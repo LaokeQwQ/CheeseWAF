@@ -1,0 +1,81 @@
+# CheeseWAF GoReleaser Configuration
+# ====================================
+# Builds both cheesewaf (WAF server) and waf-cli (management tool)
+# from the same binary using BusyBox pattern.
+
+version: 2
+
+project_name: cheesewaf
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: cheesewaf
+    main: ./cmd/cheesewaf/
+    binary: cheesewaf
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X 'github.com/LaokeQwQ/CheeseWAF/internal/cli.appVersion={{.Version}}'
+      - -X 'github.com/LaokeQwQ/CheeseWAF/internal/cli.buildTime={{.Date}}'
+    flags:
+      - -trimpath
+
+  - id: waf-cli
+    main: ./cmd/cheesewaf/
+    binary: waf-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X 'github.com/LaokeQwQ/CheeseWAF/internal/cli.appVersion={{.Version}}'
+      - -X 'github.com/LaokeQwQ/CheeseWAF/internal/cli.buildTime={{.Date}}'
+    flags:
+      - -trimpath
+
+archives:
+  - id: cheesewaf-archive
+    builds:
+      - cheesewaf
+      - waf-cli
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - configs/*
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: LaokeQwQ
+    name: CheeseWAF

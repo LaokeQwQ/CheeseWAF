@@ -1,0 +1,69 @@
+# Binaries and build output
+/bin/
+/dist/
+/build/
+/out/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Coverage, profiles, and temporary test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Local runtime state and secrets
+.env
+.env.*
+!.env.example
+/data/
+/logs/
+/run/
+/tmp/
+/temp/
+/certs/
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.db
+*.sqlite
+*.sqlite3
+
+# Local configuration. Commit *.example.yaml templates instead.
+configs/*.yaml
+!configs/*.example.yaml
+!configs/cheesewaf.yaml
+
+# Private planning/task files
+task.md
+implementation_plan.md
+*.private.md
+*.local.md
+
+# Frontend dependencies and build cache
+web/node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+web/*.log
+
+# Go workspace and dependency cache
+go.work
+go.work.sum
+vendor/
+
+# Editors and local agent state
+.idea/
+.vscode/
+.claude/
+.codex/
+
+# OS metadata
+.DS_Store
+Thumbs.db
