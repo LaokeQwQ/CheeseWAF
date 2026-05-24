@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - master
+      - canary
+      - dev
+  push:
+    branches:
+      - master
+      - canary
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  branch-flow:
+    name: branch-flow
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate promotion path
+        shell: bash
+        run: |
+          base="${{ github.base_ref }}"
+          head="${{ github.head_ref }}"
+
+          case "$base" in
+            master)
+              if [[ "$head" != "canary" ]]; then
+                echo "::error::master only accepts pull requests from canary."
+                exit 1
+              fi
+              ;;
+            canary)
+              if [[ "$head" != "dev" ]]; then
+                echo "::error::canary only accepts pull requests from dev."
+                exit 1
+              fi
+              ;;
+            dev)
+              if [[ "$head" == "master" || "$head" == "canary" ]]; then
+                echo "::error::dev cannot accept downward pull requests from master or canary."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::protected pull requests must target dev, canary, or master."
+              exit 1
+              ;;
+          esac
+
+  go-mod-tidy:
+    name: go-mod-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify go.mod and go.sum
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  go-test:
+    name: go-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  cross-build:
+    name: cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build all release targets
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p bin
+          targets=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+            "windows/arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            ext=""
+            if [[ "$goos" == "windows" ]]; then
+              ext=".exe"
+            fi
+            output="bin/cheesewaf-${goos}-${goarch}${ext}"
+            echo "building ${target} -> ${output}"
+            GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$output" ./cmd/cheesewaf/
+          done

@@ -1,0 +1,161 @@
+// Package storage defines interfaces for data persistence.
+package storage
+
+import (
+	"context"
+	"time"
+)
+
+// LogEntry represents a single WAF log entry (attack or access).
+// WAF 日志条目（攻击日志或访问日志）。
+type LogEntry struct {
+	ID         string         `json:"id"`
+	Timestamp  time.Time      `json:"timestamp"`
+	TraceID    string         `json:"trace_id"` // 溯源 ID / Trace ID
+	SiteID     string         `json:"site_id"`
+	ClientIP   string         `json:"client_ip"`
+	Method     string         `json:"method"`
+	URI        string         `json:"uri"`
+	StatusCode int            `json:"status_code"`
+	Action     string         `json:"action"` // pass/block/challenge/log
+	DetectorID string         `json:"detector_id"`
+	Category   string         `json:"category"` // sqli/xss/rce/lfi...
+	Severity   string         `json:"severity"`
+	Message    string         `json:"message"`
+	Payload    string         `json:"payload"`
+	UserAgent  string         `json:"user_agent"`
+	Country    string         `json:"country"` // GeoIP 国家
+	Latency    time.Duration  `json:"latency"`
+	Tags       []string       `json:"tags"` // IP 行为标注标签 / Behavior tags
+	Metadata   map[string]any `json:"metadata"`
+}
+
+// LogSink is the interface for log output backends.
+// Implementations include: local file, ClickHouse, VictoriaLogs, PostgreSQL.
+// 日志输出后端接口。实现包括：本地文件、ClickHouse、VictoriaLogs、PostgreSQL。
+type LogSink interface {
+	// Write writes a log entry to the sink.
+	// 写入一条日志。
+	Write(ctx context.Context, entry *LogEntry) error
+
+	// Query queries log entries with filters.
+	// 按条件查询日志。
+	Query(ctx context.Context, filter LogFilter) ([]LogEntry, int64, error)
+
+	// Flush forces pending writes to be committed.
+	// 强制提交挂起的写入。
+	Flush(ctx context.Context) error
+
+	// Close gracefully shuts down the sink.
+	// 优雅关闭。
+	Close() error
+}
+
+// LogFilter defines query filters for log entries.
+// 日志查询过滤条件。
+type LogFilter struct {
+	SiteID    string    `json:"site_id,omitempty"`
+	ClientIP  string    `json:"client_ip,omitempty"`
+	Category  string    `json:"category,omitempty"`
+	Action    string    `json:"action,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"`
+	Tags      []string  `json:"tags,omitempty"`
+	StartTime time.Time `json:"start_time,omitempty"`
+	EndTime   time.Time `json:"end_time,omitempty"`
+	Offset    int       `json:"offset,omitempty"`
+	Limit     int       `json:"limit,omitempty"`
+}
+
+// Store is the interface for configuration data persistence (SQLite).
+// 配置数据持久化接口（SQLite）。
+type Store interface {
+	// Migrate runs database migrations.
+	// 执行数据库迁移。
+	Migrate(ctx context.Context) error
+
+	// Close gracefully shuts down the store.
+	// 优雅关闭。
+	Close() error
+
+	// Sites
+	SiteStore
+
+	// Rules
+	RuleStore
+
+	// Users
+	UserStore
+}
+
+// SiteStore manages site configurations.
+// 站点配置管理。
+type SiteStore interface {
+	ListSites(ctx context.Context) ([]Site, error)
+	GetSite(ctx context.Context, id string) (*Site, error)
+	CreateSite(ctx context.Context, site *Site) error
+	UpdateSite(ctx context.Context, site *Site) error
+	DeleteSite(ctx context.Context, id string) error
+}
+
+// RuleStore manages WAF rules.
+// WAF 规则管理。
+type RuleStore interface {
+	ListRules(ctx context.Context, siteID string) ([]Rule, error)
+	GetRule(ctx context.Context, id string) (*Rule, error)
+	CreateRule(ctx context.Context, rule *Rule) error
+	UpdateRule(ctx context.Context, rule *Rule) error
+	DeleteRule(ctx context.Context, id string) error
+}
+
+// UserStore manages admin users.
+// 管理员用户管理。
+type UserStore interface {
+	GetUserByUsername(ctx context.Context, username string) (*User, error)
+	CreateUser(ctx context.Context, user *User) error
+	UpdateUser(ctx context.Context, user *User) error
+	ListUsers(ctx context.Context) ([]User, error)
+}
+
+// Site represents a protected site configuration.
+// 受保护站点配置。
+type Site struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Domains    []string  `json:"domains"`   // 监听域名
+	Upstreams  []string  `json:"upstreams"` // 上游服务器
+	ListenPort int       `json:"listen_port"`
+	EnableSSL  bool      `json:"enable_ssl"`
+	CertFile   string    `json:"cert_file,omitempty"`
+	KeyFile    string    `json:"key_file,omitempty"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// Rule represents a custom WAF rule.
+// 自定义 WAF 规则。
+type Rule struct {
+	ID          string `json:"id"`
+	SiteID      string `json:"site_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Pattern     string `json:"pattern"`
+	Location    string `json:"location"` // uri/header/body/cookie
+	Action      string `json:"action"`   // block/log/challenge
+	Severity    string `json:"severity"`
+	Enabled     bool   `json:"enabled"`
+	Priority    int    `json:"priority"`
+}
+
+// User represents an admin user.
+// 管理员用户。
+type User struct {
+	ID           string    `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"-"`
+	Role         string    `json:"role"` // admin/readonly/custom
+	TwoFAEnabled bool      `json:"two_fa_enabled"`
+	TwoFASecret  string    `json:"-"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
