@@ -12,7 +12,7 @@ GO           := go
 GOFLAGS      := -trimpath
 CGO_ENABLED  := 0
 
-.PHONY: all build build-cli run test lint clean dev help
+.PHONY: all build build-cli run test test-go web-build lint clean dev help
 
 ## help: Show this help message
 help:
@@ -23,6 +23,7 @@ help:
 	@echo "  make run         Run cheesewaf serve"
 	@echo "  make dev         Run with hot-reload (requires air)"
 	@echo "  make test        Run all tests"
+	@echo "  make web-build   Build the web dashboard"
 	@echo "  make lint        Run golangci-lint"
 	@echo "  make clean       Remove build artifacts"
 	@echo "  make deps        Download dependencies"
@@ -77,8 +78,15 @@ dev:
 	air -c .air.toml
 
 ## test: Run all tests
-test:
-	$(GO) test -v -race -count=1 ./...
+test: test-go web-build
+
+## test-go: Run Go tests
+test-go:
+	$(GO) test -v -race -count=1 ./cmd/... ./internal/...
+
+## web-build: Build the React dashboard
+web-build:
+	cd web && npm ci && npm run build
 
 ## lint: Run golangci-lint
 lint:
