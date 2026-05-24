@@ -5,15 +5,20 @@ import { Button, Dropdown, Input, Menu, Select, Space, Tag, Tooltip } from '@arc
 import { motion } from 'framer-motion';
 import {
   Activity,
+  FileCode2,
   Bell,
+  Map,
   Globe2,
   Languages,
   LayoutDashboard,
   ListFilter,
+  ListChecks,
   Menu as MenuIcon,
+  Radar,
   Search,
   Settings,
   Shield,
+  ShieldAlert,
   SlidersHorizontal,
   SunMoon,
 } from 'lucide-react';
@@ -25,8 +30,13 @@ import { themeOptions, type ThemeName } from '../themes/tokens';
 const navItems = [
   { key: '/', labelKey: 'nav.dashboard', icon: LayoutDashboard },
   { key: '/sites', labelKey: 'nav.sites', icon: Globe2 },
+  { key: '/rules', labelKey: 'nav.rules', icon: ListChecks },
   { key: '/logs', labelKey: 'nav.logs', icon: ListFilter },
   { key: '/ip', labelKey: 'nav.ip', icon: Shield },
+  { key: '/protection', labelKey: 'nav.protection', icon: ShieldAlert },
+  { key: '/ops', labelKey: 'nav.ops', icon: Radar },
+  { key: '/block-pages', labelKey: 'nav.blockPages', icon: FileCode2 },
+  { key: '/attack-map', labelKey: 'nav.attackMap', icon: Map },
   { key: '/system', labelKey: 'nav.system', icon: Settings },
 ];
 

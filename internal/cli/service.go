@@ -16,9 +16,11 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
+	"github.com/LaokeQwQ/CheeseWAF/internal/scheduler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
@@ -58,14 +60,17 @@ func runServe(ctx context.Context) error {
 	}
 	defer sink.Close()
 
-	pipeline := engine.NewPipeline(
-		semantic.NewSQLDetector(cfg.Sites[0].WAF.Mode),
-		semantic.NewXSSDetector(cfg.Sites[0].WAF.Mode),
-	)
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		return err
+	}
 	proxyServer, err := proxy.NewServer(cfg, pipeline, sink)
 	if err != nil {
 		return err
 	}
+	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
+	schedulerEngine := scheduler.NewEngine(scheduler.FromConfig(cfg.Scheduler, cfg.Setup.DataDir, configPath))
+	schedulerEngine.Start(ctx)
 	hub := realtime.NewHub()
 	authSecret, err := ensureAuthSecret(cfg.Setup.DataDir)
 	if err != nil {
@@ -110,6 +115,39 @@ func runServe(ctx context.Context) error {
 	return nil
 }
 
+func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
+	var detectors []engine.Detector
+	if len(cfg.Sites) == 0 {
+		return engine.NewPipeline(), nil
+	}
+	site := cfg.Sites[0]
+	if compiled, err := enginerules.FromConfig(site.WAF.CustomRules); err != nil {
+		return nil, err
+	} else if len(compiled) > 0 {
+		detectors = append(detectors, enginerules.New(compiled))
+	}
+	switches := site.WAF.SemanticEngines
+	if switches.SQL {
+		detectors = append(detectors, semantic.NewSQLDetector(site.WAF.Mode))
+	}
+	if switches.XSS {
+		detectors = append(detectors, semantic.NewXSSDetector(site.WAF.Mode))
+	}
+	if switches.RCE {
+		detectors = append(detectors, semantic.NewRCEDetector(site.WAF.Mode))
+	}
+	if switches.LFI {
+		detectors = append(detectors, semantic.NewLFIDetector(site.WAF.Mode))
+	}
+	if switches.XXE {
+		detectors = append(detectors, semantic.NewXXEDetector(site.WAF.Mode))
+	}
+	if switches.SSRF {
+		detectors = append(detectors, semantic.NewSSRFDetector(site.WAF.Mode))
+	}
+	return engine.NewPipeline(detectors...), nil
+}
+
 func loadConfig() (*config.Config, error) {
 	if _, err := os.Stat(configPath); err == nil {
 		return config.Load(configPath)
@@ -145,7 +183,7 @@ func seedSites(ctx context.Context, store storage.Store, cfg *config.Config) err
 			Name:       siteCfg.Name,
 			Domains:    siteCfg.Domains,
 			Upstreams:  upstreams,
-			ListenPort: 80,
+			ListenPort: siteCfg.ListenPort,
 			Enabled:    siteCfg.Enabled,
 		}
 		if err := store.CreateSite(ctx, site); err != nil {

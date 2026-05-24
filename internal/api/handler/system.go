@@ -9,5 +9,6 @@ func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 		"logging":    h.Config.Logging,
 		"protection": h.Config.Protection,
 		"setup":      h.Config.Setup,
+		"scheduler":  h.Config.Scheduler,
 	})
 }

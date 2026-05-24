@@ -26,6 +26,7 @@ sites:
     upstreams:
       - address: "127.0.0.1:9000"
         weight: 1
+    listen_port: 80
     loadbalance: "round_robin"
     enabled: true
     waf:
@@ -34,14 +35,43 @@ sites:
       semantic_engines:
         sql: true
         xss: true
-        rce: false
-        lfi: false
-        xxe: false
-        ssrf: false
+        rce: true
+        lfi: true
+        xxe: true
+        ssrf: true
+      custom_rules:
+        - id: "block-admin-probe"
+          name: "Admin path probe"
+          pattern: "(?i)/(wp-admin|phpmyadmin|\\.git)"
+          location: "uri"
+          action: "block"
+          severity: "medium"
+          enabled: true
+          priority: 180
       performance:
         max_body_bytes: 8388608
         max_header_bytes: 1048576
         proxy_timeout: 30s
+      response:
+        enabled: true
+        max_body_bytes: 1048576
+        sensitive_patterns:
+          - "AKIA[0-9A-Z]{16}"
+          - "(?i)password\\s*[=:]\\s*['\\\"]?[^'\\\"\\s]+"
+          - "(?i)secret[_-]?key\\s*[=:]\\s*['\\\"]?[^'\\\"\\s]+"
+      rewrite:
+        - id: "legacy-api"
+          pattern: "^/v1/(.*)$"
+          replacement: "/api/$1"
+          redirect_code: 0
+          enabled: false
+      health_check:
+        enabled: true
+        path: "/"
+        interval: 30s
+        timeout: 3s
+        healthy_threshold: 2
+        unhealthy_threshold: 2
 
 protection:
   ip:
@@ -52,6 +82,7 @@ protection:
       enabled: false
       database: "./data/GeoLite2-Country.mmdb"
       blocked_countries: []
+      country_cidrs: {}
   ratelimit:
     enabled: true
     default:
@@ -62,6 +93,18 @@ protection:
     enabled: false
     js_challenge: true
     captcha: false
+  acl:
+    enabled: true
+    rules:
+      - id: "deny-debug"
+        name: "Deny debug endpoints"
+        method: ""
+        path_prefix: "/debug"
+        header: ""
+        header_value: ""
+        action: "block"
+        severity: "high"
+        enabled: true
 
 storage:
   sqlite:
@@ -97,3 +140,21 @@ update:
     auto_update_binary: false
     verify_signature: true
     public_key: ""
+
+scheduler:
+  enabled: true
+  tasks:
+    - id: "log-cleanup"
+      name: "Log cleanup"
+      type: "cleanup"
+      every: 24h
+      target: "./logs"
+      keep: 14
+      enabled: true
+    - id: "config-backup"
+      name: "Config backup"
+      type: "backup"
+      every: 24h
+      target: "./data/backups"
+      keep: 7
+      enabled: false

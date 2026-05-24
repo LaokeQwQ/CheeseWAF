@@ -14,6 +14,7 @@ type Config struct {
 	Logging    LoggingConfig    `yaml:"logging" json:"logging"`
 	AI         AIConfig         `yaml:"ai" json:"ai"`
 	Update     UpdateConfig     `yaml:"update" json:"update"`
+	Scheduler  SchedulerConfig  `yaml:"scheduler" json:"scheduler"`
 }
 
 type ServerConfig struct {
@@ -44,6 +45,7 @@ type SiteConfig struct {
 	Name        string           `yaml:"name" json:"name"`
 	Domains     []string         `yaml:"domains" json:"domains"`
 	Upstreams   []UpstreamConfig `yaml:"upstreams" json:"upstreams"`
+	ListenPort  int              `yaml:"listen_port" json:"listen_port"`
 	LoadBalance string           `yaml:"loadbalance" json:"loadbalance"`
 	WAF         WAFConfig        `yaml:"waf" json:"waf"`
 	Enabled     bool             `yaml:"enabled" json:"enabled"`
@@ -55,11 +57,14 @@ type UpstreamConfig struct {
 }
 
 type WAFConfig struct {
-	Enabled         bool                    `yaml:"enabled" json:"enabled"`
-	Mode            string                  `yaml:"mode" json:"mode"`
-	SemanticEngines SemanticEngineSwitches  `yaml:"semantic_engines" json:"semantic_engines"`
-	CustomRules     []CustomRuleConfig      `yaml:"custom_rules" json:"custom_rules"`
-	Performance     PerformanceTuningConfig `yaml:"performance" json:"performance"`
+	Enabled         bool                     `yaml:"enabled" json:"enabled"`
+	Mode            string                   `yaml:"mode" json:"mode"`
+	SemanticEngines SemanticEngineSwitches   `yaml:"semantic_engines" json:"semantic_engines"`
+	CustomRules     []CustomRuleConfig       `yaml:"custom_rules" json:"custom_rules"`
+	Performance     PerformanceTuningConfig  `yaml:"performance" json:"performance"`
+	Response        ResponseInspectionConfig `yaml:"response" json:"response"`
+	Rewrite         []RewriteRuleConfig      `yaml:"rewrite" json:"rewrite"`
+	HealthCheck     HealthCheckConfig        `yaml:"health_check" json:"health_check"`
 }
 
 type SemanticEngineSwitches struct {
@@ -92,6 +97,7 @@ type ProtectionConfig struct {
 	IP        IPProtectionConfig        `yaml:"ip" json:"ip"`
 	RateLimit RateLimitProtectionConfig `yaml:"ratelimit" json:"ratelimit"`
 	Bot       BotProtectionConfig       `yaml:"bot" json:"bot"`
+	ACL       ACLProtectionConfig       `yaml:"acl" json:"acl"`
 }
 
 type IPProtectionConfig struct {
@@ -102,9 +108,10 @@ type IPProtectionConfig struct {
 }
 
 type GeoIPConfig struct {
-	Enabled          bool     `yaml:"enabled" json:"enabled"`
-	Database         string   `yaml:"database" json:"database"`
-	BlockedCountries []string `yaml:"blocked_countries" json:"blocked_countries"`
+	Enabled          bool                `yaml:"enabled" json:"enabled"`
+	Database         string              `yaml:"database" json:"database"`
+	BlockedCountries []string            `yaml:"blocked_countries" json:"blocked_countries"`
+	CountryCIDRs     map[string][]string `yaml:"country_cidrs" json:"country_cidrs"`
 }
 
 type RateLimitProtectionConfig struct {
@@ -122,6 +129,46 @@ type BotProtectionConfig struct {
 	Enabled     bool `yaml:"enabled" json:"enabled"`
 	JSChallenge bool `yaml:"js_challenge" json:"js_challenge"`
 	CAPTCHA     bool `yaml:"captcha" json:"captcha"`
+}
+
+type ACLProtectionConfig struct {
+	Enabled bool            `yaml:"enabled" json:"enabled"`
+	Rules   []ACLRuleConfig `yaml:"rules" json:"rules"`
+}
+
+type ACLRuleConfig struct {
+	ID          string `yaml:"id" json:"id"`
+	Name        string `yaml:"name" json:"name"`
+	Method      string `yaml:"method" json:"method"`
+	PathPrefix  string `yaml:"path_prefix" json:"path_prefix"`
+	Header      string `yaml:"header" json:"header"`
+	HeaderValue string `yaml:"header_value" json:"header_value"`
+	Action      string `yaml:"action" json:"action"`
+	Severity    string `yaml:"severity" json:"severity"`
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+}
+
+type ResponseInspectionConfig struct {
+	Enabled           bool     `yaml:"enabled" json:"enabled"`
+	MaxBodyBytes      int64    `yaml:"max_body_bytes" json:"max_body_bytes"`
+	SensitivePatterns []string `yaml:"sensitive_patterns" json:"sensitive_patterns"`
+}
+
+type RewriteRuleConfig struct {
+	ID           string `yaml:"id" json:"id"`
+	Pattern      string `yaml:"pattern" json:"pattern"`
+	Replacement  string `yaml:"replacement" json:"replacement"`
+	RedirectCode int    `yaml:"redirect_code" json:"redirect_code"`
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+}
+
+type HealthCheckConfig struct {
+	Enabled            bool          `yaml:"enabled" json:"enabled"`
+	Path               string        `yaml:"path" json:"path"`
+	Interval           time.Duration `yaml:"interval" json:"interval"`
+	Timeout            time.Duration `yaml:"timeout" json:"timeout"`
+	HealthyThreshold   int           `yaml:"healthy_threshold" json:"healthy_threshold"`
+	UnhealthyThreshold int           `yaml:"unhealthy_threshold" json:"unhealthy_threshold"`
 }
 
 type StorageConfig struct {
@@ -176,4 +223,21 @@ type OTAConfig struct {
 	AutoUpdateBinary bool          `yaml:"auto_update_binary" json:"auto_update_binary"`
 	VerifySignature  bool          `yaml:"verify_signature" json:"verify_signature"`
 	PublicKey        string        `yaml:"public_key" json:"public_key"`
+}
+
+type SchedulerConfig struct {
+	Enabled bool                  `yaml:"enabled" json:"enabled"`
+	Tasks   []ScheduledTaskConfig `yaml:"tasks" json:"tasks"`
+}
+
+type ScheduledTaskConfig struct {
+	ID        string        `yaml:"id" json:"id"`
+	Name      string        `yaml:"name" json:"name"`
+	Type      string        `yaml:"type" json:"type"`
+	Schedule  string        `yaml:"schedule" json:"schedule"`
+	Every     time.Duration `yaml:"every" json:"every"`
+	Target    string        `yaml:"target" json:"target"`
+	Keep      int           `yaml:"keep" json:"keep"`
+	Enabled   bool          `yaml:"enabled" json:"enabled"`
+	CreatedAt time.Time     `yaml:"created_at" json:"created_at"`
 }
