@@ -3,9 +3,14 @@ import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { pageVariants } from '../animations/variants';
 import MainLayout from '../layouts/MainLayout';
+import AttackMapPage from '../pages/AttackMap/AttackMapPage';
+import BlockPagesPage from '../pages/BlockPages/BlockPagesPage';
 import DashboardPage from '../pages/Dashboard/DashboardPage';
 import IPManagePage from '../pages/IPManage/IPManagePage';
 import LogsPage from '../pages/Logs/LogsPage';
+import OperationsPage from '../pages/Operations/OperationsPage';
+import ProtectionPage from '../pages/Protection/ProtectionPage';
+import RulesPage from '../pages/Rules/RulesPage';
 import LoginPage from '../pages/Login/LoginPage';
 import SetupPage from '../pages/Setup/SetupPage';
 import SitesPage from '../pages/Sites/SitesPage';
@@ -36,8 +41,13 @@ export default function AppRoutes() {
         <Route element={<MainLayout />}>
           <Route index element={<Page><DashboardPage /></Page>} />
           <Route path="sites" element={<Page><SitesPage /></Page>} />
+          <Route path="rules" element={<Page><RulesPage /></Page>} />
           <Route path="logs" element={<Page><LogsPage /></Page>} />
           <Route path="ip" element={<Page><IPManagePage /></Page>} />
+          <Route path="protection" element={<Page><ProtectionPage /></Page>} />
+          <Route path="ops" element={<Page><OperationsPage /></Page>} />
+          <Route path="block-pages" element={<Page><BlockPagesPage /></Page>} />
+          <Route path="attack-map" element={<Page><AttackMapPage /></Page>} />
           <Route path="system" element={<Page><SystemPage /></Page>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -159,6 +159,9 @@ protection:
       requests: 100
       window: "60s"
       burst: 20
+  acl:
+    enabled: true
+    rules: []
 
 ai:
   enabled: false
@@ -171,6 +174,17 @@ update:
     auto_update_rules: true
     auto_update_binary: false
     verify_signature: true
+
+scheduler:
+  enabled: true
+  tasks:
+    - id: "log-cleanup"
+      name: "Log cleanup"
+      type: "cleanup"
+      every: "24h"
+      target: %s
+      keep: 14
+      enabled: true
 `, quoteYAML(DefaultHTTPListen),
 		quoteYAML(DefaultHTTPSListen),
 		quoteYAML(DefaultAdminListen),
@@ -180,6 +194,7 @@ update:
 		quoteYAML(paths.RuntimeDir),
 		quoteYAML(paths.SQLiteFile),
 		quoteYAML(filepath.Join(paths.LogDir, "access.log")),
+		quoteYAML(paths.LogDir),
 	))
 }
 

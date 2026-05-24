@@ -44,6 +44,47 @@ func TestServerPassesAndBlocks(t *testing.T) {
 	}
 }
 
+func TestServerPhase2Protections(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Upstream-Path", r.URL.Path)
+		_, _ = w.Write([]byte("password=secret"))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Sites[0].WAF.Rewrite = []config.RewriteRuleConfig{{ID: "old", Pattern: "^/old/(.*)$", Replacement: "/new/$1", Enabled: true}}
+	cfg.Sites[0].WAF.Response.Enabled = true
+	cfg.Sites[0].WAF.Response.SensitivePatterns = []string{`password=secret`}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	cfg.Protection.ACL.Enabled = true
+	cfg.Protection.ACL.Rules = []config.ACLRuleConfig{{ID: "debug", Name: "Debug", PathPrefix: "/debug", Action: "block", Enabled: true}}
+
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aclReq := httptest.NewRequest(http.MethodGet, "http://localhost/debug/vars", nil)
+	aclRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(aclRec, aclReq)
+	if aclRec.Code != http.StatusForbidden {
+		t.Fatalf("expected ACL block, code=%d", aclRec.Code)
+	}
+
+	rewriteReq := httptest.NewRequest(http.MethodGet, "http://localhost/old/item", nil)
+	rewriteRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rewriteRec, rewriteReq)
+	if rewriteRec.Header().Get("X-Upstream-Path") != "/new/item" {
+		t.Fatalf("rewrite did not reach upstream path: %s", rewriteRec.Header().Get("X-Upstream-Path"))
+	}
+	if rewriteRec.Header().Get("X-CheeseWAF-Response-Finding") == "" {
+		t.Fatal("expected response inspection header")
+	}
+}
+
 type noopSink struct{}
 
 func (noopSink) Write(context.Context, *storage.LogEntry) error { return nil }

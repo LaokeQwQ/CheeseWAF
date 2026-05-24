@@ -35,19 +35,41 @@ func Default() Config {
 				Name:        "default",
 				Domains:     []string{"localhost", "127.0.0.1"},
 				Upstreams:   []UpstreamConfig{{Address: "127.0.0.1:9000", Weight: 1}},
+				ListenPort:  80,
 				LoadBalance: "round_robin",
 				Enabled:     true,
 				WAF: WAFConfig{
 					Enabled: true,
 					Mode:    "block",
 					SemanticEngines: SemanticEngineSwitches{
-						SQL: true,
-						XSS: true,
+						SQL:  true,
+						XSS:  true,
+						RCE:  true,
+						LFI:  true,
+						XXE:  true,
+						SSRF: true,
 					},
 					Performance: PerformanceTuningConfig{
 						MaxBodyBytes:   8 << 20,
 						MaxHeaderBytes: 1 << 20,
 						ProxyTimeout:   30 * time.Second,
+					},
+					Response: ResponseInspectionConfig{
+						Enabled:      true,
+						MaxBodyBytes: 1 << 20,
+						SensitivePatterns: []string{
+							`AKIA[0-9A-Z]{16}`,
+							`(?i)password\s*[=:]\s*['"]?[^'"\s]+`,
+							`(?i)secret[_-]?key\s*[=:]\s*['"]?[^'"\s]+`,
+						},
+					},
+					HealthCheck: HealthCheckConfig{
+						Enabled:            true,
+						Path:               "/",
+						Interval:           30 * time.Second,
+						Timeout:            3 * time.Second,
+						HealthyThreshold:   2,
+						UnhealthyThreshold: 2,
 					},
 				},
 			},
@@ -60,6 +82,14 @@ func Default() Config {
 			RateLimit: RateLimitProtectionConfig{
 				Enabled: true,
 				Default: RateLimitProfile{Requests: 100, Window: time.Minute, Burst: 20},
+			},
+			ACL: ACLProtectionConfig{Enabled: true},
+		},
+		Scheduler: SchedulerConfig{
+			Enabled: true,
+			Tasks: []ScheduledTaskConfig{
+				{ID: "log-cleanup", Name: "Log cleanup", Type: "cleanup", Every: 24 * time.Hour, Target: "./logs", Keep: 14, Enabled: true},
+				{ID: "config-backup", Name: "Config backup", Type: "backup", Every: 24 * time.Hour, Target: "./data/backups", Keep: 7, Enabled: false},
 			},
 		},
 		Storage: StorageConfig{
@@ -192,6 +222,9 @@ func applyDefaults(cfg *Config) {
 		if site.LoadBalance == "" {
 			site.LoadBalance = "round_robin"
 		}
+		if site.ListenPort == 0 {
+			site.ListenPort = 80
+		}
 		if site.WAF.Mode == "" {
 			site.WAF.Mode = "block"
 		}
@@ -200,6 +233,24 @@ func applyDefaults(cfg *Config) {
 		}
 		if site.WAF.Performance.ProxyTimeout == 0 {
 			site.WAF.Performance.ProxyTimeout = 30 * time.Second
+		}
+		if site.WAF.Response.MaxBodyBytes == 0 {
+			site.WAF.Response.MaxBodyBytes = 1 << 20
+		}
+		if site.WAF.HealthCheck.Path == "" {
+			site.WAF.HealthCheck.Path = "/"
+		}
+		if site.WAF.HealthCheck.Interval == 0 {
+			site.WAF.HealthCheck.Interval = 30 * time.Second
+		}
+		if site.WAF.HealthCheck.Timeout == 0 {
+			site.WAF.HealthCheck.Timeout = 3 * time.Second
+		}
+		if site.WAF.HealthCheck.HealthyThreshold == 0 {
+			site.WAF.HealthCheck.HealthyThreshold = 2
+		}
+		if site.WAF.HealthCheck.UnhealthyThreshold == 0 {
+			site.WAF.HealthCheck.UnhealthyThreshold = 2
 		}
 	}
 }

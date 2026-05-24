@@ -52,7 +52,8 @@ select {
   padding: 20px 14px;
   background: var(--surface);
   border-right: 1px solid var(--border);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .brand-row {
@@ -313,6 +314,9 @@ select {
 }
 
 .panel-heading h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
   color: var(--text);
   font-size: 16px;
@@ -382,6 +386,77 @@ code {
 
 .settings-grid {
   grid-template-columns: minmax(280px, 0.65fr) minmax(320px, 1.35fr);
+}
+
+.split-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.45fr) minmax(420px, 1fr);
+  gap: 12px;
+}
+
+.template-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.template-item-active {
+  background: var(--accent-soft);
+}
+
+.code-editor textarea {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  line-height: 1.5;
+}
+
+.map-canvas {
+  position: relative;
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 14%, transparent) 1px, transparent 1px),
+    linear-gradient(0deg, color-mix(in srgb, var(--accent-info) 14%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 28% 42%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 16%),
+    radial-gradient(circle at 68% 52%, color-mix(in srgb, var(--accent-info) 20%, transparent), transparent 18%),
+    var(--surface);
+  background-size:
+    48px 48px,
+    48px 48px,
+    auto,
+    auto,
+    auto;
+  box-shadow: var(--shadow);
+}
+
+.map-grid-lines {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(115deg, transparent 0 16%, color-mix(in srgb, var(--text-muted) 12%, transparent) 16% 17%, transparent 17% 100%),
+    linear-gradient(20deg, transparent 0 42%, color-mix(in srgb, var(--text-muted) 10%, transparent) 42% 43%, transparent 43% 100%);
+}
+
+.map-marker {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transform: translate(-50%, -50%);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.map-marker i {
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--accent-danger);
+  box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent-danger) 18%, transparent);
 }
 
 .performance-form {
@@ -502,7 +577,8 @@ code {
 
   .metric-grid,
   .dashboard-grid,
-  .settings-grid {
+  .settings-grid,
+  .split-grid {
     grid-template-columns: 1fr;
   }
 }

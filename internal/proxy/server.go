@@ -9,7 +9,10 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine/response"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/acl"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ratelimit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -21,6 +24,10 @@ type Server struct {
 	lb        *LoadBalancer
 	blacklist *ip.Blacklist
 	whitelist *ip.Whitelist
+	geoip     *ip.GeoIPPolicy
+	acl       *acl.Policy
+	limiter   *ratelimit.Limiter
+	health    *HealthRegistry
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
@@ -32,15 +39,28 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 	if err != nil {
 		return nil, err
 	}
+	geoip, err := ip.NewGeoIPPolicy(cfg.Protection.IP.GeoIP)
+	if err != nil {
+		return nil, err
+	}
+	health := NewHealthRegistry(cfg.Sites)
 	return &Server{
 		config:    cfg,
 		pipeline:  pipeline,
 		logSink:   sink,
 		renderer:  blockpage.NewRenderer(),
-		lb:        NewLoadBalancer(cfg.Sites),
+		lb:        NewLoadBalancer(cfg.Sites).WithHealth(health),
 		blacklist: blacklist,
 		whitelist: whitelist,
+		geoip:     geoip,
+		acl:       acl.NewPolicy(cfg.Protection.ACL),
+		limiter:   ratelimit.New(cfg.Protection.RateLimit.Default, cfg.Protection.RateLimit.Enabled),
+		health:    health,
 	}, nil
+}
+
+func (s *Server) HealthRegistry() *HealthRegistry {
+	return s.health
 }
 
 func (s *Server) Handler() http.Handler {
@@ -69,6 +89,28 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.block(w, reqCtx, "ip", "IP is blocked", http.StatusForbidden, start)
 		return
 	}
+	if s.geoip.Blocked(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
+		s.block(w, reqCtx, "geoip", "GeoIP country is blocked", http.StatusForbidden, start)
+		return
+	}
+	if result := s.acl.Evaluate(r); result != nil && result.Detected && result.Action == engine.ActionBlock {
+		s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
+		return
+	}
+	if !s.limiter.Allow(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
+		s.block(w, reqCtx, "ratelimit", "rate limit exceeded", http.StatusTooManyRequests, start)
+		return
+	}
+	rewriter, err := NewRewriter(site.WAF.Rewrite)
+	if err != nil {
+		http.Error(w, "rewrite configuration error", http.StatusInternalServerError)
+		return
+	}
+	if redirect, code := rewriter.Apply(r); redirect {
+		http.Redirect(w, r, r.URL.String(), code)
+		s.writeLog(r.Context(), reqCtx, "redirect", code, start, nil)
+		return
+	}
 	if site.WAF.Enabled && site.WAF.Mode != "off" && s.pipeline != nil {
 		result, err := s.pipeline.Detect(r.Context(), reqCtx)
 		if err != nil {
@@ -85,8 +127,28 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no upstream", http.StatusBadGateway)
 		return
 	}
-	NewReverseProxy(target, site.WAF.Performance.ProxyTimeout).ServeHTTP(w, r)
-	s.writeLog(r.Context(), reqCtx, "pass", http.StatusOK, start, nil)
+	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
+	if site.WAF.Response.Enabled {
+		inspector, err := response.New(site.WAF.Response)
+		if err != nil {
+			http.Error(w, "response inspector configuration error", http.StatusInternalServerError)
+			return
+		}
+		rp.ModifyResponse = func(resp *http.Response) error {
+			finding, err := inspector.InspectHTTP(resp)
+			if err != nil {
+				return err
+			}
+			if finding != nil {
+				resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
+				reqCtx.Metadata["response_finding"] = finding
+			}
+			return nil
+		}
+	}
+	rp.ServeHTTP(recorder, r)
+	s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
 }
 
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
@@ -124,7 +186,26 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		entry.Category = extra.Category
 		entry.Message = extra.Message
 	}
+	if country := s.geoip.Country(reqCtx.ClientIP); country != "" {
+		entry.Country = country
+	}
+	if finding, ok := reqCtx.Metadata["response_finding"].(*response.Finding); ok && finding != nil {
+		entry.Category = "response"
+		entry.Message = finding.Message
+		entry.DetectorID = "response.inspector"
+		entry.Action = "log"
+	}
 	_ = s.logSink.Write(ctx, entry)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
 }
 
 func ListenAndServe(ctx context.Context, srv *http.Server) error {
