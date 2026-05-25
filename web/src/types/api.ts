@@ -57,6 +57,18 @@ export type ProtectionConfig = {
       burst: number;
     };
   };
+  bot: {
+    enabled: boolean;
+    js_challenge: boolean;
+    captcha: boolean;
+    challenge_ttl: number | string;
+    cookie_name: string;
+    secret: string;
+    path_prefixes: string[];
+    exempt_path_prefixes: string[];
+    allowed_user_agents: string[];
+    suspicious_user_agents: string[];
+  };
   acl: {
     enabled: boolean;
     rules: ACLRule[];
@@ -69,10 +81,46 @@ export type ScheduledTask = {
   type: string;
   schedule: string;
   every: number | string;
+  frequency?: string;
+  at?: string;
   target: string;
+  channel?: string;
+  recipient?: string;
+  period?: string;
+  format?: string;
   keep: number;
   enabled: boolean;
   created_at?: string;
+};
+
+export type EdgeConfig = {
+  headers: {
+    enabled: boolean;
+    rules: Array<{
+      id: string;
+      name: string;
+      operation: 'set' | 'add' | 'delete';
+      header: string;
+      value: string;
+      path_prefix: string;
+      enabled: boolean;
+    }>;
+  };
+  cache: {
+    enabled: boolean;
+    mode: string;
+    ttl: number | string;
+    status_codes: number[];
+    path_prefixes: string[];
+    max_body_bytes: number;
+  };
+  compression: {
+    enabled: boolean;
+    algorithms: string[];
+    level: number;
+    min_bytes: number;
+    content_types: string[];
+  };
 };
 
 export type StorageStats = {
@@ -87,4 +135,48 @@ export type BlockTemplate = {
   name: string;
   description: string;
   html: string;
+};
+
+export type AIConfig = {
+  enabled: boolean;
+  api_base: string;
+  api_key: string;
+  api_key_set: boolean;
+  model: string;
+  async: boolean;
+};
+
+export type AttackAnalysis = {
+  log_id: string;
+  risk: string;
+  summary: string;
+  recommended_actions: string[];
+};
+
+export type IPReputationEntry = {
+  ip: string;
+  list: 'whitelist' | 'blacklist' | 'monitor';
+  reputation: number;
+  tags: string[];
+  intel: Array<{
+    id: string;
+    value: string;
+    severity: string;
+    source: string;
+    labels: string[];
+  }>;
+  stats: {
+    total: number;
+    blocked: number;
+    by_type: Record<string, number>;
+  };
+};
+
+export type IPRulesResponse = {
+  whitelist: string[];
+  blacklist: string[];
+  tags: Record<string, string[]>;
+  threat_intel: Array<Record<string, unknown>>;
+  geoip: ProtectionConfig['ip']['geoip'];
+  entries: IPReputationEntry[];
 };

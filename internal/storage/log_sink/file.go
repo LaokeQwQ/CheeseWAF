@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -48,8 +49,52 @@ func (s *FileSink) Write(_ context.Context, entry *storage.LogEntry) error {
 	return s.writer.WriteByte('\n')
 }
 
-func (s *FileSink) Query(context.Context, storage.LogFilter) ([]storage.LogEntry, int64, error) {
-	return []storage.LogEntry{}, 0, nil
+func (s *FileSink) Query(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
+	if s == nil || s.file == nil {
+		return nil, 0, fmt.Errorf("file sink is closed")
+	}
+	s.mu.Lock()
+	if err := s.writer.Flush(); err != nil {
+		s.mu.Unlock()
+		return nil, 0, err
+	}
+	path := s.file.Name()
+	s.mu.Unlock()
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4<<20)
+	var out []storage.LogEntry
+	var total int64
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, total, err
+		}
+		var entry storage.LogEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		if !matches(entry, filter) {
+			continue
+		}
+		total++
+		if int(total) <= filter.Offset {
+			continue
+		}
+		if len(out) < limit {
+			out = append(out, entry)
+		}
+	}
+	return out, total, scanner.Err()
 }
 
 func (s *FileSink) Flush(context.Context) error {
@@ -65,4 +110,43 @@ func (s *FileSink) Close() error {
 		return err
 	}
 	return s.file.Close()
+}
+
+func matches(entry storage.LogEntry, filter storage.LogFilter) bool {
+	if filter.SiteID != "" && entry.SiteID != filter.SiteID {
+		return false
+	}
+	if filter.ClientIP != "" && entry.ClientIP != filter.ClientIP {
+		return false
+	}
+	if filter.Category != "" && entry.Category != filter.Category {
+		return false
+	}
+	if filter.Action != "" && entry.Action != filter.Action {
+		return false
+	}
+	if filter.TraceID != "" && entry.TraceID != filter.TraceID {
+		return false
+	}
+	if !filter.StartTime.IsZero() && entry.Timestamp.Before(filter.StartTime) {
+		return false
+	}
+	if !filter.EndTime.IsZero() && entry.Timestamp.After(filter.EndTime) {
+		return false
+	}
+	for _, tag := range filter.Tags {
+		if !hasTag(entry.Tags, tag) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasTag(tags []string, want string) bool {
+	for _, tag := range tags {
+		if strings.EqualFold(tag, want) {
+			return true
+		}
+	}
+	return false
 }

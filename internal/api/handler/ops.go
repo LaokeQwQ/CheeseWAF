@@ -15,8 +15,30 @@ func (h *Handler) ListTasks(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, h.Config.Scheduler.Tasks)
 }
 
+func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
+	var req []config.ScheduledTaskConfig
+	if !decode(w, r, &req) {
+		return
+	}
+	h.Config.Scheduler.Tasks = req
+	writeData(w, h.Config.Scheduler.Tasks)
+}
+
 func (h *Handler) TaskHistory(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, []any{})
+}
+
+func (h *Handler) EdgePolicy(w http.ResponseWriter, _ *http.Request) {
+	writeData(w, h.Config.Edge)
+}
+
+func (h *Handler) UpdateEdgePolicy(w http.ResponseWriter, r *http.Request) {
+	var req config.EdgeConfig
+	if !decode(w, r, &req) {
+		return
+	}
+	h.Config.Edge = req
+	writeData(w, h.Config.Edge)
 }
 
 func (h *Handler) StorageStats(w http.ResponseWriter, _ *http.Request) {

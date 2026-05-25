@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { BlockTemplate, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats } from '../types/api';
+import type { AIConfig, AttackAnalysis, BlockTemplate, EdgeConfig, IPRulesResponse, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -81,6 +81,22 @@ export function updateIPProtection(ip: ProtectionConfig['ip']) {
   return unwrap<ProtectionConfig['ip']>(apiClient.put('/protection/ip', ip));
 }
 
+export function fetchIPRules() {
+  return unwrap<IPRulesResponse>(apiClient.get('/ip'));
+}
+
+export function updateIPTags(tags: Record<string, string[]>) {
+  return unwrap<Record<string, string[]>>(apiClient.put('/ip/tags', tags));
+}
+
+export async function exportThreatIntel(format: 'csv' | 'stix') {
+  const response = await apiClient.get('/ip/threat-intel/export', {
+    params: { format },
+    responseType: 'blob',
+  });
+  return response.data as Blob;
+}
+
 export function updateACLProtection(acl: ProtectionConfig['acl']) {
   return unwrap<ProtectionConfig['acl']>(apiClient.put('/protection/acl', acl));
 }
@@ -89,8 +105,16 @@ export function updateRateLimit(ratelimit: ProtectionConfig['ratelimit']) {
   return unwrap<ProtectionConfig['ratelimit']>(apiClient.put('/protection/ratelimit', ratelimit));
 }
 
+export function updateBotProtection(bot: ProtectionConfig['bot']) {
+  return unwrap<ProtectionConfig['bot']>(apiClient.put('/protection/bot', bot));
+}
+
 export function fetchTasks() {
   return unwrap<ScheduledTask[]>(apiClient.get('/scheduler/tasks'));
+}
+
+export function updateTasks(tasks: ScheduledTask[]) {
+  return unwrap<ScheduledTask[]>(apiClient.put('/scheduler/tasks', tasks));
 }
 
 export function fetchTaskHistory() {
@@ -121,4 +145,28 @@ export function importNginx(contents: string) {
   return unwrap<Site[]>(apiClient.post('/nginx/import', contents, {
     headers: { 'Content-Type': 'text/plain' },
   }));
+}
+
+export function fetchEdgePolicy() {
+  return unwrap<EdgeConfig>(apiClient.get('/edge'));
+}
+
+export function updateEdgePolicy(edge: EdgeConfig) {
+  return unwrap<EdgeConfig>(apiClient.put('/edge', edge));
+}
+
+export function fetchAIConfig() {
+  return unwrap<AIConfig>(apiClient.get('/ai/config'));
+}
+
+export function updateAIConfig(config: AIConfig) {
+  return unwrap<AIConfig>(apiClient.put('/ai/config', config));
+}
+
+export function testAIConnection() {
+  return unwrap<{ ok: boolean }>(apiClient.post('/ai/test'));
+}
+
+export function analyzeLog(entry: Record<string, unknown>) {
+  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', entry));
 }

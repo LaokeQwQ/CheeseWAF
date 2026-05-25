@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -78,10 +79,22 @@ func Default() Config {
 			IP: IPProtectionConfig{
 				Whitelist: []string{"127.0.0.1", "::1"},
 				Blacklist: []string{},
+				Tags:      map[string][]string{},
 			},
 			RateLimit: RateLimitProtectionConfig{
 				Enabled: true,
 				Default: RateLimitProfile{Requests: 100, Window: time.Minute, Burst: 20},
+			},
+			Bot: BotProtectionConfig{
+				Enabled:              false,
+				JSChallenge:          true,
+				CAPTCHA:              false,
+				ChallengeTTL:         30 * time.Minute,
+				CookieName:           "cheesewaf_js_clearance",
+				Secret:               "change-me-in-production",
+				PathPrefixes:         []string{"/"},
+				ExemptPathPrefixes:   []string{"/health", "/api/"},
+				SuspiciousUserAgents: []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
 			},
 			ACL: ACLProtectionConfig{Enabled: true},
 		},
@@ -90,6 +103,30 @@ func Default() Config {
 			Tasks: []ScheduledTaskConfig{
 				{ID: "log-cleanup", Name: "Log cleanup", Type: "cleanup", Every: 24 * time.Hour, Target: "./logs", Keep: 14, Enabled: true},
 				{ID: "config-backup", Name: "Config backup", Type: "backup", Every: 24 * time.Hour, Target: "./data/backups", Keep: 7, Enabled: false},
+				{ID: "security-daily-report", Name: "Security daily report", Type: "security_report", Frequency: "daily", At: "08:00", Channel: "file", Recipient: "./data/reports", Period: "daily", Format: "markdown", Enabled: false},
+			},
+		},
+		Edge: EdgeConfig{
+			Headers: HeaderPolicyConfig{
+				Enabled: true,
+				Rules: []HeaderRuleConfig{
+					{ID: "add-request-id", Name: "Add request marker", Operation: "set", Header: "X-CheeseWAF", Value: "edge", Enabled: true},
+				},
+			},
+			Cache: CachePolicyConfig{
+				Enabled:      true,
+				Mode:         "public",
+				TTL:          5 * time.Minute,
+				StatusCodes:  []int{http.StatusOK, http.StatusNotModified},
+				PathPrefixes: []string{"/assets/", "/static/"},
+				MaxBodyBytes: 2 << 20,
+			},
+			Compression: CompressionPolicyConfig{
+				Enabled:      true,
+				Algorithms:   []string{"gzip"},
+				Level:        5,
+				MinBytes:     1024,
+				ContentTypes: []string{"text/", "application/json", "application/javascript", "application/xml", "image/svg+xml"},
 			},
 		},
 		Storage: StorageConfig{
@@ -213,6 +250,51 @@ func applyDefaults(cfg *Config) {
 	}
 	if len(cfg.Sites) == 0 {
 		cfg.Sites = def.Sites
+	}
+	if cfg.Protection.IP.Tags == nil {
+		cfg.Protection.IP.Tags = map[string][]string{}
+	}
+	if cfg.Protection.Bot.ChallengeTTL == 0 {
+		cfg.Protection.Bot.ChallengeTTL = def.Protection.Bot.ChallengeTTL
+	}
+	if cfg.Protection.Bot.CookieName == "" {
+		cfg.Protection.Bot.CookieName = def.Protection.Bot.CookieName
+	}
+	if cfg.Protection.Bot.Secret == "" {
+		cfg.Protection.Bot.Secret = def.Protection.Bot.Secret
+	}
+	if len(cfg.Protection.Bot.PathPrefixes) == 0 {
+		cfg.Protection.Bot.PathPrefixes = def.Protection.Bot.PathPrefixes
+	}
+	if len(cfg.Protection.Bot.ExemptPathPrefixes) == 0 {
+		cfg.Protection.Bot.ExemptPathPrefixes = def.Protection.Bot.ExemptPathPrefixes
+	}
+	if len(cfg.Protection.Bot.SuspiciousUserAgents) == 0 {
+		cfg.Protection.Bot.SuspiciousUserAgents = def.Protection.Bot.SuspiciousUserAgents
+	}
+	if cfg.Edge.Cache.TTL == 0 {
+		cfg.Edge.Cache.TTL = def.Edge.Cache.TTL
+	}
+	if cfg.Edge.Cache.MaxBodyBytes == 0 {
+		cfg.Edge.Cache.MaxBodyBytes = def.Edge.Cache.MaxBodyBytes
+	}
+	if len(cfg.Edge.Cache.StatusCodes) == 0 {
+		cfg.Edge.Cache.StatusCodes = def.Edge.Cache.StatusCodes
+	}
+	if cfg.Edge.Cache.Mode == "" {
+		cfg.Edge.Cache.Mode = "public"
+	}
+	if cfg.Edge.Compression.Level == 0 {
+		cfg.Edge.Compression.Level = def.Edge.Compression.Level
+	}
+	if cfg.Edge.Compression.MinBytes == 0 {
+		cfg.Edge.Compression.MinBytes = def.Edge.Compression.MinBytes
+	}
+	if len(cfg.Edge.Compression.Algorithms) == 0 {
+		cfg.Edge.Compression.Algorithms = def.Edge.Compression.Algorithms
+	}
+	if len(cfg.Edge.Compression.ContentTypes) == 0 {
+		cfg.Edge.Compression.ContentTypes = def.Edge.Compression.ContentTypes
 	}
 	for idx := range cfg.Sites {
 		site := &cfg.Sites[idx]
