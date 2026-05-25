@@ -8,9 +8,11 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/edge"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/response"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/acl"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/bot"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ratelimit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -26,8 +28,12 @@ type Server struct {
 	whitelist *ip.Whitelist
 	geoip     *ip.GeoIPPolicy
 	acl       *acl.Policy
+	bot       *bot.Policy
 	limiter   *ratelimit.Limiter
 	health    *HealthRegistry
+	headers   *edge.HeaderModifier
+	cache     *edge.Cache
+	compress  *edge.Compressor
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
@@ -54,8 +60,12 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		whitelist: whitelist,
 		geoip:     geoip,
 		acl:       acl.NewPolicy(cfg.Protection.ACL),
+		bot:       bot.NewPolicy(cfg.Protection.Bot),
 		limiter:   ratelimit.New(cfg.Protection.RateLimit.Default, cfg.Protection.RateLimit.Enabled),
 		health:    health,
+		headers:   edge.NewHeaderModifier(cfg.Edge.Headers),
+		cache:     edge.NewCache(cfg.Edge.Cache),
+		compress:  edge.NewCompressor(cfg.Edge.Compression),
 	}, nil
 }
 
@@ -97,6 +107,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
 		return
 	}
+	if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !s.whitelist.Allowed(reqCtx.ClientIP) {
+		if result.Action == engine.ActionChallenge {
+			s.challenge(w, r, reqCtx, result.Message, start)
+			return
+		}
+		s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
+		return
+	}
 	if !s.limiter.Allow(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
 		s.block(w, reqCtx, "ratelimit", "rate limit exceeded", http.StatusTooManyRequests, start)
 		return
@@ -122,12 +140,24 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.headers.Apply(r)
+	if cached, ok := s.cache.Get(r); ok {
+		s.compress.Apply(r, &cached)
+		edge.WriteCaptured(w, cached)
+		s.writeLog(r.Context(), reqCtx, "cache_hit", cached.Status, start, nil)
+		return
+	}
 	target, err := s.lb.Next(site, reqCtx.ClientIP)
 	if err != nil {
 		http.Error(w, "no upstream", http.StatusBadGateway)
 		return
 	}
-	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	if IsWebSocketUpgrade(r) {
+		NewReverseProxy(target, site.WAF.Performance.ProxyTimeout).ServeHTTP(w, r)
+		s.writeLog(r.Context(), reqCtx, "pass", http.StatusSwitchingProtocols, start, nil)
+		return
+	}
+	capture := edge.NewCaptureWriter()
 	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
 	if site.WAF.Response.Enabled {
 		inspector, err := response.New(site.WAF.Response)
@@ -147,8 +177,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 	}
-	rp.ServeHTTP(recorder, r)
-	s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
+	rp.ServeHTTP(capture, r)
+	captured := capture.Response()
+	s.cache.Store(r, captured)
+	captured.Header.Set("X-CheeseWAF-Cache", "MISS")
+	s.compress.Apply(r, &captured)
+	edge.WriteCaptured(w, captured)
+	s.writeLog(r.Context(), reqCtx, "pass", captured.Status, start, nil)
 }
 
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
@@ -161,6 +196,14 @@ func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, cat
 	})
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category: category,
+		Message:  message,
+	})
+}
+
+func (s *Server) challenge(w http.ResponseWriter, r *http.Request, reqCtx *engine.RequestContext, message string, start time.Time) {
+	s.bot.ServeChallenge(w, r, reqCtx.ClientIP)
+	s.writeLog(r.Context(), reqCtx, "challenge", http.StatusForbidden, start, &storage.LogEntry{
+		Category: "bot",
 		Message:  message,
 	})
 }
@@ -196,16 +239,6 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		entry.Action = "log"
 	}
 	_ = s.logSink.Write(ctx, entry)
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
-	r.ResponseWriter.WriteHeader(status)
 }
 
 func ListenAndServe(ctx context.Context, srv *http.Server) error {

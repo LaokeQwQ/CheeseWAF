@@ -529,6 +529,72 @@ code {
     border-color 160ms ease;
 }
 
+.ai-fab {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 20;
+  box-shadow: var(--shadow);
+}
+
+.ai-assistant-panel {
+  position: fixed;
+  right: 22px;
+  bottom: 76px;
+  z-index: 20;
+  display: grid;
+  gap: 12px;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(560px, calc(100vh - 120px));
+  padding: 14px;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.ai-assistant-panel header,
+.assistant-input,
+.assistant-approval {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-assistant-panel header {
+  justify-content: space-between;
+}
+
+.assistant-thread {
+  display: grid;
+  gap: 8px;
+}
+
+.assistant-message {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.assistant-tool {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.assistant-approval {
+  flex-wrap: wrap;
+  padding: 10px;
+  background: var(--surface-soft);
+  border-radius: 8px;
+}
+
+.assistant-input {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 @media (max-width: 980px) {
   .app-shell,
   .app-shell-collapsed {

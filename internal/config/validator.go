@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"regexp"
 	"strings"
 )
@@ -81,6 +82,17 @@ func Validate(cfg *Config) error {
 			}
 		}
 	}
+	for _, indicator := range cfg.Protection.IP.ThreatIntel {
+		if !indicator.Enabled {
+			continue
+		}
+		if strings.TrimSpace(indicator.Value) == "" {
+			return fmt.Errorf("threat intel indicator %q must define value", indicator.ID)
+		}
+		if err := validateIPEntry(indicator.Value); err != nil {
+			return fmt.Errorf("invalid threat intel indicator %q: %w", indicator.Value, err)
+		}
+	}
 	for _, rule := range cfg.Protection.ACL.Rules {
 		if !rule.Enabled {
 			continue
@@ -90,6 +102,49 @@ func Validate(cfg *Config) error {
 		}
 		if rule.Action != "" && rule.Action != "block" && rule.Action != "log" && rule.Action != "challenge" {
 			return fmt.Errorf("acl rule %q has invalid action %q", rule.ID, rule.Action)
+		}
+	}
+	if cfg.Protection.Bot.Enabled {
+		if strings.TrimSpace(cfg.Protection.Bot.CookieName) == "" {
+			return fmt.Errorf("bot.cookie_name is required when bot protection is enabled")
+		}
+		if cfg.Protection.Bot.ChallengeTTL <= 0 {
+			return fmt.Errorf("bot.challenge_ttl must be positive")
+		}
+	}
+	for _, prefix := range append([]string{}, cfg.Protection.Bot.PathPrefixes...) {
+		if prefix != "" && !strings.HasPrefix(prefix, "/") {
+			return fmt.Errorf("bot path prefix %q must start with /", prefix)
+		}
+	}
+	for _, prefix := range append([]string{}, cfg.Protection.Bot.ExemptPathPrefixes...) {
+		if prefix != "" && !strings.HasPrefix(prefix, "/") {
+			return fmt.Errorf("bot exempt path prefix %q must start with /", prefix)
+		}
+	}
+	for _, rule := range cfg.Edge.Headers.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if strings.TrimSpace(rule.Header) == "" {
+			return fmt.Errorf("edge header rule %q must define header", rule.ID)
+		}
+		switch strings.ToLower(rule.Operation) {
+		case "set", "add", "delete":
+		default:
+			return fmt.Errorf("edge header rule %q has invalid operation %q", rule.ID, rule.Operation)
+		}
+	}
+	for _, status := range cfg.Edge.Cache.StatusCodes {
+		if status < http.StatusOK || status > 599 {
+			return fmt.Errorf("edge cache status code %d is invalid", status)
+		}
+	}
+	for _, algorithm := range cfg.Edge.Compression.Algorithms {
+		switch strings.ToLower(algorithm) {
+		case "gzip", "identity", "none":
+		default:
+			return fmt.Errorf("edge compression algorithm %q is not supported yet", algorithm)
 		}
 	}
 	return nil

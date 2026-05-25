@@ -153,12 +153,36 @@ protection:
       - "127.0.0.1"
       - "::1"
     blacklist: []
+    tags: {}
+    threat_intel: []
   ratelimit:
     enabled: true
     default:
       requests: 100
       window: "60s"
       burst: 20
+  bot:
+    enabled: false
+    js_challenge: true
+    captcha: false
+    challenge_ttl: "30m"
+    cookie_name: "cheesewaf_js_clearance"
+    secret: "change-me-in-production"
+    path_prefixes:
+      - "/"
+    exempt_path_prefixes:
+      - "/health"
+      - "/api/"
+    allowed_user_agents: []
+    suspicious_user_agents:
+      - "curl"
+      - "python-requests"
+      - "sqlmap"
+      - "nikto"
+      - "nuclei"
+      - "masscan"
+      - "zgrab"
+      - "httpclient"
   acl:
     enabled: true
     rules: []
@@ -185,6 +209,45 @@ scheduler:
       target: %s
       keep: 14
       enabled: true
+    - id: "security-daily-report"
+      name: "Security daily report"
+      type: "security_report"
+      frequency: "daily"
+      at: "08:00"
+      channel: "file"
+      recipient: %s
+      period: "daily"
+      format: "markdown"
+      enabled: false
+
+edge:
+  headers:
+    enabled: true
+    rules:
+      - id: "set-edge-marker"
+        name: "Set edge marker"
+        operation: "set"
+        header: "X-CheeseWAF"
+        value: "edge"
+        enabled: true
+  cache:
+    enabled: true
+    mode: "public"
+    ttl: "5m"
+    status_codes: [200, 304]
+    path_prefixes: ["/assets/", "/static/"]
+    max_body_bytes: 2097152
+  compression:
+    enabled: true
+    algorithms: ["gzip"]
+    level: 5
+    min_bytes: 1024
+    content_types:
+      - "text/"
+      - "application/json"
+      - "application/javascript"
+      - "application/xml"
+      - "image/svg+xml"
 `, quoteYAML(DefaultHTTPListen),
 		quoteYAML(DefaultHTTPSListen),
 		quoteYAML(DefaultAdminListen),
@@ -195,6 +258,7 @@ scheduler:
 		quoteYAML(paths.SQLiteFile),
 		quoteYAML(filepath.Join(paths.LogDir, "access.log")),
 		quoteYAML(paths.LogDir),
+		quoteYAML(filepath.Join(paths.DataDir, "reports")),
 	))
 }
 

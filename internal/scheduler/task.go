@@ -3,6 +3,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -11,16 +12,23 @@ import (
 type TaskFunc func(context.Context, Task) error
 
 type Task struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name"`
-	Type      string        `json:"type"`
-	Schedule  string        `json:"schedule"`
-	Every     time.Duration `json:"every"`
-	Target    string        `json:"target"`
-	Keep      int           `json:"keep"`
-	Enabled   bool          `json:"enabled"`
-	CreatedAt time.Time     `json:"created_at"`
-	Run       TaskFunc      `json:"-"`
+	ID           string        `json:"id"`
+	Name         string        `json:"name"`
+	Type         string        `json:"type"`
+	Schedule     string        `json:"schedule"`
+	Every        time.Duration `json:"every"`
+	Frequency    string        `json:"frequency"`
+	At           string        `json:"at"`
+	Target       string        `json:"target"`
+	Channel      string        `json:"channel"`
+	Recipient    string        `json:"recipient"`
+	Period       string        `json:"period"`
+	Format       string        `json:"format"`
+	Keep         int           `json:"keep"`
+	Enabled      bool          `json:"enabled"`
+	CreatedAt    time.Time     `json:"created_at"`
+	Run          TaskFunc      `json:"-"`
+	InitialDelay time.Duration `json:"-"`
 }
 
 type HistoryEntry struct {
@@ -31,7 +39,7 @@ type HistoryEntry struct {
 	Error     string        `json:"error,omitempty"`
 }
 
-func FromConfig(cfg config.SchedulerConfig, dataDir, configPath string) []Task {
+func FromConfig(cfg config.SchedulerConfig, dataDir, configPath, logPath string) []Task {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -43,7 +51,13 @@ func FromConfig(cfg config.SchedulerConfig, dataDir, configPath string) []Task {
 			Type:      item.Type,
 			Schedule:  item.Schedule,
 			Every:     item.Every,
+			Frequency: item.Frequency,
+			At:        item.At,
 			Target:    item.Target,
+			Channel:   item.Channel,
+			Recipient: item.Recipient,
+			Period:    item.Period,
+			Format:    item.Format,
 			Keep:      item.Keep,
 			Enabled:   item.Enabled,
 			CreatedAt: item.CreatedAt,
@@ -54,9 +68,7 @@ func FromConfig(cfg config.SchedulerConfig, dataDir, configPath string) []Task {
 		if task.Name == "" {
 			task.Name = task.ID
 		}
-		if task.Every <= 0 {
-			task.Every = 24 * time.Hour
-		}
+		applyScheduleDefaults(&task)
 		if task.Keep <= 0 {
 			task.Keep = 7
 		}
@@ -68,6 +80,8 @@ func FromConfig(cfg config.SchedulerConfig, dataDir, configPath string) []Task {
 			task.Run = BackupConfig(configPath, dataDir)
 		case "cleanup":
 			task.Run = CleanupOldFiles
+		case "security_report":
+			task.Run = SecurityReport(logPath, dataDir)
 		default:
 			task.Run = Noop
 		}
@@ -77,3 +91,39 @@ func FromConfig(cfg config.SchedulerConfig, dataDir, configPath string) []Task {
 }
 
 func Noop(context.Context, Task) error { return nil }
+
+func applyScheduleDefaults(task *Task) {
+	if task.Frequency == "" && task.Schedule != "" {
+		task.Frequency = task.Schedule
+	}
+	if task.Frequency == "" {
+		task.Frequency = "interval"
+	}
+	if task.At == "" {
+		task.At = "08:00"
+	}
+	switch task.Frequency {
+	case "daily":
+		task.Every = 24 * time.Hour
+		task.InitialDelay = nextWallClockDelay(task.At, time.Now)
+	case "weekly":
+		task.Every = 7 * 24 * time.Hour
+		task.InitialDelay = nextWallClockDelay(task.At, time.Now)
+	default:
+		if task.Every <= 0 {
+			task.Every = 24 * time.Hour
+		}
+		task.InitialDelay = task.Every
+	}
+}
+
+func nextWallClockDelay(at string, nowFn func() time.Time) time.Duration {
+	now := nowFn()
+	hour, minute := 8, 0
+	_, _ = fmt.Sscanf(at, "%d:%d", &hour, &minute)
+	next := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if !next.After(now) {
+		next = next.Add(24 * time.Hour)
+	}
+	return next.Sub(now)
+}

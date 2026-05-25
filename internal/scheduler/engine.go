@@ -56,7 +56,14 @@ func (e *Engine) History() []HistoryEntry {
 }
 
 func (e *Engine) loop(ctx context.Context, task Task) {
-	timer := time.NewTimer(task.Every)
+	delay := task.InitialDelay
+	if delay <= 0 {
+		delay = task.Every
+	}
+	if delay <= 0 {
+		delay = 24 * time.Hour
+	}
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	for {
 		select {

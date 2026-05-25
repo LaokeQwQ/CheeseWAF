@@ -5,8 +5,10 @@ import { Button, Dropdown, Input, Menu, Select, Space, Tag, Tooltip } from '@arc
 import { motion } from 'framer-motion';
 import {
   Activity,
+  BrainCircuit,
   FileCode2,
   Bell,
+  Gauge,
   Map,
   Globe2,
   Languages,
@@ -24,6 +26,7 @@ import {
 } from 'lucide-react';
 import i18n from '../i18n';
 import { navItemMotion } from '../animations/micro';
+import AIAssistant from '../components/AIAssistant/AIAssistant';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
 
@@ -34,6 +37,8 @@ const navItems = [
   { key: '/logs', labelKey: 'nav.logs', icon: ListFilter },
   { key: '/ip', labelKey: 'nav.ip', icon: Shield },
   { key: '/protection', labelKey: 'nav.protection', icon: ShieldAlert },
+  { key: '/edge', labelKey: 'nav.edge', icon: Gauge },
+  { key: '/ai', labelKey: 'nav.ai', icon: BrainCircuit },
   { key: '/ops', labelKey: 'nav.ops', icon: Radar },
   { key: '/block-pages', labelKey: 'nav.blockPages', icon: FileCode2 },
   { key: '/attack-map', labelKey: 'nav.attackMap', icon: Map },
@@ -162,6 +167,7 @@ export default function MainLayout() {
         <main className="workspace">
           <Outlet />
         </main>
+        <AIAssistant />
       </div>
     </div>
   );

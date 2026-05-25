@@ -15,6 +15,7 @@ type Config struct {
 	AI         AIConfig         `yaml:"ai" json:"ai"`
 	Update     UpdateConfig     `yaml:"update" json:"update"`
 	Scheduler  SchedulerConfig  `yaml:"scheduler" json:"scheduler"`
+	Edge       EdgeConfig       `yaml:"edge" json:"edge"`
 }
 
 type ServerConfig struct {
@@ -101,10 +102,22 @@ type ProtectionConfig struct {
 }
 
 type IPProtectionConfig struct {
-	Blacklist []string            `yaml:"blacklist" json:"blacklist"`
-	Whitelist []string            `yaml:"whitelist" json:"whitelist"`
-	GeoIP     GeoIPConfig         `yaml:"geoip" json:"geoip"`
-	Tags      map[string][]string `yaml:"tags" json:"tags"`
+	Blacklist   []string            `yaml:"blacklist" json:"blacklist"`
+	Whitelist   []string            `yaml:"whitelist" json:"whitelist"`
+	GeoIP       GeoIPConfig         `yaml:"geoip" json:"geoip"`
+	Tags        map[string][]string `yaml:"tags" json:"tags"`
+	ThreatIntel []ThreatIntelConfig `yaml:"threat_intel" json:"threat_intel"`
+}
+
+type ThreatIntelConfig struct {
+	ID        string    `yaml:"id" json:"id"`
+	Value     string    `yaml:"value" json:"value"`
+	Type      string    `yaml:"type" json:"type"`
+	Severity  string    `yaml:"severity" json:"severity"`
+	Source    string    `yaml:"source" json:"source"`
+	Labels    []string  `yaml:"labels" json:"labels"`
+	ExpiresAt time.Time `yaml:"expires_at" json:"expires_at"`
+	Enabled   bool      `yaml:"enabled" json:"enabled"`
 }
 
 type GeoIPConfig struct {
@@ -126,9 +139,16 @@ type RateLimitProfile struct {
 }
 
 type BotProtectionConfig struct {
-	Enabled     bool `yaml:"enabled" json:"enabled"`
-	JSChallenge bool `yaml:"js_challenge" json:"js_challenge"`
-	CAPTCHA     bool `yaml:"captcha" json:"captcha"`
+	Enabled              bool          `yaml:"enabled" json:"enabled"`
+	JSChallenge          bool          `yaml:"js_challenge" json:"js_challenge"`
+	CAPTCHA              bool          `yaml:"captcha" json:"captcha"`
+	ChallengeTTL         time.Duration `yaml:"challenge_ttl" json:"challenge_ttl"`
+	CookieName           string        `yaml:"cookie_name" json:"cookie_name"`
+	Secret               string        `yaml:"secret" json:"secret"`
+	PathPrefixes         []string      `yaml:"path_prefixes" json:"path_prefixes"`
+	ExemptPathPrefixes   []string      `yaml:"exempt_path_prefixes" json:"exempt_path_prefixes"`
+	AllowedUserAgents    []string      `yaml:"allowed_user_agents" json:"allowed_user_agents"`
+	SuspiciousUserAgents []string      `yaml:"suspicious_user_agents" json:"suspicious_user_agents"`
 }
 
 type ACLProtectionConfig struct {
@@ -169,6 +189,44 @@ type HealthCheckConfig struct {
 	Timeout            time.Duration `yaml:"timeout" json:"timeout"`
 	HealthyThreshold   int           `yaml:"healthy_threshold" json:"healthy_threshold"`
 	UnhealthyThreshold int           `yaml:"unhealthy_threshold" json:"unhealthy_threshold"`
+}
+
+type EdgeConfig struct {
+	Headers     HeaderPolicyConfig      `yaml:"headers" json:"headers"`
+	Cache       CachePolicyConfig       `yaml:"cache" json:"cache"`
+	Compression CompressionPolicyConfig `yaml:"compression" json:"compression"`
+}
+
+type HeaderPolicyConfig struct {
+	Enabled bool               `yaml:"enabled" json:"enabled"`
+	Rules   []HeaderRuleConfig `yaml:"rules" json:"rules"`
+}
+
+type HeaderRuleConfig struct {
+	ID         string `yaml:"id" json:"id"`
+	Name       string `yaml:"name" json:"name"`
+	Operation  string `yaml:"operation" json:"operation"`
+	Header     string `yaml:"header" json:"header"`
+	Value      string `yaml:"value" json:"value"`
+	PathPrefix string `yaml:"path_prefix" json:"path_prefix"`
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+}
+
+type CachePolicyConfig struct {
+	Enabled      bool          `yaml:"enabled" json:"enabled"`
+	Mode         string        `yaml:"mode" json:"mode"`
+	TTL          time.Duration `yaml:"ttl" json:"ttl"`
+	StatusCodes  []int         `yaml:"status_codes" json:"status_codes"`
+	PathPrefixes []string      `yaml:"path_prefixes" json:"path_prefixes"`
+	MaxBodyBytes int64         `yaml:"max_body_bytes" json:"max_body_bytes"`
+}
+
+type CompressionPolicyConfig struct {
+	Enabled      bool     `yaml:"enabled" json:"enabled"`
+	Algorithms   []string `yaml:"algorithms" json:"algorithms"`
+	Level        int      `yaml:"level" json:"level"`
+	MinBytes     int64    `yaml:"min_bytes" json:"min_bytes"`
+	ContentTypes []string `yaml:"content_types" json:"content_types"`
 }
 
 type StorageConfig struct {
@@ -236,7 +294,13 @@ type ScheduledTaskConfig struct {
 	Type      string        `yaml:"type" json:"type"`
 	Schedule  string        `yaml:"schedule" json:"schedule"`
 	Every     time.Duration `yaml:"every" json:"every"`
+	Frequency string        `yaml:"frequency" json:"frequency"`
+	At        string        `yaml:"at" json:"at"`
 	Target    string        `yaml:"target" json:"target"`
+	Channel   string        `yaml:"channel" json:"channel"`
+	Recipient string        `yaml:"recipient" json:"recipient"`
+	Period    string        `yaml:"period" json:"period"`
+	Format    string        `yaml:"format" json:"format"`
 	Keep      int           `yaml:"keep" json:"keep"`
 	Enabled   bool          `yaml:"enabled" json:"enabled"`
 	CreatedAt time.Time     `yaml:"created_at" json:"created_at"`

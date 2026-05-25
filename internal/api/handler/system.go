@@ -10,5 +10,7 @@ func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 		"protection": h.Config.Protection,
 		"setup":      h.Config.Setup,
 		"scheduler":  h.Config.Scheduler,
+		"edge":       h.Config.Edge,
+		"ai":         aiConfigView(h.Config.AI),
 	})
 }
