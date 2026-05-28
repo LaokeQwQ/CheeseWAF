@@ -153,6 +153,42 @@ export type AttackAnalysis = {
   recommended_actions: string[];
 };
 
+export type LogEntry = {
+  id: string;
+  timestamp: string;
+  trace_id: string;
+  site_id: string;
+  client_ip: string;
+  method: string;
+  uri: string;
+  status_code: number;
+  action: 'pass' | 'block' | 'challenge' | 'log' | string;
+  detector_id: string;
+  category: string;
+  severity: string;
+  message: string;
+  payload: string;
+  user_agent: string;
+  country: string;
+  latency: number;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+};
+
+export type LogQuery = {
+  limit?: number;
+  site_id?: string;
+  client_ip?: string;
+  category?: string;
+  action?: string;
+  trace_id?: string;
+};
+
+export type LogResponse = {
+  items: LogEntry[];
+  total: number;
+};
+
 export type IPReputationEntry = {
   ip: string;
   list: 'whitelist' | 'blacklist' | 'monitor';

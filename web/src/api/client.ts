@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AIConfig, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, IPRulesResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, User } from '../types/api';
+import type { AIConfig, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -16,6 +16,20 @@ apiClient.interceptors.request.use((config) => {
   }
   return config;
 });
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      localStorage.removeItem('cheesewaf-token');
+      const path = window.location.pathname;
+      if (path !== '/login' && path !== '/setup') {
+        window.location.assign('/login');
+      }
+    }
+    return Promise.reject(error);
+  },
+);
 
 type Envelope<T> = {
   data?: T;
@@ -55,6 +69,10 @@ export function createSite(site: Partial<Site>) {
 
 export function fetchStats() {
   return unwrap<Record<string, unknown>>(apiClient.get('/stats'));
+}
+
+export function fetchLogs(params: LogQuery = {}) {
+  return unwrap<LogResponse>(apiClient.get('/logs', { params }));
 }
 
 export function fetchMonitorSummary() {

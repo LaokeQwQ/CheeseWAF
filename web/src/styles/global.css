@@ -203,6 +203,12 @@ select {
   gap: 6px;
 }
 
+.menu-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .workspace {
   min-width: 0;
   padding: 24px;
@@ -362,6 +368,13 @@ select {
   min-height: 36px;
 }
 
+.empty-state {
+  padding: 14px;
+  color: var(--text-muted);
+  background: var(--surface-soft);
+  border-radius: 8px;
+}
+
 code {
   color: var(--accent-strong);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -440,8 +453,42 @@ code {
     linear-gradient(20deg, transparent 0 42%, color-mix(in srgb, var(--text-muted) 10%, transparent) 42% 43%, transparent 43% 100%);
 }
 
+.map-legend,
+.map-empty {
+  position: absolute;
+  z-index: 1;
+  left: 18px;
+  top: 18px;
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+}
+
+.map-legend strong {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.map-legend span,
+.map-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.map-empty {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
 .map-marker {
   position: absolute;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -452,8 +499,8 @@ code {
 }
 
 .map-marker i {
-  width: 13px;
-  height: 13px;
+  width: var(--marker-size, 13px);
+  height: var(--marker-size, 13px);
   border-radius: 999px;
   background: var(--accent-danger);
   box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent-danger) 18%, transparent);

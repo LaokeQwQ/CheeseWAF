@@ -2,7 +2,7 @@ import { Button, Form, Input } from '@arco-design/web-react';
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { LockKeyhole, UserRound } from 'lucide-react';
 import { pressable } from '../../animations/micro';
 import { login } from '../../api/client';
@@ -10,8 +10,15 @@ import { login } from '../../api/client';
 export default function LoginPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const token = localStorage.getItem('cheesewaf-token');
+  const from = ((location.state as { from?: string } | null)?.from ?? '/') || '/';
+
+  if (token) {
+    return <Navigate to={from} replace />;
+  }
 
   async function handleSubmit(values: { username?: string; password?: string }) {
     setLoading(true);
@@ -19,7 +26,7 @@ export default function LoginPage() {
     try {
       const result = await login(values.username ?? '', values.password ?? '');
       localStorage.setItem('cheesewaf-token', result.token);
-      navigate('/');
+      navigate(from, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -44,10 +51,10 @@ export default function LoginPage() {
         </div>
 
         <Form layout="vertical" className="auth-form" onSubmit={handleSubmit}>
-          <Form.Item label={t('login.username')}>
+          <Form.Item label={t('login.username')} field="username">
             <Input prefix={<UserRound size={16} />} placeholder="admin" />
           </Form.Item>
-          <Form.Item label={t('login.password')}>
+          <Form.Item label={t('login.password')} field="password">
             <Input.Password prefix={<LockKeyhole size={16} />} placeholder="********" />
           </Form.Item>
           <motion.div {...pressable}>
