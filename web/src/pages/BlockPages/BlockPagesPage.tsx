@@ -20,7 +20,7 @@ export default function BlockPagesPage() {
         </div>
         <Button type="primary">{t('common.save')}</Button>
       </header>
-      <div className="split-grid">
+      <div className="block-page-grid">
         <section className="panel">
           <div className="panel-heading"><h2>{t('blockPages.templates')}</h2></div>
           <List
@@ -37,6 +37,10 @@ export default function BlockPagesPage() {
         <section className="panel panel-wide">
           <div className="panel-heading"><h2>{template?.name ?? t('blockPages.editor')}</h2></div>
           <Input.TextArea className="code-editor" value={template?.html ?? ''} autoSize={{ minRows: 18, maxRows: 26 }} />
+        </section>
+        <section className="panel panel-wide">
+          <div className="panel-heading"><h2>{t('blockPages.preview')}</h2></div>
+          <div className="block-preview" dangerouslySetInnerHTML={{ __html: template?.html ?? '' }} />
         </section>
       </div>
     </section>

@@ -24,6 +24,31 @@ func TestHeuristicAnalysisFlagsHighSignalCategory(t *testing.T) {
 	}
 }
 
+func TestAnalyzeEventsSkipsPlainAccessLogs(t *testing.T) {
+	analyses, err := AnalyzeEvents(context.Background(), nil, []storage.LogEntry{
+		{ID: "access-1", Action: "pass", URI: "/"},
+		{ID: "block-1", Action: "block", Category: "xss", URI: "/?q=<script>"},
+	})
+	if err != nil {
+		t.Fatalf("analyze events: %v", err)
+	}
+	if len(analyses) != 1 || analyses[0].LogID != "block-1" || analyses[0].EventType == "" {
+		t.Fatalf("unexpected analyses: %+v", analyses)
+	}
+}
+
+func TestAssistantReplyUsesRealSecurityEvents(t *testing.T) {
+	reply, err := AnswerAssistant(context.Background(), nil, "最近拦截了什么", []storage.LogEntry{
+		{ID: "event-1", ClientIP: "203.0.113.10", Action: "block", Category: "sqli", URI: "/search?id=1"},
+	}, map[string]any{"requests": 10, "blocked": 1})
+	if err != nil {
+		t.Fatalf("assistant reply: %v", err)
+	}
+	if reply.AIUsed || reply.Events != 1 || reply.Blocked != 1 || !strings.Contains(reply.Answer, "203.0.113.10") {
+		t.Fatalf("unexpected reply: %+v", reply)
+	}
+}
+
 func TestDetectAnomaliesFindsRepeatedSource(t *testing.T) {
 	now := time.Date(2026, 5, 25, 8, 0, 0, 0, time.UTC)
 	var entries []storage.LogEntry

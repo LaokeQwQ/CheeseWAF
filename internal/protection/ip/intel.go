@@ -42,7 +42,7 @@ func NewIntel(configs []config.ThreatIntelConfig) (*Intel, error) {
 				Type:      empty(item.Type, "ip"),
 				Severity:  strings.ToLower(empty(item.Severity, "medium")),
 				Source:    item.Source,
-				Labels:    append([]string(nil), item.Labels...),
+				Labels:    cloneStrings(item.Labels),
 				ExpiresAt: item.ExpiresAt,
 			},
 		}
@@ -62,13 +62,13 @@ func NewIntel(configs []config.ThreatIntelConfig) (*Intel, error) {
 
 func (i *Intel) Match(raw string) []Indicator {
 	if i == nil {
-		return nil
+		return []Indicator{}
 	}
 	parsed := net.ParseIP(strings.TrimSpace(raw))
 	if parsed == nil {
-		return nil
+		return []Indicator{}
 	}
-	var out []Indicator
+	out := make([]Indicator, 0)
 	now := i.now().UTC()
 	for _, item := range i.items {
 		if !item.indicator.ExpiresAt.IsZero() && item.indicator.ExpiresAt.Before(now) {
@@ -87,7 +87,7 @@ func (i *Intel) Match(raw string) []Indicator {
 
 func (i *Intel) Values() []Indicator {
 	if i == nil {
-		return nil
+		return []Indicator{}
 	}
 	out := make([]Indicator, 0, len(i.items))
 	now := i.now().UTC()
@@ -105,4 +105,11 @@ func empty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	return append([]string(nil), values...)
 }

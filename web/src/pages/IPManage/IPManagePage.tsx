@@ -99,8 +99,8 @@ export default function IPManagePage() {
     return entries.filter((entry) => (
       entry.ip.toLowerCase().includes(needle)
       || entry.list.includes(needle)
-      || (draftTags[entry.ip] ?? entry.tags).some((tag) => tag.includes(needle))
-      || entry.intel.some((intel) => `${intel.source} ${intel.severity} ${intel.labels.join(' ')}`.toLowerCase().includes(needle))
+      || tagsFor(entry, draftTags).some((tag) => tag.includes(needle))
+      || intelFor(entry).some((intel) => `${intel.source} ${intel.severity} ${intel.labels.join(' ')}`.toLowerCase().includes(needle))
     ));
   }, [draftTags, entries, search]);
 
@@ -182,7 +182,7 @@ export default function IPManagePage() {
                     dataIndex: 'tags',
                     render: (_: string[], record: IPReputationEntry) => (
                       <Input
-                        value={(draftTags[record.ip] ?? record.tags).join(',')}
+                        value={tagsFor(record, draftTags).join(',')}
                         onChange={(value) => setDraftTags((current) => ({ ...current, [record.ip]: splitList(value) }))}
                       />
                     ),
@@ -192,7 +192,7 @@ export default function IPManagePage() {
                     dataIndex: 'intel',
                     render: (_: unknown, record: IPReputationEntry) => (
                       <span className="tag-stack">
-                        {record.intel.length === 0 ? <Tag>{t('common.monitor')}</Tag> : record.intel.map((item) => (
+                        {intelFor(record).length === 0 ? <Tag>{t('common.monitor')}</Tag> : intelFor(record).map((item) => (
                           <Tag key={`${record.ip}-${item.id || item.value}`} color={intelColor(item.severity)}>{item.source || item.severity}</Tag>
                         ))}
                       </span>
@@ -201,7 +201,10 @@ export default function IPManagePage() {
                   {
                     title: t('ip.activity'),
                     dataIndex: 'stats',
-                    render: (_: unknown, record: IPReputationEntry) => `${record.stats.blocked}/${record.stats.total}`,
+                    render: (_: unknown, record: IPReputationEntry) => {
+                      const stats = statsFor(record);
+                      return `${stats.blocked}/${stats.total}`;
+                    },
                   },
                 ]}
               />
@@ -337,6 +340,24 @@ async function saveIntelFile(format: 'csv' | 'stix') {
 
 function splitList(value: string) {
   return value.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
+}
+
+function tagsFor(entry: IPReputationEntry, draftTags: Record<string, string[]>) {
+  const tags = draftTags[entry.ip] ?? entry.tags;
+  return Array.isArray(tags) ? tags : [];
+}
+
+function intelFor(entry: IPReputationEntry) {
+  return Array.isArray(entry.intel)
+    ? entry.intel.map((item) => ({ ...item, labels: Array.isArray(item.labels) ? item.labels : [] }))
+    : [];
+}
+
+function statsFor(entry: IPReputationEntry) {
+  return {
+    total: Number(entry.stats?.total ?? 0),
+    blocked: Number(entry.stats?.blocked ?? 0),
+  };
 }
 
 function durationSeconds(value: number | string | undefined) {

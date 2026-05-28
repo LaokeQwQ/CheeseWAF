@@ -21,6 +21,7 @@ import SiteDetailPage from '../pages/Sites/SiteDetailPage';
 import SitesPage from '../pages/Sites/SitesPage';
 import SystemPage from '../pages/System/SystemPage';
 import UsersPage from '../pages/Users/UsersPage';
+import UpdatesPage from '../pages/Updates/UpdatesPage';
 
 function Page({ children }: { children: ReactNode }) {
   return (
@@ -67,6 +68,7 @@ export default function AppRoutes() {
           <Route path="apisec" element={<Page><APISecurityPage /></Page>} />
           <Route path="users" element={<Page><UsersPage /></Page>} />
           <Route path="ops" element={<Page><OperationsPage /></Page>} />
+          <Route path="updates" element={<Page><UpdatesPage /></Page>} />
           <Route path="block-pages" element={<Page><BlockPagesPage /></Page>} />
           <Route path="attack-map" element={<Page><AttackMapPage /></Page>} />
           <Route path="system" element={<Page><SystemPage /></Page>} />

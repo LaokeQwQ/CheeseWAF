@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AIConfig, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
+import type { AIConfig, AIEventsAnalysisResponse, AIAssistantReply, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -193,8 +193,9 @@ export function updateIPProtection(ip: ProtectionConfig['ip']) {
   return unwrap<ProtectionConfig['ip']>(apiClient.put('/protection/ip', ip));
 }
 
-export function fetchIPRules() {
-  return unwrap<IPRulesResponse>(apiClient.get('/ip'));
+export async function fetchIPRules() {
+  const response = await unwrap<IPRulesResponse>(apiClient.get('/ip'));
+  return normalizeIPRulesResponse(response);
 }
 
 export function updateIPTags(tags: Record<string, string[]>) {
@@ -251,6 +252,93 @@ export function updateRateLimit(ratelimit: ProtectionConfig['ratelimit']) {
 
 export function updateBotProtection(bot: ProtectionConfig['bot']) {
   return unwrap<ProtectionConfig['bot']>(apiClient.put('/protection/bot', bot));
+}
+
+function normalizeIPRulesResponse(response: IPRulesResponse): IPRulesResponse {
+  const raw = response as unknown as Partial<IPRulesResponse> | null | undefined;
+  const entries = asArray(raw?.entries).map(normalizeIPEntry);
+  return {
+    whitelist: asStringArray(raw?.whitelist),
+    blacklist: asStringArray(raw?.blacklist),
+    tags: asStringArrayRecord(raw?.tags),
+    threat_intel: asArray(raw?.threat_intel).map(normalizeThreatIntel),
+    providers: asArray(raw?.providers).map(normalizeThreatIntelProvider),
+    geoip: {
+      enabled: Boolean(raw?.geoip?.enabled),
+      database: raw?.geoip?.database ?? '',
+      blocked_countries: asStringArray(raw?.geoip?.blocked_countries),
+      country_cidrs: asStringArrayRecord(raw?.geoip?.country_cidrs),
+    },
+    entries,
+  };
+}
+
+function normalizeIPEntry(entry: Partial<IPReputationEntry> | null | undefined): IPReputationEntry {
+  const stats = entry?.stats;
+  return {
+    ip: entry?.ip ?? '',
+    list: entry?.list ?? 'monitor',
+    reputation: Number(entry?.reputation ?? 80),
+    tags: asStringArray(entry?.tags),
+    intel: asArray(entry?.intel).map(normalizeThreatIntel),
+    stats: {
+      total: Number(stats?.total ?? 0),
+      blocked: Number(stats?.blocked ?? 0),
+      by_type: asNumberRecord(stats?.by_type),
+    },
+  };
+}
+
+function normalizeThreatIntel(indicator: Partial<ThreatIntelIndicator> | null | undefined): ThreatIntelIndicator {
+  return {
+    id: indicator?.id ?? '',
+    value: indicator?.value ?? '',
+    type: indicator?.type ?? 'ip',
+    severity: indicator?.severity ?? 'medium',
+    source: indicator?.source ?? '',
+    labels: asStringArray(indicator?.labels),
+    action: indicator?.action,
+    enabled: indicator?.enabled,
+    expires_at: indicator?.expires_at,
+  };
+}
+
+function normalizeThreatIntelProvider(provider: Partial<ThreatIntelProvider> | null | undefined): ThreatIntelProvider {
+  return {
+    id: provider?.id ?? '',
+    name: provider?.name ?? '',
+    type: provider?.type ?? 'generic',
+    endpoint: provider?.endpoint ?? '',
+    api_key: provider?.api_key ?? '',
+    format: provider?.format ?? 'stix',
+    action: provider?.action ?? 'challenge',
+    min_severity: provider?.min_severity ?? 'high',
+    interval: provider?.interval ?? 24 * 60 * 60 * 1_000_000_000,
+    headers: provider?.headers ?? {},
+    enabled: provider?.enabled ?? true,
+  };
+}
+
+function asArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asStringArray(value: string[] | null | undefined): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function asStringArrayRecord(value: Record<string, string[]> | null | undefined): Record<string, string[]> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, list]) => [key, asStringArray(list)]));
+}
+
+function asNumberRecord(value: Record<string, number> | null | undefined): Record<string, number> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, Number(item ?? 0)]));
 }
 
 export function fetchTasks() {
@@ -313,4 +401,12 @@ export function testAIConnection() {
 
 export function analyzeLog(entry: Record<string, unknown>) {
   return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', entry));
+}
+
+export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string }) {
+  return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload));
+}
+
+export function askAIAssistant(message: string, limit = 30) {
+  return unwrap<AIAssistantReply>(apiClient.post('/ai/assistant', { message, limit }));
 }

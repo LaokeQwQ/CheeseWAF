@@ -230,7 +230,24 @@ export type AttackAnalysis = {
   log_id: string;
   risk: string;
   summary: string;
+  evidence: string[];
+  event_type: string;
+  ai_used: boolean;
   recommended_actions: string[];
+};
+
+export type AIEventsAnalysisResponse = {
+  items: AttackAnalysis[];
+  total: number;
+};
+
+export type AIAssistantReply = {
+  answer: string;
+  ai_used: boolean;
+  log_ids: string[];
+  events: number;
+  blocked: number;
+  challenge: number;
 };
 
 export type LogEntry = {

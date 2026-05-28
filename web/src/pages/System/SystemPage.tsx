@@ -1,9 +1,9 @@
 import {
   Button,
-  Empty,
   Input,
   InputNumber,
   Message as ArcoMessage,
+  Modal,
   Select,
   Space,
   Switch,
@@ -11,9 +11,9 @@ import {
   Tag,
 } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CloudDownload, Database, KeyRound, LockKeyhole, ServerCog, ShieldAlert, UserRound } from 'lucide-react';
+import { Database, LockKeyhole, ServerCog, ShieldAlert, UserRound } from 'lucide-react';
 import QRCode from 'qrcode';
-import { useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   disableUser2FA,
@@ -28,46 +28,7 @@ import i18n from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
 import type { SystemConfig, TOTPSetup } from '../../types/api';
-
-const second = 1_000_000_000;
-
-const fallbackSystem: SystemConfig = {
-  server: {
-    listen: ':80',
-    listen_tls: ':443',
-    listen_http3: ':443',
-    admin_listen: '127.0.0.1:9443',
-    read_timeout: 15 * second,
-    write_timeout: 30 * second,
-    idle_timeout: 60 * second,
-    http3: { enabled: false, zero_rtt: false },
-  },
-  tls: { auto_cert: false, cert_file: '', key_file: '', min_version: '1.3', hsts: true },
-  storage: {
-    sqlite: { path: './data/cheesewaf.db' },
-    redis: { enabled: false, address: '127.0.0.1:6379' },
-    clickhouse: { enabled: false, endpoint: '', database: 'cheesewaf', table: 'waf_logs', username: '', password: '', timeout: 5 * second },
-    victorialogs: { enabled: false, endpoint: '', timeout: 5 * second },
-    postgresql: { enabled: false, dsn: '', table: 'waf_logs', timeout: 5 * second },
-    elasticsearch: { enabled: false, endpoint: '', index: 'cheesewaf-logs', username: '', password: '', api_key: '', headers: {}, timeout: 5 * second },
-  },
-  logging: { level: 'info', format: 'json', output: { type: 'file', file: { path: './logs/access.log', max_size: '100MB', max_backups: 10 } } },
-  update: {
-    ota: {
-      enabled: false,
-      server: '',
-      channel: 'stable',
-      check_interval: 6 * 60 * 60 * second,
-      auto_update_rules: true,
-      auto_update_binary: false,
-      verify_signature: true,
-      public_key: '',
-    },
-  },
-  vulnerability: { enabled: false, feeds: [] },
-  monitor: {},
-  apisec: {},
-};
+import { durationSeconds, fallbackSystem, normalizeSystem, secondsToDuration } from './systemModel';
 
 export default function SystemPage() {
   const { t } = useTranslation();
@@ -248,53 +209,6 @@ export default function SystemPage() {
             </div>
           </Tabs.TabPane>
 
-          <Tabs.TabPane key="updates" title={<span className="tab-title"><CloudDownload size={15} />{t('system.updates')}</span>}>
-            <div className="system-section">
-              <div className="system-section-title">
-                <h2>{t('system.updates')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ update: system.update, vulnerability: system.vulnerability })} loading={saveMutation.isPending}>{t('common.save')}</Button>
-              </div>
-              <div className="site-detail-grid">
-                <label className="switch-line"><span>OTA</span><Switch checked={system.update.ota.enabled} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
-                <label><span>{t('system.updateServer')}</span><Input value={system.update.ota.server} onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
-                <label>
-                  <span>{t('system.channel')}</span>
-                  <Select value={system.update.ota.channel} onChange={(channel) => patchSystem({ update: { ota: { ...system.update.ota, channel: channel as string } } })}>
-                    <Select.Option value="stable">stable</Select.Option>
-                    <Select.Option value="canary">canary</Select.Option>
-                    <Select.Option value="dev">dev</Select.Option>
-                  </Select>
-                </label>
-                <label><span>{t('system.checkIntervalHours')}</span><InputNumber value={durationSeconds(system.update.ota.check_interval) / 3600} min={1} max={168} onChange={(value) => patchSystem({ update: { ota: { ...system.update.ota, check_interval: secondsToDuration(Number(value || 1) * 3600) } } })} /></label>
-                <label className="switch-line"><span>{t('system.autoUpdateRules')}</span><Switch checked={system.update.ota.auto_update_rules} onChange={(auto_update_rules) => patchSystem({ update: { ota: { ...system.update.ota, auto_update_rules } } })} /></label>
-                <label className="switch-line"><span>{t('system.autoUpdateBinary')}</span><Switch checked={system.update.ota.auto_update_binary} onChange={(auto_update_binary) => patchSystem({ update: { ota: { ...system.update.ota, auto_update_binary } } })} /></label>
-                <label className="switch-line"><span>{t('system.verifySignature')}</span><Switch checked={system.update.ota.verify_signature} onChange={(verify_signature) => patchSystem({ update: { ota: { ...system.update.ota, verify_signature } } })} /></label>
-                <label className="wide-field"><span>{t('system.publicKey')}</span><Input.TextArea value={system.update.ota.public_key} autoSize={{ minRows: 2, maxRows: 5 }} onChange={(public_key) => patchSystem({ update: { ota: { ...system.update.ota, public_key } } })} /></label>
-                <label className="switch-line"><span>{t('system.vulnerabilityFeeds')}</span><Switch checked={system.vulnerability.enabled} onChange={(enabled) => patchSystem({ vulnerability: { ...system.vulnerability, enabled } })} /></label>
-              </div>
-              <div className="rewrite-toolbar">
-                <Button onClick={() => addVulnerabilityFeed(system, setSystem)}>{t('common.add')}</Button>
-              </div>
-              <div className="feed-list">
-                {system.vulnerability.feeds.map((feed, index) => (
-                  <div className="feed-row" key={feed.id}>
-                    <Switch checked={feed.enabled} onChange={(enabled) => updateVulnerabilityFeed(index, { enabled }, setSystem)} />
-                    <Input value={feed.name} placeholder="NVD" onChange={(name) => updateVulnerabilityFeed(index, { name }, setSystem)} />
-                    <Input value={feed.url} placeholder="https://..." onChange={(url) => updateVulnerabilityFeed(index, { url }, setSystem)} />
-                    <Select value={feed.min_severity} onChange={(min_severity) => updateVulnerabilityFeed(index, { min_severity: min_severity as string }, setSystem)}>
-                      <Select.Option value="low">{t('rules.low')}</Select.Option>
-                      <Select.Option value="medium">{t('rules.medium')}</Select.Option>
-                      <Select.Option value="high">{t('rules.high')}</Select.Option>
-                      <Select.Option value="critical">{t('rules.critical')}</Select.Option>
-                    </Select>
-                    <Button status="danger" onClick={() => removeVulnerabilityFeed(feed.id, setSystem)}>{t('common.delete')}</Button>
-                  </div>
-                ))}
-                {!system.vulnerability.feeds.length && <Empty description={t('system.noFeeds')} />}
-              </div>
-            </div>
-          </Tabs.TabPane>
-
           <Tabs.TabPane key="users" title={<span className="tab-title"><UserRound size={15} />{t('users.title')}</span>}>
             <div className="settings-grid">
               <section className="system-card">
@@ -309,16 +223,32 @@ export default function SystemPage() {
                       {(users ?? []).map((user) => <Select.Option key={user.id} value={user.id}>{user.username} / {user.role}</Select.Option>)}
                     </Select>
                   </label>
-                  <label className="switch-line"><span>{t('system.twoFAStatus')}</span><Switch checked={Boolean(selectedUser?.two_fa_enabled)} disabled /></label>
+                  <label className="switch-line">
+                    <span>{t('system.twoFAStatus')}</span>
+                    <Switch
+                      checked={Boolean(selectedUser?.two_fa_enabled)}
+                      disabled={!selectedUser || twoFASetupMutation.isPending || twoFADisableMutation.isPending}
+                      loading={twoFASetupMutation.isPending || twoFADisableMutation.isPending}
+                      onChange={(checked) => {
+                        if (!twoFA.userId) {
+                          return;
+                        }
+                        if (checked) {
+                          twoFASetupMutation.mutate(twoFA.userId);
+                          return;
+                        }
+                        Modal.confirm({
+                          title: t('system.disable2FAConfirmTitle'),
+                          content: t('system.disable2FAConfirm'),
+                          okText: t('system.disable2FA'),
+                          cancelText: t('common.back'),
+                          okButtonProps: { status: 'danger' },
+                          onOk: () => twoFADisableMutation.mutate(),
+                        });
+                      }}
+                    />
+                  </label>
                 </div>
-                <Space wrap>
-                  <Button icon={<KeyRound size={15} />} disabled={!twoFA.userId} loading={twoFASetupMutation.isPending} onClick={() => twoFASetupMutation.mutate(twoFA.userId)}>
-                    {t('system.setup2FA')}
-                  </Button>
-                  <Button status="danger" disabled={!selectedUser?.two_fa_enabled} loading={twoFADisableMutation.isPending} onClick={() => twoFADisableMutation.mutate()}>
-                    {t('system.disable2FA')}
-                  </Button>
-                </Space>
               </section>
               <section className="system-card">
                 <div className="system-section-title">
@@ -373,104 +303,4 @@ function StoragePanel({
       <div className="storage-card-body">{children}</div>
     </section>
   );
-}
-
-function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
-  const next = input ?? fallbackSystem;
-  return {
-    ...fallbackSystem,
-    ...next,
-    server: { ...fallbackSystem.server, ...next.server, http3: { ...fallbackSystem.server.http3, ...next.server?.http3 } },
-    tls: { ...fallbackSystem.tls, ...next.tls },
-    storage: {
-      sqlite: { ...fallbackSystem.storage.sqlite, ...next.storage?.sqlite },
-      redis: { ...fallbackSystem.storage.redis, ...next.storage?.redis },
-      clickhouse: { ...fallbackSystem.storage.clickhouse, ...next.storage?.clickhouse },
-      victorialogs: { ...fallbackSystem.storage.victorialogs, ...next.storage?.victorialogs },
-      postgresql: { ...fallbackSystem.storage.postgresql, ...next.storage?.postgresql },
-      elasticsearch: { ...fallbackSystem.storage.elasticsearch, ...next.storage?.elasticsearch, headers: next.storage?.elasticsearch?.headers ?? {} },
-    },
-    logging: {
-      ...fallbackSystem.logging,
-      ...next.logging,
-      output: {
-        ...fallbackSystem.logging.output,
-        ...next.logging?.output,
-        file: { ...fallbackSystem.logging.output.file, ...next.logging?.output?.file },
-      },
-    },
-    update: { ota: { ...fallbackSystem.update.ota, ...next.update?.ota } },
-    vulnerability: { ...fallbackSystem.vulnerability, ...next.vulnerability, feeds: Array.isArray(next.vulnerability?.feeds) ? next.vulnerability.feeds : [] },
-    monitor: next.monitor ?? {},
-    apisec: next.apisec ?? {},
-  };
-}
-
-function durationSeconds(value: number | string | undefined) {
-  if (typeof value === 'number') {
-    return Math.max(0, Math.round(value / second));
-  }
-  const raw = String(value ?? '').trim();
-  if (!raw) {
-    return 0;
-  }
-  if (raw.endsWith('ms')) {
-    return Math.round(Number(raw.slice(0, -2)) / 1000);
-  }
-  if (raw.endsWith('m')) {
-    return Number(raw.slice(0, -1)) * 60;
-  }
-  if (raw.endsWith('h')) {
-    return Number(raw.slice(0, -1)) * 3600;
-  }
-  if (raw.endsWith('s')) {
-    return Number(raw.slice(0, -1));
-  }
-  return Number(raw) || 0;
-}
-
-function secondsToDuration(value: number | string | null | undefined) {
-  return Math.max(1, Number(value || 1)) * second;
-}
-
-function addVulnerabilityFeed(system: SystemConfig, setSystem: Dispatch<SetStateAction<SystemConfig>>) {
-  setSystem({
-    ...system,
-    vulnerability: {
-      ...system.vulnerability,
-      feeds: [
-        ...system.vulnerability.feeds,
-        {
-          id: `feed-${Date.now()}`,
-          name: '',
-          type: 'json',
-          url: '',
-          interval: 12 * 60 * 60 * second,
-          min_severity: 'high',
-          notify: true,
-          enabled: true,
-        },
-      ],
-    },
-  });
-}
-
-function updateVulnerabilityFeed(index: number, patch: Partial<SystemConfig['vulnerability']['feeds'][number]>, setSystem: Dispatch<SetStateAction<SystemConfig>>) {
-  setSystem((current) => ({
-    ...current,
-    vulnerability: {
-      ...current.vulnerability,
-      feeds: current.vulnerability.feeds.map((feed, feedIndex) => (feedIndex === index ? { ...feed, ...patch } : feed)),
-    },
-  }));
-}
-
-function removeVulnerabilityFeed(id: string, setSystem: Dispatch<SetStateAction<SystemConfig>>) {
-  setSystem((current) => ({
-    ...current,
-    vulnerability: {
-      ...current.vulnerability,
-      feeds: current.vulnerability.feeds.filter((feed) => feed.id !== id),
-    },
-  }));
 }

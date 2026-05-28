@@ -102,6 +102,8 @@ func NewRouter(opts Options) http.Handler {
 			r.Put("/ai/config", h.UpdateAIConfig)
 			r.Post("/ai/test", h.TestAIConnection)
 			r.Post("/ai/analyze", h.AnalyzeLog)
+			r.Post("/ai/events/analyze", h.AnalyzeEvents)
+			r.Post("/ai/assistant", h.AIAssistant)
 			r.Get("/storage", h.StorageStats)
 			r.Post("/storage/cleanup", h.CleanupStorage)
 			r.Post("/backup/export", h.ExportBackup)

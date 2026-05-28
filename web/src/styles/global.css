@@ -237,6 +237,51 @@ select {
   width: 120px;
 }
 
+.account-button {
+  min-width: 112px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.account-button span {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-panel {
+  width: 260px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.notification-panel header,
+.notification-panel > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.notification-panel span {
+  color: var(--text-muted);
+}
+
 .metric-chip {
   height: 30px;
   display: inline-flex;
@@ -731,6 +776,27 @@ code {
   gap: 12px;
 }
 
+.ops-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.ops-report-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ops-report-form .arco-form-item {
+  margin-bottom: 0;
+}
+
+.ops-report-form .wide-field {
+  grid-column: 1 / -1;
+}
+
 .template-item {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
@@ -748,33 +814,224 @@ code {
   line-height: 1.5;
 }
 
+.block-page-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.38fr) minmax(420px, 0.62fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.block-page-grid > section:first-child {
+  grid-row: span 2;
+}
+
+.block-preview {
+  min-height: 260px;
+  max-height: 420px;
+  overflow: auto;
+  padding: 16px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.updates-summary,
+.ai-workspace,
+.updates-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.updates-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.updates-summary > div {
+  min-height: 92px;
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  grid-template-areas:
+    "icon label"
+    "icon value";
+  gap: 4px 10px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.updates-summary svg {
+  grid-area: icon;
+  color: var(--accent);
+}
+
+.updates-summary span {
+  grid-area: label;
+  color: var(--text-muted);
+}
+
+.updates-summary strong {
+  grid-area: value;
+  color: var(--text);
+  font-size: 22px;
+}
+
+.updates-grid,
+.ai-workspace {
+  grid-template-columns: minmax(300px, 0.42fr) minmax(460px, 0.58fr);
+  align-items: start;
+}
+
+.feed-row-detailed {
+  grid-template-columns: auto minmax(110px, 0.7fr) minmax(220px, 1.4fr) 120px 130px 96px auto auto;
+}
+
+.ai-events-panel .arco-table-tr {
+  cursor: pointer;
+}
+
+.ai-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.42fr) minmax(420px, 0.58fr);
+  gap: 14px;
+}
+
+.ai-event-card,
+.ai-analysis-card {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ai-event-card span,
+.ai-analysis-columns strong {
+  color: var(--text-muted);
+}
+
+.ai-event-card strong {
+  color: var(--text);
+  font-size: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-analysis-card p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.ai-analysis-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.ai-analysis-columns > div {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.ai-analysis-columns span {
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
 .map-canvas {
   position: relative;
-  min-height: 420px;
+  min-height: 460px;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--accent) 14%, transparent) 1px, transparent 1px),
-    linear-gradient(0deg, color-mix(in srgb, var(--accent-info) 14%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 28% 42%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 16%),
-    radial-gradient(circle at 68% 52%, color-mix(in srgb, var(--accent-info) 20%, transparent), transparent 18%),
-    var(--surface);
-  background-size:
-    48px 48px,
-    48px 48px,
-    auto,
-    auto,
-    auto;
+  background: var(--surface);
   box-shadow: var(--shadow);
+  touch-action: none;
 }
 
-.map-grid-lines {
+.map-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.map-controls > span {
+  min-width: 48px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.flat-map-stage,
+.globe-stage {
   position: absolute;
   inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.flat-map-stage {
+  transform: scale(var(--map-zoom, 1));
+  transform-origin: center;
+  transition: transform 160ms ease;
+}
+
+.world-map-svg {
+  width: min(96%, 1120px);
+  height: auto;
+  filter: drop-shadow(0 18px 24px color-mix(in srgb, var(--text) 12%, transparent));
+}
+
+.world-map-svg path {
+  fill: color-mix(in srgb, var(--accent) 21%, var(--surface-soft));
+  stroke: color-mix(in srgb, var(--accent-strong) 52%, var(--border));
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.globe-stage {
+  perspective: 1100px;
+}
+
+.globe-sphere {
+  position: relative;
+  width: min(76vw, 560px);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 999px;
   background:
-    linear-gradient(115deg, transparent 0 16%, color-mix(in srgb, var(--text-muted) 12%, transparent) 16% 17%, transparent 17% 100%),
-    linear-gradient(20deg, transparent 0 42%, color-mix(in srgb, var(--text-muted) 10%, transparent) 42% 43%, transparent 43% 100%);
+    radial-gradient(circle at 34% 28%, color-mix(in srgb, var(--surface) 82%, white), transparent 18%),
+    radial-gradient(circle at 62% 68%, color-mix(in srgb, var(--accent-info) 22%, transparent), transparent 28%),
+    color-mix(in srgb, var(--accent) 16%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  box-shadow:
+    inset -28px -32px 64px color-mix(in srgb, var(--text) 22%, transparent),
+    var(--shadow);
+  transform: scale(var(--map-zoom, 1)) rotateX(var(--rotate-x, 0deg)) rotateY(var(--rotate-y, 0deg));
+  transform-style: preserve-3d;
+  transition: transform 100ms ease;
+}
+
+.globe-sphere .world-map-svg {
+  position: absolute;
+  inset: 8%;
+  width: 84%;
+  opacity: 0.82;
+}
+
+.globe-sphere .world-map-svg path {
+  fill: color-mix(in srgb, var(--accent-info) 24%, var(--surface-soft));
+}
+
+.globe-marker {
+  transform: translate(-50%, -50%) scale(0.92);
 }
 
 .map-legend,
@@ -828,6 +1085,32 @@ code {
   border-radius: 999px;
   background: var(--accent-danger);
   box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent-danger) 18%, transparent);
+}
+
+.continent-badge {
+  position: absolute;
+  z-index: 3;
+  min-width: 150px;
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  transform: translate(-50%, -50%);
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.continent-badge em {
+  color: var(--accent-danger);
+  font-size: 22px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.continent-badge small {
+  color: var(--text-muted);
 }
 
 .performance-form {
@@ -1018,9 +1301,20 @@ code {
   .dashboard-grid,
   .settings-grid,
   .split-grid,
+  .ops-grid,
+  .block-page-grid,
+  .updates-summary,
+  .updates-grid,
+  .ai-workspace,
+  .ai-detail-grid,
+  .ai-analysis-columns,
   .site-wizard-grid,
   .site-detail-summary {
     grid-template-columns: 1fr;
+  }
+
+  .block-page-grid > section:first-child {
+    grid-row: auto;
   }
 
   .form-grid,
@@ -1072,12 +1366,28 @@ code {
   }
 
   .feed-row,
-  .provider-row {
+  .provider-row,
+  .feed-row-detailed,
+  .ops-report-form {
     grid-template-columns: 1fr;
   }
 
   .topbar-select,
   .language-select {
     width: 118px;
+  }
+
+  .account-button {
+    min-width: 42px;
+    width: 42px;
+    padding: 0;
+  }
+
+  .account-button span {
+    display: none;
+  }
+
+  .map-controls {
+    justify-content: flex-start;
   }
 }
