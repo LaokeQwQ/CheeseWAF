@@ -19,8 +19,27 @@ func Validate(cfg *Config) error {
 	if cfg.Server.AdminListen == "" {
 		return fmt.Errorf("server.admin_listen is required")
 	}
+	if cfg.Server.ListenTLS != "" && (cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "") {
+		return fmt.Errorf("tls.cert_file and tls.key_file are required when server.listen_tls is set")
+	}
+	if cfg.Server.HTTP3.Enabled {
+		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
+			return fmt.Errorf("tls.cert_file and tls.key_file are required when HTTP/3 is enabled")
+		}
+		if _, err := net.ResolveUDPAddr("udp", http3ListenAddr(cfg.Server)); err != nil {
+			return fmt.Errorf("server.listen_http3 is invalid: %w", err)
+		}
+	}
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
+	}
+	if cfg.Storage.PostgreSQL.Enabled {
+		if strings.TrimSpace(cfg.Storage.PostgreSQL.DSN) == "" {
+			return fmt.Errorf("storage.postgresql.dsn is required when PostgreSQL log sink is enabled")
+		}
+		if err := validateSQLIdentifierPath(cfg.Storage.PostgreSQL.Table); err != nil {
+			return fmt.Errorf("storage.postgresql.table is invalid: %w", err)
+		}
 	}
 	if len(cfg.Sites) == 0 {
 		return fmt.Errorf("at least one site is required")
@@ -217,6 +236,33 @@ func validateIPEntry(entry string) error {
 	}
 	if net.ParseIP(entry) == nil {
 		return fmt.Errorf("not an IP or CIDR")
+	}
+	return nil
+}
+
+func http3ListenAddr(cfg ServerConfig) string {
+	if cfg.ListenHTTP3 != "" {
+		return cfg.ListenHTTP3
+	}
+	if cfg.ListenTLS != "" {
+		return cfg.ListenTLS
+	}
+	return ":443"
+}
+
+func validateSQLIdentifierPath(value string) error {
+	if value == "" {
+		return fmt.Errorf("identifier is required")
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 {
+		return fmt.Errorf("only schema.table identifiers are supported")
+	}
+	ident := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	for _, part := range parts {
+		if !ident.MatchString(part) {
+			return fmt.Errorf("%q is not a safe SQL identifier", part)
+		}
 	}
 	return nil
 }

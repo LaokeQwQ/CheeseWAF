@@ -272,9 +272,10 @@ type VictoriaLogsConfig struct {
 }
 
 type PostgreSQLConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	DSN     string `yaml:"dsn" json:"dsn"`
-	Table   string `yaml:"table" json:"table"`
+	Enabled bool          `yaml:"enabled" json:"enabled"`
+	DSN     string        `yaml:"dsn" json:"dsn"`
+	Table   string        `yaml:"table" json:"table"`
+	Timeout time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type LoggingConfig struct {

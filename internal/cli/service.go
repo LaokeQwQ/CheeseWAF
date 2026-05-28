@@ -87,11 +87,26 @@ func runServe(ctx context.Context) error {
 		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
+	http3Server, altSvc, err := proxyServer.HTTP3Server()
+	if err != nil {
+		return err
+	}
+	tlsServer, err := proxyServer.TLSServer(altSvc)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("CheeseWAF proxy listening on %s\n", cfg.Server.Listen)
+	if tlsServer != nil {
+		fmt.Printf("CheeseWAF TLS proxy listening on %s\n", cfg.Server.ListenTLS)
+	}
+	if http3Server != nil {
+		fmt.Printf("CheeseWAF HTTP/3 proxy listening on %s\n", http3Server.Addr)
+	}
 	fmt.Printf("CheeseWAF admin API listening on http://%s\n", cfg.Server.AdminListen)
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 4)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -105,6 +120,24 @@ func runServe(ctx context.Context) error {
 			errCh <- err
 		}
 	}()
+	if tlsServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := proxy.ListenAndServe(ctx, tlsServer); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
+	if http3Server != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := proxy.ListenAndServeHTTP3(ctx, http3Server); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -114,6 +147,12 @@ func runServe(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = admin.Shutdown(shutdownCtx)
+	if tlsServer != nil {
+		_ = tlsServer.Shutdown(shutdownCtx)
+	}
+	if http3Server != nil {
+		_ = http3Server.Shutdown(shutdownCtx)
+	}
 	wg.Wait()
 	return nil
 }

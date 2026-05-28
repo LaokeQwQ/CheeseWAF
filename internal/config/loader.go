@@ -135,7 +135,7 @@ func Default() Config {
 			SQLite:       SQLiteConfig{Path: "./data/cheesewaf.db"},
 			ClickHouse:   ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
 			VictoriaLogs: VictoriaLogsConfig{Timeout: 10 * time.Second},
-			PostgreSQL:   PostgreSQLConfig{Table: "cheesewaf_logs"},
+			PostgreSQL:   PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -291,6 +291,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Storage.PostgreSQL.Table == "" {
 		cfg.Storage.PostgreSQL.Table = def.Storage.PostgreSQL.Table
+	}
+	if cfg.Storage.PostgreSQL.Timeout == 0 {
+		cfg.Storage.PostgreSQL.Timeout = def.Storage.PostgreSQL.Timeout
 	}
 	if cfg.Logging.Output.Type == "" {
 		cfg.Logging.Output.Type = "file"
