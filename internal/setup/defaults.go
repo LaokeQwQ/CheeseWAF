@@ -119,7 +119,11 @@ func DefaultConfigYAML(paths DefaultPaths) []byte {
 server:
   listen: %s
   listen_tls: %s
+  listen_http3: ""
   admin_listen: %s
+  http3:
+    enabled: false
+    zero_rtt: false
 
 tls:
   auto_cert: false
@@ -136,6 +140,17 @@ setup:
 storage:
   sqlite:
     path: %s
+  clickhouse:
+    enabled: false
+    database: "default"
+    table: "cheesewaf_logs"
+    timeout: "10s"
+  victorialogs:
+    enabled: false
+    timeout: "10s"
+  postgresql:
+    enabled: false
+    table: "cheesewaf_logs"
 
 logging:
   level: "info"
@@ -248,6 +263,57 @@ edge:
       - "application/javascript"
       - "application/xml"
       - "image/svg+xml"
+
+monitor:
+  prometheus:
+    enabled: true
+    path: "/metrics"
+  remote_write:
+    enabled: false
+    interval: "30s"
+    timeout: "10s"
+  alerts:
+    enabled: true
+    rules:
+      - id: "high-block-rate"
+        name: "High block rate"
+        metric: "cheesewaf_blocked_total"
+        operator: ">"
+        threshold: 100
+        for: "5m"
+        severity: "high"
+        enabled: true
+  notifiers:
+    - id: "default-webhook"
+      name: "Default webhook"
+      type: "webhook"
+      enabled: false
+
+apisec:
+  enabled: true
+  discovery:
+    enabled: true
+    sample_limit: 500
+    window: "1h"
+    ignore_prefixes: ["/assets/", "/static/", "/favicon"]
+  validation:
+    enabled: true
+    schemas: []
+  auth:
+    enabled: false
+  rate_limits:
+    - id: "login-api"
+      method: "POST"
+      path_pattern: "^/api/auth/login$"
+      requests: 10
+      window: "1m"
+      enabled: true
+  permissions:
+    admin: ["*"]
+    readonly: ["read:*"]
+  audit:
+    enabled: true
+    path: %s
 `, quoteYAML(DefaultHTTPListen),
 		quoteYAML(DefaultHTTPSListen),
 		quoteYAML(DefaultAdminListen),
@@ -259,6 +325,7 @@ edge:
 		quoteYAML(filepath.Join(paths.LogDir, "access.log")),
 		quoteYAML(paths.LogDir),
 		quoteYAML(filepath.Join(paths.DataDir, "reports")),
+		quoteYAML(filepath.Join(paths.LogDir, "audit.log")),
 	))
 }
 

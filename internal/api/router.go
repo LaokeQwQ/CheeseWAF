@@ -23,13 +23,17 @@ type Options struct {
 func NewRouter(opts Options) http.Handler {
 	r := chi.NewRouter()
 	tokens := middleware.NewTokenManager(opts.Secret, 24*time.Hour)
-	h := handler.New(opts.Config, opts.Store, opts.Sink, tokens)
+	auditor := middleware.NewAuditor(opts.Config.APISec.Audit.Path)
+	h := handler.New(opts.Config, opts.Store, opts.Sink, tokens, auditor)
 	hub := opts.Hub
 	if hub == nil {
 		hub = realtime.NewHub()
 	}
 
 	r.Get("/health", h.Health)
+	if opts.Config.Monitor.Prometheus.Enabled {
+		r.Get(opts.Config.Monitor.Prometheus.Path, h.Metrics)
+	}
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/auth/login", h.Login)
 		r.Post("/setup", h.Setup)
@@ -38,22 +42,32 @@ func NewRouter(opts Options) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
+			if opts.Config.APISec.Audit.Enabled {
+				r.Use(auditor.Middleware)
+			}
 			r.Get("/stats", h.Stats)
+			r.Get("/metrics", h.Metrics)
+			r.Get("/monitor", h.MonitorSummary)
+			r.Get("/apisec/endpoints", h.APIEndpoints)
+			r.Post("/apisec/validate", h.ValidateAPIRequest)
+			r.Get("/audit", h.AuditEntries)
 			r.Get("/system", h.System)
 			r.Get("/users", h.ListUsers)
+			r.Post("/users", h.CreateUser)
+			r.Put("/users/{id}", h.UpdateUser)
 			r.Get("/logs", h.ListLogs)
 			r.Get("/ip", h.ListIPRules)
 			r.Put("/ip/tags", h.UpdateIPTags)
 			r.Get("/ip/threat-intel/export", h.ExportThreatIntel)
 			r.Get("/protection", h.Protection)
-			r.Put("/protection/ip", h.UpdateIPRules)
-			r.Put("/protection/acl", h.UpdateACLRules)
-			r.Put("/protection/ratelimit", h.UpdateRateLimit)
-			r.Put("/protection/bot", h.UpdateBotProtection)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:protection")).Put("/protection/ip", h.UpdateIPRules)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:protection")).Put("/protection/acl", h.UpdateACLRules)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:protection")).Put("/protection/ratelimit", h.UpdateRateLimit)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:protection")).Put("/protection/bot", h.UpdateBotProtection)
 			r.Get("/sites", h.ListSites)
-			r.Post("/sites", h.CreateSite)
-			r.Put("/sites/{id}", h.UpdateSite)
-			r.Delete("/sites/{id}", h.DeleteSite)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:sites")).Post("/sites", h.CreateSite)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:sites")).Put("/sites/{id}", h.UpdateSite)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:sites")).Delete("/sites/{id}", h.DeleteSite)
 			r.Get("/rules", h.ListRules)
 			r.Post("/rules", h.CreateRule)
 			r.Put("/rules/{id}", h.UpdateRule)

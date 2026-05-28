@@ -16,10 +16,12 @@ func Default() Config {
 		Server: ServerConfig{
 			Listen:       ":8080",
 			ListenTLS:    "",
+			ListenHTTP3:  "",
 			AdminListen:  "127.0.0.1:9443",
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 30 * time.Second,
 			IdleTimeout:  60 * time.Second,
+			HTTP3:        HTTP3Config{Enabled: false, ZeroRTT: false},
 		},
 		TLS: TLSConfig{
 			MinVersion: "1.3",
@@ -130,7 +132,10 @@ func Default() Config {
 			},
 		},
 		Storage: StorageConfig{
-			SQLite: SQLiteConfig{Path: "./data/cheesewaf.db"},
+			SQLite:       SQLiteConfig{Path: "./data/cheesewaf.db"},
+			ClickHouse:   ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			VictoriaLogs: VictoriaLogsConfig{Timeout: 10 * time.Second},
+			PostgreSQL:   PostgreSQLConfig{Table: "cheesewaf_logs"},
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -150,6 +155,36 @@ func Default() Config {
 				AutoUpdateBinary: false,
 				VerifySignature:  true,
 			},
+		},
+		Monitor: MonitorConfig{
+			Prometheus:  PrometheusConfig{Enabled: true, Path: "/metrics"},
+			RemoteWrite: RemoteWriteConfig{Enabled: false, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+			Alerts: AlertEngineConfig{
+				Enabled: true,
+				Rules: []AlertRuleConfig{
+					{ID: "high-block-rate", Name: "High block rate", Metric: "cheesewaf_blocked_total", Operator: ">", Threshold: 100, For: 5 * time.Minute, Severity: "high", Enabled: true},
+					{ID: "disk-usage", Name: "Disk usage high", Metric: "cheesewaf_disk_usage_percent", Operator: ">", Threshold: 85, For: 10 * time.Minute, Severity: "medium", Enabled: true},
+				},
+			},
+			Notifiers: []NotifierConfig{
+				{ID: "default-webhook", Name: "Default webhook", Type: "webhook", Enabled: false},
+			},
+		},
+		APISec: APISecConfig{
+			Enabled: true,
+			Discovery: APIDiscoveryConfig{
+				Enabled:        true,
+				SampleLimit:    500,
+				Window:         time.Hour,
+				IgnorePrefixes: []string{"/assets/", "/static/", "/favicon"},
+			},
+			Validation: APIValidationConfig{Enabled: true},
+			Auth:       APIAuthConfig{Enabled: false},
+			Permissions: map[string][]string{
+				"admin":    []string{"*"},
+				"readonly": []string{"read:*"},
+			},
+			Audit: AuditConfig{Enabled: true, Path: "./logs/audit.log"},
 		},
 	}
 }
@@ -242,6 +277,21 @@ func applyDefaults(cfg *Config) {
 	if cfg.Storage.SQLite.Path == "" {
 		cfg.Storage.SQLite.Path = filepath.Join(cfg.Setup.DataDir, "cheesewaf.db")
 	}
+	if cfg.Storage.ClickHouse.Table == "" {
+		cfg.Storage.ClickHouse.Table = def.Storage.ClickHouse.Table
+	}
+	if cfg.Storage.ClickHouse.Database == "" {
+		cfg.Storage.ClickHouse.Database = def.Storage.ClickHouse.Database
+	}
+	if cfg.Storage.ClickHouse.Timeout == 0 {
+		cfg.Storage.ClickHouse.Timeout = def.Storage.ClickHouse.Timeout
+	}
+	if cfg.Storage.VictoriaLogs.Timeout == 0 {
+		cfg.Storage.VictoriaLogs.Timeout = def.Storage.VictoriaLogs.Timeout
+	}
+	if cfg.Storage.PostgreSQL.Table == "" {
+		cfg.Storage.PostgreSQL.Table = def.Storage.PostgreSQL.Table
+	}
 	if cfg.Logging.Output.Type == "" {
 		cfg.Logging.Output.Type = "file"
 	}
@@ -250,6 +300,30 @@ func applyDefaults(cfg *Config) {
 	}
 	if len(cfg.Sites) == 0 {
 		cfg.Sites = def.Sites
+	}
+	if cfg.Monitor.Prometheus.Path == "" {
+		cfg.Monitor.Prometheus.Path = def.Monitor.Prometheus.Path
+	}
+	if cfg.Monitor.RemoteWrite.Interval == 0 {
+		cfg.Monitor.RemoteWrite.Interval = def.Monitor.RemoteWrite.Interval
+	}
+	if cfg.Monitor.RemoteWrite.Timeout == 0 {
+		cfg.Monitor.RemoteWrite.Timeout = def.Monitor.RemoteWrite.Timeout
+	}
+	if cfg.APISec.Discovery.SampleLimit == 0 {
+		cfg.APISec.Discovery.SampleLimit = def.APISec.Discovery.SampleLimit
+	}
+	if cfg.APISec.Discovery.Window == 0 {
+		cfg.APISec.Discovery.Window = def.APISec.Discovery.Window
+	}
+	if len(cfg.APISec.Discovery.IgnorePrefixes) == 0 {
+		cfg.APISec.Discovery.IgnorePrefixes = def.APISec.Discovery.IgnorePrefixes
+	}
+	if cfg.APISec.Permissions == nil {
+		cfg.APISec.Permissions = def.APISec.Permissions
+	}
+	if cfg.APISec.Audit.Path == "" {
+		cfg.APISec.Audit.Path = def.APISec.Audit.Path
 	}
 	if cfg.Protection.IP.Tags == nil {
 		cfg.Protection.IP.Tags = map[string][]string{}

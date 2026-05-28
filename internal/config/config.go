@@ -16,15 +16,24 @@ type Config struct {
 	Update     UpdateConfig     `yaml:"update" json:"update"`
 	Scheduler  SchedulerConfig  `yaml:"scheduler" json:"scheduler"`
 	Edge       EdgeConfig       `yaml:"edge" json:"edge"`
+	Monitor    MonitorConfig    `yaml:"monitor" json:"monitor"`
+	APISec     APISecConfig     `yaml:"apisec" json:"apisec"`
 }
 
 type ServerConfig struct {
 	Listen       string        `yaml:"listen" json:"listen"`
 	ListenTLS    string        `yaml:"listen_tls" json:"listen_tls"`
+	ListenHTTP3  string        `yaml:"listen_http3" json:"listen_http3"`
 	AdminListen  string        `yaml:"admin_listen" json:"admin_listen"`
 	ReadTimeout  time.Duration `yaml:"read_timeout" json:"read_timeout"`
 	WriteTimeout time.Duration `yaml:"write_timeout" json:"write_timeout"`
 	IdleTimeout  time.Duration `yaml:"idle_timeout" json:"idle_timeout"`
+	HTTP3        HTTP3Config   `yaml:"http3" json:"http3"`
+}
+
+type HTTP3Config struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	ZeroRTT bool `yaml:"zero_rtt" json:"zero_rtt"`
 }
 
 type TLSConfig struct {
@@ -230,8 +239,11 @@ type CompressionPolicyConfig struct {
 }
 
 type StorageConfig struct {
-	SQLite SQLiteConfig `yaml:"sqlite" json:"sqlite"`
-	Redis  RedisConfig  `yaml:"redis" json:"redis"`
+	SQLite       SQLiteConfig       `yaml:"sqlite" json:"sqlite"`
+	Redis        RedisConfig        `yaml:"redis" json:"redis"`
+	ClickHouse   ClickHouseConfig   `yaml:"clickhouse" json:"clickhouse"`
+	VictoriaLogs VictoriaLogsConfig `yaml:"victorialogs" json:"victorialogs"`
+	PostgreSQL   PostgreSQLConfig   `yaml:"postgresql" json:"postgresql"`
 }
 
 type SQLiteConfig struct {
@@ -241,6 +253,28 @@ type SQLiteConfig struct {
 type RedisConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Address string `yaml:"address" json:"address"`
+}
+
+type ClickHouseConfig struct {
+	Enabled  bool          `yaml:"enabled" json:"enabled"`
+	Endpoint string        `yaml:"endpoint" json:"endpoint"`
+	Database string        `yaml:"database" json:"database"`
+	Table    string        `yaml:"table" json:"table"`
+	Username string        `yaml:"username" json:"username"`
+	Password string        `yaml:"password" json:"password"`
+	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+}
+
+type VictoriaLogsConfig struct {
+	Enabled  bool          `yaml:"enabled" json:"enabled"`
+	Endpoint string        `yaml:"endpoint" json:"endpoint"`
+	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+}
+
+type PostgreSQLConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	DSN     string `yaml:"dsn" json:"dsn"`
+	Table   string `yaml:"table" json:"table"`
 }
 
 type LoggingConfig struct {
@@ -304,4 +338,102 @@ type ScheduledTaskConfig struct {
 	Keep      int           `yaml:"keep" json:"keep"`
 	Enabled   bool          `yaml:"enabled" json:"enabled"`
 	CreatedAt time.Time     `yaml:"created_at" json:"created_at"`
+}
+
+type MonitorConfig struct {
+	Prometheus  PrometheusConfig  `yaml:"prometheus" json:"prometheus"`
+	RemoteWrite RemoteWriteConfig `yaml:"remote_write" json:"remote_write"`
+	Alerts      AlertEngineConfig `yaml:"alerts" json:"alerts"`
+	Notifiers   []NotifierConfig  `yaml:"notifiers" json:"notifiers"`
+}
+
+type PrometheusConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Path    string `yaml:"path" json:"path"`
+}
+
+type RemoteWriteConfig struct {
+	Enabled  bool          `yaml:"enabled" json:"enabled"`
+	Endpoint string        `yaml:"endpoint" json:"endpoint"`
+	Interval time.Duration `yaml:"interval" json:"interval"`
+	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+}
+
+type AlertEngineConfig struct {
+	Enabled bool              `yaml:"enabled" json:"enabled"`
+	Rules   []AlertRuleConfig `yaml:"rules" json:"rules"`
+}
+
+type AlertRuleConfig struct {
+	ID        string        `yaml:"id" json:"id"`
+	Name      string        `yaml:"name" json:"name"`
+	Metric    string        `yaml:"metric" json:"metric"`
+	Operator  string        `yaml:"operator" json:"operator"`
+	Threshold float64       `yaml:"threshold" json:"threshold"`
+	For       time.Duration `yaml:"for" json:"for"`
+	Severity  string        `yaml:"severity" json:"severity"`
+	Enabled   bool          `yaml:"enabled" json:"enabled"`
+}
+
+type NotifierConfig struct {
+	ID       string            `yaml:"id" json:"id"`
+	Name     string            `yaml:"name" json:"name"`
+	Type     string            `yaml:"type" json:"type"`
+	Endpoint string            `yaml:"endpoint" json:"endpoint"`
+	To       string            `yaml:"to" json:"to"`
+	Token    string            `yaml:"token" json:"token"`
+	Headers  map[string]string `yaml:"headers" json:"headers"`
+	Enabled  bool              `yaml:"enabled" json:"enabled"`
+}
+
+type APISecConfig struct {
+	Enabled     bool                     `yaml:"enabled" json:"enabled"`
+	Discovery   APIDiscoveryConfig       `yaml:"discovery" json:"discovery"`
+	Validation  APIValidationConfig      `yaml:"validation" json:"validation"`
+	Auth        APIAuthConfig            `yaml:"auth" json:"auth"`
+	RateLimits  []APIEndpointLimitConfig `yaml:"rate_limits" json:"rate_limits"`
+	Permissions map[string][]string      `yaml:"permissions" json:"permissions"`
+	Audit       AuditConfig              `yaml:"audit" json:"audit"`
+}
+
+type APIDiscoveryConfig struct {
+	Enabled        bool          `yaml:"enabled" json:"enabled"`
+	SampleLimit    int           `yaml:"sample_limit" json:"sample_limit"`
+	Window         time.Duration `yaml:"window" json:"window"`
+	IgnorePrefixes []string      `yaml:"ignore_prefixes" json:"ignore_prefixes"`
+}
+
+type APIValidationConfig struct {
+	Enabled bool                      `yaml:"enabled" json:"enabled"`
+	Schemas []APIEndpointSchemaConfig `yaml:"schemas" json:"schemas"`
+}
+
+type APIEndpointSchemaConfig struct {
+	ID              string   `yaml:"id" json:"id"`
+	Method          string   `yaml:"method" json:"method"`
+	PathPattern     string   `yaml:"path_pattern" json:"path_pattern"`
+	RequiredParams  []string `yaml:"required_params" json:"required_params"`
+	RequiredHeaders []string `yaml:"required_headers" json:"required_headers"`
+	MaxBodyBytes    int64    `yaml:"max_body_bytes" json:"max_body_bytes"`
+	Enabled         bool     `yaml:"enabled" json:"enabled"`
+}
+
+type APIAuthConfig struct {
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	JWTIssuers     []string `yaml:"jwt_issuers" json:"jwt_issuers"`
+	RequiredScopes []string `yaml:"required_scopes" json:"required_scopes"`
+}
+
+type APIEndpointLimitConfig struct {
+	ID          string        `yaml:"id" json:"id"`
+	Method      string        `yaml:"method" json:"method"`
+	PathPattern string        `yaml:"path_pattern" json:"path_pattern"`
+	Requests    int           `yaml:"requests" json:"requests"`
+	Window      time.Duration `yaml:"window" json:"window"`
+	Enabled     bool          `yaml:"enabled" json:"enabled"`
+}
+
+type AuditConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Path    string `yaml:"path" json:"path"`
 }

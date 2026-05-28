@@ -61,6 +61,8 @@ archives:
         format: zip
     files:
       - configs/*
+      - deploy/**/*
+      - docs/**/*
       - README.md
       - LICENSE
 

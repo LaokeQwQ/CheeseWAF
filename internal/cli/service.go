@@ -18,6 +18,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
+	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/scheduler"
@@ -54,7 +56,7 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 
-	sink, err := logsink.NewFileSink(cfg.Logging.Output.File.Path)
+	sink, err := logsink.NewFromConfig(cfg.Storage, cfg.Logging.Output.File.Path)
 	if err != nil {
 		return err
 	}
@@ -69,6 +71,7 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
+	startRemoteWrite(ctx, cfg, sink, time.Now())
 	schedulerEngine := scheduler.NewEngine(scheduler.FromConfig(cfg.Scheduler, cfg.Setup.DataDir, configPath, cfg.Logging.Output.File.Path))
 	schedulerEngine.Start(ctx)
 	hub := realtime.NewHub()
@@ -113,6 +116,56 @@ func runServe(ctx context.Context) error {
 	_ = admin.Shutdown(shutdownCtx)
 	wg.Wait()
 	return nil
+}
+
+func startRemoteWrite(ctx context.Context, cfg *config.Config, sink storage.LogSink, startedAt time.Time) {
+	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
+		return
+	}
+	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
+	alerter := monitor.NewAlerter(cfg.Monitor.Alerts)
+	notifiers := monitornotify.NewManager(cfg.Monitor.Notifiers)
+	interval := cfg.Monitor.RemoteWrite.Interval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				logs, _, _ := sink.Query(ctx, storage.LogFilter{Limit: 1000})
+				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
+					"data": serviceDirSize(cfg.Setup.DataDir),
+					"logs": serviceDirSize(filepath.Dir(cfg.Logging.Output.File.Path)),
+				})
+				_ = writer.Push(ctx, snapshot)
+				_ = notifiers.Notify(ctx, alerter.Evaluate(snapshot))
+			}
+		}
+	}()
+}
+
+func serviceDirSize(root string) int64 {
+	if root == "" {
+		return 0
+	}
+	var total int64
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err == nil {
+			total += info.Size()
+		}
+		_ = path
+		return nil
+	})
+	return total
 }
 
 func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
