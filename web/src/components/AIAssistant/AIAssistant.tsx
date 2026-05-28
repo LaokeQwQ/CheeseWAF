@@ -1,18 +1,25 @@
 import { useState } from 'react';
 import { Button, Input, Tag } from '@arco-design/web-react';
-import { Bot, Check, Send, X } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { Bot, Send, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { fetchLogs, fetchMonitorSummary } from '../../api/client';
 
 export default function AIAssistant() {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const { data: monitor } = useQuery({ queryKey: ['assistant-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 10_000, retry: false });
+  const { data: logs } = useQuery({ queryKey: ['assistant-logs'], queryFn: () => fetchLogs({ limit: 1 }), refetchInterval: 10_000, retry: false });
+  const snapshot = monitor?.snapshot;
+  const latest = logs?.items?.[0];
   const messages = [
-    { role: 'assistant', text: t('assistant.seed') },
-    { role: 'tool', text: 'system_summary', status: 'read-only' },
-  ];
+    { role: 'assistant', text: t('assistant.liveSummary', { requests: snapshot?.requests ?? 0, blocked: snapshot?.blocked ?? 0 }) },
+    latest ? { role: 'tool', text: `${latest.action || 'pass'} ${latest.category || latest.uri}`, status: latest.country || 'live' } : null,
+  ].filter(Boolean) as Array<{ role: string; text: string; status?: string }>;
+
   return (
     <>
-      <Button className="ai-fab" type="primary" shape="circle" icon={<Bot size={18} />} onClick={() => setOpen((value) => !value)} />
+      <Button className="ai-fab" type="primary" shape="circle" icon={<Bot size={26} />} onClick={() => setOpen((value) => !value)} />
       {open && (
         <section className="ai-assistant-panel">
           <header>
@@ -26,11 +33,6 @@ export default function AIAssistant() {
                 {message.status && <Tag>{message.status}</Tag>}
               </div>
             ))}
-            <div className="assistant-approval">
-              <span>{t('assistant.approval')}</span>
-              <Button size="mini" icon={<Check size={13} />}>{t('assistant.approve')}</Button>
-              <Button size="mini" status="danger" icon={<X size={13} />}>{t('assistant.reject')}</Button>
-            </div>
           </div>
           <div className="assistant-input">
             <Input placeholder={t('assistant.placeholder')} />

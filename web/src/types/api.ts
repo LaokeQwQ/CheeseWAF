@@ -4,12 +4,88 @@ export type Site = {
   domains: string[];
   upstreams: string[];
   listen_port: number;
+  loadbalance: 'round_robin' | 'weighted' | 'ip_hash' | string;
   enable_ssl: boolean;
   cert_file?: string;
   key_file?: string;
+  waf_enabled: boolean;
+  waf_mode: 'block' | 'monitor' | 'off' | string;
+  advanced: SiteAdvanced;
   enabled: boolean;
   created_at?: string;
   updated_at?: string;
+};
+
+export type SiteAdvanced = {
+  certificate: SiteCertificateConfig;
+  origin: SiteOriginConfig;
+  health_check: SiteHealthCheckConfig;
+  protection: SiteProtectionConfig;
+  response: SiteResponseConfig;
+  rewrite: SiteRewriteRule[];
+  access_control: SiteAccessControl;
+};
+
+export type SiteCertificateConfig = {
+  mode: 'file' | 'inline' | 'acme' | string;
+  cert_pem?: string;
+  key_pem?: string;
+  auto_renew: boolean;
+  force_https: boolean;
+  hsts: boolean;
+  min_tls_version: string;
+};
+
+export type SiteOriginConfig = {
+  scheme: 'http' | 'https' | string;
+  pass_host: boolean;
+  host_header: string;
+  proxy_timeout: number | string;
+  max_body_bytes: number;
+  max_header_size: number;
+};
+
+export type SiteHealthCheckConfig = {
+  enabled: boolean;
+  path: string;
+  interval: number | string;
+  timeout: number | string;
+  healthy_threshold: number;
+  unhealthy_threshold: number;
+};
+
+export type SiteProtectionConfig = {
+  semantic_sql: boolean;
+  semantic_xss: boolean;
+  semantic_rce: boolean;
+  semantic_lfi: boolean;
+  semantic_xxe: boolean;
+  semantic_ssrf: boolean;
+  bot: boolean;
+  ratelimit: boolean;
+  acl: boolean;
+  apisec: boolean;
+};
+
+export type SiteResponseConfig = {
+  enabled: boolean;
+  max_body_bytes: number;
+  sensitive_patterns: string[];
+};
+
+export type SiteRewriteRule = {
+  id: string;
+  pattern: string;
+  replacement: string;
+  redirect_code: number;
+  enabled: boolean;
+};
+
+export type SiteAccessControl = {
+  auth_enabled: boolean;
+  waiting_room: boolean;
+  dynamic_guard: boolean;
+  trusted_cidrs: string[];
 };
 
 export type Rule = {
@@ -61,6 +137,10 @@ export type ProtectionConfig = {
     enabled: boolean;
     js_challenge: boolean;
     captcha: boolean;
+    challenge_difficulty: number;
+    waiting_room: boolean;
+    waiting_room_max_active: number;
+    waiting_room_ttl: number | string;
     challenge_ttl: number | string;
     cookie_name: string;
     secret: string;
@@ -194,13 +274,7 @@ export type IPReputationEntry = {
   list: 'whitelist' | 'blacklist' | 'monitor';
   reputation: number;
   tags: string[];
-  intel: Array<{
-    id: string;
-    value: string;
-    severity: string;
-    source: string;
-    labels: string[];
-  }>;
+  intel: ThreatIntelIndicator[];
   stats: {
     total: number;
     blocked: number;
@@ -208,11 +282,38 @@ export type IPReputationEntry = {
   };
 };
 
+export type ThreatIntelIndicator = {
+  id: string;
+  value: string;
+  type: string;
+  severity: string;
+  source: string;
+  labels: string[];
+  action?: string;
+  enabled?: boolean;
+  expires_at?: string;
+};
+
+export type ThreatIntelProvider = {
+  id: string;
+  name: string;
+  type: string;
+  endpoint: string;
+  api_key: string;
+  format: string;
+  action: string;
+  min_severity: string;
+  interval: number | string;
+  headers: Record<string, string>;
+  enabled: boolean;
+};
+
 export type IPRulesResponse = {
   whitelist: string[];
   blacklist: string[];
   tags: Record<string, string[]>;
-  threat_intel: Array<Record<string, unknown>>;
+  threat_intel: ThreatIntelIndicator[];
+  providers: ThreatIntelProvider[];
   geoip: ProtectionConfig['ip']['geoip'];
   entries: IPReputationEntry[];
 };
@@ -226,11 +327,118 @@ export type User = {
   updated_at?: string;
 };
 
+export type TOTPSetup = {
+  secret: string;
+  otpauth_url: string;
+};
+
+export type SystemConfig = {
+  server: {
+    listen: string;
+    listen_tls: string;
+    listen_http3: string;
+    admin_listen: string;
+    read_timeout: number | string;
+    write_timeout: number | string;
+    idle_timeout: number | string;
+    http3: {
+      enabled: boolean;
+      zero_rtt: boolean;
+    };
+  };
+  tls: {
+    auto_cert: boolean;
+    cert_file: string;
+    key_file: string;
+    min_version: string;
+    hsts: boolean;
+  };
+  storage: {
+    sqlite: {
+      path: string;
+    };
+    redis: {
+      enabled: boolean;
+      address: string;
+    };
+    clickhouse: {
+      enabled: boolean;
+      endpoint: string;
+      database: string;
+      table: string;
+      username: string;
+      password: string;
+      timeout: number | string;
+    };
+    victorialogs: {
+      enabled: boolean;
+      endpoint: string;
+      timeout: number | string;
+    };
+    postgresql: {
+      enabled: boolean;
+      dsn: string;
+      table: string;
+      timeout: number | string;
+    };
+    elasticsearch: {
+      enabled: boolean;
+      endpoint: string;
+      index: string;
+      username: string;
+      password: string;
+      api_key: string;
+      headers: Record<string, string>;
+      timeout: number | string;
+    };
+  };
+  logging: {
+    level: string;
+    format: string;
+    output: {
+      type: string;
+      file: {
+        path: string;
+        max_size: string;
+        max_backups: number;
+      };
+    };
+  };
+  update: {
+    ota: {
+      enabled: boolean;
+      server: string;
+      channel: string;
+      check_interval: number | string;
+      auto_update_rules: boolean;
+      auto_update_binary: boolean;
+      verify_signature: boolean;
+      public_key: string;
+    };
+  };
+  vulnerability: {
+    enabled: boolean;
+    feeds: Array<{
+      id: string;
+      name: string;
+      type: string;
+      url: string;
+      interval: number | string;
+      min_severity: string;
+      notify: boolean;
+      enabled: boolean;
+    }>;
+  };
+  monitor: Record<string, unknown>;
+  apisec: Record<string, unknown>;
+};
+
 export type MonitorSnapshot = {
   generated_at: string;
   uptime_seconds: number;
   goroutines: number;
   memory_alloc: number;
+  host: HostStats;
   sites: number;
   requests: number;
   blocked: number;
@@ -238,6 +446,24 @@ export type MonitorSnapshot = {
   status_codes: Record<string, number>;
   categories: Record<string, number>;
   disk_usage: Record<string, number>;
+};
+
+export type HostStats = {
+  os: string;
+  cpu_percent: number;
+  load1: number;
+  memory_total: number;
+  memory_used: number;
+  memory_percent: number;
+  disk_total: number;
+  disk_used: number;
+  disk_percent: number;
+  sampled_at: string;
+};
+
+export type HealthStatus = {
+  status: string;
+  uptime_seconds: number;
 };
 
 export type Alert = {

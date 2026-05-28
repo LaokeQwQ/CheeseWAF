@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AIConfig, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, User } from '../types/api';
+import type { AIConfig, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -39,17 +39,42 @@ type Envelope<T> = {
   };
 };
 
-async function unwrap<T>(promise: Promise<{ data: Envelope<T> }>): Promise<T> {
-  const response = await promise;
-  if (response.data.error) {
-    throw new Error(response.data.error.message);
+export class APIRequestError extends Error {
+  code?: string;
+  status?: number;
+
+  constructor(message: string, code?: string, status?: number) {
+    super(message);
+    this.name = 'APIRequestError';
+    this.code = code;
+    this.status = status;
   }
-  return response.data.data as T;
 }
 
-export function login(username: string, password: string) {
+async function unwrap<T>(promise: Promise<{ data: Envelope<T> }>): Promise<T> {
+  try {
+    const response = await promise;
+    if (response.data.error) {
+      throw new APIRequestError(response.data.error.message, response.data.error.code);
+    }
+    return response.data.data as T;
+  } catch (error) {
+    if (axios.isAxiosError<Envelope<unknown>>(error)) {
+      const apiError = error.response?.data?.error;
+      if (apiError) {
+        throw new APIRequestError(apiError.message, apiError.code, error.response?.status);
+      }
+      if (error.response?.status) {
+        throw new APIRequestError(error.message, undefined, error.response.status);
+      }
+    }
+    throw error;
+  }
+}
+
+export function login(username: string, password: string, totpCode?: string) {
   return unwrap<{ token: string; user: { username: string; role: string } }>(
-    apiClient.post('/auth/login', { username, password }),
+    apiClient.post('/auth/login', { username, password, totp_code: totpCode }),
   );
 }
 
@@ -63,12 +88,29 @@ export function fetchSites() {
   return unwrap<Site[]>(apiClient.get('/sites'));
 }
 
+export function fetchSite(id: string) {
+  return unwrap<Site>(apiClient.get(`/sites/${id}`));
+}
+
 export function createSite(site: Partial<Site>) {
   return unwrap<Site>(apiClient.post('/sites', site));
 }
 
+export function updateSite(id: string, site: Partial<Site>) {
+  return unwrap<Site>(apiClient.put(`/sites/${id}`, site));
+}
+
+export function deleteSite(id: string) {
+  return unwrap<{ deleted: boolean }>(apiClient.delete(`/sites/${id}`));
+}
+
 export function fetchStats() {
   return unwrap<Record<string, unknown>>(apiClient.get('/stats'));
+}
+
+export async function fetchHealth() {
+  const response = await axios.get<{ data?: HealthStatus }>('/health', { timeout: 5000 });
+  return response.data.data as HealthStatus;
 }
 
 export function fetchLogs(params: LogQuery = {}) {
@@ -103,6 +145,30 @@ export function updateUser(id: string, user: Partial<User> & { password?: string
   return unwrap<User>(apiClient.put(`/users/${id}`, user));
 }
 
+export function setupUser2FA(id: string) {
+  return unwrap<TOTPSetup>(apiClient.post(`/users/${id}/2fa/setup`));
+}
+
+export function enableUser2FA(id: string, secret: string, code: string) {
+  return unwrap<User>(apiClient.post(`/users/${id}/2fa/enable`, { secret, code }));
+}
+
+export function disableUser2FA(id: string) {
+  return unwrap<User>(apiClient.post(`/users/${id}/2fa/disable`));
+}
+
+export function fetchSystemConfig() {
+  return unwrap<SystemConfig>(apiClient.get('/system'));
+}
+
+export function updateSystemConfig(payload: Partial<SystemConfig>) {
+  return unwrap<SystemConfig>(apiClient.put('/system', payload));
+}
+
+export function testStorageBackend(backend: string, storage: SystemConfig['storage']) {
+  return unwrap<{ ok: boolean; backend: string }>(apiClient.post('/system/storage/test', { backend, storage }));
+}
+
 export function fetchRules(siteId?: string) {
   return unwrap<Rule[]>(apiClient.get('/rules', { params: { site_id: siteId } }));
 }
@@ -133,6 +199,38 @@ export function fetchIPRules() {
 
 export function updateIPTags(tags: Record<string, string[]>) {
   return unwrap<Record<string, string[]>>(apiClient.put('/ip/tags', tags));
+}
+
+export function updateThreatIntelProviders(providers: ThreatIntelProvider[]) {
+  return unwrap<ThreatIntelProvider[]>(apiClient.put('/ip/threat-intel/providers', providers));
+}
+
+export function importThreatIntel(payload: {
+  format: string;
+  contents: string;
+  source: string;
+  severity: string;
+  action: string;
+  labels: string[];
+  expires_at?: string;
+}) {
+  return unwrap<{ imported: number; total: number }>(apiClient.post('/ip/threat-intel/import', payload));
+}
+
+export function syncThreatIntel(providerId?: string) {
+  return unwrap<{ imported: number; total: number; results: Array<Record<string, unknown>> }>(
+    apiClient.post('/ip/threat-intel/sync', providerId ? { provider_id: providerId } : {}),
+  );
+}
+
+export function testThreatIntelProvider(provider: ThreatIntelProvider) {
+  return unwrap<{ ok: boolean; count: number }>(apiClient.post('/ip/threat-intel/test', provider));
+}
+
+export function lookupThreatIntel(providerId: string, ip: string) {
+  return unwrap<{ ip: string; imported: number; items: Array<Record<string, unknown>> }>(
+    apiClient.post('/ip/threat-intel/lookup', { provider_id: providerId, ip }),
+  );
 }
 
 export async function exportThreatIntel(format: 'csv' | 'stix') {

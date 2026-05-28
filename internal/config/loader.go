@@ -91,6 +91,10 @@ func Default() Config {
 				Enabled:              false,
 				JSChallenge:          true,
 				CAPTCHA:              false,
+				ChallengeDifficulty:  4,
+				WaitingRoom:          false,
+				WaitingRoomMaxActive: 1000,
+				WaitingRoomTTL:       5 * time.Minute,
 				ChallengeTTL:         30 * time.Minute,
 				CookieName:           "cheesewaf_js_clearance",
 				Secret:               "change-me-in-production",
@@ -132,10 +136,11 @@ func Default() Config {
 			},
 		},
 		Storage: StorageConfig{
-			SQLite:       SQLiteConfig{Path: "./data/cheesewaf.db"},
-			ClickHouse:   ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
-			VictoriaLogs: VictoriaLogsConfig{Timeout: 10 * time.Second},
-			PostgreSQL:   PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			SQLite:        SQLiteConfig{Path: "./data/cheesewaf.db"},
+			ClickHouse:    ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			VictoriaLogs:  VictoriaLogsConfig{Timeout: 10 * time.Second},
+			PostgreSQL:    PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			Elasticsearch: ElasticsearchConfig{Index: "cheesewaf-logs", Timeout: 10 * time.Second},
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -295,6 +300,15 @@ func applyDefaults(cfg *Config) {
 	if cfg.Storage.PostgreSQL.Timeout == 0 {
 		cfg.Storage.PostgreSQL.Timeout = def.Storage.PostgreSQL.Timeout
 	}
+	if cfg.Storage.Elasticsearch.Index == "" {
+		cfg.Storage.Elasticsearch.Index = def.Storage.Elasticsearch.Index
+	}
+	if cfg.Storage.Elasticsearch.Timeout == 0 {
+		cfg.Storage.Elasticsearch.Timeout = def.Storage.Elasticsearch.Timeout
+	}
+	if cfg.Storage.Elasticsearch.Headers == nil {
+		cfg.Storage.Elasticsearch.Headers = map[string]string{}
+	}
 	if cfg.Logging.Output.Type == "" {
 		cfg.Logging.Output.Type = "file"
 	}
@@ -333,6 +347,15 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Protection.Bot.ChallengeTTL == 0 {
 		cfg.Protection.Bot.ChallengeTTL = def.Protection.Bot.ChallengeTTL
+	}
+	if cfg.Protection.Bot.ChallengeDifficulty == 0 {
+		cfg.Protection.Bot.ChallengeDifficulty = def.Protection.Bot.ChallengeDifficulty
+	}
+	if cfg.Protection.Bot.WaitingRoomMaxActive == 0 {
+		cfg.Protection.Bot.WaitingRoomMaxActive = def.Protection.Bot.WaitingRoomMaxActive
+	}
+	if cfg.Protection.Bot.WaitingRoomTTL == 0 {
+		cfg.Protection.Bot.WaitingRoomTTL = def.Protection.Bot.WaitingRoomTTL
 	}
 	if cfg.Protection.Bot.CookieName == "" {
 		cfg.Protection.Bot.CookieName = def.Protection.Bot.CookieName

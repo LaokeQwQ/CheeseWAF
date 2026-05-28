@@ -4,34 +4,6 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, ShieldCheck } from 'lucide-react';
 import { createRule, fetchRules } from '../../api/client';
-import type { Rule } from '../../types/api';
-
-const fallbackRules: Rule[] = [
-  {
-    id: 'rce-shell',
-    site_id: 'default',
-    name: 'Shell metacharacters',
-    description: 'Detect command injection chains.',
-    pattern: '(;|&&|\\|\\|)\\s*(cat|id|whoami)',
-    location: 'uri',
-    action: 'block',
-    severity: 'critical',
-    enabled: true,
-    priority: 120,
-  },
-  {
-    id: 'admin-probe',
-    site_id: 'default',
-    name: 'Admin probe',
-    description: 'Common admin path scans.',
-    pattern: '(?i)/(wp-admin|phpmyadmin|\\.git)',
-    location: 'uri',
-    action: 'block',
-    severity: 'medium',
-    enabled: true,
-    priority: 180,
-  },
-];
 
 export default function RulesPage() {
   const { t } = useTranslation();
@@ -45,7 +17,14 @@ export default function RulesPage() {
       queryClient.invalidateQueries({ queryKey: ['rules'] });
     },
   });
-  const rows = data?.length ? data : fallbackRules;
+  const rows = data ?? [];
+  const severityLabel = (severity: string) => {
+    if (severity === 'low') return t('rules.low');
+    if (severity === 'medium') return t('rules.medium');
+    if (severity === 'high') return t('rules.high');
+    if (severity === 'critical') return t('rules.critical');
+    return severity;
+  };
 
   return (
     <section className="page-surface">
@@ -63,6 +42,7 @@ export default function RulesPage() {
         <Table
           rowKey="id"
           pagination={{ pageSize: 8 }}
+          loading={!data}
           data={rows}
           columns={[
             {
@@ -80,7 +60,7 @@ export default function RulesPage() {
             {
               title: t('rules.severity'),
               dataIndex: 'severity',
-              render: (severity: string) => <Tag color={severity === 'critical' ? 'red' : 'orange'}>{severity}</Tag>,
+              render: (severity: string) => <Tag color={severity === 'critical' ? 'red' : severity === 'high' ? 'orange' : 'blue'}>{severityLabel(severity)}</Tag>,
             },
             { title: t('rules.priority'), dataIndex: 'priority' },
             { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean) => <Switch checked={enabled} size="small" /> },
@@ -115,13 +95,13 @@ export default function RulesPage() {
           </Form.Item>
           <Form.Item label={t('rules.severity')} field="severity">
             <Select defaultValue="medium">
-              <Select.Option value="low">Low</Select.Option>
-              <Select.Option value="medium">Medium</Select.Option>
-              <Select.Option value="high">High</Select.Option>
-              <Select.Option value="critical">Critical</Select.Option>
+              <Select.Option value="low">{t('rules.low')}</Select.Option>
+              <Select.Option value="medium">{t('rules.medium')}</Select.Option>
+              <Select.Option value="high">{t('rules.high')}</Select.Option>
+              <Select.Option value="critical">{t('rules.critical')}</Select.Option>
             </Select>
           </Form.Item>
-          <Form.Item label={t('rules.priority')} field="priority"><InputNumber defaultValue={100} min={1} max={999} /></Form.Item>
+          <Form.Item label={`${t('rules.priority')} (${t('rules.priorityHint')})`} field="priority"><InputNumber defaultValue={100} min={1} max={999} /></Form.Item>
           <Button type="primary" htmlType="submit" loading={mutation.isPending} long>{t('common.save')}</Button>
         </Form>
       </Modal>

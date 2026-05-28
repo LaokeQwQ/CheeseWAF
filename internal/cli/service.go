@@ -29,7 +29,7 @@ import (
 )
 
 func runServe(ctx context.Context) error {
-	cfg, err := loadConfig()
+	cfg, loadedConfigPath, err := loadConfig()
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func runServe(ctx context.Context) error {
 	}
 	admin := &http.Server{
 		Addr:         cfg.Server.AdminListen,
-		Handler:      api.NewRouter(api.Options{Config: cfg, Store: store, Sink: sink, Hub: hub, Secret: authSecret}),
+		Handler:      api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites}),
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  cfg.Server.IdleTimeout,
@@ -219,30 +219,41 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 		detectors = append(detectors, enginerules.New(compiled))
 	}
 	switches := site.WAF.SemanticEngines
+	var semanticCategories []string
 	if switches.SQL {
+		semanticCategories = append(semanticCategories, "sqli")
 		detectors = append(detectors, semantic.NewSQLDetector(site.WAF.Mode))
 	}
 	if switches.XSS {
+		semanticCategories = append(semanticCategories, "xss")
 		detectors = append(detectors, semantic.NewXSSDetector(site.WAF.Mode))
 	}
 	if switches.RCE {
+		semanticCategories = append(semanticCategories, "rce")
 		detectors = append(detectors, semantic.NewRCEDetector(site.WAF.Mode))
 	}
 	if switches.LFI {
+		semanticCategories = append(semanticCategories, "lfi")
 		detectors = append(detectors, semantic.NewLFIDetector(site.WAF.Mode))
 	}
 	if switches.XXE {
+		semanticCategories = append(semanticCategories, "xxe")
 		detectors = append(detectors, semantic.NewXXEDetector(site.WAF.Mode))
 	}
 	if switches.SSRF {
+		semanticCategories = append(semanticCategories, "ssrf")
 		detectors = append(detectors, semantic.NewSSRFDetector(site.WAF.Mode))
+	}
+	if len(semanticCategories) > 0 {
+		detectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, detectors...)
 	}
 	return engine.NewPipeline(detectors...), nil
 }
 
-func loadConfig() (*config.Config, error) {
+func loadConfig() (*config.Config, string, error) {
 	if _, err := os.Stat(configPath); err == nil {
-		return config.Load(configPath)
+		cfg, err := config.Load(configPath)
+		return cfg, configPath, err
 	}
 	if configPath != "" {
 		fmt.Printf("config %s not found, using built-in defaults\n", configPath)
@@ -252,9 +263,10 @@ func loadConfig() (*config.Config, error) {
 		ConfigPath: filepath.Join(dataDir, setup.DefaultConfigFile),
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return config.Load(bundle.Paths.ConfigFile)
+	cfg, err := config.Load(bundle.Paths.ConfigFile)
+	return cfg, bundle.Paths.ConfigFile, err
 }
 
 func seedSites(ctx context.Context, store storage.Store, cfg *config.Config) error {
@@ -270,15 +282,9 @@ func seedSites(ctx context.Context, store storage.Store, cfg *config.Config) err
 		for _, upstream := range siteCfg.Upstreams {
 			upstreams = append(upstreams, upstream.Address)
 		}
-		site := &storage.Site{
-			ID:         siteCfg.ID,
-			Name:       siteCfg.Name,
-			Domains:    siteCfg.Domains,
-			Upstreams:  upstreams,
-			ListenPort: siteCfg.ListenPort,
-			Enabled:    siteCfg.Enabled,
-		}
-		if err := store.CreateSite(ctx, site); err != nil {
+		site := storage.SiteFromConfig(siteCfg)
+		site.Upstreams = upstreams
+		if err := store.CreateSite(ctx, &site); err != nil {
 			return err
 		}
 	}

@@ -69,7 +69,11 @@ export default function MainLayout() {
     i18n.changeLanguage(language);
   }, [language]);
 
-  const currentKey = navItems.find((item) => item.key === location.pathname)?.key ?? '/';
+  const currentKey = navItems.find((item) => (
+    item.key === '/'
+      ? location.pathname === '/'
+      : location.pathname === item.key || location.pathname.startsWith(`${item.key}/`)
+  ))?.key ?? '/';
   const snapshot = monitor?.snapshot;
 
   function handleLogout() {
@@ -111,9 +115,9 @@ export default function MainLayout() {
 
         <div className="sidebar-status">
           <span className="status-dot" />
-          <div>
+          <div className="sidebar-status-copy">
             <strong>{t('common.healthy')}</strong>
-            <span>127.0.0.1:9443</span>
+            <span>Admin API :9443</span>
           </div>
         </div>
       </aside>

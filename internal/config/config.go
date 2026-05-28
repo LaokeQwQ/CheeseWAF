@@ -5,19 +5,20 @@ package config
 import "time"
 
 type Config struct {
-	Server     ServerConfig     `yaml:"server" json:"server"`
-	TLS        TLSConfig        `yaml:"tls" json:"tls"`
-	Setup      SetupConfig      `yaml:"setup" json:"setup"`
-	Sites      []SiteConfig     `yaml:"sites" json:"sites"`
-	Protection ProtectionConfig `yaml:"protection" json:"protection"`
-	Storage    StorageConfig    `yaml:"storage" json:"storage"`
-	Logging    LoggingConfig    `yaml:"logging" json:"logging"`
-	AI         AIConfig         `yaml:"ai" json:"ai"`
-	Update     UpdateConfig     `yaml:"update" json:"update"`
-	Scheduler  SchedulerConfig  `yaml:"scheduler" json:"scheduler"`
-	Edge       EdgeConfig       `yaml:"edge" json:"edge"`
-	Monitor    MonitorConfig    `yaml:"monitor" json:"monitor"`
-	APISec     APISecConfig     `yaml:"apisec" json:"apisec"`
+	Server        ServerConfig        `yaml:"server" json:"server"`
+	TLS           TLSConfig           `yaml:"tls" json:"tls"`
+	Setup         SetupConfig         `yaml:"setup" json:"setup"`
+	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
+	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
+	Storage       StorageConfig       `yaml:"storage" json:"storage"`
+	Logging       LoggingConfig       `yaml:"logging" json:"logging"`
+	AI            AIConfig            `yaml:"ai" json:"ai"`
+	Update        UpdateConfig        `yaml:"update" json:"update"`
+	Vulnerability VulnerabilityConfig `yaml:"vulnerability" json:"vulnerability"`
+	Scheduler     SchedulerConfig     `yaml:"scheduler" json:"scheduler"`
+	Edge          EdgeConfig          `yaml:"edge" json:"edge"`
+	Monitor       MonitorConfig       `yaml:"monitor" json:"monitor"`
+	APISec        APISecConfig        `yaml:"apisec" json:"apisec"`
 }
 
 type ServerConfig struct {
@@ -111,11 +112,12 @@ type ProtectionConfig struct {
 }
 
 type IPProtectionConfig struct {
-	Blacklist   []string            `yaml:"blacklist" json:"blacklist"`
-	Whitelist   []string            `yaml:"whitelist" json:"whitelist"`
-	GeoIP       GeoIPConfig         `yaml:"geoip" json:"geoip"`
-	Tags        map[string][]string `yaml:"tags" json:"tags"`
-	ThreatIntel []ThreatIntelConfig `yaml:"threat_intel" json:"threat_intel"`
+	Blacklist   []string                    `yaml:"blacklist" json:"blacklist"`
+	Whitelist   []string                    `yaml:"whitelist" json:"whitelist"`
+	GeoIP       GeoIPConfig                 `yaml:"geoip" json:"geoip"`
+	Tags        map[string][]string         `yaml:"tags" json:"tags"`
+	ThreatIntel []ThreatIntelConfig         `yaml:"threat_intel" json:"threat_intel"`
+	Providers   []ThreatIntelProviderConfig `yaml:"providers" json:"providers"`
 }
 
 type ThreatIntelConfig struct {
@@ -125,8 +127,23 @@ type ThreatIntelConfig struct {
 	Severity  string    `yaml:"severity" json:"severity"`
 	Source    string    `yaml:"source" json:"source"`
 	Labels    []string  `yaml:"labels" json:"labels"`
+	Action    string    `yaml:"action" json:"action"`
 	ExpiresAt time.Time `yaml:"expires_at" json:"expires_at"`
 	Enabled   bool      `yaml:"enabled" json:"enabled"`
+}
+
+type ThreatIntelProviderConfig struct {
+	ID          string            `yaml:"id" json:"id"`
+	Name        string            `yaml:"name" json:"name"`
+	Type        string            `yaml:"type" json:"type"`
+	Endpoint    string            `yaml:"endpoint" json:"endpoint"`
+	APIKey      string            `yaml:"api_key" json:"api_key"`
+	Format      string            `yaml:"format" json:"format"`
+	Action      string            `yaml:"action" json:"action"`
+	MinSeverity string            `yaml:"min_severity" json:"min_severity"`
+	Interval    time.Duration     `yaml:"interval" json:"interval"`
+	Headers     map[string]string `yaml:"headers" json:"headers"`
+	Enabled     bool              `yaml:"enabled" json:"enabled"`
 }
 
 type GeoIPConfig struct {
@@ -151,6 +168,10 @@ type BotProtectionConfig struct {
 	Enabled              bool          `yaml:"enabled" json:"enabled"`
 	JSChallenge          bool          `yaml:"js_challenge" json:"js_challenge"`
 	CAPTCHA              bool          `yaml:"captcha" json:"captcha"`
+	ChallengeDifficulty  int           `yaml:"challenge_difficulty" json:"challenge_difficulty"`
+	WaitingRoom          bool          `yaml:"waiting_room" json:"waiting_room"`
+	WaitingRoomMaxActive int           `yaml:"waiting_room_max_active" json:"waiting_room_max_active"`
+	WaitingRoomTTL       time.Duration `yaml:"waiting_room_ttl" json:"waiting_room_ttl"`
 	ChallengeTTL         time.Duration `yaml:"challenge_ttl" json:"challenge_ttl"`
 	CookieName           string        `yaml:"cookie_name" json:"cookie_name"`
 	Secret               string        `yaml:"secret" json:"secret"`
@@ -239,11 +260,12 @@ type CompressionPolicyConfig struct {
 }
 
 type StorageConfig struct {
-	SQLite       SQLiteConfig       `yaml:"sqlite" json:"sqlite"`
-	Redis        RedisConfig        `yaml:"redis" json:"redis"`
-	ClickHouse   ClickHouseConfig   `yaml:"clickhouse" json:"clickhouse"`
-	VictoriaLogs VictoriaLogsConfig `yaml:"victorialogs" json:"victorialogs"`
-	PostgreSQL   PostgreSQLConfig   `yaml:"postgresql" json:"postgresql"`
+	SQLite        SQLiteConfig        `yaml:"sqlite" json:"sqlite"`
+	Redis         RedisConfig         `yaml:"redis" json:"redis"`
+	ClickHouse    ClickHouseConfig    `yaml:"clickhouse" json:"clickhouse"`
+	VictoriaLogs  VictoriaLogsConfig  `yaml:"victorialogs" json:"victorialogs"`
+	PostgreSQL    PostgreSQLConfig    `yaml:"postgresql" json:"postgresql"`
+	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
 }
 
 type SQLiteConfig struct {
@@ -276,6 +298,17 @@ type PostgreSQLConfig struct {
 	DSN     string        `yaml:"dsn" json:"dsn"`
 	Table   string        `yaml:"table" json:"table"`
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
+}
+
+type ElasticsearchConfig struct {
+	Enabled  bool              `yaml:"enabled" json:"enabled"`
+	Endpoint string            `yaml:"endpoint" json:"endpoint"`
+	Index    string            `yaml:"index" json:"index"`
+	Username string            `yaml:"username" json:"username"`
+	Password string            `yaml:"password" json:"password"`
+	APIKey   string            `yaml:"api_key" json:"api_key"`
+	Headers  map[string]string `yaml:"headers" json:"headers"`
+	Timeout  time.Duration     `yaml:"timeout" json:"timeout"`
 }
 
 type LoggingConfig struct {
@@ -316,6 +349,22 @@ type OTAConfig struct {
 	AutoUpdateBinary bool          `yaml:"auto_update_binary" json:"auto_update_binary"`
 	VerifySignature  bool          `yaml:"verify_signature" json:"verify_signature"`
 	PublicKey        string        `yaml:"public_key" json:"public_key"`
+}
+
+type VulnerabilityConfig struct {
+	Enabled bool                      `yaml:"enabled" json:"enabled"`
+	Feeds   []VulnerabilityFeedConfig `yaml:"feeds" json:"feeds"`
+}
+
+type VulnerabilityFeedConfig struct {
+	ID          string        `yaml:"id" json:"id"`
+	Name        string        `yaml:"name" json:"name"`
+	Type        string        `yaml:"type" json:"type"`
+	URL         string        `yaml:"url" json:"url"`
+	Interval    time.Duration `yaml:"interval" json:"interval"`
+	MinSeverity string        `yaml:"min_severity" json:"min_severity"`
+	Notify      bool          `yaml:"notify" json:"notify"`
+	Enabled     bool          `yaml:"enabled" json:"enabled"`
 }
 
 type SchedulerConfig struct {

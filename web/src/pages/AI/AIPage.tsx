@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Form, Input, Message as ArcoMessage, Space, Switch, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { BrainCircuit, PlugZap, ShieldCheck } from 'lucide-react';
-import { analyzeLog, fetchAIConfig, testAIConnection, updateAIConfig } from '../../api/client';
+import { analyzeLog, fetchAIConfig, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
 import type { AIConfig } from '../../types/api';
 
 const fallback: AIConfig = {
@@ -15,23 +15,21 @@ const fallback: AIConfig = {
   async: true,
 };
 
-const sampleLog = JSON.stringify({
-  id: 'sample-1',
-  method: 'GET',
-  uri: '/search?q=1%20or%201=1',
-  client_ip: '203.0.113.10',
-  action: 'block',
-  category: 'sqli',
-  severity: 'high',
-  message: 'SQL injection pattern matched',
-}, null, 2);
-
 export default function AIPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [rawLog, setRawLog] = useState(sampleLog);
+  const [rawLog, setRawLog] = useState('');
   const { data } = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
+  const { data: logs } = useQuery({ queryKey: ['ai-latest-log'], queryFn: () => fetchLogs({ limit: 1 }), refetchInterval: 10_000, retry: false });
   const config = data ?? fallback;
+  const latestLog = logs?.items?.[0];
+  const latestLogText = useMemo(() => (latestLog ? JSON.stringify(latestLog, null, 2) : ''), [latestLog]);
+
+  useEffect(() => {
+    if (!rawLog && latestLogText) {
+      setRawLog(latestLogText);
+    }
+  }, [latestLogText, rawLog]);
   const updateMutation = useMutation({
     mutationFn: updateAIConfig,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ai-config'] }),
@@ -103,7 +101,7 @@ export default function AIPage() {
 
         <section className="panel">
           <div className="panel-heading"><h2><BrainCircuit size={16} /> {t('ai.analysis')}</h2></div>
-          <Input.TextArea value={rawLog} autoSize={{ minRows: 10, maxRows: 16 }} onChange={setRawLog} />
+          <Input.TextArea value={rawLog} placeholder={t('ai.noLog')} autoSize={{ minRows: 10, maxRows: 16 }} onChange={setRawLog} />
           <div style={{ marginTop: 12 }}>
             <Button type="primary" onClick={runAnalysis} loading={analysisMutation.isPending}>{t('ai.run')}</Button>
           </div>

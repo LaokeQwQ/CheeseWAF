@@ -39,6 +39,7 @@ profile.cov
 configs/*.yaml
 !configs/*.example.yaml
 !configs/cheesewaf.yaml
+configs/versions/
 
 # Private planning/task files
 task.md

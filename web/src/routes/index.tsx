@@ -17,6 +17,7 @@ import ProtectionPage from '../pages/Protection/ProtectionPage';
 import RulesPage from '../pages/Rules/RulesPage';
 import LoginPage from '../pages/Login/LoginPage';
 import SetupPage from '../pages/Setup/SetupPage';
+import SiteDetailPage from '../pages/Sites/SiteDetailPage';
 import SitesPage from '../pages/Sites/SitesPage';
 import SystemPage from '../pages/System/SystemPage';
 import UsersPage from '../pages/Users/UsersPage';
@@ -55,6 +56,7 @@ export default function AppRoutes() {
         <Route element={<ProtectedLayout />}>
           <Route index element={<Page><DashboardPage /></Page>} />
           <Route path="sites" element={<Page><SitesPage /></Page>} />
+          <Route path="sites/:id" element={<Page><SiteDetailPage /></Page>} />
           <Route path="rules" element={<Page><RulesPage /></Page>} />
           <Route path="logs" element={<Page><LogsPage /></Page>} />
           <Route path="ip" element={<Page><IPManagePage /></Page>} />
