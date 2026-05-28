@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/apisec"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/edge"
@@ -34,6 +35,8 @@ type Server struct {
 	headers   *edge.HeaderModifier
 	cache     *edge.Cache
 	compress  *edge.Compressor
+	apiSchema *apisec.Validator
+	apiLimit  *apisec.RateLimiter
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
@@ -50,6 +53,14 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		return nil, err
 	}
 	health := NewHealthRegistry(cfg.Sites)
+	apiSchema, err := apisec.NewValidator(cfg.APISec.Validation)
+	if err != nil {
+		return nil, err
+	}
+	apiLimit, err := apisec.NewRateLimiter(cfg.APISec.RateLimits)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		config:    cfg,
 		pipeline:  pipeline,
@@ -66,6 +77,8 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		headers:   edge.NewHeaderModifier(cfg.Edge.Headers),
 		cache:     edge.NewCache(cfg.Edge.Cache),
 		compress:  edge.NewCompressor(cfg.Edge.Compression),
+		apiSchema: apiSchema,
+		apiLimit:  apiLimit,
 	}, nil
 }
 
@@ -118,6 +131,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if !s.limiter.Allow(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
 		s.block(w, reqCtx, "ratelimit", "rate limit exceeded", http.StatusTooManyRequests, start)
 		return
+	}
+	if s.config.APISec.Enabled {
+		if !s.apiLimit.Allow(r, reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
+			s.block(w, reqCtx, "apisec", "API endpoint rate limit exceeded", http.StatusTooManyRequests, start)
+			return
+		}
+		if findings := s.apiSchema.Validate(r); len(findings) > 0 {
+			s.block(w, reqCtx, "apisec", findings[0].Message, http.StatusBadRequest, start)
+			return
+		}
 	}
 	rewriter, err := NewRewriter(site.WAF.Rewrite)
 	if err != nil {

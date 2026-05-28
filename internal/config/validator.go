@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -145,6 +146,59 @@ func Validate(cfg *Config) error {
 		case "gzip", "identity", "none":
 		default:
 			return fmt.Errorf("edge compression algorithm %q is not supported yet", algorithm)
+		}
+	}
+	if cfg.Monitor.Prometheus.Enabled && !strings.HasPrefix(cfg.Monitor.Prometheus.Path, "/") {
+		return fmt.Errorf("monitor.prometheus.path must start with /")
+	}
+	if cfg.Monitor.RemoteWrite.Enabled {
+		if _, err := url.ParseRequestURI(cfg.Monitor.RemoteWrite.Endpoint); err != nil {
+			return fmt.Errorf("monitor.remote_write.endpoint is invalid: %w", err)
+		}
+	}
+	for _, rule := range cfg.Monitor.Alerts.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if strings.TrimSpace(rule.ID) == "" || strings.TrimSpace(rule.Metric) == "" {
+			return fmt.Errorf("alert rule must define id and metric")
+		}
+		switch rule.Operator {
+		case ">", ">=", "<", "<=", "==", "!=":
+		default:
+			return fmt.Errorf("alert rule %q has invalid operator %q", rule.ID, rule.Operator)
+		}
+	}
+	for _, notifier := range cfg.Monitor.Notifiers {
+		if !notifier.Enabled {
+			continue
+		}
+		switch notifier.Type {
+		case "webhook", "email", "telegram", "dingtalk", "wecom":
+		default:
+			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
+		}
+	}
+	for _, schema := range cfg.APISec.Validation.Schemas {
+		if !schema.Enabled {
+			continue
+		}
+		if strings.TrimSpace(schema.PathPattern) == "" {
+			return fmt.Errorf("api schema %q must define path_pattern", schema.ID)
+		}
+		if _, err := regexp.Compile(schema.PathPattern); err != nil {
+			return fmt.Errorf("api schema %q has invalid path_pattern: %w", schema.ID, err)
+		}
+	}
+	for _, limit := range cfg.APISec.RateLimits {
+		if !limit.Enabled {
+			continue
+		}
+		if limit.Requests <= 0 || limit.Window <= 0 {
+			return fmt.Errorf("api rate limit %q must define positive requests and window", limit.ID)
+		}
+		if _, err := regexp.Compile(limit.PathPattern); err != nil {
+			return fmt.Errorf("api rate limit %q has invalid path_pattern: %w", limit.ID, err)
 		}
 	}
 	return nil

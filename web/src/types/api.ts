@@ -180,3 +180,69 @@ export type IPRulesResponse = {
   geoip: ProtectionConfig['ip']['geoip'];
   entries: IPReputationEntry[];
 };
+
+export type User = {
+  id: string;
+  username: string;
+  role: string;
+  two_fa_enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type MonitorSnapshot = {
+  generated_at: string;
+  uptime_seconds: number;
+  goroutines: number;
+  memory_alloc: number;
+  sites: number;
+  requests: number;
+  blocked: number;
+  challenges: number;
+  status_codes: Record<string, number>;
+  categories: Record<string, number>;
+  disk_usage: Record<string, number>;
+};
+
+export type Alert = {
+  rule_id: string;
+  name: string;
+  metric: string;
+  value: number;
+  threshold: number;
+  severity: string;
+  message: string;
+  starts_at: string;
+};
+
+export type MonitorSummary = {
+  snapshot: MonitorSnapshot;
+  metrics: Record<string, number>;
+  alerts: Alert[];
+  config: Record<string, unknown>;
+};
+
+export type APIEndpoint = {
+  method: string;
+  path: string;
+  count: number;
+  blocked: number;
+  last_seen: string;
+  status_family: Record<string, number>;
+};
+
+export type APISecSummary = {
+  endpoints: APIEndpoint[];
+  config: Record<string, unknown>;
+};
+
+export type AuditEntry = {
+  timestamp: string;
+  user: string;
+  role: string;
+  method: string;
+  path: string;
+  status: number;
+  remote_ip: string;
+  latency_ms: number;
+};
