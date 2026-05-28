@@ -35,6 +35,16 @@ func NewFromConfig(cfg config.StorageConfig, filePath string) (storage.LogSink, 
 		}
 		sinks = append(sinks, sink)
 	}
+	if cfg.PostgreSQL.Enabled {
+		sink, err := NewPostgreSQLSink(cfg.PostgreSQL)
+		if err != nil {
+			for _, existing := range sinks {
+				_ = existing.Close()
+			}
+			return nil, err
+		}
+		sinks = append(sinks, sink)
+	}
 	return &MultiSink{sinks: sinks}, nil
 }
 

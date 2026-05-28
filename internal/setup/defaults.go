@@ -151,6 +151,7 @@ storage:
   postgresql:
     enabled: false
     table: "cheesewaf_logs"
+    timeout: "10s"
 
 logging:
   level: "info"
