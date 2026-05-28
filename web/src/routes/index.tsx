@@ -35,6 +35,15 @@ function Page({ children }: { children: ReactNode }) {
   );
 }
 
+function ProtectedLayout() {
+  const location = useLocation();
+  const token = localStorage.getItem('cheesewaf-token');
+  if (!token) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  return <MainLayout />;
+}
+
 export default function AppRoutes() {
   const location = useLocation();
 
@@ -43,7 +52,7 @@ export default function AppRoutes() {
       <Routes location={location} key={location.pathname}>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/setup" element={<SetupPage />} />
-        <Route element={<MainLayout />}>
+        <Route element={<ProtectedLayout />}>
           <Route index element={<Page><DashboardPage /></Page>} />
           <Route path="sites" element={<Page><SitesPage /></Page>} />
           <Route path="rules" element={<Page><RulesPage /></Page>} />

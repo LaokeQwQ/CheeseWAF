@@ -11,6 +11,7 @@ const zhCN = {
     status: '状态',
     next: '下一步',
     finish: '完成',
+    logout: '退出登录',
   },
   nav: {
     dashboard: '仪表盘',

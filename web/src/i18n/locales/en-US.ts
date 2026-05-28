@@ -11,6 +11,7 @@ const enUS = {
     status: 'Status',
     next: 'Next',
     finish: 'Finish',
+    logout: 'Sign Out',
   },
   nav: {
     dashboard: 'Dashboard',
