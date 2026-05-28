@@ -10,10 +10,14 @@ import (
 )
 
 var rcePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(?:;|&&|\|\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|powershell|cmd)(?:\s|$)`),
-	regexp.MustCompile(`(?i)(?:\$\(|` + "`" + `)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|powershell|cmd)`),
+	regexp.MustCompile(`(?i)(?:;|&&|\|\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat)(?:\s|$)`),
+	regexp.MustCompile(`(?i)(?:\$\(|` + "`" + `)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat)`),
 	regexp.MustCompile(`(?i)(?:/bin/(?:sh|bash)|cmd\.exe|powershell\.exe)`),
 	regexp.MustCompile(`(?i)(?:curl|wget)\s+[^|;&]+(?:\||;|&&)\s*(?:sh|bash)`),
+	regexp.MustCompile(`(?i)(?:python3?|perl|php|ruby|node)\s+(?:-c|-e|-r)\b`),
+	regexp.MustCompile(`(?i)(?:^|[=&\s])(?:/usr)?/bin/(?:perl|python3?|php|ruby|node|gunzip|unxz|ab|ansible|chef|cscli|visudo)\b`),
+	regexp.MustCompile(`(?i)(?:^|[=&\s])(?:cat|head|tail|less|more|type)\s+/(?:etc|proc|var|root|home)\b`),
+	regexp.MustCompile(`(?i)(?:\$SHELL|\$\{SHELL\})\s+-c\b`),
 }
 
 type RCEDetector struct {

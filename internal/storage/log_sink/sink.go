@@ -45,6 +45,16 @@ func NewFromConfig(cfg config.StorageConfig, filePath string) (storage.LogSink, 
 		}
 		sinks = append(sinks, sink)
 	}
+	if cfg.Elasticsearch.Enabled {
+		sink, err := NewElasticsearchSink(cfg.Elasticsearch, nil)
+		if err != nil {
+			for _, existing := range sinks {
+				_ = existing.Close()
+			}
+			return nil, err
+		}
+		sinks = append(sinks, sink)
+	}
 	return &MultiSink{sinks: sinks}, nil
 }
 

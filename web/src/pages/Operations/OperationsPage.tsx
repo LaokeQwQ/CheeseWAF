@@ -30,7 +30,7 @@ export default function OperationsPage() {
         </Button>
       </header>
 
-      <div className="settings-grid">
+      <div className="ops-grid">
         <section className="panel">
           <div className="panel-heading"><h2><Database size={16} /> {t('ops.storage')}</h2></div>
           <div className="resource-stack">
@@ -42,6 +42,7 @@ export default function OperationsPage() {
         <section className="panel">
           <div className="panel-heading"><h2>{t('ops.report')}</h2></div>
           <Form
+            className="ops-report-form"
             layout="vertical"
             initialValues={{
               enabled: reportTask.enabled,
@@ -68,7 +69,9 @@ export default function OperationsPage() {
               </Select>
             </Form.Item>
             <Form.Item label={t('ops.recipient')} field="recipient"><Input /></Form.Item>
-            <Button htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
+            <Form.Item className="wide-field">
+              <Button type="primary" htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
+            </Form.Item>
           </Form>
         </section>
       </div>

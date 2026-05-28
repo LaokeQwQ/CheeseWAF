@@ -86,6 +86,15 @@ func (s *Server) HealthRegistry() *HealthRegistry {
 	return s.health
 }
 
+func (s *Server) UpdateSites(sites []config.SiteConfig) {
+	if s == nil {
+		return
+	}
+	s.config.Sites = append([]config.SiteConfig(nil), sites...)
+	s.health = NewHealthRegistry(s.config.Sites)
+	s.lb.UpdateSites(s.config.Sites, s.health)
+}
+
 func (s *Server) Handler() http.Handler {
 	return securityHeaders(http.HandlerFunc(s.handle))
 }
@@ -159,7 +168,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if result != nil && result.Detected && result.Action == engine.ActionBlock {
-			s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
+			s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
 			return
 		}
 	}
@@ -209,6 +218,28 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.writeLog(r.Context(), reqCtx, "pass", captured.Status, start, nil)
 }
 
+func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestContext, result *engine.DetectionResult, status int, start time.Time) {
+	if result == nil {
+		s.block(w, reqCtx, "unknown", "request blocked", status, start)
+		return
+	}
+	reqCtx.Metadata["detection"] = result
+	s.renderer.Render(w, status, blockpage.Data{
+		TraceID:    reqCtx.TraceID,
+		AttackType: result.Category,
+		ClientIP:   reqCtx.ClientIP,
+		Message:    result.Message,
+		Timestamp:  time.Now().UTC(),
+	})
+	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
+		Category:   result.Category,
+		Severity:   result.Severity.String(),
+		DetectorID: result.DetectorID,
+		Message:    result.Message,
+		Payload:    result.Payload,
+	})
+}
+
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
 	s.renderer.Render(w, status, blockpage.Data{
 		TraceID:    reqCtx.TraceID,
@@ -248,9 +279,15 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		UserAgent:  reqCtx.Request.UserAgent(),
 		Latency:    time.Since(start),
 	}
+	if len(reqCtx.Metadata) > 0 {
+		entry.Metadata = reqCtx.Metadata
+	}
 	if extra != nil {
 		entry.Category = extra.Category
+		entry.Severity = extra.Severity
+		entry.DetectorID = extra.DetectorID
 		entry.Message = extra.Message
+		entry.Payload = extra.Payload
 	}
 	if country := s.geoip.Country(reqCtx.ClientIP); country != "" {
 		entry.Country = country

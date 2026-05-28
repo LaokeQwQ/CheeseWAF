@@ -24,6 +24,17 @@ func (lb *LoadBalancer) WithHealth(health *HealthRegistry) *LoadBalancer {
 	return lb
 }
 
+func (lb *LoadBalancer) UpdateSites(sites []config.SiteConfig, health *HealthRegistry) {
+	if lb == nil {
+		return
+	}
+	lb.mu.Lock()
+	lb.sites = append([]config.SiteConfig(nil), sites...)
+	lb.health = health
+	lb.next = map[string]int{}
+	lb.mu.Unlock()
+}
+
 func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
 	host = strings.Split(strings.ToLower(host), ":")[0]
 	for _, site := range lb.sites {

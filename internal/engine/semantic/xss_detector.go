@@ -10,11 +10,12 @@ import (
 )
 
 var xssPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)<\s*script\b`),
+	regexp.MustCompile(`(?i)<\s*(?:[a-z0-9_-]+\s*:\s*)?script\b`),
 	regexp.MustCompile(`(?i)javascript\s*:`),
-	regexp.MustCompile(`(?i)on(?:error|load|click|mouseover)\s*=`),
+	regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`),
 	regexp.MustCompile(`(?i)<\s*iframe\b`),
-	regexp.MustCompile(`(?i)<\s*svg\b[^>]*onload\s*=`),
+	regexp.MustCompile(`(?i)<\s*(?:[a-z0-9_-]+\s*:\s*)?svg\b[^>]*\bon[a-z0-9_-]{3,}\s*=`),
+	regexp.MustCompile(`(?i)<\s*xss\b[^>]*\bon[a-z0-9_-]{3,}\s*=`),
 }
 
 type XSSDetector struct {

@@ -178,10 +178,14 @@ protection:
       window: "60s"
       burst: 20
   bot:
-    enabled: false
-    js_challenge: true
-    captcha: false
-    challenge_ttl: "30m"
+      enabled: false
+      js_challenge: true
+      captcha: false
+      challenge_difficulty: 4
+      waiting_room: false
+      waiting_room_max_active: 1000
+      waiting_room_ttl: "5m"
+      challenge_ttl: "30m"
     cookie_name: "cheesewaf_js_clearance"
     secret: "change-me-in-production"
     path_prefixes:

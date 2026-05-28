@@ -38,6 +38,46 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
 	}
+	if err := s.ensureColumns(ctx, "sites", map[string]string{
+		"loadbalance": `ALTER TABLE sites ADD COLUMN loadbalance TEXT NOT NULL DEFAULT 'round_robin'`,
+		"waf_enabled": `ALTER TABLE sites ADD COLUMN waf_enabled INTEGER NOT NULL DEFAULT 1`,
+		"waf_mode":    `ALTER TABLE sites ADD COLUMN waf_mode TEXT NOT NULL DEFAULT 'block'`,
+		"advanced":    `ALTER TABLE sites ADD COLUMN advanced TEXT NOT NULL DEFAULT '{}'`,
+	}); err != nil {
+		return fmt.Errorf("migrate sqlite columns: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ensureColumns(ctx context.Context, table string, migrations map[string]string) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for column, statement := range migrations {
+		if existing[column] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -49,7 +89,7 @@ func (s *SQLiteStore) Close() error {
 }
 
 func (s *SQLiteStore) ListSites(ctx context.Context) ([]Site, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,domains,upstreams,listen_port,enable_ssl,cert_file,key_file,enabled,created_at,updated_at FROM sites ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,advanced,enabled,created_at,updated_at FROM sites ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +106,7 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]Site, error) {
 }
 
 func (s *SQLiteStore) GetSite(ctx context.Context, id string) (*Site, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,domains,upstreams,listen_port,enable_ssl,cert_file,key_file,enabled,created_at,updated_at FROM sites WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,advanced,enabled,created_at,updated_at FROM sites WHERE id=?`, id)
 	site, err := scanSite(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -77,8 +117,9 @@ func (s *SQLiteStore) GetSite(ctx context.Context, id string) (*Site, error) {
 func (s *SQLiteStore) CreateSite(ctx context.Context, site *Site) error {
 	ensureSite(site)
 	domains, upstreams := encodeStrings(site.Domains), encodeStrings(site.Upstreams)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sites(id,name,domains,upstreams,listen_port,enable_ssl,cert_file,key_file,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		site.ID, site.Name, domains, upstreams, site.ListenPort, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.Enabled), formatTime(site.CreatedAt), formatTime(site.UpdatedAt))
+	advanced := encodeJSON(site.Advanced)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sites(id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,advanced,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		site.ID, site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, advanced, boolInt(site.Enabled), formatTime(site.CreatedAt), formatTime(site.UpdatedAt))
 	return err
 }
 
@@ -88,8 +129,9 @@ func (s *SQLiteStore) UpdateSite(ctx context.Context, site *Site) error {
 	}
 	site.UpdatedAt = time.Now().UTC()
 	domains, upstreams := encodeStrings(site.Domains), encodeStrings(site.Upstreams)
-	_, err := s.db.ExecContext(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,enable_ssl=?,cert_file=?,key_file=?,enabled=?,updated_at=? WHERE id=?`,
-		site.Name, domains, upstreams, site.ListenPort, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.Enabled), formatTime(site.UpdatedAt), site.ID)
+	advanced := encodeJSON(site.Advanced)
+	_, err := s.db.ExecContext(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,advanced=?,enabled=?,updated_at=? WHERE id=?`,
+		site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, advanced, boolInt(site.Enabled), formatTime(site.UpdatedAt), site.ID)
 	return err
 }
 
@@ -199,17 +241,20 @@ type scanner interface {
 
 func scanSite(row scanner) (*Site, error) {
 	var site Site
-	var domains, upstreams, createdAt, updatedAt string
-	var enableSSL, enabled int
-	if err := row.Scan(&site.ID, &site.Name, &domains, &upstreams, &site.ListenPort, &enableSSL, &site.CertFile, &site.KeyFile, &enabled, &createdAt, &updatedAt); err != nil {
+	var domains, upstreams, advanced, createdAt, updatedAt string
+	var enableSSL, wafEnabled, enabled int
+	if err := row.Scan(&site.ID, &site.Name, &domains, &upstreams, &site.ListenPort, &site.LoadBalance, &enableSSL, &site.CertFile, &site.KeyFile, &wafEnabled, &site.WAFMode, &advanced, &enabled, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	site.Domains = decodeStrings(domains)
 	site.Upstreams = decodeStrings(upstreams)
 	site.EnableSSL = enableSSL == 1
+	site.WAFEnabled = wafEnabled == 1
+	site.Advanced = decodeSiteAdvanced(advanced)
 	site.Enabled = enabled == 1
 	site.CreatedAt = parseTime(createdAt)
 	site.UpdatedAt = parseTime(updatedAt)
+	ensureSiteDefaults(&site)
 	return &site, nil
 }
 
@@ -250,6 +295,63 @@ func ensureSite(site *Site) {
 	if site.ListenPort == 0 {
 		site.ListenPort = 80
 	}
+	ensureSiteDefaults(site)
+}
+
+func ensureSiteDefaults(site *Site) {
+	if site.LoadBalance == "" {
+		site.LoadBalance = "round_robin"
+	}
+	if site.WAFMode == "" {
+		site.WAFMode = "block"
+		site.WAFEnabled = true
+	}
+	if site.Advanced.Certificate.Mode == "" {
+		site.Advanced.Certificate.Mode = "file"
+	}
+	if site.Advanced.Certificate.MinTLSVersion == "" {
+		site.Advanced.Certificate.MinTLSVersion = "1.2"
+	}
+	if site.Advanced.Origin.Scheme == "" {
+		site.Advanced.Origin.Scheme = "http"
+	}
+	if site.Advanced.Origin.ProxyTimeout == "" {
+		site.Advanced.Origin.ProxyTimeout = "30s"
+	}
+	if site.Advanced.Origin.MaxBodyBytes == 0 {
+		site.Advanced.Origin.MaxBodyBytes = 64 * 1024 * 1024
+	}
+	if site.Advanced.Origin.MaxHeaderSize == 0 {
+		site.Advanced.Origin.MaxHeaderSize = 1 << 20
+	}
+	if site.WAFEnabled && !site.Advanced.Protection.SemanticSQL && !site.Advanced.Protection.SemanticXSS &&
+		!site.Advanced.Protection.SemanticRCE && !site.Advanced.Protection.SemanticLFI &&
+		!site.Advanced.Protection.SemanticXXE && !site.Advanced.Protection.SemanticSSRF {
+		site.Advanced.Protection.SemanticSQL = true
+		site.Advanced.Protection.SemanticXSS = true
+		site.Advanced.Protection.SemanticRCE = true
+		site.Advanced.Protection.SemanticLFI = true
+		site.Advanced.Protection.SemanticXXE = true
+		site.Advanced.Protection.SemanticSSRF = true
+	}
+	if site.Advanced.HealthCheck.Path == "" {
+		site.Advanced.HealthCheck.Path = "/"
+	}
+	if site.Advanced.HealthCheck.Interval == "" {
+		site.Advanced.HealthCheck.Interval = "30s"
+	}
+	if site.Advanced.HealthCheck.Timeout == "" {
+		site.Advanced.HealthCheck.Timeout = "3s"
+	}
+	if site.Advanced.HealthCheck.HealthyThreshold == 0 {
+		site.Advanced.HealthCheck.HealthyThreshold = 1
+	}
+	if site.Advanced.HealthCheck.UnhealthyThreshold == 0 {
+		site.Advanced.HealthCheck.UnhealthyThreshold = 3
+	}
+	if site.Advanced.Response.MaxBodyBytes == 0 {
+		site.Advanced.Response.MaxBodyBytes = 2 * 1024 * 1024
+	}
 }
 
 func ensureUser(user *User) {
@@ -273,10 +375,24 @@ func encodeStrings(values []string) string {
 	return string(data)
 }
 
+func encodeJSON(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
 func decodeStrings(raw string) []string {
 	var values []string
 	_ = json.Unmarshal([]byte(raw), &values)
 	return values
+}
+
+func decodeSiteAdvanced(raw string) SiteAdvanced {
+	var value SiteAdvanced
+	_ = json.Unmarshal([]byte(raw), &value)
+	return value
 }
 
 func boolInt(value bool) int {

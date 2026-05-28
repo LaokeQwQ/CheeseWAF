@@ -6,28 +6,32 @@ import { fetchProtection, updateACLProtection, updateBotProtection, updateIPProt
 import type { ACLRule, ProtectionConfig } from '../../types/api';
 
 const fallback: ProtectionConfig = {
-  ip: { whitelist: ['127.0.0.1', '::1'], blacklist: [], tags: {}, geoip: { enabled: false, database: './data/GeoLite2-Country.mmdb', blocked_countries: [], country_cidrs: {} } },
-  ratelimit: { enabled: true, default: { requests: 100, window: '60s', burst: 20 } },
+  ip: { whitelist: [], blacklist: [], tags: {}, geoip: { enabled: false, database: '', blocked_countries: [], country_cidrs: {} } },
+  ratelimit: { enabled: false, default: { requests: 0, window: '', burst: 0 } },
   bot: {
     enabled: false,
-    js_challenge: true,
+    js_challenge: false,
     captcha: false,
-    challenge_ttl: '30m',
-    cookie_name: 'cheesewaf_js_clearance',
-    secret: 'change-me-in-production',
-    path_prefixes: ['/'],
-    exempt_path_prefixes: ['/health', '/api/'],
+    challenge_difficulty: 4,
+    waiting_room: false,
+    waiting_room_max_active: 1000,
+    waiting_room_ttl: '5m',
+    challenge_ttl: '',
+    cookie_name: '',
+    secret: '',
+    path_prefixes: [],
+    exempt_path_prefixes: [],
     allowed_user_agents: [],
-    suspicious_user_agents: ['curl', 'python-requests', 'sqlmap', 'nikto', 'nuclei', 'masscan', 'zgrab', 'httpclient'],
+    suspicious_user_agents: [],
   },
-  acl: { enabled: true, rules: [{ id: 'deny-debug', name: 'Deny debug', method: '', path_prefix: '/debug', header: '', header_value: '', action: 'block', severity: 'high', enabled: true }] },
+  acl: { enabled: false, rules: [] },
 };
 
 export default function ProtectionPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ['protection'], queryFn: fetchProtection, retry: false });
-  const protection = data ?? fallback;
+  const protection = normalizeProtection(data);
   const ipMutation = useMutation({ mutationFn: updateIPProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const rateMutation = useMutation({ mutationFn: updateRateLimit, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const botMutation = useMutation({ mutationFn: updateBotProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
@@ -52,6 +56,10 @@ export default function ProtectionPage() {
               enabled: protection.bot.enabled,
               jsChallenge: protection.bot.js_challenge,
               captcha: protection.bot.captcha,
+              challengeDifficulty: protection.bot.challenge_difficulty,
+              waitingRoom: protection.bot.waiting_room,
+              waitingRoomMaxActive: protection.bot.waiting_room_max_active,
+              waitingRoomTtl: String(protection.bot.waiting_room_ttl),
               challengeTtl: String(protection.bot.challenge_ttl),
               cookieName: protection.bot.cookie_name,
               secret: protection.bot.secret,
@@ -64,6 +72,10 @@ export default function ProtectionPage() {
               enabled: values.enabled,
               js_challenge: values.jsChallenge,
               captcha: values.captcha,
+              challenge_difficulty: values.challengeDifficulty,
+              waiting_room: values.waitingRoom,
+              waiting_room_max_active: values.waitingRoomMaxActive,
+              waiting_room_ttl: values.waitingRoomTtl,
               challenge_ttl: values.challengeTtl,
               cookie_name: values.cookieName,
               secret: values.secret,
@@ -76,6 +88,10 @@ export default function ProtectionPage() {
             <Form.Item label={t('protection.bot')} field="enabled"><Switch /></Form.Item>
             <Form.Item label={t('protection.jsChallenge')} field="jsChallenge"><Switch /></Form.Item>
             <Form.Item label={t('protection.captcha')} field="captcha"><Switch /></Form.Item>
+            <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty"><InputNumber min={1} max={6} /></Form.Item>
+            <Form.Item label={t('protection.waitingRoom')} field="waitingRoom"><Switch /></Form.Item>
+            <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive"><InputNumber min={1} max={1000000} /></Form.Item>
+            <Form.Item label={t('protection.waitingRoomTtl')} field="waitingRoomTtl"><Input placeholder="5m" /></Form.Item>
             <Form.Item label={t('protection.challengeTtl')} field="challengeTtl"><Input placeholder="30m" /></Form.Item>
             <Form.Item label={t('protection.cookieName')} field="cookieName"><Input /></Form.Item>
             <Form.Item label={t('protection.secret')} field="secret"><Input.Password /></Form.Item>
@@ -137,6 +153,7 @@ export default function ProtectionPage() {
         <Table
           rowKey="id"
           pagination={false}
+          loading={!data}
           data={protection.acl.rules}
           columns={[
             { title: t('rules.name'), dataIndex: 'name' },
@@ -153,4 +170,47 @@ export default function ProtectionPage() {
 
 function splitList(value: unknown) {
   return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizeProtection(input?: ProtectionConfig): ProtectionConfig {
+  const next = input ?? fallback;
+  return {
+    ...fallback,
+    ...next,
+    ip: {
+      ...fallback.ip,
+      ...next.ip,
+      whitelist: asArray(next.ip?.whitelist),
+      blacklist: asArray(next.ip?.blacklist),
+      tags: next.ip?.tags ?? {},
+      geoip: {
+        ...fallback.ip.geoip,
+        ...next.ip?.geoip,
+        blocked_countries: asArray(next.ip?.geoip?.blocked_countries),
+        country_cidrs: next.ip?.geoip?.country_cidrs ?? {},
+      },
+    },
+    ratelimit: {
+      ...fallback.ratelimit,
+      ...next.ratelimit,
+      default: { ...fallback.ratelimit.default, ...next.ratelimit?.default },
+    },
+    bot: {
+      ...fallback.bot,
+      ...next.bot,
+      path_prefixes: asArray(next.bot?.path_prefixes),
+      exempt_path_prefixes: asArray(next.bot?.exempt_path_prefixes),
+      allowed_user_agents: asArray(next.bot?.allowed_user_agents),
+      suspicious_user_agents: asArray(next.bot?.suspicious_user_agents),
+    },
+    acl: {
+      ...fallback.acl,
+      ...next.acl,
+      rules: asArray(next.acl?.rules),
+    },
+  };
+}
+
+function asArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
 }

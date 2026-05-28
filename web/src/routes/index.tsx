@@ -17,9 +17,11 @@ import ProtectionPage from '../pages/Protection/ProtectionPage';
 import RulesPage from '../pages/Rules/RulesPage';
 import LoginPage from '../pages/Login/LoginPage';
 import SetupPage from '../pages/Setup/SetupPage';
+import SiteDetailPage from '../pages/Sites/SiteDetailPage';
 import SitesPage from '../pages/Sites/SitesPage';
 import SystemPage from '../pages/System/SystemPage';
 import UsersPage from '../pages/Users/UsersPage';
+import UpdatesPage from '../pages/Updates/UpdatesPage';
 
 function Page({ children }: { children: ReactNode }) {
   return (
@@ -55,6 +57,7 @@ export default function AppRoutes() {
         <Route element={<ProtectedLayout />}>
           <Route index element={<Page><DashboardPage /></Page>} />
           <Route path="sites" element={<Page><SitesPage /></Page>} />
+          <Route path="sites/:id" element={<Page><SiteDetailPage /></Page>} />
           <Route path="rules" element={<Page><RulesPage /></Page>} />
           <Route path="logs" element={<Page><LogsPage /></Page>} />
           <Route path="ip" element={<Page><IPManagePage /></Page>} />
@@ -65,6 +68,7 @@ export default function AppRoutes() {
           <Route path="apisec" element={<Page><APISecurityPage /></Page>} />
           <Route path="users" element={<Page><UsersPage /></Page>} />
           <Route path="ops" element={<Page><OperationsPage /></Page>} />
+          <Route path="updates" element={<Page><UpdatesPage /></Page>} />
           <Route path="block-pages" element={<Page><BlockPagesPage /></Page>} />
           <Route path="attack-map" element={<Page><AttackMapPage /></Page>} />
           <Route path="system" element={<Page><SystemPage /></Page>} />

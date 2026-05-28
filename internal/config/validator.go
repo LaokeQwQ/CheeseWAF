@@ -41,6 +41,17 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("storage.postgresql.table is invalid: %w", err)
 		}
 	}
+	if cfg.Storage.Elasticsearch.Enabled {
+		if strings.TrimSpace(cfg.Storage.Elasticsearch.Endpoint) == "" {
+			return fmt.Errorf("storage.elasticsearch.endpoint is required when Elasticsearch log sink is enabled")
+		}
+		if _, err := url.ParseRequestURI(cfg.Storage.Elasticsearch.Endpoint); err != nil {
+			return fmt.Errorf("storage.elasticsearch.endpoint is invalid: %w", err)
+		}
+		if strings.TrimSpace(cfg.Storage.Elasticsearch.Index) == "" {
+			return fmt.Errorf("storage.elasticsearch.index is required when Elasticsearch log sink is enabled")
+		}
+	}
 	if len(cfg.Sites) == 0 {
 		return fmt.Errorf("at least one site is required")
 	}
@@ -130,6 +141,15 @@ func Validate(cfg *Config) error {
 		}
 		if cfg.Protection.Bot.ChallengeTTL <= 0 {
 			return fmt.Errorf("bot.challenge_ttl must be positive")
+		}
+		if cfg.Protection.Bot.ChallengeDifficulty < 1 || cfg.Protection.Bot.ChallengeDifficulty > 6 {
+			return fmt.Errorf("bot.challenge_difficulty must be between 1 and 6")
+		}
+		if cfg.Protection.Bot.WaitingRoom && cfg.Protection.Bot.WaitingRoomMaxActive <= 0 {
+			return fmt.Errorf("bot.waiting_room_max_active must be positive when waiting room is enabled")
+		}
+		if cfg.Protection.Bot.WaitingRoom && cfg.Protection.Bot.WaitingRoomTTL <= 0 {
+			return fmt.Errorf("bot.waiting_room_ttl must be positive when waiting room is enabled")
 		}
 	}
 	for _, prefix := range append([]string{}, cfg.Protection.Bot.PathPrefixes...) {

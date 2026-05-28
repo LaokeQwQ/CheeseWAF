@@ -13,16 +13,37 @@ import (
 )
 
 type Handler struct {
-	Config    *config.Config
-	Store     storage.Store
-	Sink      storage.LogSink
-	Tokens    *middleware.TokenManager
-	Auditor   *middleware.Auditor
-	StartedAt time.Time
+	Config         *config.Config
+	ConfigPath     string
+	Store          storage.Store
+	Sink           storage.LogSink
+	Tokens         *middleware.TokenManager
+	Auditor        *middleware.Auditor
+	StartedAt      time.Time
+	OnSitesChanged func([]config.SiteConfig)
 }
 
-func New(cfg *config.Config, store storage.Store, sink storage.LogSink, tokens *middleware.TokenManager, auditor *middleware.Auditor) *Handler {
-	return &Handler{Config: cfg, Store: store, Sink: sink, Tokens: tokens, Auditor: auditor, StartedAt: time.Now().UTC()}
+type Options struct {
+	Config         *config.Config
+	ConfigPath     string
+	Store          storage.Store
+	Sink           storage.LogSink
+	Tokens         *middleware.TokenManager
+	Auditor        *middleware.Auditor
+	OnSitesChanged func([]config.SiteConfig)
+}
+
+func New(opts Options) *Handler {
+	return &Handler{
+		Config:         opts.Config,
+		ConfigPath:     opts.ConfigPath,
+		Store:          opts.Store,
+		Sink:           opts.Sink,
+		Tokens:         opts.Tokens,
+		Auditor:        opts.Auditor,
+		StartedAt:      time.Now().UTC(),
+		OnSitesChanged: opts.OnSitesChanged,
+	}
 }
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
@@ -38,6 +59,16 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil || user == nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
 		return
+	}
+	if user.TwoFAEnabled {
+		if req.TOTPCode == "" {
+			writeError(w, http.StatusUnauthorized, "TWO_FA_REQUIRED", "two-factor code required")
+			return
+		}
+		if !verifyTOTP(user.TwoFASecret, req.TOTPCode, time.Now().UTC()) {
+			writeError(w, http.StatusUnauthorized, "INVALID_TWO_FA_CODE", "invalid two-factor code")
+			return
+		}
 	}
 	token, err := h.Tokens.Sign(user.ID, user.Username, user.Role)
 	if err != nil {
