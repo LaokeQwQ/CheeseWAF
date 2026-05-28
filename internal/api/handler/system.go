@@ -12,5 +12,7 @@ func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 		"scheduler":  h.Config.Scheduler,
 		"edge":       h.Config.Edge,
 		"ai":         aiConfigView(h.Config.AI),
+		"monitor":    h.Config.Monitor,
+		"apisec":     h.Config.APISec,
 	})
 }

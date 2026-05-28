@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -73,7 +74,7 @@ func (s *FileSink) Query(ctx context.Context, filter storage.LogFilter) ([]stora
 	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 4<<20)
-	var out []storage.LogEntry
+	var matched []storage.LogEntry
 	var total int64
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -87,13 +88,23 @@ func (s *FileSink) Query(ctx context.Context, filter storage.LogFilter) ([]stora
 			continue
 		}
 		total++
-		if int(total) <= filter.Offset {
-			continue
-		}
-		if len(out) < limit {
-			out = append(out, entry)
-		}
+		matched = append(matched, entry)
 	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		return matched[i].Timestamp.After(matched[j].Timestamp)
+	})
+	start := filter.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(matched) {
+		return []storage.LogEntry{}, total, scanner.Err()
+	}
+	end := start + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	out := append([]storage.LogEntry(nil), matched[start:end]...)
 	return out, total, scanner.Err()
 }
 

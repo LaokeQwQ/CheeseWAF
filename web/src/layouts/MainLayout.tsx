@@ -8,7 +8,9 @@ import {
   BrainCircuit,
   FileCode2,
   Bell,
+  LogOut,
   Gauge,
+  LineChart,
   Map,
   Globe2,
   Languages,
@@ -21,14 +23,17 @@ import {
   Settings,
   Shield,
   ShieldAlert,
+  UserCog,
   SlidersHorizontal,
   SunMoon,
 } from 'lucide-react';
 import i18n from '../i18n';
 import { navItemMotion } from '../animations/micro';
+import { fetchMonitorSummary } from '../api/client';
 import AIAssistant from '../components/AIAssistant/AIAssistant';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
+import { useQuery } from '@tanstack/react-query';
 
 const navItems = [
   { key: '/', labelKey: 'nav.dashboard', icon: LayoutDashboard },
@@ -39,6 +44,9 @@ const navItems = [
   { key: '/protection', labelKey: 'nav.protection', icon: ShieldAlert },
   { key: '/edge', labelKey: 'nav.edge', icon: Gauge },
   { key: '/ai', labelKey: 'nav.ai', icon: BrainCircuit },
+  { key: '/monitor', labelKey: 'nav.monitor', icon: LineChart },
+  { key: '/apisec', labelKey: 'nav.apisec', icon: Radar },
+  { key: '/users', labelKey: 'nav.users', icon: UserCog },
   { key: '/ops', labelKey: 'nav.ops', icon: Radar },
   { key: '/block-pages', labelKey: 'nav.blockPages', icon: FileCode2 },
   { key: '/attack-map', labelKey: 'nav.attackMap', icon: Map },
@@ -55,12 +63,19 @@ export default function MainLayout() {
   const setTheme = useAppStore((state) => state.setTheme);
   const setLanguage = useAppStore((state) => state.setLanguage);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+  const { data: monitor } = useQuery({ queryKey: ['shell-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false });
 
   useEffect(() => {
     i18n.changeLanguage(language);
   }, [language]);
 
   const currentKey = navItems.find((item) => item.key === location.pathname)?.key ?? '/';
+  const snapshot = monitor?.snapshot;
+
+  function handleLogout() {
+    localStorage.removeItem('cheesewaf-token');
+    navigate('/login', { replace: true });
+  }
 
   return (
     <div className={sidebarCollapsed ? 'app-shell app-shell-collapsed' : 'app-shell'}>
@@ -123,10 +138,10 @@ export default function MainLayout() {
 
           <Space size={10}>
             <Tag className="metric-chip" icon={<Activity size={14} />}>
-              {t('shell.latency')} 3.8ms
+              {t('shell.attacks')} {snapshot?.blocked ?? 0}
             </Tag>
             <Tag className="metric-chip" icon={<SlidersHorizontal size={14} />}>
-              {t('shell.requests')} 18.4k
+              {t('shell.requests')} {snapshot?.requests ?? 0}
             </Tag>
             <Select
               aria-label={t('system.theme')}
@@ -153,9 +168,12 @@ export default function MainLayout() {
             </Select>
             <Dropdown
               droplist={
-                <Menu>
+                <Menu onClickMenuItem={(key) => key === 'logout' && handleLogout()}>
                   <Menu.Item key="1">{t('shell.notifications')}</Menu.Item>
                   <Menu.Item key="2">{t('shell.admin')}</Menu.Item>
+                  <Menu.Item key="logout">
+                    <span className="menu-inline"><LogOut size={14} /> {t('common.logout')}</span>
+                  </Menu.Item>
                 </Menu>
               }
             >

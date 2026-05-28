@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -18,8 +19,27 @@ func Validate(cfg *Config) error {
 	if cfg.Server.AdminListen == "" {
 		return fmt.Errorf("server.admin_listen is required")
 	}
+	if cfg.Server.ListenTLS != "" && (cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "") {
+		return fmt.Errorf("tls.cert_file and tls.key_file are required when server.listen_tls is set")
+	}
+	if cfg.Server.HTTP3.Enabled {
+		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
+			return fmt.Errorf("tls.cert_file and tls.key_file are required when HTTP/3 is enabled")
+		}
+		if _, err := net.ResolveUDPAddr("udp", http3ListenAddr(cfg.Server)); err != nil {
+			return fmt.Errorf("server.listen_http3 is invalid: %w", err)
+		}
+	}
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
+	}
+	if cfg.Storage.PostgreSQL.Enabled {
+		if strings.TrimSpace(cfg.Storage.PostgreSQL.DSN) == "" {
+			return fmt.Errorf("storage.postgresql.dsn is required when PostgreSQL log sink is enabled")
+		}
+		if err := validateSQLIdentifierPath(cfg.Storage.PostgreSQL.Table); err != nil {
+			return fmt.Errorf("storage.postgresql.table is invalid: %w", err)
+		}
 	}
 	if len(cfg.Sites) == 0 {
 		return fmt.Errorf("at least one site is required")
@@ -147,6 +167,59 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("edge compression algorithm %q is not supported yet", algorithm)
 		}
 	}
+	if cfg.Monitor.Prometheus.Enabled && !strings.HasPrefix(cfg.Monitor.Prometheus.Path, "/") {
+		return fmt.Errorf("monitor.prometheus.path must start with /")
+	}
+	if cfg.Monitor.RemoteWrite.Enabled {
+		if _, err := url.ParseRequestURI(cfg.Monitor.RemoteWrite.Endpoint); err != nil {
+			return fmt.Errorf("monitor.remote_write.endpoint is invalid: %w", err)
+		}
+	}
+	for _, rule := range cfg.Monitor.Alerts.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if strings.TrimSpace(rule.ID) == "" || strings.TrimSpace(rule.Metric) == "" {
+			return fmt.Errorf("alert rule must define id and metric")
+		}
+		switch rule.Operator {
+		case ">", ">=", "<", "<=", "==", "!=":
+		default:
+			return fmt.Errorf("alert rule %q has invalid operator %q", rule.ID, rule.Operator)
+		}
+	}
+	for _, notifier := range cfg.Monitor.Notifiers {
+		if !notifier.Enabled {
+			continue
+		}
+		switch notifier.Type {
+		case "webhook", "email", "telegram", "dingtalk", "wecom":
+		default:
+			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
+		}
+	}
+	for _, schema := range cfg.APISec.Validation.Schemas {
+		if !schema.Enabled {
+			continue
+		}
+		if strings.TrimSpace(schema.PathPattern) == "" {
+			return fmt.Errorf("api schema %q must define path_pattern", schema.ID)
+		}
+		if _, err := regexp.Compile(schema.PathPattern); err != nil {
+			return fmt.Errorf("api schema %q has invalid path_pattern: %w", schema.ID, err)
+		}
+	}
+	for _, limit := range cfg.APISec.RateLimits {
+		if !limit.Enabled {
+			continue
+		}
+		if limit.Requests <= 0 || limit.Window <= 0 {
+			return fmt.Errorf("api rate limit %q must define positive requests and window", limit.ID)
+		}
+		if _, err := regexp.Compile(limit.PathPattern); err != nil {
+			return fmt.Errorf("api rate limit %q has invalid path_pattern: %w", limit.ID, err)
+		}
+	}
 	return nil
 }
 
@@ -163,6 +236,33 @@ func validateIPEntry(entry string) error {
 	}
 	if net.ParseIP(entry) == nil {
 		return fmt.Errorf("not an IP or CIDR")
+	}
+	return nil
+}
+
+func http3ListenAddr(cfg ServerConfig) string {
+	if cfg.ListenHTTP3 != "" {
+		return cfg.ListenHTTP3
+	}
+	if cfg.ListenTLS != "" {
+		return cfg.ListenTLS
+	}
+	return ":443"
+}
+
+func validateSQLIdentifierPath(value string) error {
+	if value == "" {
+		return fmt.Errorf("identifier is required")
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 {
+		return fmt.Errorf("only schema.table identifiers are supported")
+	}
+	ident := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	for _, part := range parts {
+		if !ident.MatchString(part) {
+			return fmt.Errorf("%q is not a safe SQL identifier", part)
+		}
 	}
 	return nil
 }

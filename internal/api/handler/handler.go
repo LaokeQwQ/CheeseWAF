@@ -17,11 +17,12 @@ type Handler struct {
 	Store     storage.Store
 	Sink      storage.LogSink
 	Tokens    *middleware.TokenManager
+	Auditor   *middleware.Auditor
 	StartedAt time.Time
 }
 
-func New(cfg *config.Config, store storage.Store, sink storage.LogSink, tokens *middleware.TokenManager) *Handler {
-	return &Handler{Config: cfg, Store: store, Sink: sink, Tokens: tokens, StartedAt: time.Now().UTC()}
+func New(cfg *config.Config, store storage.Store, sink storage.LogSink, tokens *middleware.TokenManager, auditor *middleware.Auditor) *Handler {
+	return &Handler{Config: cfg, Store: store, Sink: sink, Tokens: tokens, Auditor: auditor, StartedAt: time.Now().UTC()}
 }
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {

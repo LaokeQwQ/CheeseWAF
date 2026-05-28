@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AIConfig, AttackAnalysis, BlockTemplate, EdgeConfig, IPRulesResponse, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats } from '../types/api';
+import type { AIConfig, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -16,6 +16,20 @@ apiClient.interceptors.request.use((config) => {
   }
   return config;
 });
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      localStorage.removeItem('cheesewaf-token');
+      const path = window.location.pathname;
+      if (path !== '/login' && path !== '/setup') {
+        window.location.assign('/login');
+      }
+    }
+    return Promise.reject(error);
+  },
+);
 
 type Envelope<T> = {
   data?: T;
@@ -55,6 +69,38 @@ export function createSite(site: Partial<Site>) {
 
 export function fetchStats() {
   return unwrap<Record<string, unknown>>(apiClient.get('/stats'));
+}
+
+export function fetchLogs(params: LogQuery = {}) {
+  return unwrap<LogResponse>(apiClient.get('/logs', { params }));
+}
+
+export function fetchMonitorSummary() {
+  return unwrap<MonitorSummary>(apiClient.get('/monitor'));
+}
+
+export function fetchAPISecEndpoints() {
+  return unwrap<APISecSummary>(apiClient.get('/apisec/endpoints'));
+}
+
+export function validateAPIRequest(payload: Record<string, unknown>) {
+  return unwrap<{ findings: Array<Record<string, unknown>> }>(apiClient.post('/apisec/validate', payload));
+}
+
+export function fetchAuditEntries() {
+  return unwrap<AuditEntry[]>(apiClient.get('/audit'));
+}
+
+export function fetchUsers() {
+  return unwrap<User[]>(apiClient.get('/users'));
+}
+
+export function createUser(user: Partial<User> & { password?: string }) {
+  return unwrap<User>(apiClient.post('/users', user));
+}
+
+export function updateUser(id: string, user: Partial<User> & { password?: string }) {
+  return unwrap<User>(apiClient.put(`/users/${id}`, user));
 }
 
 export function fetchRules(siteId?: string) {

@@ -18,6 +18,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
+	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/scheduler"
@@ -54,7 +56,7 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 
-	sink, err := logsink.NewFileSink(cfg.Logging.Output.File.Path)
+	sink, err := logsink.NewFromConfig(cfg.Storage, cfg.Logging.Output.File.Path)
 	if err != nil {
 		return err
 	}
@@ -69,6 +71,7 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
+	startRemoteWrite(ctx, cfg, sink, time.Now())
 	schedulerEngine := scheduler.NewEngine(scheduler.FromConfig(cfg.Scheduler, cfg.Setup.DataDir, configPath, cfg.Logging.Output.File.Path))
 	schedulerEngine.Start(ctx)
 	hub := realtime.NewHub()
@@ -84,11 +87,26 @@ func runServe(ctx context.Context) error {
 		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
+	http3Server, altSvc, err := proxyServer.HTTP3Server()
+	if err != nil {
+		return err
+	}
+	tlsServer, err := proxyServer.TLSServer(altSvc)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("CheeseWAF proxy listening on %s\n", cfg.Server.Listen)
+	if tlsServer != nil {
+		fmt.Printf("CheeseWAF TLS proxy listening on %s\n", cfg.Server.ListenTLS)
+	}
+	if http3Server != nil {
+		fmt.Printf("CheeseWAF HTTP/3 proxy listening on %s\n", http3Server.Addr)
+	}
 	fmt.Printf("CheeseWAF admin API listening on http://%s\n", cfg.Server.AdminListen)
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 4)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -102,6 +120,24 @@ func runServe(ctx context.Context) error {
 			errCh <- err
 		}
 	}()
+	if tlsServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := proxy.ListenAndServe(ctx, tlsServer); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
+	if http3Server != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := proxy.ListenAndServeHTTP3(ctx, http3Server); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -111,8 +147,64 @@ func runServe(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = admin.Shutdown(shutdownCtx)
+	if tlsServer != nil {
+		_ = tlsServer.Shutdown(shutdownCtx)
+	}
+	if http3Server != nil {
+		_ = http3Server.Shutdown(shutdownCtx)
+	}
 	wg.Wait()
 	return nil
+}
+
+func startRemoteWrite(ctx context.Context, cfg *config.Config, sink storage.LogSink, startedAt time.Time) {
+	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
+		return
+	}
+	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
+	alerter := monitor.NewAlerter(cfg.Monitor.Alerts)
+	notifiers := monitornotify.NewManager(cfg.Monitor.Notifiers)
+	interval := cfg.Monitor.RemoteWrite.Interval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				logs, _, _ := sink.Query(ctx, storage.LogFilter{Limit: 1000})
+				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
+					"data": serviceDirSize(cfg.Setup.DataDir),
+					"logs": serviceDirSize(filepath.Dir(cfg.Logging.Output.File.Path)),
+				})
+				_ = writer.Push(ctx, snapshot)
+				_ = notifiers.Notify(ctx, alerter.Evaluate(snapshot))
+			}
+		}
+	}()
+}
+
+func serviceDirSize(root string) int64 {
+	if root == "" {
+		return 0
+	}
+	var total int64
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err == nil {
+			total += info.Size()
+		}
+		_ = path
+		return nil
+	})
+	return total
 }
 
 func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {

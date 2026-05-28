@@ -6,12 +6,12 @@ mobile browser, and `waf-cli` TUI operations.
 
 ## Current Status
 
-Phase 0 backend scaffolding is in progress. The repository currently includes:
+The repository currently includes:
 
-- BusyBox-style `cheesewaf` / `waf-cli` entrypoint wiring.
-- Core package skeletons and interfaces.
-- First-launch setup defaults and self-signed admin certificate generation.
-- GitHub Actions CI for PR flow validation, Go tests, and cross-platform builds.
+- Reverse proxy WAF flow with semantic detectors, custom rules, IP/ACL/rate-limit/Bot protection, edge cache/header/compression policy, and response inspection.
+- Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, and production deployment files.
+- Prometheus metrics, alert evaluation, remote write, multi-sink logs for local file, ClickHouse, VictoriaLogs, and PostgreSQL.
+- GitHub Actions CI for PR flow validation, Go tests, web build, and cross-platform builds.
 
 ## Development
 

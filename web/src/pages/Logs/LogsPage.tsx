@@ -1,16 +1,38 @@
 import { Input, Select, Table, Tag } from '@arco-design/web-react';
+import { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Search } from 'lucide-react';
-
-const logs = [
-  { key: '1', trace: 'cw-9fa31c', source: '203.0.113.18', category: 'SQLi', action: 'block', time: '21:18:04' },
-  { key: '2', trace: 'cw-802c7e', source: '198.51.100.77', category: 'XSS', action: 'block', time: '21:16:41' },
-  { key: '3', trace: 'cw-441dda', source: '192.0.2.46', category: 'Bot', action: 'monitor', time: '21:13:20' },
-  { key: '4', trace: 'cw-6de781', source: '203.0.113.91', category: 'LFI', action: 'block', time: '21:10:02' },
-];
+import { fetchLogs } from '../../api/client';
+import type { LogEntry } from '../../types/api';
 
 export default function LogsPage() {
   const { t } = useTranslation();
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState<string>();
+  const [action, setAction] = useState<string>();
+  const { data, isLoading } = useQuery({
+    queryKey: ['logs', category, action],
+    queryFn: () => fetchLogs({ limit: 250, category, action }),
+    refetchInterval: 8_000,
+    retry: false,
+  });
+  const logs = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    const entries = data?.items ?? [];
+    if (!needle) {
+      return entries;
+    }
+    return entries.filter((entry) => [
+      entry.trace_id,
+      entry.client_ip,
+      entry.uri,
+      entry.category,
+      entry.action,
+      entry.message,
+      entry.country,
+    ].some((value) => value?.toLowerCase().includes(needle)));
+  }, [data?.items, search]);
 
   return (
     <section className="page-surface">
@@ -22,15 +44,20 @@ export default function LogsPage() {
       </header>
 
       <div className="toolbar-row">
-        <Input prefix={<Search size={16} />} placeholder={t('common.search')} allowClear />
-        <Select placeholder={t('logs.category')} allowClear>
-          <Select.Option value="SQLi">SQLi</Select.Option>
-          <Select.Option value="XSS">XSS</Select.Option>
-          <Select.Option value="RCE">RCE</Select.Option>
-          <Select.Option value="Bot">Bot</Select.Option>
+        <Input value={search} onChange={setSearch} prefix={<Search size={16} />} placeholder={t('common.search')} allowClear />
+        <Select value={category} placeholder={t('logs.category')} allowClear onChange={(value) => setCategory(value as string | undefined)}>
+          <Select.Option value="sqli">SQLi</Select.Option>
+          <Select.Option value="xss">XSS</Select.Option>
+          <Select.Option value="rce">RCE</Select.Option>
+          <Select.Option value="lfi">LFI</Select.Option>
+          <Select.Option value="ssrf">SSRF</Select.Option>
+          <Select.Option value="bot">Bot</Select.Option>
         </Select>
-        <Select placeholder={t('logs.action')} allowClear>
+        <Select value={action} placeholder={t('logs.action')} allowClear onChange={(value) => setAction(value as string | undefined)}>
           <Select.Option value="block">{t('common.block')}</Select.Option>
+          <Select.Option value="challenge">Challenge</Select.Option>
+          <Select.Option value="log">Log</Select.Option>
+          <Select.Option value="pass">Pass</Select.Option>
           <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
         </Select>
       </div>
@@ -39,14 +66,15 @@ export default function LogsPage() {
         <Table
           rowKey="key"
           pagination={{ pageSize: 8 }}
-          data={logs}
+          loading={isLoading}
+          data={logs.map((entry) => ({ ...entry, key: entry.id || entry.trace_id }))}
           columns={[
-            { title: t('logs.trace'), dataIndex: 'trace', render: (trace: string) => <code>{trace}</code> },
-            { title: t('logs.source'), dataIndex: 'source' },
+            { title: t('logs.trace'), dataIndex: 'trace_id', render: (trace: string, record: LogEntry) => <code>{trace || record.id}</code> },
+            { title: t('logs.source'), dataIndex: 'client_ip' },
             {
               title: t('logs.category'),
               dataIndex: 'category',
-              render: (category: string) => <Tag color="orange">{category}</Tag>,
+              render: (value: string) => <Tag color={value ? 'orange' : 'green'}>{value ? value.toUpperCase() : 'PASS'}</Tag>,
             },
             {
               title: t('logs.action'),
@@ -57,10 +85,20 @@ export default function LogsPage() {
                 </Tag>
               ),
             },
-            { title: t('logs.time'), dataIndex: 'time' },
+            { title: 'URI', dataIndex: 'uri' },
+            { title: t('attackMap.country'), dataIndex: 'country', render: (value: string) => value || '-' },
+            { title: t('logs.time'), dataIndex: 'timestamp', render: formatTime },
           ]}
         />
       </section>
     </section>
   );
+}
+
+function formatTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value || '-';
+  }
+  return date.toLocaleString();
 }
