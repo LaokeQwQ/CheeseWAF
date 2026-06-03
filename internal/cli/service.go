@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,7 +82,7 @@ func runServe(ctx context.Context) error {
 	}
 	admin := &http.Server{
 		Addr:         cfg.Server.AdminListen,
-		Handler:      api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites}),
+		Handler:      adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites})),
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  cfg.Server.IdleTimeout,
@@ -155,6 +156,68 @@ func runServe(ctx context.Context) error {
 	}
 	wg.Wait()
 	return nil
+}
+
+func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
+	webDir := resolveWebDir()
+	if webDir == "" {
+		return apiHandler
+	}
+	spa := http.FileServer(http.Dir(webDir))
+	metricsPath := "/metrics"
+	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
+		metricsPath = cfg.Monitor.Prometheus.Path
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAdminAPIPath(r.URL.Path, metricsPath) {
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+		path := strings.TrimPrefix(filepath.Clean("/"+strings.TrimPrefix(r.URL.Path, "/")), string(os.PathSeparator))
+		if path == "." {
+			path = "index.html"
+		}
+		fullPath := filepath.Join(webDir, path)
+		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+			spa.ServeHTTP(w, r)
+			return
+		}
+		index := filepath.Join(webDir, "index.html")
+		if _, err := os.Stat(index); err == nil {
+			http.ServeFile(w, r, index)
+			return
+		}
+		apiHandler.ServeHTTP(w, r)
+	})
+}
+
+func isAdminAPIPath(path, metricsPath string) bool {
+	if path == "/api" || strings.HasPrefix(path, "/api/") {
+		return true
+	}
+	if path == "/health" || path == metricsPath {
+		return true
+	}
+	return false
+}
+
+func resolveWebDir() string {
+	candidates := []string{
+		os.Getenv("CHEESEWAF_WEB_DIR"),
+		"/usr/share/cheesewaf/web",
+		filepath.Join("web", "dist"),
+		filepath.Join(".", "web", "dist"),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		index := filepath.Join(candidate, "index.html")
+		if info, err := os.Stat(index); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func startRemoteWrite(ctx context.Context, cfg *config.Config, sink storage.LogSink, startedAt time.Time) {
