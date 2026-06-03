@@ -145,6 +145,14 @@ func Validate(cfg *Config) error {
 		if cfg.Protection.Bot.ChallengeDifficulty < 1 || cfg.Protection.Bot.ChallengeDifficulty > 6 {
 			return fmt.Errorf("bot.challenge_difficulty must be between 1 and 6")
 		}
+		if cfg.Protection.Bot.CAPTCHA {
+			if cfg.Protection.Bot.AltchaMaxNumber < 1000 || cfg.Protection.Bot.AltchaMaxNumber > 50000000 {
+				return fmt.Errorf("bot.altcha_max_number must be between 1000 and 50000000")
+			}
+			if strings.TrimSpace(cfg.Protection.Bot.AltchaHeaderName) == "" {
+				return fmt.Errorf("bot.altcha_header_name is required when captcha is enabled")
+			}
+		}
 		if cfg.Protection.Bot.WaitingRoom && cfg.Protection.Bot.WaitingRoomMaxActive <= 0 {
 			return fmt.Errorf("bot.waiting_room_max_active must be positive when waiting room is enabled")
 		}

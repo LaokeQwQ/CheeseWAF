@@ -13,6 +13,8 @@ const fallback: ProtectionConfig = {
     js_challenge: false,
     captcha: false,
     challenge_difficulty: 4,
+    altcha_max_number: 75000,
+    altcha_header_name: 'X-CheeseWAF-Altcha',
     waiting_room: false,
     waiting_room_max_active: 1000,
     waiting_room_ttl: '5m',
@@ -57,6 +59,8 @@ export default function ProtectionPage() {
               jsChallenge: protection.bot.js_challenge,
               captcha: protection.bot.captcha,
               challengeDifficulty: protection.bot.challenge_difficulty,
+              altchaMaxNumber: protection.bot.altcha_max_number,
+              altchaHeaderName: protection.bot.altcha_header_name,
               waitingRoom: protection.bot.waiting_room,
               waitingRoomMaxActive: protection.bot.waiting_room_max_active,
               waitingRoomTtl: String(protection.bot.waiting_room_ttl),
@@ -73,6 +77,8 @@ export default function ProtectionPage() {
               js_challenge: values.jsChallenge,
               captcha: values.captcha,
               challenge_difficulty: values.challengeDifficulty,
+              altcha_max_number: values.altchaMaxNumber,
+              altcha_header_name: values.altchaHeaderName,
               waiting_room: values.waitingRoom,
               waiting_room_max_active: values.waitingRoomMaxActive,
               waiting_room_ttl: values.waitingRoomTtl,
@@ -89,6 +95,8 @@ export default function ProtectionPage() {
             <Form.Item label={t('protection.jsChallenge')} field="jsChallenge"><Switch /></Form.Item>
             <Form.Item label={t('protection.captcha')} field="captcha"><Switch /></Form.Item>
             <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty"><InputNumber min={1} max={6} /></Form.Item>
+            <Form.Item label={t('protection.altchaMaxNumber')} field="altchaMaxNumber"><InputNumber min={1000} max={50000000} /></Form.Item>
+            <Form.Item label={t('protection.altchaHeader')} field="altchaHeaderName"><Input /></Form.Item>
             <Form.Item label={t('protection.waitingRoom')} field="waitingRoom"><Switch /></Form.Item>
             <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive"><InputNumber min={1} max={1000000} /></Form.Item>
             <Form.Item label={t('protection.waitingRoomTtl')} field="waitingRoomTtl"><Input placeholder="5m" /></Form.Item>

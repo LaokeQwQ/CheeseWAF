@@ -2,13 +2,20 @@ package setup
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
 func TestEnsureDefaultsCreatesConfigAndCertificate(t *testing.T) {
@@ -108,5 +115,53 @@ func TestWizardSetupLock(t *testing.T) {
 	}
 	if wizard.NeedsSetup() {
 		t.Fatal("completed data dir should not need setup")
+	}
+}
+
+func TestWizardSetupHandlerCreatesAdminAndMarksComplete(t *testing.T) {
+	dataDir := t.TempDir()
+	wizard := NewWizard(dataDir)
+	wizard.AdminAPI = "127.0.0.1:9443"
+	bundle, err := wizard.PrepareDefaults()
+	if err != nil {
+		t.Fatalf("PrepareDefaults() error = %v", err)
+	}
+	done := make(chan struct{})
+	handler := wizard.setupHTTPHandler(bundle, done)
+	body := `{"username":"admin","password":"correct-horse-battery","admin_listen":"127.0.0.1:9444"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup returned %d: %s", rr.Code, rr.Body.String())
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("setup handler did not signal completion")
+	}
+	if wizard.NeedsSetup() {
+		t.Fatal("setup lock was not written")
+	}
+	store, err := storage.OpenSQLite(bundle.Paths.SQLiteFile)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+	users, err := store.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 1 || users[0].Username != "admin" {
+		t.Fatalf("unexpected users %+v", users)
+	}
+	cfg, err := config.Load(bundle.Paths.ConfigFile)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if cfg.Server.AdminListen != "127.0.0.1:9444" {
+		t.Fatalf("admin listener was not persisted: %q", cfg.Server.AdminListen)
 	}
 }

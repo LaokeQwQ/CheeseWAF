@@ -176,6 +176,8 @@ const zhCN = {
     jsChallenge: 'JS Challenge',
     captcha: 'CAPTCHA',
     challengeDifficulty: 'PoW 难度',
+    altchaMaxNumber: 'Altcha 最大枚举',
+    altchaHeader: 'Altcha 请求头',
     waitingRoom: '排队室',
     waitingRoomMaxActive: '最大活动席位',
     waitingRoomTtl: '排队票据有效期',

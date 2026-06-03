@@ -169,6 +169,8 @@ type BotProtectionConfig struct {
 	JSChallenge          bool          `yaml:"js_challenge" json:"js_challenge"`
 	CAPTCHA              bool          `yaml:"captcha" json:"captcha"`
 	ChallengeDifficulty  int           `yaml:"challenge_difficulty" json:"challenge_difficulty"`
+	AltchaMaxNumber      int           `yaml:"altcha_max_number" json:"altcha_max_number"`
+	AltchaHeaderName     string        `yaml:"altcha_header_name" json:"altcha_header_name"`
 	WaitingRoom          bool          `yaml:"waiting_room" json:"waiting_room"`
 	WaitingRoomMaxActive int           `yaml:"waiting_room_max_active" json:"waiting_room_max_active"`
 	WaitingRoomTTL       time.Duration `yaml:"waiting_room_ttl" json:"waiting_room_ttl"`

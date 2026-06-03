@@ -68,11 +68,25 @@ func (s *MultiSink) Write(ctx context.Context, entry *storage.LogEntry) error {
 }
 
 func (s *MultiSink) Query(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
+	var firstItems []storage.LogEntry
+	var firstTotal int64
+	var firstOK bool
 	for _, sink := range s.sinks {
 		items, total, err := sink.Query(ctx, filter)
-		if err == nil {
+		if err != nil {
+			continue
+		}
+		if !firstOK {
+			firstItems = items
+			firstTotal = total
+			firstOK = true
+		}
+		if total > 0 || len(items) > 0 {
 			return items, total, nil
 		}
+	}
+	if firstOK {
+		return firstItems, firstTotal, nil
 	}
 	return nil, 0, nil
 }

@@ -138,6 +138,8 @@ export type ProtectionConfig = {
     js_challenge: boolean;
     captcha: boolean;
     challenge_difficulty: number;
+    altcha_max_number: number;
+    altcha_header_name: string;
     waiting_room: boolean;
     waiting_room_max_active: number;
     waiting_room_ttl: number | string;

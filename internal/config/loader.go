@@ -92,6 +92,8 @@ func Default() Config {
 				JSChallenge:          true,
 				CAPTCHA:              false,
 				ChallengeDifficulty:  4,
+				AltchaMaxNumber:      75000,
+				AltchaHeaderName:     "X-CheeseWAF-Altcha",
 				WaitingRoom:          false,
 				WaitingRoomMaxActive: 1000,
 				WaitingRoomTTL:       5 * time.Minute,
@@ -350,6 +352,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Protection.Bot.ChallengeDifficulty == 0 {
 		cfg.Protection.Bot.ChallengeDifficulty = def.Protection.Bot.ChallengeDifficulty
+	}
+	if cfg.Protection.Bot.AltchaMaxNumber == 0 {
+		cfg.Protection.Bot.AltchaMaxNumber = def.Protection.Bot.AltchaMaxNumber
+	}
+	if cfg.Protection.Bot.AltchaHeaderName == "" {
+		cfg.Protection.Bot.AltchaHeaderName = def.Protection.Bot.AltchaHeaderName
 	}
 	if cfg.Protection.Bot.WaitingRoomMaxActive == 0 {
 		cfg.Protection.Bot.WaitingRoomMaxActive = def.Protection.Bot.WaitingRoomMaxActive

@@ -1,6 +1,8 @@
 package bot
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -80,6 +82,32 @@ func TestChallengeWritesClearanceScript(t *testing.T) {
 	}
 }
 
+func TestAltchaChallengeWritesHeadersAndWidgetScript(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:          true,
+		CAPTCHA:          true,
+		AltchaMaxNumber:  5000,
+		AltchaHeaderName: "X-CW-Altcha",
+		ChallengeTTL:     time.Minute,
+		CookieName:       "cw_clearance",
+		Secret:           "test-secret",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	rr := httptest.NewRecorder()
+
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	body := rr.Body.String()
+	if rr.Code != http.StatusForbidden || !strings.Contains(body, "cw_altcha") || !strings.Contains(body, "maxnumber") {
+		t.Fatalf("unexpected altcha response: status=%d body=%s", rr.Code, body)
+	}
+	if !strings.Contains(rr.Header().Get("WWW-Authenticate"), "Altcha challenge=") {
+		t.Fatalf("missing altcha authenticate header: %+v", rr.Header())
+	}
+	if rr.Header().Get("X-Altcha-Authorization-Header") != "X-CW-Altcha" {
+		t.Fatalf("unexpected altcha header hint %q", rr.Header().Get("X-Altcha-Authorization-Header"))
+	}
+}
+
 func TestChallengeValidatesProofAndSetsClearance(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{
 		Enabled:             true,
@@ -105,6 +133,64 @@ func TestChallengeValidatesProofAndSetsClearance(t *testing.T) {
 	}
 	if got := rr.Result().Cookies(); len(got) != 1 || got[0].Name != "cw_clearance" {
 		t.Fatalf("expected clearance cookie, got %+v", got)
+	}
+}
+
+func TestAltchaQueryPayloadSetsClearance(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:         true,
+		CAPTCHA:         true,
+		AltchaMaxNumber: 5000,
+		ChallengeTTL:    time.Minute,
+		CookieName:      "cw_clearance",
+		Secret:          "test-secret",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	challenge, err := policy.newAltchaChallenge(req, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("challenge: %v", err)
+	}
+	payload := solveAltchaPayload(t, challenge)
+	req = httptest.NewRequest(http.MethodGet, "/login?cw_altcha="+payload, nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	rr := httptest.NewRecorder()
+
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	if rr.Code != http.StatusFound {
+		t.Fatalf("expected redirect after valid altcha, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Result().Cookies(); len(got) != 1 || got[0].Name != "cw_clearance" {
+		t.Fatalf("expected clearance cookie, got %+v", got)
+	}
+}
+
+func TestAltchaHeaderPayloadBypassesChallenge(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:              true,
+		CAPTCHA:              true,
+		AltchaMaxNumber:      5000,
+		AltchaHeaderName:     "X-CW-Altcha",
+		SuspiciousUserAgents: []string{"curl"},
+		ChallengeTTL:         time.Minute,
+		CookieName:           "cw_clearance",
+		Secret:               "test-secret",
+		ExemptPathPrefixes:   []string{"/health"},
+		PathPrefixes:         []string{"/"},
+		WaitingRoomMaxActive: 1000,
+		WaitingRoomTTL:       time.Minute,
+		ChallengeDifficulty:  2,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/private", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	challenge, err := policy.newAltchaChallenge(req, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("challenge: %v", err)
+	}
+	req.Header.Set("X-CW-Altcha", solveAltchaPayload(t, challenge))
+
+	if result := policy.Evaluate(req, "203.0.113.10"); result != nil {
+		t.Fatalf("expected valid altcha header to bypass challenge, got %#v", result)
 	}
 }
 
@@ -161,5 +247,26 @@ func solveTestProof(nonce string, difficulty int) string {
 			return answer
 		}
 	}
+	return ""
+}
+
+func solveAltchaPayload(t *testing.T, challenge altchaChallenge) string {
+	t.Helper()
+	for i := 0; i <= challenge.MaxNumber; i++ {
+		if altchaHash(challenge.Salt, i) == challenge.Challenge {
+			payload, err := json.Marshal(altchaPayload{
+				Algorithm: challenge.Algorithm,
+				Challenge: challenge.Challenge,
+				Number:    i,
+				Salt:      challenge.Salt,
+				Signature: challenge.Signature,
+			})
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+			return base64.StdEncoding.EncodeToString(payload)
+		}
+	}
+	t.Fatalf("failed to solve altcha challenge %+v", challenge)
 	return ""
 }

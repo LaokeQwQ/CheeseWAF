@@ -176,6 +176,8 @@ const enUS = {
     jsChallenge: 'JS Challenge',
     captcha: 'CAPTCHA',
     challengeDifficulty: 'PoW Difficulty',
+    altchaMaxNumber: 'Altcha Max Number',
+    altchaHeader: 'Altcha Header',
     waitingRoom: 'Waiting Room',
     waitingRoomMaxActive: 'Max Active Slots',
     waitingRoomTtl: 'Ticket TTL',

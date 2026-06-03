@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -26,6 +28,8 @@ type Policy struct {
 	jsChallenge          bool
 	captcha              bool
 	challengeDifficulty  int
+	altchaMaxNumber      int
+	altchaHeaderName     string
 	waitingRoom          bool
 	waitingRoomMaxActive int
 	waitingRoomTTL       time.Duration
@@ -55,6 +59,12 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 	if cfg.ChallengeDifficulty > 6 {
 		cfg.ChallengeDifficulty = 6
 	}
+	if cfg.AltchaMaxNumber <= 0 {
+		cfg.AltchaMaxNumber = altchaMaxNumberForDifficulty(cfg.ChallengeDifficulty)
+	}
+	if cfg.AltchaHeaderName == "" {
+		cfg.AltchaHeaderName = "X-CheeseWAF-Altcha"
+	}
 	if cfg.WaitingRoomMaxActive <= 0 {
 		cfg.WaitingRoomMaxActive = 1000
 	}
@@ -78,6 +88,8 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 		jsChallenge:          cfg.JSChallenge,
 		captcha:              cfg.CAPTCHA,
 		challengeDifficulty:  cfg.ChallengeDifficulty,
+		altchaMaxNumber:      cfg.AltchaMaxNumber,
+		altchaHeaderName:     cfg.AltchaHeaderName,
 		waitingRoom:          cfg.WaitingRoom,
 		waitingRoomMaxActive: cfg.WaitingRoomMaxActive,
 		waitingRoomTTL:       cfg.WaitingRoomTTL,
@@ -110,7 +122,7 @@ func (p *Policy) Evaluate(r *http.Request, clientIP string) *engine.DetectionRes
 			Payload:    r.URL.Path,
 		}
 	}
-	if p.allowed(r.UserAgent()) || p.hasClearance(r, clientIP) {
+	if p.allowed(r.UserAgent()) || p.hasClearance(r, clientIP) || p.validAltchaHeaderAnswer(r, clientIP) {
 		return nil
 	}
 	if !p.suspicious(r) {
@@ -155,6 +167,18 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 		http.Redirect(w, r, cleanChallengeURL(r), http.StatusFound)
 		return
 	}
+	var altcha *altchaChallenge
+	if p.captcha {
+		challenge, err := p.newAltchaChallenge(r, clientIP)
+		if err != nil {
+			http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
+			return
+		}
+		altcha = &challenge
+		challengeJSON, _ := json.Marshal(challenge)
+		w.Header().Set("WWW-Authenticate", "Altcha challenge="+string(challengeJSON))
+		w.Header().Set("X-Altcha-Authorization-Header", p.altchaHeaderName)
+	}
 	nonce, err := randomToken(18)
 	if err != nil {
 		http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
@@ -171,6 +195,14 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 		Expires:     expires,
 		Signature:   p.signChallenge(r, clientIP, nonce, expires),
 		Difficulty:  p.challengeDifficulty,
+		UseAltcha:   altcha != nil,
+	}
+	if altcha != nil {
+		data.AltchaAlgorithm = altcha.Algorithm
+		data.AltchaChallenge = altcha.Challenge
+		data.AltchaMaxNumber = altcha.MaxNumber
+		data.AltchaSalt = altcha.Salt
+		data.AltchaSignature = altcha.Signature
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -310,7 +342,53 @@ func (p *Policy) signChallenge(r *http.Request, clientIP, nonce string, expires 
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+func (p *Policy) newAltchaChallenge(r *http.Request, clientIP string) (altchaChallenge, error) {
+	maxNumber := p.altchaMaxNumber
+	if maxNumber <= 0 {
+		maxNumber = altchaMaxNumberForDifficulty(p.challengeDifficulty)
+	}
+	number, err := randomNumber(maxNumber)
+	if err != nil {
+		return altchaChallenge{}, err
+	}
+	nonce, err := randomToken(18)
+	if err != nil {
+		return altchaChallenge{}, err
+	}
+	salt := fmt.Sprintf("%s:%d", nonce, p.now().Add(2*time.Minute).Unix())
+	challenge := altchaHash(salt, number)
+	out := altchaChallenge{
+		Algorithm: "SHA-256",
+		Challenge: challenge,
+		MaxNumber: maxNumber,
+		Salt:      salt,
+	}
+	out.Signature = p.signAltcha(r, clientIP, out)
+	return out, nil
+}
+
+func (p *Policy) signAltcha(r *http.Request, clientIP string, challenge altchaChallenge) string {
+	mac := hmac.New(sha256.New, p.secret)
+	_, _ = mac.Write([]byte("altcha-challenge"))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(clientIP))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(r.UserAgent()))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(r.URL.Path))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(challenge.Algorithm))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(challenge.Challenge))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(challenge.Salt))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
 func (p *Policy) validChallengeAnswer(r *http.Request, clientIP string) bool {
+	if p.validAltchaQueryAnswer(r, clientIP) {
+		return true
+	}
 	query := r.URL.Query()
 	nonce := query.Get("cw_nonce")
 	rawExpires := query.Get("cw_expires")
@@ -328,6 +406,95 @@ func (p *Policy) validChallengeAnswer(r *http.Request, clientIP string) bool {
 		return false
 	}
 	return validProof(nonce, answer, p.challengeDifficulty)
+}
+
+func (p *Policy) validAltchaHeaderAnswer(r *http.Request, clientIP string) bool {
+	if p == nil || r == nil || !p.captcha {
+		return false
+	}
+	return p.validAltchaPayload(r, clientIP, altchaPayloadFromHeaders(r, p.altchaHeaderName))
+}
+
+func (p *Policy) validAltchaQueryAnswer(r *http.Request, clientIP string) bool {
+	if p == nil || r == nil || !p.captcha {
+		return false
+	}
+	return p.validAltchaPayload(r, clientIP, r.URL.Query().Get("cw_altcha"))
+}
+
+func (p *Policy) validAltchaPayload(r *http.Request, clientIP, raw string) bool {
+	payload, ok := parseAltchaPayload(raw)
+	if !ok {
+		return false
+	}
+	if !strings.EqualFold(payload.Algorithm, "SHA-256") || payload.Challenge == "" || payload.Salt == "" || payload.Signature == "" {
+		return false
+	}
+	if payload.Number < 0 {
+		return false
+	}
+	if maxNumber := p.altchaMaxNumber; maxNumber > 0 && payload.Number > maxNumber {
+		return false
+	}
+	expires, ok := altchaSaltExpires(payload.Salt)
+	if !ok || expires <= p.now().Unix() {
+		return false
+	}
+	challenge := altchaChallenge{
+		Algorithm: payload.Algorithm,
+		Challenge: payload.Challenge,
+		Salt:      payload.Salt,
+	}
+	want := p.signAltcha(r, clientIP, challenge)
+	if !hmac.Equal([]byte(want), []byte(payload.Signature)) {
+		return false
+	}
+	return hmac.Equal([]byte(altchaHash(payload.Salt, payload.Number)), []byte(payload.Challenge))
+}
+
+func altchaPayloadFromHeaders(r *http.Request, headerName string) string {
+	if r == nil {
+		return ""
+	}
+	if headerName != "" {
+		if value := strings.TrimSpace(r.Header.Get(headerName)); value != "" {
+			return value
+		}
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(auth), "altcha ") {
+		return strings.TrimSpace(auth[7:])
+	}
+	return ""
+}
+
+func parseAltchaPayload(raw string) (altchaPayload, bool) {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "challenge=")
+	raw = strings.Trim(raw, `"`)
+	if raw == "" {
+		return altchaPayload{}, false
+	}
+	var data []byte
+	if strings.HasPrefix(raw, "{") {
+		data = []byte(raw)
+	} else {
+		for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+			decoded, err := encoding.DecodeString(raw)
+			if err == nil {
+				data = decoded
+				break
+			}
+		}
+	}
+	if len(data) == 0 {
+		return altchaPayload{}, false
+	}
+	var payload altchaPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return altchaPayload{}, false
+	}
+	return payload, true
 }
 
 func (p *Policy) applies(path string) bool {
@@ -393,14 +560,20 @@ func lowerList(items []string) []string {
 }
 
 type challengeData struct {
-	CookieName  string
-	CookieValue string
-	MaxAge      int
-	ReturnURL   string
-	Nonce       string
-	Expires     int64
-	Signature   string
-	Difficulty  int
+	CookieName      string
+	CookieValue     string
+	MaxAge          int
+	ReturnURL       string
+	Nonce           string
+	Expires         int64
+	Signature       string
+	Difficulty      int
+	UseAltcha       bool
+	AltchaAlgorithm string
+	AltchaChallenge string
+	AltchaMaxNumber int
+	AltchaSalt      string
+	AltchaSignature string
 }
 
 type waitingData struct {
@@ -414,6 +587,22 @@ type waitingData struct {
 	RetryAfter  int
 }
 
+type altchaChallenge struct {
+	Algorithm string `json:"algorithm"`
+	Challenge string `json:"challenge"`
+	MaxNumber int    `json:"maxnumber"`
+	Salt      string `json:"salt"`
+	Signature string `json:"signature"`
+}
+
+type altchaPayload struct {
+	Algorithm string `json:"algorithm"`
+	Challenge string `json:"challenge"`
+	Number    int    `json:"number"`
+	Salt      string `json:"salt"`
+	Signature string `json:"signature"`
+}
+
 func waitingKey(clientIP, userAgent string) string {
 	return clientIP + "\x00" + userAgent
 }
@@ -424,6 +613,17 @@ func randomToken(size int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func randomNumber(max int) (int, error) {
+	if max <= 0 {
+		max = 1
+	}
+	value, err := rand.Int(rand.Reader, big.NewInt(int64(max+1)))
+	if err != nil {
+		return 0, err
+	}
+	return int(value.Int64()), nil
 }
 
 func validProof(nonce, answer string, difficulty int) bool {
@@ -442,13 +642,44 @@ func validProof(nonce, answer string, difficulty int) bool {
 	return strings.HasPrefix(hex.EncodeToString(sum[:]), strings.Repeat("0", difficulty))
 }
 
+func altchaHash(salt string, number int) string {
+	sum := sha256.Sum256([]byte(salt + strconv.Itoa(number)))
+	return hex.EncodeToString(sum[:])
+}
+
+func altchaSaltExpires(salt string) (int64, bool) {
+	idx := strings.LastIndexByte(salt, ':')
+	if idx < 0 || idx == len(salt)-1 {
+		return 0, false
+	}
+	expires, err := strconv.ParseInt(salt[idx+1:], 10, 64)
+	return expires, err == nil
+}
+
+func altchaMaxNumberForDifficulty(difficulty int) int {
+	switch {
+	case difficulty <= 1:
+		return 1000
+	case difficulty == 2:
+		return 5000
+	case difficulty == 3:
+		return 25000
+	case difficulty == 4:
+		return 75000
+	case difficulty == 5:
+		return 250000
+	default:
+		return 1000000
+	}
+}
+
 func cleanChallengeURL(r *http.Request) string {
 	if r == nil || r.URL == nil {
 		return "/"
 	}
 	next := *r.URL
 	query := next.Query()
-	for _, key := range []string{"cw_nonce", "cw_expires", "cw_sig", "cw_pow"} {
+	for _, key := range []string{"cw_nonce", "cw_expires", "cw_sig", "cw_pow", "cw_altcha"} {
 		query.Del(key)
 	}
 	next.RawQuery = query.Encode()
@@ -475,11 +706,54 @@ var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doc
 <body>
   <main>
     <h1>Browser verification</h1>
-    <p>CheeseWAF is checking that this request comes from a browser. This page solves a short proof-of-work challenge and reloads automatically.</p>
+    {{if .UseAltcha}}
+      <p>CheeseWAF is running an Altcha-compatible proof-of-work CAPTCHA for this protected request. Verification runs locally in your browser.</p>
+    {{else}}
+      <p>CheeseWAF is checking that this request comes from a browser. This page solves a short proof-of-work challenge and reloads automatically.</p>
+    {{end}}
     <div class="bar"><span></span></div>
     <noscript>JavaScript is required to pass this challenge.</noscript>
   </main>
   <script>
+    {{if .UseAltcha}}
+    const challenge = {
+      algorithm: "{{.AltchaAlgorithm}}",
+      challenge: "{{.AltchaChallenge}}",
+      maxnumber: {{.AltchaMaxNumber}},
+      salt: "{{.AltchaSalt}}",
+      signature: "{{.AltchaSignature}}"
+    };
+    async function sha256Hex(input) {
+      const data = new TextEncoder().encode(input);
+      const digest = await crypto.subtle.digest("SHA-256", data);
+      return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+    async function solve() {
+      for (let i = 0; i <= challenge.maxnumber; i++) {
+        const hash = await sha256Hex(challenge.salt + String(i));
+        if (hash === challenge.challenge) {
+          const payload = btoa(JSON.stringify({
+            algorithm: challenge.algorithm,
+            challenge: challenge.challenge,
+            number: i,
+            salt: challenge.salt,
+            signature: challenge.signature
+          }));
+          const target = new URL(window.location.href);
+          target.searchParams.set("cw_altcha", payload);
+          window.location.replace(target.toString());
+          return;
+        }
+        if (i > 0 && i % 500 === 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
+      }
+      window.setTimeout(function(){ window.location.reload(); }, 1000);
+    }
+    if (window.crypto && window.crypto.subtle) {
+      solve();
+    }
+    {{else}}
     const nonce = "{{.Nonce}}";
     const expires = "{{.Expires}}";
     const signature = "{{.Signature}}";
@@ -508,6 +782,7 @@ var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doc
     if (window.crypto && window.crypto.subtle) {
       solve();
     }
+    {{end}}
   </script>
 </body>
 </html>`))
