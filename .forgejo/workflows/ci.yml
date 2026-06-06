@@ -58,12 +58,11 @@ jobs:
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v4
-      - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Setup Go from mirror
+        shell: bash
+        run: bash scripts/ci/setup-go-mirror.sh
       - name: Verify go.mod and go.sum
+        shell: bash
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
@@ -74,12 +73,11 @@ jobs:
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v4
-      - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Setup Go from mirror
+        shell: bash
+        run: bash scripts/ci/setup-go-mirror.sh
       - name: Test
+        shell: bash
         run: go test -race -count=1 ./cmd/... ./internal/...
 
   web-build:
@@ -88,17 +86,16 @@ jobs:
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v4
-      - name: Setup Node
-        uses: https://data.forgejo.org/actions/setup-node@v4
-        with:
-          node-version: 25
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - name: Setup Node from mirror
+        shell: bash
+        run: bash scripts/ci/setup-node-mirror.sh
       - name: Install dependencies
         working-directory: web
+        shell: bash
         run: npm ci
       - name: Build dashboard
         working-directory: web
+        shell: bash
         run: npm run build
 
   cross-build:
@@ -107,11 +104,9 @@ jobs:
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v4
-      - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Setup Go from mirror
+        shell: bash
+        run: bash scripts/ci/setup-go-mirror.sh
       - name: Build all release targets
         shell: bash
         env:

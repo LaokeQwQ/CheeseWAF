@@ -15,7 +15,7 @@ The repository currently includes:
 - AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots.
 - First-run setup wizard for local HTTPS bootstrap, admin creation, SQLite migration, default config/certificate generation, and setup completion locking.
 - Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch.
-- Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, and cross-platform builds.
+- Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, and cross-platform builds. Forgejo uses local/mirrored Go and Node toolchain bootstrap scripts to avoid self-hosted runner timeouts against GitHub tool-cache downloads.
 
 Runtime Bot challenge secrets are generated per install. If an old config still
 contains an empty value or `change-me-in-production`, CheeseWAF rotates it at
@@ -42,7 +42,9 @@ As of 2026-06-06, the active development line is `fix/admin-ui-dashboard-map`
 with PR #8 targeting `dev`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
 primary forge/build target; GitHub remains a secondary mirror/check. `master`
 and `canary` intentionally remain behind `dev` until the upward promotion flow
-is completed.
+is completed. The Forgejo workflow is present under `.forgejo/workflows/ci.yml`
+and uses `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh`
+for self-hosted runner-friendly toolchain setup.
 
 ## Pre-Release Gaps
 
