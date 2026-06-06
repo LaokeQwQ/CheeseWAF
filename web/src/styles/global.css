@@ -584,6 +584,15 @@ code {
   overflow: auto;
 }
 
+.attack-map-table .arco-table {
+  min-width: 820px;
+}
+
+.attack-map-table .arco-table-th,
+.attack-map-table .arco-table-td {
+  white-space: nowrap;
+}
+
 .table-identity,
 .tag-stack {
   display: inline-flex;
@@ -1078,6 +1087,14 @@ code {
   touch-action: manipulation;
 }
 
+.map-can-pan {
+  cursor: grab;
+}
+
+.map-panning {
+  cursor: grabbing;
+}
+
 .flat-map-stage,
 .globe-stage {
   position: absolute;
@@ -1087,9 +1104,10 @@ code {
 }
 
 .flat-map-stage {
-  transform: scale(var(--map-zoom, 1));
+  transform: translate3d(var(--map-pan-x, 0), var(--map-pan-y, 0), 0) scale(var(--map-zoom, 1));
   transform-origin: center;
-  transition: transform 160ms ease;
+  transition: transform 120ms ease;
+  will-change: transform;
 }
 
 .world-map-svg {
@@ -1098,7 +1116,8 @@ code {
   filter: drop-shadow(0 20px 30px color-mix(in srgb, var(--text) 10%, transparent));
 }
 
-.map-graticule line {
+.map-graticule {
+  fill: none;
   stroke: color-mix(in srgb, var(--accent-strong) 16%, transparent);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
@@ -1109,9 +1128,34 @@ code {
   stroke: color-mix(in srgb, var(--accent-strong) 44%, var(--border));
   stroke-width: 2.4;
   vector-effect: non-scaling-stroke;
+  transition:
+    fill 160ms ease,
+    stroke 160ms ease,
+    opacity 160ms ease;
+}
+
+.map-land path.map-risk-low {
+  fill: color-mix(in srgb, var(--accent-info) 24%, var(--surface-soft));
+  stroke: color-mix(in srgb, var(--accent-info) 52%, var(--border));
+}
+
+.map-land path.map-risk-medium {
+  fill: color-mix(in srgb, var(--accent-warning) 28%, var(--surface-soft));
+  stroke: color-mix(in srgb, var(--accent-warning) 58%, var(--border));
+}
+
+.map-land path.map-risk-high {
+  fill: color-mix(in srgb, #f97316 34%, var(--surface-soft));
+  stroke: color-mix(in srgb, #f97316 64%, var(--border));
+}
+
+.map-land path.map-risk-critical {
+  fill: color-mix(in srgb, var(--accent-danger) 36%, var(--surface-soft));
+  stroke: color-mix(in srgb, var(--accent-danger) 68%, var(--border));
 }
 
 .globe-stage {
+  position: absolute;
   cursor: grab;
   touch-action: none;
 }
@@ -1119,6 +1163,30 @@ code {
 .globe-stage canvas {
   width: 100% !important;
   height: 100% !important;
+}
+
+.globe-tooltip {
+  position: absolute;
+  z-index: 4;
+  max-width: min(280px, 64vw);
+  padding: 8px 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  backdrop-filter: blur(10px);
+}
+
+.globe-tooltip-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .map-legend,
@@ -1148,6 +1216,56 @@ code {
   font-size: 12px;
 }
 
+.map-risk-legend {
+  position: absolute;
+  z-index: 2;
+  left: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100% - 36px);
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+}
+
+.map-risk-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.map-risk-dot::before {
+  width: 10px;
+  height: 10px;
+  content: "";
+  border-radius: 999px;
+  background: var(--risk-color, var(--accent-info));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--risk-color, var(--accent-info)) 14%, transparent);
+}
+
+.map-risk-low {
+  --risk-color: var(--accent-info);
+}
+
+.map-risk-medium {
+  --risk-color: var(--accent-warning);
+}
+
+.map-risk-high {
+  --risk-color: #f97316;
+}
+
+.map-risk-critical {
+  --risk-color: var(--accent-danger);
+}
+
 .map-empty {
   left: 50%;
   top: 50%;
@@ -1165,15 +1283,62 @@ code {
   font-size: 12px;
   font-weight: 700;
   text-shadow: 0 1px 8px var(--surface);
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: default;
+  filter: drop-shadow(0 8px 18px color-mix(in srgb, var(--risk-color, var(--accent-info)) 22%, transparent));
+}
+
+.map-marker > span {
+  display: inline-grid;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--risk-color, var(--accent-info)) 38%, var(--border));
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+}
+
+.map-marker em {
+  min-width: 22px;
+  padding: 1px 5px;
+  color: #ffffff;
+  background: var(--risk-color, var(--accent-info));
+  border-radius: 999px;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.map-marker small {
+  display: none;
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .map-marker i {
   width: var(--marker-size, 13px);
   height: var(--marker-size, 13px);
   border-radius: 999px;
-  background: var(--accent-danger);
-  box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent-danger) 18%, transparent);
+  background: var(--risk-color, var(--accent-info));
+  box-shadow: 0 0 0 8px color-mix(in srgb, var(--risk-color, var(--accent-info)) 18%, transparent);
+}
+
+.map-marker-detailed > span {
+  grid-auto-flow: row;
+  align-items: start;
+  min-width: 128px;
+}
+
+.map-marker-detailed em {
+  justify-self: start;
+}
+
+.map-marker-detailed small {
+  display: block;
 }
 
 .continent-badge {
@@ -1193,7 +1358,7 @@ code {
 }
 
 .continent-badge em {
-  color: var(--accent-danger);
+  color: var(--risk-color, var(--accent-danger));
   font-size: 22px;
   font-style: normal;
   font-weight: 800;

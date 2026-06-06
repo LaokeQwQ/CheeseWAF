@@ -1,10 +1,9 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import type { ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { pageVariants } from '../animations/variants';
 import MainLayout from '../layouts/MainLayout';
 import AIPage from '../pages/AI/AIPage';
-import AttackMapPage from '../pages/AttackMap/AttackMapPage';
 import APISecurityPage from '../pages/APISecurity/APISecurityPage';
 import BlockPagesPage from '../pages/BlockPages/BlockPagesPage';
 import DashboardPage from '../pages/Dashboard/DashboardPage';
@@ -23,6 +22,8 @@ import SystemPage from '../pages/System/SystemPage';
 import UsersPage from '../pages/Users/UsersPage';
 import UpdatesPage from '../pages/Updates/UpdatesPage';
 
+const AttackMapPage = lazy(() => import('../pages/AttackMap/AttackMapPage'));
+
 function Page({ children }: { children: ReactNode }) {
   return (
     <motion.div
@@ -35,6 +36,10 @@ function Page({ children }: { children: ReactNode }) {
       {children}
     </motion.div>
   );
+}
+
+function LazyPage({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<div className="page-spinner">Loading</div>}>{children}</Suspense>;
 }
 
 function ProtectedLayout() {
@@ -70,7 +75,7 @@ export default function AppRoutes() {
           <Route path="ops" element={<Page><OperationsPage /></Page>} />
           <Route path="updates" element={<Page><UpdatesPage /></Page>} />
           <Route path="block-pages" element={<Page><BlockPagesPage /></Page>} />
-          <Route path="attack-map" element={<Page><AttackMapPage /></Page>} />
+          <Route path="attack-map" element={<Page><LazyPage><AttackMapPage /></LazyPage></Page>} />
           <Route path="system" element={<Page><SystemPage /></Page>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

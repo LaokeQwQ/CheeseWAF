@@ -37,26 +37,34 @@ const actionKeys: Record<string, string> = {
 };
 
 const countryKeys: Record<string, string> = {
+  AR: 'geo.countries.AR',
   AU: 'geo.countries.AU',
   BR: 'geo.countries.BR',
   CA: 'geo.countries.CA',
   CN: 'geo.countries.CN',
   DE: 'geo.countries.DE',
+  ES: 'geo.countries.ES',
   FR: 'geo.countries.FR',
   GB: 'geo.countries.GB',
   HK: 'geo.countries.HK',
   ID: 'geo.countries.ID',
   IN: 'geo.countries.IN',
+  IT: 'geo.countries.IT',
   JP: 'geo.countries.JP',
   KR: 'geo.countries.KR',
+  MX: 'geo.countries.MX',
   LOCAL: 'geo.local',
   NL: 'geo.countries.NL',
+  PL: 'geo.countries.PL',
   RU: 'geo.countries.RU',
+  SE: 'geo.countries.SE',
   SG: 'geo.countries.SG',
   TH: 'geo.countries.TH',
+  TR: 'geo.countries.TR',
   UNLOCATED: 'geo.unlocated',
   US: 'geo.countries.US',
   VN: 'geo.countries.VN',
+  ZA: 'geo.countries.ZA',
 };
 
 const continentKeys: Record<string, string> = {
