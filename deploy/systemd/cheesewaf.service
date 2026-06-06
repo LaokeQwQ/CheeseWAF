@@ -15,7 +15,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/cheesewaf /var/log/cheesewaf
+ReadWritePaths=/etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 LimitNOFILE=1048576
 
 [Install]

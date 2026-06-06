@@ -40,3 +40,6 @@
 - Docker: `deploy/docker/Dockerfile`
 - Compose: `deploy/docker/docker-compose.yml`
 - systemd: `deploy/systemd/cheesewaf.service`
+- The systemd unit keeps `ProtectSystem=full`, but allows writes to
+  `/etc/cheesewaf`, `/var/lib/cheesewaf`, and `/var/log/cheesewaf` so runtime
+  secret repair, config persistence, certs, SQLite, and logs keep working.
