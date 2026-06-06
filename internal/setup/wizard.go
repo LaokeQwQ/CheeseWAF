@@ -135,9 +135,11 @@ func (w *Wizard) RunWebWizard(ctx context.Context) error {
 }
 
 type setupPayload struct {
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	AdminListen string `json:"admin_listen"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	AdminListen   string `json:"admin_listen"`
+	AdminStrategy string `json:"admin_strategy"`
+	AdminPublic   bool   `json:"admin_public"`
 }
 
 func (w *Wizard) setupHTTPHandler(bundle *DefaultBundle, done chan struct{}) http.Handler {
@@ -222,6 +224,7 @@ var (
 func (w *Wizard) completeSetup(ctx context.Context, bundle *DefaultBundle, payload setupPayload) error {
 	payload.Username = strings.TrimSpace(payload.Username)
 	payload.AdminListen = strings.TrimSpace(payload.AdminListen)
+	payload.AdminStrategy = strings.TrimSpace(payload.AdminStrategy)
 	if payload.Username == "" || len(payload.Username) < 3 {
 		return fmt.Errorf("%w: username must contain at least 3 characters", errSetupValidation)
 	}
@@ -230,6 +233,9 @@ func (w *Wizard) completeSetup(ctx context.Context, bundle *DefaultBundle, paylo
 	}
 	if payload.AdminListen == "" {
 		payload.AdminListen = w.adminAPI()
+	}
+	if payload.AdminStrategy == "public_tls" {
+		payload.AdminPublic = true
 	}
 
 	store, err := storage.OpenSQLite(bundle.Paths.SQLiteFile)
@@ -247,7 +253,7 @@ func (w *Wizard) completeSetup(ctx context.Context, bundle *DefaultBundle, paylo
 	if len(users) > 0 {
 		return errSetupAlreadyComplete
 	}
-	if err := w.updateBootstrapConfig(bundle, payload.AdminListen); err != nil {
+	if err := w.updateBootstrapConfig(bundle, payload); err != nil {
 		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
@@ -264,17 +270,27 @@ func (w *Wizard) completeSetup(ctx context.Context, bundle *DefaultBundle, paylo
 	return w.MarkComplete()
 }
 
-func (w *Wizard) updateBootstrapConfig(bundle *DefaultBundle, adminListen string) error {
+func (w *Wizard) updateBootstrapConfig(bundle *DefaultBundle, payload setupPayload) error {
 	cfg, err := config.Load(bundle.Paths.ConfigFile)
 	if err != nil {
 		return err
 	}
-	cfg.Server.AdminListen = adminListen
+	cfg.Server.AdminListen = payload.AdminListen
+	cfg.Server.AdminPublic = payload.AdminPublic
+	cfg.Server.AdminTLS = config.AdminTLSConfig{
+		Enabled:    payload.AdminPublic,
+		CertFile:   bundle.Paths.CertFile,
+		KeyFile:    bundle.Paths.KeyFile,
+		SelfSigned: payload.AdminPublic,
+	}
 	cfg.Setup.DataDir = bundle.Paths.DataDir
 	cfg.Setup.RuntimeDir = bundle.Paths.RuntimeDir
 	cfg.Storage.SQLite.Path = bundle.Paths.SQLiteFile
 	cfg.TLS.CertFile = bundle.Paths.CertFile
 	cfg.TLS.KeyFile = bundle.Paths.KeyFile
+	if _, err := config.EnsureRuntimeSecrets(cfg); err != nil {
+		return err
+	}
 	return config.Save(bundle.Paths.ConfigFile, cfg)
 }
 
@@ -296,6 +312,8 @@ func readSetupPayload(req *http.Request) (setupPayload, error) {
 	if payload.AdminListen == "" {
 		payload.AdminListen = req.Form.Get("adminListen")
 	}
+	payload.AdminStrategy = req.Form.Get("admin_strategy")
+	payload.AdminPublic = req.Form.Get("admin_public") == "true" || req.Form.Get("admin_public") == "on"
 	return payload, nil
 }
 
@@ -344,7 +362,7 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
     main{width:min(560px,calc(100% - 32px));background:#fff;border:1px solid #dbe3ef;border-radius:8px;padding:28px;box-shadow:0 24px 70px rgba(15,23,42,.14)}
     h1{margin:0 0 8px;font-size:24px}p{margin:0 0 20px;color:#475569;line-height:1.6}
     label{display:grid;gap:6px;margin:0 0 14px;font-size:14px;color:#334155}
-    input{height:38px;border:1px solid #cbd5e1;border-radius:6px;padding:0 10px;font:inherit}
+    input,select{height:38px;border:1px solid #cbd5e1;border-radius:6px;padding:0 10px;font:inherit;background:#fff}
     button{height:40px;border:0;border-radius:6px;background:#0f766e;color:white;font-weight:700;padding:0 16px;cursor:pointer}
     code{display:block;background:#f1f5f9;border-radius:6px;padding:8px;margin:10px 0;color:#334155;overflow:auto}
     .error{color:#b91c1c}.ok{color:#047857}
@@ -360,6 +378,12 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       <label>Username<input name="username" autocomplete="username" required minlength="3" value="admin"></label>
       <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="10"></label>
       <label>Admin listener<input name="admin_listen" required value="{{.AdminListen}}"></label>
+      <label>Admin access strategy
+        <select name="admin_strategy">
+          <option value="local">Local listener, reverse proxy, jump host, or SSH tunnel</option>
+          <option value="public_tls">Public HTTPS with generated self-signed certificate</option>
+        </select>
+      </label>
       <button type="submit">Complete setup</button>
     </form>
   </main>

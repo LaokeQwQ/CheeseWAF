@@ -48,6 +48,12 @@ func TestEnsureDefaultsCreatesConfigAndCertificate(t *testing.T) {
 	if !bytes.Contains(config, []byte("three_end_unified: true")) {
 		t.Fatalf("default config should keep the three-end unified flag")
 	}
+	if bytes.Contains(config, []byte("change-me-in-production")) {
+		t.Fatalf("default config must not write the placeholder bot secret")
+	}
+	if !bytes.Contains(config, []byte("admin_public: false")) {
+		t.Fatalf("default config should keep admin public access disabled")
+	}
 }
 
 func TestEnsureDefaultsDoesNotOverwriteExistingConfig(t *testing.T) {
@@ -163,5 +169,30 @@ func TestWizardSetupHandlerCreatesAdminAndMarksComplete(t *testing.T) {
 	}
 	if cfg.Server.AdminListen != "127.0.0.1:9444" {
 		t.Fatalf("admin listener was not persisted: %q", cfg.Server.AdminListen)
+	}
+}
+
+func TestWizardSetupCanEnablePublicAdminTLS(t *testing.T) {
+	dataDir := t.TempDir()
+	wizard := NewWizard(dataDir)
+	bundle, err := wizard.PrepareDefaults()
+	if err != nil {
+		t.Fatalf("PrepareDefaults() error = %v", err)
+	}
+	payload := setupPayload{
+		Username:      "admin",
+		Password:      "correct-horse-battery",
+		AdminListen:   "0.0.0.0:9443",
+		AdminStrategy: "public_tls",
+	}
+	if err := wizard.completeSetup(context.Background(), bundle, payload); err != nil {
+		t.Fatalf("completeSetup() error = %v", err)
+	}
+	cfg, err := config.Load(bundle.Paths.ConfigFile)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if !cfg.Server.AdminPublic || !cfg.Server.AdminTLS.Enabled {
+		t.Fatalf("public admin TLS was not persisted: %+v", cfg.Server)
 	}
 }

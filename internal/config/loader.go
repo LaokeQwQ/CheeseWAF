@@ -18,6 +18,8 @@ func Default() Config {
 			ListenTLS:    "",
 			ListenHTTP3:  "",
 			AdminListen:  "127.0.0.1:9443",
+			AdminPublic:  false,
+			AdminTLS:     AdminTLSConfig{Enabled: false, SelfSigned: true},
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 30 * time.Second,
 			IdleTimeout:  60 * time.Second,
@@ -52,6 +54,7 @@ func Default() Config {
 						XXE:  true,
 						SSRF: true,
 					},
+					ProtectionPolicy: ProtectionPolicyConfig{},
 					Performance: PerformanceTuningConfig{
 						MaxBodyBytes:   8 << 20,
 						MaxHeaderBytes: 1 << 20,
@@ -78,6 +81,7 @@ func Default() Config {
 			},
 		},
 		Protection: ProtectionConfig{
+			Policy: DefaultProtectionPolicy(),
 			IP: IPProtectionConfig{
 				Whitelist: []string{"127.0.0.1", "::1"},
 				Blacklist: []string{},
@@ -99,7 +103,7 @@ func Default() Config {
 				WaitingRoomTTL:       5 * time.Minute,
 				ChallengeTTL:         30 * time.Minute,
 				CookieName:           "cheesewaf_js_clearance",
-				Secret:               "change-me-in-production",
+				Secret:               "",
 				PathPrefixes:         []string{"/"},
 				ExemptPathPrefixes:   []string{"/health", "/api/"},
 				SuspiciousUserAgents: []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
@@ -266,6 +270,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.AdminListen == "" {
 		cfg.Server.AdminListen = def.Server.AdminListen
 	}
+	if cfg.Server.AdminTLS.SelfSigned == false && cfg.Server.AdminTLS.CertFile == "" && cfg.Server.AdminTLS.KeyFile == "" && !cfg.Server.AdminTLS.Enabled {
+		cfg.Server.AdminTLS.SelfSigned = def.Server.AdminTLS.SelfSigned
+	}
 	if cfg.Server.ReadTimeout == 0 {
 		cfg.Server.ReadTimeout = def.Server.ReadTimeout
 	}
@@ -347,6 +354,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.Protection.IP.Tags == nil {
 		cfg.Protection.IP.Tags = map[string][]string{}
 	}
+	cfg.Protection.Policy = cfg.Protection.Policy.WithDefaults(DefaultProtectionPolicy())
 	if cfg.Protection.Bot.ChallengeTTL == 0 {
 		cfg.Protection.Bot.ChallengeTTL = def.Protection.Bot.ChallengeTTL
 	}
@@ -367,9 +375,6 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Protection.Bot.CookieName == "" {
 		cfg.Protection.Bot.CookieName = def.Protection.Bot.CookieName
-	}
-	if cfg.Protection.Bot.Secret == "" {
-		cfg.Protection.Bot.Secret = def.Protection.Bot.Secret
 	}
 	if len(cfg.Protection.Bot.PathPrefixes) == 0 {
 		cfg.Protection.Bot.PathPrefixes = def.Protection.Bot.PathPrefixes

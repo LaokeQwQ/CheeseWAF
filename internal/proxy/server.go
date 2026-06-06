@@ -111,6 +111,7 @@ func (s *Server) HTTPServer() *http.Server {
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	site := s.lb.SiteForHost(r.Host)
+	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
 	reqCtx, err := engine.NewRequestContext(r, site.ID)
 	if err != nil {
 		http.Error(w, "failed to read request", http.StatusBadRequest)
@@ -129,19 +130,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
 		return
 	}
-	if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !s.whitelist.Allowed(reqCtx.ClientIP) {
-		if result.Action == engine.ActionChallenge {
-			s.challenge(w, r, reqCtx, result.Message, start)
+	if policy.BotCC != config.ProtectionLevelOff {
+		if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !s.whitelist.Allowed(reqCtx.ClientIP) {
+			if result.Action == engine.ActionChallenge {
+				s.challenge(w, r, reqCtx, result.Message, start)
+				return
+			}
+			s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
 			return
 		}
-		s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
-		return
 	}
-	if !s.limiter.Allow(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
+	if policy.BotCC != config.ProtectionLevelOff && !s.limiter.Allow(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
 		s.block(w, reqCtx, "ratelimit", "rate limit exceeded", http.StatusTooManyRequests, start)
 		return
 	}
-	if s.config.APISec.Enabled {
+	if s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff {
 		if !s.apiLimit.Allow(r, reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
 			s.block(w, reqCtx, "apisec", "API endpoint rate limit exceeded", http.StatusTooManyRequests, start)
 			return
@@ -161,7 +164,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeLog(r.Context(), reqCtx, "redirect", code, start, nil)
 		return
 	}
-	if site.WAF.Enabled && site.WAF.Mode != "off" && s.pipeline != nil {
+	if site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff && s.pipeline != nil {
 		result, err := s.pipeline.Detect(r.Context(), reqCtx)
 		if err != nil {
 			http.Error(w, "waf pipeline error", http.StatusInternalServerError)

@@ -19,6 +19,19 @@ func Validate(cfg *Config) error {
 	if cfg.Server.AdminListen == "" {
 		return fmt.Errorf("server.admin_listen is required")
 	}
+	adminPublic, err := isPublicAdminListen(cfg.Server.AdminListen)
+	if err != nil {
+		return fmt.Errorf("server.admin_listen is invalid: %w", err)
+	}
+	if adminPublic && !cfg.Server.AdminPublic {
+		return fmt.Errorf("server.admin_listen %q is public; bind admin to localhost/private access or set server.admin_public with server.admin_tls enabled", cfg.Server.AdminListen)
+	}
+	if cfg.Server.AdminPublic && adminPublic && !cfg.Server.AdminTLS.Enabled {
+		return fmt.Errorf("server.admin_tls.enabled is required when admin listener is public")
+	}
+	if cfg.Server.AdminTLS.Enabled && (strings.TrimSpace(cfg.Server.AdminTLS.CertFile) == "" || strings.TrimSpace(cfg.Server.AdminTLS.KeyFile) == "") {
+		return fmt.Errorf("server.admin_tls.cert_file and server.admin_tls.key_file are required when admin TLS is enabled")
+	}
 	if cfg.Server.ListenTLS != "" && (cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "") {
 		return fmt.Errorf("tls.cert_file and tls.key_file are required when server.listen_tls is set")
 	}
@@ -55,6 +68,9 @@ func Validate(cfg *Config) error {
 	if len(cfg.Sites) == 0 {
 		return fmt.Errorf("at least one site is required")
 	}
+	if err := validateProtectionPolicy("protection.policy", cfg.Protection.Policy, false); err != nil {
+		return err
+	}
 	for _, site := range cfg.Sites {
 		if !site.Enabled {
 			continue
@@ -75,6 +91,9 @@ func Validate(cfg *Config) error {
 		}
 		if site.WAF.Mode != "" && site.WAF.Mode != "block" && site.WAF.Mode != "monitor" && site.WAF.Mode != "off" {
 			return fmt.Errorf("site %q has invalid waf.mode %q", site.Name, site.WAF.Mode)
+		}
+		if err := validateProtectionPolicy("site "+site.Name+" waf.protection_policy", site.WAF.ProtectionPolicy, true); err != nil {
+			return err
 		}
 		for _, rule := range site.WAF.CustomRules {
 			if strings.TrimSpace(rule.Pattern) == "" {
@@ -264,6 +283,47 @@ func validateIPEntry(entry string) error {
 	}
 	if net.ParseIP(entry) == nil {
 		return fmt.Errorf("not an IP or CIDR")
+	}
+	return nil
+}
+
+func isPublicAdminListen(addr string) (bool, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		if strings.HasPrefix(addr, ":") {
+			host = ""
+		} else {
+			host = addr
+		}
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return true, nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false, nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true, nil
+	}
+	return !ip.IsLoopback(), nil
+}
+
+func validateProtectionPolicy(name string, policy ProtectionPolicyConfig, allowEmpty bool) error {
+	values := map[string]string{
+		"web_attack":   policy.WebAttack,
+		"api_security": policy.APISecurity,
+		"bot_cc":       policy.BotCC,
+		"threat_intel": policy.ThreatIntel,
+	}
+	for key, value := range values {
+		if allowEmpty && value == "" {
+			continue
+		}
+		if !IsProtectionLevel(value) || value == "" {
+			return fmt.Errorf("%s.%s has invalid protection level %q", name, key, value)
+		}
 	}
 	return nil
 }

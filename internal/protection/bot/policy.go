@@ -71,8 +71,12 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 	if cfg.WaitingRoomTTL <= 0 {
 		cfg.WaitingRoomTTL = 5 * time.Minute
 	}
-	if cfg.Secret == "" {
-		cfg.Secret = "change-me-in-production"
+	if config.IsWeakBotSecret(cfg.Secret) {
+		if secret, err := config.GenerateSecret(); err == nil {
+			cfg.Secret = secret
+		} else {
+			cfg.Secret = "cheesewaf-ephemeral-bot-secret"
+		}
 	}
 	if len(cfg.PathPrefixes) == 0 {
 		cfg.PathPrefixes = []string{"/"}

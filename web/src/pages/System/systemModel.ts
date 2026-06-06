@@ -8,6 +8,8 @@ export const fallbackSystem: SystemConfig = {
     listen_tls: ':443',
     listen_http3: ':443',
     admin_listen: '127.0.0.1:9443',
+    admin_public: false,
+    admin_tls: { enabled: false, cert_file: './data/certs/admin.crt', key_file: './data/certs/admin.key', self_signed: true },
     read_timeout: 15 * second,
     write_timeout: 30 * second,
     idle_timeout: 60 * second,
@@ -45,7 +47,12 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
   return {
     ...fallbackSystem,
     ...next,
-    server: { ...fallbackSystem.server, ...next.server, http3: { ...fallbackSystem.server.http3, ...next.server?.http3 } },
+    server: {
+      ...fallbackSystem.server,
+      ...next.server,
+      admin_tls: { ...fallbackSystem.server.admin_tls, ...next.server?.admin_tls },
+      http3: { ...fallbackSystem.server.http3, ...next.server?.http3 },
+    },
     tls: { ...fallbackSystem.tls, ...next.tls },
     storage: {
       sqlite: { ...fallbackSystem.storage.sqlite, ...next.storage?.sqlite },

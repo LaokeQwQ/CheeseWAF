@@ -18,7 +18,7 @@ const (
 var (
 	appVersion = "0.1.0-dev"
 	buildTime  = "unknown"
-	configPath = "configs/cheesewaf.yaml"
+	configPath = "./data/cheesewaf.yaml"
 	dataDir    = "./data"
 )
 

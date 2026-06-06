@@ -80,6 +80,7 @@ func NewRouter(opts Options) http.Handler {
 			r.Post("/ip/threat-intel/test", h.TestThreatIntelProvider)
 			r.Post("/ip/threat-intel/lookup", h.LookupThreatIntel)
 			r.Get("/protection", h.Protection)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:protection")).Put("/protection/policy", h.UpdateProtectionPolicy)
 			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:protection")).Put("/protection/ip", h.UpdateIPRules)
 			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:protection")).Put("/protection/acl", h.UpdateACLRules)
 			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:protection")).Put("/protection/ratelimit", h.UpdateRateLimit)

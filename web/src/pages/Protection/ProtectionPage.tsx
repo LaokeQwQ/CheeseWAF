@@ -2,10 +2,11 @@ import { Button, Form, Input, InputNumber, Select, Switch, Table, Tag } from '@a
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Bot, Globe2, ShieldAlert, TimerReset } from 'lucide-react';
-import { fetchProtection, updateACLProtection, updateBotProtection, updateIPProtection, updateRateLimit } from '../../api/client';
+import { fetchProtection, updateACLProtection, updateBotProtection, updateIPProtection, updateProtectionPolicy, updateRateLimit } from '../../api/client';
 import type { ACLRule, ProtectionConfig } from '../../types/api';
 
 const fallback: ProtectionConfig = {
+  policy: { web_attack: 'smart', api_security: 'smart', bot_cc: 'smart', threat_intel: 'smart' },
   ip: { whitelist: [], blacklist: [], tags: {}, geoip: { enabled: false, database: '', blocked_countries: [], country_cidrs: {} } },
   ratelimit: { enabled: false, default: { requests: 0, window: '', burst: 0 } },
   bot: {
@@ -34,6 +35,7 @@ export default function ProtectionPage() {
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ['protection'], queryFn: fetchProtection, retry: false });
   const protection = normalizeProtection(data);
+  const policyMutation = useMutation({ mutationFn: updateProtectionPolicy, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const ipMutation = useMutation({ mutationFn: updateIPProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const rateMutation = useMutation({ mutationFn: updateRateLimit, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const botMutation = useMutation({ mutationFn: updateBotProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
@@ -47,6 +49,24 @@ export default function ProtectionPage() {
           <p>{t('protection.subtitle')}</p>
         </div>
       </header>
+
+      <section className="panel">
+        <div className="panel-heading"><h2><ShieldAlert size={16} /> {t('protection.policy')}</h2></div>
+        <Form
+          key={`policy-${Object.values(protection.policy).join('-')}`}
+          layout="vertical"
+          initialValues={protection.policy}
+          onSubmit={(values) => policyMutation.mutate(values as ProtectionConfig['policy'])}
+        >
+          <div className="site-detail-grid">
+            <Form.Item label={t('sites.webAttackLevel')} field="web_attack"><ProtectionLevelSelect /></Form.Item>
+            <Form.Item label={t('sites.apiSecurityLevel')} field="api_security"><ProtectionLevelSelect /></Form.Item>
+            <Form.Item label={t('sites.botCCLevel')} field="bot_cc"><ProtectionLevelSelect /></Form.Item>
+            <Form.Item label={t('sites.threatIntelLevel')} field="threat_intel"><ProtectionLevelSelect /></Form.Item>
+          </div>
+          <Button type="primary" htmlType="submit" loading={policyMutation.isPending}>{t('common.save')}</Button>
+        </Form>
+      </section>
 
       <div className="settings-grid">
         <section className="panel">
@@ -185,6 +205,7 @@ function normalizeProtection(input?: ProtectionConfig): ProtectionConfig {
   return {
     ...fallback,
     ...next,
+    policy: { ...fallback.policy, ...next.policy },
     ip: {
       ...fallback.ip,
       ...next.ip,
@@ -221,4 +242,17 @@ function normalizeProtection(input?: ProtectionConfig): ProtectionConfig {
 
 function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function ProtectionLevelSelect() {
+  const { t } = useTranslation();
+  return (
+    <Select>
+      <Select.Option value="off">{t('sites.levelOff')}</Select.Option>
+      <Select.Option value="low">{t('sites.levelLow')}</Select.Option>
+      <Select.Option value="smart">{t('sites.levelSmart')}</Select.Option>
+      <Select.Option value="high">{t('sites.levelHigh')}</Select.Option>
+      <Select.Option value="strict">{t('sites.levelStrict')}</Select.Option>
+    </Select>
+  );
 }

@@ -102,6 +102,9 @@ func (h *Handler) persistConfig() error {
 	if h == nil || h.Config == nil || h.ConfigPath == "" {
 		return nil
 	}
+	if _, err := config.EnsureRuntimeSecrets(h.Config); err != nil {
+		return err
+	}
 	if err := config.Validate(h.Config); err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -73,16 +74,21 @@ func runServe(ctx context.Context) error {
 	}
 	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
 	startRemoteWrite(ctx, cfg, sink, time.Now())
-	schedulerEngine := scheduler.NewEngine(scheduler.FromConfig(cfg.Scheduler, cfg.Setup.DataDir, configPath, cfg.Logging.Output.File.Path))
+	schedulerEngine := scheduler.NewEngine(scheduler.FromConfig(cfg.Scheduler, cfg.Setup.DataDir, loadedConfigPath, cfg.Logging.Output.File.Path))
 	schedulerEngine.Start(ctx)
 	hub := realtime.NewHub()
 	authSecret, err := ensureAuthSecret(cfg.Setup.DataDir)
 	if err != nil {
 		return err
 	}
+	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS)
+	if err != nil {
+		return err
+	}
 	admin := &http.Server{
 		Addr:         cfg.Server.AdminListen,
 		Handler:      adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites})),
+		TLSConfig:    adminTLS,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  cfg.Server.IdleTimeout,
@@ -104,7 +110,7 @@ func runServe(ctx context.Context) error {
 	if http3Server != nil {
 		fmt.Printf("CheeseWAF HTTP/3 proxy listening on %s\n", http3Server.Addr)
 	}
-	fmt.Printf("CheeseWAF admin API listening on http://%s\n", cfg.Server.AdminListen)
+	fmt.Printf("CheeseWAF admin API listening on %s://%s\n", adminScheme, cfg.Server.AdminListen)
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
@@ -316,7 +322,13 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 func loadConfig() (*config.Config, string, error) {
 	if _, err := os.Stat(configPath); err == nil {
 		cfg, err := config.Load(configPath)
-		return cfg, configPath, err
+		if err != nil {
+			return nil, configPath, err
+		}
+		if err := repairRuntimeConfig(configPath, cfg); err != nil {
+			return nil, configPath, err
+		}
+		return cfg, configPath, nil
 	}
 	if configPath != "" {
 		fmt.Printf("config %s not found, using built-in defaults\n", configPath)
@@ -329,7 +341,42 @@ func loadConfig() (*config.Config, string, error) {
 		return nil, "", err
 	}
 	cfg, err := config.Load(bundle.Paths.ConfigFile)
-	return cfg, bundle.Paths.ConfigFile, err
+	if err != nil {
+		return nil, bundle.Paths.ConfigFile, err
+	}
+	if err := repairRuntimeConfig(bundle.Paths.ConfigFile, cfg); err != nil {
+		return nil, bundle.Paths.ConfigFile, err
+	}
+	return cfg, bundle.Paths.ConfigFile, nil
+}
+
+func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
+	if !cfg.Enabled {
+		return nil, "http", nil
+	}
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	if err != nil {
+		return nil, "", fmt.Errorf("load admin TLS certificate: %w", err)
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}, "https", nil
+}
+
+func repairRuntimeConfig(path string, cfg *config.Config) error {
+	changed, err := config.EnsureRuntimeSecrets(cfg)
+	if err != nil {
+		return err
+	}
+	if !changed || path == "" {
+		return nil
+	}
+	if err := config.Save(path, cfg); err != nil {
+		return fmt.Errorf("save runtime config repair: %w", err)
+	}
+	fmt.Printf("CheeseWAF rotated weak Bot challenge secret and saved %s\n", path)
+	return nil
 }
 
 func seedSites(ctx context.Context, store storage.Store, cfg *config.Config) error {

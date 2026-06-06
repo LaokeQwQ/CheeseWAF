@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
 const (
@@ -114,6 +116,7 @@ func ResolveDefaultPaths(opts DefaultOptions) DefaultPaths {
 // database-backed configuration store is initialized.
 // 返回数据库配置存储初始化前使用的启动配置。
 func DefaultConfigYAML(paths DefaultPaths) []byte {
+	botSecret := bootstrapSecret()
 	return []byte(fmt.Sprintf(`# CheeseWAF bootstrap configuration.
 # Runtime changes will be stored in SQLite after the setup wizard completes.
 server:
@@ -121,6 +124,12 @@ server:
   listen_tls: %s
   listen_http3: ""
   admin_listen: %s
+  admin_public: false
+  admin_tls:
+    enabled: false
+    cert_file: %s
+    key_file: %s
+    self_signed: true
   http3:
     enabled: false
     zero_rtt: false
@@ -164,6 +173,11 @@ logging:
       max_backups: 10
 
 protection:
+  policy:
+    web_attack: "smart"
+    api_security: "smart"
+    bot_cc: "smart"
+    threat_intel: "smart"
   ip:
     whitelist:
       - "127.0.0.1"
@@ -189,7 +203,7 @@ protection:
     waiting_room_ttl: "5m"
     challenge_ttl: "30m"
     cookie_name: "cheesewaf_js_clearance"
-    secret: "change-me-in-production"
+    secret: %s
     path_prefixes:
       - "/"
     exempt_path_prefixes:
@@ -326,10 +340,13 @@ apisec:
 		quoteYAML(DefaultAdminListen),
 		quoteYAML(paths.CertFile),
 		quoteYAML(paths.KeyFile),
+		quoteYAML(paths.CertFile),
+		quoteYAML(paths.KeyFile),
 		quoteYAML(paths.DataDir),
 		quoteYAML(paths.RuntimeDir),
 		quoteYAML(paths.SQLiteFile),
 		quoteYAML(filepath.Join(paths.LogDir, "access.log")),
+		quoteYAML(botSecret),
 		quoteYAML(paths.LogDir),
 		quoteYAML(filepath.Join(paths.DataDir, "reports")),
 		quoteYAML(filepath.Join(paths.LogDir, "audit.log")),
@@ -454,4 +471,12 @@ func missing(path string) bool {
 
 func quoteYAML(value string) string {
 	return fmt.Sprintf("%q", filepath.ToSlash(value))
+}
+
+func bootstrapSecret() string {
+	secret, err := config.GenerateSecret()
+	if err != nil {
+		return ""
+	}
+	return secret
 }

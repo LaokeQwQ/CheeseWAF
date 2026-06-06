@@ -67,6 +67,19 @@ func (h *Handler) Protection(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, h.Config.Protection)
 }
 
+func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request) {
+	var req config.ProtectionPolicyConfig
+	if !decode(w, r, &req) {
+		return
+	}
+	h.Config.Protection.Policy = req.WithDefaults(config.DefaultProtectionPolicy())
+	if err := h.persistConfig(); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	writeData(w, h.Config.Protection.Policy)
+}
+
 func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
 	var req config.IPProtectionConfig
 	if !decode(w, r, &req) {

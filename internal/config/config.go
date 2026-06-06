@@ -22,14 +22,23 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Listen       string        `yaml:"listen" json:"listen"`
-	ListenTLS    string        `yaml:"listen_tls" json:"listen_tls"`
-	ListenHTTP3  string        `yaml:"listen_http3" json:"listen_http3"`
-	AdminListen  string        `yaml:"admin_listen" json:"admin_listen"`
-	ReadTimeout  time.Duration `yaml:"read_timeout" json:"read_timeout"`
-	WriteTimeout time.Duration `yaml:"write_timeout" json:"write_timeout"`
-	IdleTimeout  time.Duration `yaml:"idle_timeout" json:"idle_timeout"`
-	HTTP3        HTTP3Config   `yaml:"http3" json:"http3"`
+	Listen       string         `yaml:"listen" json:"listen"`
+	ListenTLS    string         `yaml:"listen_tls" json:"listen_tls"`
+	ListenHTTP3  string         `yaml:"listen_http3" json:"listen_http3"`
+	AdminListen  string         `yaml:"admin_listen" json:"admin_listen"`
+	AdminPublic  bool           `yaml:"admin_public" json:"admin_public"`
+	AdminTLS     AdminTLSConfig `yaml:"admin_tls" json:"admin_tls"`
+	ReadTimeout  time.Duration  `yaml:"read_timeout" json:"read_timeout"`
+	WriteTimeout time.Duration  `yaml:"write_timeout" json:"write_timeout"`
+	IdleTimeout  time.Duration  `yaml:"idle_timeout" json:"idle_timeout"`
+	HTTP3        HTTP3Config    `yaml:"http3" json:"http3"`
+}
+
+type AdminTLSConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	CertFile   string `yaml:"cert_file" json:"cert_file"`
+	KeyFile    string `yaml:"key_file" json:"key_file"`
+	SelfSigned bool   `yaml:"self_signed" json:"self_signed"`
 }
 
 type HTTP3Config struct {
@@ -68,14 +77,15 @@ type UpstreamConfig struct {
 }
 
 type WAFConfig struct {
-	Enabled         bool                     `yaml:"enabled" json:"enabled"`
-	Mode            string                   `yaml:"mode" json:"mode"`
-	SemanticEngines SemanticEngineSwitches   `yaml:"semantic_engines" json:"semantic_engines"`
-	CustomRules     []CustomRuleConfig       `yaml:"custom_rules" json:"custom_rules"`
-	Performance     PerformanceTuningConfig  `yaml:"performance" json:"performance"`
-	Response        ResponseInspectionConfig `yaml:"response" json:"response"`
-	Rewrite         []RewriteRuleConfig      `yaml:"rewrite" json:"rewrite"`
-	HealthCheck     HealthCheckConfig        `yaml:"health_check" json:"health_check"`
+	Enabled          bool                     `yaml:"enabled" json:"enabled"`
+	Mode             string                   `yaml:"mode" json:"mode"`
+	SemanticEngines  SemanticEngineSwitches   `yaml:"semantic_engines" json:"semantic_engines"`
+	ProtectionPolicy ProtectionPolicyConfig   `yaml:"protection_policy" json:"protection_policy"`
+	CustomRules      []CustomRuleConfig       `yaml:"custom_rules" json:"custom_rules"`
+	Performance      PerformanceTuningConfig  `yaml:"performance" json:"performance"`
+	Response         ResponseInspectionConfig `yaml:"response" json:"response"`
+	Rewrite          []RewriteRuleConfig      `yaml:"rewrite" json:"rewrite"`
+	HealthCheck      HealthCheckConfig        `yaml:"health_check" json:"health_check"`
 }
 
 type SemanticEngineSwitches struct {
@@ -105,10 +115,18 @@ type PerformanceTuningConfig struct {
 }
 
 type ProtectionConfig struct {
+	Policy    ProtectionPolicyConfig    `yaml:"policy" json:"policy"`
 	IP        IPProtectionConfig        `yaml:"ip" json:"ip"`
 	RateLimit RateLimitProtectionConfig `yaml:"ratelimit" json:"ratelimit"`
 	Bot       BotProtectionConfig       `yaml:"bot" json:"bot"`
 	ACL       ACLProtectionConfig       `yaml:"acl" json:"acl"`
+}
+
+type ProtectionPolicyConfig struct {
+	WebAttack   string `yaml:"web_attack" json:"web_attack"`
+	APISecurity string `yaml:"api_security" json:"api_security"`
+	BotCC       string `yaml:"bot_cc" json:"bot_cc"`
+	ThreatIntel string `yaml:"threat_intel" json:"threat_intel"`
 }
 
 type IPProtectionConfig struct {

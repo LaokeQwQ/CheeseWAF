@@ -21,9 +21,19 @@ export type SiteAdvanced = {
   origin: SiteOriginConfig;
   health_check: SiteHealthCheckConfig;
   protection: SiteProtectionConfig;
+  policy: ProtectionPolicyConfig;
   response: SiteResponseConfig;
   rewrite: SiteRewriteRule[];
   access_control: SiteAccessControl;
+};
+
+export type ProtectionLevel = 'off' | 'low' | 'smart' | 'high' | 'strict' | '';
+
+export type ProtectionPolicyConfig = {
+  web_attack: ProtectionLevel;
+  api_security: ProtectionLevel;
+  bot_cc: ProtectionLevel;
+  threat_intel: ProtectionLevel;
 };
 
 export type SiteCertificateConfig = {
@@ -114,6 +124,7 @@ export type ACLRule = {
 };
 
 export type ProtectionConfig = {
+  policy: ProtectionPolicyConfig;
   ip: {
     whitelist: string[];
     blacklist: string[];
@@ -357,6 +368,13 @@ export type SystemConfig = {
     listen_tls: string;
     listen_http3: string;
     admin_listen: string;
+    admin_public: boolean;
+    admin_tls: {
+      enabled: boolean;
+      cert_file: string;
+      key_file: string;
+      self_signed: boolean;
+    };
     read_timeout: number | string;
     write_timeout: number | string;
     idle_timeout: number | string;

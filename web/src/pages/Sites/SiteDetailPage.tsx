@@ -227,6 +227,27 @@ export default function SiteDetailPage() {
                 </Select>
               </label>
               {[
+                ['web_attack', t('sites.webAttackLevel')],
+                ['api_security', t('sites.apiSecurityLevel')],
+                ['bot_cc', t('sites.botCCLevel')],
+                ['threat_intel', t('sites.threatIntelLevel')],
+              ].map(([key, label]) => (
+                <label key={String(key)}>
+                  <span>{label}</span>
+                  <Select
+                    value={site.advanced.policy[key as keyof Site['advanced']['policy']] || ''}
+                    onChange={(value) => updateAdvanced('policy', { [key]: value } as Partial<Site['advanced']['policy']>)}
+                  >
+                    <Select.Option value="">{t('sites.levelInherit')}</Select.Option>
+                    <Select.Option value="off">{t('sites.levelOff')}</Select.Option>
+                    <Select.Option value="low">{t('sites.levelLow')}</Select.Option>
+                    <Select.Option value="smart">{t('sites.levelSmart')}</Select.Option>
+                    <Select.Option value="high">{t('sites.levelHigh')}</Select.Option>
+                    <Select.Option value="strict">{t('sites.levelStrict')}</Select.Option>
+                  </Select>
+                </label>
+              ))}
+              {[
                 ['semantic_sql', 'SQLi'],
                 ['semantic_xss', 'XSS'],
                 ['semantic_rce', 'RCE'],

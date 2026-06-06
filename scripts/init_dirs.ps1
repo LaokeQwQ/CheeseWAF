@@ -1,4 +1,4 @@
-$root = "e:\Dev\CheeseWAF"
+$root = Split-Path -Parent $PSScriptRoot
 $packages = @{
     "internal/proxy" = "proxy"
     "internal/engine/decoder" = "decoder"
@@ -19,7 +19,7 @@ $packages = @{
     "internal/monitor" = "monitor"
     "internal/monitor/notifier" = "notifier"
     "internal/apisec" = "apisec"
-    "internal/cache" = "cache"
+    "internal/edge" = "edge"
     "internal/setup" = "setup"
     "internal/scheduler" = "scheduler"
     "internal/blockpage" = "blockpage"

@@ -141,6 +141,7 @@ type SiteAdvanced struct {
 	Origin        OriginConfig          `json:"origin"`
 	HealthCheck   SiteHealthCheckConfig `json:"health_check"`
 	Protection    SiteProtectionConfig  `json:"protection"`
+	Policy        SiteProtectionPolicy  `json:"policy"`
 	Response      SiteResponseConfig    `json:"response"`
 	Rewrite       []SiteRewriteRule     `json:"rewrite"`
 	AccessControl SiteAccessControl     `json:"access_control"`
@@ -185,6 +186,13 @@ type SiteProtectionConfig struct {
 	RateLimit    bool `json:"ratelimit"`
 	ACL          bool `json:"acl"`
 	APISecurity  bool `json:"apisec"`
+}
+
+type SiteProtectionPolicy struct {
+	WebAttack   string `json:"web_attack"`
+	APISecurity string `json:"api_security"`
+	BotCC       string `json:"bot_cc"`
+	ThreatIntel string `json:"threat_intel"`
 }
 
 type SiteResponseConfig struct {

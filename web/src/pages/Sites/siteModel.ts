@@ -38,6 +38,12 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     acl: true,
     apisec: true,
   },
+  policy: {
+    web_attack: '',
+    api_security: '',
+    bot_cc: '',
+    threat_intel: '',
+  },
   response: {
     enabled: true,
     max_body_bytes: 2 * 1024 * 1024,
@@ -82,6 +88,7 @@ export function normalizeSite(input?: Partial<Site>): Site {
       origin: { ...defaultSiteAdvanced.origin, ...advanced.origin },
       health_check: { ...defaultSiteAdvanced.health_check, ...advanced.health_check },
       protection: { ...defaultSiteAdvanced.protection, ...advanced.protection },
+      policy: { ...defaultSiteAdvanced.policy, ...advanced.policy },
       response: {
         ...defaultSiteAdvanced.response,
         ...advanced.response,

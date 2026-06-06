@@ -78,9 +78,15 @@ export function login(username: string, password: string, totpCode?: string) {
   );
 }
 
-export function setupAdmin(username: string, password: string, adminListen: string) {
+export function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
   return unwrap<{ user: { username: string; role: string } }>(
-    apiClient.post('/setup', { username, password, admin_listen: adminListen }),
+    apiClient.post('/setup', {
+      username,
+      password,
+      admin_listen: adminListen,
+      admin_strategy: adminStrategy,
+      admin_public: adminStrategy === 'public_tls',
+    }),
   );
 }
 
@@ -191,6 +197,10 @@ export function fetchProtection() {
 
 export function updateIPProtection(ip: ProtectionConfig['ip']) {
   return unwrap<ProtectionConfig['ip']>(apiClient.put('/protection/ip', ip));
+}
+
+export function updateProtectionPolicy(policy: ProtectionConfig['policy']) {
+  return unwrap<ProtectionConfig['policy']>(apiClient.put('/protection/policy', policy));
 }
 
 export async function fetchIPRules() {

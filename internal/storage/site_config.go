@@ -37,6 +37,12 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				SemanticXXE:  site.WAF.SemanticEngines.XXE,
 				SemanticSSRF: site.WAF.SemanticEngines.SSRF,
 			},
+			Policy: SiteProtectionPolicy{
+				WebAttack:   site.WAF.ProtectionPolicy.WebAttack,
+				APISecurity: site.WAF.ProtectionPolicy.APISecurity,
+				BotCC:       site.WAF.ProtectionPolicy.BotCC,
+				ThreatIntel: site.WAF.ProtectionPolicy.ThreatIntel,
+			},
 			Response: SiteResponseConfig{
 				Enabled:           site.WAF.Response.Enabled,
 				MaxBodyBytes:      site.WAF.Response.MaxBodyBytes,
@@ -82,6 +88,12 @@ func SiteToConfig(site Site) config.SiteConfig {
 				LFI:  site.Advanced.Protection.SemanticLFI,
 				XXE:  site.Advanced.Protection.SemanticXXE,
 				SSRF: site.Advanced.Protection.SemanticSSRF,
+			},
+			ProtectionPolicy: config.ProtectionPolicyConfig{
+				WebAttack:   site.Advanced.Policy.WebAttack,
+				APISecurity: site.Advanced.Policy.APISecurity,
+				BotCC:       site.Advanced.Policy.BotCC,
+				ThreatIntel: site.Advanced.Policy.ThreatIntel,
 			},
 			Performance: config.PerformanceTuningConfig{
 				MaxBodyBytes:   site.Advanced.Origin.MaxBodyBytes,

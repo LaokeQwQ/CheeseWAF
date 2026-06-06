@@ -98,6 +98,11 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	if req.APISec != nil {
 		next.APISec = *req.APISec
 	}
+	next.Protection.Policy = next.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
+	if _, err := config.EnsureRuntimeSecrets(&next); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_REPAIR_ERROR", err.Error())
+		return
+	}
 	if err := config.Validate(&next); err != nil {
 		writeError(w, http.StatusBadRequest, "CONFIG_INVALID", err.Error())
 		return
