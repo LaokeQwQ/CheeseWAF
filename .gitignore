@@ -64,6 +64,7 @@ vendor/
 .vscode/
 .claude/
 .codex/
+.codegraph/
 
 # OS metadata
 .DS_Store
