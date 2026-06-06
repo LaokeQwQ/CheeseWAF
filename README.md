@@ -29,3 +29,26 @@ intentionally ignored by Git.
 
 Semantic engine maturity is tracked in `docs/semantic-readiness.md`; the current
 claim is "working and explainable", not "ModSecurity/OWASP CRS parity".
+
+## Stage Snapshot
+
+As of 2026-06-06, the active development line is `fix/admin-ui-dashboard-map`
+with PR #8 targeting `dev`. CI is green for branch-flow validation, Go tests on
+Linux/Windows/macOS, web build, go-mod-tidy, and cross-build. `master` and
+`canary` intentionally remain behind `dev` until the upward promotion flow is
+completed.
+
+## Pre-Release Gaps
+
+- The admin plane must be treated as a production security boundary: keep it
+  behind TLS or a trusted reverse proxy, bind it to localhost/private networks by
+  default, and avoid exposing browser tokens over plain HTTP.
+- Bot challenge signing secrets must be generated per install or rejected when a
+  placeholder value is used; do not enable Bot protection with
+  `change-me-in-production`.
+- Setup should use one shared validation/completion path across the local wizard
+  and the REST setup API.
+- Before a public release, run repeatable sqlmap, XSStrike, nuclei, OWASP ZAP,
+  CRS/Coraza or ModSecurity comparison, and admin-surface security tests.
+- Legacy scaffolding scripts should be cleaned so generated directories and
+  package names match the current `internal/edge` layout.
