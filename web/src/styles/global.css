@@ -353,7 +353,9 @@ select {
     "icon delta";
   gap: 2px 10px;
   min-height: 112px;
+  min-width: 0;
   padding: 18px;
+  overflow: hidden;
 }
 
 .metric-card svg {
@@ -364,13 +366,19 @@ select {
 
 .metric-card span {
   grid-area: label;
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .metric-card strong {
   grid-area: value;
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--text);
-  font-size: 26px;
+  font-size: clamp(20px, 2.1vw, 26px);
   line-height: 1.1;
 }
 
@@ -402,6 +410,7 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   margin-bottom: 16px;
 }
 
@@ -414,19 +423,86 @@ select {
   font-size: 16px;
 }
 
-.bar-chart {
-  height: 240px;
-  display: grid;
-  grid-template-columns: repeat(12, minmax(14px, 1fr));
-  align-items: end;
-  gap: 10px;
-  padding-top: 12px;
+.chart-controls,
+.map-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.bar-chart span {
-  min-height: 8px;
-  border-radius: 6px 6px 2px 2px;
+.chart-controls > span,
+.map-controls > span {
+  min-width: 48px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.traffic-chart {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-rows: 232px 28px;
+  gap: 0 10px;
+}
+
+.chart-y-axis {
+  display: grid;
+  align-content: space-between;
+  justify-items: end;
+  padding: 4px 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.chart-plot {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--bar-count, 12), minmax(10px, 1fr));
+  align-items: end;
+  gap: clamp(4px, 1.1vw, 12px);
+  min-width: 0;
+  padding: 10px 8px;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background:
+    linear-gradient(0deg, color-mix(in srgb, var(--border) 68%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px);
+  background-size: 100% 50%, calc(100% / 6) 100%;
+}
+
+.chart-bar {
+  position: relative;
+  min-height: 4px;
+  display: block;
+  border-radius: 7px 7px 2px 2px;
   background: linear-gradient(180deg, var(--accent), var(--accent-info));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent-info) 18%, transparent);
+}
+
+.chart-bar i {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, color-mix(in srgb, white 22%, transparent), transparent 58%);
+}
+
+.chart-x-axis {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: end;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.chart-x-axis span:nth-child(2) {
+  text-align: center;
+}
+
+.chart-x-axis span:last-child {
+  text-align: right;
 }
 
 .threat-list,
@@ -445,13 +521,46 @@ select {
   gap: 10px;
 }
 
+.threat-row {
+  grid-template-columns: minmax(92px, 0.36fr) minmax(100px, 1fr) minmax(44px, auto);
+  min-width: 0;
+}
+
+.threat-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .resource-stack > div {
-  grid-template-columns: 20px 44px minmax(80px, 1fr) 42px;
+  grid-template-columns: 20px minmax(48px, 0.34fr) minmax(90px, 1fr) minmax(64px, auto);
+  min-width: 0;
 }
 
 .event-row {
-  grid-template-columns: 110px 1fr 80px 80px;
+  grid-template-columns: minmax(128px, 1.2fr) minmax(112px, 0.8fr) minmax(96px, auto) minmax(78px, auto);
   min-height: 36px;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.event-row > code,
+.event-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-row .arco-tag {
+  justify-self: start;
+  max-width: 100%;
+}
+
+.event-row .arco-tag-content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .empty-state {
@@ -462,8 +571,13 @@ select {
 }
 
 code {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--accent-strong);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 
 .table-panel {
@@ -770,6 +884,13 @@ code {
   grid-template-columns: minmax(280px, 0.65fr) minmax(320px, 1.35fr);
 }
 
+.api-security-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.1fr) minmax(340px, 0.9fr);
+  gap: 12px;
+  align-items: start;
+}
+
 .split-grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.45fr) minmax(420px, 1fr);
@@ -946,33 +1067,21 @@ code {
 
 .map-canvas {
   position: relative;
-  min-height: 460px;
+  min-height: clamp(420px, 54vw, 620px);
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface);
+  background:
+    radial-gradient(circle at 20% 14%, color-mix(in srgb, var(--accent-info) 18%, transparent), transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-soft) 78%, var(--surface)), var(--surface));
   box-shadow: var(--shadow);
-  touch-action: none;
-}
-
-.map-controls {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.map-controls > span {
-  min-width: 48px;
-  color: var(--text-muted);
-  text-align: center;
+  touch-action: manipulation;
 }
 
 .flat-map-stage,
 .globe-stage {
   position: absolute;
-  inset: 0;
+  inset: 12px;
   display: grid;
   place-items: center;
 }
@@ -984,54 +1093,32 @@ code {
 }
 
 .world-map-svg {
-  width: min(96%, 1120px);
+  width: min(94%, 1180px);
   height: auto;
-  filter: drop-shadow(0 18px 24px color-mix(in srgb, var(--text) 12%, transparent));
+  filter: drop-shadow(0 20px 30px color-mix(in srgb, var(--text) 10%, transparent));
 }
 
-.world-map-svg path {
-  fill: color-mix(in srgb, var(--accent) 21%, var(--surface-soft));
-  stroke: color-mix(in srgb, var(--accent-strong) 52%, var(--border));
-  stroke-width: 2;
+.map-graticule line {
+  stroke: color-mix(in srgb, var(--accent-strong) 16%, transparent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.map-land path {
+  fill: color-mix(in srgb, var(--accent) 16%, var(--surface-soft));
+  stroke: color-mix(in srgb, var(--accent-strong) 44%, var(--border));
+  stroke-width: 2.4;
   vector-effect: non-scaling-stroke;
 }
 
 .globe-stage {
-  perspective: 1100px;
+  cursor: grab;
+  touch-action: none;
 }
 
-.globe-sphere {
-  position: relative;
-  width: min(76vw, 560px);
-  aspect-ratio: 1;
-  overflow: hidden;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 34% 28%, color-mix(in srgb, var(--surface) 82%, white), transparent 18%),
-    radial-gradient(circle at 62% 68%, color-mix(in srgb, var(--accent-info) 22%, transparent), transparent 28%),
-    color-mix(in srgb, var(--accent) 16%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
-  box-shadow:
-    inset -28px -32px 64px color-mix(in srgb, var(--text) 22%, transparent),
-    var(--shadow);
-  transform: scale(var(--map-zoom, 1)) rotateX(var(--rotate-x, 0deg)) rotateY(var(--rotate-y, 0deg));
-  transform-style: preserve-3d;
-  transition: transform 100ms ease;
-}
-
-.globe-sphere .world-map-svg {
-  position: absolute;
-  inset: 8%;
-  width: 84%;
-  opacity: 0.82;
-}
-
-.globe-sphere .world-map-svg path {
-  fill: color-mix(in srgb, var(--accent-info) 24%, var(--surface-soft));
-}
-
-.globe-marker {
-  transform: translate(-50%, -50%) scale(0.92);
+.globe-stage canvas {
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .map-legend,
@@ -1077,6 +1164,8 @@ code {
   color: var(--text);
   font-size: 12px;
   font-weight: 700;
+  text-shadow: 0 1px 8px var(--surface);
+  pointer-events: none;
 }
 
 .map-marker i {
@@ -1100,6 +1189,7 @@ code {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
 }
 
 .continent-badge em {
@@ -1299,6 +1389,7 @@ code {
 
   .metric-grid,
   .dashboard-grid,
+  .api-security-grid,
   .settings-grid,
   .split-grid,
   .ops-grid,
@@ -1351,9 +1442,23 @@ code {
   }
 
   .event-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: start;
     gap: 6px;
+  }
+
+  .event-row > code,
+  .event-row > span {
+    grid-column: 1 / -1;
+  }
+
+  .chart-controls,
+  .map-controls {
+    justify-content: flex-start;
+  }
+
+  .traffic-chart {
+    grid-template-columns: 36px minmax(0, 1fr);
   }
 
   .site-title-stack {

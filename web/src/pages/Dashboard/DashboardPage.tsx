@@ -1,29 +1,34 @@
-import { Progress, Spin, Tag } from '@arco-design/web-react';
-import { useMemo } from 'react';
+import { Button, Progress, Radio, Spin, Tag } from '@arco-design/web-react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
-import { Cpu, HardDrive, Network, ShieldCheck, Zap } from 'lucide-react';
+import { Cpu, HardDrive, Network, RotateCcw, ShieldCheck, Zap, ZoomIn, ZoomOut } from 'lucide-react';
 import { listItemVariants, listVariants } from '../../animations/variants';
 import { fetchLogs, fetchMonitorSummary, fetchSites } from '../../api/client';
 import type { LogEntry } from '../../types/api';
+import { displayAction, displayCategory } from '../../utils/display';
 
 const threatColors = ['var(--accent-danger)', 'var(--accent-warning)', 'var(--accent-purple)', 'var(--accent-info)'];
 
 export default function DashboardPage() {
   const { t } = useTranslation();
+  const [trafficRange, setTrafficRange] = useState(60);
+  const [chartScale, setChartScale] = useState(1);
   const { data: monitor, isLoading: loadingMonitor } = useQuery({ queryKey: ['dashboard-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 10_000, retry: false });
   const { data: logs, isLoading: loadingLogs } = useQuery({ queryKey: ['dashboard-logs'], queryFn: () => fetchLogs({ limit: 200 }), refetchInterval: 8_000, retry: false });
   const { data: sites } = useQuery({ queryKey: ['dashboard-sites'], queryFn: fetchSites, refetchInterval: 30_000, retry: false });
   const snapshot = monitor?.snapshot;
   const entries = logs?.items ?? [];
-  const traffic = useMemo(() => buildTraffic(entries), [entries]);
-  const threats = useMemo(() => buildThreatMix(entries), [entries]);
+  const traffic = useMemo(() => buildTraffic(entries, trafficRange), [entries, trafficRange]);
+  const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
   const latency = useMemo(() => p95Latency(entries), [entries]);
   const blocked = snapshot?.blocked ?? entries.filter((entry) => entry.action === 'block').length;
   const requests = snapshot?.requests ?? logs?.total ?? entries.length;
   const siteCount = sites?.length ?? snapshot?.sites ?? 0;
   const loading = loadingMonitor || loadingLogs;
+  const maxTraffic = Math.max(...traffic.map((point) => point.count), 1);
+  const yMax = Math.max(1, Math.ceil(maxTraffic / chartScale));
 
   return (
     <section className="page-surface">
@@ -60,19 +65,44 @@ export default function DashboardPage() {
         <section className="panel panel-wide">
           <div className="panel-heading">
             <h2>{t('dashboard.traffic')}</h2>
-            <span>last 60m</span>
+            <div className="chart-controls">
+              <Radio.Group type="button" value={trafficRange} onChange={(value) => setTrafficRange(Number(value))}>
+                <Radio value={15}>{t('dashboard.last15m')}</Radio>
+                <Radio value={60}>{t('dashboard.last60m')}</Radio>
+                <Radio value={180}>{t('dashboard.last3h')}</Radio>
+              </Radio.Group>
+              <Button icon={<ZoomOut size={14} />} onClick={() => setChartScale((value) => Math.max(0.5, Number((value - 0.25).toFixed(2))))} />
+              <span>{Math.round(chartScale * 100)}%</span>
+              <Button icon={<ZoomIn size={14} />} onClick={() => setChartScale((value) => Math.min(2.5, Number((value + 0.25).toFixed(2))))} />
+              <Button icon={<RotateCcw size={14} />} onClick={() => setChartScale(1)} />
+            </div>
           </div>
           <Spin loading={loading}>
-            <div className="bar-chart" aria-label={t('dashboard.traffic')}>
-              {traffic.map((value, index) => (
-                <motion.span
-                  key={`${value}-${index}`}
-                  initial={{ height: 0 }}
-                  animate={{ height: `${Math.max(value, 4)}%` }}
-                  transition={{ delay: index * 0.02, duration: 0.28 }}
-                  title={`${value}%`}
-                />
-              ))}
+            <div className="traffic-chart" aria-label={t('dashboard.traffic')}>
+              <div className="chart-y-axis" aria-hidden="true">
+                <span>{yMax}</span>
+                <span>{Math.round(yMax / 2)}</span>
+                <span>0</span>
+              </div>
+              <div className="chart-plot" style={{ '--bar-count': traffic.length } as CSSProperties}>
+                {traffic.map((point, index) => (
+                  <motion.span
+                    key={`${point.label}-${index}`}
+                    className="chart-bar"
+                    initial={{ height: 0 }}
+                    animate={{ height: `${Math.max((point.count / yMax) * 100, point.count > 0 ? 5 : 2)}%` }}
+                    transition={{ delay: index * 0.018, duration: 0.26 }}
+                    title={`${point.label}: ${point.count} ${t('dashboard.trafficRequests')}`}
+                  >
+                    <i />
+                  </motion.span>
+                ))}
+              </div>
+              <div className="chart-x-axis" aria-hidden="true">
+                <span>{traffic[0]?.label ?? '-'}</span>
+                <span>{traffic[Math.floor(traffic.length / 2)]?.label ?? '-'}</span>
+                <span>{traffic[traffic.length - 1]?.label ?? '-'}</span>
+              </div>
             </div>
           </Spin>
         </section>
@@ -126,11 +156,11 @@ export default function DashboardPage() {
             {entries.length === 0 && <div className="empty-state">{t('monitor.requests')}: 0</div>}
             {entries.slice(0, 6).map((event) => (
               <div className="event-row" key={event.id || event.trace_id}>
-                <code>{event.trace_id || event.id}</code>
+                <code title={event.trace_id || event.id}>{event.trace_id || event.id}</code>
                 <span>{event.client_ip}</span>
-                <Tag color={event.category ? 'orange' : 'green'}>{displayCategory(event.category)}</Tag>
+                <Tag color={event.category ? 'orange' : 'green'}>{displayCategory(event.category, t)}</Tag>
                 <Tag color={event.action === 'block' ? 'red' : 'blue'}>
-                  {event.action === 'block' ? t('common.block') : event.action || t('common.monitor')}
+                  {displayAction(event.action, t)}
                 </Tag>
               </div>
             ))}
@@ -141,10 +171,11 @@ export default function DashboardPage() {
   );
 }
 
-function buildTraffic(entries: LogEntry[]) {
-  const buckets = Array.from({ length: 12 }, () => 0);
+function buildTraffic(entries: LogEntry[], rangeMinutes: number) {
+  const bucketCount = rangeMinutes <= 15 ? 15 : 12;
+  const buckets = Array.from({ length: bucketCount }, () => 0);
   const now = Date.now();
-  const windowMs = 60 * 60 * 1000;
+  const windowMs = rangeMinutes * 60 * 1000;
   const bucketMs = windowMs / buckets.length;
   for (const entry of entries) {
     const time = Date.parse(entry.timestamp);
@@ -154,17 +185,22 @@ function buildTraffic(entries: LogEntry[]) {
     const index = Math.min(buckets.length - 1, Math.max(0, Math.floor((time - (now - windowMs)) / bucketMs)));
     buckets[index] += 1;
   }
-  const max = Math.max(...buckets, 1);
-  return buckets.map((count) => Math.round((count / max) * 100));
+  return buckets.map((count, index) => {
+    const at = new Date(now - windowMs + bucketMs * index);
+    return {
+      count,
+      label: at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
+    };
+  });
 }
 
-function buildThreatMix(entries: LogEntry[]) {
+function buildThreatMix(entries: LogEntry[], t: (key: string, options?: Record<string, unknown>) => string) {
   const counts = new Map<string, number>();
   for (const entry of entries) {
     if (!entry.category) {
       continue;
     }
-    const category = displayCategory(entry.category);
+    const category = displayCategory(entry.category, t);
     counts.set(category, (counts.get(category) ?? 0) + 1);
   }
   const total = Array.from(counts.values()).reduce((sum, value) => sum + value, 0);
@@ -180,10 +216,6 @@ function p95Latency(entries: LogEntry[]) {
     return 0;
   }
   return values[Math.min(values.length - 1, Math.floor(values.length * 0.95))];
-}
-
-function displayCategory(value: string) {
-  return value ? value.toUpperCase() : 'PASS';
 }
 
 function formatLatency(nanoseconds: number) {

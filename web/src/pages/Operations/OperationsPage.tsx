@@ -57,14 +57,14 @@ export default function OperationsPage() {
             <Form.Item label={t('ops.report')} field="enabled"><Switch /></Form.Item>
             <Form.Item label={t('ops.every')} field="frequency">
               <Select>
-                <Select.Option value="daily">Daily</Select.Option>
-                <Select.Option value="weekly">Weekly</Select.Option>
+                <Select.Option value="daily">{t('ops.daily')}</Select.Option>
+                <Select.Option value="weekly">{t('ops.weekly')}</Select.Option>
               </Select>
             </Form.Item>
             <Form.Item label={t('ops.at')} field="at"><Input placeholder="08:00" /></Form.Item>
             <Form.Item label={t('ops.channel')} field="channel">
               <Select>
-                <Select.Option value="file">File</Select.Option>
+                <Select.Option value="file">{t('ops.file')}</Select.Option>
                 <Select.Option value="webhook">Webhook</Select.Option>
               </Select>
             </Form.Item>
@@ -83,10 +83,10 @@ export default function OperationsPage() {
           data={tasks}
           columns={[
             { title: t('ops.task'), dataIndex: 'name' },
-            { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <Tag>{type}</Tag> },
+            { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <Tag>{taskTypeLabel(type, t)}</Tag> },
             { title: t('ops.every'), dataIndex: 'every' },
             { title: t('ops.target'), dataIndex: 'target', render: (target: string) => <code>{target}</code> },
-            { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'gray'}>{String(enabled)}</Tag> },
+            { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'gray'}>{enabled ? t('system.enabled') : t('system.disabled')}</Tag> },
           ]}
         />
       </section>
@@ -130,4 +130,14 @@ function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function taskTypeLabel(type: string, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (type === 'security_report') {
+    return t('ops.report');
+  }
+  if (type === 'cleanup') {
+    return t('ops.cleanup');
+  }
+  return type || '-';
 }

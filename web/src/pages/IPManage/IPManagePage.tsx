@@ -14,6 +14,7 @@ import {
   updateThreatIntelProviders,
 } from '../../api/client';
 import type { IPReputationEntry, ThreatIntelProvider } from '../../types/api';
+import { displayAction, displaySeverity } from '../../utils/display';
 
 const second = 1_000_000_000;
 
@@ -193,7 +194,7 @@ export default function IPManagePage() {
                     render: (_: unknown, record: IPReputationEntry) => (
                       <span className="tag-stack">
                         {intelFor(record).length === 0 ? <Tag>{t('common.monitor')}</Tag> : intelFor(record).map((item) => (
-                          <Tag key={`${record.ip}-${item.id || item.value}`} color={intelColor(item.severity)}>{item.source || item.severity}</Tag>
+                          <Tag key={`${record.ip}-${item.id || item.value}`} color={intelColor(item.severity)}>{item.source || displaySeverity(item.severity, t)}</Tag>
                         ))}
                       </span>
                     ),
@@ -243,7 +244,7 @@ export default function IPManagePage() {
                     <Select value={provider.action || 'challenge'} onChange={(action) => updateProvider(index, { action: action as string })}>
                       <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
                       <Select.Option value="block">{t('common.block')}</Select.Option>
-                      <Select.Option value="log">Log</Select.Option>
+                      <Select.Option value="log">{displayAction('log', t)}</Select.Option>
                     </Select>
                     <Input value={provider.endpoint} placeholder="https://..." onChange={(endpoint) => updateProvider(index, { endpoint })} />
                     <Input.Password value={provider.api_key} placeholder="API Key" onChange={(api_key) => updateProvider(index, { api_key })} />
@@ -290,7 +291,7 @@ export default function IPManagePage() {
                     <Select value={importDraft.action} onChange={(action) => setImportDraft((current) => ({ ...current, action: action as string }))}>
                       <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
                       <Select.Option value="block">{t('common.block')}</Select.Option>
-                      <Select.Option value="log">Log</Select.Option>
+                      <Select.Option value="log">{displayAction('log', t)}</Select.Option>
                     </Select>
                   </label>
                   <label className="wide-field"><span>{t('ip.labels')}</span><Input value={importDraft.labels} onChange={(labels) => setImportDraft((current) => ({ ...current, labels }))} /></label>

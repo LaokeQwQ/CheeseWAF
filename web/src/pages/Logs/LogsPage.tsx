@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Search } from 'lucide-react';
 import { fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
+import { displayAction, displayCategory, displayCountry } from '../../utils/display';
 
 export default function LogsPage() {
   const { t } = useTranslation();
@@ -74,19 +75,19 @@ export default function LogsPage() {
             {
               title: t('logs.category'),
               dataIndex: 'category',
-              render: (value: string) => <Tag color={value ? 'orange' : 'green'}>{value ? value.toUpperCase() : 'PASS'}</Tag>,
+              render: (value: string) => <Tag color={value ? 'orange' : 'green'}>{displayCategory(value || 'pass', t)}</Tag>,
             },
             {
               title: t('logs.action'),
               dataIndex: 'action',
               render: (action: string) => (
                 <Tag color={action === 'block' ? 'red' : 'blue'}>
-                  {action === 'block' ? t('common.block') : t('common.monitor')}
+                  {displayAction(action, t)}
                 </Tag>
               ),
             },
             { title: 'URI', dataIndex: 'uri' },
-            { title: t('attackMap.country'), dataIndex: 'country', render: (value: string) => value || '-' },
+            { title: t('attackMap.country'), dataIndex: 'country', render: (value: string) => displayCountry(value, t) },
             { title: t('logs.time'), dataIndex: 'timestamp', render: formatTime },
           ]}
         />
