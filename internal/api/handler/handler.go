@@ -8,6 +8,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -83,26 +84,38 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	users, err := h.Store.ListUsers(r.Context())
+	defaultAdminListen := setup.DefaultAdminListen
+	if h.Config != nil && h.Config.Server.AdminListen != "" {
+		defaultAdminListen = h.Config.Server.AdminListen
+	}
+	result, err := setup.CompleteSetup(r.Context(), setup.CompleteOptions{
+		Config:             h.Config,
+		ConfigPath:         h.ConfigPath,
+		Store:              h.Store,
+		DefaultAdminListen: defaultAdminListen,
+	}, setup.SetupPayload{
+		Username:      req.Username,
+		Password:      req.Password,
+		AdminListen:   req.AdminListen,
+		AdminStrategy: req.AdminStrategy,
+		AdminPublic:   req.AdminPublic,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		status := setup.SetupErrorStatus(err)
+		code := "SETUP_ERROR"
+		if status == http.StatusBadRequest {
+			code = "SETUP_VALIDATION"
+		}
+		if status == http.StatusConflict {
+			code = "SETUP_COMPLETE"
+		}
+		writeError(w, status, code, err.Error())
 		return
 	}
-	if len(users) > 0 {
-		writeError(w, http.StatusConflict, "SETUP_COMPLETE", "setup has already completed")
-		return
+	if result.Config != nil {
+		h.Config = result.Config
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "PASSWORD_ERROR", err.Error())
-		return
-	}
-	user := &storage.User{Username: req.Username, PasswordHash: string(hash), Role: "admin"}
-	if err := h.Store.CreateUser(r.Context(), user); err != nil {
-		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
-		return
-	}
-	writeData(w, map[string]any{"user": user})
+	writeData(w, map[string]any{"user": result.User, "setup_complete": true})
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dest any) bool {

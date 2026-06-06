@@ -18,7 +18,9 @@ type LoginRequest struct {
 }
 
 type SetupRequest struct {
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	AdminListen string `json:"admin_listen"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	AdminListen   string `json:"admin_listen"`
+	AdminStrategy string `json:"admin_strategy"`
+	AdminPublic   bool   `json:"admin_public"`
 }

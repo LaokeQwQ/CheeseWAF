@@ -1,6 +1,6 @@
 // Package setup handles first-launch initialization: setup wizard, default config,
-// and self-signed certificate generation.
-// 首次启动初始化：安装向导、默认配置、自签名证书生成。
+// and local CA-signed admin certificate generation.
+// 首次启动初始化：安装向导、默认配置、本地 CA 签发管理端证书生成。
 package setup
 
 import (
@@ -11,15 +11,9 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/LaokeQwQ/CheeseWAF/internal/config"
-	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
-	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -40,8 +34,8 @@ type Wizard struct {
 	DataDir      string        // 数据目录 / Data directory
 	ConfigPath   string        // 配置文件路径 / Config file path
 	AdminAPI     string        // 管理 API 地址 / Admin API address
-	CertHosts    []string      // 自签名证书 SAN / Self-signed certificate SANs
-	CertValidFor time.Duration // 自签名证书有效期 / Self-signed certificate lifetime
+	CertHosts    []string      // 管理端证书 SAN / Admin certificate SANs
+	CertValidFor time.Duration // 管理端叶子证书有效期 / Admin leaf certificate lifetime
 }
 
 // NewWizard creates a first-launch wizard with safe defaults.
@@ -53,25 +47,18 @@ func NewWizard(dataDir string) *Wizard {
 // NeedsSetup checks if the initial setup has been completed.
 // 检查是否需要初始化。
 func (w *Wizard) NeedsSetup() bool {
-	lockPath := filepath.Join(w.dataDir(), SetupLockFile)
-	_, err := os.Stat(lockPath)
-	return os.IsNotExist(err)
+	return NeedsSetup(w.dataDir())
 }
 
 // MarkComplete marks the setup as complete by creating the lock file.
 // 标记初始化完成。
 func (w *Wizard) MarkComplete() error {
-	dataDir := w.dataDir()
-	lockPath := filepath.Join(dataDir, SetupLockFile)
-	if err := os.MkdirAll(dataDir, 0o750); err != nil {
-		return fmt.Errorf("create data dir: %w", err)
-	}
-	return os.WriteFile(lockPath, []byte("setup completed\n"), 0o644)
+	return MarkComplete(w.dataDir())
 }
 
 // PrepareDefaults creates the default directory layout, config file, and
-// self-signed admin certificate. It is safe to call repeatedly.
-// 准备默认目录、配置文件和管理端自签名证书，可重复调用。
+// local CA-signed admin certificate bundle. It is safe to call repeatedly.
+// 准备默认目录、配置文件和本地 CA 签发管理端证书包，可重复调用。
 func (w *Wizard) PrepareDefaults() (*DefaultBundle, error) {
 	return EnsureDefaults(DefaultOptions{
 		DataDir:    w.dataDir(),
@@ -134,14 +121,6 @@ func (w *Wizard) RunWebWizard(ctx context.Context) error {
 	}
 }
 
-type setupPayload struct {
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	AdminListen   string `json:"admin_listen"`
-	AdminStrategy string `json:"admin_strategy"`
-	AdminPublic   bool   `json:"admin_public"`
-}
-
 func (w *Wizard) setupHTTPHandler(bundle *DefaultBundle, done chan struct{}) http.Handler {
 	mux := http.NewServeMux()
 	var completeOnce sync.Once
@@ -202,100 +181,25 @@ func (w *Wizard) handleSetupSubmit(resp http.ResponseWriter, req *http.Request, 
 		return
 	}
 	if err := w.completeSetup(req.Context(), bundle, payload); err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, errSetupValidation) {
-			status = http.StatusBadRequest
-		}
-		if errors.Is(err, errSetupAlreadyComplete) {
-			status = http.StatusConflict
-		}
-		writeSetupError(resp, status, err.Error())
+		writeSetupError(resp, SetupErrorStatus(err), err.Error())
 		return
 	}
 	writeSetupJSON(resp, http.StatusOK, map[string]any{"ok": true})
 	complete()
 }
 
-var (
-	errSetupValidation      = errors.New("setup validation failed")
-	errSetupAlreadyComplete = errors.New("setup has already completed")
-)
-
-func (w *Wizard) completeSetup(ctx context.Context, bundle *DefaultBundle, payload setupPayload) error {
-	payload.Username = strings.TrimSpace(payload.Username)
-	payload.AdminListen = strings.TrimSpace(payload.AdminListen)
-	payload.AdminStrategy = strings.TrimSpace(payload.AdminStrategy)
-	if payload.Username == "" || len(payload.Username) < 3 {
-		return fmt.Errorf("%w: username must contain at least 3 characters", errSetupValidation)
-	}
-	if len(payload.Password) < 10 {
-		return fmt.Errorf("%w: password must contain at least 10 characters", errSetupValidation)
-	}
-	if payload.AdminListen == "" {
-		payload.AdminListen = w.adminAPI()
-	}
-	if payload.AdminStrategy == "public_tls" {
-		payload.AdminPublic = true
-	}
-
-	store, err := storage.OpenSQLite(bundle.Paths.SQLiteFile)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	if err := store.Migrate(ctx); err != nil {
-		return err
-	}
-	users, err := store.ListUsers(ctx)
-	if err != nil {
-		return err
-	}
-	if len(users) > 0 {
-		return errSetupAlreadyComplete
-	}
-	if err := w.updateBootstrapConfig(bundle, payload); err != nil {
-		return err
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-	if err := store.CreateUser(ctx, &storage.User{
-		Username:     payload.Username,
-		PasswordHash: string(hash),
-		Role:         "admin",
-	}); err != nil {
-		return err
-	}
-	return w.MarkComplete()
+func (w *Wizard) completeSetup(ctx context.Context, bundle *DefaultBundle, payload SetupPayload) error {
+	_, err := CompleteSetup(ctx, CompleteOptions{
+		DataDir:            w.dataDir(),
+		ConfigPath:         bundle.Paths.ConfigFile,
+		DefaultAdminListen: w.adminAPI(),
+		Paths:              bundle.Paths,
+	}, payload)
+	return err
 }
 
-func (w *Wizard) updateBootstrapConfig(bundle *DefaultBundle, payload setupPayload) error {
-	cfg, err := config.Load(bundle.Paths.ConfigFile)
-	if err != nil {
-		return err
-	}
-	cfg.Server.AdminListen = payload.AdminListen
-	cfg.Server.AdminPublic = payload.AdminPublic
-	cfg.Server.AdminTLS = config.AdminTLSConfig{
-		Enabled:    payload.AdminPublic,
-		CertFile:   bundle.Paths.CertFile,
-		KeyFile:    bundle.Paths.KeyFile,
-		SelfSigned: payload.AdminPublic,
-	}
-	cfg.Setup.DataDir = bundle.Paths.DataDir
-	cfg.Setup.RuntimeDir = bundle.Paths.RuntimeDir
-	cfg.Storage.SQLite.Path = bundle.Paths.SQLiteFile
-	cfg.TLS.CertFile = bundle.Paths.CertFile
-	cfg.TLS.KeyFile = bundle.Paths.KeyFile
-	if _, err := config.EnsureRuntimeSecrets(cfg); err != nil {
-		return err
-	}
-	return config.Save(bundle.Paths.ConfigFile, cfg)
-}
-
-func readSetupPayload(req *http.Request) (setupPayload, error) {
-	var payload setupPayload
+func readSetupPayload(req *http.Request) (SetupPayload, error) {
+	var payload SetupPayload
 	contentType := strings.ToLower(req.Header.Get("Content-Type"))
 	if strings.Contains(contentType, "application/json") {
 		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
@@ -381,7 +285,7 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       <label>Admin access strategy
         <select name="admin_strategy">
           <option value="local">Local listener, reverse proxy, jump host, or SSH tunnel</option>
-          <option value="public_tls">Public HTTPS with generated self-signed certificate</option>
+          <option value="public_tls">Public HTTPS with generated local CA-signed certificate</option>
         </select>
       </label>
       <button type="submit">Complete setup</button>

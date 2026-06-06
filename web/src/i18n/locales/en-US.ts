@@ -400,7 +400,7 @@ const enUS = {
     adminListen: 'Admin Listener',
     adminStrategy: 'Admin Access Strategy',
     strategyLocal: 'Local listener / reverse proxy / jump host / SSH tunnel',
-    strategyPublicTLS: 'Public self-signed HTTPS',
+    strategyPublicTLS: 'Public local CA HTTPS',
   },
   login: {
     title: 'CheeseWAF',

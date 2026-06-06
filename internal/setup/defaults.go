@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -27,18 +28,23 @@ const (
 	DefaultRuntimeDir = "run"
 	DefaultSQLiteFile = "cheesewaf.db"
 
-	DefaultAdminCertFile = "admin.crt"
-	DefaultAdminKeyFile  = "admin.key"
+	DefaultAdminCertFile  = "admin.crt"
+	DefaultAdminKeyFile   = "admin.key"
+	DefaultAdminCAFile    = "admin-ca.crt"
+	DefaultAdminCAKeyFile = "admin-ca.key"
 
 	DefaultAdminListen = "127.0.0.1:9443"
 	DefaultHTTPListen  = ":80"
 	DefaultHTTPSListen = ":443"
 
-	defaultCertificateYears = 10
+	defaultLeafCertificateDays = 397
+	defaultCACertificateYears  = 10
+	defaultCACommonName        = "CheeseWAF Sign SSL CA"
+	defaultOrganization        = "CheeseCloud Technology Ltc."
 )
 
-// DefaultCertificateHosts are included in the admin self-signed certificate.
-// 默认管理端自签名证书 SAN。
+// DefaultCertificateHosts are included in the admin certificate SAN.
+// 默认管理端证书 SAN。
 var DefaultCertificateHosts = []string{"127.0.0.1", "::1", "localhost"}
 
 // DefaultOptions controls default file generation.
@@ -59,6 +65,8 @@ type DefaultPaths struct {
 	CertDir    string
 	CertFile   string
 	KeyFile    string
+	CAFile     string
+	CAKeyFile  string
 	LogDir     string
 	RuntimeDir string
 	SQLiteFile string
@@ -87,8 +95,8 @@ func EnsureDefaults(opts DefaultOptions) (*DefaultBundle, error) {
 		return nil, fmt.Errorf("write default config: %w", err)
 	}
 
-	if opts.Overwrite || missing(paths.CertFile) || missing(paths.KeyFile) {
-		if err := GenerateSelfSignedCertificate(paths.CertFile, paths.KeyFile, opts.Hostnames, opts.ValidFor); err != nil {
+	if opts.Overwrite || missing(paths.CertFile) || missing(paths.KeyFile) || missing(paths.CAFile) || missing(paths.CAKeyFile) {
+		if err := GenerateAdminCertificateBundle(paths.CertFile, paths.KeyFile, paths.CAFile, paths.CAKeyFile, opts.Hostnames, opts.ValidFor); err != nil {
 			return nil, err
 		}
 	}
@@ -106,6 +114,8 @@ func ResolveDefaultPaths(opts DefaultOptions) DefaultPaths {
 		CertDir:    filepath.Join(opts.DataDir, DefaultCertDir),
 		CertFile:   filepath.Join(opts.DataDir, DefaultCertDir, DefaultAdminCertFile),
 		KeyFile:    filepath.Join(opts.DataDir, DefaultCertDir, DefaultAdminKeyFile),
+		CAFile:     filepath.Join(opts.DataDir, DefaultCertDir, DefaultAdminCAFile),
+		CAKeyFile:  filepath.Join(opts.DataDir, DefaultCertDir, DefaultAdminCAKeyFile),
 		LogDir:     filepath.Join(opts.DataDir, DefaultLogDir),
 		RuntimeDir: filepath.Join(opts.DataDir, DefaultRuntimeDir),
 		SQLiteFile: filepath.Join(opts.DataDir, DefaultSQLiteFile),
@@ -353,42 +363,89 @@ apisec:
 	))
 }
 
-// GenerateSelfSignedCertificate writes an ECDSA P-256 self-signed certificate
-// for the admin interface.
-// 为管理端生成 ECDSA P-256 自签名证书。
+// GenerateSelfSignedCertificate writes an ECDSA P-256 admin certificate chain
+// signed by a local self-signed CheeseWAF CA.
+// 为管理端生成由本地 CheeseWAF CA 签发的 ECDSA P-256 证书链。
 func GenerateSelfSignedCertificate(certFile, keyFile string, hosts []string, validFor time.Duration) error {
+	caFile := filepath.Join(filepath.Dir(certFile), DefaultAdminCAFile)
+	caKeyFile := filepath.Join(filepath.Dir(keyFile), DefaultAdminCAKeyFile)
+	return GenerateAdminCertificateBundle(certFile, keyFile, caFile, caKeyFile, hosts, validFor)
+}
+
+// GenerateAdminCertificateBundle writes a local CA certificate/key plus a
+// server-auth leaf certificate/key for the admin interface. The leaf cert file
+// contains the leaf first and CA second, matching common TLS chain layout.
+// 生成本地 CA 与管理端叶子证书；叶子证书文件按 leaf + CA 链顺序写入。
+func GenerateAdminCertificateBundle(certFile, keyFile, caFile, caKeyFile string, hosts []string, validFor time.Duration) error {
 	if certFile == "" || keyFile == "" {
 		return errors.New("cert and key paths are required")
 	}
+	if caFile == "" || caKeyFile == "" {
+		return errors.New("ca cert and ca key paths are required")
+	}
 	if validFor <= 0 {
-		validFor = time.Hour * 24 * 365 * defaultCertificateYears
+		validFor = time.Hour * 24 * defaultLeafCertificateDays
 	}
 	if len(hosts) == 0 {
 		hosts = DefaultCertificateHosts
 	}
 
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return fmt.Errorf("generate private key: %w", err)
+		return fmt.Errorf("generate ca private key: %w", err)
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate leaf private key: %w", err)
 	}
 
-	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serial, err := rand.Int(rand.Reader, serialLimit)
+	caSerial, err := certificateSerial()
 	if err != nil {
-		return fmt.Errorf("generate serial number: %w", err)
+		return err
+	}
+	leafSerial, err := certificateSerial()
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	caSKI, err := subjectKeyID(&caKey.PublicKey)
+	if err != nil {
+		return err
+	}
+	leafSKI, err := subjectKeyID(&leafKey.PublicKey)
+	if err != nil {
+		return err
 	}
 
-	template := x509.Certificate{
-		SerialNumber: serial,
+	caTemplate := x509.Certificate{
+		SerialNumber: caSerial,
+		Subject: pkix.Name{
+			CommonName:   defaultCACommonName,
+			Organization: []string{defaultOrganization},
+		},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(time.Hour * 24 * 365 * defaultCACertificateYears),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            0,
+		MaxPathLenZero:        true,
+		SubjectKeyId:          caSKI,
+	}
+
+	leafTemplate := x509.Certificate{
+		SerialNumber: leafSerial,
 		Subject: pkix.Name{
 			CommonName:   "CheeseWAF Admin",
-			Organization: []string{"CheeseWAF"},
+			Organization: []string{defaultOrganization},
 		},
-		NotBefore:             time.Now().Add(-time.Minute),
-		NotAfter:              time.Now().Add(validFor),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(validFor),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		SubjectKeyId:          leafSKI,
+		AuthorityKeyId:        caSKI,
 	}
 
 	for _, host := range hosts {
@@ -397,43 +454,69 @@ func GenerateSelfSignedCertificate(certFile, keyFile string, hosts []string, val
 			continue
 		}
 		if ip := net.ParseIP(host); ip != nil {
-			template.IPAddresses = append(template.IPAddresses, ip)
+			leafTemplate.IPAddresses = append(leafTemplate.IPAddresses, ip)
 			continue
 		}
-		template.DNSNames = append(template.DNSNames, host)
+		leafTemplate.DNSNames = append(leafTemplate.DNSNames, host)
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	caDER, err := x509.CreateCertificate(rand.Reader, &caTemplate, &caTemplate, &caKey.PublicKey, caKey)
 	if err != nil {
-		return fmt.Errorf("create certificate: %w", err)
+		return fmt.Errorf("create ca certificate: %w", err)
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, &leafTemplate, &caTemplate, &leafKey.PublicKey, caKey)
+	if err != nil {
+		return fmt.Errorf("create leaf certificate: %w", err)
 	}
 
-	keyBytes, err := x509.MarshalECPrivateKey(privateKey)
+	leafKeyBytes, err := x509.MarshalECPrivateKey(leafKey)
 	if err != nil {
-		return fmt.Errorf("marshal private key: %w", err)
+		return fmt.Errorf("marshal leaf private key: %w", err)
+	}
+	caKeyBytes, err := x509.MarshalECPrivateKey(caKey)
+	if err != nil {
+		return fmt.Errorf("marshal ca private key: %w", err)
 	}
 
 	var certPEM bytes.Buffer
-	if err := pem.Encode(&certPEM, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return fmt.Errorf("encode certificate: %w", err)
+	if err := pem.Encode(&certPEM, &pem.Block{Type: "CERTIFICATE", Bytes: leafDER}); err != nil {
+		return fmt.Errorf("encode leaf certificate: %w", err)
+	}
+	if err := pem.Encode(&certPEM, &pem.Block{Type: "CERTIFICATE", Bytes: caDER}); err != nil {
+		return fmt.Errorf("encode ca chain certificate: %w", err)
+	}
+
+	var caPEM bytes.Buffer
+	if err := pem.Encode(&caPEM, &pem.Block{Type: "CERTIFICATE", Bytes: caDER}); err != nil {
+		return fmt.Errorf("encode ca certificate: %w", err)
 	}
 
 	var keyPEM bytes.Buffer
-	if err := pem.Encode(&keyPEM, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
-		return fmt.Errorf("encode private key: %w", err)
+	if err := pem.Encode(&keyPEM, &pem.Block{Type: "EC PRIVATE KEY", Bytes: leafKeyBytes}); err != nil {
+		return fmt.Errorf("encode leaf private key: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(certFile), 0o750); err != nil {
-		return fmt.Errorf("create cert directory: %w", err)
+	var caKeyPEM bytes.Buffer
+	if err := pem.Encode(&caKeyPEM, &pem.Block{Type: "EC PRIVATE KEY", Bytes: caKeyBytes}); err != nil {
+		return fmt.Errorf("encode ca private key: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(keyFile), 0o750); err != nil {
-		return fmt.Errorf("create key directory: %w", err)
+
+	for _, path := range []string{certFile, keyFile, caFile, caKeyFile} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			return fmt.Errorf("create cert directory: %w", err)
+		}
 	}
 	if err := os.WriteFile(certFile, certPEM.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("write certificate: %w", err)
 	}
 	if err := os.WriteFile(keyFile, keyPEM.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
+	}
+	if err := os.WriteFile(caFile, caPEM.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("write ca certificate: %w", err)
+	}
+	if err := os.WriteFile(caKeyFile, caKeyPEM.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write ca private key: %w", err)
 	}
 	return nil
 }
@@ -449,9 +532,27 @@ func normalizeDefaultOptions(opts DefaultOptions) DefaultOptions {
 		opts.Hostnames = append([]string(nil), DefaultCertificateHosts...)
 	}
 	if opts.ValidFor <= 0 {
-		opts.ValidFor = time.Hour * 24 * 365 * defaultCertificateYears
+		opts.ValidFor = time.Hour * 24 * defaultLeafCertificateDays
 	}
 	return opts
+}
+
+func certificateSerial() (*big.Int, error) {
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return nil, fmt.Errorf("generate serial number: %w", err)
+	}
+	return serial, nil
+}
+
+func subjectKeyID(publicKey *ecdsa.PublicKey) ([]byte, error) {
+	encoded, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshal public key: %w", err)
+	}
+	sum := sha1.Sum(encoded)
+	return sum[:], nil
 }
 
 func writeFile(path string, contents []byte, perm os.FileMode, overwrite bool) error {

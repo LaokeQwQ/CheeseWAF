@@ -400,7 +400,7 @@ const zhCN = {
     adminListen: '管理端监听',
     adminStrategy: '管理端访问策略',
     strategyLocal: '本地监听 / 反代 / 跳板机 / SSH 隧道',
-    strategyPublicTLS: '公网自签 HTTPS',
+    strategyPublicTLS: '公网本地 CA HTTPS',
   },
   login: {
     title: 'CheeseWAF',
