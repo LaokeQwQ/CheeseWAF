@@ -15,7 +15,7 @@ The repository currently includes:
 - AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots.
 - First-run setup wizard for local HTTPS bootstrap, admin creation, SQLite migration, default config/certificate generation, and setup completion locking.
 - Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch.
-- GitHub Actions CI for PR flow validation, Go tests, web build, and cross-platform builds.
+- Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, and cross-platform builds.
 
 Runtime Bot challenge secrets are generated per install. If an old config still
 contains an empty value or `change-me-in-production`, CheeseWAF rotates it at
@@ -39,10 +39,10 @@ claim is "working and explainable", not "ModSecurity/OWASP CRS parity".
 ## Stage Snapshot
 
 As of 2026-06-06, the active development line is `fix/admin-ui-dashboard-map`
-with PR #8 targeting `dev`. CI is green for branch-flow validation, Go tests on
-Linux/Windows/macOS, web build, go-mod-tidy, and cross-build. `master` and
-`canary` intentionally remain behind `dev` until the upward promotion flow is
-completed.
+with PR #8 targeting `dev`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
+primary forge/build target; GitHub remains a secondary mirror/check. `master`
+and `canary` intentionally remain behind `dev` until the upward promotion flow
+is completed.
 
 ## Pre-Release Gaps
 
