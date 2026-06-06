@@ -20,6 +20,9 @@
 - Mutating protection and site routes require write permissions.
 - Audit logs are written to `apisec.audit.path` and exposed through `/api/audit`.
 - `waf-cli` shows local audit and access log counts from the same configured paths.
+- Local password resets can be performed with `cheesewaf user password USERNAME`
+  or `waf-cli user password USERNAME`; use `--password-stdin` for scripts or
+  `--generate` for a one-time temporary password.
 
 ## Transport
 
