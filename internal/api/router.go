@@ -21,6 +21,7 @@ type Options struct {
 	Secret              string
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
+	OnAPISecChanged     func(config.APISecConfig) error
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -36,6 +37,7 @@ func NewRouter(opts Options) http.Handler {
 		Auditor:             auditor,
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
+		OnAPISecChanged:     opts.OnAPISecChanged,
 	})
 	hub := opts.Hub
 	if hub == nil {

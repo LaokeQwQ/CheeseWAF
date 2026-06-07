@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/apisec"
@@ -99,6 +100,24 @@ func (s *Server) UpdateSites(sites []config.SiteConfig) {
 	s.config.Sites = append([]config.SiteConfig(nil), sites...)
 	s.health = NewHealthRegistry(s.config.Sites)
 	s.lb.UpdateSites(s.config.Sites, s.health)
+}
+
+func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
+	if s == nil {
+		return nil
+	}
+	apiSchema, err := apisec.NewValidator(apiSec.Validation)
+	if err != nil {
+		return err
+	}
+	apiLimit, err := apisec.NewRateLimiter(apiSec.RateLimits)
+	if err != nil {
+		return err
+	}
+	s.config.APISec = apiSec
+	s.apiSchema = apiSchema
+	s.apiLimit = apiLimit
+	return nil
 }
 
 func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
@@ -217,12 +236,27 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff {
 		if !s.apiLimit.Allow(r, reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
-			s.block(w, reqCtx, "apisec", "API endpoint rate limit exceeded", http.StatusTooManyRequests, start)
-			return
+			result := apiRateLimitDetection(reqCtx)
+			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
+			reqCtx.Metadata["api_security_policy_decision"] = decision
+			reqCtx.Metadata["detection"] = result
+			if decision.Action == engine.ActionBlock.String() {
+				s.blockDetection(w, reqCtx, result, http.StatusTooManyRequests, start)
+				return
+			}
 		}
 		if findings := s.apiSchema.Validate(r); len(findings) > 0 {
-			s.block(w, reqCtx, "apisec", findings[0].Message, http.StatusBadRequest, start)
-			return
+			result := apiValidationDetection(findings[0])
+			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
+			decision.SchemaID = findings[0].SchemaID
+			decision.Field = findings[0].Field
+			reqCtx.Metadata["api_security_policy_decision"] = decision
+			reqCtx.Metadata["api_security_findings"] = findings
+			reqCtx.Metadata["detection"] = result
+			if decision.Action == engine.ActionBlock.String() {
+				s.blockDetection(w, reqCtx, result, http.StatusBadRequest, start)
+				return
+			}
 		}
 	}
 	rewriter, err := NewRewriter(site.WAF.Rewrite)
@@ -498,6 +532,128 @@ func rateLimitDetection(reqCtx *engine.RequestContext) *engine.DetectionResult {
 	}
 }
 
+type apiSecurityPolicyDecision struct {
+	Level             string  `json:"level"`
+	Action            string  `json:"action"`
+	Reason            string  `json:"reason"`
+	MinimumSeverity   string  `json:"minimum_severity"`
+	MinimumConfidence float64 `json:"minimum_confidence"`
+	ResultSeverity    string  `json:"result_severity"`
+	ResultConfidence  float64 `json:"result_confidence"`
+	DetectorAction    string  `json:"detector_action"`
+	DetectorCategory  string  `json:"detector_category"`
+	DetectorID        string  `json:"detector_id"`
+	SchemaID          string  `json:"schema_id,omitempty"`
+	Field             string  `json:"field,omitempty"`
+}
+
+func evaluateAPISecurityPolicy(level string, result *engine.DetectionResult) apiSecurityPolicyDecision {
+	if level == "" {
+		level = config.ProtectionLevelSmart
+	}
+	minSeverity, minConfidence := apiSecurityThreshold(level)
+	decision := apiSecurityPolicyDecision{
+		Level:             level,
+		Action:            engine.ActionLog.String(),
+		Reason:            "detected below API security policy threshold",
+		MinimumSeverity:   minSeverity.String(),
+		MinimumConfidence: minConfidence,
+		DetectorAction:    engine.ActionPass.String(),
+	}
+	if result == nil {
+		decision.Reason = "no detection result"
+		return decision
+	}
+	decision.ResultSeverity = result.Severity.String()
+	decision.ResultConfidence = result.Confidence
+	decision.DetectorAction = result.Action.String()
+	decision.DetectorCategory = result.Category
+	decision.DetectorID = result.DetectorID
+	if result.Action == engine.ActionPass || result.Action == engine.ActionLog {
+		decision.Reason = "detector requested " + result.Action.String()
+		return decision
+	}
+	if level == config.ProtectionLevelOff {
+		decision.Reason = "API security disabled"
+		return decision
+	}
+	if result.Severity >= minSeverity && result.Confidence >= minConfidence {
+		decision.Action = engine.ActionBlock.String()
+		decision.Reason = "severity and confidence meet API security policy threshold"
+		return decision
+	}
+	return decision
+}
+
+func apiSecurityThreshold(level string) (engine.Severity, float64) {
+	switch level {
+	case config.ProtectionLevelLow:
+		return engine.SeverityHigh, 0.90
+	case config.ProtectionLevelHigh:
+		return engine.SeverityLow, 0.72
+	case config.ProtectionLevelStrict:
+		return engine.SeverityLow, 0.60
+	default:
+		return engine.SeverityMedium, 0.82
+	}
+}
+
+func apiRateLimitDetection(reqCtx *engine.RequestContext) *engine.DetectionResult {
+	payload := ""
+	if reqCtx != nil {
+		payload = reqCtx.ClientIP
+	}
+	return &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "apisec.ratelimit",
+		Category:   "apisec",
+		Severity:   engine.SeverityMedium,
+		Action:     engine.ActionBlock,
+		Message:    "API endpoint rate limit exceeded",
+		Confidence: 0.86,
+		Payload:    payload,
+	}
+}
+
+func apiValidationDetection(finding apisec.ValidationFinding) *engine.DetectionResult {
+	detectorID := "apisec.validation"
+	if finding.SchemaID != "" {
+		detectorID += "." + finding.SchemaID
+	}
+	return &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: detectorID,
+		Category:   "apisec",
+		Severity:   parseSeverity(finding.Severity),
+		Action:     engine.ActionBlock,
+		Message:    finding.Message,
+		Confidence: apiValidationConfidence(finding),
+		Payload:    finding.Field,
+	}
+}
+
+func apiValidationConfidence(finding apisec.ValidationFinding) float64 {
+	if finding.Field == "body" {
+		return 0.88
+	}
+	return 0.84
+}
+
+func parseSeverity(value string) engine.Severity {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "critical":
+		return engine.SeverityCritical
+	case "high":
+		return engine.SeverityHigh
+	case "low":
+		return engine.SeverityLow
+	case "info":
+		return engine.SeverityInfo
+	default:
+		return engine.SeverityMedium
+	}
+}
+
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
 	s.renderer.Render(w, status, blockpage.Data{
 		TraceID:    reqCtx.TraceID,
@@ -594,6 +750,9 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 				entry.Action = "log"
 			}
 			if decision, ok := reqCtx.Metadata["bot_cc_policy_decision"].(botCCPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
+				entry.Action = "log"
+			}
+			if decision, ok := reqCtx.Metadata["api_security_policy_decision"].(apiSecurityPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
 				entry.Action = "log"
 			}
 		}

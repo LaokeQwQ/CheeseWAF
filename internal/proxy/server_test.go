@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -313,6 +314,150 @@ func TestServerBotCCPolicyLevels(t *testing.T) {
 	})
 }
 
+func TestServerAPISecurityPolicyLevels(t *testing.T) {
+	t.Run("smart blocks schema validation finding", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Validation.Enabled = true
+			cfg.APISec.Validation.Schemas = []config.APIEndpointSchemaConfig{{
+				ID: "search", Method: http.MethodGet, PathPattern: "^/api/search$", RequiredParams: []string{"q"}, Enabled: true,
+			}}
+		})
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/search", nil))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("expected smart API validation block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "block" || sink.entries[0].Category != "apisec" {
+			t.Fatalf("unexpected API validation log: %#v", sink.entries)
+		}
+		decision, ok := sink.entries[0].Metadata["api_security_policy_decision"].(apiSecurityPolicyDecision)
+		if !ok || decision.Action != engine.ActionBlock.String() || decision.SchemaID != "search" || decision.Field != "q" {
+			t.Fatalf("unexpected API security decision: %#v", sink.entries[0].Metadata)
+		}
+	})
+
+	t.Run("low records but passes schema validation finding", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelLow, func(cfg *config.Config) {
+			cfg.APISec.Validation.Enabled = true
+			cfg.APISec.Validation.Schemas = []config.APIEndpointSchemaConfig{{
+				ID: "search", Method: http.MethodGet, PathPattern: "^/api/search$", RequiredParams: []string{"q"}, Enabled: true,
+			}}
+		})
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/search", nil))
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected low API validation pass, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "log" || sink.entries[0].Category != "apisec" {
+			t.Fatalf("unexpected low API validation log: %#v", sink.entries)
+		}
+	})
+
+	t.Run("smart blocks API endpoint rate limit breach", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.RateLimits = []config.APIEndpointLimitConfig{{
+				ID: "search-rate", Method: http.MethodGet, PathPattern: "^/api/search$", Requests: 1, Window: time.Minute, Enabled: true,
+			}}
+		})
+		defer cleanup()
+
+		for idx := 0; idx < 1; idx++ {
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/search?q=a", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected first API request to pass, code=%d", recorder.Code)
+			}
+		}
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/search?q=a", nil))
+		if recorder.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected smart API rate limit block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 2 || sink.entries[1].Action != "block" || sink.entries[1].DetectorID != "apisec.ratelimit" {
+			t.Fatalf("unexpected API rate limit logs: %#v", sink.entries)
+		}
+	})
+
+	t.Run("low records but passes API endpoint rate limit breach", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelLow, func(cfg *config.Config) {
+			cfg.APISec.RateLimits = []config.APIEndpointLimitConfig{{
+				ID: "search-rate", Method: http.MethodGet, PathPattern: "^/api/search$", Requests: 1, Window: time.Minute, Enabled: true,
+			}}
+		})
+		defer cleanup()
+
+		for idx := 0; idx < 2; idx++ {
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/search?q=a", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected low API rate limit pass on request %d, code=%d", idx+1, recorder.Code)
+			}
+		}
+		if len(sink.entries) != 2 || sink.entries[1].Action != "log" || sink.entries[1].DetectorID != "apisec.ratelimit" {
+			t.Fatalf("unexpected low API rate limit logs: %#v", sink.entries)
+		}
+	})
+
+	t.Run("runtime update refreshes API validation", func(t *testing.T) {
+		server, _, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Enabled = false
+		})
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/search", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected API security disabled before update, code=%d", recorder.Code)
+		}
+
+		err := server.UpdateAPISec(config.APISecConfig{
+			Enabled: true,
+			Validation: config.APIValidationConfig{
+				Enabled: true,
+				Schemas: []config.APIEndpointSchemaConfig{{
+					ID: "search", Method: http.MethodGet, PathPattern: "^/api/search$", RequiredParams: []string{"q"}, Enabled: true,
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("update API security: %v", err)
+		}
+
+		recorder = httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/search", nil))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("expected API validation block after update, code=%d", recorder.Code)
+		}
+	})
+
+	t.Run("runtime update rejects invalid API schema without replacing current state", func(t *testing.T) {
+		server, _, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Enabled = false
+		})
+		defer cleanup()
+
+		err := server.UpdateAPISec(config.APISecConfig{
+			Enabled: true,
+			Validation: config.APIValidationConfig{
+				Enabled: true,
+				Schemas: []config.APIEndpointSchemaConfig{{
+					ID: "bad", Method: http.MethodGet, PathPattern: "(", RequiredParams: []string{"q"}, Enabled: true,
+				}},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected invalid API schema update to fail")
+		}
+		if server.config.APISec.Enabled {
+			t.Fatalf("expected invalid update to preserve previous API security state: %+v", server.config.APISec)
+		}
+	})
+}
+
 func TestServerPhase2Protections(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream-Path", r.URL.Path)
@@ -441,6 +586,34 @@ func newBotCCTestServer(t *testing.T, level string, configure func(*config.Confi
 	cfg.Protection.Policy.BotCC = level
 	cfg.Protection.IP.Whitelist = nil
 	cfg.Protection.IP.Blacklist = nil
+	if configure != nil {
+		configure(&cfg)
+	}
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		upstream.Close()
+		t.Fatal(err)
+	}
+	return server, sink, upstream.Close
+}
+
+func newAPISecurityTestServer(t *testing.T, level string, configure func(*config.Config)) (*Server, *captureSink, func()) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.Policy.APISecurity = level
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	cfg.Protection.Bot.Enabled = false
+	cfg.APISec.Enabled = true
+	cfg.APISec.Validation.Enabled = false
+	cfg.APISec.Validation.Schemas = nil
+	cfg.APISec.RateLimits = nil
 	if configure != nil {
 		configure(&cfg)
 	}

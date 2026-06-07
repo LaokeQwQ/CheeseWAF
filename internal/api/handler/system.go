@@ -121,6 +121,12 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.APISec != nil {
+		if err := h.notifyAPISecChanged(); err != nil {
+			writeError(w, http.StatusInternalServerError, "APISEC_RELOAD_ERROR", err.Error())
+			return
+		}
+	}
 	h.System(w, r)
 }
 

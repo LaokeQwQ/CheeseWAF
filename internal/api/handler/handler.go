@@ -23,6 +23,7 @@ type Handler struct {
 	StartedAt           time.Time
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
+	OnAPISecChanged     func(config.APISecConfig) error
 }
 
 type Options struct {
@@ -34,6 +35,7 @@ type Options struct {
 	Auditor             *middleware.Auditor
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
+	OnAPISecChanged     func(config.APISecConfig) error
 }
 
 func New(opts Options) *Handler {
@@ -47,6 +49,7 @@ func New(opts Options) *Handler {
 		StartedAt:           time.Now().UTC(),
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
+		OnAPISecChanged:     opts.OnAPISecChanged,
 	}
 }
 
@@ -55,6 +58,13 @@ func (h *Handler) notifyProtectionChanged() error {
 		return nil
 	}
 	return h.OnProtectionChanged(h.Config.Protection)
+}
+
+func (h *Handler) notifyAPISecChanged() error {
+	if h == nil || h.OnAPISecChanged == nil || h.Config == nil {
+		return nil
+	}
+	return h.OnAPISecChanged(h.Config.APISec)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
