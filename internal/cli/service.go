@@ -87,7 +87,7 @@ func runServe(ctx context.Context) error {
 	}
 	admin := &http.Server{
 		Addr:         cfg.Server.AdminListen,
-		Handler:      adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites})),
+		Handler:      adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites, OnProtectionChanged: proxyServer.UpdateProtection})),
 		TLSConfig:    adminTLS,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,

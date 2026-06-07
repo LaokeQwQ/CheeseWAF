@@ -10,6 +10,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -141,6 +142,66 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 	})
 }
 
+func TestServerThreatIntelPolicyLevels(t *testing.T) {
+	t.Run("smart challenges high confidence threat intel match", func(t *testing.T) {
+		server, sink, cleanup := newThreatIntelTestServer(t, config.ProtectionLevelSmart, []config.ThreatIntelConfig{{
+			ID: "feed-1", Value: "203.0.113.10", Severity: "high", Source: "feed-a", Action: "challenge", Confidence: 0.9, Enabled: true,
+		}}, nil)
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+		req.Header.Set("X-Real-IP", "203.0.113.10")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected threat intel challenge, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "challenge" || sink.entries[0].Category != "threat_intel" {
+			t.Fatalf("unexpected threat intel challenge log: %#v", sink.entries)
+		}
+		decision, ok := sink.entries[0].Metadata["threat_intel_decision"].(ip.ThreatDecision)
+		if !ok || decision.Action != "challenge" || decision.Score < decision.MinimumScore {
+			t.Fatalf("unexpected threat intel decision: %#v", sink.entries[0].Metadata)
+		}
+	})
+
+	t.Run("low records but passes below threat intel threshold", func(t *testing.T) {
+		server, sink, cleanup := newThreatIntelTestServer(t, config.ProtectionLevelLow, []config.ThreatIntelConfig{{
+			ID: "feed-1", Value: "203.0.113.10", Severity: "high", Source: "feed-a", Action: "block", Confidence: 0.9, Enabled: true,
+		}}, nil)
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+		req.Header.Set("X-Real-IP", "203.0.113.10")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected low policy pass, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "log" || sink.entries[0].Category != "threat_intel" {
+			t.Fatalf("unexpected low threat intel log: %#v", sink.entries)
+		}
+	})
+
+	t.Run("whitelist bypasses threat intel match", func(t *testing.T) {
+		server, sink, cleanup := newThreatIntelTestServer(t, config.ProtectionLevelSmart, []config.ThreatIntelConfig{{
+			ID: "feed-1", Value: "203.0.113.10", Severity: "critical", Source: "feed-a", Action: "block", Confidence: 1, Enabled: true,
+		}}, []string{"203.0.113.10"})
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+		req.Header.Set("X-Real-IP", "203.0.113.10")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected whitelist pass, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Category == "threat_intel" {
+			t.Fatalf("unexpected threat intel log for whitelisted ip: %#v", sink.entries)
+		}
+	})
+}
+
 func TestServerPhase2Protections(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream-Path", r.URL.Path)
@@ -231,6 +292,27 @@ func newPolicyTestServer(t *testing.T, level string, result *engine.DetectionRes
 	cfg.Protection.RateLimit.Enabled = false
 	sink := &captureSink{}
 	server, err := NewServer(&cfg, engine.NewPipeline(staticDetector{result: result}), sink)
+	if err != nil {
+		upstream.Close()
+		t.Fatal(err)
+	}
+	return server, sink, upstream.Close
+}
+
+func newThreatIntelTestServer(t *testing.T, level string, intel []config.ThreatIntelConfig, whitelist []string) (*Server, *captureSink, func()) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.Policy.ThreatIntel = level
+	cfg.Protection.IP.ThreatIntel = intel
+	cfg.Protection.IP.Whitelist = whitelist
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
 	if err != nil {
 		upstream.Close()
 		t.Fatal(err)

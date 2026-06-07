@@ -21,13 +21,14 @@ import (
 )
 
 type threatIntelImportPayload struct {
-	Format    string   `json:"format"`
-	Contents  string   `json:"contents"`
-	Source    string   `json:"source"`
-	Severity  string   `json:"severity"`
-	Action    string   `json:"action"`
-	Labels    []string `json:"labels"`
-	ExpiresAt string   `json:"expires_at"`
+	Format     string   `json:"format"`
+	Contents   string   `json:"contents"`
+	Source     string   `json:"source"`
+	Severity   string   `json:"severity"`
+	Action     string   `json:"action"`
+	Confidence float64  `json:"confidence"`
+	Labels     []string `json:"labels"`
+	ExpiresAt  string   `json:"expires_at"`
 }
 
 type threatIntelSyncPayload struct {
@@ -77,6 +78,10 @@ func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 		return
 	}
+	if err := h.notifyProtectionChanged(); err != nil {
+		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
+		return
+	}
 	writeData(w, h.Config.Protection.Policy)
 }
 
@@ -88,6 +93,10 @@ func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
 	h.Config.Protection.IP = req
 	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	if err := h.notifyProtectionChanged(); err != nil {
+		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
 		return
 	}
 	writeData(w, h.Config.Protection.IP)
@@ -134,12 +143,13 @@ func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	imported, err := ipprotect.ParseThreatIntel(req.Format, []byte(req.Contents), ipprotect.ImportOptions{
-		Source:    req.Source,
-		Severity:  req.Severity,
-		Action:    req.Action,
-		Labels:    req.Labels,
-		ExpiresAt: expiresAt,
-		Enabled:   true,
+		Source:     req.Source,
+		Severity:   req.Severity,
+		Action:     req.Action,
+		Confidence: req.Confidence,
+		Labels:     req.Labels,
+		ExpiresAt:  expiresAt,
+		Enabled:    true,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "THREAT_INTEL_IMPORT_ERROR", err.Error())
@@ -148,6 +158,10 @@ func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
 	h.Config.Protection.IP.ThreatIntel = ipprotect.MergeThreatIntel(h.Config.Protection.IP.ThreatIntel, imported)
 	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	if err := h.notifyProtectionChanged(); err != nil {
+		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
 		return
 	}
 	writeData(w, map[string]any{"imported": len(imported), "total": len(h.Config.Protection.IP.ThreatIntel)})
@@ -182,6 +196,10 @@ func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
 	if total > 0 {
 		if err := h.persistConfig(); err != nil {
 			writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+			return
+		}
+		if err := h.notifyProtectionChanged(); err != nil {
+			writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
 			return
 		}
 	}
@@ -226,6 +244,10 @@ func (h *Handler) LookupThreatIntel(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 			return
 		}
+		if err := h.notifyProtectionChanged(); err != nil {
+			writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
+			return
+		}
 	}
 	writeData(w, map[string]any{"ip": req.IP, "imported": len(imported), "items": imported})
 }
@@ -261,7 +283,14 @@ func (h *Handler) UpdateACLRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Config.Protection.ACL = req
-	_ = h.persistConfig()
+	if err := h.persistConfig(); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	if err := h.notifyProtectionChanged(); err != nil {
+		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
+		return
+	}
 	writeData(w, h.Config.Protection.ACL)
 }
 
@@ -271,7 +300,14 @@ func (h *Handler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Config.Protection.RateLimit = req
-	_ = h.persistConfig()
+	if err := h.persistConfig(); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	if err := h.notifyProtectionChanged(); err != nil {
+		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
+		return
+	}
 	writeData(w, h.Config.Protection.RateLimit)
 }
 
@@ -281,7 +317,14 @@ func (h *Handler) UpdateBotProtection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Config.Protection.Bot = req
-	_ = h.persistConfig()
+	if err := h.persistConfig(); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	if err := h.notifyProtectionChanged(); err != nil {
+		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
+		return
+	}
 	writeData(w, h.Config.Protection.Bot)
 }
 

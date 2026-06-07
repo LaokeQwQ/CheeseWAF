@@ -10,14 +10,45 @@ import (
 
 func TestIntelMatchesCIDR(t *testing.T) {
 	intel, err := NewIntel([]config.ThreatIntelConfig{
-		{ID: "feed-1", Value: "203.0.113.0/24", Severity: "high", Source: "test", Enabled: true},
+		{ID: "feed-1", Value: "203.0.113.0/24", Severity: "high", Source: "test", Action: "challenge", Confidence: 0.9, Enabled: true},
 	})
 	if err != nil {
 		t.Fatalf("new intel: %v", err)
 	}
 	matches := intel.Match("203.0.113.10")
-	if len(matches) != 1 || matches[0].Severity != "high" {
+	if len(matches) != 1 || matches[0].Severity != "high" || matches[0].Action != "challenge" || matches[0].Confidence != 0.9 {
 		t.Fatalf("expected high severity match, got %+v", matches)
+	}
+}
+
+func TestIntelEvaluatePolicyLevels(t *testing.T) {
+	intel, err := NewIntel([]config.ThreatIntelConfig{
+		{ID: "feed-1", Value: "203.0.113.10", Severity: "high", Source: "feed-a", Action: "challenge", Confidence: 0.9, Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("new intel: %v", err)
+	}
+	smart := intel.Evaluate("203.0.113.10", config.ProtectionLevelSmart)
+	if !smart.Matched || smart.Action != "challenge" || smart.Score < smart.MinimumScore || smart.Severity != "high" {
+		t.Fatalf("expected smart challenge decision, got %+v", smart)
+	}
+	low := intel.Evaluate("203.0.113.10", config.ProtectionLevelLow)
+	if !low.Matched || low.Action != "log" || low.Score >= low.MinimumScore {
+		t.Fatalf("expected low policy to log below threshold, got %+v", low)
+	}
+}
+
+func TestIntelEvaluateCombinesMultipleSources(t *testing.T) {
+	intel, err := NewIntel([]config.ThreatIntelConfig{
+		{ID: "feed-1", Value: "203.0.113.0/24", Severity: "medium", Source: "feed-a", Action: "log", Confidence: 0.7, Enabled: true},
+		{ID: "feed-2", Value: "203.0.113.10", Severity: "medium", Source: "feed-b", Action: "block", Confidence: 0.8, Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("new intel: %v", err)
+	}
+	decision := intel.Evaluate("203.0.113.10", config.ProtectionLevelHigh)
+	if !decision.Matched || decision.Action != "block" || decision.SourceCount != 2 || len(decision.Indicators) != 2 {
+		t.Fatalf("expected multi-source block decision, got %+v", decision)
 	}
 }
 

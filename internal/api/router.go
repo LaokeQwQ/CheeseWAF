@@ -13,13 +13,14 @@ import (
 )
 
 type Options struct {
-	Config         *config.Config
-	ConfigPath     string
-	Store          storage.Store
-	Sink           storage.LogSink
-	Hub            *realtime.Hub
-	Secret         string
-	OnSitesChanged func([]config.SiteConfig)
+	Config              *config.Config
+	ConfigPath          string
+	Store               storage.Store
+	Sink                storage.LogSink
+	Hub                 *realtime.Hub
+	Secret              string
+	OnSitesChanged      func([]config.SiteConfig)
+	OnProtectionChanged func(config.ProtectionConfig) error
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -27,13 +28,14 @@ func NewRouter(opts Options) http.Handler {
 	tokens := middleware.NewTokenManager(opts.Secret, 24*time.Hour)
 	auditor := middleware.NewAuditor(opts.Config.APISec.Audit.Path)
 	h := handler.New(handler.Options{
-		Config:         opts.Config,
-		ConfigPath:     opts.ConfigPath,
-		Store:          opts.Store,
-		Sink:           opts.Sink,
-		Tokens:         tokens,
-		Auditor:        auditor,
-		OnSitesChanged: opts.OnSitesChanged,
+		Config:              opts.Config,
+		ConfigPath:          opts.ConfigPath,
+		Store:               opts.Store,
+		Sink:                opts.Sink,
+		Tokens:              tokens,
+		Auditor:             auditor,
+		OnSitesChanged:      opts.OnSitesChanged,
+		OnProtectionChanged: opts.OnProtectionChanged,
 	})
 	hub := opts.Hub
 	if hub == nil {

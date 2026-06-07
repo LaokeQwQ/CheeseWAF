@@ -320,6 +320,7 @@ export type ThreatIntelIndicator = {
   source: string;
   labels: string[];
   action?: string;
+  confidence?: number;
   enabled?: boolean;
   expires_at?: string;
 };

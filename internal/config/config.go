@@ -139,15 +139,16 @@ type IPProtectionConfig struct {
 }
 
 type ThreatIntelConfig struct {
-	ID        string    `yaml:"id" json:"id"`
-	Value     string    `yaml:"value" json:"value"`
-	Type      string    `yaml:"type" json:"type"`
-	Severity  string    `yaml:"severity" json:"severity"`
-	Source    string    `yaml:"source" json:"source"`
-	Labels    []string  `yaml:"labels" json:"labels"`
-	Action    string    `yaml:"action" json:"action"`
-	ExpiresAt time.Time `yaml:"expires_at" json:"expires_at"`
-	Enabled   bool      `yaml:"enabled" json:"enabled"`
+	ID         string    `yaml:"id" json:"id"`
+	Value      string    `yaml:"value" json:"value"`
+	Type       string    `yaml:"type" json:"type"`
+	Severity   string    `yaml:"severity" json:"severity"`
+	Source     string    `yaml:"source" json:"source"`
+	Labels     []string  `yaml:"labels" json:"labels"`
+	Action     string    `yaml:"action" json:"action"`
+	Confidence float64   `yaml:"confidence" json:"confidence"`
+	ExpiresAt  time.Time `yaml:"expires_at" json:"expires_at"`
+	Enabled    bool      `yaml:"enabled" json:"enabled"`
 }
 
 type ThreatIntelProviderConfig struct {

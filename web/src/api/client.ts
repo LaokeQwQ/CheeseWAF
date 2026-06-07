@@ -222,6 +222,7 @@ export function importThreatIntel(payload: {
   source: string;
   severity: string;
   action: string;
+  confidence?: number;
   labels: string[];
   expires_at?: string;
 }) {
@@ -308,6 +309,7 @@ function normalizeThreatIntel(indicator: Partial<ThreatIntelIndicator> | null | 
     source: indicator?.source ?? '',
     labels: asStringArray(indicator?.labels),
     action: indicator?.action,
+    confidence: typeof indicator?.confidence === 'number' ? indicator.confidence : undefined,
     enabled: indicator?.enabled,
     expires_at: indicator?.expires_at,
   };

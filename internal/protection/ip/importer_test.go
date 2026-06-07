@@ -20,7 +20,7 @@ func TestParseThreatIntelPlainCIDR(t *testing.T) {
 }
 
 func TestParseThreatIntelCSV(t *testing.T) {
-	raw := "ip,severity,source,labels,action\n203.0.113.11,critical,feed-a,scanner|bot,block\n"
+	raw := "ip,severity,source,labels,action,confidence\n203.0.113.11,critical,feed-a,scanner|bot,block,95\n"
 	items, err := ParseThreatIntel("csv", []byte(raw), ImportOptions{})
 	if err != nil {
 		t.Fatalf("parse csv: %v", err)
@@ -28,7 +28,7 @@ func TestParseThreatIntelCSV(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected one indicator, got %d", len(items))
 	}
-	if items[0].Severity != "critical" || items[0].Source != "feed-a" || items[0].Labels[1] != "bot" {
+	if items[0].Severity != "critical" || items[0].Source != "feed-a" || items[0].Labels[1] != "bot" || items[0].Confidence != 0.95 {
 		t.Fatalf("unexpected csv indicator: %+v", items[0])
 	}
 }
@@ -50,8 +50,11 @@ func TestParseThreatBookIPQueryShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse threatbook: %v", err)
 	}
-	if len(items) == 0 || items[0].Value != "203.0.113.44" {
+	if len(items) != 1 || items[0].Value != "203.0.113.44" {
 		t.Fatalf("expected ip from data map key, got %+v", items)
+	}
+	if items[0].Confidence != 0.9 || items[0].Source != "ThreatBook Labs" || len(items[0].Labels) == 0 {
+		t.Fatalf("expected threatbook confidence/source/labels, got %+v", items[0])
 	}
 }
 

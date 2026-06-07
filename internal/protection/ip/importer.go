@@ -15,12 +15,13 @@ import (
 )
 
 type ImportOptions struct {
-	Source    string
-	Severity  string
-	Action    string
-	Labels    []string
-	ExpiresAt time.Time
-	Enabled   bool
+	Source     string
+	Severity   string
+	Action     string
+	Confidence float64
+	Labels     []string
+	ExpiresAt  time.Time
+	Enabled    bool
 }
 
 func ParseThreatIntel(format string, contents []byte, opts ImportOptions) ([]config.ThreatIntelConfig, error) {
@@ -37,16 +38,24 @@ func ParseThreatIntel(format string, contents []byte, opts ImportOptions) ([]con
 		opts.Enabled = true
 	}
 	format = strings.ToLower(strings.TrimSpace(format))
+	var (
+		items []config.ThreatIntelConfig
+		err   error
+	)
 	switch format {
 	case "csv":
-		return parseCSV(contents, opts)
+		items, err = parseCSV(contents, opts)
 	case "json", "misp", "threatbook":
-		return parseJSON(contents, opts)
+		items, err = parseJSON(contents, opts)
 	case "stix", "stix2", "stix2.1":
-		return parseSTIX(contents, opts)
+		items, err = parseSTIX(contents, opts)
 	default:
-		return parsePlain(contents, opts)
+		items, err = parsePlain(contents, opts)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return dedupeThreatIntel(items), nil
 }
 
 func MergeThreatIntel(existing, imported []config.ThreatIntelConfig) []config.ThreatIntelConfig {
@@ -68,6 +77,24 @@ func MergeThreatIntel(existing, imported []config.ThreatIntelConfig) []config.Th
 		merged = append(merged, item)
 	}
 	return merged
+}
+
+func dedupeThreatIntel(items []config.ThreatIntelConfig) []config.ThreatIntelConfig {
+	out := make([]config.ThreatIntelConfig, 0, len(items))
+	seen := map[string]int{}
+	for _, item := range items {
+		value := strings.TrimSpace(item.Value)
+		if value == "" {
+			continue
+		}
+		if idx, ok := seen[value]; ok {
+			out[idx] = item
+			continue
+		}
+		seen[value] = len(out)
+		out = append(out, item)
+	}
+	return out
 }
 
 func parsePlain(contents []byte, opts ImportOptions) ([]config.ThreatIntelConfig, error) {
@@ -122,6 +149,9 @@ func parseCSV(contents []byte, opts ImportOptions) ([]config.ThreatIntelConfig, 
 		if action := firstCSV(row, header, "action"); action != "" {
 			rowOpts.Action = action
 		}
+		if confidence := firstCSV(row, header, "confidence", "score", "confidence_score"); confidence != "" {
+			rowOpts.Confidence = parseConfidence(confidence)
+		}
 		if labels := firstCSV(row, header, "labels", "tags", "type"); labels != "" {
 			rowOpts.Labels = splitLabels(labels)
 		}
@@ -160,21 +190,13 @@ func walkJSON(raw any, opts ImportOptions, out *[]config.ThreatIntelConfig) {
 			walkJSON(item, opts, out)
 		}
 	case map[string]any:
-		rowOpts := opts
-		if source := stringField(value, "source", "provider"); source != "" {
-			rowOpts.Source = source
-		}
-		if severity := stringField(value, "severity", "risk", "level", "verdict"); severity != "" {
-			rowOpts.Severity = normalizeSeverity(severity)
-		}
-		if action := stringField(value, "action"); action != "" {
-			rowOpts.Action = action
-		}
-		if labels := labelsField(value); len(labels) > 0 {
-			rowOpts.Labels = labels
-		}
-		for key := range value {
-			if indicator, ok := indicatorFromValue(key, rowOpts); ok {
+		rowOpts := optionsFromMap(value, opts)
+		for key, child := range value {
+			keyOpts := rowOpts
+			if childMap, ok := child.(map[string]any); ok {
+				keyOpts = optionsFromMap(childMap, keyOpts)
+			}
+			if indicator, ok := indicatorFromValue(key, keyOpts); ok {
 				*out = append(*out, indicator)
 			}
 		}
@@ -228,15 +250,16 @@ func indicatorFromValue(value string, opts ImportOptions) (config.ThreatIntelCon
 	}
 	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(opts.Source+":"+value)).String()
 	return config.ThreatIntelConfig{
-		ID:        "intel-" + id,
-		Value:     value,
-		Type:      "ip",
-		Severity:  normalizeSeverity(opts.Severity),
-		Source:    opts.Source,
-		Labels:    append([]string(nil), opts.Labels...),
-		Action:    normalizeAction(opts.Action),
-		ExpiresAt: opts.ExpiresAt,
-		Enabled:   opts.Enabled,
+		ID:         "intel-" + id,
+		Value:      value,
+		Type:       "ip",
+		Severity:   normalizeSeverity(opts.Severity),
+		Source:     opts.Source,
+		Labels:     append([]string(nil), opts.Labels...),
+		Action:     normalizeAction(opts.Action),
+		Confidence: normalizeConfidenceValue(opts.Confidence),
+		ExpiresAt:  opts.ExpiresAt,
+		Enabled:    opts.Enabled,
 	}, true
 }
 
@@ -294,6 +317,88 @@ func labelsField(value map[string]any) []string {
 	return nil
 }
 
+func optionsFromMap(value map[string]any, opts ImportOptions) ImportOptions {
+	rowOpts := opts
+	if source := stringField(value, "source", "provider"); source != "" {
+		rowOpts.Source = source
+	}
+	if severity := stringField(value, "severity", "risk", "level", "verdict"); severity != "" {
+		rowOpts.Severity = normalizeSeverity(severity)
+	}
+	if action := stringField(value, "action"); action != "" {
+		rowOpts.Action = action
+	}
+	if confidence := numericField(value, "confidence", "score", "confidence_score"); confidence > 0 {
+		rowOpts.Confidence = confidence
+	}
+	if labels := labelsField(value); len(labels) > 0 {
+		rowOpts.Labels = labels
+	}
+	if nested, ok := value["intelligences"].(map[string]any); ok {
+		applyNestedIntelOptions(nested, &rowOpts)
+	}
+	return rowOpts
+}
+
+func applyNestedIntelOptions(value map[string]any, opts *ImportOptions) {
+	for source, raw := range value {
+		switch typed := raw.(type) {
+		case []any:
+			for _, item := range typed {
+				if child, ok := item.(map[string]any); ok {
+					if childSource := stringField(child, "source", "provider"); childSource != "" {
+						opts.Source = childSource
+					} else if strings.TrimSpace(source) != "" {
+						opts.Source = source
+					}
+					if confidence := numericField(child, "confidence", "score", "confidence_score"); confidence > opts.Confidence {
+						opts.Confidence = confidence
+					}
+					if labels := labelsField(child); len(labels) > 0 {
+						opts.Labels = labels
+					}
+				}
+			}
+		case map[string]any:
+			applyNestedIntelOptions(map[string]any{source: []any{typed}}, opts)
+		}
+	}
+}
+
+func numericField(value map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		raw, ok := value[key]
+		if !ok {
+			continue
+		}
+		switch typed := raw.(type) {
+		case float64:
+			return normalizeConfidenceValue(typed)
+		case int:
+			return normalizeConfidenceValue(float64(typed))
+		case json.Number:
+			if parsed, err := typed.Float64(); err == nil {
+				return normalizeConfidenceValue(parsed)
+			}
+		case string:
+			return parseConfidence(typed)
+		}
+	}
+	return 0
+}
+
+func parseConfidence(value string) float64 {
+	value = strings.TrimSpace(strings.TrimSuffix(value, "%"))
+	if value == "" {
+		return 0
+	}
+	var parsed float64
+	if _, err := fmt.Sscanf(value, "%f", &parsed); err != nil {
+		return 0
+	}
+	return normalizeConfidenceValue(parsed)
+}
+
 func splitLabels(value string) []string {
 	parts := strings.FieldsFunc(value, func(r rune) bool {
 		return r == ',' || r == '|' || r == ';'
@@ -328,4 +433,17 @@ func normalizeAction(value string) string {
 	default:
 		return "challenge"
 	}
+}
+
+func normalizeConfidenceValue(confidence float64) float64 {
+	if confidence > 1 {
+		confidence = confidence / 100
+	}
+	if confidence < 0 {
+		return 0
+	}
+	if confidence > 1 {
+		return 1
+	}
+	return confidence
 }

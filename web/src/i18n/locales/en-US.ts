@@ -251,6 +251,7 @@ const enUS = {
     noProviders: 'No intel providers',
     format: 'Format',
     source: 'Source',
+    confidence: 'Confidence',
     labels: 'Labels',
   },
   protection: {

@@ -14,37 +14,47 @@ import (
 )
 
 type Handler struct {
-	Config         *config.Config
-	ConfigPath     string
-	Store          storage.Store
-	Sink           storage.LogSink
-	Tokens         *middleware.TokenManager
-	Auditor        *middleware.Auditor
-	StartedAt      time.Time
-	OnSitesChanged func([]config.SiteConfig)
+	Config              *config.Config
+	ConfigPath          string
+	Store               storage.Store
+	Sink                storage.LogSink
+	Tokens              *middleware.TokenManager
+	Auditor             *middleware.Auditor
+	StartedAt           time.Time
+	OnSitesChanged      func([]config.SiteConfig)
+	OnProtectionChanged func(config.ProtectionConfig) error
 }
 
 type Options struct {
-	Config         *config.Config
-	ConfigPath     string
-	Store          storage.Store
-	Sink           storage.LogSink
-	Tokens         *middleware.TokenManager
-	Auditor        *middleware.Auditor
-	OnSitesChanged func([]config.SiteConfig)
+	Config              *config.Config
+	ConfigPath          string
+	Store               storage.Store
+	Sink                storage.LogSink
+	Tokens              *middleware.TokenManager
+	Auditor             *middleware.Auditor
+	OnSitesChanged      func([]config.SiteConfig)
+	OnProtectionChanged func(config.ProtectionConfig) error
 }
 
 func New(opts Options) *Handler {
 	return &Handler{
-		Config:         opts.Config,
-		ConfigPath:     opts.ConfigPath,
-		Store:          opts.Store,
-		Sink:           opts.Sink,
-		Tokens:         opts.Tokens,
-		Auditor:        opts.Auditor,
-		StartedAt:      time.Now().UTC(),
-		OnSitesChanged: opts.OnSitesChanged,
+		Config:              opts.Config,
+		ConfigPath:          opts.ConfigPath,
+		Store:               opts.Store,
+		Sink:                opts.Sink,
+		Tokens:              opts.Tokens,
+		Auditor:             opts.Auditor,
+		StartedAt:           time.Now().UTC(),
+		OnSitesChanged:      opts.OnSitesChanged,
+		OnProtectionChanged: opts.OnProtectionChanged,
 	}
+}
+
+func (h *Handler) notifyProtectionChanged() error {
+	if h == nil || h.OnProtectionChanged == nil || h.Config == nil {
+		return nil
+	}
+	return h.OnProtectionChanged(h.Config.Protection)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {

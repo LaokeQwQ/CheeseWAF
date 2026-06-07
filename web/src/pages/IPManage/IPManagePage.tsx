@@ -29,6 +29,7 @@ export default function IPManagePage() {
     source: 'manual',
     severity: 'high',
     action: 'challenge',
+    confidence: 0.9,
     labels: '',
     contents: '',
   });
@@ -193,9 +194,14 @@ export default function IPManagePage() {
                     dataIndex: 'intel',
                     render: (_: unknown, record: IPReputationEntry) => (
                       <span className="tag-stack">
-                        {intelFor(record).length === 0 ? <Tag>{t('common.monitor')}</Tag> : intelFor(record).map((item) => (
-                          <Tag key={`${record.ip}-${item.id || item.value}`} color={intelColor(item.severity)}>{item.source || displaySeverity(item.severity, t)}</Tag>
-                        ))}
+                        {intelFor(record).length === 0 ? <Tag>{t('common.monitor')}</Tag> : intelFor(record).map((item) => {
+                          const confidence = typeof item.confidence === 'number' && item.confidence > 0 ? ` · ${Math.round(item.confidence * 100)}%` : '';
+                          return (
+                            <Tag key={`${record.ip}-${item.id || item.value}`} color={intelColor(item.severity)}>
+                              {item.source || displaySeverity(item.severity, t)} · {displayAction(item.action || 'challenge', t)}{confidence}
+                            </Tag>
+                          );
+                        })}
                       </span>
                     ),
                   },
@@ -294,6 +300,7 @@ export default function IPManagePage() {
                       <Select.Option value="log">{displayAction('log', t)}</Select.Option>
                     </Select>
                   </label>
+                  <label><span>{t('ip.confidence')}</span><InputNumber value={importDraft.confidence * 100} min={0} max={100} precision={0} onChange={(value) => setImportDraft((current) => ({ ...current, confidence: Number(value || 0) / 100 }))} /></label>
                   <label className="wide-field"><span>{t('ip.labels')}</span><Input value={importDraft.labels} onChange={(labels) => setImportDraft((current) => ({ ...current, labels }))} /></label>
                   <label className="wide-field"><span>IOC</span><Input.TextArea value={importDraft.contents} autoSize={{ minRows: 10, maxRows: 18 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /></label>
                 </div>

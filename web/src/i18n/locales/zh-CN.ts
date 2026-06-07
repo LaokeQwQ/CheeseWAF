@@ -251,6 +251,7 @@ const zhCN = {
     noProviders: '暂无情报源',
     format: '格式',
     source: '来源',
+    confidence: '置信度',
     labels: '标签',
   },
   protection: {
