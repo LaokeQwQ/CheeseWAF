@@ -133,7 +133,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if policy.BotCC != config.ProtectionLevelOff {
 		if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !s.whitelist.Allowed(reqCtx.ClientIP) {
 			if result.Action == engine.ActionChallenge {
-				s.challenge(w, r, reqCtx, result.Message, start)
+				s.challenge(w, r, reqCtx, result.Category, result.Message, start)
 				return
 			}
 			s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
@@ -170,9 +170,18 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "waf pipeline error", http.StatusInternalServerError)
 			return
 		}
-		if result != nil && result.Detected && result.Action == engine.ActionBlock {
-			s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
-			return
+		if result != nil && result.Detected {
+			decision := evaluateWebAttackPolicy(policy.WebAttack, result)
+			reqCtx.Metadata["waf_policy_decision"] = decision
+			reqCtx.Metadata["detection"] = result
+			switch decision.Action {
+			case engine.ActionBlock.String():
+				s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
+				return
+			case engine.ActionChallenge.String():
+				s.challenge(w, r, reqCtx, result.Category, result.Message, start)
+				return
+			}
 		}
 	}
 	s.headers.Apply(r)
@@ -243,6 +252,74 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 	})
 }
 
+type webAttackPolicyDecision struct {
+	Level             string  `json:"level"`
+	Action            string  `json:"action"`
+	Reason            string  `json:"reason"`
+	MinimumSeverity   string  `json:"minimum_severity"`
+	MinimumConfidence float64 `json:"minimum_confidence"`
+	ResultSeverity    string  `json:"result_severity"`
+	ResultConfidence  float64 `json:"result_confidence"`
+	DetectorAction    string  `json:"detector_action"`
+	DetectorCategory  string  `json:"detector_category"`
+	DetectorID        string  `json:"detector_id"`
+}
+
+func evaluateWebAttackPolicy(level string, result *engine.DetectionResult) webAttackPolicyDecision {
+	if level == "" {
+		level = config.ProtectionLevelSmart
+	}
+	minSeverity, minConfidence := webAttackThreshold(level)
+	decision := webAttackPolicyDecision{
+		Level:             level,
+		Action:            engine.ActionLog.String(),
+		Reason:            "detected below policy threshold",
+		MinimumSeverity:   minSeverity.String(),
+		MinimumConfidence: minConfidence,
+		DetectorAction:    engine.ActionPass.String(),
+	}
+	if result == nil {
+		decision.Reason = "no detection result"
+		return decision
+	}
+	decision.ResultSeverity = result.Severity.String()
+	decision.ResultConfidence = result.Confidence
+	decision.DetectorAction = result.Action.String()
+	decision.DetectorCategory = result.Category
+	decision.DetectorID = result.DetectorID
+	if result.Action == engine.ActionPass || result.Action == engine.ActionLog {
+		decision.Reason = "detector requested " + result.Action.String()
+		return decision
+	}
+	if level == config.ProtectionLevelOff {
+		decision.Reason = "web attack protection disabled"
+		return decision
+	}
+	if result.Severity >= minSeverity && result.Confidence >= minConfidence {
+		if result.Action == engine.ActionChallenge {
+			decision.Action = engine.ActionChallenge.String()
+		} else {
+			decision.Action = engine.ActionBlock.String()
+		}
+		decision.Reason = "severity and confidence meet policy threshold"
+		return decision
+	}
+	return decision
+}
+
+func webAttackThreshold(level string) (engine.Severity, float64) {
+	switch level {
+	case config.ProtectionLevelLow:
+		return engine.SeverityCritical, 0.90
+	case config.ProtectionLevelHigh:
+		return engine.SeverityMedium, 0.78
+	case config.ProtectionLevelStrict:
+		return engine.SeverityLow, 0.65
+	default:
+		return engine.SeverityHigh, 0.85
+	}
+}
+
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
 	s.renderer.Render(w, status, blockpage.Data{
 		TraceID:    reqCtx.TraceID,
@@ -257,10 +334,13 @@ func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, cat
 	})
 }
 
-func (s *Server) challenge(w http.ResponseWriter, r *http.Request, reqCtx *engine.RequestContext, message string, start time.Time) {
+func (s *Server) challenge(w http.ResponseWriter, r *http.Request, reqCtx *engine.RequestContext, category, message string, start time.Time) {
+	if category == "" {
+		category = "bot"
+	}
 	s.bot.ServeChallenge(w, r, reqCtx.ClientIP)
 	s.writeLog(r.Context(), reqCtx, "challenge", http.StatusForbidden, start, &storage.LogEntry{
-		Category: "bot",
+		Category: category,
 		Message:  message,
 	})
 }
@@ -303,6 +383,18 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		entry.DetectorID = extra.DetectorID
 		entry.Message = extra.Message
 		entry.Payload = extra.Payload
+	}
+	if extra == nil {
+		if result, ok := reqCtx.Metadata["detection"].(*engine.DetectionResult); ok && result != nil && result.Detected {
+			entry.Category = result.Category
+			entry.Severity = result.Severity.String()
+			entry.DetectorID = result.DetectorID
+			entry.Message = result.Message
+			entry.Payload = result.Payload
+			if decision, ok := reqCtx.Metadata["waf_policy_decision"].(webAttackPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
+				entry.Action = "log"
+			}
+		}
 	}
 	if finding, ok := reqCtx.Metadata["response_finding"].(*response.Finding); ok && finding != nil {
 		entry.Category = "response"

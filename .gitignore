@@ -58,6 +58,7 @@ web/*.log
 go.work
 go.work.sum
 vendor/
+.cache/
 
 # Editors and local agent state
 .idea/

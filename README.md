@@ -13,7 +13,7 @@ The repository currently includes:
 - Web console hardening includes localized security/category/severity labels, dashboard chart axes and zoom/range controls, resilient event/resource card layouts, API security table layout isolation, route-level lazy loading, and Natural Earth/world-atlas based 2D/continent/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, precise-location fallbacks, WebGL fallback handling, responsive tables, and real log data. The 3D globe renderer is split into an on-demand chunk so ordinary console pages and 2D maps do not load Three.js up front.
 - GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
 - Safe admin defaults: the CLI bootstraps runtime config under `./data`, the admin listener defaults to localhost, public admin binding requires `server.admin_public: true` plus `server.admin_tls`, and first-run setup can choose local/tunnel/reverse-proxy access or public HTTPS with a generated local CA-signed admin certificate.
-- Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default.
+- Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default. Web attack protection now applies runtime severity/confidence thresholds (`low`: critical/0.90, `smart`: high/0.85, `high`: medium/0.78, `strict`: low/0.65) while respecting monitor/log-only detector modes and preserving detector-requested JS challenges.
 - AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots.
 - First-run setup wizard and REST setup API now share one completion service for validation, admin creation, SQLite migration, default config/certificate generation, and setup completion locking. The generated admin certificate bundle uses an ECDSA P-256 local CA (`CN=CheeseWAF Sign SSL CA`, `O=CheeseCloud Technology Ltc.`) and a server-auth leaf chain.
 - Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch.
@@ -55,9 +55,9 @@ for self-hosted runner-friendly toolchain setup.
   default, and avoid exposing browser tokens over plain HTTP.
 - Before a public release, run repeatable sqlmap, XSStrike, nuclei, OWASP ZAP,
   CRS/Coraza or ModSecurity comparison, and admin-surface security tests.
-- Smart/high/strict protection levels are wired into the runtime as policy gates
-  today; their threshold tuning and confidence scoring need more corpus-backed
-  iteration before GA.
+- Web attack protection levels are wired into runtime severity/confidence
+  thresholds. The default `smart` mode is tuned for lower false positives, but
+  the exact thresholds still need corpus-backed iteration before GA.
 - City/district-level map precision depends on a valid GeoIP City `.mmdb` or
   external threat-intel location feed. Without one, CheeseWAF intentionally
   degrades to country/CIDR-level attribution rather than inventing coordinates.

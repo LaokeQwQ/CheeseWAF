@@ -31,6 +31,7 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 	if reqCtx == nil {
 		return nil, nil
 	}
+	var firstDetected *DetectionResult
 	for _, detector := range p.detectors {
 		result, err := detector.Detect(ctx, reqCtx)
 		if err != nil {
@@ -43,6 +44,13 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		if result.Detected && result.Action == ActionBlock {
 			return result, nil
 		}
+		if result.Detected && firstDetected == nil {
+			snapshot := *result
+			firstDetected = &snapshot
+		}
+	}
+	if firstDetected != nil {
+		return firstDetected, nil
 	}
 	return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
 }

@@ -44,6 +44,103 @@ func TestServerPassesAndBlocks(t *testing.T) {
 	}
 }
 
+func TestServerWebAttackPolicyLevels(t *testing.T) {
+	result := &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "test.semantic",
+		Category:   "sqli",
+		Severity:   engine.SeverityHigh,
+		Action:     engine.ActionBlock,
+		Message:    "test detection",
+		Confidence: 0.88,
+		Payload:    "id=1 or 1=1",
+	}
+
+	t.Run("smart blocks high confidence high severity", func(t *testing.T) {
+		server, sink, cleanup := newPolicyTestServer(t, config.ProtectionLevelSmart, result)
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected smart policy block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "block" || sink.entries[0].Category != "sqli" {
+			t.Fatalf("unexpected smart policy log entries: %#v", sink.entries)
+		}
+	})
+
+	t.Run("low records but passes high severity below threshold", func(t *testing.T) {
+		server, sink, cleanup := newPolicyTestServer(t, config.ProtectionLevelLow, result)
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected low policy pass, code=%d", recorder.Code)
+		}
+		if strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected upstream response, body=%q", recorder.Body.String())
+		}
+		if len(sink.entries) != 1 {
+			t.Fatalf("expected one log entry, got %d", len(sink.entries))
+		}
+		entry := sink.entries[0]
+		if entry.Action != "log" || entry.Category != "sqli" || entry.Severity != "high" || entry.DetectorID != "test.semantic" {
+			t.Fatalf("unexpected low policy log entry: %#v", entry)
+		}
+		decision, ok := entry.Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+		if !ok {
+			t.Fatalf("missing policy decision metadata: %#v", entry.Metadata)
+		}
+		if decision.Level != config.ProtectionLevelLow || decision.Action != engine.ActionLog.String() || decision.MinimumSeverity != "critical" {
+			t.Fatalf("unexpected policy decision: %#v", decision)
+		}
+	})
+
+	t.Run("detector log action is not escalated by strict policy", func(t *testing.T) {
+		logOnly := *result
+		logOnly.Action = engine.ActionLog
+		server, sink, cleanup := newPolicyTestServer(t, config.ProtectionLevelStrict, &logOnly)
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected strict policy to respect detector log action, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "log" {
+			t.Fatalf("unexpected strict log-only entries: %#v", sink.entries)
+		}
+		decision, ok := sink.entries[0].Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+		if !ok || decision.Action != engine.ActionLog.String() || decision.Reason != "detector requested log" {
+			t.Fatalf("unexpected strict log-only decision: %#v", sink.entries[0].Metadata)
+		}
+	})
+
+	t.Run("detector challenge action is preserved when threshold matches", func(t *testing.T) {
+		challenge := *result
+		challenge.Action = engine.ActionChallenge
+		challenge.Category = "custom_rule"
+		challenge.Confidence = 0.91
+		server, sink, cleanup := newPolicyTestServer(t, config.ProtectionLevelSmart, &challenge)
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected challenge response, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "challenge" || sink.entries[0].Category != "custom_rule" {
+			t.Fatalf("unexpected challenge entries: %#v", sink.entries)
+		}
+		decision, ok := sink.entries[0].Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+		if !ok || decision.Action != engine.ActionChallenge.String() {
+			t.Fatalf("unexpected challenge decision: %#v", sink.entries[0].Metadata)
+		}
+	})
+}
+
 func TestServerPhase2Protections(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream-Path", r.URL.Path)
@@ -93,3 +190,50 @@ func (noopSink) Query(context.Context, storage.LogFilter) ([]storage.LogEntry, i
 }
 func (noopSink) Flush(context.Context) error { return nil }
 func (noopSink) Close() error                { return nil }
+
+type captureSink struct {
+	entries []*storage.LogEntry
+}
+
+func (s *captureSink) Write(_ context.Context, entry *storage.LogEntry) error {
+	s.entries = append(s.entries, entry)
+	return nil
+}
+
+func (s *captureSink) Query(context.Context, storage.LogFilter) ([]storage.LogEntry, int64, error) {
+	return nil, 0, nil
+}
+
+func (s *captureSink) Flush(context.Context) error { return nil }
+func (s *captureSink) Close() error                { return nil }
+
+type staticDetector struct {
+	result *engine.DetectionResult
+}
+
+func (d staticDetector) ID() string    { return "test.semantic" }
+func (d staticDetector) Name() string  { return "Test Semantic Detector" }
+func (d staticDetector) Priority() int { return 1 }
+func (d staticDetector) Detect(context.Context, *engine.RequestContext) (*engine.DetectionResult, error) {
+	return d.result, nil
+}
+
+func newPolicyTestServer(t *testing.T, level string, result *engine.DetectionResult) (*Server, *captureSink, func()) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.Policy.WebAttack = level
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(staticDetector{result: result}), sink)
+	if err != nil {
+		upstream.Close()
+		t.Fatal(err)
+	}
+	return server, sink, upstream.Close
+}
