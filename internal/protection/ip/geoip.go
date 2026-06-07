@@ -2,6 +2,7 @@ package ip
 
 import (
 	"net"
+	"os"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -90,6 +91,9 @@ func NewGeoIPPolicy(cfg config.GeoIPConfig) (*GeoIPPolicy, error) {
 	if strings.TrimSpace(cfg.Database) != "" {
 		reader, err := maxminddb.Open(cfg.Database)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return policy, nil
+			}
 			return nil, err
 		}
 		policy.reader = reader

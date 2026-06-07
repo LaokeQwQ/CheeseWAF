@@ -1,6 +1,7 @@
 package ip
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -56,11 +57,26 @@ func TestGeoIPPolicyRejectsInvalidCIDR(t *testing.T) {
 	}
 }
 
-func TestGeoIPPolicyRejectsMissingDatabase(t *testing.T) {
-	_, err := NewGeoIPPolicy(config.GeoIPConfig{
+func TestGeoIPPolicyIgnoresMissingDatabase(t *testing.T) {
+	policy, err := NewGeoIPPolicy(config.GeoIPConfig{
 		Database: filepath.Join(t.TempDir(), "missing.mmdb"),
 	})
+	if err != nil {
+		t.Fatalf("NewGeoIPPolicy returned error for missing optional database: %v", err)
+	}
+	if country := policy.Country("203.0.113.7"); country != "" {
+		t.Fatalf("Country() = %q without CIDR/mmdb data, want empty", country)
+	}
+}
+
+func TestGeoIPPolicyRejectsInvalidDatabase(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "bad.mmdb")
+	if err := os.WriteFile(database, []byte("not an mmdb"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := NewGeoIPPolicy(config.GeoIPConfig{Database: database})
 	if err == nil {
-		t.Fatal("NewGeoIPPolicy returned nil error for missing database")
+		t.Fatal("NewGeoIPPolicy returned nil error for invalid database")
 	}
 }
