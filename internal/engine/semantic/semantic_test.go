@@ -24,6 +24,46 @@ func TestSQLDetectorBlocksClassicPayload(t *testing.T) {
 	}
 }
 
+func TestSQLDetectorBlocksFunctionBasedPayloads(t *testing.T) {
+	cases := []string{
+		"/search?q=1%20and%20extractvalue(1,concat(0x7e,(select%20database()),0x7e))",
+		"/login?u=admin'%3Bselect%20pg_sleep(5)--",
+		"/search?q=1%20or%20char(49)%3Dchar(49)",
+	}
+	for _, target := range cases {
+		t.Run(target, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, target, nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected || result.Action != engine.ActionBlock {
+				t.Fatalf("expected SQLi block, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestSQLDetectorKeepsBenignDocumentationClean(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(`{"text":"The char() and concat() SQL functions are documented here."}`))
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("expected benign SQL documentation to pass, got %+v", result)
+	}
+}
+
 func TestAnalyzerFollowsStagedSemanticFlow(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "/api/search", bytes.NewBufferString(`{"filter":"JTI3JTIwb3IlMjAxJTNEMQ=="}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -178,6 +218,45 @@ func TestXSSDetectorBlocksScriptPayload(t *testing.T) {
 	}
 	if result == nil || !result.Detected || result.Category != "xss" {
 		t.Fatalf("expected XSS detection, got %+v", result)
+	}
+}
+
+func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
+	cases := []string{
+		"/?next=%3Ca%20href%3Djava%00script%3Aalert(1)%3Ego%3C%2Fa%3E",
+		"/?q=%26lt%3Bimg%20src%3Dx%20onerror%3Dalert(1)%26gt%3B",
+	}
+	for _, target := range cases {
+		t.Run(target, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, target, nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected || result.Category != "xss" {
+				t.Fatalf("expected XSS detection, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestXSSDetectorKeepsBenignDocumentationClean(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(`{"text":"This page explains why javascript: URLs are dangerous, but includes no tag attribute."}`))
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("expected benign XSS documentation to pass, got %+v", result)
 	}
 }
 

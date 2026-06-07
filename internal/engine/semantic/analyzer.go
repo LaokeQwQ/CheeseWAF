@@ -418,6 +418,9 @@ var (
 	sqlTimeFunction      = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
 	sqlComment           = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
 	sqlDangerousFunc     = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
+	sqlErrorFunction     = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name)\s*\(`)
+	sqlStringFunction    = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
+	sqlComparison        = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
 	xssEventPattern      = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
 	unicodeEscapePattern = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
 	sqlBlockComment      = regexp.MustCompile(`(?is)/\*.*?\*/`)
@@ -456,6 +459,12 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlDangerousFunc.MatchString(text) {
 		reasons["semantics: database server file or command side effect"] = true
 	}
+	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || strings.Contains(compact, "select")) {
+		reasons["semantics: error-based database function with query composition"] = true
+	}
+	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || strings.Contains(compact, "orchar") || strings.Contains(compact, "andchar")) {
+		reasons["syntax: SQL function comparison inside boolean predicate"] = true
+	}
 	if len(reasons) == 0 {
 		return Hit{}, false
 	}
@@ -471,6 +480,9 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 	lower := normalize(text)
+	if javascriptURLContext.MatchString(lower) {
+		reasons["syntax: javascript URL in executable HTML attribute"] = true
+	}
 	if strings.Contains(lower, "document.cookie") || strings.Contains(lower, "localstorage") || strings.Contains(lower, "fetch(") {
 		reasons["semantics: browser credential or network side effect"] = true
 	}

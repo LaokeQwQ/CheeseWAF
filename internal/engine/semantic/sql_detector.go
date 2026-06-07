@@ -56,6 +56,7 @@ func looksLikeSQLi(raw string) (bool, string) {
 		" union all select ",
 		" sleep(",
 		" benchmark(",
+		" pg_sleep(",
 		" information_schema",
 		" or 1=1",
 		" and 1=1",
@@ -77,6 +78,13 @@ func looksLikeSQLi(raw string) (bool, string) {
 	}
 	if hasDrop && hasTable {
 		return true, "destructive SQL keyword sequence matched"
+	}
+	compact := compactSQL(text)
+	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || strings.Contains(compact, "select")) {
+		return true, "error-based SQL function with query composition matched"
+	}
+	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || strings.Contains(compact, "orchar") || strings.Contains(compact, "andchar")) {
+		return true, "SQL function comparison inside boolean predicate matched"
 	}
 	return false, ""
 }

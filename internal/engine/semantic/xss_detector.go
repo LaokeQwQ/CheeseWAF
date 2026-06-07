@@ -11,12 +11,13 @@ import (
 
 var xssPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)<\s*(?:[a-z0-9_-]+\s*:\s*)?script\b`),
-	regexp.MustCompile(`(?i)javascript\s*:`),
 	regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`),
 	regexp.MustCompile(`(?i)<\s*iframe\b`),
 	regexp.MustCompile(`(?i)<\s*(?:[a-z0-9_-]+\s*:\s*)?svg\b[^>]*\bon[a-z0-9_-]{3,}\s*=`),
 	regexp.MustCompile(`(?i)<\s*xss\b[^>]*\bon[a-z0-9_-]{3,}\s*=`),
 }
+
+var javascriptURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|xlink:href|formaction|action)\s*=\s*['"]?\s*javascript\s*:`)
 
 type XSSDetector struct {
 	mode string
@@ -37,8 +38,9 @@ func (d *XSSDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (
 	payload := requestText(reqCtx)
 	candidates := []string{payload, decoder.Decode(payload).Text}
 	for _, candidate := range candidates {
+		normalized := normalize(candidate)
 		for _, pattern := range xssPatterns {
-			if pattern.MatchString(candidate) {
+			if pattern.MatchString(normalized) || javascriptURLContext.MatchString(normalized) {
 				return &engine.DetectionResult{
 					Detected:   true,
 					DetectorID: d.ID(),
