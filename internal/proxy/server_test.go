@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -456,6 +458,98 @@ func TestServerAPISecurityPolicyLevels(t *testing.T) {
 			t.Fatalf("expected invalid update to preserve previous API security state: %+v", server.config.APISec)
 		}
 	})
+
+	t.Run("smart blocks missing API auth token", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
+			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+		})
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil))
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("expected missing API auth token block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "block" || sink.entries[0].DetectorID != "apisec.auth.missing" {
+			t.Fatalf("unexpected missing auth log: %#v", sink.entries)
+		}
+	})
+
+	t.Run("low records but passes missing API auth token", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelLow, func(cfg *config.Config) {
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+		})
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil))
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected low API auth pass, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "log" || sink.entries[0].DetectorID != "apisec.auth.missing" {
+			t.Fatalf("unexpected low missing auth log: %#v", sink.entries)
+		}
+	})
+
+	t.Run("smart passes API auth token with issuer and scope", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
+			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+		})
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+testJWT(t, map[string]any{"iss": "issuer-a", "scope": []string{"orders:read"}}))
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected valid API auth pass, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Category == "apisec" {
+			t.Fatalf("unexpected API auth finding for valid token: %#v", sink.entries)
+		}
+	})
+
+	t.Run("smart blocks missing API auth scope", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
+			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+		})
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+testJWT(t, map[string]any{"iss": "issuer-a", "scope": []string{"orders:write"}}))
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected missing API auth scope block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "block" || sink.entries[0].DetectorID != "apisec.auth.scope" {
+			t.Fatalf("unexpected missing scope log: %#v", sink.entries)
+		}
+	})
+
+	t.Run("API auth does not apply to ordinary site path", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+		})
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/", nil))
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected ordinary path to pass API auth check, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Category == "apisec" {
+			t.Fatalf("unexpected API auth finding for ordinary path: %#v", sink.entries)
+		}
+	})
 }
 
 func TestServerPhase2Protections(t *testing.T) {
@@ -624,4 +718,17 @@ func newAPISecurityTestServer(t *testing.T, level string, configure func(*config
 		t.Fatal(err)
 	}
 	return server, sink, upstream.Close
+}
+
+func testJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	header, err := json.Marshal(map[string]string{"alg": "none", "typ": "JWT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }

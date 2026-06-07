@@ -39,6 +39,7 @@ type Server struct {
 	compress  *edge.Compressor
 	apiSchema *apisec.Validator
 	apiLimit  *apisec.RateLimiter
+	apiAuth   *apisec.Authenticator
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
@@ -67,6 +68,10 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 	if err != nil {
 		return nil, err
 	}
+	apiAuth, err := apisec.NewAuthenticator(cfg.APISec)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		config:    cfg,
 		pipeline:  pipeline,
@@ -86,6 +91,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		compress:  edge.NewCompressor(cfg.Edge.Compression),
 		apiSchema: apiSchema,
 		apiLimit:  apiLimit,
+		apiAuth:   apiAuth,
 	}, nil
 }
 
@@ -114,9 +120,14 @@ func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
 	if err != nil {
 		return err
 	}
+	apiAuth, err := apisec.NewAuthenticator(apiSec)
+	if err != nil {
+		return err
+	}
 	s.config.APISec = apiSec
 	s.apiSchema = apiSchema
 	s.apiLimit = apiLimit
+	s.apiAuth = apiAuth
 	return nil
 }
 
@@ -235,6 +246,18 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff {
+		if finding := s.apiAuth.Evaluate(r); finding != nil && !s.whitelist.Allowed(reqCtx.ClientIP) {
+			result := apiAuthDetection(*finding)
+			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
+			decision.Field = finding.Field
+			reqCtx.Metadata["api_security_policy_decision"] = decision
+			reqCtx.Metadata["api_security_auth_finding"] = finding
+			reqCtx.Metadata["detection"] = result
+			if decision.Action == engine.ActionBlock.String() {
+				s.blockDetection(w, reqCtx, result, apiAuthStatus(*finding), start)
+				return
+			}
+		}
 		if !s.apiLimit.Allow(r, reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
 			result := apiRateLimitDetection(reqCtx)
 			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
@@ -612,6 +635,52 @@ func apiRateLimitDetection(reqCtx *engine.RequestContext) *engine.DetectionResul
 		Message:    "API endpoint rate limit exceeded",
 		Confidence: 0.86,
 		Payload:    payload,
+	}
+}
+
+func apiAuthDetection(finding apisec.AuthFinding) *engine.DetectionResult {
+	detectorID := "apisec.auth"
+	switch finding.Kind {
+	case "missing":
+		detectorID = "apisec.auth.missing"
+	case "invalid":
+		detectorID = "apisec.auth.invalid"
+	case "issuer":
+		detectorID = "apisec.auth.issuer"
+	case "scope":
+		detectorID = "apisec.auth.scope"
+	}
+	return &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: detectorID,
+		Category:   "apisec",
+		Severity:   parseSeverity(finding.Severity),
+		Action:     engine.ActionBlock,
+		Message:    finding.Message,
+		Confidence: apiAuthConfidence(finding),
+		Payload:    finding.Payload,
+	}
+}
+
+func apiAuthConfidence(finding apisec.AuthFinding) float64 {
+	switch finding.Kind {
+	case "invalid":
+		return 0.91
+	case "issuer":
+		return 0.89
+	case "scope":
+		return 0.88
+	default:
+		return 0.88
+	}
+}
+
+func apiAuthStatus(finding apisec.AuthFinding) int {
+	switch finding.Kind {
+	case "missing", "invalid":
+		return http.StatusUnauthorized
+	default:
+		return http.StatusForbidden
 	}
 }
 
