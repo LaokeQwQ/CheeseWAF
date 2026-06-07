@@ -202,6 +202,117 @@ func TestServerThreatIntelPolicyLevels(t *testing.T) {
 	})
 }
 
+func TestServerBotCCPolicyLevels(t *testing.T) {
+	t.Run("smart challenges suspicious bot traffic", func(t *testing.T) {
+		server, sink, cleanup := newBotCCTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.Protection.Bot.Enabled = true
+			cfg.Protection.Bot.JSChallenge = true
+			cfg.Protection.RateLimit.Enabled = false
+		})
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil)
+		req.Header.Set("User-Agent", "curl/8.0")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected smart bot challenge, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "challenge" || sink.entries[0].Category != "bot" {
+			t.Fatalf("unexpected smart bot log: %#v", sink.entries)
+		}
+		decision, ok := sink.entries[0].Metadata["bot_cc_policy_decision"].(botCCPolicyDecision)
+		if !ok || decision.Action != engine.ActionChallenge.String() {
+			t.Fatalf("unexpected bot decision: %#v", sink.entries[0].Metadata)
+		}
+	})
+
+	t.Run("low records but passes suspicious bot traffic", func(t *testing.T) {
+		server, sink, cleanup := newBotCCTestServer(t, config.ProtectionLevelLow, func(cfg *config.Config) {
+			cfg.Protection.Bot.Enabled = true
+			cfg.Protection.Bot.JSChallenge = true
+			cfg.Protection.RateLimit.Enabled = false
+		})
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil)
+		req.Header.Set("User-Agent", "curl/8.0")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected low bot policy pass, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "log" || sink.entries[0].Category != "bot" {
+			t.Fatalf("unexpected low bot log: %#v", sink.entries)
+		}
+	})
+
+	t.Run("waiting room remains enforced when explicitly enabled", func(t *testing.T) {
+		server, sink, cleanup := newBotCCTestServer(t, config.ProtectionLevelLow, func(cfg *config.Config) {
+			cfg.Protection.Bot.Enabled = true
+			cfg.Protection.Bot.WaitingRoom = true
+			cfg.Protection.Bot.JSChallenge = false
+			cfg.Protection.Bot.CAPTCHA = false
+			cfg.Protection.RateLimit.Enabled = false
+		})
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil))
+		if recorder.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected waiting room response, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "challenge" || sink.entries[0].Category != "waiting_room" {
+			t.Fatalf("unexpected waiting room log: %#v", sink.entries)
+		}
+	})
+
+	t.Run("low records but passes rate limit breach", func(t *testing.T) {
+		server, sink, cleanup := newBotCCTestServer(t, config.ProtectionLevelLow, func(cfg *config.Config) {
+			cfg.Protection.Bot.Enabled = false
+			cfg.Protection.RateLimit.Enabled = true
+			cfg.Protection.RateLimit.Default = config.RateLimitProfile{Requests: 1, Burst: 1}
+		})
+		defer cleanup()
+
+		for idx := 0; idx < 3; idx++ {
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected low rate limit policy pass on request %d, code=%d", idx+1, recorder.Code)
+			}
+		}
+		if len(sink.entries) != 3 || sink.entries[2].Action != "log" || sink.entries[2].Category != "ratelimit" {
+			t.Fatalf("unexpected low rate limit logs: %#v", sink.entries)
+		}
+	})
+
+	t.Run("smart blocks rate limit breach", func(t *testing.T) {
+		server, sink, cleanup := newBotCCTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.Protection.Bot.Enabled = false
+			cfg.Protection.RateLimit.Enabled = true
+			cfg.Protection.RateLimit.Default = config.RateLimitProfile{Requests: 1, Burst: 1}
+		})
+		defer cleanup()
+
+		for idx := 0; idx < 2; idx++ {
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected initial rate limit request %d to pass, code=%d", idx+1, recorder.Code)
+			}
+		}
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil))
+		if recorder.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected smart rate limit block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 3 || sink.entries[2].Action != "block" || sink.entries[2].Category != "ratelimit" {
+			t.Fatalf("unexpected smart rate limit logs: %#v", sink.entries)
+		}
+	})
+}
+
 func TestServerPhase2Protections(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream-Path", r.URL.Path)
@@ -311,6 +422,28 @@ func newThreatIntelTestServer(t *testing.T, level string, intel []config.ThreatI
 	cfg.Protection.IP.Whitelist = whitelist
 	cfg.Protection.IP.Blacklist = nil
 	cfg.Protection.RateLimit.Enabled = false
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		upstream.Close()
+		t.Fatal(err)
+	}
+	return server, sink, upstream.Close
+}
+
+func newBotCCTestServer(t *testing.T, level string, configure func(*config.Config)) (*Server, *captureSink, func()) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.Policy.BotCC = level
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	if configure != nil {
+		configure(&cfg)
+	}
 	sink := &captureSink{}
 	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
 	if err != nil {

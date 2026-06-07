@@ -188,17 +188,32 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if policy.BotCC != config.ProtectionLevelOff {
 		if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !s.whitelist.Allowed(reqCtx.ClientIP) {
-			if result.Action == engine.ActionChallenge {
+			decision := evaluateBotCCPolicy(policy.BotCC, result)
+			reqCtx.Metadata["bot_cc_policy_decision"] = decision
+			reqCtx.Metadata["detection"] = result
+			switch decision.Action {
+			case engine.ActionChallenge.String():
 				s.challenge(w, r, reqCtx, result.Category, result.Message, start)
 				return
+			case engine.ActionBlock.String():
+				s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
+				return
 			}
-			s.block(w, reqCtx, result.Category, result.Message, http.StatusForbidden, start)
-			return
 		}
 	}
 	if policy.BotCC != config.ProtectionLevelOff && !s.limiter.Allow(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
-		s.block(w, reqCtx, "ratelimit", "rate limit exceeded", http.StatusTooManyRequests, start)
-		return
+		result := rateLimitDetection(reqCtx)
+		decision := evaluateBotCCPolicy(policy.BotCC, result)
+		reqCtx.Metadata["bot_cc_policy_decision"] = decision
+		reqCtx.Metadata["detection"] = result
+		switch decision.Action {
+		case engine.ActionBlock.String():
+			s.blockDetection(w, reqCtx, result, http.StatusTooManyRequests, start)
+			return
+		case engine.ActionChallenge.String():
+			s.challenge(w, r, reqCtx, result.Category, result.Message, start)
+			return
+		}
 	}
 	if s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff {
 		if !s.apiLimit.Allow(r, reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
@@ -393,6 +408,96 @@ func webAttackThreshold(level string) (engine.Severity, float64) {
 	}
 }
 
+type botCCPolicyDecision struct {
+	Level             string  `json:"level"`
+	Action            string  `json:"action"`
+	Reason            string  `json:"reason"`
+	MinimumSeverity   string  `json:"minimum_severity"`
+	MinimumConfidence float64 `json:"minimum_confidence"`
+	ResultSeverity    string  `json:"result_severity"`
+	ResultConfidence  float64 `json:"result_confidence"`
+	DetectorAction    string  `json:"detector_action"`
+	DetectorCategory  string  `json:"detector_category"`
+	DetectorID        string  `json:"detector_id"`
+}
+
+func evaluateBotCCPolicy(level string, result *engine.DetectionResult) botCCPolicyDecision {
+	if level == "" {
+		level = config.ProtectionLevelSmart
+	}
+	minSeverity, minConfidence := botCCThreshold(level)
+	decision := botCCPolicyDecision{
+		Level:             level,
+		Action:            engine.ActionLog.String(),
+		Reason:            "detected below bot policy threshold",
+		MinimumSeverity:   minSeverity.String(),
+		MinimumConfidence: minConfidence,
+		DetectorAction:    engine.ActionPass.String(),
+	}
+	if result == nil {
+		decision.Reason = "no detection result"
+		return decision
+	}
+	decision.ResultSeverity = result.Severity.String()
+	decision.ResultConfidence = result.Confidence
+	decision.DetectorAction = result.Action.String()
+	decision.DetectorCategory = result.Category
+	decision.DetectorID = result.DetectorID
+	if result.DetectorID == "bot.waiting_room" && result.Action == engine.ActionChallenge {
+		decision.Action = engine.ActionChallenge.String()
+		decision.Reason = "waiting room explicitly enabled"
+		return decision
+	}
+	if result.Action == engine.ActionPass || result.Action == engine.ActionLog {
+		decision.Reason = "detector requested " + result.Action.String()
+		return decision
+	}
+	if level == config.ProtectionLevelOff {
+		decision.Reason = "bot protection disabled"
+		return decision
+	}
+	if result.Severity >= minSeverity && result.Confidence >= minConfidence {
+		if result.Action == engine.ActionChallenge {
+			decision.Action = engine.ActionChallenge.String()
+		} else {
+			decision.Action = engine.ActionBlock.String()
+		}
+		decision.Reason = "severity and confidence meet bot policy threshold"
+		return decision
+	}
+	return decision
+}
+
+func botCCThreshold(level string) (engine.Severity, float64) {
+	switch level {
+	case config.ProtectionLevelLow:
+		return engine.SeverityHigh, 0.90
+	case config.ProtectionLevelHigh:
+		return engine.SeverityLow, 0.72
+	case config.ProtectionLevelStrict:
+		return engine.SeverityLow, 0.60
+	default:
+		return engine.SeverityMedium, 0.80
+	}
+}
+
+func rateLimitDetection(reqCtx *engine.RequestContext) *engine.DetectionResult {
+	payload := ""
+	if reqCtx != nil {
+		payload = reqCtx.ClientIP
+	}
+	return &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "bot.ratelimit",
+		Category:   "ratelimit",
+		Severity:   engine.SeverityMedium,
+		Action:     engine.ActionBlock,
+		Message:    "rate limit exceeded",
+		Confidence: 0.86,
+		Payload:    payload,
+	}
+}
+
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
 	s.renderer.Render(w, status, blockpage.Data{
 		TraceID:    reqCtx.TraceID,
@@ -486,6 +591,9 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 			entry.Message = result.Message
 			entry.Payload = result.Payload
 			if decision, ok := reqCtx.Metadata["waf_policy_decision"].(webAttackPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
+				entry.Action = "log"
+			}
+			if decision, ok := reqCtx.Metadata["bot_cc_policy_decision"].(botCCPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
 				entry.Action = "log"
 			}
 		}
