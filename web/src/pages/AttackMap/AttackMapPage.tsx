@@ -1,21 +1,21 @@
 import { Button, Radio, Table, Tag } from '@arco-design/web-react';
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react';
+import { lazy, Suspense, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Minus, Plus, RotateCcw } from 'lucide-react';
-import { geoEquirectangular, geoGraticule10, geoNaturalEarth1, geoPath } from 'd3-geo';
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { geoGraticule10, geoNaturalEarth1, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
-import worldTopology from 'world-atlas/countries-50m.json';
+import worldTopology from 'world-atlas/countries-110m.json';
 import { fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
 import { displayCategory, displayContinent, displayCountry, displaySeverity, normalizeCountryCode } from '../../utils/display';
 
+const GlobeMap = lazy(() => import('./GlobeMap'));
+
 type MapMode = '2d' | '3d' | 'continent';
-type ThreatLevel = 'low' | 'medium' | 'high' | 'critical';
+export type ThreatLevel = 'low' | 'medium' | 'high' | 'critical';
 type LocationPrecision = 'district' | 'city' | 'region' | 'country' | 'ip-range';
-type WorldFeature = {
+export type WorldFeature = {
   id?: string | number;
   type: 'Feature';
   geometry: unknown;
@@ -28,7 +28,7 @@ type WorldFeatureCollection = {
 type CountryCoordinate = { lon: number; lat: number; continent: string };
 type MapPan = { x: number; y: number };
 type DragState = { pointerId: number; startX: number; startY: number; originX: number; originY: number };
-type AttackRegion = {
+export type AttackRegion = {
   key: string;
   countryCode: string;
   country: string;
@@ -153,13 +153,6 @@ const continentCoordinates: Record<string, { lon: number; lat: number }> = {
   'South America': { lon: -61, lat: -16 },
 };
 
-const globeLevelColors: Record<ThreatLevel, number> = {
-  low: 0x2176d2,
-  medium: 0xd98912,
-  high: 0xf97316,
-  critical: 0xdd3b3b,
-};
-
 export default function AttackMapPage() {
   const { t } = useTranslation();
   const [mode, setMode] = useState<MapMode>('2d');
@@ -271,7 +264,15 @@ export default function AttackMapPage() {
           ))}
         </div>
         {mode === '3d' ? (
-          <GlobeView regions={mappedRegions} zoom={zoom} countryLevels={countryLevels} />
+          <Suspense fallback={<div className="globe-stage"><div className="page-spinner" aria-label="Loading" aria-busy="true" /></div>}>
+            <GlobeMap
+              regions={mappedRegions}
+              zoom={zoom}
+              countryLevels={countryLevels}
+              worldFeatures={worldFeatures}
+              fallback={renderGlobeFallback(mappedRegions, countryLevels)}
+            />
+          </Suspense>
         ) : (
           <div
             className="flat-map-stage"
@@ -345,183 +346,6 @@ export default function AttackMapPage() {
   );
 }
 
-function GlobeView({ regions, zoom, countryLevels }: { regions: AttackRegion[]; zoom: number; countryLevels: Map<string, ThreatLevel> }) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const [webglError, setWebglError] = useState(false);
-
-  useEffect(() => {
-    if (webglError) {
-      return undefined;
-    }
-    const host = hostRef.current;
-    if (!host) {
-      return undefined;
-    }
-
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-    camera.position.set(0, 0.22, 3 / zoom);
-    let renderer: any;
-    try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    } catch {
-      setWebglError(true);
-      return undefined;
-    }
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    host.appendChild(renderer.domElement);
-
-    const tooltip = document.createElement('div');
-    tooltip.className = 'globe-tooltip';
-    host.appendChild(tooltip);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.enablePan = false;
-    controls.enableZoom = true;
-    controls.minDistance = 1.55;
-    controls.maxDistance = 4.4;
-    controls.rotateSpeed = 0.62;
-    controls.zoomSpeed = 0.78;
-
-    const earthGroup = new THREE.Group();
-    const texture = createWorldTexture(countryLevels);
-    const globe = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 128, 128),
-      new THREE.MeshStandardMaterial({
-        map: texture,
-        roughness: 0.82,
-        metalness: 0.02,
-      }),
-    );
-    earthGroup.add(globe);
-
-    const atmosphere = new THREE.Mesh(
-      new THREE.SphereGeometry(1.018, 96, 96),
-      new THREE.MeshBasicMaterial({
-        color: 0x2f8cff,
-        transparent: true,
-        opacity: 0.07,
-        side: THREE.BackSide,
-      }),
-    );
-    earthGroup.add(atmosphere);
-
-    const markerGroup = new THREE.Group();
-    const markerMeshes: any[] = [];
-    for (const region of regions) {
-      const marker = new THREE.Mesh(
-        new THREE.SphereGeometry(Math.max(0.024, Math.min(0.08, region.size / 500)), 24, 24),
-        new THREE.MeshBasicMaterial({ color: globeLevelColors[region.level] }),
-      );
-      marker.position.copy(latLonToVector(region.lat, region.lon, 1.038));
-      marker.userData.region = region;
-      markerMeshes.push(marker);
-      markerGroup.add(marker);
-    }
-    earthGroup.add(markerGroup);
-    earthGroup.rotation.y = -0.35;
-    scene.add(earthGroup);
-
-    scene.add(new THREE.AmbientLight(0xffffff, 1.18));
-    const light = new THREE.DirectionalLight(0xffffff, 1.8);
-    light.position.set(3, 2, 4);
-    scene.add(light);
-
-    const raycaster = new THREE.Raycaster();
-    const pointer = new THREE.Vector2();
-    const onPointerMove = (event: globalThis.PointerEvent) => {
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(markerMeshes, false)[0];
-      if (!hit) {
-        tooltip.classList.remove('globe-tooltip-visible');
-        return;
-      }
-      const region = hit.object.userData.region as AttackRegion;
-      tooltip.textContent = `${region.locationName} · ${region.attacks}`;
-      tooltip.style.left = `${event.clientX - rect.left + 12}px`;
-      tooltip.style.top = `${event.clientY - rect.top + 12}px`;
-      tooltip.classList.add('globe-tooltip-visible');
-    };
-    const onPointerLeave = () => tooltip.classList.remove('globe-tooltip-visible');
-    renderer.domElement.addEventListener('pointermove', onPointerMove);
-    renderer.domElement.addEventListener('pointerleave', onPointerLeave);
-
-    const resize = () => {
-      const rect = host.getBoundingClientRect();
-      const width = Math.max(320, rect.width);
-      const height = Math.max(320, rect.height);
-      renderer.setSize(width, height, false);
-      camera.aspect = width / height;
-      camera.position.z = 3 / zoom;
-      camera.updateProjectionMatrix();
-      renderer.render(scene, camera);
-    };
-    const observer = new ResizeObserver(resize);
-    observer.observe(host);
-    resize();
-
-    let frame = 0;
-    const tick = () => {
-      earthGroup.rotation.y += 0.0012;
-      controls.update();
-      renderer.render(scene, camera);
-      frame = requestAnimationFrame(tick);
-    };
-    tick();
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      renderer.domElement.removeEventListener('pointermove', onPointerMove);
-      renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
-      controls.dispose();
-      renderer.dispose();
-      texture?.dispose();
-      globe.geometry.dispose();
-      atmosphere.geometry.dispose();
-      markerGroup.children.forEach((child: any) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          if (Array.isArray(child.material)) {
-            child.material.forEach((material: any) => material.dispose());
-          } else {
-            child.material.dispose();
-          }
-        }
-      });
-      host.removeChild(renderer.domElement);
-      host.removeChild(tooltip);
-    };
-  }, [regions, zoom, countryLevels, webglError]);
-
-  if (webglError) {
-    return (
-      <div className="globe-stage globe-stage-fallback">
-        <div className="flat-map-stage globe-fallback-flat" style={{ '--map-zoom': 1, '--map-pan-x': '0px', '--map-pan-y': '0px' } as CSSProperties}>
-          <WorldMapSVG countryLevels={countryLevels} />
-          {regions.map((region) => (
-            <span
-              key={region.key}
-              className={`map-marker map-risk-${region.level}`}
-              style={{ left: `${region.x}%`, top: `${region.y}%`, '--marker-size': `${region.size}px` } as CSSProperties}
-              title={`${region.locationName} · ${region.attacks}`}
-            >
-              <i />
-              <span><strong>{region.locationName}</strong><em>{region.attacks}</em></span>
-            </span>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  return <div ref={hostRef} className="globe-stage" />;
-}
-
 function WorldMapSVG({ countryLevels }: { countryLevels: Map<string, ThreatLevel> }) {
   return (
     <svg className="world-map-svg" viewBox="0 0 1000 500" aria-hidden="true">
@@ -530,6 +354,27 @@ function WorldMapSVG({ countryLevels }: { countryLevels: Map<string, ThreatLevel
         {worldMapPaths.map((item) => <path key={item.id} className={`map-risk-${countryLevels.get(item.id) ?? 'neutral'}`} d={item.d} />)}
       </g>
     </svg>
+  );
+}
+
+function renderGlobeFallback(regions: AttackRegion[], countryLevels: Map<string, ThreatLevel>) {
+  return (
+    <div className="globe-stage globe-stage-fallback">
+      <div className="flat-map-stage globe-fallback-flat" style={{ '--map-zoom': 1, '--map-pan-x': '0px', '--map-pan-y': '0px' } as CSSProperties}>
+        <WorldMapSVG countryLevels={countryLevels} />
+        {regions.map((region) => (
+          <span
+            key={region.key}
+            className={`map-marker map-risk-${region.level}`}
+            style={{ left: `${region.x}%`, top: `${region.y}%`, '--marker-size': `${region.size}px` } as CSSProperties}
+            title={`${region.locationName} · ${region.attacks}`}
+          >
+            <i />
+            <span><strong>{region.locationName}</strong><em>{region.attacks}</em></span>
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -797,16 +642,6 @@ function riskTagColor(level: ThreatLevel) {
   }
 }
 
-function latLonToVector(lat: number, lon: number, radius: number) {
-  const phi = (90 - lat) * (Math.PI / 180);
-  const theta = (lon + 180) * (Math.PI / 180);
-  return new THREE.Vector3(
-    -radius * Math.sin(phi) * Math.cos(theta),
-    radius * Math.cos(phi),
-    radius * Math.sin(phi) * Math.sin(theta),
-  );
-}
-
 function projectMapPoint(lon: number, lat: number) {
   const point = mapProjection([lon, lat]);
   if (!point) {
@@ -816,54 +651,6 @@ function projectMapPoint(lon: number, lat: number) {
     x: (point[0] / mapWidth) * 100,
     y: (point[1] / mapHeight) * 100,
   };
-}
-
-function createWorldTexture(countryLevels: Map<string, ThreatLevel>) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 512;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    return null;
-  }
-  ctx.fillStyle = '#0f766e';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const textureProjection = geoEquirectangular()
-    .scale(canvas.width / (2 * Math.PI))
-    .translate([canvas.width / 2, canvas.height / 2]);
-  const texturePath = geoPath(textureProjection, ctx);
-  ctx.beginPath();
-  texturePath(geoGraticule10() as any);
-  ctx.strokeStyle = 'rgba(215,248,228,0.22)';
-  ctx.lineWidth = 0.75;
-  ctx.stroke();
-  for (const item of worldFeatures) {
-    ctx.beginPath();
-    texturePath(item as any);
-    ctx.fillStyle = globeFillForLevel(countryLevels.get(normalizeWorldId(item.id ?? '')));
-    ctx.strokeStyle = '#0f513f';
-    ctx.lineWidth = 0.72;
-    ctx.fill();
-    ctx.stroke();
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
-function globeFillForLevel(level: ThreatLevel | undefined) {
-  switch (level) {
-    case 'critical':
-      return '#ef4444';
-    case 'high':
-      return '#fb923c';
-    case 'medium':
-      return '#facc15';
-    case 'low':
-      return '#7dd3fc';
-    default:
-      return '#d7f8e4';
-  }
 }
 
 function formatRegionLocation(region: AttackRegion, t: (key: string, options?: Record<string, unknown>) => string) {
@@ -978,7 +765,7 @@ function clampPan(pan: MapPan, zoom: number) {
   };
 }
 
-function normalizeWorldId(id: string | number) {
+export function normalizeWorldId(id: string | number) {
   const value = String(id);
   const parsed = Number(value);
   return Number.isFinite(parsed) ? String(parsed) : value;

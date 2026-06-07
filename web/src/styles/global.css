@@ -782,6 +782,22 @@ code {
   min-height: 320px;
 }
 
+.page-spinner::after {
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: page-spinner-rotate 0.8s linear infinite;
+  content: "";
+}
+
+@keyframes page-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .system-section {
   display: grid;
   gap: 18px;

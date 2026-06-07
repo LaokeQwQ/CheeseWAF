@@ -10,7 +10,7 @@ The repository currently includes:
 
 - Reverse proxy WAF flow with staged semantic analysis (input extraction, deep decoding, lexical/syntax/behavior scoring), custom rules, IP/ACL/rate-limit/Bot protection, threat intel import/subscription, signed JS proof-of-work challenge, Altcha-style PoW CAPTCHA, waiting room, edge cache/header/compression policy, and response inspection.
 - Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, production deployment files, and a single-binary admin listener that serves both the REST API and built Web console. The Web site workspace covers domains, upstreams, TLS material, origin tuning, health checks, response inspection, access control, and rewrite rules.
-- Web console hardening includes localized security/category/severity labels, dashboard chart axes and zoom/range controls, resilient event/resource card layouts, API security table layout isolation, and Natural Earth/world-atlas based 2D/continent/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, precise-location fallbacks, WebGL fallback handling, responsive tables, and real log data.
+- Web console hardening includes localized security/category/severity labels, dashboard chart axes and zoom/range controls, resilient event/resource card layouts, API security table layout isolation, route-level lazy loading, and Natural Earth/world-atlas based 2D/continent/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, precise-location fallbacks, WebGL fallback handling, responsive tables, and real log data. The 3D globe renderer is split into an on-demand chunk so ordinary console pages and 2D maps do not load Three.js up front.
 - GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
 - Safe admin defaults: the CLI bootstraps runtime config under `./data`, the admin listener defaults to localhost, public admin binding requires `server.admin_public: true` plus `server.admin_tls`, and first-run setup can choose local/tunnel/reverse-proxy access or public HTTPS with a generated local CA-signed admin certificate.
 - Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default.
@@ -61,3 +61,7 @@ for self-hosted runner-friendly toolchain setup.
 - City/district-level map precision depends on a valid GeoIP City `.mmdb` or
   external threat-intel location feed. Without one, CheeseWAF intentionally
   degrades to country/CIDR-level attribution rather than inventing coordinates.
+- The web console still has large shared vendor chunks, mainly from the UI stack
+  and 3D globe dependency. Route-level lazy loading and map-data slimming are in
+  place; a future pass should add stable vendor chunk grouping and measure cold
+  start on low-end mobile browsers.
