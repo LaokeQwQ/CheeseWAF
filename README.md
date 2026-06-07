@@ -11,6 +11,7 @@ The repository currently includes:
 - Reverse proxy WAF flow with staged semantic analysis (input extraction, deep decoding, lexical/syntax/behavior scoring), custom rules, IP/ACL/rate-limit/Bot protection, threat intel import/subscription, signed JS proof-of-work challenge, Altcha-style PoW CAPTCHA, waiting room, edge cache/header/compression policy, and response inspection.
 - Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, production deployment files, and a single-binary admin listener that serves both the REST API and built Web console. The Web site workspace covers domains, upstreams, TLS material, origin tuning, health checks, response inspection, access control, and rewrite rules.
 - Web console hardening includes localized security/category/severity labels, dashboard chart axes and zoom/range controls, resilient event/resource card layouts, API security table layout isolation, and Natural Earth/world-atlas based 2D/continent/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, precise-location fallbacks, WebGL fallback handling, responsive tables, and real log data.
+- GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
 - Safe admin defaults: the CLI bootstraps runtime config under `./data`, the admin listener defaults to localhost, public admin binding requires `server.admin_public: true` plus `server.admin_tls`, and first-run setup can choose local/tunnel/reverse-proxy access or public HTTPS with a generated local CA-signed admin certificate.
 - Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default.
 - AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots.
@@ -39,7 +40,7 @@ claim is "working and explainable", not "ModSecurity/OWASP CRS parity".
 
 ## Stage Snapshot
 
-As of 2026-06-06, the active development line is `fix/admin-ui-dashboard-map`
+As of 2026-06-07, the active development line is `fix/admin-ui-dashboard-map`
 with PR #8 targeting `dev`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
 primary forge/build target; GitHub remains a secondary mirror/check. `master`
 and `canary` intentionally remain behind `dev` until the upward promotion flow
@@ -57,3 +58,6 @@ for self-hosted runner-friendly toolchain setup.
 - Smart/high/strict protection levels are wired into the runtime as policy gates
   today; their threshold tuning and confidence scoring need more corpus-backed
   iteration before GA.
+- City/district-level map precision depends on a valid GeoIP City `.mmdb` or
+  external threat-intel location feed. Without one, CheeseWAF intentionally
+  degrades to country/CIDR-level attribution rather than inventing coordinates.

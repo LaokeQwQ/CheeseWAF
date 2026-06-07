@@ -285,15 +285,24 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 	if len(reqCtx.Metadata) > 0 {
 		entry.Metadata = reqCtx.Metadata
 	}
+	location := s.geoip.Lookup(reqCtx.ClientIP)
+	if metadata := location.Metadata(); location.CountryCode != "" || len(metadata) > 0 {
+		if location.CountryCode != "" {
+			entry.Country = location.CountryCode
+		}
+		if len(metadata) > 0 {
+			if entry.Metadata == nil {
+				entry.Metadata = map[string]any{}
+			}
+			entry.Metadata["geo"] = metadata
+		}
+	}
 	if extra != nil {
 		entry.Category = extra.Category
 		entry.Severity = extra.Severity
 		entry.DetectorID = extra.DetectorID
 		entry.Message = extra.Message
 		entry.Payload = extra.Payload
-	}
-	if country := s.geoip.Country(reqCtx.ClientIP); country != "" {
-		entry.Country = country
 	}
 	if finding, ok := reqCtx.Metadata["response_finding"].(*response.Finding); ok && finding != nil {
 		entry.Category = "response"

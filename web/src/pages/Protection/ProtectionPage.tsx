@@ -138,6 +138,7 @@ export default function ProtectionPage() {
             layout="vertical"
             initialValues={{
               enabled: protection.ip.geoip.enabled,
+              database: protection.ip.geoip.database,
               blocked: protection.ip.geoip.blocked_countries.join(','),
               whitelist: protection.ip.whitelist.join(','),
               blacklist: protection.ip.blacklist.join(','),
@@ -146,10 +147,11 @@ export default function ProtectionPage() {
               ...protection.ip,
               whitelist: splitList(values.whitelist),
               blacklist: splitList(values.blacklist),
-              geoip: { ...protection.ip.geoip, enabled: values.enabled, blocked_countries: splitList(values.blocked).map((item) => item.toUpperCase()) },
+              geoip: { ...protection.ip.geoip, enabled: values.enabled, database: String(values.database ?? '').trim(), blocked_countries: splitList(values.blocked).map((item) => item.toUpperCase()) },
             })}
           >
             <Form.Item label={t('protection.geoip')} field="enabled"><Switch /></Form.Item>
+            <Form.Item label={t('protection.geoipDatabase')} field="database"><Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" /></Form.Item>
             <Form.Item label={t('protection.blockedCountries')} field="blocked"><Input placeholder="CN,RU" /></Form.Item>
             <Form.Item label={t('ip.whitelist')} field="whitelist"><Input /></Form.Item>
             <Form.Item label={t('ip.blacklist')} field="blacklist"><Input /></Form.Item>

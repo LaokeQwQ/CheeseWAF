@@ -274,6 +274,7 @@ const enUS = {
     allowedUA: 'Allowed UA',
     suspiciousUA: 'Suspicious UA',
     geoip: 'GeoIP',
+    geoipDatabase: 'GeoIP Database',
     blockedCountries: 'Blocked Countries',
     ratelimit: 'CC Rate Limit',
     requests: 'Window Requests',

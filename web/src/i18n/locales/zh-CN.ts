@@ -274,6 +274,7 @@ const zhCN = {
     allowedUA: '放行 UA',
     suspiciousUA: '可疑 UA',
     geoip: 'GeoIP',
+    geoipDatabase: 'GeoIP 数据库',
     blockedCountries: '封禁国家/地区',
     ratelimit: 'CC 限流',
     requests: '窗口请求数',
