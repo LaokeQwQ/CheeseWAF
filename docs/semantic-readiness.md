@@ -32,7 +32,7 @@ go test ./internal/engine/semantic -bench BenchmarkAnalyzerReadinessCorpus -benc
 Latest local baseline on Windows amd64 / Ryzen 5 5500:
 
 ```text
-BenchmarkAnalyzerReadinessCorpus-12  47311  25143 ns/op  5726 B/op  94 allocs/op
+BenchmarkAnalyzerReadinessCorpus-12  47618  24336 ns/op  5730 B/op  94 allocs/op
 ```
 
 ## Not Yet ModSecurity/CRS Parity
