@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, InputNumber, Message as ArcoMessage, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router-dom';
 import { CloudDownload, FileDown, Pencil, Plus, Search, Shield, Tags, Trash2 } from 'lucide-react';
 import {
   exportThreatIntel,
@@ -21,6 +22,8 @@ const second = 1_000_000_000;
 export default function IPManagePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const [routeParams, setRouteParams] = useSearchParams();
+  const activeTab = routeParams.get('tab') === 'providers' || routeParams.get('tab') === 'import' ? routeParams.get('tab') as string : 'entries';
   const [search, setSearch] = useState('');
   const [draftTags, setDraftTags] = useState<Record<string, string[]>>({});
   const [providers, setProviders] = useState<ThreatIntelProvider[]>([]);
@@ -148,7 +151,18 @@ export default function IPManagePage() {
       </header>
 
       <section className="panel">
-        <Tabs defaultActiveTab="entries">
+        <Tabs
+          activeTab={activeTab}
+          onChange={(tab) => {
+            const next = new URLSearchParams(routeParams);
+            if (tab === 'entries') {
+              next.delete('tab');
+            } else {
+              next.set('tab', tab);
+            }
+            setRouteParams(next, { replace: true });
+          }}
+        >
           <Tabs.TabPane key="entries" title={t('ip.entries')}>
             <div className="toolbar-row toolbar-row-compact ip-toolbar">
               <Input className="toolbar-search" prefix={<Search size={16} />} value={search} placeholder={t('common.search')} allowClear onChange={setSearch} />
@@ -232,37 +246,66 @@ export default function IPManagePage() {
               </div>
               <div className="provider-list">
                 {providers.map((provider, index) => (
-                  <div className="provider-row" key={provider.id}>
-                    <Switch checked={provider.enabled} onChange={(enabled) => updateProvider(index, { enabled })} />
-                    <Input value={provider.name} placeholder={t('ip.providerName')} onChange={(name) => updateProvider(index, { name })} />
-                    <Select value={provider.type} onChange={(type) => updateProvider(index, { type: type as string })}>
-                      <Select.Option value="generic">Generic</Select.Option>
-                      <Select.Option value="threatbook-cn">ThreatBook CN</Select.Option>
-                      <Select.Option value="threatbook-intl">ThreatBook Intl</Select.Option>
-                      <Select.Option value="misp">MISP</Select.Option>
-                      <Select.Option value="stix">STIX</Select.Option>
-                    </Select>
-                    <Select value={provider.format || 'stix'} onChange={(format) => updateProvider(index, { format: format as string })}>
-                      <Select.Option value="cidr">CIDR/TXT</Select.Option>
-                      <Select.Option value="csv">CSV</Select.Option>
-                      <Select.Option value="json">JSON</Select.Option>
-                      <Select.Option value="stix">STIX</Select.Option>
-                      <Select.Option value="threatbook">ThreatBook</Select.Option>
-                    </Select>
-                    <Select value={provider.action || 'challenge'} onChange={(action) => updateProvider(index, { action: action as string })}>
-                      <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
-                      <Select.Option value="block">{t('common.block')}</Select.Option>
-                      <Select.Option value="log">{displayAction('log', t)}</Select.Option>
-                    </Select>
-                    <Input value={provider.endpoint} placeholder="https://..." onChange={(endpoint) => updateProvider(index, { endpoint })} />
-                    <Input.Password value={provider.api_key} placeholder="API Key" onChange={(api_key) => updateProvider(index, { api_key })} />
-                    <InputNumber value={durationSeconds(provider.interval) / 3600} min={1} max={720} onChange={(value) => updateProvider(index, { interval: secondsToDuration(Number(value || 24) * 3600) })} />
-                    <Space>
-                      <Button size="small" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(provider)}>{t('system.test')}</Button>
-                      <Button size="small" loading={syncMutation.isPending} onClick={() => syncMutation.mutate(provider.id)}>{t('ip.sync')}</Button>
-                      <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeProvider(provider.id)} />
-                    </Space>
-                  </div>
+                  <article className="provider-card" key={provider.id}>
+                    <div className="provider-card-head">
+                      <Switch checked={provider.enabled} onChange={(enabled) => updateProvider(index, { enabled })} />
+                      <div>
+                        <strong>{provider.name || t('ip.providerName')}</strong>
+                        <span>{provider.endpoint || t('ip.providerEndpointEmpty')}</span>
+                      </div>
+                      <div className="provider-actions">
+                        <Button size="small" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(provider)}>{t('system.test')}</Button>
+                        <Button size="small" loading={syncMutation.isPending} onClick={() => syncMutation.mutate(provider.id)}>{t('ip.sync')}</Button>
+                        <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeProvider(provider.id)} />
+                      </div>
+                    </div>
+                    <div className="provider-field-grid">
+                      <label>
+                        <span>{t('ip.providerName')}</span>
+                        <Input value={provider.name} placeholder={t('ip.providerName')} onChange={(name) => updateProvider(index, { name })} />
+                      </label>
+                      <label>
+                        <span>{t('ip.providerType')}</span>
+                        <Select value={provider.type} onChange={(type) => updateProvider(index, { type: type as string })}>
+                          <Select.Option value="generic">Generic</Select.Option>
+                          <Select.Option value="threatbook-cn">ThreatBook CN</Select.Option>
+                          <Select.Option value="threatbook-intl">ThreatBook Intl</Select.Option>
+                          <Select.Option value="misp">MISP</Select.Option>
+                          <Select.Option value="stix">STIX</Select.Option>
+                        </Select>
+                      </label>
+                      <label>
+                        <span>{t('ip.format')}</span>
+                        <Select value={provider.format || 'stix'} onChange={(format) => updateProvider(index, { format: format as string })}>
+                          <Select.Option value="cidr">CIDR/TXT</Select.Option>
+                          <Select.Option value="csv">CSV</Select.Option>
+                          <Select.Option value="json">JSON</Select.Option>
+                          <Select.Option value="stix">STIX</Select.Option>
+                          <Select.Option value="threatbook">ThreatBook</Select.Option>
+                        </Select>
+                      </label>
+                      <label>
+                        <span>{t('logs.action')}</span>
+                        <Select value={provider.action || 'challenge'} onChange={(action) => updateProvider(index, { action: action as string })}>
+                          <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
+                          <Select.Option value="block">{t('common.block')}</Select.Option>
+                          <Select.Option value="log">{displayAction('log', t)}</Select.Option>
+                        </Select>
+                      </label>
+                      <label className="provider-endpoint-field">
+                        <span>{t('ip.endpoint')}</span>
+                        <Input value={provider.endpoint} placeholder="https://..." onChange={(endpoint) => updateProvider(index, { endpoint })} />
+                      </label>
+                      <label>
+                        <span>API Key</span>
+                        <Input.Password value={provider.api_key} placeholder="API Key" onChange={(api_key) => updateProvider(index, { api_key })} />
+                      </label>
+                      <label>
+                        <span>{t('ip.intervalHours')}</span>
+                        <InputNumber value={durationSeconds(provider.interval) / 3600} min={1} max={720} onChange={(value) => updateProvider(index, { interval: secondsToDuration(Number(value || 24) * 3600) })} />
+                      </label>
+                    </div>
+                  </article>
                 ))}
                 {!providers.length && <div className="empty-state">{t('ip.noProviders')}</div>}
               </div>
@@ -270,10 +313,10 @@ export default function IPManagePage() {
           </Tabs.TabPane>
 
           <Tabs.TabPane key="import" title={t('ip.import')}>
-            <div className="settings-grid">
-              <section className="system-card">
+            <div className="ip-intel-workspace">
+              <section className="system-card ip-import-card">
                 <div className="system-section-title"><h2>{t('ip.import')}</h2></div>
-                <div className="site-detail-grid">
+                <div className="ip-import-grid">
                   <label>
                     <span>{t('ip.format')}</span>
                     <Select value={importDraft.format} onChange={(format) => setImportDraft((current) => ({ ...current, format: format as string }))}>
@@ -304,20 +347,22 @@ export default function IPManagePage() {
                   </label>
                   <label><span>{t('ip.confidence')}</span><InputNumber value={importDraft.confidence * 100} min={0} max={100} precision={0} onChange={(value) => setImportDraft((current) => ({ ...current, confidence: Number(value || 0) / 100 }))} /></label>
                   <label className="wide-field"><span>{t('ip.labels')}</span><Input value={importDraft.labels} onChange={(labels) => setImportDraft((current) => ({ ...current, labels }))} /></label>
-                  <label className="wide-field"><span>IOC</span><Input.TextArea value={importDraft.contents} autoSize={{ minRows: 10, maxRows: 18 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /></label>
+                  <label className="ioc-field"><span>IOC</span><Input.TextArea value={importDraft.contents} autoSize={{ minRows: 12, maxRows: 20 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /></label>
                 </div>
-                <Button
-                  type="primary"
-                  disabled={!importDraft.contents.trim()}
-                  loading={importMutation.isPending}
-                  onClick={() => importMutation.mutate({ ...importDraft, labels: splitList(importDraft.labels) })}
-                >
-                  {t('ip.import')}
-                </Button>
+                <div className="form-action-row">
+                  <Button
+                    type="primary"
+                    disabled={!importDraft.contents.trim()}
+                    loading={importMutation.isPending}
+                    onClick={() => importMutation.mutate({ ...importDraft, labels: splitList(importDraft.labels) })}
+                  >
+                    {t('ip.import')}
+                  </Button>
+                </div>
               </section>
-              <section className="system-card">
+              <section className="system-card ip-lookup-card">
                 <div className="system-section-title"><h2>{t('ip.lookup')}</h2></div>
-                <div className="site-detail-grid">
+                <div className="ip-lookup-grid">
                   <label>
                     <span>{t('ip.providerName')}</span>
                     <Select value={lookupDraft.providerId} onChange={(providerId) => setLookupDraft((current) => ({ ...current, providerId: providerId as string }))}>
@@ -326,9 +371,11 @@ export default function IPManagePage() {
                   </label>
                   <label><span>IP</span><Input value={lookupDraft.ip} placeholder="8.8.8.8" onChange={(ip) => setLookupDraft((current) => ({ ...current, ip }))} /></label>
                 </div>
-                <Button type="primary" disabled={!lookupDraft.providerId || !lookupDraft.ip} loading={lookupMutation.isPending} onClick={() => lookupMutation.mutate()}>
-                  {t('ip.lookup')}
-                </Button>
+                <div className="form-action-row">
+                  <Button type="primary" disabled={!lookupDraft.providerId || !lookupDraft.ip} loading={lookupMutation.isPending} onClick={() => lookupMutation.mutate()}>
+                    {t('ip.lookup')}
+                  </Button>
+                </div>
               </section>
             </div>
           </Tabs.TabPane>

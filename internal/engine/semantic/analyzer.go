@@ -372,16 +372,16 @@ func guessCategories(raw string) []string {
 	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf"}
 	scores := map[string]int{}
 	sqlCompact := compactSQL(text)
-	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") {
+	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlOrderByInference.MatchString(text) {
 		scores["sqli"] += 2
 	}
-	if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") {
+	if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") || strings.Contains(text, "<meta") || strings.Contains(text, "expression(") {
 		scores["xss"] += 2
 	}
 	if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") {
 		scores["rce"] += 2
 	}
-	if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "/etc/passwd") || strings.Contains(text, "boot.ini") || strings.Contains(text, "win.ini") || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, ".env") || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") {
+	if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "/etc/passwd") || strings.Contains(text, "boot.ini") || strings.Contains(text, "win.ini") || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, ".env") || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") {
 		scores["lfi"] += 2
 	}
 	if strings.Contains(text, "<!doctype") || strings.Contains(text, "<!entity") {
@@ -426,6 +426,7 @@ var (
 	sqlErrorFunction       = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name)\s*\(`)
 	sqlStringFunction      = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
 	sqlComparison          = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
+	sqlOrderByInference    = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
 	sqlMySQLVersionComment = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
 	xssEventPattern        = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
 	unicodeEscapePattern   = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
@@ -468,6 +469,9 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlComment.MatchString(text) && (contains(words, "or") || contains(words, "union") || contains(words, "select")) {
 		reasons["syntax: SQL comment used to truncate query"] = true
 	}
+	if sqlOrderByInference.MatchString(text) {
+		reasons["syntax: ORDER/GROUP BY column-count inference with SQL comment"] = true
+	}
 	if sqlDangerousFunc.MatchString(text) {
 		reasons["semantics: database server file or command side effect"] = true
 	}
@@ -498,6 +502,12 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	}
 	if xssSrcdocContext.MatchString(lower) {
 		reasons["syntax: iframe srcdoc execution context"] = true
+	}
+	if xssMetaRefreshContext.MatchString(lower) {
+		reasons["syntax: meta refresh javascript navigation"] = true
+	}
+	if xssStyleExecutionContext.MatchString(lower) {
+		reasons["syntax: executable CSS expression or javascript URL"] = true
 	}
 	if strings.Contains(lower, "document.cookie") || strings.Contains(lower, "localstorage") || strings.Contains(lower, "fetch(") {
 		reasons["semantics: browser credential or network side effect"] = true
@@ -577,7 +587,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 	lower := normalize(text)
-	for _, target := range []string{"/etc/passwd", "/etc/shadow", "/proc/self/environ", "boot.ini", "win.ini", "web-inf/web.xml", ".aws/credentials", ".git/config", ".env", ".ssh/id_rsa", "wp-config"} {
+	for _, target := range []string{"/etc/passwd", "/etc/shadow", "/proc/self/environ", "boot.ini", "win.ini", "web-inf/web.xml", ".aws/credentials", ".git/config", ".env", ".ssh/id_rsa", "wp-config", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {
 		if strings.Contains(lower, target) {
 			reasons["semantics: sensitive local file target"] = true
 			break
@@ -609,6 +619,9 @@ func analyzeXXE(candidate semanticCandidate) (Hit, bool) {
 }
 
 func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
+	if !ssrfFetchSink(candidate) {
+		return Hit{}, false
+	}
 	payload := decoder.Decode(candidate.text).Text
 	for _, rawURL := range urlLikePattern.FindAllString(payload, -1) {
 		parsed, err := url.Parse(rawURL)
@@ -629,6 +642,31 @@ func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 	return Hit{}, false
+}
+
+func ssrfFetchSink(candidate semanticCandidate) bool {
+	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
+	if name == "" || name == "path_query" || name == "body" || name == "text" || name == "content" || name == "message" || name == "description" {
+		return false
+	}
+	if candidate.input.Source == "header" {
+		switch name {
+		case "x-forwarded-host", "x-forwarded-url", "x-original-url", "x-rewrite-url", "forwarded", "referer", "origin":
+			return true
+		default:
+			return strings.Contains(name, "url") || strings.Contains(name, "uri")
+		}
+	}
+	parts := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
+	})
+	for _, part := range parts {
+		switch part {
+		case "url", "uri", "link", "href", "src", "host", "domain", "endpoint", "callback", "webhook", "redirect", "return", "next", "target", "dest", "destination", "fetch", "proxy", "source", "remote", "image", "avatar", "feed":
+			return true
+		}
+	}
+	return false
 }
 
 func hit(candidate semanticCandidate, category string, severity engine.Severity, confidence float64, reasons map[string]bool) Hit {

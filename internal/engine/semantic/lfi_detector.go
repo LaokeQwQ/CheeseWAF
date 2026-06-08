@@ -11,10 +11,11 @@ import (
 
 var lfiPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:\.\.[/\\]){2,}`),
+	regexp.MustCompile(`(?i)(?:\.\.\.\.[/\\]{2}){2,}`),
 	regexp.MustCompile(`(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|boot\.ini|win\.ini|windows[/\\]win\.ini)`),
 	regexp.MustCompile(`(?i)(?:php|zip|data|file)://`),
 	regexp.MustCompile(`(?i)(?:WEB-INF/web\.xml|META-INF/MANIFEST\.MF)`),
-	regexp.MustCompile(`(?i)(?:^|/|\b)(?:\.aws/credentials|\.git/config|\.env|\.ssh/(?:id_rsa|id_dsa)|wp-config(?:\.php)?|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|WEB-INF/web\.xml)(?:$|\b)`),
+	regexp.MustCompile(`(?i)(?:^|/|\b)(?:\.aws/credentials|\.git/config|\.env|\.ssh/(?:id_rsa|id_dsa)|wp-config(?:\.php)?|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|WEB-INF/web\.xml|var/run/secrets/kubernetes\.io/serviceaccount/(?:token|ca\.crt|namespace))(?:$|\b)`),
 }
 
 type LFIDetector struct {

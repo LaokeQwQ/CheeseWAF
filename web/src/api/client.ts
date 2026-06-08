@@ -387,6 +387,12 @@ export function cleanupStorage() {
   return unwrap<{ cleaned: boolean }>(apiClient.post('/storage/cleanup'));
 }
 
+export function reclaimSystemResources(target: 'memory' | 'swap' | 'all') {
+  return unwrap<{ ok: boolean; target: string; actions: Array<{ name: string; ok: boolean; message?: string }> }>(
+    apiClient.post('/system/reclaim', { target }),
+  );
+}
+
 export function exportBackup() {
   return unwrap<Record<string, unknown>>(apiClient.post('/backup/export'));
 }

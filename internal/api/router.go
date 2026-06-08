@@ -111,6 +111,7 @@ func NewRouter(opts Options) http.Handler {
 			r.Post("/ai/assistant", h.AIAssistant)
 			r.Get("/storage", h.StorageStats)
 			r.Post("/storage/cleanup", h.CleanupStorage)
+			r.With(middleware.RBAC(opts.Config.APISec.Permissions, "write:system")).Post("/system/reclaim", h.ReclaimSystemResources)
 			r.Post("/backup/export", h.ExportBackup)
 			r.Post("/backup/restore", h.RestoreBackup)
 			r.Get("/block-pages/templates", h.BlockPageTemplates)
