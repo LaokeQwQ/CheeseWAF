@@ -24,6 +24,7 @@ type TokenManager struct {
 
 type Claims struct {
 	Subject  string   `json:"sub"`
+	ID       string   `json:"jti,omitempty"`
 	Username string   `json:"username"`
 	Role     string   `json:"role"`
 	Scopes   []string `json:"scope"`
@@ -49,9 +50,19 @@ func NewTokenManager(secret string, ttl time.Duration) *TokenManager {
 func (m *TokenManager) Sign(subject, username, role string) (string, error) {
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	now := time.Now().UTC()
-	claims := Claims{Subject: subject, Username: username, Role: role, Scopes: []string{role}, IssuedAt: now.Unix(), Expires: now.Add(m.ttl).Unix()}
-	headerJSON, _ := json.Marshal(header)
-	claimsJSON, _ := json.Marshal(claims)
+	tokenID, err := randomTokenID()
+	if err != nil {
+		return "", err
+	}
+	claims := Claims{Subject: subject, ID: tokenID, Username: username, Role: role, Scopes: []string{role}, IssuedAt: now.Unix(), Expires: now.Add(m.ttl).Unix()}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
 	unsigned := encode(headerJSON) + "." + encode(claimsJSON)
 	sig := m.sign(unsigned)
 	return unsigned + "." + sig, nil
@@ -106,6 +117,14 @@ func (m *TokenManager) sign(unsigned string) string {
 
 func encode(data []byte) string {
 	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func randomTokenID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 func writeUnauthorized(w http.ResponseWriter) {

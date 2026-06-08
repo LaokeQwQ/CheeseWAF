@@ -133,6 +133,46 @@ func TestRouterPrometheusMetricsCanBeExplicitlyPublic(t *testing.T) {
 	}
 }
 
+func TestRouterRefreshesBearerToken(t *testing.T) {
+	router, adminToken, _ := newAuthzTestRouter(t)
+
+	withoutToken := perform(router, http.MethodPost, "/api/auth/refresh", "", []byte(`{}`))
+	if withoutToken.Code != http.StatusUnauthorized {
+		t.Fatalf("expected refresh without bearer token to be unauthorized, got %d: %s", withoutToken.Code, withoutToken.Body.String())
+	}
+
+	refreshed := perform(router, http.MethodPost, "/api/auth/refresh", adminToken, []byte(`{}`))
+	if refreshed.Code != http.StatusOK {
+		t.Fatalf("expected refresh to succeed, got %d: %s", refreshed.Code, refreshed.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Token string `json:"token"`
+			User  struct {
+				Username string `json:"username"`
+				Role     string `json:"role"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(refreshed.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode refresh response: %v", err)
+	}
+	if envelope.Data.Token == "" {
+		t.Fatal("refresh response did not include token")
+	}
+	if envelope.Data.Token == adminToken {
+		t.Fatal("refresh returned the same token; expected a rotated token id")
+	}
+	if envelope.Data.User.Username != "admin" || envelope.Data.User.Role != "admin" {
+		t.Fatalf("unexpected refresh user: %+v", envelope.Data.User)
+	}
+
+	system := perform(router, http.MethodGet, "/api/system", envelope.Data.Token, nil)
+	if system.Code != http.StatusOK {
+		t.Fatalf("refreshed token should access protected API, got %d: %s", system.Code, system.Body.String())
+	}
+}
+
 func newAuthzTestRouter(t *testing.T) (http.Handler, string, string) {
 	return newAuthzTestRouterWithConfig(t, func(cfg *config.Config) {
 		cfg.Monitor.Prometheus.Enabled = true

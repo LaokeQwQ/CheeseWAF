@@ -99,6 +99,25 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]any{"token": token, "user": user})
 }
 
+func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	user, err := h.Store.GetUserByUsername(r.Context(), claims.Username)
+	if err != nil || user == nil || user.ID != claims.Subject {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	token, err := h.Tokens.Sign(user.ID, user.Username, user.Role)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", err.Error())
+		return
+	}
+	writeData(w, map[string]any{"token": token, "user": user})
+}
+
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	var req dto.SetupRequest
 	if !decode(w, r, &req) {
