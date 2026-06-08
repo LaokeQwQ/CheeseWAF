@@ -1,12 +1,12 @@
-import { Button, Progress, Radio, Spin, Tag } from '@arco-design/web-react';
+import { Button, Message as ArcoMessage, Progress, Radio, Spin, Tag, Tooltip } from '@arco-design/web-react';
 import { useMemo, useState, type CSSProperties } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Activity, Cpu, HardDrive, MemoryStick, Network, RotateCcw, ShieldCheck, Zap, ZoomIn, ZoomOut } from 'lucide-react';
+import { Activity, Cpu, HardDrive, MemoryStick, Network, Recycle, RotateCcw, ShieldCheck, Zap, ZoomIn, ZoomOut } from 'lucide-react';
 import { listItemVariants, listVariants } from '../../animations/variants';
-import { fetchLogs, fetchMonitorSummary, fetchSites } from '../../api/client';
+import { fetchLogs, fetchMonitorSummary, fetchSites, reclaimSystemResources } from '../../api/client';
 import type { LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
 
@@ -17,35 +17,42 @@ const refreshOptions = [1000, 3000, 5000, 10000];
 
 export default function DashboardPage() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [statsRange, setStatsRange] = useState(60);
   const [refreshMs, setRefreshMs] = useState(3000);
   const [chartScale, setChartScale] = useState(1);
-  const { data: monitor, isLoading: loadingMonitor } = useQuery({ queryKey: ['dashboard-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 5_000, retry: false });
-  const { data: periodLogs, isLoading: loadingPeriod } = useQuery({
+  const { data: monitor, isLoading: loadingMonitor, isFetching: fetchingMonitor, refetch: refetchMonitor } = useQuery({
+    queryKey: ['dashboard-monitor'],
+    queryFn: fetchMonitorSummary,
+    refetchInterval: refreshMs,
+    retry: false,
+  });
+  const { data: periodLogs, isLoading: loadingPeriod, refetch: refetchPeriodLogs } = useQuery({
     queryKey: ['dashboard-period-logs', statsRange],
-    queryFn: () => fetchLogs(buildWindowQuery(statsRange * 60, 1000)),
+    queryFn: () => fetchLogs(buildWindowQuery(statsRange * 60, 5000)),
     refetchInterval: totalsRefreshMs,
     retry: false,
   });
-  const { data: periodBlocked } = useQuery({
-    queryKey: ['dashboard-period-blocked', statsRange],
-    queryFn: () => fetchLogs(buildWindowQuery(statsRange * 60, 1, 'block')),
-    refetchInterval: totalsRefreshMs,
-    retry: false,
-  });
-  const { data: liveLogs, isLoading: loadingLive } = useQuery({
+  const { data: liveLogs, isLoading: loadingLive, isFetching: fetchingLive, refetch: refetchLiveLogs } = useQuery({
     queryKey: ['dashboard-live-logs'],
     queryFn: () => fetchLogs(buildWindowQuery(realtimeWindowSeconds, 500)),
     refetchInterval: refreshMs,
     retry: false,
   });
-  const { data: liveBlocked } = useQuery({
-    queryKey: ['dashboard-live-blocked'],
-    queryFn: () => fetchLogs(buildWindowQuery(realtimeWindowSeconds, 1, 'block')),
-    refetchInterval: refreshMs,
-    retry: false,
+  const { data: sites, refetch: refetchSites } = useQuery({ queryKey: ['dashboard-sites'], queryFn: fetchSites, refetchInterval: 30_000, retry: false });
+  const reclaimMutation = useMutation({
+    mutationFn: reclaimSystemResources,
+    onSuccess: (result) => {
+      const message = `${t('dashboard.reclaimResult')}: ${result.actions.filter((item) => item.ok).length}/${result.actions.length}`;
+      if (result.ok) {
+        ArcoMessage.success(message);
+      } else {
+        ArcoMessage.warning(message);
+      }
+      queryClient.invalidateQueries({ queryKey: ['dashboard-monitor'] });
+    },
+    onError: (error) => ArcoMessage.error(error.message),
   });
-  const { data: sites } = useQuery({ queryKey: ['dashboard-sites'], queryFn: fetchSites, refetchInterval: 30_000, retry: false });
   const snapshot = monitor?.snapshot;
   const entries = periodLogs?.items ?? [];
   const liveEntries = liveLogs?.items ?? [];
@@ -53,21 +60,33 @@ export default function DashboardPage() {
   const liveSeries = useMemo(() => buildRealtimeSeries(liveEntries, realtimeWindowSeconds), [liveEntries]);
   const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
   const latency = useMemo(() => p95Latency(entries), [entries]);
-  const periodRequests = periodLogs?.total ?? entries.length;
-  const periodBlockedCount = periodBlocked?.total ?? entries.filter((entry) => entry.action === 'block').length;
-  const liveRequests = liveLogs?.total ?? liveEntries.length;
-  const liveBlockedCount = liveBlocked?.total ?? liveEntries.filter((entry) => entry.action === 'block').length;
+  const periodRequests = traffic.reduce((sum, point) => sum + point.count, 0);
+  const periodBlockedCount = entries.filter((entry) => entry.action === 'block').length;
+  const liveRequests = liveEntries.length;
+  const liveBlockedCount = liveEntries.filter((entry) => entry.action === 'block').length;
   const siteCount = sites?.length ?? snapshot?.sites ?? 0;
   const host = snapshot?.host;
   const cpuPercent = clampPercent(host?.cpu_percent ?? 0);
   const memoryHostPercent = clampPercent(host?.memory_percent ?? 0);
   const diskPercent = clampPercent(host?.disk_percent ?? 0);
+  const swapPercent = clampPercent(host?.swap_percent ?? 0);
   const cpuCount = host?.cpu_count ?? 0;
   const load1 = host?.load1 ?? 0;
   const loadPercent = clampPercent(cpuCount > 0 ? (load1 / cpuCount) * 100 : load1 * 25);
   const loading = loadingMonitor || loadingPeriod;
+  const refreshingLiveResources = fetchingMonitor || fetchingLive;
   const maxTraffic = Math.max(...traffic.map((point) => point.count), 1);
   const yMax = Math.max(1, Math.ceil(maxTraffic / chartScale));
+  const yMid = yMax <= 1 ? '0.5' : formatNumber(Math.ceil(yMax / 2));
+  const monitorState = snapshot
+    ? { color: 'green', label: t('common.online') }
+    : { color: loadingMonitor ? 'blue' : 'orange', label: loadingMonitor ? t('common.loading') : t('shell.connectionReconnecting') };
+  const manualRefresh = () => {
+    void refetchMonitor();
+    void refetchLiveLogs();
+    void refetchPeriodLogs();
+    void refetchSites();
+  };
 
   return (
     <section className="page-surface dashboard-page">
@@ -76,17 +95,38 @@ export default function DashboardPage() {
           <h1>{t('dashboard.title')}</h1>
           <p>{t('dashboard.subtitle')}</p>
         </div>
-        <Tag color="green" icon={<ShieldCheck size={14} />}>
-          {t('common.online')}
+        <Tag color={monitorState.color} icon={<ShieldCheck size={14} />}>
+          {monitorState.label}
         </Tag>
       </header>
+
+      <div className="dashboard-control-strip">
+        <div className="control-cluster">
+          <span>{t('dashboard.statsWindow')}</span>
+          <Radio.Group type="button" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
+            <Radio value={15}>{t('dashboard.last15m')}</Radio>
+            <Radio value={60}>{t('dashboard.last60m')}</Radio>
+            <Radio value={180}>{t('dashboard.last3h')}</Radio>
+            <Radio value={1440}>{t('dashboard.last24h')}</Radio>
+          </Radio.Group>
+        </div>
+        <div className="control-cluster control-cluster-right">
+          <span>{t('dashboard.autoRefresh')}</span>
+          <Radio.Group type="button" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
+            {refreshOptions.map((value) => <Radio key={value} value={value}>{value / 1000}s</Radio>)}
+          </Radio.Group>
+          <Tooltip content={t('dashboard.manualRefresh')}>
+            <Button className="icon-button" icon={<RotateCcw size={15} />} loading={refreshingLiveResources} onClick={manualRefresh} />
+          </Tooltip>
+        </div>
+      </div>
 
       <motion.div className="metric-grid" variants={listVariants} initial="initial" animate="enter">
         {[
           { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, t), icon: Zap },
           { label: t('dashboard.totalBlocked'), value: formatNumber(periodBlockedCount), delta: `${blockRate(periodBlockedCount, periodRequests)}%`, icon: ShieldCheck },
           { label: t('shell.latency'), value: formatLatency(latency), delta: 'P95', icon: Network },
-          { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: t('common.online'), icon: HardDrive },
+          { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: snapshot ? t('common.online') : t('common.unknown'), icon: HardDrive },
         ].map((item) => {
           const Icon = item.icon;
           return (
@@ -106,13 +146,6 @@ export default function DashboardPage() {
             <div className="panel-heading">
               <h2>{t('dashboard.totals')}</h2>
               <div className="chart-controls">
-                <span>{t('dashboard.statsWindow')}</span>
-                <Radio.Group type="button" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
-                  <Radio value={15}>{t('dashboard.last15m')}</Radio>
-                  <Radio value={60}>{t('dashboard.last60m')}</Radio>
-                  <Radio value={180}>{t('dashboard.last3h')}</Radio>
-                  <Radio value={1440}>{t('dashboard.last24h')}</Radio>
-                </Radio.Group>
                 <Button icon={<ZoomOut size={14} />} onClick={() => setChartScale((value) => Math.max(0.5, Number((value - 0.25).toFixed(2))))} />
                 <span>{Math.round(chartScale * 100)}%</span>
                 <Button icon={<ZoomIn size={14} />} onClick={() => setChartScale((value) => Math.min(2.5, Number((value + 0.25).toFixed(2))))} />
@@ -123,7 +156,7 @@ export default function DashboardPage() {
               <div className="traffic-chart" aria-label={t('dashboard.totals')}>
                 <div className="chart-y-axis" aria-hidden="true">
                   <span>{yMax}</span>
-                  <span>{Math.round(yMax / 2)}</span>
+                  <span>{yMid}</span>
                   <span>0</span>
                 </div>
                 <div className="chart-plot" style={{ '--bar-count': traffic.length } as CSSProperties}>
@@ -179,12 +212,7 @@ export default function DashboardPage() {
           <section className="panel realtime-panel">
             <div className="panel-heading">
               <h2>{t('dashboard.realtime')}</h2>
-              <div className="chart-controls compact-controls">
-                <span>{t('dashboard.refresh')}</span>
-                <Radio.Group type="button" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
-                  {refreshOptions.map((value) => <Radio key={value} value={value}>{value / 1000}s</Radio>)}
-                </Radio.Group>
-              </div>
+              <span>{t('dashboard.refreshEvery', { seconds: refreshMs / 1000 })}</span>
             </div>
             <Spin loading={loadingLive}>
               <div className="realtime-summary">
@@ -209,6 +237,7 @@ export default function DashboardPage() {
           <section className="panel">
             <div className="panel-heading">
               <h2>{t('dashboard.resources')}</h2>
+              <span>{t('dashboard.refreshEvery', { seconds: refreshMs / 1000 })}</span>
             </div>
             <div className="resource-stack">
               <div className="resource-row">
@@ -216,7 +245,7 @@ export default function DashboardPage() {
                 <span>{t('dashboard.cpu')}</span>
                 <Progress percent={cpuPercent} size="small" showText={false} />
                 <strong>{formatPercent(host?.cpu_percent ?? 0)}</strong>
-                <small>{host?.os ? host.os : t('common.unknown')}</small>
+                <small>{cpuCount > 0 ? t('dashboard.cpuHint', { cores: cpuCount }) : t('common.unknown')}</small>
               </div>
               <div className="resource-row">
                 <Activity size={18} />
@@ -233,6 +262,13 @@ export default function DashboardPage() {
                 <small>{formatCapacity(host?.memory_used ?? 0, host?.memory_total ?? 0, t)}</small>
               </div>
               <div className="resource-row">
+                <Recycle size={18} />
+                <span>{t('dashboard.swap')}</span>
+                <Progress percent={swapPercent} size="small" showText={false} />
+                <strong>{formatPercent(host?.swap_percent ?? 0)}</strong>
+                <small>{formatCapacity(host?.swap_used ?? 0, host?.swap_total ?? 0, t)}</small>
+              </div>
+              <div className="resource-row">
                 <HardDrive size={18} />
                 <span>{t('dashboard.disk')}</span>
                 <Progress percent={diskPercent} size="small" showText={false} />
@@ -243,6 +279,14 @@ export default function DashboardPage() {
             <div className="resource-runtime">
               <span>{t('dashboard.processRuntime')}</span>
               <strong>{t('dashboard.processHint', { goroutines: snapshot?.goroutines ?? 0, heap: formatBytes(snapshot?.memory_alloc ?? 0) })}</strong>
+            </div>
+            <div className="resource-actions">
+              <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('memory')}>
+                {t('dashboard.reclaimMemory')}
+              </Button>
+              <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('swap')}>
+                {t('dashboard.reclaimSwap')}
+              </Button>
             </div>
           </section>
 

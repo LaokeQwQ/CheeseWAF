@@ -30,6 +30,7 @@ func TestSQLDetectorBlocksFunctionBasedPayloads(t *testing.T) {
 		"/login?u=admin'%3Bselect%20pg_sleep(5)--",
 		"/search?q=1%20or%20char(49)%3Dchar(49)",
 		"/search?q=1%20/*!50000UNION*/%20/*!50000SELECT*/%20password%20from%20users",
+		"/search?q=1%20order%20by%203--",
 	}
 	for _, target := range cases {
 		t.Run(target, func(t *testing.T) {
@@ -236,6 +237,8 @@ func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
 		"/?q=%26lt%3Bimg%20src%3Dx%20onerror%3Dalert(1)%26gt%3B",
 		"/?next=%3Cobject%20data%3Ddata%3Atext%2Fhtml%3Bbase64%2CPHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg%3E",
 		"/?frame=%3Ciframe%20srcdoc%3D%22%3Cscript%3Ealert(1)%3C%2Fscript%3E%22%3E%3C%2Fiframe%3E",
+		"/?q=%3Cmeta%20http-equiv%3Drefresh%20content%3D%270%3Burl%3Djavascript%3Aalert(1)%27%3E",
+		"/?q=%3Cdiv%20style%3D%22width%3Aexpression(alert(1))%22%3E",
 	}
 	for _, target := range cases {
 		t.Run(target, func(t *testing.T) {
@@ -290,6 +293,7 @@ func TestPhase2SemanticDetectors(t *testing.T) {
 	}{
 		{name: "rce", target: "/run?cmd=1%3Bcat%20/etc/passwd", detector: NewRCEDetector("block"), category: "rce"},
 		{name: "lfi", target: "/download?file=..%2F..%2F..%2Fetc%2Fpasswd", detector: NewLFIDetector("block"), category: "lfi"},
+		{name: "lfi-kubernetes-token", target: "/download?file=/var/run/secrets/kubernetes.io/serviceaccount/token", detector: NewLFIDetector("block"), category: "lfi"},
 		{name: "xxe", target: "/xml?body=%3C!DOCTYPE%20foo%20%5B%3C!ENTITY%20xxe%20SYSTEM%20%22file%3A///etc/passwd%22%3E%5D%3E", detector: NewXXEDetector("block"), category: "xxe"},
 		{name: "ssrf", target: "/fetch?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data", detector: NewSSRFDetector("block"), category: "ssrf"},
 	}
@@ -306,6 +310,30 @@ func TestPhase2SemanticDetectors(t *testing.T) {
 			}
 			if result == nil || !result.Detected || result.Category != tc.category {
 				t.Fatalf("expected %s detection, got %+v", tc.category, result)
+			}
+		})
+	}
+}
+
+func TestSSRFDetectorBlocksNumericHostVariants(t *testing.T) {
+	cases := []string{
+		"/fetch?url=http://0x7f.0x0.0x0.0x1/admin",
+		"/fetch?url=http://0251.0376.0251.0376/latest/meta-data",
+		"/fetch?url=http://[::1]/admin",
+	}
+	for _, target := range cases {
+		t.Run(target, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, target, nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewSSRFDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected || result.Category != "ssrf" {
+				t.Fatalf("expected SSRF detection, got %+v", result)
 			}
 		})
 	}
