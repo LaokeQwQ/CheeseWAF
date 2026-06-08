@@ -62,7 +62,7 @@ export default function DashboardPage() {
   const yMax = Math.max(1, Math.ceil(maxTraffic / chartScale));
 
   return (
-    <section className="page-surface">
+    <section className="page-surface dashboard-page">
       <header className="page-header">
         <div>
           <h1>{t('dashboard.title')}</h1>

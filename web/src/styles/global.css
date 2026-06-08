@@ -309,6 +309,12 @@ select {
   gap: 22px;
 }
 
+.dashboard-page {
+  width: 100%;
+  max-width: 1360px;
+  margin: 0 auto;
+}
+
 .page-header {
   display: flex;
   align-items: flex-start;
@@ -330,7 +336,7 @@ select {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -412,8 +418,9 @@ select {
 .dashboard-grid,
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.75fr);
   gap: 12px;
+  align-items: start;
 }
 
 .dashboard-side-stack {
@@ -434,6 +441,13 @@ select {
 
 .panel-wide {
   min-width: 0;
+}
+
+.dashboard-page .panel > .arco-spin,
+.dashboard-page .panel > .arco-spin .arco-spin-children {
+  width: 100%;
+  min-width: 0;
+  display: block;
 }
 
 .panel-heading {
@@ -495,10 +509,11 @@ select {
 }
 
 .traffic-chart {
+  width: 100%;
   min-width: 0;
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
-  grid-template-rows: 232px 28px;
+  grid-template-rows: clamp(260px, 30vw, 340px) 32px;
   gap: 0 10px;
 }
 
@@ -513,10 +528,11 @@ select {
 
 .chart-plot {
   position: relative;
+  width: 100%;
   display: grid;
   grid-template-columns: repeat(var(--bar-count, 12), minmax(10px, 1fr));
   align-items: end;
-  gap: clamp(4px, 1.1vw, 12px);
+  gap: clamp(6px, 1.2vw, 16px);
   min-width: 0;
   padding: 10px 8px;
   overflow: hidden;
@@ -575,7 +591,7 @@ select {
 
 .realtime-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(88px, 1fr));
   gap: 8px;
 }
 
@@ -622,7 +638,7 @@ select {
 
 .realtime-line {
   width: 100%;
-  height: 82px;
+  height: 112px;
   margin-top: 12px;
   display: block;
   border: 1px solid var(--border);

@@ -57,8 +57,9 @@ and `canary` intentionally remain behind `dev` until the upward promotion flow
 is completed. The Forgejo workflow is present under `.forgejo/workflows/ci.yml`
 and uses `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh`
 for self-hosted runner-friendly toolchain setup. The current UI hardening pass
-focuses on real dashboard counters, live-vs-total posture separation, less
-abstract 2D/China-mainland/3D attack-map modes, and June 8 layout fixes for
+focuses on real dashboard counters, live-vs-total posture separation, scoped
+Dashboard chart sizing that fills its panel instead of shrinking into a corner,
+less abstract 2D/China-mainland/3D attack-map modes, and June 8 layout fixes for
 Rules, IP Control, Protection, Operations, Updates, Block Pages, and System
 Settings, and APISec JWT signing/audience/remote-JWKS/endpoint-policy controls. Code
 snapshot `e97ebe7` has been built as a Linux amd64 single-binary deployment and

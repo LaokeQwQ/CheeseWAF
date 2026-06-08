@@ -44,7 +44,7 @@ cd web && npm ci && npm run build
 
 ## 阶段快照
 
-截至 2026-06-08，当前开发线是 `fix/admin-ui-dashboard-map`，PR #8 目标分支为 `dev`。`git.laoker.cc/Laoke/CheeseWAF` 上的 Forgejo 是主要 forge/构建目标，GitHub 保持辅助镜像/检查角色。`master` 和 `canary` 会在向上合并流程完成前有意落后于 `dev`。Forgejo workflow 位于 `.forgejo/workflows/ci.yml`，并使用 `scripts/ci/setup-go-mirror.sh` 和 `scripts/ci/setup-node-mirror.sh` 支持自托管 runner 友好的工具链设置。当前 UI 加固重点包括真实仪表盘计数、实时/总计态势分离、更清晰的 2D/中国大陆/3D 攻击地图模式，以及 6 月 8 日对 Rules、IP Control、Protection、Operations、Updates、Block Pages、System Settings 和 APISec JWT 签名/audience/远端 JWKS/端点策略控制的布局修复。代码快照 `e97ebe7` 已构建为 Linux amd64 单二进制部署，并在远端验收主机 smoke 测试：管理端 health/index/assets 返回 200，代理首页返回 200，SQLi probe 返回 403。本地 Web build、选定 race tests、使用工作区 `GOCACHE` 的 Go tests、Playwright Chrome Canary 桌面/移动截图与 DOM overflow 审计，以及 `git diff --check` 均通过。
+截至 2026-06-08，当前开发线是 `fix/admin-ui-dashboard-map`，PR #8 目标分支为 `dev`。`git.laoker.cc/Laoke/CheeseWAF` 上的 Forgejo 是主要 forge/构建目标，GitHub 保持辅助镜像/检查角色。`master` 和 `canary` 会在向上合并流程完成前有意落后于 `dev`。Forgejo workflow 位于 `.forgejo/workflows/ci.yml`，并使用 `scripts/ci/setup-go-mirror.sh` 和 `scripts/ci/setup-node-mirror.sh` 支持自托管 runner 友好的工具链设置。当前 UI 加固重点包括真实仪表盘计数、实时/总计态势分离、Dashboard 图表按面板撑满而不是缩在角落的 scoped 尺寸修复、更清晰的 2D/中国大陆/3D 攻击地图模式，以及 6 月 8 日对 Rules、IP Control、Protection、Operations、Updates、Block Pages、System Settings 和 APISec JWT 签名/audience/远端 JWKS/端点策略控制的布局修复。代码快照 `e97ebe7` 已构建为 Linux amd64 单二进制部署，并在远端验收主机 smoke 测试：管理端 health/index/assets 返回 200，代理首页返回 200，SQLi probe 返回 403。本地 Web build、选定 race tests、使用工作区 `GOCACHE` 的 Go tests、Playwright Chrome Canary 桌面/移动截图与 DOM overflow 审计，以及 `git diff --check` 均通过。
 
 ## 发布前缺口
 
