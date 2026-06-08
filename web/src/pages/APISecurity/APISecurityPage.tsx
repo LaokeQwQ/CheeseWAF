@@ -24,21 +24,31 @@ export default function APISecurityPage() {
         </div>
       </header>
 
-      <div className="settings-grid">
+      <div className="api-security-grid">
         <section className="panel">
           <div className="panel-heading"><h2><Radar size={16} /> {t('apisec.discovery')}</h2></div>
-          <Table
-            rowKey="path"
-            pagination={false}
-            data={data?.endpoints ?? []}
-            columns={[
-              { title: 'Method', dataIndex: 'method', render: (value: string) => <Tag>{value}</Tag> },
-              { title: 'Path', dataIndex: 'path', render: (value: string) => <code>{value}</code> },
-              { title: t('apisec.count'), dataIndex: 'count' },
-              { title: t('apisec.blocked'), dataIndex: 'blocked', render: (value: number) => <Tag color={value > 0 ? 'red' : 'green'}>{value}</Tag> },
-              { title: t('apisec.status'), dataIndex: 'status_family', render: (_: unknown, record: APIEndpoint) => Object.entries(record.status_family).map(([key, value]) => <Tag key={key}>{key}:{value}</Tag>) },
-            ]}
-          />
+          <div className="table-scroll api-endpoints-table">
+            <Table
+              rowKey="path"
+              pagination={false}
+              data={data?.endpoints ?? []}
+              columns={[
+                { title: t('apisec.method'), dataIndex: 'method', render: (value: string) => <Tag>{value}</Tag> },
+                { title: t('apisec.path'), dataIndex: 'path', render: (value: string) => <code className="table-code" title={value}>{value}</code> },
+                { title: t('apisec.count'), dataIndex: 'count' },
+                { title: t('apisec.blocked'), dataIndex: 'blocked', render: (value: number) => <Tag color={value > 0 ? 'red' : 'green'}>{value}</Tag> },
+                {
+                  title: t('apisec.status'),
+                  dataIndex: 'status_family',
+                  render: (_: unknown, record: APIEndpoint) => (
+                    <span className="api-status-group">
+                      {Object.entries(record.status_family).map(([key, value]) => <Tag key={key}>{key}: {value}</Tag>)}
+                    </span>
+                  ),
+                },
+              ]}
+            />
+          </div>
         </section>
 
         <section className="panel">
@@ -48,7 +58,7 @@ export default function APISecurityPage() {
             initialValues={{ method: 'GET', path: '/api/search', query: '' }}
             onSubmit={(values) => validateMutation.mutate({ method: values.method, path: values.path, query: values.query, headers: {}, content_length: 0 })}
           >
-            <Form.Item label="Method" field="method">
+            <Form.Item label={t('apisec.method')} field="method">
               <Select>
                 <Select.Option value="GET">GET</Select.Option>
                 <Select.Option value="POST">POST</Select.Option>
@@ -56,13 +66,13 @@ export default function APISecurityPage() {
                 <Select.Option value="DELETE">DELETE</Select.Option>
               </Select>
             </Form.Item>
-            <Form.Item label="Path" field="path"><Input /></Form.Item>
-            <Form.Item label="Query" field="query"><Input placeholder="q=test" /></Form.Item>
+            <Form.Item label={t('apisec.path')} field="path"><Input /></Form.Item>
+            <Form.Item label={t('apisec.query')} field="query"><Input placeholder="q=test" /></Form.Item>
             <Button type="primary" htmlType="submit" loading={validateMutation.isPending}>{t('apisec.validate')}</Button>
           </Form>
-          <div className="event-list" style={{ marginTop: 14 }}>
+          <div className="event-list api-findings">
             {findings.length === 0 ? <Tag color="green">{t('apisec.clean')}</Tag> : findings.map((finding) => (
-              <Tag key={`${finding.schema_id}-${finding.field}`} color="orange">{String(finding.message)}</Tag>
+              <Tag className="api-finding-tag" key={`${finding.schema_id}-${finding.field}`} color="orange">{String(finding.message)}</Tag>
             ))}
           </div>
         </section>

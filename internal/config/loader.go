@@ -18,6 +18,8 @@ func Default() Config {
 			ListenTLS:    "",
 			ListenHTTP3:  "",
 			AdminListen:  "127.0.0.1:9443",
+			AdminPublic:  false,
+			AdminTLS:     AdminTLSConfig{Enabled: false, SelfSigned: true},
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 30 * time.Second,
 			IdleTimeout:  60 * time.Second,
@@ -45,13 +47,16 @@ func Default() Config {
 					Enabled: true,
 					Mode:    "block",
 					SemanticEngines: SemanticEngineSwitches{
-						SQL:  true,
-						XSS:  true,
-						RCE:  true,
-						LFI:  true,
-						XXE:  true,
-						SSRF: true,
+						SQL:   true,
+						XSS:   true,
+						RCE:   true,
+						LFI:   true,
+						XXE:   true,
+						SSRF:  true,
+						NoSQL: true,
+						SSTI:  true,
 					},
+					ProtectionPolicy: ProtectionPolicyConfig{},
 					Performance: PerformanceTuningConfig{
 						MaxBodyBytes:   8 << 20,
 						MaxHeaderBytes: 1 << 20,
@@ -74,14 +79,21 @@ func Default() Config {
 						HealthyThreshold:   2,
 						UnhealthyThreshold: 2,
 					},
+					AccessControl: SiteAccessControlConfig{
+						DynamicGuard: true,
+						TrustedCIDRs: []string{},
+					},
 				},
 			},
 		},
 		Protection: ProtectionConfig{
+			Policy: DefaultProtectionPolicy(),
 			IP: IPProtectionConfig{
-				Whitelist: []string{"127.0.0.1", "::1"},
-				Blacklist: []string{},
-				Tags:      map[string][]string{},
+				Whitelist:           []string{"127.0.0.1", "::1"},
+				Blacklist:           []string{},
+				AccessRules:         []IPAccessRuleConfig{},
+				ReputationOverrides: map[string]int{},
+				Tags:                map[string][]string{},
 			},
 			RateLimit: RateLimitProtectionConfig{
 				Enabled: true,
@@ -91,9 +103,15 @@ func Default() Config {
 				Enabled:              false,
 				JSChallenge:          true,
 				CAPTCHA:              false,
+				ChallengeDifficulty:  4,
+				AltchaMaxNumber:      75000,
+				AltchaHeaderName:     "X-CheeseWAF-Altcha",
+				WaitingRoom:          false,
+				WaitingRoomMaxActive: 1000,
+				WaitingRoomTTL:       5 * time.Minute,
 				ChallengeTTL:         30 * time.Minute,
 				CookieName:           "cheesewaf_js_clearance",
-				Secret:               "change-me-in-production",
+				Secret:               "",
 				PathPrefixes:         []string{"/"},
 				ExemptPathPrefixes:   []string{"/health", "/api/"},
 				SuspiciousUserAgents: []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
@@ -132,10 +150,11 @@ func Default() Config {
 			},
 		},
 		Storage: StorageConfig{
-			SQLite:       SQLiteConfig{Path: "./data/cheesewaf.db"},
-			ClickHouse:   ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
-			VictoriaLogs: VictoriaLogsConfig{Timeout: 10 * time.Second},
-			PostgreSQL:   PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			SQLite:        SQLiteConfig{Path: "./data/cheesewaf.db"},
+			ClickHouse:    ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			VictoriaLogs:  VictoriaLogsConfig{Timeout: 10 * time.Second},
+			PostgreSQL:    PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			Elasticsearch: ElasticsearchConfig{Index: "cheesewaf-logs", Timeout: 10 * time.Second},
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -145,7 +164,7 @@ func Default() Config {
 				File: FileLogConfig{Path: "./logs/access.log", MaxSize: "100MB", MaxBackups: 10},
 			},
 		},
-		AI: AIConfig{Enabled: false, APIBase: "https://api.openai.com/v1", Model: "gpt-4o-mini", Async: true},
+		AI: AIConfig{Enabled: false, Provider: "openai", APIBase: "https://api.openai.com/v1", APIKeyHeader: "authorization", Model: "gpt-4o-mini", Async: true},
 		Update: UpdateConfig{
 			OTA: OTAConfig{
 				Enabled:          false,
@@ -157,7 +176,7 @@ func Default() Config {
 			},
 		},
 		Monitor: MonitorConfig{
-			Prometheus:  PrometheusConfig{Enabled: true, Path: "/metrics"},
+			Prometheus:  PrometheusConfig{Enabled: true, Path: "/metrics", Public: false},
 			RemoteWrite: RemoteWriteConfig{Enabled: false, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 			Alerts: AlertEngineConfig{
 				Enabled: true,
@@ -179,7 +198,7 @@ func Default() Config {
 				IgnorePrefixes: []string{"/assets/", "/static/", "/favicon"},
 			},
 			Validation: APIValidationConfig{Enabled: true},
-			Auth:       APIAuthConfig{Enabled: false},
+			Auth:       APIAuthConfig{Enabled: false, JWKSRefresh: time.Hour},
 			Permissions: map[string][]string{
 				"admin":    []string{"*"},
 				"readonly": []string{"read:*"},
@@ -259,6 +278,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.AdminListen == "" {
 		cfg.Server.AdminListen = def.Server.AdminListen
 	}
+	if cfg.Server.AdminTLS.SelfSigned == false && cfg.Server.AdminTLS.CertFile == "" && cfg.Server.AdminTLS.KeyFile == "" && !cfg.Server.AdminTLS.Enabled {
+		cfg.Server.AdminTLS.SelfSigned = def.Server.AdminTLS.SelfSigned
+	}
 	if cfg.Server.ReadTimeout == 0 {
 		cfg.Server.ReadTimeout = def.Server.ReadTimeout
 	}
@@ -295,11 +317,42 @@ func applyDefaults(cfg *Config) {
 	if cfg.Storage.PostgreSQL.Timeout == 0 {
 		cfg.Storage.PostgreSQL.Timeout = def.Storage.PostgreSQL.Timeout
 	}
+	if cfg.Storage.Elasticsearch.Index == "" {
+		cfg.Storage.Elasticsearch.Index = def.Storage.Elasticsearch.Index
+	}
+	if cfg.Storage.Elasticsearch.Timeout == 0 {
+		cfg.Storage.Elasticsearch.Timeout = def.Storage.Elasticsearch.Timeout
+	}
+	if cfg.Storage.Elasticsearch.Headers == nil {
+		cfg.Storage.Elasticsearch.Headers = map[string]string{}
+	}
 	if cfg.Logging.Output.Type == "" {
 		cfg.Logging.Output.Type = "file"
 	}
 	if cfg.Logging.Output.File.Path == "" {
 		cfg.Logging.Output.File.Path = "./logs/access.log"
+	}
+	if cfg.AI.Provider == "" {
+		cfg.AI.Provider = def.AI.Provider
+	}
+	if cfg.AI.APIBase == "" {
+		switch cfg.AI.Provider {
+		case "anthropic":
+			cfg.AI.APIBase = "https://api.anthropic.com/v1"
+		default:
+			cfg.AI.APIBase = def.AI.APIBase
+		}
+	}
+	if cfg.AI.APIKeyHeader == "" {
+		cfg.AI.APIKeyHeader = def.AI.APIKeyHeader
+	}
+	if cfg.AI.Model == "" {
+		switch cfg.AI.Provider {
+		case "anthropic":
+			cfg.AI.Model = "claude-3-5-haiku-latest"
+		default:
+			cfg.AI.Model = def.AI.Model
+		}
 	}
 	if len(cfg.Sites) == 0 {
 		cfg.Sites = def.Sites
@@ -328,17 +381,33 @@ func applyDefaults(cfg *Config) {
 	if cfg.APISec.Audit.Path == "" {
 		cfg.APISec.Audit.Path = def.APISec.Audit.Path
 	}
+	if cfg.APISec.Auth.JWKSRefresh == 0 {
+		cfg.APISec.Auth.JWKSRefresh = def.APISec.Auth.JWKSRefresh
+	}
 	if cfg.Protection.IP.Tags == nil {
 		cfg.Protection.IP.Tags = map[string][]string{}
 	}
+	cfg.Protection.Policy = cfg.Protection.Policy.WithDefaults(DefaultProtectionPolicy())
 	if cfg.Protection.Bot.ChallengeTTL == 0 {
 		cfg.Protection.Bot.ChallengeTTL = def.Protection.Bot.ChallengeTTL
 	}
+	if cfg.Protection.Bot.ChallengeDifficulty == 0 {
+		cfg.Protection.Bot.ChallengeDifficulty = def.Protection.Bot.ChallengeDifficulty
+	}
+	if cfg.Protection.Bot.AltchaMaxNumber == 0 {
+		cfg.Protection.Bot.AltchaMaxNumber = def.Protection.Bot.AltchaMaxNumber
+	}
+	if cfg.Protection.Bot.AltchaHeaderName == "" {
+		cfg.Protection.Bot.AltchaHeaderName = def.Protection.Bot.AltchaHeaderName
+	}
+	if cfg.Protection.Bot.WaitingRoomMaxActive == 0 {
+		cfg.Protection.Bot.WaitingRoomMaxActive = def.Protection.Bot.WaitingRoomMaxActive
+	}
+	if cfg.Protection.Bot.WaitingRoomTTL == 0 {
+		cfg.Protection.Bot.WaitingRoomTTL = def.Protection.Bot.WaitingRoomTTL
+	}
 	if cfg.Protection.Bot.CookieName == "" {
 		cfg.Protection.Bot.CookieName = def.Protection.Bot.CookieName
-	}
-	if cfg.Protection.Bot.Secret == "" {
-		cfg.Protection.Bot.Secret = def.Protection.Bot.Secret
 	}
 	if len(cfg.Protection.Bot.PathPrefixes) == 0 {
 		cfg.Protection.Bot.PathPrefixes = def.Protection.Bot.PathPrefixes

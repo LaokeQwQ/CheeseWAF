@@ -1,4 +1,4 @@
-import { Button, Form, Input, Steps } from '@arco-design/web-react';
+import { Button, Form, Input, Select, Steps } from '@arco-design/web-react';
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -11,11 +11,11 @@ export default function SetupPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
-  async function handleSubmit(values: { username?: string; password?: string; adminListen?: string }) {
+  async function handleSubmit(values: { username?: string; password?: string; adminListen?: string; adminStrategy?: string }) {
     setLoading(true);
     setMessage('');
     try {
-      await setupAdmin(values.username ?? '', values.password ?? '', values.adminListen ?? '127.0.0.1:9443');
+      await setupAdmin(values.username ?? '', values.password ?? '', values.adminListen ?? '127.0.0.1:9443', values.adminStrategy ?? 'local');
       setMessage(t('setup.complete'));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Setup failed');
@@ -50,6 +50,12 @@ export default function SetupPage() {
           </Form.Item>
           <Form.Item label={t('setup.adminListen')} field="adminListen">
             <Input defaultValue="127.0.0.1:9443" />
+          </Form.Item>
+          <Form.Item label={t('setup.adminStrategy')} field="adminStrategy" initialValue="local">
+            <Select>
+              <Select.Option value="local">{t('setup.strategyLocal')}</Select.Option>
+              <Select.Option value="public_tls">{t('setup.strategyPublicTLS')}</Select.Option>
+            </Select>
           </Form.Item>
           <motion.div {...pressable}>
             <Button type="primary" htmlType="submit" loading={loading} long>

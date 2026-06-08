@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Activity, AlertTriangle, Cpu, Database, HardDrive, ShieldAlert } from 'lucide-react';
 import { fetchMonitorSummary } from '../../api/client';
 import type { Alert } from '../../types/api';
+import { displaySeverity } from '../../utils/display';
 
 export default function MonitorPage() {
   const { t } = useTranslation();
@@ -47,7 +48,7 @@ export default function MonitorPage() {
             data={data?.alerts ?? []}
             columns={[
               { title: t('monitor.rule'), dataIndex: 'name' },
-              { title: t('monitor.severity'), dataIndex: 'severity', render: (value: string) => <Tag color={severityColor(value)}>{value}</Tag> },
+              { title: t('monitor.severity'), dataIndex: 'severity', render: (value: string) => <Tag color={severityColor(value)}>{displaySeverity(value, t)}</Tag> },
               { title: t('monitor.message'), dataIndex: 'message' },
               { title: t('monitor.value'), dataIndex: 'value', render: (_: number, record: Alert) => `${record.value} / ${record.threshold}` },
             ]}

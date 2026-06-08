@@ -19,9 +19,13 @@ func NewTagger(tags map[string][]string) *Tagger {
 
 func (t *Tagger) Tags(raw string) []string {
 	if t == nil {
-		return nil
+		return []string{}
 	}
-	return append([]string(nil), t.tags[strings.TrimSpace(raw)]...)
+	values := t.tags[strings.TrimSpace(raw)]
+	if len(values) == 0 {
+		return []string{}
+	}
+	return append([]string(nil), values...)
 }
 
 func (t *Tagger) Set(raw string, tags []string) {
@@ -53,7 +57,7 @@ func (t *Tagger) Snapshot() map[string][]string {
 
 func normalizeTags(values []string) []string {
 	seen := map[string]struct{}{}
-	var out []string
+	out := make([]string, 0)
 	for _, value := range values {
 		for _, part := range strings.Split(value, ",") {
 			tag := strings.ToLower(strings.TrimSpace(part))

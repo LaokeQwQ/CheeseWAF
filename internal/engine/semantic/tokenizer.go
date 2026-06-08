@@ -9,7 +9,7 @@ func normalize(raw string) string {
 	raw = strings.ToLower(raw)
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
-			return ' '
+			return -1
 		}
 		return r
 	}, raw)

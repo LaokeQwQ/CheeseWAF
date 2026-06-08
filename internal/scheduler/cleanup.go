@@ -38,6 +38,9 @@ func CleanupOldFiles(_ context.Context, task Task) error {
 	if keep <= 0 {
 		keep = 7
 	}
+	if len(files) <= keep {
+		return nil
+	}
 	for _, file := range files[keep:] {
 		if err := os.Remove(file.path); err != nil {
 			return err

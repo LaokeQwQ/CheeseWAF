@@ -10,14 +10,11 @@ type HeaderRule = EdgeConfig['headers']['rules'][number];
 
 const fallback: EdgeConfig = {
   headers: {
-    enabled: true,
-    rules: [
-      { id: 'set-edge-marker', name: 'Set edge marker', operation: 'set', header: 'X-CheeseWAF', value: 'edge', path_prefix: '', enabled: true },
-      { id: 'remove-origin-leak', name: 'Remove origin leak header', operation: 'delete', header: 'X-Origin-Secret', value: '', path_prefix: '', enabled: true },
-    ],
+    enabled: false,
+    rules: [],
   },
-  cache: { enabled: true, mode: 'public', ttl: '5m', status_codes: [200, 304], path_prefixes: ['/assets/', '/static/'], max_body_bytes: 2097152 },
-  compression: { enabled: true, algorithms: ['gzip'], level: 5, min_bytes: 1024, content_types: ['text/', 'application/json', 'application/javascript'] },
+  cache: { enabled: false, mode: 'off', ttl: '', status_codes: [], path_prefixes: [], max_body_bytes: 0 },
+  compression: { enabled: false, algorithms: [], level: 0, min_bytes: 0, content_types: [] },
 };
 
 export default function EdgePage() {
@@ -56,10 +53,10 @@ export default function EdgePage() {
           ...current.headers.rules,
           {
             id: `header-${Date.now()}`,
-            name: 'New header rule',
+            name: '',
             operation: 'set',
-            header: 'X-CheeseWAF-Policy',
-            value: 'edge',
+            header: '',
+            value: '',
             path_prefix: '',
             enabled: true,
           },
