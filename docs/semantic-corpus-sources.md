@@ -38,7 +38,8 @@ focuses on:
 - XSS meta refresh and CSS execution contexts.
 - LFI Kubernetes service account token and overlong dot-slash traversal.
 - SSRF IPv6, dotted-hex, and dotted-octal internal hosts.
-- Benign documentation neighbors for localhost URLs and browser security terms.
+- NoSQLi MongoDB operator injection shapes for credential and `$where` query behavior.
+- Benign documentation neighbors for localhost URLs, browser security terms, and MongoDB operator references.
 
 This is not a replacement for full CRS/FTW, SecLists, FuzzDB, or BCCC runs. It
 is a checked-in safety net for the engine behavior CheeseWAF already claims.

@@ -60,7 +60,7 @@ func NewAnalyzer(mode string, categories ...string) *Analyzer {
 	}
 	enabled := map[string]bool{}
 	if len(categories) == 0 {
-		for _, category := range []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf"} {
+		for _, category := range []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli"} {
 			enabled[category] = true
 		}
 	} else {
@@ -369,7 +369,7 @@ func executableSQLText(raw string) string {
 
 func guessCategories(raw string) []string {
 	text := normalize(raw)
-	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf"}
+	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli"}
 	scores := map[string]int{}
 	sqlCompact := compactSQL(text)
 	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlOrderByInference.MatchString(text) {
@@ -389,6 +389,9 @@ func guessCategories(raw string) []string {
 	}
 	if urlLikePattern.MatchString(text) || strings.Contains(text, "169.254.169.254") || strings.Contains(text, "metadata.google.internal") {
 		scores["ssrf"] += 2
+	}
+	if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "this.") || strings.Contains(text, "function(") {
+		scores["nosqli"] += 2
 	}
 	var guesses []string
 	for _, category := range ordered {
@@ -413,6 +416,8 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 		return analyzeXXE(candidate)
 	case "ssrf":
 		return analyzeSSRF(candidate)
+	case "nosqli":
+		return analyzeNoSQL(candidate)
 	default:
 		return Hit{}, false
 	}
@@ -430,6 +435,10 @@ var (
 	sqlMySQLVersionComment = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
 	xssEventPattern        = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
 	unicodeEscapePattern   = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
+	nosqlOperatorToken     = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|where|regex|exists|gte|lte|nin|nor|not|expr|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
+	nosqlJSBehavior        = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.)`)
+	nosqlWideRegex         = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
+	nosqlOperatorNames     = []string{"$jsonschema", "$elemmatch", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
 	sqlBlockComment        = regexp.MustCompile(`(?is)/\*.*?\*/`)
 	sqlLineComment         = regexp.MustCompile(`(?m)--[^\r\n]*`)
 	rceShellControl        = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
@@ -485,6 +494,71 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		return Hit{}, false
 	}
 	return hit(candidate, "sqli", engine.SeverityHigh, 0.88+confidenceBonus(reasons), reasons), true
+}
+
+func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
+	text := strings.TrimSpace(candidate.text)
+	lowerText := normalize(text)
+	name := strings.ToLower(candidate.input.Name)
+	if !nosqlStructuredSource(candidate.input.Source) {
+		return Hit{}, false
+	}
+	structuralOperator := nosqlOperatorInPath(name)
+	textOperator := nosqlOperatorToken.MatchString(lowerText)
+	if !structuralOperator && !textOperator {
+		return Hit{}, false
+	}
+	if !structuralOperator && !nosqlSensitiveContext(name) && !nosqlLooksLikeStructuredPayload(lowerText) {
+		return Hit{}, false
+	}
+
+	combined := name + " " + lowerText
+	reasons := map[string]bool{}
+	if structuralOperator {
+		reasons["syntax: MongoDB query operator in structured parameter path"] = true
+	}
+	if textOperator {
+		reasons["syntax: MongoDB query operator token"] = true
+	}
+	if nosqlContainsOperator(combined, "$where") {
+		reasons["syntax: server-side JavaScript query operator"] = true
+		reasons["semantics: server-side query JavaScript can evaluate attacker-controlled predicates"] = true
+	}
+	if nosqlContainsOperator(combined, "$or", "$and", "$nor") {
+		reasons["syntax: logical query branch operator"] = true
+		reasons["semantics: injected branch can bypass expected query predicates"] = true
+	}
+	if nosqlContainsOperator(combined, "$regex") {
+		reasons["syntax: regular-expression query operator"] = true
+		if nosqlSensitiveContext(name) || nosqlWideRegex.MatchString(lowerText) {
+			reasons["semantics: broad regular expression can turn exact-match checks into wildcard matches"] = true
+		}
+	}
+	if nosqlContainsOperator(combined, "$exists") {
+		reasons["semantics: field-presence predicate can bypass required value checks"] = true
+	}
+	if nosqlContainsOperator(combined, "$ne", "$nin", "$gt", "$gte", "$lt", "$lte", "$not") && nosqlSensitiveContext(name) {
+		reasons["semantics: comparison operator can replace credential or filter equality"] = true
+	}
+	if nosqlJSBehavior.MatchString(lowerText) && (nosqlContainsOperator(combined, "$where") || strings.Contains(name, "$where")) {
+		reasons["semantics: query predicate contains executable JavaScript behavior"] = true
+	}
+	if len(reasons) == 0 {
+		return Hit{}, false
+	}
+	if !hasSemanticReason(reasons) {
+		if !structuralOperator || !nosqlSensitiveContext(name) {
+			return Hit{}, false
+		}
+		reasons["semantics: structured query operator can change application query behavior"] = true
+	}
+	severity := engine.SeverityHigh
+	confidence := 0.86 + confidenceBonus(reasons)
+	if nosqlContainsOperator(combined, "$where") {
+		severity = engine.SeverityCritical
+		confidence += 0.02
+	}
+	return hit(candidate, "nosqli", severity, confidence, reasons), true
 }
 
 func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
@@ -715,6 +789,72 @@ func confidenceBonus(reasons map[string]bool) float64 {
 		return 0
 	}
 	return float64(len(reasons)-1) * 0.025
+}
+
+func hasSemanticReason(reasons map[string]bool) bool {
+	for reason := range reasons {
+		if strings.HasPrefix(reason, "semantics:") {
+			return true
+		}
+	}
+	return false
+}
+
+func nosqlStructuredSource(source string) bool {
+	switch source {
+	case "query", "body.form", "body.json", "body.raw", "cookie":
+		return true
+	default:
+		return false
+	}
+}
+
+func nosqlOperatorInPath(value string) bool {
+	lower := strings.ToLower(value)
+	for _, op := range nosqlOperatorNames {
+		if lower == op ||
+			strings.Contains(lower, "."+op) ||
+			strings.Contains(lower, op+"[]") ||
+			strings.Contains(lower, "["+op+"]") ||
+			strings.Contains(lower, "["+op+"].") {
+			return true
+		}
+	}
+	return false
+}
+
+func nosqlContainsOperator(value string, operators ...string) bool {
+	lower := strings.ToLower(value)
+	for _, op := range operators {
+		if strings.Contains(lower, strings.ToLower(op)) {
+			return true
+		}
+	}
+	return false
+}
+
+func nosqlSensitiveContext(name string) bool {
+	lower := strings.ToLower(name)
+	for _, term := range []string{
+		"user", "username", "login", "email", "account", "password", "passwd", "pass", "pwd",
+		"auth", "credential", "token", "session", "filter", "query", "where", "selector",
+		"criteria", "condition", "search", "role", "tenant", "owner", "id",
+	} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func nosqlLooksLikeStructuredPayload(text string) bool {
+	if !nosqlOperatorToken.MatchString(text) {
+		return false
+	}
+	return strings.Contains(text, "{") ||
+		strings.Contains(text, "[") ||
+		strings.Contains(text, ":") ||
+		strings.Contains(text, "=")
 }
 
 func containsOrdered(words []string, sequence ...string) bool {

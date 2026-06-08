@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -94,6 +95,29 @@ func TestAnalyzerFollowsStagedSemanticFlow(t *testing.T) {
 	}
 	if report.Hits[0].Syntax == "" || report.Hits[0].Semantics == "" {
 		t.Fatalf("expected syntax and semantic evidence, got %+v", report.Hits[0])
+	}
+}
+
+func TestAnalyzerDetectsNoSQLOperatorInjectionWithEvidence(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(`{"username":{"$ne":null},"password":{"$ne":null}}`))
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewAnalyzer("block", "nosqli").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "nosqli" {
+		t.Fatalf("expected NoSQLi detection, got %+v", result)
+	}
+	report, ok := reqCtx.Metadata["semantic_analysis"].(AnalysisReport)
+	if !ok || len(report.Hits) == 0 {
+		t.Fatalf("expected semantic analysis report, got %+v", reqCtx.Metadata["semantic_analysis"])
+	}
+	if !strings.Contains(report.Hits[0].Syntax, "MongoDB query operator") || !strings.Contains(report.Hits[0].Semantics, "credential") {
+		t.Fatalf("expected NoSQL syntax and semantic evidence, got %+v", report.Hits[0])
 	}
 }
 

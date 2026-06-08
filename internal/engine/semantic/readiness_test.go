@@ -65,6 +65,10 @@ func TestAnalyzerReadinessMatrix(t *testing.T) {
 		{name: "ssrf-ipv6-loopback", method: http.MethodGet, target: "/fetch?url=http://[::1]/admin", category: "ssrf"},
 		{name: "ssrf-alibaba-metadata", method: http.MethodGet, target: "/fetch?url=http://100.100.100.200/latest/meta-data", category: "ssrf"},
 		{name: "ssrf-loopback-json", method: http.MethodPost, target: "/fetch", contentType: "application/json", body: `{"url":"http://127.0.0.1:2375/containers/json"}`, category: "ssrf"},
+		{name: "nosqli-login-ne-operators", method: http.MethodPost, target: "/login", contentType: "application/json", body: `{"username":{"$ne":null},"password":{"$ne":null}}`, category: "nosqli"},
+		{name: "nosqli-query-where-javascript", method: http.MethodPost, target: "/api/search", contentType: "application/json", body: `{"$where":"this.password && this.password.length > 0"}`, category: "nosqli"},
+		{name: "nosqli-bracket-form-operators", method: http.MethodPost, target: "/login", contentType: "application/x-www-form-urlencoded", body: "username%5B%24ne%5D=admin&password%5B%24ne%5D=x", category: "nosqli"},
+		{name: "nosqli-regex-auth-bypass", method: http.MethodPost, target: "/login", contentType: "application/json", body: `{"email":{"$regex":".*"},"password":{"$ne":""}}`, category: "nosqli"},
 		{name: "multipart-xss", method: http.MethodPost, target: "/upload", contentType: "multipart", body: "<xss onfocus=alert(1)>", category: "xss"},
 	}
 	for _, tc := range cases {
@@ -110,6 +114,8 @@ func TestAnalyzerReadinessBenignMatrix(t *testing.T) {
 		{name: "meta-refresh-documentation", target: "/docs", contentType: "application/json", body: `{"text":"Meta refresh and CSS expression() are legacy browser security topics described here without executable markup."}`},
 		{name: "powershell-defense-documentation", target: "/docs", contentType: "application/json", body: `{"text":"PowerShell EncodedCommand and cmd /c are documented here for defenders, without a command parameter or payload."}`},
 		{name: "localhost-url-documentation", target: "/docs", contentType: "application/json", body: `{"text":"Development docs may mention http://127.0.0.1:8080 or http://[::1] as local examples without asking the server to fetch them."}`},
+		{name: "mongodb-operator-documentation", target: "/docs", contentType: "application/json", body: `{"text":"MongoDB documentation can mention $ne, $regex, and $where operators without sending them as query structure."}`},
+		{name: "ordinary-json-filter", target: "/api/search", contentType: "application/json", body: `{"filter":{"status":"open","priority":"high"},"query":"mongodb operator docs"}`},
 		{name: "public-url", target: "/fetch?url=https://example.com/feed.xml"},
 	}
 	for _, tc := range cases {
