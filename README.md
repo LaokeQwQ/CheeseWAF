@@ -29,7 +29,7 @@ The repository currently includes:
 - AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots. OpenAI-compatible providers can select the API key header style. AI prompts treat logs, payloads, runtime context, and operator questions as untrusted data, with explicit guardrails against prompt injection, secret disclosure, tool execution, and unapproved policy changes.
 - First-run setup wizard and REST setup API now share one completion service for validation, admin creation, SQLite migration, default config/certificate generation, and setup completion locking. The generated admin certificate bundle uses an ECDSA P-256 local CA (`CN=CheeseWAF Sign SSL CA`, `O=CheeseCloud Technology Ltc.`) and a server-auth leaf chain.
 - Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch.
-- Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, and cross-platform builds. Forgejo uses local/mirrored Go and Node toolchain bootstrap scripts to avoid self-hosted runner timeouts against GitHub tool-cache downloads.
+- Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, cross-platform builds, and branch-channel release artifacts. Pushes to `dev`, `canary`, and `master` build distinct `dev`, `canary`, and `stable` packages on both platforms. Forgejo uses local/mirrored Go and Node toolchain bootstrap scripts to avoid self-hosted runner timeouts against GitHub tool-cache downloads.
 
 Runtime Bot challenge secrets are generated per install. If an old config still
 contains an empty value or `change-me-in-production`, CheeseWAF rotates it at
@@ -52,6 +52,22 @@ intentionally ignored by Git.
 Semantic engine maturity is tracked in `docs/semantic-readiness.md`; the current
 claim is "working and explainable", not "ModSecurity/OWASP CRS parity".
 
+## Branch Release Artifacts
+
+GitHub Actions and Forgejo Actions both package branch-specific artifacts after
+successful pushes to the protected branch chain:
+
+| Branch | Channel | Version pattern |
+| --- | --- | --- |
+| `dev` | `dev` | `0.1.0-dev.<run>+<commit>` |
+| `canary` | `canary` | `0.1.0-canary.<run>+<commit>` |
+| `master` | `stable` | `0.1.0-beta.<run>+<commit>` |
+
+Each artifact bundle includes the `cheesewaf` binary, a `waf-cli` alias/copy,
+the built Web console, README files, `LICENSE`, `VERSION`, `release.json`, and a
+top-level `SHA256SUMS` file. The shared packaging script lives at
+`scripts/ci/package-release.sh` so GitHub and Forgejo build the same payloads.
+
 ## Stage Snapshot
 
 As of 2026-06-08, the latest merged feature batch has completed the protected
@@ -70,12 +86,14 @@ CPU/load/memory/swap/disk resource metrics, resource reclaim actions,
 single-event log detail/AI analysis, URL-addressable IP threat-intel tabs,
 honest health/reconnect states, less abstract 2D/China-mainland/3D attack-map
 modes, APISec JWT signing/audience/remote-JWKS/endpoint-policy controls, and
-route-scoped management API RBAC. Code snapshot `30f1b7b` has been built as a
-Linux amd64 single-binary deployment and smoke tested on the remote acceptance
-host: admin health/index return 200, the proxy home route returns 200, and a
-SQLi probe is blocked with 403. Local web build, selected race tests, Go tests
-with a workspace `GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot
-and DOM-overflow audit, and `git diff --check` pass.
+route-scoped management API RBAC. The CI/release follow-up adds synchronized
+GitHub and Forgejo artifact packaging for branch-specific `dev`, `canary`, and
+`stable` channels. Code snapshot `30f1b7b` has been built as a Linux amd64
+single-binary deployment and smoke tested on the remote acceptance host: admin
+health/index return 200, the proxy home route returns 200, and a SQLi probe is
+blocked with 403. Local web build, selected race tests, Go tests with a
+workspace `GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot and
+DOM-overflow audit, and `git diff --check` pass.
 
 ## Pre-Release Gaps
 
