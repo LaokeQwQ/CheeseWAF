@@ -13,6 +13,7 @@ The repository currently includes:
 - Reverse proxy WAF flow with staged semantic analysis (input extraction, deep decoding, lexical/syntax/behavior scoring), custom rules, IP/ACL/rate-limit/Bot protection, threat intel import/subscription, signed JS proof-of-work challenge, Altcha-style PoW CAPTCHA, waiting room, edge cache/header/compression policy, and response inspection.
 - Semantic regression coverage now includes function-based and error-based SQLi, MySQL executable version comments, PostgreSQL delay payloads, hex tautology and `ORDER BY` enumeration SQLi, control-character/HTML-entity/data-URI/srcdoc/meta-refresh/CSS-expression XSS contexts, `${IFS}`/PowerShell/Pwsh/`cmd /c`/download-to-shell RCE variants, LFI Kubernetes-token/overlong-traversal cases, SSRF IPv6/dotted-hex/dotted-octal forms, direct detector bypass samples, and paired benign cases that protect common documentation text from false positives. Maturity and benchmark details live in `docs/semantic-readiness.md`, and public corpus sourcing is tracked in `docs/semantic-corpus-sources.md`.
 - Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, production deployment files, and a single-binary admin listener that serves both the REST API and built Web console. The Web site workspace covers domains, upstreams, TLS material, origin tuning, health checks, response inspection, access control, and rewrite rules.
+- Management API authorization is now route-scoped: every non-public admin API requires a Bearer token, realtime streams are no longer public, read routes require `read:*`-style permissions, and all mutating routes are guarded by focused `write:*` permissions for system, users, sites, rules, protection, threat intel, edge, AI, storage, and ops. Router regression tests verify unauthorized access, cookie-only CSRF-style requests, and readonly write attempts.
 - Web console hardening includes localized security/category/severity labels, dashboard total-vs-live posture separation, 1/3/5/10s live refresh controls, selectable total-stat windows, chart axes and zoom controls, resilient event/resource card layouts, URL-addressable IP-management tabs, API security table layout isolation, route-level lazy loading, and Natural Earth/world-atlas based 2D/China-mainland/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, country-level GeoIP fallbacks, precise-location metadata support, WebGL fallback handling, responsive tables, and real log data. The 3D globe renderer is split into an on-demand chunk so ordinary console pages and 2D maps do not load Three.js up front.
 - The Dashboard resource panel now reads real host metrics from the monitor snapshot: CPU usage, 1-minute system load with CPU-core context, host memory usage, swap usage, disk usage, and a separate process-runtime line for goroutines/heap. Live posture and resources auto-refresh at the selected 1/3/5/10s interval, support manual refresh, and expose real memory/swap reclaim actions through the protected system API.
 - Attack/block events now have a dedicated detail view under `/logs/:traceId`, reachable from the Dashboard, attack log table, and AI event table. The detail page shows request evidence, detector metadata, payload/user-agent context, and runs single-event AI analysis against the real log entry.
@@ -21,6 +22,7 @@ The repository currently includes:
 - GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
 - Threat-intel indicators now carry action and confidence, are scored across severity/confidence/source count, and are enforced in the proxy hot path according to the global/site `threat_intel` level. Console imports, provider sync, lookups, and protection setting updates trigger runtime policy refresh without requiring a service restart.
 - Safe admin defaults: the CLI bootstraps runtime config under `./data`, the admin listener defaults to localhost, public admin binding requires `server.admin_public: true` plus `server.admin_tls`, and first-run setup can choose local/tunnel/reverse-proxy access or public HTTPS with a generated local CA-signed admin certificate.
+- The single-binary admin handler applies baseline browser safety headers to API, SPA fallback, and static assets: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a locked-down `Permissions-Policy`, and HSTS on HTTPS admin responses.
 - Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default. Web attack protection now applies runtime severity/confidence thresholds (`low`: critical/0.90, `smart`: high/0.85, `high`: medium/0.78, `strict`: low/0.65) while respecting monitor/log-only detector modes and preserving detector-requested JS challenges. API security schema validation, endpoint rate-limit findings, and JWT claims-profile anomalies now follow the same level model, so low mode can record and pass lower-confidence API findings while smart mode blocks validated schema/rate-limit/auth breaches; system APISec setting updates rebuild the proxy validator, endpoint limiter, and auth checker without restarting the service.
 - Bot/CC protection levels are also enforced at runtime: suspicious bot detections and CC/rate-limit breaches are evaluated by severity/confidence thresholds, low-signal matches can be logged without blocking, and explicitly enabled waiting rooms remain active as traffic control.
 - API authentication can now enforce WAF-side Bearer JWT signature validation with configured HMAC secrets, PEM public keys/certificates, local JWKS JSON/files, or remote JWKS subscriptions with cache files and background refresh, then apply issuer, audience, expiry, and scope checks through the same smart protection-policy model. Endpoint-level auth policies can override issuer/audience/scope requirements by method and path regex. Runtime APISec updates rebuild schema validation, endpoint rate limiting, and JWT auth without restarting the proxy, and the Web console exposes JWT signing, remote JWKS, and endpoint-policy settings under System Settings.
@@ -52,33 +54,28 @@ claim is "working and explainable", not "ModSecurity/OWASP CRS parity".
 
 ## Stage Snapshot
 
-As of 2026-06-08, the latest feature batch has completed the protected upward
-promotion flow on GitHub: PR #8 merged `fix/admin-ui-dashboard-map -> dev`, PR
-#9 promoted `dev -> canary`, and PR #10 promoted `canary -> master`. Forgejo at
+As of 2026-06-08, the latest merged feature batch has completed the protected
+upward promotion flow on GitHub: PR #14 merged
+`feat/semantic-readiness-hardening -> dev`, PR #15 promoted `dev -> canary`, and
+PR #16 promoted `canary -> master`. Forgejo at
 `git.laoker.cc/Laoke/CheeseWAF` is the primary forge/build target; GitHub
 remains a secondary mirror/check. A Forgejo mirror-sync was triggered after the
 GitHub merges, and Forgejo now matches the same `dev`, `canary`, and `master`
 heads. The Forgejo workflow is present under `.forgejo/workflows/ci.yml` and
 uses `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
-self-hosted runner-friendly toolchain setup. The current UI hardening pass
-focuses on real dashboard counters, live-vs-total posture separation, scoped
-Dashboard chart sizing that fills its panel instead of shrinking into a corner,
-real host CPU/load/memory/disk resource metrics, single-event log detail/AI analysis,
-less abstract 2D/China-mainland/3D attack-map modes, and June 8 layout fixes for
-Rules, IP Control, Protection, Operations, Updates, Block Pages, and System
-Settings, and APISec JWT signing/audience/remote-JWKS/endpoint-policy controls.
-Code snapshot `ede7c1b` has been built as a Linux amd64 single-binary deployment
-and smoke tested on the remote acceptance host: admin health/index/assets return
-200, the proxy home route returns 200, and a SQLi probe is blocked with 403.
-Local web build, selected race tests, Go tests with a workspace
-`GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot and DOM-overflow
-audit, and `git diff --check` pass.
-
-The current in-progress feature branch adds curated public-corpus-inspired
-semantic fixtures, dashboard live/resource refresh and reclaim operations,
-URL-addressable IP threat-intel tabs, honest health/reconnect states, and a
-browser-screenshot-verified layout pass for Dashboard, IP import, and System
-Settings.
+self-hosted runner-friendly toolchain setup. The current hardening pass focuses
+on curated public-corpus-inspired semantic fixtures, real dashboard counters,
+live-vs-total posture separation, scoped Dashboard chart sizing, real host
+CPU/load/memory/swap/disk resource metrics, resource reclaim actions,
+single-event log detail/AI analysis, URL-addressable IP threat-intel tabs,
+honest health/reconnect states, less abstract 2D/China-mainland/3D attack-map
+modes, APISec JWT signing/audience/remote-JWKS/endpoint-policy controls, and
+route-scoped management API RBAC. Code snapshot `30f1b7b` has been built as a
+Linux amd64 single-binary deployment and smoke tested on the remote acceptance
+host: admin health/index return 200, the proxy home route returns 200, and a
+SQLi probe is blocked with 403. Local web build, selected race tests, Go tests
+with a workspace `GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot
+and DOM-overflow audit, and `git diff --check` pass.
 
 ## Pre-Release Gaps
 
@@ -86,7 +83,9 @@ Settings.
   behind TLS or a trusted reverse proxy, bind it to localhost/private networks by
   default, and avoid exposing browser tokens over plain HTTP.
 - Before a public release, run repeatable sqlmap, XSStrike, nuclei, OWASP ZAP,
-  CRS/Coraza or ModSecurity comparison, and admin-surface security tests.
+  and CRS/Coraza or ModSecurity comparison. Admin-surface route-level
+  authentication/RBAC tests are now automated, but deployed dynamic scans should
+  still be repeated before tagging V0.1 beta.
 - Web attack, API security, Bot/CC, and threat-intel protection levels are wired
   into runtime severity/confidence or score thresholds. The default `smart` mode
   is tuned for lower false positives, but the exact thresholds still need
