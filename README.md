@@ -70,30 +70,33 @@ top-level `SHA256SUMS` file. The shared packaging script lives at
 
 ## Stage Snapshot
 
-As of 2026-06-08, the latest merged feature batch has completed the protected
-upward promotion flow on GitHub: PR #14 merged
-`feat/semantic-readiness-hardening -> dev`, PR #15 promoted `dev -> canary`, and
-PR #16 promoted `canary -> master`. Forgejo at
-`git.laoker.cc/Laoke/CheeseWAF` is the primary forge/build target; GitHub
-remains a secondary mirror/check. A Forgejo mirror-sync was triggered after the
-GitHub merges, and Forgejo now matches the same `dev`, `canary`, and `master`
-heads. The Forgejo workflow is present under `.forgejo/workflows/ci.yml` and
-uses `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
-self-hosted runner-friendly toolchain setup. The current hardening pass focuses
-on curated public-corpus-inspired semantic fixtures, real dashboard counters,
-live-vs-total posture separation, scoped Dashboard chart sizing, real host
-CPU/load/memory/swap/disk resource metrics, resource reclaim actions,
-single-event log detail/AI analysis, URL-addressable IP threat-intel tabs,
-honest health/reconnect states, less abstract 2D/China-mainland/3D attack-map
-modes, APISec JWT signing/audience/remote-JWKS/endpoint-policy controls, and
-route-scoped management API RBAC. The CI/release follow-up adds synchronized
-GitHub and Forgejo artifact packaging for branch-specific `dev`, `canary`, and
-`stable` channels. Code snapshot `30f1b7b` has been built as a Linux amd64
-single-binary deployment and smoke tested on the remote acceptance host: admin
-health/index return 200, the proxy home route returns 200, and a SQLi probe is
-blocked with 403. Local web build, selected race tests, Go tests with a
-workspace `GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot and
-DOM-overflow audit, and `git diff --check` pass.
+As of 2026-06-08, the latest release-flow batch has completed the protected
+upward promotion flow on GitHub: PR #20 merged
+`release-branch-artifacts -> dev`, PR #21 merged
+`ci-upload-artifact-node24 -> dev`, PR #22 promoted `dev -> canary`, and PR #23
+promoted `canary -> master`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
+primary forge/build target; GitHub remains a secondary mirror/check. A Forgejo
+mirror-sync was triggered after the GitHub merges, and Forgejo now matches the
+same `dev` (`33fa87f`), `canary` (`df0acb8`), and `master` (`e3a8b80`) heads.
+The Forgejo workflow is present under `.forgejo/workflows/ci.yml` and uses
+`scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
+self-hosted runner-friendly toolchain setup.
+
+The current hardening pass covers curated public-corpus-inspired semantic
+fixtures, real dashboard counters, live-vs-total posture separation, scoped
+Dashboard chart sizing, real host CPU/load/memory/swap/disk resource metrics,
+resource reclaim actions, single-event log detail/AI analysis, URL-addressable
+IP threat-intel tabs, honest health/reconnect states, less abstract
+2D/China-mainland/3D attack-map modes, APISec JWT
+signing/audience/remote-JWKS/endpoint-policy controls, route-scoped management
+API RBAC, and synchronized GitHub/Forgejo branch-channel artifacts for `dev`,
+`canary`, and `stable`. GitHub push runs `27125345411`, `27125843548`, and
+`27126362531` passed with real `release-artifacts` uploads for those channels.
+Code snapshot `e3a8b80` has been built as a Linux amd64 single-binary
+deployment and smoke tested on the remote acceptance host: admin health/index
+return 200, the proxy home route returns 200, a SQLi probe is blocked with 403,
+and HTTPS admin responses include frame, nosniff, referrer, permissions, and
+HSTS safety headers.
 
 ## Pre-Release Gaps
 
