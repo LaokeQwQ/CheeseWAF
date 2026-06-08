@@ -119,17 +119,101 @@ type UserStore interface {
 // Site represents a protected site configuration.
 // 受保护站点配置。
 type Site struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Domains    []string  `json:"domains"`   // 监听域名
-	Upstreams  []string  `json:"upstreams"` // 上游服务器
-	ListenPort int       `json:"listen_port"`
-	EnableSSL  bool      `json:"enable_ssl"`
-	CertFile   string    `json:"cert_file,omitempty"`
-	KeyFile    string    `json:"key_file,omitempty"`
-	Enabled    bool      `json:"enabled"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Domains     []string     `json:"domains"`   // 监听域名
+	Upstreams   []string     `json:"upstreams"` // 上游服务器
+	ListenPort  int          `json:"listen_port"`
+	LoadBalance string       `json:"loadbalance"`
+	EnableSSL   bool         `json:"enable_ssl"`
+	CertFile    string       `json:"cert_file,omitempty"`
+	KeyFile     string       `json:"key_file,omitempty"`
+	WAFEnabled  bool         `json:"waf_enabled"`
+	WAFMode     string       `json:"waf_mode"`
+	Advanced    SiteAdvanced `json:"advanced"`
+	Enabled     bool         `json:"enabled"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+}
+
+type SiteAdvanced struct {
+	Certificate   CertificateConfig     `json:"certificate"`
+	Origin        OriginConfig          `json:"origin"`
+	HealthCheck   SiteHealthCheckConfig `json:"health_check"`
+	Protection    SiteProtectionConfig  `json:"protection"`
+	Policy        SiteProtectionPolicy  `json:"policy"`
+	Response      SiteResponseConfig    `json:"response"`
+	Rewrite       []SiteRewriteRule     `json:"rewrite"`
+	AccessControl SiteAccessControl     `json:"access_control"`
+}
+
+type CertificateConfig struct {
+	Mode          string `json:"mode"`
+	CertPEM       string `json:"cert_pem,omitempty"`
+	KeyPEM        string `json:"key_pem,omitempty"`
+	AutoRenew     bool   `json:"auto_renew"`
+	ForceHTTPS    bool   `json:"force_https"`
+	HSTS          bool   `json:"hsts"`
+	MinTLSVersion string `json:"min_tls_version"`
+}
+
+type OriginConfig struct {
+	Scheme        string `json:"scheme"`
+	PassHost      bool   `json:"pass_host"`
+	HostHeader    string `json:"host_header"`
+	ProxyTimeout  string `json:"proxy_timeout"`
+	MaxBodyBytes  int64  `json:"max_body_bytes"`
+	MaxHeaderSize int    `json:"max_header_size"`
+}
+
+type SiteHealthCheckConfig struct {
+	Enabled            bool   `json:"enabled"`
+	Path               string `json:"path"`
+	Interval           string `json:"interval"`
+	Timeout            string `json:"timeout"`
+	HealthyThreshold   int    `json:"healthy_threshold"`
+	UnhealthyThreshold int    `json:"unhealthy_threshold"`
+}
+
+type SiteProtectionConfig struct {
+	SemanticSQL  bool `json:"semantic_sql"`
+	SemanticXSS  bool `json:"semantic_xss"`
+	SemanticRCE  bool `json:"semantic_rce"`
+	SemanticLFI  bool `json:"semantic_lfi"`
+	SemanticXXE  bool `json:"semantic_xxe"`
+	SemanticSSRF bool `json:"semantic_ssrf"`
+	Bot          bool `json:"bot"`
+	RateLimit    bool `json:"ratelimit"`
+	ACL          bool `json:"acl"`
+	APISecurity  bool `json:"apisec"`
+}
+
+type SiteProtectionPolicy struct {
+	WebAttack   string `json:"web_attack"`
+	APISecurity string `json:"api_security"`
+	BotCC       string `json:"bot_cc"`
+	ThreatIntel string `json:"threat_intel"`
+}
+
+type SiteResponseConfig struct {
+	Enabled           bool     `json:"enabled"`
+	MaxBodyBytes      int64    `json:"max_body_bytes"`
+	SensitivePatterns []string `json:"sensitive_patterns"`
+}
+
+type SiteRewriteRule struct {
+	ID           string `json:"id"`
+	Pattern      string `json:"pattern"`
+	Replacement  string `json:"replacement"`
+	RedirectCode int    `json:"redirect_code"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type SiteAccessControl struct {
+	AuthEnabled  bool     `json:"auth_enabled"`
+	WaitingRoom  bool     `json:"waiting_room"`
+	DynamicGuard bool     `json:"dynamic_guard"`
+	TrustedCIDRs []string `json:"trusted_cidrs"`
 }
 
 // Rule represents a custom WAF rule.

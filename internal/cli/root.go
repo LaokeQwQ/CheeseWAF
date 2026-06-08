@@ -18,6 +18,8 @@ const (
 var (
 	appVersion = "0.1.0-dev"
 	buildTime  = "unknown"
+	configPath = "./data/cheesewaf.yaml"
+	dataDir    = "./data"
 )
 
 var rootCmd = &cobra.Command{
@@ -28,17 +30,21 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", configPath, "Path to cheesewaf.yaml")
+	rootCmd.PersistentFlags().StringVar(&dataDir, "data-dir", dataDir, "Runtime data directory")
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(panelCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(restartCmd)
+	rootCmd.AddCommand(userCmd)
 }
 
 // Execute dispatches the root command based on the executable name (BusyBox pattern).
 // If called as "waf-cli", it defaults to the interactive TUI panel.
 // If called as "cheesewaf" (or anything else), it defaults to starting the WAF server.
 func Execute(execName string) {
+	rootCmd.Version = appVersion + " (" + buildTime + ")"
 	switch execName {
 	case cliName:
 		// waf-cli 直接执行 → 进入 TUI 管理面板

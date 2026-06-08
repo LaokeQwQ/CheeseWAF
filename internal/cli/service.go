@@ -1,0 +1,459 @@
+package cli
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/api"
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
+	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
+	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
+	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
+	"github.com/LaokeQwQ/CheeseWAF/internal/scheduler"
+	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
+	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
+)
+
+func runServe(ctx context.Context) error {
+	cfg, loadedConfigPath, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.Setup.DataDir == "" {
+		cfg.Setup.DataDir = dataDir
+	}
+	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
+		return err
+	}
+	if err := writePID(cfg.Setup.RuntimeDir); err != nil {
+		return err
+	}
+	defer removePID(cfg.Setup.RuntimeDir)
+
+	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		return err
+	}
+	if err := seedSites(ctx, store, cfg); err != nil {
+		return err
+	}
+
+	sink, err := logsink.NewFromConfig(cfg.Storage, cfg.Logging.Output.File.Path)
+	if err != nil {
+		return err
+	}
+	defer sink.Close()
+
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		return err
+	}
+	proxyServer, err := proxy.NewServer(cfg, pipeline, sink)
+	if err != nil {
+		return err
+	}
+	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
+	startRemoteWrite(ctx, cfg, sink, time.Now())
+	schedulerEngine := scheduler.NewEngine(scheduler.FromConfig(cfg.Scheduler, cfg.Setup.DataDir, loadedConfigPath, cfg.Logging.Output.File.Path))
+	schedulerEngine.Start(ctx)
+	hub := realtime.NewHub()
+	authSecret, err := ensureAuthSecret(cfg.Setup.DataDir)
+	if err != nil {
+		return err
+	}
+	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS)
+	if err != nil {
+		return err
+	}
+	admin := &http.Server{
+		Addr:         cfg.Server.AdminListen,
+		Handler:      adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec})),
+		TLSConfig:    adminTLS,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
+	}
+
+	http3Server, altSvc, err := proxyServer.HTTP3Server()
+	if err != nil {
+		return err
+	}
+	tlsServer, err := proxyServer.TLSServer(altSvc)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("CheeseWAF proxy listening on %s\n", cfg.Server.Listen)
+	if tlsServer != nil {
+		fmt.Printf("CheeseWAF TLS proxy listening on %s\n", cfg.Server.ListenTLS)
+	}
+	if http3Server != nil {
+		fmt.Printf("CheeseWAF HTTP/3 proxy listening on %s\n", http3Server.Addr)
+	}
+	fmt.Printf("CheeseWAF admin API listening on %s://%s\n", adminScheme, cfg.Server.AdminListen)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 4)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := proxy.ListenAndServe(ctx, proxyServer.HTTPServer()); err != nil && !errors.Is(err, context.Canceled) {
+			errCh <- err
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := proxy.ListenAndServe(ctx, admin); err != nil && !errors.Is(err, context.Canceled) {
+			errCh <- err
+		}
+	}()
+	if tlsServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := proxy.ListenAndServe(ctx, tlsServer); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
+	if http3Server != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := proxy.ListenAndServeHTTP3(ctx, http3Server); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
+
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		return err
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = admin.Shutdown(shutdownCtx)
+	if tlsServer != nil {
+		_ = tlsServer.Shutdown(shutdownCtx)
+	}
+	if http3Server != nil {
+		_ = http3Server.Shutdown(shutdownCtx)
+	}
+	wg.Wait()
+	return nil
+}
+
+func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
+	webDir := resolveWebDir()
+	if webDir == "" {
+		return apiHandler
+	}
+	spa := http.FileServer(http.Dir(webDir))
+	metricsPath := "/metrics"
+	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
+		metricsPath = cfg.Monitor.Prometheus.Path
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAdminAPIPath(r.URL.Path, metricsPath) {
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+		path := strings.TrimPrefix(filepath.Clean("/"+strings.TrimPrefix(r.URL.Path, "/")), string(os.PathSeparator))
+		if path == "." {
+			path = "index.html"
+		}
+		fullPath := filepath.Join(webDir, path)
+		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+			spa.ServeHTTP(w, r)
+			return
+		}
+		index := filepath.Join(webDir, "index.html")
+		if _, err := os.Stat(index); err == nil {
+			http.ServeFile(w, r, index)
+			return
+		}
+		apiHandler.ServeHTTP(w, r)
+	})
+}
+
+func isAdminAPIPath(path, metricsPath string) bool {
+	if path == "/api" || strings.HasPrefix(path, "/api/") {
+		return true
+	}
+	if path == "/health" || path == metricsPath {
+		return true
+	}
+	return false
+}
+
+func resolveWebDir() string {
+	candidates := []string{
+		os.Getenv("CHEESEWAF_WEB_DIR"),
+		"/usr/share/cheesewaf/web",
+		filepath.Join("web", "dist"),
+		filepath.Join(".", "web", "dist"),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		index := filepath.Join(candidate, "index.html")
+		if info, err := os.Stat(index); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func startRemoteWrite(ctx context.Context, cfg *config.Config, sink storage.LogSink, startedAt time.Time) {
+	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
+		return
+	}
+	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
+	alerter := monitor.NewAlerter(cfg.Monitor.Alerts)
+	notifiers := monitornotify.NewManager(cfg.Monitor.Notifiers)
+	interval := cfg.Monitor.RemoteWrite.Interval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				logs, _, _ := sink.Query(ctx, storage.LogFilter{Limit: 1000})
+				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
+					"data": serviceDirSize(cfg.Setup.DataDir),
+					"logs": serviceDirSize(filepath.Dir(cfg.Logging.Output.File.Path)),
+				})
+				_ = writer.Push(ctx, snapshot)
+				_ = notifiers.Notify(ctx, alerter.Evaluate(snapshot))
+			}
+		}
+	}()
+}
+
+func serviceDirSize(root string) int64 {
+	if root == "" {
+		return 0
+	}
+	var total int64
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err == nil {
+			total += info.Size()
+		}
+		_ = path
+		return nil
+	})
+	return total
+}
+
+func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
+	var detectors []engine.Detector
+	if len(cfg.Sites) == 0 {
+		return engine.NewPipeline(), nil
+	}
+	site := cfg.Sites[0]
+	if compiled, err := enginerules.FromConfig(site.WAF.CustomRules); err != nil {
+		return nil, err
+	} else if len(compiled) > 0 {
+		detectors = append(detectors, enginerules.New(compiled))
+	}
+	switches := site.WAF.SemanticEngines
+	var semanticCategories []string
+	if switches.SQL {
+		semanticCategories = append(semanticCategories, "sqli")
+		detectors = append(detectors, semantic.NewSQLDetector(site.WAF.Mode))
+	}
+	if switches.XSS {
+		semanticCategories = append(semanticCategories, "xss")
+		detectors = append(detectors, semantic.NewXSSDetector(site.WAF.Mode))
+	}
+	if switches.RCE {
+		semanticCategories = append(semanticCategories, "rce")
+		detectors = append(detectors, semantic.NewRCEDetector(site.WAF.Mode))
+	}
+	if switches.LFI {
+		semanticCategories = append(semanticCategories, "lfi")
+		detectors = append(detectors, semantic.NewLFIDetector(site.WAF.Mode))
+	}
+	if switches.XXE {
+		semanticCategories = append(semanticCategories, "xxe")
+		detectors = append(detectors, semantic.NewXXEDetector(site.WAF.Mode))
+	}
+	if switches.SSRF {
+		semanticCategories = append(semanticCategories, "ssrf")
+		detectors = append(detectors, semantic.NewSSRFDetector(site.WAF.Mode))
+	}
+	if len(semanticCategories) > 0 {
+		detectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, detectors...)
+	}
+	return engine.NewPipeline(detectors...), nil
+}
+
+func loadConfig() (*config.Config, string, error) {
+	if _, err := os.Stat(configPath); err == nil {
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return nil, configPath, err
+		}
+		if err := repairRuntimeConfig(configPath, cfg); err != nil {
+			return nil, configPath, err
+		}
+		return cfg, configPath, nil
+	}
+	if configPath != "" {
+		fmt.Printf("config %s not found, using built-in defaults\n", configPath)
+	}
+	bundle, err := setup.EnsureDefaults(setup.DefaultOptions{
+		DataDir:    dataDir,
+		ConfigPath: filepath.Join(dataDir, setup.DefaultConfigFile),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	cfg, err := config.Load(bundle.Paths.ConfigFile)
+	if err != nil {
+		return nil, bundle.Paths.ConfigFile, err
+	}
+	if err := repairRuntimeConfig(bundle.Paths.ConfigFile, cfg); err != nil {
+		return nil, bundle.Paths.ConfigFile, err
+	}
+	return cfg, bundle.Paths.ConfigFile, nil
+}
+
+func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
+	if !cfg.Enabled {
+		return nil, "http", nil
+	}
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	if err != nil {
+		return nil, "", fmt.Errorf("load admin TLS certificate: %w", err)
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}, "https", nil
+}
+
+func repairRuntimeConfig(path string, cfg *config.Config) error {
+	changed, err := config.EnsureRuntimeSecrets(cfg)
+	if err != nil {
+		return err
+	}
+	if !changed || path == "" {
+		return nil
+	}
+	if err := config.Save(path, cfg); err != nil {
+		return fmt.Errorf("save runtime config repair: %w", err)
+	}
+	fmt.Printf("CheeseWAF rotated weak Bot challenge secret and saved %s\n", path)
+	return nil
+}
+
+func seedSites(ctx context.Context, store storage.Store, cfg *config.Config) error {
+	existing, err := store.ListSites(ctx)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+	for _, siteCfg := range cfg.Sites {
+		upstreams := make([]string, 0, len(siteCfg.Upstreams))
+		for _, upstream := range siteCfg.Upstreams {
+			upstreams = append(upstreams, upstream.Address)
+		}
+		site := storage.SiteFromConfig(siteCfg)
+		site.Upstreams = upstreams
+		if err := store.CreateSite(ctx, &site); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pidPath(runtimeDir string) string {
+	if runtimeDir == "" {
+		runtimeDir = filepath.Join(dataDir, "run")
+	}
+	return filepath.Join(runtimeDir, "cheesewaf.pid")
+}
+
+func writePID(runtimeDir string) error {
+	if err := os.MkdirAll(runtimeDir, 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(pidPath(runtimeDir), []byte(strconv.Itoa(os.Getpid())), 0o640)
+}
+
+func removePID(runtimeDir string) {
+	_ = os.Remove(pidPath(runtimeDir))
+}
+
+func authSecretPath(baseDir string) string {
+	if baseDir == "" {
+		baseDir = dataDir
+	}
+	return filepath.Join(baseDir, "auth.key")
+}
+
+func ensureAuthSecret(baseDir string) (string, error) {
+	path := authSecretPath(baseDir)
+	if raw, err := os.ReadFile(path); err == nil {
+		secret := string(raw)
+		if secret != "" {
+			return secret, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return "", err
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	secret := base64.RawURLEncoding.EncodeToString(buf)
+	if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
+		return "", err
+	}
+	return secret, nil
+}
+
+func readPID() (int, error) {
+	raw, err := os.ReadFile(pidPath(filepath.Join(dataDir, "run")))
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(string(raw))
+}
