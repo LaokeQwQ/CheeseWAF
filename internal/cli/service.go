@@ -357,6 +357,9 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 		semanticCategories = append(semanticCategories, "ssrf")
 		detectors = append(detectors, semantic.NewSSRFDetector(site.WAF.Mode))
 	}
+	if switches.NoSQL {
+		semanticCategories = append(semanticCategories, "nosqli")
+	}
 	if len(semanticCategories) > 0 {
 		detectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, detectors...)
 	}

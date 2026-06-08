@@ -30,6 +30,7 @@ const enUS = {
     customRule: 'Custom Rule',
     geoip: 'Geo Policy',
     lfi: 'File Include',
+    nosqli: 'NoSQL Injection',
     ratelimit: 'CC Rate Limit',
     rce: 'Command Exec',
     response: 'Response Check',

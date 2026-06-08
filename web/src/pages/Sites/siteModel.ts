@@ -33,6 +33,7 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     semantic_lfi: true,
     semantic_xxe: true,
     semantic_ssrf: true,
+    semantic_nosql: true,
     bot: false,
     ratelimit: true,
     acl: true,

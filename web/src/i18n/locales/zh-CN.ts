@@ -30,6 +30,7 @@ const zhCN = {
     customRule: '自定义规则',
     geoip: '地域策略',
     lfi: '文件包含',
+    nosqli: 'NoSQL 注入',
     ratelimit: 'CC 限流',
     rce: '命令执行',
     response: '响应检测',

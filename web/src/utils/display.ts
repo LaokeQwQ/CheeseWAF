@@ -7,6 +7,7 @@ const categoryKeys: Record<string, string> = {
   custom_rule: 'securityCategories.customRule',
   geoip: 'securityCategories.geoip',
   lfi: 'securityCategories.lfi',
+  nosqli: 'securityCategories.nosqli',
   pass: 'securityActions.pass',
   ratelimit: 'securityCategories.ratelimit',
   rce: 'securityCategories.rce',

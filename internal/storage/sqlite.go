@@ -413,13 +413,15 @@ func ensureSiteDefaults(site *Site) {
 	}
 	if site.WAFEnabled && !site.Advanced.Protection.SemanticSQL && !site.Advanced.Protection.SemanticXSS &&
 		!site.Advanced.Protection.SemanticRCE && !site.Advanced.Protection.SemanticLFI &&
-		!site.Advanced.Protection.SemanticXXE && !site.Advanced.Protection.SemanticSSRF {
+		!site.Advanced.Protection.SemanticXXE && !site.Advanced.Protection.SemanticSSRF &&
+		!site.Advanced.Protection.SemanticNoSQL {
 		site.Advanced.Protection.SemanticSQL = true
 		site.Advanced.Protection.SemanticXSS = true
 		site.Advanced.Protection.SemanticRCE = true
 		site.Advanced.Protection.SemanticLFI = true
 		site.Advanced.Protection.SemanticXXE = true
 		site.Advanced.Protection.SemanticSSRF = true
+		site.Advanced.Protection.SemanticNoSQL = true
 	}
 	if site.Advanced.HealthCheck.Path == "" {
 		site.Advanced.HealthCheck.Path = "/"

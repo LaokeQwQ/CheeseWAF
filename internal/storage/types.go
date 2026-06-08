@@ -190,16 +190,17 @@ type SiteHealthCheckConfig struct {
 }
 
 type SiteProtectionConfig struct {
-	SemanticSQL  bool `json:"semantic_sql"`
-	SemanticXSS  bool `json:"semantic_xss"`
-	SemanticRCE  bool `json:"semantic_rce"`
-	SemanticLFI  bool `json:"semantic_lfi"`
-	SemanticXXE  bool `json:"semantic_xxe"`
-	SemanticSSRF bool `json:"semantic_ssrf"`
-	Bot          bool `json:"bot"`
-	RateLimit    bool `json:"ratelimit"`
-	ACL          bool `json:"acl"`
-	APISecurity  bool `json:"apisec"`
+	SemanticSQL   bool `json:"semantic_sql"`
+	SemanticXSS   bool `json:"semantic_xss"`
+	SemanticRCE   bool `json:"semantic_rce"`
+	SemanticLFI   bool `json:"semantic_lfi"`
+	SemanticXXE   bool `json:"semantic_xxe"`
+	SemanticSSRF  bool `json:"semantic_ssrf"`
+	SemanticNoSQL bool `json:"semantic_nosql"`
+	Bot           bool `json:"bot"`
+	RateLimit     bool `json:"ratelimit"`
+	ACL           bool `json:"acl"`
+	APISecurity   bool `json:"apisec"`
 }
 
 type SiteProtectionPolicy struct {

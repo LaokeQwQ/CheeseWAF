@@ -16,6 +16,7 @@ Implemented in `internal/engine/semantic/analyzer.go`:
 - LFI handling for Windows/Linux traversal, overlong dot-slash traversal, and Kubernetes service-account token paths.
 - SSRF handling for loopback/cloud metadata hosts, dotted-decimal, dotted-hex, dotted-octal, and IPv6 loopback forms.
 - NoSQLi handling for MongoDB-style operators in structured JSON/form/query/cookie inputs, including `$ne` credential bypasses, bracket-notation form operators, `$regex` wildcard query changes, logical query branch operators, and `$where` server-side JavaScript predicates. Standalone MongoDB operator documentation text remains clean.
+- NoSQLi is exposed through the same global/site configuration path as the other semantic engines (`semantic_engines.nosql` and `advanced.protection.semantic_nosql`) so the runtime pipeline, saved site settings, and Web console stay aligned.
 - Syntax plus behavior evidence in `semantic_analysis`, including payload, source field, severity, confidence, and reason text.
 - Blocking integration before the individual semantic detectors in the runtime pipeline.
 

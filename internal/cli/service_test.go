@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
 func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
@@ -109,5 +112,40 @@ func assertAdminSecurityHeaders(t *testing.T, rr *httptest.ResponseRecorder, wan
 	}
 	if !wantHSTS && hsts != "" {
 		t.Fatalf("did not expect HSTS on HTTP admin response, got %q", hsts)
+	}
+}
+
+func TestBuildPipelineHonorsNoSQLSemanticSwitch(t *testing.T) {
+	cfg := &config.Config{
+		Sites: []config.SiteConfig{
+			{
+				ID:      "default",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+					SemanticEngines: config.SemanticEngineSwitches{
+						NoSQL: true,
+					},
+				},
+			},
+		},
+	}
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(`{"username":{"$ne":null},"password":{"$ne":null}}`))
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pipeline.Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "nosqli" {
+		t.Fatalf("expected NoSQLi detection from site semantic switch, got %+v", result)
 	}
 }
