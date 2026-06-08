@@ -95,14 +95,61 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 	}
 }
 
+func TestRouterPrometheusMetricsArePrivateByDefault(t *testing.T) {
+	router, _, readerToken := newAuthzTestRouter(t)
+
+	publicMetrics := perform(router, http.MethodGet, "/metrics", "", nil)
+	if publicMetrics.Code != http.StatusNotFound {
+		t.Fatalf("expected public /metrics to be disabled by default, got %d: %s", publicMetrics.Code, publicMetrics.Body.String())
+	}
+
+	privateMetricsWithoutToken := perform(router, http.MethodGet, "/api/metrics", "", nil)
+	if privateMetricsWithoutToken.Code != http.StatusUnauthorized {
+		t.Fatalf("expected /api/metrics to require bearer token, got %d: %s", privateMetricsWithoutToken.Code, privateMetricsWithoutToken.Body.String())
+	}
+
+	privateMetrics := perform(router, http.MethodGet, "/api/metrics", readerToken, nil)
+	if privateMetrics.Code != http.StatusOK {
+		t.Fatalf("expected readonly token to read /api/metrics, got %d: %s", privateMetrics.Code, privateMetrics.Body.String())
+	}
+	if got := privateMetrics.Header().Get("Content-Type"); got != "text/plain; version=0.0.4; charset=utf-8" {
+		t.Fatalf("unexpected metrics content type %q", got)
+	}
+}
+
+func TestRouterPrometheusMetricsCanBeExplicitlyPublic(t *testing.T) {
+	router, _, _ := newAuthzTestRouterWithConfig(t, func(cfg *config.Config) {
+		cfg.Monitor.Prometheus.Enabled = true
+		cfg.Monitor.Prometheus.Public = true
+		cfg.Monitor.Prometheus.Path = "/metrics"
+	})
+
+	recorder := perform(router, http.MethodGet, "/metrics", "", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected explicitly public /metrics to be readable, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/plain; version=0.0.4; charset=utf-8" {
+		t.Fatalf("unexpected metrics content type %q", got)
+	}
+}
+
 func newAuthzTestRouter(t *testing.T) (http.Handler, string, string) {
+	return newAuthzTestRouterWithConfig(t, func(cfg *config.Config) {
+		cfg.Monitor.Prometheus.Enabled = true
+		cfg.Monitor.Prometheus.Public = false
+	})
+}
+
+func newAuthzTestRouterWithConfig(t *testing.T, mutate func(*config.Config)) (http.Handler, string, string) {
 	t.Helper()
 	tempDir := t.TempDir()
 	cfg := config.Default()
 	cfg.APISec.Audit.Enabled = false
-	cfg.Monitor.Prometheus.Enabled = false
 	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
 	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	if mutate != nil {
+		mutate(&cfg)
+	}
 	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
 	if err := config.Save(configPath, &cfg); err != nil {
 		t.Fatalf("save config: %v", err)

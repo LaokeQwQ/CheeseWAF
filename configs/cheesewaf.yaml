@@ -273,6 +273,7 @@ monitor:
   prometheus:
     enabled: true
     path: "/metrics"
+    public: false
   remote_write:
     enabled: false
     endpoint: ""

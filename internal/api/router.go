@@ -48,7 +48,7 @@ func NewRouter(opts Options) http.Handler {
 	}
 
 	r.Get("/health", h.Health)
-	if opts.Config.Monitor.Prometheus.Enabled {
+	if opts.Config.Monitor.Prometheus.Enabled && opts.Config.Monitor.Prometheus.Public {
 		r.Get(opts.Config.Monitor.Prometheus.Path, h.Metrics)
 	}
 	r.Route("/api", func(r chi.Router) {

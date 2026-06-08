@@ -25,6 +25,10 @@ func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
 
 	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/metrics" {
+			http.NotFound(w, r)
+			return
+		}
 		_, _ = w.Write([]byte("api:" + r.URL.Path))
 	})
 	handler := adminHandler(&config.Config{}, apiHandler)
@@ -46,6 +50,23 @@ func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 			t.Fatalf("%s: got %q want %q", tc.path, rr.Body.String(), tc.want)
 		}
 		assertAdminSecurityHeaders(t, rr, false)
+	}
+
+	reqMetrics := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rrMetrics := httptest.NewRecorder()
+	handler.ServeHTTP(rrMetrics, reqMetrics)
+	if rrMetrics.Code != http.StatusNotFound {
+		t.Fatalf("/metrics should not fall back to SPA when public metrics are disabled, got %d: %s", rrMetrics.Code, rrMetrics.Body.String())
+	}
+	assertAdminSecurityHeaders(t, rrMetrics, false)
+
+	publicMetricsHandler := adminHandler(&config.Config{Monitor: config.MonitorConfig{Prometheus: config.PrometheusConfig{Enabled: true, Path: "/metrics", Public: true}}}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("metrics:" + r.URL.Path))
+	}))
+	rrPublicMetrics := httptest.NewRecorder()
+	publicMetricsHandler.ServeHTTP(rrPublicMetrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rrPublicMetrics.Body.String() != "metrics:/metrics" {
+		t.Fatalf("public /metrics should route to api handler, got %q", rrPublicMetrics.Body.String())
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "https://cheesewaf.local/", nil)

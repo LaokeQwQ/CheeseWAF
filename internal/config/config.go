@@ -422,6 +422,7 @@ type MonitorConfig struct {
 type PrometheusConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Path    string `yaml:"path" json:"path"`
+	Public  bool   `yaml:"public" json:"public"`
 }
 
 type RemoteWriteConfig struct {

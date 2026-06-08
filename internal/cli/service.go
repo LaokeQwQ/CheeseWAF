@@ -171,11 +171,17 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
 	}
 	spa := http.FileServer(http.Dir(webDir))
 	metricsPath := "/metrics"
+	metricsPublic := false
 	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
 		metricsPath = cfg.Monitor.Prometheus.Path
+		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isAdminAPIPath(r.URL.Path, metricsPath) {
+		if r.URL.Path == metricsPath && !metricsPublic {
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+		if isAdminAPIPath(r.URL.Path, metricsPath, metricsPublic) {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
@@ -211,11 +217,14 @@ func adminSecurityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func isAdminAPIPath(path, metricsPath string) bool {
+func isAdminAPIPath(path, metricsPath string, metricsPublic bool) bool {
 	if path == "/api" || strings.HasPrefix(path, "/api/") {
 		return true
 	}
-	if path == "/health" || path == metricsPath {
+	if path == "/health" {
+		return true
+	}
+	if metricsPublic && path == metricsPath {
 		return true
 	}
 	return false

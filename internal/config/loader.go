@@ -168,7 +168,7 @@ func Default() Config {
 			},
 		},
 		Monitor: MonitorConfig{
-			Prometheus:  PrometheusConfig{Enabled: true, Path: "/metrics"},
+			Prometheus:  PrometheusConfig{Enabled: true, Path: "/metrics", Public: false},
 			RemoteWrite: RemoteWriteConfig{Enabled: false, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 			Alerts: AlertEngineConfig{
 				Enabled: true,

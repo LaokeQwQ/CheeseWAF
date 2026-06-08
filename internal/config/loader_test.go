@@ -40,6 +40,27 @@ func TestValidatePostgreSQLTableIdentifier(t *testing.T) {
 	}
 }
 
+func TestValidatePublicPrometheusPathDoesNotConflictWithProtectedRoutes(t *testing.T) {
+	for _, path := range []string{"/api", "/api/metrics", "/health"} {
+		cfg := Default()
+		cfg.Monitor.Prometheus.Enabled = true
+		cfg.Monitor.Prometheus.Public = true
+		cfg.Monitor.Prometheus.Path = path
+
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("expected public prometheus path %q to be rejected", path)
+		}
+	}
+
+	cfg := Default()
+	cfg.Monitor.Prometheus.Enabled = true
+	cfg.Monitor.Prometheus.Public = true
+	cfg.Monitor.Prometheus.Path = "/metrics"
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected public prometheus /metrics to validate: %v", err)
+	}
+}
+
 func TestValidateAPISecJWTSignatureConfig(t *testing.T) {
 	t.Run("rejects none algorithm", func(t *testing.T) {
 		cfg := Default()

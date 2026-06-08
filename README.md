@@ -28,7 +28,7 @@ The repository currently includes:
 - API authentication can now enforce WAF-side Bearer JWT signature validation with configured HMAC secrets, PEM public keys/certificates, local JWKS JSON/files, or remote JWKS subscriptions with cache files and background refresh, then apply issuer, audience, expiry, and scope checks through the same smart protection-policy model. Endpoint-level auth policies can override issuer/audience/scope requirements by method and path regex. Runtime APISec updates rebuild schema validation, endpoint rate limiting, and JWT auth without restarting the proxy, and the Web console exposes JWT signing, remote JWKS, and endpoint-policy settings under System Settings.
 - AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots. OpenAI-compatible providers can select the API key header style. AI prompts treat logs, payloads, runtime context, and operator questions as untrusted data, with explicit guardrails against prompt injection, secret disclosure, tool execution, and unapproved policy changes.
 - First-run setup wizard and REST setup API now share one completion service for validation, admin creation, SQLite migration, default config/certificate generation, and setup completion locking. The generated admin certificate bundle uses an ECDSA P-256 local CA (`CN=CheeseWAF Sign SSL CA`, `O=CheeseCloud Technology Ltc.`) and a server-auth leaf chain.
-- Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch.
+- Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch. Metrics are available through authenticated `/api/metrics` by default; the bare scrape path such as `/metrics` is only exposed when `monitor.prometheus.public: true` is set explicitly.
 - Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, cross-platform builds, and branch-channel release artifacts. Pushes to `dev`, `canary`, and `master` build distinct `dev`, `canary`, and `stable` packages on both platforms. Forgejo uses local/mirrored Go and Node toolchain bootstrap scripts to avoid self-hosted runner timeouts against GitHub tool-cache downloads.
 
 Runtime Bot challenge secrets are generated per install. If an old config still
@@ -103,6 +103,10 @@ HSTS safety headers.
 - The admin plane must be treated as a production security boundary: keep it
   behind TLS or a trusted reverse proxy, bind it to localhost/private networks by
   default, and avoid exposing browser tokens over plain HTTP.
+- Bare Prometheus scraping is private by default. Prefer authenticated
+  `/api/metrics` or expose `monitor.prometheus.path` only on a trusted listener;
+  set `monitor.prometheus.public: true` deliberately when an external scraper
+  needs direct access.
 - Before a public release, run repeatable sqlmap, XSStrike, nuclei, OWASP ZAP,
   and CRS/Coraza or ModSecurity comparison. Admin-surface route-level
   authentication/RBAC tests are now automated, but deployed dynamic scans should
