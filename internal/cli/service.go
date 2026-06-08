@@ -171,11 +171,17 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
 	}
 	spa := http.FileServer(http.Dir(webDir))
 	metricsPath := "/metrics"
+	metricsPublic := false
 	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
 		metricsPath = cfg.Monitor.Prometheus.Path
+		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isAdminAPIPath(r.URL.Path, metricsPath) {
+		if r.URL.Path == metricsPath && !metricsPublic {
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+		if isAdminAPIPath(r.URL.Path, metricsPath, metricsPublic) {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
@@ -200,6 +206,9 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
 
 func adminSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", adminContentSecurityPolicy())
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -211,11 +220,32 @@ func adminSecurityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func isAdminAPIPath(path, metricsPath string) bool {
+func adminContentSecurityPolicy() string {
+	return strings.Join([]string{
+		"default-src 'self'",
+		"base-uri 'none'",
+		"object-src 'none'",
+		"frame-ancestors 'none'",
+		"form-action 'self'",
+		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"font-src 'self' data:",
+		"connect-src 'self' ws: wss:",
+		"worker-src 'self' blob:",
+		"manifest-src 'self'",
+		"media-src 'self' data: blob:",
+	}, "; ")
+}
+
+func isAdminAPIPath(path, metricsPath string, metricsPublic bool) bool {
 	if path == "/api" || strings.HasPrefix(path, "/api/") {
 		return true
 	}
-	if path == "/health" || path == metricsPath {
+	if path == "/health" {
+		return true
+	}
+	if metricsPublic && path == metricsPath {
 		return true
 	}
 	return false
@@ -326,6 +356,12 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 	if switches.SSRF {
 		semanticCategories = append(semanticCategories, "ssrf")
 		detectors = append(detectors, semantic.NewSSRFDetector(site.WAF.Mode))
+	}
+	if switches.NoSQL {
+		semanticCategories = append(semanticCategories, "nosqli")
+	}
+	if switches.SSTI {
+		semanticCategories = append(semanticCategories, "ssti")
 	}
 	if len(semanticCategories) > 0 {
 		detectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, detectors...)

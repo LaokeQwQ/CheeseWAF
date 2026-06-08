@@ -47,12 +47,14 @@ func Default() Config {
 					Enabled: true,
 					Mode:    "block",
 					SemanticEngines: SemanticEngineSwitches{
-						SQL:  true,
-						XSS:  true,
-						RCE:  true,
-						LFI:  true,
-						XXE:  true,
-						SSRF: true,
+						SQL:   true,
+						XSS:   true,
+						RCE:   true,
+						LFI:   true,
+						XXE:   true,
+						SSRF:  true,
+						NoSQL: true,
+						SSTI:  true,
 					},
 					ProtectionPolicy: ProtectionPolicyConfig{},
 					Performance: PerformanceTuningConfig{
@@ -168,7 +170,7 @@ func Default() Config {
 			},
 		},
 		Monitor: MonitorConfig{
-			Prometheus:  PrometheusConfig{Enabled: true, Path: "/metrics"},
+			Prometheus:  PrometheusConfig{Enabled: true, Path: "/metrics", Public: false},
 			RemoteWrite: RemoteWriteConfig{Enabled: false, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 			Alerts: AlertEngineConfig{
 				Enabled: true,

@@ -95,14 +95,144 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 	}
 }
 
+func TestRouterPrometheusMetricsArePrivateByDefault(t *testing.T) {
+	router, _, readerToken := newAuthzTestRouter(t)
+
+	publicMetrics := perform(router, http.MethodGet, "/metrics", "", nil)
+	if publicMetrics.Code != http.StatusNotFound {
+		t.Fatalf("expected public /metrics to be disabled by default, got %d: %s", publicMetrics.Code, publicMetrics.Body.String())
+	}
+
+	privateMetricsWithoutToken := perform(router, http.MethodGet, "/api/metrics", "", nil)
+	if privateMetricsWithoutToken.Code != http.StatusUnauthorized {
+		t.Fatalf("expected /api/metrics to require bearer token, got %d: %s", privateMetricsWithoutToken.Code, privateMetricsWithoutToken.Body.String())
+	}
+
+	privateMetrics := perform(router, http.MethodGet, "/api/metrics", readerToken, nil)
+	if privateMetrics.Code != http.StatusOK {
+		t.Fatalf("expected readonly token to read /api/metrics, got %d: %s", privateMetrics.Code, privateMetrics.Body.String())
+	}
+	if got := privateMetrics.Header().Get("Content-Type"); got != "text/plain; version=0.0.4; charset=utf-8" {
+		t.Fatalf("unexpected metrics content type %q", got)
+	}
+}
+
+func TestRouterPrometheusMetricsCanBeExplicitlyPublic(t *testing.T) {
+	router, _, _ := newAuthzTestRouterWithConfig(t, func(cfg *config.Config) {
+		cfg.Monitor.Prometheus.Enabled = true
+		cfg.Monitor.Prometheus.Public = true
+		cfg.Monitor.Prometheus.Path = "/metrics"
+	})
+
+	recorder := perform(router, http.MethodGet, "/metrics", "", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected explicitly public /metrics to be readable, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/plain; version=0.0.4; charset=utf-8" {
+		t.Fatalf("unexpected metrics content type %q", got)
+	}
+}
+
+func TestRouterRefreshesBearerToken(t *testing.T) {
+	router, adminToken, _ := newAuthzTestRouter(t)
+
+	withoutToken := perform(router, http.MethodPost, "/api/auth/refresh", "", []byte(`{}`))
+	if withoutToken.Code != http.StatusUnauthorized {
+		t.Fatalf("expected refresh without bearer token to be unauthorized, got %d: %s", withoutToken.Code, withoutToken.Body.String())
+	}
+
+	refreshed := perform(router, http.MethodPost, "/api/auth/refresh", adminToken, []byte(`{}`))
+	if refreshed.Code != http.StatusOK {
+		t.Fatalf("expected refresh to succeed, got %d: %s", refreshed.Code, refreshed.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Token string `json:"token"`
+			User  struct {
+				Username string `json:"username"`
+				Role     string `json:"role"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(refreshed.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode refresh response: %v", err)
+	}
+	if envelope.Data.Token == "" {
+		t.Fatal("refresh response did not include token")
+	}
+	if envelope.Data.Token == adminToken {
+		t.Fatal("refresh returned the same token; expected a rotated token id")
+	}
+	if envelope.Data.User.Username != "admin" || envelope.Data.User.Role != "admin" {
+		t.Fatalf("unexpected refresh user: %+v", envelope.Data.User)
+	}
+
+	system := perform(router, http.MethodGet, "/api/system", envelope.Data.Token, nil)
+	if system.Code != http.StatusOK {
+		t.Fatalf("refreshed token should access protected API, got %d: %s", system.Code, system.Body.String())
+	}
+
+	oldToken := perform(router, http.MethodGet, "/api/system", adminToken, nil)
+	if oldToken.Code != http.StatusUnauthorized {
+		t.Fatalf("old token should be revoked after refresh, got %d: %s", oldToken.Code, oldToken.Body.String())
+	}
+}
+
+func TestRouterLogoutRevokesBearerToken(t *testing.T) {
+	router, adminToken, _ := newAuthzTestRouter(t)
+
+	withoutToken := perform(router, http.MethodPost, "/api/auth/logout", "", []byte(`{}`))
+	if withoutToken.Code != http.StatusUnauthorized {
+		t.Fatalf("expected logout without bearer token to be unauthorized, got %d: %s", withoutToken.Code, withoutToken.Body.String())
+	}
+
+	logout := perform(router, http.MethodPost, "/api/auth/logout", adminToken, []byte(`{}`))
+	if logout.Code != http.StatusOK {
+		t.Fatalf("expected logout to succeed, got %d: %s", logout.Code, logout.Body.String())
+	}
+
+	system := perform(router, http.MethodGet, "/api/system", adminToken, nil)
+	if system.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked token should be rejected, got %d: %s", system.Code, system.Body.String())
+	}
+}
+
+func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
+	router, adminToken, readerToken := newAuthzTestRouter(t)
+
+	before := perform(router, http.MethodGet, "/api/system", readerToken, nil)
+	if before.Code != http.StatusOK {
+		t.Fatalf("reader token should start active, got %d: %s", before.Code, before.Body.String())
+	}
+
+	update := perform(router, http.MethodPut, "/api/users/reader-id", adminToken, []byte(`{"password":"new-reader-password","role":"readonly"}`))
+	if update.Code != http.StatusOK {
+		t.Fatalf("expected admin to update reader, got %d: %s", update.Code, update.Body.String())
+	}
+
+	after := perform(router, http.MethodGet, "/api/system", readerToken, nil)
+	if after.Code != http.StatusUnauthorized {
+		t.Fatalf("reader token should be revoked after sensitive user update, got %d: %s", after.Code, after.Body.String())
+	}
+}
+
 func newAuthzTestRouter(t *testing.T) (http.Handler, string, string) {
+	return newAuthzTestRouterWithConfig(t, func(cfg *config.Config) {
+		cfg.Monitor.Prometheus.Enabled = true
+		cfg.Monitor.Prometheus.Public = false
+	})
+}
+
+func newAuthzTestRouterWithConfig(t *testing.T, mutate func(*config.Config)) (http.Handler, string, string) {
 	t.Helper()
 	tempDir := t.TempDir()
 	cfg := config.Default()
 	cfg.APISec.Audit.Enabled = false
-	cfg.Monitor.Prometheus.Enabled = false
 	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
 	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	if mutate != nil {
+		mutate(&cfg)
+	}
 	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
 	if err := config.Save(configPath, &cfg); err != nil {
 		t.Fatalf("save config: %v", err)

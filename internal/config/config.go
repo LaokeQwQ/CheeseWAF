@@ -89,12 +89,14 @@ type WAFConfig struct {
 }
 
 type SemanticEngineSwitches struct {
-	SQL  bool `yaml:"sql" json:"sql"`
-	XSS  bool `yaml:"xss" json:"xss"`
-	RCE  bool `yaml:"rce" json:"rce"`
-	LFI  bool `yaml:"lfi" json:"lfi"`
-	XXE  bool `yaml:"xxe" json:"xxe"`
-	SSRF bool `yaml:"ssrf" json:"ssrf"`
+	SQL   bool `yaml:"sql" json:"sql"`
+	XSS   bool `yaml:"xss" json:"xss"`
+	RCE   bool `yaml:"rce" json:"rce"`
+	LFI   bool `yaml:"lfi" json:"lfi"`
+	XXE   bool `yaml:"xxe" json:"xxe"`
+	SSRF  bool `yaml:"ssrf" json:"ssrf"`
+	NoSQL bool `yaml:"nosql" json:"nosql"`
+	SSTI  bool `yaml:"ssti" json:"ssti"`
 }
 
 type CustomRuleConfig struct {
@@ -422,6 +424,7 @@ type MonitorConfig struct {
 type PrometheusConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Path    string `yaml:"path" json:"path"`
+	Public  bool   `yaml:"public" json:"public"`
 }
 
 type RemoteWriteConfig struct {

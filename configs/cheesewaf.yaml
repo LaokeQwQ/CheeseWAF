@@ -49,6 +49,8 @@ sites:
         lfi: true
         xxe: true
         ssrf: true
+        nosql: true
+        ssti: true
       protection_policy:
         web_attack: ""
         api_security: ""
@@ -273,6 +275,7 @@ monitor:
   prometheus:
     enabled: true
     path: "/metrics"
+    public: false
   remote_write:
     enabled: false
     endpoint: ""
