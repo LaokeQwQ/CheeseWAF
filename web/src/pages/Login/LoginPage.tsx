@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { LockKeyhole, UserRound } from 'lucide-react';
 import { pressable } from '../../animations/micro';
-import { login } from '../../api/client';
+import { APIRequestError, login } from '../../api/client';
 
 export default function LoginPage() {
   const { t } = useTranslation();
@@ -13,6 +13,7 @@ export default function LoginPage() {
   const location = useLocation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [requires2FA, setRequires2FA] = useState(false);
   const token = localStorage.getItem('cheesewaf-token');
   const from = ((location.state as { from?: string } | null)?.from ?? '/') || '/';
 
@@ -20,14 +21,19 @@ export default function LoginPage() {
     return <Navigate to={from} replace />;
   }
 
-  async function handleSubmit(values: { username?: string; password?: string }) {
+  async function handleSubmit(values: { username?: string; password?: string; totpCode?: string }) {
     setLoading(true);
     setError('');
     try {
-      const result = await login(values.username ?? '', values.password ?? '');
+      const result = await login(values.username ?? '', values.password ?? '', values.totpCode);
       localStorage.setItem('cheesewaf-token', result.token);
       navigate(from, { replace: true });
     } catch (err) {
+      if (err instanceof APIRequestError && err.code === 'TWO_FA_REQUIRED') {
+        setRequires2FA(true);
+        setError(t('login.totpRequired'));
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
       setLoading(false);
@@ -57,6 +63,11 @@ export default function LoginPage() {
           <Form.Item label={t('login.password')} field="password">
             <Input.Password prefix={<LockKeyhole size={16} />} placeholder="********" />
           </Form.Item>
+          {requires2FA && (
+            <Form.Item label={t('login.totp')} field="totpCode">
+              <Input prefix={<LockKeyhole size={16} />} placeholder="000000" maxLength={6} />
+            </Form.Item>
+          )}
           <motion.div {...pressable}>
             <Button type="primary" htmlType="submit" loading={loading} long>
               {t('login.submit')}

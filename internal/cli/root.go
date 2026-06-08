@@ -18,7 +18,7 @@ const (
 var (
 	appVersion = "0.1.0-dev"
 	buildTime  = "unknown"
-	configPath = "configs/cheesewaf.yaml"
+	configPath = "./data/cheesewaf.yaml"
 	dataDir    = "./data"
 )
 
@@ -37,6 +37,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(restartCmd)
+	rootCmd.AddCommand(userCmd)
 }
 
 // Execute dispatches the root command based on the executable name (BusyBox pattern).

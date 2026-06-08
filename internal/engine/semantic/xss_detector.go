@@ -10,12 +10,15 @@ import (
 )
 
 var xssPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)<\s*script\b`),
-	regexp.MustCompile(`(?i)javascript\s*:`),
-	regexp.MustCompile(`(?i)on(?:error|load|click|mouseover)\s*=`),
-	regexp.MustCompile(`(?i)<\s*iframe\b`),
-	regexp.MustCompile(`(?i)<\s*svg\b[^>]*onload\s*=`),
+	regexp.MustCompile(`(?i)<\s*(?:[a-z0-9_-]+\s*:\s*)?script\b`),
+	regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`),
+	regexp.MustCompile(`(?i)<\s*(?:[a-z0-9_-]+\s*:\s*)?svg\b[^>]*\bon[a-z0-9_-]{3,}\s*=`),
+	regexp.MustCompile(`(?i)<\s*xss\b[^>]*\bon[a-z0-9_-]{3,}\s*=`),
 }
+
+var javascriptURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|xlink:href|formaction|action)\s*=\s*['"]?\s*javascript\s*:`)
+var xssDataURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|data|xlink:href|formaction|action|content)\s*=\s*['"]?\s*data\s*:\s*(?:text/html|image/svg\+xml|application/xhtml\+xml)`)
+var xssSrcdocContext = regexp.MustCompile(`(?i)<\s*iframe\b[^>]*\bsrcdoc\s*=`)
 
 type XSSDetector struct {
 	mode string
@@ -36,20 +39,28 @@ func (d *XSSDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (
 	payload := requestText(reqCtx)
 	candidates := []string{payload, decoder.Decode(payload).Text}
 	for _, candidate := range candidates {
-		for _, pattern := range xssPatterns {
-			if pattern.MatchString(candidate) {
-				return &engine.DetectionResult{
-					Detected:   true,
-					DetectorID: d.ID(),
-					Category:   "xss",
-					Severity:   engine.SeverityHigh,
-					Action:     actionForMode(d.mode),
-					Message:    "XSS payload pattern matched",
-					Confidence: 0.86,
-					Payload:    strings.TrimSpace(candidate),
-				}, nil
-			}
+		normalized := normalize(candidate)
+		if executableXSSContext(normalized) {
+			return &engine.DetectionResult{
+				Detected:   true,
+				DetectorID: d.ID(),
+				Category:   "xss",
+				Severity:   engine.SeverityHigh,
+				Action:     actionForMode(d.mode),
+				Message:    "XSS payload pattern matched",
+				Confidence: 0.86,
+				Payload:    strings.TrimSpace(candidate),
+			}, nil
 		}
 	}
 	return nil, nil
+}
+
+func executableXSSContext(normalized string) bool {
+	for _, pattern := range xssPatterns {
+		if pattern.MatchString(normalized) {
+			return true
+		}
+	}
+	return javascriptURLContext.MatchString(normalized) || xssDataURLContext.MatchString(normalized) || xssSrcdocContext.MatchString(normalized)
 }

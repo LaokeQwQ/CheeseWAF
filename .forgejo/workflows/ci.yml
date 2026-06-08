@@ -1,0 +1,135 @@
+name: Forgejo CI
+run-name: Forgejo CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - master
+      - canary
+      - dev
+  workflow_dispatch:
+
+jobs:
+  branch-flow:
+    name: branch-flow
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate promotion path
+        shell: bash
+        run: |
+          base="${{ github.base_ref }}"
+          head="${{ github.head_ref }}"
+
+          case "$base" in
+            master)
+              if [[ "$head" != "canary" ]]; then
+                echo "::error::master only accepts pull requests from canary."
+                exit 1
+              fi
+              ;;
+            canary)
+              if [[ "$head" != "dev" ]]; then
+                echo "::error::canary only accepts pull requests from dev."
+                exit 1
+              fi
+              ;;
+            dev)
+              if [[ "$head" == "master" || "$head" == "canary" ]]; then
+                echo "::error::dev cannot accept downward pull requests from master or canary."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::protected pull requests must target dev, canary, or master."
+              exit 1
+              ;;
+          esac
+
+  go-mod-tidy:
+    name: go-mod-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v4
+      - name: Setup Go from mirror
+        shell: bash
+        run: bash scripts/ci/setup-go-mirror.sh
+      - name: Verify go.mod and go.sum
+        shell: bash
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  go-test:
+    name: go-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v4
+      - name: Setup Go from mirror
+        shell: bash
+        run: bash scripts/ci/setup-go-mirror.sh
+      - name: Test
+        shell: bash
+        run: go test -race -count=1 ./cmd/... ./internal/...
+
+  web-build:
+    name: web-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v4
+      - name: Setup Node from mirror
+        shell: bash
+        run: bash scripts/ci/setup-node-mirror.sh
+      - name: Install dependencies
+        working-directory: web
+        shell: bash
+        run: npm ci
+      - name: Build dashboard
+        working-directory: web
+        shell: bash
+        run: npm run build
+
+  cross-build:
+    name: cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v4
+      - name: Setup Go from mirror
+        shell: bash
+        run: bash scripts/ci/setup-go-mirror.sh
+      - name: Build all release targets
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p bin
+          targets=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+            "windows/arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            ext=""
+            if [[ "$goos" == "windows" ]]; then
+              ext=".exe"
+            fi
+            output="bin/cheesewaf-${goos}-${goarch}${ext}"
+            echo "building ${target} -> ${output}"
+            GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$output" ./cmd/cheesewaf/
+          done

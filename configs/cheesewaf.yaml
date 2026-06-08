@@ -4,6 +4,12 @@ server:
   listen_tls: ""
   listen_http3: ""
   admin_listen: "127.0.0.1:9443"
+  admin_public: false
+  admin_tls:
+    enabled: false
+    cert_file: "./data/certs/admin.crt"
+    key_file: "./data/certs/admin.key"
+    self_signed: true
   read_timeout: 10s
   write_timeout: 30s
   idle_timeout: 60s
@@ -43,6 +49,11 @@ sites:
         lfi: true
         xxe: true
         ssrf: true
+      protection_policy:
+        web_attack: ""
+        api_security: ""
+        bot_cc: ""
+        threat_intel: ""
       custom_rules:
         - id: "block-admin-probe"
           name: "Admin path probe"
@@ -78,6 +89,11 @@ sites:
         unhealthy_threshold: 2
 
 protection:
+  policy:
+    web_attack: "smart"
+    api_security: "smart"
+    bot_cc: "smart"
+    threat_intel: "smart"
   ip:
     whitelist: ["127.0.0.1", "::1"]
     blacklist: []
@@ -98,9 +114,15 @@ protection:
     enabled: false
     js_challenge: true
     captcha: false
+    challenge_difficulty: 4
+    altcha_max_number: 75000
+    altcha_header_name: "X-CheeseWAF-Altcha"
+    waiting_room: false
+    waiting_room_max_active: 1000
+    waiting_room_ttl: 5m
     challenge_ttl: 30m
     cookie_name: "cheesewaf_js_clearance"
-    secret: "change-me-in-production"
+    secret: ""
     path_prefixes:
       - "/"
     exempt_path_prefixes:
@@ -167,6 +189,7 @@ ai:
   enabled: false
   api_base: "https://api.openai.com/v1"
   api_key: ""
+  api_key_header: "authorization" # authorization | api-key | x-api-key
   model: "gpt-4o-mini"
   async: true
 
@@ -304,7 +327,18 @@ apisec:
   auth:
     enabled: false
     jwt_issuers: []
+    jwt_audiences: []
     required_scopes: []
+    endpoint_policies: []
+    jwt_algorithms: []
+    jwt_shared_secret: ""
+    jwt_public_key_file: ""
+    jwt_public_key_pem: ""
+    jwks_file: ""
+    jwks_json: ""
+    jwks_url: ""
+    jwks_cache_file: "./data/apisec-jwks-cache.json"
+    jwks_refresh_interval: 1h
   rate_limits:
     - id: "login-api"
       method: "POST"

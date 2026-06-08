@@ -3,6 +3,7 @@
 /dist/
 /build/
 /out/
+/output/
 *.exe
 *.exe~
 *.dll
@@ -39,6 +40,7 @@ profile.cov
 configs/*.yaml
 !configs/*.example.yaml
 !configs/cheesewaf.yaml
+configs/versions/
 
 # Private planning/task files
 task.md
@@ -57,12 +59,14 @@ web/*.log
 go.work
 go.work.sum
 vendor/
+.cache/
 
 # Editors and local agent state
 .idea/
 .vscode/
 .claude/
 .codex/
+.codegraph/
 
 # OS metadata
 .DS_Store

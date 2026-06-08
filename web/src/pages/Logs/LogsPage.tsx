@@ -1,10 +1,12 @@
-import { Input, Select, Table, Tag } from '@arco-design/web-react';
+import { Button, Input, Select, Table, Tag } from '@arco-design/web-react';
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Eye, Search } from 'lucide-react';
 import { fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
+import { displayAction, displayCategory, displayCountry } from '../../utils/display';
 
 export default function LogsPage() {
   const { t } = useTranslation();
@@ -69,25 +71,39 @@ export default function LogsPage() {
           loading={isLoading}
           data={logs.map((entry) => ({ ...entry, key: entry.id || entry.trace_id }))}
           columns={[
-            { title: t('logs.trace'), dataIndex: 'trace_id', render: (trace: string, record: LogEntry) => <code>{trace || record.id}</code> },
+            { title: t('logs.trace'), dataIndex: 'trace_id', render: (trace: string, record: LogEntry) => <code className="table-code" title={trace || record.id}>{trace || record.id}</code> },
             { title: t('logs.source'), dataIndex: 'client_ip' },
             {
               title: t('logs.category'),
               dataIndex: 'category',
-              render: (value: string) => <Tag color={value ? 'orange' : 'green'}>{value ? value.toUpperCase() : 'PASS'}</Tag>,
+              render: (value: string) => (
+                <span className="status-group">
+                  <Tag color={value ? 'orange' : 'green'}>{displayCategory(value || 'pass', t)}</Tag>
+                </span>
+              ),
             },
             {
               title: t('logs.action'),
               dataIndex: 'action',
               render: (action: string) => (
-                <Tag color={action === 'block' ? 'red' : 'blue'}>
-                  {action === 'block' ? t('common.block') : t('common.monitor')}
-                </Tag>
+                <span className="status-group">
+                  <Tag color={action === 'block' ? 'red' : 'blue'}>
+                    {displayAction(action, t)}
+                  </Tag>
+                </span>
               ),
             },
-            { title: 'URI', dataIndex: 'uri' },
-            { title: t('attackMap.country'), dataIndex: 'country', render: (value: string) => value || '-' },
+            { title: 'URI', dataIndex: 'uri', render: (uri: string) => <code className="table-code" title={uri || '-'}>{uri || '-'}</code> },
+            { title: t('attackMap.country'), dataIndex: 'country', render: (value: string) => displayCountry(value, t) },
             { title: t('logs.time'), dataIndex: 'timestamp', render: formatTime },
+            {
+              title: t('logs.detail'),
+              render: (_: unknown, record: LogEntry) => (
+                <Link to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`} className="table-action-link">
+                  <Button size="small" icon={<Eye size={14} />}>{t('logs.viewDetail')}</Button>
+                </Link>
+              ),
+            },
           ]}
         />
       </section>

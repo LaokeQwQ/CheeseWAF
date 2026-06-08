@@ -18,10 +18,11 @@ type Message struct {
 }
 
 type Client struct {
-	apiBase string
-	apiKey  string
-	model   string
-	http    *http.Client
+	apiBase      string
+	apiKey       string
+	apiKeyHeader string
+	model        string
+	http         *http.Client
 }
 
 func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
@@ -29,10 +30,11 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &Client{
-		apiBase: strings.TrimRight(cfg.APIBase, "/"),
-		apiKey:  cfg.APIKey,
-		model:   cfg.Model,
-		http:    httpClient,
+		apiBase:      strings.TrimRight(cfg.APIBase, "/"),
+		apiKey:       cfg.APIKey,
+		apiKeyHeader: normalizeAPIKeyHeader(cfg.APIKeyHeader),
+		model:        cfg.Model,
+		http:         httpClient,
 	}
 }
 
@@ -57,7 +59,7 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (string, erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		c.applyAPIKey(req)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -75,6 +77,23 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (string, erro
 		return "", fmt.Errorf("ai api returned no choices")
 	}
 	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+}
+
+func (c *Client) applyAPIKey(req *http.Request) {
+	switch strings.ToLower(c.apiKeyHeader) {
+	case "", "authorization", "bearer", "authorization-bearer":
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	default:
+		req.Header.Set(c.apiKeyHeader, c.apiKey)
+	}
+}
+
+func normalizeAPIKeyHeader(header string) string {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return "authorization"
+	}
+	return header
 }
 
 type chatRequest struct {

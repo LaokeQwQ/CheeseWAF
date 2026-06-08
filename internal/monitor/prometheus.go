@@ -17,6 +17,7 @@ type Snapshot struct {
 	UptimeSeconds int64            `json:"uptime_seconds"`
 	Goroutines    int              `json:"goroutines"`
 	MemoryAlloc   uint64           `json:"memory_alloc"`
+	Host          HostStats        `json:"host"`
 	Sites         int              `json:"sites"`
 	Requests      int              `json:"requests"`
 	Blocked       int              `json:"blocked"`
@@ -34,6 +35,7 @@ func Collect(startedAt time.Time, sites int, logs []storage.LogEntry, diskUsage 
 		UptimeSeconds: int64(time.Since(startedAt).Seconds()),
 		Goroutines:    runtime.NumGoroutine(),
 		MemoryAlloc:   mem.Alloc,
+		Host:          CollectHostStats(),
 		Sites:         sites,
 		StatusCodes:   map[int]int{},
 		Categories:    map[string]int{},
@@ -62,6 +64,9 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 	writeMetric(&buf, "cheesewaf_uptime_seconds", "CheeseWAF process uptime in seconds.", float64(snapshot.UptimeSeconds), nil)
 	writeMetric(&buf, "cheesewaf_goroutines", "Current goroutine count.", float64(snapshot.Goroutines), nil)
 	writeMetric(&buf, "cheesewaf_memory_alloc_bytes", "Current allocated heap bytes.", float64(snapshot.MemoryAlloc), nil)
+	writeMetric(&buf, "cheesewaf_host_cpu_percent", "Host CPU usage percent.", snapshot.Host.CPUPercent, nil)
+	writeMetric(&buf, "cheesewaf_host_memory_percent", "Host memory usage percent.", snapshot.Host.MemoryPercent, nil)
+	writeMetric(&buf, "cheesewaf_host_disk_percent", "Host root disk usage percent.", snapshot.Host.DiskPercent, nil)
 	writeMetric(&buf, "cheesewaf_sites", "Configured sites.", float64(snapshot.Sites), nil)
 	writeMetric(&buf, "cheesewaf_requests_total", "Observed access log events.", float64(snapshot.Requests), nil)
 	writeMetric(&buf, "cheesewaf_blocked_total", "Blocked access log events.", float64(snapshot.Blocked), nil)
@@ -80,13 +85,16 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 
 func Values(snapshot Snapshot) map[string]float64 {
 	values := map[string]float64{
-		"cheesewaf_uptime_seconds":     float64(snapshot.UptimeSeconds),
-		"cheesewaf_goroutines":         float64(snapshot.Goroutines),
-		"cheesewaf_memory_alloc_bytes": float64(snapshot.MemoryAlloc),
-		"cheesewaf_sites":              float64(snapshot.Sites),
-		"cheesewaf_requests_total":     float64(snapshot.Requests),
-		"cheesewaf_blocked_total":      float64(snapshot.Blocked),
-		"cheesewaf_challenges_total":   float64(snapshot.Challenges),
+		"cheesewaf_uptime_seconds":      float64(snapshot.UptimeSeconds),
+		"cheesewaf_goroutines":          float64(snapshot.Goroutines),
+		"cheesewaf_memory_alloc_bytes":  float64(snapshot.MemoryAlloc),
+		"cheesewaf_host_cpu_percent":    snapshot.Host.CPUPercent,
+		"cheesewaf_host_memory_percent": snapshot.Host.MemoryPercent,
+		"cheesewaf_host_disk_percent":   snapshot.Host.DiskPercent,
+		"cheesewaf_sites":               float64(snapshot.Sites),
+		"cheesewaf_requests_total":      float64(snapshot.Requests),
+		"cheesewaf_blocked_total":       float64(snapshot.Blocked),
+		"cheesewaf_challenges_total":    float64(snapshot.Challenges),
 	}
 	for area, usage := range snapshot.DiskUsage {
 		values["cheesewaf_disk_usage_bytes:"+area] = float64(usage)

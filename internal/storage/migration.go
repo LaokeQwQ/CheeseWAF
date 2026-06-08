@@ -10,9 +10,13 @@ CREATE TABLE IF NOT EXISTS sites (
   domains TEXT NOT NULL,
   upstreams TEXT NOT NULL,
   listen_port INTEGER NOT NULL DEFAULT 80,
+  loadbalance TEXT NOT NULL DEFAULT 'round_robin',
   enable_ssl INTEGER NOT NULL DEFAULT 0,
   cert_file TEXT NOT NULL DEFAULT '',
   key_file TEXT NOT NULL DEFAULT '',
+  waf_enabled INTEGER NOT NULL DEFAULT 1,
+  waf_mode TEXT NOT NULL DEFAULT 'block',
+  advanced TEXT NOT NULL DEFAULT '{}',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

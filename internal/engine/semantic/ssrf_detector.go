@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -53,15 +54,29 @@ func (d *SSRFDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) 
 
 func isInternalHost(host string) bool {
 	host = strings.Trim(strings.ToLower(host), "[]")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "metadata" || host == "metadata.google.internal" || host == "metadata.google.internal." {
 		return true
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return host == "metadata.google.internal"
+		ip = parseNumericIPv4(host)
+	}
+	if ip == nil {
+		return false
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 		return true
 	}
-	return ip.Equal(net.ParseIP("169.254.169.254"))
+	return ip.Equal(net.ParseIP("169.254.169.254")) || ip.Equal(net.ParseIP("169.254.170.2")) || ip.Equal(net.ParseIP("100.100.100.200"))
+}
+
+func parseNumericIPv4(host string) net.IP {
+	if strings.Contains(host, ".") || strings.Contains(host, ":") {
+		return nil
+	}
+	value, err := strconv.ParseUint(host, 0, 32)
+	if err != nil {
+		return nil
+	}
+	return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value))
 }
