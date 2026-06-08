@@ -193,6 +193,8 @@ protection:
       - "127.0.0.1"
       - "::1"
     blacklist: []
+    access_rules: []
+    reputation_overrides: {}
     tags: {}
     threat_intel: []
   ratelimit:
@@ -235,9 +237,9 @@ protection:
 
 ai:
   enabled: false
+  provider: "openai"
   api_base: "https://api.openai.com/v1"
   api_key: ""
-  api_key_header: "authorization"
   model: "gpt-4o-mini"
   async: true
 

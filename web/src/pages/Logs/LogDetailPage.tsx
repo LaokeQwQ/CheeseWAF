@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, BrainCircuit, ShieldAlert } from 'lucide-react';
 import { analyzeLog, fetchLogEvent } from '../../api/client';
+import AIAnalysisMeta from '../../components/AIAnalysisMeta';
 import type { AttackAnalysis, LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry, displaySeverity } from '../../utils/display';
 
@@ -136,7 +137,7 @@ function AnalysisResult({ analysis }: { analysis?: AttackAnalysis }) {
         <strong>{t('ai.actions')}</strong>
         {(analysis.recommended_actions ?? []).length > 0 ? analysis.recommended_actions.map((item) => <span key={item}>{item}</span>) : <span>-</span>}
       </div>
-      <Tag color={analysis.ai_used ? 'green' : 'blue'}>{analysis.ai_used ? t('ai.aiUsed') : t('ai.heuristicUsed')}</Tag>
+      <AIAnalysisMeta analysis={analysis} />
     </div>
   );
 }

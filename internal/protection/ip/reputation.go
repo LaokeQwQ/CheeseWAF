@@ -9,12 +9,24 @@ import (
 )
 
 type ReputationProfile struct {
-	IP         string         `json:"ip"`
-	List       string         `json:"list"`
-	Reputation int            `json:"reputation"`
-	Tags       []string       `json:"tags"`
-	Intel      []Indicator    `json:"intel"`
-	Stats      ReputationStat `json:"stats"`
+	IP         string          `json:"ip"`
+	List       string          `json:"list"`
+	Reputation int             `json:"reputation"`
+	Tags       []string        `json:"tags"`
+	Intel      []Indicator     `json:"intel"`
+	Access     []AccessRuleRef `json:"access_rules"`
+	Override   *int            `json:"reputation_override,omitempty"`
+	Stats      ReputationStat  `json:"stats"`
+}
+
+type AccessRuleRef struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Action     string   `json:"action"`
+	Scope      string   `json:"scope"`
+	SiteID     string   `json:"site_id,omitempty"`
+	PathPrefix string   `json:"path_prefix,omitempty"`
+	Entries    []string `json:"entries,omitempty"`
 }
 
 type ReputationStat struct {
@@ -41,6 +53,12 @@ func BuildReputationProfiles(cfg config.IPProtectionConfig, entries []storage.Lo
 	keys := map[string]struct{}{}
 	addKeys(keys, cfg.Whitelist)
 	addKeys(keys, cfg.Blacklist)
+	for _, rule := range cfg.AccessRules {
+		addKeys(keys, rule.Entries)
+	}
+	for key := range cfg.ReputationOverrides {
+		keys[key] = struct{}{}
+	}
 	for key := range cfg.Tags {
 		keys[key] = struct{}{}
 	}
@@ -75,11 +93,16 @@ func BuildReputationProfiles(cfg config.IPProtectionConfig, entries []storage.Lo
 			stat.ByType = map[string]int{}
 		}
 		profile := ReputationProfile{
-			IP:    key,
-			List:  listName(key, whitelist, blacklist),
-			Tags:  tagger.Tags(key),
-			Intel: intel.Match(key),
-			Stats: stat,
+			IP:     key,
+			Tags:   tagger.Tags(key),
+			Intel:  intel.Match(key),
+			Access: accessRulesFor(key, cfg.AccessRules),
+			Stats:  stat,
+		}
+		profile.List = listName(key, cfg.Whitelist, cfg.Blacklist, whitelist, blacklist, profile.Access)
+		if override, ok := cfg.ReputationOverrides[key]; ok {
+			value := clampScore(override)
+			profile.Override = &value
 		}
 		profile.Reputation = score(profile)
 		profiles = append(profiles, profile)
@@ -102,18 +125,37 @@ func addKeys(keys map[string]struct{}, values []string) {
 	}
 }
 
-func listName(raw string, whitelist, blacklist *Matcher) string {
+func listName(raw string, whitelistEntries, blacklistEntries []string, whitelist, blacklist *Matcher, access []AccessRuleRef) string {
+	for _, rule := range access {
+		if rule.Action == AccessActionAllow {
+			return "whitelist"
+		}
+	}
+	if entryInList(raw, whitelistEntries) {
+		return "whitelist"
+	}
+	if entryInList(raw, blacklistEntries) {
+		return "blacklist"
+	}
 	switch {
 	case whitelist.Contains(raw):
 		return "whitelist"
 	case blacklist.Contains(raw):
 		return "blacklist"
 	default:
+		for _, rule := range access {
+			if rule.Action == AccessActionBlock {
+				return "blacklist"
+			}
+		}
 		return "monitor"
 	}
 }
 
 func score(profile ReputationProfile) int {
+	if profile.Override != nil {
+		return clampScore(*profile.Override)
+	}
 	if profile.List == "whitelist" {
 		return 100
 	}
@@ -142,6 +184,56 @@ func score(profile ReputationProfile) int {
 			value -= 10
 		}
 	}
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func accessRulesFor(raw string, rules []config.IPAccessRuleConfig) []AccessRuleRef {
+	out := make([]AccessRuleRef, 0)
+	for _, rule := range rules {
+		if !rule.Enabled || !ruleContainsIP(rule, raw) {
+			continue
+		}
+		out = append(out, AccessRuleRef{
+			ID:         rule.ID,
+			Name:       rule.Name,
+			Action:     normalizeAccessAction(rule.Action),
+			Scope:      normalizeAccessScope(rule.Scope),
+			SiteID:     rule.SiteID,
+			PathPrefix: normalizePathPrefix(rule.PathPrefix),
+			Entries:    append([]string(nil), rule.Entries...),
+		})
+	}
+	return out
+}
+
+func ruleContainsIP(rule config.IPAccessRuleConfig, raw string) bool {
+	if entryInList(raw, rule.Entries) {
+		return true
+	}
+	matcher, err := NewMatcher(rule.Entries)
+	if err != nil {
+		return false
+	}
+	return matcher.Contains(raw)
+}
+
+func entryInList(raw string, values []string) bool {
+	raw = strings.TrimSpace(raw)
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), raw) {
+			return true
+		}
+	}
+	return false
+}
+
+func clampScore(value int) int {
 	if value < 0 {
 		return 0
 	}

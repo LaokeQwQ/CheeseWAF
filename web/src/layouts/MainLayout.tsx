@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Dropdown, Input, Menu, Popover, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
@@ -68,10 +68,12 @@ export default function MainLayout() {
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const { data: monitor } = useQuery({ queryKey: ['shell-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false });
   const [healthFailures, setHealthFailures] = useState(0);
+  const [lastHeartbeatAt, setLastHeartbeatAt] = useState(Date.now());
+  const heartbeatRefetching = useRef(false);
   const healthQuery = useQuery({
     queryKey: ['shell-health'],
     queryFn: fetchHealth,
-    refetchInterval: healthFailures >= 5 ? false : 10_000,
+    refetchInterval: healthFailures >= 5 ? false : healthFailures > 0 ? 10_000 : 1_000,
     retry: false,
   });
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -88,11 +90,29 @@ export default function MainLayout() {
   useEffect(() => {
     if (healthQuery.isSuccess) {
       setHealthFailures(0);
+      setLastHeartbeatAt(Date.now());
     }
     if (healthQuery.isError) {
       setHealthFailures((value) => Math.min(5, value + 1));
     }
   }, [healthQuery.isError, healthQuery.isSuccess, healthQuery.dataUpdatedAt, healthQuery.errorUpdatedAt]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (healthFailures >= 5 || heartbeatRefetching.current) {
+        return;
+      }
+      if (Date.now() - lastHeartbeatAt <= 3_000) {
+        return;
+      }
+      setHealthFailures((value) => Math.max(1, Math.min(5, value + 1)));
+      heartbeatRefetching.current = true;
+      void healthQuery.refetch().finally(() => {
+        heartbeatRefetching.current = false;
+      });
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [healthFailures, healthQuery, lastHeartbeatAt]);
 
   const currentKey = navItems.find((item) => (
     item.key === '/'
@@ -154,7 +174,7 @@ export default function MainLayout() {
           <span className="status-dot" />
           <div className="sidebar-status-copy">
             <strong>{t(connection.titleKey)}</strong>
-            <span>{connectionDetail(connection.state, healthFailures, healthQuery.data?.uptime_seconds, t)}</span>
+            <span>{connectionDetail(connection.state, healthFailures, t)}</span>
           </div>
         </button>
       </aside>
@@ -287,14 +307,14 @@ function connectionState(failures: number, status: string | undefined, fetching:
   return { state: 'online', titleKey: 'shell.connectionOnline' };
 }
 
-function connectionDetail(state: string, failures: number, uptime: number | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
+function connectionDetail(state: string, failures: number, t: (key: string, options?: Record<string, unknown>) => string) {
   if (state === 'offline') {
     return t('shell.connectionFailed');
   }
   if (state === 'reconnecting') {
-    return t('shell.connectionRetrying', { count: Math.max(1, failures) });
+    return t('shell.connectionRetrying', { count: Math.max(1, failures), total: 5 });
   }
-  return typeof uptime === 'number' ? t('shell.connectionUptime', { seconds: uptime }) : t('shell.connectionReady');
+  return t('shell.connectionReady');
 }
 
 function currentAccount() {

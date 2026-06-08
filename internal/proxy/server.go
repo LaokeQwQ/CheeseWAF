@@ -28,6 +28,7 @@ type Server struct {
 	lb        *LoadBalancer
 	blacklist *ip.Blacklist
 	whitelist *ip.Whitelist
+	access    *ip.AccessPolicy
 	geoip     *ip.GeoIPPolicy
 	intel     *ip.Intel
 	acl       *acl.Policy
@@ -48,6 +49,10 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		return nil, err
 	}
 	whitelist, err := ip.NewWhitelist(cfg.Protection.IP.Whitelist)
+	if err != nil {
+		return nil, err
+	}
+	access, err := ip.NewAccessPolicy(cfg.Protection.IP)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +85,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		lb:        NewLoadBalancer(cfg.Sites).WithHealth(health),
 		blacklist: blacklist,
 		whitelist: whitelist,
+		access:    access,
 		geoip:     geoip,
 		intel:     intel,
 		acl:       acl.NewPolicy(cfg.Protection.ACL),
@@ -147,6 +153,10 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	if err != nil {
 		return err
 	}
+	access, err := ip.NewAccessPolicy(protection.IP)
+	if err != nil {
+		return err
+	}
 	geoip, err := ip.NewGeoIPPolicy(protection.IP.GeoIP)
 	if err != nil {
 		return err
@@ -162,6 +172,7 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	s.config.Protection = protection
 	s.blacklist = blacklist
 	s.whitelist = whitelist
+	s.access = access
 	s.geoip = geoip
 	s.intel = intel
 	s.acl = acl.NewPolicy(protection.ACL)
@@ -188,21 +199,30 @@ func (s *Server) HTTPServer() *http.Server {
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	site := s.lb.SiteForHost(r.Host)
 	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
-	reqCtx, err := engine.NewRequestContext(r, site.ID)
+	reqCtx, err := engine.NewRequestContextWithTrustedProxies(r, site.ID, site.WAF.AccessControl.TrustedCIDRs)
 	if err != nil {
 		http.Error(w, "failed to read request", http.StatusBadRequest)
 		return
 	}
 	start := time.Now()
-	if s.blacklist.Blocked(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
-		s.block(w, reqCtx, "ip", "IP is blocked", http.StatusForbidden, start)
+	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, r.URL.Path)
+	if accessDecision.Matched {
+		reqCtx.Metadata["ip_access_decision"] = accessDecision
+	}
+	ipAllowed := accessDecision.Action == ip.AccessActionAllow
+	if accessDecision.Action == ip.AccessActionBlock {
+		message := "IP access rule blocked the request"
+		if accessDecision.RuleName != "" {
+			message = "IP access rule blocked the request: " + accessDecision.RuleName
+		}
+		s.block(w, reqCtx, "ip_access", message, http.StatusForbidden, start)
 		return
 	}
-	if s.geoip.Blocked(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
+	if s.geoip.Blocked(reqCtx.ClientIP) && !ipAllowed {
 		s.block(w, reqCtx, "geoip", "GeoIP country is blocked", http.StatusForbidden, start)
 		return
 	}
-	if policy.ThreatIntel != config.ProtectionLevelOff && !s.whitelist.Allowed(reqCtx.ClientIP) {
+	if policy.ThreatIntel != config.ProtectionLevelOff && !ipAllowed {
 		decision := s.intel.Evaluate(reqCtx.ClientIP, policy.ThreatIntel)
 		if decision.Matched {
 			reqCtx.Metadata["threat_intel_decision"] = decision
@@ -221,7 +241,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if policy.BotCC != config.ProtectionLevelOff {
-		if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !s.whitelist.Allowed(reqCtx.ClientIP) {
+		if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !ipAllowed {
 			decision := evaluateBotCCPolicy(policy.BotCC, result)
 			reqCtx.Metadata["bot_cc_policy_decision"] = decision
 			reqCtx.Metadata["detection"] = result
@@ -235,7 +255,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if policy.BotCC != config.ProtectionLevelOff && !s.limiter.Allow(reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
+	if policy.BotCC != config.ProtectionLevelOff && !s.limiter.Allow(reqCtx.ClientIP) && !ipAllowed {
 		result := rateLimitDetection(reqCtx)
 		decision := evaluateBotCCPolicy(policy.BotCC, result)
 		reqCtx.Metadata["bot_cc_policy_decision"] = decision
@@ -250,7 +270,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff {
-		if finding := s.apiAuth.Evaluate(r); finding != nil && !s.whitelist.Allowed(reqCtx.ClientIP) {
+		if finding := s.apiAuth.Evaluate(r); finding != nil && !ipAllowed {
 			result := apiAuthDetection(*finding)
 			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
 			decision.Field = finding.Field
@@ -262,7 +282,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if !s.apiLimit.Allow(r, reqCtx.ClientIP) && !s.whitelist.Allowed(reqCtx.ClientIP) {
+		if !s.apiLimit.Allow(r, reqCtx.ClientIP) && !ipAllowed {
 			result := apiRateLimitDetection(reqCtx)
 			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
 			reqCtx.Metadata["api_security_policy_decision"] = decision

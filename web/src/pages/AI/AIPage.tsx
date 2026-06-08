@@ -5,14 +5,23 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { BrainCircuit, Eye, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
 import { analyzeEvents, analyzeLog, fetchAIConfig, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
-import type { AIConfig, AttackAnalysis, LogEntry } from '../../types/api';
+import AIAnalysisMeta from '../../components/AIAnalysisMeta';
+import type { AIConfig, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
+
+const analysisRanges = [
+  { value: '15m', labelKey: 'ai.range15m', seconds: 15 * 60 },
+  { value: '1h', labelKey: 'ai.range1h', seconds: 60 * 60 },
+  { value: '6h', labelKey: 'ai.range6h', seconds: 6 * 60 * 60 },
+  { value: '24h', labelKey: 'ai.range24h', seconds: 24 * 60 * 60 },
+  { value: '7d', labelKey: 'ai.range7d', seconds: 7 * 24 * 60 * 60 },
+];
 
 const fallback: AIConfig = {
   enabled: false,
+  provider: 'openai',
   api_base: 'https://api.openai.com/v1',
   api_key: '',
-  api_key_header: 'authorization',
   api_key_set: false,
   model: 'gpt-4o-mini',
   async: true,
@@ -22,9 +31,15 @@ export default function AIPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState('');
+  const [analysisRange, setAnalysisRange] = useState('1h');
   const [analyses, setAnalyses] = useState<Record<string, AttackAnalysis>>({});
   const { data } = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
-  const { data: logs, isLoading } = useQuery({ queryKey: ['ai-events'], queryFn: () => fetchLogs({ limit: 80 }), refetchInterval: 5_000, retry: false });
+  const { data: logs, isLoading } = useQuery({
+    queryKey: ['ai-events', analysisRange],
+    queryFn: () => fetchLogs(buildAnalysisWindowQuery(analysisRange, 80)),
+    refetchInterval: 5_000,
+    retry: false,
+  });
   const config = data ?? fallback;
   const events = useMemo(() => (logs?.items ?? []).filter(isSecurityEvent), [logs?.items]);
   const selected = events.find((event) => event.id === selectedId) ?? events[0];
@@ -55,7 +70,7 @@ export default function AIPage() {
     onError: (error) => ArcoMessage.error(error.message),
   });
   const batchAnalysisMutation = useMutation({
-    mutationFn: () => analyzeEvents({ limit: 80 }),
+    mutationFn: () => analyzeEvents(buildAnalysisWindowQuery(analysisRange, 200)),
     onSuccess: (result) => {
       setAnalyses((current) => {
         const next = { ...current };
@@ -87,50 +102,61 @@ export default function AIPage() {
             </Button>
           </div>
           <Form
-            key={`ai-${config.enabled}-${config.api_base}-${config.api_key_header}-${config.model}-${config.api_key_set}`}
+            key={`ai-${config.enabled}-${config.provider}-${config.api_base}-${config.model}-${config.api_key_set}`}
             layout="vertical"
             initialValues={{
               enabled: config.enabled,
+              provider: config.provider || 'openai',
               apiBase: config.api_base,
-              apiKey: config.api_key,
-              apiKeyHeader: config.api_key_header || 'authorization',
+              apiKey: config.api_key ?? '',
               model: config.model,
               async: config.async,
             }}
             onSubmit={(values) => updateMutation.mutate({
               enabled: values.enabled,
+              provider: values.provider || 'openai',
               api_base: values.apiBase,
               api_key: values.apiKey,
-              api_key_header: values.apiKeyHeader,
               api_key_set: config.api_key_set,
               model: values.model,
               async: values.async,
             })}
           >
             <Form.Item label={t('ai.enabled')} field="enabled"><Switch /></Form.Item>
-            <Form.Item label={t('ai.apiBase')} field="apiBase"><Input /></Form.Item>
-            <Form.Item label={t('ai.apiKeyHeader')} field="apiKeyHeader">
+            <Form.Item label={t('ai.provider')} field="provider">
               <Select>
-                <Select.Option value="authorization">{t('ai.headerAuthorization')}</Select.Option>
-                <Select.Option value="api-key">{t('ai.headerAPIKey')}</Select.Option>
-                <Select.Option value="x-api-key">{t('ai.headerXAPIKey')}</Select.Option>
+                <Select.Option value="openai">{t('ai.providerOpenAI')}</Select.Option>
+                <Select.Option value="anthropic">{t('ai.providerAnthropic')}</Select.Option>
               </Select>
             </Form.Item>
+            <Form.Item label={t('ai.apiBase')} field="apiBase"><Input /></Form.Item>
             <Form.Item label={t('ai.model')} field="model"><Input /></Form.Item>
             <Form.Item label={t('ai.apiKey')} field="apiKey">
               <Input.Password placeholder={config.api_key_set ? t('ai.keyStored') : ''} />
             </Form.Item>
             <Form.Item label={t('ai.async')} field="async"><Switch /></Form.Item>
-            <Button type="primary" htmlType="submit" loading={updateMutation.isPending}>{t('common.save')}</Button>
+            <Button className="ai-config-save" type="primary" htmlType="submit" loading={updateMutation.isPending}>{t('common.save')}</Button>
           </Form>
         </section>
 
         <section className="panel ai-events-panel">
           <div className="panel-heading">
             <h2><ListChecks size={16} /> {t('ai.events')}</h2>
-            <Button type="primary" onClick={() => batchAnalysisMutation.mutate()} loading={batchAnalysisMutation.isPending} disabled={events.length === 0}>
-              {t('ai.analyzeRecent')}
-            </Button>
+            <Space wrap>
+              <Select
+                aria-label={t('ai.timeRange')}
+                value={analysisRange}
+                onChange={setAnalysisRange}
+                style={{ width: 132 }}
+              >
+                {analysisRanges.map((range) => (
+                  <Select.Option key={range.value} value={range.value}>{t(range.labelKey)}</Select.Option>
+                ))}
+              </Select>
+              <Button type="primary" onClick={() => batchAnalysisMutation.mutate()} loading={batchAnalysisMutation.isPending} disabled={events.length === 0}>
+                {t('ai.analyzeRecent')}
+              </Button>
+            </Space>
           </div>
           <div className="table-scroll ai-events-table">
             <Table
@@ -222,7 +248,7 @@ export default function AIPage() {
                       {selectedAnalysis.recommended_actions.map((item) => <span key={item}>{item}</span>)}
                     </div>
                   </div>
-                  <Tag color={selectedAnalysis.ai_used ? 'green' : 'blue'}>{selectedAnalysis.ai_used ? t('ai.aiUsed') : t('ai.heuristicUsed')}</Tag>
+                  <AIAnalysisMeta analysis={selectedAnalysis} />
                 </>
               ) : (
                 <div className="empty-state">{t('ai.selectAndAnalyze')}</div>
@@ -235,6 +261,17 @@ export default function AIPage() {
       </section>
     </section>
   );
+}
+
+function buildAnalysisWindowQuery(rangeValue: string, limit: number): LogQuery {
+  const range = analysisRanges.find((item) => item.value === rangeValue) ?? analysisRanges[1];
+  const end = new Date();
+  const start = new Date(end.getTime() - range.seconds * 1000);
+  return {
+    limit,
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
 }
 
 function isSecurityEvent(entry: LogEntry) {

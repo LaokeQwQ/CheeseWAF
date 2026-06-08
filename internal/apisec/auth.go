@@ -56,11 +56,13 @@ func NewAuthenticator(cfg config.APISecConfig) (*Authenticator, error) {
 		requiredScopes: append([]string(nil), cfg.Auth.RequiredScopes...),
 		now:            time.Now,
 	}
-	verifier, err := newJWTVerifier(cfg.Auth)
-	if err != nil {
-		return nil, err
+	if cfg.Auth.Enabled {
+		verifier, err := newJWTVerifier(cfg.Auth)
+		if err != nil {
+			return nil, err
+		}
+		auth.verifier = verifier
 	}
-	auth.verifier = verifier
 	for _, issuer := range cfg.Auth.JWTIssuers {
 		issuer = strings.TrimSpace(issuer)
 		if issuer != "" {

@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -10,13 +11,13 @@ import (
 )
 
 type aiConfigPayload struct {
-	Enabled      bool   `json:"enabled"`
-	APIBase      string `json:"api_base"`
-	APIKey       string `json:"api_key"`
-	APIKeyHeader string `json:"api_key_header"`
-	APIKeySet    bool   `json:"api_key_set"`
-	Model        string `json:"model"`
-	Async        bool   `json:"async"`
+	Enabled   bool   `json:"enabled"`
+	Provider  string `json:"provider"`
+	APIBase   string `json:"api_base"`
+	APIKey    string `json:"api_key,omitempty"`
+	APIKeySet bool   `json:"api_key_set"`
+	Model     string `json:"model"`
+	Async     bool   `json:"async"`
 }
 
 type aiEventsAnalyzePayload struct {
@@ -25,6 +26,8 @@ type aiEventsAnalyzePayload struct {
 	Category string `json:"category"`
 	ClientIP string `json:"client_ip"`
 	TraceID  string `json:"trace_id"`
+	Start    string `json:"start"`
+	End      string `json:"end"`
 }
 
 type aiAssistantPayload struct {
@@ -43,11 +46,18 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	next := config.AIConfig{
 		Enabled:      req.Enabled,
+		Provider:     req.Provider,
 		APIBase:      req.APIBase,
 		APIKey:       req.APIKey,
-		APIKeyHeader: req.APIKeyHeader,
+		APIKeyHeader: h.Config.AI.APIKeyHeader,
 		Model:        req.Model,
 		Async:        req.Async,
+	}
+	if next.Provider == "" {
+		next.Provider = h.Config.AI.Provider
+	}
+	if next.Provider == "" {
+		next.Provider = "openai"
 	}
 	if next.APIKey == "" {
 		next.APIKey = h.Config.AI.APIKey
@@ -90,12 +100,26 @@ func (h *Handler) AnalyzeEvents(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	startTime, ok := parsePayloadTime(w, req.Start, "start")
+	if !ok {
+		return
+	}
+	endTime, ok := parsePayloadTime(w, req.End, "end")
+	if !ok {
+		return
+	}
+	if !startTime.IsZero() && !endTime.IsZero() && endTime.Before(startTime) {
+		writeError(w, http.StatusBadRequest, "BAD_TIME_RANGE", "end must be after start")
+		return
+	}
 	entries := h.queryLogs(r, storage.LogFilter{
-		Limit:    limit,
-		Action:   req.Action,
-		Category: req.Category,
-		ClientIP: req.ClientIP,
-		TraceID:  req.TraceID,
+		Limit:     limit,
+		Action:    req.Action,
+		Category:  req.Category,
+		ClientIP:  req.ClientIP,
+		TraceID:   req.TraceID,
+		StartTime: startTime,
+		EndTime:   endTime,
 	})
 	analyses, err := ai.AnalyzeEvents(r.Context(), h.aiClient(), entries)
 	if err != nil {
@@ -103,6 +127,18 @@ func (h *Handler) AnalyzeEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, map[string]any{"items": analyses, "total": len(analyses)})
+}
+
+func parsePayloadTime(w http.ResponseWriter, raw string, name string) (time.Time, bool) {
+	if raw == "" {
+		return time.Time{}, true
+	}
+	value, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_TIME_RANGE", name+" must be RFC3339")
+		return time.Time{}, false
+	}
+	return value, true
 }
 
 func (h *Handler) AIAssistant(w http.ResponseWriter, r *http.Request) {
@@ -150,12 +186,16 @@ func (h *Handler) queryLogs(r *http.Request, filter storage.LogFilter) []storage
 }
 
 func aiConfigView(cfg config.AIConfig) aiConfigPayload {
+	provider := cfg.Provider
+	if provider == "" {
+		provider = "openai"
+	}
 	return aiConfigPayload{
-		Enabled:      cfg.Enabled,
-		APIBase:      cfg.APIBase,
-		APIKeyHeader: cfg.APIKeyHeader,
-		APIKeySet:    cfg.APIKey != "",
-		Model:        cfg.Model,
-		Async:        cfg.Async,
+		Enabled:   cfg.Enabled,
+		Provider:  provider,
+		APIBase:   cfg.APIBase,
+		APIKeySet: cfg.APIKey != "",
+		Model:     cfg.Model,
+		Async:     cfg.Async,
 	}
 }

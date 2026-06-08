@@ -20,15 +20,25 @@ type AttackAnalysis struct {
 	EventType          string   `json:"event_type"`
 	AIUsed             bool     `json:"ai_used"`
 	RecommendedActions []string `json:"recommended_actions"`
+	Provider           string   `json:"provider,omitempty"`
+	Model              string   `json:"model,omitempty"`
+	InputTokens        int      `json:"input_tokens,omitempty"`
+	OutputTokens       int      `json:"output_tokens,omitempty"`
+	TotalTokens        int      `json:"total_tokens,omitempty"`
 }
 
 type AssistantReply struct {
-	Answer    string   `json:"answer"`
-	AIUsed    bool     `json:"ai_used"`
-	LogIDs    []string `json:"log_ids"`
-	Events    int      `json:"events"`
-	Blocked   int      `json:"blocked"`
-	Challenge int      `json:"challenge"`
+	Answer       string   `json:"answer"`
+	AIUsed       bool     `json:"ai_used"`
+	LogIDs       []string `json:"log_ids"`
+	Events       int      `json:"events"`
+	Blocked      int      `json:"blocked"`
+	Challenge    int      `json:"challenge"`
+	Provider     string   `json:"provider,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	InputTokens  int      `json:"input_tokens,omitempty"`
+	OutputTokens int      `json:"output_tokens,omitempty"`
+	TotalTokens  int      `json:"total_tokens,omitempty"`
 }
 
 func AnalyzeLog(ctx context.Context, client *Client, entry storage.LogEntry) (*AttackAnalysis, error) {
@@ -36,13 +46,18 @@ func AnalyzeLog(ctx context.Context, client *Client, entry storage.LogEntry) (*A
 	if client == nil {
 		return base, nil
 	}
-	content, err := client.Complete(ctx, analysisMessages(entry))
+	result, err := client.CompleteWithUsage(ctx, analysisMessages(entry))
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(content) != "" {
-		base.Summary = content
+	if strings.TrimSpace(result.Content) != "" {
+		base.Summary = result.Content
 		base.AIUsed = true
+		base.Provider = result.Provider
+		base.Model = result.Model
+		base.InputTokens = result.Usage.InputTokens
+		base.OutputTokens = result.Usage.OutputTokens
+		base.TotalTokens = result.Usage.TotalTokens
 	}
 	return base, nil
 }
@@ -78,13 +93,18 @@ func AnswerAssistant(ctx context.Context, client *Client, question string, entri
 	if client == nil {
 		return reply, nil
 	}
-	content, err := client.Complete(ctx, assistantMessages(question, events, runtimeSummary))
+	result, err := client.CompleteWithUsage(ctx, assistantMessages(question, events, runtimeSummary))
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(content) != "" {
-		reply.Answer = content
+	if strings.TrimSpace(result.Content) != "" {
+		reply.Answer = result.Content
 		reply.AIUsed = true
+		reply.Provider = result.Provider
+		reply.Model = result.Model
+		reply.InputTokens = result.Usage.InputTokens
+		reply.OutputTokens = result.Usage.OutputTokens
+		reply.TotalTokens = result.Usage.TotalTokens
 	}
 	return reply, nil
 }

@@ -86,6 +86,7 @@ type WAFConfig struct {
 	Response         ResponseInspectionConfig `yaml:"response" json:"response"`
 	Rewrite          []RewriteRuleConfig      `yaml:"rewrite" json:"rewrite"`
 	HealthCheck      HealthCheckConfig        `yaml:"health_check" json:"health_check"`
+	AccessControl    SiteAccessControlConfig  `yaml:"access_control" json:"access_control"`
 }
 
 type SemanticEngineSwitches struct {
@@ -132,12 +133,26 @@ type ProtectionPolicyConfig struct {
 }
 
 type IPProtectionConfig struct {
-	Blacklist   []string                    `yaml:"blacklist" json:"blacklist"`
-	Whitelist   []string                    `yaml:"whitelist" json:"whitelist"`
-	GeoIP       GeoIPConfig                 `yaml:"geoip" json:"geoip"`
-	Tags        map[string][]string         `yaml:"tags" json:"tags"`
-	ThreatIntel []ThreatIntelConfig         `yaml:"threat_intel" json:"threat_intel"`
-	Providers   []ThreatIntelProviderConfig `yaml:"providers" json:"providers"`
+	Blacklist           []string                    `yaml:"blacklist" json:"blacklist"`
+	Whitelist           []string                    `yaml:"whitelist" json:"whitelist"`
+	AccessRules         []IPAccessRuleConfig        `yaml:"access_rules" json:"access_rules"`
+	ReputationOverrides map[string]int              `yaml:"reputation_overrides" json:"reputation_overrides"`
+	GeoIP               GeoIPConfig                 `yaml:"geoip" json:"geoip"`
+	Tags                map[string][]string         `yaml:"tags" json:"tags"`
+	ThreatIntel         []ThreatIntelConfig         `yaml:"threat_intel" json:"threat_intel"`
+	Providers           []ThreatIntelProviderConfig `yaml:"providers" json:"providers"`
+}
+
+type IPAccessRuleConfig struct {
+	ID          string   `yaml:"id" json:"id"`
+	Name        string   `yaml:"name" json:"name"`
+	Description string   `yaml:"description" json:"description"`
+	Action      string   `yaml:"action" json:"action"` // allow/block
+	Scope       string   `yaml:"scope" json:"scope"`   // global/site/path
+	SiteID      string   `yaml:"site_id" json:"site_id"`
+	PathPrefix  string   `yaml:"path_prefix" json:"path_prefix"`
+	Entries     []string `yaml:"entries" json:"entries"`
+	Enabled     bool     `yaml:"enabled" json:"enabled"`
 }
 
 type ThreatIntelConfig struct {
@@ -242,6 +257,13 @@ type HealthCheckConfig struct {
 	Timeout            time.Duration `yaml:"timeout" json:"timeout"`
 	HealthyThreshold   int           `yaml:"healthy_threshold" json:"healthy_threshold"`
 	UnhealthyThreshold int           `yaml:"unhealthy_threshold" json:"unhealthy_threshold"`
+}
+
+type SiteAccessControlConfig struct {
+	AuthEnabled  bool     `yaml:"auth_enabled" json:"auth_enabled"`
+	WaitingRoom  bool     `yaml:"waiting_room" json:"waiting_room"`
+	DynamicGuard bool     `yaml:"dynamic_guard" json:"dynamic_guard"`
+	TrustedCIDRs []string `yaml:"trusted_cidrs" json:"trusted_cidrs"`
 }
 
 type EdgeConfig struct {
@@ -353,6 +375,7 @@ type FileLogConfig struct {
 
 type AIConfig struct {
 	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	Provider     string `yaml:"provider" json:"provider"`
 	APIBase      string `yaml:"api_base" json:"api_base"`
 	APIKey       string `yaml:"api_key" json:"api_key"`
 	APIKeyHeader string `yaml:"api_key_header" json:"api_key_header"`
