@@ -85,6 +85,9 @@ type Store interface {
 
 	// Users
 	UserStore
+
+	// Sessions
+	SessionStore
 }
 
 // SiteStore manages site configurations.
@@ -114,6 +117,15 @@ type UserStore interface {
 	CreateUser(ctx context.Context, user *User) error
 	UpdateUser(ctx context.Context, user *User) error
 	ListUsers(ctx context.Context) ([]User, error)
+}
+
+// SessionStore manages admin bearer-token sessions.
+// 管理端 Bearer token 会话管理。
+type SessionStore interface {
+	CreateSession(ctx context.Context, session *Session) error
+	RotateSession(ctx context.Context, oldID, userID string, next *Session) error
+	RevokeSession(ctx context.Context, id, userID string) error
+	IsSessionActive(ctx context.Context, id, userID string, now time.Time) (bool, error)
 }
 
 // Site represents a protected site configuration.
@@ -242,4 +254,18 @@ type User struct {
 	TwoFASecret  string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// Session represents a revocable admin API session.
+// 可撤销的管理端 API 会话。
+type Session struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	IssuedAt  time.Time `json:"issued_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	RevokedAt time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

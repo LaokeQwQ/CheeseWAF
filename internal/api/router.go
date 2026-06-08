@@ -57,11 +57,14 @@ func NewRouter(opts Options) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
+			r.Use(middleware.SessionMiddleware(opts.Store))
 			r.Post("/auth/refresh", h.RefreshToken)
+			r.Post("/auth/logout", h.Logout)
 		})
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
+			r.Use(middleware.SessionMiddleware(opts.Store))
 			if opts.Config.APISec.Audit.Enabled {
 				r.Use(auditor.Middleware)
 			}

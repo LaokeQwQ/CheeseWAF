@@ -40,7 +40,7 @@ apiClient.interceptors.response.use(
 );
 
 async function refreshTokenIfNeeded(token: string, requestURL: string) {
-  if (requestURL.includes('/auth/login') || requestURL.includes('/auth/refresh') || requestURL.includes('/setup')) {
+  if (requestURL.includes('/auth/login') || requestURL.includes('/auth/refresh') || requestURL.includes('/auth/logout') || requestURL.includes('/setup')) {
     return token;
   }
   const claims = parseTokenClaims(token);
@@ -138,6 +138,10 @@ export function login(username: string, password: string, totpCode?: string) {
   return unwrap<AuthResponse>(
     apiClient.post('/auth/login', { username, password, totp_code: totpCode }),
   );
+}
+
+export function logout() {
+  return unwrap<{ revoked: boolean }>(apiClient.post('/auth/logout', {}));
 }
 
 export function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {

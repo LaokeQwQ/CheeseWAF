@@ -91,9 +91,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	token, err := h.Tokens.Sign(user.ID, user.Username, user.Role)
+	token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", err.Error())
+		return
+	}
+	if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims)); err != nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
 	writeData(w, map[string]any{"token": token, "user": user})
@@ -110,12 +114,43 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
 	}
-	token, err := h.Tokens.Sign(user.ID, user.Username, user.Role)
+	token, nextClaims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", err.Error())
 		return
 	}
+	if err := h.Store.RotateSession(r.Context(), claims.ID, user.ID, sessionFromClaims(nextClaims)); err != nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
+		return
+	}
 	writeData(w, map[string]any{"token": token, "user": user})
+}
+
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	if err := h.Store.RevokeSession(r.Context(), claims.ID, claims.Subject); err != nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
+		return
+	}
+	writeData(w, map[string]any{"revoked": true})
+}
+
+func sessionFromClaims(claims *middleware.Claims) *storage.Session {
+	if claims == nil {
+		return nil
+	}
+	return &storage.Session{
+		ID:        claims.ID,
+		UserID:    claims.Subject,
+		Username:  claims.Username,
+		Role:      claims.Role,
+		IssuedAt:  time.Unix(claims.IssuedAt, 0).UTC(),
+		ExpiresAt: time.Unix(claims.Expires, 0).UTC(),
+	}
 }
 
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {

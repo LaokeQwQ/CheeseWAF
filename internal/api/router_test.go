@@ -171,6 +171,30 @@ func TestRouterRefreshesBearerToken(t *testing.T) {
 	if system.Code != http.StatusOK {
 		t.Fatalf("refreshed token should access protected API, got %d: %s", system.Code, system.Body.String())
 	}
+
+	oldToken := perform(router, http.MethodGet, "/api/system", adminToken, nil)
+	if oldToken.Code != http.StatusUnauthorized {
+		t.Fatalf("old token should be revoked after refresh, got %d: %s", oldToken.Code, oldToken.Body.String())
+	}
+}
+
+func TestRouterLogoutRevokesBearerToken(t *testing.T) {
+	router, adminToken, _ := newAuthzTestRouter(t)
+
+	withoutToken := perform(router, http.MethodPost, "/api/auth/logout", "", []byte(`{}`))
+	if withoutToken.Code != http.StatusUnauthorized {
+		t.Fatalf("expected logout without bearer token to be unauthorized, got %d: %s", withoutToken.Code, withoutToken.Body.String())
+	}
+
+	logout := perform(router, http.MethodPost, "/api/auth/logout", adminToken, []byte(`{}`))
+	if logout.Code != http.StatusOK {
+		t.Fatalf("expected logout to succeed, got %d: %s", logout.Code, logout.Body.String())
+	}
+
+	system := perform(router, http.MethodGet, "/api/system", adminToken, nil)
+	if system.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked token should be rejected, got %d: %s", system.Code, system.Body.String())
+	}
 }
 
 func newAuthzTestRouter(t *testing.T) (http.Handler, string, string) {
