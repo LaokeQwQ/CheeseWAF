@@ -1,8 +1,9 @@
 # Binaries and build output
-bin/
-dist/
-build/
-out/
+/bin/
+/dist/
+/build/
+/out/
+/output/
 *.exe
 *.exe~
 *.dll
@@ -20,12 +21,12 @@ profile.cov
 .env
 .env.*
 !.env.example
-data/
-logs/
-run/
-tmp/
-temp/
-certs/
+/data/
+/logs/
+/run/
+/tmp/
+/temp/
+/certs/
 *.key
 *.pem
 *.crt
@@ -38,6 +39,8 @@ certs/
 # Local configuration. Commit *.example.yaml templates instead.
 configs/*.yaml
 !configs/*.example.yaml
+!configs/cheesewaf.yaml
+configs/versions/
 
 # Private planning/task files
 task.md
@@ -50,17 +53,20 @@ web/node_modules/
 web/dist/
 web/.vite/
 web/coverage/
+web/*.log
 
 # Go workspace and dependency cache
 go.work
 go.work.sum
 vendor/
+.cache/
 
 # Editors and local agent state
 .idea/
 .vscode/
 .claude/
 .codex/
+.codegraph/
 
 # OS metadata
 .DS_Store
