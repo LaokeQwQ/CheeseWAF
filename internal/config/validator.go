@@ -66,6 +66,22 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("storage.elasticsearch.index is required when Elasticsearch log sink is enabled")
 		}
 	}
+	switch strings.ToLower(strings.TrimSpace(cfg.AI.Provider)) {
+	case "", "openai", "anthropic":
+	default:
+		return fmt.Errorf("ai.provider must be openai or anthropic")
+	}
+	if cfg.AI.Enabled {
+		if strings.TrimSpace(cfg.AI.APIBase) == "" {
+			return fmt.Errorf("ai.api_base is required when ai is enabled")
+		}
+		if _, err := url.ParseRequestURI(cfg.AI.APIBase); err != nil {
+			return fmt.Errorf("ai.api_base is invalid: %w", err)
+		}
+		if strings.TrimSpace(cfg.AI.Model) == "" {
+			return fmt.Errorf("ai.model is required when ai is enabled")
+		}
+	}
 	if len(cfg.Sites) == 0 {
 		return fmt.Errorf("at least one site is required")
 	}
@@ -112,6 +128,11 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("site %q has invalid rewrite rule %q: %w", site.Name, rewrite.ID, err)
 			}
 		}
+		for _, cidr := range site.WAF.AccessControl.TrustedCIDRs {
+			if err := validateIPEntry(cidr); err != nil {
+				return fmt.Errorf("site %q has invalid trusted_cidrs entry %q: %w", site.Name, cidr, err)
+			}
+		}
 	}
 	for _, entry := range append([]string{}, cfg.Protection.IP.Blacklist...) {
 		if err := validateIPEntry(entry); err != nil {
@@ -121,6 +142,19 @@ func Validate(cfg *Config) error {
 	for _, entry := range append([]string{}, cfg.Protection.IP.Whitelist...) {
 		if err := validateIPEntry(entry); err != nil {
 			return fmt.Errorf("invalid whitelist entry %q: %w", entry, err)
+		}
+	}
+	for _, rule := range cfg.Protection.IP.AccessRules {
+		if err := validateIPAccessRule(rule); err != nil {
+			return err
+		}
+	}
+	for ip, score := range cfg.Protection.IP.ReputationOverrides {
+		if err := validateIPEntry(ip); err != nil {
+			return fmt.Errorf("invalid reputation override IP %q: %w", ip, err)
+		}
+		if score < 0 || score > 100 {
+			return fmt.Errorf("reputation override for %q must be between 0 and 100", ip)
 		}
 	}
 	for country, cidrs := range cfg.Protection.IP.GeoIP.CountryCIDRs {
@@ -330,6 +364,41 @@ func validateIPEntry(entry string) error {
 	}
 	if net.ParseIP(entry) == nil {
 		return fmt.Errorf("not an IP or CIDR")
+	}
+	return nil
+}
+
+func validateIPAccessRule(rule IPAccessRuleConfig) error {
+	if !rule.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(rule.ID) == "" {
+		return fmt.Errorf("ip access rule must define id")
+	}
+	action := strings.ToLower(strings.TrimSpace(rule.Action))
+	if action != "allow" && action != "block" {
+		return fmt.Errorf("ip access rule %q has invalid action %q", rule.ID, rule.Action)
+	}
+	scope := strings.ToLower(strings.TrimSpace(rule.Scope))
+	if scope == "" {
+		scope = "global"
+	}
+	if scope != "global" && scope != "site" && scope != "path" && scope != "directory" {
+		return fmt.Errorf("ip access rule %q has invalid scope %q", rule.ID, rule.Scope)
+	}
+	if scope == "site" && strings.TrimSpace(rule.SiteID) == "" {
+		return fmt.Errorf("ip access rule %q with site scope must define site_id", rule.ID)
+	}
+	if (scope == "path" || scope == "directory") && strings.TrimSpace(rule.PathPrefix) == "" {
+		return fmt.Errorf("ip access rule %q with path scope must define path_prefix", rule.ID)
+	}
+	if len(rule.Entries) == 0 {
+		return fmt.Errorf("ip access rule %q must define entries", rule.ID)
+	}
+	for _, entry := range rule.Entries {
+		if err := validateIPEntry(entry); err != nil {
+			return fmt.Errorf("ip access rule %q has invalid entry %q: %w", rule.ID, entry, err)
+		}
 	}
 	return nil
 }

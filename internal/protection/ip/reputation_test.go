@@ -106,6 +106,21 @@ func TestBuildReputationProfilesScoresThreats(t *testing.T) {
 	}
 }
 
+func TestBuildReputationProfilesAppliesManualOverride(t *testing.T) {
+	profiles, err := BuildReputationProfiles(config.IPProtectionConfig{
+		Blacklist:           []string{"198.51.100.7"},
+		ReputationOverrides: map[string]int{"198.51.100.7": 72},
+	}, []storage.LogEntry{
+		{ClientIP: "198.51.100.7", Action: "block", Category: "sqli"},
+	})
+	if err != nil {
+		t.Fatalf("profiles: %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].Reputation != 72 || profiles[0].Override == nil {
+		t.Fatalf("expected manual reputation override, got %+v", profiles)
+	}
+}
+
 func containsJSONNull(raw []byte, field string) bool {
 	var decoded map[string]any
 	if err := json.Unmarshal(raw, &decoded); err != nil {

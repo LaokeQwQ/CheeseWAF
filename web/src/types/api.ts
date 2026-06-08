@@ -130,6 +130,8 @@ export type ProtectionConfig = {
   ip: {
     whitelist: string[];
     blacklist: string[];
+    access_rules: IPAccessRule[];
+    reputation_overrides: Record<string, number>;
     geoip: {
       enabled: boolean;
       database: string;
@@ -137,6 +139,8 @@ export type ProtectionConfig = {
       country_cidrs: Record<string, string[]>;
     };
     tags: Record<string, string[]>;
+    threat_intel: ThreatIntelIndicator[];
+    providers: ThreatIntelProvider[];
   };
   ratelimit: {
     enabled: boolean;
@@ -234,9 +238,9 @@ export type BlockTemplate = {
 
 export type AIConfig = {
   enabled: boolean;
+  provider: 'openai' | 'anthropic' | string;
   api_base: string;
-  api_key: string;
-  api_key_header: string;
+  api_key?: string;
   api_key_set: boolean;
   model: string;
   async: boolean;
@@ -250,6 +254,11 @@ export type AttackAnalysis = {
   event_type: string;
   ai_used: boolean;
   recommended_actions: string[];
+  provider?: string;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
 };
 
 export type AIEventsAnalysisResponse = {
@@ -264,6 +273,11 @@ export type AIAssistantReply = {
   events: number;
   blocked: number;
   challenge: number;
+  provider?: string;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
 };
 
 export type LogEntry = {
@@ -308,13 +322,37 @@ export type IPReputationEntry = {
   ip: string;
   list: 'whitelist' | 'blacklist' | 'monitor';
   reputation: number;
+  reputation_override?: number;
   tags: string[];
   intel: ThreatIntelIndicator[];
+  access_rules: IPAccessRuleRef[];
   stats: {
     total: number;
     blocked: number;
     by_type: Record<string, number>;
   };
+};
+
+export type IPAccessRule = {
+  id: string;
+  name: string;
+  description: string;
+  action: 'allow' | 'block' | string;
+  scope: 'global' | 'site' | 'path' | 'directory' | string;
+  site_id: string;
+  path_prefix: string;
+  entries: string[];
+  enabled: boolean;
+};
+
+export type IPAccessRuleRef = {
+  id: string;
+  name: string;
+  action: string;
+  scope: string;
+  site_id?: string;
+  path_prefix?: string;
+  entries?: string[];
 };
 
 export type ThreatIntelIndicator = {
@@ -347,6 +385,8 @@ export type ThreatIntelProvider = {
 export type IPRulesResponse = {
   whitelist: string[];
   blacklist: string[];
+  access_rules: IPAccessRule[];
+  reputation_overrides: Record<string, number>;
   tags: Record<string, string[]>;
   threat_intel: ThreatIntelIndicator[];
   providers: ThreatIntelProvider[];

@@ -48,3 +48,43 @@ func TestImportThreatIntelNotifiesProtectionReload(t *testing.T) {
 		t.Fatalf("unexpected imported intel: %+v", reloaded.IP.ThreatIntel[0])
 	}
 }
+
+func TestUpdateIPAccessRulesNotifiesProtectionReload(t *testing.T) {
+	cfg := config.Default()
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var reloaded config.ProtectionConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnProtectionChanged: func(next config.ProtectionConfig) error {
+			reloaded = next
+			return nil
+		},
+	})
+	body := []config.IPAccessRuleConfig{{
+		ID:         "allow-admin",
+		Name:       "Allow office IP",
+		Action:     "allow",
+		Scope:      "path",
+		SiteID:     "default",
+		PathPrefix: "/admin",
+		Entries:    []string{"203.0.113.10"},
+		Enabled:    true,
+	}}
+	raw, _ := json.Marshal(body)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/ip/access-rules", bytes.NewReader(raw))
+	handler.UpdateIPAccessRules(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected access rule update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(reloaded.IP.AccessRules) != 1 || reloaded.IP.AccessRules[0].ID != "allow-admin" {
+		t.Fatalf("expected protection reload with access rules, got %+v", reloaded.IP.AccessRules)
+	}
+}

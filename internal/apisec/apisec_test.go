@@ -45,6 +45,23 @@ func TestValidatorReportsMissingQueryParam(t *testing.T) {
 	}
 }
 
+func TestAuthenticatorDisabledSkipsJWKSInitialization(t *testing.T) {
+	auth, err := NewAuthenticator(config.APISecConfig{
+		Auth: config.APIAuthConfig{
+			Enabled:        false,
+			JWTAlgorithms:  []string{"HS256"},
+			JWKSCacheFile:  t.TempDir() + "/missing-jwks-cache.json",
+			RequiredScopes: []string{"orders:read"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("disabled authenticator should not initialize JWKS verifier: %v", err)
+	}
+	if finding := auth.Evaluate(httptest.NewRequest(http.MethodGet, "/api/orders", nil)); finding != nil {
+		t.Fatalf("disabled authenticator should not evaluate requests, got %+v", finding)
+	}
+}
+
 func TestAuthenticatorEvaluatesAPIAuthClaims(t *testing.T) {
 	auth, err := NewAuthenticator(config.APISecConfig{
 		Auth: config.APIAuthConfig{

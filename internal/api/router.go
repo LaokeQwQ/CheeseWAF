@@ -87,6 +87,8 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("write:users")).Post("/users/{id}/2fa/disable", h.DisableUser2FA)
 			r.With(require("read:logs")).Get("/logs", h.ListLogs)
 			r.With(require("read:protection")).Get("/ip", h.ListIPRules)
+			r.With(require("write:protection")).Put("/ip/access-rules", h.UpdateIPAccessRules)
+			r.With(require("write:protection")).Put("/ip/reputation-overrides", h.UpdateIPReputationOverrides)
 			r.With(require("write:protection")).Put("/ip/tags", h.UpdateIPTags)
 			r.With(require("read:threat_intel")).Get("/ip/threat-intel/export", h.ExportThreatIntel)
 			r.With(require("write:threat_intel")).Put("/ip/threat-intel/providers", h.UpdateThreatIntelProviders)

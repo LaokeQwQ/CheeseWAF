@@ -207,6 +207,42 @@ func TestServerThreatIntelPolicyLevels(t *testing.T) {
 	})
 }
 
+func TestServerScopedIPAccessRuleBlocksBeforeUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.IP.AccessRules = []config.IPAccessRuleConfig{{
+		ID:         "block-admin-ip",
+		Name:       "Block admin probes",
+		Action:     "block",
+		Scope:      "path",
+		SiteID:     "default",
+		PathPrefix: "/admin",
+		Entries:    []string{"192.0.2.1"},
+		Enabled:    true,
+	}}
+	cfg.Protection.RateLimit.Enabled = false
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/admin", nil))
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected access rule block, code=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 || sink.entries[0].Category != "ip_access" || sink.entries[0].Action != "block" {
+		t.Fatalf("unexpected access rule log: %#v", sink.entries)
+	}
+}
+
 func TestServerBotCCPolicyLevels(t *testing.T) {
 	t.Run("smart challenges suspicious bot traffic", func(t *testing.T) {
 		server, sink, cleanup := newBotCCTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
@@ -725,6 +761,7 @@ func newThreatIntelTestServer(t *testing.T, level string, intel []config.ThreatI
 	}))
 	cfg := config.Default()
 	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Sites[0].WAF.AccessControl.TrustedCIDRs = []string{"192.0.2.1"}
 	cfg.Protection.Policy.ThreatIntel = level
 	cfg.Protection.IP.ThreatIntel = intel
 	cfg.Protection.IP.Whitelist = whitelist
