@@ -1,5 +1,7 @@
 # CheeseWAF
 
+[English](README.md) | [简体中文](README_CN.md)
+
 CheeseWAF is a Go-based Web Application Firewall scaffold focused on a
 single-binary deployment model, a shared management API, and unified Web,
 mobile browser, and `waf-cli` TUI operations.
