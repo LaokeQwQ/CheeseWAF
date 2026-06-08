@@ -2,7 +2,11 @@
 // 负责 YAML 配置加载、校验和热重载。
 package config
 
-import "time"
+import (
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
 
 type Config struct {
 	Server        ServerConfig        `yaml:"server" json:"server"`
@@ -98,6 +102,62 @@ type SemanticEngineSwitches struct {
 	SSRF  bool `yaml:"ssrf" json:"ssrf"`
 	NoSQL bool `yaml:"nosql" json:"nosql"`
 	SSTI  bool `yaml:"ssti" json:"ssti"`
+}
+
+func (s *SemanticEngineSwitches) UnmarshalYAML(value *yaml.Node) error {
+	defaults := SemanticEngineSwitches{
+		SQL:   true,
+		XSS:   true,
+		RCE:   true,
+		LFI:   true,
+		XXE:   true,
+		SSRF:  true,
+		NoSQL: true,
+		SSTI:  true,
+	}
+	if value == nil || (value.Kind == yaml.ScalarNode && value.Tag == "!!null") {
+		*s = defaults
+		return nil
+	}
+	var raw struct {
+		SQL   *bool `yaml:"sql"`
+		XSS   *bool `yaml:"xss"`
+		RCE   *bool `yaml:"rce"`
+		LFI   *bool `yaml:"lfi"`
+		XXE   *bool `yaml:"xxe"`
+		SSRF  *bool `yaml:"ssrf"`
+		NoSQL *bool `yaml:"nosql"`
+		SSTI  *bool `yaml:"ssti"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*s = defaults
+	if raw.SQL != nil {
+		s.SQL = *raw.SQL
+	}
+	if raw.XSS != nil {
+		s.XSS = *raw.XSS
+	}
+	if raw.RCE != nil {
+		s.RCE = *raw.RCE
+	}
+	if raw.LFI != nil {
+		s.LFI = *raw.LFI
+	}
+	if raw.XXE != nil {
+		s.XXE = *raw.XXE
+	}
+	if raw.SSRF != nil {
+		s.SSRF = *raw.SSRF
+	}
+	if raw.NoSQL != nil {
+		s.NoSQL = *raw.NoSQL
+	}
+	if raw.SSTI != nil {
+		s.SSTI = *raw.SSTI
+	}
+	return nil
 }
 
 type CustomRuleConfig struct {

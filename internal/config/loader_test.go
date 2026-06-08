@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -18,6 +20,64 @@ func TestLoadSampleConfig(t *testing.T) {
 	}
 }
 
+func TestLoadBackfillsNewSemanticEnginesForOldSiteConfig(t *testing.T) {
+	cfg := loadTempConfig(t, `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      mode: block
+      semantic_engines:
+        sql: true
+        xss: true
+        rce: true
+        lfi: true
+        xxe: true
+        ssrf: true
+`)
+
+	engines := cfg.Sites[0].WAF.SemanticEngines
+	if !engines.NoSQL || !engines.SSTI {
+		t.Fatalf("expected omitted new semantic engines to default on, got %+v", engines)
+	}
+}
+
+func TestLoadHonorsExplicitSemanticEngineFalse(t *testing.T) {
+	cfg := loadTempConfig(t, `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      mode: block
+      semantic_engines:
+        sql: true
+        xss: true
+        rce: true
+        lfi: true
+        xxe: true
+        ssrf: true
+        nosql: false
+        ssti: false
+`)
+
+	engines := cfg.Sites[0].WAF.SemanticEngines
+	if engines.NoSQL || engines.SSTI {
+		t.Fatalf("expected explicit disabled semantic engines to stay disabled, got %+v", engines)
+	}
+}
+
 func TestValidateHTTP3RequiresCertificate(t *testing.T) {
 	cfg := Default()
 	cfg.Server.HTTP3.Enabled = true
@@ -27,6 +87,19 @@ func TestValidateHTTP3RequiresCertificate(t *testing.T) {
 	if err := Validate(&cfg); err == nil {
 		t.Fatal("expected HTTP/3 certificate validation error")
 	}
+}
+
+func loadTempConfig(t *testing.T, raw string) *Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
 
 func TestValidatePostgreSQLTableIdentifier(t *testing.T) {

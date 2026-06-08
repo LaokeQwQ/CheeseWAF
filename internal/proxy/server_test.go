@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -47,6 +48,66 @@ func TestServerPassesAndBlocks(t *testing.T) {
 	server.Handler().ServeHTTP(blockRec, blockReq)
 	if blockRec.Code != http.StatusForbidden {
 		t.Fatalf("expected block, code=%d body=%q", blockRec.Code, blockRec.Body.String())
+	}
+}
+
+func TestServerBlocksSemanticPostBodyPayloads(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream method unsupported", http.StatusNotImplemented)
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+
+	server, err := NewServer(&cfg, engine.NewPipeline(
+		semantic.NewAnalyzer("block", "nosqli", "ssti"),
+	), &captureSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name        string
+		target      string
+		contentType string
+		body        string
+		category    string
+	}{
+		{
+			name:        "nosqli json login bypass",
+			target:      "http://localhost/login",
+			contentType: "application/json",
+			body:        `{"username":{"$ne":null},"password":{"$ne":null}}`,
+			category:    "nosqli",
+		},
+		{
+			name:        "ssti form object graph execution",
+			target:      "http://localhost/profile",
+			contentType: "application/x-www-form-urlencoded",
+			body:        `display_name={{config.__class__.__init__.__globals__['os'].popen('id').read()}}`,
+			category:    "ssti",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.target, bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", tc.contentType)
+			recorder := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("expected WAF block before upstream 501, code=%d body=%q", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), tc.category) {
+				t.Fatalf("expected block page to mention category %q, body=%q", tc.category, recorder.Body.String())
+			}
+		})
 	}
 }
 

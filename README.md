@@ -12,6 +12,7 @@ The repository currently includes:
 
 - Reverse proxy WAF flow with staged semantic analysis (input extraction, deep decoding, lexical/syntax/behavior scoring), custom rules, IP/ACL/rate-limit/Bot protection, threat intel import/subscription, signed JS proof-of-work challenge, Altcha-style PoW CAPTCHA, waiting room, edge cache/header/compression policy, and response inspection.
 - Semantic regression coverage now includes function-based and error-based SQLi, MySQL executable version comments, PostgreSQL delay payloads, hex tautology and `ORDER BY` enumeration SQLi, control-character/HTML-entity/data-URI/srcdoc/meta-refresh/CSS-expression XSS contexts, `${IFS}`/PowerShell/Pwsh/`cmd /c`/download-to-shell RCE variants, LFI Kubernetes-token/overlong-traversal cases, SSRF IPv6/dotted-hex/dotted-octal forms, Mongo/NoSQL operator injection for login/query contexts, SSTI object-graph/runtime execution chains, direct detector bypass samples, and paired benign cases that protect common documentation text from false positives. Maturity and benchmark details live in `docs/semantic-readiness.md`, and public corpus sourcing is tracked in `docs/semantic-corpus-sources.md`.
+- Repeatable semantic validation now has a dedicated `cheesewaf-corpus` runner. It replays the curated JSONL corpus against either the in-process analyzer or a deployed WAF listener and emits a JSON report with detection rate, false-positive rate, per-case latency, and failure evidence. Older site YAML files that predate newly added semantic engines backfill missing engine switches to safe defaults unless the operator explicitly sets them to `false`. The release-gate workflow is documented in `docs/security-validation.md`.
 - Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, production deployment files, and a single-binary admin listener that serves both the REST API and built Web console. The Web site workspace covers domains, upstreams, TLS material, origin tuning, health checks, per-site semantic toggles including NoSQLi and SSTI, response inspection, access control, and rewrite rules.
 - Management API authorization is now route-scoped: every non-public admin API requires a Bearer token, realtime streams are no longer public, read routes require `read:*`-style permissions, and all mutating routes are guarded by focused `write:*` permissions for system, users, sites, rules, protection, threat intel, edge, AI, storage, and ops. Router regression tests verify unauthorized access, cookie-only CSRF-style requests, and readonly write attempts.
 - Admin tokens carry a unique token ID backed by a revocable server-side session. Login creates a session, `/api/auth/refresh` atomically revokes the old token ID and issues a new one, and `/api/auth/logout` revokes the current session before the Web console clears local state. Password/role and 2FA changes revoke existing sessions for the affected user, and expired/revoked sessions are pruned during login. The Web console refreshes valid near-expiry tokens before requests, while expired or invalid tokens still fall through to the normal 401 logout flow.
@@ -44,6 +45,9 @@ go test ./cmd/... ./internal/...
 # On restricted Windows shells, keep the Go build cache inside the workspace:
 # PowerShell: $env:GOCACHE="$PWD\tmp\go-build-cache"; go test ./cmd/... ./internal/...
 go test -race -count=1 ./cmd/... ./internal/...
+go run ./cmd/cheesewaf-corpus --mode analyzer
+# Against a deployed data-plane listener:
+# go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
 go build -trimpath -o bin/cheesewaf ./cmd/cheesewaf/
 cd web && npm ci && npm run build
 ```
@@ -51,8 +55,10 @@ cd web && npm ci && npm run build
 Private local planning files such as `task.md` and `implementation_plan.md` are
 intentionally ignored by Git.
 
-Semantic engine maturity is tracked in `docs/semantic-readiness.md`; the current
-claim is "working and explainable", not "ModSecurity/OWASP CRS parity".
+Semantic engine maturity is tracked in `docs/semantic-readiness.md`; the
+repeatable security corpus gate is documented in `docs/security-validation.md`.
+The current claim is "working and explainable", not "ModSecurity/OWASP CRS
+parity".
 
 ## Branch Release Artifacts
 
@@ -72,17 +78,16 @@ top-level `SHA256SUMS` file. The shared packaging script lives at
 
 ## Stage Snapshot
 
-As of 2026-06-08, the latest hardening release-flow batch has completed the protected
-upward promotion flow on GitHub: PR #26 merged
-`hardening-private-prometheus-metrics -> dev`, PR #25 promoted `dev -> canary`,
-and PR #27 promoted `canary -> master`. Forgejo at
-`git.laoker.cc/Laoke/CheeseWAF` is the primary forge/build target; GitHub remains
-a secondary mirror/check. A Forgejo mirror-sync was triggered after the GitHub
-merges, and Forgejo matched the same hardening snapshot heads: `dev`
-(`bab9f83`), `canary` (`c8a71d6`), and `master` (`df244ca`). Those three
-protected branches had the same tree content while retaining their required
-upward PR merge commits.
-The Forgejo workflow is present under `.forgejo/workflows/ci.yml` and uses
+As of 2026-06-09, the latest hardening release-flow batch has completed the
+protected upward promotion flow on GitHub: PR #30 merged
+`fix/admin-health-ai-events -> dev`, PR #31 promoted `dev -> canary`, and PR #32
+promoted `canary -> master`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
+primary forge/build target; GitHub remains a secondary mirror/check. A Forgejo
+mirror-sync was triggered after the GitHub merges, and Forgejo matched the same
+snapshot heads: `dev` (`081416a`), `canary` (`1f8eab1`), and `master`
+(`9719b01`). Those three protected branches had the same tree content while
+retaining their required upward PR merge commits. The Forgejo workflow is
+present under `.forgejo/workflows/ci.yml` and uses
 `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
 self-hosted runner-friendly toolchain setup.
 
@@ -96,16 +101,12 @@ health/reconnect states, less abstract
 2D/China-mainland/3D attack-map modes, APISec JWT
 signing/audience/remote-JWKS/endpoint-policy controls, route-scoped management
 API RBAC, and synchronized GitHub/Forgejo branch-channel artifacts for `dev`,
-`canary`, and `stable`. The most recent GitHub push runs for `canary` and
-`master` (`27135688931`, `27136147773`, and `27136628202`) passed Go
-multi-platform tests, web build, cross-build, and branch-channel
-`release-artifacts` where applicable. Code snapshot `e3a8b80` has been built as
-a Linux amd64 single-binary deployment and smoke tested on the remote acceptance
-host: admin health/index return 200, the proxy home route returns 200, a SQLi
-probe is blocked with 403, and HTTPS admin responses include frame, nosniff,
-referrer, permissions, and HSTS safety headers. The promoted hardening snapshot
-`df244ca` is packaged; redeploying the next master snapshot to the acceptance
-host remains the next operational step when the remote host is available.
+`canary`, and `stable`. The promoted `master` snapshot `9719b01` has been
+deployed to the remote acceptance host and smoke tested: admin health/index
+return 200, the proxy home route returns 200, a SQLi probe is blocked with 403,
+and HTTPS admin responses include frame, nosniff, referrer, permissions, and
+HSTS safety headers. The next release step is to add repeatable deployed WAF
+security replay and dynamic scanner evidence before tagging V0.1 beta.
 
 ## Pre-Release Gaps
 
@@ -117,9 +118,10 @@ host remains the next operational step when the remote host is available.
   set `monitor.prometheus.public: true` deliberately when an external scraper
   needs direct access.
 - Before a public release, run repeatable sqlmap, XSStrike, nuclei, OWASP ZAP,
-  and CRS/Coraza or ModSecurity comparison. Admin-surface route-level
-  authentication/RBAC tests are now automated, but deployed dynamic scans should
-  still be repeated before tagging V0.1 beta.
+  CRS/Coraza or ModSecurity comparison, and `cheesewaf-corpus` analyzer plus
+  deployed HTTP replay. Admin-surface route-level authentication/RBAC tests are
+  now automated, but deployed dynamic scans should still be repeated before
+  tagging V0.1 beta.
 - Web attack, API security, Bot/CC, and threat-intel protection levels are wired
   into runtime severity/confidence or score thresholds. The default `smart` mode
   is tuned for lower false positives, but the exact thresholds still need
