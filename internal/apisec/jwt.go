@@ -32,6 +32,7 @@ type parsedJWT struct {
 type jwtVerifier struct {
 	allowed map[string]struct{}
 	keys    []jwtKey
+	remote  *remoteJWKSSource
 }
 
 type jwtKey struct {
@@ -96,14 +97,49 @@ func newJWTVerifier(cfg config.APIAuthConfig) (*jwtVerifier, error) {
 		}
 		verifier.keys = append(verifier.keys, keys...)
 	}
-	if len(verifier.allowed) > 0 && len(verifier.keys) == 0 {
+	if strings.TrimSpace(cfg.JWKSURL) != "" || strings.TrimSpace(cfg.JWKSCacheFile) != "" {
+		remote, err := newRemoteJWKSSource(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if err := remote.LoadCache(); err != nil && strings.TrimSpace(cfg.JWKSURL) == "" {
+			return nil, err
+		}
+		if remote.HasURL() {
+			if err := remote.RefreshOnce(); err != nil && len(verifier.keys) == 0 && !remote.HasKeys() {
+				return nil, err
+			}
+		}
+		verifier.remote = remote
+	}
+	if len(verifier.allowed) > 0 && len(verifier.snapshotKeys()) == 0 {
 		return nil, fmt.Errorf("JWT algorithms require at least one verification key")
+	}
+	if verifier.remote != nil {
+		verifier.remote.Start()
 	}
 	return verifier, nil
 }
 
 func (v *jwtVerifier) configured() bool {
-	return v != nil && len(v.keys) > 0
+	return v != nil && (len(v.keys) > 0 || v.remote != nil)
+}
+
+func (v *jwtVerifier) Close() {
+	if v != nil && v.remote != nil {
+		v.remote.Close()
+	}
+}
+
+func (v *jwtVerifier) snapshotKeys() []jwtKey {
+	if v == nil {
+		return nil
+	}
+	keys := append([]jwtKey(nil), v.keys...)
+	if v.remote != nil {
+		keys = append(keys, v.remote.Keys()...)
+	}
+	return keys
 }
 
 func (v *jwtVerifier) Verify(token parsedJWT) error {
@@ -118,8 +154,12 @@ func (v *jwtVerifier) Verify(token parsedJWT) error {
 			return fmt.Errorf("JWT alg %q is not allowed", token.alg)
 		}
 	}
+	keys := v.snapshotKeys()
+	if len(keys) == 0 {
+		return fmt.Errorf("no JWT verification keys are loaded")
+	}
 	var sawCandidate bool
-	for _, key := range v.keys {
+	for _, key := range keys {
 		if token.kid != "" && key.kid != "" && token.kid != key.kid {
 			continue
 		}

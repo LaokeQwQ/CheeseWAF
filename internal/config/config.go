@@ -502,6 +502,9 @@ type APIAuthConfig struct {
 	JWTPublicKeyPEM  string                        `yaml:"jwt_public_key_pem" json:"jwt_public_key_pem"`
 	JWKSFile         string                        `yaml:"jwks_file" json:"jwks_file"`
 	JWKSJSON         string                        `yaml:"jwks_json" json:"jwks_json"`
+	JWKSURL          string                        `yaml:"jwks_url" json:"jwks_url"`
+	JWKSCacheFile    string                        `yaml:"jwks_cache_file" json:"jwks_cache_file"`
+	JWKSRefresh      time.Duration                 `yaml:"jwks_refresh_interval" json:"jwks_refresh_interval"`
 }
 
 type APIAuthEndpointPolicyConfig struct {

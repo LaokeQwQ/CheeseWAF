@@ -106,6 +106,13 @@ func NewAuthenticator(cfg config.APISecConfig) (*Authenticator, error) {
 	return auth, nil
 }
 
+func (a *Authenticator) Close() error {
+	if a != nil && a.verifier != nil {
+		a.verifier.Close()
+	}
+	return nil
+}
+
 func newEndpointMatcher(method, pathPattern string) (endpointMatcher, error) {
 	pattern, err := regexp.Compile(pathPattern)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 func Validate(cfg *Config) error {
@@ -277,8 +278,16 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("api auth jwt_algorithms contains unsupported algorithm %q", alg)
 			}
 		}
-		if len(cfg.APISec.Auth.JWTAlgorithms) > 0 && strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" {
-			return fmt.Errorf("api auth jwt_algorithms requires jwt_shared_secret, jwt_public_key_file, jwt_public_key_pem, jwks_file, or jwks_json")
+		if jwksURL := strings.TrimSpace(cfg.APISec.Auth.JWKSURL); jwksURL != "" {
+			if err := validateRemoteJWKSURL(jwksURL); err != nil {
+				return fmt.Errorf("api auth jwks_url is invalid: %w", err)
+			}
+			if cfg.APISec.Auth.JWKSRefresh > 0 && cfg.APISec.Auth.JWKSRefresh < time.Minute {
+				return fmt.Errorf("api auth jwks_refresh_interval must be at least 1m")
+			}
+		}
+		if len(cfg.APISec.Auth.JWTAlgorithms) > 0 && strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSURL) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSCacheFile) == "" {
+			return fmt.Errorf("api auth jwt_algorithms requires jwt_shared_secret, jwt_public_key_file, jwt_public_key_pem, jwks_file, jwks_json, jwks_url, or jwks_cache_file")
 		}
 		for _, policy := range cfg.APISec.Auth.EndpointPolicies {
 			if !policy.Enabled {
@@ -317,6 +326,41 @@ func validateIPEntry(entry string) error {
 		return fmt.Errorf("not an IP or CIDR")
 	}
 	return nil
+}
+
+func validateRemoteJWKSURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("only https JWKS URLs are allowed")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("credentials in JWKS URL are not allowed")
+	}
+	if parsed.Fragment != "" {
+		return fmt.Errorf("fragments in JWKS URL are not allowed")
+	}
+	host := strings.Trim(parsed.Hostname(), "[]")
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+	if ip := net.ParseIP(host); ip != nil && !isPublicJWKSIP(ip) {
+		return fmt.Errorf("host IP must be public")
+	}
+	return nil
+}
+
+func isPublicJWKSIP(ip net.IP) bool {
+	return ip != nil &&
+		ip.IsGlobalUnicast() &&
+		!ip.IsLoopback() &&
+		!ip.IsPrivate() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsMulticast() &&
+		!ip.IsUnspecified()
 }
 
 func isPublicAdminListen(addr string) (bool, error) {

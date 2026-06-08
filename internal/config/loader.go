@@ -190,7 +190,7 @@ func Default() Config {
 				IgnorePrefixes: []string{"/assets/", "/static/", "/favicon"},
 			},
 			Validation: APIValidationConfig{Enabled: true},
-			Auth:       APIAuthConfig{Enabled: false},
+			Auth:       APIAuthConfig{Enabled: false, JWKSRefresh: time.Hour},
 			Permissions: map[string][]string{
 				"admin":    []string{"*"},
 				"readonly": []string{"read:*"},
@@ -350,6 +350,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.APISec.Audit.Path == "" {
 		cfg.APISec.Audit.Path = def.APISec.Audit.Path
+	}
+	if cfg.APISec.Auth.JWKSRefresh == 0 {
+		cfg.APISec.Auth.JWKSRefresh = def.APISec.Auth.JWKSRefresh
 	}
 	if cfg.Protection.IP.Tags == nil {
 		cfg.Protection.IP.Tags = map[string][]string{}

@@ -14,6 +14,9 @@ const fallbackAPIAuth: APISecAuthConfig = {
   jwt_public_key_pem: '',
   jwks_file: '',
   jwks_json: '',
+  jwks_url: '',
+  jwks_cache_file: './data/apisec-jwks-cache.json',
+  jwks_refresh_interval: 60 * 60 * second,
 };
 
 export const fallbackSystem: SystemConfig = {

@@ -21,7 +21,7 @@ The repository currently includes:
 - Safe admin defaults: the CLI bootstraps runtime config under `./data`, the admin listener defaults to localhost, public admin binding requires `server.admin_public: true` plus `server.admin_tls`, and first-run setup can choose local/tunnel/reverse-proxy access or public HTTPS with a generated local CA-signed admin certificate.
 - Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default. Web attack protection now applies runtime severity/confidence thresholds (`low`: critical/0.90, `smart`: high/0.85, `high`: medium/0.78, `strict`: low/0.65) while respecting monitor/log-only detector modes and preserving detector-requested JS challenges. API security schema validation, endpoint rate-limit findings, and JWT claims-profile anomalies now follow the same level model, so low mode can record and pass lower-confidence API findings while smart mode blocks validated schema/rate-limit/auth breaches; system APISec setting updates rebuild the proxy validator, endpoint limiter, and auth checker without restarting the service.
 - Bot/CC protection levels are also enforced at runtime: suspicious bot detections and CC/rate-limit breaches are evaluated by severity/confidence thresholds, low-signal matches can be logged without blocking, and explicitly enabled waiting rooms remain active as traffic control.
-- API authentication can now enforce WAF-side Bearer JWT signature validation with configured HMAC secrets, PEM public keys/certificates, or local JWKS JSON/files, then apply issuer, audience, expiry, and scope checks through the same smart protection-policy model. Endpoint-level auth policies can override issuer/audience/scope requirements by method and path regex. Runtime APISec updates rebuild schema validation, endpoint rate limiting, and JWT auth without restarting the proxy, and the Web console exposes JWT signing and endpoint-policy settings under System Settings.
+- API authentication can now enforce WAF-side Bearer JWT signature validation with configured HMAC secrets, PEM public keys/certificates, local JWKS JSON/files, or remote JWKS subscriptions with cache files and background refresh, then apply issuer, audience, expiry, and scope checks through the same smart protection-policy model. Endpoint-level auth policies can override issuer/audience/scope requirements by method and path regex. Runtime APISec updates rebuild schema validation, endpoint rate limiting, and JWT auth without restarting the proxy, and the Web console exposes JWT signing, remote JWKS, and endpoint-policy settings under System Settings.
 - AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots. OpenAI-compatible providers can select the API key header style. AI prompts treat logs, payloads, runtime context, and operator questions as untrusted data, with explicit guardrails against prompt injection, secret disclosure, tool execution, and unapproved policy changes.
 - First-run setup wizard and REST setup API now share one completion service for validation, admin creation, SQLite migration, default config/certificate generation, and setup completion locking. The generated admin certificate bundle uses an ECDSA P-256 local CA (`CN=CheeseWAF Sign SSL CA`, `O=CheeseCloud Technology Ltc.`) and a server-auth leaf chain.
 - Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch.
@@ -60,7 +60,7 @@ for self-hosted runner-friendly toolchain setup. The current UI hardening pass
 focuses on real dashboard counters, live-vs-total posture separation, less
 abstract 2D/China-mainland/3D attack-map modes, and June 8 layout fixes for
 Rules, IP Control, Protection, Operations, Updates, Block Pages, and System
-Settings, and APISec JWT signing/audience/endpoint-policy controls. Code
+Settings, and APISec JWT signing/audience/remote-JWKS/endpoint-policy controls. Code
 snapshot `6e714e8` has been built as a Linux amd64 single-binary deployment and
 smoke tested on the remote acceptance host: admin health/index return 200, the
 proxy home route returns 200, and a SQLi probe is blocked with 403. Local web build, selected race tests, Go tests with a workspace
@@ -79,9 +79,10 @@ audit, and `git diff --check` pass.
   is tuned for lower false positives, but the exact thresholds still need
   corpus-backed iteration before GA.
 - API auth checks now support configured JWT signature validation, audience
-  validation, and endpoint-level issuer/audience/scope policies. They still do
-  not replace source application authentication, and CheeseWAF intentionally
-  does not fetch remote JWKS URLs in the proxy hot path.
+  validation, endpoint-level issuer/audience/scope policies, and remote JWKS
+  refresh with SSRF-conscious HTTPS-only fetching plus cache-file fallback. They
+  still do not replace source application authentication, and CheeseWAF
+  intentionally does not fetch remote JWKS URLs in the proxy hot path.
 - City/district-level map precision depends on a valid GeoIP City `.mmdb` or
   external threat-intel location feed. Without one, CheeseWAF intentionally
   degrades to country/CIDR-level attribution rather than inventing coordinates.

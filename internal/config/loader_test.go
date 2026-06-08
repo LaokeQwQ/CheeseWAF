@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadSampleConfig(t *testing.T) {
 	cfg, err := Load("../../configs/cheesewaf.yaml")
@@ -56,6 +59,47 @@ func TestValidateAPISecJWTSignatureConfig(t *testing.T) {
 
 		if err := Validate(&cfg); err == nil {
 			t.Fatal("expected missing JWT verification key validation error")
+		}
+	})
+
+	t.Run("accepts remote JWKS URL as verification key source", func(t *testing.T) {
+		cfg := Default()
+		cfg.APISec.Auth.Enabled = true
+		cfg.APISec.Auth.JWTAlgorithms = []string{"RS256"}
+		cfg.APISec.Auth.JWKSURL = "https://keys.example.com/.well-known/jwks.json"
+
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("expected remote JWKS auth config to validate: %v", err)
+		}
+	})
+
+	t.Run("rejects unsafe remote JWKS URL", func(t *testing.T) {
+		for _, rawURL := range []string{
+			"http://keys.example.com/jwks.json",
+			"https://127.0.0.1/jwks.json",
+			"https://[::1]/jwks.json",
+			"https://user:pass@keys.example.com/jwks.json",
+		} {
+			cfg := Default()
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.JWTAlgorithms = []string{"RS256"}
+			cfg.APISec.Auth.JWKSURL = rawURL
+
+			if err := Validate(&cfg); err == nil {
+				t.Fatalf("expected unsafe remote JWKS URL %q to fail validation", rawURL)
+			}
+		}
+	})
+
+	t.Run("rejects too frequent remote JWKS refresh", func(t *testing.T) {
+		cfg := Default()
+		cfg.APISec.Auth.Enabled = true
+		cfg.APISec.Auth.JWTAlgorithms = []string{"RS256"}
+		cfg.APISec.Auth.JWKSURL = "https://keys.example.com/jwks.json"
+		cfg.APISec.Auth.JWKSRefresh = 10 * time.Second
+
+		if err := Validate(&cfg); err == nil {
+			t.Fatal("expected too frequent remote JWKS refresh validation error")
 		}
 	})
 

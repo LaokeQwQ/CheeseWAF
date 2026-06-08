@@ -124,10 +124,14 @@ func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
 	if err != nil {
 		return err
 	}
+	oldAuth := s.apiAuth
 	s.config.APISec = apiSec
 	s.apiSchema = apiSchema
 	s.apiLimit = apiLimit
 	s.apiAuth = apiAuth
+	if oldAuth != nil {
+		_ = oldAuth.Close()
+	}
 	return nil
 }
 

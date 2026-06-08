@@ -378,6 +378,9 @@ export type APISecAuthConfig = {
   jwt_public_key_pem: string;
   jwks_file: string;
   jwks_json: string;
+  jwks_url: string;
+  jwks_cache_file: string;
+  jwks_refresh_interval: number | string;
 };
 
 export type APISecAuthEndpointPolicyConfig = {

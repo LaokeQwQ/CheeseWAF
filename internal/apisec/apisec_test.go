@@ -180,6 +180,70 @@ func TestAuthenticatorVerifiesJWTSignatures(t *testing.T) {
 			t.Fatalf("expected RSA JWT to pass, got %+v", finding)
 		}
 	})
+
+	t.Run("remote jwks with cache fallback", func(t *testing.T) {
+		secret := []byte("remote-jwks-secret")
+		jwks := `{"keys":[{"kty":"oct","kid":"remote-1","alg":"HS256","k":"` + base64.RawURLEncoding.EncodeToString(secret) + `"}]}`
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(jwks))
+		}))
+		defer server.Close()
+
+		oldValidator := remoteJWKSURLValidator
+		oldFactory := remoteJWKSClientFactory
+		remoteJWKSURLValidator = func(string) error { return nil }
+		remoteJWKSClientFactory = func(time.Duration) *http.Client { return server.Client() }
+		defer func() {
+			remoteJWKSURLValidator = oldValidator
+			remoteJWKSClientFactory = oldFactory
+		}()
+
+		cacheFile := t.TempDir() + "/jwks-cache.json"
+		cfg := config.APISecConfig{
+			Auth: config.APIAuthConfig{
+				Enabled:        true,
+				JWTAlgorithms:  []string{"HS256"},
+				JWKSURL:        server.URL,
+				JWKSCacheFile:  cacheFile,
+				JWKSRefresh:    time.Hour,
+				RequiredScopes: []string{"orders:read"},
+			},
+			Validation: config.APIValidationConfig{
+				Schemas: []config.APIEndpointSchemaConfig{{ID: "orders", Method: http.MethodGet, PathPattern: "^/v1/orders$", Enabled: true}},
+			},
+		}
+		auth, err := NewAuthenticator(cfg)
+		if err != nil {
+			t.Fatalf("authenticator: %v", err)
+		}
+		defer auth.Close()
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "remote-1", string(secret), map[string]any{"scope": "orders:read"}))
+		if finding := auth.Evaluate(req); finding != nil {
+			t.Fatalf("expected remote JWKS JWT to pass, got %+v", finding)
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "remote-1", "wrong-secret", map[string]any{"scope": "orders:read"}))
+		if finding := auth.Evaluate(req); finding == nil || finding.Kind != "signature" {
+			t.Fatalf("expected signature finding for wrong remote JWKS secret, got %+v", finding)
+		}
+
+		cached := cfg
+		cached.Auth.JWKSURL = ""
+		cachedAuth, err := NewAuthenticator(cached)
+		if err != nil {
+			t.Fatalf("cache-only authenticator: %v", err)
+		}
+		defer cachedAuth.Close()
+		req = httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "remote-1", string(secret), map[string]any{"scope": "orders:read"}))
+		if finding := cachedAuth.Evaluate(req); finding != nil {
+			t.Fatalf("expected cached JWKS JWT to pass, got %+v", finding)
+		}
+	})
 }
 
 func TestAuthenticatorEvaluatesAudienceAndEndpointPolicies(t *testing.T) {

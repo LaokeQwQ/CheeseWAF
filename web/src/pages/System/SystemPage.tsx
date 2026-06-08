@@ -394,6 +394,23 @@ export default function SystemPage() {
                       <Input value={apiAuth.jwks_file} onChange={(jwks_file) => patchAPIAuth({ jwks_file })} />
                     </label>
                     <label>
+                      <span>{t('system.jwksURL')}</span>
+                      <Input value={apiAuth.jwks_url} placeholder="https://issuer.example.com/.well-known/jwks.json" onChange={(jwks_url) => patchAPIAuth({ jwks_url })} />
+                    </label>
+                    <label>
+                      <span>{t('system.jwksCacheFile')}</span>
+                      <Input value={apiAuth.jwks_cache_file} onChange={(jwks_cache_file) => patchAPIAuth({ jwks_cache_file })} />
+                    </label>
+                    <label>
+                      <span>{t('system.jwksRefreshInterval')}</span>
+                      <InputNumber
+                        min={60}
+                        step={60}
+                        value={durationSeconds(apiAuth.jwks_refresh_interval)}
+                        onChange={(value) => patchAPIAuth({ jwks_refresh_interval: secondsToDuration(Number(value || 0)) })}
+                      />
+                    </label>
+                    <label>
                       <span>{t('system.jwksJSON')}</span>
                       <Input.TextArea
                         autoSize={{ minRows: 3, maxRows: 7 }}
@@ -487,6 +504,9 @@ function readAPIAuth(system: SystemConfig): APISecAuthConfig {
     jwt_public_key_pem: stringValue(auth.jwt_public_key_pem),
     jwks_file: stringValue(auth.jwks_file),
     jwks_json: stringValue(auth.jwks_json),
+    jwks_url: stringValue(auth.jwks_url),
+    jwks_cache_file: stringValue(auth.jwks_cache_file) || './data/apisec-jwks-cache.json',
+    jwks_refresh_interval: auth.jwks_refresh_interval ?? 60 * 60 * 1_000_000_000,
   };
 }
 
