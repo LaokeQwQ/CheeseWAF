@@ -4,6 +4,7 @@
 /build/
 /out/
 /output/
+/release/
 *.exe
 *.exe~
 *.dll
