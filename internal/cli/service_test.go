@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -78,13 +79,28 @@ func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 func assertAdminSecurityHeaders(t *testing.T, rr *httptest.ResponseRecorder, wantHSTS bool) {
 	t.Helper()
 	for name, want := range map[string]string{
-		"X-Frame-Options":        "DENY",
-		"X-Content-Type-Options": "nosniff",
-		"Referrer-Policy":        "no-referrer",
-		"Permissions-Policy":     "camera=(), microphone=(), geolocation=(), payment=()",
+		"Cross-Origin-Opener-Policy":   "same-origin",
+		"Cross-Origin-Resource-Policy": "same-origin",
+		"X-Frame-Options":              "DENY",
+		"X-Content-Type-Options":       "nosniff",
+		"Referrer-Policy":              "no-referrer",
+		"Permissions-Policy":           "camera=(), microphone=(), geolocation=(), payment=()",
 	} {
 		if got := rr.Header().Get(name); got != want {
 			t.Fatalf("header %s = %q, want %q", name, got, want)
+		}
+	}
+	csp := rr.Header().Get("Content-Security-Policy")
+	for _, want := range []string{
+		"default-src 'self'",
+		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline'",
+		"object-src 'none'",
+		"frame-ancestors 'none'",
+		"connect-src 'self' ws: wss:",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Fatalf("Content-Security-Policy %q does not contain %q", csp, want)
 		}
 	}
 	hsts := rr.Header().Get("Strict-Transport-Security")

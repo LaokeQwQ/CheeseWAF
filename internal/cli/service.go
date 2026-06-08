@@ -206,6 +206,9 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
 
 func adminSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", adminContentSecurityPolicy())
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -215,6 +218,24 @@ func adminSecurityHeaders(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func adminContentSecurityPolicy() string {
+	return strings.Join([]string{
+		"default-src 'self'",
+		"base-uri 'none'",
+		"object-src 'none'",
+		"frame-ancestors 'none'",
+		"form-action 'self'",
+		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"font-src 'self' data:",
+		"connect-src 'self' ws: wss:",
+		"worker-src 'self' blob:",
+		"manifest-src 'self'",
+		"media-src 'self' data: blob:",
+	}, "; ")
 }
 
 func isAdminAPIPath(path, metricsPath string, metricsPublic bool) bool {
