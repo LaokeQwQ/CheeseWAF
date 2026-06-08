@@ -58,6 +58,12 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				HealthyThreshold:   site.WAF.HealthCheck.HealthyThreshold,
 				UnhealthyThreshold: site.WAF.HealthCheck.UnhealthyThreshold,
 			},
+			AccessControl: SiteAccessControl{
+				AuthEnabled:  site.WAF.AccessControl.AuthEnabled,
+				WaitingRoom:  site.WAF.AccessControl.WaitingRoom,
+				DynamicGuard: site.WAF.AccessControl.DynamicGuard,
+				TrustedCIDRs: cloneStrings(site.WAF.AccessControl.TrustedCIDRs),
+			},
 		},
 	}
 }
@@ -118,6 +124,12 @@ func SiteToConfig(site Site) config.SiteConfig {
 				UnhealthyThreshold: site.Advanced.HealthCheck.UnhealthyThreshold,
 			},
 			Rewrite: siteRewriteToConfig(site.Advanced.Rewrite),
+			AccessControl: config.SiteAccessControlConfig{
+				AuthEnabled:  site.Advanced.AccessControl.AuthEnabled,
+				WaitingRoom:  site.Advanced.AccessControl.WaitingRoom,
+				DynamicGuard: site.Advanced.AccessControl.DynamicGuard,
+				TrustedCIDRs: cloneStrings(site.Advanced.AccessControl.TrustedCIDRs),
+			},
 		},
 	}
 }
@@ -141,6 +153,15 @@ func siteRewriteToConfig(rules []SiteRewriteRule) []config.RewriteRuleConfig {
 			Enabled:      rule.Enabled,
 		})
 	}
+	return out
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	out := make([]string, len(values))
+	copy(out, values)
 	return out
 }
 

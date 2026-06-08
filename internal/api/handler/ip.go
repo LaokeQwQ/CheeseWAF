@@ -54,13 +54,15 @@ func (h *Handler) ListIPRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, map[string]any{
-		"whitelist":    h.Config.Protection.IP.Whitelist,
-		"blacklist":    h.Config.Protection.IP.Blacklist,
-		"tags":         h.Config.Protection.IP.Tags,
-		"threat_intel": h.Config.Protection.IP.ThreatIntel,
-		"providers":    h.Config.Protection.IP.Providers,
-		"geoip":        h.Config.Protection.IP.GeoIP,
-		"entries":      profiles,
+		"whitelist":            h.Config.Protection.IP.Whitelist,
+		"blacklist":            h.Config.Protection.IP.Blacklist,
+		"access_rules":         h.Config.Protection.IP.AccessRules,
+		"reputation_overrides": h.Config.Protection.IP.ReputationOverrides,
+		"tags":                 h.Config.Protection.IP.Tags,
+		"threat_intel":         h.Config.Protection.IP.ThreatIntel,
+		"providers":            h.Config.Protection.IP.Providers,
+		"geoip":                h.Config.Protection.IP.GeoIP,
+		"entries":              profiles,
 	})
 }
 
@@ -100,6 +102,39 @@ func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, h.Config.Protection.IP)
+}
+
+func (h *Handler) UpdateIPAccessRules(w http.ResponseWriter, r *http.Request) {
+	var req []config.IPAccessRuleConfig
+	if !decode(w, r, &req) {
+		return
+	}
+	h.Config.Protection.IP.AccessRules = req
+	if err := h.persistConfig(); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	if err := h.notifyProtectionChanged(); err != nil {
+		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
+		return
+	}
+	writeData(w, h.Config.Protection.IP.AccessRules)
+}
+
+func (h *Handler) UpdateIPReputationOverrides(w http.ResponseWriter, r *http.Request) {
+	var req map[string]int
+	if !decode(w, r, &req) {
+		return
+	}
+	if req == nil {
+		req = map[string]int{}
+	}
+	h.Config.Protection.IP.ReputationOverrides = req
+	if err := h.persistConfig(); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	writeData(w, h.Config.Protection.IP.ReputationOverrides)
 }
 
 func (h *Handler) UpdateIPTags(w http.ResponseWriter, r *http.Request) {

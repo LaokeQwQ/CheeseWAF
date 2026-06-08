@@ -89,6 +89,11 @@ sites:
         timeout: 3s
         healthy_threshold: 2
         unhealthy_threshold: 2
+      access_control:
+        auth_enabled: false
+        waiting_room: false
+        dynamic_guard: true
+        trusted_cidrs: []
 
 protection:
   policy:
@@ -99,6 +104,8 @@ protection:
   ip:
     whitelist: ["127.0.0.1", "::1"]
     blacklist: []
+    access_rules: []
+    reputation_overrides: {}
     tags: {}
     threat_intel: []
     geoip:
@@ -189,9 +196,9 @@ logging:
 
 ai:
   enabled: false
+  provider: "openai" # openai | anthropic
   api_base: "https://api.openai.com/v1"
   api_key: ""
-  api_key_header: "authorization" # authorization | api-key | x-api-key
   model: "gpt-4o-mini"
   async: true
 

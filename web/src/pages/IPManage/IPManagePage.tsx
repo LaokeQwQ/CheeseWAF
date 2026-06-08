@@ -3,29 +3,47 @@ import { Button, Input, InputNumber, Message as ArcoMessage, Popover, Select, Sp
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
-import { CloudDownload, FileDown, Pencil, Plus, Search, Shield, Tags, Trash2 } from 'lucide-react';
+import { Ban, CheckCircle2, CloudDownload, FileDown, ListPlus, Pencil, Plus, RotateCcw, Search, Shield, Tags, Trash2 } from 'lucide-react';
 import {
   exportThreatIntel,
   fetchIPRules,
+  fetchSites,
   importThreatIntel,
   lookupThreatIntel,
   syncThreatIntel,
   testThreatIntelProvider,
+  updateIPAccessRules,
+  updateIPReputationOverrides,
   updateIPTags,
   updateThreatIntelProviders,
 } from '../../api/client';
-import type { IPReputationEntry, ThreatIntelProvider } from '../../types/api';
+import type { IPAccessRule, IPReputationEntry, ThreatIntelProvider } from '../../types/api';
 import { displayAction, displaySeverity } from '../../utils/display';
 
 const second = 1_000_000_000;
+const defaultAccessDraft: IPAccessRule = {
+  id: '',
+  name: '',
+  description: '',
+  action: 'allow',
+  scope: 'global',
+  site_id: '',
+  path_prefix: '',
+  entries: [],
+  enabled: true,
+};
 
 export default function IPManagePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [routeParams, setRouteParams] = useSearchParams();
-  const activeTab = routeParams.get('tab') === 'providers' || routeParams.get('tab') === 'import' ? routeParams.get('tab') as string : 'entries';
+  const tabParam = routeParams.get('tab');
+  const activeTab = tabParam === 'access' || tabParam === 'providers' || tabParam === 'import' ? tabParam : 'entries';
   const [search, setSearch] = useState('');
   const [draftTags, setDraftTags] = useState<Record<string, string[]>>({});
+  const [accessRules, setAccessRules] = useState<IPAccessRule[]>([]);
+  const [reputationOverrides, setReputationOverrides] = useState<Record<string, number>>({});
+  const [accessDraft, setAccessDraft] = useState<IPAccessRule>(defaultAccessDraft);
   const [providers, setProviders] = useState<ThreatIntelProvider[]>([]);
   const [importDraft, setImportDraft] = useState({
     format: 'cidr',
@@ -38,11 +56,18 @@ export default function IPManagePage() {
   });
   const [lookupDraft, setLookupDraft] = useState({ providerId: '', ip: '' });
   const { data, isLoading } = useQuery({ queryKey: ['ip-rules'], queryFn: fetchIPRules, retry: false });
+  const { data: sites = [] } = useQuery({ queryKey: ['sites-lite'], queryFn: fetchSites, retry: false });
   const entries = data?.entries ?? [];
 
   useEffect(() => {
     if (data?.tags) {
       setDraftTags(data.tags);
+    }
+    if (data?.access_rules) {
+      setAccessRules(data.access_rules);
+    }
+    if (data?.reputation_overrides) {
+      setReputationOverrides(data.reputation_overrides);
     }
     if (data?.providers) {
       setProviders(data.providers);
@@ -50,11 +75,29 @@ export default function IPManagePage() {
         setLookupDraft((current) => ({ ...current, providerId: data.providers[0].id }));
       }
     }
-  }, [data?.providers, data?.tags, lookupDraft.providerId]);
+  }, [data?.access_rules, data?.providers, data?.reputation_overrides, data?.tags, lookupDraft.providerId]);
 
   const tagMutation = useMutation({
     mutationFn: updateIPTags,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ip-rules'] }),
+  });
+  const accessRulesMutation = useMutation({
+    mutationFn: updateIPAccessRules,
+    onSuccess: (saved) => {
+      setAccessRules(saved);
+      queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
+      ArcoMessage.success(t('ip.accessRulesSaved'));
+    },
+    onError: (error) => ArcoMessage.error(error.message),
+  });
+  const reputationMutation = useMutation({
+    mutationFn: updateIPReputationOverrides,
+    onSuccess: (saved) => {
+      setReputationOverrides(saved);
+      queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
+      ArcoMessage.success(t('ip.reputationSaved'));
+    },
+    onError: (error) => ArcoMessage.error(error.message),
   });
   const providersMutation = useMutation({
     mutationFn: updateThreatIntelProviders,
@@ -133,6 +176,71 @@ export default function IPManagePage() {
       },
     ]);
   };
+  const saveAccessRules = (nextRules = accessRules) => {
+    accessRulesMutation.mutate(nextRules.map(normalizeAccessRuleForSave).filter((rule) => rule.entries.length > 0));
+  };
+  const addAccessRule = () => {
+    const entries = accessDraft.entries.length > 0 ? accessDraft.entries : splitList(accessDraft.entries.join(','));
+    if (entries.length === 0) {
+      ArcoMessage.warning(t('ip.entriesRequired'));
+      return;
+    }
+    if (accessDraft.scope === 'site' && !accessDraft.site_id) {
+      ArcoMessage.warning(t('ip.siteRequired'));
+      return;
+    }
+    if (accessDraft.scope === 'path' && !accessDraft.path_prefix.trim()) {
+      ArcoMessage.warning(t('ip.pathRequired'));
+      return;
+    }
+    const nextRule = normalizeAccessRuleForSave({
+      ...accessDraft,
+      id: accessDraft.id || `ip-rule-${Date.now()}`,
+      name: accessDraft.name || entries[0],
+      entries,
+    });
+    const nextRules = [...accessRules, nextRule];
+    setAccessRules(nextRules);
+    setAccessDraft(defaultAccessDraft);
+    saveAccessRules(nextRules);
+  };
+  const removeAccessRule = (id: string) => {
+    const nextRules = accessRules.filter((rule) => rule.id !== id);
+    setAccessRules(nextRules);
+    saveAccessRules(nextRules);
+  };
+  const updateAccessRule = (index: number, patch: Partial<IPAccessRule>) => {
+    setAccessRules((current) => current.map((rule, ruleIndex) => (ruleIndex === index ? { ...rule, ...patch } : rule)));
+  };
+  const applyIPDisposition = (ip: string, action: 'allow' | 'block' | 'monitor') => {
+    const cleaned = accessRules
+      .map((rule) => ({ ...rule, entries: rule.entries.filter((entry) => entry !== ip) }))
+      .filter((rule) => rule.entries.length > 0);
+    const nextRules = action === 'monitor'
+      ? cleaned
+      : [
+        ...cleaned,
+        {
+          ...defaultAccessDraft,
+          id: `manual-${action}-${safeRuleID(ip)}`,
+          name: action === 'allow' ? `${t('ip.allow')} ${ip}` : `${t('ip.block')} ${ip}`,
+          action,
+          scope: 'global',
+          entries: [ip],
+          enabled: true,
+        },
+      ];
+    setAccessRules(nextRules);
+    saveAccessRules(nextRules);
+  };
+  const saveReputationOverride = (ip: string, score: number) => {
+    reputationMutation.mutate({ ...reputationOverrides, [ip]: Math.max(0, Math.min(100, Math.round(score))) });
+  };
+  const resetReputationOverride = (ip: string) => {
+    const next = { ...reputationOverrides };
+    delete next[ip];
+    reputationMutation.mutate(next);
+  };
 
   return (
     <section className="page-surface">
@@ -193,7 +301,19 @@ export default function IPManagePage() {
                       return <Tag color={color}>{label}</Tag>;
                     },
                   },
-                  { title: t('ip.reputation'), dataIndex: 'reputation', render: (value: number) => <Tag color={reputationColor(value)}>{value}</Tag> },
+                  {
+                    title: t('ip.reputation'),
+                    dataIndex: 'reputation',
+                    render: (value: number, record: IPReputationEntry) => (
+                      <ReputationOverrideEditor
+                        value={value}
+                        override={record.reputation_override}
+                        saving={reputationMutation.isPending}
+                        onSave={(score) => saveReputationOverride(record.ip, score)}
+                        onReset={() => resetReputationOverride(record.ip)}
+                      />
+                    ),
+                  },
                   {
                     title: t('ip.tags'),
                     dataIndex: 'tags',
@@ -229,8 +349,127 @@ export default function IPManagePage() {
                       return `${stats.blocked}/${stats.total}`;
                     },
                   },
+                  {
+                    title: t('ip.actions'),
+                    dataIndex: 'actions',
+                    render: (_: unknown, record: IPReputationEntry) => (
+                      <Space className="ip-row-actions" wrap size={6}>
+                        <Button size="mini" icon={<CheckCircle2 size={13} />} loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'allow')}>
+                          {t('ip.allow')}
+                        </Button>
+                        <Button size="mini" status="danger" icon={<Ban size={13} />} loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'block')}>
+                          {t('ip.block')}
+                        </Button>
+                        <Button size="mini" icon={<RotateCcw size={13} />} loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'monitor')}>
+                          {t('common.monitor')}
+                        </Button>
+                      </Space>
+                    ),
+                  },
                 ]}
               />
+            </div>
+            <div className="ip-entry-card-list">
+              {isLoading && <div className="empty-state">{t('common.loading')}</div>}
+              {!isLoading && filtered.length === 0 && <div className="empty-state">{t('common.noData')}</div>}
+              {!isLoading && filtered.map((entry) => (
+                <IPEntryMobileCard
+                  key={entry.ip}
+                  entry={entry}
+                  tags={tagsFor(entry, draftTags)}
+                  savingAccess={accessRulesMutation.isPending}
+                  savingReputation={reputationMutation.isPending}
+                  onTagsChange={(tags) => setDraftTags((current) => ({ ...current, [entry.ip]: tags }))}
+                  onAllow={() => applyIPDisposition(entry.ip, 'allow')}
+                  onBlock={() => applyIPDisposition(entry.ip, 'block')}
+                  onMonitor={() => applyIPDisposition(entry.ip, 'monitor')}
+                  onSaveReputation={(score) => saveReputationOverride(entry.ip, score)}
+                  onResetReputation={() => resetReputationOverride(entry.ip)}
+                  t={t}
+                />
+              ))}
+            </div>
+          </Tabs.TabPane>
+
+          <Tabs.TabPane key="access" title={t('ip.accessRules')}>
+            <div className="ip-access-workspace">
+              <section className="ip-access-editor">
+                <div className="system-section-title">
+                  <h2><ListPlus size={16} /> {t('ip.accessRules')}</h2>
+                  <Button type="primary" loading={accessRulesMutation.isPending} onClick={() => saveAccessRules()}>{t('common.save')}</Button>
+                </div>
+                <div className="ip-access-draft-grid">
+                  <label>
+                    <span>{t('rules.name')}</span>
+                    <Input value={accessDraft.name} placeholder={t('ip.ruleNamePlaceholder')} onChange={(name) => setAccessDraft((current) => ({ ...current, name }))} />
+                  </label>
+                  <label>
+                    <span>{t('logs.action')}</span>
+                    <Select value={accessDraft.action} onChange={(action) => setAccessDraft((current) => ({ ...current, action: action as string }))}>
+                      <Select.Option value="allow">{t('ip.allow')}</Select.Option>
+                      <Select.Option value="block">{t('ip.block')}</Select.Option>
+                    </Select>
+                  </label>
+                  <label>
+                    <span>{t('ip.scope')}</span>
+                    <Select value={accessDraft.scope} onChange={(scope) => setAccessDraft((current) => ({ ...current, scope: scope as string }))}>
+                      <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
+                      <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
+                      <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
+                    </Select>
+                  </label>
+                  <label>
+                    <span>{t('sites.title')}</span>
+                    <Select
+                      allowClear
+                      disabled={accessDraft.scope === 'global'}
+                      value={accessDraft.site_id || undefined}
+                      placeholder={t('ip.optionalSite')}
+                      onChange={(site_id) => setAccessDraft((current) => ({ ...current, site_id: String(site_id || '') }))}
+                    >
+                      {sites.map((site) => <Select.Option key={site.id} value={site.id}>{site.name || site.id}</Select.Option>)}
+                    </Select>
+                  </label>
+                  <label>
+                    <span>{t('ip.pathPrefix')}</span>
+                    <Input
+                      disabled={accessDraft.scope !== 'path'}
+                      value={accessDraft.path_prefix}
+                      placeholder="/admin"
+                      onChange={(path_prefix) => setAccessDraft((current) => ({ ...current, path_prefix }))}
+                    />
+                  </label>
+                  <label className="ip-access-entries-field">
+                    <span>{t('ip.entriesInput')}</span>
+                    <Input value={accessDraft.entries.join(', ')} placeholder="203.0.113.10, 198.51.100.0/24" onChange={(value) => setAccessDraft((current) => ({ ...current, entries: splitList(value) }))} />
+                  </label>
+                  <label className="switch-line ip-access-enabled"><span>{t('rules.enabled')}</span><Switch checked={accessDraft.enabled} onChange={(enabled) => setAccessDraft((current) => ({ ...current, enabled }))} /></label>
+                  <Button className="ip-access-add-button" type="primary" icon={<Plus size={15} />} onClick={addAccessRule}>{t('ip.addRule')}</Button>
+                </div>
+              </section>
+              <div className="table-panel table-panel-embedded ip-access-table">
+                <Table
+                  rowKey="id"
+                  pagination={false}
+                  data={accessRules}
+                  columns={[
+                    { title: t('rules.name'), dataIndex: 'name', render: (_: string, rule: IPAccessRule) => <strong>{rule.name || rule.id}</strong> },
+                    { title: t('logs.action'), dataIndex: 'action', render: (action: string) => <Tag color={action === 'allow' ? 'green' : 'red'}>{action === 'allow' ? t('ip.allow') : t('ip.block')}</Tag> },
+                    { title: t('ip.scope'), dataIndex: 'scope', render: (_: string, rule: IPAccessRule) => scopeLabel(rule, t) },
+                    { title: t('ip.entriesInput'), dataIndex: 'entries', render: (entries: string[]) => <span className="ip-access-entry-list">{entries.map((entry) => <code key={entry}>{entry}</code>)}</span> },
+                    { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean, rule: IPAccessRule, index: number) => <Switch checked={enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} /> },
+                    {
+                      title: t('ip.actions'),
+                      dataIndex: 'actions',
+                      render: (_: unknown, rule: IPAccessRule) => (
+                        <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeAccessRule(rule.id)}>
+                          {t('common.delete')}
+                        </Button>
+                      ),
+                    },
+                  ]}
+                />
+              </div>
             </div>
           </Tabs.TabPane>
 
@@ -385,6 +624,88 @@ export default function IPManagePage() {
   );
 }
 
+function IPEntryMobileCard({
+  entry,
+  tags,
+  savingAccess,
+  savingReputation,
+  onTagsChange,
+  onAllow,
+  onBlock,
+  onMonitor,
+  onSaveReputation,
+  onResetReputation,
+  t,
+}: {
+  entry: IPReputationEntry;
+  tags: string[];
+  savingAccess: boolean;
+  savingReputation: boolean;
+  onTagsChange: (tags: string[]) => void;
+  onAllow: () => void;
+  onBlock: () => void;
+  onMonitor: () => void;
+  onSaveReputation: (score: number) => void;
+  onResetReputation: () => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const list = entry.list === 'whitelist' ? t('ip.whitelist') : entry.list === 'blacklist' ? t('ip.blacklist') : t('common.monitor');
+  const listColor = entry.list === 'whitelist' ? 'green' : entry.list === 'blacklist' ? 'red' : 'blue';
+  const stats = statsFor(entry);
+  const intel = intelFor(entry);
+
+  return (
+    <article className="ip-entry-card">
+      <header>
+        <span className="table-identity">
+          <Shield size={17} />
+          <strong>{entry.ip}</strong>
+        </span>
+        <Tag color={listColor}>{list}</Tag>
+      </header>
+      <div className="ip-entry-card-grid">
+        <div>
+          <span>{t('ip.reputation')}</span>
+          <ReputationOverrideEditor
+            value={entry.reputation}
+            override={entry.reputation_override}
+            saving={savingReputation}
+            onSave={onSaveReputation}
+            onReset={onResetReputation}
+          />
+        </div>
+        <div>
+          <span>{t('ip.activity')}</span>
+          <strong>{stats.blocked}/{stats.total}</strong>
+        </div>
+      </div>
+      <div className="ip-entry-card-section">
+        <span>{t('ip.tags')}</span>
+        <EditableTagInput tags={tags} onChange={onTagsChange} />
+      </div>
+      <div className="ip-entry-card-section">
+        <span>{t('ip.intel')}</span>
+        <span className="intel-chip-list">
+          {intel.length === 0 ? <span className="intel-chip intel-chip-muted">{t('common.monitor')}</span> : intel.map((item) => {
+            const confidence = typeof item.confidence === 'number' && item.confidence > 0 ? ` · ${Math.round(item.confidence * 100)}%` : '';
+            return (
+              <span key={`${entry.ip}-${item.id || item.value}`} className={`intel-chip intel-chip-${intelColor(item.severity)}`}>
+                <span>{item.source || displaySeverity(item.severity, t)}</span>
+                <strong>{displayAction(item.action || 'challenge', t)}{confidence}</strong>
+              </span>
+            );
+          })}
+        </span>
+      </div>
+      <div className="ip-entry-card-actions">
+        <Button size="small" icon={<CheckCircle2 size={14} />} loading={savingAccess} onClick={onAllow}>{t('ip.allow')}</Button>
+        <Button size="small" status="danger" icon={<Ban size={14} />} loading={savingAccess} onClick={onBlock}>{t('ip.block')}</Button>
+        <Button size="small" icon={<RotateCcw size={14} />} loading={savingAccess} onClick={onMonitor}>{t('common.monitor')}</Button>
+      </div>
+    </article>
+  );
+}
+
 async function saveIntelFile(format: 'csv' | 'stix') {
   const blob = await exportThreatIntel(format);
   const url = URL.createObjectURL(blob);
@@ -439,6 +760,51 @@ function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags:
         </Popover>
       </div>
     </div>
+  );
+}
+
+function ReputationOverrideEditor({
+  value,
+  override,
+  saving,
+  onSave,
+  onReset,
+}: {
+  value: number;
+  override?: number;
+  saving: boolean;
+  onSave: (score: number) => void;
+  onReset: () => void;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(override ?? value);
+
+  useEffect(() => {
+    setDraft(override ?? value);
+  }, [override, value]);
+
+  return (
+    <Popover
+      popupVisible={open}
+      onVisibleChange={setOpen}
+      trigger="click"
+      position="bottom"
+      content={(
+        <div className="ip-score-popover">
+          <InputNumber min={0} max={100} precision={0} value={draft} onChange={(score) => setDraft(Number(score ?? value))} />
+          <div>
+            <Button size="mini" disabled={override === undefined} onClick={() => { onReset(); setOpen(false); }}>{t('common.reset')}</Button>
+            <Button size="mini" type="primary" loading={saving} onClick={() => { onSave(draft); setOpen(false); }}>{t('common.save')}</Button>
+          </div>
+        </div>
+      )}
+    >
+      <button className="ip-score-button" type="button">
+        <Tag color={reputationColor(value)}>{value}</Tag>
+        {override !== undefined && <span>{t('ip.manual')}</span>}
+      </button>
+    </Popover>
   );
 }
 
@@ -505,4 +871,45 @@ function intelColor(severity: string) {
     default:
       return 'blue';
   }
+}
+
+function normalizeAccessRuleForSave(rule: IPAccessRule): IPAccessRule {
+  const scope = rule.scope === 'directory' ? 'path' : rule.scope || 'global';
+  const pathPrefix = scope === 'path' ? normalizePathPrefix(rule.path_prefix) : '';
+  return {
+    ...rule,
+    id: rule.id || `ip-rule-${Date.now()}`,
+    name: rule.name || rule.id || 'IP access rule',
+    description: rule.description || '',
+    action: rule.action === 'block' ? 'block' : 'allow',
+    scope,
+    site_id: scope === 'global' ? '' : rule.site_id,
+    path_prefix: pathPrefix,
+    entries: rule.entries.map((entry) => entry.trim()).filter(Boolean),
+    enabled: rule.enabled,
+  };
+}
+
+function normalizePathPrefix(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function safeRuleID(ip: string) {
+  return ip.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || String(Date.now());
+}
+
+function scopeLabel(rule: IPAccessRule, t: (key: string) => string) {
+  const scope = rule.scope === 'directory' ? 'path' : rule.scope;
+  if (scope === 'site') {
+    return `${t('ip.scopeSite')} · ${rule.site_id || '-'}`;
+  }
+  if (scope === 'path') {
+    const site = rule.site_id ? `${rule.site_id} · ` : '';
+    return `${t('ip.scopePath')} · ${site}${rule.path_prefix || '/'}`;
+  }
+  return t('ip.scopeGlobal');
 }
