@@ -95,4 +95,36 @@ func TestSQLiteStoreSessionLifecycle(t *testing.T) {
 	if expiredActive {
 		t.Fatal("expected expired session to be inactive")
 	}
+	activeOne := &Session{ID: "session-active-one", UserID: user.ID, Username: user.Username, Role: user.Role, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	activeTwo := &Session{ID: "session-active-two", UserID: user.ID, Username: user.Username, Role: user.Role, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := store.CreateSession(ctx, activeOne); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSession(ctx, activeTwo); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeUserSessions(ctx, user.ID, activeTwo.ID); err != nil {
+		t.Fatal(err)
+	}
+	activeOneStillActive, err := store.IsSessionActive(ctx, activeOne.ID, user.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeOneStillActive {
+		t.Fatal("expected user-wide revocation to revoke non-excepted session")
+	}
+	activeTwoStillActive, err := store.IsSessionActive(ctx, activeTwo.ID, user.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !activeTwoStillActive {
+		t.Fatal("expected excepted session to remain active")
+	}
+	pruned, err := store.PruneSessions(ctx, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned == 0 {
+		t.Fatal("expected prune to delete expired or old revoked sessions")
+	}
 }

@@ -281,6 +281,21 @@ func (s *SQLiteStore) RevokeSession(ctx context.Context, id, userID string) erro
 	return err
 }
 
+func (s *SQLiteStore) RevokeUserSessions(ctx context.Context, userID string, exceptID string) error {
+	if userID == "" {
+		return fmt.Errorf("user id is required")
+	}
+	now := time.Now().UTC()
+	query := `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE user_id=? AND revoked_at=''`
+	args := []any{formatOptionalTime(now), formatTime(now), userID}
+	if exceptID != "" {
+		query += ` AND id<>?`
+		args = append(args, exceptID)
+	}
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 func (s *SQLiteStore) IsSessionActive(ctx context.Context, id, userID string, now time.Time) (bool, error) {
 	if id == "" || userID == "" {
 		return false, nil
@@ -294,6 +309,17 @@ func (s *SQLiteStore) IsSessionActive(ctx context.Context, id, userID string, no
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (s *SQLiteStore) PruneSessions(ctx context.Context, before time.Time) (int64, error) {
+	if before.IsZero() {
+		before = time.Now().UTC()
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE expires_at<? OR (revoked_at<>'' AND revoked_at<?)`, formatTime(before), formatOptionalTime(before))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 type scanner interface {

@@ -76,6 +76,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	h.pruneExpiredSessions(r)
 	user, err := h.Store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil || user == nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
@@ -137,6 +138,22 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, map[string]any{"revoked": true})
+}
+
+func (h *Handler) revokeUserSessions(w http.ResponseWriter, r *http.Request, userID string, exceptID string) bool {
+	if err := h.Store.RevokeUserSessions(r.Context(), userID, exceptID); err != nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
+		return false
+	}
+	return true
+}
+
+func (h *Handler) pruneExpiredSessions(r *http.Request) {
+	if h == nil || h.Store == nil {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	_, _ = h.Store.PruneSessions(r.Context(), cutoff)
 }
 
 func sessionFromClaims(claims *middleware.Claims) *storage.Session {

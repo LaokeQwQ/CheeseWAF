@@ -197,6 +197,25 @@ func TestRouterLogoutRevokesBearerToken(t *testing.T) {
 	}
 }
 
+func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
+	router, adminToken, readerToken := newAuthzTestRouter(t)
+
+	before := perform(router, http.MethodGet, "/api/system", readerToken, nil)
+	if before.Code != http.StatusOK {
+		t.Fatalf("reader token should start active, got %d: %s", before.Code, before.Body.String())
+	}
+
+	update := perform(router, http.MethodPut, "/api/users/reader-id", adminToken, []byte(`{"password":"new-reader-password","role":"readonly"}`))
+	if update.Code != http.StatusOK {
+		t.Fatalf("expected admin to update reader, got %d: %s", update.Code, update.Body.String())
+	}
+
+	after := perform(router, http.MethodGet, "/api/system", readerToken, nil)
+	if after.Code != http.StatusUnauthorized {
+		t.Fatalf("reader token should be revoked after sensitive user update, got %d: %s", after.Code, after.Body.String())
+	}
+}
+
 func newAuthzTestRouter(t *testing.T) (http.Handler, string, string) {
 	return newAuthzTestRouterWithConfig(t, func(cfg *config.Config) {
 		cfg.Monitor.Prometheus.Enabled = true

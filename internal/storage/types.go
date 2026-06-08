@@ -125,7 +125,9 @@ type SessionStore interface {
 	CreateSession(ctx context.Context, session *Session) error
 	RotateSession(ctx context.Context, oldID, userID string, next *Session) error
 	RevokeSession(ctx context.Context, id, userID string) error
+	RevokeUserSessions(ctx context.Context, userID string, exceptID string) error
 	IsSessionActive(ctx context.Context, id, userID string, now time.Time) (bool, error)
+	PruneSessions(ctx context.Context, before time.Time) (int64, error)
 }
 
 // Site represents a protected site configuration.
