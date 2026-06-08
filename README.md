@@ -11,9 +11,10 @@ mobile browser, and `waf-cli` TUI operations.
 The repository currently includes:
 
 - Reverse proxy WAF flow with staged semantic analysis (input extraction, deep decoding, lexical/syntax/behavior scoring), custom rules, IP/ACL/rate-limit/Bot protection, threat intel import/subscription, signed JS proof-of-work challenge, Altcha-style PoW CAPTCHA, waiting room, edge cache/header/compression policy, and response inspection.
-- Semantic regression coverage now includes function-based and error-based SQLi, MySQL executable version comments, PostgreSQL delay payloads, hex tautology and `ORDER BY` enumeration SQLi, control-character/HTML-entity/data-URI/srcdoc/meta-refresh/CSS-expression XSS contexts, `${IFS}`/PowerShell/Pwsh/`cmd /c`/download-to-shell RCE variants, LFI Kubernetes-token/overlong-traversal cases, SSRF IPv6/dotted-hex/dotted-octal forms, direct detector bypass samples, and paired benign cases that protect common documentation text from false positives. Maturity and benchmark details live in `docs/semantic-readiness.md`, and public corpus sourcing is tracked in `docs/semantic-corpus-sources.md`.
-- Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, production deployment files, and a single-binary admin listener that serves both the REST API and built Web console. The Web site workspace covers domains, upstreams, TLS material, origin tuning, health checks, response inspection, access control, and rewrite rules.
+- Semantic regression coverage now includes function-based and error-based SQLi, MySQL executable version comments, PostgreSQL delay payloads, hex tautology and `ORDER BY` enumeration SQLi, control-character/HTML-entity/data-URI/srcdoc/meta-refresh/CSS-expression XSS contexts, `${IFS}`/PowerShell/Pwsh/`cmd /c`/download-to-shell RCE variants, LFI Kubernetes-token/overlong-traversal cases, SSRF IPv6/dotted-hex/dotted-octal forms, Mongo/NoSQL operator injection for login/query contexts, SSTI object-graph/runtime execution chains, direct detector bypass samples, and paired benign cases that protect common documentation text from false positives. Maturity and benchmark details live in `docs/semantic-readiness.md`, and public corpus sourcing is tracked in `docs/semantic-corpus-sources.md`.
+- Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, production deployment files, and a single-binary admin listener that serves both the REST API and built Web console. The Web site workspace covers domains, upstreams, TLS material, origin tuning, health checks, per-site semantic toggles including NoSQLi and SSTI, response inspection, access control, and rewrite rules.
 - Management API authorization is now route-scoped: every non-public admin API requires a Bearer token, realtime streams are no longer public, read routes require `read:*`-style permissions, and all mutating routes are guarded by focused `write:*` permissions for system, users, sites, rules, protection, threat intel, edge, AI, storage, and ops. Router regression tests verify unauthorized access, cookie-only CSRF-style requests, and readonly write attempts.
+- Admin tokens carry a unique token ID backed by a revocable server-side session. Login creates a session, `/api/auth/refresh` atomically revokes the old token ID and issues a new one, and `/api/auth/logout` revokes the current session before the Web console clears local state. Password/role and 2FA changes revoke existing sessions for the affected user, and expired/revoked sessions are pruned during login. The Web console refreshes valid near-expiry tokens before requests, while expired or invalid tokens still fall through to the normal 401 logout flow.
 - Web console hardening includes localized security/category/severity labels, dashboard total-vs-live posture separation, 1/3/5/10s live refresh controls, selectable total-stat windows, chart axes and zoom controls, resilient event/resource card layouts, URL-addressable IP-management tabs, API security table layout isolation, route-level lazy loading, and Natural Earth/world-atlas based 2D/China-mainland/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, country-level GeoIP fallbacks, precise-location metadata support, WebGL fallback handling, responsive tables, and real log data. The 3D globe renderer is split into an on-demand chunk so ordinary console pages and 2D maps do not load Three.js up front.
 - The Dashboard resource panel now reads real host metrics from the monitor snapshot: CPU usage, 1-minute system load with CPU-core context, host memory usage, swap usage, disk usage, and a separate process-runtime line for goroutines/heap. Live posture and resources auto-refresh at the selected 1/3/5/10s interval, support manual refresh, and expose real memory/swap reclaim actions through the protected system API.
 - Attack/block events now have a dedicated detail view under `/logs/:traceId`, reachable from the Dashboard, attack log table, and AI event table. The detail page shows request evidence, detector metadata, payload/user-agent context, and runs single-event AI analysis against the real log entry.
@@ -22,13 +23,13 @@ The repository currently includes:
 - GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
 - Threat-intel indicators now carry action and confidence, are scored across severity/confidence/source count, and are enforced in the proxy hot path according to the global/site `threat_intel` level. Console imports, provider sync, lookups, and protection setting updates trigger runtime policy refresh without requiring a service restart.
 - Safe admin defaults: the CLI bootstraps runtime config under `./data`, the admin listener defaults to localhost, public admin binding requires `server.admin_public: true` plus `server.admin_tls`, and first-run setup can choose local/tunnel/reverse-proxy access or public HTTPS with a generated local CA-signed admin certificate.
-- The single-binary admin handler applies baseline browser safety headers to API, SPA fallback, and static assets: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a locked-down `Permissions-Policy`, and HSTS on HTTPS admin responses.
+- The single-binary admin handler applies baseline browser safety headers to API, SPA fallback, and static assets: an enforcing `Content-Security-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a locked-down `Permissions-Policy`, and HSTS on HTTPS admin responses.
 - Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default. Web attack protection now applies runtime severity/confidence thresholds (`low`: critical/0.90, `smart`: high/0.85, `high`: medium/0.78, `strict`: low/0.65) while respecting monitor/log-only detector modes and preserving detector-requested JS challenges. API security schema validation, endpoint rate-limit findings, and JWT claims-profile anomalies now follow the same level model, so low mode can record and pass lower-confidence API findings while smart mode blocks validated schema/rate-limit/auth breaches; system APISec setting updates rebuild the proxy validator, endpoint limiter, and auth checker without restarting the service.
 - Bot/CC protection levels are also enforced at runtime: suspicious bot detections and CC/rate-limit breaches are evaluated by severity/confidence thresholds, low-signal matches can be logged without blocking, and explicitly enabled waiting rooms remain active as traffic control.
 - API authentication can now enforce WAF-side Bearer JWT signature validation with configured HMAC secrets, PEM public keys/certificates, local JWKS JSON/files, or remote JWKS subscriptions with cache files and background refresh, then apply issuer, audience, expiry, and scope checks through the same smart protection-policy model. Endpoint-level auth policies can override issuer/audience/scope requirements by method and path regex. Runtime APISec updates rebuild schema validation, endpoint rate limiting, and JWT auth without restarting the proxy, and the Web console exposes JWT signing, remote JWKS, and endpoint-policy settings under System Settings.
 - AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots. OpenAI-compatible providers can select the API key header style. AI prompts treat logs, payloads, runtime context, and operator questions as untrusted data, with explicit guardrails against prompt injection, secret disclosure, tool execution, and unapproved policy changes.
 - First-run setup wizard and REST setup API now share one completion service for validation, admin creation, SQLite migration, default config/certificate generation, and setup completion locking. The generated admin certificate bundle uses an ECDSA P-256 local CA (`CN=CheeseWAF Sign SSL CA`, `O=CheeseCloud Technology Ltc.`) and a server-auth leaf chain.
-- Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch.
+- Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch. Metrics are available through authenticated `/api/metrics` by default; the bare scrape path such as `/metrics` is only exposed when `monitor.prometheus.public: true` is set explicitly.
 - Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, cross-platform builds, and branch-channel release artifacts. Pushes to `dev`, `canary`, and `master` build distinct `dev`, `canary`, and `stable` packages on both platforms. Forgejo uses local/mirrored Go and Node toolchain bootstrap scripts to avoid self-hosted runner timeouts against GitHub tool-cache downloads.
 
 Runtime Bot challenge secrets are generated per install. If an old config still
@@ -70,36 +71,43 @@ top-level `SHA256SUMS` file. The shared packaging script lives at
 
 ## Stage Snapshot
 
-As of 2026-06-08, the latest merged feature batch has completed the protected
-upward promotion flow on GitHub: PR #14 merged
-`feat/semantic-readiness-hardening -> dev`, PR #15 promoted `dev -> canary`, and
-PR #16 promoted `canary -> master`. Forgejo at
-`git.laoker.cc/Laoke/CheeseWAF` is the primary forge/build target; GitHub
-remains a secondary mirror/check. A Forgejo mirror-sync was triggered after the
-GitHub merges, and Forgejo now matches the same `dev`, `canary`, and `master`
-heads. The Forgejo workflow is present under `.forgejo/workflows/ci.yml` and
-uses `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
-self-hosted runner-friendly toolchain setup. The current hardening pass focuses
-on curated public-corpus-inspired semantic fixtures, real dashboard counters,
-live-vs-total posture separation, scoped Dashboard chart sizing, real host
-CPU/load/memory/swap/disk resource metrics, resource reclaim actions,
-single-event log detail/AI analysis, URL-addressable IP threat-intel tabs,
-honest health/reconnect states, less abstract 2D/China-mainland/3D attack-map
-modes, APISec JWT signing/audience/remote-JWKS/endpoint-policy controls, and
-route-scoped management API RBAC. The CI/release follow-up adds synchronized
-GitHub and Forgejo artifact packaging for branch-specific `dev`, `canary`, and
-`stable` channels. Code snapshot `30f1b7b` has been built as a Linux amd64
-single-binary deployment and smoke tested on the remote acceptance host: admin
-health/index return 200, the proxy home route returns 200, and a SQLi probe is
-blocked with 403. Local web build, selected race tests, Go tests with a
-workspace `GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot and
-DOM-overflow audit, and `git diff --check` pass.
+As of 2026-06-08, the latest release-flow batch has completed the protected
+upward promotion flow on GitHub: PR #20 merged
+`release-branch-artifacts -> dev`, PR #21 merged
+`ci-upload-artifact-node24 -> dev`, PR #22 promoted `dev -> canary`, and PR #23
+promoted `canary -> master`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
+primary forge/build target; GitHub remains a secondary mirror/check. A Forgejo
+mirror-sync was triggered after the GitHub merges, and Forgejo now matches the
+same `dev` (`33fa87f`), `canary` (`df0acb8`), and `master` (`e3a8b80`) heads.
+The Forgejo workflow is present under `.forgejo/workflows/ci.yml` and uses
+`scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
+self-hosted runner-friendly toolchain setup.
+
+The current hardening pass covers curated public-corpus-inspired semantic
+fixtures, real dashboard counters, live-vs-total posture separation, scoped
+Dashboard chart sizing, real host CPU/load/memory/swap/disk resource metrics,
+resource reclaim actions, single-event log detail/AI analysis, URL-addressable
+IP threat-intel tabs, honest health/reconnect states, less abstract
+2D/China-mainland/3D attack-map modes, APISec JWT
+signing/audience/remote-JWKS/endpoint-policy controls, route-scoped management
+API RBAC, and synchronized GitHub/Forgejo branch-channel artifacts for `dev`,
+`canary`, and `stable`. GitHub push runs `27125345411`, `27125843548`, and
+`27126362531` passed with real `release-artifacts` uploads for those channels.
+Code snapshot `e3a8b80` has been built as a Linux amd64 single-binary
+deployment and smoke tested on the remote acceptance host: admin health/index
+return 200, the proxy home route returns 200, a SQLi probe is blocked with 403,
+and HTTPS admin responses include frame, nosniff, referrer, permissions, and
+HSTS safety headers.
 
 ## Pre-Release Gaps
 
 - The admin plane must be treated as a production security boundary: keep it
   behind TLS or a trusted reverse proxy, bind it to localhost/private networks by
   default, and avoid exposing browser tokens over plain HTTP.
+- Bare Prometheus scraping is private by default. Prefer authenticated
+  `/api/metrics` or expose `monitor.prometheus.path` only on a trusted listener;
+  set `monitor.prometheus.public: true` deliberately when an external scraper
+  needs direct access.
 - Before a public release, run repeatable sqlmap, XSStrike, nuclei, OWASP ZAP,
   and CRS/Coraza or ModSecurity comparison. Admin-surface route-level
   authentication/RBAC tests are now automated, but deployed dynamic scans should

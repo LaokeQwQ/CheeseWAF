@@ -48,7 +48,7 @@ func NewRouter(opts Options) http.Handler {
 	}
 
 	r.Get("/health", h.Health)
-	if opts.Config.Monitor.Prometheus.Enabled {
+	if opts.Config.Monitor.Prometheus.Enabled && opts.Config.Monitor.Prometheus.Public {
 		r.Get(opts.Config.Monitor.Prometheus.Path, h.Metrics)
 	}
 	r.Route("/api", func(r chi.Router) {
@@ -57,6 +57,14 @@ func NewRouter(opts Options) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
+			r.Use(middleware.SessionMiddleware(opts.Store))
+			r.Post("/auth/refresh", h.RefreshToken)
+			r.Post("/auth/logout", h.Logout)
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(tokens.Middleware)
+			r.Use(middleware.SessionMiddleware(opts.Store))
 			if opts.Config.APISec.Audit.Enabled {
 				r.Use(auditor.Middleware)
 			}

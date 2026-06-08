@@ -9,10 +9,18 @@ export const apiClient = axios.create({
   },
 });
 
-apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('cheesewaf-token');
+const tokenStorageKey = 'cheesewaf-token';
+const tokenRefreshWindowSeconds = 10 * 60;
+let refreshPromise: Promise<string> | null = null;
+
+type AuthResponse = { token: string; user: { username: string; role: string } };
+type TokenClaims = { exp?: number };
+
+apiClient.interceptors.request.use(async (config) => {
+  const token = localStorage.getItem(tokenStorageKey);
   if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+    const activeToken = await refreshTokenIfNeeded(token, String(config.url ?? ''));
+    config.headers.Authorization = `Bearer ${activeToken}`;
   }
   return config;
 });
@@ -21,7 +29,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (axios.isAxiosError(error) && error.response?.status === 401) {
-      localStorage.removeItem('cheesewaf-token');
+      localStorage.removeItem(tokenStorageKey);
       const path = window.location.pathname;
       if (path !== '/login' && path !== '/setup') {
         window.location.assign('/login');
@@ -30,6 +38,60 @@ apiClient.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
+async function refreshTokenIfNeeded(token: string, requestURL: string) {
+  if (requestURL.includes('/auth/login') || requestURL.includes('/auth/refresh') || requestURL.includes('/auth/logout') || requestURL.includes('/setup')) {
+    return token;
+  }
+  const claims = parseTokenClaims(token);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (!claims?.exp || claims.exp <= nowSeconds || claims.exp - nowSeconds > tokenRefreshWindowSeconds) {
+    return token;
+  }
+  if (!refreshPromise) {
+    refreshPromise = axios
+      .post<Envelope<AuthResponse>>(
+        '/api/auth/refresh',
+        {},
+        {
+          timeout: 10_000,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      )
+      .then((response) => {
+        if (response.data.error || !response.data.data?.token) {
+          throw new APIRequestError(response.data.error?.message ?? 'Unable to refresh token', response.data.error?.code);
+        }
+        localStorage.setItem(tokenStorageKey, response.data.data.token);
+        return response.data.data.token;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  try {
+    return await refreshPromise;
+  } catch {
+    return token;
+  }
+}
+
+function parseTokenClaims(token: string): TokenClaims | null {
+  const payload = token.split('.')[1];
+  if (!payload) {
+    return null;
+  }
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return JSON.parse(atob(padded)) as TokenClaims;
+  } catch {
+    return null;
+  }
+}
 
 type Envelope<T> = {
   data?: T;
@@ -73,9 +135,13 @@ async function unwrap<T>(promise: Promise<{ data: Envelope<T> }>): Promise<T> {
 }
 
 export function login(username: string, password: string, totpCode?: string) {
-  return unwrap<{ token: string; user: { username: string; role: string } }>(
+  return unwrap<AuthResponse>(
     apiClient.post('/auth/login', { username, password, totp_code: totpCode }),
   );
+}
+
+export function logout() {
+  return unwrap<{ revoked: boolean }>(apiClient.post('/auth/logout', {}));
 }
 
 export function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
