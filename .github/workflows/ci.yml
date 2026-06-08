@@ -179,7 +179,7 @@ jobs:
           CHEESEWAF_COMMIT: ${{ github.sha }}
         run: bash scripts/ci/package-release.sh
       - name: Upload branch release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
           path: release/*
