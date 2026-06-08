@@ -167,14 +167,14 @@ func runServe(ctx context.Context) error {
 func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
 	webDir := resolveWebDir()
 	if webDir == "" {
-		return apiHandler
+		return adminSecurityHeaders(apiHandler)
 	}
 	spa := http.FileServer(http.Dir(webDir))
 	metricsPath := "/metrics"
 	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
 		metricsPath = cfg.Monitor.Prometheus.Path
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isAdminAPIPath(r.URL.Path, metricsPath) {
 			apiHandler.ServeHTTP(w, r)
 			return
@@ -194,6 +194,20 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
 			return
 		}
 		apiHandler.ServeHTTP(w, r)
+	})
+	return adminSecurityHeaders(handler)
+}
+
+func adminSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
