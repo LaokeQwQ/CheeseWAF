@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import i18n from '../i18n';
 import { navItemMotion } from '../animations/micro';
-import { fetchHealth, fetchMonitorSummary } from '../api/client';
+import { fetchHealth, fetchMonitorSummary, logout } from '../api/client';
 import AIAssistant from '../components/AIAssistant/AIAssistant';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
@@ -107,9 +107,15 @@ export default function MainLayout() {
     void healthQuery.refetch();
   }
 
-  function handleLogout() {
-    localStorage.removeItem('cheesewaf-token');
-    navigate('/login', { replace: true });
+  async function handleLogout() {
+    try {
+      await logout();
+    } catch {
+      // Local logout must still work if the session is already expired or the API is unreachable.
+    } finally {
+      localStorage.removeItem('cheesewaf-token');
+      navigate('/login', { replace: true });
+    }
   }
 
   return (

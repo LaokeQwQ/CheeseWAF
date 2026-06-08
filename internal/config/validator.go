@@ -218,6 +218,12 @@ func Validate(cfg *Config) error {
 	if cfg.Monitor.Prometheus.Enabled && !strings.HasPrefix(cfg.Monitor.Prometheus.Path, "/") {
 		return fmt.Errorf("monitor.prometheus.path must start with /")
 	}
+	if cfg.Monitor.Prometheus.Enabled && cfg.Monitor.Prometheus.Public {
+		path := cfg.Monitor.Prometheus.Path
+		if path == "/health" || path == "/api" || strings.HasPrefix(path, "/api/") {
+			return fmt.Errorf("monitor.prometheus.path %q conflicts with protected admin routes", path)
+		}
+	}
 	if cfg.Monitor.RemoteWrite.Enabled {
 		if _, err := url.ParseRequestURI(cfg.Monitor.RemoteWrite.Endpoint); err != nil {
 			return fmt.Errorf("monitor.remote_write.endpoint is invalid: %w", err)

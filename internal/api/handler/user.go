@@ -94,6 +94,9 @@ func (h *Handler) EnableUser2FA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
+	if !h.revokeUserSessions(w, r, user.ID, "") {
+		return
+	}
 	writeData(w, user)
 }
 
@@ -106,6 +109,9 @@ func (h *Handler) DisableUser2FA(w http.ResponseWriter, r *http.Request) {
 	user.TwoFASecret = ""
 	if err := h.Store.UpdateUser(r.Context(), user); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+	if !h.revokeUserSessions(w, r, user.ID, "") {
 		return
 	}
 	writeData(w, user)
@@ -167,6 +173,9 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Store.UpdateUser(r.Context(), user); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+	if !h.revokeUserSessions(w, r, user.ID, "") {
 		return
 	}
 	writeData(w, user)

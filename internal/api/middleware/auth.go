@@ -24,6 +24,7 @@ type TokenManager struct {
 
 type Claims struct {
 	Subject  string   `json:"sub"`
+	ID       string   `json:"jti,omitempty"`
 	Username string   `json:"username"`
 	Role     string   `json:"role"`
 	Scopes   []string `json:"scope"`
@@ -47,14 +48,29 @@ func NewTokenManager(secret string, ttl time.Duration) *TokenManager {
 }
 
 func (m *TokenManager) Sign(subject, username, role string) (string, error) {
+	token, _, err := m.SignWithClaims(subject, username, role)
+	return token, err
+}
+
+func (m *TokenManager) SignWithClaims(subject, username, role string) (string, *Claims, error) {
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	now := time.Now().UTC()
-	claims := Claims{Subject: subject, Username: username, Role: role, Scopes: []string{role}, IssuedAt: now.Unix(), Expires: now.Add(m.ttl).Unix()}
-	headerJSON, _ := json.Marshal(header)
-	claimsJSON, _ := json.Marshal(claims)
+	tokenID, err := randomTokenID()
+	if err != nil {
+		return "", nil, err
+	}
+	claims := Claims{Subject: subject, ID: tokenID, Username: username, Role: role, Scopes: []string{role}, IssuedAt: now.Unix(), Expires: now.Add(m.ttl).Unix()}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", nil, err
+	}
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", nil, err
+	}
 	unsigned := encode(headerJSON) + "." + encode(claimsJSON)
 	sig := m.sign(unsigned)
-	return unsigned + "." + sig, nil
+	return unsigned + "." + sig, &claims, nil
 }
 
 func (m *TokenManager) Verify(token string) (*Claims, error) {
@@ -98,6 +114,32 @@ func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+type SessionValidator interface {
+	IsSessionActive(ctx context.Context, id, userID string, now time.Time) (bool, error)
+}
+
+func SessionMiddleware(validator SessionValidator) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if validator == nil {
+				writeUnauthorized(w)
+				return
+			}
+			claims, _ := r.Context().Value(UserContextKey).(*Claims)
+			if claims == nil || claims.ID == "" || claims.Subject == "" {
+				writeUnauthorized(w)
+				return
+			}
+			active, err := validator.IsSessionActive(r.Context(), claims.ID, claims.Subject, time.Now().UTC())
+			if err != nil || !active {
+				writeUnauthorized(w)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func (m *TokenManager) sign(unsigned string) string {
 	mac := hmac.New(sha256.New, m.secret)
 	_, _ = mac.Write([]byte(unsigned))
@@ -106,6 +148,14 @@ func (m *TokenManager) sign(unsigned string) string {
 
 func encode(data []byte) string {
 	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func randomTokenID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 func writeUnauthorized(w http.ResponseWriter) {

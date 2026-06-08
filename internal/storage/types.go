@@ -85,6 +85,9 @@ type Store interface {
 
 	// Users
 	UserStore
+
+	// Sessions
+	SessionStore
 }
 
 // SiteStore manages site configurations.
@@ -114,6 +117,17 @@ type UserStore interface {
 	CreateUser(ctx context.Context, user *User) error
 	UpdateUser(ctx context.Context, user *User) error
 	ListUsers(ctx context.Context) ([]User, error)
+}
+
+// SessionStore manages admin bearer-token sessions.
+// 管理端 Bearer token 会话管理。
+type SessionStore interface {
+	CreateSession(ctx context.Context, session *Session) error
+	RotateSession(ctx context.Context, oldID, userID string, next *Session) error
+	RevokeSession(ctx context.Context, id, userID string) error
+	RevokeUserSessions(ctx context.Context, userID string, exceptID string) error
+	IsSessionActive(ctx context.Context, id, userID string, now time.Time) (bool, error)
+	PruneSessions(ctx context.Context, before time.Time) (int64, error)
 }
 
 // Site represents a protected site configuration.
@@ -176,16 +190,18 @@ type SiteHealthCheckConfig struct {
 }
 
 type SiteProtectionConfig struct {
-	SemanticSQL  bool `json:"semantic_sql"`
-	SemanticXSS  bool `json:"semantic_xss"`
-	SemanticRCE  bool `json:"semantic_rce"`
-	SemanticLFI  bool `json:"semantic_lfi"`
-	SemanticXXE  bool `json:"semantic_xxe"`
-	SemanticSSRF bool `json:"semantic_ssrf"`
-	Bot          bool `json:"bot"`
-	RateLimit    bool `json:"ratelimit"`
-	ACL          bool `json:"acl"`
-	APISecurity  bool `json:"apisec"`
+	SemanticSQL   bool `json:"semantic_sql"`
+	SemanticXSS   bool `json:"semantic_xss"`
+	SemanticRCE   bool `json:"semantic_rce"`
+	SemanticLFI   bool `json:"semantic_lfi"`
+	SemanticXXE   bool `json:"semantic_xxe"`
+	SemanticSSRF  bool `json:"semantic_ssrf"`
+	SemanticNoSQL bool `json:"semantic_nosql"`
+	SemanticSSTI  bool `json:"semantic_ssti"`
+	Bot           bool `json:"bot"`
+	RateLimit     bool `json:"ratelimit"`
+	ACL           bool `json:"acl"`
+	APISecurity   bool `json:"apisec"`
 }
 
 type SiteProtectionPolicy struct {
@@ -242,4 +258,18 @@ type User struct {
 	TwoFASecret  string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// Session represents a revocable admin API session.
+// 可撤销的管理端 API 会话。
+type Session struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	IssuedAt  time.Time `json:"issued_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	RevokedAt time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

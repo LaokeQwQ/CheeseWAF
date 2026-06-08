@@ -235,6 +235,93 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
+func (s *SQLiteStore) CreateSession(ctx context.Context, session *Session) error {
+	ensureSession(session)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_sessions(id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		session.ID, session.UserID, session.Username, session.Role, formatTime(session.IssuedAt), formatTime(session.ExpiresAt), formatOptionalTime(session.RevokedAt), formatTime(session.CreatedAt), formatTime(session.UpdatedAt))
+	return err
+}
+
+func (s *SQLiteStore) RotateSession(ctx context.Context, oldID, userID string, next *Session) error {
+	if oldID == "" || userID == "" {
+		return fmt.Errorf("session id and user id are required")
+	}
+	ensureSession(next)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE id=? AND user_id=? AND revoked_at=''`,
+		formatOptionalTime(now), formatTime(now), oldID, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("session is not active")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO admin_sessions(id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		next.ID, next.UserID, next.Username, next.Role, formatTime(next.IssuedAt), formatTime(next.ExpiresAt), formatOptionalTime(next.RevokedAt), formatTime(next.CreatedAt), formatTime(next.UpdatedAt)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) RevokeSession(ctx context.Context, id, userID string) error {
+	if id == "" || userID == "" {
+		return fmt.Errorf("session id and user id are required")
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE id=? AND user_id=? AND revoked_at=''`, formatOptionalTime(now), formatTime(now), id, userID)
+	return err
+}
+
+func (s *SQLiteStore) RevokeUserSessions(ctx context.Context, userID string, exceptID string) error {
+	if userID == "" {
+		return fmt.Errorf("user id is required")
+	}
+	now := time.Now().UTC()
+	query := `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE user_id=? AND revoked_at=''`
+	args := []any{formatOptionalTime(now), formatTime(now), userID}
+	if exceptID != "" {
+		query += ` AND id<>?`
+		args = append(args, exceptID)
+	}
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *SQLiteStore) IsSessionActive(ctx context.Context, id, userID string, now time.Time) (bool, error) {
+	if id == "" || userID == "" {
+		return false, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM admin_sessions WHERE id=? AND user_id=? AND revoked_at='' AND expires_at>?`, id, userID, formatTime(now)).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *SQLiteStore) PruneSessions(ctx context.Context, before time.Time) (int64, error) {
+	if before.IsZero() {
+		before = time.Now().UTC()
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE expires_at<? OR (revoked_at<>'' AND revoked_at<?)`, formatTime(before), formatOptionalTime(before))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -326,13 +413,16 @@ func ensureSiteDefaults(site *Site) {
 	}
 	if site.WAFEnabled && !site.Advanced.Protection.SemanticSQL && !site.Advanced.Protection.SemanticXSS &&
 		!site.Advanced.Protection.SemanticRCE && !site.Advanced.Protection.SemanticLFI &&
-		!site.Advanced.Protection.SemanticXXE && !site.Advanced.Protection.SemanticSSRF {
+		!site.Advanced.Protection.SemanticXXE && !site.Advanced.Protection.SemanticSSRF &&
+		!site.Advanced.Protection.SemanticNoSQL && !site.Advanced.Protection.SemanticSSTI {
 		site.Advanced.Protection.SemanticSQL = true
 		site.Advanced.Protection.SemanticXSS = true
 		site.Advanced.Protection.SemanticRCE = true
 		site.Advanced.Protection.SemanticLFI = true
 		site.Advanced.Protection.SemanticXXE = true
 		site.Advanced.Protection.SemanticSSRF = true
+		site.Advanced.Protection.SemanticNoSQL = true
+		site.Advanced.Protection.SemanticSSTI = true
 	}
 	if site.Advanced.HealthCheck.Path == "" {
 		site.Advanced.HealthCheck.Path = "/"
@@ -367,6 +457,19 @@ func ensureUser(user *User) {
 	}
 	if user.UpdatedAt.IsZero() {
 		user.UpdatedAt = now
+	}
+}
+
+func ensureSession(session *Session) {
+	now := time.Now().UTC()
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = now
+	}
+	if session.UpdatedAt.IsZero() {
+		session.UpdatedAt = now
+	}
+	if session.IssuedAt.IsZero() {
+		session.IssuedAt = now
 	}
 }
 
@@ -405,6 +508,13 @@ func boolInt(value bool) int {
 func formatTime(value time.Time) string {
 	if value.IsZero() {
 		value = time.Now().UTC()
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func formatOptionalTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
 }

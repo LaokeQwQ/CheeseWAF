@@ -304,6 +304,7 @@ monitor:
   prometheus:
     enabled: true
     path: "/metrics"
+    public: false
   remote_write:
     enabled: false
     interval: "30s"
