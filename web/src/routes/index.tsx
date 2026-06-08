@@ -7,6 +7,7 @@ import MainLayout from '../layouts/MainLayout';
 const AIPage = lazy(() => import('../pages/AI/AIPage'));
 const APISecurityPage = lazy(() => import('../pages/APISecurity/APISecurityPage'));
 const AttackMapPage = lazy(() => import('../pages/AttackMap/AttackMapPage'));
+const AttackScreenPage = lazy(() => import('../pages/AttackMap/AttackScreenPage'));
 const BlockPagesPage = lazy(() => import('../pages/BlockPages/BlockPagesPage'));
 const DashboardPage = lazy(() => import('../pages/Dashboard/DashboardPage'));
 const EdgePage = lazy(() => import('../pages/Edge/EdgePage'));
@@ -51,6 +52,15 @@ function ProtectedLayout() {
   return <MainLayout />;
 }
 
+function ProtectedStandalone({ children }: { children: ReactNode }) {
+  const location = useLocation();
+  const token = localStorage.getItem('cheesewaf-token');
+  if (!token) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  return <>{children}</>;
+}
+
 export default function AppRoutes() {
   const location = useLocation();
 
@@ -59,6 +69,7 @@ export default function AppRoutes() {
       <Routes location={location} key={location.pathname}>
         <Route path="/login" element={<LazyPage><LoginPage /></LazyPage>} />
         <Route path="/setup" element={<LazyPage><SetupPage /></LazyPage>} />
+        <Route path="/attack-map/screen" element={<ProtectedStandalone><LazyPage><AttackScreenPage /></LazyPage></ProtectedStandalone>} />
         <Route element={<ProtectedLayout />}>
           <Route index element={<Page><LazyPage><DashboardPage /></LazyPage></Page>} />
           <Route path="sites" element={<Page><LazyPage><SitesPage /></LazyPage></Page>} />

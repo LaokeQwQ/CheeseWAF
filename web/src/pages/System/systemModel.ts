@@ -1,6 +1,20 @@
-import type { SystemConfig } from '../../types/api';
+import type { APISecAuthConfig, SystemConfig } from '../../types/api';
 
 export const second = 1_000_000_000;
+
+const fallbackAPIAuth: APISecAuthConfig = {
+  enabled: false,
+  jwt_issuers: [],
+  jwt_audiences: [],
+  required_scopes: [],
+  endpoint_policies: [],
+  jwt_algorithms: [],
+  jwt_shared_secret: '',
+  jwt_public_key_file: '',
+  jwt_public_key_pem: '',
+  jwks_file: '',
+  jwks_json: '',
+};
 
 export const fallbackSystem: SystemConfig = {
   server: {
@@ -39,7 +53,7 @@ export const fallbackSystem: SystemConfig = {
   },
   vulnerability: { enabled: false, feeds: [] },
   monitor: {},
-  apisec: {},
+  apisec: { enabled: false, auth: fallbackAPIAuth },
 };
 
 export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
@@ -74,7 +88,11 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
     update: { ota: { ...fallbackSystem.update.ota, ...next.update?.ota } },
     vulnerability: { ...fallbackSystem.vulnerability, ...next.vulnerability, feeds: Array.isArray(next.vulnerability?.feeds) ? next.vulnerability.feeds : [] },
     monitor: next.monitor ?? {},
-    apisec: next.apisec ?? {},
+    apisec: {
+      ...fallbackSystem.apisec,
+      ...next.apisec,
+      auth: { ...fallbackAPIAuth, ...next.apisec?.auth },
+    },
   };
 }
 

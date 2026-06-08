@@ -235,6 +235,11 @@ protection:
 
 ai:
   enabled: false
+  api_base: "https://api.openai.com/v1"
+  api_key: ""
+  api_key_header: "authorization"
+  model: "gpt-4o-mini"
+  async: true
 
 update:
   ota:
@@ -332,6 +337,16 @@ apisec:
     schemas: []
   auth:
     enabled: false
+    jwt_issuers: []
+    jwt_audiences: []
+    required_scopes: []
+    endpoint_policies: []
+    jwt_algorithms: []
+    jwt_shared_secret: ""
+    jwt_public_key_file: ""
+    jwt_public_key_pem: ""
+    jwks_file: ""
+    jwks_json: ""
   rate_limits:
     - id: "login-api"
       method: "POST"

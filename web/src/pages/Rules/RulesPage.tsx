@@ -9,7 +9,7 @@ export default function RulesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const { data } = useQuery({ queryKey: ['rules'], queryFn: () => fetchRules(), retry: false });
+  const { data, isError, isLoading, refetch } = useQuery({ queryKey: ['rules'], queryFn: () => fetchRules(), retry: false });
   const mutation = useMutation({
     mutationFn: createRule,
     onSuccess: () => {
@@ -39,10 +39,16 @@ export default function RulesPage() {
       </header>
 
       <section className="table-panel">
+        {isError && (
+          <div className="inline-error">
+            <span>{t('rules.loadFailed')}</span>
+            <Button size="small" onClick={() => refetch()}>{t('common.retry')}</Button>
+          </div>
+        )}
         <Table
           rowKey="id"
           pagination={{ pageSize: 8 }}
-          loading={!data}
+          loading={isLoading}
           data={rows}
           columns={[
             {
@@ -55,12 +61,16 @@ export default function RulesPage() {
                 </span>
               ),
             },
-            { title: t('rules.pattern'), dataIndex: 'pattern', render: (pattern: string) => <code>{pattern}</code> },
+            { title: t('rules.pattern'), dataIndex: 'pattern', render: (pattern: string) => <code className="table-code" title={pattern}>{pattern}</code> },
             { title: t('rules.location'), dataIndex: 'location' },
             {
               title: t('rules.severity'),
               dataIndex: 'severity',
-              render: (severity: string) => <Tag color={severity === 'critical' ? 'red' : severity === 'high' ? 'orange' : 'blue'}>{severityLabel(severity)}</Tag>,
+              render: (severity: string) => (
+                <span className="status-group">
+                  <Tag color={severity === 'critical' ? 'red' : severity === 'high' ? 'orange' : 'blue'}>{severityLabel(severity)}</Tag>
+                </span>
+              ),
             },
             { title: t('rules.priority'), dataIndex: 'priority' },
             { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean) => <Switch checked={enabled} size="small" /> },

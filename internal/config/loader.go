@@ -156,7 +156,7 @@ func Default() Config {
 				File: FileLogConfig{Path: "./logs/access.log", MaxSize: "100MB", MaxBackups: 10},
 			},
 		},
-		AI: AIConfig{Enabled: false, APIBase: "https://api.openai.com/v1", Model: "gpt-4o-mini", Async: true},
+		AI: AIConfig{Enabled: false, APIBase: "https://api.openai.com/v1", APIKeyHeader: "authorization", Model: "gpt-4o-mini", Async: true},
 		Update: UpdateConfig{
 			OTA: OTAConfig{
 				Enabled:          false,

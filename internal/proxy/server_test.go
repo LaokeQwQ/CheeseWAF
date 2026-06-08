@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -514,6 +516,73 @@ func TestServerAPISecurityPolicyLevels(t *testing.T) {
 		}
 	})
 
+	t.Run("smart blocks API auth token with invalid signature", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
+			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+			cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+			cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
+		})
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+testHMACJWT(t, "wrong-secret", map[string]any{"iss": "issuer-a", "scope": []string{"orders:read"}}))
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("expected invalid API auth signature block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "block" || sink.entries[0].DetectorID != "apisec.auth.signature" {
+			t.Fatalf("unexpected invalid signature log: %#v", sink.entries)
+		}
+	})
+
+	t.Run("smart passes API auth token with valid signature", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
+			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+			cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+			cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
+		})
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+testHMACJWT(t, "proxy-secret", map[string]any{"iss": "issuer-a", "scope": []string{"orders:read"}}))
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+			t.Fatalf("expected valid signed API auth pass, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Category == "apisec" {
+			t.Fatalf("unexpected API auth finding for valid signed token: %#v", sink.entries)
+		}
+	})
+
+	t.Run("smart blocks API auth token with invalid audience", func(t *testing.T) {
+		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+			cfg.APISec.Auth.Enabled = true
+			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
+			cfg.APISec.Auth.JWTAudiences = []string{"orders-api"}
+			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+			cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+			cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
+		})
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+testHMACJWT(t, "proxy-secret", map[string]any{"iss": "issuer-a", "aud": "other-api", "scope": []string{"orders:read"}}))
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected invalid API auth audience block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "block" || sink.entries[0].DetectorID != "apisec.auth.audience" {
+			t.Fatalf("unexpected invalid audience log: %#v", sink.entries)
+		}
+	})
+
 	t.Run("smart blocks missing API auth scope", func(t *testing.T) {
 		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
 			cfg.APISec.Auth.Enabled = true
@@ -730,5 +799,21 @@ func testJWT(t *testing.T, claims map[string]any) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+	return base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + "."
+}
+
+func testHMACJWT(t *testing.T, secret string, claims map[string]any) string {
+	t.Helper()
+	header, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(signingInput))
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

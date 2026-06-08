@@ -31,13 +31,15 @@ export default function OperationsPage() {
       </header>
 
       <div className="ops-grid">
-        <section className="panel">
+        <section className="panel storage-ops-panel">
           <div className="panel-heading"><h2><Database size={16} /> {t('ops.storage')}</h2></div>
           <div className="resource-stack">
-            <div><Database size={18} /><span>Data</span><Progress percent={Math.round((dataSize / total) * 100)} /><code>{formatBytes(dataSize)}</code></div>
-            <div><Archive size={18} /><span>Logs</span><Progress percent={Math.round((logSize / total) * 100)} /><code>{formatBytes(logSize)}</code></div>
+            <div><Database size={18} /><span>Data</span><Progress percent={Math.round((dataSize / total) * 100)} /><code className="resource-value">{formatBytes(dataSize)}</code></div>
+            <div><Archive size={18} /><span>Logs</span><Progress percent={Math.round((logSize / total) * 100)} /><code className="resource-value">{formatBytes(logSize)}</code></div>
           </div>
-          <Button icon={<RotateCcw size={16} />} onClick={() => cleanup.mutate()} loading={cleanup.isPending}>{t('ops.cleanup')}</Button>
+          <div className="panel-actions">
+            <Button icon={<RotateCcw size={16} />} onClick={() => cleanup.mutate()} loading={cleanup.isPending}>{t('ops.cleanup')}</Button>
+          </div>
         </section>
         <section className="panel">
           <div className="panel-heading"><h2>{t('ops.report')}</h2></div>
@@ -83,10 +85,10 @@ export default function OperationsPage() {
           data={tasks}
           columns={[
             { title: t('ops.task'), dataIndex: 'name' },
-            { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <Tag>{taskTypeLabel(type, t)}</Tag> },
+            { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <span className="status-group"><Tag>{taskTypeLabel(type, t)}</Tag></span> },
             { title: t('ops.every'), dataIndex: 'every' },
-            { title: t('ops.target'), dataIndex: 'target', render: (target: string) => <code>{target}</code> },
-            { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'gray'}>{enabled ? t('system.enabled') : t('system.disabled')}</Tag> },
+            { title: t('ops.target'), dataIndex: 'target', render: (target: string) => <code className="table-code" title={target || '-'}>{target || '-'}</code> },
+            { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean) => <span className="status-group"><Tag color={enabled ? 'green' : 'gray'}>{enabled ? t('system.enabled') : t('system.disabled')}</Tag></span> },
           ]}
         />
       </section>

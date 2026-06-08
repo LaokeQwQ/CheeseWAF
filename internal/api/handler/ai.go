@@ -10,12 +10,13 @@ import (
 )
 
 type aiConfigPayload struct {
-	Enabled   bool   `json:"enabled"`
-	APIBase   string `json:"api_base"`
-	APIKey    string `json:"api_key"`
-	APIKeySet bool   `json:"api_key_set"`
-	Model     string `json:"model"`
-	Async     bool   `json:"async"`
+	Enabled      bool   `json:"enabled"`
+	APIBase      string `json:"api_base"`
+	APIKey       string `json:"api_key"`
+	APIKeyHeader string `json:"api_key_header"`
+	APIKeySet    bool   `json:"api_key_set"`
+	Model        string `json:"model"`
+	Async        bool   `json:"async"`
 }
 
 type aiEventsAnalyzePayload struct {
@@ -41,11 +42,12 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := config.AIConfig{
-		Enabled: req.Enabled,
-		APIBase: req.APIBase,
-		APIKey:  req.APIKey,
-		Model:   req.Model,
-		Async:   req.Async,
+		Enabled:      req.Enabled,
+		APIBase:      req.APIBase,
+		APIKey:       req.APIKey,
+		APIKeyHeader: req.APIKeyHeader,
+		Model:        req.Model,
+		Async:        req.Async,
 	}
 	if next.APIKey == "" {
 		next.APIKey = h.Config.AI.APIKey
@@ -149,10 +151,11 @@ func (h *Handler) queryLogs(r *http.Request, filter storage.LogFilter) []storage
 
 func aiConfigView(cfg config.AIConfig) aiConfigPayload {
 	return aiConfigPayload{
-		Enabled:   cfg.Enabled,
-		APIBase:   cfg.APIBase,
-		APIKeySet: cfg.APIKey != "",
-		Model:     cfg.Model,
-		Async:     cfg.Async,
+		Enabled:      cfg.Enabled,
+		APIBase:      cfg.APIBase,
+		APIKeyHeader: cfg.APIKeyHeader,
+		APIKeySet:    cfg.APIKey != "",
+		Model:        cfg.Model,
+		Async:        cfg.Async,
 	}
 }

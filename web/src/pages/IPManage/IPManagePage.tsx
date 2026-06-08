@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Input, InputNumber, Message as ArcoMessage, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
+import { Button, Input, InputNumber, Message as ArcoMessage, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { CloudDownload, FileDown, Plus, Search, Shield, Tags, Trash2 } from 'lucide-react';
+import { CloudDownload, FileDown, Pencil, Plus, Search, Shield, Tags, Trash2 } from 'lucide-react';
 import {
   exportThreatIntel,
   fetchIPRules,
@@ -34,7 +34,7 @@ export default function IPManagePage() {
     contents: '',
   });
   const [lookupDraft, setLookupDraft] = useState({ providerId: '', ip: '' });
-  const { data } = useQuery({ queryKey: ['ip-rules'], queryFn: fetchIPRules, retry: false });
+  const { data, isLoading } = useQuery({ queryKey: ['ip-rules'], queryFn: fetchIPRules, retry: false });
   const entries = data?.entries ?? [];
 
   useEffect(() => {
@@ -101,7 +101,7 @@ export default function IPManagePage() {
     return entries.filter((entry) => (
       entry.ip.toLowerCase().includes(needle)
       || entry.list.includes(needle)
-      || tagsFor(entry, draftTags).some((tag) => tag.includes(needle))
+      || tagsFor(entry, draftTags).some((tag) => tag.toLowerCase().includes(needle))
       || intelFor(entry).some((intel) => `${intel.source} ${intel.severity} ${intel.labels.join(' ')}`.toLowerCase().includes(needle))
     ));
   }, [draftTags, entries, search]);
@@ -150,13 +150,14 @@ export default function IPManagePage() {
       <section className="panel">
         <Tabs defaultActiveTab="entries">
           <Tabs.TabPane key="entries" title={t('ip.entries')}>
-            <div className="toolbar-row">
-              <Input prefix={<Search size={16} />} value={search} placeholder={t('common.search')} allowClear onChange={setSearch} />
+            <div className="toolbar-row toolbar-row-compact ip-toolbar">
+              <Input className="toolbar-search" prefix={<Search size={16} />} value={search} placeholder={t('common.search')} allowClear onChange={setSearch} />
             </div>
-            <div className="table-panel table-panel-embedded">
+            <div className="table-panel table-panel-embedded ip-entries-table">
               <Table
                 rowKey="ip"
                 pagination={{ pageSize: 10 }}
+                loading={isLoading}
                 data={filtered}
                 columns={[
                   {
@@ -183,9 +184,9 @@ export default function IPManagePage() {
                     title: t('ip.tags'),
                     dataIndex: 'tags',
                     render: (_: string[], record: IPReputationEntry) => (
-                      <Input
-                        value={tagsFor(record, draftTags).join(',')}
-                        onChange={(value) => setDraftTags((current) => ({ ...current, [record.ip]: splitList(value) }))}
+                      <EditableTagInput
+                        tags={tagsFor(record, draftTags)}
+                        onChange={(tags) => setDraftTags((current) => ({ ...current, [record.ip]: tags }))}
                       />
                     ),
                   },
@@ -193,13 +194,14 @@ export default function IPManagePage() {
                     title: t('ip.intel'),
                     dataIndex: 'intel',
                     render: (_: unknown, record: IPReputationEntry) => (
-                      <span className="tag-stack">
-                        {intelFor(record).length === 0 ? <Tag>{t('common.monitor')}</Tag> : intelFor(record).map((item) => {
+                      <span className="intel-chip-list">
+                        {intelFor(record).length === 0 ? <span className="intel-chip intel-chip-muted">{t('common.monitor')}</span> : intelFor(record).map((item) => {
                           const confidence = typeof item.confidence === 'number' && item.confidence > 0 ? ` · ${Math.round(item.confidence * 100)}%` : '';
                           return (
-                            <Tag key={`${record.ip}-${item.id || item.value}`} color={intelColor(item.severity)}>
-                              {item.source || displaySeverity(item.severity, t)} · {displayAction(item.action || 'challenge', t)}{confidence}
-                            </Tag>
+                            <span key={`${record.ip}-${item.id || item.value}`} className={`intel-chip intel-chip-${intelColor(item.severity)}`}>
+                              <span>{item.source || displaySeverity(item.severity, t)}</span>
+                              <strong>{displayAction(item.action || 'challenge', t)}{confidence}</strong>
+                            </span>
                           );
                         })}
                       </span>
@@ -344,6 +346,53 @@ async function saveIntelFile(format: 'csv' | 'stix') {
   link.download = `cheesewaf-threat-intel.${format === 'stix' ? 'json' : 'csv'}`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
+  const { t } = useTranslation();
+  const tagText = tags.join(', ');
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(tagText);
+
+  useEffect(() => {
+    setDraft(tagText);
+  }, [tagText]);
+
+  const commit = () => {
+    onChange(splitList(draft));
+    setOpen(false);
+  };
+
+  return (
+    <div className="ip-tag-editor">
+      <div className="ip-token-row">
+        {tags.length > 0 ? tags.map((tag) => <span className="ip-token" key={tag}>{tag}</span>) : <span className="ip-token-muted">-</span>}
+        <Popover
+          popupVisible={open}
+          onVisibleChange={setOpen}
+          trigger="click"
+          position="bottom"
+          content={(
+            <div className="ip-tag-popover">
+              <Input
+                size="small"
+                value={draft}
+                placeholder="tag-a, tag-b"
+                onChange={setDraft}
+                onPressEnter={commit}
+              />
+              <div>
+                <Button size="mini" onClick={() => setDraft(tagText)}>{t('common.reset')}</Button>
+                <Button size="mini" type="primary" onClick={commit}>{t('common.save')}</Button>
+              </div>
+            </div>
+          )}
+        >
+          <Button className="ip-tag-edit-btn" size="mini" icon={<Pencil size={12} />} />
+        </Popover>
+      </div>
+    </div>
+  );
 }
 
 function splitList(value: string) {

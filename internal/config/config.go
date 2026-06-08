@@ -350,11 +350,12 @@ type FileLogConfig struct {
 }
 
 type AIConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	APIBase string `yaml:"api_base" json:"api_base"`
-	APIKey  string `yaml:"api_key" json:"api_key"`
-	Model   string `yaml:"model" json:"model"`
-	Async   bool   `yaml:"async" json:"async"`
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	APIBase      string `yaml:"api_base" json:"api_base"`
+	APIKey       string `yaml:"api_key" json:"api_key"`
+	APIKeyHeader string `yaml:"api_key_header" json:"api_key_header"`
+	Model        string `yaml:"model" json:"model"`
+	Async        bool   `yaml:"async" json:"async"`
 }
 
 type UpdateConfig struct {
@@ -490,9 +491,27 @@ type APIEndpointSchemaConfig struct {
 }
 
 type APIAuthConfig struct {
-	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	Enabled          bool                          `yaml:"enabled" json:"enabled"`
+	JWTIssuers       []string                      `yaml:"jwt_issuers" json:"jwt_issuers"`
+	JWTAudiences     []string                      `yaml:"jwt_audiences" json:"jwt_audiences"`
+	RequiredScopes   []string                      `yaml:"required_scopes" json:"required_scopes"`
+	EndpointPolicies []APIAuthEndpointPolicyConfig `yaml:"endpoint_policies" json:"endpoint_policies"`
+	JWTAlgorithms    []string                      `yaml:"jwt_algorithms" json:"jwt_algorithms"`
+	JWTSharedSecret  string                        `yaml:"jwt_shared_secret" json:"jwt_shared_secret"`
+	JWTPublicKeyFile string                        `yaml:"jwt_public_key_file" json:"jwt_public_key_file"`
+	JWTPublicKeyPEM  string                        `yaml:"jwt_public_key_pem" json:"jwt_public_key_pem"`
+	JWKSFile         string                        `yaml:"jwks_file" json:"jwks_file"`
+	JWKSJSON         string                        `yaml:"jwks_json" json:"jwks_json"`
+}
+
+type APIAuthEndpointPolicyConfig struct {
+	ID             string   `yaml:"id" json:"id"`
+	Method         string   `yaml:"method" json:"method"`
+	PathPattern    string   `yaml:"path_pattern" json:"path_pattern"`
 	JWTIssuers     []string `yaml:"jwt_issuers" json:"jwt_issuers"`
+	JWTAudiences   []string `yaml:"jwt_audiences" json:"jwt_audiences"`
 	RequiredScopes []string `yaml:"required_scopes" json:"required_scopes"`
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
 }
 
 type APIEndpointLimitConfig struct {

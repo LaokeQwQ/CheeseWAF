@@ -11,7 +11,7 @@ import {
   Tag,
 } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Database, LockKeyhole, ServerCog, ShieldAlert, UserRound } from 'lucide-react';
+import { Database, KeyRound, LockKeyhole, Plus, ServerCog, ShieldAlert, Trash2, UserRound } from 'lucide-react';
 import QRCode from 'qrcode';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -27,7 +27,7 @@ import {
 import i18n from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
-import type { SystemConfig, TOTPSetup } from '../../types/api';
+import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, SystemConfig, TOTPSetup } from '../../types/api';
 import { durationSeconds, fallbackSystem, normalizeSystem, secondsToDuration } from './systemModel';
 
 export default function SystemPage() {
@@ -107,6 +107,47 @@ export default function SystemPage() {
       },
     }));
   };
+  const apiAuth = useMemo(() => readAPIAuth(system), [system]);
+  const patchAPISec = (patch: Partial<SystemConfig['apisec']>) => {
+    setSystem((current) => normalizeSystem({ ...current, apisec: { ...current.apisec, ...patch } }));
+  };
+  const patchAPIAuth = (patch: Partial<APISecAuthConfig>) => {
+    setSystem((current) => {
+      const auth = readAPIAuth(current);
+      return normalizeSystem({
+        ...current,
+        apisec: {
+          ...current.apisec,
+          auth: { ...auth, ...patch },
+        },
+      });
+    });
+  };
+  const patchAPIAuthEndpoint = (index: number, patch: Partial<APISecAuthEndpointPolicyConfig>) => {
+    const endpointPolicies = apiAuth.endpoint_policies.map((policy, policyIndex) => (
+      policyIndex === index ? { ...policy, ...patch } : policy
+    ));
+    patchAPIAuth({ endpoint_policies: endpointPolicies });
+  };
+  const addAPIAuthEndpoint = () => {
+    patchAPIAuth({
+      endpoint_policies: [
+        ...apiAuth.endpoint_policies,
+        {
+          id: `api-auth-${apiAuth.endpoint_policies.length + 1}`,
+          method: 'GET',
+          path_pattern: '^/api/',
+          jwt_issuers: [],
+          jwt_audiences: [],
+          required_scopes: [],
+          enabled: true,
+        },
+      ],
+    });
+  };
+  const removeAPIAuthEndpoint = (index: number) => {
+    patchAPIAuth({ endpoint_policies: apiAuth.endpoint_policies.filter((_, policyIndex) => policyIndex !== index) });
+  };
 
   return (
     <section className="page-surface">
@@ -120,51 +161,75 @@ export default function SystemPage() {
         </Button>
       </header>
 
-      <section className="panel">
-        <Tabs defaultActiveTab="runtime">
+      <section className="panel system-settings-panel">
+        <Tabs className="system-tabs" defaultActiveTab="runtime">
           <Tabs.TabPane key="runtime" title={<span className="tab-title"><ServerCog size={15} />{t('system.runtime')}</span>}>
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.interface')}</h2>
                 <Button onClick={() => saveMutation.mutate({ server: system.server, tls: system.tls, logging: system.logging })} loading={saveMutation.isPending}>{t('common.save')}</Button>
               </div>
-              <div className="site-detail-grid">
-                <label>
-                  <span>{t('system.theme')}</span>
-                  <Select value={theme} onChange={(value) => setTheme(value as ThemeName)}>
-                    {themeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
-                  </Select>
-                </label>
-                <label>
-                  <span>{t('system.language')}</span>
-                  <Select
-                    value={language}
-                    onChange={(value) => {
-                      const next = value as Language;
-                      setLanguage(next);
-                      i18n.changeLanguage(next);
-                    }}
-                  >
-                    <Select.Option value="zh-CN">中文</Select.Option>
-                    <Select.Option value="en-US">English</Select.Option>
-                  </Select>
-                </label>
-                <label><span>HTTP</span><Input value={system.server.listen} onChange={(listen) => patchSystem({ server: { ...system.server, listen } })} /></label>
-                <label><span>HTTPS</span><Input value={system.server.listen_tls} onChange={(listen_tls) => patchSystem({ server: { ...system.server, listen_tls } })} /></label>
-                <label><span>HTTP/3 UDP</span><Input value={system.server.listen_http3} onChange={(listen_http3) => patchSystem({ server: { ...system.server, listen_http3 } })} /></label>
-                <label><span>{t('system.adminListen')}</span><Input value={system.server.admin_listen} onChange={(admin_listen) => patchSystem({ server: { ...system.server, admin_listen } })} /></label>
-                <label className="switch-line"><span>{t('system.adminPublic')}</span><Switch checked={system.server.admin_public} onChange={(admin_public) => patchSystem({ server: { ...system.server, admin_public } })} /></label>
-                <label className="switch-line"><span>{t('system.adminTls')}</span><Switch checked={system.server.admin_tls.enabled} onChange={(enabled) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, enabled } } })} /></label>
-                <label><span>{t('system.adminTlsCert')}</span><Input value={system.server.admin_tls.cert_file} onChange={(cert_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, cert_file } } })} /></label>
-                <label><span>{t('system.adminTlsKey')}</span><Input value={system.server.admin_tls.key_file} onChange={(key_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, key_file } } })} /></label>
-                <label className="switch-line"><span>HTTP/3</span><Switch checked={system.server.http3.enabled} onChange={(enabled) => patchSystem({ server: { ...system.server, http3: { ...system.server.http3, enabled } } })} /></label>
-                <label className="switch-line"><span>0-RTT</span><Switch checked={system.server.http3.zero_rtt} onChange={(zero_rtt) => patchSystem({ server: { ...system.server, http3: { ...system.server.http3, zero_rtt } } })} /></label>
-                <label className="switch-line"><span>{t('system.autoCert')}</span><Switch checked={system.tls.auto_cert} onChange={(auto_cert) => patchSystem({ tls: { ...system.tls, auto_cert } })} /></label>
-                <label className="switch-line"><span>HSTS</span><Switch checked={system.tls.hsts} onChange={(hsts) => patchSystem({ tls: { ...system.tls, hsts } })} /></label>
-                <label><span>{t('sites.certFile')}</span><Input value={system.tls.cert_file} onChange={(cert_file) => patchSystem({ tls: { ...system.tls, cert_file } })} /></label>
-                <label><span>{t('sites.keyFile')}</span><Input value={system.tls.key_file} onChange={(key_file) => patchSystem({ tls: { ...system.tls, key_file } })} /></label>
-                <label><span>{t('system.logPath')}</span><Input value={system.logging.output.file.path} onChange={(path) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, path } } } })} /></label>
-                <label><span>{t('system.logMaxBackups')}</span><InputNumber value={system.logging.output.file.max_backups} min={1} max={365} onChange={(max_backups) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, max_backups: Number(max_backups || 1) } } } })} /></label>
+              <div className="system-form-groups">
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.runtime')}</strong>
+                    <span>{t('system.runtimeHint')}</span>
+                  </header>
+                  <div className="site-detail-grid system-runtime-grid">
+                    <label>
+                      <span>{t('system.theme')}</span>
+                      <Select value={theme} onChange={(value) => setTheme(value as ThemeName)}>
+                        {themeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
+                      </Select>
+                    </label>
+                    <label>
+                      <span>{t('system.language')}</span>
+                      <Select
+                        value={language}
+                        onChange={(value) => {
+                          const next = value as Language;
+                          setLanguage(next);
+                          i18n.changeLanguage(next);
+                        }}
+                      >
+                        <Select.Option value="zh-CN">中文</Select.Option>
+                        <Select.Option value="en-US">English</Select.Option>
+                      </Select>
+                    </label>
+                    <label><span>HTTP</span><Input value={system.server.listen} onChange={(listen) => patchSystem({ server: { ...system.server, listen } })} /></label>
+                    <label><span>HTTPS</span><Input value={system.server.listen_tls} onChange={(listen_tls) => patchSystem({ server: { ...system.server, listen_tls } })} /></label>
+                    <label><span>HTTP/3 UDP</span><Input value={system.server.listen_http3} onChange={(listen_http3) => patchSystem({ server: { ...system.server, listen_http3 } })} /></label>
+                    <label><span>{t('system.adminListen')}</span><Input value={system.server.admin_listen} onChange={(admin_listen) => patchSystem({ server: { ...system.server, admin_listen } })} /></label>
+                    <label className="switch-line"><span>{t('system.adminPublic')}</span><Switch checked={system.server.admin_public} onChange={(admin_public) => patchSystem({ server: { ...system.server, admin_public } })} /></label>
+                    <label className="switch-line"><span>HTTP/3</span><Switch checked={system.server.http3.enabled} onChange={(enabled) => patchSystem({ server: { ...system.server, http3: { ...system.server.http3, enabled } } })} /></label>
+                    <label className="switch-line"><span>0-RTT</span><Switch checked={system.server.http3.zero_rtt} onChange={(zero_rtt) => patchSystem({ server: { ...system.server, http3: { ...system.server.http3, zero_rtt } } })} /></label>
+                  </div>
+                </section>
+                <section className="system-fieldset">
+                  <header>
+                    <strong>TLS</strong>
+                    <span>{t('system.tlsHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label className="switch-line"><span>{t('system.adminTls')}</span><Switch checked={system.server.admin_tls.enabled} onChange={(enabled) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, enabled } } })} /></label>
+                    <label><span>{t('system.adminTlsCert')}</span><Input value={system.server.admin_tls.cert_file} onChange={(cert_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, cert_file } } })} /></label>
+                    <label><span>{t('system.adminTlsKey')}</span><Input value={system.server.admin_tls.key_file} onChange={(key_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, key_file } } })} /></label>
+                    <label className="switch-line"><span>{t('system.autoCert')}</span><Switch checked={system.tls.auto_cert} onChange={(auto_cert) => patchSystem({ tls: { ...system.tls, auto_cert } })} /></label>
+                    <label className="switch-line"><span>HSTS</span><Switch checked={system.tls.hsts} onChange={(hsts) => patchSystem({ tls: { ...system.tls, hsts } })} /></label>
+                    <label><span>{t('sites.certFile')}</span><Input value={system.tls.cert_file} onChange={(cert_file) => patchSystem({ tls: { ...system.tls, cert_file } })} /></label>
+                    <label><span>{t('sites.keyFile')}</span><Input value={system.tls.key_file} onChange={(key_file) => patchSystem({ tls: { ...system.tls, key_file } })} /></label>
+                  </div>
+                </section>
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.logging')}</strong>
+                    <span>{t('system.loggingHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label><span>{t('system.logPath')}</span><Input value={system.logging.output.file.path} onChange={(path) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, path } } } })} /></label>
+                    <label><span>{t('system.logMaxBackups')}</span><InputNumber value={system.logging.output.file.max_backups} min={1} max={365} onChange={(max_backups) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, max_backups: Number(max_backups || 1) } } } })} /></label>
+                  </div>
+                </section>
               </div>
             </div>
           </Tabs.TabPane>
@@ -209,6 +274,135 @@ export default function SystemPage() {
                   <label><span>Endpoint</span><Input value={system.storage.victorialogs.endpoint} onChange={(endpoint) => patchStorage('victorialogs', { endpoint })} /></label>
                   <label><span>{t('system.timeoutSeconds')}</span><InputNumber value={durationSeconds(system.storage.victorialogs.timeout)} min={1} max={120} onChange={(value) => patchStorage('victorialogs', { timeout: secondsToDuration(value) })} /></label>
                 </StoragePanel>
+              </div>
+            </div>
+          </Tabs.TabPane>
+
+          <Tabs.TabPane key="apisec" title={<span className="tab-title"><ShieldAlert size={15} />{t('system.apiSecurity')}</span>}>
+            <div className="system-section">
+              <div className="system-section-title">
+                <h2><KeyRound size={16} /> {t('system.jwtAuth')}</h2>
+                <Button type="primary" onClick={() => saveMutation.mutate({ apisec: system.apisec })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+              </div>
+              <div className="system-form-groups">
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.apiSecurity')}</strong>
+                    <span>{t('system.apiSecurityHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label className="switch-line">
+                      <span>{t('system.apiSecurityEnabled')}</span>
+                      <Switch checked={Boolean(system.apisec.enabled)} onChange={(enabled) => patchAPISec({ enabled })} />
+                    </label>
+                    <label className="switch-line">
+                      <span>{t('system.jwtAuthEnabled')}</span>
+                      <Switch checked={apiAuth.enabled} onChange={(enabled) => patchAPIAuth({ enabled })} />
+                    </label>
+                    <label>
+                      <span>{t('system.jwtAlgorithms')}</span>
+                      <Input value={joinList(apiAuth.jwt_algorithms)} placeholder="HS256, RS256" onChange={(value) => patchAPIAuth({ jwt_algorithms: splitList(value) })} />
+                    </label>
+                    <label>
+                      <span>{t('system.jwtIssuers')}</span>
+                      <Input value={joinList(apiAuth.jwt_issuers)} placeholder="https://issuer.example.com" onChange={(value) => patchAPIAuth({ jwt_issuers: splitList(value) })} />
+                    </label>
+                    <label>
+                      <span>{t('system.jwtAudiences')}</span>
+                      <Input value={joinList(apiAuth.jwt_audiences)} placeholder="orders-api, admin-api" onChange={(value) => patchAPIAuth({ jwt_audiences: splitList(value) })} />
+                    </label>
+                    <label className="wide-field">
+                      <span>{t('system.requiredScopes')}</span>
+                      <Input value={joinList(apiAuth.required_scopes)} placeholder="orders:read, admin:read" onChange={(value) => patchAPIAuth({ required_scopes: splitList(value) })} />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="system-fieldset">
+                  <header className="fieldset-header-action">
+                    <div>
+                      <strong>{t('system.apiAuthEndpointPolicies')}</strong>
+                      <span>{t('system.apiAuthEndpointPoliciesHint')}</span>
+                    </div>
+                    <Button size="small" icon={<Plus size={14} />} onClick={addAPIAuthEndpoint}>{t('common.add')}</Button>
+                  </header>
+                  <div className="endpoint-policy-list">
+                    {apiAuth.endpoint_policies.length === 0 ? (
+                      <div className="empty-state"><ShieldAlert size={16} /> {t('system.noEndpointPolicies')}</div>
+                    ) : apiAuth.endpoint_policies.map((policy, index) => (
+                      <section className="endpoint-policy-row" key={`${policy.id}-${index}`}>
+                        <div className="endpoint-policy-head">
+                          <Switch checked={policy.enabled} onChange={(enabled) => patchAPIAuthEndpoint(index, { enabled })} />
+                          <Input value={policy.id} placeholder="orders-write" onChange={(id) => patchAPIAuthEndpoint(index, { id })} />
+                          <Button size="mini" status="danger" icon={<Trash2 size={13} />} onClick={() => removeAPIAuthEndpoint(index)}>{t('common.delete')}</Button>
+                        </div>
+                        <div className="site-detail-grid">
+                          <label>
+                            <span>{t('apisec.method')}</span>
+                            <Select value={policy.method || 'GET'} onChange={(method) => patchAPIAuthEndpoint(index, { method: method as string })}>
+                              {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((method) => (
+                                <Select.Option key={method} value={method}>{method}</Select.Option>
+                              ))}
+                            </Select>
+                          </label>
+                          <label>
+                            <span>{t('system.pathPattern')}</span>
+                            <Input value={policy.path_pattern} placeholder="^/api/orders$" onChange={(path_pattern) => patchAPIAuthEndpoint(index, { path_pattern })} />
+                          </label>
+                          <label>
+                            <span>{t('system.jwtIssuers')}</span>
+                            <Input value={joinList(policy.jwt_issuers)} onChange={(value) => patchAPIAuthEndpoint(index, { jwt_issuers: splitList(value) })} />
+                          </label>
+                          <label>
+                            <span>{t('system.jwtAudiences')}</span>
+                            <Input value={joinList(policy.jwt_audiences)} onChange={(value) => patchAPIAuthEndpoint(index, { jwt_audiences: splitList(value) })} />
+                          </label>
+                          <label className="wide-field">
+                            <span>{t('system.requiredScopes')}</span>
+                            <Input value={joinList(policy.required_scopes)} onChange={(value) => patchAPIAuthEndpoint(index, { required_scopes: splitList(value) })} />
+                          </label>
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.jwtVerificationKeys')}</strong>
+                    <span>{t('system.jwtVerificationKeysHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label>
+                      <span>{t('system.jwtSharedSecret')}</span>
+                      <Input.Password value={apiAuth.jwt_shared_secret} onChange={(jwt_shared_secret) => patchAPIAuth({ jwt_shared_secret })} />
+                    </label>
+                    <label>
+                      <span>{t('system.jwtPublicKeyFile')}</span>
+                      <Input value={apiAuth.jwt_public_key_file} onChange={(jwt_public_key_file) => patchAPIAuth({ jwt_public_key_file })} />
+                    </label>
+                    <label className="wide-field">
+                      <span>{t('system.jwtPublicKeyPEM')}</span>
+                      <Input.TextArea
+                        autoSize={{ minRows: 3, maxRows: 7 }}
+                        value={apiAuth.jwt_public_key_pem}
+                        onChange={(jwt_public_key_pem) => patchAPIAuth({ jwt_public_key_pem })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.jwksFile')}</span>
+                      <Input value={apiAuth.jwks_file} onChange={(jwks_file) => patchAPIAuth({ jwks_file })} />
+                    </label>
+                    <label>
+                      <span>{t('system.jwksJSON')}</span>
+                      <Input.TextArea
+                        autoSize={{ minRows: 3, maxRows: 7 }}
+                        value={apiAuth.jwks_json}
+                        onChange={(jwks_json) => patchAPIAuth({ jwks_json })}
+                      />
+                    </label>
+                  </div>
+                </section>
               </div>
             </div>
           </Tabs.TabPane>
@@ -279,6 +473,63 @@ export default function SystemPage() {
   );
 }
 
+function readAPIAuth(system: SystemConfig): APISecAuthConfig {
+  const auth = system.apisec.auth ?? {};
+  return {
+    enabled: Boolean(auth.enabled),
+    jwt_issuers: listValue(auth.jwt_issuers),
+    jwt_audiences: listValue(auth.jwt_audiences),
+    required_scopes: listValue(auth.required_scopes),
+    endpoint_policies: endpointPoliciesValue(auth.endpoint_policies),
+    jwt_algorithms: listValue(auth.jwt_algorithms),
+    jwt_shared_secret: stringValue(auth.jwt_shared_secret),
+    jwt_public_key_file: stringValue(auth.jwt_public_key_file),
+    jwt_public_key_pem: stringValue(auth.jwt_public_key_pem),
+    jwks_file: stringValue(auth.jwks_file),
+    jwks_json: stringValue(auth.jwks_json),
+  };
+}
+
+function endpointPoliciesValue(value: unknown): APISecAuthEndpointPolicyConfig[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item, index) => {
+    const record = item && typeof item === 'object' ? item as Partial<APISecAuthEndpointPolicyConfig> : {};
+    return {
+      id: stringValue(record.id) || `api-auth-${index + 1}`,
+      method: stringValue(record.method) || 'GET',
+      path_pattern: stringValue(record.path_pattern) || '^/api/',
+      jwt_issuers: listValue(record.jwt_issuers),
+      jwt_audiences: listValue(record.jwt_audiences),
+      required_scopes: listValue(record.required_scopes),
+      enabled: record.enabled !== false,
+    };
+  });
+}
+
+function listValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  return splitList(String(value ?? ''));
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' ? value : '';
+}
+
+function splitList(value: string) {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function joinList(value: string[]) {
+  return value.join(', ');
+}
+
 function StoragePanel({
   title,
   enabled,
@@ -296,7 +547,7 @@ function StoragePanel({
 }) {
   const { t } = useTranslation();
   return (
-    <section className="system-card">
+    <section className="system-card storage-card">
       <div className="system-section-title">
         <h2>{title}</h2>
         <Space>

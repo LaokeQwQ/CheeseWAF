@@ -6,27 +6,58 @@ import { useTranslation } from 'react-i18next';
 import { Cpu, HardDrive, Network, RotateCcw, ShieldCheck, Zap, ZoomIn, ZoomOut } from 'lucide-react';
 import { listItemVariants, listVariants } from '../../animations/variants';
 import { fetchLogs, fetchMonitorSummary, fetchSites } from '../../api/client';
-import type { LogEntry } from '../../types/api';
+import type { LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
 
 const threatColors = ['var(--accent-danger)', 'var(--accent-warning)', 'var(--accent-purple)', 'var(--accent-info)'];
+const realtimeWindowSeconds = 60;
+const totalsRefreshMs = 10_000;
+const refreshOptions = [1000, 3000, 5000, 10000];
 
 export default function DashboardPage() {
   const { t } = useTranslation();
-  const [trafficRange, setTrafficRange] = useState(60);
+  const [statsRange, setStatsRange] = useState(60);
+  const [refreshMs, setRefreshMs] = useState(3000);
   const [chartScale, setChartScale] = useState(1);
-  const { data: monitor, isLoading: loadingMonitor } = useQuery({ queryKey: ['dashboard-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 10_000, retry: false });
-  const { data: logs, isLoading: loadingLogs } = useQuery({ queryKey: ['dashboard-logs'], queryFn: () => fetchLogs({ limit: 200 }), refetchInterval: 8_000, retry: false });
+  const { data: monitor, isLoading: loadingMonitor } = useQuery({ queryKey: ['dashboard-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 5_000, retry: false });
+  const { data: periodLogs, isLoading: loadingPeriod } = useQuery({
+    queryKey: ['dashboard-period-logs', statsRange],
+    queryFn: () => fetchLogs(buildWindowQuery(statsRange * 60, 1000)),
+    refetchInterval: totalsRefreshMs,
+    retry: false,
+  });
+  const { data: periodBlocked } = useQuery({
+    queryKey: ['dashboard-period-blocked', statsRange],
+    queryFn: () => fetchLogs(buildWindowQuery(statsRange * 60, 1, 'block')),
+    refetchInterval: totalsRefreshMs,
+    retry: false,
+  });
+  const { data: liveLogs, isLoading: loadingLive } = useQuery({
+    queryKey: ['dashboard-live-logs'],
+    queryFn: () => fetchLogs(buildWindowQuery(realtimeWindowSeconds, 500)),
+    refetchInterval: refreshMs,
+    retry: false,
+  });
+  const { data: liveBlocked } = useQuery({
+    queryKey: ['dashboard-live-blocked'],
+    queryFn: () => fetchLogs(buildWindowQuery(realtimeWindowSeconds, 1, 'block')),
+    refetchInterval: refreshMs,
+    retry: false,
+  });
   const { data: sites } = useQuery({ queryKey: ['dashboard-sites'], queryFn: fetchSites, refetchInterval: 30_000, retry: false });
   const snapshot = monitor?.snapshot;
-  const entries = logs?.items ?? [];
-  const traffic = useMemo(() => buildTraffic(entries, trafficRange), [entries, trafficRange]);
+  const entries = periodLogs?.items ?? [];
+  const liveEntries = liveLogs?.items ?? [];
+  const traffic = useMemo(() => buildTraffic(entries, statsRange), [entries, statsRange]);
+  const liveSeries = useMemo(() => buildRealtimeSeries(liveEntries, realtimeWindowSeconds), [liveEntries]);
   const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
   const latency = useMemo(() => p95Latency(entries), [entries]);
-  const blocked = snapshot?.blocked ?? entries.filter((entry) => entry.action === 'block').length;
-  const requests = snapshot?.requests ?? logs?.total ?? entries.length;
+  const periodRequests = periodLogs?.total ?? entries.length;
+  const periodBlockedCount = periodBlocked?.total ?? entries.filter((entry) => entry.action === 'block').length;
+  const liveRequests = liveLogs?.total ?? liveEntries.length;
+  const liveBlockedCount = liveBlocked?.total ?? liveEntries.filter((entry) => entry.action === 'block').length;
   const siteCount = sites?.length ?? snapshot?.sites ?? 0;
-  const loading = loadingMonitor || loadingLogs;
+  const loading = loadingMonitor || loadingPeriod;
   const maxTraffic = Math.max(...traffic.map((point) => point.count), 1);
   const yMax = Math.max(1, Math.ceil(maxTraffic / chartScale));
 
@@ -44,8 +75,8 @@ export default function DashboardPage() {
 
       <motion.div className="metric-grid" variants={listVariants} initial="initial" animate="enter">
         {[
-          { label: t('shell.requests'), value: formatNumber(requests), delta: 'live', icon: Zap },
-          { label: t('shell.attacks'), value: formatNumber(blocked), delta: `${blockRate(blocked, requests)}%`, icon: ShieldCheck },
+          { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, t), icon: Zap },
+          { label: t('dashboard.totalBlocked'), value: formatNumber(periodBlockedCount), delta: `${blockRate(periodBlockedCount, periodRequests)}%`, icon: ShieldCheck },
           { label: t('shell.latency'), value: formatLatency(latency), delta: 'P95', icon: Network },
           { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: t('common.online'), icon: HardDrive },
         ].map((item) => {
@@ -64,12 +95,14 @@ export default function DashboardPage() {
       <div className="dashboard-grid">
         <section className="panel panel-wide">
           <div className="panel-heading">
-            <h2>{t('dashboard.traffic')}</h2>
+            <h2>{t('dashboard.totals')}</h2>
             <div className="chart-controls">
-              <Radio.Group type="button" value={trafficRange} onChange={(value) => setTrafficRange(Number(value))}>
+              <span>{t('dashboard.statsWindow')}</span>
+              <Radio.Group type="button" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
                 <Radio value={15}>{t('dashboard.last15m')}</Radio>
                 <Radio value={60}>{t('dashboard.last60m')}</Radio>
                 <Radio value={180}>{t('dashboard.last3h')}</Radio>
+                <Radio value={1440}>{t('dashboard.last24h')}</Radio>
               </Radio.Group>
               <Button icon={<ZoomOut size={14} />} onClick={() => setChartScale((value) => Math.max(0.5, Number((value - 0.25).toFixed(2))))} />
               <span>{Math.round(chartScale * 100)}%</span>
@@ -78,7 +111,7 @@ export default function DashboardPage() {
             </div>
           </div>
           <Spin loading={loading}>
-            <div className="traffic-chart" aria-label={t('dashboard.traffic')}>
+            <div className="traffic-chart" aria-label={t('dashboard.totals')}>
               <div className="chart-y-axis" aria-hidden="true">
                 <span>{yMax}</span>
                 <span>{Math.round(yMax / 2)}</span>
@@ -107,46 +140,78 @@ export default function DashboardPage() {
           </Spin>
         </section>
 
-        <section className="panel">
-          <div className="panel-heading">
-            <h2>{t('dashboard.threatMix')}</h2>
-          </div>
-          <div className="threat-list">
-            {threats.length === 0 && <div className="empty-state">{t('monitor.requests')}: 0</div>}
-            {threats.map((threat, index) => (
-              <div className="threat-row" key={threat.name}>
-                <span>{threat.name}</span>
-                <Progress
-                  percent={threat.value}
-                  showText={false}
-                  color={threatColors[index % threatColors.length]}
-                  size="small"
-                />
-                <strong>{threat.value}%</strong>
+        <div className="dashboard-side-stack">
+          <section className="panel realtime-panel">
+            <div className="panel-heading">
+              <h2>{t('dashboard.realtime')}</h2>
+              <div className="chart-controls compact-controls">
+                <span>{t('dashboard.refresh')}</span>
+                <Radio.Group type="button" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
+                  {refreshOptions.map((value) => <Radio key={value} value={value}>{value / 1000}s</Radio>)}
+                </Radio.Group>
               </div>
-            ))}
-          </div>
-        </section>
+            </div>
+            <Spin loading={loadingLive}>
+              <div className="realtime-summary">
+                <div>
+                  <span>{t('dashboard.liveRequests')}</span>
+                  <strong>{formatNumber(liveRequests)}</strong>
+                </div>
+                <div>
+                  <span>{t('dashboard.liveBlocked')}</span>
+                  <strong>{formatNumber(liveBlockedCount)}</strong>
+                </div>
+                <div>
+                  <span>{t('dashboard.liveRate')}</span>
+                  <strong>{formatRate(liveRequests / realtimeWindowSeconds)}</strong>
+                </div>
+              </div>
+              <RealtimeLineChart points={liveSeries} />
+              <span className="realtime-window">{t('dashboard.last60s')}</span>
+            </Spin>
+          </section>
 
-        <section className="panel">
-          <div className="panel-heading">
-            <h2>{t('dashboard.resources')}</h2>
-          </div>
-          <div className="resource-stack">
-            <div>
-              <Cpu size={18} />
-              <span>Go</span>
-              <Progress percent={runtimePercent(snapshot?.goroutines ?? 0)} size="small" showText={false} />
-              <strong>{snapshot?.goroutines ?? 0}</strong>
+          <section className="panel">
+            <div className="panel-heading">
+              <h2>{t('dashboard.resources')}</h2>
             </div>
-            <div>
-              <HardDrive size={18} />
-              <span>RAM</span>
-              <Progress percent={memoryPercent(snapshot?.memory_alloc ?? 0)} size="small" showText={false} />
-              <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
+            <div className="resource-stack">
+              <div>
+                <Cpu size={18} />
+                <span>Go</span>
+                <Progress percent={runtimePercent(snapshot?.goroutines ?? 0)} size="small" showText={false} />
+                <strong>{snapshot?.goroutines ?? 0}</strong>
+              </div>
+              <div>
+                <HardDrive size={18} />
+                <span>RAM</span>
+                <Progress percent={memoryPercent(snapshot?.memory_alloc ?? 0)} size="small" showText={false} />
+                <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading">
+              <h2>{t('dashboard.threatMix')}</h2>
+            </div>
+            <div className="threat-list">
+              {threats.length === 0 && <div className="empty-state">{t('monitor.requests')}: 0</div>}
+              {threats.map((threat, index) => (
+                <div className="threat-row" key={threat.name}>
+                  <span>{threat.name}</span>
+                  <Progress
+                    percent={threat.value}
+                    showText={false}
+                    color={threatColors[index % threatColors.length]}
+                    size="small"
+                  />
+                  <strong>{threat.value}%</strong>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
 
         <section className="panel panel-wide">
           <div className="panel-heading">
@@ -155,13 +220,19 @@ export default function DashboardPage() {
           <div className="event-list">
             {entries.length === 0 && <div className="empty-state">{t('monitor.requests')}: 0</div>}
             {entries.slice(0, 6).map((event) => (
-              <div className="event-row" key={event.id || event.trace_id}>
-                <code title={event.trace_id || event.id}>{event.trace_id || event.id}</code>
-                <span>{event.client_ip}</span>
-                <Tag color={event.category ? 'orange' : 'green'}>{displayCategory(event.category, t)}</Tag>
-                <Tag color={event.action === 'block' ? 'red' : 'blue'}>
-                  {displayAction(event.action, t)}
-                </Tag>
+              <div className="event-row" key={event.id || event.trace_id || `${event.client_ip}-${event.timestamp}`}>
+                <code className="event-trace" title={event.trace_id || event.id || '-'}>
+                  {event.trace_id || event.id || '-'}
+                </code>
+                <span className="event-source" title={event.client_ip || '-'}>
+                  {event.client_ip || '-'}
+                </span>
+                <span className="event-status-group">
+                  <Tag color={event.category ? 'orange' : 'green'}>{displayCategory(event.category, t)}</Tag>
+                  <Tag color={event.action === 'block' ? 'red' : 'blue'}>
+                    {displayAction(event.action, t)}
+                  </Tag>
+                </span>
               </div>
             ))}
           </div>
@@ -169,6 +240,17 @@ export default function DashboardPage() {
       </div>
     </section>
   );
+}
+
+function buildWindowQuery(windowSeconds: number, limit: number, action?: string): LogQuery {
+  const end = new Date();
+  const start = new Date(end.getTime() - windowSeconds * 1000);
+  return {
+    limit,
+    action,
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
 }
 
 function buildTraffic(entries: LogEntry[], rangeMinutes: number) {
@@ -192,6 +274,41 @@ function buildTraffic(entries: LogEntry[], rangeMinutes: number) {
       label: at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
     };
   });
+}
+
+function buildRealtimeSeries(entries: LogEntry[], windowSeconds: number) {
+  const bucketCount = 30;
+  const buckets = Array.from({ length: bucketCount }, () => 0);
+  const now = Date.now();
+  const windowMs = windowSeconds * 1000;
+  const bucketMs = windowMs / bucketCount;
+  for (const entry of entries) {
+    const time = Date.parse(entry.timestamp);
+    if (!Number.isFinite(time) || time < now - windowMs || time > now + 1000) {
+      continue;
+    }
+    const index = Math.min(bucketCount - 1, Math.max(0, Math.floor((time - (now - windowMs)) / bucketMs)));
+    buckets[index] += 1;
+  }
+  return buckets.map((count, index) => ({
+    count,
+    label: `${Math.round(windowSeconds - (index * windowSeconds) / bucketCount)}s`,
+  }));
+}
+
+function RealtimeLineChart({ points }: { points: Array<{ count: number; label: string }> }) {
+  const max = Math.max(...points.map((point) => point.count), 1);
+  const path = points.map((point, index) => {
+    const x = points.length <= 1 ? 0 : (index / (points.length - 1)) * 100;
+    const y = 54 - (point.count / max) * 46;
+    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+  }).join(' ');
+  return (
+    <svg className="realtime-line" viewBox="0 0 100 60" preserveAspectRatio="none" aria-hidden="true">
+      <path className="realtime-line-area" d={`${path} L 100 58 L 0 58 Z`} />
+      <path className="realtime-line-path" d={path} />
+    </svg>
+  );
 }
 
 function buildThreatMix(entries: LogEntry[], t: (key: string, options?: Record<string, unknown>) => string) {
@@ -237,6 +354,17 @@ function formatBytes(value: number) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat(undefined, { notation: value >= 10000 ? 'compact' : 'standard' }).format(value);
+}
+
+function formatRate(value: number) {
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}/s`;
+}
+
+function rangeLabel(value: number, t: (key: string) => string) {
+  if (value === 15) return t('dashboard.last15m');
+  if (value === 180) return t('dashboard.last3h');
+  if (value === 1440) return t('dashboard.last24h');
+  return t('dashboard.last60m');
 }
 
 function blockRate(blocked: number, requests: number) {

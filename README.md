@@ -9,15 +9,18 @@ mobile browser, and `waf-cli` TUI operations.
 The repository currently includes:
 
 - Reverse proxy WAF flow with staged semantic analysis (input extraction, deep decoding, lexical/syntax/behavior scoring), custom rules, IP/ACL/rate-limit/Bot protection, threat intel import/subscription, signed JS proof-of-work challenge, Altcha-style PoW CAPTCHA, waiting room, edge cache/header/compression policy, and response inspection.
-- Semantic regression coverage now includes function-based and error-based SQLi, PostgreSQL delay payloads, control-character/HTML-entity XSS contexts, direct detector bypass samples, and paired benign cases that protect common documentation text from false positives. Maturity and benchmark details live in `docs/semantic-readiness.md`.
+- Semantic regression coverage now includes function-based and error-based SQLi, MySQL executable version comments, PostgreSQL delay payloads, control-character/HTML-entity/data-URI/srcdoc XSS contexts, `${IFS}`/PowerShell/Pwsh/`cmd /c`/download-to-shell RCE variants, direct detector bypass samples, and paired benign cases that protect common documentation text from false positives. Maturity and benchmark details live in `docs/semantic-readiness.md`.
 - Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, production deployment files, and a single-binary admin listener that serves both the REST API and built Web console. The Web site workspace covers domains, upstreams, TLS material, origin tuning, health checks, response inspection, access control, and rewrite rules.
-- Web console hardening includes localized security/category/severity labels, dashboard chart axes and zoom/range controls, resilient event/resource card layouts, API security table layout isolation, route-level lazy loading, and Natural Earth/world-atlas based 2D/continent/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, precise-location fallbacks, WebGL fallback handling, responsive tables, and real log data. The 3D globe renderer is split into an on-demand chunk so ordinary console pages and 2D maps do not load Three.js up front.
+- Web console hardening includes localized security/category/severity labels, dashboard total-vs-live posture separation, 1/3/5/10s live refresh controls, selectable total-stat windows, chart axes and zoom controls, resilient event/resource card layouts, API security table layout isolation, route-level lazy loading, and Natural Earth/world-atlas based 2D/China-mainland/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, country-level GeoIP fallbacks, precise-location metadata support, WebGL fallback handling, responsive tables, and real log data. The 3D globe renderer is split into an on-demand chunk so ordinary console pages and 2D maps do not load Three.js up front.
+- Frontend build output uses stable Vite/Rolldown vendor chunks for React, Arco, Three.js, visualization, runtime, and UI utility dependencies. The main entry bundle is now small enough for admin-console use, while the large Three.js dependency stays isolated to the attack-map path.
+- The latest admin UI quality pass hardens Rules, IP Control, Protection Policy, Operations, Updates & Vulnerability Feeds, Block Pages, and System Settings against failed API calls, cramped search inputs, overflowing tags, blank controlled selects, action-button squeeze, and mixed settings layouts. The console now favors explicit loading/error/empty states, scoped action footers, responsive token/chip groups, grouped settings sections, and browser-verified layouts instead of placeholder or decorative-only UI.
 - GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
 - Threat-intel indicators now carry action and confidence, are scored across severity/confidence/source count, and are enforced in the proxy hot path according to the global/site `threat_intel` level. Console imports, provider sync, lookups, and protection setting updates trigger runtime policy refresh without requiring a service restart.
 - Safe admin defaults: the CLI bootstraps runtime config under `./data`, the admin listener defaults to localhost, public admin binding requires `server.admin_public: true` plus `server.admin_tls`, and first-run setup can choose local/tunnel/reverse-proxy access or public HTTPS with a generated local CA-signed admin certificate.
 - Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default. Web attack protection now applies runtime severity/confidence thresholds (`low`: critical/0.90, `smart`: high/0.85, `high`: medium/0.78, `strict`: low/0.65) while respecting monitor/log-only detector modes and preserving detector-requested JS challenges. API security schema validation, endpoint rate-limit findings, and JWT claims-profile anomalies now follow the same level model, so low mode can record and pass lower-confidence API findings while smart mode blocks validated schema/rate-limit/auth breaches; system APISec setting updates rebuild the proxy validator, endpoint limiter, and auth checker without restarting the service.
 - Bot/CC protection levels are also enforced at runtime: suspicious bot detections and CC/rate-limit breaches are evaluated by severity/confidence thresholds, low-signal matches can be logged without blocking, and explicitly enabled waiting rooms remain active as traffic control.
-- AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots.
+- API authentication can now enforce WAF-side Bearer JWT signature validation with configured HMAC secrets, PEM public keys/certificates, or local JWKS JSON/files, then apply issuer, audience, expiry, and scope checks through the same smart protection-policy model. Endpoint-level auth policies can override issuer/audience/scope requirements by method and path regex. Runtime APISec updates rebuild schema validation, endpoint rate limiting, and JWT auth without restarting the proxy, and the Web console exposes JWT signing and endpoint-policy settings under System Settings.
+- AI operations surfaces for real attack/block/challenge event analysis, per-event recommendations, and a console assistant backed by recent WAF events and monitor snapshots. OpenAI-compatible providers can select the API key header style. AI prompts treat logs, payloads, runtime context, and operator questions as untrusted data, with explicit guardrails against prompt injection, secret disclosure, tool execution, and unapproved policy changes.
 - First-run setup wizard and REST setup API now share one completion service for validation, admin creation, SQLite migration, default config/certificate generation, and setup completion locking. The generated admin certificate bundle uses an ECDSA P-256 local CA (`CN=CheeseWAF Sign SSL CA`, `O=CheeseCloud Technology Ltc.`) and a server-auth leaf chain.
 - Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch.
 - Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, and cross-platform builds. Forgejo uses local/mirrored Go and Node toolchain bootstrap scripts to avoid self-hosted runner timeouts against GitHub tool-cache downloads.
@@ -30,6 +33,8 @@ startup and saves the repaired runtime config.
 
 ```bash
 go test ./cmd/... ./internal/...
+# On restricted Windows shells, keep the Go build cache inside the workspace:
+# PowerShell: $env:GOCACHE="$PWD\tmp\go-build-cache"; go test ./cmd/... ./internal/...
 go test -race -count=1 ./cmd/... ./internal/...
 go build -trimpath -o bin/cheesewaf ./cmd/cheesewaf/
 cd web && npm ci && npm run build
@@ -43,13 +48,19 @@ claim is "working and explainable", not "ModSecurity/OWASP CRS parity".
 
 ## Stage Snapshot
 
-As of 2026-06-07, the active development line is `fix/admin-ui-dashboard-map`
+As of 2026-06-08, the active development line is `fix/admin-ui-dashboard-map`
 with PR #8 targeting `dev`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
 primary forge/build target; GitHub remains a secondary mirror/check. `master`
 and `canary` intentionally remain behind `dev` until the upward promotion flow
 is completed. The Forgejo workflow is present under `.forgejo/workflows/ci.yml`
 and uses `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh`
-for self-hosted runner-friendly toolchain setup.
+for self-hosted runner-friendly toolchain setup. The current UI hardening pass
+focuses on real dashboard counters, live-vs-total posture separation, less
+abstract 2D/China-mainland/3D attack-map modes, and June 8 layout fixes for
+Rules, IP Control, Protection, Operations, Updates, Block Pages, and System
+Settings, and APISec JWT signing/audience/endpoint-policy controls. Local web build, selected race tests, Go tests with a workspace
+`GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot and DOM-overflow
+audit, and `git diff --check` pass.
 
 ## Pre-Release Gaps
 
@@ -62,13 +73,18 @@ for self-hosted runner-friendly toolchain setup.
   into runtime severity/confidence or score thresholds. The default `smart` mode
   is tuned for lower false positives, but the exact thresholds still need
   corpus-backed iteration before GA.
-- API auth checks currently perform WAF-side Bearer JWT structure, issuer,
-  expiry, and scope-claim anomaly detection for API paths. They do not replace
-  source application authentication or full JWT signature/JWKS validation.
+- API auth checks now support configured JWT signature validation, audience
+  validation, and endpoint-level issuer/audience/scope policies. They still do
+  not replace source application authentication, and CheeseWAF intentionally
+  does not fetch remote JWKS URLs in the proxy hot path.
 - City/district-level map precision depends on a valid GeoIP City `.mmdb` or
   external threat-intel location feed. Without one, CheeseWAF intentionally
   degrades to country/CIDR-level attribution rather than inventing coordinates.
-- The web console still has large shared vendor chunks, mainly from the UI stack
-  and 3D globe dependency. Route-level lazy loading and map-data slimming are in
-  place; a future pass should add stable vendor chunk grouping and measure cold
-  start on low-end mobile browsers.
+- The web console now has route-level lazy loading, map-data slimming, and
+  stable vendor chunk grouping. The remaining large chunk is primarily the
+  on-demand Three.js 3D map dependency; measure cold start on low-end mobile
+  browsers before GA.
+- Browser-level visual regression now has a local Chrome Canary headless smoke
+  path with desktop/mobile screenshots and DOM-overflow assertions. Before
+  tagging V0.1 beta, repeat it against the deployed admin console and add a
+  tablet viewport.

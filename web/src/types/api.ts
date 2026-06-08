@@ -234,6 +234,7 @@ export type AIConfig = {
   enabled: boolean;
   api_base: string;
   api_key: string;
+  api_key_header: string;
   api_key_set: boolean;
   model: string;
   async: boolean;
@@ -292,6 +293,8 @@ export type LogQuery = {
   category?: string;
   action?: string;
   trace_id?: string;
+  start?: string;
+  end?: string;
 };
 
 export type LogResponse = {
@@ -361,6 +364,39 @@ export type User = {
 export type TOTPSetup = {
   secret: string;
   otpauth_url: string;
+};
+
+export type APISecAuthConfig = {
+  enabled: boolean;
+  jwt_issuers: string[];
+  jwt_audiences: string[];
+  required_scopes: string[];
+  endpoint_policies: APISecAuthEndpointPolicyConfig[];
+  jwt_algorithms: string[];
+  jwt_shared_secret: string;
+  jwt_public_key_file: string;
+  jwt_public_key_pem: string;
+  jwks_file: string;
+  jwks_json: string;
+};
+
+export type APISecAuthEndpointPolicyConfig = {
+  id: string;
+  method: string;
+  path_pattern: string;
+  jwt_issuers: string[];
+  jwt_audiences: string[];
+  required_scopes: string[];
+  enabled: boolean;
+};
+
+export type APISecSystemConfig = {
+  enabled?: boolean;
+  auth?: Partial<APISecAuthConfig>;
+  discovery?: Record<string, unknown>;
+  validation?: Record<string, unknown>;
+  rate_limits?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
 };
 
 export type SystemConfig = {
@@ -468,7 +504,7 @@ export type SystemConfig = {
     }>;
   };
   monitor: Record<string, unknown>;
-  apisec: Record<string, unknown>;
+  apisec: APISecSystemConfig;
 };
 
 export type MonitorSnapshot = {

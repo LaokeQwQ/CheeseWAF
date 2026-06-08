@@ -267,6 +267,38 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("api rate limit %q has invalid path_pattern: %w", limit.ID, err)
 		}
 	}
+	if cfg.APISec.Auth.Enabled {
+		for _, alg := range cfg.APISec.Auth.JWTAlgorithms {
+			switch strings.ToUpper(strings.TrimSpace(alg)) {
+			case "", "HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512":
+			case "NONE":
+				return fmt.Errorf("api auth jwt_algorithms must not allow none")
+			default:
+				return fmt.Errorf("api auth jwt_algorithms contains unsupported algorithm %q", alg)
+			}
+		}
+		if len(cfg.APISec.Auth.JWTAlgorithms) > 0 && strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" {
+			return fmt.Errorf("api auth jwt_algorithms requires jwt_shared_secret, jwt_public_key_file, jwt_public_key_pem, jwks_file, or jwks_json")
+		}
+		for _, policy := range cfg.APISec.Auth.EndpointPolicies {
+			if !policy.Enabled {
+				continue
+			}
+			if strings.TrimSpace(policy.PathPattern) == "" {
+				return fmt.Errorf("api auth endpoint policy %q must define path_pattern", policy.ID)
+			}
+			if _, err := regexp.Compile(policy.PathPattern); err != nil {
+				return fmt.Errorf("api auth endpoint policy %q has invalid path_pattern: %w", policy.ID, err)
+			}
+			if method := strings.ToUpper(strings.TrimSpace(policy.Method)); method != "" {
+				switch method {
+				case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
+				default:
+					return fmt.Errorf("api auth endpoint policy %q has invalid method %q", policy.ID, policy.Method)
+				}
+			}
+		}
+	}
 	return nil
 }
 

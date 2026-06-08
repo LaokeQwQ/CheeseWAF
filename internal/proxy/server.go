@@ -645,8 +645,12 @@ func apiAuthDetection(finding apisec.AuthFinding) *engine.DetectionResult {
 		detectorID = "apisec.auth.missing"
 	case "invalid":
 		detectorID = "apisec.auth.invalid"
+	case "signature":
+		detectorID = "apisec.auth.signature"
 	case "issuer":
 		detectorID = "apisec.auth.issuer"
+	case "audience":
+		detectorID = "apisec.auth.audience"
 	case "scope":
 		detectorID = "apisec.auth.scope"
 	}
@@ -664,9 +668,13 @@ func apiAuthDetection(finding apisec.AuthFinding) *engine.DetectionResult {
 
 func apiAuthConfidence(finding apisec.AuthFinding) float64 {
 	switch finding.Kind {
+	case "signature":
+		return 0.93
 	case "invalid":
 		return 0.91
 	case "issuer":
+		return 0.89
+	case "audience":
 		return 0.89
 	case "scope":
 		return 0.88
@@ -677,7 +685,7 @@ func apiAuthConfidence(finding apisec.AuthFinding) float64 {
 
 func apiAuthStatus(finding apisec.AuthFinding) int {
 	switch finding.Kind {
-	case "missing", "invalid":
+	case "missing", "invalid", "signature":
 		return http.StatusUnauthorized
 	default:
 		return http.StatusForbidden

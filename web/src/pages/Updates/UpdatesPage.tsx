@@ -72,7 +72,7 @@ export default function UpdatesPage() {
           </div>
           <div className="site-detail-grid">
             <label className="switch-line"><span>OTA</span><Switch checked={system.update.ota.enabled} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
-            <label><span>{t('system.updateServer')}</span><Input value={system.update.ota.server} onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
+            <label className="wide-field"><span>{t('system.updateServer')}</span><Input value={system.update.ota.server} onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
             <label>
               <span>{t('system.channel')}</span>
               <Select value={system.update.ota.channel} onChange={(channel) => patchSystem({ update: { ota: { ...system.update.ota, channel: channel as string } } })}>
@@ -99,25 +99,44 @@ export default function UpdatesPage() {
           </div>
           <div className="feed-list feed-list-detailed">
             {system.vulnerability.feeds.map((feed, index) => (
-              <div className="feed-row feed-row-detailed" key={feed.id}>
-                <Switch checked={feed.enabled} onChange={(enabled) => updateVulnerabilityFeed(index, { enabled }, setSystem)} />
-                <Input value={feed.name} placeholder="NVD" onChange={(name) => updateVulnerabilityFeed(index, { name }, setSystem)} />
-                <Input value={feed.url} placeholder="https://..." onChange={(url) => updateVulnerabilityFeed(index, { url }, setSystem)} />
-                <Select value={feed.type || 'json'} onChange={(type) => updateVulnerabilityFeed(index, { type: type as string }, setSystem)}>
-                  <Select.Option value="json">JSON</Select.Option>
-                  <Select.Option value="nvd">NVD</Select.Option>
-                  <Select.Option value="osv">OSV</Select.Option>
-                  <Select.Option value="cve">CVE</Select.Option>
-                </Select>
-                <Select value={feed.min_severity} onChange={(min_severity) => updateVulnerabilityFeed(index, { min_severity: min_severity as string }, setSystem)}>
-                  <Select.Option value="low">{t('rules.low')}</Select.Option>
-                  <Select.Option value="medium">{t('rules.medium')}</Select.Option>
-                  <Select.Option value="high">{t('rules.high')}</Select.Option>
-                  <Select.Option value="critical">{t('rules.critical')}</Select.Option>
-                </Select>
-                <InputNumber value={durationSeconds(feed.interval) / 3600} min={1} max={720} onChange={(value) => updateVulnerabilityFeed(index, { interval: secondsToDuration(Number(value || 12) * 3600) }, setSystem)} />
-                <Switch checked={feed.notify} onChange={(notify) => updateVulnerabilityFeed(index, { notify }, setSystem)} />
-                <Button status="danger" icon={<Trash2 size={14} />} onClick={() => removeVulnerabilityFeed(feed.id, setSystem)} />
+              <div className="feed-card" key={feed.id}>
+                <div className="feed-card-head">
+                  <Switch checked={feed.enabled} onChange={(enabled) => updateVulnerabilityFeed(index, { enabled }, setSystem)} />
+                  <Input value={feed.name} placeholder="NVD" onChange={(name) => updateVulnerabilityFeed(index, { name }, setSystem)} />
+                  <Button status="danger" icon={<Trash2 size={14} />} onClick={() => removeVulnerabilityFeed(feed.id, setSystem)} />
+                </div>
+                <div className="feed-card-body">
+                  <label className="wide-field">
+                    <span>URL</span>
+                    <Input value={feed.url} placeholder="https://..." onChange={(url) => updateVulnerabilityFeed(index, { url }, setSystem)} />
+                  </label>
+                  <label>
+                    <span>{t('ip.format')}</span>
+                    <Select value={feed.type || 'json'} onChange={(type) => updateVulnerabilityFeed(index, { type: type as string }, setSystem)}>
+                      <Select.Option value="json">JSON</Select.Option>
+                      <Select.Option value="nvd">NVD</Select.Option>
+                      <Select.Option value="osv">OSV</Select.Option>
+                      <Select.Option value="cve">CVE</Select.Option>
+                    </Select>
+                  </label>
+                  <label>
+                    <span>{t('rules.severity')}</span>
+                    <Select value={feed.min_severity} onChange={(min_severity) => updateVulnerabilityFeed(index, { min_severity: min_severity as string }, setSystem)}>
+                      <Select.Option value="low">{t('rules.low')}</Select.Option>
+                      <Select.Option value="medium">{t('rules.medium')}</Select.Option>
+                      <Select.Option value="high">{t('rules.high')}</Select.Option>
+                      <Select.Option value="critical">{t('rules.critical')}</Select.Option>
+                    </Select>
+                  </label>
+                  <label>
+                    <span>{t('system.checkIntervalHours')}</span>
+                    <InputNumber value={durationSeconds(feed.interval) / 3600} min={1} max={720} onChange={(value) => updateVulnerabilityFeed(index, { interval: secondsToDuration(Number(value || 12) * 3600) }, setSystem)} />
+                  </label>
+                  <label className="switch-line">
+                    <span>{t('updates.notify')}</span>
+                    <Switch checked={feed.notify} onChange={(notify) => updateVulnerabilityFeed(index, { notify }, setSystem)} />
+                  </label>
+                </div>
               </div>
             ))}
             {!system.vulnerability.feeds.length && <Empty description={t('system.noFeeds')} />}

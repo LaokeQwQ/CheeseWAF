@@ -9,18 +9,19 @@ Implemented in `internal/engine/semantic/analyzer.go`:
 - HTTP input extraction from URI, query, headers, cookies, form bodies, JSON bodies, multipart fields, XML/raw bodies.
 - Recursive decoding for URL encoding, HTML entities, printable Base64, and JavaScript `\uXXXX` / `\xXX` escapes.
 - Category guessing for SQLi, XSS, RCE, LFI, XXE, and SSRF.
-- Obfuscation handling for SQL comment keyword splitting, Windows path traversal, numeric IPv4 SSRF hosts, and common cloud metadata addresses.
-- Additional SQLi handling for error-based XML functions (`extractvalue`/`updatexml`-style patterns), database time-delay functions including `pg_sleep`, and boolean predicates that use SQL string functions such as `char()` without flagging standalone documentation text.
-- XSS handling for NUL/control-character obfuscation in executable `javascript:` URL contexts, while keeping standalone `javascript:` documentation clean.
+- Obfuscation handling for SQL comment keyword splitting, MySQL executable version comments, Windows path traversal, numeric IPv4 SSRF hosts, and common cloud metadata addresses.
+- Additional SQLi handling for error-based XML functions (`extractvalue`/`updatexml`-style patterns), database time-delay functions including `pg_sleep`, and boolean predicates that use SQL string functions such as `char()` without flagging standalone documentation text or SQL comment tutorials.
+- XSS handling for NUL/control-character obfuscation in executable `javascript:` URL contexts, executable `data:text/html` / SVG data URI attributes, and `iframe srcdoc`, while keeping standalone `javascript:` / data URI documentation and ordinary iframe markup examples clean.
+- RCE handling for shell control operators, command substitution, `${IFS}` whitespace evasion, download-to-shell chains, `bash`/`sh -c`, `cmd /c`, PowerShell/Pwsh dynamic execution and encoded-command payloads, with command-parameter context used as supporting evidence rather than a standalone trigger.
 - Syntax plus behavior evidence in `semantic_analysis`, including payload, source field, severity, confidence, and reason text.
 - Blocking integration before the individual semantic detectors in the runtime pipeline.
 
 Regression coverage:
 
-- `TestAnalyzerReadinessMatrix` covers common SQLi/XSS/RCE/LFI/XXE/SSRF payloads, cookie and multipart inputs, SQL comment keyword splitting, database file-read and error-based function side effects, PostgreSQL time delay functions, function-based boolean SQLi, Unicode/control-character/entity XSS, inline interpreter execution, Windows traversal, and internal-network SSRF including decimal IPv4 notation.
-- `TestAnalyzerReadinessBenignMatrix` protects a small benign corpus from obvious false positives, including SQL function documentation and standalone `javascript:` URL safety text.
+- `TestAnalyzerReadinessMatrix` covers common SQLi/XSS/RCE/LFI/XXE/SSRF payloads, cookie and multipart inputs, SQL comment keyword splitting, MySQL versioned comments, database file-read and error-based function side effects, PostgreSQL time delay functions, function-based boolean SQLi, Unicode/control-character/entity/data-URI/srcdoc XSS, `${IFS}` command injection, PowerShell/Pwsh encoded or dynamic execution, inline interpreter execution, Windows traversal, and internal-network SSRF including decimal IPv4 notation.
+- `TestAnalyzerReadinessBenignMatrix` protects a small benign corpus from obvious false positives, including SQL function/comment documentation, standalone `javascript:` / `data:text/html` URL safety text, non-executable iframe markup examples, and defensive PowerShell/cmd documentation without runnable payloads.
 - `TestAnalyzerAgainstOpenWAFRegressionPayloads` keeps CRS-inspired payload shapes in the suite.
-- Direct `SQLDetector` and `XSSDetector` tests cover the same newly added function-based SQLi and executable-context XSS bypass samples because those detectors are still usable independently in the proxy pipeline.
+- Direct `SQLDetector`, `XSSDetector`, and `RCEDetector` tests cover the same newly added function-based SQLi, executable-context XSS, and obfuscated command-injection samples because those detectors are still usable independently in the proxy pipeline.
 
 Run:
 
@@ -32,7 +33,7 @@ go test ./internal/engine/semantic -bench BenchmarkAnalyzerReadinessCorpus -benc
 Latest local baseline on Windows amd64 / Ryzen 5 5500:
 
 ```text
-BenchmarkAnalyzerReadinessCorpus-12  47618  24336 ns/op  5730 B/op  94 allocs/op
+BenchmarkAnalyzerReadinessCorpus-12  37794  28041 ns/op  6146 B/op  108 allocs/op
 ```
 
 ## Not Yet ModSecurity/CRS Parity

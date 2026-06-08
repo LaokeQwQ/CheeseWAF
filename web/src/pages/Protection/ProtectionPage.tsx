@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Bot, Globe2, ShieldAlert, TimerReset } from 'lucide-react';
 import { fetchProtection, updateACLProtection, updateBotProtection, updateIPProtection, updateProtectionPolicy, updateRateLimit } from '../../api/client';
 import type { ACLRule, ProtectionConfig } from '../../types/api';
+import { displayAction } from '../../utils/display';
 
 const fallback: ProtectionConfig = {
   policy: { web_attack: 'smart', api_security: 'smart', bot_cc: 'smart', threat_intel: 'smart' },
@@ -33,8 +34,14 @@ const fallback: ProtectionConfig = {
 export default function ProtectionPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { data } = useQuery({ queryKey: ['protection'], queryFn: fetchProtection, retry: false });
+  const { data, isLoading } = useQuery({ queryKey: ['protection'], queryFn: fetchProtection, retry: false });
   const protection = normalizeProtection(data);
+  const policyItems = [
+    { field: 'web_attack', label: t('sites.webAttackLevel') },
+    { field: 'api_security', label: t('sites.apiSecurityLevel') },
+    { field: 'bot_cc', label: t('sites.botCCLevel') },
+    { field: 'threat_intel', label: t('sites.threatIntelLevel') },
+  ] as const;
   const policyMutation = useMutation({ mutationFn: updateProtectionPolicy, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const ipMutation = useMutation({ mutationFn: updateIPProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const rateMutation = useMutation({ mutationFn: updateRateLimit, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
@@ -50,19 +57,31 @@ export default function ProtectionPage() {
         </div>
       </header>
 
-      <section className="panel">
-        <div className="panel-heading"><h2><ShieldAlert size={16} /> {t('protection.policy')}</h2></div>
+      <section className="panel policy-panel">
+        <div className="panel-heading">
+          <h2><ShieldAlert size={16} /> {t('protection.policy')}</h2>
+          <span className="policy-current-summary">
+            {policyItems.map((item) => (
+              <span key={item.field}>{item.label}: {policyLevelLabel(protection.policy[item.field], t)}</span>
+            ))}
+          </span>
+        </div>
         <Form
           key={`policy-${Object.values(protection.policy).join('-')}`}
           layout="vertical"
           initialValues={protection.policy}
           onSubmit={(values) => policyMutation.mutate(values as ProtectionConfig['policy'])}
         >
-          <div className="site-detail-grid">
-            <Form.Item label={t('sites.webAttackLevel')} field="web_attack"><ProtectionLevelSelect /></Form.Item>
-            <Form.Item label={t('sites.apiSecurityLevel')} field="api_security"><ProtectionLevelSelect /></Form.Item>
-            <Form.Item label={t('sites.botCCLevel')} field="bot_cc"><ProtectionLevelSelect /></Form.Item>
-            <Form.Item label={t('sites.threatIntelLevel')} field="threat_intel"><ProtectionLevelSelect /></Form.Item>
+          <div className="policy-level-grid">
+            {policyItems.map((item) => (
+              <div className="policy-level-card" key={item.field}>
+                <span>{item.label}</span>
+                <strong>{policyLevelLabel(protection.policy[item.field], t)}</strong>
+                <Form.Item label={false} field={item.field}>
+                  <ProtectionLevelSelect />
+                </Form.Item>
+              </div>
+            ))}
           </div>
           <Button type="primary" htmlType="submit" loading={policyMutation.isPending}>{t('common.save')}</Button>
         </Form>
@@ -183,13 +202,21 @@ export default function ProtectionPage() {
         <Table
           rowKey="id"
           pagination={false}
-          loading={!data}
+          loading={isLoading}
           data={protection.acl.rules}
           columns={[
             { title: t('rules.name'), dataIndex: 'name' },
             { title: 'Method', dataIndex: 'method', render: (method: string) => method || '*' },
-            { title: 'Path', dataIndex: 'path_prefix', render: (path: string) => <code>{path || '*'}</code> },
-            { title: t('logs.action'), dataIndex: 'action', render: (action: string) => <Tag color={action === 'block' ? 'red' : 'blue'}>{action}</Tag> },
+            { title: 'Path', dataIndex: 'path_prefix', render: (path: string) => <code className="table-code" title={path || '*'}>{path || '*'}</code> },
+            {
+              title: t('logs.action'),
+              dataIndex: 'action',
+              render: (action: string) => (
+                <span className="status-group">
+                  <Tag color={action === 'block' ? 'red' : 'blue'}>{displayAction(action, t)}</Tag>
+                </span>
+              ),
+            },
             { title: t('rules.enabled'), dataIndex: 'enabled', render: (_: boolean, record: ACLRule) => <Switch checked={record.enabled} size="small" /> },
           ]}
         />
@@ -246,10 +273,10 @@ function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-function ProtectionLevelSelect() {
+function ProtectionLevelSelect({ value, onChange }: { value?: string; onChange?: (value: string) => void }) {
   const { t } = useTranslation();
   return (
-    <Select>
+    <Select className="protection-level-select" value={value || 'smart'} onChange={(next) => onChange?.(String(next))}>
       <Select.Option value="off">{t('sites.levelOff')}</Select.Option>
       <Select.Option value="low">{t('sites.levelLow')}</Select.Option>
       <Select.Option value="smart">{t('sites.levelSmart')}</Select.Option>
@@ -257,4 +284,19 @@ function ProtectionLevelSelect() {
       <Select.Option value="strict">{t('sites.levelStrict')}</Select.Option>
     </Select>
   );
+}
+
+function policyLevelLabel(level: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  switch (level || 'smart') {
+    case 'off':
+      return t('sites.levelOff');
+    case 'low':
+      return t('sites.levelLow');
+    case 'high':
+      return t('sites.levelHigh');
+    case 'strict':
+      return t('sites.levelStrict');
+    default:
+      return t('sites.levelSmart');
+  }
 }

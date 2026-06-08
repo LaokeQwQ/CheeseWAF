@@ -2,17 +2,18 @@ import { Button, Radio, Table, Tag } from '@arco-design/web-react';
 import { lazy, Suspense, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Minus, Plus, RotateCcw } from 'lucide-react';
+import { Maximize2, Minus, Plus, RotateCcw } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { geoGraticule10, geoNaturalEarth1, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
 import worldTopology from 'world-atlas/countries-110m.json';
 import { fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
-import { displayCategory, displayContinent, displayCountry, displaySeverity, normalizeCountryCode } from '../../utils/display';
+import { displayCategory, displayCountry, normalizeCountryCode } from '../../utils/display';
 
 const GlobeMap = lazy(() => import('./GlobeMap'));
 
-type MapMode = '2d' | '3d' | 'continent';
+type MapMode = '2d' | '3d' | 'china';
 export type ThreatLevel = 'low' | 'medium' | 'high' | 'critical';
 type LocationPrecision = 'district' | 'city' | 'region' | 'country' | 'ip-range';
 export type WorldFeature = {
@@ -48,16 +49,6 @@ export type AttackRegion = {
   precision: LocationPrecision;
   sourcePrefixes: string[];
 };
-type ContinentRegion = {
-  key: string;
-  name: string;
-  attacks: number;
-  top: string;
-  severityRank: number;
-  level: ThreatLevel;
-  x: number;
-  y: number;
-};
 type RegionBucket = {
   countryCode: string;
   continent: string;
@@ -77,84 +68,156 @@ const mapWidth = 1000;
 const mapHeight = 500;
 const topo = worldTopology as any;
 const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as WorldFeatureCollection;
-const worldFeatures = worldFeatureCollection.features.filter((item) => item.geometry);
+export const worldFeatures = worldFeatureCollection.features.filter((item) => item.geometry);
 const mapProjection = geoNaturalEarth1().fitExtent([[28, 28], [mapWidth - 28, mapHeight - 28]], worldFeatureCollection as any);
 const mapPath = geoPath(mapProjection);
 const graticulePath = mapPath(geoGraticule10() as any) ?? '';
-const worldMapPaths = worldFeatures
+export const worldMapPaths = worldFeatures
   .map((item, index) => ({ id: normalizeWorldId(item.id ?? index), d: mapPath(item as any) ?? '' }))
   .filter((item) => item.d);
 
 const countryCoordinates: Record<string, CountryCoordinate> = {
   AR: { lon: -63.6, lat: -38.4, continent: 'South America' },
+  AE: { lon: 54.4, lat: 23.4, continent: 'Asia' },
+  AT: { lon: 14.6, lat: 47.5, continent: 'Europe' },
   AU: { lon: 133.8, lat: -25.3, continent: 'Oceania' },
+  BE: { lon: 4.5, lat: 50.5, continent: 'Europe' },
+  BG: { lon: 25.5, lat: 42.7, continent: 'Europe' },
   BR: { lon: -51.9, lat: -14.2, continent: 'South America' },
   CA: { lon: -106.3, lat: 56.1, continent: 'North America' },
+  CH: { lon: 8.2, lat: 46.8, continent: 'Europe' },
+  CL: { lon: -71.5, lat: -35.7, continent: 'South America' },
   CN: { lon: 104.2, lat: 35.9, continent: 'Asia' },
+  CO: { lon: -74.3, lat: 4.6, continent: 'South America' },
+  CZ: { lon: 15.5, lat: 49.8, continent: 'Europe' },
   DE: { lon: 10.5, lat: 51.1, continent: 'Europe' },
+  DK: { lon: 9.5, lat: 56.3, continent: 'Europe' },
+  EG: { lon: 30.8, lat: 26.8, continent: 'Africa' },
   ES: { lon: -3.7, lat: 40.4, continent: 'Europe' },
+  FI: { lon: 25.7, lat: 61.9, continent: 'Europe' },
   FR: { lon: 2.2, lat: 46.2, continent: 'Europe' },
   GB: { lon: -3.4, lat: 55.4, continent: 'Europe' },
+  GR: { lon: 21.8, lat: 39.1, continent: 'Europe' },
   HK: { lon: 114.2, lat: 22.3, continent: 'Asia' },
+  HU: { lon: 19.5, lat: 47.2, continent: 'Europe' },
   ID: { lon: 113.9, lat: -0.8, continent: 'Asia' },
+  IE: { lon: -8.2, lat: 53.4, continent: 'Europe' },
+  IL: { lon: 34.9, lat: 31.0, continent: 'Asia' },
   IN: { lon: 78.9, lat: 20.6, continent: 'Asia' },
+  IR: { lon: 53.7, lat: 32.4, continent: 'Asia' },
   IT: { lon: 12.6, lat: 42.8, continent: 'Europe' },
   JP: { lon: 138.2, lat: 36.2, continent: 'Asia' },
+  KE: { lon: 37.9, lat: 0.0, continent: 'Africa' },
+  KZ: { lon: 66.9, lat: 48.0, continent: 'Asia' },
   KR: { lon: 127.8, lat: 35.9, continent: 'Asia' },
+  MA: { lon: -7.1, lat: 31.8, continent: 'Africa' },
   MX: { lon: -102.6, lat: 23.6, continent: 'North America' },
+  MY: { lon: 101.9, lat: 4.2, continent: 'Asia' },
+  NG: { lon: 8.7, lat: 9.1, continent: 'Africa' },
   NL: { lon: 5.3, lat: 52.1, continent: 'Europe' },
+  NO: { lon: 8.5, lat: 60.5, continent: 'Europe' },
+  NZ: { lon: 174.9, lat: -40.9, continent: 'Oceania' },
+  PE: { lon: -75.0, lat: -9.2, continent: 'South America' },
+  PH: { lon: 122.9, lat: 12.9, continent: 'Asia' },
+  PK: { lon: 69.3, lat: 30.4, continent: 'Asia' },
   PL: { lon: 19.1, lat: 52.1, continent: 'Europe' },
+  PT: { lon: -8.2, lat: 39.4, continent: 'Europe' },
+  RO: { lon: 24.9, lat: 45.9, continent: 'Europe' },
   RU: { lon: 105.3, lat: 61.5, continent: 'Europe/Asia' },
+  SA: { lon: 45.1, lat: 23.9, continent: 'Asia' },
   SE: { lon: 18.6, lat: 60.1, continent: 'Europe' },
   SG: { lon: 103.8, lat: 1.3, continent: 'Asia' },
+  SI: { lon: 14.9, lat: 46.2, continent: 'Europe' },
+  SK: { lon: 19.7, lat: 48.7, continent: 'Europe' },
   TH: { lon: 100.9, lat: 15.9, continent: 'Asia' },
   TR: { lon: 35.2, lat: 39.0, continent: 'Europe/Asia' },
+  TW: { lon: 120.9, lat: 23.7, continent: 'Asia' },
+  UA: { lon: 31.2, lat: 48.4, continent: 'Europe' },
   US: { lon: -95.7, lat: 37.1, continent: 'North America' },
+  VE: { lon: -66.6, lat: 6.4, continent: 'South America' },
   VN: { lon: 108.3, lat: 14.1, continent: 'Asia' },
   ZA: { lon: 22.9, lat: -30.6, continent: 'Africa' },
 };
 
 const countryNumericIds: Record<string, string> = {
   AR: '32',
+  AE: '784',
+  AT: '40',
   AU: '36',
+  BE: '56',
+  BG: '100',
   BR: '76',
   CA: '124',
+  CH: '756',
+  CL: '152',
   CN: '156',
+  CO: '170',
+  CZ: '203',
   DE: '276',
+  DK: '208',
+  EG: '818',
   ES: '724',
+  FI: '246',
   FR: '250',
   GB: '826',
+  GR: '300',
   HK: '344',
+  HU: '348',
   ID: '360',
+  IE: '372',
+  IL: '376',
   IN: '356',
+  IR: '364',
   IT: '380',
   JP: '392',
+  KE: '404',
+  KZ: '398',
   KR: '410',
+  MA: '504',
   MX: '484',
+  MY: '458',
+  NG: '566',
   NL: '528',
+  NO: '578',
+  NZ: '554',
+  PE: '604',
+  PH: '608',
+  PK: '586',
   PL: '616',
+  PT: '620',
+  RO: '642',
   RU: '643',
+  SA: '682',
   SE: '752',
   SG: '702',
+  SI: '705',
+  SK: '703',
   TH: '764',
   TR: '792',
+  TW: '158',
+  UA: '804',
   US: '840',
+  VE: '862',
   VN: '704',
   ZA: '710',
 };
 
-const continentCoordinates: Record<string, { lon: number; lat: number }> = {
-  Africa: { lon: 20, lat: 4 },
-  Asia: { lon: 92, lat: 36 },
-  Europe: { lon: 15, lat: 52 },
-  'Europe/Asia': { lon: 62, lat: 50 },
-  'North America': { lon: -102, lat: 47 },
-  Oceania: { lon: 138, lat: -24 },
-  'South America': { lon: -61, lat: -16 },
+const chinaNumericId = countryNumericIds.CN;
+const chinaFeature = worldFeatures.find((item) => normalizeWorldId(item.id ?? '') === chinaNumericId);
+const chinaPath = chinaFeature ? (mapPath(chinaFeature as any) ?? '') : '';
+const chinaBounds = chinaFeature ? mapPath.bounds(chinaFeature as any) : [[620, 128], [802, 286]];
+const chinaPadding = 24;
+const chinaViewport = {
+  x: Math.max(0, chinaBounds[0][0] - chinaPadding),
+  y: Math.max(0, chinaBounds[0][1] - chinaPadding),
+  width: Math.min(mapWidth, chinaBounds[1][0] + chinaPadding) - Math.max(0, chinaBounds[0][0] - chinaPadding),
+  height: Math.min(mapHeight, chinaBounds[1][1] + chinaPadding) - Math.max(0, chinaBounds[0][1] - chinaPadding),
 };
+const chinaViewBox = `${chinaViewport.x} ${chinaViewport.y} ${chinaViewport.width} ${chinaViewport.height}`;
 
 export default function AttackMapPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [mode, setMode] = useState<MapMode>('2d');
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<MapPan>({ x: 0, y: 0 });
@@ -162,10 +225,12 @@ export default function AttackMapPage() {
   const dragRef = useRef<DragState | null>(null);
   const { data, isLoading } = useQuery({ queryKey: ['attack-map-logs'], queryFn: () => fetchLogs({ limit: 1000 }), refetchInterval: 5_000, retry: false });
   const regions = useMemo(() => aggregateRegions(data?.items ?? []), [data?.items]);
-  const continents = useMemo(() => aggregateContinents(regions), [regions]);
-  const mappedRegions = regions.filter((region) => region.mappable);
-  const countryLevels = useMemo(() => buildCountryLevelMap(regions), [regions]);
+  const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
+  const chinaRegions = useMemo(() => mappedRegions.filter((region) => region.countryCode === 'CN'), [mappedRegions]);
+  const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
   const total = regions.reduce((sum, region) => sum + region.attacks, 0);
+  const mappedTotal = mappedRegions.reduce((sum, region) => sum + region.attacks, 0);
+  const unmappedTotal = Math.max(0, total - mappedTotal);
   const showDetailedLabels = zoom >= 1.35;
 
   function updateZoom(next: number | ((current: number) => number)) {
@@ -237,12 +302,13 @@ export default function AttackMapPage() {
           <Radio.Group type="button" value={mode} onChange={(value) => { setMode(value as MapMode); resetView(); }}>
             <Radio value="2d">{t('attackMap.mode2d')}</Radio>
             <Radio value="3d">{t('attackMap.mode3d')}</Radio>
-            <Radio value="continent">{t('attackMap.modeContinent')}</Radio>
+            <Radio value="china">{t('attackMap.modeChina')}</Radio>
           </Radio.Group>
           <Button icon={<Minus size={14} />} onClick={() => updateZoom((current) => current - 0.15)} title={t('attackMap.zoomOut')} />
           <span>{Math.round(zoom * 100)}%</span>
           <Button icon={<Plus size={14} />} onClick={() => updateZoom((current) => current + 0.15)} title={t('attackMap.zoomIn')} />
           <Button icon={<RotateCcw size={14} />} onClick={resetView} title={t('attackMap.resetView')} />
+          <Button icon={<Maximize2 size={14} />} onClick={() => navigate('/attack-map/screen')}>{t('attackMap.bigScreen')}</Button>
         </div>
       </header>
 
@@ -257,6 +323,8 @@ export default function AttackMapPage() {
         <div className="map-legend">
           <strong>{total}</strong>
           <span>{t('attackMap.attacks')}</span>
+          <small>{t('attackMap.mapped', { count: mappedTotal })}</small>
+          {unmappedTotal > 0 && <small>{t('attackMap.unmapped', { count: unmappedTotal })}</small>}
         </div>
         <div className="map-risk-legend" aria-hidden="true">
           {(['low', 'medium', 'high', 'critical'] as ThreatLevel[]).map((level) => (
@@ -264,7 +332,7 @@ export default function AttackMapPage() {
           ))}
         </div>
         {mode === '3d' ? (
-          <Suspense fallback={<div className="globe-stage"><div className="page-spinner" aria-label="Loading" aria-busy="true" /></div>}>
+          <Suspense fallback={<div className="globe-stage"><div className="page-spinner" aria-label={t('attackMap.loading')} aria-busy="true" /></div>}>
             <GlobeMap
               regions={mappedRegions}
               zoom={zoom}
@@ -278,7 +346,7 @@ export default function AttackMapPage() {
             className="flat-map-stage"
             style={{ '--map-zoom': zoom, '--map-pan-x': `${pan.x}px`, '--map-pan-y': `${pan.y}px` } as CSSProperties}
           >
-            <WorldMapSVG countryLevels={countryLevels} />
+            {mode === 'china' ? <ChinaMainlandMap countryLevels={countryLevels} /> : <WorldMapSVG countryLevels={countryLevels} />}
             {mode === '2d' && mappedRegions.map((region) => (
               <span
                 key={region.key}
@@ -294,65 +362,79 @@ export default function AttackMapPage() {
                 </span>
               </span>
             ))}
-            {mode === 'continent' && continents.map((continent) => (
-              <span
-                key={continent.name}
-                className={`continent-badge map-risk-${continent.level}`}
-                style={{ left: `${continent.x}%`, top: `${continent.y}%` }}
-              >
-                <strong>{displayContinent(continent.name, t)}</strong>
-                <em>{continent.attacks}</em>
-                <small>{displayCategory(continent.top, t)} · {displaySeverity(rankToSeverity(continent.severityRank), t)}</small>
-              </span>
-            ))}
+            {mode === 'china' && chinaRegions.map((region) => {
+              const point = projectChinaPoint(region.lon, region.lat);
+              if (!point) {
+                return null;
+              }
+              return (
+                <span
+                  key={region.key}
+                  className={`map-marker map-risk-${region.level} ${showDetailedLabels ? 'map-marker-detailed' : ''}`}
+                  style={{ left: `${point.x}%`, top: `${point.y}%`, '--marker-size': `${region.size}px` } as CSSProperties}
+                  title={formatRegionTooltip(region, t)}
+                >
+                  <i />
+                  <span>
+                    <strong>{showDetailedLabels ? formatRegionLocation(region, t) : displayCountry(region.countryCode, t)}</strong>
+                    <em>{region.attacks}</em>
+                    {showDetailedLabels && <small>{formatRegionDetail(region, t)}</small>}
+                  </span>
+                </span>
+              );
+            })}
           </div>
         )}
-        {regions.length === 0 && <div className="map-empty">{isLoading ? 'Loading' : `${t('attackMap.attacks')}: 0`}</div>}
+        {(regions.length === 0 || (mode === 'china' && chinaRegions.length === 0)) && (
+          <div className="map-empty">
+            {isLoading ? t('attackMap.loading') : `${mode === 'china' ? t('attackMap.modeChina') : t('attackMap.attacks')}: 0`}
+          </div>
+        )}
       </section>
 
       <section className="table-panel attack-map-table">
-        {mode === 'continent' ? (
-          <Table
-            rowKey="key"
-            pagination={false}
-            loading={isLoading}
-            data={continents}
-            columns={[
-              { title: t('attackMap.continent'), dataIndex: 'name', render: (value: string) => displayContinent(value, t) },
-              { title: t('attackMap.attacks'), dataIndex: 'attacks' },
-              { title: t('attackMap.riskLabel'), dataIndex: 'level', render: (level: ThreatLevel) => <Tag color={riskTagColor(level)}>{t(`attackMap.risk.${level}`)}</Tag> },
-              { title: t('attackMap.top'), dataIndex: 'top', render: (top: string) => <Tag color="orange">{displayCategory(top, t)}</Tag> },
-            ]}
-          />
-        ) : (
-          <Table
-            rowKey="key"
-            pagination={false}
-            loading={isLoading}
-            data={regions}
-            columns={[
-              { title: t('attackMap.country'), dataIndex: 'countryCode', render: (value: string) => displayCountry(value, t) },
-              { title: t('attackMap.location'), dataIndex: 'locationName', render: (_: string, record: AttackRegion) => formatRegionLocation(record, t) },
-              { title: t('attackMap.precision'), dataIndex: 'precision', render: (value: LocationPrecision) => t(`attackMap.precisionLevel.${value}`) },
-              { title: t('attackMap.attacks'), dataIndex: 'attacks' },
-              { title: t('attackMap.riskLabel'), dataIndex: 'level', render: (level: ThreatLevel) => <Tag color={riskTagColor(level)}>{t(`attackMap.risk.${level}`)}</Tag> },
-              { title: t('attackMap.top'), dataIndex: 'top', render: (top: string) => <Tag color="orange">{displayCategory(top, t)}</Tag> },
-              { title: t('attackMap.sources'), dataIndex: 'sourcePrefixes', render: (items: string[]) => items.join(', ') || '-' },
-            ]}
-          />
-        )}
+        <Table
+          rowKey="key"
+          pagination={false}
+          loading={isLoading}
+          data={mode === 'china' ? chinaRegions : regions}
+          columns={[
+            { title: t('attackMap.country'), dataIndex: 'countryCode', render: (value: string) => displayCountry(value, t) },
+            { title: t('attackMap.location'), dataIndex: 'locationName', render: (_: string, record: AttackRegion) => formatRegionLocation(record, t) },
+            { title: t('attackMap.precision'), dataIndex: 'precision', render: (value: LocationPrecision) => t(`attackMap.precisionLevel.${value}`) },
+            { title: t('attackMap.attacks'), dataIndex: 'attacks' },
+            { title: t('attackMap.riskLabel'), dataIndex: 'level', render: (level: ThreatLevel) => <Tag color={riskTagColor(level)}>{t(`attackMap.risk.${level}`)}</Tag> },
+            { title: t('attackMap.top'), dataIndex: 'top', render: (top: string) => <Tag color="orange">{displayCategory(top, t)}</Tag> },
+            { title: t('attackMap.sources'), dataIndex: 'sourcePrefixes', render: (items: string[]) => items.join(', ') || '-' },
+          ]}
+        />
       </section>
     </section>
   );
 }
 
-function WorldMapSVG({ countryLevels }: { countryLevels: Map<string, ThreatLevel> }) {
+function WorldMapSVG({ countryLevels, variant = 'default' }: { countryLevels: Map<string, ThreatLevel>; variant?: 'default' | 'china' }) {
   return (
-    <svg className="world-map-svg" viewBox="0 0 1000 500" aria-hidden="true">
+    <svg className={`world-map-svg world-map-svg-${variant}`} viewBox="0 0 1000 500" aria-hidden="true">
+      <rect className="map-ocean" x="16" y="16" width="968" height="468" rx="18" />
       <path className="map-graticule" d={graticulePath} />
       <g className="map-land">
         {worldMapPaths.map((item) => <path key={item.id} className={`map-risk-${countryLevels.get(item.id) ?? 'neutral'}`} d={item.d} />)}
       </g>
+    </svg>
+  );
+}
+
+function ChinaMainlandMap({ countryLevels }: { countryLevels: Map<string, ThreatLevel> }) {
+  const chinaLevel = countryLevels.get(chinaNumericId) ?? 'neutral';
+  return (
+    <svg className="china-map-svg world-map-svg" viewBox={chinaViewBox} aria-hidden="true">
+      <rect className="map-ocean" x={chinaViewport.x} y={chinaViewport.y} width={chinaViewport.width} height={chinaViewport.height} rx="10" />
+      <path className="map-graticule" d={graticulePath} />
+      <g className="map-land china-map-context">
+        {worldMapPaths.map((item) => <path key={item.id} className={`map-risk-${countryLevels.get(item.id) ?? 'neutral'}`} d={item.d} />)}
+      </g>
+      {chinaPath && <path className={`china-mainland-path map-risk-${chinaLevel}`} d={chinaPath} />}
     </svg>
   );
 }
@@ -378,7 +460,7 @@ function renderGlobeFallback(regions: AttackRegion[], countryLevels: Map<string,
   );
 }
 
-function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
+export function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
   const buckets = new Map<string, RegionBucket>();
   for (const entry of entries) {
     if (!isSecurityEvent(entry)) {
@@ -452,32 +534,7 @@ function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
     .sort((a, b) => b.attacks - a.attacks);
 }
 
-function aggregateContinents(regions: AttackRegion[]): ContinentRegion[] {
-  const byContinent = new Map<string, { attacks: number; categories: Map<string, number>; maxSeverity: number }>();
-  for (const region of regions) {
-    const current = byContinent.get(region.continent) ?? { attacks: 0, categories: new Map<string, number>(), maxSeverity: 0 };
-    current.attacks += region.attacks;
-    current.categories.set(region.top, (current.categories.get(region.top) ?? 0) + region.attacks);
-    current.maxSeverity = Math.max(current.maxSeverity, region.severityRank);
-    byContinent.set(region.continent, current);
-  }
-  const maxAttacks = Math.max(1, ...Array.from(byContinent.values()).map((item) => item.attacks));
-  return Array.from(byContinent.entries()).map(([name, value]) => {
-    const point = continentCoordinates[name] ? projectMapPoint(continentCoordinates[name].lon, continentCoordinates[name].lat) : null;
-    return {
-      key: name,
-      name,
-      attacks: value.attacks,
-      top: topMapValue(value.categories) ?? '-',
-      severityRank: value.maxSeverity,
-      level: threatLevelFor(value.attacks, value.maxSeverity, maxAttacks),
-      x: point?.x ?? 50,
-      y: point?.y ?? 88,
-    };
-  }).sort((a, b) => b.attacks - a.attacks);
-}
-
-function buildCountryLevelMap(regions: AttackRegion[]) {
+export function buildCountryLevelMap(regions: AttackRegion[]) {
   const byCountry = new Map<string, { attacks: number; severityRank: number }>();
   for (const region of regions) {
     if (!region.mappable || !countryNumericIds[region.countryCode]) {
@@ -500,17 +557,19 @@ function resolveLocation(entry: LogEntry) {
   const metadata = entry.metadata ?? {};
   const countryCode = inferCountry(entry);
   const coord = countryCoordinates[countryCode];
+  const metadataContinent = normalizeContinent(readMetadataString(metadata, ['continent', 'continent_name', 'geo.continent', 'geo.continent_name']));
+  const metadataCountryName = readMetadataString(metadata, ['country_name', 'geo.country_name']);
   const lat = readMetadataNumber(metadata, ['lat', 'latitude', 'geo_lat', 'geo.latitude', 'location.lat']);
   const lon = readMetadataNumber(metadata, ['lon', 'lng', 'longitude', 'geo_lon', 'geo.longitude', 'location.lon', 'location.lng']);
   const region = readMetadataString(metadata, ['district', 'county', 'area', 'city', 'region', 'province', 'state', 'subdivision', 'geo.region', 'geo.city']);
   const precise = validCoordinate(lat, lon);
   const sourcePrefix = ipPrefix(entry.client_ip);
-  const fallbackName = countryCode === 'UNLOCATED' ? (sourcePrefix || 'UNLOCATED') : countryCode;
+  const fallbackName = countryCode === 'UNLOCATED' ? (metadataCountryName || sourcePrefix || 'UNLOCATED') : countryCode;
   const locationName = region || (sourcePrefix && !coord ? sourcePrefix : fallbackName);
   const point = precise ? jitterCoordinate(lon, lat, entry.client_ip || locationName) : null;
   return {
     countryCode,
-    continent: coord?.continent ?? countryCode,
+    continent: metadataContinent || (coord?.continent ?? 'UNLOCATED'),
     lon: point?.lon ?? coord?.lon ?? 0,
     lat: point?.lat ?? coord?.lat ?? 0,
     mappable: Boolean(point || coord),
@@ -653,6 +712,17 @@ function projectMapPoint(lon: number, lat: number) {
   };
 }
 
+function projectChinaPoint(lon: number, lat: number) {
+  const point = mapProjection([lon, lat]);
+  if (!point) {
+    return null;
+  }
+  return {
+    x: ((point[0] - chinaViewport.x) / chinaViewport.width) * 100,
+    y: ((point[1] - chinaViewport.y) / chinaViewport.height) * 100,
+  };
+}
+
 function formatRegionLocation(region: AttackRegion, t: (key: string, options?: Record<string, unknown>) => string) {
   const country = displayCountry(region.countryCode, t);
   if (region.locationName && region.locationName !== region.countryCode && region.locationName !== 'UNLOCATED') {
@@ -709,6 +779,33 @@ function readMetadataNumber(metadata: Record<string, unknown>, keys: string[]) {
     }
   }
   return null;
+}
+
+function normalizeContinent(value: string) {
+  const normalized = value.trim().toLowerCase().replace(/[_-]+/g, ' ');
+  switch (normalized) {
+    case 'af':
+    case 'africa':
+      return 'Africa';
+    case 'as':
+    case 'asia':
+      return 'Asia';
+    case 'eu':
+    case 'europe':
+      return 'Europe';
+    case 'na':
+    case 'north america':
+      return 'North America';
+    case 'oc':
+    case 'oceania':
+    case 'australia':
+      return 'Oceania';
+    case 'sa':
+    case 'south america':
+      return 'South America';
+    default:
+      return '';
+  }
 }
 
 function readMetadataValue(metadata: Record<string, unknown>, key: string): unknown {

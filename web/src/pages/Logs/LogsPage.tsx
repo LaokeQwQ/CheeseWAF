@@ -70,23 +70,29 @@ export default function LogsPage() {
           loading={isLoading}
           data={logs.map((entry) => ({ ...entry, key: entry.id || entry.trace_id }))}
           columns={[
-            { title: t('logs.trace'), dataIndex: 'trace_id', render: (trace: string, record: LogEntry) => <code>{trace || record.id}</code> },
+            { title: t('logs.trace'), dataIndex: 'trace_id', render: (trace: string, record: LogEntry) => <code className="table-code" title={trace || record.id}>{trace || record.id}</code> },
             { title: t('logs.source'), dataIndex: 'client_ip' },
             {
               title: t('logs.category'),
               dataIndex: 'category',
-              render: (value: string) => <Tag color={value ? 'orange' : 'green'}>{displayCategory(value || 'pass', t)}</Tag>,
+              render: (value: string) => (
+                <span className="status-group">
+                  <Tag color={value ? 'orange' : 'green'}>{displayCategory(value || 'pass', t)}</Tag>
+                </span>
+              ),
             },
             {
               title: t('logs.action'),
               dataIndex: 'action',
               render: (action: string) => (
-                <Tag color={action === 'block' ? 'red' : 'blue'}>
-                  {displayAction(action, t)}
-                </Tag>
+                <span className="status-group">
+                  <Tag color={action === 'block' ? 'red' : 'blue'}>
+                    {displayAction(action, t)}
+                  </Tag>
+                </span>
               ),
             },
-            { title: 'URI', dataIndex: 'uri' },
+            { title: 'URI', dataIndex: 'uri', render: (uri: string) => <code className="table-code" title={uri || '-'}>{uri || '-'}</code> },
             { title: t('attackMap.country'), dataIndex: 'country', render: (value: string) => displayCountry(value, t) },
             { title: t('logs.time'), dataIndex: 'timestamp', render: formatTime },
           ]}

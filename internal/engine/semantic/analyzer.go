@@ -349,7 +349,7 @@ func decodeUnicodeEscapes(raw string) (string, bool) {
 }
 
 func compactSQL(raw string) string {
-	text := normalize(raw)
+	text := executableSQLText(raw)
 	text = sqlBlockComment.ReplaceAllString(text, "")
 	text = sqlLineComment.ReplaceAllString(text, "")
 	text = strings.ReplaceAll(text, "#", "")
@@ -362,6 +362,11 @@ func compactSQL(raw string) string {
 	return b.String()
 }
 
+func executableSQLText(raw string) string {
+	text := normalize(raw)
+	return sqlMySQLVersionComment.ReplaceAllString(text, " $1 ")
+}
+
 func guessCategories(raw string) []string {
 	text := normalize(raw)
 	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf"}
@@ -370,10 +375,10 @@ func guessCategories(raw string) []string {
 	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") {
 		scores["sqli"] += 2
 	}
-	if strings.Contains(text, "<script") || strings.Contains(text, ":script") || strings.Contains(text, "javascript:") || xssEventPattern.MatchString(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<iframe") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") {
+	if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") {
 		scores["xss"] += 2
 	}
-	if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "powershell") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") {
+	if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") {
 		scores["rce"] += 2
 	}
 	if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "/etc/passwd") || strings.Contains(text, "boot.ini") || strings.Contains(text, "win.ini") || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, ".env") || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") {
@@ -414,21 +419,28 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 }
 
 var (
-	sqlBooleanTautology  = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
-	sqlTimeFunction      = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
-	sqlComment           = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
-	sqlDangerousFunc     = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
-	sqlErrorFunction     = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name)\s*\(`)
-	sqlStringFunction    = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
-	sqlComparison        = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
-	xssEventPattern      = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
-	unicodeEscapePattern = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
-	sqlBlockComment      = regexp.MustCompile(`(?is)/\*.*?\*/`)
-	sqlLineComment       = regexp.MustCompile(`(?m)--[^\r\n]*`)
+	sqlBooleanTautology    = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
+	sqlTimeFunction        = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
+	sqlComment             = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
+	sqlDangerousFunc       = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
+	sqlErrorFunction       = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name)\s*\(`)
+	sqlStringFunction      = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
+	sqlComparison          = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
+	sqlMySQLVersionComment = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
+	xssEventPattern        = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
+	unicodeEscapePattern   = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
+	sqlBlockComment        = regexp.MustCompile(`(?is)/\*.*?\*/`)
+	sqlLineComment         = regexp.MustCompile(`(?m)--[^\r\n]*`)
+	rceShellControl        = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
+	rceWhitespaceEvasion   = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
+	rcePowerShellSideFx    = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b`)
+	rceEncodedPowerShell   = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,160}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{12,}`)
+	rceInterpreterInline   = regexp.MustCompile(`(?i)(?:^|[=&\s;|])(?:bash|sh|zsh|dash|ksh)\s+-c\s+['"]?(?:id|whoami|cat|curl|wget|uname|nc|ncat|python3?|perl|php|ruby|node|powershell|pwsh)\b|(?:^|[=&\s;|])cmd(?:\.exe)?\s*/c\s+(?:whoami|id|dir|type|powershell|certutil|curl|wget|ping|nslookup)\b|(?:python3?|perl|php|ruby|node)\s+(?:-c|-e|-r)\b`)
+	rceDownloadExecChain   = regexp.MustCompile(`(?i)(?:curl|wget|fetch)\s+[^\r\n|;&]+(?:\||;|&&)\s*(?:sh|bash|zsh|dash|ksh|python3?|php|perl|ruby|node)\b`)
 )
 
 func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
-	text := candidate.text
+	text := executableSQLText(candidate.text)
 	words := tokens(text)
 	reasons := map[string]bool{}
 	if containsOrdered(words, "union", "select") {
@@ -474,14 +486,18 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	text := candidate.text
 	reasons := map[string]bool{}
-	for _, pattern := range xssPatterns {
-		if pattern.MatchString(text) {
-			reasons["syntax: executable HTML/JavaScript context"] = true
-		}
-	}
 	lower := normalize(text)
+	if executableXSSContext(lower) {
+		reasons["syntax: executable HTML/JavaScript context"] = true
+	}
 	if javascriptURLContext.MatchString(lower) {
 		reasons["syntax: javascript URL in executable HTML attribute"] = true
+	}
+	if xssDataURLContext.MatchString(lower) {
+		reasons["syntax: executable data URI in HTML attribute"] = true
+	}
+	if xssSrcdocContext.MatchString(lower) {
+		reasons["syntax: iframe srcdoc execution context"] = true
 	}
 	if strings.Contains(lower, "document.cookie") || strings.Contains(lower, "localstorage") || strings.Contains(lower, "fetch(") {
 		reasons["semantics: browser credential or network side effect"] = true
@@ -494,26 +510,62 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 
 func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	text := strings.TrimSpace(candidate.text)
+	lower := normalize(text)
 	reasons := map[string]bool{}
 	for _, pattern := range rcePatterns {
 		if pattern.MatchString(text) {
 			reasons["syntax: shell metacharacter plus executable command"] = true
 		}
 	}
+	if rceShellControl.MatchString(text) {
+		reasons["syntax: shell control operator or command substitution"] = true
+	}
+	if rceWhitespaceEvasion.MatchString(text) {
+		reasons["syntax: shell whitespace evasion"] = true
+	}
+	if rceExecutionSink(candidate.input.Name) {
+		reasons["context: command execution parameter"] = true
+	}
+	if rcePowerShellSideFx.MatchString(text) || rceEncodedPowerShell.MatchString(text) {
+		reasons["semantics: PowerShell dynamic execution or encoded command"] = true
+	}
+	if rceInterpreterInline.MatchString(text) {
+		reasons["semantics: interpreter inline command execution"] = true
+	}
+	if rceDownloadExecChain.MatchString(text) {
+		reasons["semantics: download-to-shell execution chain"] = true
+	}
 	words := tokens(text)
-	for _, command := range []string{"cat", "id", "whoami", "uname", "curl", "wget", "bash", "sh", "powershell", "cmd", "python", "python3", "perl", "php", "ruby", "node", "nc", "ncat", "netcat", "socat", "lua"} {
+	for _, command := range []string{"cat", "whoami", "uname", "curl", "wget", "bash", "sh", "zsh", "dash", "pwsh", "powershell", "cmd", "python", "python3", "perl", "php", "ruby", "node", "nc", "ncat", "netcat", "socat", "lua", "iex", "invoke-expression"} {
 		if contains(words, command) {
 			reasons["semantics: command execution intent"] = true
 			break
 		}
 	}
-	if strings.Contains(normalize(text), "/usr/bin/") || strings.Contains(normalize(text), "/bin/") || strings.Contains(text, "$SHELL") || strings.Contains(text, "${SHELL}") {
+	if strings.Contains(lower, "/usr/bin/") || strings.Contains(lower, "/bin/") || strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}") {
 		reasons["semantics: fully qualified executable or shell interpreter"] = true
 	}
 	if len(reasons) < 2 {
 		return Hit{}, false
 	}
 	return hit(candidate, "rce", engine.SeverityCritical, 0.87+confidenceBonus(reasons), reasons), true
+}
+
+func rceExecutionSink(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" || normalized == "path_query" || normalized == "body" {
+		return false
+	}
+	parts := strings.FieldsFunc(normalized, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
+	})
+	for _, part := range parts {
+		switch part {
+		case "cmd", "command", "exec", "execute", "shell", "system", "process", "run", "script", "payload":
+			return true
+		}
+	}
+	return false
 }
 
 func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
