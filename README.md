@@ -58,7 +58,10 @@ for self-hosted runner-friendly toolchain setup. The current UI hardening pass
 focuses on real dashboard counters, live-vs-total posture separation, less
 abstract 2D/China-mainland/3D attack-map modes, and June 8 layout fixes for
 Rules, IP Control, Protection, Operations, Updates, Block Pages, and System
-Settings, and APISec JWT signing/audience/endpoint-policy controls. Local web build, selected race tests, Go tests with a workspace
+Settings, and APISec JWT signing/audience/endpoint-policy controls. Head
+`6e714e8` has been built as a Linux amd64 single-binary deployment and smoke
+tested on the remote acceptance host: admin health/index return 200, the proxy
+home route returns 200, and a SQLi probe is blocked with 403. Local web build, selected race tests, Go tests with a workspace
 `GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot and DOM-overflow
 audit, and `git diff --check` pass.
 
