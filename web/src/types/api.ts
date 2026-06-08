@@ -527,6 +527,7 @@ export type MonitorSnapshot = {
 
 export type HostStats = {
   os: string;
+  cpu_count: number;
   cpu_percent: number;
   load1: number;
   memory_total: number;

@@ -1,8 +1,9 @@
-import { Input, Select, Table, Tag } from '@arco-design/web-react';
+import { Button, Input, Select, Table, Tag } from '@arco-design/web-react';
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Eye, Search } from 'lucide-react';
 import { fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry } from '../../utils/display';
@@ -95,6 +96,14 @@ export default function LogsPage() {
             { title: 'URI', dataIndex: 'uri', render: (uri: string) => <code className="table-code" title={uri || '-'}>{uri || '-'}</code> },
             { title: t('attackMap.country'), dataIndex: 'country', render: (value: string) => displayCountry(value, t) },
             { title: t('logs.time'), dataIndex: 'timestamp', render: formatTime },
+            {
+              title: t('logs.detail'),
+              render: (_: unknown, record: LogEntry) => (
+                <Link to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`} className="table-action-link">
+                  <Button size="small" icon={<Eye size={14} />}>{t('logs.viewDetail')}</Button>
+                </Link>
+              ),
+            },
           ]}
         />
       </section>

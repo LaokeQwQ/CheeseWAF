@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Form, Input, Message as ArcoMessage, Select, Space, Switch, Table, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { BrainCircuit, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { BrainCircuit, Eye, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
 import { analyzeEvents, analyzeLog, fetchAIConfig, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
 import type { AIConfig, AttackAnalysis, LogEntry } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
@@ -163,17 +164,22 @@ export default function AIPage() {
                 {
                   title: t('ai.analysis'),
                   render: (_: unknown, record: LogEntry) => (
-                    <Button
-                      size="small"
-                      loading={eventAnalysisMutation.isPending && selectedId === record.id}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setSelectedId(record.id);
-                        eventAnalysisMutation.mutate(record);
-                      }}
-                    >
-                      {analyses[record.id] ? t('ai.reanalyze') : t('ai.run')}
-                    </Button>
+                    <Space wrap className="table-action-group">
+                      <Link to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`} onClick={(event) => event.stopPropagation()} className="table-action-link">
+                        <Button size="small" icon={<Eye size={14} />}>{t('logs.detail')}</Button>
+                      </Link>
+                      <Button
+                        size="small"
+                        loading={eventAnalysisMutation.isPending && selectedId === record.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedId(record.id);
+                          eventAnalysisMutation.mutate(record);
+                        }}
+                      >
+                        {analyses[record.id] ? t('ai.reanalyze') : t('ai.run')}
+                      </Button>
+                    </Space>
                   ),
                 },
               ]}

@@ -123,6 +123,20 @@ export function fetchLogs(params: LogQuery = {}) {
   return unwrap<LogResponse>(apiClient.get('/logs', { params }));
 }
 
+export async function fetchLogEvent(reference: string) {
+  const byTrace = await fetchLogs({ limit: 10, trace_id: reference });
+  const direct = byTrace.items.find((entry) => entry.trace_id === reference || entry.id === reference) ?? byTrace.items[0];
+  if (direct) {
+    return direct;
+  }
+  const recent = await fetchLogs({ limit: 250 });
+  const fallback = recent.items.find((entry) => entry.trace_id === reference || entry.id === reference);
+  if (!fallback) {
+    throw new APIRequestError('Log event not found', 'LOG_NOT_FOUND', 404);
+  }
+  return fallback;
+}
+
 export function fetchMonitorSummary() {
   return unwrap<MonitorSummary>(apiClient.get('/monitor'));
 }

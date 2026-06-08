@@ -12,6 +12,7 @@ const BlockPagesPage = lazy(() => import('../pages/BlockPages/BlockPagesPage'));
 const DashboardPage = lazy(() => import('../pages/Dashboard/DashboardPage'));
 const EdgePage = lazy(() => import('../pages/Edge/EdgePage'));
 const IPManagePage = lazy(() => import('../pages/IPManage/IPManagePage'));
+const LogDetailPage = lazy(() => import('../pages/Logs/LogDetailPage'));
 const LogsPage = lazy(() => import('../pages/Logs/LogsPage'));
 const LoginPage = lazy(() => import('../pages/Login/LoginPage'));
 const MonitorPage = lazy(() => import('../pages/Monitor/MonitorPage'));
@@ -76,6 +77,7 @@ export default function AppRoutes() {
           <Route path="sites/:id" element={<Page><LazyPage><SiteDetailPage /></LazyPage></Page>} />
           <Route path="rules" element={<Page><LazyPage><RulesPage /></LazyPage></Page>} />
           <Route path="logs" element={<Page><LazyPage><LogsPage /></LazyPage></Page>} />
+          <Route path="logs/:traceId" element={<Page><LazyPage><LogDetailPage /></LazyPage></Page>} />
           <Route path="ip" element={<Page><LazyPage><IPManagePage /></LazyPage></Page>} />
           <Route path="protection" element={<Page><LazyPage><ProtectionPage /></LazyPage></Page>} />
           <Route path="edge" element={<Page><LazyPage><EdgePage /></LazyPage></Page>} />

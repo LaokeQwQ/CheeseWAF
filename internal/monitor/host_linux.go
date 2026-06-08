@@ -4,6 +4,7 @@ package monitor
 
 import (
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 type HostStats struct {
 	OS            string    `json:"os"`
+	CPUCount      int       `json:"cpu_count"`
 	CPUPercent    float64   `json:"cpu_percent"`
 	Load1         float64   `json:"load1"`
 	MemoryTotal   uint64    `json:"memory_total"`
@@ -36,6 +38,7 @@ func CollectHostStats() HostStats {
 	diskTotal, diskUsed := readRootDisk()
 	stats := HostStats{
 		OS:          "linux",
+		CPUCount:    runtime.NumCPU(),
 		Load1:       readLoad1(),
 		MemoryTotal: memTotal,
 		MemoryUsed:  saturatingSub(memTotal, memAvailable),

@@ -9,6 +9,7 @@ import (
 
 type HostStats struct {
 	OS            string    `json:"os"`
+	CPUCount      int       `json:"cpu_count"`
 	CPUPercent    float64   `json:"cpu_percent"`
 	Load1         float64   `json:"load1"`
 	MemoryTotal   uint64    `json:"memory_total"`
@@ -21,5 +22,5 @@ type HostStats struct {
 }
 
 func CollectHostStats() HostStats {
-	return HostStats{OS: runtime.GOOS, SampledAt: time.Now().UTC()}
+	return HostStats{OS: runtime.GOOS, CPUCount: runtime.NumCPU(), SampledAt: time.Now().UTC()}
 }
