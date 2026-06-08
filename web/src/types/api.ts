@@ -533,6 +533,9 @@ export type HostStats = {
   memory_total: number;
   memory_used: number;
   memory_percent: number;
+  swap_total: number;
+  swap_used: number;
+  swap_percent: number;
   disk_total: number;
   disk_used: number;
   disk_percent: number;

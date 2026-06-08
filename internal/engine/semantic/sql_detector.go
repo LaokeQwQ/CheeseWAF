@@ -81,6 +81,9 @@ func looksLikeSQLi(raw string) (bool, string) {
 	if sqlComment.MatchString(normalize(raw)) && (contains(words, "or") || contains(words, "union") || contains(words, "select") || strings.Contains(compact, "or1=1") || strings.Contains(compact, "unionselect")) {
 		return true, "SQL comment sequence with executable query context matched"
 	}
+	if sqlOrderByInference.MatchString(text) {
+		return true, "SQL ORDER/GROUP BY inference with comment matched"
+	}
 	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || strings.Contains(compact, "select")) {
 		return true, "error-based SQL function with query composition matched"
 	}

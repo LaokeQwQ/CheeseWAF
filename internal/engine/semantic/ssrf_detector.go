@@ -71,7 +71,11 @@ func isInternalHost(host string) bool {
 }
 
 func parseNumericIPv4(host string) net.IP {
-	if strings.Contains(host, ".") || strings.Contains(host, ":") {
+	host = strings.TrimSuffix(host, ".")
+	if strings.Contains(host, ".") {
+		return parseDottedNumericIPv4(host)
+	}
+	if strings.Contains(host, ":") {
 		return nil
 	}
 	value, err := strconv.ParseUint(host, 0, 32)
@@ -79,4 +83,23 @@ func parseNumericIPv4(host string) net.IP {
 		return nil
 	}
 	return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value))
+}
+
+func parseDottedNumericIPv4(host string) net.IP {
+	parts := strings.Split(host, ".")
+	if len(parts) != 4 {
+		return nil
+	}
+	var octets [4]byte
+	for i, part := range parts {
+		if part == "" {
+			return nil
+		}
+		value, err := strconv.ParseUint(part, 0, 8)
+		if err != nil {
+			return nil
+		}
+		octets[i] = byte(value)
+	}
+	return net.IPv4(octets[0], octets[1], octets[2], octets[3])
 }
