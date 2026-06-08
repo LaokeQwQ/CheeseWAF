@@ -50,6 +50,7 @@ sites:
         xxe: true
         ssrf: true
         nosql: true
+        ssti: true
       protection_policy:
         web_attack: ""
         api_security: ""

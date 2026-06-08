@@ -149,3 +149,38 @@ func TestBuildPipelineHonorsNoSQLSemanticSwitch(t *testing.T) {
 		t.Fatalf("expected NoSQLi detection from site semantic switch, got %+v", result)
 	}
 }
+
+func TestBuildPipelineHonorsSSTISemanticSwitch(t *testing.T) {
+	cfg := &config.Config{
+		Sites: []config.SiteConfig{
+			{
+				ID:      "default",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+					SemanticEngines: config.SemanticEngineSwitches{
+						SSTI: true,
+					},
+				},
+			},
+		},
+	}
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "/profile", bytes.NewBufferString(`display_name={{config.__class__.__init__.__globals__['os'].popen('id').read()}}`))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pipeline.Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "ssti" {
+		t.Fatalf("expected SSTI detection from site semantic switch, got %+v", result)
+	}
+}

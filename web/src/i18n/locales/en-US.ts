@@ -37,6 +37,7 @@ const enUS = {
     semantic: 'Semantic Detection',
     sqli: 'SQL Injection',
     ssrf: 'SSRF',
+    ssti: 'Template Injection',
     threatIntel: 'Threat Intel',
     unknown: 'Unknown',
     xss: 'XSS',

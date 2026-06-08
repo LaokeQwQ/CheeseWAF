@@ -18,6 +18,7 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 			Mode:    "block",
 			SemanticEngines: config.SemanticEngineSwitches{
 				NoSQL: true,
+				SSTI:  true,
 			},
 		},
 	}
@@ -25,8 +26,14 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	if !site.Advanced.Protection.SemanticNoSQL {
 		t.Fatalf("expected storage site to preserve NoSQL semantic switch: %+v", site.Advanced.Protection)
 	}
+	if !site.Advanced.Protection.SemanticSSTI {
+		t.Fatalf("expected storage site to preserve SSTI semantic switch: %+v", site.Advanced.Protection)
+	}
 	converted := SiteToConfig(site)
 	if !converted.WAF.SemanticEngines.NoSQL {
 		t.Fatalf("expected config site to preserve NoSQL semantic switch: %+v", converted.WAF.SemanticEngines)
+	}
+	if !converted.WAF.SemanticEngines.SSTI {
+		t.Fatalf("expected config site to preserve SSTI semantic switch: %+v", converted.WAF.SemanticEngines)
 	}
 }

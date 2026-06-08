@@ -96,6 +96,7 @@ type SemanticEngineSwitches struct {
 	XXE   bool `yaml:"xxe" json:"xxe"`
 	SSRF  bool `yaml:"ssrf" json:"ssrf"`
 	NoSQL bool `yaml:"nosql" json:"nosql"`
+	SSTI  bool `yaml:"ssti" json:"ssti"`
 }
 
 type CustomRuleConfig struct {

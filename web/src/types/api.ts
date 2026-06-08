@@ -72,6 +72,7 @@ export type SiteProtectionConfig = {
   semantic_xxe: boolean;
   semantic_ssrf: boolean;
   semantic_nosql: boolean;
+  semantic_ssti: boolean;
   bot: boolean;
   ratelimit: boolean;
   acl: boolean;

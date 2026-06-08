@@ -9,7 +9,7 @@ with benign counterexamples when a pattern is likely to affect normal traffic.
 | Source | Use | Notes |
 | --- | --- | --- |
 | OWASP Core Rule Set / FTW | WAF-positive and WAF-negative request shapes | Best baseline for parity-style regression because FTW is designed to issue repeatable HTTP requests and validate WAF behavior. See <https://github.com/coreruleset/coreruleset>, <https://github.com/coreruleset/ftw>, and <https://github.com/coreruleset/go-ftw>. |
-| FuzzDB | Attack payload primitives for SQLi, XSS, RCE, LFI, SSRF, XXE, NoSQLi, and discovery | Use as a source of payload shapes only. Do not bulk-import every line as a block rule. See <https://github.com/fuzzdb-project/fuzzdb>. |
+| FuzzDB | Attack payload primitives for SQLi, XSS, RCE, LFI, SSRF, XXE, NoSQLi, SSTI, and discovery | Use as a source of payload shapes only. Do not bulk-import every line as a block rule. See <https://github.com/fuzzdb-project/fuzzdb>. |
 | SecLists | Broad fuzzing and payload lists | Use selected web payloads and pair them with benign examples. Repository is large and includes material that can trigger local security tooling. See <https://github.com/danielmiessler/SecLists>. |
 | BCCC-SFU-SQLInj-2023 | Evasive and sophisticated SQL injection queries | Good candidate for SQLi adversarial regression and benchmark scoring after license and download handling are reviewed. See <https://www.yorku.ca/research/bccc/ucs-technical/cybersecurity-datasets-cds/sql-injection-attack-bccc-sfu-sqlinj-2023/>. |
 | Internal production/user reports | False positives and false negatives seen by CheeseWAF users | Highest priority for threshold tuning because it reflects real deployments. Must redact secrets and personal data. |
@@ -39,7 +39,8 @@ focuses on:
 - LFI Kubernetes service account token and overlong dot-slash traversal.
 - SSRF IPv6, dotted-hex, and dotted-octal internal hosts.
 - NoSQLi MongoDB operator injection shapes for credential and `$where` query behavior.
-- Benign documentation neighbors for localhost URLs, browser security terms, and MongoDB operator references.
+- SSTI Jinja/Freemarker execution-chain shapes.
+- Benign documentation neighbors for localhost URLs, browser security terms, MongoDB operator references, and harmless template examples.
 
 This is not a replacement for full CRS/FTW, SecLists, FuzzDB, or BCCC runs. It
 is a checked-in safety net for the engine behavior CheeseWAF already claims.

@@ -15,6 +15,7 @@ const categoryKeys: Record<string, string> = {
   semantic: 'securityCategories.semantic',
   sqli: 'securityCategories.sqli',
   ssrf: 'securityCategories.ssrf',
+  ssti: 'securityCategories.ssti',
   threat_intel: 'securityCategories.threatIntel',
   unknown: 'securityCategories.unknown',
   xss: 'securityCategories.xss',

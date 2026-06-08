@@ -8,7 +8,7 @@ Implemented in `internal/engine/semantic/analyzer.go`:
 
 - HTTP input extraction from URI, query, headers, cookies, form bodies, JSON bodies, multipart fields, XML/raw bodies.
 - Recursive decoding for URL encoding, HTML entities, printable Base64, and JavaScript `\uXXXX` / `\xXX` escapes.
-- Category guessing for SQLi, XSS, RCE, LFI, XXE, SSRF, and NoSQLi.
+- Category guessing for SQLi, XSS, RCE, LFI, XXE, SSRF, NoSQLi, and SSTI.
 - Obfuscation handling for SQL comment keyword splitting, MySQL executable version comments, Windows path traversal, numeric IPv4 SSRF hosts, and common cloud metadata addresses.
 - Additional SQLi handling for error-based XML functions (`extractvalue`/`updatexml`-style patterns), database time-delay functions including `pg_sleep`, boolean predicates that use SQL string functions such as `char()`, hex tautologies, and `ORDER BY` enumeration without flagging standalone documentation text or SQL comment tutorials.
 - XSS handling for NUL/control-character obfuscation in executable `javascript:` URL contexts, executable `data:text/html` / SVG data URI attributes, `iframe srcdoc`, meta refresh JavaScript redirects, and legacy CSS expression contexts, while keeping standalone `javascript:` / data URI documentation and ordinary iframe markup examples clean.
@@ -16,14 +16,15 @@ Implemented in `internal/engine/semantic/analyzer.go`:
 - LFI handling for Windows/Linux traversal, overlong dot-slash traversal, and Kubernetes service-account token paths.
 - SSRF handling for loopback/cloud metadata hosts, dotted-decimal, dotted-hex, dotted-octal, and IPv6 loopback forms.
 - NoSQLi handling for MongoDB-style operators in structured JSON/form/query/cookie inputs, including `$ne` credential bypasses, bracket-notation form operators, `$regex` wildcard query changes, logical query branch operators, and `$where` server-side JavaScript predicates. Standalone MongoDB operator documentation text remains clean.
-- NoSQLi is exposed through the same global/site configuration path as the other semantic engines (`semantic_engines.nosql` and `advanced.protection.semantic_nosql`) so the runtime pipeline, saved site settings, and Web console stay aligned.
+- NoSQLi and SSTI are exposed through the same global/site configuration path as the other semantic engines (`semantic_engines.nosql`, `semantic_engines.ssti`, `advanced.protection.semantic_nosql`, and `advanced.protection.semantic_ssti`) so the runtime pipeline, saved site settings, and Web console stay aligned.
+- SSTI handling for Jinja-style object graph traversal, Spring EL runtime execution, Freemarker `Execute` utility calls, and context-bound arithmetic probes. Documentation and CMS content examples with ordinary template placeholders remain clean unless they contain execution primitives.
 - Syntax plus behavior evidence in `semantic_analysis`, including payload, source field, severity, confidence, and reason text.
 - Blocking integration before the individual semantic detectors in the runtime pipeline.
 
 Regression coverage:
 
-- `TestAnalyzerReadinessMatrix` covers common SQLi/XSS/RCE/LFI/XXE/SSRF/NoSQLi payloads, cookie and multipart inputs, SQL comment keyword splitting, MySQL versioned comments, database file-read and error-based function side effects, PostgreSQL time delay functions, function-based boolean SQLi, Unicode/control-character/entity/data-URI/srcdoc XSS, `${IFS}` command injection, PowerShell/Pwsh encoded or dynamic execution, inline interpreter execution, Windows traversal, internal-network SSRF including decimal IPv4 notation, and MongoDB operator injection in JSON/form login or query structures.
-- `TestAnalyzerReadinessBenignMatrix` protects a small benign corpus from obvious false positives, including SQL function/comment documentation, standalone `javascript:` / `data:text/html` URL safety text, non-executable iframe markup examples, defensive PowerShell/cmd documentation without runnable payloads, ordinary JSON filters, and MongoDB operator documentation text.
+- `TestAnalyzerReadinessMatrix` covers common SQLi/XSS/RCE/LFI/XXE/SSRF/NoSQLi/SSTI payloads, cookie and multipart inputs, SQL comment keyword splitting, MySQL versioned comments, database file-read and error-based function side effects, PostgreSQL time delay functions, function-based boolean SQLi, Unicode/control-character/entity/data-URI/srcdoc XSS, `${IFS}` command injection, PowerShell/Pwsh encoded or dynamic execution, inline interpreter execution, Windows traversal, internal-network SSRF including decimal IPv4 notation, MongoDB operator injection in JSON/form login or query structures, and template-injection execution chains.
+- `TestAnalyzerReadinessBenignMatrix` protects a small benign corpus from obvious false positives, including SQL function/comment documentation, standalone `javascript:` / `data:text/html` URL safety text, non-executable iframe markup examples, defensive PowerShell/cmd documentation without runnable payloads, ordinary JSON filters, MongoDB operator documentation text, and safe template documentation/CMS content.
 - `TestAnalyzerAgainstOpenWAFRegressionPayloads` keeps CRS-inspired payload shapes in the suite.
 - `TestCuratedExternalCorpusShapes` loads reviewed JSONL fixtures from `internal/engine/semantic/testdata/curated_external_shapes.jsonl` so public-corpus-inspired shapes stay visible without importing large raw payload lists into the repository.
 - Direct `SQLDetector`, `XSSDetector`, and `RCEDetector` tests cover the same newly added function-based SQLi, executable-context XSS, and obfuscated command-injection samples because those detectors are still usable independently in the proxy pipeline.
@@ -44,7 +45,7 @@ go test ./internal/engine/semantic -bench BenchmarkAnalyzerReadinessCorpus -benc
 Latest local baseline on Windows amd64 / Ryzen 5 5500:
 
 ```text
-BenchmarkAnalyzerReadinessCorpus-12  34459  33902 ns/op  6157 B/op  108 allocs/op
+BenchmarkAnalyzerReadinessCorpus-12  36810  32326 ns/op  6145 B/op  108 allocs/op
 ```
 
 ## Not Yet ModSecurity/CRS Parity

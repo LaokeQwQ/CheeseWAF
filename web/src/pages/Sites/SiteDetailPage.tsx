@@ -255,6 +255,7 @@ export default function SiteDetailPage() {
                 ['semantic_xxe', 'XXE'],
                 ['semantic_ssrf', 'SSRF'],
                 ['semantic_nosql', 'NoSQLi'],
+                ['semantic_ssti', 'SSTI'],
                 ['bot', 'Bot'],
                 ['ratelimit', t('protection.ratelimit')],
                 ['acl', t('protection.acl')],

@@ -121,6 +121,29 @@ func TestAnalyzerDetectsNoSQLOperatorInjectionWithEvidence(t *testing.T) {
 	}
 }
 
+func TestAnalyzerDetectsSSTIWithEvidence(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "/profile", bytes.NewBufferString(`display_name={{config.__class__.__init__.__globals__['os'].popen('id').read()}}`))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewAnalyzer("block", "ssti").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "ssti" {
+		t.Fatalf("expected SSTI detection, got %+v", result)
+	}
+	report, ok := reqCtx.Metadata["semantic_analysis"].(AnalysisReport)
+	if !ok || len(report.Hits) == 0 {
+		t.Fatalf("expected semantic analysis report, got %+v", reqCtx.Metadata["semantic_analysis"])
+	}
+	if !strings.Contains(report.Hits[0].Syntax, "template expression") || !strings.Contains(report.Hits[0].Semantics, "execution") {
+		t.Fatalf("expected SSTI syntax and semantic evidence, got %+v", report.Hits[0])
+	}
+}
+
 func TestAnalyzerUsesHeaderAndBodyInputs(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "/submit", bytes.NewBufferString("name=alice&comment=%3Csvg%20onload%3Dalert(1)%3E"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

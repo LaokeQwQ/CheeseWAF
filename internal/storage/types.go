@@ -197,6 +197,7 @@ type SiteProtectionConfig struct {
 	SemanticXXE   bool `json:"semantic_xxe"`
 	SemanticSSRF  bool `json:"semantic_ssrf"`
 	SemanticNoSQL bool `json:"semantic_nosql"`
+	SemanticSSTI  bool `json:"semantic_ssti"`
 	Bot           bool `json:"bot"`
 	RateLimit     bool `json:"ratelimit"`
 	ACL           bool `json:"acl"`

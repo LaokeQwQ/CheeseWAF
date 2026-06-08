@@ -360,6 +360,9 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 	if switches.NoSQL {
 		semanticCategories = append(semanticCategories, "nosqli")
 	}
+	if switches.SSTI {
+		semanticCategories = append(semanticCategories, "ssti")
+	}
 	if len(semanticCategories) > 0 {
 		detectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, detectors...)
 	}

@@ -60,7 +60,7 @@ func NewAnalyzer(mode string, categories ...string) *Analyzer {
 	}
 	enabled := map[string]bool{}
 	if len(categories) == 0 {
-		for _, category := range []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli"} {
+		for _, category := range []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"} {
 			enabled[category] = true
 		}
 	} else {
@@ -369,7 +369,7 @@ func executableSQLText(raw string) string {
 
 func guessCategories(raw string) []string {
 	text := normalize(raw)
-	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli"}
+	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"}
 	scores := map[string]int{}
 	sqlCompact := compactSQL(text)
 	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlOrderByInference.MatchString(text) {
@@ -392,6 +392,9 @@ func guessCategories(raw string) []string {
 	}
 	if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "this.") || strings.Contains(text, "function(") {
 		scores["nosqli"] += 2
+	}
+	if sstiTemplateExpression.MatchString(text) {
+		scores["ssti"] += 2
 	}
 	var guesses []string
 	for _, category := range ordered {
@@ -418,6 +421,8 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 		return analyzeSSRF(candidate)
 	case "nosqli":
 		return analyzeNoSQL(candidate)
+	case "ssti":
+		return analyzeSSTI(candidate)
 	default:
 		return Hit{}, false
 	}
@@ -439,6 +444,9 @@ var (
 	nosqlJSBehavior        = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.)`)
 	nosqlWideRegex         = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
 	nosqlOperatorNames     = []string{"$jsonschema", "$elemmatch", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
+	sstiTemplateExpression = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|<%=?\s*.*?%>)`)
+	sstiArithmeticProbe    = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
+	sstiDangerousBehavior  = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime)`)
 	sqlBlockComment        = regexp.MustCompile(`(?is)/\*.*?\*/`)
 	sqlLineComment         = regexp.MustCompile(`(?m)--[^\r\n]*`)
 	rceShellControl        = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
@@ -559,6 +567,46 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 		confidence += 0.02
 	}
 	return hit(candidate, "nosqli", severity, confidence, reasons), true
+}
+
+func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
+	text := strings.TrimSpace(candidate.text)
+	lowerText := normalize(text)
+	if !sstiTemplateExpression.MatchString(lowerText) {
+		return Hit{}, false
+	}
+	reasons := map[string]bool{
+		"syntax: server-side template expression delimiter": true,
+	}
+	dangerous := sstiDangerousBehavior.MatchString(lowerText)
+	arithmeticProbe := sstiArithmeticProbe.MatchString(lowerText)
+	if dangerous {
+		reasons["semantics: template expression reaches introspection or execution primitive"] = true
+	}
+	if strings.Contains(lowerText, "__globals__") || strings.Contains(lowerText, "__subclasses__") || strings.Contains(lowerText, "__mro__") {
+		reasons["semantics: template object graph traversal can escape sandboxed data access"] = true
+	}
+	if strings.Contains(lowerText, "java.lang.runtime") || strings.Contains(lowerText, "processbuilder") || strings.Contains(lowerText, "freemarker.template.utility.execute") {
+		reasons["semantics: template expression can reach host runtime command execution"] = true
+	}
+	if arithmeticProbe && sstiProbeContext(candidate.input.Name) {
+		reasons["syntax: arithmetic template evaluation probe"] = true
+		reasons["semantics: probe attempts to confirm server-side template evaluation"] = true
+	}
+	if !hasSemanticReason(reasons) {
+		return Hit{}, false
+	}
+	severity := engine.SeverityHigh
+	confidence := 0.86 + confidenceBonus(reasons)
+	if dangerous {
+		severity = engine.SeverityCritical
+		confidence += 0.02
+	}
+	if arithmeticProbe && !dangerous {
+		severity = engine.SeverityMedium
+		confidence = 0.78 + confidenceBonus(reasons)
+	}
+	return hit(candidate, "ssti", severity, confidence, reasons), true
 }
 
 func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
@@ -855,6 +903,24 @@ func nosqlLooksLikeStructuredPayload(text string) bool {
 		strings.Contains(text, "[") ||
 		strings.Contains(text, ":") ||
 		strings.Contains(text, "=")
+}
+
+func sstiProbeContext(name string) bool {
+	lower := strings.ToLower(name)
+	for _, excluded := range []string{"text", "content", "body", "markdown", "doc", "docs", "example", "template"} {
+		if lower == excluded || strings.Contains(lower, excluded) {
+			return false
+		}
+	}
+	for _, term := range []string{
+		"name", "display", "username", "nickname", "title", "subject", "q", "query", "search",
+		"message", "comment", "redirect", "next", "url", "path", "payload", "value",
+	} {
+		if lower == term || strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsOrdered(words []string, sequence ...string) bool {

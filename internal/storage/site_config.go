@@ -37,6 +37,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				SemanticXXE:   site.WAF.SemanticEngines.XXE,
 				SemanticSSRF:  site.WAF.SemanticEngines.SSRF,
 				SemanticNoSQL: site.WAF.SemanticEngines.NoSQL,
+				SemanticSSTI:  site.WAF.SemanticEngines.SSTI,
 			},
 			Policy: SiteProtectionPolicy{
 				WebAttack:   site.WAF.ProtectionPolicy.WebAttack,
@@ -90,6 +91,7 @@ func SiteToConfig(site Site) config.SiteConfig {
 				XXE:   site.Advanced.Protection.SemanticXXE,
 				SSRF:  site.Advanced.Protection.SemanticSSRF,
 				NoSQL: site.Advanced.Protection.SemanticNoSQL,
+				SSTI:  site.Advanced.Protection.SemanticSSTI,
 			},
 			ProtectionPolicy: config.ProtectionPolicyConfig{
 				WebAttack:   site.Advanced.Policy.WebAttack,

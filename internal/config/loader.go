@@ -54,6 +54,7 @@ func Default() Config {
 						XXE:   true,
 						SSRF:  true,
 						NoSQL: true,
+						SSTI:  true,
 					},
 					ProtectionPolicy: ProtectionPolicyConfig{},
 					Performance: PerformanceTuningConfig{

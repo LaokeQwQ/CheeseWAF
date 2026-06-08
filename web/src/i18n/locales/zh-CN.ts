@@ -37,6 +37,7 @@ const zhCN = {
     semantic: '语义检测',
     sqli: 'SQL 注入',
     ssrf: 'SSRF',
+    ssti: '模板注入',
     threatIntel: '威胁情报',
     unknown: '未知类型',
     xss: 'XSS',
