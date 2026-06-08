@@ -71,14 +71,16 @@ top-level `SHA256SUMS` file. The shared packaging script lives at
 
 ## Stage Snapshot
 
-As of 2026-06-08, the latest release-flow batch has completed the protected
-upward promotion flow on GitHub: PR #20 merged
-`release-branch-artifacts -> dev`, PR #21 merged
-`ci-upload-artifact-node24 -> dev`, PR #22 promoted `dev -> canary`, and PR #23
-promoted `canary -> master`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
-primary forge/build target; GitHub remains a secondary mirror/check. A Forgejo
-mirror-sync was triggered after the GitHub merges, and Forgejo now matches the
-same `dev` (`33fa87f`), `canary` (`df0acb8`), and `master` (`e3a8b80`) heads.
+As of 2026-06-08, the latest hardening release-flow batch has completed the protected
+upward promotion flow on GitHub: PR #26 merged
+`hardening-private-prometheus-metrics -> dev`, PR #25 promoted `dev -> canary`,
+and PR #27 promoted `canary -> master`. Forgejo at
+`git.laoker.cc/Laoke/CheeseWAF` is the primary forge/build target; GitHub remains
+a secondary mirror/check. A Forgejo mirror-sync was triggered after the GitHub
+merges, and Forgejo matched the same hardening snapshot heads: `dev`
+(`bab9f83`), `canary` (`c8a71d6`), and `master` (`df244ca`). Those three
+protected branches had the same tree content while retaining their required
+upward PR merge commits.
 The Forgejo workflow is present under `.forgejo/workflows/ci.yml` and uses
 `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
 self-hosted runner-friendly toolchain setup.
@@ -91,13 +93,16 @@ IP threat-intel tabs, honest health/reconnect states, less abstract
 2D/China-mainland/3D attack-map modes, APISec JWT
 signing/audience/remote-JWKS/endpoint-policy controls, route-scoped management
 API RBAC, and synchronized GitHub/Forgejo branch-channel artifacts for `dev`,
-`canary`, and `stable`. GitHub push runs `27125345411`, `27125843548`, and
-`27126362531` passed with real `release-artifacts` uploads for those channels.
-Code snapshot `e3a8b80` has been built as a Linux amd64 single-binary
-deployment and smoke tested on the remote acceptance host: admin health/index
-return 200, the proxy home route returns 200, a SQLi probe is blocked with 403,
-and HTTPS admin responses include frame, nosniff, referrer, permissions, and
-HSTS safety headers.
+`canary`, and `stable`. The most recent GitHub push runs for `canary` and
+`master` (`27135688931`, `27136147773`, and `27136628202`) passed Go
+multi-platform tests, web build, cross-build, and branch-channel
+`release-artifacts` where applicable. Code snapshot `e3a8b80` has been built as
+a Linux amd64 single-binary deployment and smoke tested on the remote acceptance
+host: admin health/index return 200, the proxy home route returns 200, a SQLi
+probe is blocked with 403, and HTTPS admin responses include frame, nosniff,
+referrer, permissions, and HSTS safety headers. The promoted hardening snapshot
+`df244ca` is packaged; redeploying the next master snapshot to the acceptance
+host remains the next operational step when the remote host is available.
 
 ## Pre-Release Gaps
 
