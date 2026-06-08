@@ -1,0 +1,22 @@
+:root[data-theme='dark'] {
+  --app-bg: #0d1117;
+  --surface: #151b24;
+  --surface-soft: #10161f;
+  --surface-raised: #1a2230;
+  --border: #293449;
+  --text: #edf2f8;
+  --text-muted: #9aa8bc;
+  --accent: #4fd6bd;
+  --accent-strong: #7ae8d5;
+  --accent-soft: rgba(79, 214, 189, 0.13);
+  --accent-danger: #ff6b6b;
+  --accent-warning: #f5b85b;
+  --accent-info: #6aa7ff;
+  --accent-purple: #b58cff;
+  --shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
+  --color-primary-6: #4fd6bd;
+  --color-bg-1: #151b24;
+  --color-bg-2: #10161f;
+  --color-text-1: #edf2f8;
+  --color-text-2: #cbd5e1;
+}
