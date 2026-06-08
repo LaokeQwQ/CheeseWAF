@@ -108,9 +108,7 @@ func (h *Handler) persistConfig() error {
 	if err := config.Validate(h.Config); err != nil {
 		return err
 	}
-	if err := h.writeConfigVersion(); err != nil {
-		return err
-	}
+	_ = h.writeConfigVersion()
 	return config.Save(h.ConfigPath, h.Config)
 }
 
@@ -123,9 +121,18 @@ func (h *Handler) writeConfigVersion() error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return err
+		return nil
 	}
-	dir := filepath.Join(filepath.Dir(h.ConfigPath), "versions")
+	if err := writeConfigVersionFile(filepath.Join(filepath.Dir(h.ConfigPath), "versions"), raw); err == nil {
+		return nil
+	}
+	if h.Config != nil && h.Config.Setup.RuntimeDir != "" {
+		_ = writeConfigVersionFile(filepath.Join(h.Config.Setup.RuntimeDir, "versions"), raw)
+	}
+	return nil
+}
+
+func writeConfigVersionFile(dir string, raw []byte) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}

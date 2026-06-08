@@ -8,7 +8,16 @@ import { displayAction } from '../../utils/display';
 
 const fallback: ProtectionConfig = {
   policy: { web_attack: 'smart', api_security: 'smart', bot_cc: 'smart', threat_intel: 'smart' },
-  ip: { whitelist: [], blacklist: [], tags: {}, geoip: { enabled: false, database: '', blocked_countries: [], country_cidrs: {} } },
+  ip: {
+    whitelist: [],
+    blacklist: [],
+    access_rules: [],
+    reputation_overrides: {},
+    tags: {},
+    threat_intel: [],
+    providers: [],
+    geoip: { enabled: false, database: '', blocked_countries: [], country_cidrs: {} },
+  },
   ratelimit: { enabled: false, default: { requests: 0, window: '', burst: 0 } },
   bot: {
     enabled: false,
@@ -240,7 +249,11 @@ function normalizeProtection(input?: ProtectionConfig): ProtectionConfig {
       ...next.ip,
       whitelist: asArray(next.ip?.whitelist),
       blacklist: asArray(next.ip?.blacklist),
+      access_rules: asArray(next.ip?.access_rules),
+      reputation_overrides: next.ip?.reputation_overrides ?? {},
       tags: next.ip?.tags ?? {},
+      threat_intel: asArray(next.ip?.threat_intel),
+      providers: asArray(next.ip?.providers),
       geoip: {
         ...fallback.ip.geoip,
         ...next.ip?.geoip,

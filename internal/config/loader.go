@@ -79,15 +79,21 @@ func Default() Config {
 						HealthyThreshold:   2,
 						UnhealthyThreshold: 2,
 					},
+					AccessControl: SiteAccessControlConfig{
+						DynamicGuard: true,
+						TrustedCIDRs: []string{},
+					},
 				},
 			},
 		},
 		Protection: ProtectionConfig{
 			Policy: DefaultProtectionPolicy(),
 			IP: IPProtectionConfig{
-				Whitelist: []string{"127.0.0.1", "::1"},
-				Blacklist: []string{},
-				Tags:      map[string][]string{},
+				Whitelist:           []string{"127.0.0.1", "::1"},
+				Blacklist:           []string{},
+				AccessRules:         []IPAccessRuleConfig{},
+				ReputationOverrides: map[string]int{},
+				Tags:                map[string][]string{},
 			},
 			RateLimit: RateLimitProtectionConfig{
 				Enabled: true,
@@ -158,7 +164,7 @@ func Default() Config {
 				File: FileLogConfig{Path: "./logs/access.log", MaxSize: "100MB", MaxBackups: 10},
 			},
 		},
-		AI: AIConfig{Enabled: false, APIBase: "https://api.openai.com/v1", APIKeyHeader: "authorization", Model: "gpt-4o-mini", Async: true},
+		AI: AIConfig{Enabled: false, Provider: "openai", APIBase: "https://api.openai.com/v1", APIKeyHeader: "authorization", Model: "gpt-4o-mini", Async: true},
 		Update: UpdateConfig{
 			OTA: OTAConfig{
 				Enabled:          false,
@@ -325,6 +331,28 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Logging.Output.File.Path == "" {
 		cfg.Logging.Output.File.Path = "./logs/access.log"
+	}
+	if cfg.AI.Provider == "" {
+		cfg.AI.Provider = def.AI.Provider
+	}
+	if cfg.AI.APIBase == "" {
+		switch cfg.AI.Provider {
+		case "anthropic":
+			cfg.AI.APIBase = "https://api.anthropic.com/v1"
+		default:
+			cfg.AI.APIBase = def.AI.APIBase
+		}
+	}
+	if cfg.AI.APIKeyHeader == "" {
+		cfg.AI.APIKeyHeader = def.AI.APIKeyHeader
+	}
+	if cfg.AI.Model == "" {
+		switch cfg.AI.Provider {
+		case "anthropic":
+			cfg.AI.Model = "claude-3-5-haiku-latest"
+		default:
+			cfg.AI.Model = def.AI.Model
+		}
 	}
 	if len(cfg.Sites) == 0 {
 		cfg.Sites = def.Sites

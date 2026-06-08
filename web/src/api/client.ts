@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AIConfig, AIEventsAnalysisResponse, AIAssistantReply, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
+import type { AIConfig, AIEventsAnalysisResponse, AIAssistantReply, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -181,7 +181,7 @@ export function fetchStats() {
 }
 
 export async function fetchHealth() {
-  const response = await axios.get<{ data?: HealthStatus }>('/health', { timeout: 5000 });
+  const response = await axios.get<{ data?: HealthStatus }>('/health', { timeout: 2500 });
   return response.data.data as HealthStatus;
 }
 
@@ -292,6 +292,14 @@ export function updateIPTags(tags: Record<string, string[]>) {
   return unwrap<Record<string, string[]>>(apiClient.put('/ip/tags', tags));
 }
 
+export function updateIPAccessRules(rules: IPAccessRule[]) {
+  return unwrap<IPAccessRule[]>(apiClient.put('/ip/access-rules', rules));
+}
+
+export function updateIPReputationOverrides(overrides: Record<string, number>) {
+  return unwrap<Record<string, number>>(apiClient.put('/ip/reputation-overrides', overrides));
+}
+
 export function updateThreatIntelProviders(providers: ThreatIntelProvider[]) {
   return unwrap<ThreatIntelProvider[]>(apiClient.put('/ip/threat-intel/providers', providers));
 }
@@ -351,6 +359,8 @@ function normalizeIPRulesResponse(response: IPRulesResponse): IPRulesResponse {
   return {
     whitelist: asStringArray(raw?.whitelist),
     blacklist: asStringArray(raw?.blacklist),
+    access_rules: asArray(raw?.access_rules).map(normalizeIPAccessRule),
+    reputation_overrides: asNumberRecord(raw?.reputation_overrides),
     tags: asStringArrayRecord(raw?.tags),
     threat_intel: asArray(raw?.threat_intel).map(normalizeThreatIntel),
     providers: asArray(raw?.providers).map(normalizeThreatIntelProvider),
@@ -370,14 +380,34 @@ function normalizeIPEntry(entry: Partial<IPReputationEntry> | null | undefined):
     ip: entry?.ip ?? '',
     list: entry?.list ?? 'monitor',
     reputation: Number(entry?.reputation ?? 80),
+    reputation_override: typeof entry?.reputation_override === 'number' ? entry.reputation_override : undefined,
     tags: asStringArray(entry?.tags),
     intel: asArray(entry?.intel).map(normalizeThreatIntel),
+    access_rules: asArray(entry?.access_rules).map(normalizeIPAccessRuleRef),
     stats: {
       total: Number(stats?.total ?? 0),
       blocked: Number(stats?.blocked ?? 0),
       by_type: asNumberRecord(stats?.by_type),
     },
   };
+}
+
+function normalizeIPAccessRule(rule: Partial<IPAccessRule> | null | undefined): IPAccessRule {
+  return {
+    id: rule?.id ?? '',
+    name: rule?.name ?? '',
+    description: rule?.description ?? '',
+    action: rule?.action ?? 'allow',
+    scope: rule?.scope ?? 'global',
+    site_id: rule?.site_id ?? '',
+    path_prefix: rule?.path_prefix ?? '',
+    entries: asStringArray(rule?.entries),
+    enabled: rule?.enabled ?? true,
+  };
+}
+
+function normalizeIPAccessRuleRef(rule: Partial<IPAccessRule> | null | undefined) {
+  return normalizeIPAccessRule(rule);
 }
 
 function normalizeThreatIntel(indicator: Partial<ThreatIntelIndicator> | null | undefined): ThreatIntelIndicator {
@@ -501,7 +531,7 @@ export function analyzeLog(entry: Record<string, unknown>) {
   return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', entry));
 }
 
-export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string }) {
+export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string }) {
   return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload));
 }
 
