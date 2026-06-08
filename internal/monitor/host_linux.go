@@ -20,6 +20,9 @@ type HostStats struct {
 	MemoryTotal   uint64    `json:"memory_total"`
 	MemoryUsed    uint64    `json:"memory_used"`
 	MemoryPercent float64   `json:"memory_percent"`
+	SwapTotal     uint64    `json:"swap_total"`
+	SwapUsed      uint64    `json:"swap_used"`
+	SwapPercent   float64   `json:"swap_percent"`
 	DiskTotal     uint64    `json:"disk_total"`
 	DiskUsed      uint64    `json:"disk_used"`
 	DiskPercent   float64   `json:"disk_percent"`
@@ -34,7 +37,7 @@ var cpuSample struct {
 
 func CollectHostStats() HostStats {
 	total, idle := readCPUCounters()
-	memTotal, memAvailable := readMemInfo()
+	memTotal, memAvailable, swapTotal, swapFree := readMemInfo()
 	diskTotal, diskUsed := readRootDisk()
 	stats := HostStats{
 		OS:          "linux",
@@ -42,12 +45,15 @@ func CollectHostStats() HostStats {
 		Load1:       readLoad1(),
 		MemoryTotal: memTotal,
 		MemoryUsed:  saturatingSub(memTotal, memAvailable),
+		SwapTotal:   swapTotal,
+		SwapUsed:    saturatingSub(swapTotal, swapFree),
 		DiskTotal:   diskTotal,
 		DiskUsed:    diskUsed,
 		SampledAt:   time.Now().UTC(),
 	}
 	stats.CPUPercent = cpuPercent(total, idle)
 	stats.MemoryPercent = percent(float64(stats.MemoryUsed), float64(stats.MemoryTotal))
+	stats.SwapPercent = percent(float64(stats.SwapUsed), float64(stats.SwapTotal))
 	stats.DiskPercent = percent(float64(stats.DiskUsed), float64(stats.DiskTotal))
 	return stats
 }
@@ -97,12 +103,12 @@ func cpuPercent(total, idle uint64) float64 {
 	return percent(float64(deltaTotal-deltaIdle), float64(deltaTotal))
 }
 
-func readMemInfo() (uint64, uint64) {
+func readMemInfo() (uint64, uint64, uint64, uint64) {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0, 0
 	}
-	var total, available uint64
+	var total, available, swapTotal, swapFree uint64
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
@@ -114,9 +120,13 @@ func readMemInfo() (uint64, uint64) {
 			total = value * 1024
 		case "MemAvailable":
 			available = value * 1024
+		case "SwapTotal":
+			swapTotal = value * 1024
+		case "SwapFree":
+			swapFree = value * 1024
 		}
 	}
-	return total, available
+	return total, available, swapTotal, swapFree
 }
 
 func readRootDisk() (uint64, uint64) {

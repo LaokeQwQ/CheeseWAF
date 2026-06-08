@@ -1,7 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Input, Menu, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Dropdown, Input, Menu, Popover, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
 import { motion } from 'framer-motion';
 import {
   Activity,
@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import i18n from '../i18n';
 import { navItemMotion } from '../animations/micro';
-import { fetchMonitorSummary } from '../api/client';
+import { fetchHealth, fetchMonitorSummary } from '../api/client';
 import AIAssistant from '../components/AIAssistant/AIAssistant';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
@@ -67,11 +67,32 @@ export default function MainLayout() {
   const setLanguage = useAppStore((state) => state.setLanguage);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const { data: monitor } = useQuery({ queryKey: ['shell-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false });
+  const [healthFailures, setHealthFailures] = useState(0);
+  const healthQuery = useQuery({
+    queryKey: ['shell-health'],
+    queryFn: fetchHealth,
+    refetchInterval: healthFailures >= 5 ? false : 10_000,
+    retry: false,
+  });
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const account = currentAccount();
 
   useEffect(() => {
     i18n.changeLanguage(language);
   }, [language]);
+
+  useEffect(() => {
+    setNotificationsOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (healthQuery.isSuccess) {
+      setHealthFailures(0);
+    }
+    if (healthQuery.isError) {
+      setHealthFailures((value) => Math.min(5, value + 1));
+    }
+  }, [healthQuery.isError, healthQuery.isSuccess, healthQuery.dataUpdatedAt, healthQuery.errorUpdatedAt]);
 
   const currentKey = navItems.find((item) => (
     item.key === '/'
@@ -79,6 +100,12 @@ export default function MainLayout() {
       : location.pathname === item.key || location.pathname.startsWith(`${item.key}/`)
   ))?.key ?? '/';
   const snapshot = monitor?.snapshot;
+  const connection = connectionState(healthFailures, healthQuery.data?.status, healthQuery.isFetching);
+
+  function reconnectHealth() {
+    setHealthFailures(0);
+    void healthQuery.refetch();
+  }
 
   function handleLogout() {
     localStorage.removeItem('cheesewaf-token');
@@ -117,13 +144,13 @@ export default function MainLayout() {
           })}
         </nav>
 
-        <div className="sidebar-status">
+        <button className={`sidebar-status sidebar-status-${connection.state}`} type="button" onClick={reconnectHealth}>
           <span className="status-dot" />
           <div className="sidebar-status-copy">
-            <strong>{t('common.healthy')}</strong>
-            <span>Admin API :9443</span>
+            <strong>{t(connection.titleKey)}</strong>
+            <span>{connectionDetail(connection.state, healthFailures, healthQuery.data?.uptime_seconds, t)}</span>
           </div>
-        </div>
+        </button>
       </aside>
 
       <div className="app-main">
@@ -151,6 +178,18 @@ export default function MainLayout() {
             <Tag className="metric-chip" icon={<SlidersHorizontal size={14} />}>
               {t('shell.requests')} {snapshot?.requests ?? 0}
             </Tag>
+            <Popover
+              popupVisible={notificationsOpen}
+              onVisibleChange={setNotificationsOpen}
+              trigger="click"
+              position="bottom"
+              content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
+            >
+              <Button
+                className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
+                icon={<Bell size={18} />}
+              />
+            </Popover>
             <Select
               aria-label={t('system.theme')}
               className="topbar-select"
@@ -174,9 +213,6 @@ export default function MainLayout() {
               <Select.Option value="zh-CN">中文</Select.Option>
               <Select.Option value="en-US">English</Select.Option>
             </Select>
-            <Dropdown droplist={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}>
-              <Button className="icon-button" icon={<Bell size={18} />} />
-            </Dropdown>
             <Dropdown
               droplist={
                 <Menu
@@ -233,6 +269,26 @@ function NotificationPanel({ blocked, requests }: { blocked: number; requests: n
       </div>
     </section>
   );
+}
+
+function connectionState(failures: number, status: string | undefined, fetching: boolean) {
+  if (failures >= 5) {
+    return { state: 'offline', titleKey: 'shell.connectionOffline' };
+  }
+  if (failures > 0 || (!status && fetching)) {
+    return { state: 'reconnecting', titleKey: 'shell.connectionReconnecting' };
+  }
+  return { state: 'online', titleKey: 'shell.connectionOnline' };
+}
+
+function connectionDetail(state: string, failures: number, uptime: number | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (state === 'offline') {
+    return t('shell.connectionFailed');
+  }
+  if (state === 'reconnecting') {
+    return t('shell.connectionRetrying', { count: Math.max(1, failures) });
+  }
+  return typeof uptime === 'number' ? t('shell.connectionUptime', { seconds: uptime }) : t('shell.connectionReady');
 }
 
 function currentAccount() {

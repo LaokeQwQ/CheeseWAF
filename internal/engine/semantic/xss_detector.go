@@ -19,6 +19,8 @@ var xssPatterns = []*regexp.Regexp{
 var javascriptURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|xlink:href|formaction|action)\s*=\s*['"]?\s*javascript\s*:`)
 var xssDataURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|data|xlink:href|formaction|action|content)\s*=\s*['"]?\s*data\s*:\s*(?:text/html|image/svg\+xml|application/xhtml\+xml)`)
 var xssSrcdocContext = regexp.MustCompile(`(?i)<\s*iframe\b[^>]*\bsrcdoc\s*=`)
+var xssMetaRefreshContext = regexp.MustCompile(`(?i)<\s*meta\b[^>]*\bcontent\s*=\s*['"]?[^'">]*url\s*=\s*javascript\s*:`)
+var xssStyleExecutionContext = regexp.MustCompile(`(?i)<[^>]+\bstyle\s*=\s*['"]?[^>]*(?:\bexpression\s*\(|\burl\s*\(\s*javascript\s*:)`)
 
 type XSSDetector struct {
 	mode string
@@ -62,5 +64,5 @@ func executableXSSContext(normalized string) bool {
 			return true
 		}
 	}
-	return javascriptURLContext.MatchString(normalized) || xssDataURLContext.MatchString(normalized) || xssSrcdocContext.MatchString(normalized)
+	return javascriptURLContext.MatchString(normalized) || xssDataURLContext.MatchString(normalized) || xssSrcdocContext.MatchString(normalized) || xssMetaRefreshContext.MatchString(normalized) || xssStyleExecutionContext.MatchString(normalized)
 }
