@@ -52,22 +52,25 @@ claim is "working and explainable", not "ModSecurity/OWASP CRS parity".
 
 ## Stage Snapshot
 
-As of 2026-06-08, the active development line is `fix/admin-ui-dashboard-map`
-with PR #8 targeting `dev`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
-primary forge/build target; GitHub remains a secondary mirror/check. `master`
-and `canary` intentionally remain behind `dev` until the upward promotion flow
-is completed. The Forgejo workflow is present under `.forgejo/workflows/ci.yml`
-and uses `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh`
-for self-hosted runner-friendly toolchain setup. The current UI hardening pass
+As of 2026-06-08, the latest feature batch has completed the protected upward
+promotion flow on GitHub: PR #8 merged `fix/admin-ui-dashboard-map -> dev`, PR
+#9 promoted `dev -> canary`, and PR #10 promoted `canary -> master`. Forgejo at
+`git.laoker.cc/Laoke/CheeseWAF` is the primary forge/build target; GitHub
+remains a secondary mirror/check. A Forgejo mirror-sync was triggered after the
+GitHub merges, and Forgejo now matches the same `dev`, `canary`, and `master`
+heads. The Forgejo workflow is present under `.forgejo/workflows/ci.yml` and
+uses `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
+self-hosted runner-friendly toolchain setup. The current UI hardening pass
 focuses on real dashboard counters, live-vs-total posture separation, scoped
 Dashboard chart sizing that fills its panel instead of shrinking into a corner,
 real host CPU/load/memory/disk resource metrics, single-event log detail/AI analysis,
 less abstract 2D/China-mainland/3D attack-map modes, and June 8 layout fixes for
 Rules, IP Control, Protection, Operations, Updates, Block Pages, and System
-Settings, and APISec JWT signing/audience/remote-JWKS/endpoint-policy controls. Code
-snapshot `e97ebe7` has been built as a Linux amd64 single-binary deployment and
-smoke tested on the remote acceptance host: admin health/index/assets return
-200, the proxy home route returns 200, and a SQLi probe is blocked with 403. Local web build, selected race tests, Go tests with a workspace
+Settings, and APISec JWT signing/audience/remote-JWKS/endpoint-policy controls.
+Code snapshot `ede7c1b` has been built as a Linux amd64 single-binary deployment
+and smoke tested on the remote acceptance host: admin health/index/assets return
+200, the proxy home route returns 200, and a SQLi probe is blocked with 403.
+Local web build, selected race tests, Go tests with a workspace
 `GOCACHE`, Playwright Chrome Canary desktop/mobile screenshot and DOM-overflow
 audit, and `git diff --check` pass.
 
