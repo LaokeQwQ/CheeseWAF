@@ -1,0 +1,22 @@
+:root[data-theme='black-gold'] {
+  --app-bg: #0a0a08;
+  --surface: #15130f;
+  --surface-soft: #1d1a14;
+  --surface-raised: #211d16;
+  --border: #3a3322;
+  --text: #f7f1df;
+  --text-muted: #c2b58f;
+  --accent: #d6a93a;
+  --accent-strong: #f0ca63;
+  --accent-soft: rgba(214, 169, 58, 0.14);
+  --accent-danger: #f06b61;
+  --accent-warning: #f0ca63;
+  --accent-info: #62b6d8;
+  --accent-purple: #b88de6;
+  --shadow: 0 20px 70px rgba(0, 0, 0, 0.36);
+  --color-primary-6: #d6a93a;
+  --color-bg-1: #15130f;
+  --color-bg-2: #1d1a14;
+  --color-text-1: #f7f1df;
+  --color-text-2: #dacda7;
+}
