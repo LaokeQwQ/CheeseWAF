@@ -47,6 +47,17 @@ func Validate(cfg *Config) error {
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
 	}
+	if cfg.Console.Login.CAPTCHA.Enabled {
+		if cfg.Console.Login.CAPTCHA.MaxNumber < 1000 || cfg.Console.Login.CAPTCHA.MaxNumber > 50000000 {
+			return fmt.Errorf("console.login.captcha.max_number must be between 1000 and 50000000")
+		}
+		if cfg.Console.Login.CAPTCHA.TTL < 30*time.Second || cfg.Console.Login.CAPTCHA.TTL > 10*time.Minute {
+			return fmt.Errorf("console.login.captcha.ttl must be between 30s and 10m")
+		}
+	}
+	if err := validateLoginBackground(cfg.Console.Login.Background); err != nil {
+		return err
+	}
 	if cfg.Storage.PostgreSQL.Enabled {
 		if strings.TrimSpace(cfg.Storage.PostgreSQL.DSN) == "" {
 			return fmt.Errorf("storage.postgresql.dsn is required when PostgreSQL log sink is enabled")
@@ -347,6 +358,34 @@ func Validate(cfg *Config) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func validateLoginBackground(background LoginBackgroundConfig) error {
+	switch strings.ToLower(strings.TrimSpace(background.Type)) {
+	case "", "auto", "image", "video":
+	default:
+		return fmt.Errorf("console.login.background.type must be auto, image, or video")
+	}
+	rawURL := strings.TrimSpace(background.URL)
+	if rawURL == "" {
+		return nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("console.login.background.url is invalid: %w", err)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return fmt.Errorf("console.login.background.url must use http or https")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("console.login.background.url must include a host")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("console.login.background.url must not include credentials")
 	}
 	return nil
 }
