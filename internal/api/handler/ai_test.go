@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,85 @@ func TestAnalyzeEventsRejectsInvalidTimeRange(t *testing.T) {
 	}
 }
 
+func TestAnalyzeLogReferenceLoadsStoredEvent(t *testing.T) {
+	sink := &filteringAISink{items: []storage.LogEntry{{
+		ID:         "log-1",
+		TraceID:    "trace-real",
+		Action:     "block",
+		Category:   "sqli",
+		Severity:   "high",
+		Method:     http.MethodGet,
+		URI:        "/search?q=1",
+		ClientIP:   "203.0.113.9",
+		DetectorID: "semantic.sqli",
+	}}}
+	handler := New(Options{Config: ptrConfig(config.Default()), Sink: sink})
+	body := []byte(`{"reference":"trace-real","event":{"id":"fake","trace_id":"trace-real","category":"xss","severity":"low","uri":"/fake"}}`)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/analyze", bytes.NewReader(body))
+	handler.AnalyzeLog(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected analysis ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := response.Data["risk"]; got != "high" {
+		t.Fatalf("expected stored event risk, got %v response=%+v", got, response.Data)
+	}
+	if got := response.Data["summary"]; !strings.Contains(got.(string), "sqli") || strings.Contains(got.(string), "xss") {
+		t.Fatalf("expected summary to use stored event, got %q", got)
+	}
+	if len(sink.filters) == 0 || sink.filters[0].TraceID != "trace-real" {
+		t.Fatalf("expected first query by trace reference, filters=%+v", sink.filters)
+	}
+}
+
+func TestAnalyzeLogReferenceNotFound(t *testing.T) {
+	sink := &filteringAISink{}
+	handler := New(Options{Config: ptrConfig(config.Default()), Sink: sink})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/analyze", bytes.NewReader([]byte(`{"reference":"missing-trace"}`)))
+	handler.AnalyzeLog(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected log not found, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAnalyzeLogLegacyPayloadPrefersStoredEvent(t *testing.T) {
+	sink := &filteringAISink{items: []storage.LogEntry{{
+		ID:       "stored-id",
+		TraceID:  "trace-from-legacy",
+		Action:   "block",
+		Category: "rce",
+		Severity: "critical",
+		URI:      "/api/run",
+	}}}
+	handler := New(Options{Config: ptrConfig(config.Default()), Sink: sink})
+	body := []byte(`{"id":"client-id","trace_id":"trace-from-legacy","action":"block","category":"xss","severity":"low","uri":"/client"}`)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/analyze", bytes.NewReader(body))
+	handler.AnalyzeLog(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected analysis ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := response.Data["risk"]; got != "critical" {
+		t.Fatalf("expected stored critical risk, got %v response=%+v", got, response.Data)
+	}
+}
+
 type recordingAISink struct {
 	items  []storage.LogEntry
 	filter storage.LogFilter
@@ -118,4 +198,40 @@ func (s *recordingAISink) Flush(context.Context) error {
 
 func (s *recordingAISink) Close() error {
 	return nil
+}
+
+type filteringAISink struct {
+	items   []storage.LogEntry
+	filters []storage.LogFilter
+}
+
+func (s *filteringAISink) Write(context.Context, *storage.LogEntry) error {
+	return nil
+}
+
+func (s *filteringAISink) Query(_ context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
+	s.filters = append(s.filters, filter)
+	out := make([]storage.LogEntry, 0, len(s.items))
+	for _, entry := range s.items {
+		if filter.TraceID != "" && entry.TraceID != filter.TraceID {
+			continue
+		}
+		out = append(out, entry)
+	}
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, int64(len(out)), nil
+}
+
+func (s *filteringAISink) Flush(context.Context) error {
+	return nil
+}
+
+func (s *filteringAISink) Close() error {
+	return nil
+}
+
+func ptrConfig(cfg config.Config) *config.Config {
+	return &cfg
 }
