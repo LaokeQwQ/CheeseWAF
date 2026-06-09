@@ -229,12 +229,12 @@ func adminContentSecurityPolicy() string {
 		"form-action 'self'",
 		"script-src 'self'",
 		"style-src 'self' 'unsafe-inline'",
-			"img-src 'self' data: blob: https: http:",
+		"img-src 'self' data: blob: https: http:",
 		"font-src 'self' data:",
 		"connect-src 'self' ws: wss:",
 		"worker-src 'self' blob:",
 		"manifest-src 'self'",
-			"media-src 'self' data: blob: https: http:",
+		"media-src 'self' data: blob: https: http:",
 	}, "; ")
 }
 

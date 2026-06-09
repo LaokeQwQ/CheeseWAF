@@ -135,55 +135,57 @@ export default function LoginPage() {
         <div className="auth-background-media auth-background-image" style={{ backgroundImage: `url("${cssURL(backgroundURL)}")` }} />
       )}
       {backgroundURL && <div className="auth-background-shade" />}
-      <motion.section
-        className="auth-panel"
-        initial={{ opacity: 0, y: 14 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.24 }}
-      >
-        <div className="auth-brand">
-          <span>CW</span>
-          <div>
-            <h1>{t('login.title')}</h1>
-            <p>{t('login.subtitle')}</p>
-          </div>
-        </div>
-
-        <Form layout="vertical" className="auth-form" onSubmit={handleSubmit}>
-          <Form.Item label={t('login.username')} field="username">
-            <Input prefix={<UserRound size={16} />} autoComplete="username" />
-          </Form.Item>
-          <Form.Item label={t('login.password')} field="password">
-            <Input.Password prefix={<LockKeyhole size={16} />} autoComplete="current-password" />
-          </Form.Item>
-          {requires2FA && (
-            <Form.Item label={t('login.totp')} field="totpCode">
-              <Input prefix={<LockKeyhole size={16} />} maxLength={6} inputMode="numeric" />
-            </Form.Item>
-          )}
-          {options?.captcha.enabled && (
-            <div className={`auth-captcha-state auth-captcha-state-${captchaState}`}>
-              <ShieldCheck size={16} />
-              <span>{t(`login.captchaState.${captchaState}`)}</span>
-              <Button
-                size="mini"
-                htmlType="button"
-                icon={<RefreshCcw size={13} />}
-                onClick={refreshCaptcha}
-                disabled={loading || captchaState === 'loading' || captchaState === 'solving'}
-              />
+      <div className="auth-stack">
+        <motion.section
+          className="auth-panel"
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.24 }}
+        >
+          <div className="auth-brand">
+            <span>CW</span>
+            <div>
+              <h1>{t('login.title')}</h1>
+              <p>{t('login.subtitle')}</p>
             </div>
-          )}
-          <motion.div {...pressable}>
-            <Button type="primary" htmlType="submit" loading={loading} long>
-              {t('login.submit')}
-            </Button>
-          </motion.div>
-          {error && <p className="form-error">{error}</p>}
-        </Form>
-      </motion.section>
-      <div className="auth-load-time">
-        {loadMs == null ? t('login.loading') : t('login.loadTime', { ms: loadMs })}
+          </div>
+
+          <Form layout="vertical" className="auth-form" onSubmit={handleSubmit}>
+            <Form.Item label={t('login.username')} field="username">
+              <Input prefix={<UserRound size={16} />} autoComplete="username" />
+            </Form.Item>
+            <Form.Item label={t('login.password')} field="password">
+              <Input.Password prefix={<LockKeyhole size={16} />} autoComplete="current-password" />
+            </Form.Item>
+            {requires2FA && (
+              <Form.Item label={t('login.totp')} field="totpCode">
+                <Input prefix={<LockKeyhole size={16} />} maxLength={6} inputMode="numeric" />
+              </Form.Item>
+            )}
+            {options?.captcha.enabled && (
+              <div className={`auth-captcha-state auth-captcha-state-${captchaState}`}>
+                <ShieldCheck size={16} />
+                <span>{t(`login.captchaState.${captchaState}`)}</span>
+                <Button
+                  size="mini"
+                  htmlType="button"
+                  icon={<RefreshCcw size={13} />}
+                  onClick={refreshCaptcha}
+                  disabled={loading || captchaState === 'loading' || captchaState === 'solving'}
+                />
+              </div>
+            )}
+            <motion.div {...pressable}>
+              <Button type="primary" htmlType="submit" loading={loading} long>
+                {t('login.submit')}
+              </Button>
+            </motion.div>
+            {error && <p className="form-error">{error}</p>}
+          </Form>
+        </motion.section>
+        <div className="auth-load-time">
+          {loadMs == null ? t('login.loading') : t('login.loadTime', { ms: loadMs })}
+        </div>
       </div>
     </main>
   );
