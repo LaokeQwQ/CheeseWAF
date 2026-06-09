@@ -16,7 +16,7 @@ var xssPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)<\s*xss\b[^>]*\bon[a-z0-9_-]{3,}\s*=`),
 }
 
-var javascriptURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|xlink:href|formaction|action)\s*=\s*['"]?\s*javascript\s*:`)
+var javascriptURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|srcset|xlink:href|formaction|action)\s*=\s*['"]?\s*javascript\s*:`)
 var xssDataURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|data|xlink:href|formaction|action|content)\s*=\s*['"]?\s*data\s*:\s*(?:text/html|image/svg\+xml|application/xhtml\+xml)`)
 var xssSrcdocContext = regexp.MustCompile(`(?i)<\s*iframe\b[^>]*\bsrcdoc\s*=`)
 var xssMetaRefreshContext = regexp.MustCompile(`(?i)<\s*meta\b[^>]*\bcontent\s*=\s*['"]?[^'">]*url\s*=\s*javascript\s*:`)

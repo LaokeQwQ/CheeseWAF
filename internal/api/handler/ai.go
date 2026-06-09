@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
@@ -28,6 +29,12 @@ type aiEventsAnalyzePayload struct {
 	TraceID  string `json:"trace_id"`
 	Start    string `json:"start"`
 	End      string `json:"end"`
+}
+
+type aiAnalyzeLogPayload struct {
+	storage.LogEntry
+	Reference string            `json:"reference"`
+	Event     *storage.LogEntry `json:"event"`
 }
 
 type aiAssistantPayload struct {
@@ -79,8 +86,13 @@ func (h *Handler) TestAIConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AnalyzeLog(w http.ResponseWriter, r *http.Request) {
-	var entry storage.LogEntry
-	if !decode(w, r, &entry) {
+	var req aiAnalyzeLogPayload
+	if !decode(w, r, &req) {
+		return
+	}
+	entry, status, code, err := h.resolveAnalyzeLogEntry(r, req)
+	if err != nil {
+		writeError(w, status, code, err.Error())
 		return
 	}
 	analysis, err := ai.AnalyzeLog(r.Context(), h.aiClient(), entry)
@@ -89,6 +101,94 @@ func (h *Handler) AnalyzeLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, analysis)
+}
+
+func (h *Handler) resolveAnalyzeLogEntry(r *http.Request, req aiAnalyzeLogPayload) (storage.LogEntry, int, string, error) {
+	if ref := strings.TrimSpace(req.Reference); ref != "" {
+		entry, ok, err := h.lookupLogEvent(r, ref)
+		if err != nil {
+			return storage.LogEntry{}, http.StatusInternalServerError, "LOG_QUERY_ERROR", err
+		}
+		if !ok {
+			return storage.LogEntry{}, http.StatusNotFound, "LOG_NOT_FOUND", errLogNotFound(ref)
+		}
+		return entry, http.StatusOK, "", nil
+	}
+	if req.Event != nil {
+		return h.resolveLegacyLogEntry(r, *req.Event)
+	}
+	return h.resolveLegacyLogEntry(r, req.LogEntry)
+}
+
+func (h *Handler) resolveLegacyLogEntry(r *http.Request, entry storage.LogEntry) (storage.LogEntry, int, string, error) {
+	if !hasLogEvidence(entry) {
+		return storage.LogEntry{}, http.StatusBadRequest, "BAD_REQUEST", errLogReferenceRequired()
+	}
+	ref := firstNonEmpty(entry.TraceID, entry.ID)
+	if ref != "" && h.Sink != nil {
+		if stored, ok, err := h.lookupLogEvent(r, ref); err != nil {
+			return storage.LogEntry{}, http.StatusInternalServerError, "LOG_QUERY_ERROR", err
+		} else if ok {
+			return stored, http.StatusOK, "", nil
+		}
+	}
+	return entry, http.StatusOK, "", nil
+}
+
+func (h *Handler) lookupLogEvent(r *http.Request, reference string) (storage.LogEntry, bool, error) {
+	if h.Sink == nil {
+		return storage.LogEntry{}, false, nil
+	}
+	entries, _, err := h.Sink.Query(r.Context(), storage.LogFilter{TraceID: reference, Limit: 10})
+	if err != nil {
+		return storage.LogEntry{}, false, err
+	}
+	if entry, ok := pickLogEvent(entries, reference); ok {
+		return entry, true, nil
+	}
+	entries, _, err = h.Sink.Query(r.Context(), storage.LogFilter{Limit: 500})
+	if err != nil {
+		return storage.LogEntry{}, false, err
+	}
+	entry, ok := pickLogEvent(entries, reference)
+	return entry, ok, nil
+}
+
+func pickLogEvent(entries []storage.LogEntry, reference string) (storage.LogEntry, bool) {
+	for _, entry := range entries {
+		if entry.TraceID == reference || entry.ID == reference {
+			return entry, true
+		}
+	}
+	if len(entries) > 0 && entries[0].TraceID == reference {
+		return entries[0], true
+	}
+	return storage.LogEntry{}, false
+}
+
+func hasLogEvidence(entry storage.LogEntry) bool {
+	return firstNonEmpty(entry.ID, entry.TraceID, entry.Action, entry.Category, entry.URI, entry.Message, entry.Payload, entry.ClientIP) != ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+type logReferenceError string
+
+func (e logReferenceError) Error() string { return string(e) }
+
+func errLogNotFound(reference string) error {
+	return logReferenceError("log event not found: " + reference)
+}
+
+func errLogReferenceRequired() error {
+	return logReferenceError("reference or log event is required")
 }
 
 func (h *Handler) AnalyzeEvents(w http.ResponseWriter, r *http.Request) {

@@ -120,7 +120,7 @@ export default function MainLayout() {
       : location.pathname === item.key || location.pathname.startsWith(`${item.key}/`)
   ))?.key ?? '/';
   const snapshot = monitor?.snapshot;
-  const connection = connectionState(healthFailures, healthQuery.data?.status, healthQuery.isFetching);
+  const connection = connectionState(healthFailures, healthQuery.data?.status, healthQuery.isFetching, lastHeartbeatAt);
 
   function reconnectHealth() {
     setHealthFailures(0);
@@ -204,18 +204,6 @@ export default function MainLayout() {
             <Tag className="metric-chip" icon={<SlidersHorizontal size={14} />}>
               {t('shell.requests')} {snapshot?.requests ?? 0}
             </Tag>
-            <Popover
-              popupVisible={notificationsOpen}
-              onVisibleChange={setNotificationsOpen}
-              trigger="click"
-              position="bottom"
-              content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
-            >
-              <Button
-                className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
-                icon={<Bell size={18} />}
-              />
-            </Popover>
             <Select
               aria-label={t('system.theme')}
               className="topbar-select"
@@ -239,6 +227,18 @@ export default function MainLayout() {
               <Select.Option value="zh-CN">中文</Select.Option>
               <Select.Option value="en-US">English</Select.Option>
             </Select>
+            <Popover
+              popupVisible={notificationsOpen}
+              onVisibleChange={setNotificationsOpen}
+              trigger="click"
+              position="bottom"
+              content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
+            >
+              <Button
+                className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
+                icon={<Bell size={18} />}
+              />
+            </Popover>
             <Dropdown
               droplist={
                 <Menu
@@ -297,14 +297,17 @@ function NotificationPanel({ blocked, requests }: { blocked: number; requests: n
   );
 }
 
-function connectionState(failures: number, status: string | undefined, fetching: boolean) {
+function connectionState(failures: number, status: string | undefined, fetching: boolean, lastHeartbeatAt: number) {
   if (failures >= 5) {
     return { state: 'offline', titleKey: 'shell.connectionOffline' };
   }
-  if (failures > 0 || (!status && fetching)) {
+  if (failures > 0 || (fetching && Date.now() - lastHeartbeatAt > 3_000)) {
     return { state: 'reconnecting', titleKey: 'shell.connectionReconnecting' };
   }
-  return { state: 'online', titleKey: 'shell.connectionOnline' };
+  if (status === 'ok') {
+    return { state: 'online', titleKey: 'shell.connectionOnline' };
+  }
+  return { state: 'reconnecting', titleKey: 'shell.connectionReconnecting' };
 }
 
 function connectionDetail(state: string, failures: number, t: (key: string, options?: Record<string, unknown>) => string) {
