@@ -20,6 +20,7 @@ The repository currently includes:
 - Web console hardening includes localized security/category/severity labels, dashboard total-vs-live posture separation, 1/3/5/10s live refresh controls, selectable total-stat windows, chart axes, legend, zoom buttons, range-slider scaling, resilient event/resource card layouts, URL-addressable IP-management tabs, API security table layout isolation, route-level lazy loading, and Natural Earth/world-atlas based 2D/China-mainland/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, country-level GeoIP fallbacks, precise-location metadata support, WebGL fallback handling, responsive tables, and real log data. The China-mainland mode now uses its own mainland projection, real reference-city anchors, mainland-only filtering, and hover/zoom detail labels instead of a cropped world map. The 3D globe renderer is split into an on-demand chunk so ordinary console pages and 2D maps do not load Three.js up front.
 - The Dashboard resource panel now reads real host metrics from the monitor snapshot: CPU usage, 1-minute system load with CPU-core context, host memory usage, swap usage, disk usage, and a separate process-runtime line for goroutines/heap. Live posture and resources auto-refresh at the selected 1/3/5/10s interval, support manual refresh, display disabled swap explicitly when the host has no swap device, and expose real memory/swap reclaim actions through the protected system API.
 - Attack/block events now have a dedicated detail view under `/logs/:traceId`, reachable from the Dashboard, attack log table, and AI event table. The detail page shows request evidence, detector metadata, payload/user-agent context, and runs single-event AI analysis against the real log entry.
+- Scheduled security reports can generate daily or weekly Markdown/JSON summaries from real WAF logs and deliver them to a local report directory or webhook. Reports include the time window, total and security-event counts, block/challenge/log-only totals, unique source IPs, action/severity/category/site/country breakdowns, top security source IPs, attacked URIs, detectors, and recent high-risk events while excluding ordinary pass traffic from risk rankings.
 - Frontend build output uses stable Vite/Rolldown vendor chunks for React, Arco, Three.js, visualization, runtime, and UI utility dependencies. Production source maps are disabled unless `VITE_SOURCEMAP=true` is set, keeping the released Web console payload small, while the large Three.js dependency stays isolated to the attack-map path.
 - The latest admin UI quality pass hardens Rules, IP Control, Protection Policy, Operations, Updates & Vulnerability Feeds, Block Pages, Dashboard, AI Operations, and System Settings against failed API calls, cramped search inputs, overflowing tags, blank controlled selects, action-button squeeze, false online states, and mixed settings layouts. The console now favors explicit loading/error/empty states, scoped action footers, responsive token/chip groups, grouped settings sections, mobile IP profile cards with real allow/block/reputation actions, AI assistant safe-area spacing, clickable health reconnect status, separated notification/account menus, and browser-verified layouts instead of placeholder or decorative-only UI.
 - GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
@@ -80,13 +81,13 @@ top-level `SHA256SUMS` file. The shared packaging script lives at
 ## Stage Snapshot
 
 As of 2026-06-09, the latest hardening release-flow batch has completed the
-protected upward promotion flow on GitHub: PR #30 merged
-`fix/admin-health-ai-events -> dev`, PR #31 promoted `dev -> canary`, and PR #32
-promoted `canary -> master`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
+protected upward promotion flow on GitHub: PR #49 merged
+`fix/login-slider-performance -> dev`, PR #50 promoted `dev -> canary`, and PR
+#51 promoted `canary -> master`. Forgejo at `git.laoker.cc/Laoke/CheeseWAF` is the
 primary forge/build target; GitHub remains a secondary mirror/check. A Forgejo
 mirror-sync was triggered after the GitHub merges, and Forgejo matched the same
-snapshot heads: `dev` (`081416a`), `canary` (`1f8eab1`), and `master`
-(`9719b01`). Those three protected branches had the same tree content while
+snapshot heads: `dev` (`9c1ba54`), `canary` (`4eda681`), and `master`
+(`ebc62ae`). Those three protected branches had the same tree content while
 retaining their required upward PR merge commits. The Forgejo workflow is
 present under `.forgejo/workflows/ci.yml` and uses
 `scripts/ci/setup-go-mirror.sh` plus `scripts/ci/setup-node-mirror.sh` for
@@ -102,12 +103,14 @@ health/reconnect states, less abstract
 2D/China-mainland/3D attack-map modes, APISec JWT
 signing/audience/remote-JWKS/endpoint-policy controls, route-scoped management
 API RBAC, and synchronized GitHub/Forgejo branch-channel artifacts for `dev`,
-`canary`, and `stable`. The promoted `master` snapshot `9719b01` has been
+`canary`, and `stable`, plus richer scheduled security reports. The promoted
+`master` snapshot `ebc62ae` has been
 deployed to the remote acceptance host and smoke tested: admin health/index
 return 200, the proxy home route returns 200, a SQLi probe is blocked with 403,
-and HTTPS admin responses include frame, nosniff, referrer, permissions, and
-HSTS safety headers. The next release step is to add repeatable deployed WAF
-security replay and dynamic scanner evidence before tagging V0.1 beta.
+the deployed HTTP corpus replays 40/40 cases with 30/30 attacks blocked and
+10/10 benign cases not blocked, and HTTPS admin responses include frame,
+nosniff, referrer, permissions, and HSTS safety headers. The next release step
+is to add repeatable external dynamic scanner evidence before tagging V0.1 beta.
 
 ## Pre-Release Gaps
 
