@@ -81,16 +81,17 @@ top-level `SHA256SUMS` file. The shared packaging script lives at
 ## Stage Snapshot
 
 As of 2026-06-09, the latest release-flow batch has completed the protected
-upward promotion flow on GitHub: PR #52 merged
-`feature/security-report-productization -> dev`, PR #53 promoted
-`dev -> canary`, and PR #54 promoted `canary -> master`. Forgejo at
-`git.laoker.cc/Laoke/CheeseWAF` is the primary forge/build target; GitHub remains
-a secondary mirror/check. A Forgejo mirror-sync was triggered after the GitHub
-merges, and Forgejo matched the same snapshot heads: `dev` (`00f7912`), `canary`
-(`e3d692e`), and `master` (`e55c578`). GitHub Actions run `27212626546` passed
-the master push gate, including release artifacts. Forgejo refs are in sync, but
-the latest Forgejo Actions runs were still queued/running during this snapshot,
-so they are not claimed as green here. The Forgejo workflow is present under
+upward promotion flow on GitHub: PR #55 merged
+`feature/server-side-event-ai-analysis -> dev`, PR #56 promoted
+`dev -> canary`, and PR #57 promoted `canary -> master`. Forgejo at
+`git.laoker.cc/Laoke/CheeseWAF` is the intended primary forge/build target;
+GitHub currently remains the source repository for the pull mirror and the
+secondary CI check. GitHub Actions run `27217637012` passed the master push gate
+for `29f27264`, including release artifacts. A Forgejo mirror-sync was triggered
+after the GitHub merges, but the Forgejo mirror did not advance past the previous
+snapshot during this check (`dev=00f7912`, `canary=e3d692e`, `master=e55c578`),
+so the current Forgejo mirror state is treated as a synchronization issue rather
+than green release evidence. The Forgejo workflow is present under
 `.forgejo/workflows/ci.yml` and uses `scripts/ci/setup-go-mirror.sh` plus
 `scripts/ci/setup-node-mirror.sh` for self-hosted runner-friendly toolchain setup.
 
@@ -103,15 +104,16 @@ proxy/CDN real-client IP parsing, manual IP reputation overrides, honest
 health/reconnect states, less abstract
 2D/China-mainland/3D attack-map modes, APISec JWT
 signing/audience/remote-JWKS/endpoint-policy controls, route-scoped management
-API RBAC, and synchronized GitHub/Forgejo branch-channel artifacts for `dev`,
-`canary`, and `stable`, plus richer scheduled security reports and server-side
-single-event AI analysis lookup. The promoted `master` snapshot `e55c578` has
-been deployed to the remote acceptance host and smoke tested: admin health/index
-return 200, the proxy home route returns 200, a SQLi probe is blocked with 403,
-the deployed HTTP corpus replays 40/40 cases with 30/30 attacks blocked and
-10/10 benign cases not blocked, and HTTPS admin responses include frame,
-nosniff, referrer, permissions, and HSTS safety headers. The next release step
-is to add repeatable external dynamic scanner evidence before tagging V0.1 beta.
+API RBAC, richer scheduled security reports, GitHub branch-channel artifacts for
+`dev`, `canary`, and `stable`, and server-side single-event AI analysis lookup.
+The promoted `master` snapshot `29f27264` has been deployed to the remote
+acceptance host as `0.1.0-beta.147+29f27264b95c` and smoke tested: admin
+health/index return 200, the proxy home route returns 200, a SQLi probe is
+blocked with 403, the deployed HTTP corpus replays 40/40 cases with 30/30
+attacks blocked and 10/10 benign cases not blocked, and HTTPS admin responses
+include frame, nosniff, referrer, permissions, and HSTS safety headers. The next
+release step is to repair Forgejo mirror freshness and add repeatable external
+dynamic scanner evidence before tagging V0.1 beta.
 
 ## Pre-Release Gaps
 
