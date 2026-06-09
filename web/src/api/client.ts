@@ -539,6 +539,10 @@ export function analyzeLog(entry: Record<string, unknown>) {
   return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', entry));
 }
 
+export function analyzeLogReference(reference: string) {
+  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', { reference }));
+}
+
 export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string }) {
   return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload));
 }
