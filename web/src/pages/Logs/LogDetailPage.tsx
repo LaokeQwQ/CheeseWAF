@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, BrainCircuit, ShieldAlert } from 'lucide-react';
-import { analyzeLog, fetchLogEvent } from '../../api/client';
+import { analyzeLogReference, fetchLogEvent } from '../../api/client';
 import AIAnalysisMeta from '../../components/AIAnalysisMeta';
 import type { AttackAnalysis, LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry, displaySeverity } from '../../utils/display';
@@ -21,7 +21,7 @@ export default function LogDetailPage() {
     retry: false,
   });
   const analysisMutation = useMutation({
-    mutationFn: (entry: LogEntry) => analyzeLog(entry as unknown as Record<string, unknown>),
+    mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id || reference),
     onError: (mutationError) => ArcoMessage.error(mutationError.message),
   });
   const analysis = analysisMutation.data;

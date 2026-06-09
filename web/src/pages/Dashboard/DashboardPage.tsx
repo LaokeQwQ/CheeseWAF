@@ -14,6 +14,13 @@ const threatColors = ['var(--accent-danger)', 'var(--accent-warning)', 'var(--ac
 const realtimeWindowSeconds = 60;
 const totalsRefreshMs = 10_000;
 const refreshOptions = [1000, 3000, 5000, 10000];
+const statsRangeOptions = [
+  { value: 30, labelKey: 'dashboard.last30m' },
+  { value: 60, labelKey: 'dashboard.last60m' },
+  { value: 360, labelKey: 'dashboard.last6h' },
+  { value: 1440, labelKey: 'dashboard.last24h' },
+  { value: 10080, labelKey: 'dashboard.last7d' },
+];
 
 export default function DashboardPage() {
   const { t } = useTranslation();
@@ -100,27 +107,6 @@ export default function DashboardPage() {
         </Tag>
       </header>
 
-      <div className="dashboard-control-strip">
-        <div className="control-cluster">
-          <span>{t('dashboard.statsWindow')}</span>
-          <Radio.Group type="button" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
-            <Radio value={15}>{t('dashboard.last15m')}</Radio>
-            <Radio value={60}>{t('dashboard.last60m')}</Radio>
-            <Radio value={180}>{t('dashboard.last3h')}</Radio>
-            <Radio value={1440}>{t('dashboard.last24h')}</Radio>
-          </Radio.Group>
-        </div>
-        <div className="control-cluster control-cluster-right">
-          <span>{t('dashboard.autoRefresh')}</span>
-          <Radio.Group type="button" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
-            {refreshOptions.map((value) => <Radio key={value} value={value}>{value / 1000}s</Radio>)}
-          </Radio.Group>
-          <Tooltip content={t('dashboard.manualRefresh')}>
-            <Button className="icon-button" icon={<RotateCcw size={15} />} loading={refreshingLiveResources} onClick={manualRefresh} />
-          </Tooltip>
-        </div>
-      </div>
-
       <motion.div className="metric-grid" variants={listVariants} initial="initial" animate="enter">
         {[
           { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, t), icon: Zap },
@@ -180,6 +166,42 @@ export default function DashboardPage() {
                 </div>
               </div>
             </Spin>
+            <div className="dashboard-chart-footer">
+              <div className="chart-legend" aria-label={t('dashboard.trafficRequests')}>
+                <span><i /> {t('dashboard.trafficRequests')}</span>
+                <span>{t('dashboard.statsWindow')}: {rangeLabel(statsRange, t)}</span>
+              </div>
+              <label className="chart-scale-slider">
+                <span>{t('dashboard.trafficScale')}</span>
+                <input
+                  type="range"
+                  min="50"
+                  max="250"
+                  step="25"
+                  value={Math.round(chartScale * 100)}
+                  onChange={(event) => setChartScale(Number(event.currentTarget.value) / 100)}
+                />
+              </label>
+              <div className="control-cluster dashboard-footer-controls">
+                <span>{t('dashboard.statsWindow')}</span>
+                <Radio.Group type="button" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
+                  {statsRangeOptions.map((option) => <Radio key={option.value} value={option.value}>{t(option.labelKey)}</Radio>)}
+                </Radio.Group>
+              </div>
+              <div className="control-cluster dashboard-footer-controls">
+                <span>{t('dashboard.autoRefresh')}</span>
+                <Radio.Group type="button" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
+                  {refreshOptions.map((value) => <Radio key={value} value={value}>{value / 1000}s</Radio>)}
+                </Radio.Group>
+                <Tooltip content={t('dashboard.manualRefresh')}>
+                  <Button
+                    className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
+                    icon={<RotateCcw size={15} />}
+                    onClick={manualRefresh}
+                  />
+                </Tooltip>
+              </div>
+            </div>
           </section>
 
           <section className="panel panel-wide">
@@ -197,7 +219,7 @@ export default function DashboardPage() {
                     {event.client_ip || '-'}
                   </span>
                   <span className="event-status-group">
-                    <Tag color={event.category ? 'orange' : 'green'}>{displayCategory(event.category, t)}</Tag>
+                    <Tag color={event.category ? 'orange' : event.action === 'pass' || !event.action ? 'green' : 'blue'}>{eventCategoryLabel(event, t)}</Tag>
                     <Tag color={event.action === 'block' ? 'red' : 'blue'}>
                       {displayAction(event.action, t)}
                     </Tag>
@@ -212,7 +234,13 @@ export default function DashboardPage() {
           <section className="panel realtime-panel">
             <div className="panel-heading">
               <h2>{t('dashboard.realtime')}</h2>
-              <span>{t('dashboard.refreshEvery', { seconds: refreshMs / 1000 })}</span>
+              <Tooltip content={t('dashboard.manualRefresh')}>
+                <Button
+                  className={fetchingLive ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
+                  icon={<RotateCcw size={14} />}
+                  onClick={() => void refetchLiveLogs()}
+                />
+              </Tooltip>
             </div>
             <Spin loading={loadingLive}>
               <div className="realtime-summary">
@@ -237,7 +265,13 @@ export default function DashboardPage() {
           <section className="panel">
             <div className="panel-heading">
               <h2>{t('dashboard.resources')}</h2>
-              <span>{t('dashboard.refreshEvery', { seconds: refreshMs / 1000 })}</span>
+              <Tooltip content={t('dashboard.manualRefresh')}>
+                <Button
+                  className={fetchingMonitor ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
+                  icon={<RotateCcw size={14} />}
+                  onClick={() => void refetchMonitor()}
+                />
+              </Tooltip>
             </div>
             <div className="resource-stack">
               <div className="resource-row">
@@ -266,7 +300,7 @@ export default function DashboardPage() {
                 <span>{t('dashboard.swap')}</span>
                 <Progress percent={swapPercent} size="small" showText={false} />
                 <strong>{formatPercent(host?.swap_percent ?? 0)}</strong>
-                <small>{formatCapacity(host?.swap_used ?? 0, host?.swap_total ?? 0, t)}</small>
+                <small>{formatCapacity(host?.swap_used ?? 0, host?.swap_total ?? 0, t, 'dashboard.swapNotEnabled')}</small>
               </div>
               <div className="resource-row">
                 <HardDrive size={18} />
@@ -329,7 +363,7 @@ function buildWindowQuery(windowSeconds: number, limit: number, action?: string)
 }
 
 function buildTraffic(entries: LogEntry[], rangeMinutes: number) {
-  const bucketCount = rangeMinutes <= 15 ? 15 : 12;
+  const bucketCount = rangeMinutes <= 60 ? 12 : rangeMinutes <= 1440 ? 24 : 28;
   const buckets = Array.from({ length: bucketCount }, () => 0);
   const now = Date.now();
   const windowMs = rangeMinutes * 60 * 1000;
@@ -427,9 +461,9 @@ function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(1)}MB`;
 }
 
-function formatCapacity(used: number, total: number, t: (key: string) => string) {
+function formatCapacity(used: number, total: number, t: (key: string) => string, zeroKey = 'common.unknown') {
   if (total <= 0) {
-    return t('common.unknown');
+    return t(zeroKey);
   }
   return `${formatBytes(used)} / ${formatBytes(total)}`;
 }
@@ -464,9 +498,10 @@ function formatRate(value: number) {
 }
 
 function rangeLabel(value: number, t: (key: string) => string) {
-  if (value === 15) return t('dashboard.last15m');
-  if (value === 180) return t('dashboard.last3h');
+  if (value === 30) return t('dashboard.last30m');
+  if (value === 360) return t('dashboard.last6h');
   if (value === 1440) return t('dashboard.last24h');
+  if (value === 10080) return t('dashboard.last7d');
   return t('dashboard.last60m');
 }
 
@@ -475,4 +510,14 @@ function blockRate(blocked: number, requests: number) {
     return 0;
   }
   return Math.round((blocked / requests) * 100);
+}
+
+function eventCategoryLabel(entry: LogEntry, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (entry.category) {
+    return displayCategory(entry.category, t);
+  }
+  if (entry.action && entry.action !== 'pass') {
+    return displayAction(entry.action, t);
+  }
+  return displayCategory('pass', t);
 }

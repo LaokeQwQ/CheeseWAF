@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
@@ -26,7 +25,7 @@ type Options struct {
 
 func NewRouter(opts Options) http.Handler {
 	r := chi.NewRouter()
-	tokens := middleware.NewTokenManager(opts.Secret, 24*time.Hour)
+	tokens := middleware.NewTokenManager(opts.Secret, config.AdminSessionTTL)
 	auditor := middleware.NewAuditor(opts.Config.APISec.Audit.Path)
 	require := func(permission string) func(http.Handler) http.Handler {
 		return middleware.RBAC(opts.Config.APISec.Permissions, permission)
@@ -37,6 +36,7 @@ func NewRouter(opts Options) http.Handler {
 		Store:               opts.Store,
 		Sink:                opts.Sink,
 		Tokens:              tokens,
+		Secret:              opts.Secret,
 		Auditor:             auditor,
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
@@ -52,6 +52,8 @@ func NewRouter(opts Options) http.Handler {
 		r.Get(opts.Config.Monitor.Prometheus.Path, h.Metrics)
 	}
 	r.Route("/api", func(r chi.Router) {
+		r.Get("/auth/login-options", h.LoginOptions)
+		r.Post("/auth/captcha", h.LoginCAPTCHA)
 		r.Post("/auth/login", h.Login)
 		r.Post("/setup", h.Setup)
 

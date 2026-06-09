@@ -3,8 +3,8 @@ import { lazy, Suspense, useMemo, useRef, useState, type CSSProperties, type Poi
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Maximize2, Minus, Plus, RotateCcw } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import { geoGraticule10, geoNaturalEarth1, geoPath } from 'd3-geo';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { geoContains, geoGraticule10, geoMercator, geoNaturalEarth1, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
 import worldTopology from 'world-atlas/countries-110m.json';
 import { fetchLogs } from '../../api/client';
@@ -66,6 +66,8 @@ type RegionBucket = {
 
 const mapWidth = 1000;
 const mapHeight = 500;
+const chinaMapWidth = 960;
+const chinaMapHeight = 620;
 const topo = worldTopology as any;
 const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as WorldFeatureCollection;
 export const worldFeatures = worldFeatureCollection.features.filter((item) => item.geometry);
@@ -204,21 +206,32 @@ const countryNumericIds: Record<string, string> = {
 
 const chinaNumericId = countryNumericIds.CN;
 const chinaFeature = worldFeatures.find((item) => normalizeWorldId(item.id ?? '') === chinaNumericId);
-const chinaPath = chinaFeature ? (mapPath(chinaFeature as any) ?? '') : '';
-const chinaBounds = chinaFeature ? mapPath.bounds(chinaFeature as any) : [[620, 128], [802, 286]];
-const chinaPadding = 24;
-const chinaViewport = {
-  x: Math.max(0, chinaBounds[0][0] - chinaPadding),
-  y: Math.max(0, chinaBounds[0][1] - chinaPadding),
-  width: Math.min(mapWidth, chinaBounds[1][0] + chinaPadding) - Math.max(0, chinaBounds[0][0] - chinaPadding),
-  height: Math.min(mapHeight, chinaBounds[1][1] + chinaPadding) - Math.max(0, chinaBounds[0][1] - chinaPadding),
-};
-const chinaViewBox = `${chinaViewport.x} ${chinaViewport.y} ${chinaViewport.width} ${chinaViewport.height}`;
+const chinaProjection = geoMercator().fitExtent(
+  [[42, 34], [chinaMapWidth - 42, chinaMapHeight - 34]],
+  (chinaFeature ?? worldFeatureCollection) as any,
+);
+const chinaMapPath = geoPath(chinaProjection);
+const chinaGraticulePath = chinaMapPath(geoGraticule10() as any) ?? '';
+const chinaPath = chinaFeature ? (chinaMapPath(chinaFeature as any) ?? '') : '';
+const chinaViewBox = `0 0 ${chinaMapWidth} ${chinaMapHeight}`;
+const chinaReferencePoints = [
+  { key: 'beijing', zh: '北京', en: 'Beijing', lon: 116.4, lat: 39.9 },
+  { key: 'shanghai', zh: '上海', en: 'Shanghai', lon: 121.5, lat: 31.2 },
+  { key: 'guangzhou', zh: '广州', en: 'Guangzhou', lon: 113.3, lat: 23.1 },
+  { key: 'chengdu', zh: '成都', en: 'Chengdu', lon: 104.1, lat: 30.7 },
+  { key: 'wuhan', zh: '武汉', en: 'Wuhan', lon: 114.3, lat: 30.6 },
+  { key: 'xian', zh: '西安', en: "Xi'an", lon: 108.9, lat: 34.3 },
+  { key: 'urumqi', zh: '乌鲁木齐', en: 'Urumqi', lon: 87.6, lat: 43.8 },
+  { key: 'harbin', zh: '哈尔滨', en: 'Harbin', lon: 126.6, lat: 45.8 },
+  { key: 'kunming', zh: '昆明', en: 'Kunming', lon: 102.8, lat: 25.0 },
+  { key: 'lhasa', zh: '拉萨', en: 'Lhasa', lon: 91.1, lat: 29.7 },
+].map((item) => ({ ...item, point: projectChinaSvgPoint(item.lon, item.lat) })).filter((item) => item.point);
 
 export default function AttackMapPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const [mode, setMode] = useState<MapMode>('2d');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [mode, setMode] = useState<MapMode>(() => parseMapMode(searchParams.get('mode')));
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<MapPan>({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -226,11 +239,15 @@ export default function AttackMapPage() {
   const { data, isLoading } = useQuery({ queryKey: ['attack-map-logs'], queryFn: () => fetchLogs({ limit: 1000 }), refetchInterval: 5_000, retry: false });
   const regions = useMemo(() => aggregateRegions(data?.items ?? []), [data?.items]);
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
-  const chinaRegions = useMemo(() => mappedRegions.filter((region) => region.countryCode === 'CN'), [mappedRegions]);
+  const chinaRegions = useMemo(() => mappedRegions.filter(isChinaMainlandRegion), [mappedRegions]);
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
+  const chinaCountryLevels = useMemo(() => buildCountryLevelMap(chinaRegions), [chinaRegions]);
   const total = regions.reduce((sum, region) => sum + region.attacks, 0);
   const mappedTotal = mappedRegions.reduce((sum, region) => sum + region.attacks, 0);
+  const chinaTotal = chinaRegions.reduce((sum, region) => sum + region.attacks, 0);
   const unmappedTotal = Math.max(0, total - mappedTotal);
+  const mapTotal = mode === 'china' ? chinaTotal : total;
+  const mapMappedTotal = mode === 'china' ? chinaTotal : mappedTotal;
   const showDetailedLabels = zoom >= 1.35;
 
   function updateZoom(next: number | ((current: number) => number)) {
@@ -245,6 +262,18 @@ export default function AttackMapPage() {
   function resetView() {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+  }
+
+  function selectMode(nextMode: MapMode) {
+    const nextParams = new URLSearchParams(searchParams);
+    if (nextMode === '2d') {
+      nextParams.delete('mode');
+    } else {
+      nextParams.set('mode', nextMode);
+    }
+    setSearchParams(nextParams, { replace: true });
+    setMode(nextMode);
+    resetView();
   }
 
   function handleWheel(event: WheelEvent<HTMLElement>) {
@@ -299,7 +328,7 @@ export default function AttackMapPage() {
           <p>{t('attackMap.subtitle')}</p>
         </div>
         <div className="map-controls">
-          <Radio.Group type="button" value={mode} onChange={(value) => { setMode(value as MapMode); resetView(); }}>
+          <Radio.Group type="button" value={mode} onChange={(value) => selectMode(value as MapMode)}>
             <Radio value="2d">{t('attackMap.mode2d')}</Radio>
             <Radio value="3d">{t('attackMap.mode3d')}</Radio>
             <Radio value="china">{t('attackMap.modeChina')}</Radio>
@@ -321,10 +350,11 @@ export default function AttackMapPage() {
         onPointerCancel={handlePointerEnd}
       >
         <div className="map-legend">
-          <strong>{total}</strong>
+          <strong>{mapTotal}</strong>
           <span>{t('attackMap.attacks')}</span>
-          <small>{t('attackMap.mapped', { count: mappedTotal })}</small>
-          {unmappedTotal > 0 && <small>{t('attackMap.unmapped', { count: unmappedTotal })}</small>}
+          <small>{mode === 'china' ? t('attackMap.mainlandMapped', { count: mapMappedTotal }) : t('attackMap.mapped', { count: mapMappedTotal })}</small>
+          {mode === 'china' && total > chinaTotal && <small>{t('attackMap.otherRegions', { count: total - chinaTotal })}</small>}
+          {mode !== 'china' && unmappedTotal > 0 && <small>{t('attackMap.unmapped', { count: unmappedTotal })}</small>}
         </div>
         <div className="map-risk-legend" aria-hidden="true">
           {(['low', 'medium', 'high', 'critical'] as ThreatLevel[]).map((level) => (
@@ -346,10 +376,11 @@ export default function AttackMapPage() {
             className="flat-map-stage"
             style={{ '--map-zoom': zoom, '--map-pan-x': `${pan.x}px`, '--map-pan-y': `${pan.y}px` } as CSSProperties}
           >
-            {mode === 'china' ? <ChinaMainlandMap countryLevels={countryLevels} /> : <WorldMapSVG countryLevels={countryLevels} />}
+            {mode === 'china' ? <ChinaMainlandMap countryLevels={chinaCountryLevels} language={i18n.language.startsWith('zh') ? 'zh' : 'en'} /> : <WorldMapSVG countryLevels={countryLevels} />}
             {mode === '2d' && mappedRegions.map((region) => (
               <span
                 key={region.key}
+                tabIndex={0}
                 className={`map-marker map-risk-${region.level} ${showDetailedLabels ? 'map-marker-detailed' : ''}`}
                 style={{ left: `${region.x}%`, top: `${region.y}%`, '--marker-size': `${region.size}px` } as CSSProperties}
                 title={formatRegionTooltip(region, t)}
@@ -370,6 +401,7 @@ export default function AttackMapPage() {
               return (
                 <span
                   key={region.key}
+                  tabIndex={0}
                   className={`map-marker map-risk-${region.level} ${showDetailedLabels ? 'map-marker-detailed' : ''}`}
                   style={{ left: `${point.x}%`, top: `${point.y}%`, '--marker-size': `${region.size}px` } as CSSProperties}
                   title={formatRegionTooltip(region, t)}
@@ -387,7 +419,7 @@ export default function AttackMapPage() {
         )}
         {(regions.length === 0 || (mode === 'china' && chinaRegions.length === 0)) && (
           <div className="map-empty">
-            {isLoading ? t('attackMap.loading') : `${mode === 'china' ? t('attackMap.modeChina') : t('attackMap.attacks')}: 0`}
+            {isLoading ? t('attackMap.loading') : (mode === 'china' ? t('attackMap.mainlandEmpty') : `${t('attackMap.attacks')}: 0`)}
           </div>
         )}
       </section>
@@ -425,16 +457,32 @@ function WorldMapSVG({ countryLevels, variant = 'default' }: { countryLevels: Ma
   );
 }
 
-function ChinaMainlandMap({ countryLevels }: { countryLevels: Map<string, ThreatLevel> }) {
+function ChinaMainlandMap({ countryLevels, language }: { countryLevels: Map<string, ThreatLevel>; language: 'zh' | 'en' }) {
   const chinaLevel = countryLevels.get(chinaNumericId) ?? 'neutral';
   return (
     <svg className="china-map-svg world-map-svg" viewBox={chinaViewBox} aria-hidden="true">
-      <rect className="map-ocean" x={chinaViewport.x} y={chinaViewport.y} width={chinaViewport.width} height={chinaViewport.height} rx="10" />
-      <path className="map-graticule" d={graticulePath} />
-      <g className="map-land china-map-context">
-        {worldMapPaths.map((item) => <path key={item.id} className={`map-risk-${countryLevels.get(item.id) ?? 'neutral'}`} d={item.d} />)}
+      <defs>
+        <clipPath id="china-mainland-clip">
+          {chinaPath && <path d={chinaPath} />}
+        </clipPath>
+      </defs>
+      <rect className="map-ocean china-map-ocean" x="0" y="0" width={chinaMapWidth} height={chinaMapHeight} rx="18" />
+      <path className="map-graticule china-map-graticule" d={chinaGraticulePath} />
+      {chinaPath && (
+        <>
+          <path className="china-mainland-shadow" d={chinaPath} />
+          <path className={`china-mainland-path map-risk-${chinaLevel}`} d={chinaPath} />
+          <path className="china-mainland-inner-grid" d={chinaGraticulePath} clipPath="url(#china-mainland-clip)" />
+        </>
+      )}
+      <g className="china-map-labels">
+        {chinaReferencePoints.map((item) => (
+          <g key={item.key} transform={`translate(${item.point?.x ?? 0} ${item.point?.y ?? 0})`}>
+            <circle r="3.2" />
+            <text x="8" y="4">{language === 'zh' ? item.zh : item.en}</text>
+          </g>
+        ))}
       </g>
-      {chinaPath && <path className={`china-mainland-path map-risk-${chinaLevel}`} d={chinaPath} />}
     </svg>
   );
 }
@@ -701,6 +749,13 @@ function riskTagColor(level: ThreatLevel) {
   }
 }
 
+function parseMapMode(value: string | null): MapMode {
+  if (value === '3d' || value === 'china') {
+    return value;
+  }
+  return '2d';
+}
+
 function projectMapPoint(lon: number, lat: number) {
   const point = mapProjection([lon, lat]);
   if (!point) {
@@ -713,14 +768,35 @@ function projectMapPoint(lon: number, lat: number) {
 }
 
 function projectChinaPoint(lon: number, lat: number) {
-  const point = mapProjection([lon, lat]);
+  const point = projectChinaSvgPoint(lon, lat);
   if (!point) {
     return null;
   }
   return {
-    x: ((point[0] - chinaViewport.x) / chinaViewport.width) * 100,
-    y: ((point[1] - chinaViewport.y) / chinaViewport.height) * 100,
+    x: (point.x / chinaMapWidth) * 100,
+    y: (point.y / chinaMapHeight) * 100,
   };
+}
+
+function projectChinaSvgPoint(lon: number, lat: number) {
+  const point = chinaProjection([lon, lat]);
+  if (!point) {
+    return null;
+  }
+  return {
+    x: point[0],
+    y: point[1],
+  };
+}
+
+function isChinaMainlandRegion(region: AttackRegion) {
+  if (region.countryCode !== 'CN') {
+    return false;
+  }
+  if (!chinaFeature || !validCoordinate(region.lat, region.lon)) {
+    return true;
+  }
+  return geoContains(chinaFeature as any, [region.lon, region.lat]);
 }
 
 function formatRegionLocation(region: AttackRegion, t: (key: string, options?: Record<string, unknown>) => string) {

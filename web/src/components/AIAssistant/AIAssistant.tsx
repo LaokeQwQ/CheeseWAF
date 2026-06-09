@@ -36,7 +36,9 @@ export default function AIAssistant() {
   const [renderPanel, setRenderPanel] = useState(false);
   const [draft, setDraft] = useState('');
   const [thread, setThread] = useState<AssistantMessage[]>([]);
-  const pendingRef = useRef<{ startedAt: number; createdAt: string } | null>(null);
+  const [pendingElapsedMs, setPendingElapsedMs] = useState(0);
+  const [thinkingProcessOpen, setThinkingProcessOpen] = useState(true);
+  const pendingRef = useRef<{ startedAt: number; createdAt: string; inputTokens: number } | null>(null);
   const { data: monitor } = useQuery({ queryKey: ['assistant-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 10_000, retry: false });
   const { data: logs } = useQuery({ queryKey: ['assistant-logs'], queryFn: () => fetchLogs({ limit: 5 }), refetchInterval: 10_000, retry: false });
   const liveContext = useMemo(() => {
@@ -117,6 +119,21 @@ export default function AIAssistant() {
     }
   }, [open]);
 
+  useEffect(() => {
+    if (!askMutation.isPending) {
+      setPendingElapsedMs(0);
+      setThinkingProcessOpen(true);
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      const pending = pendingRef.current;
+      if (pending) {
+        setPendingElapsedMs(performance.now() - pending.startedAt);
+      }
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [askMutation.isPending]);
+
   const messages: AssistantMessage[] = [
     {
       id: 'live',
@@ -136,6 +153,23 @@ export default function AIAssistant() {
       role: 'assistant' as const,
       text: t('assistant.thinking'),
       status: t('assistant.working'),
+      createdAt: pendingRef.current?.createdAt,
+      meta: {
+        thinkingMs: pendingElapsedMs,
+        totalMs: pendingElapsedMs,
+        inputTokens: pendingRef.current?.inputTokens ?? 0,
+        outputTokens: 0,
+        totalTokens: pendingRef.current?.inputTokens ?? 0,
+        tokenSpeed: 0,
+        events: liveContext.events,
+        blocked: liveContext.blocked,
+        challenge: 0,
+      },
+      process: [
+        t('assistant.processContext', { events: liveContext.events, blocked: liveContext.blocked, challenge: 0 }),
+        t('assistant.processSafety'),
+      ],
+      processOpen: thinkingProcessOpen,
     }] : []),
   ];
 
@@ -145,12 +179,18 @@ export default function AIAssistant() {
       return;
     }
     setDraft('');
-    pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString() };
+    setPendingElapsedMs(0);
+    setThinkingProcessOpen(true);
+    pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString(), inputTokens: estimateTokens(message) };
     setThread((current) => [...current, { id: `user-${Date.now()}`, role: 'user', text: message, createdAt: new Date().toISOString() }]);
     askMutation.mutate(message);
   }
 
   function toggleProcess(messageID: string) {
+    if (messageID === 'thinking') {
+      setThinkingProcessOpen((value) => !value);
+      return;
+    }
     setThread((current) => current.map((message) => (
       message.id === messageID ? { ...message, processOpen: !message.processOpen } : message
     )));
