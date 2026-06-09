@@ -2,12 +2,17 @@
 // 负责 YAML 配置加载、校验和热重载。
 package config
 
-import "time"
+import (
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
 
 type Config struct {
 	Server        ServerConfig        `yaml:"server" json:"server"`
 	TLS           TLSConfig           `yaml:"tls" json:"tls"`
 	Setup         SetupConfig         `yaml:"setup" json:"setup"`
+	Console       ConsoleConfig       `yaml:"console" json:"console"`
 	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
 	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
 	Storage       StorageConfig       `yaml:"storage" json:"storage"`
@@ -60,6 +65,46 @@ type SetupConfig struct {
 	ThreeEndUnified bool   `yaml:"three_end_unified" json:"three_end_unified"`
 }
 
+type ConsoleConfig struct {
+	Login ConsoleLoginConfig `yaml:"login" json:"login"`
+}
+
+type ConsoleLoginConfig struct {
+	CAPTCHA       LoginCAPTCHAConfig       `yaml:"captcha" json:"captcha"`
+	SecurityEntry LoginSecurityEntryConfig `yaml:"security_entry" json:"security_entry"`
+	Background    LoginBackgroundConfig    `yaml:"background" json:"background"`
+}
+
+type LoginCAPTCHAConfig struct {
+	Enabled   bool                     `yaml:"enabled" json:"enabled"`
+	Mode      string                   `yaml:"mode" json:"mode"` // slider/pow
+	MaxNumber int                      `yaml:"max_number" json:"max_number"`
+	TTL       time.Duration            `yaml:"ttl" json:"ttl"`
+	Slider    LoginSliderCAPTCHAConfig `yaml:"slider" json:"slider"`
+}
+
+type LoginSliderCAPTCHAConfig struct {
+	Width        int           `yaml:"width" json:"width"`
+	Height       int           `yaml:"height" json:"height"`
+	PieceSize    int           `yaml:"piece_size" json:"piece_size"`
+	Tolerance    int           `yaml:"tolerance" json:"tolerance"`
+	MinDrag      time.Duration `yaml:"min_drag" json:"min_drag"`
+	PowEnabled   bool          `yaml:"pow_enabled" json:"pow_enabled"`
+	PowMaxNumber int           `yaml:"pow_max_number" json:"pow_max_number"`
+}
+
+type LoginSecurityEntryConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	Path       string `yaml:"path" json:"path"`
+	CookieName string `yaml:"cookie_name" json:"cookie_name"`
+}
+
+type LoginBackgroundConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Type    string `yaml:"type" json:"type"` // auto/image/video
+	URL     string `yaml:"url" json:"url"`
+}
+
 type SiteConfig struct {
 	ID          string           `yaml:"id" json:"id"`
 	Name        string           `yaml:"name" json:"name"`
@@ -98,6 +143,62 @@ type SemanticEngineSwitches struct {
 	SSRF  bool `yaml:"ssrf" json:"ssrf"`
 	NoSQL bool `yaml:"nosql" json:"nosql"`
 	SSTI  bool `yaml:"ssti" json:"ssti"`
+}
+
+func (s *SemanticEngineSwitches) UnmarshalYAML(value *yaml.Node) error {
+	defaults := SemanticEngineSwitches{
+		SQL:   true,
+		XSS:   true,
+		RCE:   true,
+		LFI:   true,
+		XXE:   true,
+		SSRF:  true,
+		NoSQL: true,
+		SSTI:  true,
+	}
+	if value == nil || (value.Kind == yaml.ScalarNode && value.Tag == "!!null") {
+		*s = defaults
+		return nil
+	}
+	var raw struct {
+		SQL   *bool `yaml:"sql"`
+		XSS   *bool `yaml:"xss"`
+		RCE   *bool `yaml:"rce"`
+		LFI   *bool `yaml:"lfi"`
+		XXE   *bool `yaml:"xxe"`
+		SSRF  *bool `yaml:"ssrf"`
+		NoSQL *bool `yaml:"nosql"`
+		SSTI  *bool `yaml:"ssti"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*s = defaults
+	if raw.SQL != nil {
+		s.SQL = *raw.SQL
+	}
+	if raw.XSS != nil {
+		s.XSS = *raw.XSS
+	}
+	if raw.RCE != nil {
+		s.RCE = *raw.RCE
+	}
+	if raw.LFI != nil {
+		s.LFI = *raw.LFI
+	}
+	if raw.XXE != nil {
+		s.XXE = *raw.XXE
+	}
+	if raw.SSRF != nil {
+		s.SSRF = *raw.SSRF
+	}
+	if raw.NoSQL != nil {
+		s.NoSQL = *raw.NoSQL
+	}
+	if raw.SSTI != nil {
+		s.SSTI = *raw.SSTI
+	}
+	return nil
 }
 
 type CustomRuleConfig struct {

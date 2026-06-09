@@ -12,7 +12,7 @@ GO           := go
 GOFLAGS      := -trimpath
 CGO_ENABLED  := 0
 
-.PHONY: all build build-cli run test test-go web-build lint clean dev help
+.PHONY: all build build-cli run test test-go web-build security-corpus security-corpus-http lint clean dev help
 
 ## help: Show this help message
 help:
@@ -24,6 +24,8 @@ help:
 	@echo "  make dev         Run with hot-reload (requires air)"
 	@echo "  make test        Run all tests"
 	@echo "  make web-build   Build the web dashboard"
+	@echo "  make security-corpus      Run curated semantic corpus against analyzer"
+	@echo "  make security-corpus-http Run curated corpus against deployed WAF (BASE_URL=...)"
 	@echo "  make lint        Run golangci-lint"
 	@echo "  make clean       Remove build artifacts"
 	@echo "  make deps        Download dependencies"
@@ -87,6 +89,15 @@ test-go:
 ## web-build: Build the React dashboard
 web-build:
 	cd web && npm ci && npm run build
+
+## security-corpus: Run curated attack/benign corpus against the semantic analyzer
+security-corpus:
+	$(GO) run ./cmd/cheesewaf-corpus --mode analyzer
+
+## security-corpus-http: Run curated attack/benign corpus against a deployed WAF (BASE_URL=http://127.0.0.1:8080)
+security-corpus-http:
+	@if [ -z "$(BASE_URL)" ]; then echo "BASE_URL is required"; exit 1; fi
+	$(GO) run ./cmd/cheesewaf-corpus --mode http --base-url "$(BASE_URL)" $(CORPUS_FLAGS)
 
 ## lint: Run golangci-lint
 lint:

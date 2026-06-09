@@ -22,6 +22,7 @@ func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 		"tls":           h.Config.TLS,
 		"storage":       h.Config.Storage,
 		"logging":       h.Config.Logging,
+		"console":       h.Config.Console,
 		"protection":    h.Config.Protection,
 		"setup":         h.Config.Setup,
 		"scheduler":     h.Config.Scheduler,
@@ -40,6 +41,7 @@ type systemPayload struct {
 	Setup         *config.SetupConfig         `json:"setup"`
 	Storage       *config.StorageConfig       `json:"storage"`
 	Logging       *config.LoggingConfig       `json:"logging"`
+	Console       *config.ConsoleConfig       `json:"console"`
 	Protection    *config.ProtectionConfig    `json:"protection"`
 	Scheduler     *config.SchedulerConfig     `json:"scheduler"`
 	Edge          *config.EdgeConfig          `json:"edge"`
@@ -70,6 +72,9 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Logging != nil {
 		next.Logging = *req.Logging
+	}
+	if req.Console != nil {
+		next.Console = *req.Console
 	}
 	if req.Protection != nil {
 		next.Protection = *req.Protection
