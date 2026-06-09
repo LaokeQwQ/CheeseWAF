@@ -18,6 +18,26 @@ func TestLoadSampleConfig(t *testing.T) {
 	if len(cfg.Sites) != 1 {
 		t.Fatalf("expected one sample site, got %d", len(cfg.Sites))
 	}
+	if cfg.Console.Login.CAPTCHA.Mode != "slider" || cfg.Console.Login.CAPTCHA.Slider.PowMaxNumber <= 0 {
+		t.Fatalf("expected sample login captcha slider defaults, got %+v", cfg.Console.Login.CAPTCHA)
+	}
+}
+
+func TestValidateSecurityEntryRejectsRouteConflicts(t *testing.T) {
+	for _, path := range []string{"/", "/login", "/api", "/api/auth/login", "/health"} {
+		cfg := Default()
+		cfg.Console.Login.SecurityEntry.Enabled = true
+		cfg.Console.Login.SecurityEntry.Path = path
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("expected security entry path %q to be rejected", path)
+		}
+	}
+	cfg := Default()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected valid security entry path: %v", err)
+	}
 }
 
 func TestLoadBackfillsNewSemanticEnginesForOldSiteConfig(t *testing.T) {

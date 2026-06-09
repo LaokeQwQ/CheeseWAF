@@ -11,6 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const AdminSessionTTL = 24 * time.Hour
+
 func Default() Config {
 	return Config{
 		Server: ServerConfig{
@@ -38,8 +40,22 @@ func Default() Config {
 			Login: ConsoleLoginConfig{
 				CAPTCHA: LoginCAPTCHAConfig{
 					Enabled:   true,
+					Mode:      "slider",
 					MaxNumber: 75000,
 					TTL:       2 * time.Minute,
+					Slider: LoginSliderCAPTCHAConfig{
+						Width:        320,
+						Height:       150,
+						PieceSize:    42,
+						Tolerance:    6,
+						MinDrag:      450 * time.Millisecond,
+						PowMaxNumber: 12000,
+					},
+				},
+				SecurityEntry: LoginSecurityEntryConfig{
+					Enabled:    false,
+					Path:       "/__cheesewaf-entry",
+					CookieName: "cheesewaf_admin_entry",
 				},
 				Background: LoginBackgroundConfig{
 					Enabled: false,
@@ -312,8 +328,35 @@ func applyDefaults(cfg *Config) {
 	if cfg.Console.Login.CAPTCHA.MaxNumber == 0 {
 		cfg.Console.Login.CAPTCHA.MaxNumber = def.Console.Login.CAPTCHA.MaxNumber
 	}
+	if cfg.Console.Login.CAPTCHA.Mode == "" {
+		cfg.Console.Login.CAPTCHA.Mode = def.Console.Login.CAPTCHA.Mode
+	}
 	if cfg.Console.Login.CAPTCHA.TTL == 0 {
 		cfg.Console.Login.CAPTCHA.TTL = def.Console.Login.CAPTCHA.TTL
+	}
+	if cfg.Console.Login.CAPTCHA.Slider.Width == 0 {
+		cfg.Console.Login.CAPTCHA.Slider.Width = def.Console.Login.CAPTCHA.Slider.Width
+	}
+	if cfg.Console.Login.CAPTCHA.Slider.Height == 0 {
+		cfg.Console.Login.CAPTCHA.Slider.Height = def.Console.Login.CAPTCHA.Slider.Height
+	}
+	if cfg.Console.Login.CAPTCHA.Slider.PieceSize == 0 {
+		cfg.Console.Login.CAPTCHA.Slider.PieceSize = def.Console.Login.CAPTCHA.Slider.PieceSize
+	}
+	if cfg.Console.Login.CAPTCHA.Slider.Tolerance == 0 {
+		cfg.Console.Login.CAPTCHA.Slider.Tolerance = def.Console.Login.CAPTCHA.Slider.Tolerance
+	}
+	if cfg.Console.Login.CAPTCHA.Slider.MinDrag == 0 {
+		cfg.Console.Login.CAPTCHA.Slider.MinDrag = def.Console.Login.CAPTCHA.Slider.MinDrag
+	}
+	if cfg.Console.Login.CAPTCHA.Slider.PowMaxNumber == 0 {
+		cfg.Console.Login.CAPTCHA.Slider.PowMaxNumber = def.Console.Login.CAPTCHA.Slider.PowMaxNumber
+	}
+	if cfg.Console.Login.SecurityEntry.Path == "" {
+		cfg.Console.Login.SecurityEntry.Path = def.Console.Login.SecurityEntry.Path
+	}
+	if cfg.Console.Login.SecurityEntry.CookieName == "" {
+		cfg.Console.Login.SecurityEntry.CookieName = def.Console.Login.SecurityEntry.CookieName
 	}
 	if cfg.Console.Login.Background.Type == "" {
 		cfg.Console.Login.Background.Type = def.Console.Login.Background.Type

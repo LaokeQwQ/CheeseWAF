@@ -70,14 +70,32 @@ type ConsoleConfig struct {
 }
 
 type ConsoleLoginConfig struct {
-	CAPTCHA    LoginCAPTCHAConfig    `yaml:"captcha" json:"captcha"`
-	Background LoginBackgroundConfig `yaml:"background" json:"background"`
+	CAPTCHA       LoginCAPTCHAConfig       `yaml:"captcha" json:"captcha"`
+	SecurityEntry LoginSecurityEntryConfig `yaml:"security_entry" json:"security_entry"`
+	Background    LoginBackgroundConfig    `yaml:"background" json:"background"`
 }
 
 type LoginCAPTCHAConfig struct {
-	Enabled   bool          `yaml:"enabled" json:"enabled"`
-	MaxNumber int           `yaml:"max_number" json:"max_number"`
-	TTL       time.Duration `yaml:"ttl" json:"ttl"`
+	Enabled   bool                     `yaml:"enabled" json:"enabled"`
+	Mode      string                   `yaml:"mode" json:"mode"` // slider/pow
+	MaxNumber int                      `yaml:"max_number" json:"max_number"`
+	TTL       time.Duration            `yaml:"ttl" json:"ttl"`
+	Slider    LoginSliderCAPTCHAConfig `yaml:"slider" json:"slider"`
+}
+
+type LoginSliderCAPTCHAConfig struct {
+	Width        int           `yaml:"width" json:"width"`
+	Height       int           `yaml:"height" json:"height"`
+	PieceSize    int           `yaml:"piece_size" json:"piece_size"`
+	Tolerance    int           `yaml:"tolerance" json:"tolerance"`
+	MinDrag      time.Duration `yaml:"min_drag" json:"min_drag"`
+	PowMaxNumber int           `yaml:"pow_max_number" json:"pow_max_number"`
+}
+
+type LoginSecurityEntryConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	Path       string `yaml:"path" json:"path"`
+	CookieName string `yaml:"cookie_name" json:"cookie_name"`
 }
 
 type LoginBackgroundConfig struct {
