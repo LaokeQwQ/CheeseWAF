@@ -53,8 +53,11 @@ func (d *SSRFDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) 
 }
 
 func isInternalHost(host string) bool {
-	host = strings.Trim(strings.ToLower(host), "[]")
+	host = strings.TrimSuffix(strings.Trim(strings.ToLower(host), "[]"), ".")
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "metadata" || host == "metadata.google.internal" || host == "metadata.google.internal." {
+		return true
+	}
+	if dynamicDNSHostResolvesInternal(host) {
 		return true
 	}
 	ip := net.ParseIP(host)
@@ -68,6 +71,51 @@ func isInternalHost(host string) bool {
 		return true
 	}
 	return ip.Equal(net.ParseIP("169.254.169.254")) || ip.Equal(net.ParseIP("169.254.170.2")) || ip.Equal(net.ParseIP("100.100.100.200"))
+}
+
+func dynamicDNSHostResolvesInternal(host string) bool {
+	for _, suffix := range []string{".nip.io", ".sslip.io", ".xip.io"} {
+		if !strings.HasSuffix(host, suffix) {
+			continue
+		}
+		encoded := strings.TrimSuffix(host, suffix)
+		if encoded == "" {
+			continue
+		}
+		candidates := []string{encoded}
+		if strings.Contains(encoded, "-") {
+			candidates = append(candidates, strings.ReplaceAll(encoded, "-", "."))
+		}
+		for _, candidate := range candidates {
+			if internalIP(parseNumericIPv4(candidate)) {
+				return true
+			}
+			if len(candidate) == 8 && isHex(candidate) {
+				value, err := strconv.ParseUint(candidate, 16, 32)
+				if err == nil && internalIP(net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value))) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func internalIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() ||
+		ip.Equal(net.ParseIP("169.254.169.254")) || ip.Equal(net.ParseIP("169.254.170.2")) || ip.Equal(net.ParseIP("100.100.100.200"))
+}
+
+func isHex(value string) bool {
+	for _, ch := range value {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func parseNumericIPv4(host string) net.IP {

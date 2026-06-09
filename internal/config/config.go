@@ -12,6 +12,7 @@ type Config struct {
 	Server        ServerConfig        `yaml:"server" json:"server"`
 	TLS           TLSConfig           `yaml:"tls" json:"tls"`
 	Setup         SetupConfig         `yaml:"setup" json:"setup"`
+	Console       ConsoleConfig       `yaml:"console" json:"console"`
 	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
 	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
 	Storage       StorageConfig       `yaml:"storage" json:"storage"`
@@ -62,6 +63,27 @@ type SetupConfig struct {
 	DataDir         string `yaml:"data_dir" json:"data_dir"`
 	RuntimeDir      string `yaml:"runtime_dir" json:"runtime_dir"`
 	ThreeEndUnified bool   `yaml:"three_end_unified" json:"three_end_unified"`
+}
+
+type ConsoleConfig struct {
+	Login ConsoleLoginConfig `yaml:"login" json:"login"`
+}
+
+type ConsoleLoginConfig struct {
+	CAPTCHA    LoginCAPTCHAConfig    `yaml:"captcha" json:"captcha"`
+	Background LoginBackgroundConfig `yaml:"background" json:"background"`
+}
+
+type LoginCAPTCHAConfig struct {
+	Enabled   bool          `yaml:"enabled" json:"enabled"`
+	MaxNumber int           `yaml:"max_number" json:"max_number"`
+	TTL       time.Duration `yaml:"ttl" json:"ttl"`
+}
+
+type LoginBackgroundConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Type    string `yaml:"type" json:"type"` // auto/image/video
+	URL     string `yaml:"url" json:"url"`
 }
 
 type SiteConfig struct {

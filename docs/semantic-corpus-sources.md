@@ -34,13 +34,13 @@ with benign counterexamples when a pattern is likely to affect normal traffic.
 small, reviewed samples inspired by public dataset families. It currently
 focuses on:
 
-- SQLi hex tautology, ORDER BY enumeration, SQL Server `xp_cmdshell`, and `UNION ... INTO OUTFILE` escalation shapes.
-- XSS meta refresh, CSS execution, `formaction=javascript:`, and `srcset=javascript:` contexts.
+- SQLi hex tautology, ORDER BY/HAVING inference, regex value probes, MySQL `PROCEDURE ANALYSE`, SQL Server `xp_cmdshell`, and `UNION ... INTO OUTFILE` escalation shapes.
+- XSS meta refresh, CSS execution, `formaction=javascript:`, `srcset=javascript:`, and entity-decoded `iframe srcdoc` contexts.
 - LFI Kubernetes service account token, process environment disclosure, and overlong dot-slash traversal.
-- SSRF IPv6, IPv4-mapped IPv6, dotted-hex, dotted-octal internal hosts, and `file://` schemes in URL-fetch sinks.
+- SSRF IPv6, IPv4-mapped IPv6, dotted-hex, dotted-octal, single-integer hex, dynamic-DNS encoded internal hosts, and `file://` schemes in URL-fetch sinks.
 - NoSQLi MongoDB operator injection shapes for credential, `$where`, `$expr`, and `$function` query behavior.
 - SSTI Jinja, Freemarker, Twig, and ERB execution-chain shapes.
-- Benign documentation neighbors for localhost URLs, browser security terms, MongoDB operator/expression references, and harmless template examples.
+- Benign documentation neighbors for localhost/dynamic-DNS URLs, browser security terms, SQL inference vocabulary, MongoDB operator/expression references, and harmless template examples.
 
 This is not a replacement for full CRS/FTW, SecLists, FuzzDB, or BCCC runs. It
 is a checked-in safety net for the engine behavior CheeseWAF already claims.

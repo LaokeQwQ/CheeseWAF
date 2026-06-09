@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
@@ -130,6 +131,34 @@ func TestRouterPrometheusMetricsCanBeExplicitlyPublic(t *testing.T) {
 	}
 	if got := recorder.Header().Get("Content-Type"); got != "text/plain; version=0.0.4; charset=utf-8" {
 		t.Fatalf("unexpected metrics content type %q", got)
+	}
+}
+
+func TestRouterLoginCAPTCHAIsEnabledByDefault(t *testing.T) {
+	router, _, _ := newAuthzTestRouter(t)
+
+	options := perform(router, http.MethodGet, "/api/auth/login-options", "", nil)
+	if options.Code != http.StatusOK {
+		t.Fatalf("expected public login options, got %d: %s", options.Code, options.Body.String())
+	}
+	var loginOptions struct {
+		Data struct {
+			CAPTCHA struct {
+				Enabled bool `json:"enabled"`
+			} `json:"captcha"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(options.Body).Decode(&loginOptions); err != nil {
+		t.Fatalf("decode login options: %v", err)
+	}
+	if !loginOptions.Data.CAPTCHA.Enabled {
+		t.Fatal("expected login captcha to be enabled by default")
+	}
+
+	body, _ := json.Marshal(map[string]string{"username": "admin", "password": "admin-password"})
+	recorder := perform(router, http.MethodPost, "/api/auth/login", "", body)
+	if recorder.Code != http.StatusUnauthorized || !bytes.Contains(recorder.Body.Bytes(), []byte("INVALID_CAPTCHA")) {
+		t.Fatalf("expected missing captcha to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -277,7 +306,11 @@ func createAuthzUser(t *testing.T, store storage.Store, id, username, password, 
 
 func loginAuthzUser(t *testing.T, router http.Handler, username, password string) string {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"username": username, "password": password})
+	bodyPayload := map[string]any{"username": username, "password": password}
+	if payload := solveLoginCAPTCHA(t, router); payload != nil {
+		bodyPayload["captcha"] = payload
+	}
+	body, err := json.Marshal(bodyPayload)
 	if err != nil {
 		t.Fatalf("marshal login: %v", err)
 	}
@@ -297,6 +330,46 @@ func loginAuthzUser(t *testing.T, router http.Handler, username, password string
 		t.Fatal("login response did not include token")
 	}
 	return envelope.Data.Token
+}
+
+func solveLoginCAPTCHA(t *testing.T, router http.Handler) map[string]any {
+	t.Helper()
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha", "", []byte(`{}`))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("captcha challenge returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Enabled   bool `json:"enabled"`
+			Challenge struct {
+				Algorithm string `json:"algorithm"`
+				Challenge string `json:"challenge"`
+				MaxNumber int    `json:"max_number"`
+				Salt      string `json:"salt"`
+				Signature string `json:"signature"`
+			} `json:"challenge"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode captcha challenge: %v", err)
+	}
+	if !envelope.Data.Enabled {
+		return nil
+	}
+	challenge := envelope.Data.Challenge
+	for i := 0; i <= challenge.MaxNumber; i++ {
+		if captcha.Hash(challenge.Salt, i) == challenge.Challenge {
+			return map[string]any{
+				"algorithm": challenge.Algorithm,
+				"challenge": challenge.Challenge,
+				"number":    i,
+				"salt":      challenge.Salt,
+				"signature": challenge.Signature,
+			}
+		}
+	}
+	t.Fatalf("failed to solve login captcha challenge")
+	return nil
 }
 
 func perform(router http.Handler, method, path, token string, body []byte) *httptest.ResponseRecorder {

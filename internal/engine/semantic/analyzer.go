@@ -372,7 +372,7 @@ func guessCategories(raw string) []string {
 	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"}
 	scores := map[string]int{}
 	sqlCompact := compactSQL(text)
-	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlOrderByInference.MatchString(text) {
+	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(text, "procedure analyse") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlOrderByInference.MatchString(text) || sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) {
 		scores["sqli"] += 2
 	}
 	if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") || strings.Contains(text, "<meta") || strings.Contains(text, "expression(") {
@@ -437,6 +437,9 @@ var (
 	sqlStringFunction      = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
 	sqlComparison          = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
 	sqlOrderByInference    = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
+	sqlHavingInference     = regexp.MustCompile(`(?i)\bhaving\s+(?:\d+|'[^']*'|"[^"]*")\s*=\s*(?:\d+|'[^']*'|"[^"]*")\s*(?:--|#|/\*)`)
+	sqlRegexProbe          = regexp.MustCompile(`(?i)\b(?:rlike|regexp|like)\s+(?:binary\s+)?(?:0x[0-9a-f]+|'[^']*'|"[^"]*")`)
+	sqlProcedureAnalyse    = regexp.MustCompile(`(?i)\bprocedure\s+analyse\s*\(`)
 	sqlMySQLVersionComment = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
 	xssEventPattern        = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
 	unicodeEscapePattern   = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
@@ -488,6 +491,16 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 	if sqlOrderByInference.MatchString(text) {
 		reasons["syntax: ORDER/GROUP BY column-count inference with SQL comment"] = true
+	}
+	if sqlHavingInference.MatchString(text) {
+		reasons["syntax: HAVING boolean predicate with SQL comment truncation"] = true
+	}
+	if sqlRegexProbe.MatchString(text) && (contains(words, "and") || contains(words, "or") || strings.Contains(text, "database()") || strings.Contains(text, "version()") || strings.Contains(text, "user()")) {
+		reasons["syntax: SQL regex or LIKE probe in boolean predicate"] = true
+		reasons["semantics: database value inference through pattern matching"] = true
+	}
+	if sqlProcedureAnalyse.MatchString(text) {
+		reasons["semantics: MySQL PROCEDURE ANALYSE enumeration primitive"] = true
 	}
 	if sqlDangerousFunc.MatchString(text) {
 		reasons["semantics: database server file or command side effect"] = true

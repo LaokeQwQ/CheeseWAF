@@ -408,6 +408,45 @@ export type TOTPSetup = {
   otpauth_url: string;
 };
 
+export type LoginCAPTCHAConfig = {
+  enabled: boolean;
+  max_number: number;
+  ttl: number | string;
+};
+
+export type LoginBackgroundConfig = {
+  enabled: boolean;
+  type: 'auto' | 'image' | 'video' | string;
+  url: string;
+};
+
+export type LoginCAPTCHAPayload = {
+  algorithm: string;
+  challenge: string;
+  number: number;
+  salt: string;
+  signature: string;
+};
+
+export type LoginCAPTCHAChallenge = Omit<LoginCAPTCHAPayload, 'number'> & {
+  max_number: number;
+  expires_at?: string;
+};
+
+export type LoginOptions = {
+  captcha: {
+    enabled: boolean;
+    algorithm?: string;
+    max_number?: number;
+  };
+  background: LoginBackgroundConfig;
+};
+
+export type LoginCAPTCHAResponse = {
+  enabled: boolean;
+  challenge?: LoginCAPTCHAChallenge;
+};
+
 export type APISecAuthConfig = {
   enabled: boolean;
   jwt_issuers: string[];
@@ -445,6 +484,12 @@ export type APISecSystemConfig = {
 };
 
 export type SystemConfig = {
+  console: {
+    login: {
+      captcha: LoginCAPTCHAConfig;
+      background: LoginBackgroundConfig;
+    };
+  };
   server: {
     listen: string;
     listen_tls: string;

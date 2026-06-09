@@ -34,6 +34,19 @@ func Default() Config {
 			RuntimeDir:      "./data/run",
 			ThreeEndUnified: true,
 		},
+		Console: ConsoleConfig{
+			Login: ConsoleLoginConfig{
+				CAPTCHA: LoginCAPTCHAConfig{
+					Enabled:   true,
+					MaxNumber: 75000,
+					TTL:       2 * time.Minute,
+				},
+				Background: LoginBackgroundConfig{
+					Enabled: false,
+					Type:    "auto",
+				},
+			},
+		},
 		Sites: []SiteConfig{
 			{
 				ID:          "default",
@@ -295,6 +308,15 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Setup.RuntimeDir == "" {
 		cfg.Setup.RuntimeDir = filepath.Join(cfg.Setup.DataDir, "run")
+	}
+	if cfg.Console.Login.CAPTCHA.MaxNumber == 0 {
+		cfg.Console.Login.CAPTCHA.MaxNumber = def.Console.Login.CAPTCHA.MaxNumber
+	}
+	if cfg.Console.Login.CAPTCHA.TTL == 0 {
+		cfg.Console.Login.CAPTCHA.TTL = def.Console.Login.CAPTCHA.TTL
+	}
+	if cfg.Console.Login.Background.Type == "" {
+		cfg.Console.Login.Background.Type = def.Console.Login.Background.Type
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		cfg.Storage.SQLite.Path = filepath.Join(cfg.Setup.DataDir, "cheesewaf.db")
