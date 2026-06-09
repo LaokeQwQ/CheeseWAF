@@ -87,11 +87,13 @@ upward promotion flow on GitHub: PR #55 merged
 `git.laoker.cc/Laoke/CheeseWAF` is the intended primary forge/build target;
 GitHub currently remains the source repository for the pull mirror and the
 secondary CI check. GitHub Actions run `27217637012` passed the master push gate
-for `29f27264`, including release artifacts. A Forgejo mirror-sync was triggered
-after the GitHub merges, but the Forgejo mirror did not advance past the previous
-snapshot during this check (`dev=00f7912`, `canary=e3d692e`, `master=e55c578`),
-so the current Forgejo mirror state is treated as a synchronization issue rather
-than green release evidence. The Forgejo workflow is present under
+for `29f27264`, including release artifacts; the follow-up docs-only promotion
+also passed through PR #58/#59/#60 and master push run `27220251726`. A Forgejo
+mirror-sync was triggered after the GitHub merges and the mirror refs matched
+the current branch heads (`dev=230b3db`, `canary=a99dee0`, `master=2c5acd6`).
+The latest Forgejo Actions runs for those refs were still running or waiting
+during this snapshot, so the current green build evidence is GitHub-side until
+Forgejo finishes that queue. The Forgejo workflow is present under
 `.forgejo/workflows/ci.yml` and uses `scripts/ci/setup-go-mirror.sh` plus
 `scripts/ci/setup-node-mirror.sh` for self-hosted runner-friendly toolchain setup.
 
