@@ -381,7 +381,7 @@ func guessCategories(raw string) []string {
 	if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") {
 		scores["rce"] += 2
 	}
-	if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "/etc/passwd") || strings.Contains(text, "boot.ini") || strings.Contains(text, "win.ini") || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, ".env") || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") {
+	if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "/etc/passwd") || strings.Contains(text, "/proc/self/environ") || strings.Contains(text, "boot.ini") || strings.Contains(text, "win.ini") || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, ".env") || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") {
 		scores["lfi"] += 2
 	}
 	if strings.Contains(text, "<!doctype") || strings.Contains(text, "<!entity") {
@@ -390,7 +390,7 @@ func guessCategories(raw string) []string {
 	if urlLikePattern.MatchString(text) || strings.Contains(text, "169.254.169.254") || strings.Contains(text, "metadata.google.internal") {
 		scores["ssrf"] += 2
 	}
-	if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "this.") || strings.Contains(text, "function(") {
+	if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "$function") || strings.Contains(text, "this.") || strings.Contains(text, "function(") {
 		scores["nosqli"] += 2
 	}
 	if sstiTemplateExpression.MatchString(text) {
@@ -440,10 +440,10 @@ var (
 	sqlMySQLVersionComment = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
 	xssEventPattern        = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
 	unicodeEscapePattern   = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
-	nosqlOperatorToken     = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|where|regex|exists|gte|lte|nin|nor|not|expr|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
+	nosqlOperatorToken     = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
 	nosqlJSBehavior        = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.)`)
 	nosqlWideRegex         = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
-	nosqlOperatorNames     = []string{"$jsonschema", "$elemmatch", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
+	nosqlOperatorNames     = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
 	sstiTemplateExpression = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|<%=?\s*.*?%>)`)
 	sstiArithmeticProbe    = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
 	sstiDangerousBehavior  = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime)`)
@@ -492,6 +492,12 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlDangerousFunc.MatchString(text) {
 		reasons["semantics: database server file or command side effect"] = true
 	}
+	if strings.Contains(text, "xp_cmdshell") {
+		reasons["semantics: SQL Server command execution primitive"] = true
+	}
+	if strings.Contains(text, "into outfile") || strings.Contains(text, "load_file") {
+		reasons["semantics: database file-system read or write primitive"] = true
+	}
 	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || strings.Contains(compact, "select")) {
 		reasons["semantics: error-based database function with query composition"] = true
 	}
@@ -501,7 +507,13 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if len(reasons) == 0 {
 		return Hit{}, false
 	}
-	return hit(candidate, "sqli", engine.SeverityHigh, 0.88+confidenceBonus(reasons), reasons), true
+	severity := engine.SeverityHigh
+	confidence := 0.88 + confidenceBonus(reasons)
+	if strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "into outfile") || strings.Contains(text, "load_file") {
+		severity = engine.SeverityCritical
+		confidence += 0.04
+	}
+	return hit(candidate, "sqli", severity, confidence, reasons), true
 }
 
 func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
@@ -514,6 +526,9 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	structuralOperator := nosqlOperatorInPath(name)
 	textOperator := nosqlOperatorToken.MatchString(lowerText)
 	if !structuralOperator && !textOperator {
+		return Hit{}, false
+	}
+	if !structuralOperator && nosqlDocumentationContext(name) {
 		return Hit{}, false
 	}
 	if !structuralOperator && !nosqlSensitiveContext(name) && !nosqlLooksLikeStructuredPayload(lowerText) {
@@ -532,6 +547,14 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 		reasons["syntax: server-side JavaScript query operator"] = true
 		reasons["semantics: server-side query JavaScript can evaluate attacker-controlled predicates"] = true
 	}
+	if nosqlContainsOperator(combined, "$function") {
+		reasons["syntax: server-side function query operator"] = true
+		reasons["semantics: server-side query function can evaluate attacker-controlled JavaScript"] = true
+	}
+	if nosqlContainsOperator(combined, "$expr") {
+		reasons["syntax: aggregation expression query operator"] = true
+		reasons["semantics: expression operator can replace application-side predicate logic"] = true
+	}
 	if nosqlContainsOperator(combined, "$or", "$and", "$nor") {
 		reasons["syntax: logical query branch operator"] = true
 		reasons["semantics: injected branch can bypass expected query predicates"] = true
@@ -548,7 +571,7 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	if nosqlContainsOperator(combined, "$ne", "$nin", "$gt", "$gte", "$lt", "$lte", "$not") && nosqlSensitiveContext(name) {
 		reasons["semantics: comparison operator can replace credential or filter equality"] = true
 	}
-	if nosqlJSBehavior.MatchString(lowerText) && (nosqlContainsOperator(combined, "$where") || strings.Contains(name, "$where")) {
+	if nosqlJSBehavior.MatchString(lowerText) && (nosqlContainsOperator(combined, "$where", "$function") || strings.Contains(name, "$where") || strings.Contains(name, "$function")) {
 		reasons["semantics: query predicate contains executable JavaScript behavior"] = true
 	}
 	if len(reasons) == 0 {
@@ -562,7 +585,7 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 	severity := engine.SeverityHigh
 	confidence := 0.86 + confidenceBonus(reasons)
-	if nosqlContainsOperator(combined, "$where") {
+	if nosqlContainsOperator(combined, "$where", "$function") {
 		severity = engine.SeverityCritical
 		confidence += 0.02
 	}
@@ -745,6 +768,19 @@ func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
 		return Hit{}, false
 	}
 	payload := decoder.Decode(candidate.text).Text
+	lowerPayload := normalize(payload)
+	if strings.Contains(lowerPayload, "file://") {
+		return Hit{
+			Category:   "ssrf",
+			Source:     candidate.input.Source,
+			Name:       candidate.input.Name,
+			Syntax:     "syntax: URL parameter accepted by request",
+			Semantics:  "semantics: local file URL scheme would make the server access host files",
+			Severity:   engine.SeverityHigh,
+			Confidence: 0.88,
+			Payload:    strings.TrimSpace(payload),
+		}, true
+	}
 	for _, rawURL := range urlLikePattern.FindAllString(payload, -1) {
 		parsed, err := url.Parse(rawURL)
 		if err != nil || parsed.Hostname() == "" {
@@ -888,6 +924,16 @@ func nosqlSensitiveContext(name string) bool {
 		"auth", "credential", "token", "session", "filter", "query", "where", "selector",
 		"criteria", "condition", "search", "role", "tenant", "owner", "id",
 	} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func nosqlDocumentationContext(name string) bool {
+	lower := strings.ToLower(name)
+	for _, term := range []string{"text", "content", "docs", "doc", "documentation", "description", "lesson", "example", "guide", "article", "markdown", "body"} {
 		if strings.Contains(lower, term) {
 			return true
 		}
