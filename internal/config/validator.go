@@ -392,8 +392,11 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 	if slider.MinDrag < 100*time.Millisecond || slider.MinDrag > 10*time.Second {
 		return fmt.Errorf("console.login.captcha.slider.min_drag must be between 100ms and 10s")
 	}
-	if slider.PowMaxNumber < 1000 || slider.PowMaxNumber > 50000000 {
+	if slider.PowMaxNumber != 0 && (slider.PowMaxNumber < 1000 || slider.PowMaxNumber > 50000000) {
 		return fmt.Errorf("console.login.captcha.slider.pow_max_number must be between 1000 and 50000000")
+	}
+	if slider.PowEnabled && slider.PowMaxNumber == 0 {
+		return fmt.Errorf("console.login.captcha.slider.pow_max_number is required when slider auxiliary PoW is enabled")
 	}
 	return nil
 }

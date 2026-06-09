@@ -169,6 +169,7 @@ console:
         piece_size: 42
         tolerance: 6
         min_drag: "450ms"
+        pow_enabled: false
         pow_max_number: 12000
     security_entry:
       enabled: false

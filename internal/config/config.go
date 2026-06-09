@@ -89,6 +89,7 @@ type LoginSliderCAPTCHAConfig struct {
 	PieceSize    int           `yaml:"piece_size" json:"piece_size"`
 	Tolerance    int           `yaml:"tolerance" json:"tolerance"`
 	MinDrag      time.Duration `yaml:"min_drag" json:"min_drag"`
+	PowEnabled   bool          `yaml:"pow_enabled" json:"pow_enabled"`
 	PowMaxNumber int           `yaml:"pow_max_number" json:"pow_max_number"`
 }
 

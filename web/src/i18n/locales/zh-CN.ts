@@ -637,6 +637,7 @@ const zhCN = {
     loginCaptchaTTL: '验证码有效期（秒）',
     loginSliderTolerance: '滑块误差（像素）',
     loginSliderMinDrag: '最短拖动耗时（毫秒）',
+    loginSliderPowEnabled: '滑块附加 PoW',
     loginSliderPowMax: '辅助 PoW 上限',
     securityEntry: '安全入口',
     securityEntryHint: '开启后直接访问管理端口或错误入口会返回 418，正确入口下发会话同寿命的 HttpOnly 入口凭证。',

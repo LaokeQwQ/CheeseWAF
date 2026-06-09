@@ -49,6 +49,7 @@ func Default() Config {
 						PieceSize:    42,
 						Tolerance:    6,
 						MinDrag:      450 * time.Millisecond,
+						PowEnabled:   false,
 						PowMaxNumber: 12000,
 					},
 				},

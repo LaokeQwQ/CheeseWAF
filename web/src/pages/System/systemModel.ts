@@ -33,6 +33,7 @@ export const fallbackSystem: SystemConfig = {
           piece_size: 42,
           tolerance: 6,
           min_drag: 450_000_000,
+          pow_enabled: false,
           pow_max_number: 12000,
         },
       },
