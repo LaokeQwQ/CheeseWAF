@@ -84,6 +84,15 @@ func looksLikeSQLi(raw string) (bool, string) {
 	if sqlOrderByInference.MatchString(text) {
 		return true, "SQL ORDER/GROUP BY inference with comment matched"
 	}
+	if sqlHavingInference.MatchString(text) {
+		return true, "SQL HAVING inference with comment matched"
+	}
+	if sqlRegexProbe.MatchString(text) && (contains(words, "and") || contains(words, "or") || strings.Contains(text, "database()") || strings.Contains(text, "version()") || strings.Contains(text, "user()")) {
+		return true, "SQL regex or LIKE inference probe matched"
+	}
+	if sqlProcedureAnalyse.MatchString(text) {
+		return true, "MySQL PROCEDURE ANALYSE enumeration primitive matched"
+	}
 	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || strings.Contains(compact, "select")) {
 		return true, "error-based SQL function with query composition matched"
 	}
