@@ -410,8 +410,25 @@ export type TOTPSetup = {
 
 export type LoginCAPTCHAConfig = {
   enabled: boolean;
+  mode?: 'slider' | 'pow' | string;
   max_number: number;
   ttl: number | string;
+  slider: LoginSliderCAPTCHAConfig;
+};
+
+export type LoginSliderCAPTCHAConfig = {
+  width: number;
+  height: number;
+  piece_size: number;
+  tolerance: number;
+  min_drag: number | string;
+  pow_max_number: number;
+};
+
+export type LoginSecurityEntryConfig = {
+  enabled: boolean;
+  path: string;
+  cookie_name: string;
 };
 
 export type LoginBackgroundConfig = {
@@ -426,25 +443,55 @@ export type LoginCAPTCHAPayload = {
   number: number;
   salt: string;
   signature: string;
+  slider?: LoginSliderCAPTCHAPayload;
 };
 
-export type LoginCAPTCHAChallenge = Omit<LoginCAPTCHAPayload, 'number'> & {
+export type LoginSliderCAPTCHAPayload = {
+  token: string;
+  x: number;
+  drag_ms: number;
+};
+
+export type LoginCAPTCHAChallenge = Omit<LoginCAPTCHAPayload, 'number' | 'slider'> & {
   max_number: number;
+  expires_at?: string;
+};
+
+export type LoginSliderCAPTCHAChallenge = {
+  width: number;
+  height: number;
+  piece_size: number;
+  track_width: number;
+  target_y: number;
+  tolerance: number;
+  min_drag_ms: number;
+  image: string;
+  token: string;
   expires_at?: string;
 };
 
 export type LoginOptions = {
   captcha: {
     enabled: boolean;
+    mode?: 'slider' | 'pow' | string;
     algorithm?: string;
     max_number?: number;
+    slider?: {
+      width: number;
+      height: number;
+      piece_size: number;
+      tolerance: number;
+      min_drag_ms: number;
+    };
   };
   background: LoginBackgroundConfig;
 };
 
 export type LoginCAPTCHAResponse = {
   enabled: boolean;
+  mode?: 'slider' | 'pow' | string;
   challenge?: LoginCAPTCHAChallenge;
+  slider?: LoginSliderCAPTCHAChallenge;
 };
 
 export type APISecAuthConfig = {
@@ -487,6 +534,7 @@ export type SystemConfig = {
   console: {
     login: {
       captcha: LoginCAPTCHAConfig;
+      security_entry: LoginSecurityEntryConfig;
       background: LoginBackgroundConfig;
     };
   };

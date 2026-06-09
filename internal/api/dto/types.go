@@ -19,11 +19,18 @@ type LoginRequest struct {
 }
 
 type CAPTCHAPayload struct {
-	Algorithm string `json:"algorithm"`
-	Challenge string `json:"challenge"`
-	Number    int    `json:"number"`
-	Salt      string `json:"salt"`
-	Signature string `json:"signature"`
+	Algorithm string                `json:"algorithm"`
+	Challenge string                `json:"challenge"`
+	Number    int                   `json:"number"`
+	Salt      string                `json:"salt"`
+	Signature string                `json:"signature"`
+	Slider    *SliderCAPTCHAPayload `json:"slider,omitempty"`
+}
+
+type SliderCAPTCHAPayload struct {
+	Token  string `json:"token"`
+	X      int    `json:"x"`
+	DragMS int    `json:"drag_ms"`
 }
 
 type SetupRequest struct {

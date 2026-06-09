@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const sourcemap = process.env.VITE_SOURCEMAP === 'true';
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -10,7 +12,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    sourcemap,
     rolldownOptions: {
       output: {
         manualChunks(id) {

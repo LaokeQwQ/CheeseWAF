@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
@@ -26,7 +25,7 @@ type Options struct {
 
 func NewRouter(opts Options) http.Handler {
 	r := chi.NewRouter()
-	tokens := middleware.NewTokenManager(opts.Secret, 24*time.Hour)
+	tokens := middleware.NewTokenManager(opts.Secret, config.AdminSessionTTL)
 	auditor := middleware.NewAuditor(opts.Config.APISec.Audit.Path)
 	require := func(permission string) func(http.Handler) http.Handler {
 		return middleware.RBAC(opts.Config.APISec.Permissions, permission)

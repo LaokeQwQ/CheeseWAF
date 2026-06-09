@@ -22,7 +22,21 @@ const fallbackAPIAuth: APISecAuthConfig = {
 export const fallbackSystem: SystemConfig = {
   console: {
     login: {
-      captcha: { enabled: true, max_number: 75000, ttl: 120 * second },
+      captcha: {
+        enabled: true,
+        mode: 'slider',
+        max_number: 75000,
+        ttl: 120 * second,
+        slider: {
+          width: 320,
+          height: 150,
+          piece_size: 42,
+          tolerance: 6,
+          min_drag: 450_000_000,
+          pow_max_number: 12000,
+        },
+      },
+      security_entry: { enabled: false, path: '/__cheesewaf-entry', cookie_name: 'cheesewaf_admin_entry' },
       background: { enabled: false, type: 'auto', url: '' },
     },
   },
@@ -76,7 +90,18 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
       login: {
         ...fallbackSystem.console.login,
         ...next.console?.login,
-        captcha: { ...fallbackSystem.console.login.captcha, ...next.console?.login?.captcha },
+        captcha: {
+          ...fallbackSystem.console.login.captcha,
+          ...next.console?.login?.captcha,
+          slider: {
+            ...fallbackSystem.console.login.captcha.slider,
+            ...next.console?.login?.captcha?.slider,
+          },
+        },
+        security_entry: {
+          ...fallbackSystem.console.login.security_entry,
+          ...next.console?.login?.security_entry,
+        },
         background: { ...fallbackSystem.console.login.background, ...next.console?.login?.background },
       },
     },
@@ -138,6 +163,30 @@ export function durationSeconds(value: number | string | undefined) {
   return Number(raw) || 0;
 }
 
+export function durationMilliseconds(value: number | string | undefined) {
+  if (typeof value === 'number') {
+    return Math.max(0, Math.round(value / 1_000_000));
+  }
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return 0;
+  }
+  if (raw.endsWith('ms')) {
+    return Number(raw.slice(0, -2)) || 0;
+  }
+  if (raw.endsWith('s')) {
+    return (Number(raw.slice(0, -1)) || 0) * 1000;
+  }
+  if (raw.endsWith('m')) {
+    return (Number(raw.slice(0, -1)) || 0) * 60_000;
+  }
+  return Number(raw) || 0;
+}
+
 export function secondsToDuration(value: number | string | null | undefined) {
   return Math.max(1, Number(value || 1)) * second;
+}
+
+export function millisecondsToDuration(value: number | string | null | undefined) {
+  return Math.max(1, Number(value || 1)) * 1_000_000;
 }
