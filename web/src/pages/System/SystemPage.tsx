@@ -28,7 +28,7 @@ import i18n from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
 import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, SystemConfig, TOTPSetup } from '../../types/api';
-import { durationSeconds, fallbackSystem, normalizeSystem, secondsToDuration } from './systemModel';
+import { durationMilliseconds, durationSeconds, fallbackSystem, millisecondsToDuration, normalizeSystem, secondsToDuration } from './systemModel';
 
 export default function SystemPage() {
   const { t } = useTranslation();
@@ -267,6 +267,16 @@ export default function SystemPage() {
                       />
                     </label>
                     <label>
+                      <span>{t('system.loginCaptchaMode')}</span>
+                      <Select
+                        value={system.console.login.captcha.mode || 'slider'}
+                        onChange={(mode) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, mode: mode as string } })}
+                      >
+                        <Select.Option value="slider">{t('system.loginCaptchaSlider')}</Select.Option>
+                        <Select.Option value="pow">{t('system.loginCaptchaPow')}</Select.Option>
+                      </Select>
+                    </label>
+                    <label>
                       <span>{t('system.loginCaptchaMaxNumber')}</span>
                       <InputNumber
                         min={1000}
@@ -284,6 +294,75 @@ export default function SystemPage() {
                         step={30}
                         value={durationSeconds(system.console.login.captcha.ttl)}
                         onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, ttl: secondsToDuration(value) } })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.loginSliderTolerance')}</span>
+                      <InputNumber
+                        min={2}
+                        max={20}
+                        value={system.console.login.captcha.slider.tolerance}
+                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, tolerance: Number(value || 6) } } })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.loginSliderMinDrag')}</span>
+                      <InputNumber
+                        min={100}
+                        max={10000}
+                        step={50}
+                        value={durationMilliseconds(system.console.login.captcha.slider.min_drag)}
+                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, min_drag: millisecondsToDuration(value || 450) } } })}
+                      />
+                    </label>
+                    <label className="switch-line">
+                      <span>{t('system.loginSliderPowEnabled')}</span>
+                      <Switch
+                        checked={system.console.login.captcha.slider.pow_enabled}
+                        onChange={(pow_enabled) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_enabled } } })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.loginSliderPowMax')}</span>
+                      <InputNumber
+                        min={1000}
+                        max={50000000}
+                        step={1000}
+                        disabled={!system.console.login.captcha.slider.pow_enabled}
+                        value={system.console.login.captcha.slider.pow_max_number}
+                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_max_number: Number(value || 12000) } } })}
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.securityEntry')}</strong>
+                    <span>{t('system.securityEntryHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label className="switch-line">
+                      <span>{t('system.securityEntryEnabled')}</span>
+                      <Switch
+                        checked={system.console.login.security_entry.enabled}
+                        onChange={(enabled) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, enabled } })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.securityEntryPath')}</span>
+                      <Input
+                        value={system.console.login.security_entry.path}
+                        placeholder="/__cheesewaf-entry"
+                        onChange={(path) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, path } })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.securityEntryCookie')}</span>
+                      <Input
+                        value={system.console.login.security_entry.cookie_name}
+                        placeholder="cheesewaf_admin_entry"
+                        onChange={(cookie_name) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, cookie_name } })}
                       />
                     </label>
                   </div>

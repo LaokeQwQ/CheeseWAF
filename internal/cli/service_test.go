@@ -35,7 +35,7 @@ func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 		}
 		_, _ = w.Write([]byte("api:" + r.URL.Path))
 	})
-	handler := adminHandler(&config.Config{}, apiHandler)
+	handler := adminHandler(&config.Config{}, apiHandler, "test-admin-secret")
 
 	for _, tc := range []struct {
 		path string
@@ -66,7 +66,7 @@ func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 
 	publicMetricsHandler := adminHandler(&config.Config{Monitor: config.MonitorConfig{Prometheus: config.PrometheusConfig{Enabled: true, Path: "/metrics", Public: true}}}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("metrics:" + r.URL.Path))
-	}))
+	}), "test-admin-secret")
 	rrPublicMetrics := httptest.NewRecorder()
 	publicMetricsHandler.ServeHTTP(rrPublicMetrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rrPublicMetrics.Body.String() != "metrics:/metrics" {
@@ -77,6 +77,97 @@ func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	assertAdminSecurityHeaders(t, rr, true)
+}
+
+func TestAdminHandlerSecurityEntryGatesConsole(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	cfg := config.Default()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	cfg.Console.Login.SecurityEntry.CookieName = "cw_entry_test"
+	handler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("api:" + r.URL.Path))
+	}), "security-entry-secret")
+
+	direct := httptest.NewRecorder()
+	handler.ServeHTTP(direct, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if direct.Code != http.StatusTeapot || !strings.Contains(direct.Body.String(), "418 I'm a teapot") {
+		t.Fatalf("expected direct login to return 418, got %d: %s", direct.Code, direct.Body.String())
+	}
+
+	wrong := httptest.NewRecorder()
+	handler.ServeHTTP(wrong, httptest.NewRequest(http.MethodGet, "/secure-admin-wrong", nil))
+	if wrong.Code != http.StatusTeapot {
+		t.Fatalf("expected wrong entry to return 418, got %d: %s", wrong.Code, wrong.Body.String())
+	}
+
+	entry := httptest.NewRecorder()
+	handler.ServeHTTP(entry, httptest.NewRequest(http.MethodGet, "/secure-admin", nil))
+	if entry.Code != http.StatusFound {
+		t.Fatalf("expected security entry redirect, got %d: %s", entry.Code, entry.Body.String())
+	}
+	if got := entry.Header().Get("Location"); got != "/login" {
+		t.Fatalf("security entry redirected to %q, want /login", got)
+	}
+	cookies := entry.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "cw_entry_test" || !cookies[0].HttpOnly {
+		t.Fatalf("expected signed HttpOnly entry cookie, got %+v", cookies)
+	}
+
+	allowedReq := httptest.NewRequest(http.MethodGet, "/login", nil)
+	allowedReq.AddCookie(cookies[0])
+	allowed := httptest.NewRecorder()
+	handler.ServeHTTP(allowed, allowedReq)
+	if allowed.Code != http.StatusOK || allowed.Body.String() != "cheesewaf-login" {
+		t.Fatalf("expected login with entry cookie to serve SPA, got %d: %s", allowed.Code, allowed.Body.String())
+	}
+
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if health.Code != http.StatusOK || health.Body.String() != "api:/health" {
+		t.Fatalf("expected health to remain available, got %d: %s", health.Code, health.Body.String())
+	}
+}
+
+func TestAdminHandlerCachesAndCompressesStaticAssets(t *testing.T) {
+	webDir := t.TempDir()
+	assets := filepath.Join(webDir, "assets")
+	if err := os.MkdirAll(assets, 0o755); err != nil {
+		t.Fatalf("mkdir assets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte(strings.Repeat("index", 100)), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assets, "app.js"), []byte(strings.Repeat("console.log('cw');", 80)), 0o644); err != nil {
+		t.Fatalf("write asset: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+	handler := adminHandler(&config.Config{}, http.NotFoundHandler(), "cache-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected asset 200, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("unexpected asset cache header %q", got)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("expected gzip asset, got %q", got)
+	}
+
+	index := httptest.NewRecorder()
+	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if got := index.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("unexpected index cache header %q", got)
+	}
 }
 
 func assertAdminSecurityHeaders(t *testing.T, rr *httptest.ResponseRecorder, wantHSTS bool) {

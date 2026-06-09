@@ -48,12 +48,23 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("storage.sqlite.path is required")
 	}
 	if cfg.Console.Login.CAPTCHA.Enabled {
+		switch strings.ToLower(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Mode)) {
+		case "", "slider", "pow":
+		default:
+			return fmt.Errorf("console.login.captcha.mode must be slider or pow")
+		}
 		if cfg.Console.Login.CAPTCHA.MaxNumber < 1000 || cfg.Console.Login.CAPTCHA.MaxNumber > 50000000 {
 			return fmt.Errorf("console.login.captcha.max_number must be between 1000 and 50000000")
 		}
 		if cfg.Console.Login.CAPTCHA.TTL < 30*time.Second || cfg.Console.Login.CAPTCHA.TTL > 10*time.Minute {
 			return fmt.Errorf("console.login.captcha.ttl must be between 30s and 10m")
 		}
+		if err := validateSliderCAPTCHA(cfg.Console.Login.CAPTCHA.Slider); err != nil {
+			return err
+		}
+	}
+	if err := validateSecurityEntry(cfg.Console.Login.SecurityEntry); err != nil {
+		return err
 	}
 	if err := validateLoginBackground(cfg.Console.Login.Background); err != nil {
 		return err
@@ -358,6 +369,59 @@ func Validate(cfg *Config) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
+	if slider.Width < 240 || slider.Width > 640 {
+		return fmt.Errorf("console.login.captcha.slider.width must be between 240 and 640")
+	}
+	if slider.Height < 100 || slider.Height > 360 {
+		return fmt.Errorf("console.login.captcha.slider.height must be between 100 and 360")
+	}
+	if slider.PieceSize < 28 || slider.PieceSize > 96 {
+		return fmt.Errorf("console.login.captcha.slider.piece_size must be between 28 and 96")
+	}
+	if slider.PieceSize*2 >= slider.Width || slider.PieceSize+20 >= slider.Height {
+		return fmt.Errorf("console.login.captcha.slider piece_size is too large for the configured image")
+	}
+	if slider.Tolerance < 2 || slider.Tolerance > 20 {
+		return fmt.Errorf("console.login.captcha.slider.tolerance must be between 2 and 20")
+	}
+	if slider.MinDrag < 100*time.Millisecond || slider.MinDrag > 10*time.Second {
+		return fmt.Errorf("console.login.captcha.slider.min_drag must be between 100ms and 10s")
+	}
+	if slider.PowMaxNumber != 0 && (slider.PowMaxNumber < 1000 || slider.PowMaxNumber > 50000000) {
+		return fmt.Errorf("console.login.captcha.slider.pow_max_number must be between 1000 and 50000000")
+	}
+	if slider.PowEnabled && slider.PowMaxNumber == 0 {
+		return fmt.Errorf("console.login.captcha.slider.pow_max_number is required when slider auxiliary PoW is enabled")
+	}
+	return nil
+}
+
+func validateSecurityEntry(entry LoginSecurityEntryConfig) error {
+	if !entry.Enabled && strings.TrimSpace(entry.Path) == "" && strings.TrimSpace(entry.CookieName) == "" {
+		return nil
+	}
+	path := strings.TrimSpace(entry.Path)
+	if path == "" {
+		return fmt.Errorf("console.login.security_entry.path is required")
+	}
+	if !strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.ContainsAny(path, "?#") {
+		return fmt.Errorf("console.login.security_entry.path must be an absolute clean path without query or fragment")
+	}
+	cleaned := "/" + strings.Trim(strings.TrimPrefix(path, "/"), "/")
+	if cleaned == "/" || cleaned == "/login" || cleaned == "/api" || strings.HasPrefix(cleaned, "/api/") || cleaned == "/health" {
+		return fmt.Errorf("console.login.security_entry.path conflicts with admin routes")
+	}
+	cookieName := strings.TrimSpace(entry.CookieName)
+	if cookieName == "" {
+		return fmt.Errorf("console.login.security_entry.cookie_name is required")
+	}
+	if strings.ContainsAny(cookieName, " \t\r\n=;,") {
+		return fmt.Errorf("console.login.security_entry.cookie_name is invalid")
 	}
 	return nil
 }
