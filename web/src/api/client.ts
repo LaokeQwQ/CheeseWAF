@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AIConfig, AIEventsAnalysisResponse, AIAssistantReply, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
+import type { AIConfig, AIEventsAnalysisResponse, AIAssistantReply, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -134,9 +134,17 @@ async function unwrap<T>(promise: Promise<{ data: Envelope<T> }>): Promise<T> {
   }
 }
 
-export function login(username: string, password: string, totpCode?: string) {
+export function fetchLoginOptions() {
+  return unwrap<LoginOptions>(apiClient.get('/auth/login-options'));
+}
+
+export function fetchLoginCaptcha() {
+  return unwrap<LoginCAPTCHAResponse>(apiClient.post('/auth/captcha', {}));
+}
+
+export function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {
   return unwrap<AuthResponse>(
-    apiClient.post('/auth/login', { username, password, totp_code: totpCode }),
+    apiClient.post('/auth/login', { username, password, totp_code: totpCode, captcha }),
   );
 }
 

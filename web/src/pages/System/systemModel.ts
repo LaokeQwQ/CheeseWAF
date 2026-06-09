@@ -20,6 +20,12 @@ const fallbackAPIAuth: APISecAuthConfig = {
 };
 
 export const fallbackSystem: SystemConfig = {
+  console: {
+    login: {
+      captcha: { enabled: true, max_number: 75000, ttl: 120 * second },
+      background: { enabled: false, type: 'auto', url: '' },
+    },
+  },
   server: {
     listen: ':80',
     listen_tls: ':443',
@@ -64,6 +70,16 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
   return {
     ...fallbackSystem,
     ...next,
+    console: {
+      ...fallbackSystem.console,
+      ...next.console,
+      login: {
+        ...fallbackSystem.console.login,
+        ...next.console?.login,
+        captcha: { ...fallbackSystem.console.login.captcha, ...next.console?.login?.captcha },
+        background: { ...fallbackSystem.console.login.background, ...next.console?.login?.background },
+      },
+    },
     server: {
       ...fallbackSystem.server,
       ...next.server,
