@@ -156,6 +156,17 @@ setup:
   runtime_dir: %s
   three_end_unified: true
 
+console:
+  login:
+    captcha:
+      enabled: true
+      max_number: 75000
+      ttl: "120s"
+    background:
+      enabled: false
+      type: "auto"
+      url: ""
+
 storage:
   sqlite:
     path: %s

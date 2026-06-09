@@ -2,11 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -19,6 +22,7 @@ type Handler struct {
 	Store               storage.Store
 	Sink                storage.LogSink
 	Tokens              *middleware.TokenManager
+	Secret              string
 	Auditor             *middleware.Auditor
 	StartedAt           time.Time
 	OnSitesChanged      func([]config.SiteConfig)
@@ -32,6 +36,7 @@ type Options struct {
 	Store               storage.Store
 	Sink                storage.LogSink
 	Tokens              *middleware.TokenManager
+	Secret              string
 	Auditor             *middleware.Auditor
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
@@ -45,6 +50,7 @@ func New(opts Options) *Handler {
 		Store:               opts.Store,
 		Sink:                opts.Sink,
 		Tokens:              opts.Tokens,
+		Secret:              opts.Secret,
 		Auditor:             opts.Auditor,
 		StartedAt:           time.Now().UTC(),
 		OnSitesChanged:      opts.OnSitesChanged,
@@ -71,9 +77,46 @@ func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, map[string]any{"status": "ok", "uptime_seconds": int(time.Since(h.StartedAt).Seconds())})
 }
 
+func (h *Handler) LoginOptions(w http.ResponseWriter, _ *http.Request) {
+	login := h.loginConfig()
+	writeData(w, map[string]any{
+		"captcha": map[string]any{
+			"enabled":    login.CAPTCHA.Enabled,
+			"algorithm":  captcha.AlgorithmSHA256,
+			"max_number": login.CAPTCHA.MaxNumber,
+		},
+		"background": login.Background,
+	})
+}
+
+func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
+	login := h.loginConfig()
+	if !login.CAPTCHA.Enabled {
+		writeData(w, map[string]any{"enabled": false})
+		return
+	}
+	challenge, err := captcha.NewChallenge(captcha.Options{
+		Secret:    h.loginCaptchaSecret(),
+		Purpose:   "admin-login",
+		ClientKey: loginCaptchaClientKey(r),
+		Path:      "admin-login",
+		MaxNumber: login.CAPTCHA.MaxNumber,
+		TTL:       login.CAPTCHA.TTL,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "CAPTCHA_ERROR", err.Error())
+		return
+	}
+	writeData(w, map[string]any{"enabled": true, "challenge": challenge})
+}
+
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req dto.LoginRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	if !h.verifyLoginCAPTCHA(r, req.CAPTCHA) {
+		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
 		return
 	}
 	h.pruneExpiredSessions(r)
@@ -102,6 +145,71 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, map[string]any{"token": token, "user": user})
+}
+
+func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayload) bool {
+	login := h.loginConfig()
+	if !login.CAPTCHA.Enabled {
+		return true
+	}
+	if payload == nil {
+		return false
+	}
+	return captcha.Verify(captcha.Options{
+		Secret:    h.loginCaptchaSecret(),
+		Purpose:   "admin-login",
+		ClientKey: loginCaptchaClientKey(r),
+		Path:      "admin-login",
+		MaxNumber: login.CAPTCHA.MaxNumber,
+		TTL:       login.CAPTCHA.TTL,
+	}, captcha.Payload{
+		Algorithm: payload.Algorithm,
+		Challenge: payload.Challenge,
+		Number:    payload.Number,
+		Salt:      payload.Salt,
+		Signature: payload.Signature,
+	})
+}
+
+func (h *Handler) loginConfig() config.ConsoleLoginConfig {
+	if h == nil || h.Config == nil {
+		return config.Default().Console.Login
+	}
+	login := h.Config.Console.Login
+	if login.CAPTCHA.MaxNumber <= 0 {
+		login.CAPTCHA.MaxNumber = config.Default().Console.Login.CAPTCHA.MaxNumber
+	}
+	if login.CAPTCHA.TTL <= 0 {
+		login.CAPTCHA.TTL = config.Default().Console.Login.CAPTCHA.TTL
+	}
+	if login.Background.Type == "" {
+		login.Background.Type = "auto"
+	}
+	return login
+}
+
+func (h *Handler) loginCaptchaSecret() string {
+	if h != nil && h.Secret != "" {
+		return h.Secret
+	}
+	if h != nil && h.Config != nil && !config.IsWeakBotSecret(h.Config.Protection.Bot.Secret) {
+		return h.Config.Protection.Bot.Secret
+	}
+	if secret, err := config.GenerateSecret(); err == nil {
+		return secret
+	}
+	return "cheesewaf-login-captcha"
+}
+
+func loginCaptchaClientKey(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	host := r.RemoteAddr
+	if parsedHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = parsedHost
+	}
+	return strings.TrimSpace(host) + "\n" + r.UserAgent()
 }
 
 func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {

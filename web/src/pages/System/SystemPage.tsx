@@ -11,7 +11,7 @@ import {
   Tag,
 } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Database, KeyRound, LockKeyhole, Plus, ServerCog, ShieldAlert, Trash2, UserRound } from 'lucide-react';
+import { Database, Image, KeyRound, LockKeyhole, Plus, ServerCog, ShieldAlert, Trash2, UserRound } from 'lucide-react';
 import QRCode from 'qrcode';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -95,6 +95,18 @@ export default function SystemPage() {
   });
 
   const patchSystem = (patch: Partial<SystemConfig>) => setSystem((current) => normalizeSystem({ ...current, ...patch }));
+  const patchConsoleLogin = (patch: Partial<SystemConfig['console']['login']>) => {
+    setSystem((current) => normalizeSystem({
+      ...current,
+      console: {
+        ...current.console,
+        login: {
+          ...current.console.login,
+          ...patch,
+        },
+      },
+    }));
+  };
   const patchStorage = <K extends keyof SystemConfig['storage']>(key: K, patch: Partial<SystemConfig['storage'][K]>) => {
     setSystem((current) => ({
       ...current,
@@ -228,6 +240,87 @@ export default function SystemPage() {
                   <div className="site-detail-grid">
                     <label><span>{t('system.logPath')}</span><Input value={system.logging.output.file.path} onChange={(path) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, path } } } })} /></label>
                     <label><span>{t('system.logMaxBackups')}</span><InputNumber value={system.logging.output.file.max_backups} min={1} max={365} onChange={(max_backups) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, max_backups: Number(max_backups || 1) } } } })} /></label>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </Tabs.TabPane>
+
+          <Tabs.TabPane key="console" title={<span className="tab-title"><Image size={15} />{t('system.consoleLogin')}</span>}>
+            <div className="system-section">
+              <div className="system-section-title">
+                <h2>{t('system.consoleLogin')}</h2>
+                <Button type="primary" onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+              </div>
+              <div className="system-form-groups">
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.loginSecurity')}</strong>
+                    <span>{t('system.loginSecurityHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label className="switch-line">
+                      <span>{t('system.loginCaptchaEnabled')}</span>
+                      <Switch
+                        checked={system.console.login.captcha.enabled}
+                        onChange={(enabled) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, enabled } })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.loginCaptchaMaxNumber')}</span>
+                      <InputNumber
+                        min={1000}
+                        max={50000000}
+                        step={1000}
+                        value={system.console.login.captcha.max_number}
+                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, max_number: Number(value || 75000) } })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.loginCaptchaTTL')}</span>
+                      <InputNumber
+                        min={30}
+                        max={600}
+                        step={30}
+                        value={durationSeconds(system.console.login.captcha.ttl)}
+                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, ttl: secondsToDuration(value) } })}
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.loginBackground')}</strong>
+                    <span>{t('system.loginBackgroundHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label className="switch-line">
+                      <span>{t('system.loginBackgroundEnabled')}</span>
+                      <Switch
+                        checked={system.console.login.background.enabled}
+                        onChange={(enabled) => patchConsoleLogin({ background: { ...system.console.login.background, enabled } })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.loginBackgroundType')}</span>
+                      <Select
+                        value={system.console.login.background.type || 'auto'}
+                        onChange={(type) => patchConsoleLogin({ background: { ...system.console.login.background, type: type as string } })}
+                      >
+                        <Select.Option value="auto">{t('system.loginBackgroundAuto')}</Select.Option>
+                        <Select.Option value="image">{t('system.loginBackgroundImage')}</Select.Option>
+                        <Select.Option value="video">{t('system.loginBackgroundVideo')}</Select.Option>
+                      </Select>
+                    </label>
+                    <label className="wide-field">
+                      <span>{t('system.loginBackgroundURL')}</span>
+                      <Input
+                        value={system.console.login.background.url}
+                        placeholder="https://example.com/admin-bg.webp"
+                        onChange={(url) => patchConsoleLogin({ background: { ...system.console.login.background, url } })}
+                      />
+                    </label>
                   </div>
                 </section>
               </div>

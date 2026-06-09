@@ -12,9 +12,18 @@ type APIError struct {
 }
 
 type LoginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	TOTPCode string `json:"totp_code"`
+	Username string          `json:"username"`
+	Password string          `json:"password"`
+	TOTPCode string          `json:"totp_code"`
+	CAPTCHA  *CAPTCHAPayload `json:"captcha,omitempty"`
+}
+
+type CAPTCHAPayload struct {
+	Algorithm string `json:"algorithm"`
+	Challenge string `json:"challenge"`
+	Number    int    `json:"number"`
+	Salt      string `json:"salt"`
+	Signature string `json:"signature"`
 }
 
 type SetupRequest struct {
