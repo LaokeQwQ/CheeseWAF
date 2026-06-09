@@ -1423,6 +1423,10 @@ code {
   min-width: 0;
 }
 
+.system-section-title > .arco-btn {
+  flex: 0 0 auto;
+}
+
 .system-section-title h2 {
   display: inline-flex;
   align-items: center;
@@ -4046,6 +4050,7 @@ code {
   .ai-detail-grid,
   .ai-analysis-columns,
   .site-wizard-grid,
+  .system-form-groups,
   .site-detail-summary {
     grid-template-columns: 1fr;
   }
@@ -4137,7 +4142,7 @@ code {
 
 @media (max-width: 640px) {
   .workspace {
-    padding: 16px 16px 104px;
+    padding: 16px 16px calc(152px + env(safe-area-inset-bottom));
   }
 
   .page-header {
@@ -4155,6 +4160,45 @@ code {
   .metric-card,
   .ip-entry-card {
     padding-right: 62px;
+  }
+
+  .ip-entry-card {
+    padding-bottom: 18px;
+  }
+
+  .ip-entry-card-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ip-entry-card-actions .arco-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .system-settings-panel .arco-tabs-header {
+    padding: 0 12px;
+  }
+
+  .system-settings-panel .arco-tabs-content {
+    padding: 12px;
+  }
+
+  .system-section-title {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .system-section-title h2 {
+    min-width: min(100%, 180px);
+  }
+
+  .system-section-title > .arco-btn {
+    margin-left: 0;
+  }
+
+  .system-fieldset {
+    padding: 14px;
   }
 
   .realtime-summary {
@@ -4382,7 +4426,7 @@ code {
 
   .ai-fab {
     right: 14px;
-    bottom: 14px;
+    bottom: calc(14px + env(safe-area-inset-bottom));
     width: 56px !important;
     height: 56px !important;
     box-shadow:
