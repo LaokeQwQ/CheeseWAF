@@ -40,7 +40,19 @@ Run:
 ```bash
 go test ./internal/engine/semantic -run 'Readiness|OpenWAF'
 go test ./internal/engine/semantic -bench BenchmarkAnalyzerReadinessCorpus -benchmem
+go run ./cmd/cheesewaf-corpus --mode analyzer
 ```
+
+The same curated corpus can be replayed against a deployed WAF data-plane
+listener:
+
+```bash
+go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
+```
+
+The runner emits a JSON report with detection rate, false-positive rate,
+per-case latency, and per-case pass/fail evidence. See
+`docs/security-validation.md` for the release gate.
 
 Latest local baseline on Windows amd64 / Ryzen 5 5500:
 

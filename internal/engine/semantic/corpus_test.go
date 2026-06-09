@@ -1,27 +1,13 @@
 package semantic
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"os"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
 )
-
-type curatedCorpusCase struct {
-	Name         string            `json:"name"`
-	SourceFamily string            `json:"source_family"`
-	Label        string            `json:"label"`
-	Category     string            `json:"category"`
-	Method       string            `json:"method"`
-	Target       string            `json:"target"`
-	ContentType  string            `json:"content_type"`
-	Body         string            `json:"body"`
-	Header       map[string]string `json:"header"`
-	Rationale    string            `json:"rationale"`
-}
 
 func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
 	file, err := os.Open("testdata/curated_external_shapes.jsonl")
@@ -30,14 +16,11 @@ func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		var tc curatedCorpusCase
-		if err := json.Unmarshal(scanner.Bytes(), &tc); err != nil {
-			t.Fatalf("line %d: %v", lineNo, err)
-		}
+	cases, err := securitytest.LoadJSONL(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			req := readinessRequest(t, tc.Method, tc.Target, tc.ContentType, tc.Body)
 			for key, value := range tc.Header {
@@ -64,8 +47,5 @@ func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
 				t.Fatalf("unsupported label %q", tc.Label)
 			}
 		})
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatal(err)
 	}
 }

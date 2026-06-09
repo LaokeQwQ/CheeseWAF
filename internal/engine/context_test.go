@@ -25,6 +25,31 @@ func TestClientIPWithTrustedProxiesUsesCDNHeaders(t *testing.T) {
 	}
 }
 
+func TestClientIPWithTrustedProxiesUsesAdditionalCDNHeaders(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		value  string
+		want   string
+	}{
+		{name: "aliyun", header: "Ali-CDN-Real-IP", value: "203.0.113.21", want: "203.0.113.21"},
+		{name: "vercel list", header: "X-Vercel-Forwarded-For", value: "203.0.113.22, 198.51.100.20", want: "203.0.113.22"},
+		{name: "digitalocean", header: "DO-Connecting-IP", value: "203.0.113.23", want: "203.0.113.23"},
+		{name: "azure", header: "X-Azure-ClientIP", value: "203.0.113.24", want: "203.0.113.24"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+			req.RemoteAddr = "198.51.100.20:1234"
+			req.Header.Set(tc.header, tc.value)
+
+			if got := ClientIPWithTrustedProxies(req, []string{"198.51.100.0/24"}); got != tc.want {
+				t.Fatalf("expected %s, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestClientIPWithTrustedProxiesUsesForwardedForChain(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
 	req.RemoteAddr = "198.51.100.20:1234"
