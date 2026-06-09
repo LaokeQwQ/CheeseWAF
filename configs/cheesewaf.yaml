@@ -33,8 +33,21 @@ console:
   login:
     captcha:
       enabled: true
+      mode: "slider"
       max_number: 75000
       ttl: 120s
+      slider:
+        width: 320
+        height: 150
+        piece_size: 42
+        tolerance: 6
+        min_drag: 450ms
+        pow_enabled: false
+        pow_max_number: 12000
+    security_entry:
+      enabled: false
+      path: "/__cheesewaf-entry"
+      cookie_name: "cheesewaf_admin_entry"
     background:
       enabled: false
       type: "auto"

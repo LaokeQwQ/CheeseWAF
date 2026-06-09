@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"compress/gzip"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -87,7 +90,7 @@ func runServe(ctx context.Context) error {
 	}
 	admin := &http.Server{
 		Addr:         cfg.Server.AdminListen,
-		Handler:      adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec})),
+		Handler:      adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec}), authSecret),
 		TLSConfig:    adminTLS,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
@@ -164,10 +167,10 @@ func runServe(ctx context.Context) error {
 	return nil
 }
 
-func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
+func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string) http.Handler {
 	webDir := resolveWebDir()
 	if webDir == "" {
-		return adminSecurityHeaders(apiHandler)
+		return adminSecurityHeaders(adminEntranceGate(cfg, authSecret, apiHandler))
 	}
 	spa := http.FileServer(http.Dir(webDir))
 	metricsPath := "/metrics"
@@ -177,6 +180,9 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowAdminEntrance(cfg, authSecret, metricsPath, metricsPublic, w, r) {
+			return
+		}
 		if r.URL.Path == metricsPath && !metricsPublic {
 			apiHandler.ServeHTTP(w, r)
 			return
@@ -191,17 +197,34 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler) http.Handler {
 		}
 		fullPath := filepath.Join(webDir, path)
 		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+			setAdminStaticCacheHeaders(w, path)
 			spa.ServeHTTP(w, r)
 			return
 		}
 		index := filepath.Join(webDir, "index.html")
 		if _, err := os.Stat(index); err == nil {
+			setAdminStaticCacheHeaders(w, "index.html")
 			http.ServeFile(w, r, index)
 			return
 		}
 		apiHandler.ServeHTTP(w, r)
 	})
-	return adminSecurityHeaders(handler)
+	return adminSecurityHeaders(adminGzip(handler, metricsPath))
+}
+
+func adminEntranceGate(cfg *config.Config, authSecret string, next http.Handler) http.Handler {
+	metricsPath := "/metrics"
+	metricsPublic := false
+	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
+		metricsPath = cfg.Monitor.Prometheus.Path
+		metricsPublic = cfg.Monitor.Prometheus.Public
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowAdminEntrance(cfg, authSecret, metricsPath, metricsPublic, w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func adminSecurityHeaders(next http.Handler) http.Handler {
@@ -218,6 +241,185 @@ func adminSecurityHeaders(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func allowAdminEntrance(cfg *config.Config, authSecret, metricsPath string, metricsPublic bool, w http.ResponseWriter, r *http.Request) bool {
+	login := config.Default().Console.Login
+	if cfg != nil {
+		login = cfg.Console.Login
+	}
+	entry := login.SecurityEntry
+	if !entry.Enabled {
+		return true
+	}
+	if entry.Path == "" {
+		entry.Path = config.Default().Console.Login.SecurityEntry.Path
+	}
+	if entry.CookieName == "" {
+		entry.CookieName = config.Default().Console.Login.SecurityEntry.CookieName
+	}
+	if r.URL.Path == "/health" || (metricsPublic && r.URL.Path == metricsPath) {
+		return true
+	}
+	entryPath := cleanAdminEntryPath(entry.Path)
+	requestPath := cleanAdminEntryPath(r.URL.Path)
+	if requestPath == entryPath {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeAdminTeapot(w)
+			return false
+		}
+		issueAdminEntryCookie(w, r, entry.CookieName, adminEntrySecret(authSecret, cfg))
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return false
+	}
+	if validAdminEntryCookie(r, entry.CookieName, adminEntrySecret(authSecret, cfg), time.Now) {
+		return true
+	}
+	writeAdminTeapot(w)
+	return false
+}
+
+func cleanAdminEntryPath(path string) string {
+	cleaned := filepath.ToSlash(filepath.Clean("/" + strings.TrimSpace(strings.TrimPrefix(path, "/"))))
+	if cleaned == "." || cleaned == "" {
+		return "/"
+	}
+	return cleaned
+}
+
+func issueAdminEntryCookie(w http.ResponseWriter, r *http.Request, name, secret string) {
+	expires := time.Now().UTC().Add(config.AdminSessionTTL)
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		nonceBytes = []byte(fmt.Sprintf("%d", time.Now().UnixNano()))
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
+	value := signedAdminEntryValue(secret, r.UserAgent(), expires.Unix(), nonce)
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		Expires:  expires,
+		MaxAge:   int(config.AdminSessionTTL / time.Second),
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func validAdminEntryCookie(r *http.Request, name, secret string, now func() time.Time) bool {
+	if now == nil {
+		now = time.Now
+	}
+	cookie, err := r.Cookie(name)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	expiresUnix, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || expiresUnix <= now().UTC().Unix() {
+		return false
+	}
+	want := signedAdminEntryValue(secret, r.UserAgent(), expiresUnix, parts[1])
+	return hmac.Equal([]byte(want), []byte(cookie.Value))
+}
+
+func signedAdminEntryValue(secret, userAgent string, expires int64, nonce string) string {
+	base := fmt.Sprintf("%d.%s", expires, nonce)
+	mac := hmac.New(sha256.New, []byte(secret))
+	for _, item := range []string{"cheesewaf-admin-entry-v1", userAgent, base} {
+		_, _ = mac.Write([]byte(item))
+		_, _ = mac.Write([]byte{'\n'})
+	}
+	return base + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func adminEntrySecret(authSecret string, cfg *config.Config) string {
+	if authSecret != "" {
+		return authSecret
+	}
+	if cfg != nil && !config.IsWeakBotSecret(cfg.Protection.Bot.Secret) {
+		return cfg.Protection.Bot.Secret
+	}
+	return "cheesewaf-admin-entry"
+}
+
+func writeAdminTeapot(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusTeapot)
+	_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head><title>418 I'm a teapot</title></head>
+<body>
+<center><h1>418 I'm a teapot</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>`))
+}
+
+func setAdminStaticCacheHeaders(w http.ResponseWriter, path string) {
+	normalized := filepath.ToSlash(path)
+	if strings.HasPrefix(normalized, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+}
+
+func adminGzip(next http.Handler, metricsPath string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !adminShouldGzip(r, metricsPath) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Add("Vary", "Accept-Encoding")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Del("Content-Length")
+		gz, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		defer gz.Close()
+		next.ServeHTTP(gzipResponseWriter{ResponseWriter: w, writer: gz}, r)
+	})
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	writer *gzip.Writer
+}
+
+func (w gzipResponseWriter) WriteHeader(status int) {
+	w.Header().Del("Content-Length")
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w gzipResponseWriter) Write(data []byte) (int, error) {
+	w.Header().Del("Content-Length")
+	return w.writer.Write(data)
+}
+
+func adminShouldGzip(r *http.Request, metricsPath string) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		return false
+	}
+	if r.URL.Path == "/health" || r.URL.Path == metricsPath || strings.HasPrefix(r.URL.Path, "/api/") {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(r.URL.Path))
+	switch ext {
+	case "", ".html", ".js", ".css", ".json", ".svg", ".txt", ".wasm":
+		return true
+	default:
+		return false
+	}
 }
 
 func adminContentSecurityPolicy() string {

@@ -162,6 +162,89 @@ func TestRouterLoginCAPTCHAIsEnabledByDefault(t *testing.T) {
 	}
 }
 
+func TestRouterSliderCAPTCHARequiresSliderProof(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Slider.PowEnabled = true
+	cfg.APISec.Audit.Enabled = false
+	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
+	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	createAuthzUser(t, store, "admin-id", "admin", "admin-password", "admin")
+	router := NewRouter(Options{Config: &cfg, ConfigPath: configPath, Store: store, Secret: "router-slider-test-secret"})
+
+	pow := solveLoginCAPTCHA(t, router)
+	body, _ := json.Marshal(map[string]any{"username": "admin", "password": "admin-password", "captcha": pow})
+	recorder := perform(router, http.MethodPost, "/api/auth/login", "", body)
+	if recorder.Code != http.StatusUnauthorized || !bytes.Contains(recorder.Body.Bytes(), []byte("INVALID_CAPTCHA")) {
+		t.Fatalf("expected missing slider proof to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRouterSliderCAPTCHADoesNotIssuePowByDefault(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Mode = "slider"
+	cfg.Console.Login.CAPTCHA.Slider.PowEnabled = false
+	cfg.APISec.Audit.Enabled = false
+	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
+	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	createAuthzUser(t, store, "admin-id", "admin", "admin-password", "admin")
+	router := NewRouter(Options{Config: &cfg, ConfigPath: configPath, Store: store, Secret: "router-slider-no-pow-test-secret"})
+
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha", "", []byte(`{}`))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected slider captcha challenge, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Enabled   bool `json:"enabled"`
+			Challenge *struct {
+				Challenge string `json:"challenge"`
+			} `json:"challenge"`
+			Slider *struct {
+				Token string `json:"token"`
+				Image string `json:"image"`
+			} `json:"slider"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode slider captcha response: %v", err)
+	}
+	if !envelope.Data.Enabled {
+		t.Fatal("expected captcha to be enabled")
+	}
+	if envelope.Data.Challenge != nil && envelope.Data.Challenge.Challenge != "" {
+		t.Fatalf("default slider captcha should not issue PoW challenge, got %+v", envelope.Data.Challenge)
+	}
+	if envelope.Data.Slider == nil || envelope.Data.Slider.Token == "" || envelope.Data.Slider.Image == "" {
+		t.Fatalf("expected real slider challenge, got %+v", envelope.Data.Slider)
+	}
+}
+
 func TestRouterRefreshesBearerToken(t *testing.T) {
 	router, adminToken, _ := newAuthzTestRouter(t)
 
@@ -256,6 +339,7 @@ func newAuthzTestRouterWithConfig(t *testing.T, mutate func(*config.Config)) (ht
 	t.Helper()
 	tempDir := t.TempDir()
 	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Mode = "pow"
 	cfg.APISec.Audit.Enabled = false
 	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
 	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
@@ -357,6 +441,9 @@ func solveLoginCAPTCHA(t *testing.T, router http.Handler) map[string]any {
 		return nil
 	}
 	challenge := envelope.Data.Challenge
+	if challenge.Challenge == "" {
+		return nil
+	}
 	for i := 0; i <= challenge.MaxNumber; i++ {
 		if captcha.Hash(challenge.Salt, i) == challenge.Challenge {
 			return map[string]any{
