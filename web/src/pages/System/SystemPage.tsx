@@ -315,12 +315,20 @@ export default function SystemPage() {
                         onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, min_drag: millisecondsToDuration(value || 450) } } })}
                       />
                     </label>
+                    <label className="switch-line">
+                      <span>{t('system.loginSliderPowEnabled')}</span>
+                      <Switch
+                        checked={system.console.login.captcha.slider.pow_enabled}
+                        onChange={(pow_enabled) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_enabled } } })}
+                      />
+                    </label>
                     <label>
                       <span>{t('system.loginSliderPowMax')}</span>
                       <InputNumber
                         min={1000}
                         max={50000000}
                         step={1000}
+                        disabled={!system.console.login.captcha.slider.pow_enabled}
                         value={system.console.login.captcha.slider.pow_max_number}
                         onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_max_number: Number(value || 12000) } } })}
                       />

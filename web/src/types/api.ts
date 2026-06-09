@@ -422,6 +422,7 @@ export type LoginSliderCAPTCHAConfig = {
   piece_size: number;
   tolerance: number;
   min_drag: number | string;
+  pow_enabled: boolean;
   pow_max_number: number;
 };
 
@@ -438,11 +439,11 @@ export type LoginBackgroundConfig = {
 };
 
 export type LoginCAPTCHAPayload = {
-  algorithm: string;
-  challenge: string;
-  number: number;
-  salt: string;
-  signature: string;
+  algorithm?: string;
+  challenge?: string;
+  number?: number;
+  salt?: string;
+  signature?: string;
   slider?: LoginSliderCAPTCHAPayload;
 };
 
@@ -452,7 +453,11 @@ export type LoginSliderCAPTCHAPayload = {
   drag_ms: number;
 };
 
-export type LoginCAPTCHAChallenge = Omit<LoginCAPTCHAPayload, 'number' | 'slider'> & {
+export type LoginCAPTCHAChallenge = {
+  algorithm: string;
+  challenge: string;
+  salt: string;
+  signature: string;
   max_number: number;
   expires_at?: string;
 };
@@ -482,6 +487,8 @@ export type LoginOptions = {
       piece_size: number;
       tolerance: number;
       min_drag_ms: number;
+      pow_enabled?: boolean;
+      pow_max_number?: number;
     };
   };
   background: LoginBackgroundConfig;

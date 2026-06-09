@@ -9,6 +9,7 @@ import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login } from '..
 import type {
   LoginCAPTCHAChallenge,
   LoginCAPTCHAPayload,
+  LoginCAPTCHAResponse,
   LoginOptions,
   LoginSliderCAPTCHAChallenge,
 } from '../../types/api';
@@ -43,7 +44,7 @@ export default function LoginPage() {
     setSliderDragMS(0);
   }, []);
 
-  const applyCaptchaResponse = useCallback((response: Awaited<ReturnType<typeof fetchLoginCaptcha>>) => {
+  const applyCaptchaResponse = useCallback((response: Awaited<ReturnType<typeof fetchLoginCaptcha>>, activeOptions: LoginOptions | null) => {
     if (!response.enabled) {
       setChallenge(null);
       setPowPayload(null);
@@ -52,10 +53,15 @@ export default function LoginPage() {
       setCaptchaState('disabled');
       return;
     }
-    if (!response.challenge) {
+    const sliderMode = isSliderMode(activeOptions, response.mode);
+    const needsPow = loginCAPTCHARequiresPow(activeOptions, response);
+    if (needsPow && !response.challenge) {
       throw new Error(t('login.captchaUnavailable'));
     }
-    setChallenge(response.challenge);
+    if (sliderMode && !response.slider) {
+      throw new Error(t('login.captchaUnavailable'));
+    }
+    setChallenge(response.challenge ?? null);
     setPowPayload(null);
     setSlider(response.slider ?? null);
     resetSlider();
@@ -74,7 +80,7 @@ export default function LoginPage() {
     setCaptchaState('loading');
     setError('');
     try {
-      applyCaptchaResponse(await fetchLoginCaptcha());
+      applyCaptchaResponse(await fetchLoginCaptcha(), options);
     } catch (err) {
       setCaptchaState('error');
       setError(err instanceof Error ? err.message : t('login.captchaUnavailable'));
@@ -95,7 +101,7 @@ export default function LoginPage() {
           setCaptchaState('loading');
           const response = await fetchLoginCaptcha();
           if (!cancelled) {
-            applyCaptchaResponse(response);
+            applyCaptchaResponse(response, nextOptions);
           }
         } else {
           setChallenge(null);
@@ -121,7 +127,7 @@ export default function LoginPage() {
   }, [applyCaptchaResponse, resetSlider]);
 
   useEffect(() => {
-    if (!options?.captcha.enabled || !challenge) {
+    if (!options?.captcha.enabled || !challenge || !loginCAPTCHARequiresPow(options)) {
       return undefined;
     }
     const currentChallenge = challenge;
@@ -158,7 +164,7 @@ export default function LoginPage() {
     if (!options?.captcha.enabled || captchaState === 'loading' || captchaState === 'error' || captchaState === 'disabled') {
       return;
     }
-    if (powPayload && (!isSliderMode(options) || sliderDone)) {
+    if ((!loginCAPTCHARequiresPow(options) || powPayload) && (!isSliderMode(options) || sliderDone)) {
       setCaptchaState('verified');
     } else if (captchaState !== 'solving') {
       setCaptchaState('ready');
@@ -383,32 +389,35 @@ async function buildLoginCaptchaIfNeeded({
   if (!options?.captcha.enabled) {
     return undefined;
   }
-  if (!challenge) {
-    throw new Error('captcha challenge is not ready');
+  const sliderMode = isSliderMode(options);
+  const needsPow = loginCAPTCHARequiresPow(options);
+  const payload: LoginCAPTCHAPayload = {};
+  if (needsPow) {
+    if (!challenge) {
+      throw new Error('captcha challenge is not ready');
+    }
+    let nextPowPayload = powPayload;
+    if (!nextPowPayload) {
+      setCaptchaState('solving');
+      const number = await solveSHA256(challenge.salt, challenge.challenge, challenge.max_number);
+      nextPowPayload = {
+        algorithm: challenge.algorithm,
+        challenge: challenge.challenge,
+        number,
+        salt: challenge.salt,
+        signature: challenge.signature,
+      };
+    }
+    Object.assign(payload, nextPowPayload);
   }
-  let payload = powPayload;
-  if (!payload) {
-    setCaptchaState('solving');
-    const number = await solveSHA256(challenge.salt, challenge.challenge, challenge.max_number);
-    payload = {
-      algorithm: challenge.algorithm,
-      challenge: challenge.challenge,
-      number,
-      salt: challenge.salt,
-      signature: challenge.signature,
-    };
-  }
-  if (isSliderMode(options)) {
+  if (sliderMode) {
     if (!slider || !sliderDone) {
       throw new Error('complete slider verification first');
     }
-    return {
-      ...payload,
-      slider: {
-        token: slider.token,
-        x: Math.round(sliderX),
-        drag_ms: Math.max(sliderDragMS, 0),
-      },
+    payload.slider = {
+      token: slider.token,
+      x: Math.round(sliderX),
+      drag_ms: Math.max(sliderDragMS, 0),
     };
   }
   return payload;
@@ -504,8 +513,16 @@ function rotr(value: number, bits: number) {
   return (value >>> bits) | (value << (32 - bits));
 }
 
-function isSliderMode(options: LoginOptions | null) {
-  return String(options?.captcha.mode || 'slider').toLowerCase() === 'slider';
+function isSliderMode(options: LoginOptions | null, responseMode?: string) {
+  return String(responseMode || options?.captcha.mode || 'slider').toLowerCase() === 'slider';
+}
+
+function loginCAPTCHARequiresPow(options: LoginOptions | null, response?: LoginCAPTCHAResponse) {
+  const mode = String(response?.mode || options?.captcha.mode || 'slider').toLowerCase();
+  if (mode !== 'slider') {
+    return true;
+  }
+  return Boolean(options?.captcha.slider?.pow_enabled || response?.challenge);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -537,6 +554,8 @@ function normalizeLoginOptions(value: LoginOptions | null | undefined): LoginOpt
         piece_size: 42,
         tolerance: 6,
         min_drag_ms: 450,
+        pow_enabled: false,
+        pow_max_number: 12000,
       },
     },
     background: {

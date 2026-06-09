@@ -637,6 +637,7 @@ const enUS = {
     loginCaptchaTTL: 'CAPTCHA TTL (s)',
     loginSliderTolerance: 'Slider Tolerance (px)',
     loginSliderMinDrag: 'Min Drag Time (ms)',
+    loginSliderPowEnabled: 'Slider Auxiliary PoW',
     loginSliderPowMax: 'Auxiliary PoW Limit',
     securityEntry: 'Security Entry',
     securityEntryHint: 'When enabled, direct admin-port access or a wrong entrance returns 418. The correct entrance issues an HttpOnly entry cookie with the same lifetime as the login session.',
