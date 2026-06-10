@@ -23,6 +23,13 @@
 - Local password resets can be performed with `cheesewaf user password USERNAME`
   or `waf-cli user password USERNAME`; use `--password-stdin` for scripts or
   `--generate` for a one-time temporary password.
+- Local usernames can be renamed with `cheesewaf user rename OLD_USERNAME NEW_USERNAME`
+  or `waf-cli user rename OLD_USERNAME NEW_USERNAME`; the command revokes that
+  user's existing admin sessions.
+- Admin slider CAPTCHA verification is a two-step flow: `/api/auth/captcha/verify`
+  validates the encrypted slider token and returns a short-lived one-time receipt,
+  then `/api/auth/login` consumes that receipt. Raw slider coordinates are not a
+  valid login payload.
 
 ## Transport
 
