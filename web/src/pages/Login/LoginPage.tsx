@@ -1,11 +1,11 @@
-import { Button, Form, Input } from '@arco-design/web-react';
+import { Button, Form, Input, Modal } from '@arco-design/web-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LockKeyhole, MoveRight, RefreshCcw, ShieldCheck, UserRound } from 'lucide-react';
+import { LockKeyhole, MoveRight, ShieldCheck, UserRound } from 'lucide-react';
 import { pressable } from '../../animations/micro';
-import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login } from '../../api/client';
+import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login, verifyLoginCaptcha } from '../../api/client';
 import type {
   LoginCAPTCHAChallenge,
   LoginCAPTCHAPayload,
@@ -14,7 +14,8 @@ import type {
   LoginSliderCAPTCHAChallenge,
 } from '../../types/api';
 
-type CAPTCHAState = 'loading' | 'ready' | 'solving' | 'verified' | 'disabled' | 'error';
+type CAPTCHAState = 'loading' | 'ready' | 'solving' | 'checking' | 'verified' | 'invalid' | 'disabled' | 'error';
+type LoginCAPTCHAMode = 'slider' | 'pow';
 
 export default function LoginPage() {
   const { t } = useTranslation();
@@ -26,41 +27,59 @@ export default function LoginPage() {
   const [options, setOptions] = useState<LoginOptions | null>(null);
   const [challenge, setChallenge] = useState<LoginCAPTCHAChallenge | null>(null);
   const [powPayload, setPowPayload] = useState<LoginCAPTCHAPayload | null>(null);
+  const [activeCaptchaMode, setActiveCaptchaMode] = useState<LoginCAPTCHAMode>('slider');
   const [slider, setSlider] = useState<LoginSliderCAPTCHAChallenge | null>(null);
   const [sliderX, setSliderX] = useState(0);
   const [sliderDone, setSliderDone] = useState(false);
-  const [sliderDragMS, setSliderDragMS] = useState(0);
+  const [sliderPayload, setSliderPayload] = useState<LoginCAPTCHAPayload['slider'] | null>(null);
+  const [captchaReceipt, setCaptchaReceipt] = useState<string | null>(null);
+  const [sliderDragging, setSliderDragging] = useState(false);
+  const [lastSliderDragMs, setLastSliderDragMs] = useState<number | null>(null);
   const [captchaState, setCaptchaState] = useState<CAPTCHAState>('loading');
+  const [captchaModalOpen, setCaptchaModalOpen] = useState(false);
   const [loadMs, setLoadMs] = useState<number | null>(null);
+  const mobileCaptcha = useMobileCaptchaMode();
   const dragRef = useRef<{ pointerId: number; originX: number; startX: number; startedAt: number } | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const captchaCloseTimerRef = useRef<number | null>(null);
+  const captchaRefreshTimerRef = useRef<number | null>(null);
   const token = localStorage.getItem('cheesewaf-token');
   const from = ((location.state as { from?: string } | null)?.from ?? '/') || '/';
 
-  const resetSlider = useCallback(() => {
+  const resetSliderMotion = useCallback(() => {
     dragRef.current = null;
     setSliderX(0);
-    setSliderDone(false);
-    setSliderDragMS(0);
+    setSliderDragging(false);
   }, []);
+
+  const resetSlider = useCallback(() => {
+    resetSliderMotion();
+    setSliderDone(false);
+    setSliderPayload(null);
+    setCaptchaReceipt(null);
+    setLastSliderDragMs(null);
+  }, [resetSliderMotion]);
 
   const applyCaptchaResponse = useCallback((response: Awaited<ReturnType<typeof fetchLoginCaptcha>>, activeOptions: LoginOptions | null) => {
     if (!response.enabled) {
       setChallenge(null);
       setPowPayload(null);
+      setActiveCaptchaMode('slider');
       setSlider(null);
       resetSlider();
       setCaptchaState('disabled');
       return;
     }
-    const sliderMode = isSliderMode(activeOptions, response.mode);
-    const needsPow = loginCAPTCHARequiresPow(activeOptions, response);
+    const nextMode = resolveCAPTCHAMode(activeOptions, response.mode);
+    const sliderMode = nextMode === 'slider';
+    const needsPow = loginCAPTCHARequiresPow(activeOptions, nextMode, response);
     if (needsPow && !response.challenge) {
       throw new Error(t('login.captchaUnavailable'));
     }
     if (sliderMode && !response.slider) {
       throw new Error(t('login.captchaUnavailable'));
     }
+    setActiveCaptchaMode(nextMode);
     setChallenge(response.challenge ?? null);
     setPowPayload(null);
     setSlider(response.slider ?? null);
@@ -69,6 +88,10 @@ export default function LoginPage() {
   }, [resetSlider, t]);
 
   const refreshCaptcha = useCallback(async () => {
+    if (captchaRefreshTimerRef.current != null) {
+      window.clearTimeout(captchaRefreshTimerRef.current);
+      captchaRefreshTimerRef.current = null;
+    }
     if (options && !options.captcha.enabled) {
       setCaptchaState('disabled');
       setChallenge(null);
@@ -80,12 +103,12 @@ export default function LoginPage() {
     setCaptchaState('loading');
     setError('');
     try {
-      applyCaptchaResponse(await fetchLoginCaptcha(), options);
+      applyCaptchaResponse(await fetchLoginCaptcha(mobileCaptcha ? 'pow' : undefined), options);
     } catch (err) {
       setCaptchaState('error');
       setError(err instanceof Error ? err.message : t('login.captchaUnavailable'));
     }
-  }, [applyCaptchaResponse, options, resetSlider, t]);
+  }, [applyCaptchaResponse, mobileCaptcha, options, resetSlider, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,7 +122,7 @@ export default function LoginPage() {
         setOptions(nextOptions);
         if (nextOptions.captcha.enabled) {
           setCaptchaState('loading');
-          const response = await fetchLoginCaptcha();
+          const response = await fetchLoginCaptcha(mobileCaptcha ? 'pow' : undefined);
           if (!cancelled) {
             applyCaptchaResponse(response, nextOptions);
           }
@@ -124,13 +147,23 @@ export default function LoginPage() {
     return () => {
       cancelled = true;
     };
-  }, [applyCaptchaResponse, resetSlider]);
+  }, [applyCaptchaResponse, mobileCaptcha, resetSlider]);
+
+  useEffect(() => () => {
+    if (captchaCloseTimerRef.current != null) {
+      window.clearTimeout(captchaCloseTimerRef.current);
+    }
+    if (captchaRefreshTimerRef.current != null) {
+      window.clearTimeout(captchaRefreshTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
-    if (!options?.captcha.enabled || !challenge || !loginCAPTCHARequiresPow(options)) {
+    if (!options?.captcha.enabled || !challenge || !loginCAPTCHARequiresPow(options, activeCaptchaMode)) {
       return undefined;
     }
     const currentChallenge = challenge;
+    const currentMode = activeCaptchaMode;
     let cancelled = false;
     async function solvePow() {
       try {
@@ -140,6 +173,7 @@ export default function LoginPage() {
           return;
         }
         setPowPayload({
+          mode: currentMode,
           algorithm: currentChallenge.algorithm,
           challenge: currentChallenge.challenge,
           number,
@@ -158,18 +192,18 @@ export default function LoginPage() {
     return () => {
       cancelled = true;
     };
-  }, [challenge, options, t]);
+  }, [activeCaptchaMode, challenge, options, t]);
 
   useEffect(() => {
-    if (!options?.captcha.enabled || captchaState === 'loading' || captchaState === 'error' || captchaState === 'disabled') {
+    if (!options?.captcha.enabled || captchaState === 'loading' || captchaState === 'checking' || captchaState === 'invalid' || captchaState === 'error' || captchaState === 'disabled') {
       return;
     }
-    if ((!loginCAPTCHARequiresPow(options) || powPayload) && (!isSliderMode(options) || sliderDone)) {
+    if ((!loginCAPTCHARequiresPow(options, activeCaptchaMode) || powPayload) && (activeCaptchaMode !== 'slider' || sliderDone)) {
       setCaptchaState('verified');
     } else if (captchaState !== 'solving') {
       setCaptchaState('ready');
     }
-  }, [captchaState, options, powPayload, sliderDone]);
+  }, [activeCaptchaMode, captchaState, options, powPayload, sliderDone]);
 
   const background = options?.background;
   const backgroundURL = background?.enabled ? background.url.trim() : '';
@@ -183,14 +217,19 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
+      if (options?.captcha.enabled && activeCaptchaMode === 'slider' && !captchaReceipt) {
+        setCaptchaModalOpen(true);
+        setError(t('login.captchaRequired'));
+        return;
+      }
       const captcha = await buildLoginCaptchaIfNeeded({
         options,
         challenge,
         powPayload,
+        activeCaptchaMode,
         slider,
-        sliderDone,
-        sliderX,
-        sliderDragMS,
+        sliderPayload,
+        captchaReceipt,
         setCaptchaState,
       });
       const result = await login(values.username ?? '', values.password ?? '', values.totpCode, captcha);
@@ -205,6 +244,7 @@ export default function LoginPage() {
       if (err instanceof APIRequestError && err.code === 'INVALID_CAPTCHA') {
         setError(t('login.captchaInvalid'));
         await refreshCaptcha();
+        setCaptchaModalOpen(true);
         return;
       }
       setError(err instanceof Error ? err.message : 'Login failed');
@@ -216,23 +256,22 @@ export default function LoginPage() {
     }
   }
 
-  function updateSlider(clientX: number) {
-    const track = trackRef.current;
-    if (!track || !slider) {
+  function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!slider || loading || captchaState === 'loading' || captchaState === 'solving' || captchaState === 'checking' || captchaState === 'verified' || captchaState === 'invalid' || captchaState === 'error') {
       return;
     }
-    const rect = track.getBoundingClientRect();
-    const trackWidth = slider.track_width || Math.max(0, slider.width - slider.piece_size);
-    const next = clamp(clientX - rect.left - slider.piece_size / 2, 0, trackWidth);
-    setSliderX(Math.round(next));
-    setSliderDone(false);
-  }
-
-  function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
-    if (!slider || loading || captchaState === 'loading' || captchaState === 'error') {
-      return;
+    if (captchaRefreshTimerRef.current != null) {
+      window.clearTimeout(captchaRefreshTimerRef.current);
+      captchaRefreshTimerRef.current = null;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
+    setError('');
+    setSliderDragging(true);
+    setSliderDone(false);
+    setSliderPayload(null);
+    setCaptchaReceipt(null);
+    setLastSliderDragMs(null);
+    setCaptchaState('ready');
     dragRef.current = { pointerId: event.pointerId, originX: event.clientX, startX: sliderX, startedAt: performance.now() };
   }
 
@@ -241,23 +280,105 @@ export default function LoginPage() {
     if (!drag || drag.pointerId !== event.pointerId || !slider) {
       return;
     }
-    const trackWidth = slider.track_width || Math.max(0, slider.width - slider.piece_size);
+    const trackWidth = getVisualSliderTravel(slider, trackRef.current);
     setSliderX(Math.round(clamp(drag.startX + event.clientX - drag.originX, 0, trackWidth)));
     setSliderDone(false);
   }
 
-  function handlePointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+  async function handlePointerUp(event: React.PointerEvent<HTMLButtonElement>) {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) {
+    if (!drag || drag.pointerId !== event.pointerId || !slider) {
       return;
     }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const currentSlider = slider;
+    const trackWidth = getVisualSliderTravel(slider, trackRef.current);
+    const finalVisualX = Math.round(clamp(drag.startX + event.clientX - drag.originX, 0, trackWidth));
+    const finalServerX = toServerSliderX(finalVisualX, slider, trackRef.current);
     const elapsed = Math.max(0, Math.round(performance.now() - drag.startedAt));
+    setLastSliderDragMs(elapsed);
     dragRef.current = null;
-    setSliderDragMS(elapsed);
-    setSliderDone(sliderX > 0);
+    setSliderDragging(false);
+    setSliderX(0);
+    setSliderDone(false);
+    setSliderPayload(null);
+    setCaptchaReceipt(null);
+    if (finalVisualX <= 0) {
+      setCaptchaState('invalid');
+      setError('');
+      scheduleCaptchaRefresh();
+      return;
+    }
+    setCaptchaState('checking');
+    try {
+      const nextSliderPayload = { token: currentSlider.token, x: finalServerX, drag_ms: elapsed };
+      const verifyPayload: LoginCAPTCHAPayload = { mode: 'slider', slider: nextSliderPayload };
+      if (loginCAPTCHARequiresPow(options, 'slider') && powPayload) {
+        Object.assign(verifyPayload, powPayload, { mode: 'slider' });
+      }
+      const verification = await verifyLoginCaptcha(verifyPayload);
+      setSliderPayload(nextSliderPayload);
+      setCaptchaReceipt(verification.receipt);
+      setSliderDone(true);
+      setCaptchaState('verified');
+      setError('');
+      if (captchaCloseTimerRef.current != null) {
+        window.clearTimeout(captchaCloseTimerRef.current);
+      }
+      captchaCloseTimerRef.current = window.setTimeout(() => setCaptchaModalOpen(false), 1100);
+    } catch (err) {
+      setSliderPayload(null);
+      setCaptchaReceipt(null);
+      setSliderDone(false);
+      setCaptchaState('invalid');
+      setError('');
+      scheduleCaptchaRefresh();
+    }
   }
 
-  const sliderMode = isSliderMode(options);
+  function scheduleCaptchaRefresh() {
+    if (captchaRefreshTimerRef.current != null) {
+      window.clearTimeout(captchaRefreshTimerRef.current);
+    }
+    captchaRefreshTimerRef.current = window.setTimeout(() => {
+      captchaRefreshTimerRef.current = null;
+      void refreshCaptcha();
+    }, 850);
+  }
+
+  async function openCaptchaModal() {
+    if (captchaState === 'verified') {
+      return;
+    }
+    if (activeCaptchaMode !== 'slider') {
+      await refreshCaptcha();
+      return;
+    }
+    setCaptchaModalOpen(true);
+    if (!options?.captcha.enabled) {
+      return;
+    }
+    if (captchaState === 'error' || !slider) {
+      await refreshCaptcha();
+    }
+  }
+
+  const sliderMode = activeCaptchaMode === 'slider';
+  const sliderClass = ['auth-slider', sliderDone ? 'auth-slider-done' : '', sliderDragging ? 'auth-slider-dragging' : ''].filter(Boolean).join(' ');
+  const sliderCopy = captchaState === 'checking'
+    ? t('login.sliderChecking')
+    : captchaState === 'invalid'
+      ? t('login.sliderInvalid')
+      : sliderDone
+        ? t('login.sliderReleasedWithTime', { seconds: formatSeconds(lastSliderDragMs) })
+        : t('login.sliderHint');
+  const captchaGateDisabled = loading
+    || captchaState === 'loading'
+    || captchaState === 'solving'
+    || captchaState === 'checking'
+    || captchaState === 'verified';
 
   return (
     <main className={backgroundURL ? 'auth-screen auth-screen-media' : 'auth-screen'}>
@@ -296,60 +417,19 @@ export default function LoginPage() {
               </Form.Item>
             )}
             {options?.captcha.enabled && (
-              <div className={`auth-captcha-card auth-captcha-state-${captchaState}`}>
-                <div className="auth-captcha-head">
-                  <div>
+              <button
+                type="button"
+                className={`auth-captcha-gate auth-captcha-state-${captchaState}`}
+                onClick={openCaptchaModal}
+                disabled={captchaGateDisabled}
+              >
+                <span className="auth-captcha-gate-main">
+                  <span className="auth-captcha-gate-icon" aria-hidden="true">
                     <ShieldCheck size={16} />
-                    <span>{t(`login.captchaState.${captchaState}`)}</span>
-                  </div>
-                  <Button
-                    size="mini"
-                    htmlType="button"
-                    icon={<RefreshCcw size={13} />}
-                    onClick={refreshCaptcha}
-                    disabled={loading || captchaState === 'loading'}
-                  />
-                </div>
-                {sliderMode && slider ? (
-                  <div className="auth-slider" style={{ '--slider-width': `${slider.width}px`, '--piece-size': `${slider.piece_size}px` } as CSSProperties}>
-                    <button
-                      type="button"
-                      className="auth-slider-image-button"
-                      onPointerDown={(event) => updateSlider(event.clientX)}
-                      aria-label={t('login.sliderImage')}
-                    >
-                      <img className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
-                    </button>
-                    <div
-                      ref={trackRef}
-                      className="auth-slider-track"
-                      role="slider"
-                      aria-valuemin={0}
-                      aria-valuemax={slider.track_width}
-                      aria-valuenow={sliderX}
-                      aria-label={t('login.sliderLabel')}
-                    >
-                      <span className="auth-slider-fill" style={{ width: `${sliderX + slider.piece_size / 2}px` }} />
-                      <button
-                        type="button"
-                        className={sliderDone ? 'auth-slider-thumb auth-slider-thumb-done' : 'auth-slider-thumb'}
-                        style={{ transform: `translateX(${sliderX}px)` }}
-                        onPointerDown={handlePointerDown}
-                        onPointerMove={handlePointerMove}
-                        onPointerUp={handlePointerUp}
-                        onPointerCancel={handlePointerUp}
-                      >
-                        <MoveRight size={18} />
-                      </button>
-                      <span className="auth-slider-copy">{sliderDone ? t('login.sliderReleased') : t('login.sliderHint')}</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="auth-captcha-compact">
-                    <span>{t('login.powHint')}</span>
-                  </div>
-                )}
-              </div>
+                  </span>
+                  <span className="auth-captcha-gate-label">{t(`login.captchaState.${captchaState}`)}</span>
+                </span>
+              </button>
             )}
             <motion.div {...pressable}>
               <Button type="primary" htmlType="submit" loading={loading} long>
@@ -363,6 +443,82 @@ export default function LoginPage() {
           {loadMs == null ? t('login.loading') : t('login.loadTime', { ms: loadMs })}
         </div>
       </div>
+      <Modal
+        className="auth-captcha-modal"
+        title={null}
+        visible={captchaModalOpen}
+        onCancel={() => setCaptchaModalOpen(false)}
+        footer={null}
+        closable={false}
+      >
+        <div className={`auth-captcha-widget auth-captcha-state-${captchaState}`}>
+          <div className="auth-captcha-widget-head">
+            <div>
+              <strong>{t('login.captchaWidgetTitle')}</strong>
+              <span>{captchaState === 'verified' ? t('login.captchaWidgetVerified') : t('login.captchaWidgetHint')}</span>
+            </div>
+          </div>
+          {captchaState === 'verified' ? (
+            <div className="auth-slider-success" role="status">
+              <ShieldCheck size={18} />
+              <span>{t('login.sliderReleasedWithTime', { seconds: formatSeconds(lastSliderDragMs) })}</span>
+            </div>
+          ) : sliderMode && slider ? (
+            <div className={sliderClass} style={{ '--slider-width': `${slider.width}px`, '--piece-size': `${slider.piece_size}px` } as CSSProperties}>
+              <div className="auth-slider-stage" aria-label={t('login.sliderImage')} role="img">
+                <img className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
+                {slider.piece && (
+                  <img
+                    className="auth-slider-piece"
+                    src={slider.piece}
+                    width={slider.piece_size}
+                    height={slider.piece_size}
+                    alt=""
+                    draggable={false}
+                    style={{ transform: `translate3d(${sliderX}px, ${slider.target_y}px, 0)` }}
+                  />
+                )}
+              </div>
+              {(captchaState === 'invalid' || captchaState === 'checking') && (
+                <div className="auth-slider-feedback">
+                  {captchaState === 'invalid'
+                    ? t('login.sliderInvalidRefreshing')
+                    : t('login.sliderChecking')}
+                </div>
+              )}
+              <div
+                ref={trackRef}
+                className="auth-slider-track"
+                role="slider"
+                aria-valuemin={0}
+                aria-valuemax={slider.track_width}
+                aria-valuenow={sliderX}
+                aria-label={t('login.sliderLabel')}
+                aria-disabled={captchaState === 'checking'}
+              >
+                <span className="auth-slider-fill" style={{ width: sliderX > 0 ? `${sliderX + slider.piece_size / 2}px` : 0 }} />
+                <button
+                  type="button"
+                  className={sliderDone ? 'auth-slider-thumb auth-slider-thumb-done' : 'auth-slider-thumb'}
+                  style={{ transform: `translateX(${sliderX}px)` }}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerCancel={handlePointerUp}
+                  disabled={captchaState === 'solving' || captchaState === 'checking' || captchaState === 'invalid' || captchaState === 'loading'}
+                >
+                  <MoveRight size={18} />
+                </button>
+                <span className={sliderDone ? 'auth-slider-copy auth-slider-copy-done' : 'auth-slider-copy'}>{sliderCopy}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="auth-captcha-compact">
+              <span>{captchaState === 'loading' ? t('login.captchaState.loading') : t('login.powHint')}</span>
+            </div>
+          )}
+        </div>
+      </Modal>
     </main>
   );
 }
@@ -371,27 +527,27 @@ async function buildLoginCaptchaIfNeeded({
   options,
   challenge,
   powPayload,
+  activeCaptchaMode,
   slider,
-  sliderDone,
-  sliderX,
-  sliderDragMS,
+  sliderPayload,
+  captchaReceipt,
   setCaptchaState,
 }: {
   options: LoginOptions | null;
   challenge: LoginCAPTCHAChallenge | null;
   powPayload: LoginCAPTCHAPayload | null;
+  activeCaptchaMode: LoginCAPTCHAMode;
   slider: LoginSliderCAPTCHAChallenge | null;
-  sliderDone: boolean;
-  sliderX: number;
-  sliderDragMS: number;
+  sliderPayload: LoginCAPTCHAPayload['slider'] | null;
+  captchaReceipt: string | null;
   setCaptchaState: (state: CAPTCHAState) => void;
 }): Promise<LoginCAPTCHAPayload | undefined> {
   if (!options?.captcha.enabled) {
     return undefined;
   }
-  const sliderMode = isSliderMode(options);
-  const needsPow = loginCAPTCHARequiresPow(options);
-  const payload: LoginCAPTCHAPayload = {};
+  const sliderMode = activeCaptchaMode === 'slider';
+  const needsPow = loginCAPTCHARequiresPow(options, activeCaptchaMode);
+  const payload: LoginCAPTCHAPayload = { mode: activeCaptchaMode };
   if (needsPow) {
     if (!challenge) {
       throw new Error('captcha challenge is not ready');
@@ -401,6 +557,7 @@ async function buildLoginCaptchaIfNeeded({
       setCaptchaState('solving');
       const number = await solveSHA256(challenge.salt, challenge.challenge, challenge.max_number);
       nextPowPayload = {
+        mode: activeCaptchaMode,
         algorithm: challenge.algorithm,
         challenge: challenge.challenge,
         number,
@@ -411,14 +568,10 @@ async function buildLoginCaptchaIfNeeded({
     Object.assign(payload, nextPowPayload);
   }
   if (sliderMode) {
-    if (!slider || !sliderDone) {
+    if (!slider || !sliderPayload || !captchaReceipt) {
       throw new Error('complete slider verification first');
     }
-    payload.slider = {
-      token: slider.token,
-      x: Math.round(sliderX),
-      drag_ms: Math.max(sliderDragMS, 0),
-    };
+    payload.receipt = captchaReceipt;
   }
   return payload;
 }
@@ -513,20 +666,62 @@ function rotr(value: number, bits: number) {
   return (value >>> bits) | (value << (32 - bits));
 }
 
-function isSliderMode(options: LoginOptions | null, responseMode?: string) {
-  return String(responseMode || options?.captcha.mode || 'slider').toLowerCase() === 'slider';
+function resolveCAPTCHAMode(options: LoginOptions | null, responseMode?: string): LoginCAPTCHAMode {
+  return String(responseMode || options?.captcha.mode || 'slider').toLowerCase() === 'pow' ? 'pow' : 'slider';
 }
 
-function loginCAPTCHARequiresPow(options: LoginOptions | null, response?: LoginCAPTCHAResponse) {
-  const mode = String(response?.mode || options?.captcha.mode || 'slider').toLowerCase();
-  if (mode !== 'slider') {
+function loginCAPTCHARequiresPow(options: LoginOptions | null, mode?: LoginCAPTCHAMode, response?: LoginCAPTCHAResponse) {
+  const resolvedMode = mode ?? resolveCAPTCHAMode(options, response?.mode);
+  if (resolvedMode !== 'slider') {
     return true;
   }
   return Boolean(options?.captcha.slider?.pow_enabled || response?.challenge);
 }
 
+function useMobileCaptchaMode() {
+  const query = '(max-width: 640px), (pointer: coarse)';
+  const [matches, setMatches] = useState(() => (typeof window !== 'undefined' ? window.matchMedia(query).matches : false));
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    const media = window.matchMedia(query);
+    const handleChange = () => setMatches(media.matches);
+    handleChange();
+    media.addEventListener('change', handleChange);
+    return () => media.removeEventListener('change', handleChange);
+  }, []);
+  return matches;
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function formatSeconds(milliseconds: number | null) {
+  return ((milliseconds ?? 0) / 1000).toFixed(2);
+}
+
+function getVisualSliderTravel(slider: LoginSliderCAPTCHAChallenge, track: HTMLDivElement | null) {
+  const serverTravel = slider.track_width || Math.max(0, slider.width - slider.piece_size);
+  if (!track) {
+    return serverTravel;
+  }
+  const rect = track.getBoundingClientRect();
+  if (!Number.isFinite(rect.width) || rect.width <= 0) {
+    return serverTravel;
+  }
+  const scale = rect.width / Math.max(1, slider.width);
+  return Math.max(0, rect.width - slider.piece_size * scale);
+}
+
+function toServerSliderX(visualX: number, slider: LoginSliderCAPTCHAChallenge, track: HTMLDivElement | null) {
+  const serverTravel = slider.track_width || Math.max(0, slider.width - slider.piece_size);
+  const visualTravel = getVisualSliderTravel(slider, track);
+  if (visualTravel <= 0 || serverTravel <= 0) {
+    return Math.round(clamp(visualX, 0, serverTravel));
+  }
+  return Math.round(clamp((visualX / visualTravel) * serverTravel, 0, serverTravel));
 }
 
 function resolveBackgroundKind(type: string | undefined, url: string) {

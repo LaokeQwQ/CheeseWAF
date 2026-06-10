@@ -23,6 +23,17 @@ const fallback: ProtectionConfig = {
     enabled: false,
     js_challenge: false,
     captcha: false,
+    captcha_type: 'pow',
+    captcha_max_attempts: 5,
+    image_captcha_length: 6,
+    image_captcha_width: 220,
+    image_captcha_height: 86,
+    image_captcha_audio_limit: 6,
+    slider_captcha_width: 320,
+    slider_captcha_height: 150,
+    slider_captcha_piece: 42,
+    slider_captcha_tolerance: 6,
+    slider_captcha_min_drag: '450ms',
     challenge_difficulty: 4,
     altcha_max_number: 75000,
     altcha_header_name: 'X-CheeseWAF-Altcha',
@@ -106,6 +117,17 @@ export default function ProtectionPage() {
               enabled: protection.bot.enabled,
               jsChallenge: protection.bot.js_challenge,
               captcha: protection.bot.captcha,
+              captchaType: protection.bot.captcha_type || 'pow',
+              captchaMaxAttempts: protection.bot.captcha_max_attempts,
+              imageCaptchaLength: protection.bot.image_captcha_length,
+              imageCaptchaWidth: protection.bot.image_captcha_width,
+              imageCaptchaHeight: protection.bot.image_captcha_height,
+              imageCaptchaAudioLimit: protection.bot.image_captcha_audio_limit,
+              sliderCaptchaWidth: protection.bot.slider_captcha_width,
+              sliderCaptchaHeight: protection.bot.slider_captcha_height,
+              sliderCaptchaPiece: protection.bot.slider_captcha_piece,
+              sliderCaptchaTolerance: protection.bot.slider_captcha_tolerance,
+              sliderCaptchaMinDrag: String(protection.bot.slider_captcha_min_drag),
               challengeDifficulty: protection.bot.challenge_difficulty,
               altchaMaxNumber: protection.bot.altcha_max_number,
               altchaHeaderName: protection.bot.altcha_header_name,
@@ -124,6 +146,17 @@ export default function ProtectionPage() {
               enabled: values.enabled,
               js_challenge: values.jsChallenge,
               captcha: values.captcha,
+              captcha_type: values.captchaType,
+              captcha_max_attempts: values.captchaMaxAttempts,
+              image_captcha_length: values.imageCaptchaLength,
+              image_captcha_width: values.imageCaptchaWidth,
+              image_captcha_height: values.imageCaptchaHeight,
+              image_captcha_audio_limit: values.imageCaptchaAudioLimit,
+              slider_captcha_width: values.sliderCaptchaWidth,
+              slider_captcha_height: values.sliderCaptchaHeight,
+              slider_captcha_piece: values.sliderCaptchaPiece,
+              slider_captcha_tolerance: values.sliderCaptchaTolerance,
+              slider_captcha_min_drag: values.sliderCaptchaMinDrag,
               challenge_difficulty: values.challengeDifficulty,
               altcha_max_number: values.altchaMaxNumber,
               altcha_header_name: values.altchaHeaderName,
@@ -142,9 +175,26 @@ export default function ProtectionPage() {
             <Form.Item label={t('protection.bot')} field="enabled"><Switch /></Form.Item>
             <Form.Item label={t('protection.jsChallenge')} field="jsChallenge"><Switch /></Form.Item>
             <Form.Item label={t('protection.captcha')} field="captcha"><Switch /></Form.Item>
+            <Form.Item label={t('protection.captchaType')} field="captchaType">
+              <Select>
+                <Select.Option value="pow">{t('protection.captchaTypePow')}</Select.Option>
+                <Select.Option value="image">{t('protection.captchaTypeImage')}</Select.Option>
+                <Select.Option value="slider">{t('protection.captchaTypeSlider')}</Select.Option>
+              </Select>
+            </Form.Item>
+            <Form.Item label={t('protection.captchaMaxAttempts')} field="captchaMaxAttempts"><InputNumber min={1} max={20} /></Form.Item>
             <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty"><InputNumber min={1} max={6} /></Form.Item>
             <Form.Item label={t('protection.altchaMaxNumber')} field="altchaMaxNumber"><InputNumber min={1000} max={50000000} /></Form.Item>
             <Form.Item label={t('protection.altchaHeader')} field="altchaHeaderName"><Input /></Form.Item>
+            <Form.Item label={t('protection.imageCaptchaLength')} field="imageCaptchaLength"><InputNumber min={4} max={8} /></Form.Item>
+            <Form.Item label={t('protection.imageCaptchaSize')} field="imageCaptchaWidth"><InputNumber min={160} max={420} /></Form.Item>
+            <Form.Item label={t('protection.imageCaptchaHeight')} field="imageCaptchaHeight"><InputNumber min={60} max={180} /></Form.Item>
+            <Form.Item label={t('protection.imageCaptchaAudioLimit')} field="imageCaptchaAudioLimit"><InputNumber min={1} max={20} /></Form.Item>
+            <Form.Item label={t('protection.sliderCaptchaWidth')} field="sliderCaptchaWidth"><InputNumber min={240} max={520} /></Form.Item>
+            <Form.Item label={t('protection.sliderCaptchaHeight')} field="sliderCaptchaHeight"><InputNumber min={100} max={260} /></Form.Item>
+            <Form.Item label={t('protection.sliderCaptchaPiece')} field="sliderCaptchaPiece"><InputNumber min={32} max={80} /></Form.Item>
+            <Form.Item label={t('protection.sliderCaptchaTolerance')} field="sliderCaptchaTolerance"><InputNumber min={2} max={16} /></Form.Item>
+            <Form.Item label={t('protection.sliderCaptchaMinDrag')} field="sliderCaptchaMinDrag"><Input placeholder="450ms" /></Form.Item>
             <Form.Item label={t('protection.waitingRoom')} field="waitingRoom"><Switch /></Form.Item>
             <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive"><InputNumber min={1} max={1000000} /></Form.Item>
             <Form.Item label={t('protection.waitingRoomTtl')} field="waitingRoomTtl"><Input placeholder="5m" /></Form.Item>

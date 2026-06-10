@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -24,6 +25,7 @@ type Handler struct {
 	Tokens              *middleware.TokenManager
 	Secret              string
 	Auditor             *middleware.Auditor
+	LoginCAPTCHAState   *loginCAPTCHAState
 	StartedAt           time.Time
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
@@ -52,6 +54,7 @@ func New(opts Options) *Handler {
 		Tokens:              opts.Tokens,
 		Secret:              opts.Secret,
 		Auditor:             opts.Auditor,
+		LoginCAPTCHAState:   newLoginCAPTCHAState(),
 		StartedAt:           time.Now().UTC(),
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
@@ -105,14 +108,20 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 		writeData(w, map[string]any{"enabled": false})
 		return
 	}
-	response := map[string]any{"enabled": true, "mode": login.CAPTCHA.Mode}
-	if loginCAPTCHARequiresPow(login.CAPTCHA) {
+	var req dto.CAPTCHAChallengeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid captcha request")
+		return
+	}
+	mode := loginCaptchaRequestedMode(login.CAPTCHA, req.Mode)
+	response := map[string]any{"enabled": true, "mode": mode}
+	if loginCAPTCHARequiresPowForMode(login.CAPTCHA, mode) {
 		challenge, err := captcha.NewChallenge(captcha.Options{
 			Secret:    h.loginCaptchaSecret(),
 			Purpose:   "admin-login",
 			ClientKey: loginCaptchaClientKey(r),
 			Path:      "admin-login",
-			MaxNumber: loginCAPTCHAPowMax(login.CAPTCHA),
+			MaxNumber: loginCAPTCHAPowMaxForMode(login.CAPTCHA, mode),
 			TTL:       login.CAPTCHA.TTL,
 		})
 		if err != nil {
@@ -121,7 +130,7 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 		}
 		response["challenge"] = challenge
 	}
-	if loginCaptchaMode(login.CAPTCHA) == "slider" {
+	if mode == "slider" {
 		slider, err := captcha.NewSliderChallenge(captcha.SliderOptions{
 			Secret:    h.loginCaptchaSecret(),
 			Purpose:   "admin-login-slider",
@@ -141,6 +150,26 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 		response["slider"] = slider
 	}
 	writeData(w, response)
+}
+
+func (h *Handler) VerifyLoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
+	var payload dto.CAPTCHAPayload
+	if !decode(w, r, &payload) {
+		return
+	}
+	login := h.loginConfig()
+	mode := loginCaptchaPayloadMode(login.CAPTCHA, payload.Mode)
+	if !h.verifyLoginCAPTCHAProof(r, login, mode, &payload) {
+		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
+		return
+	}
+	receipt, expires, err := captcha.NewReceipt(h.loginCAPTCHAReceiptOptions(r, login.CAPTCHA.TTL), mode)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "CAPTCHA_RECEIPT_ERROR", err.Error())
+		return
+	}
+	h.loginCAPTCHATracker().storeReceipt(receipt, expires, time.Now().UTC())
+	writeData(w, map[string]any{"valid": true, "receipt": receipt})
 }
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -188,8 +217,32 @@ func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayloa
 	if payload == nil {
 		return false
 	}
-	if loginCaptchaMode(login.CAPTCHA) == "slider" {
-		if payload.Slider == nil || !captcha.VerifySlider(captcha.SliderOptions{
+	mode := loginCaptchaPayloadMode(login.CAPTCHA, payload.Mode)
+	if payload.Receipt != "" {
+		return h.consumeLoginCAPTCHAReceipt(r, login, mode, payload.Receipt)
+	}
+	if mode == "slider" {
+		return false
+	}
+	return h.verifyLoginCAPTCHAProof(r, login, mode, payload)
+}
+
+func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleLoginConfig, mode string, payload *dto.CAPTCHAPayload) bool {
+	if payload == nil {
+		return false
+	}
+	if mode == "slider" {
+		if payload.Slider == nil {
+			return false
+		}
+		now := time.Now().UTC()
+		proofKey := loginCAPTCHAFingerprint("slider", loginCaptchaClientKey(r), payload.Slider.Token)
+		tracker := h.loginCAPTCHATracker()
+		if !tracker.proofAllowed(proofKey, now) {
+			return false
+		}
+		expires := now.Add(login.CAPTCHA.TTL)
+		if !captcha.VerifySlider(captcha.SliderOptions{
 			Secret:    h.loginCaptchaSecret(),
 			Purpose:   "admin-login-slider",
 			ClientKey: loginCaptchaClientKey(r),
@@ -205,19 +258,31 @@ func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayloa
 			X:      payload.Slider.X,
 			DragMS: payload.Slider.DragMS,
 		}) {
+			tracker.recordProofFailure(proofKey, expires, now)
 			return false
 		}
-		if !loginCAPTCHARequiresPow(login.CAPTCHA) {
+		if !loginCAPTCHARequiresPowForMode(login.CAPTCHA, mode) {
+			tracker.markProofUsed(proofKey, expires, now)
 			return true
 		}
+		if !verifyLoginCAPTCHAPow(r, h.loginCaptchaSecret(), login.CAPTCHA, mode, payload) {
+			tracker.recordProofFailure(proofKey, expires, now)
+			return false
+		}
+		tracker.markProofUsed(proofKey, expires, now)
+		return true
 	}
+	return verifyLoginCAPTCHAPow(r, h.loginCaptchaSecret(), login.CAPTCHA, mode, payload)
+}
+
+func verifyLoginCAPTCHAPow(r *http.Request, secret string, cfg config.LoginCAPTCHAConfig, mode string, payload *dto.CAPTCHAPayload) bool {
 	return captcha.Verify(captcha.Options{
-		Secret:    h.loginCaptchaSecret(),
+		Secret:    secret,
 		Purpose:   "admin-login",
 		ClientKey: loginCaptchaClientKey(r),
 		Path:      "admin-login",
-		MaxNumber: loginCAPTCHAPowMax(login.CAPTCHA),
-		TTL:       login.CAPTCHA.TTL,
+		MaxNumber: loginCAPTCHAPowMaxForMode(cfg, mode),
+		TTL:       cfg.TTL,
 	}, captcha.Payload{
 		Algorithm: payload.Algorithm,
 		Challenge: payload.Challenge,
@@ -225,6 +290,23 @@ func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayloa
 		Salt:      payload.Salt,
 		Signature: payload.Signature,
 	})
+}
+
+func (h *Handler) consumeLoginCAPTCHAReceipt(r *http.Request, login config.ConsoleLoginConfig, mode string, receipt string) bool {
+	if !captcha.VerifyReceipt(h.loginCAPTCHAReceiptOptions(r, login.CAPTCHA.TTL), receipt, mode) {
+		return false
+	}
+	return h.loginCAPTCHATracker().consumeReceipt(receipt, time.Now().UTC())
+}
+
+func (h *Handler) loginCAPTCHAReceiptOptions(r *http.Request, ttl time.Duration) captcha.ReceiptOptions {
+	return captcha.ReceiptOptions{
+		Secret:    h.loginCaptchaSecret(),
+		Purpose:   "admin-login-receipt",
+		ClientKey: loginCaptchaClientKey(r),
+		Path:      "admin-login",
+		TTL:       ttl,
+	}
 }
 
 func (h *Handler) loginConfig() config.ConsoleLoginConfig {
@@ -281,8 +363,12 @@ func loginCaptchaMode(cfg config.LoginCAPTCHAConfig) string {
 }
 
 func loginCAPTCHAPowMax(cfg config.LoginCAPTCHAConfig) int {
+	return loginCAPTCHAPowMaxForMode(cfg, loginCaptchaMode(cfg))
+}
+
+func loginCAPTCHAPowMaxForMode(cfg config.LoginCAPTCHAConfig, mode string) int {
 	maxNumber := cfg.MaxNumber
-	if loginCaptchaMode(cfg) == "slider" && cfg.Slider.PowEnabled && cfg.Slider.PowMaxNumber > 0 && cfg.Slider.PowMaxNumber < maxNumber {
+	if strings.ToLower(strings.TrimSpace(mode)) == "slider" && cfg.Slider.PowEnabled && cfg.Slider.PowMaxNumber > 0 && cfg.Slider.PowMaxNumber < maxNumber {
 		maxNumber = cfg.Slider.PowMaxNumber
 	}
 	if maxNumber <= 0 {
@@ -292,10 +378,40 @@ func loginCAPTCHAPowMax(cfg config.LoginCAPTCHAConfig) int {
 }
 
 func loginCAPTCHARequiresPow(cfg config.LoginCAPTCHAConfig) bool {
-	if loginCaptchaMode(cfg) == "slider" {
+	return loginCAPTCHARequiresPowForMode(cfg, loginCaptchaMode(cfg))
+}
+
+func loginCAPTCHARequiresPowForMode(cfg config.LoginCAPTCHAConfig, mode string) bool {
+	if strings.ToLower(strings.TrimSpace(mode)) == "slider" {
 		return cfg.Slider.PowEnabled
 	}
 	return true
+}
+
+func loginCaptchaRequestedMode(cfg config.LoginCAPTCHAConfig, requested string) string {
+	mode := loginCaptchaMode(cfg)
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	switch requested {
+	case "pow":
+		return "pow"
+	case "slider":
+		if mode == "slider" {
+			return "slider"
+		}
+	}
+	return mode
+}
+
+func loginCaptchaPayloadMode(cfg config.LoginCAPTCHAConfig, requested string) string {
+	mode := loginCaptchaMode(cfg)
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "pow" {
+		return "pow"
+	}
+	if requested == "slider" && mode == "slider" {
+		return "slider"
+	}
+	return mode
 }
 
 func (h *Handler) loginCaptchaSecret() string {

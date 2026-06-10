@@ -28,6 +28,9 @@ func TestSliderChallengeVerifiesUserDrag(t *testing.T) {
 	if !strings.HasPrefix(challenge.Image, "data:image/png;base64,") {
 		t.Fatalf("expected png data url, got %q", challenge.Image[:min(32, len(challenge.Image))])
 	}
+	if !strings.HasPrefix(challenge.Piece, "data:image/png;base64,") {
+		t.Fatalf("expected puzzle piece png data url, got %q", challenge.Piece[:min(32, len(challenge.Piece))])
+	}
 	token, ok := openSliderToken(opts, challenge.Token)
 	if !ok {
 		t.Fatal("expected token to decrypt with matching options")
