@@ -450,6 +450,8 @@ export type LoginBackgroundConfig = {
 };
 
 export type LoginCAPTCHAPayload = {
+  mode?: 'slider' | 'pow' | string;
+  receipt?: string;
   algorithm?: string;
   challenge?: string;
   number?: number;

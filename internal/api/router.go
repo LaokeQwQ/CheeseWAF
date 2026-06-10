@@ -54,6 +54,7 @@ func NewRouter(opts Options) http.Handler {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/auth/login-options", h.LoginOptions)
 		r.Post("/auth/captcha", h.LoginCAPTCHA)
+		r.Post("/auth/captcha/verify", h.VerifyLoginCAPTCHA)
 		r.Post("/auth/login", h.Login)
 		r.Post("/setup", h.Setup)
 
