@@ -302,22 +302,33 @@ type RateLimitProfile struct {
 }
 
 type BotProtectionConfig struct {
-	Enabled              bool          `yaml:"enabled" json:"enabled"`
-	JSChallenge          bool          `yaml:"js_challenge" json:"js_challenge"`
-	CAPTCHA              bool          `yaml:"captcha" json:"captcha"`
-	ChallengeDifficulty  int           `yaml:"challenge_difficulty" json:"challenge_difficulty"`
-	AltchaMaxNumber      int           `yaml:"altcha_max_number" json:"altcha_max_number"`
-	AltchaHeaderName     string        `yaml:"altcha_header_name" json:"altcha_header_name"`
-	WaitingRoom          bool          `yaml:"waiting_room" json:"waiting_room"`
-	WaitingRoomMaxActive int           `yaml:"waiting_room_max_active" json:"waiting_room_max_active"`
-	WaitingRoomTTL       time.Duration `yaml:"waiting_room_ttl" json:"waiting_room_ttl"`
-	ChallengeTTL         time.Duration `yaml:"challenge_ttl" json:"challenge_ttl"`
-	CookieName           string        `yaml:"cookie_name" json:"cookie_name"`
-	Secret               string        `yaml:"secret" json:"secret"`
-	PathPrefixes         []string      `yaml:"path_prefixes" json:"path_prefixes"`
-	ExemptPathPrefixes   []string      `yaml:"exempt_path_prefixes" json:"exempt_path_prefixes"`
-	AllowedUserAgents    []string      `yaml:"allowed_user_agents" json:"allowed_user_agents"`
-	SuspiciousUserAgents []string      `yaml:"suspicious_user_agents" json:"suspicious_user_agents"`
+	Enabled                bool          `yaml:"enabled" json:"enabled"`
+	JSChallenge            bool          `yaml:"js_challenge" json:"js_challenge"`
+	CAPTCHA                bool          `yaml:"captcha" json:"captcha"`
+	CAPTCHAType            string        `yaml:"captcha_type" json:"captcha_type"`
+	CAPTCHAMaxAttempts     int           `yaml:"captcha_max_attempts" json:"captcha_max_attempts"`
+	ImageCAPTCHALength     int           `yaml:"image_captcha_length" json:"image_captcha_length"`
+	ImageCAPTCHAWidth      int           `yaml:"image_captcha_width" json:"image_captcha_width"`
+	ImageCAPTCHAHeight     int           `yaml:"image_captcha_height" json:"image_captcha_height"`
+	ImageCAPTCHAAudioLimit int           `yaml:"image_captcha_audio_limit" json:"image_captcha_audio_limit"`
+	SliderCAPTCHAWidth     int           `yaml:"slider_captcha_width" json:"slider_captcha_width"`
+	SliderCAPTCHAHeight    int           `yaml:"slider_captcha_height" json:"slider_captcha_height"`
+	SliderCAPTCHAPiece     int           `yaml:"slider_captcha_piece" json:"slider_captcha_piece"`
+	SliderCAPTCHATolerance int           `yaml:"slider_captcha_tolerance" json:"slider_captcha_tolerance"`
+	SliderCAPTCHAMinDrag   time.Duration `yaml:"slider_captcha_min_drag" json:"slider_captcha_min_drag"`
+	ChallengeDifficulty    int           `yaml:"challenge_difficulty" json:"challenge_difficulty"`
+	AltchaMaxNumber        int           `yaml:"altcha_max_number" json:"altcha_max_number"`
+	AltchaHeaderName       string        `yaml:"altcha_header_name" json:"altcha_header_name"`
+	WaitingRoom            bool          `yaml:"waiting_room" json:"waiting_room"`
+	WaitingRoomMaxActive   int           `yaml:"waiting_room_max_active" json:"waiting_room_max_active"`
+	WaitingRoomTTL         time.Duration `yaml:"waiting_room_ttl" json:"waiting_room_ttl"`
+	ChallengeTTL           time.Duration `yaml:"challenge_ttl" json:"challenge_ttl"`
+	CookieName             string        `yaml:"cookie_name" json:"cookie_name"`
+	Secret                 string        `yaml:"secret" json:"secret"`
+	PathPrefixes           []string      `yaml:"path_prefixes" json:"path_prefixes"`
+	ExemptPathPrefixes     []string      `yaml:"exempt_path_prefixes" json:"exempt_path_prefixes"`
+	AllowedUserAgents      []string      `yaml:"allowed_user_agents" json:"allowed_user_agents"`
+	SuspiciousUserAgents   []string      `yaml:"suspicious_user_agents" json:"suspicious_user_agents"`
 }
 
 type ACLProtectionConfig struct {

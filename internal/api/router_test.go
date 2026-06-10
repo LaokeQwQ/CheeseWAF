@@ -245,6 +245,197 @@ func TestRouterSliderCAPTCHADoesNotIssuePowByDefault(t *testing.T) {
 	}
 }
 
+func TestRouterLoginCAPTCHAVerifySliderIssuesOneTimeReceipt(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Mode = "slider"
+	cfg.Console.Login.CAPTCHA.Slider.PowEnabled = false
+	cfg.APISec.Audit.Enabled = false
+	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
+	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	secret := "router-slider-verify-test-secret"
+	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	createAuthzUser(t, store, "admin-id", "admin", "admin-password", "admin")
+	router := NewRouter(Options{Config: &cfg, ConfigPath: configPath, Store: store, Secret: secret})
+
+	challenge := requestSliderLoginCAPTCHA(t, router, []byte(`{}`))
+	validX := findValidSliderX(t, cfg, secret, challenge)
+	invalid, _ := json.Marshal(map[string]any{
+		"mode": "slider",
+		"slider": map[string]any{
+			"token":   challenge.Token,
+			"x":       0,
+			"drag_ms": challenge.MinDragMS + 50,
+		},
+	})
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", invalid)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected bad slider x to fail, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	rawLogin, _ := json.Marshal(map[string]any{
+		"username": "admin",
+		"password": "admin-password",
+		"captcha": map[string]any{
+			"mode": "slider",
+			"slider": map[string]any{
+				"token":   challenge.Token,
+				"x":       validX,
+				"drag_ms": challenge.MinDragMS + 50,
+			},
+		},
+	})
+	recorder = perform(router, http.MethodPost, "/api/auth/login", "", rawLogin)
+	if recorder.Code != http.StatusUnauthorized || !bytes.Contains(recorder.Body.Bytes(), []byte("INVALID_CAPTCHA")) {
+		t.Fatalf("expected raw slider proof login to require receipt, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	valid, _ := json.Marshal(map[string]any{
+		"mode": "slider",
+		"slider": map[string]any{
+			"token":   challenge.Token,
+			"x":       validX,
+			"drag_ms": challenge.MinDragMS + 50,
+		},
+	})
+	recorder = perform(router, http.MethodPost, "/api/auth/captcha/verify", "", valid)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected valid slider proof to issue receipt, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var verified struct {
+		Data struct {
+			Receipt string `json:"receipt"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&verified); err != nil {
+		t.Fatalf("decode verify response: %v", err)
+	}
+	if verified.Data.Receipt == "" {
+		t.Fatal("verify response did not include a receipt")
+	}
+
+	reverify := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", valid)
+	if reverify.Code != http.StatusUnauthorized {
+		t.Fatalf("slider token should be consumed after issuing receipt, got %d: %s", reverify.Code, reverify.Body.String())
+	}
+
+	loginBody, _ := json.Marshal(map[string]any{
+		"username": "admin",
+		"password": "admin-password",
+		"captcha":  map[string]any{"mode": "slider", "receipt": verified.Data.Receipt},
+	})
+	recorder = perform(router, http.MethodPost, "/api/auth/login", "", loginBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected receipt-backed login to succeed, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	reuse := perform(router, http.MethodPost, "/api/auth/login", "", loginBody)
+	if reuse.Code != http.StatusUnauthorized || !bytes.Contains(reuse.Body.Bytes(), []byte("INVALID_CAPTCHA")) {
+		t.Fatalf("receipt should be one-time, got %d: %s", reuse.Code, reuse.Body.String())
+	}
+}
+
+func TestRouterLoginCAPTCHASliderVerifyLocksAfterFailures(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Mode = "slider"
+	cfg.Console.Login.CAPTCHA.Slider.PowEnabled = false
+	cfg.APISec.Audit.Enabled = false
+	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
+	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	secret := "router-slider-lock-test-secret"
+	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	router := NewRouter(Options{Config: &cfg, ConfigPath: configPath, Store: store, Secret: secret})
+
+	challenge := requestSliderLoginCAPTCHA(t, router, []byte(`{}`))
+	validX := findValidSliderX(t, cfg, secret, challenge)
+	badX := 0
+	if validX == 0 {
+		badX = challenge.TrackWidth
+	}
+	for i := 0; i < 5; i++ {
+		body, _ := json.Marshal(map[string]any{
+			"mode": "slider",
+			"slider": map[string]any{
+				"token":   challenge.Token,
+				"x":       badX,
+				"drag_ms": challenge.MinDragMS + 50,
+			},
+		})
+		recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", body)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("expected bad slider attempt %d to fail, got %d: %s", i+1, recorder.Code, recorder.Body.String())
+		}
+	}
+	valid, _ := json.Marshal(map[string]any{
+		"mode": "slider",
+		"slider": map[string]any{
+			"token":   challenge.Token,
+			"x":       validX,
+			"drag_ms": challenge.MinDragMS + 50,
+		},
+	})
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", valid)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("locked slider token should not issue receipt after failures, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRouterLoginCAPTCHAPowModeCanVerifyWhenConfiguredForSlider(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Mode = "slider"
+	cfg.Console.Login.CAPTCHA.Slider.PowEnabled = false
+	cfg.APISec.Audit.Enabled = false
+	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
+	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	router := NewRouter(Options{Config: &cfg, ConfigPath: configPath, Store: store, Secret: "router-pow-override-test-secret"})
+
+	payload := solveLoginCAPTCHAWithRequest(t, router, []byte(`{"mode":"pow"}`))
+	if payload == nil || payload["mode"] != "pow" {
+		t.Fatalf("expected a pow payload, got %#v", payload)
+	}
+	body, _ := json.Marshal(payload)
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected pow payload to verify against slider config, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRouterRefreshesBearerToken(t *testing.T) {
 	router, adminToken, _ := newAuthzTestRouter(t)
 
@@ -417,14 +608,19 @@ func loginAuthzUser(t *testing.T, router http.Handler, username, password string
 }
 
 func solveLoginCAPTCHA(t *testing.T, router http.Handler) map[string]any {
+	return solveLoginCAPTCHAWithRequest(t, router, []byte(`{}`))
+}
+
+func solveLoginCAPTCHAWithRequest(t *testing.T, router http.Handler, requestBody []byte) map[string]any {
 	t.Helper()
-	recorder := perform(router, http.MethodPost, "/api/auth/captcha", "", []byte(`{}`))
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha", "", requestBody)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("captcha challenge returned %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var envelope struct {
 		Data struct {
-			Enabled   bool `json:"enabled"`
+			Enabled   bool   `json:"enabled"`
+			Mode      string `json:"mode"`
 			Challenge struct {
 				Algorithm string `json:"algorithm"`
 				Challenge string `json:"challenge"`
@@ -446,17 +642,81 @@ func solveLoginCAPTCHA(t *testing.T, router http.Handler) map[string]any {
 	}
 	for i := 0; i <= challenge.MaxNumber; i++ {
 		if captcha.Hash(challenge.Salt, i) == challenge.Challenge {
-			return map[string]any{
+			payload := map[string]any{
 				"algorithm": challenge.Algorithm,
 				"challenge": challenge.Challenge,
 				"number":    i,
 				"salt":      challenge.Salt,
 				"signature": challenge.Signature,
 			}
+			if envelope.Data.Mode != "" {
+				payload["mode"] = envelope.Data.Mode
+			}
+			return payload
 		}
 	}
 	t.Fatalf("failed to solve login captcha challenge")
 	return nil
+}
+
+type sliderLoginCAPTCHAForTest struct {
+	Token      string
+	TrackWidth int
+	MinDragMS  int
+}
+
+func requestSliderLoginCAPTCHA(t *testing.T, router http.Handler, requestBody []byte) sliderLoginCAPTCHAForTest {
+	t.Helper()
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha", "", requestBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("slider captcha challenge returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Slider struct {
+				Token      string `json:"token"`
+				TrackWidth int    `json:"track_width"`
+				MinDragMS  int    `json:"min_drag_ms"`
+			} `json:"slider"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode slider captcha challenge: %v", err)
+	}
+	if envelope.Data.Slider.Token == "" || envelope.Data.Slider.TrackWidth <= 0 {
+		t.Fatalf("expected slider challenge, got %+v", envelope.Data.Slider)
+	}
+	return sliderLoginCAPTCHAForTest{
+		Token:      envelope.Data.Slider.Token,
+		TrackWidth: envelope.Data.Slider.TrackWidth,
+		MinDragMS:  envelope.Data.Slider.MinDragMS,
+	}
+}
+
+func findValidSliderX(t *testing.T, cfg config.Config, secret string, challenge sliderLoginCAPTCHAForTest) int {
+	t.Helper()
+	for x := 0; x <= challenge.TrackWidth; x++ {
+		if captcha.VerifySlider(captcha.SliderOptions{
+			Secret:    secret,
+			Purpose:   "admin-login-slider",
+			ClientKey: "192.0.2.1\n",
+			Path:      "admin-login",
+			TTL:       cfg.Console.Login.CAPTCHA.TTL,
+			Width:     cfg.Console.Login.CAPTCHA.Slider.Width,
+			Height:    cfg.Console.Login.CAPTCHA.Slider.Height,
+			PieceSize: cfg.Console.Login.CAPTCHA.Slider.PieceSize,
+			Tolerance: cfg.Console.Login.CAPTCHA.Slider.Tolerance,
+			MinDrag:   cfg.Console.Login.CAPTCHA.Slider.MinDrag,
+		}, captcha.SliderPayload{
+			Token:  challenge.Token,
+			X:      x,
+			DragMS: challenge.MinDragMS + 50,
+		}) {
+			return x
+		}
+	}
+	t.Fatalf("failed to find valid slider x within track width %d", challenge.TrackWidth)
+	return -1
 }
 
 func perform(router http.Handler, method, path, token string, body []byte) *httptest.ResponseRecorder {

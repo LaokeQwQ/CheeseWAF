@@ -138,8 +138,12 @@ export function fetchLoginOptions() {
   return unwrap<LoginOptions>(apiClient.get('/auth/login-options'));
 }
 
-export function fetchLoginCaptcha() {
-  return unwrap<LoginCAPTCHAResponse>(apiClient.post('/auth/captcha', {}));
+export function fetchLoginCaptcha(mode?: 'slider' | 'pow') {
+  return unwrap<LoginCAPTCHAResponse>(apiClient.post('/auth/captcha', mode ? { mode } : {}));
+}
+
+export function verifyLoginCaptcha(captcha: LoginCAPTCHAPayload) {
+  return unwrap<{ valid: boolean; receipt: string }>(apiClient.post('/auth/captcha/verify', captcha));
 }
 
 export function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {

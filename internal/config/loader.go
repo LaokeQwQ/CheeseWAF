@@ -130,21 +130,32 @@ func Default() Config {
 				Default: RateLimitProfile{Requests: 100, Window: time.Minute, Burst: 20},
 			},
 			Bot: BotProtectionConfig{
-				Enabled:              false,
-				JSChallenge:          true,
-				CAPTCHA:              false,
-				ChallengeDifficulty:  4,
-				AltchaMaxNumber:      75000,
-				AltchaHeaderName:     "X-CheeseWAF-Altcha",
-				WaitingRoom:          false,
-				WaitingRoomMaxActive: 1000,
-				WaitingRoomTTL:       5 * time.Minute,
-				ChallengeTTL:         30 * time.Minute,
-				CookieName:           "cheesewaf_js_clearance",
-				Secret:               "",
-				PathPrefixes:         []string{"/"},
-				ExemptPathPrefixes:   []string{"/health", "/api/"},
-				SuspiciousUserAgents: []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
+				Enabled:                false,
+				JSChallenge:            true,
+				CAPTCHA:                false,
+				CAPTCHAType:            "pow",
+				CAPTCHAMaxAttempts:     5,
+				ImageCAPTCHALength:     6,
+				ImageCAPTCHAWidth:      220,
+				ImageCAPTCHAHeight:     86,
+				ImageCAPTCHAAudioLimit: 6,
+				SliderCAPTCHAWidth:     320,
+				SliderCAPTCHAHeight:    150,
+				SliderCAPTCHAPiece:     42,
+				SliderCAPTCHATolerance: 6,
+				SliderCAPTCHAMinDrag:   450 * time.Millisecond,
+				ChallengeDifficulty:    4,
+				AltchaMaxNumber:        75000,
+				AltchaHeaderName:       "X-CheeseWAF-Altcha",
+				WaitingRoom:            false,
+				WaitingRoomMaxActive:   1000,
+				WaitingRoomTTL:         5 * time.Minute,
+				ChallengeTTL:           30 * time.Minute,
+				CookieName:             "cheesewaf_js_clearance",
+				Secret:                 "",
+				PathPrefixes:           []string{"/"},
+				ExemptPathPrefixes:     []string{"/health", "/api/"},
+				SuspiciousUserAgents:   []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
 			},
 			ACL: ACLProtectionConfig{Enabled: true},
 		},
@@ -465,6 +476,39 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Protection.Bot.AltchaHeaderName == "" {
 		cfg.Protection.Bot.AltchaHeaderName = def.Protection.Bot.AltchaHeaderName
+	}
+	if cfg.Protection.Bot.CAPTCHAType == "" {
+		cfg.Protection.Bot.CAPTCHAType = def.Protection.Bot.CAPTCHAType
+	}
+	if cfg.Protection.Bot.CAPTCHAMaxAttempts == 0 {
+		cfg.Protection.Bot.CAPTCHAMaxAttempts = def.Protection.Bot.CAPTCHAMaxAttempts
+	}
+	if cfg.Protection.Bot.ImageCAPTCHALength == 0 {
+		cfg.Protection.Bot.ImageCAPTCHALength = def.Protection.Bot.ImageCAPTCHALength
+	}
+	if cfg.Protection.Bot.ImageCAPTCHAWidth == 0 {
+		cfg.Protection.Bot.ImageCAPTCHAWidth = def.Protection.Bot.ImageCAPTCHAWidth
+	}
+	if cfg.Protection.Bot.ImageCAPTCHAHeight == 0 {
+		cfg.Protection.Bot.ImageCAPTCHAHeight = def.Protection.Bot.ImageCAPTCHAHeight
+	}
+	if cfg.Protection.Bot.ImageCAPTCHAAudioLimit == 0 {
+		cfg.Protection.Bot.ImageCAPTCHAAudioLimit = def.Protection.Bot.ImageCAPTCHAAudioLimit
+	}
+	if cfg.Protection.Bot.SliderCAPTCHAWidth == 0 {
+		cfg.Protection.Bot.SliderCAPTCHAWidth = def.Protection.Bot.SliderCAPTCHAWidth
+	}
+	if cfg.Protection.Bot.SliderCAPTCHAHeight == 0 {
+		cfg.Protection.Bot.SliderCAPTCHAHeight = def.Protection.Bot.SliderCAPTCHAHeight
+	}
+	if cfg.Protection.Bot.SliderCAPTCHAPiece == 0 {
+		cfg.Protection.Bot.SliderCAPTCHAPiece = def.Protection.Bot.SliderCAPTCHAPiece
+	}
+	if cfg.Protection.Bot.SliderCAPTCHATolerance == 0 {
+		cfg.Protection.Bot.SliderCAPTCHATolerance = def.Protection.Bot.SliderCAPTCHATolerance
+	}
+	if cfg.Protection.Bot.SliderCAPTCHAMinDrag == 0 {
+		cfg.Protection.Bot.SliderCAPTCHAMinDrag = def.Protection.Bot.SliderCAPTCHAMinDrag
 	}
 	if cfg.Protection.Bot.WaitingRoomMaxActive == 0 {
 		cfg.Protection.Bot.WaitingRoomMaxActive = def.Protection.Bot.WaitingRoomMaxActive

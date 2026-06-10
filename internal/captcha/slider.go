@@ -27,6 +27,7 @@ type SliderChallenge struct {
 	Tolerance  int    `json:"tolerance"`
 	MinDragMS  int    `json:"min_drag_ms"`
 	Image      string `json:"image"`
+	Piece      string `json:"piece,omitempty"`
 	Token      string `json:"token"`
 	ExpiresAt  string `json:"expires_at,omitempty"`
 }
@@ -102,7 +103,7 @@ func NewSliderChallenge(opts SliderOptions) (SliderChallenge, error) {
 	if err != nil {
 		return SliderChallenge{}, err
 	}
-	imageURL, err := renderSliderImage(opts.Width, opts.Height, opts.PieceSize, targetX, targetY, nonce)
+	imageURL, pieceURL, err := renderSliderAssets(opts.Width, opts.Height, opts.PieceSize, targetX, targetY, nonce)
 	if err != nil {
 		return SliderChallenge{}, err
 	}
@@ -115,6 +116,7 @@ func NewSliderChallenge(opts SliderOptions) (SliderChallenge, error) {
 		Tolerance:  opts.Tolerance,
 		MinDragMS:  int(opts.MinDrag / time.Millisecond),
 		Image:      imageURL,
+		Piece:      pieceURL,
 		Token:      token,
 		ExpiresAt:  expires.UTC().Format(time.RFC3339),
 	}, nil
@@ -243,20 +245,20 @@ func sliderAAD(opts SliderOptions) string {
 	return strings.Join([]string{opts.Purpose, opts.ClientKey, opts.Path}, "\n")
 }
 
-func renderSliderImage(width, height, pieceSize, targetX, targetY int, nonce string) (string, error) {
+func renderSliderAssets(width, height, pieceSize, targetX, targetY int, nonce string) (string, string, error) {
 	seed := int64(0)
 	for _, b := range hmacHash("slider-image", nonce)[:8] {
 		seed = (seed << 8) | int64(b)
 	}
 	rng := mrand.New(mrand.NewSource(seed))
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	base := image.NewRGBA(image.Rect(0, 0, width, height))
 	baseA := color.RGBA{R: uint8(26 + rng.Intn(32)), G: uint8(96 + rng.Intn(58)), B: uint8(126 + rng.Intn(48)), A: 255}
 	baseB := color.RGBA{R: uint8(106 + rng.Intn(46)), G: uint8(157 + rng.Intn(42)), B: uint8(118 + rng.Intn(52)), A: 255}
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			t := float64(x+y) / float64(width+height)
 			noise := rng.Intn(10) - 5
-			img.SetRGBA(x, y, blend(baseA, baseB, t, noise))
+			base.SetRGBA(x, y, blend(baseA, baseB, t, noise))
 		}
 	}
 	for i := 0; i < 12; i++ {
@@ -264,22 +266,29 @@ func renderSliderImage(width, height, pieceSize, targetX, targetY int, nonce str
 		y0 := rng.Intn(height)
 		x1 := rng.Intn(width)
 		y1 := rng.Intn(height)
-		drawLine(img, x0, y0, x1, y1, color.RGBA{255, 255, 255, uint8(20 + rng.Intn(34))})
+		drawLine(base, x0, y0, x1, y1, color.RGBA{255, 255, 255, uint8(20 + rng.Intn(34))})
 	}
 	for i := 0; i < 18; i++ {
-		drawCircle(img, rng.Intn(width), rng.Intn(height), 2+rng.Intn(8), color.RGBA{255, 255, 255, uint8(12 + rng.Intn(22))})
+		drawCircle(base, rng.Intn(width), rng.Intn(height), 2+rng.Intn(8), color.RGBA{255, 255, 255, uint8(12 + rng.Intn(22))})
 	}
+	img := cloneRGBA(base)
+	piece := renderPuzzlePiece(base, targetX, targetY, pieceSize)
 	drawPuzzleSlot(img, targetX, targetY, pieceSize)
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return "", err
+	imageURL, err := encodePNGDataURL(img)
+	if err != nil {
+		return "", "", err
 	}
-	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+	pieceURL, err := encodePNGDataURL(piece)
+	if err != nil {
+		return "", "", err
+	}
+	return imageURL, pieceURL, nil
 }
 
 func drawPuzzleSlot(img *image.RGBA, x, y, size int) {
-	shadow := color.RGBA{0, 0, 0, 92}
-	edge := color.RGBA{255, 255, 255, 126}
+	shadow := color.RGBA{0, 0, 0, 132}
+	edge := color.RGBA{255, 255, 255, 184}
+	rim := color.RGBA{0, 0, 0, 58}
 	for py := -2; py < size+2; py++ {
 		for px := -2; px < size+2; px++ {
 			gx := x + px
@@ -292,6 +301,7 @@ func drawPuzzleSlot(img *image.RGBA, x, y, size int) {
 				continue
 			}
 			if px < 1 || py < 1 || px >= size-1 || py >= size-1 || !puzzleMask(px-1, py, size) || !puzzleMask(px+1, py, size) || !puzzleMask(px, py-1, size) || !puzzleMask(px, py+1, size) {
+				over(img, gx+1, gy+1, rim)
 				over(img, gx, gy, edge)
 				continue
 			}
@@ -304,18 +314,65 @@ func puzzleMask(x, y, size int) bool {
 	if x < 0 || y < 0 || x >= size || y >= size {
 		return false
 	}
-	r := float64(size) * 0.16
-	topX := float64(size) * 0.52
-	topY := float64(size) * 0.17
-	if dist(float64(x), float64(y), topX, topY) < r*r {
+	fx := float64(x)
+	fy := float64(y)
+	r := float64(size) * 0.17
+	left := float64(size) * 0.18
+	right := float64(size) * 0.82
+	top := float64(size) * 0.20
+	bottom := float64(size) * 0.86
+	inBody := fx >= left && fx <= right && fy >= top && fy <= bottom
+	topKnob := dist(fx, fy, float64(size)*0.50, top) <= r*r
+	rightKnob := dist(fx, fy, right, float64(size)*0.58) <= r*r
+	leftCut := dist(fx, fy, left, float64(size)*0.58) <= r*r
+	if leftCut {
 		return false
 	}
-	leftX := float64(size) * 0.16
-	leftY := float64(size) * 0.58
-	if dist(float64(x), float64(y), leftX, leftY) < r*r {
-		return false
+	return inBody || topKnob || rightKnob
+}
+
+func cloneRGBA(src *image.RGBA) *image.RGBA {
+	bounds := src.Bounds()
+	dst := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			dst.SetRGBA(x, y, src.RGBAAt(x, y))
+		}
 	}
-	return true
+	return dst
+}
+
+func renderPuzzlePiece(base *image.RGBA, x, y, size int) *image.NRGBA {
+	piece := image.NewNRGBA(image.Rect(0, 0, size, size))
+	for py := 0; py < size; py++ {
+		for px := 0; px < size; px++ {
+			if !puzzleMask(px, py, size) {
+				continue
+			}
+			gx := x + px
+			gy := y + py
+			if !inside(base, gx, gy) {
+				continue
+			}
+			c := base.RGBAAt(gx, gy)
+			piece.SetNRGBA(px, py, color.NRGBA{R: c.R, G: c.G, B: c.B, A: 255})
+		}
+	}
+	for py := 0; py < size; py++ {
+		for px := 0; px < size; px++ {
+			if !puzzleMask(px, py, size) {
+				continue
+			}
+			if px < 1 || py < 1 || px >= size-1 || py >= size-1 || !puzzleMask(px-1, py, size) || !puzzleMask(px+1, py, size) || !puzzleMask(px, py-1, size) || !puzzleMask(px, py+1, size) {
+				if px < size/2 || py < size/2 {
+					overNRGBA(piece, px, py, color.NRGBA{R: 255, G: 255, B: 255, A: 192})
+				} else {
+					overNRGBA(piece, px, py, color.NRGBA{R: 0, G: 0, B: 0, A: 74})
+				}
+			}
+		}
+	}
+	return piece
 }
 
 func drawLine(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
@@ -375,6 +432,9 @@ func blend(a, b color.RGBA, t float64, noise int) color.RGBA {
 }
 
 func over(img *image.RGBA, x, y int, fg color.RGBA) {
+	if !inside(img, x, y) {
+		return
+	}
 	bg := img.RGBAAt(x, y)
 	alpha := float64(fg.A) / 255
 	img.SetRGBA(x, y, color.RGBA{
@@ -383,6 +443,32 @@ func over(img *image.RGBA, x, y int, fg color.RGBA) {
 		B: uint8(float64(fg.B)*alpha + float64(bg.B)*(1-alpha)),
 		A: 255,
 	})
+}
+
+func overNRGBA(img *image.NRGBA, x, y int, fg color.NRGBA) {
+	bounds := img.Bounds()
+	if x < bounds.Min.X || x >= bounds.Max.X || y < bounds.Min.Y || y >= bounds.Max.Y {
+		return
+	}
+	bg := img.NRGBAAt(x, y)
+	if bg.A == 0 {
+		return
+	}
+	alpha := float64(fg.A) / 255
+	img.SetNRGBA(x, y, color.NRGBA{
+		R: uint8(float64(fg.R)*alpha + float64(bg.R)*(1-alpha)),
+		G: uint8(float64(fg.G)*alpha + float64(bg.G)*(1-alpha)),
+		B: uint8(float64(fg.B)*alpha + float64(bg.B)*(1-alpha)),
+		A: bg.A,
+	})
+}
+
+func encodePNGDataURL(img image.Image) (string, error) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
 func inside(img *image.RGBA, x, y int) bool {
