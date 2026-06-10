@@ -147,6 +147,17 @@ protection:
     enabled: false
     js_challenge: true
     captcha: false
+    captcha_type: "pow" # pow | image | slider
+    captcha_max_attempts: 5
+    image_captcha_length: 6
+    image_captcha_width: 220
+    image_captcha_height: 86
+    image_captcha_audio_limit: 6
+    slider_captcha_width: 320
+    slider_captcha_height: 150
+    slider_captcha_piece: 42
+    slider_captcha_tolerance: 6
+    slider_captcha_min_drag: 450ms
     challenge_difficulty: 4
     altcha_max_number: 75000
     altcha_header_name: "X-CheeseWAF-Altcha"
