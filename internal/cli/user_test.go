@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
@@ -97,6 +98,71 @@ func TestChangeUserPasswordValidation(t *testing.T) {
 		Generate: true,
 	}); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("expected source validation error, got %v", err)
+	}
+}
+
+func TestRenameUserUpdatesUsernameAndRevokesSessions(t *testing.T) {
+	t.Parallel()
+
+	store, sqlitePath := userPasswordTestStore(t)
+	user := seedPasswordTestUser(t, store, "admin", "old-password-123")
+	now := time.Now().UTC()
+	session := &storage.Session{
+		ID:        "session-1",
+		UserID:    user.ID,
+		Username:  user.Username,
+		Role:      user.Role,
+		IssuedAt:  now,
+		ExpiresAt: now.Add(time.Hour),
+	}
+	if err := store.CreateSession(context.Background(), session); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	renamed, err := renameUser(context.Background(), sqlitePath, "admin", "Cheese")
+	if err != nil {
+		t.Fatalf("renameUser() error = %v", err)
+	}
+	if renamed.ID != user.ID || renamed.Username != "Cheese" {
+		t.Fatalf("unexpected renamed user: %+v", renamed)
+	}
+	oldUser, err := store.GetUserByUsername(context.Background(), "admin")
+	if err != nil {
+		t.Fatalf("get old user: %v", err)
+	}
+	if oldUser != nil {
+		t.Fatalf("old username should not resolve, got %+v", oldUser)
+	}
+	newUser, err := store.GetUserByUsername(context.Background(), "Cheese")
+	if err != nil {
+		t.Fatalf("get new user: %v", err)
+	}
+	if newUser == nil || newUser.ID != user.ID {
+		t.Fatalf("new username did not resolve original user: %+v", newUser)
+	}
+	active, err := store.IsSessionActive(context.Background(), session.ID, user.ID, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("check session: %v", err)
+	}
+	if active {
+		t.Fatal("rename should revoke existing user sessions")
+	}
+}
+
+func TestRenameUserValidation(t *testing.T) {
+	t.Parallel()
+
+	store, sqlitePath := userPasswordTestStore(t)
+	seedPasswordTestUser(t, store, "admin", "old-password-123")
+	seedPasswordTestUser(t, store, "reader", "old-password-123")
+	if _, err := renameUser(context.Background(), sqlitePath, "missing", "Cheese"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected missing user error, got %v", err)
+	}
+	if _, err := renameUser(context.Background(), sqlitePath, "admin", "xy"); err == nil || !strings.Contains(err.Error(), "at least 3") {
+		t.Fatalf("expected short username error, got %v", err)
+	}
+	if _, err := renameUser(context.Background(), sqlitePath, "admin", "reader"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected duplicate username error, got %v", err)
 	}
 }
 

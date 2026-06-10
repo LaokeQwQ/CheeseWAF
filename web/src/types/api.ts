@@ -154,6 +154,17 @@ export type ProtectionConfig = {
     enabled: boolean;
     js_challenge: boolean;
     captcha: boolean;
+    captcha_type: 'pow' | 'image' | 'slider' | string;
+    captcha_max_attempts: number;
+    image_captcha_length: number;
+    image_captcha_width: number;
+    image_captcha_height: number;
+    image_captcha_audio_limit: number;
+    slider_captcha_width: number;
+    slider_captcha_height: number;
+    slider_captcha_piece: number;
+    slider_captcha_tolerance: number;
+    slider_captcha_min_drag: number | string;
     challenge_difficulty: number;
     altcha_max_number: number;
     altcha_header_name: string;
@@ -439,6 +450,8 @@ export type LoginBackgroundConfig = {
 };
 
 export type LoginCAPTCHAPayload = {
+  mode?: 'slider' | 'pow' | string;
+  receipt?: string;
   algorithm?: string;
   challenge?: string;
   number?: number;
@@ -471,6 +484,7 @@ export type LoginSliderCAPTCHAChallenge = {
   tolerance: number;
   min_drag_ms: number;
   image: string;
+  piece?: string;
   token: string;
   expires_at?: string;
 };
