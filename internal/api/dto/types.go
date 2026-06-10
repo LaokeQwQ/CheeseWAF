@@ -18,7 +18,13 @@ type LoginRequest struct {
 	CAPTCHA  *CAPTCHAPayload `json:"captcha,omitempty"`
 }
 
+type CAPTCHAChallengeRequest struct {
+	Mode string `json:"mode,omitempty"`
+}
+
 type CAPTCHAPayload struct {
+	Mode      string                `json:"mode,omitempty"`
+	Receipt   string                `json:"receipt,omitempty"`
 	Algorithm string                `json:"algorithm"`
 	Challenge string                `json:"challenge"`
 	Number    int                   `json:"number"`

@@ -19,32 +19,53 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
 type Policy struct {
-	enabled              bool
-	jsChallenge          bool
-	captcha              bool
-	challengeDifficulty  int
-	altchaMaxNumber      int
-	altchaHeaderName     string
-	waitingRoom          bool
-	waitingRoomMaxActive int
-	waitingRoomTTL       time.Duration
-	ttl                  time.Duration
-	cookieName           string
-	waitingCookieName    string
-	secret               []byte
-	pathPrefixes         []string
-	exemptPathPrefixes   []string
-	allowedUserAgents    []string
-	suspiciousUserAgents []string
-	now                  func() time.Time
-	mu                   sync.Mutex
-	active               map[string]int64
+	enabled                bool
+	jsChallenge            bool
+	captcha                bool
+	captchaType            string
+	captchaMaxAttempts     int
+	imageCAPTCHALength     int
+	imageCAPTCHAWidth      int
+	imageCAPTCHAHeight     int
+	imageCAPTCHAAudioLimit int
+	sliderCAPTCHAWidth     int
+	sliderCAPTCHAHeight    int
+	sliderCAPTCHAPiece     int
+	sliderCAPTCHATolerance int
+	sliderCAPTCHAMinDrag   time.Duration
+	challengeDifficulty    int
+	altchaMaxNumber        int
+	altchaHeaderName       string
+	waitingRoom            bool
+	waitingRoomMaxActive   int
+	waitingRoomTTL         time.Duration
+	ttl                    time.Duration
+	cookieName             string
+	waitingCookieName      string
+	secret                 []byte
+	pathPrefixes           []string
+	exemptPathPrefixes     []string
+	allowedUserAgents      []string
+	suspiciousUserAgents   []string
+	now                    func() time.Time
+	mu                     sync.Mutex
+	active                 map[string]int64
+	attempts               map[string]captchaAttempt
 }
+
+type captchaAttempt struct {
+	expires    int64
+	failures   int
+	audioReads int
+}
+
+const maxCAPTCHAAttemptEntries = 20000
 
 func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 	if cfg.ChallengeTTL <= 0 {
@@ -64,6 +85,43 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 	}
 	if cfg.AltchaHeaderName == "" {
 		cfg.AltchaHeaderName = "X-CheeseWAF-Altcha"
+	}
+	cfg.CAPTCHAType = normalizeCAPTCHAType(cfg.CAPTCHAType)
+	if cfg.CAPTCHAMaxAttempts <= 0 {
+		cfg.CAPTCHAMaxAttempts = 5
+	}
+	if cfg.CAPTCHAMaxAttempts > 20 {
+		cfg.CAPTCHAMaxAttempts = 20
+	}
+	if cfg.ImageCAPTCHALength <= 0 {
+		cfg.ImageCAPTCHALength = 6
+	}
+	if cfg.ImageCAPTCHAWidth <= 0 {
+		cfg.ImageCAPTCHAWidth = 220
+	}
+	if cfg.ImageCAPTCHAHeight <= 0 {
+		cfg.ImageCAPTCHAHeight = 86
+	}
+	if cfg.ImageCAPTCHAAudioLimit <= 0 {
+		cfg.ImageCAPTCHAAudioLimit = 6
+	}
+	if cfg.ImageCAPTCHAAudioLimit > 20 {
+		cfg.ImageCAPTCHAAudioLimit = 20
+	}
+	if cfg.SliderCAPTCHAWidth <= 0 {
+		cfg.SliderCAPTCHAWidth = 320
+	}
+	if cfg.SliderCAPTCHAHeight <= 0 {
+		cfg.SliderCAPTCHAHeight = 150
+	}
+	if cfg.SliderCAPTCHAPiece <= 0 {
+		cfg.SliderCAPTCHAPiece = 42
+	}
+	if cfg.SliderCAPTCHATolerance <= 0 {
+		cfg.SliderCAPTCHATolerance = 6
+	}
+	if cfg.SliderCAPTCHAMinDrag <= 0 {
+		cfg.SliderCAPTCHAMinDrag = 450 * time.Millisecond
 	}
 	if cfg.WaitingRoomMaxActive <= 0 {
 		cfg.WaitingRoomMaxActive = 1000
@@ -88,25 +146,37 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 		cfg.SuspiciousUserAgents = []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"}
 	}
 	return &Policy{
-		enabled:              cfg.Enabled,
-		jsChallenge:          cfg.JSChallenge,
-		captcha:              cfg.CAPTCHA,
-		challengeDifficulty:  cfg.ChallengeDifficulty,
-		altchaMaxNumber:      cfg.AltchaMaxNumber,
-		altchaHeaderName:     cfg.AltchaHeaderName,
-		waitingRoom:          cfg.WaitingRoom,
-		waitingRoomMaxActive: cfg.WaitingRoomMaxActive,
-		waitingRoomTTL:       cfg.WaitingRoomTTL,
-		ttl:                  cfg.ChallengeTTL,
-		cookieName:           cfg.CookieName,
-		waitingCookieName:    cfg.CookieName + "_queue",
-		secret:               []byte(cfg.Secret),
-		pathPrefixes:         cleanList(cfg.PathPrefixes),
-		exemptPathPrefixes:   cleanList(cfg.ExemptPathPrefixes),
-		allowedUserAgents:    lowerList(cfg.AllowedUserAgents),
-		suspiciousUserAgents: lowerList(cfg.SuspiciousUserAgents),
-		now:                  time.Now,
-		active:               map[string]int64{},
+		enabled:                cfg.Enabled,
+		jsChallenge:            cfg.JSChallenge,
+		captcha:                cfg.CAPTCHA,
+		captchaType:            cfg.CAPTCHAType,
+		captchaMaxAttempts:     cfg.CAPTCHAMaxAttempts,
+		imageCAPTCHALength:     cfg.ImageCAPTCHALength,
+		imageCAPTCHAWidth:      cfg.ImageCAPTCHAWidth,
+		imageCAPTCHAHeight:     cfg.ImageCAPTCHAHeight,
+		imageCAPTCHAAudioLimit: cfg.ImageCAPTCHAAudioLimit,
+		sliderCAPTCHAWidth:     cfg.SliderCAPTCHAWidth,
+		sliderCAPTCHAHeight:    cfg.SliderCAPTCHAHeight,
+		sliderCAPTCHAPiece:     cfg.SliderCAPTCHAPiece,
+		sliderCAPTCHATolerance: cfg.SliderCAPTCHATolerance,
+		sliderCAPTCHAMinDrag:   cfg.SliderCAPTCHAMinDrag,
+		challengeDifficulty:    cfg.ChallengeDifficulty,
+		altchaMaxNumber:        cfg.AltchaMaxNumber,
+		altchaHeaderName:       cfg.AltchaHeaderName,
+		waitingRoom:            cfg.WaitingRoom,
+		waitingRoomMaxActive:   cfg.WaitingRoomMaxActive,
+		waitingRoomTTL:         cfg.WaitingRoomTTL,
+		ttl:                    cfg.ChallengeTTL,
+		cookieName:             cfg.CookieName,
+		waitingCookieName:      cfg.CookieName + "_queue",
+		secret:                 []byte(cfg.Secret),
+		pathPrefixes:           cleanList(cfg.PathPrefixes),
+		exemptPathPrefixes:     cleanList(cfg.ExemptPathPrefixes),
+		allowedUserAgents:      lowerList(cfg.AllowedUserAgents),
+		suspiciousUserAgents:   lowerList(cfg.SuspiciousUserAgents),
+		now:                    time.Now,
+		active:                 map[string]int64{},
+		attempts:               map[string]captchaAttempt{},
 	}
 }
 
@@ -126,7 +196,7 @@ func (p *Policy) Evaluate(r *http.Request, clientIP string) *engine.DetectionRes
 			Payload:    r.URL.Path,
 		}
 	}
-	if p.allowed(r.UserAgent()) || p.hasClearance(r, clientIP) || p.validAltchaHeaderAnswer(r, clientIP) {
+	if p.allowed(r.UserAgent()) || p.hasClearance(r, clientIP) || (p.captchaType == "pow" && p.validAltchaHeaderAnswer(r, clientIP)) {
 		return nil
 	}
 	if !p.suspicious(r) {
@@ -159,6 +229,10 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 		p.serveWaitingRoom(w, r, clientIP)
 		return
 	}
+	if token := strings.TrimSpace(r.URL.Query().Get("cw_audio")); token != "" {
+		p.serveImageAudio(w, r, clientIP, token)
+		return
+	}
 	if p.validChallengeAnswer(r, clientIP) {
 		value, maxAge := p.clearance(r, clientIP)
 		http.SetCookie(w, &http.Cookie{
@@ -172,7 +246,9 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 		return
 	}
 	var altcha *altchaChallenge
-	if p.captcha {
+	var imageChallenge *captcha.ImageChallenge
+	var sliderChallenge *captcha.SliderChallenge
+	if p.captcha && p.captchaType == "pow" {
 		challenge, err := p.newAltchaChallenge(r, clientIP)
 		if err != nil {
 			http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
@@ -182,6 +258,20 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 		challengeJSON, _ := json.Marshal(challenge)
 		w.Header().Set("WWW-Authenticate", "Altcha challenge="+string(challengeJSON))
 		w.Header().Set("X-Altcha-Authorization-Header", p.altchaHeaderName)
+	} else if p.captcha && p.captchaType == "image" {
+		challenge, err := p.newImageChallenge(r, clientIP)
+		if err != nil {
+			http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
+			return
+		}
+		imageChallenge = &challenge
+	} else if p.captcha && p.captchaType == "slider" {
+		challenge, err := p.newSliderChallenge(r, clientIP)
+		if err != nil {
+			http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
+			return
+		}
+		sliderChallenge = &challenge
 	}
 	nonce, err := randomToken(18)
 	if err != nil {
@@ -207,6 +297,26 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 		data.AltchaMaxNumber = altcha.MaxNumber
 		data.AltchaSalt = altcha.Salt
 		data.AltchaSignature = altcha.Signature
+	}
+	if imageChallenge != nil {
+		data.UseImage = true
+		data.ImageWidth = imageChallenge.Width
+		data.ImageHeight = imageChallenge.Height
+		data.ImageLength = imageChallenge.Length
+		data.ImageData = template.URL(imageChallenge.Image)
+		data.ImageToken = imageChallenge.Token
+		data.AudioURL = template.URL(imageAudioURL(r, imageChallenge.Token))
+	}
+	if sliderChallenge != nil {
+		data.UseSlider = true
+		data.SliderWidth = sliderChallenge.Width
+		data.SliderHeight = sliderChallenge.Height
+		data.SliderPieceSize = sliderChallenge.PieceSize
+		data.SliderTrackWidth = sliderChallenge.TrackWidth
+		data.SliderTargetY = sliderChallenge.TargetY
+		data.SliderImage = template.URL(sliderChallenge.Image)
+		data.SliderPiece = template.URL(sliderChallenge.Piece)
+		data.SliderToken = sliderChallenge.Token
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -308,6 +418,89 @@ func (p *Policy) purgeWaiting() {
 	}
 }
 
+func (p *Policy) allowCAPTCHAAudio(r *http.Request, clientIP, token string) bool {
+	if p == nil || r == nil || strings.TrimSpace(token) == "" {
+		return false
+	}
+	key := p.captchaAttemptKey(r, clientIP, "image-audio", token)
+	now := p.now().Unix()
+	expires := now + int64((2 * time.Minute).Seconds())
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.purgeCAPTCHAAttemptsLocked(now)
+	if len(p.attempts) >= maxCAPTCHAAttemptEntries {
+		return false
+	}
+	attempt := p.attempts[key]
+	if attempt.expires <= now {
+		attempt = captchaAttempt{expires: expires}
+	}
+	if attempt.audioReads >= p.imageCAPTCHAAudioLimit {
+		p.attempts[key] = attempt
+		return false
+	}
+	attempt.audioReads++
+	attempt.expires = expires
+	p.attempts[key] = attempt
+	return true
+}
+
+func (p *Policy) captchaLocked(r *http.Request, clientIP, kind, token string) bool {
+	if p == nil || r == nil || strings.TrimSpace(token) == "" {
+		return true
+	}
+	key := p.captchaAttemptKey(r, clientIP, kind, token)
+	now := p.now().Unix()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.purgeCAPTCHAAttemptsLocked(now)
+	attempt, ok := p.attempts[key]
+	return ok && attempt.expires > now && attempt.failures >= p.captchaMaxAttempts
+}
+
+func (p *Policy) recordCAPTCHAAnswer(r *http.Request, clientIP, kind, token string, success bool) {
+	if p == nil || r == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	key := p.captchaAttemptKey(r, clientIP, kind, token)
+	now := p.now().Unix()
+	expires := now + int64((2 * time.Minute).Seconds())
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.purgeCAPTCHAAttemptsLocked(now)
+	if success {
+		delete(p.attempts, key)
+		return
+	}
+	if len(p.attempts) >= maxCAPTCHAAttemptEntries {
+		return
+	}
+	attempt := p.attempts[key]
+	if attempt.expires <= now {
+		attempt = captchaAttempt{expires: expires}
+	}
+	attempt.failures++
+	attempt.expires = expires
+	p.attempts[key] = attempt
+}
+
+func (p *Policy) purgeCAPTCHAAttemptsLocked(now int64) {
+	for key, attempt := range p.attempts {
+		if attempt.expires <= now {
+			delete(p.attempts, key)
+		}
+	}
+}
+
+func (p *Policy) captchaAttemptKey(r *http.Request, clientIP, kind, token string) string {
+	mac := hmac.New(sha256.New, p.secret)
+	for _, item := range []string{"captcha-attempt-v1", kind, clientIP, r.UserAgent(), r.URL.Path, token} {
+		_, _ = mac.Write([]byte(item))
+		_, _ = mac.Write([]byte{'\n'})
+	}
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
 func (p *Policy) sign(r *http.Request, clientIP string, expires int64) string {
 	mac := hmac.New(sha256.New, p.secret)
 	_, _ = mac.Write([]byte(clientIP))
@@ -389,8 +582,72 @@ func (p *Policy) signAltcha(r *http.Request, clientIP string, challenge altchaCh
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+func (p *Policy) imageOptions(r *http.Request, clientIP string) captcha.ImageOptions {
+	return captcha.ImageOptions{
+		Secret:    string(p.secret),
+		Purpose:   "waf-bot-image",
+		ClientKey: clientIP + "\n" + r.UserAgent(),
+		Path:      r.URL.Path,
+		TTL:       2 * time.Minute,
+		Width:     p.imageCAPTCHAWidth,
+		Height:    p.imageCAPTCHAHeight,
+		Length:    p.imageCAPTCHALength,
+		Now:       p.now,
+	}
+}
+
+func (p *Policy) newImageChallenge(r *http.Request, clientIP string) (captcha.ImageChallenge, error) {
+	return captcha.NewImageChallenge(p.imageOptions(r, clientIP))
+}
+
+func (p *Policy) serveImageAudio(w http.ResponseWriter, r *http.Request, clientIP, token string) {
+	if !p.allowCAPTCHAAudio(r, clientIP, token) {
+		http.Error(w, "audio challenge rate limited", http.StatusTooManyRequests)
+		return
+	}
+	data, ok, err := captcha.RenderImageAudio(p.imageOptions(r, clientIP), token)
+	if err != nil {
+		http.Error(w, "audio challenge unavailable", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "audio challenge expired", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (p *Policy) sliderOptions(r *http.Request, clientIP string) captcha.SliderOptions {
+	return captcha.SliderOptions{
+		Secret:    string(p.secret),
+		Purpose:   "waf-bot-slider",
+		ClientKey: clientIP + "\n" + r.UserAgent(),
+		Path:      r.URL.Path,
+		TTL:       2 * time.Minute,
+		Width:     p.sliderCAPTCHAWidth,
+		Height:    p.sliderCAPTCHAHeight,
+		PieceSize: p.sliderCAPTCHAPiece,
+		Tolerance: p.sliderCAPTCHATolerance,
+		MinDrag:   p.sliderCAPTCHAMinDrag,
+		Now:       p.now,
+	}
+}
+
+func (p *Policy) newSliderChallenge(r *http.Request, clientIP string) (captcha.SliderChallenge, error) {
+	return captcha.NewSliderChallenge(p.sliderOptions(r, clientIP))
+}
+
 func (p *Policy) validChallengeAnswer(r *http.Request, clientIP string) bool {
-	if p.validAltchaQueryAnswer(r, clientIP) {
+	if p.captchaType == "pow" && p.validAltchaQueryAnswer(r, clientIP) {
+		return true
+	}
+	if p.captchaType == "image" && p.validImageQueryAnswer(r, clientIP) {
+		return true
+	}
+	if p.captchaType == "slider" && p.validSliderQueryAnswer(r, clientIP) {
 		return true
 	}
 	query := r.URL.Query()
@@ -410,6 +667,45 @@ func (p *Policy) validChallengeAnswer(r *http.Request, clientIP string) bool {
 		return false
 	}
 	return validProof(nonce, answer, p.challengeDifficulty)
+}
+
+func (p *Policy) validImageQueryAnswer(r *http.Request, clientIP string) bool {
+	if p == nil || r == nil || !p.captcha {
+		return false
+	}
+	query := r.URL.Query()
+	token := query.Get("cw_image_token")
+	answer := query.Get("cw_image_answer")
+	if strings.TrimSpace(token) == "" || strings.TrimSpace(answer) == "" || p.captchaLocked(r, clientIP, "image", token) {
+		return false
+	}
+	ok := captcha.VerifyImage(p.imageOptions(r, clientIP), captcha.ImagePayload{Token: token, Answer: answer})
+	p.recordCAPTCHAAnswer(r, clientIP, "image", token, ok)
+	return ok
+}
+
+func (p *Policy) validSliderQueryAnswer(r *http.Request, clientIP string) bool {
+	if p == nil || r == nil || !p.captcha {
+		return false
+	}
+	query := r.URL.Query()
+	token := query.Get("cw_slider_token")
+	if strings.TrimSpace(token) == "" || p.captchaLocked(r, clientIP, "slider", token) {
+		return false
+	}
+	x, err := strconv.Atoi(query.Get("cw_slider_x"))
+	if err != nil {
+		p.recordCAPTCHAAnswer(r, clientIP, "slider", token, false)
+		return false
+	}
+	dragMS, err := strconv.Atoi(query.Get("cw_slider_drag_ms"))
+	if err != nil {
+		p.recordCAPTCHAAnswer(r, clientIP, "slider", token, false)
+		return false
+	}
+	ok := captcha.VerifySlider(p.sliderOptions(r, clientIP), captcha.SliderPayload{Token: token, X: x, DragMS: dragMS})
+	p.recordCAPTCHAAnswer(r, clientIP, "slider", token, ok)
+	return ok
 }
 
 func (p *Policy) validAltchaHeaderAnswer(r *http.Request, clientIP string) bool {
@@ -563,21 +859,48 @@ func lowerList(items []string) []string {
 	return out
 }
 
+func normalizeCAPTCHAType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image", "graphic":
+		return "image"
+	case "slider", "puzzle":
+		return "slider"
+	default:
+		return "pow"
+	}
+}
+
 type challengeData struct {
-	CookieName      string
-	CookieValue     string
-	MaxAge          int
-	ReturnURL       string
-	Nonce           string
-	Expires         int64
-	Signature       string
-	Difficulty      int
-	UseAltcha       bool
-	AltchaAlgorithm string
-	AltchaChallenge string
-	AltchaMaxNumber int
-	AltchaSalt      string
-	AltchaSignature string
+	CookieName       string
+	CookieValue      string
+	MaxAge           int
+	ReturnURL        string
+	Nonce            string
+	Expires          int64
+	Signature        string
+	Difficulty       int
+	UseAltcha        bool
+	AltchaAlgorithm  string
+	AltchaChallenge  string
+	AltchaMaxNumber  int
+	AltchaSalt       string
+	AltchaSignature  string
+	UseImage         bool
+	ImageWidth       int
+	ImageHeight      int
+	ImageLength      int
+	ImageData        template.URL
+	ImageToken       string
+	AudioURL         template.URL
+	UseSlider        bool
+	SliderWidth      int
+	SliderHeight     int
+	SliderPieceSize  int
+	SliderTrackWidth int
+	SliderTargetY    int
+	SliderImage      template.URL
+	SliderPiece      template.URL
+	SliderToken      string
 }
 
 type waitingData struct {
@@ -683,9 +1006,20 @@ func cleanChallengeURL(r *http.Request) string {
 	}
 	next := *r.URL
 	query := next.Query()
-	for _, key := range []string{"cw_nonce", "cw_expires", "cw_sig", "cw_pow", "cw_altcha"} {
+	for _, key := range []string{"cw_nonce", "cw_expires", "cw_sig", "cw_pow", "cw_altcha", "cw_image_token", "cw_image_answer", "cw_slider_token", "cw_slider_x", "cw_slider_drag_ms", "cw_audio"} {
 		query.Del(key)
 	}
+	next.RawQuery = query.Encode()
+	return next.RequestURI()
+}
+
+func imageAudioURL(r *http.Request, token string) string {
+	if r == nil || r.URL == nil {
+		return "?cw_audio=" + url.QueryEscape(token)
+	}
+	next := *r.URL
+	query := next.Query()
+	query.Set("cw_audio", token)
 	next.RawQuery = query.Encode()
 	return next.RequestURI()
 }
@@ -697,95 +1031,131 @@ var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doc
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Browser verification</title>
   <style>
-    body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:#0f172a;color:#e2e8f0;display:grid;min-height:100vh;place-items:center}
-    main{width:min(520px,calc(100% - 32px));border:1px solid #334155;border-radius:8px;background:#111827;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.35)}
+    :root{color-scheme:dark;--bg:#0e1523;--panel:#111827;--line:#2d3b51;--text:#e5edf7;--muted:#9aa8bc;--accent:#11a58d;--accent2:#2dd4bf;--danger:#fca5a5}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:radial-gradient(circle at 20% 20%,#19324a 0,#0e1523 38%,#090e18 100%);color:var(--text);display:grid;min-height:100vh;place-items:center;padding:12px;overflow-x:hidden}
+    main{width:min(390px,calc(100vw - 24px));max-width:100%;border:1px solid var(--line);border-radius:10px;background:color-mix(in srgb,var(--panel) 94%,transparent);padding:24px;box-shadow:0 24px 80px rgba(0,0,0,.38)}
     h1{margin:0 0 8px;font-size:22px;line-height:1.2}
-    p{margin:0 0 18px;color:#94a3b8;line-height:1.6}
+    p{margin:0 0 18px;color:var(--muted);line-height:1.65}
     .bar{height:6px;border-radius:999px;background:#1e293b;overflow:hidden}
-    .bar span{display:block;width:45%;height:100%;background:#22c55e;animation:load 1.2s ease-in-out infinite alternate}
+    .bar span{display:block;width:45%;height:100%;background:var(--accent2);animation:load 1.2s ease-in-out infinite alternate}
+    .captcha{display:grid;gap:14px}
+    .captcha-img,.slider-stage{border:1px solid var(--line);border-radius:9px;background:#dbe9e8;overflow:hidden}
+    .captcha-img{width:100%}
+    .captcha-img{display:block;height:auto}
+    .captcha-row{display:flex;gap:10px;align-items:center}
+    input{min-width:0;width:100%;height:42px;border:1px solid var(--line);border-radius:8px;background:#0b1220;color:var(--text);padding:0 12px;font-size:15px}
+    button{height:42px;border:0;border-radius:8px;background:var(--accent);color:white;padding:0 16px;font-weight:650;cursor:pointer}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    audio{width:100%;height:36px}
+    .hint{font-size:12px;color:var(--muted);margin:0}
+    .slider-stage{position:relative;width:min(100%,var(--slider-width,100%));height:auto;line-height:0;user-select:none}
+    .slider-stage img{display:block;width:100%;height:auto;user-select:none;-webkit-user-drag:none}
+    .slider-piece{position:absolute;left:0;top:0;width:var(--piece);height:var(--piece);filter:drop-shadow(0 10px 16px rgba(15,23,42,.3));pointer-events:none}
+    .slider-track{position:relative;width:min(100%,var(--slider-width,100%));height:44px;border:1px solid var(--line);border-radius:8px;background:#0b1220;overflow:hidden;touch-action:none}
+    .slider-fill{position:absolute;inset:0 auto 0 0;background:rgba(17,165,141,.2);border-right:1px solid rgba(45,212,191,.32)}
+    .slider-thumb{position:absolute;left:0;top:1px;width:var(--piece);height:40px;display:grid;place-items:center;border-radius:7px;background:var(--accent);box-shadow:0 8px 18px rgba(17,165,141,.28);cursor:grab;touch-action:none}
+    .slider-copy{position:absolute;inset:0 14px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;pointer-events:none}
+    noscript{display:block;margin-top:16px;color:var(--danger)}
     @keyframes load{from{transform:translateX(-30%)}to{transform:translateX(140%)}}
-    noscript{display:block;margin-top:16px;color:#fca5a5}
+    @media(max-width:460px){main{padding:20px}.captcha-row{display:grid}button{width:100%}}
   </style>
 </head>
 <body>
   <main>
     <h1>Browser verification</h1>
-    {{if .UseAltcha}}
+    {{if .UseImage}}
+      <p>CheeseWAF needs a visual CAPTCHA for this protected request. Enter the digits shown in the image, or use the audio challenge if the image is unclear.</p>
+      <form class="captcha" method="get" action="{{.ReturnURL}}" autocomplete="off">
+        <img class="captcha-img" src="{{.ImageData}}" width="{{.ImageWidth}}" height="{{.ImageHeight}}" alt="CAPTCHA image with {{.ImageLength}} digits">
+        <audio controls preload="none" src="{{.AudioURL}}"></audio>
+        <p class="hint">Audio is generated server-side from an opaque challenge token; the URL does not contain the answer.</p>
+        <input type="hidden" name="cw_image_token" value="{{.ImageToken}}">
+        <div class="captcha-row">
+          <input name="cw_image_answer" inputmode="numeric" pattern="[0-9]*" maxlength="{{.ImageLength}}" aria-label="CAPTCHA answer" placeholder="Enter digits" required>
+          <button type="submit">Verify</button>
+        </div>
+      </form>
+    {{else if .UseSlider}}
+      <p>CheeseWAF needs a puzzle slider verification for this protected request. Drag the piece until it fits the image gap.</p>
+      <form id="slider-form" class="captcha" method="get" action="{{.ReturnURL}}" autocomplete="off">
+        <div class="slider-stage" style="--piece:{{.SliderPieceSize}}px;--slider-width:{{.SliderWidth}}px">
+          <img src="{{.SliderImage}}" width="{{.SliderWidth}}" height="{{.SliderHeight}}" alt="Puzzle slider CAPTCHA image" draggable="false">
+          <img id="slider-piece" class="slider-piece" src="{{.SliderPiece}}" width="{{.SliderPieceSize}}" height="{{.SliderPieceSize}}" alt="" draggable="false">
+        </div>
+        <div id="slider-track" class="slider-track" role="slider" aria-label="Puzzle slider" aria-valuemin="0" aria-valuemax="{{.SliderTrackWidth}}" aria-valuenow="0" style="--piece:{{.SliderPieceSize}}px;--slider-width:{{.SliderWidth}}px">
+          <span id="slider-fill" class="slider-fill"></span>
+          <button id="slider-thumb" class="slider-thumb" type="button" aria-label="Drag slider">→</button>
+          <span id="slider-copy" class="slider-copy">Drag to fit the puzzle piece</span>
+        </div>
+        <input type="hidden" name="cw_slider_token" value="{{.SliderToken}}">
+        <input id="slider-x" type="hidden" name="cw_slider_x" value="">
+        <input id="slider-drag-ms" type="hidden" name="cw_slider_drag_ms" value="">
+        <button id="slider-submit" type="submit" disabled>Verify</button>
+      </form>
+    {{else if .UseAltcha}}
       <p>CheeseWAF is running an Altcha-compatible proof-of-work CAPTCHA for this protected request. Verification runs locally in your browser.</p>
+      <div class="bar"><span></span></div>
     {{else}}
       <p>CheeseWAF is checking that this request comes from a browser. This page solves a short proof-of-work challenge and reloads automatically.</p>
+      <div class="bar"><span></span></div>
     {{end}}
-    <div class="bar"><span></span></div>
-    <noscript>JavaScript is required to pass this challenge.</noscript>
+    <noscript>JavaScript is required for PoW and slider verification. Use image CAPTCHA mode if JavaScript-free access is required.</noscript>
   </main>
   <script>
-    {{if .UseAltcha}}
-    const challenge = {
-      algorithm: "{{.AltchaAlgorithm}}",
-      challenge: "{{.AltchaChallenge}}",
-      maxnumber: {{.AltchaMaxNumber}},
-      salt: "{{.AltchaSalt}}",
-      signature: "{{.AltchaSignature}}"
-    };
-    async function sha256Hex(input) {
-      const data = new TextEncoder().encode(input);
-      const digest = await crypto.subtle.digest("SHA-256", data);
-      return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-    }
-    async function solve() {
-      for (let i = 0; i <= challenge.maxnumber; i++) {
-        const hash = await sha256Hex(challenge.salt + String(i));
-        if (hash === challenge.challenge) {
-          const payload = btoa(JSON.stringify({
-            algorithm: challenge.algorithm,
-            challenge: challenge.challenge,
-            number: i,
-            salt: challenge.salt,
-            signature: challenge.signature
-          }));
-          const target = new URL(window.location.href);
-          target.searchParams.set("cw_altcha", payload);
-          window.location.replace(target.toString());
-          return;
-        }
-        if (i > 0 && i % 500 === 0) {
-          await new Promise((resolve) => window.setTimeout(resolve, 0));
-        }
+    {{if .UseSlider}}
+    (function(){
+      const piece = document.getElementById("slider-piece");
+      const track = document.getElementById("slider-track");
+      const fill = document.getElementById("slider-fill");
+      const thumb = document.getElementById("slider-thumb");
+      const copy = document.getElementById("slider-copy");
+      const inputX = document.getElementById("slider-x");
+      const inputMS = document.getElementById("slider-drag-ms");
+      const submit = document.getElementById("slider-submit");
+      const pieceSize = {{.SliderPieceSize}};
+      const targetY = {{.SliderTargetY}};
+      const trackWidth = {{.SliderTrackWidth}};
+      let drag = null;
+      function apply(x){
+        const next = Math.max(0, Math.min(trackWidth, Math.round(x)));
+        thumb.style.transform = "translateX(" + next + "px)";
+        piece.style.transform = "translate3d(" + next + "px," + targetY + "px,0)";
+        fill.style.width = (next + pieceSize / 2) + "px";
+        track.setAttribute("aria-valuenow", String(next));
+        return next;
       }
-      window.setTimeout(function(){ window.location.reload(); }, 1000);
-    }
-    if (window.crypto && window.crypto.subtle) {
-      solve();
-    }
-    {{else}}
-    const nonce = "{{.Nonce}}";
-    const expires = "{{.Expires}}";
-    const signature = "{{.Signature}}";
-    const difficulty = {{.Difficulty}};
-    const prefix = "0".repeat(difficulty);
-    async function sha256Hex(input) {
-      const data = new TextEncoder().encode(input);
-      const digest = await crypto.subtle.digest("SHA-256", data);
-      return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-    }
-    async function solve() {
-      for (let i = 0; i < 12000000; i++) {
-        const hash = await sha256Hex(nonce + ":" + i);
-        if (hash.startsWith(prefix)) {
-          const target = new URL(window.location.href);
-          target.searchParams.set("cw_nonce", nonce);
-          target.searchParams.set("cw_expires", expires);
-          target.searchParams.set("cw_sig", signature);
-          target.searchParams.set("cw_pow", String(i));
-          window.location.replace(target.toString());
-          return;
-        }
+      apply(0);
+      thumb.addEventListener("pointerdown", function(event){
+        thumb.setPointerCapture(event.pointerId);
+        drag = {id:event.pointerId, origin:event.clientX, start: Number(track.getAttribute("aria-valuenow") || "0"), at: performance.now()};
+      });
+      thumb.addEventListener("pointermove", function(event){
+        if (!drag || drag.id !== event.pointerId) return;
+        apply(drag.start + event.clientX - drag.origin);
+      });
+      function finish(event){
+        if (!drag || drag.id !== event.pointerId) return;
+        const x = apply(drag.start + event.clientX - drag.origin);
+        inputX.value = String(x);
+        inputMS.value = String(Math.max(0, Math.round(performance.now() - drag.at)));
+        submit.disabled = x <= 0;
+        copy.textContent = x > 0 ? "Release and submit verification" : "Drag to fit the puzzle piece";
+        drag = null;
       }
-      window.setTimeout(function(){ window.location.reload(); }, 1000);
-    }
-    if (window.crypto && window.crypto.subtle) {
-      solve();
-    }
+      thumb.addEventListener("pointerup", finish);
+      thumb.addEventListener("pointercancel", finish);
+    })();
+    {{else if .UseAltcha}}
+    const challenge = {algorithm:"{{.AltchaAlgorithm}}",challenge:"{{.AltchaChallenge}}",maxnumber:{{.AltchaMaxNumber}},salt:"{{.AltchaSalt}}",signature:"{{.AltchaSignature}}"};
+    async function sha256Hex(input){const data=new TextEncoder().encode(input);const digest=await crypto.subtle.digest("SHA-256",data);return Array.from(new Uint8Array(digest)).map((b)=>b.toString(16).padStart(2,"0")).join("")}
+    async function solve(){for(let i=0;i<=challenge.maxnumber;i++){const hash=await sha256Hex(challenge.salt+String(i));if(hash===challenge.challenge){const payload=btoa(JSON.stringify({algorithm:challenge.algorithm,challenge:challenge.challenge,number:i,salt:challenge.salt,signature:challenge.signature}));const target=new URL(window.location.href);target.searchParams.set("cw_altcha",payload);window.location.replace(target.toString());return}if(i>0&&i%500===0){await new Promise((resolve)=>window.setTimeout(resolve,0))}}window.setTimeout(function(){window.location.reload()},1000)}
+    if(window.crypto&&window.crypto.subtle){solve()}
+    {{else if not .UseImage}}
+    const nonce="{{.Nonce}}";const expires="{{.Expires}}";const signature="{{.Signature}}";const difficulty={{.Difficulty}};const prefix="0".repeat(difficulty);
+    async function sha256Hex(input){const data=new TextEncoder().encode(input);const digest=await crypto.subtle.digest("SHA-256",data);return Array.from(new Uint8Array(digest)).map((b)=>b.toString(16).padStart(2,"0")).join("")}
+    async function solve(){for(let i=0;i<12000000;i++){const hash=await sha256Hex(nonce+":"+i);if(hash.startsWith(prefix)){const target=new URL(window.location.href);target.searchParams.set("cw_nonce",nonce);target.searchParams.set("cw_expires",expires);target.searchParams.set("cw_sig",signature);target.searchParams.set("cw_pow",String(i));window.location.replace(target.toString());return}}window.setTimeout(function(){window.location.reload()},1000)}
+    if(window.crypto&&window.crypto.subtle){solve()}
     {{end}}
   </script>
 </body>

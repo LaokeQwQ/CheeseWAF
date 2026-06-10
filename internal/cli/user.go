@@ -51,6 +51,25 @@ var userPasswordCmd = &cobra.Command{
 	},
 }
 
+var userRenameCmd = &cobra.Command{
+	Use:     "rename OLD_USERNAME NEW_USERNAME",
+	Aliases: []string{"mv", "update-username"},
+	Short:   "修改本地用户用户名",
+	Args:    cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sqlitePath, err := cliSQLitePath()
+		if err != nil {
+			return err
+		}
+		user, err := renameUser(cmd.Context(), sqlitePath, args[0], args[1])
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Renamed user %s to %s\n", args[0], user.Username)
+		return nil
+	},
+}
+
 type cliPasswordOptions struct {
 	Password      string
 	PasswordStdin bool
@@ -63,6 +82,7 @@ func init() {
 	userPasswordCmd.Flags().BoolVar(&passwordOptions.PasswordStdin, "password-stdin", false, "Read the new password from stdin")
 	userPasswordCmd.Flags().BoolVar(&passwordOptions.Generate, "generate", false, "Generate and print a strong temporary password")
 	userCmd.AddCommand(userPasswordCmd)
+	userCmd.AddCommand(userRenameCmd)
 }
 
 func changeUserPassword(ctx context.Context, sqlitePath, username string, opts cliPasswordOptions) (string, error) {
@@ -107,6 +127,50 @@ func changeUserPassword(ctx context.Context, sqlitePath, username string, opts c
 		return password, nil
 	}
 	return "", nil
+}
+
+func renameUser(ctx context.Context, sqlitePath, oldUsername, newUsername string) (*storage.User, error) {
+	oldUsername = strings.TrimSpace(oldUsername)
+	newUsername = strings.TrimSpace(newUsername)
+	if oldUsername == "" {
+		return nil, errors.New("old username is required")
+	}
+	if len(newUsername) < 3 {
+		return nil, errors.New("new username must contain at least 3 characters")
+	}
+	if oldUsername == newUsername {
+		return nil, errors.New("new username must be different from old username")
+	}
+	store, err := storage.OpenSQLite(sqlitePath)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		return nil, err
+	}
+	user, err := store.GetUserByUsername(ctx, oldUsername)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, fmt.Errorf("user %q not found", oldUsername)
+	}
+	existing, err := store.GetUserByUsername(ctx, newUsername)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil && existing.ID != user.ID {
+		return nil, fmt.Errorf("user %q already exists", newUsername)
+	}
+	user.Username = newUsername
+	if err := store.UpdateUser(ctx, user); err != nil {
+		return nil, err
+	}
+	if err := store.RevokeUserSessions(ctx, user.ID, ""); err != nil {
+		return nil, err
+	}
+	return user, nil
 }
 
 func resolvePassword(opts cliPasswordOptions) (string, bool, error) {
