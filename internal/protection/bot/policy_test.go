@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -105,6 +106,130 @@ func TestAltchaChallengeWritesHeadersAndWidgetScript(t *testing.T) {
 	}
 	if rr.Header().Get("X-Altcha-Authorization-Header") != "X-CW-Altcha" {
 		t.Fatalf("unexpected altcha header hint %q", rr.Header().Get("X-Altcha-Authorization-Header"))
+	}
+}
+
+func TestImageCAPTCHAChallengeWritesImageAndAudioURL(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:      true,
+		CAPTCHA:      true,
+		CAPTCHAType:  "image",
+		ChallengeTTL: time.Minute,
+		CookieName:   "cw_clearance",
+		Secret:       "test-secret",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	rr := httptest.NewRecorder()
+
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	body := rr.Body.String()
+	if rr.Code != http.StatusForbidden || !strings.Contains(body, "cw_image_answer") || !strings.Contains(body, "cw_audio=") || !strings.Contains(body, "data:image/png;base64,") {
+		t.Fatalf("unexpected image captcha response: status=%d body=%s", rr.Code, body)
+	}
+}
+
+func TestImageCAPTCHAAudioURLReturnsWAV(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:      true,
+		CAPTCHA:      true,
+		CAPTCHAType:  "image",
+		ChallengeTTL: time.Minute,
+		CookieName:   "cw_clearance",
+		Secret:       "test-secret",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	challenge, err := policy.newImageChallenge(req, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("image challenge: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/login?cw_audio="+url.QueryEscape(challenge.Token), nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	rr := httptest.NewRecorder()
+
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "audio/wav" || !strings.HasPrefix(rr.Body.String(), "RIFF") {
+		t.Fatalf("unexpected audio response: status=%d content-type=%q len=%d", rr.Code, rr.Header().Get("Content-Type"), rr.Body.Len())
+	}
+}
+
+func TestImageCAPTCHAAudioURLIsRateLimitedPerChallenge(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:                true,
+		CAPTCHA:                true,
+		CAPTCHAType:            "image",
+		ImageCAPTCHAAudioLimit: 2,
+		ChallengeTTL:           time.Minute,
+		CookieName:             "cw_clearance",
+		Secret:                 "test-secret",
+	})
+	base := httptest.NewRequest(http.MethodGet, "/login", nil)
+	base.Header.Set("User-Agent", "curl/8.0")
+	challenge, err := policy.newImageChallenge(base, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("image challenge: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/login?cw_audio="+url.QueryEscape(challenge.Token), nil)
+		req.Header.Set("User-Agent", "curl/8.0")
+		rr := httptest.NewRecorder()
+		policy.ServeChallenge(rr, req, "203.0.113.10")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("audio play %d should be allowed, got status=%d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/login?cw_audio="+url.QueryEscape(challenge.Token), nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	rr := httptest.NewRecorder()
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected audio rate limit, got status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCAPTCHAAnswerFailuresLockChallengeToken(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:            true,
+		CAPTCHA:            true,
+		CAPTCHAType:        "image",
+		CAPTCHAMaxAttempts: 2,
+		ChallengeTTL:       time.Minute,
+		CookieName:         "cw_clearance",
+		Secret:             "test-secret",
+	})
+	token := "opaque-token"
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/login?cw_image_token="+url.QueryEscape(token)+"&cw_image_answer=bad", nil)
+		req.Header.Set("User-Agent", "curl/8.0")
+		if policy.validImageQueryAnswer(req, "203.0.113.10") {
+			t.Fatal("fake image answer should not verify")
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/login?cw_image_token="+url.QueryEscape(token)+"&cw_image_answer=bad", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	if !policy.captchaLocked(req, "203.0.113.10", "image", token) {
+		t.Fatal("expected challenge token to be locked after max failures")
+	}
+}
+
+func TestSliderCAPTCHAChallengeWritesPuzzleForm(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:      true,
+		CAPTCHA:      true,
+		CAPTCHAType:  "slider",
+		ChallengeTTL: time.Minute,
+		CookieName:   "cw_clearance",
+		Secret:       "test-secret",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	rr := httptest.NewRecorder()
+
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	body := rr.Body.String()
+	if rr.Code != http.StatusForbidden || !strings.Contains(body, "cw_slider_token") || !strings.Contains(body, "cw_slider_x") || !strings.Contains(body, "slider-piece") {
+		t.Fatalf("unexpected slider captcha response: status=%d body=%s", rr.Code, body)
 	}
 }
 

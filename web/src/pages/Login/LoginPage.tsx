@@ -1,4 +1,4 @@
-import { Button, Form, Input } from '@arco-design/web-react';
+import { Button, Form, Input, Modal } from '@arco-design/web-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -31,6 +31,7 @@ export default function LoginPage() {
   const [sliderDone, setSliderDone] = useState(false);
   const [sliderDragMS, setSliderDragMS] = useState(0);
   const [captchaState, setCaptchaState] = useState<CAPTCHAState>('loading');
+  const [captchaModalOpen, setCaptchaModalOpen] = useState(false);
   const [loadMs, setLoadMs] = useState<number | null>(null);
   const dragRef = useRef<{ pointerId: number; originX: number; startX: number; startedAt: number } | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -183,6 +184,11 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
+      if (options?.captcha.enabled && isSliderMode(options) && !sliderDone) {
+        setCaptchaModalOpen(true);
+        setError(t('login.captchaRequired'));
+        return;
+      }
       const captcha = await buildLoginCaptchaIfNeeded({
         options,
         challenge,
@@ -205,6 +211,7 @@ export default function LoginPage() {
       if (err instanceof APIRequestError && err.code === 'INVALID_CAPTCHA') {
         setError(t('login.captchaInvalid'));
         await refreshCaptcha();
+        setCaptchaModalOpen(true);
         return;
       }
       setError(err instanceof Error ? err.message : 'Login failed');
@@ -214,18 +221,6 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
     }
-  }
-
-  function updateSlider(clientX: number) {
-    const track = trackRef.current;
-    if (!track || !slider) {
-      return;
-    }
-    const rect = track.getBoundingClientRect();
-    const trackWidth = slider.track_width || Math.max(0, slider.width - slider.piece_size);
-    const next = clamp(clientX - rect.left - slider.piece_size / 2, 0, trackWidth);
-    setSliderX(Math.round(next));
-    setSliderDone(false);
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
@@ -248,13 +243,26 @@ export default function LoginPage() {
 
   function handlePointerUp(event: React.PointerEvent<HTMLButtonElement>) {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) {
+    if (!drag || drag.pointerId !== event.pointerId || !slider) {
       return;
     }
+    const trackWidth = slider.track_width || Math.max(0, slider.width - slider.piece_size);
+    const finalX = Math.round(clamp(drag.startX + event.clientX - drag.originX, 0, trackWidth));
     const elapsed = Math.max(0, Math.round(performance.now() - drag.startedAt));
     dragRef.current = null;
+    setSliderX(finalX);
     setSliderDragMS(elapsed);
-    setSliderDone(sliderX > 0);
+    setSliderDone(finalX > 0);
+  }
+
+  async function openCaptchaModal() {
+    setCaptchaModalOpen(true);
+    if (!options?.captcha.enabled) {
+      return;
+    }
+    if (captchaState === 'error' || (isSliderMode(options) && !slider)) {
+      await refreshCaptcha();
+    }
   }
 
   const sliderMode = isSliderMode(options);
@@ -296,59 +304,24 @@ export default function LoginPage() {
               </Form.Item>
             )}
             {options?.captcha.enabled && (
-              <div className={`auth-captcha-card auth-captcha-state-${captchaState}`}>
-                <div className="auth-captcha-head">
+              <div className={`auth-captcha-gate auth-captcha-state-${captchaState}`}>
+                <div className="auth-captcha-summary">
                   <div>
                     <ShieldCheck size={16} />
                     <span>{t(`login.captchaState.${captchaState}`)}</span>
                   </div>
-                  <Button
-                    size="mini"
-                    htmlType="button"
-                    icon={<RefreshCcw size={13} />}
-                    onClick={refreshCaptcha}
-                    disabled={loading || captchaState === 'loading'}
-                  />
+                  <small>{t('login.captchaGateHint')}</small>
                 </div>
-                {sliderMode && slider ? (
-                  <div className="auth-slider" style={{ '--slider-width': `${slider.width}px`, '--piece-size': `${slider.piece_size}px` } as CSSProperties}>
-                    <button
-                      type="button"
-                      className="auth-slider-image-button"
-                      onPointerDown={(event) => updateSlider(event.clientX)}
-                      aria-label={t('login.sliderImage')}
-                    >
-                      <img className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
-                    </button>
-                    <div
-                      ref={trackRef}
-                      className="auth-slider-track"
-                      role="slider"
-                      aria-valuemin={0}
-                      aria-valuemax={slider.track_width}
-                      aria-valuenow={sliderX}
-                      aria-label={t('login.sliderLabel')}
-                    >
-                      <span className="auth-slider-fill" style={{ width: `${sliderX + slider.piece_size / 2}px` }} />
-                      <button
-                        type="button"
-                        className={sliderDone ? 'auth-slider-thumb auth-slider-thumb-done' : 'auth-slider-thumb'}
-                        style={{ transform: `translateX(${sliderX}px)` }}
-                        onPointerDown={handlePointerDown}
-                        onPointerMove={handlePointerMove}
-                        onPointerUp={handlePointerUp}
-                        onPointerCancel={handlePointerUp}
-                      >
-                        <MoveRight size={18} />
-                      </button>
-                      <span className="auth-slider-copy">{sliderDone ? t('login.sliderReleased') : t('login.sliderHint')}</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="auth-captcha-compact">
-                    <span>{t('login.powHint')}</span>
-                  </div>
-                )}
+                <Button
+                  htmlType="button"
+                  type={captchaState === 'verified' ? 'outline' : 'primary'}
+                  icon={captchaState === 'verified' ? <RefreshCcw size={14} /> : <ShieldCheck size={14} />}
+                  onClick={openCaptchaModal}
+                  loading={captchaState === 'loading'}
+                  disabled={loading}
+                >
+                  {captchaState === 'verified' ? t('login.captchaRecheck') : t('login.captchaAction')}
+                </Button>
               </div>
             )}
             <motion.div {...pressable}>
@@ -363,6 +336,87 @@ export default function LoginPage() {
           {loadMs == null ? t('login.loading') : t('login.loadTime', { ms: loadMs })}
         </div>
       </div>
+      <Modal
+        className="auth-captcha-modal"
+        title={t('login.captchaModalTitle')}
+        visible={captchaModalOpen}
+        onCancel={() => setCaptchaModalOpen(false)}
+        footer={(
+          <div className="auth-captcha-modal-footer">
+            <Button
+              htmlType="button"
+              icon={<RefreshCcw size={14} />}
+              onClick={refreshCaptcha}
+              disabled={loading || captchaState === 'loading'}
+            >
+              {t('login.captchaRefresh')}
+            </Button>
+            <Button
+              htmlType="button"
+              type="primary"
+              disabled={options?.captcha.enabled && captchaState !== 'verified'}
+              onClick={() => setCaptchaModalOpen(false)}
+            >
+              {captchaState === 'verified' ? t('login.captchaModalDone') : t('login.captchaModalClose')}
+            </Button>
+          </div>
+        )}
+      >
+        <div className={`auth-captcha-modal-body auth-captcha-state-${captchaState}`}>
+          <div className="auth-captcha-modal-status">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>{t(`login.captchaState.${captchaState}`)}</strong>
+              <span>{t('login.captchaModalHint')}</span>
+            </div>
+          </div>
+          {sliderMode && slider ? (
+            <div className={sliderDone ? 'auth-slider auth-slider-done' : 'auth-slider'} style={{ '--slider-width': `${slider.width}px`, '--piece-size': `${slider.piece_size}px` } as CSSProperties}>
+              <div className="auth-slider-stage" aria-label={t('login.sliderImage')} role="img">
+                <img className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
+                {slider.piece && (
+                  <img
+                    className="auth-slider-piece"
+                    src={slider.piece}
+                    width={slider.piece_size}
+                    height={slider.piece_size}
+                    alt=""
+                    draggable={false}
+                    style={{ transform: `translate3d(${sliderX}px, ${slider.target_y}px, 0)` }}
+                  />
+                )}
+              </div>
+              <div
+                ref={trackRef}
+                className="auth-slider-track"
+                role="slider"
+                aria-valuemin={0}
+                aria-valuemax={slider.track_width}
+                aria-valuenow={sliderX}
+                aria-label={t('login.sliderLabel')}
+              >
+                <span className="auth-slider-fill" style={{ width: `${sliderX + slider.piece_size / 2}px` }} />
+                <button
+                  type="button"
+                  className={sliderDone ? 'auth-slider-thumb auth-slider-thumb-done' : 'auth-slider-thumb'}
+                  style={{ transform: `translateX(${sliderX}px)` }}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerCancel={handlePointerUp}
+                >
+                  <MoveRight size={18} />
+                </button>
+                <span className={sliderDone ? 'auth-slider-copy auth-slider-copy-done' : 'auth-slider-copy'}>{sliderDone ? t('login.sliderReleased') : t('login.sliderHint')}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="auth-captcha-compact">
+              <span>{captchaState === 'loading' ? t('login.captchaState.loading') : t('login.powHint')}</span>
+            </div>
+          )}
+        </div>
+      </Modal>
     </main>
   );
 }
