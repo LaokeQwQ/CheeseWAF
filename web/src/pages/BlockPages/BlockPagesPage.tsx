@@ -55,7 +55,9 @@ export default function BlockPagesPage() {
         </section>
         <section className="panel panel-wide">
           <div className="panel-heading"><h2>{t('blockPages.preview')}</h2></div>
-          <div className="block-preview" dangerouslySetInnerHTML={{ __html: template?.html ?? '' }} />
+          <div className="block-preview-frame">
+            <iframe title={t('blockPages.preview')} sandbox="" srcDoc={template?.html ?? ''} />
+          </div>
         </section>
       </div>
     </section>

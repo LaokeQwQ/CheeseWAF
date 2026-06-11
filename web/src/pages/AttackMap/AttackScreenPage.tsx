@@ -1,4 +1,4 @@
-import { Suspense, useMemo } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -8,13 +8,15 @@ import BrandLogo from '../../components/BrandLogo';
 import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry } from '../../utils/display';
 import GlobeMap from './GlobeMap';
-import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ThreatLevel } from './AttackMapPage';
+import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './AttackMapPage';
 
 const screenRefreshMs = 3_000;
 
 export default function AttackScreenPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [railOpen, setRailOpen] = useState(false);
+  const [timelinePercent, setTimelinePercent] = useState(100);
   const { data: logs, isFetching, refetch } = useQuery({
     queryKey: ['attack-screen-logs'],
     queryFn: () => fetchLogs({ limit: 1000 }),
@@ -29,27 +31,33 @@ export default function AttackScreenPage() {
   });
   const entries = logs?.items ?? [];
   const attackEntries = useMemo(() => entries.filter(isAttackEntry), [entries]);
-  const regions = useMemo(() => aggregateRegions(entries), [entries]);
+  const visibleEntries = useMemo(() => filterEntriesByTimeline(entries, timelinePercent), [entries, timelinePercent]);
+  const visibleAttackEntries = useMemo(() => visibleEntries.filter(isAttackEntry), [visibleEntries]);
+  const regions = useMemo(() => aggregateRegions(visibleEntries), [visibleEntries]);
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
-  const attackTypes = useMemo(() => buildAttackTypes(attackEntries, t), [attackEntries, t]);
-  const sourceCountries = mappedRegions.slice(0, 7);
+  const attackTypes = useMemo(() => buildAttackTypes(visibleAttackEntries, t), [visibleAttackEntries, t]);
+  const sourceCountries = useMemo(() => buildSourceCountries(mappedRegions), [mappedRegions]);
   const totalAttacks = regions.reduce((sum, region) => sum + region.attacks, 0);
-  const blocked = attackEntries.filter((entry) => entry.action === 'block' || entry.status_code === 403).length;
+  const blocked = visibleAttackEntries.filter((entry) => entry.action === 'block' || entry.status_code === 403).length;
   const critical = regions.reduce((sum, region) => sum + (region.level === 'critical' ? region.attacks : 0), 0);
-  const perMinute = attackEntries.filter((entry) => Date.parse(entry.timestamp) >= Date.now() - 60_000).length;
+  const perMinute = visibleAttackEntries.filter((entry) => Date.parse(entry.timestamp) >= Date.now() - 60_000).length;
   const level = overallThreatLevel(regions);
   const timeRange = formatTimeRange(entries);
+  const protectedTarget = useMemo<ProtectedTarget>(() => {
+    const host = window.location.hostname;
+    return { lat: host.startsWith('38.') ? 37.1 : 35.9, lon: host.startsWith('38.') ? -95.7 : 104.2, label: t('attackMap.protectedTarget'), source: 'admin-host' };
+  }, [t]);
 
   return (
     <main className="attack-screen">
-      <aside className="attack-screen-rail">
+      <aside className={railOpen ? 'attack-screen-rail attack-screen-rail-open' : 'attack-screen-rail'}>
         <div className="attack-screen-brand">
           <span><BrandLogo alt="" /></span>
           <strong>CheeseWAF</strong>
         </div>
         <nav>
-          <button className="attack-screen-nav-active" type="button">
+          <button className="attack-screen-nav-active" type="button" onClick={() => setRailOpen((value) => !value)}>
             <Globe2 size={16} />
             <span>{t('attackMap.globalThreatMap')}</span>
           </button>
@@ -80,7 +88,7 @@ export default function AttackScreenPage() {
         </header>
 
         <div className="attack-screen-grid">
-          <div className="attack-screen-left">
+          <div className="attack-screen-left attack-screen-overlay attack-screen-overlay-left">
             <section className="attack-screen-panel">
               <h2>{t('dashboard.threatMix')}</h2>
               <div className="attack-screen-stats">
@@ -100,15 +108,16 @@ export default function AttackScreenPage() {
             <Suspense fallback={<div className="page-spinner" aria-label={t('attackMap.loading')} aria-busy="true" />}>
               <GlobeMap
                 regions={mappedRegions}
-                zoom={1}
+                zoom={0.86}
                 countryLevels={countryLevels}
                 worldFeatures={worldFeatures}
+                target={protectedTarget}
                 fallback={<div className="attack-screen-globe-empty">{t('attackMap.attacks')}: 0</div>}
               />
             </Suspense>
           </section>
 
-          <div className="attack-screen-right">
+          <div className="attack-screen-right attack-screen-overlay attack-screen-overlay-right">
             <section className="attack-screen-panel">
               <h2>{t('attackMap.sourceCountries')}</h2>
               <CountryList regions={sourceCountries} t={t} />
@@ -120,10 +129,14 @@ export default function AttackScreenPage() {
               <div className="attack-screen-level-meter"><i style={{ width: `${levelPercent(level)}%` }} /></div>
             </section>
             <section className="attack-screen-panel">
-              <h2>{t('attackMap.timeRange')}</h2>
-              <div className="attack-screen-time">
-                <span>{timeRange.start}</span>
-                <span>{timeRange.end}</span>
+              <h2>{t('attackMap.timeline')}</h2>
+              <div className="attack-screen-timeline">
+                <input type="range" min={0} max={100} value={timelinePercent} onChange={(event) => setTimelinePercent(Number(event.currentTarget.value))} />
+                <div>
+                  <span>{timeRange.start}</span>
+                  <strong>{timelinePercent}%</strong>
+                  <span>{timeRange.end}</span>
+                </div>
               </div>
             </section>
           </div>
@@ -179,6 +192,29 @@ function CountryList({ regions, t }: { regions: AttackRegion[]; t: (key: string,
   );
 }
 
+function buildSourceCountries(regions: AttackRegion[]) {
+  const grouped = new Map<string, AttackRegion>();
+  for (const region of regions) {
+    const current = grouped.get(region.countryCode);
+    if (!current) {
+      grouped.set(region.countryCode, { ...region, key: `country-${region.countryCode}` });
+      continue;
+    }
+    grouped.set(region.countryCode, {
+      ...current,
+      attacks: current.attacks + region.attacks,
+      severityRank: Math.max(current.severityRank, region.severityRank),
+      level: threatMax(current.level, region.level),
+    });
+  }
+  return Array.from(grouped.values()).sort((a, b) => b.attacks - a.attacks).slice(0, 7);
+}
+
+function threatMax(a: ThreatLevel, b: ThreatLevel): ThreatLevel {
+  const order: ThreatLevel[] = ['low', 'medium', 'high', 'critical'];
+  return order[Math.max(order.indexOf(a), order.indexOf(b))] ?? a;
+}
+
 function buildAttackTypes(entries: LogEntry[], t: (key: string, options?: Record<string, unknown>) => string) {
   const counts = new Map<string, number>();
   for (const entry of entries) {
@@ -194,6 +230,23 @@ function buildAttackTypes(entries: LogEntry[], t: (key: string, options?: Record
       value,
       percent: Math.max(5, (value / max) * 100),
     }));
+}
+
+function filterEntriesByTimeline(entries: LogEntry[], percent: number) {
+  if (percent >= 100 || entries.length === 0) {
+    return entries;
+  }
+  const times = entries.map((entry) => Date.parse(entry.timestamp)).filter((time) => Number.isFinite(time));
+  if (times.length === 0) {
+    return entries;
+  }
+  const min = Math.min(...times);
+  const max = Math.max(...times);
+  const cutoff = min + ((max - min) * Math.max(0, Math.min(100, percent))) / 100;
+  return entries.filter((entry) => {
+    const time = Date.parse(entry.timestamp);
+    return !Number.isFinite(time) || time <= cutoff;
+  });
 }
 
 function isAttackEntry(entry: LogEntry) {

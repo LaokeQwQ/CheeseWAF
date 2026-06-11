@@ -22,7 +22,7 @@ export default function UsersPage() {
         </div>
       </header>
 
-      <div className="settings-grid">
+      <div className="users-grid">
         <section className="panel">
           <div className="panel-heading"><h2><UserPlus size={16} /> {t('users.create')}</h2></div>
           <Form layout="vertical" onSubmit={(values) => createMutation.mutate({ username: values.username, password: values.password, role: values.role })}>
@@ -39,26 +39,29 @@ export default function UsersPage() {
           </Form>
         </section>
 
-        <section className="panel">
+        <section className="panel users-audit-panel">
           <div className="panel-heading"><h2><ShieldCheck size={16} /> {t('users.audit')}</h2></div>
-          <Table
-            rowKey="timestamp"
-            pagination={false}
-            data={audit ?? []}
-            columns={[
-              { title: t('logs.time'), dataIndex: 'timestamp' },
-              { title: t('users.user'), dataIndex: 'user' },
-              { title: 'Path', dataIndex: 'path', render: (value: string) => <code>{value}</code> },
-              { title: t('common.status'), dataIndex: 'status', render: (value: number) => <Tag color={value >= 400 ? 'red' : 'green'}>{value}</Tag> },
-            ]}
-          />
+          <div className="table-scroll users-audit-table">
+            <Table
+              rowKey="timestamp"
+              pagination={false}
+              data={audit ?? []}
+              columns={[
+                { title: t('logs.time'), dataIndex: 'timestamp', render: (value: string) => <span className="nowrap-cell" title={value}>{value}</span> },
+                { title: t('users.user'), dataIndex: 'user', render: (value: string) => <span className="nowrap-cell" title={value}>{value || '-'}</span> },
+                { title: 'Path', dataIndex: 'path', render: (value: string) => <code className="table-code" title={value}>{value}</code> },
+                { title: t('common.status'), dataIndex: 'status', render: (value: number) => <Tag color={value >= 400 ? 'red' : 'green'}>{value}</Tag> },
+              ]}
+            />
+          </div>
         </section>
       </div>
 
-      <section className="table-panel">
+      <section className="table-panel users-table-panel">
         <Table
           rowKey="id"
           pagination={false}
+          className="users-table"
           data={users ?? []}
           columns={[
             { title: t('users.user'), dataIndex: 'username' },

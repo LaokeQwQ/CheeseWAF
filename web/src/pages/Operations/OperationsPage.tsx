@@ -1,7 +1,8 @@
-import { Button, Form, Input, Progress, Select, Switch, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, Modal, Progress, Select, Switch, Table, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Archive, Database, RotateCcw } from 'lucide-react';
+import { Archive, Database, Edit3, RotateCcw, Trash2 } from 'lucide-react';
 import { cleanupStorage, exportBackup, fetchStorageStats, fetchTasks, updateTasks } from '../../api/client';
 import type { ScheduledTask } from '../../types/api';
 
@@ -17,6 +18,14 @@ export default function OperationsPage() {
   const logSize = storage?.logs ?? 0;
   const total = Math.max(dataSize + logSize, 1);
   const reportTask = tasks.find((task) => task.type === 'security_report') ?? defaultReportTask;
+  const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
+  const persistTasks = (next: ScheduledTask[]) => tasksMutation.mutate(next);
+  const patchTask = (id: string, patch: Partial<ScheduledTask>) => {
+    persistTasks(tasks.map((task) => (task.id === id ? { ...task, ...patch } : task)));
+  };
+  const removeTask = (id: string) => {
+    persistTasks(tasks.filter((task) => task.id !== id));
+  };
 
   return (
     <section className="page-surface">
@@ -41,7 +50,7 @@ export default function OperationsPage() {
             <Button icon={<RotateCcw size={16} />} onClick={() => cleanup.mutate()} loading={cleanup.isPending}>{t('ops.cleanup')}</Button>
           </div>
         </section>
-        <section className="panel">
+        <section className="panel ops-report-panel">
           <div className="panel-heading"><h2>{t('ops.report')}</h2></div>
           <Form
             className="ops-report-form"
@@ -56,7 +65,7 @@ export default function OperationsPage() {
             }}
             onSubmit={(values) => tasksMutation.mutate(upsertReportTask(tasks, { ...reportTask, ...values }))}
           >
-            <Form.Item label={t('ops.report')} field="enabled"><Switch /></Form.Item>
+            <Form.Item label={t('ops.report')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
             <Form.Item label={t('ops.every')} field="frequency">
               <Select>
                 <Select.Option value="daily">{t('ops.daily')}</Select.Option>
@@ -78,20 +87,86 @@ export default function OperationsPage() {
         </section>
       </div>
 
-      <section className="table-panel">
+      <section className="table-panel ops-task-panel">
+        <div className="panel-heading">
+          <h2>{t('ops.taskList')}</h2>
+        </div>
         <Table
           rowKey="id"
           pagination={false}
+          className="ops-task-table"
           data={tasks}
           columns={[
             { title: t('ops.task'), dataIndex: 'name' },
             { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <span className="status-group"><Tag>{taskTypeLabel(type, t)}</Tag></span> },
             { title: t('ops.every'), dataIndex: 'every' },
             { title: t('ops.target'), dataIndex: 'target', render: (target: string) => <code className="table-code" title={target || '-'}>{target || '-'}</code> },
-            { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean) => <span className="status-group"><Tag color={enabled ? 'green' : 'gray'}>{enabled ? t('system.enabled') : t('system.disabled')}</Tag></span> },
+            {
+              title: t('rules.enabled'),
+              dataIndex: 'enabled',
+              render: (enabled: boolean, record: ScheduledTask) => (
+                <Switch
+                  size="small"
+                  checked={enabled}
+                  loading={tasksMutation.isPending}
+                  onChange={(next) => patchTask(record.id, { enabled: next })}
+                />
+              ),
+            },
+            {
+              title: t('common.actions'),
+              dataIndex: 'actions',
+              render: (_: unknown, record: ScheduledTask) => (
+                <span className="table-action-group ops-task-actions">
+                  <Button size="mini" icon={<Edit3 size={13} />} onClick={() => setEditingTask(record)}>{t('common.edit')}</Button>
+                  <Button
+                    size="mini"
+                    status="danger"
+                    icon={<Trash2 size={13} />}
+                    disabled={tasksMutation.isPending}
+                    onClick={() => removeTask(record.id)}
+                  >
+                    {t('common.delete')}
+                  </Button>
+                </span>
+              ),
+            },
           ]}
         />
       </section>
+      <Modal
+        title={t('ops.editTask')}
+        visible={Boolean(editingTask)}
+        footer={null}
+        onCancel={() => setEditingTask(null)}
+        className="ops-task-modal"
+      >
+        {editingTask && (
+          <Form
+            key={editingTask.id}
+            layout="vertical"
+            initialValues={editingTask}
+            onSubmit={(values) => {
+              patchTask(editingTask.id, {
+                name: values.name,
+                every: values.every,
+                target: values.target,
+                enabled: values.enabled,
+              });
+              setEditingTask(null);
+            }}
+          >
+            <Form.Item label={t('ops.task')} field="name"><Input /></Form.Item>
+            <Form.Item label={t('ops.every')} field="every"><Input /></Form.Item>
+            <Form.Item label={t('ops.target')} field="target"><Input /></Form.Item>
+            <Form.Item label={t('rules.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
+            <div className="form-action-row">
+              <Button onClick={() => setEditingTask(null)}>{t('common.close')}</Button>
+              <Button type="primary" htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
+            </div>
+          </Form>
+        )}
+      </Modal>
     </section>
   );
 }

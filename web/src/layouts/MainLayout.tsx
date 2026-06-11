@@ -68,6 +68,7 @@ export default function MainLayout() {
   const { data: monitor } = useQuery({ queryKey: ['shell-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false });
   const [healthFailures, setHealthFailures] = useState(0);
   const [lastHeartbeatAt, setLastHeartbeatAt] = useState(Date.now());
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const heartbeatRefetching = useRef(false);
   const healthQuery = useQuery({
     queryKey: ['shell-health'],
@@ -77,6 +78,10 @@ export default function MainLayout() {
   });
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const account = currentAccount();
+  const shellClassName = [
+    sidebarCollapsed ? 'app-shell app-shell-collapsed' : 'app-shell',
+    mobileNavOpen ? 'app-mobile-nav-open' : '',
+  ].filter(Boolean).join(' ');
 
   useEffect(() => {
     i18n.changeLanguage(language);
@@ -84,6 +89,7 @@ export default function MainLayout() {
 
   useEffect(() => {
     setNotificationsOpen(false);
+    setMobileNavOpen(false);
   }, [location.pathname]);
 
   useEffect(() => {
@@ -138,7 +144,7 @@ export default function MainLayout() {
   }
 
   return (
-    <div className={sidebarCollapsed ? 'app-shell app-shell-collapsed' : 'app-shell'}>
+    <div className={shellClassName}>
       <aside className="app-sidebar">
         <div className="brand-row">
           <button className="brand-mark" type="button" onClick={() => navigate('/')}>
@@ -160,7 +166,10 @@ export default function MainLayout() {
                 key={item.key}
                 type="button"
                 className={active ? 'nav-item nav-item-active' : 'nav-item'}
-                onClick={() => navigate(item.key)}
+                onClick={() => {
+                  navigate(item.key);
+                  setMobileNavOpen(false);
+                }}
               >
                 <Icon size={18} />
                 <span>{t(item.labelKey)}</span>
@@ -177,6 +186,7 @@ export default function MainLayout() {
           </div>
         </button>
       </aside>
+      <button className="mobile-nav-backdrop" type="button" aria-label={t('common.close')} onClick={() => setMobileNavOpen(false)} />
 
       <div className="app-main">
         <header className="topbar">
@@ -185,9 +195,16 @@ export default function MainLayout() {
               <Button
                 className="icon-button"
                 icon={<MenuIcon size={18} />}
-                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                aria-expanded={mobileNavOpen}
+                onClick={() => {
+                  setSidebarCollapsed(!sidebarCollapsed);
+                  setMobileNavOpen((open) => !open);
+                }}
               />
             </Tooltip>
+            <button className="topbar-mobile-brand" type="button" onClick={() => navigate('/')}>
+              <BrandLogo />
+            </button>
             <Input
               className="topbar-search"
               prefix={<Search size={16} />}

@@ -1,7 +1,8 @@
 import { Button, Form, Input, InputNumber, Select, Switch, Table, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, Globe2, ShieldAlert, TimerReset } from 'lucide-react';
+import { Bot, Clock3, Globe2, Image as ImageIcon, KeyRound, Puzzle, Route, ShieldAlert, TimerReset } from 'lucide-react';
 import { fetchProtection, updateACLProtection, updateBotProtection, updateIPProtection, updateProtectionPolicy, updateRateLimit } from '../../api/client';
 import type { ACLRule, ProtectionConfig } from '../../types/api';
 import { displayAction } from '../../utils/display';
@@ -50,6 +51,9 @@ const fallback: ProtectionConfig = {
   },
   acl: { enabled: false, rules: [] },
 };
+type DurationUnit = 'ms' | 's' | 'm' | 'h' | 'd';
+
+const geoRegionOptions = ['CN', 'HK', 'MO', 'TW', 'US', 'RU', 'SG', 'JP', 'KR', 'DE', 'GB', 'FR', 'IN', 'BR', 'VN'] as const;
 
 export default function ProtectionPage() {
   const { t } = useTranslation();
@@ -90,7 +94,7 @@ export default function ProtectionPage() {
         >
           <div className="policy-level-grid">
             {policyItems.map((item) => (
-              <div className="policy-level-card" key={item.field}>
+              <div className={`policy-level-card policy-level-card-${protection.policy[item.field] || 'smart'}`} key={item.field}>
                 <div className="policy-level-card-head">
                   <span>{item.label}</span>
                   <strong>{policyLevelLabel(protection.policy[item.field], t)}</strong>
@@ -108,7 +112,10 @@ export default function ProtectionPage() {
 
       <div className="settings-grid protection-settings-grid">
         <section className="panel protection-bot-panel">
-          <div className="panel-heading"><h2><Bot size={16} /> {t('protection.bot')}</h2></div>
+          <div className="panel-heading">
+            <h2><Bot size={16} /> {t('protection.botChallenge')}</h2>
+            <span className="policy-current-summary">{t('protection.botChallengeHint')}</span>
+          </div>
           <Form
             key={`bot-${protection.bot.enabled}-${protection.bot.cookie_name}`}
             layout="vertical"
@@ -126,14 +133,14 @@ export default function ProtectionPage() {
               sliderCaptchaHeight: protection.bot.slider_captcha_height,
               sliderCaptchaPiece: protection.bot.slider_captcha_piece,
               sliderCaptchaTolerance: protection.bot.slider_captcha_tolerance,
-              sliderCaptchaMinDrag: String(protection.bot.slider_captcha_min_drag),
+              sliderCaptchaMinDrag: protection.bot.slider_captcha_min_drag || '450ms',
               challengeDifficulty: protection.bot.challenge_difficulty,
               altchaMaxNumber: protection.bot.altcha_max_number,
               altchaHeaderName: protection.bot.altcha_header_name,
               waitingRoom: protection.bot.waiting_room,
               waitingRoomMaxActive: protection.bot.waiting_room_max_active,
-              waitingRoomTtl: String(protection.bot.waiting_room_ttl),
-              challengeTtl: String(protection.bot.challenge_ttl),
+              waitingRoomTtl: protection.bot.waiting_room_ttl || '5m',
+              challengeTtl: protection.bot.challenge_ttl || '30m',
               cookieName: protection.bot.cookie_name,
               secret: protection.bot.secret,
               protectedPaths: protection.bot.path_prefixes.join(','),
@@ -155,14 +162,14 @@ export default function ProtectionPage() {
               slider_captcha_height: values.sliderCaptchaHeight,
               slider_captcha_piece: values.sliderCaptchaPiece,
               slider_captcha_tolerance: values.sliderCaptchaTolerance,
-              slider_captcha_min_drag: values.sliderCaptchaMinDrag,
+              slider_captcha_min_drag: durationToNanoseconds(values.sliderCaptchaMinDrag, '450ms'),
               challenge_difficulty: values.challengeDifficulty,
               altcha_max_number: values.altchaMaxNumber,
               altcha_header_name: values.altchaHeaderName,
               waiting_room: values.waitingRoom,
               waiting_room_max_active: values.waitingRoomMaxActive,
-              waiting_room_ttl: values.waitingRoomTtl,
-              challenge_ttl: values.challengeTtl,
+              waiting_room_ttl: durationToNanoseconds(values.waitingRoomTtl, '5m'),
+              challenge_ttl: durationToNanoseconds(values.challengeTtl, '30m'),
               cookie_name: values.cookieName,
               secret: values.secret,
               path_prefixes: splitList(values.protectedPaths),
@@ -171,42 +178,95 @@ export default function ProtectionPage() {
               suspicious_user_agents: splitList(values.suspiciousUA),
             })}
           >
-            <div className="protection-form-grid protection-bot-grid">
-              <Form.Item label={t('protection.bot')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-              <Form.Item label={t('protection.jsChallenge')} field="jsChallenge" triggerPropName="checked"><Switch /></Form.Item>
-              <Form.Item label={t('protection.captcha')} field="captcha" triggerPropName="checked"><Switch /></Form.Item>
-              <Form.Item label={t('protection.captchaType')} field="captchaType">
-                <Select>
-                  <Select.Option value="pow">{t('protection.captchaTypePow')}</Select.Option>
-                  <Select.Option value="image">{t('protection.captchaTypeImage')}</Select.Option>
-                  <Select.Option value="slider">{t('protection.captchaTypeSlider')}</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item label={t('protection.captchaMaxAttempts')} field="captchaMaxAttempts"><InputNumber min={1} max={20} /></Form.Item>
-              <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty"><InputNumber min={1} max={6} /></Form.Item>
-              <Form.Item label={t('protection.altchaMaxNumber')} field="altchaMaxNumber"><InputNumber min={1000} max={50000000} /></Form.Item>
-              <Form.Item label={t('protection.altchaHeader')} field="altchaHeaderName"><Input /></Form.Item>
-              <Form.Item label={t('protection.imageCaptchaLength')} field="imageCaptchaLength"><InputNumber min={4} max={8} /></Form.Item>
-              <Form.Item label={t('protection.imageCaptchaSize')} field="imageCaptchaWidth"><InputNumber min={160} max={420} /></Form.Item>
-              <Form.Item label={t('protection.imageCaptchaHeight')} field="imageCaptchaHeight"><InputNumber min={60} max={180} /></Form.Item>
-              <Form.Item label={t('protection.imageCaptchaAudioLimit')} field="imageCaptchaAudioLimit"><InputNumber min={1} max={20} /></Form.Item>
-              <Form.Item label={t('protection.sliderCaptchaWidth')} field="sliderCaptchaWidth"><InputNumber min={240} max={520} /></Form.Item>
-              <Form.Item label={t('protection.sliderCaptchaHeight')} field="sliderCaptchaHeight"><InputNumber min={100} max={260} /></Form.Item>
-              <Form.Item label={t('protection.sliderCaptchaPiece')} field="sliderCaptchaPiece"><InputNumber min={32} max={80} /></Form.Item>
-              <Form.Item label={t('protection.sliderCaptchaTolerance')} field="sliderCaptchaTolerance"><InputNumber min={2} max={16} /></Form.Item>
-              <Form.Item label={t('protection.sliderCaptchaMinDrag')} field="sliderCaptchaMinDrag"><Input placeholder="450ms" /></Form.Item>
-              <Form.Item label={t('protection.waitingRoom')} field="waitingRoom" triggerPropName="checked"><Switch /></Form.Item>
-              <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive"><InputNumber min={1} max={1000000} /></Form.Item>
-              <Form.Item label={t('protection.waitingRoomTtl')} field="waitingRoomTtl"><Input placeholder="5m" /></Form.Item>
-              <Form.Item label={t('protection.challengeTtl')} field="challengeTtl"><Input placeholder="30m" /></Form.Item>
-              <Form.Item label={t('protection.cookieName')} field="cookieName"><Input /></Form.Item>
-              <Form.Item label={t('protection.secret')} field="secret"><Input.Password /></Form.Item>
-              <Form.Item label={t('protection.protectedPaths')} field="protectedPaths"><Input placeholder="/" /></Form.Item>
-              <Form.Item label={t('protection.exemptPaths')} field="exemptPaths"><Input placeholder="/health,/api/" /></Form.Item>
-              <Form.Item label={t('protection.allowedUA')} field="allowedUA"><Input /></Form.Item>
-              <Form.Item label={t('protection.suspiciousUA')} field="suspiciousUA"><Input /></Form.Item>
+            <div className="protection-section-stack">
+              <div className="protection-section-card protection-section-card-main protection-section-card-plain">
+                <div className="protection-form-grid protection-form-grid-compact">
+                  <Form.Item label={t('protection.bot')} field="enabled" triggerPropName="checked" extra={t('protection.botEnabledHint')}><Switch /></Form.Item>
+                  <Form.Item label={t('protection.jsChallenge')} field="jsChallenge" triggerPropName="checked" extra={t('protection.jsChallengeHint')}><Switch /></Form.Item>
+                  <Form.Item label={t('protection.captcha')} field="captcha" triggerPropName="checked" extra={t('protection.captchaHint')}><Switch /></Form.Item>
+                  <Form.Item label={t('protection.captchaType')} field="captchaType" extra={t('protection.captchaTypeHint')}>
+                    <Select>
+                      <Select.Option value="pow">{t('protection.captchaTypePow')}</Select.Option>
+                      <Select.Option value="image">{t('protection.captchaTypeImage')}</Select.Option>
+                      <Select.Option value="slider">{t('protection.captchaTypeSlider')}</Select.Option>
+                    </Select>
+                  </Form.Item>
+                  <Form.Item label={t('protection.captchaMaxAttempts')} field="captchaMaxAttempts" extra={t('protection.captchaMaxAttemptsHint')}><InputNumber min={1} max={20} /></Form.Item>
+                  <Form.Item className="duration-field" label={t('protection.challengeTtl')} field="challengeTtl" extra={t('protection.challengeTtlHint')}><DurationUnitInput /></Form.Item>
+                </div>
+              </div>
+
+              <div className="protection-subsection-grid">
+                <div className="protection-section-card">
+                  <header>
+                    <strong><KeyRound size={15} /> {t('protection.powAltcha')}</strong>
+                    <span>{t('protection.powAltchaHint')}</span>
+                  </header>
+                  <div className="protection-form-grid protection-form-grid-compact">
+                    <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty" extra={t('protection.challengeDifficultyHint')}><InputNumber min={1} max={6} /></Form.Item>
+                    <Form.Item label={t('protection.altchaMaxNumber')} field="altchaMaxNumber" extra={t('protection.altchaMaxNumberHint')}><InputNumber min={1000} max={50000000} /></Form.Item>
+                    <Form.Item label={t('protection.altchaHeader')} field="altchaHeaderName" extra={t('protection.altchaHeaderHint')}><Input /></Form.Item>
+                  </div>
+                </div>
+
+                <div className="protection-section-card">
+                  <header>
+                    <strong><ImageIcon size={15} /> {t('protection.imageCaptcha')}</strong>
+                    <span>{t('protection.imageCaptchaHint')}</span>
+                  </header>
+                  <div className="protection-form-grid protection-form-grid-compact">
+                    <Form.Item label={t('protection.imageCaptchaLength')} field="imageCaptchaLength" extra={t('protection.imageCaptchaLengthHint')}><InputNumber min={4} max={8} /></Form.Item>
+                    <Form.Item label={t('protection.imageCaptchaSize')} field="imageCaptchaWidth" extra={t('protection.imageCaptchaSizeHint')}><InputNumber min={160} max={420} /></Form.Item>
+                    <Form.Item label={t('protection.imageCaptchaHeight')} field="imageCaptchaHeight"><InputNumber min={60} max={180} /></Form.Item>
+                    <Form.Item label={t('protection.imageCaptchaAudioLimit')} field="imageCaptchaAudioLimit" extra={t('protection.imageCaptchaAudioLimitHint')}><InputNumber min={1} max={20} /></Form.Item>
+                  </div>
+                </div>
+
+                <div className="protection-section-card">
+                  <header>
+                    <strong><Puzzle size={15} /> {t('protection.sliderCaptcha')}</strong>
+                    <span>{t('protection.sliderCaptchaHint')}</span>
+                  </header>
+                  <div className="protection-form-grid protection-form-grid-compact">
+                    <Form.Item label={t('protection.sliderCaptchaWidth')} field="sliderCaptchaWidth"><InputNumber min={240} max={520} /></Form.Item>
+                    <Form.Item label={t('protection.sliderCaptchaHeight')} field="sliderCaptchaHeight"><InputNumber min={100} max={260} /></Form.Item>
+                    <Form.Item label={t('protection.sliderCaptchaPiece')} field="sliderCaptchaPiece" extra={t('protection.sliderCaptchaPieceHint')}><InputNumber min={32} max={80} /></Form.Item>
+                    <Form.Item label={t('protection.sliderCaptchaTolerance')} field="sliderCaptchaTolerance" extra={t('protection.sliderCaptchaToleranceHint')}><InputNumber min={2} max={16} /></Form.Item>
+                    <Form.Item className="duration-field" label={t('protection.sliderCaptchaMinDrag')} field="sliderCaptchaMinDrag" extra={t('protection.sliderCaptchaMinDragHint')}><DurationUnitInput units={['ms', 's']} fallback="450ms" /></Form.Item>
+                  </div>
+                </div>
+
+                <div className="protection-section-card">
+                  <header>
+                    <strong><Clock3 size={15} /> {t('protection.waitingRoom')}</strong>
+                    <span>{t('protection.waitingRoomHint')}</span>
+                  </header>
+                  <div className="protection-form-grid protection-form-grid-compact">
+                    <Form.Item label={t('protection.waitingRoom')} field="waitingRoom" triggerPropName="checked" extra={t('protection.waitingRoomEnabledHint')}><Switch /></Form.Item>
+                    <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive" extra={t('protection.waitingRoomMaxActiveHint')}><InputNumber min={1} max={1000000} /></Form.Item>
+                    <Form.Item className="duration-field" label={t('protection.waitingRoomTtl')} field="waitingRoomTtl" extra={t('protection.waitingRoomTtlHint')}><DurationUnitInput /></Form.Item>
+                  </div>
+                </div>
+              </div>
+
+              <div className="protection-section-card">
+                <header>
+                  <strong><Route size={15} /> {t('protection.scopeAndTrust')}</strong>
+                  <span>{t('protection.scopeAndTrustHint')}</span>
+                </header>
+                <div className="protection-form-grid">
+                  <Form.Item label={t('protection.cookieName')} field="cookieName" extra={t('protection.cookieNameHint')}><Input /></Form.Item>
+                  <Form.Item label={t('protection.secret')} field="secret" extra={t('protection.secretHint')}><Input.Password /></Form.Item>
+                  <Form.Item label={t('protection.protectedPaths')} field="protectedPaths" extra={t('protection.protectedPathsHint')}><Input placeholder="/" /></Form.Item>
+                  <Form.Item label={t('protection.exemptPaths')} field="exemptPaths" extra={t('protection.exemptPathsHint')}><Input placeholder="/health,/api/" /></Form.Item>
+                  <Form.Item label={t('protection.allowedUA')} field="allowedUA" extra={t('protection.allowedUAHint')}><Input /></Form.Item>
+                  <Form.Item label={t('protection.suspiciousUA')} field="suspiciousUA" extra={t('protection.suspiciousUAHint')}><Input /></Form.Item>
+                </div>
+              </div>
             </div>
-            <Button type="primary" htmlType="submit" loading={botMutation.isPending}>{t('common.save')}</Button>
+            <div className="form-action-row">
+              <Button type="primary" htmlType="submit" loading={botMutation.isPending}>{t('common.save')}</Button>
+            </div>
           </Form>
         </section>
 
@@ -218,7 +278,7 @@ export default function ProtectionPage() {
             initialValues={{
               enabled: protection.ip.geoip.enabled,
               database: protection.ip.geoip.database,
-              blocked: protection.ip.geoip.blocked_countries.join(','),
+              blocked: protection.ip.geoip.blocked_countries,
               whitelist: protection.ip.whitelist.join(','),
               blacklist: protection.ip.blacklist.join(','),
             }}
@@ -232,7 +292,7 @@ export default function ProtectionPage() {
             <div className="protection-form-grid">
               <Form.Item label={t('protection.geoip')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
               <Form.Item label={t('protection.geoipDatabase')} field="database"><Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" /></Form.Item>
-              <Form.Item label={t('protection.blockedCountries')} field="blocked"><Input placeholder="CN,RU" /></Form.Item>
+              <Form.Item label={t('protection.blockedCountries')} field="blocked" extra={t('protection.blockedCountriesHint')}><GeoRegionSelector /></Form.Item>
               <Form.Item label={t('ip.whitelist')} field="whitelist"><Input /></Form.Item>
               <Form.Item label={t('ip.blacklist')} field="blacklist"><Input /></Form.Item>
             </div>
@@ -264,6 +324,7 @@ export default function ProtectionPage() {
           <Button onClick={() => aclMutation.mutate(protection.acl)} loading={aclMutation.isPending}>{t('common.save')}</Button>
         </div>
         <Table
+          className="protection-acl-table"
           rowKey="id"
           pagination={false}
           loading={isLoading}
@@ -284,13 +345,59 @@ export default function ProtectionPage() {
             { title: t('rules.enabled'), dataIndex: 'enabled', render: (_: boolean, record: ACLRule) => <Switch checked={record.enabled} size="small" /> },
           ]}
         />
+        <div className="protection-acl-cards">
+          {protection.acl.rules.map((rule) => (
+            <article className="protection-acl-card" key={rule.id}>
+              <header>
+                <strong>{rule.name}</strong>
+                <Switch checked={rule.enabled} size="small" />
+              </header>
+              <div>
+                <span>Method</span>
+                <strong>{rule.method || '*'}</strong>
+              </div>
+              <div>
+                <span>Path</span>
+                <code>{rule.path_prefix || '*'}</code>
+              </div>
+              <div>
+                <span>{t('logs.action')}</span>
+                <Tag color={rule.action === 'block' ? 'red' : 'blue'}>{displayAction(rule.action, t)}</Tag>
+              </div>
+            </article>
+          ))}
+        </div>
       </section>
     </section>
   );
 }
 
 function splitList(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
   return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function GeoRegionSelector({ value, onChange }: { value?: string[]; onChange?: (value: string[]) => void }) {
+  const { t } = useTranslation();
+  const selected = Array.isArray(value) ? value : splitList(value);
+  return (
+    <Select
+      className="geo-region-select"
+      mode="multiple"
+      allowClear
+      value={selected}
+      placeholder={t('protection.blockedCountriesPlaceholder')}
+      onChange={(next) => onChange?.((Array.isArray(next) ? next : []).map((item) => String(item).toUpperCase()))}
+    >
+      {geoRegionOptions.map((code) => (
+        <Select.Option key={code} value={code}>
+          {t(`geo.countries.${code}`, { defaultValue: code })} ({code})
+        </Select.Option>
+      ))}
+    </Select>
+  );
 }
 
 function normalizeProtection(input?: ProtectionConfig): ProtectionConfig {
@@ -343,15 +450,130 @@ function asArray<T>(value: T[] | null | undefined): T[] {
 
 function ProtectionLevelSelect({ value, onChange }: { value?: string; onChange?: (value: string) => void }) {
   const { t } = useTranslation();
+  const current = value || 'smart';
+  const options = [
+    { value: 'off', label: t('sites.levelOff') },
+    { value: 'low', label: t('sites.levelLow') },
+    { value: 'smart', label: t('sites.levelSmart') },
+    { value: 'high', label: t('sites.levelHigh') },
+    { value: 'strict', label: t('sites.levelStrict') },
+  ];
   return (
-    <Select className="protection-level-select" value={value || 'smart'} onChange={(next) => onChange?.(String(next))}>
-      <Select.Option value="off">{t('sites.levelOff')}</Select.Option>
-      <Select.Option value="low">{t('sites.levelLow')}</Select.Option>
-      <Select.Option value="smart">{t('sites.levelSmart')}</Select.Option>
-      <Select.Option value="high">{t('sites.levelHigh')}</Select.Option>
-      <Select.Option value="strict">{t('sites.levelStrict')}</Select.Option>
-    </Select>
+    <div className="protection-level-picker" role="radiogroup" aria-label={t('protection.policy')}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={current === option.value}
+          className={current === option.value ? `protection-level-option protection-level-option-${option.value} protection-level-option-active` : 'protection-level-option'}
+          onClick={() => onChange?.(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
+}
+
+function DurationUnitInput({
+  value,
+  onChange,
+  units = ['s', 'm', 'h', 'd'],
+  fallback = '30m',
+}: {
+  value?: number | string;
+  onChange?: (next: number) => void;
+  units?: DurationUnit[];
+  fallback?: number | string;
+}) {
+  const { t } = useTranslation();
+  const parts = durationToUnitParts(value, units, fallback);
+  const [unit, setUnit] = useState<DurationUnit>(parts.unit);
+  useEffect(() => {
+    setUnit(parts.unit);
+  }, [parts.unit, parts.amount]);
+
+  const emit = (amount: number | string | null | undefined, nextUnit = unit) => {
+    const numeric = Math.max(1, Number(amount || 1));
+    onChange?.(numeric * durationUnitToNanoseconds(nextUnit));
+  };
+
+  return (
+    <div className="compound-input duration-unit-input">
+      <InputNumber min={1} value={parts.amount} onChange={(next) => emit(next)} />
+      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as DurationUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
+        {units.map((option) => (
+          <Select.Option key={option} value={option}>{durationUnitLabel(option, t)}</Select.Option>
+        ))}
+      </Select>
+    </div>
+  );
+}
+
+function durationToNanoseconds(value: number | string | undefined, fallback: number | string = '30m'): number {
+  if (typeof value === 'number') {
+    return value > 0 ? value : durationToNanoseconds(fallback);
+  }
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return durationToNanoseconds(fallback);
+  }
+  const numeric = Number.parseFloat(raw);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return durationToNanoseconds(fallback);
+  }
+  if (raw.endsWith('ms')) {
+    return numeric * durationUnitToNanoseconds('ms');
+  }
+  if (raw.endsWith('d')) {
+    return numeric * durationUnitToNanoseconds('d');
+  }
+  if (raw.endsWith('h')) {
+    return numeric * durationUnitToNanoseconds('h');
+  }
+  if (raw.endsWith('m')) {
+    return numeric * durationUnitToNanoseconds('m');
+  }
+  if (raw.endsWith('s')) {
+    return numeric * durationUnitToNanoseconds('s');
+  }
+  return numeric;
+}
+
+function durationToUnitParts(value: number | string | undefined, units: DurationUnit[], fallback: number | string): { amount: number; unit: DurationUnit } {
+  const ns = Math.max(1, Number(durationToNanoseconds(value, fallback) || 0));
+  for (const unit of units) {
+    const divisor = durationUnitToNanoseconds(unit);
+    if (ns >= divisor && ns % divisor === 0) {
+      return { amount: ns / divisor, unit };
+    }
+  }
+  const unit = units[0] ?? 's';
+  return { amount: Math.max(1, Math.round(ns / durationUnitToNanoseconds(unit))), unit };
+}
+
+function durationUnitToNanoseconds(unit: DurationUnit) {
+  switch (unit) {
+    case 'ms':
+      return 1_000_000;
+    case 'd':
+      return 24 * 60 * 60 * 1_000_000_000;
+    case 'h':
+      return 60 * 60 * 1_000_000_000;
+    case 'm':
+      return 60 * 1_000_000_000;
+    default:
+      return 1_000_000_000;
+  }
+}
+
+function durationUnitLabel(unit: DurationUnit, t: ReturnType<typeof useTranslation>['t']) {
+  if (unit === 'ms') return 'ms';
+  if (unit === 's') return t('common.seconds');
+  if (unit === 'm') return t('common.minutes');
+  if (unit === 'h') return t('common.hours');
+  return t('common.days');
 }
 
 function policyLevelLabel(level: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
