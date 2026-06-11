@@ -47,7 +47,8 @@ export default function IPManagePage() {
   const queryClient = useQueryClient();
   const [routeParams, setRouteParams] = useSearchParams();
   const tabParam = routeParams.get('tab');
-  const activeTab = tabParam === 'access' || tabParam === 'providers' || tabParam === 'import' ? tabParam : 'entries';
+  const normalizedTab = tabParam === 'intel' ? 'providers' : tabParam;
+  const activeTab = normalizedTab === 'access' || normalizedTab === 'providers' || normalizedTab === 'import' ? normalizedTab : 'entries';
   const [search, setSearch] = useState('');
   const [draftTags, setDraftTags] = useState<Record<string, string[]>>({});
   const [accessRules, setAccessRules] = useState<IPAccessRule[]>([]);
@@ -339,7 +340,7 @@ export default function IPManagePage() {
             if (tab === 'entries') {
               next.delete('tab');
             } else {
-              next.set('tab', tab);
+              next.set('tab', tab === 'providers' ? 'intel' : tab);
             }
             setRouteParams(next, { replace: true });
           }}
@@ -403,7 +404,7 @@ export default function IPManagePage() {
                     render: (_: unknown, record: IPReputationEntry) => (
                       <span className="intel-chip-list">
                         {intelFor(record).length === 0 ? <span className="intel-chip intel-chip-muted">{t('common.monitor')}</span> : intelFor(record).map((item) => {
-                          const confidence = typeof item.confidence === 'number' && item.confidence > 0 ? ` · ${Math.round(item.confidence * 100)}%` : '';
+                          const confidence = formatConfidenceSuffix(item.confidence);
                           return (
                             <span key={`${record.ip}-${item.id || item.value}`} className={`intel-chip intel-chip-${intelColor(item.severity)}`}>
                               <span>{item.source || displaySeverity(item.severity, t)}</span>
@@ -803,7 +804,7 @@ function indicatorSummary(item: Record<string, unknown>) {
     parts.push(severity);
   }
   if (typeof confidence === 'number' && Number.isFinite(confidence)) {
-    parts.push(confidence <= 1 ? `${Math.round(confidence * 100)}%` : `${Math.round(confidence)}%`);
+    parts.push(formatConfidenceLabel(confidence));
   }
   if (source) {
     parts.push(source);
@@ -829,6 +830,18 @@ function numberField(item: Record<string, unknown>, keys: string[]) {
     }
   }
   return undefined;
+}
+
+function formatConfidenceSuffix(value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return '';
+  }
+  return ` · ${formatConfidenceLabel(value)}`;
+}
+
+function formatConfidenceLabel(value: number) {
+  const percent = value <= 1 ? value * 100 : value;
+  return `${Math.round(Math.max(0, Math.min(100, percent)))}%`;
 }
 
 function IPEntryMobileCard({
@@ -894,7 +907,7 @@ function IPEntryMobileCard({
         <span>{t('ip.intel')}</span>
         <span className="intel-chip-list">
           {intel.length === 0 ? <span className="intel-chip intel-chip-muted">{t('common.monitor')}</span> : intel.map((item) => {
-            const confidence = typeof item.confidence === 'number' && item.confidence > 0 ? ` · ${Math.round(item.confidence * 100)}%` : '';
+            const confidence = formatConfidenceSuffix(item.confidence);
             return (
               <span key={`${entry.ip}-${item.id || item.value}`} className={`intel-chip intel-chip-${intelColor(item.severity)}`}>
                 <span>{item.source || displaySeverity(item.severity, t)}</span>

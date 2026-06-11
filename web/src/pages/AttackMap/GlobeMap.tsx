@@ -2,14 +2,17 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { geoEquirectangular, geoGraticule10, geoPath } from 'd3-geo';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { AttackRegion, ThreatLevel, WorldFeature } from './AttackMapPage';
+import { useTranslation } from 'react-i18next';
+import type { AttackRegion, ProtectedTarget, ThreatLevel, WorldFeature } from './AttackMapPage';
 import { normalizeWorldId } from './AttackMapPage';
+import { displayCountry } from '../../utils/display';
 
 type GlobeMapProps = {
   regions: AttackRegion[];
   zoom: number;
   countryLevels: Map<string, ThreatLevel>;
   worldFeatures: WorldFeature[];
+  target?: ProtectedTarget;
   fallback: ReactNode;
 };
 
@@ -22,7 +25,8 @@ const globeLevelColors: Record<ThreatLevel, number> = {
 
 const markerColorFallback = 0x2176d2;
 
-export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, fallback }: GlobeMapProps) {
+export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, target, fallback }: GlobeMapProps) {
+  const { t } = useTranslation();
   const hostRef = useRef<HTMLDivElement>(null);
   const [webglError, setWebglError] = useState(false);
 
@@ -77,6 +81,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const atmosphereGeometry = new THREE.SphereGeometry(1.085, 128, 128);
     const markerTipGeometry = new THREE.SphereGeometry(1, 24, 24);
     const flowHeadGeometry = new THREE.SphereGeometry(0.014, 14, 14);
+    const targetGeometry = new THREE.SphereGeometry(0.024, 24, 24);
     const texture = createWorldTexture(countryLevels, worldFeatures);
     if (texture) {
       texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() ?? 1);
@@ -149,7 +154,16 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const markerMeshes: any[] = [];
     const pulseRings: Array<{ mesh: any; material: any; phase: number }> = [];
     const flowArcs: Array<{ material: any; head: any; headMaterial: any; curve: any; phase: number }> = [];
-    const protectedOrigin = latLonToVector(35.9, 104.2, 1.036);
+    const protectedTarget = target ?? { lat: 35.9, lon: 104.2, label: t('attackMap.protectedTarget'), source: 'fallback' as const };
+    const protectedOrigin = latLonToVector(protectedTarget.lat, protectedTarget.lon, 1.052);
+    const targetMarker = new THREE.Mesh(
+      targetGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.96, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
+    targetMarker.position.copy(protectedOrigin);
+    targetMarker.userData.region = { locationName: protectedTarget.label, attacks: t('attackMap.protectedTarget'), isTarget: true };
+    markerMeshes.push(targetMarker);
+    markerGroup.add(targetMarker);
     for (const [index, region] of regions.entries()) {
       const normal = latLonToVector(region.lat, region.lon, 1).normalize();
       const color = globeLevelColors[region.level] ?? markerColorFallback;
@@ -199,7 +213,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
           depthWrite: false,
           blending: THREE.AdditiveBlending,
         });
-        const arc = createArcMesh(protectedOrigin, normal.clone().multiplyScalar(1.038), arcMaterial);
+        const arc = createArcMesh(normal.clone().multiplyScalar(1.038), protectedOrigin, arcMaterial);
         const headMaterial = new THREE.MeshBasicMaterial({
           color,
           transparent: true,
@@ -241,8 +255,10 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
         tooltip.classList.remove('globe-tooltip-visible');
         return;
       }
-      const region = hit.object.userData.region as AttackRegion;
-      tooltip.textContent = `${region.locationName} · ${region.attacks}`;
+      const region = hit.object.userData.region as AttackRegion & { isTarget?: boolean };
+      tooltip.textContent = region.isTarget
+        ? `${protectedTarget.label} · ${t('attackMap.protectedTarget')}`
+        : `${formatGlobeRegionLocation(region, t)} · ${region.attacks}`;
       tooltip.style.left = `${event.clientX - rect.left + 12}px`;
       tooltip.style.top = `${event.clientY - rect.top + 12}px`;
       tooltip.classList.add('globe-tooltip-visible');
@@ -255,9 +271,11 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       const rect = host.getBoundingClientRect();
       const width = Math.max(320, rect.width);
       const height = Math.max(320, rect.height);
+      const narrow = width < 560;
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
-      camera.position.z = 3 / zoom;
+      camera.position.y = narrow ? 0.08 : 0.22;
+      camera.position.z = (narrow ? 3.65 : 3) / zoom;
       camera.updateProjectionMatrix();
       renderer.render(scene, camera);
     };
@@ -308,7 +326,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       host.removeChild(renderer.domElement);
       host.removeChild(tooltip);
     };
-  }, [regions, zoom, countryLevels, worldFeatures, webglError]);
+  }, [regions, zoom, countryLevels, worldFeatures, target, t, webglError]);
 
   if (webglError) {
     return <>{fallback}</>;
@@ -319,6 +337,14 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
 
 function orientNormal(object: any, normal: any) {
   object.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+}
+
+function formatGlobeRegionLocation(region: AttackRegion, t: (key: string, options?: Record<string, unknown>) => string) {
+  const country = displayCountry(region.countryCode, t);
+  if (region.locationName && region.locationName !== region.countryCode && region.locationName !== 'UNLOCATED') {
+    return `${country} · ${region.locationName}`;
+  }
+  return country;
 }
 
 function createArcMesh(start: any, end: any, material: any) {

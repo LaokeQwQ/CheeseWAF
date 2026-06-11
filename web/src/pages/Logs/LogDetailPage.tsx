@@ -10,7 +10,7 @@ import type { AttackAnalysis, LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry, displaySeverity } from '../../utils/display';
 
 export default function LogDetailPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { traceId = '' } = useParams();
   const reference = decodeURIComponent(traceId);
@@ -21,7 +21,7 @@ export default function LogDetailPage() {
     retry: false,
   });
   const analysisMutation = useMutation({
-    mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id || reference),
+    mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id || reference, i18n.language),
     onError: (mutationError) => ArcoMessage.error(mutationError.message),
   });
   const analysis = analysisMutation.data;

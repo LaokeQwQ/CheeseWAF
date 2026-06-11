@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AIConfig, AIEventsAnalysisResponse, AIAssistantReply, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
+import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -9,6 +9,7 @@ export const apiClient = axios.create({
   },
 });
 
+const AI_REQUEST_TIMEOUT_MS = 120_000;
 const tokenStorageKey = 'cheesewaf-token';
 const tokenRefreshWindowSeconds = 10 * 60;
 let refreshPromise: Promise<string> | null = null;
@@ -125,6 +126,20 @@ async function unwrap<T>(promise: Promise<{ data: Envelope<T> }>): Promise<T> {
       const apiError = error.response?.data?.error;
       if (apiError) {
         throw new APIRequestError(apiError.message, apiError.code, error.response?.status);
+      }
+      if (error.code === 'ECONNABORTED' || error.message.toLowerCase().includes('timeout')) {
+        const timeout = Number(error.config?.timeout ?? apiClient.defaults.timeout ?? 0);
+        const seconds = timeout > 0 ? Math.round(timeout / 1000) : 0;
+        throw new APIRequestError(
+          seconds > 0 ? `Request timed out after ${seconds}s. Check the upstream service or try again.` : 'Request timed out. Check the upstream service or try again.',
+          'REQUEST_TIMEOUT',
+        );
+      }
+      if (!error.response) {
+        throw new APIRequestError(
+          'Network request failed. Check the API base URL, provider availability, firewall, or server-side proxy logs.',
+          'NETWORK_ERROR',
+        );
       }
       if (error.response?.status) {
         throw new APIRequestError(error.message, undefined, error.response.status);
@@ -536,21 +551,138 @@ export function updateAIConfig(config: AIConfig) {
 }
 
 export function testAIConnection() {
-  return unwrap<{ ok: boolean }>(apiClient.post('/ai/test'));
+  return unwrap<{ ok: boolean }>(apiClient.post('/ai/test', {}, { timeout: 20_000 }));
 }
 
-export function analyzeLog(entry: Record<string, unknown>) {
-  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', entry));
+export function analyzeLog(entry: Record<string, unknown>, language?: string) {
+  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', { ...entry, language }, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
-export function analyzeLogReference(reference: string) {
-  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', { reference }));
+export function analyzeLogReference(reference: string, language?: string) {
+  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', { reference, language }, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
-export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string }) {
-  return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload));
+export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string; language?: string }) {
+  return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
-export function askAIAssistant(message: string, limit = 30) {
-  return unwrap<AIAssistantReply>(apiClient.post('/ai/assistant', { message, limit }));
+export function askAIAssistant(message: string, limit = 30, language?: string) {
+  return unwrap<AIAssistantReply>(apiClient.post('/ai/assistant', { message, limit, language }, { timeout: AI_REQUEST_TIMEOUT_MS }));
+}
+
+export async function askAIAssistantStream(
+  message: string,
+  limit = 30,
+  language = '',
+  onTrace?: (event: AIAssistantTraceEvent) => void,
+  signal?: AbortSignal,
+) {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/assistant/stream') : '';
+  const response = await fetch('/api/ai/assistant/stream', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+    },
+    body: JSON.stringify({ message, limit, language }),
+  });
+  if (!response.ok) {
+    throw new APIRequestError(await readableFetchError(response), 'AI_ASSISTANT_STREAM_FAILED', response.status);
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
+    const payload = await response.json() as Envelope<AIAssistantReply>;
+    if (payload.error) {
+      throw new APIRequestError(payload.error.message, payload.error.code, response.status);
+    }
+    return payload.data as AIAssistantReply;
+  }
+  if (!response.body) {
+    throw new APIRequestError('Streaming response body is not available.', 'AI_ASSISTANT_STREAM_UNAVAILABLE', response.status);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalReply: AIAssistantReply | null = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split(/\n\n/);
+    buffer = parts.pop() ?? '';
+    for (const part of parts) {
+      const event = parseSSEBlock(part);
+      if (!event) {
+        continue;
+      }
+      if (event.event === 'trace') {
+        onTrace?.(event.data as AIAssistantTraceEvent);
+      } else if (event.event === 'done') {
+        finalReply = event.data as AIAssistantReply;
+      } else if (event.event === 'error') {
+        const payload = event.data as { message?: string };
+        throw new APIRequestError(payload.message || 'AI assistant stream failed.', 'AI_ASSISTANT_STREAM_FAILED');
+      }
+    }
+  }
+  if (buffer.trim()) {
+    const event = parseSSEBlock(buffer);
+    if (event?.event === 'done') {
+      finalReply = event.data as AIAssistantReply;
+    }
+  }
+  if (!finalReply) {
+    throw new APIRequestError('AI assistant stream ended without a final answer.', 'AI_ASSISTANT_STREAM_INCOMPLETE');
+  }
+  return finalReply;
+}
+
+export function fetchAITools() {
+  return unwrap<AIToolDefinition[]>(apiClient.get('/ai/tools'));
+}
+
+export function executeAITool(name: string, args: Record<string, unknown> = {}, approvalID = '') {
+  return unwrap<AIToolExecution>(apiClient.post('/ai/tools/execute', { name, args, approval_id: approvalID }));
+}
+
+export function approveAIApproval(id: string) {
+  return unwrap<AIApprovalRequest>(apiClient.post(`/ai/tools/approvals/${encodeURIComponent(id)}/approve`, {}));
+}
+
+export function rejectAIApproval(id: string) {
+  return unwrap<AIApprovalRequest>(apiClient.post(`/ai/tools/approvals/${encodeURIComponent(id)}/reject`, {}));
+}
+
+function parseSSEBlock(block: string) {
+  const lines = block.split(/\r?\n/);
+  let event = 'message';
+  const data: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      data.push(line.slice(5).trimStart());
+    }
+  }
+  if (data.length === 0) {
+    return null;
+  }
+  return { event, data: JSON.parse(data.join('\n')) as unknown };
+}
+
+async function readableFetchError(response: Response) {
+  const text = await response.text().catch(() => '');
+  if (!text) {
+    return `${response.status} ${response.statusText}`;
+  }
+  try {
+    const parsed = JSON.parse(text) as Envelope<unknown>;
+    return parsed.error?.message || text;
+  } catch {
+    return text;
+  }
 }

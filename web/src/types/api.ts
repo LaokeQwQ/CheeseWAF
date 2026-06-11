@@ -289,6 +289,64 @@ export type AIAssistantReply = {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  tool_executions?: AIToolExecution[];
+  trace?: AIAssistantTraceEvent[];
+};
+
+export type AIAssistantTraceEvent = {
+  type: string;
+  message: string;
+  provider?: string;
+  model?: string;
+  mode?: string;
+  tool_name?: string;
+  args?: Record<string, unknown>;
+  result?: AIToolResult;
+  approval?: AIApprovalRequest;
+  error?: string;
+  at?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+};
+
+export type AIToolSensitivity = 'read_only' | 'modify' | 'destructive' | string;
+
+export type AIApprovalStatus = 'pending' | 'approved' | 'rejected' | 'executed' | string;
+
+export type AIToolResult = {
+  success: boolean;
+  output: string;
+  diff?: string;
+  error?: string;
+};
+
+export type AIApprovalRequest = {
+  id: string;
+  tool_name: string;
+  args: Record<string, unknown>;
+  sensitivity: number | string;
+  diff?: string;
+  status: AIApprovalStatus;
+  created_at: string;
+  decided_at?: string;
+};
+
+export type AIToolExecution = {
+  name: string;
+  description?: string;
+  sensitivity: AIToolSensitivity;
+  args?: Record<string, unknown>;
+  result?: AIToolResult;
+  approval?: AIApprovalRequest;
+  error?: string;
+};
+
+export type AIToolDefinition = {
+  name: string;
+  description: string;
+  sensitivity: AIToolSensitivity;
+  parameters: Record<string, unknown>;
 };
 
 export type LogEntry = {

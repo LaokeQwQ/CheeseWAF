@@ -29,10 +29,10 @@ const fallback: AIConfig = {
 };
 
 export default function AIPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState('');
-  const [analysisRange, setAnalysisRange] = useState('1h');
+  const [analysisRange, setAnalysisRange] = useState('24h');
   const [eventPage, setEventPage] = useState(1);
   const [analyses, setAnalyses] = useState<Record<string, AttackAnalysis>>({});
   const { data } = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
@@ -81,12 +81,12 @@ export default function AIPage() {
     onError: (error) => ArcoMessage.error(error.message),
   });
   const eventAnalysisMutation = useMutation({
-    mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id),
+    mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id, i18n.language),
     onSuccess: (analysis, entry) => setAnalyses((current) => ({ ...current, [eventKey(entry)]: analysis, [analysis.log_id]: analysis })),
     onError: (error) => ArcoMessage.error(error.message),
   });
   const batchAnalysisMutation = useMutation({
-    mutationFn: () => analyzeEvents(buildAnalysisWindowQuery(analysisRange, 200)),
+    mutationFn: () => analyzeEvents({ ...buildAnalysisWindowQuery(analysisRange, 200), language: i18n.language }),
     onSuccess: (result) => {
       setAnalyses((current) => {
         const next = { ...current };
@@ -138,7 +138,7 @@ export default function AIPage() {
               async: values.async,
             })}
           >
-            <Form.Item label={t('ai.enabled')} field="enabled"><Switch /></Form.Item>
+            <Form.Item label={t('ai.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
             <Form.Item label={t('ai.provider')} field="provider">
               <Select>
                 <Select.Option value="openai">{t('ai.providerOpenAI')}</Select.Option>
@@ -150,7 +150,7 @@ export default function AIPage() {
             <Form.Item label={t('ai.apiKey')} field="apiKey">
               <Input.Password placeholder={config.api_key_set ? t('ai.keyStored') : ''} />
             </Form.Item>
-            <Form.Item label={t('ai.async')} field="async"><Switch /></Form.Item>
+            <Form.Item label={t('ai.async')} field="async" triggerPropName="checked"><Switch /></Form.Item>
             <Button className="ai-config-save" type="primary" htmlType="submit" loading={updateMutation.isPending}>{t('common.save')}</Button>
           </Form>
         </section>
