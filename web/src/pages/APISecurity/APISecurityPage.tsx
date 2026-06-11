@@ -25,7 +25,7 @@ export default function APISecurityPage() {
       </header>
 
       <div className="api-security-grid">
-        <section className="panel">
+        <section className="panel api-discovery-panel">
           <div className="panel-heading"><h2><Radar size={16} /> {t('apisec.discovery')}</h2></div>
           <div className="table-scroll api-endpoints-table">
             <Table
@@ -33,13 +33,14 @@ export default function APISecurityPage() {
               pagination={false}
               data={data?.endpoints ?? []}
               columns={[
-                { title: t('apisec.method'), dataIndex: 'method', render: (value: string) => <Tag>{value}</Tag> },
-                { title: t('apisec.path'), dataIndex: 'path', render: (value: string) => <code className="table-code" title={value}>{value}</code> },
-                { title: t('apisec.count'), dataIndex: 'count' },
-                { title: t('apisec.blocked'), dataIndex: 'blocked', render: (value: number) => <Tag color={value > 0 ? 'red' : 'green'}>{value}</Tag> },
+                { title: t('apisec.method'), dataIndex: 'method', width: 88, render: (value: string) => <Tag>{value}</Tag> },
+                { title: t('apisec.path'), dataIndex: 'path', width: 180, render: (value: string) => <code className="table-code" title={value}>{value}</code> },
+                { title: t('apisec.count'), dataIndex: 'count', width: 92 },
+                { title: t('apisec.blocked'), dataIndex: 'blocked', width: 86, render: (value: number) => <Tag color={value > 0 ? 'red' : 'green'}>{value}</Tag> },
                 {
                   title: t('apisec.status'),
                   dataIndex: 'status_family',
+                  width: 240,
                   render: (_: unknown, record: APIEndpoint) => (
                     <span className="api-status-group">
                       {Object.entries(record.status_family).map(([key, value]) => <Tag key={key}>{key}: {value}</Tag>)}
@@ -51,7 +52,7 @@ export default function APISecurityPage() {
           </div>
         </section>
 
-        <section className="panel">
+        <section className="panel api-validation-panel">
           <div className="panel-heading"><h2><ClipboardCheck size={16} /> {t('apisec.validation')}</h2></div>
           <Form
             layout="vertical"

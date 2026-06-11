@@ -13,6 +13,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 func TestAIConfigUsesProviderAndHidesHeader(t *testing.T) {
@@ -175,6 +176,291 @@ func TestAnalyzeLogLegacyPayloadPrefersStoredEvent(t *testing.T) {
 	}
 	if got := response.Data["risk"]; got != "critical" {
 		t.Fatalf("expected stored critical risk, got %v response=%+v", got, response.Data)
+	}
+}
+
+func TestAIAssistantReturnsRealToolExecutions(t *testing.T) {
+	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	sink := &filteringAISink{items: []storage.LogEntry{{
+		ID:        "event-1",
+		TraceID:   "trace-1",
+		Timestamp: now,
+		Action:    "block",
+		Category:  "sqli",
+		Severity:  "high",
+		ClientIP:  "203.0.113.10",
+		URI:       "/search?q=1",
+	}}}
+	handler := New(Options{Config: ptrConfig(config.Default()), Sink: sink})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请读取系统状态和最近安全事件","limit":10}`)))
+	handler.AIAssistant(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			ToolExecutions []struct {
+				Name        string `json:"name"`
+				Sensitivity string `json:"sensitivity"`
+				Result      *struct {
+					Success bool   `json:"success"`
+					Output  string `json:"output"`
+				} `json:"result"`
+			} `json:"tool_executions"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Data.ToolExecutions) != 2 {
+		t.Fatalf("expected system and event tools, got %+v", response.Data.ToolExecutions)
+	}
+	seenEvents := false
+	for _, call := range response.Data.ToolExecutions {
+		if call.Sensitivity != "read_only" || call.Result == nil || !call.Result.Success {
+			t.Fatalf("expected read-only successful tool call, got %+v", call)
+		}
+		if call.Name == "recent_security_events" && strings.Contains(call.Result.Output, "event-1") {
+			seenEvents = true
+		}
+	}
+	if !seenEvents {
+		t.Fatalf("expected recent events tool output to include stored event: %+v", response.Data.ToolExecutions)
+	}
+}
+
+func TestAIAssistantFetchesEventsOnlyAfterToolRequest(t *testing.T) {
+	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	sink := &filteringAISink{items: []storage.LogEntry{{
+		ID:        "event-1",
+		TraceID:   "trace-1",
+		Timestamp: now,
+		Action:    "block",
+		Category:  "sqli",
+		Severity:  "high",
+		ClientIP:  "203.0.113.10",
+		URI:       "/search?q=1",
+	}}}
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := new(bytes.Buffer)
+		_, _ = raw.ReadFrom(r.Body)
+		bodies = append(bodies, raw.String())
+		if len(bodies) == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"tool_calls\":[{\"name\":\"recent_security_events\",\"args\":{\"limit\":5}}]}"}}],"usage":{"prompt_tokens":31,"completion_tokens":9,"total_tokens":40}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"已读取工具结果：最近 1 条安全事件，1 条已拦截。"}}],"usage":{"prompt_tokens":41,"completion_tokens":12,"total_tokens":53}}`))
+	}))
+	defer server.Close()
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = server.URL
+	cfg.AI.APIKey = "test-secret"
+	cfg.AI.Model = "test-model"
+	handler := New(Options{Config: &cfg, Sink: sink})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	handler.AIAssistant(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected planning and final AI calls, got %d bodies=%+v", len(bodies), bodies)
+	}
+	if strings.Contains(bodies[0], "event-1") || strings.Contains(bodies[0], "runtime_json") || strings.Contains(bodies[0], "event_json") {
+		t.Fatalf("planning request should not include runtime/event data: %s", bodies[0])
+	}
+	if !strings.Contains(bodies[0], "使用{%Language}") || !strings.Contains(bodies[0], "Simplified Chinese") {
+		t.Fatalf("planning request missing language directive: %s", bodies[0])
+	}
+	if !strings.Contains(bodies[1], "event-1") || !strings.Contains(bodies[1], "tool_results") {
+		t.Fatalf("final request should include tool results only after execution: %s", bodies[1])
+	}
+	var response struct {
+		Data struct {
+			Answer         string `json:"answer"`
+			AIUsed         bool   `json:"ai_used"`
+			InputTokens    int    `json:"input_tokens"`
+			OutputTokens   int    `json:"output_tokens"`
+			ToolExecutions []struct {
+				Name string `json:"name"`
+			} `json:"tool_executions"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Data.AIUsed || !strings.Contains(response.Data.Answer, "已读取工具结果") || len(response.Data.ToolExecutions) != 1 {
+		t.Fatalf("unexpected assistant response: %+v", response.Data)
+	}
+	if response.Data.InputTokens != 72 || response.Data.OutputTokens != 21 {
+		t.Fatalf("expected aggregated token usage, got %+v", response.Data)
+	}
+}
+
+func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {
+	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	sink := &filteringAISink{items: []storage.LogEntry{{
+		ID:        "event-stream-1",
+		TraceID:   "trace-stream-1",
+		Timestamp: now,
+		Action:    "block",
+		Category:  "sqli",
+		Severity:  "high",
+		ClientIP:  "203.0.113.10",
+		URI:       "/search?q=1",
+	}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := new(bytes.Buffer)
+		_, _ = raw.ReadFrom(r.Body)
+		if strings.Contains(raw.String(), `"tools"`) {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"recent_security_events","arguments":"{\"limit\":5}"}}]}}],"usage":{"prompt_tokens":31,"completion_tokens":5,"total_tokens":36}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"已基于工具 observation 完成分析。"}}],"usage":{"prompt_tokens":41,"completion_tokens":8,"total_tokens":49}}`))
+	}))
+	defer server.Close()
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = server.URL
+	cfg.AI.APIKey = "test-secret"
+	cfg.AI.Model = "test-model"
+	handler := New(Options{Config: &cfg, Sink: sink})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant/stream", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	handler.AIAssistantStream(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected assistant stream ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"event: trace",
+		`"type":"planning_start"`,
+		`"type":"tool_call"`,
+		`"type":"tool_result"`,
+		"event-stream-1",
+		"event: done",
+		`"answer":"已基于工具 observation 完成分析。"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream missing %q in body:\n%s", want, body)
+		}
+	}
+}
+
+func TestAIAssistantCreatesApprovalForConfigIntent(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请帮我开启滑块验证码","limit":10}`)))
+	handler.AIAssistant(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			ToolExecutions []struct {
+				Name     string `json:"name"`
+				Approval *struct {
+					ID       string         `json:"id"`
+					ToolName string         `json:"tool_name"`
+					Args     map[string]any `json:"args"`
+					Diff     string         `json:"diff"`
+					Status   string         `json:"status"`
+				} `json:"approval"`
+			} `json:"tool_executions"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Data.ToolExecutions) != 1 || response.Data.ToolExecutions[0].Approval == nil {
+		t.Fatalf("expected one pending approval, got %+v", response.Data.ToolExecutions)
+	}
+	approval := response.Data.ToolExecutions[0].Approval
+	if approval.ToolName != "set_bot_challenge" || approval.Status != "pending" || approval.Args["captcha_type"] != "slider" {
+		t.Fatalf("unexpected approval: %+v", approval)
+	}
+	if cfg.Protection.Bot.CAPTCHAType == "slider" && cfg.Protection.Bot.CAPTCHA {
+		t.Fatal("bot captcha changed before approval")
+	}
+}
+
+func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var reloaded bool
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnProtectionChanged: func(config.ProtectionConfig) error {
+			reloaded = true
+			return nil
+		},
+	})
+	router := chi.NewRouter()
+	router.Post("/execute", handler.ExecuteAITool)
+	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
+
+	args := `{"area":"bot_cc","level":"high"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","args":`+args+`}`)))
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected approval request ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var first struct {
+		Data struct {
+			Approval *struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+				Diff   string `json:"diff"`
+			} `json:"approval"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+	if first.Data.Approval == nil || first.Data.Approval.ID == "" || !strings.Contains(first.Data.Approval.Diff, `"bot_cc": "high"`) {
+		t.Fatalf("expected pending approval with diff, got %+v", first.Data.Approval)
+	}
+	if cfg.Protection.Policy.BotCC == "high" {
+		t.Fatal("policy changed before approval")
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected approve ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`)))
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected approved execute ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Protection.Policy.BotCC != "high" || !reloaded {
+		t.Fatalf("expected policy update and reload, policy=%+v reloaded=%v", cfg.Protection.Policy, reloaded)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`)))
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected approval reuse to fail, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

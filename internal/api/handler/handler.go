@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
@@ -25,6 +26,7 @@ type Handler struct {
 	Tokens              *middleware.TokenManager
 	Secret              string
 	Auditor             *middleware.Auditor
+	AssistantApprovals  *ai.ApprovalStore
 	LoginCAPTCHAState   *loginCAPTCHAState
 	StartedAt           time.Time
 	OnSitesChanged      func([]config.SiteConfig)
@@ -40,12 +42,17 @@ type Options struct {
 	Tokens              *middleware.TokenManager
 	Secret              string
 	Auditor             *middleware.Auditor
+	AssistantApprovals  *ai.ApprovalStore
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 }
 
 func New(opts Options) *Handler {
+	approvals := opts.AssistantApprovals
+	if approvals == nil {
+		approvals = ai.NewApprovalStore()
+	}
 	return &Handler{
 		Config:              opts.Config,
 		ConfigPath:          opts.ConfigPath,
@@ -54,6 +61,7 @@ func New(opts Options) *Handler {
 		Tokens:              opts.Tokens,
 		Secret:              opts.Secret,
 		Auditor:             opts.Auditor,
+		AssistantApprovals:  approvals,
 		LoginCAPTCHAState:   newLoginCAPTCHAState(),
 		StartedAt:           time.Now().UTC(),
 		OnSitesChanged:      opts.OnSitesChanged,
