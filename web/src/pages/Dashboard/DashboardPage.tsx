@@ -64,6 +64,7 @@ export default function DashboardPage() {
   const entries = periodLogs?.items ?? [];
   const liveEntries = liveLogs?.items ?? [];
   const traffic = useMemo(() => buildTraffic(entries, statsRange), [entries, statsRange]);
+  const securityEntries = useMemo(() => entries.filter(isSecurityEvent), [entries]);
   const liveSeries = useMemo(() => buildRealtimeSeries(liveEntries, realtimeWindowSeconds), [liveEntries]);
   const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
   const latency = useMemo(() => p95Latency(entries), [entries]);
@@ -198,8 +199,8 @@ export default function DashboardPage() {
               <h2>{t('dashboard.events')}</h2>
             </div>
             <div className="event-list">
-              {entries.length === 0 && <div className="empty-state">{t('monitor.requests')}: 0</div>}
-              {entries.slice(0, 6).map((event) => (
+              {securityEntries.length === 0 && <div className="empty-state">{t('dashboard.noSecurityEvents')}</div>}
+              {securityEntries.slice(0, 6).map((event) => (
                 <div className="event-row" key={event.id || event.trace_id || `${event.client_ip}-${event.timestamp}`}>
                   <Link className="event-trace-link" to={`/logs/${encodeURIComponent(event.trace_id || event.id || '-')}`} title={event.trace_id || event.id || '-'}>
                     <code className="event-trace">{event.trace_id || event.id || '-'}</code>
@@ -505,8 +506,12 @@ function eventCategoryLabel(entry: LogEntry, t: (key: string, options?: Record<s
   if (entry.category) {
     return displayCategory(entry.category, t);
   }
-  if (entry.action && entry.action !== 'pass') {
+  if (entry.action && entry.action !== 'allow' && entry.action !== 'pass') {
     return displayAction(entry.action, t);
   }
   return displayCategory('pass', t);
+}
+
+function isSecurityEvent(entry: LogEntry) {
+  return Boolean(entry.category || ['block', 'challenge', 'log'].includes(entry.action));
 }
