@@ -1,6 +1,8 @@
 package edge
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/andybalholm/brotli"
 )
 
 func TestHeaderModifierSetAddDelete(t *testing.T) {
@@ -62,5 +65,38 @@ func TestCompressorAppliesGzip(t *testing.T) {
 	compressor.Apply(req, resp)
 	if resp.Header.Get("Content-Encoding") != "gzip" || len(resp.Body) >= len(body) {
 		t.Fatalf("expected gzip compression, headers=%v len=%d", resp.Header, len(resp.Body))
+	}
+}
+
+func TestCompressorPrefersBrotliAndFallsBackToGzip(t *testing.T) {
+	compressor := NewCompressor(config.CompressionPolicyConfig{
+		Enabled:      true,
+		Algorithms:   []string{"br", "gzip"},
+		Level:        5,
+		MinBytes:     4,
+		ContentTypes: []string{"text/"},
+	})
+	body := strings.Repeat("attack intel ", 128)
+	resp := &CapturedResponse{Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: []byte(body)}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "gzip, br")
+	compressor.Apply(req, resp)
+	if got := resp.Header.Get("Content-Encoding"); got != "br" {
+		t.Fatalf("expected br compression, got %q", got)
+	}
+	decoded, err := io.ReadAll(brotli.NewReader(bytes.NewReader(resp.Body)))
+	if err != nil {
+		t.Fatalf("decode br: %v", err)
+	}
+	if string(decoded) != body {
+		t.Fatalf("unexpected br payload")
+	}
+
+	resp = &CapturedResponse{Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: []byte(body)}
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	compressor.Apply(req, resp)
+	if got := resp.Header.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("expected gzip fallback, got %q", got)
 	}
 }

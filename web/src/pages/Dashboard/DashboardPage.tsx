@@ -1,4 +1,4 @@
-import { Button, Message as ArcoMessage, Progress, Radio, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
 import { useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -64,6 +64,7 @@ export default function DashboardPage() {
   const entries = periodLogs?.items ?? [];
   const liveEntries = liveLogs?.items ?? [];
   const traffic = useMemo(() => buildTraffic(entries, statsRange), [entries, statsRange]);
+  const securityEntries = useMemo(() => entries.filter(isSecurityEvent), [entries]);
   const liveSeries = useMemo(() => buildRealtimeSeries(liveEntries, realtimeWindowSeconds), [liveEntries]);
   const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
   const latency = useMemo(() => p95Latency(entries), [entries]);
@@ -171,28 +172,17 @@ export default function DashboardPage() {
                 <span><i /> {t('dashboard.trafficRequests')}</span>
                 <span>{t('dashboard.statsWindow')}: {rangeLabel(statsRange, t)}</span>
               </div>
-              <label className="chart-scale-slider">
-                <span>{t('dashboard.trafficScale')}</span>
-                <input
-                  type="range"
-                  min="50"
-                  max="250"
-                  step="25"
-                  value={Math.round(chartScale * 100)}
-                  onChange={(event) => setChartScale(Number(event.currentTarget.value) / 100)}
-                />
-              </label>
               <div className="control-cluster dashboard-footer-controls">
                 <span>{t('dashboard.statsWindow')}</span>
-                <Radio.Group type="button" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
-                  {statsRangeOptions.map((option) => <Radio key={option.value} value={option.value}>{t(option.labelKey)}</Radio>)}
-                </Radio.Group>
+                <Select className="dashboard-footer-select" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
+                  {statsRangeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
+                </Select>
               </div>
               <div className="control-cluster dashboard-footer-controls">
                 <span>{t('dashboard.autoRefresh')}</span>
-                <Radio.Group type="button" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
-                  {refreshOptions.map((value) => <Radio key={value} value={value}>{value / 1000}s</Radio>)}
-                </Radio.Group>
+                <Select className="dashboard-footer-select dashboard-refresh-select" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
+                  {refreshOptions.map((value) => <Select.Option key={value} value={value}>{value / 1000}s</Select.Option>)}
+                </Select>
                 <Tooltip content={t('dashboard.manualRefresh')}>
                   <Button
                     className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
@@ -209,8 +199,8 @@ export default function DashboardPage() {
               <h2>{t('dashboard.events')}</h2>
             </div>
             <div className="event-list">
-              {entries.length === 0 && <div className="empty-state">{t('monitor.requests')}: 0</div>}
-              {entries.slice(0, 6).map((event) => (
+              {securityEntries.length === 0 && <div className="empty-state">{t('dashboard.noSecurityEvents')}</div>}
+              {securityEntries.slice(0, 6).map((event) => (
                 <div className="event-row" key={event.id || event.trace_id || `${event.client_ip}-${event.timestamp}`}>
                   <Link className="event-trace-link" to={`/logs/${encodeURIComponent(event.trace_id || event.id || '-')}`} title={event.trace_id || event.id || '-'}>
                     <code className="event-trace">{event.trace_id || event.id || '-'}</code>
@@ -516,8 +506,12 @@ function eventCategoryLabel(entry: LogEntry, t: (key: string, options?: Record<s
   if (entry.category) {
     return displayCategory(entry.category, t);
   }
-  if (entry.action && entry.action !== 'pass') {
+  if (entry.action && entry.action !== 'allow' && entry.action !== 'pass') {
     return displayAction(entry.action, t);
   }
   return displayCategory('pass', t);
+}
+
+function isSecurityEvent(entry: LogEntry) {
+  return Boolean(entry.category || ['block', 'challenge', 'log'].includes(entry.action));
 }

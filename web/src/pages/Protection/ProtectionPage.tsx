@@ -57,10 +57,10 @@ export default function ProtectionPage() {
   const { data, isLoading } = useQuery({ queryKey: ['protection'], queryFn: fetchProtection, retry: false });
   const protection = normalizeProtection(data);
   const policyItems = [
-    { field: 'web_attack', label: t('sites.webAttackLevel') },
-    { field: 'api_security', label: t('sites.apiSecurityLevel') },
-    { field: 'bot_cc', label: t('sites.botCCLevel') },
-    { field: 'threat_intel', label: t('sites.threatIntelLevel') },
+    { field: 'web_attack', label: t('sites.webAttackLevel'), hint: t('protection.webAttackHint') },
+    { field: 'api_security', label: t('sites.apiSecurityLevel'), hint: t('protection.apiSecurityHint') },
+    { field: 'bot_cc', label: t('sites.botCCLevel'), hint: t('protection.botCCHint') },
+    { field: 'threat_intel', label: t('sites.threatIntelLevel'), hint: t('protection.threatIntelHint') },
   ] as const;
   const policyMutation = useMutation({ mutationFn: updateProtectionPolicy, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const ipMutation = useMutation({ mutationFn: updateIPProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
@@ -80,11 +80,7 @@ export default function ProtectionPage() {
       <section className="panel policy-panel">
         <div className="panel-heading">
           <h2><ShieldAlert size={16} /> {t('protection.policy')}</h2>
-          <span className="policy-current-summary">
-            {policyItems.map((item) => (
-              <span key={item.field}>{item.label}: {policyLevelLabel(protection.policy[item.field], t)}</span>
-            ))}
-          </span>
+          <span className="policy-current-summary">{t('protection.policyDefaultHint')}</span>
         </div>
         <Form
           key={`policy-${Object.values(protection.policy).join('-')}`}
@@ -95,8 +91,11 @@ export default function ProtectionPage() {
           <div className="policy-level-grid">
             {policyItems.map((item) => (
               <div className="policy-level-card" key={item.field}>
-                <span>{item.label}</span>
-                <strong>{policyLevelLabel(protection.policy[item.field], t)}</strong>
+                <div className="policy-level-card-head">
+                  <span>{item.label}</span>
+                  <strong>{policyLevelLabel(protection.policy[item.field], t)}</strong>
+                </div>
+                <p>{item.hint}</p>
                 <Form.Item label={false} field={item.field}>
                   <ProtectionLevelSelect />
                 </Form.Item>
@@ -107,8 +106,8 @@ export default function ProtectionPage() {
         </Form>
       </section>
 
-      <div className="settings-grid">
-        <section className="panel">
+      <div className="settings-grid protection-settings-grid">
+        <section className="panel protection-bot-panel">
           <div className="panel-heading"><h2><Bot size={16} /> {t('protection.bot')}</h2></div>
           <Form
             key={`bot-${protection.bot.enabled}-${protection.bot.cookie_name}`}
@@ -172,39 +171,41 @@ export default function ProtectionPage() {
               suspicious_user_agents: splitList(values.suspiciousUA),
             })}
           >
-            <Form.Item label={t('protection.bot')} field="enabled"><Switch /></Form.Item>
-            <Form.Item label={t('protection.jsChallenge')} field="jsChallenge"><Switch /></Form.Item>
-            <Form.Item label={t('protection.captcha')} field="captcha"><Switch /></Form.Item>
-            <Form.Item label={t('protection.captchaType')} field="captchaType">
-              <Select>
-                <Select.Option value="pow">{t('protection.captchaTypePow')}</Select.Option>
-                <Select.Option value="image">{t('protection.captchaTypeImage')}</Select.Option>
-                <Select.Option value="slider">{t('protection.captchaTypeSlider')}</Select.Option>
-              </Select>
-            </Form.Item>
-            <Form.Item label={t('protection.captchaMaxAttempts')} field="captchaMaxAttempts"><InputNumber min={1} max={20} /></Form.Item>
-            <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty"><InputNumber min={1} max={6} /></Form.Item>
-            <Form.Item label={t('protection.altchaMaxNumber')} field="altchaMaxNumber"><InputNumber min={1000} max={50000000} /></Form.Item>
-            <Form.Item label={t('protection.altchaHeader')} field="altchaHeaderName"><Input /></Form.Item>
-            <Form.Item label={t('protection.imageCaptchaLength')} field="imageCaptchaLength"><InputNumber min={4} max={8} /></Form.Item>
-            <Form.Item label={t('protection.imageCaptchaSize')} field="imageCaptchaWidth"><InputNumber min={160} max={420} /></Form.Item>
-            <Form.Item label={t('protection.imageCaptchaHeight')} field="imageCaptchaHeight"><InputNumber min={60} max={180} /></Form.Item>
-            <Form.Item label={t('protection.imageCaptchaAudioLimit')} field="imageCaptchaAudioLimit"><InputNumber min={1} max={20} /></Form.Item>
-            <Form.Item label={t('protection.sliderCaptchaWidth')} field="sliderCaptchaWidth"><InputNumber min={240} max={520} /></Form.Item>
-            <Form.Item label={t('protection.sliderCaptchaHeight')} field="sliderCaptchaHeight"><InputNumber min={100} max={260} /></Form.Item>
-            <Form.Item label={t('protection.sliderCaptchaPiece')} field="sliderCaptchaPiece"><InputNumber min={32} max={80} /></Form.Item>
-            <Form.Item label={t('protection.sliderCaptchaTolerance')} field="sliderCaptchaTolerance"><InputNumber min={2} max={16} /></Form.Item>
-            <Form.Item label={t('protection.sliderCaptchaMinDrag')} field="sliderCaptchaMinDrag"><Input placeholder="450ms" /></Form.Item>
-            <Form.Item label={t('protection.waitingRoom')} field="waitingRoom"><Switch /></Form.Item>
-            <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive"><InputNumber min={1} max={1000000} /></Form.Item>
-            <Form.Item label={t('protection.waitingRoomTtl')} field="waitingRoomTtl"><Input placeholder="5m" /></Form.Item>
-            <Form.Item label={t('protection.challengeTtl')} field="challengeTtl"><Input placeholder="30m" /></Form.Item>
-            <Form.Item label={t('protection.cookieName')} field="cookieName"><Input /></Form.Item>
-            <Form.Item label={t('protection.secret')} field="secret"><Input.Password /></Form.Item>
-            <Form.Item label={t('protection.protectedPaths')} field="protectedPaths"><Input placeholder="/" /></Form.Item>
-            <Form.Item label={t('protection.exemptPaths')} field="exemptPaths"><Input placeholder="/health,/api/" /></Form.Item>
-            <Form.Item label={t('protection.allowedUA')} field="allowedUA"><Input /></Form.Item>
-            <Form.Item label={t('protection.suspiciousUA')} field="suspiciousUA"><Input /></Form.Item>
+            <div className="protection-form-grid protection-bot-grid">
+              <Form.Item label={t('protection.bot')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
+              <Form.Item label={t('protection.jsChallenge')} field="jsChallenge" triggerPropName="checked"><Switch /></Form.Item>
+              <Form.Item label={t('protection.captcha')} field="captcha" triggerPropName="checked"><Switch /></Form.Item>
+              <Form.Item label={t('protection.captchaType')} field="captchaType">
+                <Select>
+                  <Select.Option value="pow">{t('protection.captchaTypePow')}</Select.Option>
+                  <Select.Option value="image">{t('protection.captchaTypeImage')}</Select.Option>
+                  <Select.Option value="slider">{t('protection.captchaTypeSlider')}</Select.Option>
+                </Select>
+              </Form.Item>
+              <Form.Item label={t('protection.captchaMaxAttempts')} field="captchaMaxAttempts"><InputNumber min={1} max={20} /></Form.Item>
+              <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty"><InputNumber min={1} max={6} /></Form.Item>
+              <Form.Item label={t('protection.altchaMaxNumber')} field="altchaMaxNumber"><InputNumber min={1000} max={50000000} /></Form.Item>
+              <Form.Item label={t('protection.altchaHeader')} field="altchaHeaderName"><Input /></Form.Item>
+              <Form.Item label={t('protection.imageCaptchaLength')} field="imageCaptchaLength"><InputNumber min={4} max={8} /></Form.Item>
+              <Form.Item label={t('protection.imageCaptchaSize')} field="imageCaptchaWidth"><InputNumber min={160} max={420} /></Form.Item>
+              <Form.Item label={t('protection.imageCaptchaHeight')} field="imageCaptchaHeight"><InputNumber min={60} max={180} /></Form.Item>
+              <Form.Item label={t('protection.imageCaptchaAudioLimit')} field="imageCaptchaAudioLimit"><InputNumber min={1} max={20} /></Form.Item>
+              <Form.Item label={t('protection.sliderCaptchaWidth')} field="sliderCaptchaWidth"><InputNumber min={240} max={520} /></Form.Item>
+              <Form.Item label={t('protection.sliderCaptchaHeight')} field="sliderCaptchaHeight"><InputNumber min={100} max={260} /></Form.Item>
+              <Form.Item label={t('protection.sliderCaptchaPiece')} field="sliderCaptchaPiece"><InputNumber min={32} max={80} /></Form.Item>
+              <Form.Item label={t('protection.sliderCaptchaTolerance')} field="sliderCaptchaTolerance"><InputNumber min={2} max={16} /></Form.Item>
+              <Form.Item label={t('protection.sliderCaptchaMinDrag')} field="sliderCaptchaMinDrag"><Input placeholder="450ms" /></Form.Item>
+              <Form.Item label={t('protection.waitingRoom')} field="waitingRoom" triggerPropName="checked"><Switch /></Form.Item>
+              <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive"><InputNumber min={1} max={1000000} /></Form.Item>
+              <Form.Item label={t('protection.waitingRoomTtl')} field="waitingRoomTtl"><Input placeholder="5m" /></Form.Item>
+              <Form.Item label={t('protection.challengeTtl')} field="challengeTtl"><Input placeholder="30m" /></Form.Item>
+              <Form.Item label={t('protection.cookieName')} field="cookieName"><Input /></Form.Item>
+              <Form.Item label={t('protection.secret')} field="secret"><Input.Password /></Form.Item>
+              <Form.Item label={t('protection.protectedPaths')} field="protectedPaths"><Input placeholder="/" /></Form.Item>
+              <Form.Item label={t('protection.exemptPaths')} field="exemptPaths"><Input placeholder="/health,/api/" /></Form.Item>
+              <Form.Item label={t('protection.allowedUA')} field="allowedUA"><Input /></Form.Item>
+              <Form.Item label={t('protection.suspiciousUA')} field="suspiciousUA"><Input /></Form.Item>
+            </div>
             <Button type="primary" htmlType="submit" loading={botMutation.isPending}>{t('common.save')}</Button>
           </Form>
         </section>
@@ -228,11 +229,13 @@ export default function ProtectionPage() {
               geoip: { ...protection.ip.geoip, enabled: values.enabled, database: String(values.database ?? '').trim(), blocked_countries: splitList(values.blocked).map((item) => item.toUpperCase()) },
             })}
           >
-            <Form.Item label={t('protection.geoip')} field="enabled"><Switch /></Form.Item>
-            <Form.Item label={t('protection.geoipDatabase')} field="database"><Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" /></Form.Item>
-            <Form.Item label={t('protection.blockedCountries')} field="blocked"><Input placeholder="CN,RU" /></Form.Item>
-            <Form.Item label={t('ip.whitelist')} field="whitelist"><Input /></Form.Item>
-            <Form.Item label={t('ip.blacklist')} field="blacklist"><Input /></Form.Item>
+            <div className="protection-form-grid">
+              <Form.Item label={t('protection.geoip')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
+              <Form.Item label={t('protection.geoipDatabase')} field="database"><Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" /></Form.Item>
+              <Form.Item label={t('protection.blockedCountries')} field="blocked"><Input placeholder="CN,RU" /></Form.Item>
+              <Form.Item label={t('ip.whitelist')} field="whitelist"><Input /></Form.Item>
+              <Form.Item label={t('ip.blacklist')} field="blacklist"><Input /></Form.Item>
+            </div>
             <Button type="primary" htmlType="submit" loading={ipMutation.isPending}>{t('common.save')}</Button>
           </Form>
         </section>
@@ -245,9 +248,11 @@ export default function ProtectionPage() {
             initialValues={{ enabled: protection.ratelimit.enabled, requests: protection.ratelimit.default.requests, burst: protection.ratelimit.default.burst }}
             onSubmit={(values) => rateMutation.mutate({ enabled: values.enabled, default: { ...protection.ratelimit.default, requests: values.requests, burst: values.burst } })}
           >
-            <Form.Item label={t('common.online')} field="enabled"><Switch /></Form.Item>
-            <Form.Item label={t('protection.requests')} field="requests"><InputNumber min={1} max={100000} /></Form.Item>
-            <Form.Item label={t('protection.burst')} field="burst"><InputNumber min={0} max={10000} /></Form.Item>
+            <div className="protection-form-grid">
+              <Form.Item label={t('common.online')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
+              <Form.Item label={t('protection.requests')} field="requests"><InputNumber min={1} max={100000} /></Form.Item>
+              <Form.Item label={t('protection.burst')} field="burst"><InputNumber min={0} max={10000} /></Form.Item>
+            </div>
             <Button type="primary" htmlType="submit" loading={rateMutation.isPending}>{t('common.save')}</Button>
           </Form>
         </section>
