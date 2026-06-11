@@ -265,11 +265,14 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     observer.observe(host);
     resize();
 
-    const clock = new THREE.Clock();
+    const startedAt = performance.now();
+    let lastFrameAt = startedAt;
     let frame = 0;
     const tick = () => {
-      const delta = clock.getDelta();
-      const elapsed = clock.getElapsedTime();
+      const now = performance.now();
+      const delta = Math.min((now - lastFrameAt) / 1000, 0.05);
+      const elapsed = (now - startedAt) / 1000;
+      lastFrameAt = now;
       controls.update(delta);
       earthGroup.rotation.y += delta * 0.006;
       clouds.rotation.y += delta * 0.024;
