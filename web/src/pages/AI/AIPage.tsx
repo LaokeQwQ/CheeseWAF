@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Select, Space, Switch, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, Message as ArcoMessage, Select, Space, Switch, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { BrainCircuit, Eye, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
-import { analyzeEvents, analyzeLog, fetchAIConfig, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
+import { BrainCircuit, ChevronLeft, ChevronRight, Eye, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
+import { analyzeEvents, analyzeLogReference, fetchAIConfig, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
 import AIAnalysisMeta from '../../components/AIAnalysisMeta';
 import type { AIConfig, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
@@ -16,6 +16,7 @@ const analysisRanges = [
   { value: '24h', labelKey: 'ai.range24h', seconds: 24 * 60 * 60 },
   { value: '7d', labelKey: 'ai.range7d', seconds: 7 * 24 * 60 * 60 },
 ];
+const AI_EVENT_PAGE_SIZE = 8;
 
 const fallback: AIConfig = {
   enabled: false,
@@ -32,6 +33,7 @@ export default function AIPage() {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState('');
   const [analysisRange, setAnalysisRange] = useState('1h');
+  const [eventPage, setEventPage] = useState(1);
   const [analyses, setAnalyses] = useState<Record<string, AttackAnalysis>>({});
   const { data } = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
   const { data: logs, isLoading } = useQuery({
@@ -42,14 +44,28 @@ export default function AIPage() {
   });
   const config = data ?? fallback;
   const events = useMemo(() => (logs?.items ?? []).filter(isSecurityEvent), [logs?.items]);
-  const selected = events.find((event) => event.id === selectedId) ?? events[0];
-  const selectedAnalysis = selected ? analyses[selected.id] : undefined;
+  const eventPageCount = Math.max(1, Math.ceil(events.length / AI_EVENT_PAGE_SIZE));
+  const eventPageItems = events.slice((eventPage - 1) * AI_EVENT_PAGE_SIZE, eventPage * AI_EVENT_PAGE_SIZE);
+  const eventPageStart = events.length === 0 ? 0 : (eventPage - 1) * AI_EVENT_PAGE_SIZE + 1;
+  const eventPageEnd = Math.min(eventPage * AI_EVENT_PAGE_SIZE, events.length);
+  const selected = events.find((event) => eventKey(event) === selectedId) ?? events[0];
+  const selectedAnalysis = selected ? analyses[eventKey(selected)] : undefined;
 
   useEffect(() => {
     if (!selectedId && events.length > 0) {
-      setSelectedId(events[0].id);
+      setSelectedId(eventKey(events[0]));
     }
   }, [events, selectedId]);
+
+  useEffect(() => {
+    setEventPage(1);
+  }, [analysisRange]);
+
+  useEffect(() => {
+    if (eventPage > eventPageCount) {
+      setEventPage(eventPageCount);
+    }
+  }, [eventPage, eventPageCount]);
 
   const updateMutation = useMutation({
     mutationFn: updateAIConfig,
@@ -65,8 +81,8 @@ export default function AIPage() {
     onError: (error) => ArcoMessage.error(error.message),
   });
   const eventAnalysisMutation = useMutation({
-    mutationFn: (entry: LogEntry) => analyzeLog(entry as unknown as Record<string, unknown>),
-    onSuccess: (analysis) => setAnalyses((current) => ({ ...current, [analysis.log_id]: analysis })),
+    mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id),
+    onSuccess: (analysis, entry) => setAnalyses((current) => ({ ...current, [eventKey(entry)]: analysis, [analysis.log_id]: analysis })),
     onError: (error) => ArcoMessage.error(error.message),
   });
   const batchAnalysisMutation = useMutation({
@@ -158,58 +174,82 @@ export default function AIPage() {
               </Button>
             </Space>
           </div>
-          <div className="table-scroll ai-events-table">
-            <Table
-              rowKey="id"
-              loading={isLoading}
-              pagination={{ pageSize: 8 }}
-              data={events}
-              onRow={(record) => ({ onClick: () => setSelectedId(record.id) })}
-              columns={[
-                { title: t('logs.time'), dataIndex: 'timestamp', render: (value: string) => new Date(value).toLocaleString() },
-                { title: t('logs.source'), dataIndex: 'client_ip' },
-                {
-                  title: t('logs.action'),
-                  dataIndex: 'action',
-                  render: (value: string) => (
-                    <span className="status-group">
-                      <Tag color={actionColor(value)}>{displayAction(value, t)}</Tag>
-                    </span>
-                  ),
-                },
-                {
-                  title: t('logs.category'),
-                  dataIndex: 'category',
-                  render: (value: string) => value ? (
-                    <span className="status-group">
-                      <Tag color="orange">{displayCategory(value, t)}</Tag>
-                    </span>
-                  ) : '-',
-                },
-                { title: 'URI', dataIndex: 'uri', render: (value: string) => <code className="table-code" title={value || '-'}>{value || '-'}</code> },
-                {
-                  title: t('ai.analysis'),
-                  render: (_: unknown, record: LogEntry) => (
-                    <Space wrap className="table-action-group">
-                      <Link to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`} onClick={(event) => event.stopPropagation()} className="table-action-link">
+          <div className="ai-events-list-panel">
+            <div className="ai-events-list-header" aria-hidden="true">
+              <span>{t('logs.time')}</span>
+              <span>{t('logs.source')}</span>
+              <span>{t('logs.action')}</span>
+              <span>{t('logs.category')}</span>
+              <span>URI</span>
+              <span>{t('ai.analysis')}</span>
+            </div>
+            <div className="ai-events-list" aria-busy={isLoading}>
+              {isLoading && Array.from({ length: 4 }).map((_, index) => (
+                <div className="ai-events-list-row security-event-skeleton" key={index} />
+              ))}
+              {!isLoading && eventPageItems.length === 0 && <div className="empty-state">{t('ai.noEvents')}</div>}
+              {!isLoading && eventPageItems.map((record) => {
+                const key = eventKey(record);
+                return (
+                  <article
+                    className={`ai-events-list-row${selected && eventKey(selected) === key ? ' ai-events-list-row-active' : ''}`}
+                    key={key}
+                    onClick={() => setSelectedId(key)}
+                  >
+                    <div className="security-event-cell" data-label={t('logs.time')}>
+                      <time dateTime={record.timestamp} title={formatTime(record.timestamp)}>{formatCompactTime(record.timestamp)}</time>
+                    </div>
+                    <div className="security-event-cell" data-label={t('logs.source')}>
+                      <span title={record.client_ip || '-'}>{record.client_ip || '-'}</span>
+                    </div>
+                    <div className="security-event-cell" data-label={t('logs.action')}>
+                      <Tag color={actionColor(record.action)}>{displayAction(record.action, t)}</Tag>
+                    </div>
+                    <div className="security-event-cell" data-label={t('logs.category')}>
+                      {record.category ? <Tag color="orange">{displayCategory(record.category, t)}</Tag> : <span>-</span>}
+                    </div>
+                    <div className="security-event-cell security-event-uri" data-label="URI">
+                      <code title={record.uri || '-'}>{record.uri || '-'}</code>
+                    </div>
+                    <div className="security-event-cell ai-events-row-actions" data-label={t('ai.analysis')} onClick={(event) => event.stopPropagation()}>
+                      <Link to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`} className="table-action-link">
                         <Button size="small" icon={<Eye size={14} />}>{t('logs.detail')}</Button>
                       </Link>
                       <Button
                         size="small"
-                        loading={eventAnalysisMutation.isPending && selectedId === record.id}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSelectedId(record.id);
+                        loading={eventAnalysisMutation.isPending && selectedId === key}
+                        onClick={() => {
+                          setSelectedId(key);
                           eventAnalysisMutation.mutate(record);
                         }}
                       >
-                        {analyses[record.id] ? t('ai.reanalyze') : t('ai.run')}
+                        {analyses[key] ? t('ai.reanalyze') : t('ai.run')}
                       </Button>
-                    </Space>
-                  ),
-                },
-              ]}
-            />
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            {!isLoading && events.length > AI_EVENT_PAGE_SIZE && (
+              <footer className="security-events-pagination">
+                <span>{eventPageStart}-{eventPageEnd} / {events.length}</span>
+                <div>
+                  <Button
+                    aria-label={t('common.back')}
+                    icon={<ChevronLeft size={15} />}
+                    disabled={eventPage <= 1}
+                    onClick={() => setEventPage((current) => Math.max(1, current - 1))}
+                  />
+                  <strong>{eventPage}</strong>
+                  <Button
+                    aria-label={t('common.next')}
+                    icon={<ChevronRight size={15} />}
+                    disabled={eventPage >= eventPageCount}
+                    onClick={() => setEventPage((current) => Math.min(eventPageCount, current + 1))}
+                  />
+                </div>
+              </footer>
+            )}
           </div>
         </section>
       </div>
@@ -223,7 +263,7 @@ export default function AIPage() {
           <div className="ai-detail-grid">
             <div className="ai-event-card">
               <span>{t('ai.selectedEvent')}</span>
-              <strong>{selected.id || selected.trace_id}</strong>
+              <strong>{eventKey(selected)}</strong>
               <code>{selected.method} {selected.uri}</code>
               <Space wrap>
                 <Tag>{selected.client_ip || '-'}</Tag>
@@ -272,6 +312,26 @@ function buildAnalysisWindowQuery(rangeValue: string, limit: number): LogQuery {
     start: start.toISOString(),
     end: end.toISOString(),
   };
+}
+
+function eventKey(entry: LogEntry) {
+  return entry.id || entry.trace_id;
+}
+
+function formatTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value || '-';
+  }
+  return date.toLocaleString();
+}
+
+function formatCompactTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value || '-';
+  }
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function isSecurityEvent(entry: LogEntry) {

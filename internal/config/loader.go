@@ -184,7 +184,7 @@ func Default() Config {
 			},
 			Compression: CompressionPolicyConfig{
 				Enabled:      true,
-				Algorithms:   []string{"gzip"},
+				Algorithms:   []string{"br", "gzip"},
 				Level:        5,
 				MinBytes:     1024,
 				ContentTypes: []string{"text/", "application/json", "application/javascript", "application/xml", "image/svg+xml"},

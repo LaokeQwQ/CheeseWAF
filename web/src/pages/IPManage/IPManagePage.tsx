@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { type KeyboardEvent, useEffect, useMemo, useState } from 'react';
 import { Button, Input, InputNumber, Message as ArcoMessage, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
-import { Ban, CheckCircle2, CloudDownload, FileDown, ListPlus, Pencil, Plus, RotateCcw, Search, Shield, Tags, Trash2 } from 'lucide-react';
+import { Ban, CheckCircle2, CloudDownload, FileDown, ListPlus, Pencil, Plus, RotateCcw, Search, Shield, Tags, Trash2, X } from 'lucide-react';
 import {
   exportThreatIntel,
   fetchIPRules,
@@ -21,6 +21,15 @@ import type { IPAccessRule, IPReputationEntry, ThreatIntelProvider } from '../..
 import { displayAction, displaySeverity } from '../../utils/display';
 
 const second = 1_000_000_000;
+type IntelStatusTone = 'success' | 'warning' | 'error';
+type IntelOperationStatus = {
+  tone: IntelStatusTone;
+  title: string;
+  detail: string;
+  at: string;
+  items?: Array<Record<string, unknown>>;
+};
+
 const defaultAccessDraft: IPAccessRule = {
   id: '',
   name: '',
@@ -51,10 +60,14 @@ export default function IPManagePage() {
     severity: 'high',
     action: 'challenge',
     confidence: 0.9,
-    labels: '',
+    labels: [] as string[],
     contents: '',
   });
   const [lookupDraft, setLookupDraft] = useState({ providerId: '', ip: '' });
+  const [providerStatuses, setProviderStatuses] = useState<Record<string, IntelOperationStatus>>({});
+  const [importStatus, setImportStatus] = useState<IntelOperationStatus | null>(null);
+  const [syncStatus, setSyncStatus] = useState<IntelOperationStatus | null>(null);
+  const [lookupStatus, setLookupStatus] = useState<IntelOperationStatus | null>(null);
   const { data, isLoading } = useQuery({ queryKey: ['ip-rules'], queryFn: fetchIPRules, retry: false });
   const { data: sites = [] } = useQuery({ queryKey: ['sites-lite'], queryFn: fetchSites, retry: false });
   const entries = data?.entries ?? [];
@@ -111,32 +124,92 @@ export default function IPManagePage() {
   const importMutation = useMutation({
     mutationFn: importThreatIntel,
     onSuccess: (result) => {
-      ArcoMessage.success(`${t('ip.imported')} ${result.imported}`);
+      const status = buildCountStatus({
+        tone: result.imported > 0 ? 'success' : 'warning',
+        title: result.imported > 0 ? t('ip.importApplied') : t('ip.importNoItems'),
+        countLabel: t('ip.imported'),
+        imported: result.imported,
+        total: result.total,
+        t,
+      });
+      setImportStatus(status);
+      showStatusMessage(status);
       setImportDraft((current) => ({ ...current, contents: '' }));
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => {
+      setImportStatus(buildErrorStatus(t('ip.importFailed'), error.message));
+      ArcoMessage.error(error.message);
+    },
   });
   const syncMutation = useMutation({
     mutationFn: syncThreatIntel,
-    onSuccess: (result) => {
-      ArcoMessage.success(`${t('ip.synced')} ${result.imported}`);
+    onSuccess: (result, providerId) => {
+      const status = buildCountStatus({
+        tone: result.imported > 0 ? 'success' : 'warning',
+        title: result.imported > 0 ? t('ip.syncApplied') : t('ip.syncNoItems'),
+        countLabel: t('ip.synced'),
+        imported: result.imported,
+        total: result.total,
+        t,
+        items: result.results,
+      });
+      setSyncStatus(status);
+      if (providerId) {
+        setProviderStatuses((current) => ({ ...current, [providerId]: status }));
+      }
+      showStatusMessage(status);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error, providerId) => {
+      const status = buildErrorStatus(t('ip.syncFailed'), error.message);
+      setSyncStatus(status);
+      if (providerId) {
+        setProviderStatuses((current) => ({ ...current, [providerId]: status }));
+      }
+      ArcoMessage.error(error.message);
+    },
   });
   const providerTestMutation = useMutation({
     mutationFn: testThreatIntelProvider,
-    onSuccess: (result) => ArcoMessage.success(`${t('system.testOk')}: ${result.count}`),
-    onError: (error) => ArcoMessage.error(error.message),
+    onSuccess: (result, provider) => {
+      const status: IntelOperationStatus = {
+        tone: result.ok && result.count > 0 ? 'success' : 'warning',
+        title: result.ok && result.count > 0 ? t('ip.providerTestUsable') : t('ip.providerTestClean'),
+        detail: `${t('ip.parsedItems')}: ${result.count}`,
+        at: formatStatusTime(),
+      };
+      setProviderStatuses((current) => ({ ...current, [provider.id]: status }));
+      showStatusMessage(status);
+    },
+    onError: (error, provider) => {
+      setProviderStatuses((current) => ({ ...current, [provider.id]: buildErrorStatus(t('ip.providerTestFailed'), error.message) }));
+      ArcoMessage.error(error.message);
+    },
   });
   const lookupMutation = useMutation({
     mutationFn: () => lookupThreatIntel(lookupDraft.providerId, lookupDraft.ip),
     onSuccess: (result) => {
-      ArcoMessage.success(`${t('ip.lookupImported')} ${result.imported}`);
+      const status = buildCountStatus({
+        tone: result.imported > 0 ? 'success' : 'warning',
+        title: result.imported > 0 ? t('ip.lookupApplied') : t('ip.lookupClean'),
+        countLabel: t('ip.lookupImported'),
+        imported: result.imported,
+        total: result.items.length,
+        t,
+        items: result.items,
+      });
+      setLookupStatus(status);
+      setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
+      showStatusMessage(status);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => {
+      const status = buildErrorStatus(t('ip.lookupFailed'), error.message);
+      setLookupStatus(status);
+      setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
+      ArcoMessage.error(error.message);
+    },
   });
 
   const filtered = useMemo(() => {
@@ -399,7 +472,7 @@ export default function IPManagePage() {
                   <Button type="primary" loading={accessRulesMutation.isPending} onClick={() => saveAccessRules()}>{t('common.save')}</Button>
                 </div>
                 <div className="ip-access-draft-grid">
-                  <label>
+                  <label className="ip-access-rule-name-field">
                     <span>{t('rules.name')}</span>
                     <Input value={accessDraft.name} placeholder={t('ip.ruleNamePlaceholder')} onChange={(name) => setAccessDraft((current) => ({ ...current, name }))} />
                   </label>
@@ -418,7 +491,7 @@ export default function IPManagePage() {
                       <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
                     </Select>
                   </label>
-                  <label>
+                  <label className="ip-access-site-field">
                     <span>{t('sites.title')}</span>
                     <Select
                       allowClear
@@ -430,7 +503,7 @@ export default function IPManagePage() {
                       {sites.map((site) => <Select.Option key={site.id} value={site.id}>{site.name || site.id}</Select.Option>)}
                     </Select>
                   </label>
-                  <label>
+                  <label className="ip-access-path-field">
                     <span>{t('ip.pathPrefix')}</span>
                     <Input
                       disabled={accessDraft.scope !== 'path'}
@@ -443,8 +516,10 @@ export default function IPManagePage() {
                     <span>{t('ip.entriesInput')}</span>
                     <Input value={accessDraft.entries.join(', ')} placeholder="203.0.113.10, 198.51.100.0/24" onChange={(value) => setAccessDraft((current) => ({ ...current, entries: splitList(value) }))} />
                   </label>
-                  <label className="switch-line ip-access-enabled"><span>{t('rules.enabled')}</span><Switch checked={accessDraft.enabled} onChange={(enabled) => setAccessDraft((current) => ({ ...current, enabled }))} /></label>
-                  <Button className="ip-access-add-button" type="primary" icon={<Plus size={15} />} onClick={addAccessRule}>{t('ip.addRule')}</Button>
+                  <div className="ip-access-draft-actions">
+                    <label className="switch-line ip-access-enabled"><span>{t('rules.enabled')}</span><Switch checked={accessDraft.enabled} onChange={(enabled) => setAccessDraft((current) => ({ ...current, enabled }))} /></label>
+                    <Button className="ip-access-add-button" type="primary" icon={<Plus size={15} />} onClick={addAccessRule}>{t('ip.addRule')}</Button>
+                  </div>
                 </div>
               </section>
               <div className="table-panel table-panel-embedded ip-access-table">
@@ -484,68 +559,72 @@ export default function IPManagePage() {
                 </Space>
               </div>
               <div className="provider-list">
-                {providers.map((provider, index) => (
-                  <article className="provider-card" key={provider.id}>
-                    <div className="provider-card-head">
-                      <Switch checked={provider.enabled} onChange={(enabled) => updateProvider(index, { enabled })} />
-                      <div>
-                        <strong>{provider.name || t('ip.providerName')}</strong>
-                        <span>{provider.endpoint || t('ip.providerEndpointEmpty')}</span>
+                {providers.map((provider, index) => {
+                  const status = providerStatuses[provider.id];
+                  return (
+                    <article className="provider-card" key={provider.id}>
+                      <div className="provider-card-head">
+                        <Switch checked={provider.enabled} onChange={(enabled) => updateProvider(index, { enabled })} />
+                        <div>
+                          <strong>{provider.name || t('ip.providerName')}</strong>
+                          <span>{provider.endpoint || t('ip.providerEndpointEmpty')}</span>
+                        </div>
+                        <div className="provider-actions">
+                          <Button size="small" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(provider)}>{t('system.test')}</Button>
+                          <Button size="small" loading={syncMutation.isPending} onClick={() => syncMutation.mutate(provider.id)}>{t('ip.sync')}</Button>
+                          <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeProvider(provider.id)} />
+                        </div>
                       </div>
-                      <div className="provider-actions">
-                        <Button size="small" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(provider)}>{t('system.test')}</Button>
-                        <Button size="small" loading={syncMutation.isPending} onClick={() => syncMutation.mutate(provider.id)}>{t('ip.sync')}</Button>
-                        <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeProvider(provider.id)} />
+                      {status && <IntelStatusPanel status={status} t={t} />}
+                      <div className="provider-field-grid">
+                        <label>
+                          <span>{t('ip.providerName')}</span>
+                          <Input value={provider.name} placeholder={t('ip.providerName')} onChange={(name) => updateProvider(index, { name })} />
+                        </label>
+                        <label>
+                          <span>{t('ip.providerType')}</span>
+                          <Select value={provider.type} onChange={(type) => updateProvider(index, { type: type as string })}>
+                            <Select.Option value="generic">Generic</Select.Option>
+                            <Select.Option value="threatbook-cn">ThreatBook CN</Select.Option>
+                            <Select.Option value="threatbook-intl">ThreatBook Intl</Select.Option>
+                            <Select.Option value="misp">MISP</Select.Option>
+                            <Select.Option value="stix">STIX</Select.Option>
+                          </Select>
+                        </label>
+                        <label>
+                          <span>{t('ip.format')}</span>
+                          <Select value={provider.format || 'stix'} onChange={(format) => updateProvider(index, { format: format as string })}>
+                            <Select.Option value="cidr">CIDR/TXT</Select.Option>
+                            <Select.Option value="csv">CSV</Select.Option>
+                            <Select.Option value="json">JSON</Select.Option>
+                            <Select.Option value="stix">STIX</Select.Option>
+                            <Select.Option value="threatbook">ThreatBook</Select.Option>
+                          </Select>
+                        </label>
+                        <label>
+                          <span>{t('logs.action')}</span>
+                          <Select value={provider.action || 'challenge'} onChange={(action) => updateProvider(index, { action: action as string })}>
+                            <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
+                            <Select.Option value="block">{t('common.block')}</Select.Option>
+                            <Select.Option value="log">{displayAction('log', t)}</Select.Option>
+                          </Select>
+                        </label>
+                        <label className="provider-endpoint-field">
+                          <span>{t('ip.endpoint')}</span>
+                          <Input value={provider.endpoint} placeholder="https://..." onChange={(endpoint) => updateProvider(index, { endpoint })} />
+                        </label>
+                        <label>
+                          <span>API Key</span>
+                          <Input.Password value={provider.api_key} placeholder="API Key" onChange={(api_key) => updateProvider(index, { api_key })} />
+                        </label>
+                        <label>
+                          <span>{t('ip.intervalHours')}</span>
+                          <InputNumber value={durationSeconds(provider.interval) / 3600} min={1} max={720} onChange={(value) => updateProvider(index, { interval: secondsToDuration(Number(value || 24) * 3600) })} />
+                        </label>
                       </div>
-                    </div>
-                    <div className="provider-field-grid">
-                      <label>
-                        <span>{t('ip.providerName')}</span>
-                        <Input value={provider.name} placeholder={t('ip.providerName')} onChange={(name) => updateProvider(index, { name })} />
-                      </label>
-                      <label>
-                        <span>{t('ip.providerType')}</span>
-                        <Select value={provider.type} onChange={(type) => updateProvider(index, { type: type as string })}>
-                          <Select.Option value="generic">Generic</Select.Option>
-                          <Select.Option value="threatbook-cn">ThreatBook CN</Select.Option>
-                          <Select.Option value="threatbook-intl">ThreatBook Intl</Select.Option>
-                          <Select.Option value="misp">MISP</Select.Option>
-                          <Select.Option value="stix">STIX</Select.Option>
-                        </Select>
-                      </label>
-                      <label>
-                        <span>{t('ip.format')}</span>
-                        <Select value={provider.format || 'stix'} onChange={(format) => updateProvider(index, { format: format as string })}>
-                          <Select.Option value="cidr">CIDR/TXT</Select.Option>
-                          <Select.Option value="csv">CSV</Select.Option>
-                          <Select.Option value="json">JSON</Select.Option>
-                          <Select.Option value="stix">STIX</Select.Option>
-                          <Select.Option value="threatbook">ThreatBook</Select.Option>
-                        </Select>
-                      </label>
-                      <label>
-                        <span>{t('logs.action')}</span>
-                        <Select value={provider.action || 'challenge'} onChange={(action) => updateProvider(index, { action: action as string })}>
-                          <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
-                          <Select.Option value="block">{t('common.block')}</Select.Option>
-                          <Select.Option value="log">{displayAction('log', t)}</Select.Option>
-                        </Select>
-                      </label>
-                      <label className="provider-endpoint-field">
-                        <span>{t('ip.endpoint')}</span>
-                        <Input value={provider.endpoint} placeholder="https://..." onChange={(endpoint) => updateProvider(index, { endpoint })} />
-                      </label>
-                      <label>
-                        <span>API Key</span>
-                        <Input.Password value={provider.api_key} placeholder="API Key" onChange={(api_key) => updateProvider(index, { api_key })} />
-                      </label>
-                      <label>
-                        <span>{t('ip.intervalHours')}</span>
-                        <InputNumber value={durationSeconds(provider.interval) / 3600} min={1} max={720} onChange={(value) => updateProvider(index, { interval: secondsToDuration(Number(value || 24) * 3600) })} />
-                      </label>
-                    </div>
-                  </article>
-                ))}
+                    </article>
+                  );
+                })}
                 {!providers.length && <div className="empty-state">{t('ip.noProviders')}</div>}
               </div>
             </div>
@@ -585,7 +664,14 @@ export default function IPManagePage() {
                     </Select>
                   </label>
                   <label><span>{t('ip.confidence')}</span><InputNumber value={importDraft.confidence * 100} min={0} max={100} precision={0} onChange={(value) => setImportDraft((current) => ({ ...current, confidence: Number(value || 0) / 100 }))} /></label>
-                  <label className="wide-field"><span>{t('ip.labels')}</span><Input value={importDraft.labels} onChange={(labels) => setImportDraft((current) => ({ ...current, labels }))} /></label>
+                  <label className="wide-field tag-token-field">
+                    <span>{t('ip.labels')}</span>
+                    <TagTokenInput
+                      value={importDraft.labels}
+                      onChange={(labels) => setImportDraft((current) => ({ ...current, labels }))}
+                      placeholder={t('ip.labelPlaceholder')}
+                    />
+                  </label>
                   <label className="ioc-field"><span>IOC</span><Input.TextArea value={importDraft.contents} autoSize={{ minRows: 12, maxRows: 20 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /></label>
                 </div>
                 <div className="form-action-row">
@@ -593,11 +679,12 @@ export default function IPManagePage() {
                     type="primary"
                     disabled={!importDraft.contents.trim()}
                     loading={importMutation.isPending}
-                    onClick={() => importMutation.mutate({ ...importDraft, labels: splitList(importDraft.labels) })}
+                    onClick={() => importMutation.mutate({ ...importDraft, labels: importDraft.labels })}
                   >
                     {t('ip.import')}
                   </Button>
                 </div>
+                {importStatus && <IntelStatusPanel status={importStatus} t={t} />}
               </section>
               <section className="system-card ip-lookup-card">
                 <div className="system-section-title"><h2>{t('ip.lookup')}</h2></div>
@@ -615,6 +702,8 @@ export default function IPManagePage() {
                     {t('ip.lookup')}
                   </Button>
                 </div>
+                {lookupStatus && <IntelStatusPanel status={lookupStatus} t={t} />}
+                {syncStatus && <IntelStatusPanel status={syncStatus} t={t} compact />}
               </section>
             </div>
           </Tabs.TabPane>
@@ -622,6 +711,124 @@ export default function IPManagePage() {
       </section>
     </section>
   );
+}
+
+function IntelStatusPanel({
+  status,
+  compact = false,
+  t,
+}: {
+  status: IntelOperationStatus;
+  compact?: boolean;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const items = (status.items || []).slice(0, compact ? 2 : 4);
+  return (
+    <div className={`intel-status intel-status-${status.tone}${compact ? ' intel-status-compact' : ''}`}>
+      <div className="intel-status-main">
+        <strong>{status.title}</strong>
+        <span>{status.detail}</span>
+      </div>
+      <time>{status.at}</time>
+      {items.length > 0 && (
+        <div className="intel-status-items">
+          {items.map((item, index) => (
+            <code key={`${indicatorSummary(item)}-${index}`}>{indicatorSummary(item)}</code>
+          ))}
+          {(status.items?.length || 0) > items.length && <span>{t('ip.moreItems', { count: (status.items?.length || 0) - items.length })}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function buildCountStatus({
+  tone,
+  title,
+  countLabel,
+  imported,
+  total,
+  items,
+  t,
+}: {
+  tone: IntelStatusTone;
+  title: string;
+  countLabel: string;
+  imported: number;
+  total: number;
+  items?: Array<Record<string, unknown>>;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}): IntelOperationStatus {
+  return {
+    tone,
+    title,
+    detail: `${countLabel}: ${imported} / ${t('ip.totalItems')}: ${total}`,
+    at: formatStatusTime(),
+    items,
+  };
+}
+
+function buildErrorStatus(title: string, detail: string): IntelOperationStatus {
+  return {
+    tone: 'error',
+    title,
+    detail,
+    at: formatStatusTime(),
+  };
+}
+
+function showStatusMessage(status: IntelOperationStatus) {
+  if (status.tone === 'success') {
+    ArcoMessage.success(status.title);
+    return;
+  }
+  if (status.tone === 'warning') {
+    ArcoMessage.warning(status.title);
+    return;
+  }
+  ArcoMessage.error(status.title);
+}
+
+function formatStatusTime() {
+  return new Date().toLocaleString();
+}
+
+function indicatorSummary(item: Record<string, unknown>) {
+  const value = stringField(item, ['value', 'ip', 'ip_address', 'ipAddress', 'address', 'cidr']) || 'item';
+  const severity = stringField(item, ['severity', 'risk', 'threat_level', 'judgment', 'verdict']);
+  const source = stringField(item, ['source', 'provider', 'origin']);
+  const confidence = numberField(item, ['confidence', 'score', 'riskScore', 'threatScore', 'abuseConfidenceScore']);
+  const parts = [value];
+  if (severity) {
+    parts.push(severity);
+  }
+  if (typeof confidence === 'number' && Number.isFinite(confidence)) {
+    parts.push(confidence <= 1 ? `${Math.round(confidence * 100)}%` : `${Math.round(confidence)}%`);
+  }
+  if (source) {
+    parts.push(source);
+  }
+  return parts.join(' · ');
+}
+
+function stringField(item: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
+function numberField(item: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === 'number') {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function IPEntryMobileCard({
@@ -718,16 +925,16 @@ async function saveIntelFile(format: 'csv' | 'stix') {
 
 function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
   const { t } = useTranslation();
-  const tagText = tags.join(', ');
+  const tagText = tags.join('\n');
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(tagText);
+  const [draft, setDraft] = useState(tags);
 
   useEffect(() => {
-    setDraft(tagText);
-  }, [tagText]);
+    setDraft(tags);
+  }, [tagText, tags]);
 
   const commit = () => {
-    onChange(splitList(draft));
+    onChange(draft);
     setOpen(false);
   };
 
@@ -742,15 +949,9 @@ function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags:
           position="bottom"
           content={(
             <div className="ip-tag-popover">
-              <Input
-                size="small"
-                value={draft}
-                placeholder="tag-a, tag-b"
-                onChange={setDraft}
-                onPressEnter={commit}
-              />
+              <TagTokenInput value={draft} onChange={setDraft} placeholder={t('ip.labelPlaceholder')} autoFocus />
               <div>
-                <Button size="mini" onClick={() => setDraft(tagText)}>{t('common.reset')}</Button>
+                <Button size="mini" onClick={() => setDraft(tags)}>{t('common.reset')}</Button>
                 <Button size="mini" type="primary" onClick={commit}>{t('common.save')}</Button>
               </div>
             </div>
@@ -759,6 +960,78 @@ function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags:
           <Button className="ip-tag-edit-btn" size="mini" icon={<Pencil size={12} />} />
         </Popover>
       </div>
+    </div>
+  );
+}
+
+function TagTokenInput({
+  value,
+  onChange,
+  placeholder,
+  autoFocus,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+  autoFocus?: boolean;
+}) {
+  const [draft, setDraft] = useState('');
+
+  const addToken = (raw: string) => {
+    const nextItems = splitList(raw.replace(/\n/g, ','));
+    if (nextItems.length === 0) {
+      return;
+    }
+    const existing = new Set(value.map((item) => item.toLowerCase()));
+    const additions = nextItems.filter((item) => {
+      const key = item.toLowerCase();
+      if (existing.has(key)) {
+        return false;
+      }
+      existing.add(key);
+      return true;
+    });
+    if (additions.length > 0) {
+      onChange([...value, ...additions]);
+    }
+    setDraft('');
+  };
+
+  const removeToken = (target: string) => {
+    onChange(value.filter((item) => item !== target));
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter' || event.key === ',') {
+      event.preventDefault();
+      addToken(draft);
+      return;
+    }
+    if (event.key === 'Backspace' && draft.length === 0 && value.length > 0) {
+      event.preventDefault();
+      onChange(value.slice(0, -1));
+    }
+  };
+
+  return (
+    <div className="tag-token-input" onClick={(event) => event.currentTarget.querySelector('input')?.focus()}>
+      {value.map((tag) => (
+        <span className="ip-token tag-token-input-item" key={tag}>
+          {tag}
+          <button type="button" aria-label={`Remove ${tag}`} onClick={() => removeToken(tag)}>
+            <X size={12} />
+          </button>
+        </span>
+      ))}
+      <Input
+        autoFocus={autoFocus}
+        size="small"
+        value={draft}
+        placeholder={value.length ? '' : placeholder}
+        onChange={setDraft}
+        onBlur={() => addToken(draft)}
+        onKeyDown={handleKeyDown}
+      />
     </div>
   );
 }
