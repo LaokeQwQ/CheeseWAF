@@ -31,6 +31,7 @@ import i18n from '../i18n';
 import { navItemMotion } from '../animations/micro';
 import { fetchHealth, fetchMonitorSummary, logout } from '../api/client';
 import AIAssistant from '../components/AIAssistant/AIAssistant';
+import BrandLogo from '../components/BrandLogo';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
 import { useQuery } from '@tanstack/react-query';
@@ -141,7 +142,7 @@ export default function MainLayout() {
       <aside className="app-sidebar">
         <div className="brand-row">
           <button className="brand-mark" type="button" onClick={() => navigate('/')}>
-            CW
+            <BrandLogo />
           </button>
           <div className="brand-copy">
             <strong>CheeseWAF</strong>

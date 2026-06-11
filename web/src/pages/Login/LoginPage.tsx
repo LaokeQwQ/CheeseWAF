@@ -6,6 +6,7 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { LockKeyhole, MoveRight, ShieldCheck, UserRound } from 'lucide-react';
 import { pressable } from '../../animations/micro';
 import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login, verifyLoginCaptcha } from '../../api/client';
+import BrandLogo from '../../components/BrandLogo';
 import type {
   LoginCAPTCHAChallenge,
   LoginCAPTCHAPayload,
@@ -397,7 +398,7 @@ export default function LoginPage() {
           transition={{ duration: 0.24 }}
         >
           <div className="auth-brand">
-            <span>CW</span>
+            <span><BrandLogo /></span>
             <div>
               <h1>{t('login.title')}</h1>
               <p>{t('login.subtitle')}</p>
