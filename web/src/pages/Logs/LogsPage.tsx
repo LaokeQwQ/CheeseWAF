@@ -1,27 +1,30 @@
-import { Button, Input, Select, Table, Tag } from '@arco-design/web-react';
-import { useMemo, useState } from 'react';
+import { Button, Input, Select, Tag } from '@arco-design/web-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Eye, Search } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, Search } from 'lucide-react';
 import { fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry } from '../../utils/display';
+
+const PAGE_SIZE = 8;
 
 export default function LogsPage() {
   const { t } = useTranslation();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<string>();
   const [action, setAction] = useState<string>();
+  const [page, setPage] = useState(1);
   const { data, isLoading } = useQuery({
     queryKey: ['logs', category, action],
-    queryFn: () => fetchLogs({ limit: 250, category, action }),
+    queryFn: () => fetchLogs({ limit: 500, category, action }),
     refetchInterval: 8_000,
     retry: false,
   });
   const logs = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    const entries = data?.items ?? [];
+    const entries = (data?.items ?? []).filter(isSecurityEvent);
     if (!needle) {
       return entries;
     }
@@ -35,6 +38,20 @@ export default function LogsPage() {
       entry.country,
     ].some((value) => value?.toLowerCase().includes(needle)));
   }, [data?.items, search]);
+  const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE));
+  const pageItems = logs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const pageStart = logs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const pageEnd = Math.min(page * PAGE_SIZE, logs.length);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, category, action]);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
 
   return (
     <section className="page-surface">
@@ -59,53 +76,77 @@ export default function LogsPage() {
           <Select.Option value="block">{t('common.block')}</Select.Option>
           <Select.Option value="challenge">Challenge</Select.Option>
           <Select.Option value="log">Log</Select.Option>
-          <Select.Option value="pass">Pass</Select.Option>
           <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
         </Select>
       </div>
 
-      <section className="table-panel">
-        <Table
-          rowKey="key"
-          pagination={{ pageSize: 8 }}
-          loading={isLoading}
-          data={logs.map((entry) => ({ ...entry, key: entry.id || entry.trace_id }))}
-          columns={[
-            { title: t('logs.trace'), dataIndex: 'trace_id', render: (trace: string, record: LogEntry) => <code className="table-code" title={trace || record.id}>{trace || record.id}</code> },
-            { title: t('logs.source'), dataIndex: 'client_ip' },
-            {
-              title: t('logs.category'),
-              dataIndex: 'category',
-              render: (value: string) => (
-                <span className="status-group">
-                  <Tag color={value ? 'orange' : 'green'}>{displayCategory(value || 'pass', t)}</Tag>
-                </span>
-              ),
-            },
-            {
-              title: t('logs.action'),
-              dataIndex: 'action',
-              render: (action: string) => (
-                <span className="status-group">
-                  <Tag color={action === 'block' ? 'red' : 'blue'}>
-                    {displayAction(action, t)}
-                  </Tag>
-                </span>
-              ),
-            },
-            { title: 'URI', dataIndex: 'uri', render: (uri: string) => <code className="table-code" title={uri || '-'}>{uri || '-'}</code> },
-            { title: t('attackMap.country'), dataIndex: 'country', render: (value: string) => displayCountry(value, t) },
-            { title: t('logs.time'), dataIndex: 'timestamp', render: formatTime },
-            {
-              title: t('logs.detail'),
-              render: (_: unknown, record: LogEntry) => (
-                <Link to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`} className="table-action-link">
+      <section className="table-panel security-events-panel">
+        <div className="security-events-header" aria-hidden="true">
+          <span>{t('logs.trace')}</span>
+          <span>{t('logs.source')}</span>
+          <span>{t('logs.category')}</span>
+          <span>{t('logs.action')}</span>
+          <span>URI</span>
+          <span>{t('attackMap.country')}</span>
+          <span>{t('logs.time')}</span>
+          <span>{t('logs.detail')}</span>
+        </div>
+        <div className="security-events-list" aria-busy={isLoading}>
+          {isLoading && Array.from({ length: 4 }).map((_, index) => (
+            <div className="security-event-row security-event-skeleton" key={index} />
+          ))}
+          {!isLoading && pageItems.length === 0 && <div className="empty-state">{t('common.noData')}</div>}
+          {!isLoading && pageItems.map((entry) => (
+            <article className="security-event-row" key={entry.id || entry.trace_id}>
+              <div className="security-event-cell security-event-trace" data-label={t('logs.trace')}>
+                <code title={entry.trace_id || entry.id}>{entry.trace_id || entry.id || '-'}</code>
+              </div>
+              <div className="security-event-cell" data-label={t('logs.source')}>
+                <span title={entry.client_ip || '-'}>{entry.client_ip || '-'}</span>
+              </div>
+              <div className="security-event-cell" data-label={t('logs.category')}>
+                <Tag color={entry.category ? 'orange' : 'green'}>{displayCategory(entry.category || 'pass', t)}</Tag>
+              </div>
+              <div className="security-event-cell" data-label={t('logs.action')}>
+                <Tag color={entry.action === 'block' ? 'red' : 'blue'}>{displayAction(entry.action, t)}</Tag>
+              </div>
+              <div className="security-event-cell security-event-uri" data-label="URI">
+                <code title={entry.uri || '-'}>{entry.uri || '-'}</code>
+              </div>
+              <div className="security-event-cell" data-label={t('attackMap.country')}>
+                <span title={displayCountry(entry.country, t)}>{displayCountry(entry.country, t)}</span>
+              </div>
+              <div className="security-event-cell" data-label={t('logs.time')}>
+                <time dateTime={entry.timestamp}>{formatTime(entry.timestamp)}</time>
+              </div>
+              <div className="security-event-cell security-event-actions" data-label={t('logs.detail')}>
+                <Link to={`/logs/${encodeURIComponent(entry.trace_id || entry.id)}`} className="table-action-link">
                   <Button size="small" icon={<Eye size={14} />}>{t('logs.viewDetail')}</Button>
                 </Link>
-              ),
-            },
-          ]}
-        />
+              </div>
+            </article>
+          ))}
+        </div>
+        {!isLoading && logs.length > PAGE_SIZE && (
+          <footer className="security-events-pagination">
+            <span>{pageStart}-{pageEnd} / {logs.length}</span>
+            <div>
+              <Button
+                aria-label={t('common.back')}
+                icon={<ChevronLeft size={15} />}
+                disabled={page <= 1}
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+              />
+              <strong>{page}</strong>
+              <Button
+                aria-label={t('common.next')}
+                icon={<ChevronRight size={15} />}
+                disabled={page >= totalPages}
+                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+              />
+            </div>
+          </footer>
+        )}
       </section>
     </section>
   );
@@ -117,4 +158,20 @@ function formatTime(value: string) {
     return value || '-';
   }
   return date.toLocaleString();
+}
+
+function isSecurityEvent(entry: LogEntry) {
+  const action = String(entry.action ?? '').toLowerCase();
+  const status = Number(entry.status_code ?? 0);
+  return Boolean(
+    entry.category
+      || entry.detector_id
+      || entry.severity
+      || action === 'block'
+      || action === 'challenge'
+      || action === 'log'
+      || action === 'monitor'
+      || status === 403
+      || status === 429,
+  );
 }

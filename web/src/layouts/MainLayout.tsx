@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import { Button, Dropdown, Input, Menu, Popover, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
 import { motion } from 'framer-motion';
 import {
-  Activity,
   BrainCircuit,
   FileCode2,
   Bell,
@@ -26,7 +25,6 @@ import {
   CloudDownload,
   UserCog,
   UserRound,
-  SlidersHorizontal,
   SunMoon,
 } from 'lucide-react';
 import i18n from '../i18n';
@@ -181,7 +179,7 @@ export default function MainLayout() {
 
       <div className="app-main">
         <header className="topbar">
-          <Space size={10}>
+          <Space className="topbar-left" size={10}>
             <Tooltip content="Menu">
               <Button
                 className="icon-button"
@@ -197,13 +195,20 @@ export default function MainLayout() {
             />
           </Space>
 
-          <Space size={10}>
-            <Tag className="metric-chip" icon={<Activity size={14} />}>
-              {t('shell.attacks')} {snapshot?.blocked ?? 0}
-            </Tag>
-            <Tag className="metric-chip" icon={<SlidersHorizontal size={14} />}>
-              {t('shell.requests')} {snapshot?.requests ?? 0}
-            </Tag>
+          <div className="topbar-right">
+            <div className="topbar-actions">
+              <Popover
+                popupVisible={notificationsOpen}
+                onVisibleChange={setNotificationsOpen}
+                trigger="click"
+                position="bottom"
+                content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
+              >
+                <Button
+                  className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
+                  icon={<Bell size={18} />}
+                />
+              </Popover>
             <Select
               aria-label={t('system.theme')}
               className="topbar-select"
@@ -227,18 +232,7 @@ export default function MainLayout() {
               <Select.Option value="zh-CN">中文</Select.Option>
               <Select.Option value="en-US">English</Select.Option>
             </Select>
-            <Popover
-              popupVisible={notificationsOpen}
-              onVisibleChange={setNotificationsOpen}
-              trigger="click"
-              position="bottom"
-              content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
-            >
-              <Button
-                className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
-                icon={<Bell size={18} />}
-              />
-            </Popover>
+            </div>
             <Dropdown
               droplist={
                 <Menu
@@ -265,7 +259,7 @@ export default function MainLayout() {
                 <span>{account.username}</span>
               </button>
             </Dropdown>
-          </Space>
+          </div>
         </header>
 
         <main className="workspace">

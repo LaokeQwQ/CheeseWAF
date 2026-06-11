@@ -303,7 +303,7 @@ edge:
     max_body_bytes: 2097152
   compression:
     enabled: true
-    algorithms: ["gzip"]
+    algorithms: ["br", "gzip"]
     level: 5
     min_bytes: 1024
     content_types:
