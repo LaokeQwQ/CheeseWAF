@@ -58,3 +58,35 @@ func TestUpdateSystemNotifiesAPISecReload(t *testing.T) {
 		t.Fatalf("system config was not updated: %+v", cfg.APISec)
 	}
 }
+
+func TestUpdateSystemPersistsConsoleSecurityEntry(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	nextConsole := cfg.Console
+	nextConsole.Login.SecurityEntry.Enabled = true
+	nextConsole.Login.SecurityEntry.Path = "/ops-door"
+	nextConsole.Login.SecurityEntry.CookieName = "cw_ops_entry"
+	raw, _ := json.Marshal(map[string]any{"console": nextConsole})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw))
+	handler.UpdateSystem(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected system update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !cfg.Console.Login.SecurityEntry.Enabled || cfg.Console.Login.SecurityEntry.Path != "/ops-door" || cfg.Console.Login.SecurityEntry.CookieName != "cw_ops_entry" {
+		t.Fatalf("security entry was not updated in memory: %+v", cfg.Console.Login.SecurityEntry)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.Console.Login.SecurityEntry.Enabled || loaded.Console.Login.SecurityEntry.Path != "/ops-door" || loaded.Console.Login.SecurityEntry.CookieName != "cw_ops_entry" {
+		t.Fatalf("security entry was not persisted: %+v", loaded.Console.Login.SecurityEntry)
+	}
+}

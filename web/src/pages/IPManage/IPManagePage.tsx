@@ -47,7 +47,8 @@ export default function IPManagePage() {
   const queryClient = useQueryClient();
   const [routeParams, setRouteParams] = useSearchParams();
   const tabParam = routeParams.get('tab');
-  const activeTab = tabParam === 'access' || tabParam === 'providers' || tabParam === 'import' ? tabParam : 'entries';
+  const normalizedTab = tabParam === 'intel' ? 'providers' : tabParam;
+  const activeTab = normalizedTab === 'access' || normalizedTab === 'providers' || normalizedTab === 'import' ? normalizedTab : 'entries';
   const [search, setSearch] = useState('');
   const [draftTags, setDraftTags] = useState<Record<string, string[]>>({});
   const [accessRules, setAccessRules] = useState<IPAccessRule[]>([]);
@@ -339,7 +340,7 @@ export default function IPManagePage() {
             if (tab === 'entries') {
               next.delete('tab');
             } else {
-              next.set('tab', tab);
+              next.set('tab', tab === 'providers' ? 'intel' : tab);
             }
             setRouteParams(next, { replace: true });
           }}
