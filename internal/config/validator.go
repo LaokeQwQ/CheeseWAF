@@ -266,7 +266,7 @@ func Validate(cfg *Config) error {
 	}
 	for _, algorithm := range cfg.Edge.Compression.Algorithms {
 		switch strings.ToLower(algorithm) {
-		case "gzip", "identity", "none":
+		case "br", "brotli", "gzip", "identity", "none":
 		default:
 			return fmt.Errorf("edge compression algorithm %q is not supported yet", algorithm)
 		}

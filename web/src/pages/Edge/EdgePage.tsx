@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Form, Input, InputNumber, Select, Switch, Table } from '@arco-design/web-react';
+import { Button, Checkbox, Form, Input, InputNumber, Select, Switch, Table } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Gauge, ListPlus, PackageCheck, Plus, Trash2 } from 'lucide-react';
@@ -7,6 +7,8 @@ import { fetchEdgePolicy, updateEdgePolicy } from '../../api/client';
 import type { EdgeConfig } from '../../types/api';
 
 type HeaderRule = EdgeConfig['headers']['rules'][number];
+type DurationUnit = 's' | 'm' | 'h' | 'd';
+type ByteUnit = 'KB' | 'MB';
 
 const fallback: EdgeConfig = {
   headers: {
@@ -95,9 +97,10 @@ export default function EdgePage() {
             initialValues={{
               enabled: edge.cache.enabled,
               mode: edge.cache.mode,
-              ttl: String(edge.cache.ttl),
+              ttl: durationToNanoseconds(edge.cache.ttl),
               paths: edge.cache.path_prefixes.join(','),
-              maxBody: edge.cache.max_body_bytes,
+              statusCodes: edge.cache.status_codes.join(','),
+              maxBody: edge.cache.max_body_bytes || 2 * 1024 * 1024,
             }}
             onSubmit={(values) => {
               const next = {
@@ -106,26 +109,36 @@ export default function EdgePage() {
                 ...edge.cache,
                 enabled: values.enabled,
                 mode: values.mode,
-                ttl: values.ttl,
+                ttl: Number(values.ttl || 0),
                 path_prefixes: split(values.paths),
-                max_body_bytes: values.maxBody,
+                status_codes: splitNumbers(values.statusCodes),
+                max_body_bytes: Number(values.maxBody || 0),
               },
               };
               setDraft(next);
               mutation.mutate(next);
             }}
           >
-            <Form.Item label={t('edge.enabled')} field="enabled"><Switch /></Form.Item>
-            <Form.Item label={t('edge.mode')} field="mode">
+            <Form.Item label={t('edge.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
+            <Form.Item label={t('edge.mode')} field="mode" extra={t('edge.modeHint')}>
               <Select>
-                <Select.Option value="public">public</Select.Option>
-                <Select.Option value="private">private</Select.Option>
-                <Select.Option value="off">off</Select.Option>
+                <Select.Option value="public">{t('edge.modePublic')}</Select.Option>
+                <Select.Option value="private">{t('edge.modePrivate')}</Select.Option>
+                <Select.Option value="off">{t('edge.modeOff')}</Select.Option>
               </Select>
             </Form.Item>
-            <Form.Item label="TTL" field="ttl"><Input placeholder="5m" /></Form.Item>
-            <Form.Item label={t('edge.paths')} field="paths"><Input /></Form.Item>
-            <Form.Item label={t('edge.maxBody')} field="maxBody"><InputNumber min={1024} step={1024} /></Form.Item>
+            <Form.Item label="TTL" field="ttl" extra={t('edge.ttlHint')}>
+              <DurationUnitInput />
+            </Form.Item>
+            <Form.Item label={t('edge.paths')} field="paths" extra={t('edge.pathsHint')}>
+              <Input placeholder="/assets/,/static/" />
+            </Form.Item>
+            <Form.Item label={t('edge.statusCodes')} field="statusCodes" extra={t('edge.statusCodesHint')}>
+              <Input placeholder="200,304" />
+            </Form.Item>
+            <Form.Item label={t('edge.maxBody')} field="maxBody" extra={t('edge.maxBodyHint')}>
+              <ByteUnitInput minBytes={1024} />
+            </Form.Item>
             <Button htmlType="submit">{t('common.save')}</Button>
           </Form>
         </section>
@@ -137,9 +150,9 @@ export default function EdgePage() {
             layout="vertical"
             initialValues={{
               enabled: edge.compression.enabled,
-              algorithms: edge.compression.algorithms.join(','),
-              level: edge.compression.level,
-              minBytes: edge.compression.min_bytes,
+              algorithms: normalizeAlgorithms(edge.compression.algorithms),
+              level: normalizeCompressionLevel(edge.compression.level),
+              minBytes: edge.compression.min_bytes || 1024,
               types: edge.compression.content_types.join(','),
             }}
             onSubmit={(values) => {
@@ -148,9 +161,9 @@ export default function EdgePage() {
               compression: {
                 ...edge.compression,
                 enabled: values.enabled,
-                algorithms: split(values.algorithms),
-                level: values.level,
-                min_bytes: values.minBytes,
+                algorithms: Array.isArray(values.algorithms) ? values.algorithms : [],
+                level: Number(values.level || 5),
+                min_bytes: Number(values.minBytes || 0),
                 content_types: split(values.types),
               },
               };
@@ -158,11 +171,26 @@ export default function EdgePage() {
               mutation.mutate(next);
             }}
           >
-            <Form.Item label={t('edge.enabled')} field="enabled"><Switch /></Form.Item>
-            <Form.Item label={t('edge.algorithms')} field="algorithms"><Input /></Form.Item>
-            <Form.Item label={t('edge.level')} field="level"><InputNumber min={-2} max={9} /></Form.Item>
-            <Form.Item label={t('edge.minBytes')} field="minBytes"><InputNumber min={0} step={512} /></Form.Item>
-            <Form.Item label={t('edge.types')} field="types"><Input /></Form.Item>
+            <Form.Item label={t('edge.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
+            <Form.Item label={t('edge.algorithms')} field="algorithms" extra={t('edge.algorithmsHint')}>
+              <Checkbox.Group className="edge-checkbox-group">
+                <Checkbox value="br">Brotli (br)</Checkbox>
+                <Checkbox value="gzip">Gzip</Checkbox>
+              </Checkbox.Group>
+            </Form.Item>
+            <Form.Item label={t('edge.level')} field="level" extra={t('edge.levelHint')}>
+              <Select>
+                <Select.Option value={1}>{t('edge.levelFast')}</Select.Option>
+                <Select.Option value={5}>{t('edge.levelBalanced')}</Select.Option>
+                <Select.Option value={9}>{t('edge.levelCompact')}</Select.Option>
+              </Select>
+            </Form.Item>
+            <Form.Item label={t('edge.minBytes')} field="minBytes" extra={t('edge.minBytesHint')}>
+              <ByteUnitInput minBytes={0} defaultUnit="KB" />
+            </Form.Item>
+            <Form.Item label={t('edge.types')} field="types" extra={t('edge.typesHint')}>
+              <Input placeholder="text/,application/json,application/javascript" />
+            </Form.Item>
             <Button htmlType="submit">{t('common.save')}</Button>
           </Form>
         </section>
@@ -207,4 +235,147 @@ export default function EdgePage() {
 
 function split(value: unknown) {
   return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function splitNumbers(value: unknown) {
+  return split(value).map((item) => Number(item)).filter((item) => Number.isInteger(item) && item >= 100 && item <= 599);
+}
+
+function normalizeAlgorithms(value: string[]) {
+  const out = value.map((item) => (item === 'brotli' ? 'br' : item)).filter((item) => item === 'br' || item === 'gzip');
+  return out.length > 0 ? Array.from(new Set(out)) : ['br', 'gzip'];
+}
+
+function normalizeCompressionLevel(level: number) {
+  if (level <= 1) {
+    return 1;
+  }
+  if (level >= 9) {
+    return 9;
+  }
+  return 5;
+}
+
+function DurationUnitInput({ value, onChange }: { value?: number | string; onChange?: (next: number) => void }) {
+  const { t } = useTranslation();
+  const parts = durationToUnitParts(value);
+  const [unit, setUnit] = useState<DurationUnit>(parts.unit);
+  useEffect(() => {
+    setUnit(parts.unit);
+  }, [parts.unit, parts.amount]);
+
+  const emit = (amount: number | string | null | undefined, nextUnit = unit) => {
+    const numeric = Math.max(1, Number(amount || 1));
+    onChange?.(numeric * durationUnitToNanoseconds(nextUnit));
+  };
+
+  return (
+    <div className="compound-input">
+      <InputNumber min={1} value={parts.amount} onChange={(next) => emit(next)} />
+      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as DurationUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
+        <Select.Option value="d">{t('common.days')}</Select.Option>
+        <Select.Option value="h">{t('common.hours')}</Select.Option>
+        <Select.Option value="m">{t('common.minutes')}</Select.Option>
+        <Select.Option value="s">{t('common.seconds')}</Select.Option>
+      </Select>
+    </div>
+  );
+}
+
+function ByteUnitInput({
+  value,
+  onChange,
+  minBytes = 0,
+  defaultUnit = 'MB',
+}: {
+  value?: number;
+  onChange?: (next: number) => void;
+  minBytes?: number;
+  defaultUnit?: ByteUnit;
+}) {
+  const parts = bytesToUnitParts(value, defaultUnit);
+  const [unit, setUnit] = useState<ByteUnit>(parts.unit);
+  useEffect(() => {
+    setUnit(parts.unit);
+  }, [parts.unit, parts.amount]);
+  const emit = (amount: number | string | null | undefined, nextUnit = unit) => {
+    const numeric = Math.max(0, Number(amount || 0));
+    onChange?.(Math.max(minBytes, Math.round(numeric * byteUnitMultiplier(nextUnit))));
+  };
+  return (
+    <div className="compound-input">
+      <InputNumber min={0} value={parts.amount} precision={parts.unit === 'MB' ? 2 : 0} onChange={(next) => emit(next)} />
+      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as ByteUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
+        <Select.Option value="KB">KB</Select.Option>
+        <Select.Option value="MB">MB</Select.Option>
+      </Select>
+    </div>
+  );
+}
+
+function durationToNanoseconds(value: number | string | undefined) {
+  if (typeof value === 'number') {
+    return value;
+  }
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return 5 * durationUnitToNanoseconds('m');
+  }
+  const numeric = Number.parseFloat(raw);
+  if (!Number.isFinite(numeric)) {
+    return 5 * durationUnitToNanoseconds('m');
+  }
+  if (raw.endsWith('d')) {
+    return numeric * durationUnitToNanoseconds('d');
+  }
+  if (raw.endsWith('h')) {
+    return numeric * durationUnitToNanoseconds('h');
+  }
+  if (raw.endsWith('m')) {
+    return numeric * durationUnitToNanoseconds('m');
+  }
+  if (raw.endsWith('s')) {
+    return numeric * durationUnitToNanoseconds('s');
+  }
+  return numeric;
+}
+
+function durationToUnitParts(value: number | string | undefined): { amount: number; unit: DurationUnit } {
+  const ns = Math.max(1, Number(durationToNanoseconds(value) || 0));
+  const units: DurationUnit[] = ['d', 'h', 'm', 's'];
+  for (const unit of units) {
+    const divisor = durationUnitToNanoseconds(unit);
+    if (ns >= divisor && ns % divisor === 0) {
+      return { amount: ns / divisor, unit };
+    }
+  }
+  return { amount: Math.max(1, Math.round(ns / durationUnitToNanoseconds('s'))), unit: 's' };
+}
+
+function durationUnitToNanoseconds(unit: DurationUnit) {
+  switch (unit) {
+    case 'd':
+      return 24 * 60 * 60 * 1_000_000_000;
+    case 'h':
+      return 60 * 60 * 1_000_000_000;
+    case 'm':
+      return 60 * 1_000_000_000;
+    default:
+      return 1_000_000_000;
+  }
+}
+
+function bytesToUnitParts(value: number | undefined, defaultUnit: ByteUnit): { amount: number; unit: ByteUnit } {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes === 0) {
+    return { amount: 0, unit: defaultUnit };
+  }
+  if (bytes % byteUnitMultiplier('MB') === 0 || bytes >= byteUnitMultiplier('MB')) {
+    return { amount: Number((bytes / byteUnitMultiplier('MB')).toFixed(2)), unit: 'MB' };
+  }
+  return { amount: Math.round(bytes / byteUnitMultiplier('KB')), unit: 'KB' };
+}
+
+function byteUnitMultiplier(unit: ByteUnit) {
+  return unit === 'MB' ? 1024 * 1024 : 1024;
 }

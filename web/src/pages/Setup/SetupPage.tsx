@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { LockKeyhole, Network, UserRound } from 'lucide-react';
 import { pressable } from '../../animations/micro';
 import { setupAdmin } from '../../api/client';
+import BrandLogo from '../../components/BrandLogo';
 
 export default function SetupPage() {
   const { t } = useTranslation();
@@ -28,7 +29,7 @@ export default function SetupPage() {
     <main className="auth-screen setup-screen">
       <section className="auth-panel setup-panel">
         <div className="auth-brand">
-          <span>CW</span>
+          <span><BrandLogo /></span>
           <div>
             <h1>{t('setup.title')}</h1>
             <p>{t('setup.subtitle')}</p>

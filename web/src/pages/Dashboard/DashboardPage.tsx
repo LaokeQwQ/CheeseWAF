@@ -1,4 +1,4 @@
-import { Button, Message as ArcoMessage, Progress, Radio, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
 import { useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -171,28 +171,17 @@ export default function DashboardPage() {
                 <span><i /> {t('dashboard.trafficRequests')}</span>
                 <span>{t('dashboard.statsWindow')}: {rangeLabel(statsRange, t)}</span>
               </div>
-              <label className="chart-scale-slider">
-                <span>{t('dashboard.trafficScale')}</span>
-                <input
-                  type="range"
-                  min="50"
-                  max="250"
-                  step="25"
-                  value={Math.round(chartScale * 100)}
-                  onChange={(event) => setChartScale(Number(event.currentTarget.value) / 100)}
-                />
-              </label>
               <div className="control-cluster dashboard-footer-controls">
                 <span>{t('dashboard.statsWindow')}</span>
-                <Radio.Group type="button" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
-                  {statsRangeOptions.map((option) => <Radio key={option.value} value={option.value}>{t(option.labelKey)}</Radio>)}
-                </Radio.Group>
+                <Select className="dashboard-footer-select" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
+                  {statsRangeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
+                </Select>
               </div>
               <div className="control-cluster dashboard-footer-controls">
                 <span>{t('dashboard.autoRefresh')}</span>
-                <Radio.Group type="button" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
-                  {refreshOptions.map((value) => <Radio key={value} value={value}>{value / 1000}s</Radio>)}
-                </Radio.Group>
+                <Select className="dashboard-footer-select dashboard-refresh-select" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
+                  {refreshOptions.map((value) => <Select.Option key={value} value={value}>{value / 1000}s</Select.Option>)}
+                </Select>
                 <Tooltip content={t('dashboard.manualRefresh')}>
                   <Button
                     className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
