@@ -57,6 +57,61 @@ select {
   color: color-mix(in srgb, var(--text-muted) 72%, #ffffff);
 }
 
+.arco-btn:not(.arco-btn-primary):not(.arco-btn-text):not(.arco-btn-status-danger):not(.arco-btn-disabled):not(:disabled) {
+  color: var(--text);
+}
+
+.arco-btn:not(.arco-btn-primary):not(.arco-btn-text):not(.arco-btn-status-danger):not(.arco-btn-disabled):not(:disabled) svg {
+  color: currentColor;
+}
+
+.arco-btn:not(.arco-btn-primary):not(.arco-btn-text):not(.arco-btn-status-danger):not(.arco-btn-disabled):not(:disabled):hover {
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+}
+
+.arco-input-inner-wrapper,
+.arco-textarea-wrapper,
+.arco-select-view,
+.arco-input-number,
+.arco-input:not(.arco-input-disabled) {
+  color: var(--text);
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--border) 88%, var(--text-muted));
+}
+
+.arco-select-view:not(.arco-select-view-disabled) {
+  background: var(--surface) !important;
+  border-width: 1px !important;
+  border-style: solid !important;
+  border-color: color-mix(in srgb, var(--border) 88%, var(--text-muted)) !important;
+}
+
+.arco-input-inner-wrapper .arco-input,
+.arco-input-group-wrapper .arco-input,
+.arco-input-number .arco-input {
+  background: transparent;
+  border-color: transparent;
+}
+
+.arco-input-inner-wrapper:hover,
+.arco-textarea-wrapper:hover,
+.arco-select-view:hover,
+.arco-input-number:hover,
+.arco-input:not(.arco-input-disabled):hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+
+.arco-input-disabled,
+.arco-input-inner-wrapper-disabled,
+.arco-textarea-disabled,
+.arco-select-view-disabled,
+.arco-input-number-disabled {
+  color: var(--text-muted) !important;
+  background: color-mix(in srgb, var(--surface-soft) 78%, var(--app-bg)) !important;
+  border-color: var(--border-subtle) !important;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
@@ -725,21 +780,22 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px;
-  background: color-mix(in srgb, var(--surface-soft) 78%, var(--surface));
-  border: 1px solid var(--border-subtle);
+  min-height: 38px;
+  padding: 4px;
+  background: color-mix(in srgb, var(--surface) 90%, var(--app-bg));
+  border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 10%);
   border-radius: 8px;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, #ffffff 64%, transparent) inset,
+    0 8px 20px color-mix(in srgb, #0f2740 4%, transparent);
 }
 
 .map-mode-switch {
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
+  flex: 0 0 auto;
 }
 
 .map-action-group {
-  background: transparent;
-  border-color: transparent;
+  padding-inline: 5px;
 }
 
 .compact-controls {
@@ -760,6 +816,42 @@ select {
 .map-controls .arco-radio-button {
   flex: 0 0 auto;
   white-space: nowrap;
+}
+
+.map-mode-switch .arco-radio-group {
+  gap: 4px;
+}
+
+.map-mode-switch .arco-radio-button {
+  min-width: 54px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px !important;
+  color: var(--text-muted);
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.map-mode-switch .arco-radio-button::before,
+.map-mode-switch .arco-radio-button::after {
+  display: none !important;
+}
+
+.map-mode-switch .arco-radio-checked,
+.map-mode-switch .arco-radio-button-checked {
+  color: var(--accent-strong) !important;
+  background: var(--surface) !important;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, #ffffff 72%, transparent) inset,
+    0 8px 18px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .chart-controls > span,
@@ -1873,7 +1965,7 @@ code {
   display: grid;
   gap: 14px;
   padding: 16px;
-  background: var(--surface-soft);
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-soft));
   border: 1px solid var(--border);
   border-radius: 8px;
 }
@@ -2731,6 +2823,10 @@ code {
   gap: 6px;
   align-items: center;
   min-width: 0;
+}
+
+.ai-analysis-meta .arco-tag {
+  margin: 0;
 }
 
 .ai-analysis-meta > span {
@@ -3735,10 +3831,16 @@ code {
   line-height: 1.6;
 }
 
-.analysis-result > div {
+.analysis-result > div:not(.ai-analysis-meta) {
   min-width: 0;
   display: grid;
   gap: 7px;
+}
+
+.analysis-result > .ai-analysis-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .analysis-result strong {
