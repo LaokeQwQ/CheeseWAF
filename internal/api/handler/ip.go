@@ -466,17 +466,6 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 	if err != nil {
 		return nil, err
 	}
-	if len(items) == 0 {
-		items = append(items, config.ThreatIntelConfig{
-			ID:       "intel-" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(provider.ID+":"+ip)).String(),
-			Value:    ip,
-			Type:     "ip",
-			Severity: "medium",
-			Source:   emptyString(provider.Name, provider.ID),
-			Action:   emptyString(provider.Action, "challenge"),
-			Enabled:  true,
-		})
-	}
 	return items, nil
 }
 

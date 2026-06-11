@@ -129,6 +129,7 @@ function AnalysisResult({ analysis }: { analysis?: AttackAnalysis }) {
   return (
     <div className="analysis-result">
       <p>{analysis.summary}</p>
+      <AIAnalysisMeta analysis={analysis} />
       <div>
         <strong>{t('ai.evidence')}</strong>
         {(analysis.evidence ?? []).length > 0 ? analysis.evidence.map((item) => <span key={item}>{item}</span>) : <span>-</span>}
@@ -137,7 +138,6 @@ function AnalysisResult({ analysis }: { analysis?: AttackAnalysis }) {
         <strong>{t('ai.actions')}</strong>
         {(analysis.recommended_actions ?? []).length > 0 ? analysis.recommended_actions.map((item) => <span key={item}>{item}</span>) : <span>-</span>}
       </div>
-      <AIAnalysisMeta analysis={analysis} />
     </div>
   );
 }
