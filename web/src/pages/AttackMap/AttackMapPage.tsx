@@ -354,16 +354,22 @@ export default function AttackMapPage() {
           <p>{t('attackMap.subtitle')}</p>
         </div>
         <div className="map-controls">
-          <Radio.Group type="button" value={mode} onChange={(value) => selectMode(value as MapMode)}>
-            <Radio value="2d">{t('attackMap.mode2d')}</Radio>
-            <Radio value="3d">{t('attackMap.mode3d')}</Radio>
-            <Radio value="china">{t('attackMap.modeChina')}</Radio>
-          </Radio.Group>
-          <Button icon={<Minus size={14} />} onClick={() => updateZoom((current) => current - 0.15)} title={t('attackMap.zoomOut')} />
-          <span>{Math.round(zoom * 100)}%</span>
-          <Button icon={<Plus size={14} />} onClick={() => updateZoom((current) => current + 0.15)} title={t('attackMap.zoomIn')} />
-          <Button icon={<RotateCcw size={14} />} onClick={resetView} title={t('attackMap.resetView')} />
-          <Button icon={<Maximize2 size={14} />} onClick={() => navigate('/attack-map/screen')}>{t('attackMap.bigScreen')}</Button>
+          <span className="map-control-group map-mode-switch">
+            <Radio.Group type="button" value={mode} onChange={(value) => selectMode(value as MapMode)}>
+              <Radio value="2d">{t('attackMap.mode2d')}</Radio>
+              <Radio value="3d">{t('attackMap.mode3d')}</Radio>
+              <Radio value="china">{t('attackMap.modeChina')}</Radio>
+            </Radio.Group>
+          </span>
+          <span className="map-control-group map-zoom-group">
+            <Button icon={<Minus size={14} />} onClick={() => updateZoom((current) => current - 0.15)} title={t('attackMap.zoomOut')} />
+            <span>{Math.round(zoom * 100)}%</span>
+            <Button icon={<Plus size={14} />} onClick={() => updateZoom((current) => current + 0.15)} title={t('attackMap.zoomIn')} />
+            <Button icon={<RotateCcw size={14} />} onClick={resetView} title={t('attackMap.resetView')} />
+          </span>
+          <span className="map-control-group map-action-group">
+            <Button icon={<Maximize2 size={14} />} onClick={() => navigate('/attack-map/screen')}>{t('attackMap.bigScreen')}</Button>
+          </span>
         </div>
       </header>
 
