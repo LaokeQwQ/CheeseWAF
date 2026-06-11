@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Activity, ArrowLeft, Gauge, Globe2, ListFilter, RefreshCcw, Shield } from 'lucide-react';
 import { fetchLogs, fetchMonitorSummary } from '../../api/client';
+import BrandLogo from '../../components/BrandLogo';
 import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry } from '../../utils/display';
 import GlobeMap from './GlobeMap';
@@ -44,7 +45,7 @@ export default function AttackScreenPage() {
     <main className="attack-screen">
       <aside className="attack-screen-rail">
         <div className="attack-screen-brand">
-          <span>CW</span>
+          <span><BrandLogo alt="" /></span>
           <strong>CheeseWAF</strong>
         </div>
         <nav>
