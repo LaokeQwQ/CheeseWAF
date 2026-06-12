@@ -10,8 +10,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	defaultSQLMapDockerImage   = "parrotsec/sqlmap:latest"
+	defaultXSStrikeDockerImage = "femtopixel/xsstrike:latest"
+	defaultNucleiDockerImage   = "projectdiscovery/nuclei:latest"
+	defaultZAPDockerImage      = "ghcr.io/zaproxy/zaproxy:stable"
+)
+
+var (
+	lookupExecutable    = exec.LookPath
+	executeSuiteCommand = runExternalCommand
 )
 
 type suiteResult struct {
@@ -114,25 +127,58 @@ func (s *summary) addSuite(res suiteResult, strict bool) {
 }
 
 func runSqlmapSuite(ctx context.Context, opts options, target string) suiteResult {
-	if _, err := exec.LookPath("sqlmap"); err != nil {
+	if _, err := lookupExecutable("sqlmap"); err == nil {
+		outputDir, err := os.MkdirTemp("", "cheesewaf-sqlmap-*")
+		if err != nil {
+			return suiteResult{Name: "sqlmap", Tool: "sqlmap", Target: target, Status: "failed", Error: err.Error()}
+		}
+		args := sqlmapArgs(target, outputDir)
+		return executeSuiteCommand(ctx, suiteCommand{
+			Name:    "sqlmap",
+			Tool:    "sqlmap",
+			Target:  target,
+			Args:    args,
+			Timeout: opts.ToolTimeout,
+		}, classifySQLMapResult(opts, target, append([]string{"sqlmap"}, args...), outputDir))
+	}
+
+	if _, err := lookupExecutable("docker"); err != nil {
 		return suiteResult{
 			Name:   "sqlmap",
 			Tool:   "sqlmap",
 			Target: target,
 			Status: "skipped",
-			Error:  "sqlmap not found in PATH",
+			Error:  "sqlmap not found in PATH and docker is not available",
 		}
+	}
+
+	rewrittenTarget, dockerHostArgs, err := dockerReachableTarget(target)
+	if err != nil {
+		return suiteResult{Name: "sqlmap", Tool: "sqlmap", Target: target, Status: "failed", Error: err.Error()}
 	}
 	outputDir, err := os.MkdirTemp("", "cheesewaf-sqlmap-*")
 	if err != nil {
-		return suiteResult{
-			Name:   "sqlmap",
-			Tool:   "sqlmap",
-			Target: target,
-			Status: "skipped",
-			Error:  err.Error(),
-		}
+		return suiteResult{Name: "sqlmap", Tool: "sqlmap", Target: target, Status: "failed", Error: err.Error()}
 	}
+	if err := os.Chmod(outputDir, 0o777); err != nil {
+		return suiteResult{Name: "sqlmap", Tool: "sqlmap", Target: target, Status: "failed", Error: err.Error()}
+	}
+	args := sqlmapArgs(rewrittenTarget, "/output")
+	runArgs := []string{"run", "--rm", "-v", outputDir + ":/output:rw"}
+	runArgs = append(runArgs, dockerHostArgs...)
+	runArgs = append(runArgs, dockerImage("CHEESEWAF_SQLMAP_DOCKER_IMAGE", defaultSQLMapDockerImage))
+	runArgs = append(runArgs, args...)
+
+	return executeSuiteCommand(ctx, suiteCommand{
+		Name:    "sqlmap",
+		Tool:    "docker",
+		Target:  target,
+		Args:    runArgs,
+		Timeout: opts.ToolTimeout,
+	}, classifySQLMapResult(opts, target, append([]string{"docker"}, runArgs...), outputDir))
+}
+
+func sqlmapArgs(target, outputDir string) []string {
 	args := []string{
 		"--batch",
 		"--random-agent",
@@ -144,54 +190,109 @@ func runSqlmapSuite(ctx context.Context, opts options, target string) suiteResul
 		"--retries=0",
 		"--output-dir",
 		outputDir,
-		"--purge-output",
+		"--purge",
 		"-u",
 		target,
 	}
 	if strings.HasPrefix(strings.ToLower(target), "https://") {
 		args = append(args, "--force-ssl")
 	}
-	return runExternalCommand(ctx, suiteCommand{
-		Name:    "sqlmap",
-		Tool:    "sqlmap",
-		Target:  target,
-		Args:    args,
-		Timeout: opts.ToolTimeout,
-	}, func(output string, exitCode int, err error) suiteResult {
-		status := "passed"
-		findings := 0
-		lower := strings.ToLower(output)
-		if strings.Contains(lower, "identified the following injection point") ||
-			strings.Contains(lower, "sql injection") ||
-			strings.Contains(lower, "is vulnerable") {
-			status = "failed"
-			findings = 1
-		} else if exitCode != 0 {
-			if strings.Contains(lower, "not injectable") ||
-				strings.Contains(lower, "no injectable parameters") ||
-				strings.Contains(lower, "parameter appears to be not injectable") {
-				status = "passed"
-			} else {
-				status = "warning"
-			}
-		}
+	return args
+}
+
+func classifySQLMapResult(opts options, target string, command []string, artifact string) func(string, int, error) suiteResult {
+	return func(output string, exitCode int, err error) suiteResult {
+		status, findings := classifySQLMapStatus(output, exitCode)
 		return suiteResult{
 			Name:       "sqlmap",
 			Tool:       "sqlmap",
 			Target:     target,
-			Command:    append([]string{"sqlmap"}, args...),
+			Command:    command,
 			Status:     status,
 			ExitCode:   exitCode,
 			Findings:   findings,
 			DurationMS: durationMS(opts.ToolTimeout),
 			Output:     trimSuiteOutput(output),
-			Error:      classifySuiteError(err),
+			Error:      classifySuiteErrorForStatus(status, err),
+			Artifact:   artifact,
 		}
-	})
+	}
+}
+
+func classifySQLMapStatus(output string, exitCode int) (string, int) {
+	lower := strings.ToLower(output)
+	if hasSQLMapInjectionEvidence(lower) {
+		return "failed", 1
+	}
+	if exitCode != 0 && !hasSQLMapCleanEvidence(lower) {
+		return "warning", 0
+	}
+	return "passed", 0
+}
+
+func hasSQLMapInjectionEvidence(lowerOutput string) bool {
+	return strings.Contains(lowerOutput, "identified the following injection point") ||
+		strings.Contains(lowerOutput, "identified the following injection points") ||
+		strings.Contains(lowerOutput, "parameter:") && strings.Contains(lowerOutput, "payload:") ||
+		strings.Contains(lowerOutput, "parameter") && strings.Contains(lowerOutput, " is vulnerable")
+}
+
+func hasSQLMapCleanEvidence(lowerOutput string) bool {
+	cleanPhrases := []string{
+		"all tested parameters do not appear to be injectable",
+		"does not seem to be injectable",
+		"does not appear to be injectable",
+		"no injectable parameters",
+		"parameter appears to be not injectable",
+	}
+	for _, phrase := range cleanPhrases {
+		if strings.Contains(lowerOutput, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func runXSStrikeSuite(ctx context.Context, opts options, target string) suiteResult {
-	args := []string{
+	args := xsstrikeArgs(target)
+	if _, err := lookupExecutable("xsstrike"); err == nil {
+		return executeSuiteCommand(ctx, suiteCommand{
+			Name:    "xsstrike",
+			Tool:    "xsstrike",
+			Target:  target,
+			Args:    args,
+			Timeout: opts.ToolTimeout,
+		}, classifyXSStrikeResult(opts, target, append([]string{"xsstrike"}, args...)))
+	}
+	if _, err := lookupExecutable("docker"); err != nil {
+		return suiteResult{
+			Name:   "xsstrike",
+			Tool:   "xsstrike",
+			Target: target,
+			Status: "skipped",
+			Error:  "xsstrike not found in PATH and docker is not available",
+		}
+	}
+	rewrittenTarget, dockerHostArgs, err := dockerReachableTarget(target)
+	if err != nil {
+		return suiteResult{Name: "xsstrike", Tool: "xsstrike", Target: target, Status: "failed", Error: err.Error()}
+	}
+	runArgs := []string{"run", "--rm"}
+	runArgs = append(runArgs, dockerHostArgs...)
+	runArgs = append(runArgs, dockerImage("CHEESEWAF_XSSTRIKE_DOCKER_IMAGE", defaultXSStrikeDockerImage))
+	runArgs = append(runArgs, xsstrikeArgs(rewrittenTarget)...)
+
+	return executeSuiteCommand(ctx, suiteCommand{
+		Name:    "xsstrike",
+		Tool:    "docker",
+		Target:  target,
+		Args:    runArgs,
+		Timeout: opts.ToolTimeout,
+	}, classifyXSStrikeResult(opts, target, append([]string{"docker"}, runArgs...)))
+}
+
+func xsstrikeArgs(target string) []string {
+	return []string{
 		"-u",
 		target,
 		"--skip",
@@ -199,13 +300,10 @@ func runXSStrikeSuite(ctx context.Context, opts options, target string) suiteRes
 		"--timeout",
 		"7",
 	}
-	return runExternalCommand(ctx, suiteCommand{
-		Name:    "xsstrike",
-		Tool:    "xsstrike",
-		Target:  target,
-		Args:    args,
-		Timeout: opts.ToolTimeout,
-	}, func(output string, exitCode int, err error) suiteResult {
+}
+
+func classifyXSStrikeResult(opts options, target string, command []string) func(string, int, error) suiteResult {
+	return func(output string, exitCode int, err error) suiteResult {
 		status := "passed"
 		findings := 0
 		lower := strings.ToLower(output)
@@ -221,7 +319,7 @@ func runXSStrikeSuite(ctx context.Context, opts options, target string) suiteRes
 			Name:       "xsstrike",
 			Tool:       "xsstrike",
 			Target:     target,
-			Command:    append([]string{"xsstrike"}, args...),
+			Command:    command,
 			Status:     status,
 			ExitCode:   exitCode,
 			Findings:   findings,
@@ -229,81 +327,78 @@ func runXSStrikeSuite(ctx context.Context, opts options, target string) suiteRes
 			Output:     trimSuiteOutput(output),
 			Error:      classifySuiteError(err),
 		}
-	})
+	}
 }
 
 func runNucleiDataSuite(ctx context.Context, opts options, target string) suiteResult {
-	templateRoot := strings.TrimSpace(opts.NucleiTemplates)
-	if templateRoot == "" {
-		templateRoot = "security-validation/nuclei"
-	}
-	templateDir := filepath.Join(filepath.Clean(templateRoot), "data")
-	if _, err := os.Stat(templateDir); err != nil {
-		return suiteResult{
-			Name:   "nuclei-data",
-			Tool:   "nuclei",
-			Target: target,
-			Status: "skipped",
-			Error:  fmt.Sprintf("nuclei templates unavailable: %v", err),
-		}
-	}
-	args := []string{
-		"-u",
-		target,
-		"-t",
-		templateDir,
-		"-jsonl",
-		"-silent",
-	}
-	if strings.HasPrefix(strings.ToLower(target), "https://") || opts.Insecure {
-		args = append(args, "-insecure")
-	}
-	return runExternalCommand(ctx, suiteCommand{
-		Name:    "nuclei-data",
-		Tool:    "nuclei",
-		Target:  target,
-		Args:    args,
-		Timeout: opts.ToolTimeout,
-	}, func(output string, exitCode int, err error) suiteResult {
-		findings := countNucleiFindings(output)
-		status := "passed"
-		switch {
-		case findings > 0:
-			status = "failed"
-		case exitCode != 0:
-			status = "warning"
-		}
-		return suiteResult{
-			Name:       "nuclei-data",
-			Tool:       "nuclei",
-			Target:     target,
-			Command:    append([]string{"nuclei"}, args...),
-			Status:     status,
-			ExitCode:   exitCode,
-			Findings:   findings,
-			DurationMS: durationMS(opts.ToolTimeout),
-			Output:     trimSuiteOutput(output),
-			Error:      classifySuiteError(err),
-		}
-	})
+	return runNucleiSuite(ctx, opts, "nuclei-data", "data", target)
 }
 
 func runNucleiAdminSuite(ctx context.Context, opts options, target string) suiteResult {
+	return runNucleiSuite(ctx, opts, "nuclei-admin", "admin", target)
+}
+
+func runNucleiSuite(ctx context.Context, opts options, name, templateKind, target string) suiteResult {
 	templateRoot := strings.TrimSpace(opts.NucleiTemplates)
 	if templateRoot == "" {
 		templateRoot = "security-validation/nuclei"
 	}
-	templateDir := filepath.Join(filepath.Clean(templateRoot), "admin")
+	templateDir := filepath.Join(filepath.Clean(templateRoot), templateKind)
 	if _, err := os.Stat(templateDir); err != nil {
 		return suiteResult{
-			Name:   "nuclei-admin",
+			Name:   name,
 			Tool:   "nuclei",
 			Target: target,
 			Status: "skipped",
-			Error:  fmt.Sprintf("nuclei admin templates unavailable: %v", err),
+			Error:  fmt.Sprintf("nuclei %s templates unavailable: %v", templateKind, err),
 		}
 	}
-	args := []string{
+
+	if _, err := lookupExecutable("nuclei"); err == nil {
+		args := nucleiArgs(target, templateDir, opts.Insecure)
+		return executeSuiteCommand(ctx, suiteCommand{
+			Name:    name,
+			Tool:    "nuclei",
+			Target:  target,
+			Args:    args,
+			Timeout: opts.ToolTimeout,
+		}, classifyNucleiResult(opts, name, target, append([]string{"nuclei"}, args...)))
+	}
+	if _, err := lookupExecutable("docker"); err != nil {
+		return suiteResult{
+			Name:   name,
+			Tool:   "nuclei",
+			Target: target,
+			Status: "skipped",
+			Error:  "nuclei not found in PATH and docker is not available",
+		}
+	}
+
+	absTemplateDir, err := filepath.Abs(templateDir)
+	if err != nil {
+		return suiteResult{Name: name, Tool: "nuclei", Target: target, Status: "failed", Error: err.Error()}
+	}
+	rewrittenTarget, dockerHostArgs, err := dockerReachableTarget(target)
+	if err != nil {
+		return suiteResult{Name: name, Tool: "nuclei", Target: target, Status: "failed", Error: err.Error()}
+	}
+	args := nucleiArgs(rewrittenTarget, "/templates", opts.Insecure)
+	runArgs := []string{"run", "--rm", "-v", absTemplateDir + ":/templates:ro"}
+	runArgs = append(runArgs, dockerHostArgs...)
+	runArgs = append(runArgs, dockerImage("CHEESEWAF_NUCLEI_DOCKER_IMAGE", defaultNucleiDockerImage))
+	runArgs = append(runArgs, args...)
+
+	return executeSuiteCommand(ctx, suiteCommand{
+		Name:    name,
+		Tool:    "docker",
+		Target:  target,
+		Args:    runArgs,
+		Timeout: opts.ToolTimeout,
+	}, classifyNucleiResult(opts, name, target, append([]string{"docker"}, runArgs...)))
+}
+
+func nucleiArgs(target, templateDir string, _ bool) []string {
+	return []string{
 		"-u",
 		target,
 		"-t",
@@ -311,16 +406,10 @@ func runNucleiAdminSuite(ctx context.Context, opts options, target string) suite
 		"-jsonl",
 		"-silent",
 	}
-	if strings.HasPrefix(strings.ToLower(target), "https://") || opts.Insecure {
-		args = append(args, "-insecure")
-	}
-	return runExternalCommand(ctx, suiteCommand{
-		Name:    "nuclei-admin",
-		Tool:    "nuclei",
-		Target:  target,
-		Args:    args,
-		Timeout: opts.ToolTimeout,
-	}, func(output string, exitCode int, err error) suiteResult {
+}
+
+func classifyNucleiResult(opts options, name, target string, command []string) func(string, int, error) suiteResult {
+	return func(output string, exitCode int, err error) suiteResult {
 		findings := countNucleiFindings(output)
 		status := "passed"
 		switch {
@@ -330,10 +419,10 @@ func runNucleiAdminSuite(ctx context.Context, opts options, target string) suite
 			status = "warning"
 		}
 		return suiteResult{
-			Name:       "nuclei-admin",
+			Name:       name,
 			Tool:       "nuclei",
 			Target:     target,
-			Command:    append([]string{"nuclei"}, args...),
+			Command:    command,
 			Status:     status,
 			ExitCode:   exitCode,
 			Findings:   findings,
@@ -341,12 +430,12 @@ func runNucleiAdminSuite(ctx context.Context, opts options, target string) suite
 			Output:     trimSuiteOutput(output),
 			Error:      classifySuiteError(err),
 		}
-	})
+	}
 }
 
 func runZAPSuite(ctx context.Context, opts options, target string) suiteResult {
-	scriptPath, scriptErr := exec.LookPath("zap-baseline.py")
-	_, dockerErr := exec.LookPath("docker")
+	scriptPath, scriptErr := lookupExecutable("zap-baseline.py")
+	_, dockerErr := lookupExecutable("docker")
 	if scriptErr != nil && dockerErr != nil {
 		return suiteResult{
 			Name:   "zap-baseline",
@@ -358,6 +447,15 @@ func runZAPSuite(ctx context.Context, opts options, target string) suiteResult {
 	}
 	reportDir, err := os.MkdirTemp("", "cheesewaf-zap-*")
 	if err != nil {
+		return suiteResult{
+			Name:   "zap-baseline",
+			Tool:   "zap-baseline.py",
+			Target: target,
+			Status: "failed",
+			Error:  err.Error(),
+		}
+	}
+	if err := os.Chmod(reportDir, 0o777); err != nil {
 		return suiteResult{
 			Name:   "zap-baseline",
 			Tool:   "zap-baseline.py",
@@ -379,35 +477,13 @@ func runZAPSuite(ctx context.Context, opts options, target string) suiteResult {
 		if strings.HasPrefix(strings.ToLower(target), "https://") || opts.Insecure {
 			args = append(args, "-z", "-config connection.sslVerify=false")
 		}
-		return runExternalCommand(ctx, suiteCommand{
+		return executeSuiteCommand(ctx, suiteCommand{
 			Name:    "zap-baseline",
 			Tool:    "zap-baseline.py",
 			Target:  target,
 			Args:    args,
 			Timeout: opts.ToolTimeout,
-		}, func(output string, exitCode int, err error) suiteResult {
-			status := "passed"
-			switch exitCode {
-			case 0:
-				status = "passed"
-			case 2:
-				status = "warning"
-			default:
-				status = "failed"
-			}
-			return suiteResult{
-				Name:       "zap-baseline",
-				Tool:       "zap-baseline.py",
-				Target:     target,
-				Command:    append([]string{scriptPath}, args...),
-				Status:     status,
-				ExitCode:   exitCode,
-				DurationMS: durationMS(opts.ToolTimeout),
-				Output:     trimSuiteOutput(output),
-				Error:      classifySuiteError(err),
-				Artifact:   reportFile,
-			}
-		})
+		}, classifyZAPResult(opts, target, append([]string{scriptPath}, args...), reportFile))
 	}
 
 	rewrittenTarget, dockerArgs, rewriteErr := dockerReachableTarget(target)
@@ -436,39 +512,70 @@ func runZAPSuite(ctx context.Context, opts options, target string) suiteResult {
 
 	runArgs := []string{"run", "--rm", "-v", reportDir + ":/zap/wrk:rw"}
 	runArgs = append(runArgs, dockerArgs...)
-	runArgs = append(runArgs, "ghcr.io/zaproxy/zaproxy:stable")
+	runArgs = append(runArgs, dockerImage("CHEESEWAF_ZAP_DOCKER_IMAGE", defaultZAPDockerImage))
 	runArgs = append(runArgs, args...)
 
-	res := runExternalCommand(ctx, suiteCommand{
+	res := executeSuiteCommand(ctx, suiteCommand{
 		Name:    "zap-baseline",
 		Tool:    "docker",
 		Target:  target,
 		Args:    runArgs,
 		Timeout: opts.ToolTimeout,
-	}, func(output string, exitCode int, err error) suiteResult {
-		status := "passed"
-		switch exitCode {
-		case 0:
-			status = "passed"
-		case 2:
-			status = "warning"
-		default:
-			status = "failed"
-		}
+	}, classifyZAPResult(opts, target, append([]string{"docker"}, runArgs...), reportFile))
+	return res
+}
+
+func classifyZAPResult(opts options, target string, command []string, artifact string) func(string, int, error) suiteResult {
+	return func(output string, exitCode int, err error) suiteResult {
+		status, findings := classifyZAPStatus(output, exitCode)
 		return suiteResult{
 			Name:       "zap-baseline",
 			Tool:       "zap-baseline.py",
 			Target:     target,
-			Command:    append([]string{"docker"}, runArgs...),
+			Command:    command,
 			Status:     status,
 			ExitCode:   exitCode,
+			Findings:   findings,
 			DurationMS: durationMS(opts.ToolTimeout),
 			Output:     trimSuiteOutput(output),
-			Error:      classifySuiteError(err),
-			Artifact:   reportFile,
+			Error:      classifySuiteErrorForStatus(status, err),
+			Artifact:   artifact,
 		}
-	})
-	return res
+	}
+}
+
+func classifyZAPStatus(output string, exitCode int) (string, int) {
+	failNew, hasFailNew := zapMetric(output, "FAIL-NEW")
+	failInprog, hasFailInprog := zapMetric(output, "FAIL-INPROG")
+	findings := failNew + failInprog
+	if findings > 0 {
+		return "failed", findings
+	}
+	if exitCode == 0 {
+		return "passed", 0
+	}
+	if exitCode == 2 && hasFailNew && hasFailInprog {
+		return "passed", 0
+	}
+	if exitCode == 2 {
+		return "warning", 0
+	}
+	return "failed", 0
+}
+
+func zapMetric(output, name string) (int, bool) {
+	fields := strings.Fields(output)
+	for i, field := range fields {
+		if strings.TrimSuffix(field, ":") != name || i+1 >= len(fields) {
+			continue
+		}
+		value, err := strconv.Atoi(strings.TrimRight(fields[i+1], "\t ,;"))
+		if err != nil {
+			return 0, false
+		}
+		return value, true
+	}
+	return 0, false
 }
 
 type suiteCommand struct {
@@ -481,7 +588,7 @@ type suiteCommand struct {
 
 func runExternalCommand(ctx context.Context, spec suiteCommand, classify func(output string, exitCode int, err error) suiteResult) suiteResult {
 	start := time.Now()
-	path, err := exec.LookPath(spec.Tool)
+	path, err := lookupExecutable(spec.Tool)
 	if err != nil {
 		return suiteResult{
 			Name:       spec.Name,
@@ -538,12 +645,23 @@ func dockerReachableTarget(raw string) (string, []string, error) {
 	if hostname != "127.0.0.1" && hostname != "localhost" {
 		return raw, nil, nil
 	}
-	parsed.Host = net.JoinHostPort("host.docker.internal", parsed.Port())
+	if port := parsed.Port(); port != "" {
+		parsed.Host = net.JoinHostPort("host.docker.internal", port)
+	} else {
+		parsed.Host = "host.docker.internal"
+	}
 	args := []string{}
 	if runtime.GOOS == "linux" {
 		args = append(args, "--add-host", "host.docker.internal:host-gateway")
 	}
 	return parsed.String(), args, nil
+}
+
+func dockerImage(envName, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func trimSuiteOutput(output string) string {
@@ -563,6 +681,13 @@ func classifySuiteError(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func classifySuiteErrorForStatus(status string, err error) string {
+	if status == "passed" {
+		return ""
+	}
+	return classifySuiteError(err)
 }
 
 func countNucleiFindings(output string) int {
