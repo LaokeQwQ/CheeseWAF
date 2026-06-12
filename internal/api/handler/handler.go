@@ -576,7 +576,13 @@ func writeData(w http.ResponseWriter, data any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
-	traceID := blockpage.NewTraceID()
+	writeErrorWithTraceID(w, status, code, message, blockpage.NewTraceID())
+}
+
+func writeErrorWithTraceID(w http.ResponseWriter, status int, code, message, traceID string) {
+	if traceID == "" {
+		traceID = blockpage.NewTraceID()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
 	w.WriteHeader(status)

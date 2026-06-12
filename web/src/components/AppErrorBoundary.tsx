@@ -28,6 +28,7 @@ class AppErrorBoundaryInner extends Component<BoundaryProps, BoundaryState> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('[CheeseWAF UI error]', this.state.traceID, error, info.componentStack);
+    reportUIError(this.state.traceID, error, info);
   }
 
   componentDidUpdate(prevProps: BoundaryProps) {
@@ -80,4 +81,43 @@ function newUITraceID() {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
   return `cw-ui-${Array.from(bytes, (item) => item.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
+  const token = localStorage.getItem('cheesewaf-token');
+  if (!token) {
+    return;
+  }
+  const payload = {
+    trace_id: traceID || newUITraceID(),
+    name: error.name,
+    message: error.message,
+    stack: truncateForReport(error.stack ?? ''),
+    component_stack: truncateForReport(info.componentStack),
+    path: `${window.location.pathname}${window.location.search}${window.location.hash}`,
+    user_agent: navigator.userAgent,
+    language: navigator.language,
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    },
+  };
+  void fetch('/api/ui/errors', {
+    method: 'POST',
+    keepalive: true,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  }).catch((reportError) => {
+    console.error('[CheeseWAF UI error report failed]', payload.trace_id, reportError);
+  });
+}
+
+function truncateForReport(value: string | null | undefined, max = 8_000) {
+  if (!value) {
+    return '';
+  }
+  return value.length > max ? `${value.slice(0, max)}...(truncated)` : value;
 }
