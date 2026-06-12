@@ -208,6 +208,9 @@ func TestExternalSuitesUseDockerFallbackWhenToolsAreMissing(t *testing.T) {
 		if !containsArg(command.Args, "host.docker.internal") {
 			t.Fatalf("command %d should rewrite localhost target for docker, args=%v", i, command.Args)
 		}
+		if strings.HasPrefix(command.Name, "nuclei-") && hasExactArg(command.Args, "-insecure") {
+			t.Fatalf("nuclei command %d should not pass removed -insecure flag, args=%v", i, command.Args)
+		}
 	}
 	for _, wantImage := range []string{defaultSQLMapDockerImage, defaultXSStrikeDockerImage, defaultNucleiDockerImage} {
 		if !anyCommandContains(commands, wantImage) {
@@ -224,6 +227,93 @@ func TestExternalSuitesUseDockerFallbackWhenToolsAreMissing(t *testing.T) {
 	}
 	if results[0].Artifact == "" {
 		t.Fatalf("expected sqlmap fallback to record its output artifact directory")
+	}
+}
+
+func TestZAPSuiteUsesDockerFallbackAndImageOverride(t *testing.T) {
+	t.Setenv("CHEESEWAF_ZAP_DOCKER_IMAGE", "registry.local/zap:stable")
+	var commands []suiteCommand
+	restore := stubExternalExecution(t,
+		func(name string) (string, error) {
+			if name == "docker" {
+				return "docker", nil
+			}
+			return "", exec.ErrNotFound
+		},
+		func(ctx context.Context, spec suiteCommand, classify func(string, int, error) suiteResult) suiteResult {
+			commands = append(commands, spec)
+			return classify("", 0, nil)
+		},
+	)
+	defer restore()
+
+	res := runZAPSuite(context.Background(), options{ToolTimeout: time.Second, Insecure: true}, "https://127.0.0.1:9443")
+	if res.Artifact != "" {
+		t.Cleanup(func() {
+			_ = os.RemoveAll(filepath.Dir(res.Artifact))
+		})
+	}
+	if res.Status != "passed" {
+		t.Fatalf("expected ZAP fallback to pass under empty scanner output, got %+v", res)
+	}
+	if len(commands) != 1 || commands[0].Tool != "docker" {
+		t.Fatalf("expected one docker-backed ZAP command, got %+v", commands)
+	}
+	if !containsArg(commands[0].Args, "registry.local/zap:stable") {
+		t.Fatalf("expected ZAP image override, args=%v", commands[0].Args)
+	}
+	if !containsArg(commands[0].Args, "host.docker.internal") {
+		t.Fatalf("expected localhost rewrite for ZAP container, args=%v", commands[0].Args)
+	}
+}
+
+func TestSQLMapClassifierTreatsProtectedNotInjectableOutputAsPassed(t *testing.T) {
+	output := `[INFO] checking if the target is protected by some kind of WAF/IPS
+[CRITICAL] heuristics detected that the target is protected by some kind of WAF/IPS
+[INFO] testing for SQL injection on GET parameter 'q'
+[WARNING] GET parameter 'q' does not seem to be injectable
+[ERROR] all tested parameters do not appear to be injectable.
+[WARNING] HTTP error codes detected during run:
+403 (Forbidden) - 60 times`
+
+	status, findings := classifySQLMapStatus(output, 1)
+	if status != "passed" || findings != 0 {
+		t.Fatalf("expected protected non-injectable output to pass, got status=%q findings=%d", status, findings)
+	}
+}
+
+func TestSQLMapClassifierFailsOnInjectionEvidence(t *testing.T) {
+	output := `sqlmap identified the following injection point(s) with a total of 42 HTTP(s) requests:
+---
+Parameter: id (GET)
+    Type: boolean-based blind
+    Title: AND boolean-based blind
+    Payload: id=1 AND 1=1
+---`
+
+	status, findings := classifySQLMapStatus(output, 0)
+	if status != "failed" || findings != 1 {
+		t.Fatalf("expected injection evidence to fail, got status=%q findings=%d", status, findings)
+	}
+}
+
+func TestZAPClassifierTreatsWarnOnlyBaselineAsPassed(t *testing.T) {
+	output := `WARN-NEW: Non-Storable Content [10049] x 3
+WARN-NEW: CSP: Wildcard Directive [10055] x 4
+FAIL-NEW: 0	FAIL-INPROG: 0	WARN-NEW: 2	WARN-INPROG: 0	INFO: 0	IGNORE: 0	PASS: 65`
+
+	status, findings := classifyZAPStatus(output, 2)
+	if status != "passed" || findings != 0 {
+		t.Fatalf("expected WARN-only ZAP baseline to pass, got status=%q findings=%d", status, findings)
+	}
+}
+
+func TestZAPClassifierFailsOnFailCounts(t *testing.T) {
+	output := `FAIL-NEW: 1	FAIL-INPROG: 2	WARN-NEW: 0	WARN-INPROG: 0	INFO: 0	IGNORE: 0	PASS: 65`
+
+	status, findings := classifyZAPStatus(output, 1)
+	if status != "failed" || findings != 3 {
+		t.Fatalf("expected ZAP fail counts to fail, got status=%q findings=%d", status, findings)
 	}
 }
 
@@ -300,6 +390,15 @@ func stubExternalExecution(t *testing.T, lookPath func(string) (string, error), 
 func containsArg(args []string, needle string) bool {
 	for _, arg := range args {
 		if strings.Contains(arg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExactArg(args []string, needle string) bool {
+	for _, arg := range args {
+		if arg == needle {
 			return true
 		}
 	}
