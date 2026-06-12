@@ -366,12 +366,25 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if IsWebSocketUpgrade(r) {
-		NewReverseProxy(target, site.WAF.Performance.ProxyTimeout).ServeHTTP(w, r)
+		rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
+		var proxyErr error
+		rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
+			proxyErr = err
+		}
+		rp.ServeHTTP(w, r)
+		if proxyErr != nil {
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
+			return
+		}
 		s.writeLog(r.Context(), reqCtx, "pass", http.StatusSwitchingProtocols, start, nil)
 		return
 	}
 	capture := edge.NewCaptureWriter()
 	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
+	var proxyErr error
+	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
+		proxyErr = err
+	}
 	if site.WAF.Response.Enabled {
 		inspector, err := response.New(site.WAF.Response)
 		if err != nil {
@@ -391,6 +404,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rp.ServeHTTP(capture, r)
+	if proxyErr != nil {
+		s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
+		return
+	}
 	captured := capture.Response()
 	s.cache.Store(r, captured)
 	captured.Header.Set("X-CheeseWAF-Cache", "MISS")
