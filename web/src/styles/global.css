@@ -1323,6 +1323,14 @@ select {
   overflow-wrap: anywhere;
 }
 
+.inline-error code {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--accent-danger);
+  font-size: 12px;
+}
+
 .skeleton-list {
   min-height: 180px;
   border-radius: 8px;
@@ -1369,6 +1377,51 @@ code {
 .table-action-group {
   display: flex;
   flex-wrap: wrap;
+}
+
+.table-action-group .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
+.table-action-group .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled),
+.security-event-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
+.security-event-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled),
+.ai-events-row-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
+.ai-events-row-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled),
+.ip-row-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
+.ip-row-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled),
+.ip-entry-card-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
+.ip-entry-card-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-soft));
+  border-color: color-mix(in srgb, var(--border) 86%, var(--text-muted));
+  box-shadow: 0 1px 0 color-mix(in srgb, #ffffff 52%, transparent) inset;
+}
+
+.table-action-group .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
+.table-action-group .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover,
+.security-event-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
+.security-event-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover,
+.ai-events-row-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
+.ai-events-row-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover,
+.ip-row-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
+.ip-row-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover,
+.ip-entry-card-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
+.ip-entry-card-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.ip-row-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
+.ip-entry-card-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled) {
+  color: var(--accent-danger);
+  background: color-mix(in srgb, var(--accent-danger) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-danger) 18%, var(--border));
+}
+
+.ip-row-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
+.ip-entry-card-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover {
+  color: var(--accent-danger);
+  background: color-mix(in srgb, var(--accent-danger) 13%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-danger) 32%, var(--border));
 }
 
 .event-trace-link {
@@ -2060,6 +2113,99 @@ code {
   }
 }
 
+.ui-error-boundary {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--accent-danger) 10%, transparent), transparent 28rem),
+    var(--app-bg);
+}
+
+.ui-error-boundary > div {
+  width: min(620px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.ui-error-kicker {
+  width: max-content;
+  padding: 4px 9px;
+  color: var(--accent-danger);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--accent-danger) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent-danger) 24%, var(--border));
+  border-radius: 999px;
+}
+
+.ui-error-boundary h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.ui-error-boundary p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.ui-error-trace {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ui-error-trace span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.ui-error-trace code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--accent);
+}
+
+.ui-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ui-error-actions button {
+  min-height: 36px;
+  padding: 0 14px;
+  color: var(--text);
+  font-weight: 700;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ui-error-actions button:first-child {
+  color: var(--surface);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .system-section {
   display: grid;
   gap: 18px;
@@ -2509,6 +2655,14 @@ code {
 
 .ip-entry-card-actions {
   flex-wrap: wrap;
+  justify-content: stretch;
+}
+
+.ip-entry-card-actions .arco-btn,
+.ip-entry-card-actions .arco-button {
+  flex: 1 1 104px;
+  justify-content: center;
+  white-space: nowrap;
 }
 
 .ip-score-button {
@@ -2851,8 +3005,8 @@ code {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 48px;
-  padding: 10px 12px;
+  min-height: 68px;
+  padding: 12px;
   min-width: 0;
   color: var(--text);
   text-align: left;
@@ -2875,10 +3029,26 @@ code {
   color: var(--text-muted);
 }
 
+.template-item-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 .template-item-name {
   min-width: 0;
   overflow: hidden;
   font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.template-item-desc {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2905,6 +3075,27 @@ code {
 
 .block-editor-panel {
   gap: 14px;
+}
+
+.block-page-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.status-pill.arco-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(420px, 100%);
+  margin: 0;
+  padding: 5px 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-success) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-success) 28%, var(--border));
+  border-radius: 999px;
 }
 
 .block-editor-heading {
@@ -2942,6 +3133,14 @@ code {
 
 .block-editor-actions .arco-tag {
   margin: 0;
+}
+
+.block-template-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
 }
 
 .code-editor textarea {
@@ -2985,6 +3184,10 @@ code {
   display: grid;
   grid-template-rows: auto auto;
   overflow: hidden;
+}
+
+.block-preview-panel {
+  min-width: 0;
 }
 
 .block-preview {
@@ -4423,6 +4626,10 @@ code {
   background: transparent;
 }
 
+.globe-stage-light canvas {
+  background: transparent !important;
+}
+
 .globe-stage-dark {
   background: transparent;
 }
@@ -5128,6 +5335,10 @@ code {
   inset: 0;
 }
 
+.attack-screen-globe .globe-stage {
+  z-index: 1;
+}
+
 .attack-screen-globe-empty,
 .attack-screen-empty {
   color: rgba(200, 247, 255, 0.52);
@@ -5477,14 +5688,33 @@ code {
 }
 
 .attack-screen-light .attack-screen-globe {
+  overflow: hidden;
   background:
-    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-info) 14%, transparent), transparent 34%),
-    radial-gradient(circle at 50% 52%, color-mix(in srgb, var(--accent-warning) 7%, transparent), transparent 52%),
-    linear-gradient(180deg, #ffffff, color-mix(in srgb, var(--surface-soft) 76%, #ffffff));
+    radial-gradient(circle at 50% 49%, color-mix(in srgb, var(--accent-info) 17%, transparent), transparent 35%),
+    radial-gradient(circle at 50% 52%, color-mix(in srgb, var(--accent-warning) 8%, transparent), transparent 53%),
+    linear-gradient(180deg, #ffffff, color-mix(in srgb, var(--surface-soft) 82%, #ffffff));
+}
+
+.attack-screen-light .attack-screen-globe::before {
+  position: absolute;
+  inset: 7% 10%;
+  content: "";
+  pointer-events: none;
+  background:
+    radial-gradient(circle at center, transparent 0 38%, color-mix(in srgb, var(--accent-info) 16%, transparent) 38.2% 38.7%, transparent 39% 56%, color-mix(in srgb, var(--accent-info) 10%, transparent) 56.2% 56.7%, transparent 57%),
+    linear-gradient(90deg, transparent 0 49.7%, color-mix(in srgb, var(--accent-info) 12%, transparent) 49.9% 50.1%, transparent 50.3%),
+    linear-gradient(0deg, transparent 0 49.7%, color-mix(in srgb, var(--accent-info) 10%, transparent) 49.9% 50.1%, transparent 50.3%);
+  border-radius: 50%;
+  opacity: 0.72;
+  filter: blur(0.2px);
 }
 
 .attack-screen-light .attack-screen-globe .globe-stage-light {
   background: transparent;
+}
+
+.attack-screen-light .attack-screen-globe canvas {
+  background: transparent !important;
 }
 
 .attack-screen-light .attack-screen-overlay .attack-screen-panel {
@@ -7491,6 +7721,12 @@ code {
   .ip-entry-card-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .ip-entry-card-actions .arco-btn:nth-child(3),
+  .ip-entry-card-actions .arco-button:nth-child(3) {
+    grid-column: 1 / -1;
   }
 
   .ip-entry-card-actions .arco-btn {

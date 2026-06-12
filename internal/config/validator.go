@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"html/template"
 	"net"
 	"net/http"
 	"net/url"
@@ -67,6 +68,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	if err := validateLoginBackground(cfg.Console.Login.Background); err != nil {
+		return err
+	}
+	if err := validateBlockPage(cfg.BlockPage); err != nil {
 		return err
 	}
 	if cfg.Storage.PostgreSQL.Enabled {
@@ -369,6 +373,22 @@ func Validate(cfg *Config) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func validateBlockPage(page BlockPageConfig) error {
+	if strings.TrimSpace(page.TemplateID) == "" {
+		return fmt.Errorf("block_page.template_id is required")
+	}
+	if len(page.CustomHTML) > MaxBlockPageHTMLBytes {
+		return fmt.Errorf("block_page.custom_html exceeds %d bytes", MaxBlockPageHTMLBytes)
+	}
+	if strings.TrimSpace(page.CustomHTML) == "" {
+		return nil
+	}
+	if _, err := template.New("block_page").Parse(page.CustomHTML); err != nil {
+		return fmt.Errorf("block_page.custom_html has invalid template syntax: %w", err)
 	}
 	return nil
 }

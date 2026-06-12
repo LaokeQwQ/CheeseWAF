@@ -90,3 +90,63 @@ func TestUpdateSystemPersistsConsoleSecurityEntry(t *testing.T) {
 		t.Fatalf("security entry was not persisted: %+v", loaded.Console.Login.SecurityEntry)
 	}
 }
+
+func TestUpdateBlockPageConfigPersistsAndNotifies(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var calls int
+	var reloaded config.BlockPageConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnBlockPageChanged: func(next config.BlockPageConfig) error {
+			calls++
+			reloaded = next
+			return nil
+		},
+	})
+	payload := config.BlockPageConfig{
+		TemplateID:    "minimal",
+		CustomEnabled: true,
+		CustomHTML:    `<html><body>{{.TraceID}}</body></html>`,
+	}
+	raw, _ := json.Marshal(payload)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/block-pages/config", bytes.NewReader(raw))
+	handler.UpdateBlockPageConfig(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected block page update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if calls != 1 || !reloaded.CustomEnabled {
+		t.Fatalf("expected block page reload callback, calls=%d payload=%+v", calls, reloaded)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML == "" {
+		t.Fatalf("block page config was not persisted: %+v", loaded.BlockPage)
+	}
+}
+
+func TestWriteErrorIncludesTraceID(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeError(recorder, http.StatusBadRequest, "BAD_REQUEST", "bad")
+	if recorder.Header().Get("X-CheeseWAF-Trace-ID") == "" {
+		t.Fatal("expected trace id response header")
+	}
+	var body struct {
+		Error struct {
+			TraceID string `json:"trace_id"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if body.Error.TraceID == "" || body.Error.TraceID != recorder.Header().Get("X-CheeseWAF-Trace-ID") {
+		t.Fatalf("trace id mismatch header=%q body=%q", recorder.Header().Get("X-CheeseWAF-Trace-ID"), body.Error.TraceID)
+	}
+}
