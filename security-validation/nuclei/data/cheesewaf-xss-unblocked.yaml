@@ -1,0 +1,23 @@
+id: cheesewaf-xss-unblocked
+
+info:
+  name: CheeseWAF XSS block regression
+  author: CheeseWAF
+  severity: medium
+  description: Reports when an XSS-shaped probe reaches the origin without hitting a block or challenge response.
+  tags: cheesewaf,security-gate,xss
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E"
+    redirects: true
+    matchers:
+      - type: status
+        status:
+          - 403
+          - 406
+          - 429
+          - 451
+          - 503
+        negative: true

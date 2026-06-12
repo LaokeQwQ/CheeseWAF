@@ -50,6 +50,42 @@ The runner emits JSON with detection rate, false-positive rate, total duration
 in `duration_ms`, per-case `latency_ms`, and per-case evidence. A non-zero
 failure count exits non-zero.
 
+## Release Gate Mode
+
+`cheesewaf-corpus` also has a gate mode for release and acceptance runs:
+
+```bash
+go run ./cmd/cheesewaf-corpus --mode gate \
+  --base-url http://127.0.0.1:8080 \
+  --admin-url https://127.0.0.1:9443 \
+  --insecure \
+  --output security-gate.json
+```
+
+Gate mode runs:
+
+- The in-process semantic analyzer against the curated JSONL corpus.
+- The same corpus against the deployed WAF data-plane listener.
+- External scanner wrappers when the tools are installed:
+  - `sqlmap` against a query-parameter target on the data plane.
+  - `xsstrike` against an XSS query-parameter target on the data plane.
+  - `nuclei` against repository-owned gate templates in
+    `security-validation/nuclei/data` and, when `--admin-url` is supplied,
+    `security-validation/nuclei/admin`.
+  - OWASP ZAP baseline through `zap-baseline.py` when present, or the official
+    ZAP Docker image when Docker is available.
+
+Missing external tools are reported as `skipped` and counted as warnings by
+default. Add `--require-external` to make any skipped or warning scanner suite
+fail the gate. The generated JSON report includes `external_suites`, each with
+the command, target, status, exit code, finding count, duration, trimmed output,
+and any artifact path.
+
+The checked-in nuclei templates are intentionally negative release checks: they
+report a finding only when a SQLi/XSS probe is not blocked/challenged or when a
+protected admin entry does not return the expected `418` response. They do not
+replace broad public template packs.
+
 ## Release Use
 
 Before tagging V0.1 beta, run at least:
@@ -59,6 +95,7 @@ go test -race -count=1 ./cmd/... ./internal/...
 cd web && npm ci && npm run build
 go run ./cmd/cheesewaf-corpus --mode analyzer
 go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
+go run ./cmd/cheesewaf-corpus --mode gate --base-url http://127.0.0.1:8080 --admin-url https://127.0.0.1:9443 --insecure
 ```
 
 Then add the heavier external tools where available:
