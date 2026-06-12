@@ -79,8 +79,8 @@ export default function OperationsPage() {
                 <Select.Option value="webhook">Webhook</Select.Option>
               </Select>
             </Form.Item>
-            <Form.Item label={t('ops.recipient')} field="recipient"><Input /></Form.Item>
-            <Form.Item className="wide-field">
+            <Form.Item className="ops-report-recipient" label={t('ops.recipient')} field="recipient"><Input /></Form.Item>
+            <Form.Item className="ops-report-actions">
               <Button type="primary" htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
             </Form.Item>
           </Form>
