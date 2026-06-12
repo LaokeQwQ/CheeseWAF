@@ -1,8 +1,8 @@
-import { Button, Empty, Input, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, Message as ArcoMessage, Tag } from '@arco-design/web-react';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileCode2 } from 'lucide-react';
+import { Copy, Download, FileCode2 } from 'lucide-react';
 import { fetchBlockTemplates } from '../../api/client';
 
 export default function BlockPagesPage() {
@@ -10,6 +10,33 @@ export default function BlockPagesPage() {
   const { data = [], isError, isLoading, refetch } = useQuery({ queryKey: ['block-templates'], queryFn: fetchBlockTemplates, retry: false });
   const [selected, setSelected] = useState('minimal');
   const template = useMemo(() => data.find((item) => item.id === selected) ?? data[0], [data, selected]);
+  const templateHTML = template?.html ?? '';
+  const templateName = template?.name ?? t('blockPages.editor');
+
+  async function copyTemplate() {
+    if (!templateHTML) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(templateHTML);
+      ArcoMessage.success(t('blockPages.copied'));
+    } catch {
+      ArcoMessage.error(t('blockPages.copyFailed'));
+    }
+  }
+
+  function downloadTemplate() {
+    if (!templateHTML) {
+      return;
+    }
+    const blob = new Blob([templateHTML], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${template?.id ?? 'block-page'}.html`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <section className="page-surface">
@@ -46,12 +73,19 @@ export default function BlockPagesPage() {
             </div>
           ) : <Empty description={t('blockPages.noTemplates')} />}
         </section>
-        <section className="panel panel-wide">
-          <div className="panel-heading">
-            <h2>{template?.name ?? t('blockPages.editor')}</h2>
-            <Tag>{t('blockPages.templateSource')}</Tag>
+        <section className="panel panel-wide block-editor-panel">
+          <div className="panel-heading block-editor-heading">
+            <div>
+              <h2>{templateName}</h2>
+              <p>{t('blockPages.systemTemplateReadonly')}</p>
+            </div>
+            <div className="block-editor-actions">
+              <Tag>{t('blockPages.templateSource')}</Tag>
+              <Button icon={<Copy size={14} />} disabled={!templateHTML} onClick={copyTemplate}>{t('blockPages.copyHtml')}</Button>
+              <Button icon={<Download size={14} />} disabled={!templateHTML} onClick={downloadTemplate}>{t('blockPages.downloadHtml')}</Button>
+            </div>
           </div>
-          <Input.TextArea className="code-editor" value={template?.html ?? ''} readOnly autoSize={{ minRows: 18, maxRows: 26 }} />
+          <Input.TextArea className="code-editor" value={templateHTML} readOnly autoSize={{ minRows: 18, maxRows: 26 }} />
         </section>
         <section className="panel panel-wide">
           <div className="panel-heading"><h2>{t('blockPages.preview')}</h2></div>
