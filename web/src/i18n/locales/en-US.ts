@@ -700,7 +700,7 @@ const enUS = {
     noTemplates: 'No block page templates',
     templateSource: 'Template Source',
     customHtml: 'Custom HTML',
-    customHint: 'Supports Go html/template variables: TraceID, AttackType, ClientIP, Timestamp, Message, Status, StatusText.',
+    customHint: 'Supports Go html/template variables: EventID, TraceID, AttackType, ClientIP, Timestamp, Message, Status, StatusText.',
     editorPlaceholder: 'Upload HTML or create a draft from a built-in template. Saving hot-reloads the proxy block page.',
     customActive: 'Active: Custom HTML',
     builtInActive: 'Active: {{name}}',

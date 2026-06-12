@@ -214,14 +214,14 @@ func (s *Server) HTTPServer() *http.Server {
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	site := s.lb.SiteForHost(r.Host)
 	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
 	reqCtx, err := engine.NewRequestContextWithTrustedProxies(r, site.ID, site.WAF.AccessControl.TrustedCIDRs)
 	if err != nil {
-		http.Error(w, "failed to read request", http.StatusBadRequest)
+		s.proxyError(w, r, site, nil, "proxy_error", "failed to read request", http.StatusBadRequest, start, err)
 		return
 	}
-	start := time.Now()
 	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, r.URL.Path)
 	if accessDecision.Matched {
 		reqCtx.Metadata["ip_access_decision"] = accessDecision
@@ -325,7 +325,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	rewriter, err := NewRewriter(site.WAF.Rewrite)
 	if err != nil {
-		http.Error(w, "rewrite configuration error", http.StatusInternalServerError)
+		s.proxyError(w, r, site, reqCtx, "proxy_error", "rewrite configuration error", http.StatusInternalServerError, start, err)
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
@@ -336,7 +336,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff && s.pipeline != nil {
 		result, err := s.pipeline.Detect(r.Context(), reqCtx)
 		if err != nil {
-			http.Error(w, "waf pipeline error", http.StatusInternalServerError)
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "waf pipeline error", http.StatusInternalServerError, start, err)
 			return
 		}
 		if result != nil && result.Detected {
@@ -362,7 +362,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	target, err := s.lb.Next(site, reqCtx.ClientIP)
 	if err != nil {
-		http.Error(w, "no upstream", http.StatusBadGateway)
+		s.proxyError(w, r, site, reqCtx, "proxy_error", "no upstream", http.StatusBadGateway, start, err)
 		return
 	}
 	if IsWebSocketUpgrade(r) {
@@ -375,7 +375,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if site.WAF.Response.Enabled {
 		inspector, err := response.New(site.WAF.Response)
 		if err != nil {
-			http.Error(w, "response inspector configuration error", http.StatusInternalServerError)
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "response inspector configuration error", http.StatusInternalServerError, start, err)
 			return
 		}
 		rp.ModifyResponse = func(resp *http.Response) error {
@@ -397,6 +397,57 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.compress.Apply(r, &captured)
 	edge.WriteCaptured(w, captured)
 	s.writeLog(r.Context(), reqCtx, "pass", captured.Status, start, nil)
+}
+
+func (s *Server) proxyError(w http.ResponseWriter, r *http.Request, site config.SiteConfig, reqCtx *engine.RequestContext, category, message string, status int, start time.Time, cause error) {
+	if start.IsZero() {
+		start = time.Now()
+	}
+	if category == "" {
+		category = "proxy_error"
+	}
+	if reqCtx == nil {
+		reqCtx = &engine.RequestContext{
+			Request:  r,
+			ClientIP: engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs),
+			TraceID:  blockpage.NewTraceID(),
+			SiteID:   site.ID,
+			Metadata: map[string]any{},
+		}
+	}
+	if reqCtx.Request == nil {
+		reqCtx.Request = r
+	}
+	if reqCtx.TraceID == "" {
+		reqCtx.TraceID = blockpage.NewTraceID()
+	}
+	if reqCtx.SiteID == "" {
+		reqCtx.SiteID = site.ID
+	}
+	if reqCtx.ClientIP == "" && r != nil {
+		reqCtx.ClientIP = engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+	}
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = map[string]any{}
+	}
+	reqCtx.Metadata["proxy_error"] = message
+	if cause != nil {
+		reqCtx.Metadata["proxy_error_detail"] = cause.Error()
+	}
+	s.renderer.Render(w, status, blockpage.Data{
+		EventID:    reqCtx.TraceID,
+		TraceID:    reqCtx.TraceID,
+		AttackType: category,
+		ClientIP:   reqCtx.ClientIP,
+		Message:    message,
+		Timestamp:  time.Now().UTC(),
+	})
+	s.writeLog(r.Context(), reqCtx, "error", status, start, &storage.LogEntry{
+		Category:   category,
+		Severity:   "medium",
+		DetectorID: "proxy.error",
+		Message:    message,
+	})
 }
 
 func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestContext, result *engine.DetectionResult, status int, start time.Time) {
