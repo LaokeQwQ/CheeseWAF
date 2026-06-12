@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { lazy, Suspense, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { pageVariants } from '../animations/variants';
+import { AppErrorBoundary } from '../components/AppErrorBoundary';
 import MainLayout from '../layouts/MainLayout';
 
 const AIPage = lazy(() => import('../pages/AI/AIPage'));
@@ -67,32 +68,34 @@ export default function AppRoutes() {
 
   return (
     <AnimatePresence mode="wait">
-      <Routes location={location} key={location.pathname}>
-        <Route path="/login" element={<LazyPage><LoginPage /></LazyPage>} />
-        <Route path="/setup" element={<LazyPage><SetupPage /></LazyPage>} />
-        <Route path="/attack-map/screen" element={<ProtectedStandalone><LazyPage><AttackScreenPage /></LazyPage></ProtectedStandalone>} />
-        <Route element={<ProtectedLayout />}>
-          <Route index element={<Page><LazyPage><DashboardPage /></LazyPage></Page>} />
-          <Route path="sites" element={<Page><LazyPage><SitesPage /></LazyPage></Page>} />
-          <Route path="sites/:id" element={<Page><LazyPage><SiteDetailPage /></LazyPage></Page>} />
-          <Route path="rules" element={<Page><LazyPage><RulesPage /></LazyPage></Page>} />
-          <Route path="logs" element={<Page><LazyPage><LogsPage /></LazyPage></Page>} />
-          <Route path="logs/:traceId" element={<Page><LazyPage><LogDetailPage /></LazyPage></Page>} />
-          <Route path="ip" element={<Page><LazyPage><IPManagePage /></LazyPage></Page>} />
-          <Route path="protection" element={<Page><LazyPage><ProtectionPage /></LazyPage></Page>} />
-          <Route path="edge" element={<Page><LazyPage><EdgePage /></LazyPage></Page>} />
-          <Route path="ai" element={<Page><LazyPage><AIPage /></LazyPage></Page>} />
-          <Route path="monitor" element={<Page><LazyPage><MonitorPage /></LazyPage></Page>} />
-          <Route path="apisec" element={<Page><LazyPage><APISecurityPage /></LazyPage></Page>} />
-          <Route path="users" element={<Page><LazyPage><UsersPage /></LazyPage></Page>} />
-          <Route path="ops" element={<Page><LazyPage><OperationsPage /></LazyPage></Page>} />
-          <Route path="updates" element={<Page><LazyPage><UpdatesPage /></LazyPage></Page>} />
-          <Route path="block-pages" element={<Page><LazyPage><BlockPagesPage /></LazyPage></Page>} />
-          <Route path="attack-map" element={<Page><LazyPage><AttackMapPage /></LazyPage></Page>} />
-          <Route path="system" element={<Page><LazyPage><SystemPage /></LazyPage></Page>} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <AppErrorBoundary resetKey={location.pathname}>
+        <Routes location={location} key={location.pathname}>
+          <Route path="/login" element={<LazyPage><LoginPage /></LazyPage>} />
+          <Route path="/setup" element={<LazyPage><SetupPage /></LazyPage>} />
+          <Route path="/attack-map/screen" element={<ProtectedStandalone><LazyPage><AttackScreenPage /></LazyPage></ProtectedStandalone>} />
+          <Route element={<ProtectedLayout />}>
+            <Route index element={<Page><LazyPage><DashboardPage /></LazyPage></Page>} />
+            <Route path="sites" element={<Page><LazyPage><SitesPage /></LazyPage></Page>} />
+            <Route path="sites/:id" element={<Page><LazyPage><SiteDetailPage /></LazyPage></Page>} />
+            <Route path="rules" element={<Page><LazyPage><RulesPage /></LazyPage></Page>} />
+            <Route path="logs" element={<Page><LazyPage><LogsPage /></LazyPage></Page>} />
+            <Route path="logs/:traceId" element={<Page><LazyPage><LogDetailPage /></LazyPage></Page>} />
+            <Route path="ip" element={<Page><LazyPage><IPManagePage /></LazyPage></Page>} />
+            <Route path="protection" element={<Page><LazyPage><ProtectionPage /></LazyPage></Page>} />
+            <Route path="edge" element={<Page><LazyPage><EdgePage /></LazyPage></Page>} />
+            <Route path="ai" element={<Page><LazyPage><AIPage /></LazyPage></Page>} />
+            <Route path="monitor" element={<Page><LazyPage><MonitorPage /></LazyPage></Page>} />
+            <Route path="apisec" element={<Page><LazyPage><APISecurityPage /></LazyPage></Page>} />
+            <Route path="users" element={<Page><LazyPage><UsersPage /></LazyPage></Page>} />
+            <Route path="ops" element={<Page><LazyPage><OperationsPage /></LazyPage></Page>} />
+            <Route path="updates" element={<Page><LazyPage><UpdatesPage /></LazyPage></Page>} />
+            <Route path="block-pages" element={<Page><LazyPage><BlockPagesPage /></LazyPage></Page>} />
+            <Route path="attack-map" element={<Page><LazyPage><AttackMapPage /></LazyPage></Page>} />
+            <Route path="system" element={<Page><LazyPage><SystemPage /></LazyPage></Page>} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AppErrorBoundary>
     </AnimatePresence>
   );
 }
