@@ -1,0 +1,23 @@
+id: cheesewaf-sqli-unblocked
+
+info:
+  name: CheeseWAF SQLi block regression
+  author: CheeseWAF
+  severity: medium
+  description: Reports when a SQLi-shaped probe reaches the origin without hitting a block or challenge response.
+  tags: cheesewaf,security-gate,sqli
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/?q=1%20or%201%3D1--"
+    redirects: true
+    matchers:
+      - type: status
+        status:
+          - 403
+          - 406
+          - 429
+          - 451
+          - 503
+        negative: true

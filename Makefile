@@ -12,7 +12,7 @@ GO           := go
 GOFLAGS      := -trimpath
 CGO_ENABLED  := 0
 
-.PHONY: all build build-cli run test test-go web-build security-corpus security-corpus-http lint clean dev help
+.PHONY: all build build-cli run test test-go web-build security-corpus security-corpus-http security-gate lint clean dev help
 
 ## help: Show this help message
 help:
@@ -26,6 +26,7 @@ help:
 	@echo "  make web-build   Build the web dashboard"
 	@echo "  make security-corpus      Run curated semantic corpus against analyzer"
 	@echo "  make security-corpus-http Run curated corpus against deployed WAF (BASE_URL=...)"
+	@echo "  make security-gate        Run analyzer, HTTP replay, and optional external scanner gate (BASE_URL=..., ADMIN_URL=...)"
 	@echo "  make lint        Run golangci-lint"
 	@echo "  make clean       Remove build artifacts"
 	@echo "  make deps        Download dependencies"
@@ -98,6 +99,11 @@ security-corpus:
 security-corpus-http:
 	@if [ -z "$(BASE_URL)" ]; then echo "BASE_URL is required"; exit 1; fi
 	$(GO) run ./cmd/cheesewaf-corpus --mode http --base-url "$(BASE_URL)" $(CORPUS_FLAGS)
+
+## security-gate: Run release security gate against deployed data/admin planes
+security-gate:
+	@if [ -z "$(BASE_URL)" ]; then echo "BASE_URL is required"; exit 1; fi
+	$(GO) run ./cmd/cheesewaf-corpus --mode gate --base-url "$(BASE_URL)" $(if $(ADMIN_URL),--admin-url "$(ADMIN_URL)") $(GATE_FLAGS)
 
 ## lint: Run golangci-lint
 lint:
