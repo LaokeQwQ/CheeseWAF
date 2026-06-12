@@ -134,8 +134,8 @@ const enUS = {
     },
   },
   uiError: {
-    title: 'Frontend panel error',
-    subtitle: 'The console hit a runtime error. Keep this event ID so backend logs and browser console output can be matched with the same diagnostic ID.',
+    title: 'Console request could not be completed',
+    subtitle: 'The CheeseWAF console encountered a runtime error. Reload the page; if the issue persists, provide the event ID below so support can locate the matching backend log entry.',
     traceLabel: 'Event / Trace ID',
     reload: 'Reload',
     home: 'Back Home',

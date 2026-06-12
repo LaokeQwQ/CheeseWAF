@@ -45,7 +45,7 @@ func TestDefaultTemplateIncludesTroubleshootingFields(t *testing.T) {
 		Timestamp:  time.Unix(0, 0).UTC(),
 	})
 	body := recorder.Body.String()
-	for _, want := range []string{"Event / Trace ID", "cw-visible", "sqli", "198.51.100.9", "403 Forbidden"} {
+	for _, want := range []string{"CheeseWAF", "Security response", "Request could not be completed", "Event / Trace ID", "cw-visible", "sqli", "198.51.100.9", "403 Forbidden"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("default template missing %q in %s", want, body)
 		}

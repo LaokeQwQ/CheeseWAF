@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import BrandLogo from './BrandLogo';
 
 type BoundaryTexts = {
   title: string;
@@ -44,7 +45,12 @@ class AppErrorBoundaryInner extends Component<BoundaryProps, BoundaryState> {
     return (
       <section className="ui-error-boundary" role="alert">
         <div>
-          <span className="ui-error-kicker">CheeseWAF</span>
+          <header className="ui-error-brand">
+            <span className="ui-error-logo">
+              <BrandLogo alt="CheeseWAF" />
+            </span>
+            <span>CheeseWAF</span>
+          </header>
           <h1>{this.props.title}</h1>
           <p>{this.props.subtitle}</p>
           <div className="ui-error-trace">
