@@ -49,6 +49,14 @@ func runGateSuites(report *summary, opts options) error {
 		return err
 	}
 
+	if opts.SkipExternal {
+		report.ExternalSuites = append(report.ExternalSuites, skippedExternalSuites(opts)...)
+		for _, suite := range report.ExternalSuites {
+			report.addSuite(suite, opts.RequireExternal)
+		}
+		return nil
+	}
+
 	ctx := context.Background()
 	report.ExternalSuites = append(report.ExternalSuites, runSqlmapSuite(ctx, opts, sqlTarget))
 	report.ExternalSuites = append(report.ExternalSuites, runXSStrikeSuite(ctx, opts, xssTarget))
@@ -78,6 +86,17 @@ func runGateSuites(report *summary, opts options) error {
 		report.addSuite(suite, opts.RequireExternal)
 	}
 	return nil
+}
+
+func skippedExternalSuites(opts options) []suiteResult {
+	adminTarget := strings.TrimSpace(opts.AdminURL)
+	return []suiteResult{
+		{Name: "sqlmap", Tool: "sqlmap", Target: "", Status: "skipped", Error: "external scanner execution disabled"},
+		{Name: "xsstrike", Tool: "xsstrike", Target: "", Status: "skipped", Error: "external scanner execution disabled"},
+		{Name: "nuclei-data", Tool: "nuclei", Target: strings.TrimSpace(opts.BaseURL), Status: "skipped", Error: "external scanner execution disabled"},
+		{Name: "nuclei-admin", Tool: "nuclei", Target: adminTarget, Status: "skipped", Error: "external scanner execution disabled"},
+		{Name: "zap-baseline", Tool: "zap-baseline.py", Target: adminTarget, Status: "skipped", Error: "external scanner execution disabled"},
+	}
 }
 
 func (s *summary) addSuite(res suiteResult, strict bool) {

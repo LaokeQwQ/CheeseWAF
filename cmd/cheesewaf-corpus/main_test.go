@@ -128,6 +128,7 @@ func TestRunGateModeAggregatesCorpusAndExternalSuites(t *testing.T) {
 		BlockStatuses:   "403",
 		OutputPath:      output,
 		NucleiTemplates: filepath.Join("..", "..", "security-validation", "nuclei"),
+		SkipExternal:    true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -141,6 +142,9 @@ func TestRunGateModeAggregatesCorpusAndExternalSuites(t *testing.T) {
 	}
 	if len(report.ExternalSuites) == 0 {
 		t.Fatal("expected external suite results")
+	}
+	if report.Warnings == 0 {
+		t.Fatal("expected skipped external suites to be counted as warnings")
 	}
 	if report.Failures != 0 {
 		t.Fatalf("expected gate without failures, got warnings=%d failures=%d", report.Warnings, report.Failures)

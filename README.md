@@ -134,9 +134,10 @@ dynamic scanner evidence before tagging V0.1 beta.
   deployed data and admin planes with sqlmap, XSStrike, nuclei, and ZAP
   available or `--require-external` enabled, then archive the JSON/artifacts.
   CRS/Coraza or ModSecurity comparison remains a separate parity benchmark
-  before stronger claims. Admin-surface route-level authentication/RBAC tests
-  are automated, but deployed dynamic scans should still be repeated before
-  tagging V0.1 beta.
+  before stronger claims. `--skip-external` is only for CI/unit-test replay and
+  must not be used as release evidence. Admin-surface route-level
+  authentication/RBAC tests are automated, but deployed dynamic scans should
+  still be repeated before tagging V0.1 beta.
 - Web attack, API security, Bot/CC, and threat-intel protection levels are wired
   into runtime severity/confidence or score thresholds. The default `smart` mode
   is tuned for lower false positives, but the exact thresholds still need

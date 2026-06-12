@@ -74,6 +74,7 @@ type options struct {
 	OutputPath      string
 	NucleiTemplates string
 	RequireExternal bool
+	SkipExternal    bool
 }
 
 func main() {
@@ -89,6 +90,7 @@ func main() {
 		outputPath      = flag.String("output", "", "write JSON report to file instead of stdout")
 		nucleiTemplates = flag.String("nuclei-templates", "security-validation/nuclei", "nuclei template directory for gate mode")
 		requireExternal = flag.Bool("require-external", false, "fail gate mode when an external scanner is missing instead of skipping")
+		skipExternal    = flag.Bool("skip-external", false, "skip external scanner wrappers in gate mode and run only analyzer/http replay")
 	)
 	flag.Parse()
 
@@ -104,6 +106,7 @@ func main() {
 		OutputPath:      *outputPath,
 		NucleiTemplates: *nucleiTemplates,
 		RequireExternal: *requireExternal,
+		SkipExternal:    *skipExternal,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

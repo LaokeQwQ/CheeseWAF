@@ -80,7 +80,7 @@ GitHub Actions 和 Forgejo Actions 会在受保护分支链推送成功后同步
 
 - 管理平面必须被视为生产安全边界：应保持在 TLS 或可信反向代理之后，默认绑定 localhost/私有网络，避免通过明文 HTTP 暴露浏览器 token。
 - 裸 Prometheus 抓取默认不公开。优先使用带认证的 `/api/metrics`，或仅在可信监听面上暴露 `monitor.prometheus.path`；需要外部 scraper 直接抓取时必须有意识地设置 `monitor.prometheus.public: true`。
-- 公开发布前，需要对已部署的数据面和管理面运行 `cheesewaf-corpus --mode gate`，确保 sqlmap、XSStrike、nuclei、ZAP 可用或启用 `--require-external`，并归档 JSON/扫描产物。CRS/Coraza 或 ModSecurity 对比仍是单独的等价性基准，不能用 gate 结果替代。管理面路由级认证/RBAC 测试已自动化，但 V0.1 beta 打标前仍需对已部署管理端复跑动态扫描。
+- 公开发布前，需要对已部署的数据面和管理面运行 `cheesewaf-corpus --mode gate`，确保 sqlmap、XSStrike、nuclei、ZAP 可用或启用 `--require-external`，并归档 JSON/扫描产物。CRS/Coraza 或 ModSecurity 对比仍是单独的等价性基准，不能用 gate 结果替代；`--skip-external` 只用于 CI/单测回放，不能作为发行证据。管理面路由级认证/RBAC 测试已自动化，但 V0.1 beta 打标前仍需对已部署管理端复跑动态扫描。
 - Web 攻击、API 安全、Bot/CC 和威胁情报防护等级已接入运行时严重级别/置信度或评分阈值。默认 `smart` 模式偏向降低误报，但 GA 前仍需基于 corpus 继续迭代阈值。
 - API auth 当前支持配置化 JWT 签名校验、audience 校验、端点级 issuer/audience/scope 策略，以及带 HTTPS-only/SSRF 防护和缓存兜底的远端 JWKS 刷新。它仍不能替代源站应用认证，并且 CheeseWAF 有意不在代理请求热路径中抓取远端 JWKS URL。
 - 城市/区县级地图精度依赖有效的 GeoIP City `.mmdb` 或外部威胁情报位置源。缺少这些数据时，CheeseWAF 会有意降级到国家/CIDR 级归因，而不是伪造坐标；中国大陆视图只显示大陆范围内的真实位置或安全的 CN 国家级兜底点。

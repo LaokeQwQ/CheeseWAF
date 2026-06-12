@@ -81,6 +81,10 @@ fail the gate. The generated JSON report includes `external_suites`, each with
 the command, target, status, exit code, finding count, duration, trimmed output,
 and any artifact path.
 
+Use `--skip-external` only for CI/unit-test environments where analyzer and
+HTTP replay should be exercised without starting local scanner binaries or
+Docker. Release acceptance should not use `--skip-external`.
+
 The checked-in nuclei templates are intentionally negative release checks: they
 report a finding only when a SQLi/XSS probe is not blocked/challenged or when a
 protected admin entry does not return the expected `418` response. They do not
