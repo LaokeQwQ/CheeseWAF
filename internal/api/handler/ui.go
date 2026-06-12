@@ -77,13 +77,13 @@ func (h *Handler) ReportUIError(w http.ResponseWriter, r *http.Request) {
 func normalizeUITraceID(raw string) string {
 	traceID := strings.TrimSpace(raw)
 	if traceID == "" || utf8.RuneCountInString(traceID) > 128 {
-		return "cw-ui-" + strings.TrimPrefix(blockpage.NewTraceID(), "cw-")
+		return blockpage.NewTraceID()
 	}
 	for _, item := range traceID {
 		if item >= 'a' && item <= 'z' || item >= 'A' && item <= 'Z' || item >= '0' && item <= '9' || item == '-' || item == '_' || item == '.' {
 			continue
 		}
-		return "cw-ui-" + strings.TrimPrefix(blockpage.NewTraceID(), "cw-")
+		return blockpage.NewTraceID()
 	}
 	return traceID
 }

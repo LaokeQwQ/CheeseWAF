@@ -64,7 +64,12 @@ async function refreshTokenIfNeeded(token: string, requestURL: string) {
       )
       .then((response) => {
         if (response.data.error || !response.data.data?.token) {
-          throw new APIRequestError(response.data.error?.message ?? 'Unable to refresh token', response.data.error?.code);
+          throw new APIRequestError(
+            response.data.error?.message ?? 'Unable to refresh token',
+            response.data.error?.code,
+            response.status,
+            response.data.error?.trace_id ?? responseTraceID(response),
+          );
         }
         localStorage.setItem(tokenStorageKey, response.data.data.token);
         return response.data.data.token;
@@ -110,7 +115,7 @@ export class APIRequestError extends Error {
   rawMessage: string;
 
   constructor(message: string, code?: string, status?: number, traceID?: string) {
-    super(traceID ? `${message} · Trace ID: ${traceID}` : message);
+    super(traceID ? `${message} · Event / Trace ID: ${traceID}` : message);
     this.name = 'APIRequestError';
     this.rawMessage = message;
     this.code = code;
@@ -160,11 +165,16 @@ async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<
 }
 
 function responseTraceID(response?: AxiosResponse<unknown>) {
-  const value = response?.headers?.['x-cheesewaf-trace-id'];
+  const headers = response?.headers as (AxiosResponse<unknown>['headers'] & { get?: (name: string) => unknown }) | undefined;
+  const value = headers?.get?.('x-cheesewaf-trace-id') ?? headers?.['x-cheesewaf-trace-id'];
   if (Array.isArray(value)) {
     return value[0];
   }
   return typeof value === 'string' ? value : undefined;
+}
+
+function fetchResponseTraceID(response?: Response) {
+  return response?.headers.get('x-cheesewaf-trace-id') ?? undefined;
 }
 
 export function fetchLoginOptions() {
@@ -629,14 +639,16 @@ export async function askAIAssistantStream(
     },
     body: JSON.stringify({ message, limit, language }),
   });
+  const traceID = fetchResponseTraceID(response);
   if (!response.ok) {
-    throw new APIRequestError(await readableFetchError(response), 'AI_ASSISTANT_STREAM_FAILED', response.status);
+    const errorBody = await readableFetchError(response);
+    throw new APIRequestError(errorBody.message, 'AI_ASSISTANT_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
   }
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
     const payload = await response.json() as Envelope<AIAssistantReply>;
     if (payload.error) {
-      throw new APIRequestError(payload.error.message, payload.error.code, response.status);
+      throw new APIRequestError(payload.error.message, payload.error.code, response.status, payload.error.trace_id ?? traceID);
     }
     return payload.data as AIAssistantReply;
   }
@@ -665,8 +677,8 @@ export async function askAIAssistantStream(
       } else if (event.event === 'done') {
         finalReply = event.data as AIAssistantReply;
       } else if (event.event === 'error') {
-        const payload = event.data as { message?: string };
-        throw new APIRequestError(payload.message || 'AI assistant stream failed.', 'AI_ASSISTANT_STREAM_FAILED');
+        const payload = event.data as { message?: string; code?: string; trace_id?: string };
+        throw new APIRequestError(payload.message || 'AI assistant stream failed.', payload.code || 'AI_ASSISTANT_STREAM_FAILED', response.status, payload.trace_id ?? traceID);
       }
     }
   }
@@ -715,15 +727,15 @@ function parseSSEBlock(block: string) {
   return { event, data: JSON.parse(data.join('\n')) as unknown };
 }
 
-async function readableFetchError(response: Response) {
+async function readableFetchError(response: Response): Promise<{ message: string; traceID?: string }> {
   const text = await response.text().catch(() => '');
   if (!text) {
-    return `${response.status} ${response.statusText}`;
+    return { message: `${response.status} ${response.statusText}` };
   }
   try {
     const parsed = JSON.parse(text) as Envelope<unknown>;
-    return parsed.error?.message || text;
+    return { message: parsed.error?.message || text, traceID: parsed.error?.trace_id };
   } catch {
-    return text;
+    return { message: text };
   }
 }
