@@ -40,6 +40,19 @@ func TestValidateSecurityEntryRejectsRouteConflicts(t *testing.T) {
 	}
 }
 
+func TestValidateBlockPageCustomHTML(t *testing.T) {
+	cfg := Default()
+	cfg.BlockPage.CustomEnabled = true
+	cfg.BlockPage.CustomHTML = `<html><body>{{.TraceID}}</body></html>`
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected valid custom block page: %v", err)
+	}
+	cfg.BlockPage.CustomHTML = `<html><body>{{if}}</body></html>`
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("expected invalid custom block page template to be rejected")
+	}
+}
+
 func TestLoadBackfillsNewSemanticEnginesForOldSiteConfig(t *testing.T) {
 	cfg := loadTempConfig(t, `
 sites:

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 )
 
 type contextKey string
@@ -159,7 +161,19 @@ func randomTokenID() (string, error) {
 }
 
 func writeUnauthorized(w http.ResponseWriter) {
+	writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+}
+
+func writeAPIError(w http.ResponseWriter, status int, code, message string) {
+	traceID := blockpage.NewTraceID()
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"unauthorized"}}`))
+	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{
+			"code":     code,
+			"message":  message,
+			"trace_id": traceID,
+		},
+	})
 }

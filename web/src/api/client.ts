@@ -1,5 +1,5 @@
-import axios from 'axios';
-import type { AIConfig, AIEventsAnalysisResponse, AIAssistantReply, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
+import axios, { type AxiosResponse } from 'axios';
+import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -9,6 +9,7 @@ export const apiClient = axios.create({
   },
 });
 
+const AI_REQUEST_TIMEOUT_MS = 120_000;
 const tokenStorageKey = 'cheesewaf-token';
 const tokenRefreshWindowSeconds = 10 * 60;
 let refreshPromise: Promise<string> | null = null;
@@ -63,7 +64,12 @@ async function refreshTokenIfNeeded(token: string, requestURL: string) {
       )
       .then((response) => {
         if (response.data.error || !response.data.data?.token) {
-          throw new APIRequestError(response.data.error?.message ?? 'Unable to refresh token', response.data.error?.code);
+          throw new APIRequestError(
+            response.data.error?.message ?? 'Unable to refresh token',
+            response.data.error?.code,
+            response.status,
+            response.data.error?.trace_id ?? responseTraceID(response),
+          );
         }
         localStorage.setItem(tokenStorageKey, response.data.data.token);
         return response.data.data.token;
@@ -98,40 +104,77 @@ type Envelope<T> = {
   error?: {
     code: string;
     message: string;
+    trace_id?: string;
   };
 };
 
 export class APIRequestError extends Error {
   code?: string;
   status?: number;
+  traceID?: string;
+  rawMessage: string;
 
-  constructor(message: string, code?: string, status?: number) {
-    super(message);
+  constructor(message: string, code?: string, status?: number, traceID?: string) {
+    super(traceID ? `${message} · Event / Trace ID: ${traceID}` : message);
     this.name = 'APIRequestError';
+    this.rawMessage = message;
     this.code = code;
     this.status = status;
+    this.traceID = traceID;
   }
 }
 
-async function unwrap<T>(promise: Promise<{ data: Envelope<T> }>): Promise<T> {
+async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<T> {
   try {
     const response = await promise;
     if (response.data.error) {
-      throw new APIRequestError(response.data.error.message, response.data.error.code);
+      throw new APIRequestError(response.data.error.message, response.data.error.code, response.status, response.data.error.trace_id ?? responseTraceID(response));
     }
     return response.data.data as T;
   } catch (error) {
     if (axios.isAxiosError<Envelope<unknown>>(error)) {
       const apiError = error.response?.data?.error;
       if (apiError) {
-        throw new APIRequestError(apiError.message, apiError.code, error.response?.status);
+        throw new APIRequestError(apiError.message, apiError.code, error.response?.status, apiError.trace_id ?? responseTraceID(error.response));
+      }
+      const traceID = responseTraceID(error.response);
+      if (error.code === 'ECONNABORTED' || error.message.toLowerCase().includes('timeout')) {
+        const timeout = Number(error.config?.timeout ?? apiClient.defaults.timeout ?? 0);
+        const seconds = timeout > 0 ? Math.round(timeout / 1000) : 0;
+        throw new APIRequestError(
+          seconds > 0 ? `Request timed out after ${seconds}s. Check the upstream service or try again.` : 'Request timed out. Check the upstream service or try again.',
+          'REQUEST_TIMEOUT',
+          error.response?.status,
+          traceID,
+        );
+      }
+      if (!error.response) {
+        throw new APIRequestError(
+          'Network request failed. Check the API base URL, provider availability, firewall, or server-side proxy logs.',
+          'NETWORK_ERROR',
+          undefined,
+          traceID,
+        );
       }
       if (error.response?.status) {
-        throw new APIRequestError(error.message, undefined, error.response.status);
+        throw new APIRequestError(error.message, undefined, error.response.status, traceID);
       }
     }
     throw error;
   }
+}
+
+function responseTraceID(response?: AxiosResponse<unknown>) {
+  const headers = response?.headers as (AxiosResponse<unknown>['headers'] & { get?: (name: string) => unknown }) | undefined;
+  const value = headers?.get?.('x-cheesewaf-trace-id') ?? headers?.['x-cheesewaf-trace-id'];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return typeof value === 'string' ? value : undefined;
+}
+
+function fetchResponseTraceID(response?: Response) {
+  return response?.headers.get('x-cheesewaf-trace-id') ?? undefined;
 }
 
 export function fetchLoginOptions() {
@@ -513,6 +556,29 @@ export function fetchBlockTemplates() {
   return unwrap<BlockTemplate[]>(apiClient.get('/block-pages/templates'));
 }
 
+export function fetchBlockPageConfig() {
+  return unwrap<BlockPageConfig>(apiClient.get('/block-pages/config'));
+}
+
+export function updateBlockPageConfig(payload: BlockPageConfig) {
+  return unwrap<BlockPageConfig>(apiClient.put('/block-pages/config', payload));
+}
+
+export function uploadBlockPageHTML(file: File, templateID?: string) {
+  const form = new FormData();
+  form.append('file', file);
+  if (templateID) {
+    form.append('template_id', templateID);
+  }
+  return unwrap<{ config: BlockPageConfig; filename: string; bytes: number }>(
+    apiClient.post('/block-pages/upload', form, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  );
+}
+
+export function deleteCustomBlockPage() {
+  return unwrap<BlockPageConfig>(apiClient.delete('/block-pages/custom'));
+}
+
 export function importNginx(contents: string) {
   return unwrap<Site[]>(apiClient.post('/nginx/import', contents, {
     headers: { 'Content-Type': 'text/plain' },
@@ -536,21 +602,140 @@ export function updateAIConfig(config: AIConfig) {
 }
 
 export function testAIConnection() {
-  return unwrap<{ ok: boolean }>(apiClient.post('/ai/test'));
+  return unwrap<{ ok: boolean }>(apiClient.post('/ai/test', {}, { timeout: 20_000 }));
 }
 
-export function analyzeLog(entry: Record<string, unknown>) {
-  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', entry));
+export function analyzeLog(entry: Record<string, unknown>, language?: string) {
+  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', { ...entry, language }, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
-export function analyzeLogReference(reference: string) {
-  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', { reference }));
+export function analyzeLogReference(reference: string, language?: string) {
+  return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', { reference, language }, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
-export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string }) {
-  return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload));
+export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string; language?: string }) {
+  return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
-export function askAIAssistant(message: string, limit = 30) {
-  return unwrap<AIAssistantReply>(apiClient.post('/ai/assistant', { message, limit }));
+export function askAIAssistant(message: string, limit = 30, language?: string) {
+  return unwrap<AIAssistantReply>(apiClient.post('/ai/assistant', { message, limit, language }, { timeout: AI_REQUEST_TIMEOUT_MS }));
+}
+
+export async function askAIAssistantStream(
+  message: string,
+  limit = 30,
+  language = '',
+  onTrace?: (event: AIAssistantTraceEvent) => void,
+  signal?: AbortSignal,
+) {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/assistant/stream') : '';
+  const response = await fetch('/api/ai/assistant/stream', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+    },
+    body: JSON.stringify({ message, limit, language }),
+  });
+  const traceID = fetchResponseTraceID(response);
+  if (!response.ok) {
+    const errorBody = await readableFetchError(response);
+    throw new APIRequestError(errorBody.message, 'AI_ASSISTANT_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
+    const payload = await response.json() as Envelope<AIAssistantReply>;
+    if (payload.error) {
+      throw new APIRequestError(payload.error.message, payload.error.code, response.status, payload.error.trace_id ?? traceID);
+    }
+    return payload.data as AIAssistantReply;
+  }
+  if (!response.body) {
+    throw new APIRequestError('Streaming response body is not available.', 'AI_ASSISTANT_STREAM_UNAVAILABLE', response.status);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalReply: AIAssistantReply | null = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split(/\n\n/);
+    buffer = parts.pop() ?? '';
+    for (const part of parts) {
+      const event = parseSSEBlock(part);
+      if (!event) {
+        continue;
+      }
+      if (event.event === 'trace') {
+        onTrace?.(event.data as AIAssistantTraceEvent);
+      } else if (event.event === 'done') {
+        finalReply = event.data as AIAssistantReply;
+      } else if (event.event === 'error') {
+        const payload = event.data as { message?: string; code?: string; trace_id?: string };
+        throw new APIRequestError(payload.message || 'AI assistant stream failed.', payload.code || 'AI_ASSISTANT_STREAM_FAILED', response.status, payload.trace_id ?? traceID);
+      }
+    }
+  }
+  if (buffer.trim()) {
+    const event = parseSSEBlock(buffer);
+    if (event?.event === 'done') {
+      finalReply = event.data as AIAssistantReply;
+    }
+  }
+  if (!finalReply) {
+    throw new APIRequestError('AI assistant stream ended without a final answer.', 'AI_ASSISTANT_STREAM_INCOMPLETE');
+  }
+  return finalReply;
+}
+
+export function fetchAITools() {
+  return unwrap<AIToolDefinition[]>(apiClient.get('/ai/tools'));
+}
+
+export function executeAITool(name: string, args: Record<string, unknown> = {}, approvalID = '') {
+  return unwrap<AIToolExecution>(apiClient.post('/ai/tools/execute', { name, args, approval_id: approvalID }));
+}
+
+export function approveAIApproval(id: string) {
+  return unwrap<AIApprovalRequest>(apiClient.post(`/ai/tools/approvals/${encodeURIComponent(id)}/approve`, {}));
+}
+
+export function rejectAIApproval(id: string) {
+  return unwrap<AIApprovalRequest>(apiClient.post(`/ai/tools/approvals/${encodeURIComponent(id)}/reject`, {}));
+}
+
+function parseSSEBlock(block: string) {
+  const lines = block.split(/\r?\n/);
+  let event = 'message';
+  const data: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      data.push(line.slice(5).trimStart());
+    }
+  }
+  if (data.length === 0) {
+    return null;
+  }
+  return { event, data: JSON.parse(data.join('\n')) as unknown };
+}
+
+async function readableFetchError(response: Response): Promise<{ message: string; traceID?: string }> {
+  const text = await response.text().catch(() => '');
+  if (!text) {
+    return { message: `${response.status} ${response.statusText}` };
+  }
+  try {
+    const parsed = JSON.parse(text) as Envelope<unknown>;
+    return { message: parsed.error?.message || text, traceID: parsed.error?.trace_id };
+  } catch {
+    return { message: text };
+  }
 }

@@ -112,7 +112,7 @@ export default function DashboardPage() {
         {[
           { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, t), icon: Zap },
           { label: t('dashboard.totalBlocked'), value: formatNumber(periodBlockedCount), delta: `${blockRate(periodBlockedCount, periodRequests)}%`, icon: ShieldCheck },
-          { label: t('shell.latency'), value: formatLatency(latency), delta: 'P95', icon: Network },
+          { label: t('dashboard.latencyP95'), value: formatLatency(latency), delta: t('dashboard.percentile95'), icon: Network },
           { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: snapshot ? t('common.online') : t('common.unknown'), icon: HardDrive },
         ].map((item) => {
           const Icon = item.icon;
@@ -132,11 +132,17 @@ export default function DashboardPage() {
           <section className="panel panel-wide">
             <div className="panel-heading">
               <h2>{t('dashboard.totals')}</h2>
-              <div className="chart-controls">
-                <Button icon={<ZoomOut size={14} />} onClick={() => setChartScale((value) => Math.max(0.5, Number((value - 0.25).toFixed(2))))} />
+              <div className="chart-controls chart-zoom-controls">
+                <Tooltip content={t('common.zoomOut')}>
+                  <Button icon={<ZoomOut size={14} />} onClick={() => setChartScale((value) => Math.max(0.5, Number((value - 0.25).toFixed(2))))} />
+                </Tooltip>
                 <span>{Math.round(chartScale * 100)}%</span>
-                <Button icon={<ZoomIn size={14} />} onClick={() => setChartScale((value) => Math.min(2.5, Number((value + 0.25).toFixed(2))))} />
-                <Button icon={<RotateCcw size={14} />} onClick={() => setChartScale(1)} />
+                <Tooltip content={t('common.zoomIn')}>
+                  <Button icon={<ZoomIn size={14} />} onClick={() => setChartScale((value) => Math.min(2.5, Number((value + 0.25).toFixed(2))))} />
+                </Tooltip>
+                <Tooltip content={t('common.reset')}>
+                  <Button icon={<RotateCcw size={14} />} onClick={() => setChartScale(1)} />
+                </Tooltip>
               </div>
             </div>
             <Spin loading={loading}>
@@ -170,7 +176,6 @@ export default function DashboardPage() {
             <div className="dashboard-chart-footer">
               <div className="chart-legend" aria-label={t('dashboard.trafficRequests')}>
                 <span><i /> {t('dashboard.trafficRequests')}</span>
-                <span>{t('dashboard.statsWindow')}: {rangeLabel(statsRange, t)}</span>
               </div>
               <div className="control-cluster dashboard-footer-controls">
                 <span>{t('dashboard.statsWindow')}</span>
@@ -499,7 +504,7 @@ function blockRate(blocked: number, requests: number) {
   if (requests <= 0) {
     return 0;
   }
-  return Math.round((blocked / requests) * 100);
+  return Math.min(100, Math.max(0, Math.round((blocked / requests) * 100)));
 }
 
 function eventCategoryLabel(entry: LogEntry, t: (key: string, options?: Record<string, unknown>) => string) {

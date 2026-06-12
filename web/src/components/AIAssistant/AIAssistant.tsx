@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Tag } from '@arco-design/web-react';
+import { Button, Input, Message, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, ChevronDown, ChevronUp, Send, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { askAIAssistant, fetchLogs, fetchMonitorSummary } from '../../api/client';
+import { approveAIApproval, askAIAssistantStream, executeAITool, fetchAITools, fetchLogs, fetchMonitorSummary, rejectAIApproval } from '../../api/client';
+import type { AIAssistantTraceEvent, AIToolExecution } from '../../types/api';
 
 type AssistantMessage = {
   id: string;
@@ -14,6 +15,8 @@ type AssistantMessage = {
   meta?: AssistantMeta;
   process?: string[];
   processOpen?: boolean;
+  tools?: AIToolExecution[];
+  trace?: AIAssistantTraceEvent[];
 };
 
 type AssistantMeta = {
@@ -31,14 +34,20 @@ type AssistantMeta = {
 };
 
 export default function AIAssistant() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
   const [renderPanel, setRenderPanel] = useState(false);
   const [draft, setDraft] = useState('');
   const [thread, setThread] = useState<AssistantMessage[]>([]);
   const [pendingElapsedMs, setPendingElapsedMs] = useState(0);
   const [thinkingProcessOpen, setThinkingProcessOpen] = useState(true);
+  const [pendingTrace, setPendingTrace] = useState<AIAssistantTraceEvent[]>([]);
   const pendingRef = useRef<{ startedAt: number; createdAt: string; inputTokens: number } | null>(null);
+  const pendingTraceRef = useRef<AIAssistantTraceEvent[]>([]);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const { data: tools } = useQuery({ queryKey: ['assistant-tools'], queryFn: fetchAITools, retry: false });
   const { data: monitor } = useQuery({ queryKey: ['assistant-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 10_000, retry: false });
   const { data: logs } = useQuery({ queryKey: ['assistant-logs'], queryFn: () => fetchLogs({ limit: 5 }), refetchInterval: 10_000, retry: false });
   const liveContext = useMemo(() => {
@@ -53,11 +62,22 @@ export default function AIAssistant() {
   }, [logs?.items, monitor?.snapshot]);
 
   const askMutation = useMutation({
-    mutationFn: (message: string) => askAIAssistant(message, 30),
+    mutationFn: (message: string) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      return askAIAssistantStream(message, 30, i18n.language, (event) => {
+        setPendingTrace((current) => {
+          const next = [...current, event];
+          pendingTraceRef.current = next;
+          return next;
+        });
+      }, controller.signal);
+    },
     onSuccess: (reply) => {
       const pending = pendingRef.current;
       const totalMs = pending ? performance.now() - pending.startedAt : 0;
       const outputTokens = reply.output_tokens || estimateTokens(reply.answer);
+      const trace = reply.trace?.length ? reply.trace : pendingTraceRef.current;
       setThread((current) => [
         ...current,
         {
@@ -79,10 +99,19 @@ export default function AIAssistant() {
             provider: reply.provider,
             model: reply.model,
           },
-          process: buildProcessSummary(t, reply.ai_used, reply.events, reply.blocked, reply.challenge),
+          process: [
+            ...buildTraceProcess(t, trace),
+            ...buildToolProcessSummary(t, reply.tool_executions ?? []),
+          ],
+          processOpen: false,
+          trace,
+          tools: reply.tool_executions,
         },
       ]);
       pendingRef.current = null;
+      pendingTraceRef.current = [];
+      setPendingTrace([]);
+      abortRef.current = null;
     },
     onError: (error) => {
       const pending = pendingRef.current;
@@ -106,18 +135,99 @@ export default function AIAssistant() {
             blocked: liveContext.blocked,
             challenge: 0,
           },
-          process: [t('assistant.processError')],
+          process: [...buildTraceProcess(t, pendingTraceRef.current), t('assistant.processError')],
+          processOpen: true,
+          trace: pendingTraceRef.current,
         },
       ]);
       pendingRef.current = null;
+      pendingTraceRef.current = [];
+      setPendingTrace([]);
+      abortRef.current = null;
     },
   });
+  const approveToolMutation = useMutation({
+    mutationFn: async (execution: AIToolExecution) => {
+      if (!execution.approval?.id) {
+        throw new Error(t('assistant.missingApproval'));
+      }
+      await approveAIApproval(execution.approval.id);
+      return executeAITool(execution.name, execution.args ?? {}, execution.approval.id);
+    },
+    onSuccess: (result, execution) => {
+      Message.success(t('assistant.toolExecuted'));
+      const approvalID = execution.approval?.id;
+      setThread((current) => [
+        ...markApprovalStatus(current, approvalID, 'executed'),
+        {
+          id: `tool-${Date.now()}`,
+          role: 'tool',
+          text: t('assistant.toolExecutionCompleted', { tool: toolDisplayName(t, result.name) }),
+          status: result.result?.success ? t('assistant.toolExecuted') : 'error',
+          createdAt: new Date().toISOString(),
+          tools: [result],
+        },
+      ]);
+    },
+    onError: (error) => Message.error(error.message),
+  });
+  const rejectToolMutation = useMutation({
+    mutationFn: async (execution: AIToolExecution) => {
+      if (!execution.approval?.id) {
+        throw new Error(t('assistant.missingApproval'));
+      }
+      return rejectAIApproval(execution.approval.id);
+    },
+    onSuccess: (approval) => {
+      Message.info(t('assistant.approvalRejected'));
+      setThread((current) => [
+        ...markApprovalStatus(current, approval.id, 'rejected'),
+        {
+          id: `tool-reject-${Date.now()}`,
+          role: 'tool',
+          text: t('assistant.approvalRejectedFor', { tool: approval.tool_name }),
+          status: t('assistant.rejected'),
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    },
+    onError: (error) => Message.error(error.message),
+  });
 
-  useEffect(() => {
-    if (open) {
-      setRenderPanel(true);
+  function clearCloseTimer() {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
     }
-  }, [open]);
+  }
+
+  function openAssistant() {
+    clearCloseTimer();
+    setRenderPanel(true);
+    setOpen(true);
+  }
+
+  function closeAssistant() {
+    clearCloseTimer();
+    setOpen(false);
+    closeTimerRef.current = window.setTimeout(() => {
+      setRenderPanel(false);
+      closeTimerRef.current = null;
+    }, 180);
+  }
+
+  function toggleAssistant() {
+    if (open) {
+      closeAssistant();
+      return;
+    }
+    openAssistant();
+  }
+
+  useEffect(() => () => {
+    clearCloseTimer();
+    abortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (!askMutation.isPending) {
@@ -135,23 +245,11 @@ export default function AIAssistant() {
   }, [askMutation.isPending]);
 
   const messages: AssistantMessage[] = [
-    {
-      id: 'live',
-      role: 'tool',
-      text: t('assistant.liveSummary', { requests: liveContext.requests, blocked: liveContext.blocked, events: liveContext.events }),
-      status: 'live',
-    },
-    ...(liveContext.latest ? [{
-      id: 'latest',
-      role: 'tool' as const,
-      text: `${liveContext.latest.action || 'log'} ${liveContext.latest.category || liveContext.latest.uri}`,
-      status: liveContext.latest.country || liveContext.latest.client_ip || 'event',
-    }] : []),
     ...thread,
     ...(askMutation.isPending ? [{
       id: 'thinking',
       role: 'assistant' as const,
-      text: t('assistant.thinking'),
+      text: pendingTrace[pendingTrace.length - 1]?.message || t('assistant.thinking'),
       status: t('assistant.working'),
       createdAt: pendingRef.current?.createdAt,
       meta: {
@@ -165,13 +263,21 @@ export default function AIAssistant() {
         blocked: liveContext.blocked,
         challenge: 0,
       },
-      process: [
-        t('assistant.processContext', { events: liveContext.events, blocked: liveContext.blocked, challenge: 0 }),
-        t('assistant.processSafety'),
-      ],
+      process: buildTraceProcess(t, pendingTrace),
       processOpen: thinkingProcessOpen,
+      trace: pendingTrace,
     }] : []),
   ];
+
+  useEffect(() => {
+    if (!open || !threadRef.current) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, messages.length, askMutation.isPending]);
 
   function submit() {
     const message = draft.trim();
@@ -181,6 +287,8 @@ export default function AIAssistant() {
     setDraft('');
     setPendingElapsedMs(0);
     setThinkingProcessOpen(true);
+    pendingTraceRef.current = [];
+    setPendingTrace([]);
     pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString(), inputTokens: estimateTokens(message) };
     setThread((current) => [...current, { id: `user-${Date.now()}`, role: 'user', text: message, createdAt: new Date().toISOString() }]);
     askMutation.mutate(message);
@@ -208,22 +316,36 @@ export default function AIAssistant() {
         type="primary"
         shape="circle"
         icon={<Bot size={36} strokeWidth={1.8} />}
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggleAssistant}
       />
       {renderPanel && (
         <section
           className={open ? 'ai-assistant-panel' : 'ai-assistant-panel ai-assistant-panel-closing'}
           onAnimationEnd={() => {
             if (!open) {
+              clearCloseTimer();
               setRenderPanel(false);
             }
           }}
         >
           <header>
             <strong>{t('assistant.title')}</strong>
-            <Button size="mini" icon={<X size={14} />} onClick={() => setOpen(false)} />
+            {tools?.length ? <Tag>{t('assistant.toolsAvailable', { count: tools.length })}</Tag> : null}
+            <button
+              className="assistant-close-button"
+              type="button"
+              aria-label={t('common.close')}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                closeAssistant();
+              }}
+            >
+              <X size={16} />
+            </button>
           </header>
-          <div className="assistant-thread" aria-live="polite">
+          <div className="assistant-thread" ref={threadRef} aria-live="polite">
             {messages.map((message) => (
               <div
                 key={message.id}
@@ -265,6 +387,107 @@ export default function AIAssistant() {
                     )}
                   </div>
                 )}
+                {message.tools && message.tools.length > 0 && (
+                  <div className="assistant-tools">
+                    {message.tools.map((tool) => {
+                      const toolName = toolDisplayName(t, tool.name);
+                      const sensitivity = sensitivityDisplayName(t, tool.sensitivity);
+                      const approvalStatus = tool.approval?.status;
+                      const status = approvalStatus ? approvalStatusDisplayName(t, approvalStatus) : undefined;
+                      const description = toolDescription(t, tool);
+                      return (
+                        <div className="assistant-tool-card" key={`${tool.name}-${tool.approval?.id ?? tool.result?.output ?? tool.error ?? 'tool'}`}>
+                          <div className="assistant-tool-card-head">
+                            <div className="assistant-tool-title">
+                              <strong>{toolName}</strong>
+                              <span>{t('assistant.toolId', { id: tool.name })}</span>
+                            </div>
+                            <div className="assistant-tool-badges">
+                              {status && (
+                                <span className={`assistant-tool-badge assistant-tool-status-${cssToken(approvalStatus)}`}>
+                                  {status}
+                                </span>
+                              )}
+                              <span className={`assistant-tool-badge assistant-tool-sensitivity-${cssToken(tool.sensitivity)}`}>
+                                {sensitivity}
+                              </span>
+                            </div>
+                          </div>
+                          {description && <p>{description}</p>}
+                          {tool.result && (
+                            <div className={tool.result.success ? 'assistant-tool-result' : 'assistant-tool-result assistant-tool-result-error'}>
+                              <span>{tool.result.success ? t('assistant.toolResult') : t('assistant.toolFailed')}</span>
+                              {tool.result.output && (
+                                <div className="assistant-tool-section">
+                                  <small>{t('assistant.resultOutput')}</small>
+                                  <pre>{tool.result.output}</pre>
+                                </div>
+                              )}
+                              {tool.result.diff && (
+                                <div className="assistant-tool-section assistant-tool-section-diff">
+                                  <small>{t('assistant.diffPreview')}</small>
+                                  <pre>{tool.result.diff}</pre>
+                                </div>
+                              )}
+                              {tool.result.error && (
+                                <div className="assistant-tool-section">
+                                  <small>{t('assistant.errorDetail')}</small>
+                                  <pre>{tool.result.error}</pre>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {tool.error && !tool.result && (
+                            <div className="assistant-tool-result assistant-tool-result-error">
+                              <div className="assistant-tool-section">
+                                <small>{t('assistant.errorDetail')}</small>
+                                <pre>{tool.error}</pre>
+                              </div>
+                            </div>
+                          )}
+                          {tool.approval && tool.approval.status !== 'pending' && (
+                            <div className={`assistant-approval-state assistant-approval-state-${cssToken(tool.approval.status)}`}>
+                              <span>{approvalStatusDisplayName(t, tool.approval.status)}</span>
+                              <small>{t('assistant.approvalCompleted', { tool: toolName })}</small>
+                            </div>
+                          )}
+                          {tool.approval && tool.approval.status === 'pending' && (
+                            <div className="assistant-approval">
+                              <div className="assistant-approval-head">
+                                <strong>{t('assistant.approvalRequired')}</strong>
+                                <span>{t('assistant.approvalTool', { tool: toolName })}</span>
+                              </div>
+                              {tool.approval.diff && (
+                                <div className="assistant-tool-section assistant-tool-section-diff">
+                                  <small>{t('assistant.diffPreview')}</small>
+                                  <pre>{tool.approval.diff}</pre>
+                                </div>
+                              )}
+                              <div className="assistant-approval-actions">
+                                <Button
+                                  size="small"
+                                  type="primary"
+                                  loading={approveToolMutation.isPending}
+                                  onClick={() => approveToolMutation.mutate(tool)}
+                                >
+                                  {t('assistant.approve')}
+                                </Button>
+                                <Button
+                                  size="small"
+                                  status="warning"
+                                  loading={rejectToolMutation.isPending}
+                                  onClick={() => rejectToolMutation.mutate(tool)}
+                                >
+                                  {t('assistant.reject')}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -283,18 +506,100 @@ export default function AIAssistant() {
   );
 }
 
-function buildProcessSummary(
+function markApprovalStatus(messages: AssistantMessage[], approvalID: string | undefined, status: string) {
+  if (!approvalID) {
+    return messages;
+  }
+  return messages.map((message) => {
+    if (!message.tools) {
+      return message;
+    }
+    return {
+      ...message,
+      tools: message.tools.map((tool) => (
+        tool.approval?.id === approvalID
+          ? { ...tool, approval: { ...tool.approval, status } }
+          : tool
+      )),
+    };
+  });
+}
+
+function toolDisplayName(t: (key: string, options?: Record<string, unknown>) => string, name: string) {
+  return t(`assistant.toolNames.${name}`, { defaultValue: name });
+}
+
+function toolDescription(t: (key: string, options?: Record<string, unknown>) => string, tool: AIToolExecution) {
+  return t(`assistant.toolDescriptions.${tool.name}`, { defaultValue: tool.description ?? '' });
+}
+
+function sensitivityDisplayName(t: (key: string, options?: Record<string, unknown>) => string, value: string) {
+  return t(`assistant.sensitivity.${value}`, { defaultValue: value });
+}
+
+function approvalStatusDisplayName(t: (key: string, options?: Record<string, unknown>) => string, value: string) {
+  return t(`assistant.approvalStatus.${value}`, { defaultValue: value });
+}
+
+function cssToken(value?: string) {
+  return (value || 'unknown').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+}
+
+function buildToolProcessSummary(
   t: (key: string, options?: Record<string, unknown>) => string,
-  aiUsed: boolean,
-  events: number,
-  blocked: number,
-  challenge: number,
+  tools: AIToolExecution[],
 ) {
-  return [
-    t('assistant.processContext', { events, blocked, challenge }),
-    aiUsed ? t('assistant.processProvider') : t('assistant.processLocal'),
-    t('assistant.processSafety'),
-  ];
+  if (tools.length === 0) {
+    return [];
+  }
+  const readOnly = tools.filter((tool) => tool.sensitivity === 'read_only' && tool.result?.success).length;
+  const approvals = tools.filter((tool) => tool.approval?.status === 'pending').length;
+  const executed = tools.filter((tool) => tool.sensitivity !== 'read_only' && tool.result?.success).length;
+  return [t('assistant.processTools', { readOnly, approvals, executed })];
+}
+
+function buildTraceProcess(t: (key: string, options?: Record<string, unknown>) => string, trace: AIAssistantTraceEvent[]) {
+  if (trace.length === 0) {
+    return [t('assistant.traceWaiting')];
+  }
+  return trace.map((event) => formatTraceEvent(t, event));
+}
+
+function formatTraceEvent(t: (key: string, options?: Record<string, unknown>) => string, event: AIAssistantTraceEvent) {
+  switch (event.type) {
+    case 'tool_call':
+      return t('assistant.traceToolCall', { tool: event.tool_name || '-', args: compactJson(event.args) });
+    case 'tool_result':
+      return t('assistant.traceToolResult', { tool: event.tool_name || '-', output: summarizeOutput(event.result?.output) });
+    case 'approval_required':
+      return t('assistant.traceApproval', { tool: event.tool_name || '-' });
+    case 'tool_error':
+    case 'planning_error':
+    case 'final_error':
+      return t('assistant.traceError', { step: event.tool_name || event.type, error: event.error || event.message });
+    default:
+      return event.message || event.type;
+  }
+}
+
+function compactJson(value: unknown) {
+  if (!value || (typeof value === 'object' && Object.keys(value as Record<string, unknown>).length === 0)) {
+    return '{}';
+  }
+  try {
+    const text = JSON.stringify(value);
+    return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+  } catch {
+    return String(value);
+  }
+}
+
+function summarizeOutput(value?: string) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return '-';
+  }
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }
 
 function estimateTokens(text: string) {

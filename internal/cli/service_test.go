@@ -134,6 +134,36 @@ func TestAdminHandlerSecurityEntryGatesConsole(t *testing.T) {
 	}
 }
 
+func TestAdminHandlerSecurityEntryReadsUpdatedConfig(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	cfg := config.Default()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/first-door"
+	cfg.Console.Login.SecurityEntry.CookieName = "cw_entry_dynamic"
+	handler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("api:" + r.URL.Path))
+	}), "dynamic-entry-secret")
+
+	cfg.Console.Login.SecurityEntry.Path = "/second-door"
+
+	oldEntry := httptest.NewRecorder()
+	handler.ServeHTTP(oldEntry, httptest.NewRequest(http.MethodGet, "/first-door", nil))
+	if oldEntry.Code != http.StatusTeapot {
+		t.Fatalf("expected old security entry to be rejected after config update, got %d", oldEntry.Code)
+	}
+
+	newEntry := httptest.NewRecorder()
+	handler.ServeHTTP(newEntry, httptest.NewRequest(http.MethodGet, "/second-door", nil))
+	if newEntry.Code != http.StatusFound {
+		t.Fatalf("expected updated security entry to redirect, got %d: %s", newEntry.Code, newEntry.Body.String())
+	}
+}
+
 func TestAdminHandlerCachesAndCompressesStaticAssets(t *testing.T) {
 	webDir := t.TempDir()
 	assets := filepath.Join(webDir, "assets")

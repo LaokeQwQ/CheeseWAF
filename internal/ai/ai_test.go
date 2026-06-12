@@ -155,6 +155,48 @@ func TestAssistantPromptSeparatesQuestionAndEventContext(t *testing.T) {
 	}
 }
 
+func TestAssistantToolPlanningPromptUsesLanguageAndOmitsRuntimeData(t *testing.T) {
+	messages := assistantToolPlanningMessages("帮我分析最近攻击事件", "zh-CN", []map[string]any{{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "recent_security_events",
+			"description": "Read recent real CheeseWAF security events from the log sink.",
+		},
+	}})
+	if len(messages) != 2 {
+		t.Fatalf("unexpected messages: %+v", messages)
+	}
+	system := messages[0].Content
+	if !strings.Contains(system, "使用{%Language}交流和输出信息") || !strings.Contains(system, "Simplified Chinese") {
+		t.Fatalf("system prompt is missing language directive: %s", system)
+	}
+	user := messages[1].Content
+	for _, needle := range []string{`"available_tools"`, `"operator_question"`, `"data_availability"`} {
+		if !strings.Contains(user, needle) {
+			t.Fatalf("expected %q in planning prompt: %s", needle, user)
+		}
+	}
+	for _, forbidden := range []string{`"runtime_json"`, `"event_json"`, "event-1"} {
+		if strings.Contains(user, forbidden) {
+			t.Fatalf("planning prompt should not include runtime/event data %q: %s", forbidden, user)
+		}
+	}
+}
+
+func TestAssistantToolResultReplyCountsEvents(t *testing.T) {
+	reply, err := AnswerAssistantWithToolResults(context.Background(), nil, "最近拦截", "zh-CN", nil, []AssistantToolCall{{
+		Name:        "recent_security_events",
+		Sensitivity: SensitivityName(ReadOnly),
+		Result:      &ToolResult{Success: true, Output: `[{"id":"event-1","action":"block"},{"trace_id":"trace-2","action":"challenge"}]`},
+	}})
+	if err != nil {
+		t.Fatalf("tool result reply: %v", err)
+	}
+	if reply.Events != 2 || reply.Blocked != 1 || reply.Challenge != 1 || len(reply.LogIDs) != 2 {
+		t.Fatalf("unexpected event counts: %+v", reply)
+	}
+}
+
 func TestClientUsesOpenAIStandardBearerAuth(t *testing.T) {
 	var gotAuthorization, gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -183,6 +225,50 @@ func TestClientUsesOpenAIStandardBearerAuth(t *testing.T) {
 	}
 	if result.Content != "ok" || result.Provider != "openai" || result.Model != "gpt-4o-mini" || result.Usage.OutputTokens != 3 || result.Usage.TotalTokens != 14 {
 		t.Fatalf("unexpected OpenAI result: %+v", result)
+	}
+}
+
+func TestClientParsesOpenAINativeToolCalls(t *testing.T) {
+	var parsed struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&parsed); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"recent_security_events","arguments":"{\"limit\":7}"}}]}}],"usage":{"prompt_tokens":19,"completion_tokens":5,"total_tokens":24}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AIConfig{
+		Enabled:  true,
+		Provider: "openai",
+		APIBase:  server.URL,
+		APIKey:   "test-secret",
+		Model:    "gpt-test",
+	}, server.Client())
+	plan, err := client.CompleteToolPlan(context.Background(), []Message{{Role: "user", Content: "分析最近安全事件"}}, []map[string]any{{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "recent_security_events",
+			"description": "read recent events",
+			"parameters":  map[string]any{"type": "object"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("tool plan: %v", err)
+	}
+	if len(parsed.Tools) != 1 {
+		t.Fatalf("expected native tools in request, got %+v", parsed)
+	}
+	if plan.Mode != "native_openai_tool_calls" || len(plan.ToolRequests) != 1 || plan.ToolRequests[0].Name != "recent_security_events" {
+		t.Fatalf("unexpected native tool plan: %+v", plan)
+	}
+	if got := plan.ToolRequests[0].Args["limit"]; got != json.Number("7") {
+		t.Fatalf("expected parsed limit argument, got %#v", got)
+	}
+	if plan.InputTokens != 19 || plan.OutputTokens != 5 || plan.TotalTokens != 24 {
+		t.Fatalf("unexpected token usage: %+v", plan)
 	}
 }
 
@@ -277,6 +363,27 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	}
 	if second.Result == nil || !second.Result.Success {
 		t.Fatalf("expected successful result, got %+v", second)
+	}
+	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, approved.ID); err == nil {
+		t.Fatal("expected approved request to be single-use")
+	}
+}
+
+func TestAssistantRejectsApprovalArgumentSwap(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(fakeTool{sensitivity: Modify})
+	assistant := NewAssistant(registry, NewApprovalStore())
+
+	first, err := assistant.ExecuteTool(context.Background(), "fake_modify", map[string]any{"enabled": true}, "")
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	approved, err := assistant.Approve(first.Approval.ID)
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", map[string]any{"enabled": false}, approved.ID); err == nil {
+		t.Fatal("expected approval argument mismatch to be rejected")
 	}
 }
 

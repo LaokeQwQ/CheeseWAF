@@ -10,7 +10,7 @@ CheeseWAF 是一个基于 Go 的 Web 应用防火墙项目，目标是提供单�
 
 - 反向代理 WAF 主流程：分阶段语义分析（输入提取、深度解码、词法/语法/行为评分）、自定义规则、IP/ACL/限流/Bot 防护、威胁情报导入与订阅、签名 JS 工作量证明挑战、Altcha 风格 PoW CAPTCHA、带 opaque token 服务端音频与尝试次数限制的图像验证码、拼图滑块验证码、排队室、边缘缓存/请求头/Brotli+gzip 压缩策略，以及响应体检测。
 - 语义回归覆盖：function-based 和 error-based SQLi、MySQL 可执行版本注释、PostgreSQL 延迟 payload、hex tautology、`ORDER BY`/`HAVING` 推断、regex 值探测、`PROCEDURE ANALYSE`、`xp_cmdshell` 与 `into outfile` SQLi 形态，control-character/HTML entity/data URI/srcdoc/meta-refresh/CSS-expression/formaction/srcset XSS 上下文，`${IFS}`/PowerShell/Pwsh/`cmd /c`/download-to-shell RCE 变体，LFI Kubernetes token、进程环境泄露和超长 traversal，SSRF IPv6/IPv4-mapped IPv6/dotted-hex/dotted-octal/单整数十六进制/dynamic-DNS/file-scheme 形式，登录/查询上下文中的 Mongo/NoSQL 操作符、`$expr`、`$function` 注入，SSTI 对象图/runtime/Twig/ERB 执行链、直接 detector 绕过样本，以及用于压低误报的成对 benign 样本。成熟度和基准细节见 `docs/semantic-readiness.md`，公开 corpus 来源策略见 `docs/semantic-corpus-sources.md`。
-- 可重复语义验证已经有独立的 `cheesewaf-corpus` runner，可将精选 JSONL corpus 跑在进程内 analyzer 或已部署 WAF 数据面上，并输出包含检出率、误报率、逐 case 延迟和失败证据的 JSON 报告。早于新增语义引擎的旧站点 YAML 会把缺失的引擎开关补为安全默认值，除非运维显式写成 `false`。发行门禁流程见 `docs/security-validation.md`。
+- 可重复语义验证已经有独立的 `cheesewaf-corpus` runner，可将精选 JSONL corpus 跑在进程内 analyzer 或已部署 WAF 数据面上，并输出包含检出率、误报率、逐 case 延迟和失败证据的 JSON 报告。Gate 模式会组合 analyzer 回放、已部署 HTTP 回放、可选的 `sqlmap`/XSStrike/nuclei/ZAP baseline wrapper，以及仓库内置 nuclei 负向模板，用于发现数据面未拦截 SQLi/XSS 探测或管理端安全入口未返回 `418` 的回归。缺少外部工具时会明确标记为 skipped；需要强制外部扫描时可加 `--require-external`。早于新增语义引擎的旧站点 YAML 会把缺失的引擎开关补为安全默认值，除非运维显式写成 `false`。发行门禁流程见 `docs/security-validation.md`。
 - 共享 Web/API/TUI 管理模型：RBAC、审计日志、监控、API 安全、生产部署文件，以及单二进制 admin listener，可同时提供 REST API 和已构建的 Web 控制台。站点工作台覆盖域名、上游、TLS 材料、源站调优、健康检查、包含 NoSQLi/SSTI 在内的站点级语义开关、响应检测、访问控制和重写规则。
 - 管理 API 授权已经细化到路由级：所有非公开管理 API 都必须携带 Bearer token，实时流不再公开；读接口需要 `read:*` 类权限，所有写接口按 system、users、sites、rules、protection、threat intel、edge、AI、storage、ops 等方向使用明确的 `write:*` 权限保护。路由回归测试覆盖无 token、cookie-only 类 CSRF 请求和 readonly 角色写操作。
 - 管理端 token 带唯一 token ID，并由服务端可撤销 session 支撑。登录会创建 session，`/api/auth/refresh` 会原子撤销旧 token ID 并签发新 token，`/api/auth/logout` 会在 Web 控制台清理本地状态前撤销当前 session。密码/角色和 2FA 变更会撤销受影响用户的既有会话，过期/已撤销 session 会在登录时清理。控制台会在请求前自动刷新仍有效但接近过期的 token；过期或无效 token 仍走正常 401 登出流程。
@@ -18,11 +18,12 @@ CheeseWAF 是一个基于 Go 的 Web 应用防火墙项目，目标是提供单�
 - Web 控制台加固：安全/类别/严重级别本地化标签，仪表盘总计态势与实时态势分离，1/3/5/10 秒实时刷新控制，总计统计周期可选，图表坐标轴、图例、缩放按钮与滑动缩放尺，事件/资源卡片弹性布局，IP 管理页签支持 URL 定位，API 安全表格布局隔离，路由级懒加载，以及基于 Natural Earth/world-atlas 的 2D/中国大陆/交互式 Three.js 3D 攻击地图。地图支持缩放/拖拽、按攻击强度着色、国家级 GeoIP 兜底、精确位置 metadata、WebGL 兜底、响应式表格和真实日志数据；中国大陆模式已改为独立大陆投影、真实参考城市锚点、大陆范围过滤和悬停/放大详情标签，不再裁切世界地图凑视图。3D 地球渲染器已拆到按需 chunk，普通控制台页面和 2D 地图不会提前加载 Three.js。
 - Dashboard 资源面板现在读取 monitor snapshot 的真实主机指标：CPU 占用、带 CPU 核数上下文的 1 分钟 system load、主机内存、Swap、磁盘占用，并把 goroutines/heap 移到单独的进程运行时信息行。实时态势和资源占用会按 1/3/5/10 秒自动刷新，支持手动刷新；无 Swap 设备时明确显示“未启用”，并通过受保护系统 API 提供真实内存/Swap 回收操作。
 - 攻击/拦截事件现在有独立 `/logs/:traceId` 详情页，可从 Dashboard、攻击日志表和 AI 事件表进入；详情页展示请求证据、检测器 metadata、payload/User-Agent 上下文，并且单事件 AI 分析只提交事件 reference，由后端从真实日志 sink 解析对应 `trace_id`/日志 ID 后再分析，避免 Web 前端伪造分析对象。
+- 拦截/报错页已从“只读预览”升级为运行时真实配置：代理默认渲染更完整的内置 HTML 模板，每个拦截或代理错误响应都会在页面正文、`X-CheeseWAF-Trace-ID` 响应头和 WAF 日志事件中显示同一个事件 / Trace ID；Web 控制台可启用内置模板、上传或编辑自定义 Go `html/template` HTML，后端校验语法后持久化到 YAML 并热更新代理渲染器，无需重启。管理 API 错误会返回 Trace ID，已登录态前端运行时错误会用页面 ErrorBoundary 显示的同一个 `cw-ui-*` ID 上报到后端日志 sink，便于把浏览器报错和持久化日志对齐排查。
 - 计划安全报告可以按日报或周报从真实 WAF 日志生成 Markdown/JSON，并投递到本地报告目录或 Webhook。报告包含时间窗口、总日志与安全事件数量、拦截/挑战/仅记录计数、唯一来源 IP、动作/严重级别/攻击类型/站点/国家分布、风险来源 IP、被攻击 URI、检测器排行和最近高风险事件；普通放行流量不会污染风险排行。
 - 前端构建输出使用稳定的 Vite/Rolldown vendor chunks，将 React、Arco、Three.js、可视化、运行时和 UI 工具依赖分组。生产构建默认不输出 source map，只有显式设置 `VITE_SOURCEMAP=true` 才保留调试 map，从而减小发布版 Web 控制台体积；较大的 Three.js 依赖只在攻击地图路径按需加载。
-- 最新管理后台 UI 品控已修复 Rules、IP Control、Protection Policy、Operations、Updates & Vulnerability Feeds、Block Pages、Dashboard、攻击日志、AI Operations 和 System Settings 在接口失败、搜索框挤压、标签溢出、受控选择器空值、操作按钮压缩、假在线状态、设置布局混杂和表格断词回归时的问题。控制台现在优先使用明确的加载/错误/空态、局部 action footer、响应式 token/chip 组、不会把 IP/时间压成竖排的攻击/AI 事件列表、攻击日志自动排除普通 pass 流量、分组设置区域、移动端 IP 画像卡片与真实加白/拉黑/信誉分操作、AI 助手安全避让、可点击健康重连状态、独立通知/账号菜单和浏览器验证过的布局，而不是占位或纯装饰 UI。
+- 最新管理后台 UI 品控已修复 Rules、IP Control、Protection Policy、Operations、Updates & Vulnerability Feeds、Block Pages、Dashboard、攻击日志、AI Operations、Attack Map/Attack Screen 和 System Settings 在接口失败、搜索框挤压、标签溢出、受控选择器空值、操作按钮压缩、假在线状态、设置布局混杂和表格断词回归时的问题。控制台现在优先使用明确的加载/错误/空态、局部 action footer、响应式 token/chip 组、不会把 IP/时间压成竖排的攻击/AI 事件列表、攻击日志自动排除普通 pass 流量、分组设置区域、移动端 IP 画像卡片与真实加白/拉黑/信誉分操作、移动端安全处理 AI 入口、可点击健康重连状态、独立通知/账号菜单和浏览器验证过的布局，而不是占位或纯装饰 UI。本地视觉回归矩阵当前覆盖 desktop/laptop/tablet/mobile 下的 108 个路由/视口组合，作为 UI 改动进入部署前的截图验真门禁。
 - GeoIP 防护支持用户自定义国家 CIDR 覆盖和 MaxMind 兼容 `.mmdb` 数据库；代理日志会写入 `metadata.geo` 的 country/city/region/lat/lon/accuracy/ASN 字段，让攻击地图和报告在配置有效 City 数据库或威胁情报位置源时可以使用真实位置。
-- 威胁情报指标带有 action 和 confidence，并根据严重级别、置信度和来源数量评分，在代理热路径中按全局/站点 `threat_intel` 等级执行。控制台导入、provider sync、查询和防护设置更新都会刷新运行时策略，无需重启服务。clean/空结果不会被导入，JSON key 看起来像 IP/CIDR 时也必须由 value 明确携带威胁信号才会转成指标。导入器已识别常见 AbuseIPDB、AlienVault OTX、ThreatBook、MISP Attribute 和 STIX IPv4/IPv6 结构，同时保留 plain CIDR/CSV/手工导入。
+- 威胁情报指标带有 action 和 confidence，并根据严重级别、置信度和来源数量评分；上游返回 `0-1` 比例或 `0-100` 百分比时都会归一化显示与计算，在代理热路径中按全局/站点 `threat_intel` 等级执行。控制台导入、provider sync、查询和防护设置更新都会刷新运行时策略，无需重启服务。clean/空结果不会被导入，JSON key 看起来像 IP/CIDR 时也必须由 value 明确携带威胁信号才会转成指标。导入器已识别常见 AbuseIPDB、AlienVault OTX、ThreatBook、MISP Attribute 和 STIX IPv4/IPv6 结构，同时保留 plain CIDR/CSV/手工导入。
 - IP 访问控制现在支持全局、站点级、目录/路径级 allow/block 规则，并兼容旧的全局白名单/黑名单。allow 规则沿用现有白名单对 IP 相关防护的旁路语义，block 规则会在转发到源站前拦截；IP 画像可手动覆盖 0-100 信誉分。站点访问控制可配置可信代理/CDN CIDR；只有可信来源代理才会采信 `CF-Connecting-IP`、`True-Client-IP`、`Fastly-Client-IP`、`Fly-Client-IP`、`DO-Connecting-IP`、`Ali-CDN-Real-IP`、`CDN-Src-IP`、`X-CDN-Src-IP`、`X-Azure-ClientIP`、`X-Vercel-Forwarded-For`、`X-Original-Forwarded-For`、`X-Real-IP`、`X-Forwarded-For` 和 RFC `Forwarded` 等真实客户端 IP 头。
 - 安全的管理端默认值：CLI 会在 `./data` 下引导运行时配置，管理端默认监听 localhost；公开绑定管理端需要同时设置 `server.admin_public: true` 和 `server.admin_tls`；首次设置可选择本地/隧道/反向代理访问，或使用生成的本地 CA 签发管理证书公开 HTTPS。
 - 单二进制 admin handler 会为 API、SPA fallback 和静态资源统一加基础浏览器安全头：强制 `Content-Security-Policy`、`Cross-Origin-Opener-Policy`、`Cross-Origin-Resource-Policy`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、收紧的 `Permissions-Policy`，并在 HTTPS 管理端响应上发送 HSTS。管理端静态资源支持 immutable cache，并按浏览器能力协商 Brotli/gzip 压缩；SPA 入口保持 `no-cache`。
@@ -47,6 +48,8 @@ go test -race -count=1 ./cmd/... ./internal/...
 go run ./cmd/cheesewaf-corpus --mode analyzer
 # 对已部署的数据面监听执行回放：
 # go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
+# 完整发行门禁，外部扫描器存在时会自动执行：
+# go run ./cmd/cheesewaf-corpus --mode gate --base-url http://127.0.0.1:8080 --admin-url https://127.0.0.1:9443 --insecure --output security-gate.json
 go build -trimpath -o bin/cheesewaf ./cmd/cheesewaf/
 cd web && npm ci && npm run build
 ```
@@ -77,7 +80,7 @@ GitHub Actions 和 Forgejo Actions 会在受保护分支链推送成功后同步
 
 - 管理平面必须被视为生产安全边界：应保持在 TLS 或可信反向代理之后，默认绑定 localhost/私有网络，避免通过明文 HTTP 暴露浏览器 token。
 - 裸 Prometheus 抓取默认不公开。优先使用带认证的 `/api/metrics`，或仅在可信监听面上暴露 `monitor.prometheus.path`；需要外部 scraper 直接抓取时必须有意识地设置 `monitor.prometheus.public: true`。
-- 公开发布前，需要跑可重复的 sqlmap、XSStrike、nuclei、OWASP ZAP、CRS/Coraza 或 ModSecurity 对比，以及 `cheesewaf-corpus` analyzer 与已部署 HTTP 回放。管理面路由级认证/RBAC 测试已自动化，但 V0.1 beta 打标前仍需对已部署管理端复跑动态扫描。
+- 公开发布前，需要对已部署的数据面和管理面运行 `cheesewaf-corpus --mode gate`，确保 sqlmap、XSStrike、nuclei、ZAP 可用或启用 `--require-external`，并归档 JSON/扫描产物。CRS/Coraza 或 ModSecurity 对比仍是单独的等价性基准，不能用 gate 结果替代；`--skip-external` 只用于 CI/单测回放，不能作为发行证据。管理面路由级认证/RBAC 测试已自动化，但 V0.1 beta 打标前仍需对已部署管理端复跑动态扫描。
 - Web 攻击、API 安全、Bot/CC 和威胁情报防护等级已接入运行时严重级别/置信度或评分阈值。默认 `smart` 模式偏向降低误报，但 GA 前仍需基于 corpus 继续迭代阈值。
 - API auth 当前支持配置化 JWT 签名校验、audience 校验、端点级 issuer/audience/scope 策略，以及带 HTTPS-only/SSRF 防护和缓存兜底的远端 JWKS 刷新。它仍不能替代源站应用认证，并且 CheeseWAF 有意不在代理请求热路径中抓取远端 JWKS URL。
 - 城市/区县级地图精度依赖有效的 GeoIP City `.mmdb` 或外部威胁情报位置源。缺少这些数据时，CheeseWAF 会有意降级到国家/CIDR 级归因，而不是伪造坐标；中国大陆视图只显示大陆范围内的真实位置或安全的 CN 国家级兜底点。
