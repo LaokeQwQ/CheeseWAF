@@ -49,6 +49,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
     camera.position.set(0, 0.22, 3 / zoom);
+    const isDarkGlobe = visualTheme === 'dark';
     let renderer: any;
     try {
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -61,7 +62,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.06;
-    renderer.setClearColor(0x000000, 0);
+    renderer.setClearColor(isDarkGlobe ? 0x000000 : 0xf8fbff, 0);
     host.appendChild(renderer.domElement);
 
     const tooltip = document.createElement('div');
@@ -79,7 +80,6 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     controls.autoRotate = true;
     controls.autoRotateSpeed = 0.45;
 
-    const isDarkGlobe = visualTheme === 'dark';
     const starField = createStarField(visualTheme);
     scene.add(starField);
 
@@ -346,7 +346,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     return <>{fallback}</>;
   }
 
-  return <div ref={hostRef} className="globe-stage" />;
+  return <div ref={hostRef} className={`globe-stage globe-stage-${visualTheme}`} />;
 }
 
 function resolveGlobeTheme(theme: ThemeName): GlobeVisualTheme {

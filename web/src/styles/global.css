@@ -1203,6 +1203,8 @@ select {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .resource-actions .arco-button,
@@ -1840,8 +1842,24 @@ code {
   min-width: 64px;
   height: 30px;
   padding: 0 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-soft));
+  border-color: var(--border);
   justify-content: center;
   white-space: nowrap;
+}
+
+.ai-events-row-actions .arco-btn:hover,
+.table-action-link .arco-btn:hover {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+
+.ai-events-row-actions .arco-btn-primary,
+.ai-event-card .arco-btn-primary,
+.event-detail-side .arco-btn-primary {
+  color: #fff;
 }
 
 .api-findings {
@@ -4401,6 +4419,14 @@ code {
   touch-action: none;
 }
 
+.globe-stage-light {
+  background: transparent;
+}
+
+.globe-stage-dark {
+  background: transparent;
+}
+
 .map-canvas.map-mode-3d {
   background:
     radial-gradient(circle at 50% 44%, color-mix(in srgb, var(--accent-info) 17%, transparent), transparent 34%),
@@ -5452,9 +5478,13 @@ code {
 
 .attack-screen-light .attack-screen-globe {
   background:
-    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-info) 16%, transparent), transparent 34%),
-    radial-gradient(circle at 50% 52%, color-mix(in srgb, var(--accent-warning) 9%, transparent), transparent 52%),
-    color-mix(in srgb, var(--surface) 76%, transparent);
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-info) 14%, transparent), transparent 34%),
+    radial-gradient(circle at 50% 52%, color-mix(in srgb, var(--accent-warning) 7%, transparent), transparent 52%),
+    linear-gradient(180deg, #ffffff, color-mix(in srgb, var(--surface-soft) 76%, #ffffff));
+}
+
+.attack-screen-light .attack-screen-globe .globe-stage-light {
+  background: transparent;
 }
 
 .attack-screen-light .attack-screen-overlay .attack-screen-panel {
@@ -7330,6 +7360,25 @@ code {
     gap: 10px;
   }
 
+  .page-header:has(> .arco-btn) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 12px;
+  }
+
+  .page-header:has(> .arco-btn) > div {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .page-header:has(> .arco-btn) > .arco-btn {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 72px;
+    align-self: start;
+  }
+
   .page-header h1 {
     font-size: 24px;
   }
@@ -7699,18 +7748,30 @@ code {
   }
 
   .detail-kv-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 
   .detail-kv-grid > div {
     grid-template-columns: 1fr;
     gap: 5px;
-    padding: 10px 0;
-    border-bottom: 1px solid var(--border-subtle);
+    padding: 10px;
+    background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
+    border: 1px solid var(--border);
+    border-radius: 8px;
   }
 
-  .detail-kv-grid > div:last-child {
-    border-bottom: 0;
+  .detail-kv-grid > div:nth-child(6),
+  .detail-kv-grid > div:nth-child(10) {
+    grid-column: 1 / -1;
+  }
+
+  .detail-kv-grid span {
+    font-size: 12px;
+  }
+
+  .detail-kv-grid strong {
+    font-size: 14px;
   }
 
   .event-row > code,
