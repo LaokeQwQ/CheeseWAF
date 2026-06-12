@@ -21,6 +21,7 @@ type Options struct {
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
+	OnBlockPageChanged  func(config.BlockPageConfig) error
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -41,6 +42,7 @@ func NewRouter(opts Options) http.Handler {
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
 		OnAPISecChanged:     opts.OnAPISecChanged,
+		OnBlockPageChanged:  opts.OnBlockPageChanged,
 	})
 	hub := opts.Hub
 	if hub == nil {
@@ -136,6 +138,10 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:system")).Post("/backup/export", h.ExportBackup)
 			r.With(require("write:system")).Post("/backup/restore", h.RestoreBackup)
 			r.With(require("read:system")).Get("/block-pages/templates", h.BlockPageTemplates)
+			r.With(require("read:system")).Get("/block-pages/config", h.BlockPageConfig)
+			r.With(require("write:system")).Put("/block-pages/config", h.UpdateBlockPageConfig)
+			r.With(require("write:system")).Post("/block-pages/upload", h.UploadBlockPageHTML)
+			r.With(require("write:system")).Delete("/block-pages/custom", h.DeleteCustomBlockPage)
 			r.With(require("write:sites")).Post("/nginx/import", h.ImportNginx)
 		})
 	})

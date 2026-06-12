@@ -24,6 +24,15 @@ type Config struct {
 	Edge          EdgeConfig          `yaml:"edge" json:"edge"`
 	Monitor       MonitorConfig       `yaml:"monitor" json:"monitor"`
 	APISec        APISecConfig        `yaml:"apisec" json:"apisec"`
+	BlockPage     BlockPageConfig     `yaml:"block_page" json:"block_page"`
+}
+
+const MaxBlockPageHTMLBytes = 512 * 1024
+
+type BlockPageConfig struct {
+	TemplateID    string `yaml:"template_id" json:"template_id"`
+	CustomEnabled bool   `yaml:"custom_enabled" json:"custom_enabled"`
+	CustomHTML    string `yaml:"custom_html" json:"custom_html"`
 }
 
 type ServerConfig struct {

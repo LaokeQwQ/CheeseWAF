@@ -195,6 +195,11 @@ protection:
         severity: "high"
         enabled: true
 
+block_page:
+  template_id: "minimal"
+  custom_enabled: false
+  custom_html: ""
+
 storage:
   sqlite:
     path: "./data/cheesewaf.db"

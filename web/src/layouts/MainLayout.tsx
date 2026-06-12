@@ -211,46 +211,46 @@ export default function MainLayout() {
               placeholder={t('common.search')}
               allowClear
             />
-            <Popover
-              popupVisible={notificationsOpen}
-              onVisibleChange={setNotificationsOpen}
-              trigger="click"
-              position="bottom"
-              content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
-            >
-              <Button
-                className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
-                icon={<Bell size={18} />}
-                aria-label={t('shell.notifications')}
-              />
-            </Popover>
           </Space>
 
           <div className="topbar-right">
             <div className="topbar-actions">
-            <Select
-              aria-label={t('system.theme')}
-              className="topbar-select"
-              value={theme}
-              prefix={<SunMoon size={15} />}
-              onChange={(value) => setTheme(value as ThemeName)}
-            >
-              {themeOptions.map((option) => (
-                <Select.Option key={option.value} value={option.value}>
-                  {t(option.labelKey)}
-                </Select.Option>
-              ))}
-            </Select>
-            <Select
-              aria-label={t('system.language')}
-              className="language-select"
-              value={language}
-              prefix={<Languages size={15} />}
-              onChange={(value) => setLanguage(value as Language)}
-            >
-              <Select.Option value="zh-CN">中文</Select.Option>
-              <Select.Option value="en-US">English</Select.Option>
-            </Select>
+              <Popover
+                popupVisible={notificationsOpen}
+                onVisibleChange={setNotificationsOpen}
+                trigger="click"
+                position="bottom"
+                content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
+              >
+                <Button
+                  className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
+                  icon={<Bell size={18} />}
+                  aria-label={t('shell.notifications')}
+                />
+              </Popover>
+              <Select
+                aria-label={t('system.theme')}
+                className="topbar-select"
+                value={theme}
+                prefix={<SunMoon size={15} />}
+                onChange={(value) => setTheme(value as ThemeName)}
+              >
+                {themeOptions.map((option) => (
+                  <Select.Option key={option.value} value={option.value}>
+                    {t(option.labelKey)}
+                  </Select.Option>
+                ))}
+              </Select>
+              <Select
+                aria-label={t('system.language')}
+                className="language-select"
+                value={language}
+                prefix={<Languages size={15} />}
+                onChange={(value) => setLanguage(value as Language)}
+              >
+                <Select.Option value="zh-CN">中文</Select.Option>
+                <Select.Option value="en-US">English</Select.Option>
+              </Select>
             </div>
             <Dropdown
               droplist={

@@ -19,9 +19,7 @@ func RBAC(permissions PermissionMap, required string) func(http.Handler) http.Ha
 				next.ServeHTTP(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"permission denied"}}`))
+			writeAPIError(w, http.StatusForbidden, "FORBIDDEN", "permission denied")
 		})
 	}
 }

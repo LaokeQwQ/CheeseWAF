@@ -247,6 +247,12 @@ export type BlockTemplate = {
   html: string;
 };
 
+export type BlockPageConfig = {
+  template_id: string;
+  custom_enabled: boolean;
+  custom_html: string;
+};
+
 export type AIConfig = {
   enabled: boolean;
   provider: 'openai' | 'anthropic' | string;
@@ -722,6 +728,7 @@ export type SystemConfig = {
   };
   monitor: Record<string, unknown>;
   apisec: APISecSystemConfig;
+  block_page: BlockPageConfig;
 };
 
 export type MonitorSnapshot = {
