@@ -66,7 +66,7 @@ Gate mode runs:
 
 - The in-process semantic analyzer against the curated JSONL corpus.
 - The same corpus against the deployed WAF data-plane listener.
-- External scanner wrappers when the tools are installed:
+- External scanner wrappers when the tools or Docker are available:
   - `sqlmap` against a query-parameter target on the data plane.
   - `xsstrike` against an XSS query-parameter target on the data plane.
   - `nuclei` against repository-owned gate templates in
@@ -75,11 +75,35 @@ Gate mode runs:
   - OWASP ZAP baseline through `zap-baseline.py` when present, or the official
     ZAP Docker image when Docker is available.
 
-Missing external tools are reported as `skipped` and counted as warnings by
-default. Add `--require-external` to make any skipped or warning scanner suite
-fail the gate. The generated JSON report includes `external_suites`, each with
-the command, target, status, exit code, finding count, duration, trimmed output,
-and any artifact path.
+For `sqlmap`, `xsstrike`, and `nuclei`, the runner prefers a local executable
+from `PATH`. If it is missing and Docker is available, the runner falls back to
+a containerized scanner and rewrites `127.0.0.1` / `localhost` targets to
+`host.docker.internal` so containerized tools can reach a local acceptance
+listener. ZAP follows the same local-script-first, Docker-second behavior.
+Override the default images with:
+
+```bash
+CHEESEWAF_SQLMAP_DOCKER_IMAGE=parrotsec/sqlmap:latest
+CHEESEWAF_XSSTRIKE_DOCKER_IMAGE=femtopixel/xsstrike:latest
+CHEESEWAF_NUCLEI_DOCKER_IMAGE=projectdiscovery/nuclei:latest
+CHEESEWAF_ZAP_DOCKER_IMAGE=ghcr.io/zaproxy/zaproxy:stable
+```
+
+Missing external tools and missing Docker are reported as `skipped` and counted
+as warnings by default. Add `--require-external` to make any skipped or warning
+scanner suite fail the gate. The generated JSON report includes
+`external_suites`, each with the command, target, status, exit code, finding
+count, duration, trimmed output, and any artifact path.
+
+Scanner classification is conservative about positive findings:
+
+- `sqlmap` fails only on strong injection evidence such as identified injection
+  points, vulnerable parameters, or payload sections. WAF-protected runs that
+  explicitly report all tested parameters as non-injectable are accepted even if
+  the scanner logs WAF warnings.
+- ZAP baseline keeps the raw exit code in the report. Exit code `2` is accepted
+  only when the summary contains `FAIL-NEW: 0` and `FAIL-INPROG: 0`; any ZAP
+  fail count still fails the gate.
 
 Use `--skip-external` only for CI/unit-test environments where analyzer and
 HTTP replay should be exercised without starting local scanner binaries or
