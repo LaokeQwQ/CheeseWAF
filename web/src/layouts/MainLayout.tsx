@@ -211,22 +211,23 @@ export default function MainLayout() {
               placeholder={t('common.search')}
               allowClear
             />
+            <Popover
+              popupVisible={notificationsOpen}
+              onVisibleChange={setNotificationsOpen}
+              trigger="click"
+              position="bottom"
+              content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
+            >
+              <Button
+                className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
+                icon={<Bell size={18} />}
+                aria-label={t('shell.notifications')}
+              />
+            </Popover>
           </Space>
 
           <div className="topbar-right">
             <div className="topbar-actions">
-              <Popover
-                popupVisible={notificationsOpen}
-                onVisibleChange={setNotificationsOpen}
-                trigger="click"
-                position="bottom"
-                content={<NotificationPanel blocked={snapshot?.blocked ?? 0} requests={snapshot?.requests ?? 0} />}
-              >
-                <Button
-                  className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
-                  icon={<Bell size={18} />}
-                />
-              </Popover>
             <Select
               aria-label={t('system.theme')}
               className="topbar-select"
