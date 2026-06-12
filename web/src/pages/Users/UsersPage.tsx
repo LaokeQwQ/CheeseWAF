@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ShieldCheck, UserPlus } from 'lucide-react';
 import { createUser, fetchAuditEntries, fetchUsers, updateUser } from '../../api/client';
-import type { User } from '../../types/api';
+import type { AuditEntry, User } from '../../types/api';
 
 export default function UsersPage() {
   const { t } = useTranslation();
@@ -54,31 +54,116 @@ export default function UsersPage() {
               ]}
             />
           </div>
+          <div className="mobile-card-list users-audit-cards">
+            {(audit ?? []).map((entry) => (
+              <AuditEntryCard key={`${entry.timestamp}-${entry.path}`} entry={entry} t={t} />
+            ))}
+          </div>
         </section>
       </div>
 
       <section className="table-panel users-table-panel">
-        <Table
-          rowKey="id"
-          pagination={false}
-          className="users-table"
-          data={users ?? []}
-          columns={[
-            { title: t('users.user'), dataIndex: 'username' },
-            { title: t('users.role'), dataIndex: 'role', render: (value: string) => <Tag>{value}</Tag> },
-            { title: '2FA', dataIndex: 'two_fa_enabled', render: (value: boolean) => <Tag color={value ? 'green' : 'gray'}>{value ? 'on' : 'off'}</Tag> },
-            {
-              title: t('common.save'),
-              dataIndex: 'action',
-              render: (_: unknown, record: User) => (
-                <Button size="mini" loading={updateMutation.isPending} onClick={() => updateMutation.mutate({ id: record.id, user: { role: record.role } })}>
-                  {t('common.save')}
-                </Button>
-              ),
-            },
-          ]}
-        />
+        <div className="desktop-table-wrap">
+          <Table
+            rowKey="id"
+            pagination={false}
+            className="users-table"
+            data={users ?? []}
+            columns={[
+              { title: t('users.user'), dataIndex: 'username' },
+              { title: t('users.role'), dataIndex: 'role', render: (value: string) => <Tag>{value}</Tag> },
+              { title: '2FA', dataIndex: 'two_fa_enabled', render: (value: boolean) => <Tag color={value ? 'green' : 'gray'}>{value ? 'on' : 'off'}</Tag> },
+              {
+                title: t('common.save'),
+                dataIndex: 'action',
+                render: (_: unknown, record: User) => (
+                  <Button size="mini" loading={updateMutation.isPending} onClick={() => updateMutation.mutate({ id: record.id, user: { role: record.role } })}>
+                    {t('common.save')}
+                  </Button>
+                ),
+              },
+            ]}
+          />
+        </div>
+        <div className="mobile-card-list users-mobile-list">
+          {(users ?? []).map((user) => (
+            <UserCard
+              key={user.id}
+              user={user}
+              saving={updateMutation.isPending}
+              onSave={() => updateMutation.mutate({ id: user.id, user: { role: user.role } })}
+              t={t}
+            />
+          ))}
+        </div>
       </section>
     </section>
+  );
+}
+
+function AuditEntryCard({
+  entry,
+  t,
+}: {
+  entry: AuditEntry;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  return (
+    <article className="mobile-data-card">
+      <header>
+        <strong>{entry.user || '-'}</strong>
+        <Tag color={entry.status >= 400 ? 'red' : 'green'}>{entry.status}</Tag>
+      </header>
+      <dl>
+        <div>
+          <dt>{t('logs.time')}</dt>
+          <dd>{entry.timestamp}</dd>
+        </div>
+        <div>
+          <dt>Path</dt>
+          <dd><code className="table-code" title={entry.path}>{entry.path}</code></dd>
+        </div>
+        <div>
+          <dt>IP</dt>
+          <dd>{entry.remote_ip || '-'}</dd>
+        </div>
+      </dl>
+    </article>
+  );
+}
+
+function UserCard({
+  user,
+  saving,
+  onSave,
+  t,
+}: {
+  user: User;
+  saving: boolean;
+  onSave: () => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  return (
+    <article className="mobile-data-card">
+      <header>
+        <strong>{user.username}</strong>
+        <Tag>{user.role}</Tag>
+      </header>
+      <dl>
+        <div>
+          <dt>2FA</dt>
+          <dd><Tag color={user.two_fa_enabled ? 'green' : 'gray'}>{user.two_fa_enabled ? 'on' : 'off'}</Tag></dd>
+        </div>
+        {user.created_at && (
+          <div>
+            <dt>{t('logs.time')}</dt>
+            <dd>{user.created_at}</dd>
+          </div>
+        )}
+      </dl>
+      <div className="mobile-card-actions">
+        <Button type="primary" loading={saving} onClick={onSave}>{t('common.save')}</Button>
+      </div>
+    </article>
   );
 }
