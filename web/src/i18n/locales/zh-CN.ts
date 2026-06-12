@@ -702,7 +702,7 @@ const zhCN = {
     noTemplates: '暂无拦截页模板',
     templateSource: '模板源码',
     customHtml: '自定义 HTML',
-    customHint: '支持 Go html/template 变量：TraceID、AttackType、ClientIP、Timestamp、Message、Status、StatusText。',
+    customHint: '支持 Go html/template 变量：EventID、TraceID、AttackType、ClientIP、Timestamp、Message、Status、StatusText。',
     editorPlaceholder: '上传 HTML 或从内置模板生成底稿。保存后会热更新代理拦截页。',
     customActive: '当前启用：自定义 HTML',
     builtInActive: '当前启用：{{name}}',
