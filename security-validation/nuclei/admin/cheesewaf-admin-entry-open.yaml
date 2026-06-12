@@ -1,0 +1,19 @@
+id: cheesewaf-admin-entry-open
+
+info:
+  name: CheeseWAF admin entry gate regression
+  author: CheeseWAF
+  severity: high
+  description: Reports when the protected admin entry is reachable without the expected teapot gate.
+  tags: cheesewaf,security-gate,admin
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    redirects: true
+    matchers:
+      - type: status
+        status:
+          - 418
+        negative: true
