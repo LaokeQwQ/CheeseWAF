@@ -427,6 +427,12 @@ select {
 
 .notification-button {
   position: relative;
+  flex: 0 0 36px;
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
 }
 
 .notification-button-active {
@@ -1238,7 +1244,9 @@ select {
 }
 
 .event-trace-link {
-  display: block;
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
   color: var(--accent-strong);
 }
 
@@ -1368,6 +1376,19 @@ code {
 .event-trace-link:hover,
 .event-trace-link:focus-visible {
   color: var(--accent-strong);
+}
+
+.page-surface .arco-btn-size-mini,
+.page-surface .arco-button-size-mini,
+.desktop-table-wrap .arco-btn-size-mini,
+.desktop-table-wrap .arco-button-size-mini,
+.ops-task-panel .arco-btn-size-mini,
+.users-table-panel .arco-btn-size-mini,
+.ip-entry-card-actions .arco-btn-size-mini {
+  height: 32px !important;
+  min-height: 32px !important;
+  padding-inline: 12px !important;
+  border-radius: 8px;
 }
 
 .table-panel {
@@ -1552,6 +1573,7 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-height: 32px;
   min-width: 0;
   padding: 0;
   border: 0;
@@ -2057,7 +2079,8 @@ code {
   display: grid;
   gap: 14px;
   padding: 16px;
-  background: color-mix(in srgb, var(--surface) 88%, var(--surface-soft));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--surface-soft)), var(--surface));
   border: 1px solid var(--border);
   border-radius: 8px;
 }
@@ -2341,6 +2364,12 @@ code {
 .ip-import-grid .ioc-field .arco-input-inner-wrapper {
   min-height: 220px;
   align-items: stretch;
+  background: var(--surface) !important;
+}
+
+.ip-import-grid .ioc-field .arco-textarea,
+.ip-import-grid .ioc-field textarea {
+  background: var(--surface) !important;
 }
 
 .twofa-setup {
@@ -2468,11 +2497,27 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0;
-  border: 0;
-  color: var(--text-muted);
-  background: transparent;
+  min-height: 32px;
+  padding: 4px 8px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 84%, var(--accent-soft));
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 8px;
   cursor: pointer;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
+}
+
+.ip-score-button:hover,
+.ip-score-button:focus-visible {
+  background: color-mix(in srgb, var(--accent-soft) 78%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+
+.ip-score-button:active {
+  transform: translateY(1px);
 }
 
 .ip-score-button .arco-tag {
@@ -3824,7 +3869,8 @@ code {
   gap: 14px;
   align-content: start;
   padding: 15px;
-  background: var(--surface-soft);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 97%, var(--surface-soft)), var(--surface));
   border: 1px solid var(--border);
   border-radius: 8px;
 }
@@ -3858,7 +3904,8 @@ code {
 }
 
 .storage-card {
-  background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--surface-soft)), var(--surface));
 }
 
 .endpoint-policy-list {
@@ -5170,7 +5217,7 @@ code {
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  padding: 14px;
+  padding: 16px 20px 18px;
 }
 
 .attack-screen-globe {
@@ -5184,13 +5231,17 @@ code {
 }
 
 .attack-screen-globe .globe-stage {
-  inset: -5% 3% -3%;
+  inset: 2% 8% 5%;
 }
 
 .attack-screen-overlay {
   position: absolute;
   z-index: 3;
-  width: min(330px, 30vw);
+  width: min(330px, 29vw);
+  max-height: calc(100% - 44px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   pointer-events: none;
 }
 
@@ -5204,12 +5255,12 @@ code {
 
 .attack-screen-overlay-left {
   left: 22px;
-  bottom: 22px;
+  top: 22px;
 }
 
 .attack-screen-overlay-right {
   right: 22px;
-  bottom: 22px;
+  top: 22px;
 }
 
 .attack-screen-panel h2 {

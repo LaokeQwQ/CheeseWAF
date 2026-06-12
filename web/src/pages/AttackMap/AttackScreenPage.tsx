@@ -111,7 +111,7 @@ export default function AttackScreenPage() {
             <Suspense fallback={<div className="page-spinner" aria-label={t('attackMap.loading')} aria-busy="true" />}>
               <GlobeMap
                 regions={mappedRegions}
-                zoom={0.86}
+                zoom={0.68}
                 countryLevels={countryLevels}
                 worldFeatures={worldFeatures}
                 target={protectedTarget}
