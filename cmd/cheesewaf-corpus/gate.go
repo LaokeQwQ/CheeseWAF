@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +19,7 @@ const (
 	defaultSQLMapDockerImage   = "parrotsec/sqlmap:latest"
 	defaultXSStrikeDockerImage = "femtopixel/xsstrike:latest"
 	defaultNucleiDockerImage   = "projectdiscovery/nuclei:latest"
+	defaultZAPDockerImage      = "ghcr.io/zaproxy/zaproxy:stable"
 )
 
 var (
@@ -158,6 +160,9 @@ func runSqlmapSuite(ctx context.Context, opts options, target string) suiteResul
 	if err != nil {
 		return suiteResult{Name: "sqlmap", Tool: "sqlmap", Target: target, Status: "failed", Error: err.Error()}
 	}
+	if err := os.Chmod(outputDir, 0o777); err != nil {
+		return suiteResult{Name: "sqlmap", Tool: "sqlmap", Target: target, Status: "failed", Error: err.Error()}
+	}
 	args := sqlmapArgs(rewrittenTarget, "/output")
 	runArgs := []string{"run", "--rm", "-v", outputDir + ":/output:rw"}
 	runArgs = append(runArgs, dockerHostArgs...)
@@ -185,7 +190,7 @@ func sqlmapArgs(target, outputDir string) []string {
 		"--retries=0",
 		"--output-dir",
 		outputDir,
-		"--purge-output",
+		"--purge",
 		"-u",
 		target,
 	}
@@ -197,23 +202,7 @@ func sqlmapArgs(target, outputDir string) []string {
 
 func classifySQLMapResult(opts options, target string, command []string, artifact string) func(string, int, error) suiteResult {
 	return func(output string, exitCode int, err error) suiteResult {
-		status := "passed"
-		findings := 0
-		lower := strings.ToLower(output)
-		if strings.Contains(lower, "identified the following injection point") ||
-			strings.Contains(lower, "sql injection") ||
-			strings.Contains(lower, "is vulnerable") {
-			status = "failed"
-			findings = 1
-		} else if exitCode != 0 {
-			if strings.Contains(lower, "not injectable") ||
-				strings.Contains(lower, "no injectable parameters") ||
-				strings.Contains(lower, "parameter appears to be not injectable") {
-				status = "passed"
-			} else {
-				status = "warning"
-			}
-		}
+		status, findings := classifySQLMapStatus(output, exitCode)
 		return suiteResult{
 			Name:       "sqlmap",
 			Tool:       "sqlmap",
@@ -224,10 +213,44 @@ func classifySQLMapResult(opts options, target string, command []string, artifac
 			Findings:   findings,
 			DurationMS: durationMS(opts.ToolTimeout),
 			Output:     trimSuiteOutput(output),
-			Error:      classifySuiteError(err),
+			Error:      classifySuiteErrorForStatus(status, err),
 			Artifact:   artifact,
 		}
 	}
+}
+
+func classifySQLMapStatus(output string, exitCode int) (string, int) {
+	lower := strings.ToLower(output)
+	if hasSQLMapInjectionEvidence(lower) {
+		return "failed", 1
+	}
+	if exitCode != 0 && !hasSQLMapCleanEvidence(lower) {
+		return "warning", 0
+	}
+	return "passed", 0
+}
+
+func hasSQLMapInjectionEvidence(lowerOutput string) bool {
+	return strings.Contains(lowerOutput, "identified the following injection point") ||
+		strings.Contains(lowerOutput, "identified the following injection points") ||
+		strings.Contains(lowerOutput, "parameter:") && strings.Contains(lowerOutput, "payload:") ||
+		strings.Contains(lowerOutput, "parameter") && strings.Contains(lowerOutput, " is vulnerable")
+}
+
+func hasSQLMapCleanEvidence(lowerOutput string) bool {
+	cleanPhrases := []string{
+		"all tested parameters do not appear to be injectable",
+		"does not seem to be injectable",
+		"does not appear to be injectable",
+		"no injectable parameters",
+		"parameter appears to be not injectable",
+	}
+	for _, phrase := range cleanPhrases {
+		if strings.Contains(lowerOutput, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func runXSStrikeSuite(ctx context.Context, opts options, target string) suiteResult {
@@ -374,8 +397,8 @@ func runNucleiSuite(ctx context.Context, opts options, name, templateKind, targe
 	}, classifyNucleiResult(opts, name, target, append([]string{"docker"}, runArgs...)))
 }
 
-func nucleiArgs(target, templateDir string, insecure bool) []string {
-	args := []string{
+func nucleiArgs(target, templateDir string, _ bool) []string {
+	return []string{
 		"-u",
 		target,
 		"-t",
@@ -383,10 +406,6 @@ func nucleiArgs(target, templateDir string, insecure bool) []string {
 		"-jsonl",
 		"-silent",
 	}
-	if strings.HasPrefix(strings.ToLower(target), "https://") || insecure {
-		args = append(args, "-insecure")
-	}
-	return args
 }
 
 func classifyNucleiResult(opts options, name, target string, command []string) func(string, int, error) suiteResult {
@@ -415,8 +434,8 @@ func classifyNucleiResult(opts options, name, target string, command []string) f
 }
 
 func runZAPSuite(ctx context.Context, opts options, target string) suiteResult {
-	scriptPath, scriptErr := exec.LookPath("zap-baseline.py")
-	_, dockerErr := exec.LookPath("docker")
+	scriptPath, scriptErr := lookupExecutable("zap-baseline.py")
+	_, dockerErr := lookupExecutable("docker")
 	if scriptErr != nil && dockerErr != nil {
 		return suiteResult{
 			Name:   "zap-baseline",
@@ -428,6 +447,15 @@ func runZAPSuite(ctx context.Context, opts options, target string) suiteResult {
 	}
 	reportDir, err := os.MkdirTemp("", "cheesewaf-zap-*")
 	if err != nil {
+		return suiteResult{
+			Name:   "zap-baseline",
+			Tool:   "zap-baseline.py",
+			Target: target,
+			Status: "failed",
+			Error:  err.Error(),
+		}
+	}
+	if err := os.Chmod(reportDir, 0o777); err != nil {
 		return suiteResult{
 			Name:   "zap-baseline",
 			Tool:   "zap-baseline.py",
@@ -449,35 +477,13 @@ func runZAPSuite(ctx context.Context, opts options, target string) suiteResult {
 		if strings.HasPrefix(strings.ToLower(target), "https://") || opts.Insecure {
 			args = append(args, "-z", "-config connection.sslVerify=false")
 		}
-		return runExternalCommand(ctx, suiteCommand{
+		return executeSuiteCommand(ctx, suiteCommand{
 			Name:    "zap-baseline",
 			Tool:    "zap-baseline.py",
 			Target:  target,
 			Args:    args,
 			Timeout: opts.ToolTimeout,
-		}, func(output string, exitCode int, err error) suiteResult {
-			status := "passed"
-			switch exitCode {
-			case 0:
-				status = "passed"
-			case 2:
-				status = "warning"
-			default:
-				status = "failed"
-			}
-			return suiteResult{
-				Name:       "zap-baseline",
-				Tool:       "zap-baseline.py",
-				Target:     target,
-				Command:    append([]string{scriptPath}, args...),
-				Status:     status,
-				ExitCode:   exitCode,
-				DurationMS: durationMS(opts.ToolTimeout),
-				Output:     trimSuiteOutput(output),
-				Error:      classifySuiteError(err),
-				Artifact:   reportFile,
-			}
-		})
+		}, classifyZAPResult(opts, target, append([]string{scriptPath}, args...), reportFile))
 	}
 
 	rewrittenTarget, dockerArgs, rewriteErr := dockerReachableTarget(target)
@@ -506,39 +512,70 @@ func runZAPSuite(ctx context.Context, opts options, target string) suiteResult {
 
 	runArgs := []string{"run", "--rm", "-v", reportDir + ":/zap/wrk:rw"}
 	runArgs = append(runArgs, dockerArgs...)
-	runArgs = append(runArgs, "ghcr.io/zaproxy/zaproxy:stable")
+	runArgs = append(runArgs, dockerImage("CHEESEWAF_ZAP_DOCKER_IMAGE", defaultZAPDockerImage))
 	runArgs = append(runArgs, args...)
 
-	res := runExternalCommand(ctx, suiteCommand{
+	res := executeSuiteCommand(ctx, suiteCommand{
 		Name:    "zap-baseline",
 		Tool:    "docker",
 		Target:  target,
 		Args:    runArgs,
 		Timeout: opts.ToolTimeout,
-	}, func(output string, exitCode int, err error) suiteResult {
-		status := "passed"
-		switch exitCode {
-		case 0:
-			status = "passed"
-		case 2:
-			status = "warning"
-		default:
-			status = "failed"
-		}
+	}, classifyZAPResult(opts, target, append([]string{"docker"}, runArgs...), reportFile))
+	return res
+}
+
+func classifyZAPResult(opts options, target string, command []string, artifact string) func(string, int, error) suiteResult {
+	return func(output string, exitCode int, err error) suiteResult {
+		status, findings := classifyZAPStatus(output, exitCode)
 		return suiteResult{
 			Name:       "zap-baseline",
 			Tool:       "zap-baseline.py",
 			Target:     target,
-			Command:    append([]string{"docker"}, runArgs...),
+			Command:    command,
 			Status:     status,
 			ExitCode:   exitCode,
+			Findings:   findings,
 			DurationMS: durationMS(opts.ToolTimeout),
 			Output:     trimSuiteOutput(output),
-			Error:      classifySuiteError(err),
-			Artifact:   reportFile,
+			Error:      classifySuiteErrorForStatus(status, err),
+			Artifact:   artifact,
 		}
-	})
-	return res
+	}
+}
+
+func classifyZAPStatus(output string, exitCode int) (string, int) {
+	failNew, hasFailNew := zapMetric(output, "FAIL-NEW")
+	failInprog, hasFailInprog := zapMetric(output, "FAIL-INPROG")
+	findings := failNew + failInprog
+	if findings > 0 {
+		return "failed", findings
+	}
+	if exitCode == 0 {
+		return "passed", 0
+	}
+	if exitCode == 2 && hasFailNew && hasFailInprog {
+		return "passed", 0
+	}
+	if exitCode == 2 {
+		return "warning", 0
+	}
+	return "failed", 0
+}
+
+func zapMetric(output, name string) (int, bool) {
+	fields := strings.Fields(output)
+	for i, field := range fields {
+		if strings.TrimSuffix(field, ":") != name || i+1 >= len(fields) {
+			continue
+		}
+		value, err := strconv.Atoi(strings.TrimRight(fields[i+1], "\t ,;"))
+		if err != nil {
+			return 0, false
+		}
+		return value, true
+	}
+	return 0, false
 }
 
 type suiteCommand struct {
@@ -644,6 +681,13 @@ func classifySuiteError(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func classifySuiteErrorForStatus(status string, err error) string {
+	if status == "passed" {
+		return ""
+	}
+	return classifySuiteError(err)
 }
 
 func countNucleiFindings(output string) int {
