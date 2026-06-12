@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -74,6 +75,9 @@ func TestReportUIErrorNormalizesBadTraceID(t *testing.T) {
 	}
 	if sink.entries[0].TraceID == "bad trace id" || sink.entries[0].TraceID == "" {
 		t.Fatalf("expected invalid UI trace id to be replaced, got %q", sink.entries[0].TraceID)
+	}
+	if !strings.HasPrefix(sink.entries[0].TraceID, "cw-") || strings.HasPrefix(sink.entries[0].TraceID, "cw-ui-") {
+		t.Fatalf("expected backend-style replacement trace id, got %q", sink.entries[0].TraceID)
 	}
 }
 

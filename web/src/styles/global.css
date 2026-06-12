@@ -2120,38 +2120,54 @@ code {
   padding: 24px;
   color: var(--text);
   background:
-    radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--accent-danger) 10%, transparent), transparent 28rem),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 74%, transparent), transparent 360px),
     var(--app-bg);
 }
 
 .ui-error-boundary > div {
-  width: min(620px, 100%);
+  width: min(760px, 100%);
   display: grid;
-  gap: 16px;
-  padding: 28px;
+  gap: 18px;
+  padding: 34px 38px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
+  border-top: 4px solid var(--accent-warning);
+  border-radius: 6px;
+  box-shadow: 0 22px 70px color-mix(in srgb, var(--text) 10%, transparent);
 }
 
-.ui-error-kicker {
+.ui-error-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
   width: max-content;
-  padding: 4px 9px;
-  color: var(--accent-danger);
-  font-size: 12px;
+  color: var(--text);
+  font-size: 13px;
   font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  background: color-mix(in srgb, var(--accent-danger) 10%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--accent-danger) 24%, var(--border));
-  border-radius: 999px;
+}
+
+.ui-error-logo {
+  width: 38px;
+  height: 38px;
+  display: inline-grid;
+  place-items: center;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent-warning) 34%, var(--border));
+  border-radius: 8px;
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent-warning) 14%, transparent);
+}
+
+.ui-error-logo .brand-logo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .ui-error-boundary h1 {
   margin: 0;
   color: var(--text);
-  font-size: 30px;
+  font-size: clamp(28px, 4vw, 40px);
   line-height: 1.15;
 }
 
@@ -2163,11 +2179,11 @@ code {
 
 .ui-error-trace {
   display: grid;
-  gap: 6px;
-  padding: 12px;
+  gap: 8px;
+  padding: 14px 16px;
   background: var(--surface-soft);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 .ui-error-trace span {
@@ -2191,12 +2207,12 @@ code {
 
 .ui-error-actions button {
   min-height: 36px;
-  padding: 0 14px;
+  padding: 0 16px;
   color: var(--text);
   font-weight: 700;
   background: var(--surface-soft);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
 }
 
