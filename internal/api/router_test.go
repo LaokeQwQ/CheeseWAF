@@ -27,6 +27,7 @@ func TestRouterRequiresBearerForManagementAPI(t *testing.T) {
 		{name: "realtime events", method: http.MethodGet, path: "/api/realtime/events"},
 		{name: "realtime websocket", method: http.MethodGet, path: "/api/realtime/ws"},
 		{name: "logs", method: http.MethodGet, path: "/api/logs"},
+		{name: "ui error report", method: http.MethodPost, path: "/api/ui/errors"},
 		{name: "backup export", method: http.MethodPost, path: "/api/backup/export"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
