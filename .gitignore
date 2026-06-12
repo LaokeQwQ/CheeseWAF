@@ -17,6 +17,10 @@
 coverage.*
 *.coverprofile
 profile.cov
+security-gate*.json
+zap-baseline*.html
+zap-baseline*.json
+sqlmap-output/
 
 # Local runtime state and secrets
 .env

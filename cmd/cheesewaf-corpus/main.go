@@ -42,44 +42,79 @@ type result struct {
 }
 
 type summary struct {
-	Mode              string    `json:"mode"`
-	Corpus            string    `json:"corpus"`
-	BaseURL           string    `json:"base_url,omitempty"`
-	StartedAt         time.Time `json:"started_at"`
-	DurationMS        float64   `json:"duration_ms"`
-	Total             int       `json:"total"`
-	AttackTotal       int       `json:"attack_total"`
-	AttackDetected    int       `json:"attack_detected"`
-	AttackMissed      int       `json:"attack_missed"`
-	BenignTotal       int       `json:"benign_total"`
-	BenignClean       int       `json:"benign_clean"`
-	FalsePositive     int       `json:"false_positive"`
-	Failures          int       `json:"failures"`
-	DetectionRate     float64   `json:"detection_rate"`
-	FalsePositiveRate float64   `json:"false_positive_rate"`
-	Results           []result  `json:"results"`
+	Mode              string        `json:"mode"`
+	Corpus            string        `json:"corpus"`
+	BaseURL           string        `json:"base_url,omitempty"`
+	StartedAt         time.Time     `json:"started_at"`
+	DurationMS        float64       `json:"duration_ms"`
+	Total             int           `json:"total"`
+	AttackTotal       int           `json:"attack_total"`
+	AttackDetected    int           `json:"attack_detected"`
+	AttackMissed      int           `json:"attack_missed"`
+	BenignTotal       int           `json:"benign_total"`
+	BenignClean       int           `json:"benign_clean"`
+	FalsePositive     int           `json:"false_positive"`
+	Warnings          int           `json:"warnings"`
+	Failures          int           `json:"failures"`
+	DetectionRate     float64       `json:"detection_rate"`
+	FalsePositiveRate float64       `json:"false_positive_rate"`
+	Results           []result      `json:"results"`
+	ExternalSuites    []suiteResult `json:"external_suites,omitempty"`
+}
+
+type options struct {
+	Mode            string
+	CorpusPath      string
+	BaseURL         string
+	AdminURL        string
+	Timeout         time.Duration
+	ToolTimeout     time.Duration
+	Insecure        bool
+	BlockStatuses   string
+	OutputPath      string
+	NucleiTemplates string
+	RequireExternal bool
+	SkipExternal    bool
 }
 
 func main() {
 	var (
-		mode          = flag.String("mode", "analyzer", "validation mode: analyzer or http")
-		corpusPath    = flag.String("corpus", "internal/engine/semantic/testdata/curated_external_shapes.jsonl", "JSONL corpus path")
-		baseURL       = flag.String("base-url", "", "base URL for http mode, for example http://127.0.0.1:8080")
-		timeout       = flag.Duration("timeout", 10*time.Second, "per-request timeout in http mode")
-		insecure      = flag.Bool("insecure", false, "skip TLS certificate verification in http mode")
-		blockStatuses = flag.String("block-statuses", "403,406,429,451,503", "comma-separated statuses treated as WAF block/challenge")
-		outputPath    = flag.String("output", "", "write JSON report to file instead of stdout")
+		mode            = flag.String("mode", "analyzer", "validation mode: analyzer, http, or gate")
+		corpusPath      = flag.String("corpus", "internal/engine/semantic/testdata/curated_external_shapes.jsonl", "JSONL corpus path")
+		baseURL         = flag.String("base-url", "", "base URL for http/gate mode, for example http://127.0.0.1:8080")
+		adminURL        = flag.String("admin-url", "", "admin-plane base URL for gate mode; defaults to base URL when empty")
+		timeout         = flag.Duration("timeout", 10*time.Second, "per-request timeout in http mode")
+		toolTimeout     = flag.Duration("tool-timeout", 10*time.Minute, "per-tool timeout in gate mode")
+		insecure        = flag.Bool("insecure", false, "skip TLS certificate verification in http mode and supported gate scanners")
+		blockStatuses   = flag.String("block-statuses", "403,406,429,451,503", "comma-separated statuses treated as WAF block/challenge")
+		outputPath      = flag.String("output", "", "write JSON report to file instead of stdout")
+		nucleiTemplates = flag.String("nuclei-templates", "security-validation/nuclei", "nuclei template directory for gate mode")
+		requireExternal = flag.Bool("require-external", false, "fail gate mode when an external scanner is missing instead of skipping")
+		skipExternal    = flag.Bool("skip-external", false, "skip external scanner wrappers in gate mode and run only analyzer/http replay")
 	)
 	flag.Parse()
 
-	if err := run(*mode, *corpusPath, *baseURL, *timeout, *insecure, *blockStatuses, *outputPath); err != nil {
+	if err := run(options{
+		Mode:            *mode,
+		CorpusPath:      *corpusPath,
+		BaseURL:         *baseURL,
+		AdminURL:        *adminURL,
+		Timeout:         *timeout,
+		ToolTimeout:     *toolTimeout,
+		Insecure:        *insecure,
+		BlockStatuses:   *blockStatuses,
+		OutputPath:      *outputPath,
+		NucleiTemplates: *nucleiTemplates,
+		RequireExternal: *requireExternal,
+		SkipExternal:    *skipExternal,
+	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(mode, corpusPath, baseURL string, timeout time.Duration, insecure bool, rawBlockStatuses, outputPath string) error {
-	file, err := os.Open(corpusPath)
+func run(opts options) error {
+	file, err := os.Open(opts.CorpusPath)
 	if err != nil {
 		return err
 	}
@@ -95,33 +130,50 @@ func run(mode, corpusPath, baseURL string, timeout time.Duration, insecure bool,
 
 	started := time.Now().UTC()
 	report := summary{
-		Mode:      mode,
-		Corpus:    corpusPath,
-		BaseURL:   baseURL,
+		Mode:      opts.Mode,
+		Corpus:    opts.CorpusPath,
+		BaseURL:   opts.BaseURL,
 		StartedAt: started,
-		Total:     len(cases),
 		Results:   make([]result, 0, len(cases)),
 	}
 
-	switch mode {
+	switch opts.Mode {
 	case "analyzer":
 		for _, tc := range cases {
 			report.add(validateAnalyzer(tc))
 		}
 	case "http":
-		if strings.TrimSpace(baseURL) == "" {
+		if strings.TrimSpace(opts.BaseURL) == "" {
 			return errors.New("--base-url is required in http mode")
 		}
-		statuses, err := parseBlockStatuses(rawBlockStatuses)
+		statuses, err := parseBlockStatuses(opts.BlockStatuses)
 		if err != nil {
 			return err
 		}
-		client := httpClient(timeout, insecure)
+		client := httpClient(opts.Timeout, opts.Insecure)
 		for _, tc := range cases {
-			report.add(validateHTTP(client, baseURL, statuses, tc))
+			report.add(validateHTTP(client, opts.BaseURL, statuses, tc))
+		}
+	case "gate":
+		if strings.TrimSpace(opts.BaseURL) == "" {
+			return errors.New("--base-url is required in gate mode")
+		}
+		statuses, err := parseBlockStatuses(opts.BlockStatuses)
+		if err != nil {
+			return err
+		}
+		client := httpClient(opts.Timeout, opts.Insecure)
+		for _, tc := range cases {
+			report.add(validateAnalyzer(tc))
+		}
+		for _, tc := range cases {
+			report.add(validateHTTP(client, opts.BaseURL, statuses, tc))
+		}
+		if err := runGateSuites(&report, opts); err != nil {
+			return err
 		}
 	default:
-		return fmt.Errorf("unsupported mode %q", mode)
+		return fmt.Errorf("unsupported mode %q", opts.Mode)
 	}
 
 	report.DurationMS = durationMS(time.Since(started))
@@ -134,16 +186,19 @@ func run(mode, corpusPath, baseURL string, timeout time.Duration, insecure bool,
 	sort.Slice(report.Results, func(i, j int) bool {
 		return report.Results[i].Name < report.Results[j].Name
 	})
+	sort.Slice(report.ExternalSuites, func(i, j int) bool {
+		return report.ExternalSuites[i].Name < report.ExternalSuites[j].Name
+	})
 
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
 	}
 	encoded = append(encoded, '\n')
-	if outputPath == "" {
+	if opts.OutputPath == "" {
 		_, err = os.Stdout.Write(encoded)
 	} else {
-		err = os.WriteFile(outputPath, encoded, 0o644)
+		err = os.WriteFile(opts.OutputPath, encoded, 0o644)
 	}
 	if err != nil {
 		return err
@@ -315,6 +370,7 @@ func resolveTarget(baseURL, target string) (string, error) {
 
 func (s *summary) add(res result) {
 	s.Results = append(s.Results, res)
+	s.Total++
 	switch res.Label {
 	case "attack":
 		s.AttackTotal++

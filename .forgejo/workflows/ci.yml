@@ -98,6 +98,19 @@ jobs:
         shell: bash
         run: npm run build
 
+  security-corpus:
+    name: security-corpus
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v4
+      - name: Setup Go from mirror
+        shell: bash
+        run: bash scripts/ci/setup-go-mirror.sh
+      - name: Run curated semantic corpus
+        shell: bash
+        run: go run ./cmd/cheesewaf-corpus --mode analyzer
+
   cross-build:
     name: cross-build
     runs-on: ubuntu-latest
@@ -142,6 +155,7 @@ jobs:
       - go-mod-tidy
       - go-test
       - web-build
+      - security-corpus
       - cross-build
     steps:
       - name: Checkout
