@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +154,124 @@ func TestRunGateModeAggregatesCorpusAndExternalSuites(t *testing.T) {
 	}
 }
 
+func TestExternalSuitesUseDockerFallbackWhenToolsAreMissing(t *testing.T) {
+	templateRoot := t.TempDir()
+	for _, dir := range []string{"data", "admin"} {
+		path := filepath.Join(templateRoot, dir)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "negative.yaml"), []byte("id: unit\ninfo:\n  name: unit\n  severity: info\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var commands []suiteCommand
+	restore := stubExternalExecution(t,
+		func(name string) (string, error) {
+			if name == "docker" {
+				return "docker", nil
+			}
+			return "", exec.ErrNotFound
+		},
+		func(ctx context.Context, spec suiteCommand, classify func(string, int, error) suiteResult) suiteResult {
+			commands = append(commands, spec)
+			return classify("", 0, nil)
+		},
+	)
+	defer restore()
+
+	opts := options{ToolTimeout: time.Second, NucleiTemplates: templateRoot, Insecure: true}
+	results := []suiteResult{
+		runSqlmapSuite(context.Background(), opts, "http://127.0.0.1:8080/?q=1"),
+		runXSStrikeSuite(context.Background(), opts, "http://localhost:8080/?q=test"),
+		runNucleiDataSuite(context.Background(), opts, "https://127.0.0.1:9443/"),
+		runNucleiAdminSuite(context.Background(), opts, "https://127.0.0.1:9443/__bad-entry"),
+	}
+	for _, result := range results {
+		if result.Artifact == "" {
+			continue
+		}
+		artifact := result.Artifact
+		t.Cleanup(func() {
+			_ = os.RemoveAll(artifact)
+		})
+	}
+
+	if len(commands) != 4 {
+		t.Fatalf("expected four docker-backed scanner commands, got %d", len(commands))
+	}
+	for i, command := range commands {
+		if command.Tool != "docker" {
+			t.Fatalf("command %d should use docker fallback, got %q", i, command.Tool)
+		}
+		if !containsArg(command.Args, "host.docker.internal") {
+			t.Fatalf("command %d should rewrite localhost target for docker, args=%v", i, command.Args)
+		}
+	}
+	for _, wantImage := range []string{defaultSQLMapDockerImage, defaultXSStrikeDockerImage, defaultNucleiDockerImage} {
+		if !anyCommandContains(commands, wantImage) {
+			t.Fatalf("expected docker command to include image %q, commands=%v", wantImage, commands)
+		}
+	}
+	for _, result := range results {
+		if result.Status != "passed" {
+			t.Fatalf("expected fallback result to pass under empty scanner output, got %+v", result)
+		}
+		if len(result.Command) == 0 || result.Command[0] != "docker" {
+			t.Fatalf("expected recorded docker command, got %+v", result.Command)
+		}
+	}
+	if results[0].Artifact == "" {
+		t.Fatalf("expected sqlmap fallback to record its output artifact directory")
+	}
+}
+
+func TestExternalSuitesSkipWhenToolAndDockerAreMissing(t *testing.T) {
+	restore := stubExternalExecution(t,
+		func(name string) (string, error) {
+			return "", exec.ErrNotFound
+		},
+		func(ctx context.Context, spec suiteCommand, classify func(string, int, error) suiteResult) suiteResult {
+			t.Fatalf("scanner command should not run when %s and docker are missing", spec.Name)
+			return suiteResult{}
+		},
+	)
+	defer restore()
+
+	res := runXSStrikeSuite(context.Background(), options{ToolTimeout: time.Second}, "http://example.test/?q=test")
+	if res.Status != "skipped" {
+		t.Fatalf("expected skipped result, got %+v", res)
+	}
+	if !strings.Contains(res.Error, "docker is not available") {
+		t.Fatalf("expected docker availability error, got %q", res.Error)
+	}
+}
+
+func TestDockerReachableTargetRewritesLocalhostWithoutPort(t *testing.T) {
+	target, args, err := dockerReachableTarget("http://127.0.0.1/path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(target, "http://host.docker.internal/path") {
+		t.Fatalf("unexpected rewritten target %q", target)
+	}
+	if strings.Contains(target, "host.docker.internal:") {
+		t.Fatalf("rewritten target should not include an empty port: %q", target)
+	}
+	if runtime.GOOS == "linux" && !containsArg(args, "host.docker.internal:host-gateway") {
+		t.Fatalf("expected linux docker host-gateway arg, got %v", args)
+	}
+}
+
+func TestDockerImageUsesEnvOverride(t *testing.T) {
+	t.Setenv("CHEESEWAF_TEST_SCANNER_IMAGE", "registry.local/scanner@sha256:abc")
+	got := dockerImage("CHEESEWAF_TEST_SCANNER_IMAGE", "default:latest")
+	if got != "registry.local/scanner@sha256:abc" {
+		t.Fatalf("expected docker image env override, got %q", got)
+	}
+}
+
 func readSummary(t *testing.T, path string) summary {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -162,4 +283,34 @@ func readSummary(t *testing.T, path string) summary {
 		t.Fatal(err)
 	}
 	return report
+}
+
+func stubExternalExecution(t *testing.T, lookPath func(string) (string, error), run func(context.Context, suiteCommand, func(string, int, error) suiteResult) suiteResult) func() {
+	t.Helper()
+	oldLookPath := lookupExecutable
+	oldRun := executeSuiteCommand
+	lookupExecutable = lookPath
+	executeSuiteCommand = run
+	return func() {
+		lookupExecutable = oldLookPath
+		executeSuiteCommand = oldRun
+	}
+}
+
+func containsArg(args []string, needle string) bool {
+	for _, arg := range args {
+		if strings.Contains(arg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func anyCommandContains(commands []suiteCommand, needle string) bool {
+	for _, command := range commands {
+		if containsArg(command.Args, needle) {
+			return true
+		}
+	}
+	return false
 }
