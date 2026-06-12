@@ -77,11 +77,15 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 	if err != nil {
 		return nil, err
 	}
+	renderer, err := blockpage.NewRendererFromConfig(cfg.BlockPage)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		config:    cfg,
 		pipeline:  pipeline,
 		logSink:   sink,
-		renderer:  blockpage.NewRenderer(),
+		renderer:  renderer,
 		lb:        NewLoadBalancer(cfg.Sites).WithHealth(health),
 		blacklist: blacklist,
 		whitelist: whitelist,
@@ -99,6 +103,19 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		apiLimit:  apiLimit,
 		apiAuth:   apiAuth,
 	}, nil
+}
+
+func (s *Server) UpdateBlockPage(page config.BlockPageConfig) error {
+	if s == nil {
+		return nil
+	}
+	renderer, err := blockpage.NewRendererFromConfig(page)
+	if err != nil {
+		return err
+	}
+	s.config.BlockPage = page
+	s.renderer = renderer
+	return nil
 }
 
 func (s *Server) HealthRegistry() *HealthRegistry {

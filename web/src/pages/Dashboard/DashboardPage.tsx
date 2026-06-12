@@ -112,7 +112,7 @@ export default function DashboardPage() {
         {[
           { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, t), icon: Zap },
           { label: t('dashboard.totalBlocked'), value: formatNumber(periodBlockedCount), delta: `${blockRate(periodBlockedCount, periodRequests)}%`, icon: ShieldCheck },
-          { label: t('shell.latency'), value: formatLatency(latency), delta: 'P95', icon: Network },
+          { label: t('dashboard.latencyP95'), value: formatLatency(latency), delta: t('dashboard.percentile95'), icon: Network },
           { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: snapshot ? t('common.online') : t('common.unknown'), icon: HardDrive },
         ].map((item) => {
           const Icon = item.icon;

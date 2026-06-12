@@ -1,5 +1,5 @@
-import axios from 'axios';
-import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
+import axios, { type AxiosResponse } from 'axios';
+import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -99,54 +99,72 @@ type Envelope<T> = {
   error?: {
     code: string;
     message: string;
+    trace_id?: string;
   };
 };
 
 export class APIRequestError extends Error {
   code?: string;
   status?: number;
+  traceID?: string;
+  rawMessage: string;
 
-  constructor(message: string, code?: string, status?: number) {
-    super(message);
+  constructor(message: string, code?: string, status?: number, traceID?: string) {
+    super(traceID ? `${message} · Trace ID: ${traceID}` : message);
     this.name = 'APIRequestError';
+    this.rawMessage = message;
     this.code = code;
     this.status = status;
+    this.traceID = traceID;
   }
 }
 
-async function unwrap<T>(promise: Promise<{ data: Envelope<T> }>): Promise<T> {
+async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<T> {
   try {
     const response = await promise;
     if (response.data.error) {
-      throw new APIRequestError(response.data.error.message, response.data.error.code);
+      throw new APIRequestError(response.data.error.message, response.data.error.code, response.status, response.data.error.trace_id ?? responseTraceID(response));
     }
     return response.data.data as T;
   } catch (error) {
     if (axios.isAxiosError<Envelope<unknown>>(error)) {
       const apiError = error.response?.data?.error;
       if (apiError) {
-        throw new APIRequestError(apiError.message, apiError.code, error.response?.status);
+        throw new APIRequestError(apiError.message, apiError.code, error.response?.status, apiError.trace_id ?? responseTraceID(error.response));
       }
+      const traceID = responseTraceID(error.response);
       if (error.code === 'ECONNABORTED' || error.message.toLowerCase().includes('timeout')) {
         const timeout = Number(error.config?.timeout ?? apiClient.defaults.timeout ?? 0);
         const seconds = timeout > 0 ? Math.round(timeout / 1000) : 0;
         throw new APIRequestError(
           seconds > 0 ? `Request timed out after ${seconds}s. Check the upstream service or try again.` : 'Request timed out. Check the upstream service or try again.',
           'REQUEST_TIMEOUT',
+          error.response?.status,
+          traceID,
         );
       }
       if (!error.response) {
         throw new APIRequestError(
           'Network request failed. Check the API base URL, provider availability, firewall, or server-side proxy logs.',
           'NETWORK_ERROR',
+          undefined,
+          traceID,
         );
       }
       if (error.response?.status) {
-        throw new APIRequestError(error.message, undefined, error.response.status);
+        throw new APIRequestError(error.message, undefined, error.response.status, traceID);
       }
     }
     throw error;
   }
+}
+
+function responseTraceID(response?: AxiosResponse<unknown>) {
+  const value = response?.headers?.['x-cheesewaf-trace-id'];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return typeof value === 'string' ? value : undefined;
 }
 
 export function fetchLoginOptions() {
@@ -526,6 +544,29 @@ export function restoreBackup(payload: unknown) {
 
 export function fetchBlockTemplates() {
   return unwrap<BlockTemplate[]>(apiClient.get('/block-pages/templates'));
+}
+
+export function fetchBlockPageConfig() {
+  return unwrap<BlockPageConfig>(apiClient.get('/block-pages/config'));
+}
+
+export function updateBlockPageConfig(payload: BlockPageConfig) {
+  return unwrap<BlockPageConfig>(apiClient.put('/block-pages/config', payload));
+}
+
+export function uploadBlockPageHTML(file: File, templateID?: string) {
+  const form = new FormData();
+  form.append('file', file);
+  if (templateID) {
+    form.append('template_id', templateID);
+  }
+  return unwrap<{ config: BlockPageConfig; filename: string; bytes: number }>(
+    apiClient.post('/block-pages/upload', form, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  );
+}
+
+export function deleteCustomBlockPage() {
+  return unwrap<BlockPageConfig>(apiClient.delete('/block-pages/custom'));
 }
 
 export function importNginx(contents: string) {
