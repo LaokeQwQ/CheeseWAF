@@ -5125,6 +5125,177 @@ code {
   font-size: 12px;
 }
 
+.attack-screen-light {
+  color: var(--text);
+  background:
+    radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--accent-info) 13%, transparent), transparent 34%),
+    radial-gradient(circle at 74% 18%, color-mix(in srgb, var(--accent-warning) 10%, transparent), transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-soft) 92%, var(--surface)), var(--surface) 62%, var(--app-bg));
+}
+
+.attack-screen-light::before {
+  background-image:
+    radial-gradient(circle, color-mix(in srgb, var(--accent-info) 26%, transparent) 0 1px, transparent 1.4px),
+    linear-gradient(color-mix(in srgb, var(--accent-info) 11%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-info) 10%, transparent) 1px, transparent 1px);
+  opacity: 0.34;
+}
+
+.attack-screen-light .attack-screen-rail,
+.attack-screen-light .attack-screen-topbar,
+.attack-screen-light .attack-screen-panel,
+.attack-screen-light .attack-screen-globe {
+  border-color: color-mix(in srgb, var(--accent-info) 22%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 92%, transparent), color-mix(in srgb, var(--surface-soft) 78%, transparent)),
+    color-mix(in srgb, var(--surface) 88%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 74%, transparent),
+    0 16px 42px color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.attack-screen-light .attack-screen-rail-open {
+  box-shadow:
+    0 20px 56px color-mix(in srgb, var(--text) 14%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #ffffff 76%, transparent);
+}
+
+.attack-screen-light .attack-screen-brand {
+  color: var(--text);
+}
+
+.attack-screen-light .attack-screen-brand span {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--surface) 84%, var(--accent-soft));
+  border-color: color-mix(in srgb, var(--accent-info) 42%, var(--border));
+  box-shadow: 0 14px 28px color-mix(in srgb, var(--accent-info) 14%, transparent);
+}
+
+.attack-screen-light .attack-screen-brand .brand-logo {
+  filter: drop-shadow(0 8px 16px color-mix(in srgb, var(--accent-info) 14%, transparent));
+}
+
+.attack-screen-light .attack-screen-rail button {
+  color: var(--text-muted);
+}
+
+.attack-screen-light .attack-screen-rail button:hover,
+.attack-screen-light .attack-screen-rail .attack-screen-nav-active {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 74%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+
+.attack-screen-light .attack-screen-topbar strong {
+  color: var(--text);
+}
+
+.attack-screen-light .attack-screen-topbar button {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+}
+
+.attack-screen-light .attack-screen-live {
+  color: var(--accent-strong);
+}
+
+.attack-screen-light .attack-screen-live i {
+  background: var(--accent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.attack-screen-light .attack-screen-panel h2 {
+  color: var(--accent-strong);
+}
+
+.attack-screen-light .attack-screen-panel h2::before {
+  background: var(--accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 36%, transparent);
+}
+
+.attack-screen-light .attack-screen-stats > div {
+  background: color-mix(in srgb, var(--surface-soft) 76%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-info) 14%, var(--border));
+}
+
+.attack-screen-light .attack-screen-stats strong {
+  color: var(--accent-danger);
+}
+
+.attack-screen-light .attack-screen-stats span,
+.attack-screen-light .attack-screen-level > span,
+.attack-screen-light .attack-screen-time span,
+.attack-screen-light .attack-screen-timeline span {
+  color: var(--text-muted);
+}
+
+.attack-screen-light .attack-screen-bars > div,
+.attack-screen-light .attack-screen-countries > div {
+  color: color-mix(in srgb, var(--text) 88%, var(--text-muted));
+}
+
+.attack-screen-light .attack-screen-bars i,
+.attack-screen-light .attack-screen-countries i,
+.attack-screen-light .attack-screen-level-meter {
+  background: color-mix(in srgb, var(--accent-info) 13%, var(--surface-soft));
+}
+
+.attack-screen-light .attack-screen-bars b,
+.attack-screen-light .attack-screen-countries b,
+.attack-screen-light .attack-screen-level-meter i {
+  background: linear-gradient(90deg, var(--accent-info), var(--accent-warning), var(--accent-danger));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent-danger) 18%, transparent);
+}
+
+.attack-screen-light .attack-screen-bars em,
+.attack-screen-light .attack-screen-countries em {
+  color: var(--accent-danger);
+}
+
+.attack-screen-light .attack-screen-countries svg {
+  color: var(--accent-info);
+}
+
+.attack-screen-light .attack-screen-globe {
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-info) 16%, transparent), transparent 34%),
+    radial-gradient(circle at 50% 52%, color-mix(in srgb, var(--accent-warning) 9%, transparent), transparent 52%),
+    color-mix(in srgb, var(--surface) 76%, transparent);
+}
+
+.attack-screen-light .attack-screen-overlay .attack-screen-panel {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 88%, transparent), color-mix(in srgb, var(--surface-soft) 76%, transparent)),
+    color-mix(in srgb, var(--surface) 76%, transparent);
+}
+
+.attack-screen-light .attack-screen-globe-empty,
+.attack-screen-light .attack-screen-empty {
+  color: var(--text-muted);
+}
+
+.attack-screen-light .attack-screen-level-low {
+  color: var(--accent);
+}
+
+.attack-screen-light .attack-screen-level-medium {
+  color: var(--accent-warning);
+}
+
+.attack-screen-light .attack-screen-level-high,
+.attack-screen-light .attack-screen-level-critical {
+  color: var(--accent-danger);
+}
+
+.attack-screen-light .attack-screen-timeline input {
+  accent-color: var(--accent-info);
+}
+
+.attack-screen-light .attack-screen-timeline strong {
+  color: var(--accent-strong);
+}
+
 @keyframes map-marker-pulse {
   0% {
     opacity: 0.72;
