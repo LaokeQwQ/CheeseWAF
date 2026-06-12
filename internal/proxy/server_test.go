@@ -121,6 +121,52 @@ func TestServerProxyErrorsExposeTraceIDAndWriteEvent(t *testing.T) {
 	}
 }
 
+func TestServerUpstreamTransportErrorsExposeTraceIDAndWriteEvent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	upstreamURL := upstream.URL
+	upstream.Close()
+
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstreamURL, Weight: 1}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	sink := &captureSink{}
+
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/", nil))
+
+	traceID := recorder.Header().Get("X-CheeseWAF-Trace-ID")
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("expected upstream transport error, code=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if traceID == "" {
+		t.Fatal("expected upstream transport error trace header")
+	}
+	if !strings.Contains(recorder.Body.String(), traceID) || !strings.Contains(recorder.Body.String(), "Event / Trace ID") {
+		t.Fatalf("expected upstream transport error body to include event trace id %q, body=%q", traceID, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 {
+		t.Fatalf("expected one upstream transport error log entry, got %d", len(sink.entries))
+	}
+	entry := sink.entries[0]
+	if entry.ID != traceID || entry.TraceID != traceID || entry.Action != "error" || entry.Category != "proxy_error" {
+		t.Fatalf("unexpected upstream transport error log entry: %#v", entry)
+	}
+	if entry.Metadata["proxy_error"] != "upstream proxy error" {
+		t.Fatalf("missing upstream proxy error metadata: %#v", entry.Metadata)
+	}
+	if _, ok := entry.Metadata["proxy_error_detail"].(string); !ok {
+		t.Fatalf("missing upstream proxy error detail: %#v", entry.Metadata)
+	}
+}
+
 func TestServerBlocksSemanticPostBodyPayloads(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "upstream method unsupported", http.StatusNotImplemented)
