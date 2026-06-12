@@ -134,9 +134,9 @@ const zhCN = {
     },
   },
   uiError: {
-    title: '前端面板发生错误',
-    subtitle: '界面运行时遇到异常。请保留此 Trace ID，排查时可与浏览器控制台日志对齐。',
-    traceLabel: 'Trace ID',
+    title: '控制台请求无法完成',
+    subtitle: 'CheeseWAF 控制台遇到运行时异常。请重新加载页面；如果问题持续存在，请向管理员提供下方事件 ID 以便在后端日志中定位。',
+    traceLabel: '事件 ID / Trace ID',
     reload: '重新加载',
     home: '返回首页',
   },
