@@ -70,6 +70,7 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, data Data) {
 		buf.Reset()
 		_ = template.Must(template.New("block").Parse(defaultBlockTemplate)).Execute(&buf, data)
 	}
+	ensureVisibleEventID(&buf, data.EventID)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-CheeseWAF-Trace-ID", data.TraceID)
 	w.WriteHeader(status)
@@ -84,6 +85,24 @@ func ResolveTemplateHTML(cfg config.BlockPageConfig) string {
 		return info.HTML
 	}
 	return defaultBlockTemplate
+}
+
+func ensureVisibleEventID(buf *bytes.Buffer, eventID string) {
+	eventID = strings.TrimSpace(eventID)
+	if buf == nil || eventID == "" || bytes.Contains(buf.Bytes(), []byte(eventID)) {
+		return
+	}
+	badge := `<div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;max-width:min(420px,calc(100vw - 32px));padding:10px 12px;border:1px solid rgba(148,163,184,.45);border-radius:10px;background:rgba(15,23,42,.92);color:#f8fafc;box-shadow:0 16px 40px rgba(15,23,42,.24);font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,Liberation Mono,monospace;overflow-wrap:anywhere">Event / Trace ID: <strong style="color:#93c5fd">` + template.HTMLEscapeString(eventID) + `</strong></div>`
+	body := buf.String()
+	lower := strings.ToLower(body)
+	if idx := strings.LastIndex(lower, "</body>"); idx >= 0 {
+		buf.Reset()
+		buf.WriteString(body[:idx])
+		buf.WriteString(badge)
+		buf.WriteString(body[idx:])
+		return
+	}
+	buf.WriteString(badge)
 }
 
 const defaultBlockTemplate = `<!doctype html>

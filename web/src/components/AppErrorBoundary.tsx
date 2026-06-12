@@ -80,7 +80,7 @@ export function AppErrorBoundary({ children, resetKey }: { children: ReactNode; 
 function newUITraceID() {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
-  return `cw-ui-${Array.from(bytes, (item) => item.toString(16).padStart(2, '0')).join('')}`;
+  return `cw-${Array.from(bytes, (item) => item.toString(16).padStart(2, '0')).join('')}`;
 }
 
 function reportUIError(traceID: string, error: Error, info: ErrorInfo) {

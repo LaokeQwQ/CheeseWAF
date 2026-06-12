@@ -135,8 +135,8 @@ const enUS = {
   },
   uiError: {
     title: 'Frontend panel error',
-    subtitle: 'The console hit a runtime error. Keep this Trace ID so it can be matched with browser console logs.',
-    traceLabel: 'Trace ID',
+    subtitle: 'The console hit a runtime error. Keep this event ID so backend logs and browser console output can be matched with the same diagnostic ID.',
+    traceLabel: 'Event / Trace ID',
     reload: 'Reload',
     home: 'Back Home',
   },
