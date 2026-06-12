@@ -83,6 +83,9 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 		{name: "ai config", method: http.MethodPut, path: "/api/ai/config", body: []byte(`{}`)},
 		{name: "storage cleanup", method: http.MethodPost, path: "/api/storage/cleanup", body: []byte(`{}`)},
 		{name: "system reclaim", method: http.MethodPost, path: "/api/system/reclaim", body: []byte(`{"target":"memory"}`)},
+		{name: "block page config", method: http.MethodPut, path: "/api/block-pages/config", body: []byte(`{"template_id":"minimal"}`)},
+		{name: "block page upload", method: http.MethodPost, path: "/api/block-pages/upload", body: []byte(`{}`)},
+		{name: "block page delete custom", method: http.MethodDelete, path: "/api/block-pages/custom", body: nil},
 		{name: "backup restore", method: http.MethodPost, path: "/api/backup/restore", body: []byte(`{}`)},
 		{name: "nginx import", method: http.MethodPost, path: "/api/nginx/import", body: []byte(`{}`)},
 	}

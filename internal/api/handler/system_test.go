@@ -3,9 +3,11 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +132,118 @@ func TestUpdateBlockPageConfigPersistsAndNotifies(t *testing.T) {
 	if !loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML == "" {
 		t.Fatalf("block page config was not persisted: %+v", loaded.BlockPage)
 	}
+}
+
+func TestUploadAndDeleteCustomBlockPagePersistsAndNotifies(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var calls []config.BlockPageConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnBlockPageChanged: func(next config.BlockPageConfig) error {
+			calls = append(calls, next)
+			return nil
+		},
+	})
+
+	customHTML := `<html><body><main data-event="{{.EventID}}">blocked {{.TraceID}}</main></body></html>`
+	uploadRecorder := httptest.NewRecorder()
+	uploadRequest := multipartBlockPageUploadRequest(t, customHTML, "custom-block.html", "minimal")
+	handler.UploadBlockPageHTML(uploadRecorder, uploadRequest)
+	if uploadRecorder.Code != http.StatusOK {
+		t.Fatalf("expected upload ok, code=%d body=%s", uploadRecorder.Code, uploadRecorder.Body.String())
+	}
+	if len(calls) != 1 || !calls[0].CustomEnabled || calls[0].CustomHTML != customHTML {
+		t.Fatalf("expected upload reload callback with custom html, calls=%+v", calls)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config after upload: %v", err)
+	}
+	if !loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML != customHTML {
+		t.Fatalf("uploaded block page was not persisted: %+v", loaded.BlockPage)
+	}
+
+	deleteRecorder := httptest.NewRecorder()
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/block-pages/custom", nil)
+	handler.DeleteCustomBlockPage(deleteRecorder, deleteRequest)
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("expected delete custom ok, code=%d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	if len(calls) != 2 || calls[1].CustomEnabled || calls[1].CustomHTML != "" {
+		t.Fatalf("expected delete reload callback to clear custom html, calls=%+v", calls)
+	}
+	loaded, err = config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config after delete: %v", err)
+	}
+	if loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML != "" {
+		t.Fatalf("custom block page was not cleared from persisted config: %+v", loaded.BlockPage)
+	}
+}
+
+func TestUploadCustomBlockPageRejectsInvalidTemplateWithoutMutatingConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.BlockPage.CustomEnabled = true
+	cfg.BlockPage.CustomHTML = `<html><body>{{.TraceID}}</body></html>`
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var calls int
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnBlockPageChanged: func(next config.BlockPageConfig) error {
+			calls++
+			return nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	request := multipartBlockPageUploadRequest(t, `<html><body>{{if}}</body></html>`, "bad.html", "minimal")
+	handler.UploadBlockPageHTML(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "BLOCK_PAGE_TEMPLATE_INVALID") {
+		t.Fatalf("expected invalid template rejection, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("invalid upload should not notify hot reload, calls=%d", calls)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML != `<html><body>{{.TraceID}}</body></html>` {
+		t.Fatalf("invalid upload mutated persisted config: %+v", loaded.BlockPage)
+	}
+}
+
+func multipartBlockPageUploadRequest(t *testing.T, html, filename, templateID string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if templateID != "" {
+		if err := writer.WriteField("template_id", templateID); err != nil {
+			t.Fatalf("write template field: %v", err)
+		}
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create upload field: %v", err)
+	}
+	if _, err := part.Write([]byte(html)); err != nil {
+		t.Fatalf("write upload body: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/block-pages/upload", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
 }
 
 func TestWriteErrorIncludesTraceID(t *testing.T) {
