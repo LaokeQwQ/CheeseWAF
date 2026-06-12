@@ -65,6 +65,7 @@ func NewRouter(opts Options) http.Handler {
 			r.Use(middleware.SessionMiddleware(opts.Store))
 			r.Post("/auth/refresh", h.RefreshToken)
 			r.Post("/auth/logout", h.Logout)
+			r.Post("/ui/errors", h.ReportUIError)
 		})
 
 		r.Group(func(r chi.Router) {
