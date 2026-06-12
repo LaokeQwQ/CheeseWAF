@@ -6,6 +6,8 @@ import { useTranslation } from 'react-i18next';
 import type { AttackRegion, ProtectedTarget, ThreatLevel, WorldFeature } from './AttackMapPage';
 import { normalizeWorldId } from './AttackMapPage';
 import { displayCountry } from '../../utils/display';
+import { useAppStore } from '../../stores';
+import type { ThemeName } from '../../themes/tokens';
 
 type GlobeMapProps = {
   regions: AttackRegion[];
@@ -14,7 +16,10 @@ type GlobeMapProps = {
   worldFeatures: WorldFeature[];
   target?: ProtectedTarget;
   fallback: ReactNode;
+  visualTheme?: GlobeVisualTheme;
 };
+
+type GlobeVisualTheme = 'light' | 'dark';
 
 const globeLevelColors: Record<ThreatLevel, number> = {
   low: 0x2176d2,
@@ -25,8 +30,10 @@ const globeLevelColors: Record<ThreatLevel, number> = {
 
 const markerColorFallback = 0x2176d2;
 
-export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, target, fallback }: GlobeMapProps) {
+export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, target, fallback, visualTheme: forcedVisualTheme }: GlobeMapProps) {
   const { t } = useTranslation();
+  const appTheme = useAppStore((state) => state.theme);
+  const visualTheme = forcedVisualTheme ?? resolveGlobeTheme(appTheme);
   const hostRef = useRef<HTMLDivElement>(null);
   const [webglError, setWebglError] = useState(false);
 
@@ -72,7 +79,8 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     controls.autoRotate = true;
     controls.autoRotateSpeed = 0.45;
 
-    const starField = createStarField();
+    const isDarkGlobe = visualTheme === 'dark';
+    const starField = createStarField(visualTheme);
     scene.add(starField);
 
     const earthGroup = new THREE.Group();
@@ -82,7 +90,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const markerTipGeometry = new THREE.SphereGeometry(1, 24, 24);
     const flowHeadGeometry = new THREE.SphereGeometry(0.014, 14, 14);
     const targetGeometry = new THREE.SphereGeometry(0.024, 24, 24);
-    const texture = createWorldTexture(countryLevels, worldFeatures);
+    const texture = createWorldTexture(countryLevels, worldFeatures, visualTheme);
     if (texture) {
       texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() ?? 1);
       texture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -93,17 +101,17 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       cloudTexture.wrapS = THREE.RepeatWrapping;
       cloudTexture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy?.() ?? 1);
     }
-    const gridSphere = createGridSphere(1.006);
+    const gridSphere = createGridSphere(1.006, visualTheme);
     const globe = new THREE.Mesh(
       globeGeometry,
       new THREE.MeshPhysicalMaterial({
         map: texture,
-        roughness: 0.76,
+        roughness: isDarkGlobe ? 0.76 : 0.82,
         metalness: 0.02,
-        clearcoat: 0.18,
-        clearcoatRoughness: 0.58,
-        emissive: new THREE.Color(0x021b29),
-        emissiveIntensity: 0.2,
+        clearcoat: isDarkGlobe ? 0.18 : 0.1,
+        clearcoatRoughness: isDarkGlobe ? 0.58 : 0.7,
+        emissive: new THREE.Color(isDarkGlobe ? 0x021b29 : 0xdff6fb),
+        emissiveIntensity: isDarkGlobe ? 0.2 : 0.06,
       }),
     );
     earthGroup.add(globe);
@@ -114,7 +122,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       new THREE.MeshBasicMaterial({
         map: cloudTexture,
         transparent: true,
-        opacity: 0.2,
+        opacity: isDarkGlobe ? 0.2 : 0.16,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       }),
@@ -125,7 +133,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       atmosphereGeometry,
       new THREE.ShaderMaterial({
         uniforms: {
-          glowColor: { value: new THREE.Color(0x5bdcff) },
+          glowColor: { value: new THREE.Color(isDarkGlobe ? 0x5bdcff : 0x4e9ed1) },
         },
         vertexShader: `
           varying vec3 vNormal;
@@ -158,7 +166,13 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const protectedOrigin = latLonToVector(protectedTarget.lat, protectedTarget.lon, 1.052);
     const targetMarker = new THREE.Mesh(
       targetGeometry,
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.96, depthWrite: false, blending: THREE.AdditiveBlending }),
+      new THREE.MeshBasicMaterial({
+        color: isDarkGlobe ? 0xffffff : 0x0e7490,
+        transparent: true,
+        opacity: 0.96,
+        depthWrite: false,
+        blending: isDarkGlobe ? THREE.AdditiveBlending : THREE.NormalBlending,
+      }),
     );
     targetMarker.position.copy(protectedOrigin);
     targetMarker.userData.region = { locationName: protectedTarget.label, attacks: t('attackMap.protectedTarget'), isTarget: true };
@@ -233,13 +247,13 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     earthGroup.rotation.x = -0.08;
     scene.add(earthGroup);
 
-    scene.add(new THREE.AmbientLight(0x8fb7d9, 0.32));
-    const hemi = new THREE.HemisphereLight(0xa9e5ff, 0x06101c, 0.82);
+    scene.add(new THREE.AmbientLight(isDarkGlobe ? 0x8fb7d9 : 0xffffff, isDarkGlobe ? 0.32 : 0.62));
+    const hemi = new THREE.HemisphereLight(isDarkGlobe ? 0xa9e5ff : 0xf4fbff, isDarkGlobe ? 0x06101c : 0xb9d9e6, isDarkGlobe ? 0.82 : 0.9);
     scene.add(hemi);
-    const light = new THREE.DirectionalLight(0xffffff, 2.35);
+    const light = new THREE.DirectionalLight(0xffffff, isDarkGlobe ? 2.35 : 1.78);
     light.position.set(3.4, 2.2, 4.2);
     scene.add(light);
-    const rimLight = new THREE.DirectionalLight(0x74e0ff, 1.15);
+    const rimLight = new THREE.DirectionalLight(isDarkGlobe ? 0x74e0ff : 0x3b8dbc, isDarkGlobe ? 1.15 : 0.48);
     rimLight.position.set(-3.4, 0.55, -2.3);
     scene.add(rimLight);
 
@@ -326,13 +340,17 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       host.removeChild(renderer.domElement);
       host.removeChild(tooltip);
     };
-  }, [regions, zoom, countryLevels, worldFeatures, target, t, webglError]);
+  }, [regions, zoom, countryLevels, worldFeatures, target, t, webglError, visualTheme]);
 
   if (webglError) {
     return <>{fallback}</>;
   }
 
   return <div ref={hostRef} className="globe-stage" />;
+}
+
+function resolveGlobeTheme(theme: ThemeName): GlobeVisualTheme {
+  return theme === 'dark' || theme === 'blackGold' ? 'dark' : 'light';
 }
 
 function orientNormal(object: any, normal: any) {
@@ -355,14 +373,15 @@ function createArcMesh(start: any, end: any, material: any) {
   return mesh;
 }
 
-function createGridSphere(radius: number) {
+function createGridSphere(radius: number, visualTheme: GlobeVisualTheme) {
+  const isDarkGlobe = visualTheme === 'dark';
   const group = new THREE.Group();
   const material = new THREE.LineBasicMaterial({
-    color: 0x8ce8ff,
+    color: isDarkGlobe ? 0x8ce8ff : 0x27799d,
     transparent: true,
-    opacity: 0.16,
+    opacity: isDarkGlobe ? 0.16 : 0.11,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    blending: isDarkGlobe ? THREE.AdditiveBlending : THREE.NormalBlending,
   });
 
   for (let lon = -180; lon < 180; lon += 15) {
@@ -407,7 +426,8 @@ function disposeObjectTree(...objects: any[]) {
   materials.forEach((material) => material.dispose());
 }
 
-function createStarField() {
+function createStarField(visualTheme: GlobeVisualTheme) {
+  const isDarkGlobe = visualTheme === 'dark';
   const count = 260;
   const positions = new Float32Array(count * 3);
   for (let index = 0; index < count; index += 1) {
@@ -424,11 +444,11 @@ function createStarField() {
   return new THREE.Points(
     geometry,
     new THREE.PointsMaterial({
-      color: 0xb8d9ff,
-      size: 0.012,
+      color: isDarkGlobe ? 0xb8d9ff : 0x2e7da4,
+      size: isDarkGlobe ? 0.012 : 0.009,
       sizeAttenuation: true,
       transparent: true,
-      opacity: 0.58,
+      opacity: isDarkGlobe ? 0.58 : 0.16,
       depthWrite: false,
     }),
   );
@@ -444,7 +464,8 @@ function latLonToVector(lat: number, lon: number, radius: number) {
   );
 }
 
-function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatures: WorldFeature[]) {
+function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatures: WorldFeature[], visualTheme: GlobeVisualTheme) {
+  const isDarkGlobe = visualTheme === 'dark';
   const canvas = document.createElement('canvas');
   canvas.width = 2048;
   canvas.height = 1024;
@@ -460,10 +481,17 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
     canvas.height * 0.55,
     canvas.width * 0.76,
   );
-  ocean.addColorStop(0, '#0e5667');
-  ocean.addColorStop(0.42, '#083444');
-  ocean.addColorStop(0.78, '#031829');
-  ocean.addColorStop(1, '#020814');
+  if (isDarkGlobe) {
+    ocean.addColorStop(0, '#0e5667');
+    ocean.addColorStop(0.42, '#083444');
+    ocean.addColorStop(0.78, '#031829');
+    ocean.addColorStop(1, '#020814');
+  } else {
+    ocean.addColorStop(0, '#f0fbff');
+    ocean.addColorStop(0.38, '#d7edf8');
+    ocean.addColorStop(0.74, '#abd4e4');
+    ocean.addColorStop(1, '#79b7ce');
+  }
   ctx.fillStyle = ocean;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -472,7 +500,9 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
     const y = (index * 131) % canvas.height;
     const width = 170 + (index % 9) * 48;
     const height = 14 + (index % 5) * 10;
-    ctx.fillStyle = `rgba(115, 221, 244, ${0.014 + (index % 4) * 0.006})`;
+    ctx.fillStyle = isDarkGlobe
+      ? `rgba(115, 221, 244, ${0.014 + (index % 4) * 0.006})`
+      : `rgba(255, 255, 255, ${0.08 + (index % 4) * 0.014})`;
     ctx.beginPath();
     ctx.ellipse(x, y, width, height, (index % 11) * 0.21, 0, Math.PI * 2);
     ctx.fill();
@@ -485,7 +515,7 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
 
   ctx.beginPath();
   texturePath(geoGraticule10() as any);
-  ctx.strokeStyle = 'rgba(130,226,239,0.08)';
+  ctx.strokeStyle = isDarkGlobe ? 'rgba(130,226,239,0.08)' : 'rgba(35,97,124,0.12)';
   ctx.lineWidth = 0.9;
   ctx.stroke();
 
@@ -495,9 +525,9 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
     const level = countryLevels.get(normalizeWorldId(item.id ?? ''));
     ctx.beginPath();
     texturePath(item as any);
-    ctx.shadowColor = globeShadowForLevel(level);
-    ctx.shadowBlur = level ? 18 : 3;
-    ctx.fillStyle = globeFillForLevel(level);
+    ctx.shadowColor = globeShadowForLevel(level, visualTheme);
+    ctx.shadowBlur = level ? (isDarkGlobe ? 18 : 10) : (isDarkGlobe ? 3 : 1);
+    ctx.fillStyle = globeFillForLevel(level, visualTheme);
     ctx.fill();
     ctx.shadowBlur = 0;
   }
@@ -506,15 +536,17 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
     const level = countryLevels.get(normalizeWorldId(item.id ?? ''));
     ctx.beginPath();
     texturePath(item as any);
-    ctx.strokeStyle = level ? 'rgba(255,241,224,0.86)' : 'rgba(196,239,226,0.42)';
-    ctx.lineWidth = level ? 1.4 : 0.72;
+    ctx.strokeStyle = level
+      ? (isDarkGlobe ? 'rgba(255,241,224,0.86)' : 'rgba(255,255,255,0.86)')
+      : (isDarkGlobe ? 'rgba(196,239,226,0.42)' : 'rgba(49,92,112,0.34)');
+    ctx.lineWidth = level ? (isDarkGlobe ? 1.4 : 1.25) : 0.72;
     ctx.stroke();
   }
 
   const vignette = ctx.createRadialGradient(canvas.width * 0.5, canvas.height * 0.45, 0, canvas.width * 0.5, canvas.height * 0.5, canvas.width * 0.66);
-  vignette.addColorStop(0, 'rgba(255,255,255,0.08)');
+  vignette.addColorStop(0, isDarkGlobe ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.24)');
   vignette.addColorStop(0.52, 'rgba(255,255,255,0)');
-  vignette.addColorStop(1, 'rgba(0,4,10,0.28)');
+  vignette.addColorStop(1, isDarkGlobe ? 'rgba(0,4,10,0.28)' : 'rgba(22,86,113,0.14)');
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -560,7 +592,21 @@ function createCloudTexture() {
   return texture;
 }
 
-function globeFillForLevel(level: ThreatLevel | undefined) {
+function globeFillForLevel(level: ThreatLevel | undefined, visualTheme: GlobeVisualTheme) {
+  if (visualTheme === 'light') {
+    switch (level) {
+      case 'critical':
+        return '#ef5353';
+      case 'high':
+        return '#fb923c';
+      case 'medium':
+        return '#f3c75e';
+      case 'low':
+        return '#66a9ee';
+      default:
+        return '#d7eadb';
+    }
+  }
   switch (level) {
     case 'critical':
       return '#f05252';
@@ -575,7 +621,21 @@ function globeFillForLevel(level: ThreatLevel | undefined) {
   }
 }
 
-function globeShadowForLevel(level: ThreatLevel | undefined) {
+function globeShadowForLevel(level: ThreatLevel | undefined, visualTheme: GlobeVisualTheme) {
+  if (visualTheme === 'light') {
+    switch (level) {
+      case 'critical':
+        return 'rgba(239, 83, 83, 0.46)';
+      case 'high':
+        return 'rgba(251, 146, 60, 0.36)';
+      case 'medium':
+        return 'rgba(222, 164, 40, 0.28)';
+      case 'low':
+        return 'rgba(72, 137, 210, 0.28)';
+      default:
+        return 'rgba(69, 119, 100, 0.08)';
+    }
+  }
   switch (level) {
     case 'critical':
       return 'rgba(248, 81, 73, 0.9)';

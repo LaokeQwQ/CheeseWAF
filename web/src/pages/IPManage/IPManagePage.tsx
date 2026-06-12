@@ -573,7 +573,9 @@ export default function IPManagePage() {
                         <div className="provider-actions">
                           <Button size="small" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(provider)}>{t('system.test')}</Button>
                           <Button size="small" loading={syncMutation.isPending} onClick={() => syncMutation.mutate(provider.id)}>{t('ip.sync')}</Button>
-                          <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeProvider(provider.id)} />
+                          <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeProvider(provider.id)}>
+                            {t('common.delete')}
+                          </Button>
                         </div>
                       </div>
                       {status && <IntelStatusPanel status={status} t={t} />}
