@@ -31,7 +31,7 @@ export default function MonitorPage() {
         <Metric icon={<Database size={18} />} label={t('monitor.memory')} value={formatBytes(snapshot?.memory_alloc ?? 0)} />
       </div>
 
-      <div className="settings-grid">
+      <div className="monitor-grid">
         <section className="panel">
           <div className="panel-heading"><h2><HardDrive size={16} /> {t('monitor.disk')}</h2></div>
           <div className="resource-stack">
@@ -40,19 +40,21 @@ export default function MonitorPage() {
           </div>
         </section>
 
-        <section className="panel">
+        <section className="panel monitor-alerts-panel">
           <div className="panel-heading"><h2><AlertTriangle size={16} /> {t('monitor.alerts')}</h2></div>
-          <Table
-            rowKey="rule_id"
-            pagination={false}
-            data={data?.alerts ?? []}
-            columns={[
-              { title: t('monitor.rule'), dataIndex: 'name' },
-              { title: t('monitor.severity'), dataIndex: 'severity', render: (value: string) => <Tag color={severityColor(value)}>{displaySeverity(value, t)}</Tag> },
-              { title: t('monitor.message'), dataIndex: 'message' },
-              { title: t('monitor.value'), dataIndex: 'value', render: (_: number, record: Alert) => `${record.value} / ${record.threshold}` },
-            ]}
-          />
+          <div className="table-scroll monitor-alerts-table">
+            <Table
+              rowKey="rule_id"
+              pagination={false}
+              data={data?.alerts ?? []}
+              columns={[
+                { title: t('monitor.rule'), dataIndex: 'name' },
+                { title: t('monitor.severity'), dataIndex: 'severity', render: (value: string) => <Tag color={severityColor(value)}>{displaySeverity(value, t)}</Tag> },
+                { title: t('monitor.message'), dataIndex: 'message' },
+                { title: t('monitor.value'), dataIndex: 'value', render: (_: number, record: Alert) => `${record.value} / ${record.threshold}` },
+              ]}
+            />
+          </div>
         </section>
       </div>
     </section>

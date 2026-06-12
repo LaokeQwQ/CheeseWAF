@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -32,6 +33,7 @@ func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 		"vulnerability": h.Config.Vulnerability,
 		"monitor":       h.Config.Monitor,
 		"apisec":        h.Config.APISec,
+		"block_page":    h.Config.BlockPage,
 	})
 }
 
@@ -50,6 +52,7 @@ type systemPayload struct {
 	Vulnerability *config.VulnerabilityConfig `json:"vulnerability"`
 	Monitor       *config.MonitorConfig       `json:"monitor"`
 	APISec        *config.APISecConfig        `json:"apisec"`
+	BlockPage     *config.BlockPageConfig     `json:"block_page"`
 }
 
 func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +106,20 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	if req.APISec != nil {
 		next.APISec = *req.APISec
 	}
+	if req.BlockPage != nil {
+		next.BlockPage = *req.BlockPage
+		if next.BlockPage.TemplateID == "" {
+			next.BlockPage.TemplateID = config.Default().BlockPage.TemplateID
+		}
+		if _, ok := blockpage.TemplateByID(next.BlockPage.TemplateID); !ok {
+			writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_UNKNOWN", "unknown block page template")
+			return
+		}
+		if _, err := blockpage.NewRendererFromConfig(next.BlockPage); err != nil {
+			writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
+			return
+		}
+	}
 	next.Protection.Policy = next.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
 	if _, err := config.EnsureRuntimeSecrets(&next); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_REPAIR_ERROR", err.Error())
@@ -129,6 +146,12 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	if req.APISec != nil {
 		if err := h.notifyAPISecChanged(); err != nil {
 			writeError(w, http.StatusInternalServerError, "APISEC_RELOAD_ERROR", err.Error())
+			return
+		}
+	}
+	if req.BlockPage != nil {
+		if err := h.notifyBlockPageChanged(); err != nil {
+			writeError(w, http.StatusInternalServerError, "BLOCK_PAGE_RELOAD_ERROR", err.Error())
 			return
 		}
 	}

@@ -3,9 +3,11 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,5 +58,209 @@ func TestUpdateSystemNotifiesAPISecReload(t *testing.T) {
 	}
 	if cfg.APISec.Validation.Schemas[0].ID != "search" || cfg.APISec.RateLimits[0].ID != "search-rate" {
 		t.Fatalf("system config was not updated: %+v", cfg.APISec)
+	}
+}
+
+func TestUpdateSystemPersistsConsoleSecurityEntry(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	nextConsole := cfg.Console
+	nextConsole.Login.SecurityEntry.Enabled = true
+	nextConsole.Login.SecurityEntry.Path = "/ops-door"
+	nextConsole.Login.SecurityEntry.CookieName = "cw_ops_entry"
+	raw, _ := json.Marshal(map[string]any{"console": nextConsole})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw))
+	handler.UpdateSystem(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected system update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !cfg.Console.Login.SecurityEntry.Enabled || cfg.Console.Login.SecurityEntry.Path != "/ops-door" || cfg.Console.Login.SecurityEntry.CookieName != "cw_ops_entry" {
+		t.Fatalf("security entry was not updated in memory: %+v", cfg.Console.Login.SecurityEntry)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.Console.Login.SecurityEntry.Enabled || loaded.Console.Login.SecurityEntry.Path != "/ops-door" || loaded.Console.Login.SecurityEntry.CookieName != "cw_ops_entry" {
+		t.Fatalf("security entry was not persisted: %+v", loaded.Console.Login.SecurityEntry)
+	}
+}
+
+func TestUpdateBlockPageConfigPersistsAndNotifies(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var calls int
+	var reloaded config.BlockPageConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnBlockPageChanged: func(next config.BlockPageConfig) error {
+			calls++
+			reloaded = next
+			return nil
+		},
+	})
+	payload := config.BlockPageConfig{
+		TemplateID:    "minimal",
+		CustomEnabled: true,
+		CustomHTML:    `<html><body>{{.TraceID}}</body></html>`,
+	}
+	raw, _ := json.Marshal(payload)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/block-pages/config", bytes.NewReader(raw))
+	handler.UpdateBlockPageConfig(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected block page update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if calls != 1 || !reloaded.CustomEnabled {
+		t.Fatalf("expected block page reload callback, calls=%d payload=%+v", calls, reloaded)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML == "" {
+		t.Fatalf("block page config was not persisted: %+v", loaded.BlockPage)
+	}
+}
+
+func TestUploadAndDeleteCustomBlockPagePersistsAndNotifies(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var calls []config.BlockPageConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnBlockPageChanged: func(next config.BlockPageConfig) error {
+			calls = append(calls, next)
+			return nil
+		},
+	})
+
+	customHTML := `<html><body><main data-event="{{.EventID}}">blocked {{.TraceID}}</main></body></html>`
+	uploadRecorder := httptest.NewRecorder()
+	uploadRequest := multipartBlockPageUploadRequest(t, customHTML, "custom-block.html", "minimal")
+	handler.UploadBlockPageHTML(uploadRecorder, uploadRequest)
+	if uploadRecorder.Code != http.StatusOK {
+		t.Fatalf("expected upload ok, code=%d body=%s", uploadRecorder.Code, uploadRecorder.Body.String())
+	}
+	if len(calls) != 1 || !calls[0].CustomEnabled || calls[0].CustomHTML != customHTML {
+		t.Fatalf("expected upload reload callback with custom html, calls=%+v", calls)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config after upload: %v", err)
+	}
+	if !loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML != customHTML {
+		t.Fatalf("uploaded block page was not persisted: %+v", loaded.BlockPage)
+	}
+
+	deleteRecorder := httptest.NewRecorder()
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/block-pages/custom", nil)
+	handler.DeleteCustomBlockPage(deleteRecorder, deleteRequest)
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("expected delete custom ok, code=%d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	if len(calls) != 2 || calls[1].CustomEnabled || calls[1].CustomHTML != "" {
+		t.Fatalf("expected delete reload callback to clear custom html, calls=%+v", calls)
+	}
+	loaded, err = config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config after delete: %v", err)
+	}
+	if loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML != "" {
+		t.Fatalf("custom block page was not cleared from persisted config: %+v", loaded.BlockPage)
+	}
+}
+
+func TestUploadCustomBlockPageRejectsInvalidTemplateWithoutMutatingConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.BlockPage.CustomEnabled = true
+	cfg.BlockPage.CustomHTML = `<html><body>{{.TraceID}}</body></html>`
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var calls int
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnBlockPageChanged: func(next config.BlockPageConfig) error {
+			calls++
+			return nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	request := multipartBlockPageUploadRequest(t, `<html><body>{{if}}</body></html>`, "bad.html", "minimal")
+	handler.UploadBlockPageHTML(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "BLOCK_PAGE_TEMPLATE_INVALID") {
+		t.Fatalf("expected invalid template rejection, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("invalid upload should not notify hot reload, calls=%d", calls)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML != `<html><body>{{.TraceID}}</body></html>` {
+		t.Fatalf("invalid upload mutated persisted config: %+v", loaded.BlockPage)
+	}
+}
+
+func multipartBlockPageUploadRequest(t *testing.T, html, filename, templateID string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if templateID != "" {
+		if err := writer.WriteField("template_id", templateID); err != nil {
+			t.Fatalf("write template field: %v", err)
+		}
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create upload field: %v", err)
+	}
+	if _, err := part.Write([]byte(html)); err != nil {
+		t.Fatalf("write upload body: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/block-pages/upload", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
+}
+
+func TestWriteErrorIncludesTraceID(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeError(recorder, http.StatusBadRequest, "BAD_REQUEST", "bad")
+	if recorder.Header().Get("X-CheeseWAF-Trace-ID") == "" {
+		t.Fatal("expected trace id response header")
+	}
+	var body struct {
+		Error struct {
+			TraceID string `json:"trace_id"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if body.Error.TraceID == "" || body.Error.TraceID != recorder.Header().Get("X-CheeseWAF-Trace-ID") {
+		t.Fatalf("trace id mismatch header=%q body=%q", recorder.Header().Get("X-CheeseWAF-Trace-ID"), body.Error.TraceID)
 	}
 }

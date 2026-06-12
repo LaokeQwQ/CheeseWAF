@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -74,17 +75,21 @@ func (h *Handler) ValidateAPIRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) monitorSnapshot(r *http.Request) monitor.Snapshot {
-	logs, total, ok := h.queryLogsWithTotal(r, storage.LogFilter{Limit: 1000})
+	return h.monitorSnapshotFromContext(r.Context())
+}
+
+func (h *Handler) monitorSnapshotFromContext(ctx context.Context) monitor.Snapshot {
+	logs, total, ok := h.queryLogsWithTotalContext(ctx, storage.LogFilter{Limit: 1000})
 	snapshot := monitor.Collect(h.StartedAt, len(h.Config.Sites), logs, map[string]int64{
 		"data": dirSize(h.Config.Setup.DataDir),
 		"logs": dirSize(logDir(h.Config.Logging.Output.File.Path)),
 	})
 	if ok {
 		snapshot.Requests = intFromTotal(total)
-		if blocked, ok := h.logCount(r, storage.LogFilter{Action: "block"}); ok {
+		if blocked, ok := h.logCountFromContext(ctx, storage.LogFilter{Action: "block"}); ok {
 			snapshot.Blocked = intFromTotal(blocked)
 		}
-		if challenges, ok := h.logCount(r, storage.LogFilter{Action: "challenge"}); ok {
+		if challenges, ok := h.logCountFromContext(ctx, storage.LogFilter{Action: "challenge"}); ok {
 			snapshot.Challenges = intFromTotal(challenges)
 		}
 	}
@@ -97,20 +102,33 @@ func (h *Handler) recentLogs(r *http.Request, limit int) []storage.LogEntry {
 }
 
 func (h *Handler) logCount(r *http.Request, filter storage.LogFilter) (int64, bool) {
+	return h.logCountFromContext(r.Context(), filter)
+}
+
+func (h *Handler) logCountFromContext(ctx context.Context, filter storage.LogFilter) (int64, bool) {
 	filter.Limit = 1
-	_, total, ok := h.queryLogsWithTotal(r, filter)
+	_, total, ok := h.queryLogsWithTotalContext(ctx, filter)
 	return total, ok
 }
 
 func (h *Handler) queryLogsWithTotal(r *http.Request, filter storage.LogFilter) ([]storage.LogEntry, int64, bool) {
+	return h.queryLogsWithTotalContext(r.Context(), filter)
+}
+
+func (h *Handler) queryLogsWithTotalContext(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, bool) {
 	if h.Sink == nil {
 		return nil, 0, false
 	}
-	logs, total, err := h.Sink.Query(r.Context(), filter)
+	logs, total, err := h.Sink.Query(ctx, filter)
 	if err != nil {
 		return nil, 0, false
 	}
 	return logs, total, true
+}
+
+func (h *Handler) queryLogsFromContext(ctx context.Context, filter storage.LogFilter) []storage.LogEntry {
+	logs, _, _ := h.queryLogsWithTotalContext(ctx, filter)
+	return logs
 }
 
 func intFromTotal(total int64) int {

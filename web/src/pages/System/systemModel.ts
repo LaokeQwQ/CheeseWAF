@@ -78,6 +78,7 @@ export const fallbackSystem: SystemConfig = {
   vulnerability: { enabled: false, feeds: [] },
   monitor: {},
   apisec: { enabled: false, auth: fallbackAPIAuth },
+  block_page: { template_id: 'minimal', custom_enabled: false, custom_html: '' },
 };
 
 export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
@@ -138,6 +139,7 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
       ...next.apisec,
       auth: { ...fallbackAPIAuth, ...next.apisec?.auth },
     },
+    block_page: { ...fallbackSystem.block_page, ...next.block_page },
   };
 }
 

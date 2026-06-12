@@ -8,19 +8,34 @@ import type { SystemConfig } from '../../types/api';
 import { fallbackSystem, normalizeSystem, second, secondsToDuration, durationSeconds } from '../System/systemModel';
 
 type Feed = SystemConfig['vulnerability']['feeds'][number];
+const OFFICIAL_OTA_SERVER = 'https://ota.waf.laoker.cc/';
+const FEED_PAGE_SIZE = 4;
 
 export default function UpdatesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [system, setSystem] = useState<SystemConfig>(fallbackSystem);
+  const [feedPage, setFeedPage] = useState(1);
+  const [keySyncing, setKeySyncing] = useState(false);
   const { data } = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
   const enabledFeeds = useMemo(() => system.vulnerability.feeds.filter((feed) => feed.enabled).length, [system.vulnerability.feeds]);
+  const feedPageCount = Math.max(1, Math.ceil(system.vulnerability.feeds.length / FEED_PAGE_SIZE));
+  const visibleFeeds = system.vulnerability.feeds.slice((feedPage - 1) * FEED_PAGE_SIZE, feedPage * FEED_PAGE_SIZE);
+  const updateServer = system.update.ota.server || OFFICIAL_OTA_SERVER;
 
   useEffect(() => {
     if (data) {
-      setSystem(normalizeSystem(data));
+      const normalized = normalizeSystem(data);
+      if (!normalized.update.ota.server) {
+        normalized.update.ota.server = OFFICIAL_OTA_SERVER;
+      }
+      setSystem(normalized);
     }
   }, [data]);
+
+  useEffect(() => {
+    setFeedPage((current) => Math.min(current, feedPageCount));
+  }, [feedPageCount]);
 
   const saveMutation = useMutation({
     mutationFn: updateSystemConfig,
@@ -33,6 +48,27 @@ export default function UpdatesPage() {
   });
 
   const patchSystem = (patch: Partial<SystemConfig>) => setSystem((current) => normalizeSystem({ ...current, ...patch }));
+
+  async function syncOfficialPublicKey() {
+    setKeySyncing(true);
+    try {
+      const base = updateServer.endsWith('/') ? updateServer : `${updateServer}/`;
+      const response = await fetch(new URL('public-key.pem', base).toString(), { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      const publicKey = (await response.text()).trim();
+      if (!publicKey.includes('BEGIN PUBLIC KEY')) {
+        throw new Error(t('updates.publicKeyInvalid'));
+      }
+      patchSystem({ update: { ota: { ...system.update.ota, server: updateServer, public_key: publicKey } } });
+      ArcoMessage.success(t('updates.publicKeySynced'));
+    } catch (error) {
+      ArcoMessage.error(error instanceof Error ? error.message : t('updates.publicKeySyncFailed'));
+    } finally {
+      setKeySyncing(false);
+    }
+  }
 
   return (
     <section className="page-surface">
@@ -65,14 +101,18 @@ export default function UpdatesPage() {
       </section>
 
       <div className="updates-grid">
-        <section className="panel">
+        <section className="panel updates-runtime-panel">
           <div className="panel-heading">
             <h2><CloudDownload size={16} /> {t('updates.runtimeUpdate')}</h2>
             <Tag color={system.update.ota.enabled ? 'green' : 'gray'}>{system.update.ota.enabled ? t('system.enabled') : t('system.disabled')}</Tag>
           </div>
-          <div className="site-detail-grid">
-            <label className="switch-line"><span>OTA</span><Switch checked={system.update.ota.enabled} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
-            <label className="wide-field"><span>{t('system.updateServer')}</span><Input value={system.update.ota.server} onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
+          <div className="updates-runtime-form">
+            <label className="switch-line updates-main-switch"><span>{t('updates.ota')}</span><Switch checked={system.update.ota.enabled} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
+            <label className="wide-field"><span>{t('system.updateServer')}</span><Input value={updateServer} placeholder={OFFICIAL_OTA_SERVER} onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
+            <div className="updates-official-note wide-field">
+              <Tag color="blue">{t('updates.officialServer')}</Tag>
+              <span>{OFFICIAL_OTA_SERVER}</span>
+            </div>
             <label>
               <span>{t('system.channel')}</span>
               <Select value={system.update.ota.channel} onChange={(channel) => patchSystem({ update: { ota: { ...system.update.ota, channel: channel as string } } })}>
@@ -85,11 +125,17 @@ export default function UpdatesPage() {
             <label className="switch-line"><span>{t('system.autoUpdateRules')}</span><Switch checked={system.update.ota.auto_update_rules} onChange={(auto_update_rules) => patchSystem({ update: { ota: { ...system.update.ota, auto_update_rules } } })} /></label>
             <label className="switch-line"><span>{t('system.autoUpdateBinary')}</span><Switch checked={system.update.ota.auto_update_binary} onChange={(auto_update_binary) => patchSystem({ update: { ota: { ...system.update.ota, auto_update_binary } } })} /></label>
             <label className="switch-line"><span>{t('system.verifySignature')}</span><Switch checked={system.update.ota.verify_signature} onChange={(verify_signature) => patchSystem({ update: { ota: { ...system.update.ota, verify_signature } } })} /></label>
-            <label className="wide-field"><span>{t('system.publicKey')}</span><Input.TextArea value={system.update.ota.public_key} autoSize={{ minRows: 3, maxRows: 6 }} onChange={(public_key) => patchSystem({ update: { ota: { ...system.update.ota, public_key } } })} /></label>
+            <div className="updates-public-key wide-field">
+              <div>
+                <span>{t('system.publicKey')}</span>
+                <strong>{system.update.ota.public_key ? publicKeySummary(system.update.ota.public_key, t) : t('updates.publicKeyNotSet')}</strong>
+              </div>
+              <Button loading={keySyncing} onClick={syncOfficialPublicKey}>{t('updates.syncPublicKey')}</Button>
+            </div>
           </div>
         </section>
 
-        <section className="panel">
+        <section className="panel updates-feeds-panel">
           <div className="panel-heading">
             <h2><ShieldAlert size={16} /> {t('updates.vulnerabilityFeeds')}</h2>
             <Space wrap>
@@ -98,7 +144,9 @@ export default function UpdatesPage() {
             </Space>
           </div>
           <div className="feed-list feed-list-detailed">
-            {system.vulnerability.feeds.map((feed, index) => (
+            {visibleFeeds.map((feed, pageIndex) => {
+              const index = (feedPage - 1) * FEED_PAGE_SIZE + pageIndex;
+              return (
               <div className="feed-card" key={feed.id}>
                 <div className="feed-card-head">
                   <Switch checked={feed.enabled} onChange={(enabled) => updateVulnerabilityFeed(index, { enabled }, setSystem)} />
@@ -138,9 +186,18 @@ export default function UpdatesPage() {
                   </label>
                 </div>
               </div>
-            ))}
+            ); })}
             {!system.vulnerability.feeds.length && <Empty description={t('system.noFeeds')} />}
           </div>
+          {system.vulnerability.feeds.length > FEED_PAGE_SIZE && (
+            <div className="feed-pagination">
+              <span>{t('updates.feedPage', { page: feedPage, total: feedPageCount })}</span>
+              <Space>
+                <Button disabled={feedPage <= 1} onClick={() => setFeedPage((current) => Math.max(1, current - 1))}>{t('common.back')}</Button>
+                <Button disabled={feedPage >= feedPageCount} onClick={() => setFeedPage((current) => Math.min(feedPageCount, current + 1))}>{t('common.next')}</Button>
+              </Space>
+            </div>
+          )}
         </section>
       </div>
     </section>
@@ -187,4 +244,8 @@ function removeVulnerabilityFeed(id: string, setSystem: React.Dispatch<React.Set
       feeds: current.vulnerability.feeds.filter((feed) => feed.id !== id),
     },
   }));
+}
+
+function publicKeySummary(value: string, t: (key: string, options?: Record<string, unknown>) => string) {
+  return t('updates.publicKeyConfigured', { chars: value.trim().length });
 }

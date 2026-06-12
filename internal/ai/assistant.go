@@ -35,14 +35,21 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 	}
 	if tool.Sensitivity() != ReadOnly {
 		if approvalID == "" {
-			request, err := a.approvals.Create(tool, args, "")
+			diff := ""
+			if previewer, ok := tool.(ToolPreviewer); ok {
+				var err error
+				diff, err = previewer.Preview(ctx, args)
+				if err != nil {
+					return nil, err
+				}
+			}
+			request, err := a.approvals.Create(tool, args, diff)
 			if err != nil {
 				return nil, err
 			}
 			return &ToolExecution{Approval: &request}, nil
 		}
-		request, ok := a.approvals.Get(approvalID)
-		if !ok || request.ToolName != name || request.Status != ApprovalApproved {
+		if _, err := a.approvals.ConsumeApproved(approvalID, name, args); err != nil {
 			return nil, fmt.Errorf("tool %q requires approved request", name)
 		}
 	}

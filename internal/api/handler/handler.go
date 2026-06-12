@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
@@ -25,11 +27,13 @@ type Handler struct {
 	Tokens              *middleware.TokenManager
 	Secret              string
 	Auditor             *middleware.Auditor
+	AssistantApprovals  *ai.ApprovalStore
 	LoginCAPTCHAState   *loginCAPTCHAState
 	StartedAt           time.Time
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
+	OnBlockPageChanged  func(config.BlockPageConfig) error
 }
 
 type Options struct {
@@ -40,12 +44,18 @@ type Options struct {
 	Tokens              *middleware.TokenManager
 	Secret              string
 	Auditor             *middleware.Auditor
+	AssistantApprovals  *ai.ApprovalStore
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
+	OnBlockPageChanged  func(config.BlockPageConfig) error
 }
 
 func New(opts Options) *Handler {
+	approvals := opts.AssistantApprovals
+	if approvals == nil {
+		approvals = ai.NewApprovalStore()
+	}
 	return &Handler{
 		Config:              opts.Config,
 		ConfigPath:          opts.ConfigPath,
@@ -54,11 +64,13 @@ func New(opts Options) *Handler {
 		Tokens:              opts.Tokens,
 		Secret:              opts.Secret,
 		Auditor:             opts.Auditor,
+		AssistantApprovals:  approvals,
 		LoginCAPTCHAState:   newLoginCAPTCHAState(),
 		StartedAt:           time.Now().UTC(),
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
 		OnAPISecChanged:     opts.OnAPISecChanged,
+		OnBlockPageChanged:  opts.OnBlockPageChanged,
 	}
 }
 
@@ -74,6 +86,13 @@ func (h *Handler) notifyAPISecChanged() error {
 		return nil
 	}
 	return h.OnAPISecChanged(h.Config.APISec)
+}
+
+func (h *Handler) notifyBlockPageChanged() error {
+	if h == nil || h.OnBlockPageChanged == nil || h.Config == nil {
+		return nil
+	}
+	return h.OnBlockPageChanged(h.Config.BlockPage)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
@@ -557,7 +576,15 @@ func writeData(w http.ResponseWriter, data any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeErrorWithTraceID(w, status, code, message, blockpage.NewTraceID())
+}
+
+func writeErrorWithTraceID(w http.ResponseWriter, status int, code, message, traceID string) {
+	if traceID == "" {
+		traceID = blockpage.NewTraceID()
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(dto.Response{Error: &dto.APIError{Code: code, Message: message}})
+	_ = json.NewEncoder(w).Encode(dto.Response{Error: &dto.APIError{Code: code, Message: message, TraceID: traceID}})
 }
