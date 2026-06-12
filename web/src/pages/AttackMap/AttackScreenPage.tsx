@@ -5,8 +5,9 @@ import { useNavigate } from 'react-router-dom';
 import { Activity, ArrowLeft, Gauge, Globe2, ListFilter, RefreshCcw, Shield } from 'lucide-react';
 import { fetchLogs, fetchMonitorSummary } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
+import { useAppStore } from '../../stores';
 import type { LogEntry } from '../../types/api';
-import { displayCategory, displayCountry } from '../../utils/display';
+import { displayCategory, displayCountry, displaySeverity } from '../../utils/display';
 import GlobeMap from './GlobeMap';
 import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './AttackMapPage';
 
@@ -15,6 +16,8 @@ const screenRefreshMs = 3_000;
 export default function AttackScreenPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const appTheme = useAppStore((state) => state.theme);
+  const visualTheme = appTheme === 'dark' || appTheme === 'blackGold' ? 'dark' : 'light';
   const [railOpen, setRailOpen] = useState(false);
   const [timelinePercent, setTimelinePercent] = useState(100);
   const { data: logs, isFetching, refetch } = useQuery({
@@ -50,7 +53,7 @@ export default function AttackScreenPage() {
   }, [t]);
 
   return (
-    <main className="attack-screen">
+    <main className={`attack-screen attack-screen-${visualTheme}`}>
       <aside className={railOpen ? 'attack-screen-rail attack-screen-rail-open' : 'attack-screen-rail'}>
         <div className="attack-screen-brand">
           <span><BrandLogo alt="" /></span>
@@ -80,7 +83,7 @@ export default function AttackScreenPage() {
         <header className="attack-screen-topbar">
           <span className="attack-screen-live"><i /> {t('attackMap.live')}</span>
           <strong>{new Date().toLocaleTimeString()}</strong>
-          <span>{monitor?.alerts?.length ? monitor.alerts[0]?.severity ?? t('common.blocked') : t('common.healthy')}</span>
+          <span>{monitor?.alerts?.length ? displaySeverity(monitor.alerts[0]?.severity, t) : t('common.healthy')}</span>
           <button type="button" onClick={() => refetch()} disabled={isFetching}>
             <RefreshCcw size={15} />
             <span>{t('attackMap.refresh')}</span>
@@ -112,7 +115,7 @@ export default function AttackScreenPage() {
                 countryLevels={countryLevels}
                 worldFeatures={worldFeatures}
                 target={protectedTarget}
-                visualTheme="dark"
+                visualTheme={visualTheme}
                 fallback={<div className="attack-screen-globe-empty">{t('attackMap.attacks')}: 0</div>}
               />
             </Suspense>
