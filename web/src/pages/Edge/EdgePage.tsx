@@ -9,6 +9,7 @@ import type { EdgeConfig } from '../../types/api';
 type HeaderRule = EdgeConfig['headers']['rules'][number];
 type DurationUnit = 's' | 'm' | 'h' | 'd';
 type ByteUnit = 'KB' | 'MB';
+const statusCodeChoices = ['2xx', '3xx', '4xx', '5xx', '200', '201', '204', '301', '302', '304', '400', '401', '403', '404', '429', '500', '502', '503'];
 
 const fallback: EdgeConfig = {
   headers: {
@@ -88,7 +89,7 @@ export default function EdgePage() {
         </Button>
       </header>
 
-      <div className="settings-grid">
+      <div className="edge-settings-grid">
         <section className="panel">
           <div className="panel-heading"><h2><PackageCheck size={16} /> {t('edge.cache')}</h2></div>
           <Form
@@ -99,7 +100,7 @@ export default function EdgePage() {
               mode: edge.cache.mode,
               ttl: durationToNanoseconds(edge.cache.ttl),
               paths: edge.cache.path_prefixes.join(','),
-              statusCodes: edge.cache.status_codes.join(','),
+              statusCodes: statusCodesToChoices(edge.cache.status_codes),
               maxBody: edge.cache.max_body_bytes || 2 * 1024 * 1024,
             }}
             onSubmit={(values) => {
@@ -111,7 +112,7 @@ export default function EdgePage() {
                 mode: values.mode,
                 ttl: Number(values.ttl || 0),
                 path_prefixes: split(values.paths),
-                status_codes: splitNumbers(values.statusCodes),
+                status_codes: parseStatusCodeChoices(values.statusCodes),
                 max_body_bytes: Number(values.maxBody || 0),
               },
               };
@@ -134,12 +135,12 @@ export default function EdgePage() {
               <Input placeholder="/assets/,/static/" />
             </Form.Item>
             <Form.Item label={t('edge.statusCodes')} field="statusCodes" extra={t('edge.statusCodesHint')}>
-              <Input placeholder="200,304" />
+              <StatusCodeSelector />
             </Form.Item>
             <Form.Item label={t('edge.maxBody')} field="maxBody" extra={t('edge.maxBodyHint')}>
               <ByteUnitInput minBytes={1024} />
             </Form.Item>
-            <Button htmlType="submit">{t('common.save')}</Button>
+            <div className="form-action-row"><Button type="primary" htmlType="submit">{t('common.save')}</Button></div>
           </Form>
         </section>
 
@@ -174,14 +175,16 @@ export default function EdgePage() {
             <Form.Item label={t('edge.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
             <Form.Item label={t('edge.algorithms')} field="algorithms" extra={t('edge.algorithmsHint')}>
               <Checkbox.Group className="edge-checkbox-group">
-                <Checkbox value="br">Brotli (br)</Checkbox>
                 <Checkbox value="gzip">Gzip</Checkbox>
+                <Checkbox value="br">Brotli (br)</Checkbox>
               </Checkbox.Group>
             </Form.Item>
             <Form.Item label={t('edge.level')} field="level" extra={t('edge.levelHint')}>
               <Select>
                 <Select.Option value={1}>{t('edge.levelFast')}</Select.Option>
+                <Select.Option value={3}>{t('edge.levelLight')}</Select.Option>
                 <Select.Option value={5}>{t('edge.levelBalanced')}</Select.Option>
+                <Select.Option value={7}>{t('edge.levelStrong')}</Select.Option>
                 <Select.Option value={9}>{t('edge.levelCompact')}</Select.Option>
               </Select>
             </Form.Item>
@@ -191,7 +194,7 @@ export default function EdgePage() {
             <Form.Item label={t('edge.types')} field="types" extra={t('edge.typesHint')}>
               <Input placeholder="text/,application/json,application/javascript" />
             </Form.Item>
-            <Button htmlType="submit">{t('common.save')}</Button>
+            <div className="form-action-row"><Button type="primary" htmlType="submit">{t('common.save')}</Button></div>
           </Form>
         </section>
       </div>
@@ -237,23 +240,87 @@ function split(value: unknown) {
   return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
 }
 
-function splitNumbers(value: unknown) {
-  return split(value).map((item) => Number(item)).filter((item) => Number.isInteger(item) && item >= 100 && item <= 599);
-}
-
 function normalizeAlgorithms(value: string[]) {
   const out = value.map((item) => (item === 'brotli' ? 'br' : item)).filter((item) => item === 'br' || item === 'gzip');
   return out.length > 0 ? Array.from(new Set(out)) : ['br', 'gzip'];
 }
 
 function normalizeCompressionLevel(level: number) {
-  if (level <= 1) {
+  if (level <= 2) {
     return 1;
+  }
+  if (level <= 4) {
+    return 3;
+  }
+  if (level <= 6) {
+    return 5;
+  }
+  if (level <= 8) {
+    return 7;
   }
   if (level >= 9) {
     return 9;
   }
   return 5;
+}
+
+function StatusCodeSelector({ value, onChange }: { value?: string[]; onChange?: (next: string[]) => void }) {
+  const selected = Array.isArray(value) ? value : [];
+  return (
+    <Select
+      mode="multiple"
+      value={selected}
+      onChange={(next) => onChange?.((Array.isArray(next) ? next : []).map(String))}
+      allowClear
+      placeholder="2xx, 3xx, 200, 304"
+    >
+      {statusCodeChoices.map((choice) => (
+        <Select.Option key={choice} value={choice}>{choice}</Select.Option>
+      ))}
+    </Select>
+  );
+}
+
+function statusCodesToChoices(codes: number[] | undefined) {
+  const values = new Set((codes ?? []).filter((code) => Number.isInteger(code) && code >= 100 && code <= 599));
+  const out: string[] = [];
+  for (const family of [2, 3, 4, 5]) {
+    let complete = true;
+    for (let code = family * 100; code < family * 100 + 100; code += 1) {
+      if (!values.has(code)) {
+        complete = false;
+        break;
+      }
+    }
+    if (complete) {
+      out.push(`${family}xx`);
+      for (let code = family * 100; code < family * 100 + 100; code += 1) {
+        values.delete(code);
+      }
+    }
+  }
+  return [...out, ...Array.from(values).sort((a, b) => a - b).map(String)];
+}
+
+function parseStatusCodeChoices(value: unknown) {
+  const parts = Array.isArray(value) ? value.map(String) : split(value);
+  const codes = new Set<number>();
+  for (const part of parts) {
+    const normalized = part.trim().toLowerCase();
+    const family = normalized.match(/^([2-5])xx$/);
+    if (family) {
+      const base = Number(family[1]) * 100;
+      for (let code = base; code < base + 100; code += 1) {
+        codes.add(code);
+      }
+      continue;
+    }
+    const code = Number(normalized);
+    if (Number.isInteger(code) && code >= 100 && code <= 599) {
+      codes.add(code);
+    }
+  }
+  return Array.from(codes).sort((a, b) => a - b);
 }
 
 function DurationUnitInput({ value, onChange }: { value?: number | string; onChange?: (next: number) => void }) {

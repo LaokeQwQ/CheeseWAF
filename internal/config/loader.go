@@ -246,6 +246,9 @@ func Default() Config {
 			},
 			Audit: AuditConfig{Enabled: true, Path: "./logs/audit.log"},
 		},
+		BlockPage: BlockPageConfig{
+			TemplateID: "minimal",
+		},
 	}
 }
 
@@ -460,6 +463,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.APISec.Auth.JWKSRefresh == 0 {
 		cfg.APISec.Auth.JWKSRefresh = def.APISec.Auth.JWKSRefresh
+	}
+	if cfg.BlockPage.TemplateID == "" {
+		cfg.BlockPage.TemplateID = def.BlockPage.TemplateID
 	}
 	if cfg.Protection.IP.Tags == nil {
 		cfg.Protection.IP.Tags = map[string][]string{}

@@ -30,6 +30,55 @@ type ToolResult struct {
 	Error   string `json:"error,omitempty"`
 }
 
+type AssistantToolCall struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	Sensitivity string           `json:"sensitivity"`
+	Args        map[string]any   `json:"args,omitempty"`
+	Result      *ToolResult      `json:"result,omitempty"`
+	Approval    *ApprovalRequest `json:"approval,omitempty"`
+	Error       string           `json:"error,omitempty"`
+}
+
+// AssistantTraceEvent is an operator-visible audit trail for the assistant
+// agent loop. It records what happened at the tool gateway boundary without
+// exposing hidden chain-of-thought.
+type AssistantTraceEvent struct {
+	Type         string           `json:"type"`
+	Message      string           `json:"message"`
+	Provider     string           `json:"provider,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	Mode         string           `json:"mode,omitempty"`
+	ToolName     string           `json:"tool_name,omitempty"`
+	Args         map[string]any   `json:"args,omitempty"`
+	Result       *ToolResult      `json:"result,omitempty"`
+	Approval     *ApprovalRequest `json:"approval,omitempty"`
+	Error        string           `json:"error,omitempty"`
+	At           string           `json:"at,omitempty"`
+	InputTokens  int              `json:"input_tokens,omitempty"`
+	OutputTokens int              `json:"output_tokens,omitempty"`
+	TotalTokens  int              `json:"total_tokens,omitempty"`
+}
+
+func SensitivityName(value ToolSensitivity) string {
+	switch value {
+	case ReadOnly:
+		return "read_only"
+	case Modify:
+		return "modify"
+	case Destructive:
+		return "destructive"
+	default:
+		return "unknown"
+	}
+}
+
+// ToolPreviewer can be implemented by tools that need to show an exact
+// operator-visible diff before approval.
+type ToolPreviewer interface {
+	Preview(ctx context.Context, args map[string]any) (string, error)
+}
+
 // Tool is the interface for AI assistant internal tools.
 // Each tool declares its sensitivity level for the approval flow.
 // AI 助手内部工具接口，每个工具声明自己的敏感度级别。

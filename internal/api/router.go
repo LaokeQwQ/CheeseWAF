@@ -21,6 +21,7 @@ type Options struct {
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
+	OnBlockPageChanged  func(config.BlockPageConfig) error
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -41,6 +42,7 @@ func NewRouter(opts Options) http.Handler {
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
 		OnAPISecChanged:     opts.OnAPISecChanged,
+		OnBlockPageChanged:  opts.OnBlockPageChanged,
 	})
 	hub := opts.Hub
 	if hub == nil {
@@ -63,6 +65,7 @@ func NewRouter(opts Options) http.Handler {
 			r.Use(middleware.SessionMiddleware(opts.Store))
 			r.Post("/auth/refresh", h.RefreshToken)
 			r.Post("/auth/logout", h.Logout)
+			r.Post("/ui/errors", h.ReportUIError)
 		})
 
 		r.Group(func(r chi.Router) {
@@ -125,12 +128,21 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:ai")).Post("/ai/analyze", h.AnalyzeLog)
 			r.With(require("read:ai")).Post("/ai/events/analyze", h.AnalyzeEvents)
 			r.With(require("read:ai")).Post("/ai/assistant", h.AIAssistant)
+			r.With(require("read:ai")).Post("/ai/assistant/stream", h.AIAssistantStream)
+			r.With(require("read:ai")).Get("/ai/tools", h.AITools)
+			r.With(require("write:ai")).Post("/ai/tools/execute", h.ExecuteAITool)
+			r.With(require("write:ai")).Post("/ai/tools/approvals/{id}/approve", h.ApproveAIApproval)
+			r.With(require("write:ai")).Post("/ai/tools/approvals/{id}/reject", h.RejectAIApproval)
 			r.With(require("read:storage")).Get("/storage", h.StorageStats)
 			r.With(require("write:storage")).Post("/storage/cleanup", h.CleanupStorage)
 			r.With(require("write:system")).Post("/system/reclaim", h.ReclaimSystemResources)
 			r.With(require("read:system")).Post("/backup/export", h.ExportBackup)
 			r.With(require("write:system")).Post("/backup/restore", h.RestoreBackup)
 			r.With(require("read:system")).Get("/block-pages/templates", h.BlockPageTemplates)
+			r.With(require("read:system")).Get("/block-pages/config", h.BlockPageConfig)
+			r.With(require("write:system")).Put("/block-pages/config", h.UpdateBlockPageConfig)
+			r.With(require("write:system")).Post("/block-pages/upload", h.UploadBlockPageHTML)
+			r.With(require("write:system")).Delete("/block-pages/custom", h.DeleteCustomBlockPage)
 			r.With(require("write:sites")).Post("/nginx/import", h.ImportNginx)
 		})
 	})

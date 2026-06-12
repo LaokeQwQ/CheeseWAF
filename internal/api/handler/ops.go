@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
@@ -165,6 +166,108 @@ func (h *Handler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) BlockPageTemplates(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, blockpage.TemplateLibrary())
+}
+
+func (h *Handler) BlockPageConfig(w http.ResponseWriter, _ *http.Request) {
+	writeData(w, h.Config.BlockPage)
+}
+
+func (h *Handler) UpdateBlockPageConfig(w http.ResponseWriter, r *http.Request) {
+	var req config.BlockPageConfig
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.TemplateID == "" {
+		req.TemplateID = h.Config.BlockPage.TemplateID
+		if req.TemplateID == "" {
+			req.TemplateID = config.Default().BlockPage.TemplateID
+		}
+	}
+	if strings.TrimSpace(req.CustomHTML) == "" {
+		req.CustomEnabled = false
+	}
+	if !h.applyBlockPageConfig(w, req) {
+		return
+	}
+	writeData(w, h.Config.BlockPage)
+}
+
+func (h *Handler) UploadBlockPageHTML(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, int64(config.MaxBlockPageHTMLBytes+4096))
+	if err := r.ParseMultipartForm(int64(config.MaxBlockPageHTMLBytes + 4096)); err != nil {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_INVALID", err.Error())
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_MISSING", "html file field is required")
+		return
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, int64(config.MaxBlockPageHTMLBytes+1)))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_READ_ERROR", err.Error())
+		return
+	}
+	if len(body) > config.MaxBlockPageHTMLBytes {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_TOO_LARGE", "custom block page HTML exceeds maximum size")
+		return
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_EMPTY", "custom block page HTML is empty")
+		return
+	}
+	next := h.Config.BlockPage
+	if templateID := strings.TrimSpace(r.FormValue("template_id")); templateID != "" {
+		next.TemplateID = templateID
+	}
+	if next.TemplateID == "" {
+		next.TemplateID = config.Default().BlockPage.TemplateID
+	}
+	next.CustomEnabled = true
+	next.CustomHTML = string(body)
+	if !h.applyBlockPageConfig(w, next) {
+		return
+	}
+	writeData(w, map[string]any{"config": h.Config.BlockPage, "filename": header.Filename, "bytes": len(body)})
+}
+
+func (h *Handler) DeleteCustomBlockPage(w http.ResponseWriter, _ *http.Request) {
+	next := h.Config.BlockPage
+	next.CustomEnabled = false
+	next.CustomHTML = ""
+	if next.TemplateID == "" {
+		next.TemplateID = config.Default().BlockPage.TemplateID
+	}
+	if !h.applyBlockPageConfig(w, next) {
+		return
+	}
+	writeData(w, h.Config.BlockPage)
+}
+
+func (h *Handler) applyBlockPageConfig(w http.ResponseWriter, next config.BlockPageConfig) bool {
+	if _, ok := blockpage.TemplateByID(next.TemplateID); !ok {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_UNKNOWN", "unknown block page template")
+		return false
+	}
+	if _, err := blockpage.NewRendererFromConfig(next); err != nil {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
+		return false
+	}
+	prev := h.Config.BlockPage
+	h.Config.BlockPage = next
+	if err := h.persistConfig(); err != nil {
+		h.Config.BlockPage = prev
+		writeError(w, http.StatusInternalServerError, "BLOCK_PAGE_SAVE_ERROR", err.Error())
+		return false
+	}
+	if err := h.notifyBlockPageChanged(); err != nil {
+		h.Config.BlockPage = prev
+		_ = h.persistConfig()
+		writeError(w, http.StatusInternalServerError, "BLOCK_PAGE_RELOAD_ERROR", err.Error())
+		return false
+	}
+	return true
 }
 
 func (h *Handler) ImportNginx(w http.ResponseWriter, r *http.Request) {
