@@ -480,24 +480,66 @@ export default function AttackMapPage() {
       </section>
 
       <section className="table-panel attack-map-table">
-        <Table
-          rowKey="key"
-          pagination={false}
-          loading={isLoading}
-          data={mode === 'china' ? chinaRegions : regions}
-          expandedRowRender={(record) => <RegionEventDetails region={record as AttackRegion} />}
-          columns={[
-            { title: t('attackMap.country'), dataIndex: 'countryCode', render: (value: string) => displayCountry(value, t) },
-            { title: t('attackMap.location'), dataIndex: 'locationName', render: (_: string, record: AttackRegion) => formatRegionLocation(record, t) },
-            { title: t('attackMap.precision'), dataIndex: 'precision', render: (value: LocationPrecision) => t(`attackMap.precisionLevel.${value}`) },
-            { title: t('attackMap.attacks'), dataIndex: 'attacks' },
-            { title: t('attackMap.riskLabel'), dataIndex: 'level', render: (level: ThreatLevel) => <Tag color={riskTagColor(level)}>{t(`attackMap.risk.${level}`)}</Tag> },
-            { title: t('attackMap.top'), dataIndex: 'top', render: (top: string) => <Tag color="orange">{displayCategory(top, t)}</Tag> },
-            { title: t('attackMap.sources'), dataIndex: 'sourcePrefixes', render: (items: string[]) => items.join(', ') || '-' },
-          ]}
-        />
+        <div className="desktop-table-wrap">
+          <Table
+            rowKey="key"
+            pagination={false}
+            loading={isLoading}
+            data={mode === 'china' ? chinaRegions : regions}
+            expandedRowRender={(record) => <RegionEventDetails region={record as AttackRegion} />}
+            columns={[
+              { title: t('attackMap.country'), dataIndex: 'countryCode', render: (value: string) => displayCountry(value, t) },
+              { title: t('attackMap.location'), dataIndex: 'locationName', render: (_: string, record: AttackRegion) => formatRegionLocation(record, t) },
+              { title: t('attackMap.precision'), dataIndex: 'precision', render: (value: LocationPrecision) => t(`attackMap.precisionLevel.${value}`) },
+              { title: t('attackMap.attacks'), dataIndex: 'attacks' },
+              { title: t('attackMap.riskLabel'), dataIndex: 'level', render: (level: ThreatLevel) => <Tag color={riskTagColor(level)}>{t(`attackMap.risk.${level}`)}</Tag> },
+              { title: t('attackMap.top'), dataIndex: 'top', render: (top: string) => <Tag color="orange">{displayCategory(top, t)}</Tag> },
+              { title: t('attackMap.sources'), dataIndex: 'sourcePrefixes', render: (items: string[]) => items.join(', ') || '-' },
+            ]}
+          />
+        </div>
+        <div className="mobile-card-list attack-region-cards">
+          {(mode === 'china' ? chinaRegions : regions).map((region) => (
+            <AttackRegionCard key={region.key} region={region} t={t} />
+          ))}
+        </div>
       </section>
     </section>
+  );
+}
+
+function AttackRegionCard({
+  region,
+  t,
+}: {
+  region: AttackRegion;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  return (
+    <article className="mobile-data-card attack-region-card">
+      <header>
+        <strong>{formatRegionLocation(region, t)}</strong>
+        <Tag color={riskTagColor(region.level)}>{t(`attackMap.risk.${region.level}`)}</Tag>
+      </header>
+      <dl>
+        <div>
+          <dt>{t('attackMap.precision')}</dt>
+          <dd>{t(`attackMap.precisionLevel.${region.precision}`)}</dd>
+        </div>
+        <div>
+          <dt>{t('attackMap.attacks')}</dt>
+          <dd>{region.attacks}</dd>
+        </div>
+        <div>
+          <dt>{t('attackMap.top')}</dt>
+          <dd><Tag color="orange">{displayCategory(region.top, t)}</Tag></dd>
+        </div>
+        <div>
+          <dt>{t('attackMap.sources')}</dt>
+          <dd>{region.sourcePrefixes.join(', ') || '-'}</dd>
+        </div>
+      </dl>
+    </article>
   );
 }
 

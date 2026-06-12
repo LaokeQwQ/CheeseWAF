@@ -112,6 +112,7 @@ export default function AttackScreenPage() {
                 countryLevels={countryLevels}
                 worldFeatures={worldFeatures}
                 target={protectedTarget}
+                visualTheme="dark"
                 fallback={<div className="attack-screen-globe-empty">{t('attackMap.attacks')}: 0</div>}
               />
             </Suspense>

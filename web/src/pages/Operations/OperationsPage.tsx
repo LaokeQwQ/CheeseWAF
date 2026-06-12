@@ -91,48 +91,63 @@ export default function OperationsPage() {
         <div className="panel-heading">
           <h2>{t('ops.taskList')}</h2>
         </div>
-        <Table
-          rowKey="id"
-          pagination={false}
-          className="ops-task-table"
-          data={tasks}
-          columns={[
-            { title: t('ops.task'), dataIndex: 'name' },
-            { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <span className="status-group"><Tag>{taskTypeLabel(type, t)}</Tag></span> },
-            { title: t('ops.every'), dataIndex: 'every' },
-            { title: t('ops.target'), dataIndex: 'target', render: (target: string) => <code className="table-code" title={target || '-'}>{target || '-'}</code> },
-            {
-              title: t('rules.enabled'),
-              dataIndex: 'enabled',
-              render: (enabled: boolean, record: ScheduledTask) => (
-                <Switch
-                  size="small"
-                  checked={enabled}
-                  loading={tasksMutation.isPending}
-                  onChange={(next) => patchTask(record.id, { enabled: next })}
-                />
-              ),
-            },
-            {
-              title: t('common.actions'),
-              dataIndex: 'actions',
-              render: (_: unknown, record: ScheduledTask) => (
-                <span className="table-action-group ops-task-actions">
-                  <Button size="mini" icon={<Edit3 size={13} />} onClick={() => setEditingTask(record)}>{t('common.edit')}</Button>
-                  <Button
-                    size="mini"
-                    status="danger"
-                    icon={<Trash2 size={13} />}
-                    disabled={tasksMutation.isPending}
-                    onClick={() => removeTask(record.id)}
-                  >
-                    {t('common.delete')}
-                  </Button>
-                </span>
-              ),
-            },
-          ]}
-        />
+        <div className="desktop-table-wrap">
+          <Table
+            rowKey="id"
+            pagination={false}
+            className="ops-task-table"
+            data={tasks}
+            columns={[
+              { title: t('ops.task'), dataIndex: 'name' },
+              { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <span className="status-group"><Tag>{taskTypeLabel(type, t)}</Tag></span> },
+              { title: t('ops.every'), dataIndex: 'every' },
+              { title: t('ops.target'), dataIndex: 'target', render: (target: string) => <code className="table-code" title={target || '-'}>{target || '-'}</code> },
+              {
+                title: t('rules.enabled'),
+                dataIndex: 'enabled',
+                render: (enabled: boolean, record: ScheduledTask) => (
+                  <Switch
+                    size="small"
+                    checked={enabled}
+                    loading={tasksMutation.isPending}
+                    onChange={(next) => patchTask(record.id, { enabled: next })}
+                  />
+                ),
+              },
+              {
+                title: t('common.actions'),
+                dataIndex: 'actions',
+                render: (_: unknown, record: ScheduledTask) => (
+                  <span className="table-action-group ops-task-actions">
+                    <Button size="mini" icon={<Edit3 size={13} />} onClick={() => setEditingTask(record)}>{t('common.edit')}</Button>
+                    <Button
+                      size="mini"
+                      status="danger"
+                      icon={<Trash2 size={13} />}
+                      disabled={tasksMutation.isPending}
+                      onClick={() => removeTask(record.id)}
+                    >
+                      {t('common.delete')}
+                    </Button>
+                  </span>
+                ),
+              },
+            ]}
+          />
+        </div>
+        <div className="mobile-card-list ops-task-cards">
+          {tasks.map((task) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              busy={tasksMutation.isPending}
+              onToggle={(enabled) => patchTask(task.id, { enabled })}
+              onEdit={() => setEditingTask(task)}
+              onDelete={() => removeTask(task.id)}
+              t={t}
+            />
+          ))}
+        </div>
       </section>
       <Modal
         title={t('ops.editTask')}
@@ -217,4 +232,51 @@ function taskTypeLabel(type: string, t: (key: string, options?: Record<string, u
     return t('ops.cleanup');
   }
   return type || '-';
+}
+
+function TaskCard({
+  task,
+  busy,
+  onToggle,
+  onEdit,
+  onDelete,
+  t,
+}: {
+  task: ScheduledTask;
+  busy: boolean;
+  onToggle: (enabled: boolean) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  return (
+    <article className="mobile-data-card">
+      <header>
+        <strong>{task.name}</strong>
+        <Tag>{taskTypeLabel(task.type, t)}</Tag>
+      </header>
+      <dl>
+        <div>
+          <dt>{t('ops.every')}</dt>
+          <dd>{task.every || '-'}</dd>
+        </div>
+        <div>
+          <dt>{t('ops.target')}</dt>
+          <dd><code className="table-code" title={task.target || '-'}>{task.target || '-'}</code></dd>
+        </div>
+        <div>
+          <dt>{t('rules.enabled')}</dt>
+          <dd>
+            <Switch size="small" checked={task.enabled} loading={busy} onChange={onToggle} />
+          </dd>
+        </div>
+      </dl>
+      <div className="mobile-card-actions">
+        <Button icon={<Edit3 size={14} />} onClick={onEdit}>{t('common.edit')}</Button>
+        <Button status="danger" icon={<Trash2 size={14} />} disabled={busy} onClick={onDelete}>
+          {t('common.delete')}
+        </Button>
+      </div>
+    </article>
+  );
 }
