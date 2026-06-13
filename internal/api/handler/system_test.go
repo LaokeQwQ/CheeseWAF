@@ -134,6 +134,64 @@ func TestUpdateBlockPageConfigPersistsAndNotifies(t *testing.T) {
 	}
 }
 
+func TestPreviewBlockPageConfigRendersRuntimeHTMLWithoutPersisting(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var calls int
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnBlockPageChanged: func(next config.BlockPageConfig) error {
+			calls++
+			return nil
+		},
+	})
+	payload := config.BlockPageConfig{
+		TemplateID:    "minimal",
+		CustomEnabled: true,
+		CustomHTML:    `<html><body><main>event={{.EventID}} status={{.Status}} type={{.AttackType}}</main></body></html>`,
+	}
+	raw, _ := json.Marshal(payload)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/block-pages/preview", bytes.NewReader(raw))
+	request.RemoteAddr = "203.0.113.10:49152"
+
+	handler.PreviewBlockPageConfig(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected preview ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Data struct {
+			HTML    string `json:"html"`
+			EventID string `json:"event_id"`
+			TraceID string `json:"trace_id"`
+			Status  int    `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode preview response: %v", err)
+	}
+	if body.Data.EventID == "" || body.Data.TraceID != body.Data.EventID {
+		t.Fatalf("expected preview trace/event ids, got %+v", body.Data)
+	}
+	if body.Data.Status != http.StatusForbidden || !strings.Contains(body.Data.HTML, body.Data.EventID) || strings.Contains(body.Data.HTML, "{{.EventID}}") {
+		t.Fatalf("preview did not render runtime data: %+v", body.Data)
+	}
+	if calls != 0 {
+		t.Fatalf("preview must not trigger hot reload, calls=%d", calls)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if loaded.BlockPage.CustomEnabled {
+		t.Fatalf("preview must not persist block page config: %+v", loaded.BlockPage)
+	}
+}
+
 func TestUploadAndDeleteCustomBlockPagePersistsAndNotifies(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
@@ -183,6 +241,29 @@ func TestUploadAndDeleteCustomBlockPagePersistsAndNotifies(t *testing.T) {
 	}
 	if loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML != "" {
 		t.Fatalf("custom block page was not cleared from persisted config: %+v", loaded.BlockPage)
+	}
+}
+
+func TestUploadCustomBlockPageRejectsNonHTMLUpload(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	recorder := httptest.NewRecorder()
+	request := multipartBlockPageUploadRequest(t, `not html`, "notes.txt", "minimal")
+	handler.UploadBlockPageHTML(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "BLOCK_PAGE_UPLOAD_NOT_HTML") {
+		t.Fatalf("expected non-html upload rejection, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML != "" {
+		t.Fatalf("non-html upload mutated config: %+v", loaded.BlockPage)
 	}
 }
 
@@ -252,9 +333,16 @@ func TestWriteErrorIncludesTraceID(t *testing.T) {
 	if recorder.Header().Get("X-CheeseWAF-Trace-ID") == "" {
 		t.Fatal("expected trace id response header")
 	}
+	if recorder.Header().Get("X-CheeseWAF-Event-ID") == "" {
+		t.Fatal("expected event id response header")
+	}
+	if recorder.Header().Get("X-CheeseWAF-Event-ID") != recorder.Header().Get("X-CheeseWAF-Trace-ID") {
+		t.Fatalf("event id should match trace id header, event=%q trace=%q", recorder.Header().Get("X-CheeseWAF-Event-ID"), recorder.Header().Get("X-CheeseWAF-Trace-ID"))
+	}
 	var body struct {
 		Error struct {
 			TraceID string `json:"trace_id"`
+			EventID string `json:"event_id"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
@@ -262,5 +350,8 @@ func TestWriteErrorIncludesTraceID(t *testing.T) {
 	}
 	if body.Error.TraceID == "" || body.Error.TraceID != recorder.Header().Get("X-CheeseWAF-Trace-ID") {
 		t.Fatalf("trace id mismatch header=%q body=%q", recorder.Header().Get("X-CheeseWAF-Trace-ID"), body.Error.TraceID)
+	}
+	if body.Error.EventID == "" || body.Error.EventID != recorder.Header().Get("X-CheeseWAF-Event-ID") {
+		t.Fatalf("event id mismatch header=%q body=%q", recorder.Header().Get("X-CheeseWAF-Event-ID"), body.Error.EventID)
 	}
 }

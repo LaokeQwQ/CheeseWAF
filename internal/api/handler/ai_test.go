@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -348,6 +349,67 @@ func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {
 		"event-stream-1",
 		"event: done",
 		`"answer":"已基于工具 observation 完成分析。"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream missing %q in body:\n%s", want, body)
+		}
+	}
+}
+
+func TestAIAssistantStreamEmitsProviderReasoningBeforeDone(t *testing.T) {
+	sink := &filteringAISink{items: []storage.LogEntry{{
+		ID:        "event-stream-reasoning",
+		TraceID:   "trace-stream-reasoning",
+		Timestamp: time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC),
+		Action:    "block",
+		Category:  "xss",
+		Severity:  "high",
+		ClientIP:  "203.0.113.42",
+		URI:       "/login",
+	}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := new(bytes.Buffer)
+		_, _ = raw.ReadFrom(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if strings.Contains(raw.String(), `"tools"`) {
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先读取最近事件\"}}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"recent_security_events\",\"arguments\":\"{\\\"limit\\\":5}\"}}]}}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":31,\"completion_tokens\":5,\"total_tokens\":36}}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"基于 observation 汇总\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"已基于真实工具 observation 完成分析。\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":41,\"completion_tokens\":8,\"total_tokens\":49}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = server.URL
+	cfg.AI.APIKey = "test-secret"
+	cfg.AI.Model = "test-model"
+	handler := New(Options{Config: &cfg, Sink: sink})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant/stream", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	handler.AIAssistantStream(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected assistant stream ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	reasoningIndex := strings.Index(body, `"type":"reasoning_delta"`)
+	doneIndex := strings.Index(body, "event: done")
+	if reasoningIndex < 0 || doneIndex < 0 || reasoningIndex > doneIndex {
+		t.Fatalf("expected reasoning delta before done, reasoning=%d done=%d body:\n%s", reasoningIndex, doneIndex, body)
+	}
+	for _, want := range []string{
+		`"type":"provider_response_start"`,
+		`"type":"tool_call_delta"`,
+		`"type":"content_delta"`,
+		`"answer":"已基于真实工具 observation 完成分析。"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream missing %q in body:\n%s", want, body)

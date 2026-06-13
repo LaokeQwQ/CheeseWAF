@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
@@ -299,13 +300,17 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 		limit = 30
 	}
 	trace := make([]ai.AssistantTraceEvent, 0, 8)
+	var traceMu sync.Mutex
 	record := func(event ai.AssistantTraceEvent) {
+		traceMu.Lock()
+		defer traceMu.Unlock()
 		event.At = time.Now().UTC().Format(time.RFC3339Nano)
 		trace = append(trace, event)
 		if emit != nil {
 			emit(event)
 		}
 	}
+	record(ai.AssistantTraceEvent{Type: "safety_boundary", Message: localizedTraceMessage(req.Language, "已建立安全边界：日志、payload、工具输出和用户问题都按不可信数据处理。", "Safety boundary established: logs, payloads, tool outputs, and operator questions are treated as untrusted data.")})
 	client := h.aiClient()
 	var reply *ai.AssistantReply
 	if client == nil {
@@ -326,8 +331,17 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	}
 	registry := h.aiAssistantRegistry()
 	toolDefinitions := registry.ListForLLM()
+	record(ai.AssistantTraceEvent{Type: "tool_gateway_ready", Message: localizedTraceMessage(req.Language, fmt.Sprintf("工具网关已就绪：%d 个 CheeseWAF 工具可供模型按需调用。", len(toolDefinitions)), fmt.Sprintf("Tool gateway ready: %d CheeseWAF tools are available for model-requested calls.", len(toolDefinitions)))})
 	record(ai.AssistantTraceEvent{Type: "planning_start", Message: localizedTraceMessage(req.Language, "正在让模型通过原生工具接口选择需要调用的 CheeseWAF 工具。", "Asking the model to choose CheeseWAF tools through the native tool interface.")})
-	plan, err := ai.PlanAssistantToolCalls(ctx, client, req.Message, req.Language, toolDefinitions)
+	var plan *ai.AssistantPlan
+	var err error
+	if emit != nil {
+		planEmit, stopPlanWatch := providerStreamEmitter(ctx, req.Language, "planning", record)
+		plan, err = ai.PlanAssistantToolCallsStream(ctx, client, req.Message, req.Language, toolDefinitions, planEmit)
+		stopPlanWatch()
+	} else {
+		plan, err = ai.PlanAssistantToolCalls(ctx, client, req.Message, req.Language, toolDefinitions)
+	}
 	if err != nil {
 		requests := intentsToToolRequests(h.assistantToolIntents(req.Message))
 		if len(requests) > 0 {
@@ -352,6 +366,9 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 		OutputTokens: plan.OutputTokens,
 		TotalTokens:  plan.TotalTokens,
 	})
+	if strings.TrimSpace(plan.ReasoningSummary) != "" {
+		record(ai.AssistantTraceEvent{Type: "reasoning_summary", Message: plan.ReasoningSummary, Provider: plan.Provider, Model: plan.Model})
+	}
 	requests := plan.ToolRequests
 	if len(requests) == 0 {
 		requests = intentsToToolRequests(h.assistantToolIntents(req.Message))
@@ -361,20 +378,27 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	}
 	if len(requests) == 0 {
 		reply = &ai.AssistantReply{
-			Answer:       plan.Answer,
-			AIUsed:       true,
-			Provider:     plan.Provider,
-			Model:        plan.Model,
-			InputTokens:  plan.InputTokens,
-			OutputTokens: plan.OutputTokens,
-			TotalTokens:  plan.TotalTokens,
+			Answer:           plan.Answer,
+			ReasoningSummary: plan.ReasoningSummary,
+			AIUsed:           true,
+			Provider:         plan.Provider,
+			Model:            plan.Model,
+			InputTokens:      plan.InputTokens,
+			OutputTokens:     plan.OutputTokens,
+			TotalTokens:      plan.TotalTokens,
 		}
 		reply.Trace = trace
 		return reply, nil
 	}
 	calls := h.executeAssistantToolRequests(ctx, requests, record)
 	record(ai.AssistantTraceEvent{Type: "final_start", Message: localizedTraceMessage(req.Language, "工具 observation 已返回，正在让模型基于这些真实结果生成最终回答。", "Tool observations have returned; asking the model to produce the final answer from those real results.")})
-	reply, err = ai.AnswerAssistantWithToolResults(ctx, client, req.Message, req.Language, toolDefinitions, calls)
+	if emit != nil {
+		finalEmit, stopFinalWatch := providerStreamEmitter(ctx, req.Language, "final", record)
+		reply, err = ai.AnswerAssistantWithToolResultsStream(ctx, client, req.Message, req.Language, toolDefinitions, calls, finalEmit)
+		stopFinalWatch()
+	} else {
+		reply, err = ai.AnswerAssistantWithToolResults(ctx, client, req.Message, req.Language, toolDefinitions, calls)
+	}
 	if err != nil {
 		providerErr := err
 		record(ai.AssistantTraceEvent{Type: "final_error", Message: localizedTraceMessage(req.Language, "模型最终总结失败，保留真实工具结果并返回本地摘要。", "Model final summarization failed; keeping real tool results and returning a local summary."), Error: providerErr.Error()})
@@ -394,6 +418,9 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	}
 	if reply.Model == "" {
 		reply.Model = plan.Model
+	}
+	if strings.TrimSpace(reply.ReasoningSummary) == "" {
+		reply.ReasoningSummary = plan.ReasoningSummary
 	}
 	record(ai.AssistantTraceEvent{
 		Type:         "final_done",
@@ -578,6 +605,82 @@ func appendProviderFailure(answer, language string, err error) string {
 		return message
 	}
 	return strings.TrimSpace(answer) + "\n\n" + message
+}
+
+func providerStreamEmitter(ctx context.Context, language, phase string, record func(ai.AssistantTraceEvent)) (ai.StreamEmitter, func()) {
+	first := make(chan struct{})
+	done := make(chan struct{})
+	var firstOnce sync.Once
+	var stopOnce sync.Once
+	markFirst := func() {
+		firstOnce.Do(func() {
+			close(first)
+		})
+	}
+	go func() {
+		timer := time.NewTimer(10 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-first:
+		case <-done:
+		case <-ctx.Done():
+		case <-timer.C:
+			record(ai.AssistantTraceEvent{
+				Type:    "provider_first_event_slow",
+				Message: localizedProviderSlowMessage(language, phase),
+			})
+		}
+	}()
+	emit := func(event ai.AssistantTraceEvent) {
+		if isProviderFirstEvent(event.Type) {
+			markFirst()
+		}
+		event.Message = localizedProviderTraceMessage(language, event)
+		record(event)
+	}
+	stop := func() {
+		stopOnce.Do(func() {
+			close(done)
+		})
+	}
+	return emit, stop
+}
+
+func isProviderFirstEvent(kind string) bool {
+	switch kind {
+	case "provider_response_start", "reasoning_delta", "content_delta", "tool_call_delta":
+		return true
+	default:
+		return false
+	}
+}
+
+func localizedProviderTraceMessage(language string, event ai.AssistantTraceEvent) string {
+	switch event.Type {
+	case "provider_response_start":
+		return localizedTraceMessage(language, "AI provider 已开始回流响应。", "AI provider started streaming a response.")
+	case "provider_first_event_slow":
+		if strings.TrimSpace(event.Message) != "" {
+			return event.Message
+		}
+		return localizedProviderSlowMessage(language, event.Mode)
+	default:
+		return event.Message
+	}
+}
+
+func localizedProviderSlowMessage(language, phase string) string {
+	if strings.Contains(strings.ToLower(language), "en") {
+		return "AI provider has not started streaming within 10s during " + nonEmpty(phase, "this step") + "; keeping the request open."
+	}
+	switch phase {
+	case "planning":
+		return "AI provider 在 10 秒内还没有开始规划回流；请求会继续保持，不会把最终回答误判为超时。"
+	case "final":
+		return "AI provider 在 10 秒内还没有开始生成最终回答；请求会继续保持，不会把完整回复耗时误判为首包超时。"
+	default:
+		return "AI provider 在 10 秒内还没有开始回流；请求会继续保持。"
+	}
 }
 
 func localizedTraceMessage(language, zh, en string) string {

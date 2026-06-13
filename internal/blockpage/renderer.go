@@ -2,6 +2,7 @@ package blockpage
 
 import (
 	"bytes"
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"strings"
@@ -11,14 +12,61 @@ import (
 )
 
 type Data struct {
-	EventID    string
-	TraceID    string
-	AttackType string
-	ClientIP   string
-	Timestamp  time.Time
-	Message    string
-	Status     int
-	StatusText string
+	EventID            string
+	TraceID            string
+	AttackType         string
+	ClientIP           string
+	Timestamp          time.Time
+	Message            string
+	Status             int
+	StatusText         string
+	Lang               string
+	Locale             string
+	Timezone           string
+	TimestampISO       string
+	TimestampLocal     string
+	Text               LocalizedText
+	TranslationsJSON   template.JS
+	ServerLanguageHint string
+}
+
+type LocalizedText struct {
+	HTMLLang         string
+	Title            string
+	StatusChip       string
+	AriaLabel        string
+	EyebrowSecurity  string
+	EyebrowError     string
+	HeadlineBlocked  string
+	HeadlineError    string
+	DefaultBlocked   string
+	DefaultError     string
+	Client           string
+	CheeseWAF        string
+	Origin           string
+	RequestReceived  string
+	SecurityApplied  string
+	ErrorRecorded    string
+	Protected        string
+	NeedsReview      string
+	NoticePrefix     string
+	NoticeBody       string
+	EventTraceID     string
+	HTTPStatus       string
+	EventType        string
+	ClientIP         string
+	Time             string
+	Action           string
+	ActionBlocked    string
+	ActionRecorded   string
+	NextSteps        string
+	Visitor          string
+	VisitorHelp      string
+	SiteOperator     string
+	SiteOperatorHelp string
+	Footer           string
+	Unknown          string
+	GeneratedBy      string
 }
 
 type Renderer struct {
@@ -43,6 +91,37 @@ func NewRendererFromConfig(cfg config.BlockPageConfig) (*Renderer, error) {
 }
 
 func (r *Renderer) Render(w http.ResponseWriter, status int, data Data) {
+	body, data := r.RenderHTML(status, data)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Language", data.Locale)
+	w.Header().Set("Vary", "Accept-Language, Sec-CH-Time-Zone, Sec-CH-Timezone, X-Timezone, X-Client-Timezone, CloudFront-Viewer-Time-Zone")
+	w.Header().Set("Accept-CH", "Sec-CH-Time-Zone")
+	w.Header().Set("X-CheeseWAF-Trace-ID", data.TraceID)
+	w.Header().Set("X-CheeseWAF-Event-ID", data.EventID)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
+}
+
+func (r *Renderer) RenderRequest(w http.ResponseWriter, req *http.Request, status int, data Data) {
+	data = data.WithRequest(req)
+	r.Render(w, status, data)
+}
+
+func (data Data) WithRequest(req *http.Request) Data {
+	if req == nil {
+		return data
+	}
+	if strings.TrimSpace(data.Locale) == "" || strings.TrimSpace(data.Lang) == "" {
+		data.Locale, data.Lang = localeFromAcceptLanguage(req.Header.Get("Accept-Language"))
+	}
+	if strings.TrimSpace(data.Timezone) == "" {
+		data.Timezone = timezoneFromRequest(req)
+	}
+	return data
+}
+
+func (r *Renderer) RenderHTML(status int, data Data) (string, Data) {
 	if data.Timestamp.IsZero() {
 		data.Timestamp = time.Now().UTC()
 	}
@@ -61,6 +140,7 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, data Data) {
 	if data.StatusText == "" {
 		data.StatusText = http.StatusText(data.Status)
 	}
+	data = localizeData(data)
 	var buf bytes.Buffer
 	tmpl := r.template
 	if tmpl == nil {
@@ -71,12 +151,7 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, data Data) {
 		_ = template.Must(template.New("block").Parse(defaultBlockTemplate)).Execute(&buf, data)
 	}
 	ensureVisibleEventID(&buf, data.EventID)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("X-CheeseWAF-Trace-ID", data.TraceID)
-	w.Header().Set("X-CheeseWAF-Event-ID", data.EventID)
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_, _ = w.Write(buf.Bytes())
+	return buf.String(), data
 }
 
 func ResolveTemplateHTML(cfg config.BlockPageConfig) string {
@@ -87,6 +162,323 @@ func ResolveTemplateHTML(cfg config.BlockPageConfig) string {
 		return info.HTML
 	}
 	return defaultBlockTemplate
+}
+
+func localizeData(data Data) Data {
+	if strings.TrimSpace(data.Locale) == "" || strings.TrimSpace(data.Lang) == "" {
+		data.Locale, data.Lang = localeFromAcceptLanguage("")
+	}
+	if strings.TrimSpace(data.Timezone) == "" {
+		data.Timezone = "UTC"
+	}
+	data.Text = localizedText(data.Locale)
+	data.TimestampISO = data.Timestamp.UTC().Format(time.RFC3339)
+	data.TimestampLocal = formatTimestamp(data.Timestamp, data.Timezone, data.Locale)
+	data.TranslationsJSON = template.JS(localizationJSON())
+	data.ServerLanguageHint = data.Locale
+	return data
+}
+
+func localeFromAcceptLanguage(header string) (string, string) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return "en", "en"
+	}
+	bestLocale := ""
+	bestLang := ""
+	bestQ := -1.0
+	for _, part := range strings.Split(header, ",") {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		tag := item
+		q := 1.0
+		if semicolon := strings.Index(item, ";"); semicolon >= 0 {
+			tag = strings.TrimSpace(item[:semicolon])
+			for _, param := range strings.Split(item[semicolon+1:], ";") {
+				param = strings.TrimSpace(param)
+				if strings.HasPrefix(strings.ToLower(param), "q=") {
+					if parsed, ok := parseQuality(strings.TrimSpace(param[2:])); ok {
+						q = parsed
+					}
+				}
+			}
+		}
+		if q <= 0 || tag == "*" || tag == "" {
+			continue
+		}
+		locale, lang, supported := supportedLocale(tag)
+		if supported && q > bestQ {
+			bestLocale = locale
+			bestLang = lang
+			bestQ = q
+		}
+	}
+	if bestLocale != "" {
+		return bestLocale, bestLang
+	}
+	return "en", "en"
+}
+
+func parseQuality(raw string) (float64, bool) {
+	switch {
+	case raw == "1" || raw == "1.0" || raw == "1.00" || raw == "1.000":
+		return 1, true
+	case raw == "0" || raw == "0.0" || raw == "0.00" || raw == "0.000":
+		return 0, true
+	}
+	if strings.HasPrefix(raw, "0.") {
+		var value float64
+		scale := 0.1
+		for _, ch := range strings.TrimPrefix(raw, "0.") {
+			if ch < '0' || ch > '9' {
+				return 0, false
+			}
+			value += float64(ch-'0') * scale
+			scale /= 10
+		}
+		return value, true
+	}
+	return 0, false
+}
+
+func normalizeLocale(tag string) (string, string) {
+	locale, lang, _ := supportedLocale(tag)
+	return locale, lang
+}
+
+func supportedLocale(tag string) (string, string, bool) {
+	tag = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(tag), "_", "-"))
+	switch {
+	case tag == "" || tag == "*":
+		return "en", "en", true
+	case strings.HasPrefix(tag, "zh"):
+		if strings.Contains(tag, "tw") || strings.Contains(tag, "hk") || strings.Contains(tag, "hant") {
+			return "zh-Hant", "zh", true
+		}
+		return "zh-CN", "zh", true
+	case strings.HasPrefix(tag, "ja"):
+		return "ja", "ja", true
+	case strings.HasPrefix(tag, "en"):
+		return "en", "en", true
+	default:
+		return "en", "en", false
+	}
+}
+
+func timezoneFromRequest(req *http.Request) string {
+	if req == nil {
+		return "UTC"
+	}
+	for _, key := range []string{"Sec-CH-Time-Zone", "Sec-CH-Timezone", "X-Timezone", "X-Client-Timezone", "CloudFront-Viewer-Time-Zone"} {
+		if value := strings.TrimSpace(req.Header.Get(key)); validTimezone(value) {
+			return value
+		}
+	}
+	return "UTC"
+}
+
+func validTimezone(value string) bool {
+	if value == "" || len(value) > 80 || strings.ContainsAny(value, "\r\n\t\\") {
+		return false
+	}
+	if value == "UTC" {
+		return true
+	}
+	if strings.Contains(value, "..") || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") {
+		return false
+	}
+	_, err := time.LoadLocation(value)
+	return err == nil
+}
+
+func formatTimestamp(ts time.Time, timezone, locale string) string {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		loc = time.UTC
+		timezone = "UTC"
+	}
+	local := ts.In(loc)
+	switch {
+	case strings.HasPrefix(locale, "zh"):
+		return local.Format("2006-01-02 15:04:05 ") + timezone
+	case locale == "ja":
+		return local.Format("2006-01-02 15:04:05 ") + timezone
+	default:
+		return local.Format("2006-01-02 15:04:05 ") + timezone
+	}
+}
+
+func localizedText(locale string) LocalizedText {
+	switch locale {
+	case "zh-CN":
+		return LocalizedText{
+			HTMLLang:         "zh-CN",
+			Title:            "访问被拦截",
+			AriaLabel:        "CheeseWAF 安全响应",
+			EyebrowSecurity:  "安全响应",
+			EyebrowError:     "服务错误",
+			HeadlineBlocked:  "访问已被拦截",
+			HeadlineError:    "受保护服务返回错误",
+			DefaultBlocked:   "该请求在到达受保护源站之前命中了 CheeseWAF 安全策略。",
+			DefaultError:     "CheeseWAF 未能完成对受保护源站的请求。",
+			Client:           "客户端",
+			CheeseWAF:        "CheeseWAF",
+			Origin:           "源站",
+			RequestReceived:  "请求已接收",
+			SecurityApplied:  "安全策略已执行",
+			ErrorRecorded:    "错误已记录",
+			Protected:        "已保护",
+			NeedsReview:      "需要站点管理员检查",
+			NoticePrefix:     "联系支持时请提供事件 / Trace ID。",
+			NoticeBody:       "这是 CheeseWAF 中对应安全事件或上游错误事件的精确检索键。",
+			EventTraceID:     "事件 / Trace ID",
+			HTTPStatus:       "HTTP 状态",
+			EventType:        "事件类型",
+			ClientIP:         "客户端 IP",
+			Time:             "时间",
+			Action:           "动作",
+			ActionBlocked:    "已拦截",
+			ActionRecorded:   "已记录",
+			NextSteps:        "下一步",
+			Visitor:          "访客",
+			VisitorHelp:      "如果你认为这是误拦截，请联系站点所有者并提供上方事件 / Trace ID。",
+			SiteOperator:     "站点管理员",
+			SiteOperatorHelp: "在 CheeseWAF 日志中搜索事件 / Trace ID，查看命中的策略、请求元数据和执行动作。",
+			Footer:           "此页面由 CheeseWAF 生成，响应中不会暴露源站应用细节。",
+			Unknown:          "未知",
+			GeneratedBy:      "由 CheeseWAF 生成",
+		}
+	case "zh-Hant":
+		return LocalizedText{
+			HTMLLang:         "zh-Hant",
+			Title:            "存取已被封鎖",
+			AriaLabel:        "CheeseWAF 安全回應",
+			EyebrowSecurity:  "安全回應",
+			EyebrowError:     "服務錯誤",
+			HeadlineBlocked:  "存取已被封鎖",
+			HeadlineError:    "受保護服務返回錯誤",
+			DefaultBlocked:   "此請求在到達受保護源站之前命中了 CheeseWAF 安全策略。",
+			DefaultError:     "CheeseWAF 無法完成對受保護源站的請求。",
+			Client:           "用戶端",
+			CheeseWAF:        "CheeseWAF",
+			Origin:           "源站",
+			RequestReceived:  "請求已接收",
+			SecurityApplied:  "安全策略已執行",
+			ErrorRecorded:    "錯誤已記錄",
+			Protected:        "已保護",
+			NeedsReview:      "需要站點管理員檢查",
+			NoticePrefix:     "聯絡支援時請提供事件 / Trace ID。",
+			NoticeBody:       "這是 CheeseWAF 中對應安全事件或上游錯誤事件的精確檢索鍵。",
+			EventTraceID:     "事件 / Trace ID",
+			HTTPStatus:       "HTTP 狀態",
+			EventType:        "事件類型",
+			ClientIP:         "用戶端 IP",
+			Time:             "時間",
+			Action:           "動作",
+			ActionBlocked:    "已封鎖",
+			ActionRecorded:   "已記錄",
+			NextSteps:        "下一步",
+			Visitor:          "訪客",
+			VisitorHelp:      "如果你認為這是誤封鎖，請聯絡站點所有者並提供上方事件 / Trace ID。",
+			SiteOperator:     "站點管理員",
+			SiteOperatorHelp: "在 CheeseWAF 日誌中搜尋事件 / Trace ID，查看命中的策略、請求 metadata 和執行動作。",
+			Footer:           "此頁面由 CheeseWAF 產生，回應中不會暴露源站應用細節。",
+			Unknown:          "未知",
+			GeneratedBy:      "由 CheeseWAF 產生",
+		}
+	case "ja":
+		return LocalizedText{
+			HTMLLang:         "ja",
+			Title:            "アクセスがブロックされました",
+			AriaLabel:        "CheeseWAF セキュリティ応答",
+			EyebrowSecurity:  "セキュリティ応答",
+			EyebrowError:     "サービスエラー",
+			HeadlineBlocked:  "アクセスがブロックされました",
+			HeadlineError:    "保護対象サービスでエラーが発生しました",
+			DefaultBlocked:   "このリクエストは保護対象のオリジンに到達する前に CheeseWAF のセキュリティポリシーに一致しました。",
+			DefaultError:     "CheeseWAF は保護対象オリジンへのリクエストを完了できませんでした。",
+			Client:           "クライアント",
+			CheeseWAF:        "CheeseWAF",
+			Origin:           "オリジン",
+			RequestReceived:  "リクエスト受信済み",
+			SecurityApplied:  "セキュリティポリシー適用済み",
+			ErrorRecorded:    "エラー記録済み",
+			Protected:        "保護済み",
+			NeedsReview:      "サイト管理者の確認が必要です",
+			NoticePrefix:     "サポートへ連絡する際は Event / Trace ID を伝えてください。",
+			NoticeBody:       "これは CheeseWAF の対応するセキュリティイベントまたは上流エラーイベントを検索するための正確なキーです。",
+			EventTraceID:     "Event / Trace ID",
+			HTTPStatus:       "HTTP ステータス",
+			EventType:        "イベント種別",
+			ClientIP:         "クライアント IP",
+			Time:             "時刻",
+			Action:           "アクション",
+			ActionBlocked:    "ブロック済み",
+			ActionRecorded:   "記録済み",
+			NextSteps:        "次の手順",
+			Visitor:          "訪問者",
+			VisitorHelp:      "誤検知と思われる場合は、上記の Event / Trace ID を添えてサイト所有者に連絡してください。",
+			SiteOperator:     "サイト管理者",
+			SiteOperatorHelp: "CheeseWAF ログで Event / Trace ID を検索し、一致したポリシー、リクエスト metadata、実行されたアクションを確認してください。",
+			Footer:           "このページは CheeseWAF により生成されました。この応答ではオリジンアプリケーションの詳細は公開されません。",
+			Unknown:          "不明",
+			GeneratedBy:      "CheeseWAF により生成",
+		}
+	default:
+		return LocalizedText{
+			HTMLLang:         "en",
+			Title:            "Access blocked",
+			AriaLabel:        "CheeseWAF security response",
+			EyebrowSecurity:  "Security response",
+			EyebrowError:     "Service error",
+			HeadlineBlocked:  "Access was blocked",
+			HeadlineError:    "The protected service returned an error",
+			DefaultBlocked:   "The request matched an active CheeseWAF security policy before it reached the protected origin.",
+			DefaultError:     "CheeseWAF could not complete the request to the protected origin.",
+			Client:           "Client",
+			CheeseWAF:        "CheeseWAF",
+			Origin:           "Origin",
+			RequestReceived:  "Request received",
+			SecurityApplied:  "Security policy applied",
+			ErrorRecorded:    "Error recorded",
+			Protected:        "Protected",
+			NeedsReview:      "Needs operator review",
+			NoticePrefix:     "When contacting support, include the Event / Trace ID.",
+			NoticeBody:       "It is the exact lookup key for the corresponding CheeseWAF security or upstream error event.",
+			EventTraceID:     "Event / Trace ID",
+			HTTPStatus:       "HTTP status",
+			EventType:        "Event type",
+			ClientIP:         "Client IP",
+			Time:             "Time",
+			Action:           "Action",
+			ActionBlocked:    "Blocked",
+			ActionRecorded:   "Recorded",
+			NextSteps:        "Next steps",
+			Visitor:          "Visitor",
+			VisitorHelp:      "If you believe this is a mistake, contact the site owner and provide the Event / Trace ID shown above.",
+			SiteOperator:     "Site operator",
+			SiteOperatorHelp: "Search CheeseWAF logs for the Event / Trace ID to review the matched policy, request metadata, and action taken.",
+			Footer:           "This page was generated by CheeseWAF. No origin application details are exposed on this response.",
+			Unknown:          "unknown",
+			GeneratedBy:      "Generated by CheeseWAF",
+		}
+	}
+}
+
+func localizationJSON() string {
+	payload := map[string]LocalizedText{
+		"en":      localizedText("en"),
+		"zh-CN":   localizedText("zh-CN"),
+		"zh-Hant": localizedText("zh-Hant"),
+		"ja":      localizedText("ja"),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 func ensureVisibleEventID(buf *bytes.Buffer, eventID string) {
@@ -108,18 +500,18 @@ func ensureVisibleEventID(buf *bytes.Buffer, eventID string) {
 }
 
 const defaultBlockTemplate = `<!doctype html>
-<html lang="en">
+<html lang="{{.Text.HTMLLang}}" data-server-lang="{{.ServerLanguageHint}}" data-status="{{.Status}}" data-timestamp="{{.TimestampISO}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <title>{{if ge .Status 500}}Service error{{else}}Access blocked{{end}} | CheeseWAF</title>
+  <title data-i18n-title="1">{{if ge .Status 500}}{{.Text.EyebrowError}}{{else}}{{.Text.Title}}{{end}} | CheeseWAF</title>
   <style>
     :root{color-scheme:light dark;--bg:#f4f7fb;--panel:#ffffff;--panel-soft:#f8fafc;--text:#172033;--muted:#667085;--line:#d8e1ec;--line-strong:#c4cfdd;--accent:#f2a922;--accent-dark:#b76b00;--teal:#087776;--teal-dark:#0b4d50;--ok:#0f9f60;--danger:#b42318;--shadow:0 26px 80px rgba(15,23,42,.14)}
     @media (prefers-color-scheme:dark){:root{--bg:#0f1724;--panel:#151f2d;--panel-soft:#101928;--text:#eef4fb;--muted:#9aa8ba;--line:#2b394b;--line-strong:#3b4a60;--accent:#ffbd4a;--accent-dark:#ffcf72;--teal:#35c7c0;--teal-dark:#2aa9a4;--ok:#52d48d;--danger:#ff8b7f;--shadow:0 26px 80px rgba(0,0,0,.38)}}
     *{box-sizing:border-box}
     body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    main{width:min(1040px,100%);min-height:100vh;margin:0 auto;padding:42px 28px 34px;display:grid;align-content:center;gap:22px}
+    main{width:min(1040px,100%);min-height:100vh;margin:0 auto;padding:42px 28px 34px;display:grid;align-content:start;gap:22px}
     .top{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
     .brand{display:flex;align-items:center;gap:12px;color:var(--text);font-size:15px;font-weight:850}
     .logo{width:48px;height:48px;display:grid;place-items:center;background:var(--panel);border:1px solid var(--line-strong);border-radius:10px;box-shadow:0 12px 30px rgba(15,23,42,.1)}
@@ -158,56 +550,121 @@ const defaultBlockTemplate = `<!doctype html>
     <div class="top">
       <div class="brand">
         <span class="logo" aria-hidden="true">
-          <svg viewBox="0 0 64 64" role="img" focusable="false"><defs><linearGradient id="shield" x1="7" y1="10" x2="58" y2="56"><stop stop-color="#0c8887"/><stop offset="1" stop-color="#06383f"/></linearGradient><linearGradient id="cheese" x1="15" y1="14" x2="32" y2="52"><stop stop-color="#ffe56a"/><stop offset="1" stop-color="#f5a400"/></linearGradient><linearGradient id="fire" x1="42" y1="22" x2="42" y2="47"><stop stop-color="#8ef3ec"/><stop offset="1" stop-color="#16938f"/></linearGradient></defs><path fill="url(#shield)" d="M32 4 57 15v17c0 15-10 24-25 29C17 56 7 47 7 32V15L32 4Z"/><path fill="#0b595f" d="M32 9v46c12-5 20-12 20-23V18L32 9Z"/><path fill="url(#cheese)" d="M14 19 32 10v44C21 49 14 42 14 31V19Z"/><path fill="#fff4a8" opacity=".78" d="M18 22 32 15v6c-4 1-8 3-11 6-3 4-5 9-5 15-1-3-2-7-2-11v-8Z"/><circle cx="24" cy="26" r="5" fill="#d88400"/><circle cx="28" cy="40" r="4" fill="#d88400"/><circle cx="17" cy="35" r="3" fill="#d88400"/><path fill="url(#fire)" d="M41 47c-7-3-9-8-7-14 1-4 5-7 7-12 3 4 3 8 2 11 3-1 5-4 6-7 5 8 4 18-8 22Z"/><path fill="#128782" d="M35 42h16v4H35v-4Zm0-9h8v4h-8v-4Zm13 0h6v4h-6v-4Z" opacity=".8"/><path fill="none" stroke="#50d6cf" stroke-opacity=".55" stroke-width="2" d="M12 18 32 9l20 9v14c0 12-8 20-20 24-12-4-20-12-20-24V18Z"/></svg>
+          <svg viewBox="0 0 64 64" role="img" focusable="false"><defs><linearGradient id="cw-shield" x1="12" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse"><stop stop-color="#0f8f77"/><stop offset="1" stop-color="#075e64"/></linearGradient><linearGradient id="cw-cheese" x1="17" y1="13" x2="39" y2="50" gradientUnits="userSpaceOnUse"><stop stop-color="#ffe98a"/><stop offset=".52" stop-color="#ffc928"/><stop offset="1" stop-color="#f3a51b"/></linearGradient></defs><path fill="url(#cw-shield)" d="M32 4 56 14.7v16.6C56 45.6 46.6 55.1 32 60 17.4 55.1 8 45.6 8 31.3V14.7L32 4Z"/><path fill="#f8fffb" fill-opacity=".86" d="M32 9.7 14.5 17.4v13.2c0 10.8 6.5 18.2 17.5 22.4 11-4.2 17.5-11.6 17.5-22.4V17.4L32 9.7Z"/><path fill="url(#cw-cheese)" d="M18.4 20.2 32 14.4v37.2c-8.7-3.8-13.6-10-13.6-19.4v-12Z"/><path fill="#0f8f77" d="M35.5 23.5h9.8v4.4h-9.8v-4.4Zm0 8.1h13.1V36H35.5v-4.4Zm0 8.1h8.4V44h-8.4v-4.3Z"/><circle cx="25.2" cy="27" r="3.7" fill="#d88400"/><circle cx="28.7" cy="40.3" r="2.9" fill="#d88400"/><circle cx="21.8" cy="35.3" r="1.9" fill="#d88400"/></svg>
         </span>
         <span>CheeseWAF</span>
       </div>
       <div class="status-chip">{{.Status}} {{.StatusText}}</div>
     </div>
-    <section class="card" aria-label="CheeseWAF security response">
+    <section class="card" aria-label="{{.Text.AriaLabel}}">
       <div class="summary">
-        <p class="eyebrow">{{if ge .Status 500}}Service error{{else}}Security response{{end}}</p>
-        <h1>{{if ge .Status 500}}The protected service returned an error{{else}}Access was blocked{{end}}</h1>
-        <p class="lead">{{if .Message}}{{.Message}}{{else}}{{if ge .Status 500}}CheeseWAF could not complete the request to the protected origin.{{else}}The request matched an active CheeseWAF security policy before it reached the protected origin.{{end}}{{end}}</p>
+        <p class="eyebrow" data-i18n="eyebrow">{{if ge .Status 500}}{{.Text.EyebrowError}}{{else}}{{.Text.EyebrowSecurity}}{{end}}</p>
+        <h1 data-i18n="headline">{{if ge .Status 500}}{{.Text.HeadlineError}}{{else}}{{.Text.HeadlineBlocked}}{{end}}</h1>
+        <p class="lead" data-i18n-default-message="1">{{if ge .Status 500}}{{.Text.DefaultError}}{{else}}{{.Text.DefaultBlocked}}{{end}}</p>
       </div>
       <div class="checks" aria-label="Connection status">
-        <div class="check"><strong>Client</strong><span><i class="dot"></i>Request received</span></div>
-        <div class="check"><strong>CheeseWAF</strong><span><i class="dot dot-warning"></i>{{if ge .Status 500}}Error recorded{{else}}Security policy applied{{end}}</span></div>
-        <div class="check"><strong>Origin</strong><span><i class="dot"></i>{{if ge .Status 500}}Needs operator review{{else}}Protected{{end}}</span></div>
+        <div class="check"><strong data-i18n="client">{{.Text.Client}}</strong><span><i class="dot"></i><span data-i18n="requestReceived">{{.Text.RequestReceived}}</span></span></div>
+        <div class="check"><strong>CheeseWAF</strong><span><i class="dot dot-warning"></i><span data-i18n="wafState">{{if ge .Status 500}}{{.Text.ErrorRecorded}}{{else}}{{.Text.SecurityApplied}}{{end}}</span></span></div>
+        <div class="check"><strong data-i18n="origin">{{.Text.Origin}}</strong><span><i class="dot"></i><span data-i18n="originState">{{if ge .Status 500}}{{.Text.NeedsReview}}{{else}}{{.Text.Protected}}{{end}}</span></span></div>
       </div>
-      <div class="notice"><strong>When contacting support, include the Event / Trace ID.</strong> It is the exact lookup key for the corresponding CheeseWAF security or upstream error event.</div>
+      <div class="notice"><strong data-i18n="noticePrefix">{{.Text.NoticePrefix}}</strong> <span data-i18n="noticeBody">{{.Text.NoticeBody}}</span></div>
       <div class="details" aria-label="Request details">
         <div class="item">
-          <span class="label">Event / Trace ID</span>
+          <span class="label" data-i18n="eventTraceID">{{.Text.EventTraceID}}</span>
           <code>{{.EventID}}</code>
         </div>
         <div class="item">
-          <span class="label">HTTP status</span>
+          <span class="label" data-i18n="httpStatus">{{.Text.HTTPStatus}}</span>
           <span class="value">{{.Status}} {{.StatusText}}</span>
         </div>
         <div class="item">
-          <span class="label">Event type</span>
+          <span class="label" data-i18n="eventType">{{.Text.EventType}}</span>
           <span class="value">{{if .AttackType}}{{.AttackType}}{{else}}waf_block{{end}}</span>
         </div>
         <div class="item">
-          <span class="label">Client IP</span>
-          <span class="value">{{if .ClientIP}}{{.ClientIP}}{{else}}unknown{{end}}</span>
+          <span class="label" data-i18n="clientIP">{{.Text.ClientIP}}</span>
+          <span class="value">{{if .ClientIP}}{{.ClientIP}}{{else}}{{.Text.Unknown}}{{end}}</span>
         </div>
         <div class="item">
-          <span class="label">Time</span>
-          <span class="value">{{.Timestamp.Format "2006-01-02 15:04:05 UTC"}}</span>
+          <span class="label" data-i18n="time">{{.Text.Time}}</span>
+          <span class="value" data-time="{{.TimestampISO}}">{{.TimestampLocal}}</span>
         </div>
         <div class="item">
-          <span class="label">Action</span>
-          <span class="value">{{if ge .Status 500}}Recorded{{else}}Blocked{{end}}</span>
+          <span class="label" data-i18n="action">{{.Text.Action}}</span>
+          <span class="value" data-i18n="actionValue">{{if ge .Status 500}}{{.Text.ActionRecorded}}{{else}}{{.Text.ActionBlocked}}{{end}}</span>
         </div>
       </div>
       <div class="help" aria-label="Next steps">
-        <div><h2>Visitor</h2><p>If you believe this is a mistake, contact the site owner and provide the Event / Trace ID shown above.</p></div>
-        <div><h2>Site operator</h2><p>Search CheeseWAF logs for the Event / Trace ID to review the matched policy, request metadata, and action taken.</p></div>
+        <div><h2 data-i18n="visitor">{{.Text.Visitor}}</h2><p data-i18n="visitorHelp">{{.Text.VisitorHelp}}</p></div>
+        <div><h2 data-i18n="siteOperator">{{.Text.SiteOperator}}</h2><p data-i18n="siteOperatorHelp">{{.Text.SiteOperatorHelp}}</p></div>
       </div>
-      <footer>This page was generated by CheeseWAF. No origin application details are exposed on this response.</footer>
+      <footer data-i18n="footer">{{.Text.Footer}}</footer>
     </section>
   </main>
+  <script id="cw-i18n" type="application/json">{{.TranslationsJSON}}</script>
+  <script>
+  (function(){
+    var status = Number(document.documentElement.dataset.status || "0");
+    var blocked = status < 500;
+    var dict = {};
+    try { dict = JSON.parse(document.getElementById("cw-i18n").textContent || "{}"); } catch (_) {}
+    function choose() {
+      var langs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || document.documentElement.lang || "en"]).map(function(v){ return String(v || "").toLowerCase(); });
+      for (var i = 0; i < langs.length; i++) {
+        var lang = langs[i];
+        if (lang.indexOf("zh") === 0) {
+          if (lang.indexOf("tw") > -1 || lang.indexOf("hk") > -1 || lang.indexOf("hant") > -1) return "zh-Hant";
+          return "zh-CN";
+        }
+        if (lang.indexOf("ja") === 0) return "ja";
+        if (lang.indexOf("en") === 0) return "en";
+      }
+      return document.documentElement.dataset.serverLang || "en";
+    }
+    var locale = choose();
+    var t = dict[locale] || dict.en || {};
+    document.documentElement.lang = t.HTMLLang || locale || "en";
+    document.title = (blocked ? (t.Title || t.HeadlineBlocked) : (t.EyebrowError || "Service error")) + " | CheeseWAF";
+    var map = {
+      eyebrow: blocked ? t.EyebrowSecurity : t.EyebrowError,
+      headline: blocked ? t.HeadlineBlocked : t.HeadlineError,
+      client: t.Client,
+      requestReceived: t.RequestReceived,
+      wafState: blocked ? t.SecurityApplied : t.ErrorRecorded,
+      origin: t.Origin,
+      originState: blocked ? t.Protected : t.NeedsReview,
+      noticePrefix: t.NoticePrefix,
+      noticeBody: t.NoticeBody,
+      eventTraceID: t.EventTraceID,
+      httpStatus: t.HTTPStatus,
+      eventType: t.EventType,
+      clientIP: t.ClientIP,
+      time: t.Time,
+      action: t.Action,
+      actionValue: blocked ? t.ActionBlocked : t.ActionRecorded,
+      visitor: t.Visitor,
+      visitorHelp: t.VisitorHelp,
+      siteOperator: t.SiteOperator,
+      siteOperatorHelp: t.SiteOperatorHelp,
+      footer: t.Footer
+    };
+    if (document.querySelector("[data-i18n-default-message='1']")) {
+      var lead = document.querySelector("[data-i18n-default-message='1']");
+      if (lead) lead.textContent = blocked ? t.DefaultBlocked : t.DefaultError;
+    }
+    Object.keys(map).forEach(function(key){
+      if (!key) return;
+      var el = document.querySelector("[data-i18n='" + key + "']");
+      if (el && map[key]) el.textContent = map[key];
+    });
+    var timeEl = document.querySelector("[data-time]");
+    if (timeEl && window.Intl) {
+      try {
+        var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        timeEl.textContent = new Intl.DateTimeFormat(locale, { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false, timeZone:tz, timeZoneName:"short" }).format(new Date(timeEl.dataset.time));
+      } catch (_) {}
+    }
+  }());
+  </script>
 </body>
 </html>`
