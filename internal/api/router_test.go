@@ -29,11 +29,29 @@ func TestRouterRequiresBearerForManagementAPI(t *testing.T) {
 		{name: "logs", method: http.MethodGet, path: "/api/logs"},
 		{name: "ui error report", method: http.MethodPost, path: "/api/ui/errors"},
 		{name: "backup export", method: http.MethodPost, path: "/api/backup/export"},
+		{name: "block page preview", method: http.MethodPost, path: "/api/block-pages/preview"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := perform(router, tc.method, tc.path, "", nil)
 			if recorder.Code != http.StatusUnauthorized {
 				t.Fatalf("expected 401 without bearer token, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			traceID := recorder.Header().Get("X-CheeseWAF-Trace-ID")
+			eventID := recorder.Header().Get("X-CheeseWAF-Event-ID")
+			if traceID == "" || eventID == "" || traceID != eventID {
+				t.Fatalf("expected matching trace/event headers, trace=%q event=%q", traceID, eventID)
+			}
+			var body struct {
+				Error struct {
+					TraceID string `json:"trace_id"`
+					EventID string `json:"event_id"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode unauthorized error: %v", err)
+			}
+			if body.Error.TraceID != traceID || body.Error.EventID != eventID {
+				t.Fatalf("expected matching trace/event body fields, header trace=%q event=%q body=%+v", traceID, eventID, body.Error)
 			}
 		})
 	}

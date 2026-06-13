@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, BrainCircuit, ShieldAlert } from 'lucide-react';
 import { analyzeLogReference, fetchLogEvent } from '../../api/client';
-import AIAnalysisMeta from '../../components/AIAnalysisMeta';
+import AIAnalysisMeta, { AIReasoningSummary } from '../../components/AIAnalysisMeta';
 import type { AttackAnalysis, LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry, displaySeverity } from '../../utils/display';
 
@@ -130,6 +130,7 @@ function AnalysisResult({ analysis }: { analysis?: AttackAnalysis }) {
     <div className="analysis-result">
       <p>{analysis.summary}</p>
       <AIAnalysisMeta analysis={analysis} />
+      <AIReasoningSummary analysis={analysis} />
       <div>
         <strong>{t('ai.evidence')}</strong>
         {(analysis.evidence ?? []).length > 0 ? analysis.evidence.map((item) => <span key={item}>{item}</span>) : <span>-</span>}
