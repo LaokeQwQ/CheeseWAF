@@ -1,5 +1,5 @@
 import axios, { type AxiosResponse } from 'axios';
-import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
+import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -68,7 +68,7 @@ async function refreshTokenIfNeeded(token: string, requestURL: string) {
             response.data.error?.message ?? 'Unable to refresh token',
             response.data.error?.code,
             response.status,
-            response.data.error?.trace_id ?? responseTraceID(response),
+            errorLookupID(response.data.error, response),
           );
         }
         localStorage.setItem(tokenStorageKey, response.data.data.token);
@@ -105,6 +105,7 @@ type Envelope<T> = {
     code: string;
     message: string;
     trace_id?: string;
+    event_id?: string;
   };
 };
 
@@ -128,16 +129,16 @@ async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<
   try {
     const response = await promise;
     if (response.data.error) {
-      throw new APIRequestError(response.data.error.message, response.data.error.code, response.status, response.data.error.trace_id ?? responseTraceID(response));
+      throw new APIRequestError(response.data.error.message, response.data.error.code, response.status, errorLookupID(response.data.error, response));
     }
     return response.data.data as T;
   } catch (error) {
     if (axios.isAxiosError<Envelope<unknown>>(error)) {
       const apiError = error.response?.data?.error;
       if (apiError) {
-        throw new APIRequestError(apiError.message, apiError.code, error.response?.status, apiError.trace_id ?? responseTraceID(error.response));
+        throw new APIRequestError(apiError.message, apiError.code, error.response?.status, errorLookupID(apiError, error.response));
       }
-      const traceID = responseTraceID(error.response);
+      const traceID = responseLookupID(error.response);
       if (error.code === 'ECONNABORTED' || error.message.toLowerCase().includes('timeout')) {
         const timeout = Number(error.config?.timeout ?? apiClient.defaults.timeout ?? 0);
         const seconds = timeout > 0 ? Math.round(timeout / 1000) : 0;
@@ -164,9 +165,16 @@ async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<
   }
 }
 
-function responseTraceID(response?: AxiosResponse<unknown>) {
+function errorLookupID(error?: Envelope<unknown>['error'], response?: AxiosResponse<unknown>) {
+  return error?.event_id ?? error?.trace_id ?? responseLookupID(response);
+}
+
+function responseLookupID(response?: AxiosResponse<unknown>) {
   const headers = response?.headers as (AxiosResponse<unknown>['headers'] & { get?: (name: string) => unknown }) | undefined;
-  const value = headers?.get?.('x-cheesewaf-trace-id') ?? headers?.['x-cheesewaf-trace-id'];
+  const value = headers?.get?.('x-cheesewaf-event-id')
+    ?? headers?.['x-cheesewaf-event-id']
+    ?? headers?.get?.('x-cheesewaf-trace-id')
+    ?? headers?.['x-cheesewaf-trace-id'];
   if (Array.isArray(value)) {
     return value[0];
   }
@@ -174,7 +182,7 @@ function responseTraceID(response?: AxiosResponse<unknown>) {
 }
 
 function fetchResponseTraceID(response?: Response) {
-  return response?.headers.get('x-cheesewaf-trace-id') ?? undefined;
+  return response?.headers.get('x-cheesewaf-event-id') ?? response?.headers.get('x-cheesewaf-trace-id') ?? undefined;
 }
 
 export function fetchLoginOptions() {
@@ -422,6 +430,7 @@ function normalizeIPRulesResponse(response: IPRulesResponse): IPRulesResponse {
     geoip: {
       enabled: Boolean(raw?.geoip?.enabled),
       database: raw?.geoip?.database ?? '',
+      precision_database: raw?.geoip?.precision_database ?? '',
       blocked_countries: asStringArray(raw?.geoip?.blocked_countries),
       country_cidrs: asStringArrayRecord(raw?.geoip?.country_cidrs),
     },
@@ -564,6 +573,10 @@ export function updateBlockPageConfig(payload: BlockPageConfig) {
   return unwrap<BlockPageConfig>(apiClient.put('/block-pages/config', payload));
 }
 
+export function previewBlockPageConfig(payload: BlockPageConfig) {
+  return unwrap<BlockPagePreview>(apiClient.post('/block-pages/preview', payload));
+}
+
 export function uploadBlockPageHTML(file: File, templateID?: string) {
   const form = new FormData();
   form.append('file', file);
@@ -648,7 +661,7 @@ export async function askAIAssistantStream(
   if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
     const payload = await response.json() as Envelope<AIAssistantReply>;
     if (payload.error) {
-      throw new APIRequestError(payload.error.message, payload.error.code, response.status, payload.error.trace_id ?? traceID);
+      throw new APIRequestError(payload.error.message, payload.error.code, response.status, payload.error.event_id ?? payload.error.trace_id ?? traceID);
     }
     return payload.data as AIAssistantReply;
   }
@@ -677,8 +690,8 @@ export async function askAIAssistantStream(
       } else if (event.event === 'done') {
         finalReply = event.data as AIAssistantReply;
       } else if (event.event === 'error') {
-        const payload = event.data as { message?: string; code?: string; trace_id?: string };
-        throw new APIRequestError(payload.message || 'AI assistant stream failed.', payload.code || 'AI_ASSISTANT_STREAM_FAILED', response.status, payload.trace_id ?? traceID);
+        const payload = event.data as { message?: string; code?: string; event_id?: string; trace_id?: string };
+        throw new APIRequestError(payload.message || 'AI assistant stream failed.', payload.code || 'AI_ASSISTANT_STREAM_FAILED', response.status, payload.event_id ?? payload.trace_id ?? traceID);
       }
     }
   }
@@ -730,12 +743,12 @@ function parseSSEBlock(block: string) {
 async function readableFetchError(response: Response): Promise<{ message: string; traceID?: string }> {
   const text = await response.text().catch(() => '');
   if (!text) {
-    return { message: `${response.status} ${response.statusText}` };
+    return { message: `${response.status} ${response.statusText}`, traceID: fetchResponseTraceID(response) };
   }
   try {
     const parsed = JSON.parse(text) as Envelope<unknown>;
-    return { message: parsed.error?.message || text, traceID: parsed.error?.trace_id };
+    return { message: parsed.error?.message || text, traceID: parsed.error?.event_id ?? parsed.error?.trace_id ?? fetchResponseTraceID(response) };
   } catch {
-    return { message: text };
+    return { message: text, traceID: fetchResponseTraceID(response) };
   }
 }

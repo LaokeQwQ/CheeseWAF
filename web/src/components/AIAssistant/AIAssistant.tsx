@@ -42,7 +42,7 @@ export default function AIAssistant() {
   const [pendingElapsedMs, setPendingElapsedMs] = useState(0);
   const [thinkingProcessOpen, setThinkingProcessOpen] = useState(true);
   const [pendingTrace, setPendingTrace] = useState<AIAssistantTraceEvent[]>([]);
-  const pendingRef = useRef<{ startedAt: number; createdAt: string; inputTokens: number } | null>(null);
+  const pendingRef = useRef<{ startedAt: number; createdAt: string; inputTokens: number; providerStartedAt?: number } | null>(null);
   const pendingTraceRef = useRef<AIAssistantTraceEvent[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
@@ -66,6 +66,9 @@ export default function AIAssistant() {
       const controller = new AbortController();
       abortRef.current = controller;
       return askAIAssistantStream(message, 30, i18n.language, (event) => {
+        if (isProviderFirstTraceEvent(event.type) && pendingRef.current && !pendingRef.current.providerStartedAt) {
+          pendingRef.current = { ...pendingRef.current, providerStartedAt: performance.now() };
+        }
         setPendingTrace((current) => {
           const next = [...current, event];
           pendingTraceRef.current = next;
@@ -76,6 +79,7 @@ export default function AIAssistant() {
     onSuccess: (reply) => {
       const pending = pendingRef.current;
       const totalMs = pending ? performance.now() - pending.startedAt : 0;
+      const thinkingMs = pending?.providerStartedAt ? pending.providerStartedAt - pending.startedAt : totalMs;
       const outputTokens = reply.output_tokens || estimateTokens(reply.answer);
       const trace = reply.trace?.length ? reply.trace : pendingTraceRef.current;
       setThread((current) => [
@@ -87,7 +91,7 @@ export default function AIAssistant() {
           status: reply.ai_used ? 'AI' : t('ai.heuristicUsed'),
           createdAt: new Date().toISOString(),
           meta: {
-            thinkingMs: totalMs,
+            thinkingMs,
             totalMs,
             inputTokens: reply.input_tokens ?? 0,
             outputTokens,
@@ -100,10 +104,11 @@ export default function AIAssistant() {
             model: reply.model,
           },
           process: [
+            ...buildReasoningProcess(t, reply.reasoning_summary, reply.ai_used),
             ...buildTraceProcess(t, trace),
             ...buildToolProcessSummary(t, reply.tool_executions ?? []),
           ],
-          processOpen: false,
+          processOpen: true,
           trace,
           tools: reply.tool_executions,
         },
@@ -249,11 +254,11 @@ export default function AIAssistant() {
     ...(askMutation.isPending ? [{
       id: 'thinking',
       role: 'assistant' as const,
-      text: pendingTrace[pendingTrace.length - 1]?.message || t('assistant.thinking'),
+      text: pendingAssistantText(t, pendingTrace),
       status: t('assistant.working'),
       createdAt: pendingRef.current?.createdAt,
       meta: {
-        thinkingMs: pendingElapsedMs,
+        thinkingMs: pendingRef.current?.providerStartedAt ? pendingRef.current.providerStartedAt - pendingRef.current.startedAt : pendingElapsedMs,
         totalMs: pendingElapsedMs,
         inputTokens: pendingRef.current?.inputTokens ?? 0,
         outputTokens: 0,
@@ -263,7 +268,10 @@ export default function AIAssistant() {
         blocked: liveContext.blocked,
         challenge: 0,
       },
-      process: buildTraceProcess(t, pendingTrace),
+      process: [
+        t('assistant.reasoningPending'),
+        ...buildTraceProcess(t, pendingTrace),
+      ],
       processOpen: thinkingProcessOpen,
       trace: pendingTrace,
     }] : []),
@@ -382,7 +390,7 @@ export default function AIAssistant() {
                     </button>
                     {message.processOpen && (
                       <ol>
-                        {message.process.map((item) => <li key={item}>{item}</li>)}
+                        {message.process.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
                       </ol>
                     )}
                   </div>
@@ -558,19 +566,55 @@ function buildToolProcessSummary(
   return [t('assistant.processTools', { readOnly, approvals, executed })];
 }
 
+function buildReasoningProcess(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  reasoning: string | undefined,
+  aiUsed: boolean,
+) {
+  if (!aiUsed) {
+    return [t('assistant.reasoningLocal')];
+  }
+  const text = String(reasoning ?? '').trim();
+  if (!text) {
+    return [t('assistant.reasoningUnavailable')];
+  }
+  return [t('assistant.reasoningSummary', { summary: summarizeOutput(text) })];
+}
+
 function buildTraceProcess(t: (key: string, options?: Record<string, unknown>) => string, trace: AIAssistantTraceEvent[]) {
   if (trace.length === 0) {
     return [t('assistant.traceWaiting')];
   }
-  return trace.map((event) => formatTraceEvent(t, event));
+  const reasoning = trace.filter((event) => event.type === 'reasoning_delta').map((event) => event.message).join('');
+  const content = trace.filter((event) => event.type === 'content_delta').map((event) => event.message).join('');
+  const toolDeltas = trace.filter((event) => event.type === 'tool_call_delta');
+  const compacted: string[] = [];
+  if (reasoning.trim()) {
+    compacted.push(t('assistant.reasoningLive', { summary: summarizeOutput(reasoning) }));
+  }
+  if (content.trim()) {
+    compacted.push(t('assistant.answerLive', { summary: summarizeOutput(content) }));
+  }
+  if (toolDeltas.length > 0) {
+    const latestTool = [...toolDeltas].reverse().find((event) => event.tool_name)?.tool_name ?? '-';
+    compacted.push(t('assistant.toolDeltaLive', { tool: latestTool, chunks: toolDeltas.length }));
+  }
+  const regular = trace.filter((event) => !['reasoning_delta', 'content_delta', 'tool_call_delta'].includes(event.type));
+  return [...compacted, ...regular.map((event) => formatTraceEvent(t, event))];
 }
 
 function formatTraceEvent(t: (key: string, options?: Record<string, unknown>) => string, event: AIAssistantTraceEvent) {
   switch (event.type) {
+    case 'provider_response_start':
+      return event.message || t('assistant.providerStarted');
+    case 'provider_first_event_slow':
+      return event.message || t('assistant.providerSlow');
     case 'tool_call':
       return t('assistant.traceToolCall', { tool: event.tool_name || '-', args: compactJson(event.args) });
     case 'tool_result':
       return t('assistant.traceToolResult', { tool: event.tool_name || '-', output: summarizeOutput(event.result?.output) });
+    case 'reasoning_summary':
+      return t('assistant.reasoningSummary', { summary: summarizeOutput(event.message) });
     case 'approval_required':
       return t('assistant.traceApproval', { tool: event.tool_name || '-' });
     case 'tool_error':
@@ -579,6 +623,31 @@ function formatTraceEvent(t: (key: string, options?: Record<string, unknown>) =>
       return t('assistant.traceError', { step: event.tool_name || event.type, error: event.error || event.message });
     default:
       return event.message || event.type;
+  }
+}
+
+function isProviderFirstTraceEvent(type: string) {
+  return ['provider_response_start', 'reasoning_delta', 'content_delta', 'tool_call_delta'].includes(type);
+}
+
+function pendingAssistantText(t: (key: string, options?: Record<string, unknown>) => string, trace: AIAssistantTraceEvent[]) {
+  const last = trace[trace.length - 1];
+  if (!last) {
+    return t('assistant.thinking');
+  }
+  switch (last.type) {
+    case 'reasoning_delta':
+      return t('assistant.reasoningStreaming');
+    case 'content_delta':
+      return t('assistant.answerStreaming');
+    case 'tool_call_delta':
+      return t('assistant.toolPlanningStreaming');
+    case 'provider_response_start':
+      return t('assistant.providerStarted');
+    case 'provider_first_event_slow':
+      return last.message || t('assistant.providerSlow');
+    default:
+      return last.message || t('assistant.thinking');
   }
 }
 

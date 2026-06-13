@@ -168,12 +168,14 @@ func writeAPIError(w http.ResponseWriter, status int, code, message string) {
 	traceID := blockpage.NewTraceID()
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
+	w.Header().Set("X-CheeseWAF-Event-ID", traceID)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{
 			"code":     code,
 			"message":  message,
 			"trace_id": traceID,
+			"event_id": traceID,
 		},
 	})
 }

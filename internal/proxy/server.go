@@ -451,7 +451,7 @@ func (s *Server) proxyError(w http.ResponseWriter, r *http.Request, site config.
 	if cause != nil {
 		reqCtx.Metadata["proxy_error_detail"] = cause.Error()
 	}
-	s.renderer.Render(w, status, blockpage.Data{
+	s.renderer.RenderRequest(w, r, status, blockpage.Data{
 		EventID:    reqCtx.TraceID,
 		TraceID:    reqCtx.TraceID,
 		AttackType: category,
@@ -473,7 +473,7 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 		return
 	}
 	reqCtx.Metadata["detection"] = result
-	s.renderer.Render(w, status, blockpage.Data{
+	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
 		TraceID:    reqCtx.TraceID,
 		AttackType: result.Category,
 		ClientIP:   reqCtx.ClientIP,
@@ -490,7 +490,7 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 }
 
 func (s *Server) blockThreatIntel(w http.ResponseWriter, reqCtx *engine.RequestContext, decision ip.ThreatDecision, status int, start time.Time) {
-	s.renderer.Render(w, status, blockpage.Data{
+	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
 		TraceID:    reqCtx.TraceID,
 		AttackType: "threat_intel",
 		ClientIP:   reqCtx.ClientIP,
@@ -841,7 +841,7 @@ func parseSeverity(value string) engine.Severity {
 }
 
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
-	s.renderer.Render(w, status, blockpage.Data{
+	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
 		TraceID:    reqCtx.TraceID,
 		AttackType: category,
 		ClientIP:   reqCtx.ClientIP,

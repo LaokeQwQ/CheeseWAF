@@ -15,7 +15,7 @@ const GlobeMap = lazy(() => import('./GlobeMap'));
 
 type MapMode = '2d' | '3d' | 'china';
 export type ThreatLevel = 'low' | 'medium' | 'high' | 'critical';
-type LocationPrecision = 'district' | 'city' | 'region' | 'country' | 'ip-range';
+type LocationPrecision = 'street' | 'district' | 'city' | 'region' | 'country' | 'ip-range';
 export type WorldFeature = {
   id?: string | number;
   type: 'Feature';
@@ -48,6 +48,8 @@ export type AttackRegion = {
   size: number;
   locationName: string;
   precision: LocationPrecision;
+  accuracyRadiusKm: number | null;
+  locationSource: string;
   sourcePrefixes: string[];
   events: Array<Pick<LogEntry, 'id' | 'trace_id' | 'timestamp' | 'client_ip' | 'method' | 'uri' | 'action' | 'category' | 'severity' | 'status_code'>>;
 };
@@ -63,6 +65,8 @@ type RegionBucket = {
   mappable: boolean;
   locationName: string;
   precision: LocationPrecision;
+  accuracyRadiusKm: number | null;
+  locationSource: string;
   sourcePrefixes: Map<string, number>;
   events: Array<Pick<LogEntry, 'id' | 'trace_id' | 'timestamp' | 'client_ip' | 'method' | 'uri' | 'action' | 'category' | 'severity' | 'status_code'>>;
 };
@@ -491,6 +495,8 @@ export default function AttackMapPage() {
               { title: t('attackMap.country'), dataIndex: 'countryCode', render: (value: string) => displayCountry(value, t) },
               { title: t('attackMap.location'), dataIndex: 'locationName', render: (_: string, record: AttackRegion) => formatRegionLocation(record, t) },
               { title: t('attackMap.precision'), dataIndex: 'precision', render: (value: LocationPrecision) => t(`attackMap.precisionLevel.${value}`) },
+              { title: t('attackMap.accuracy'), dataIndex: 'accuracyRadiusKm', render: (_: number | null, record: AttackRegion) => formatAccuracy(record, t) },
+              { title: t('attackMap.locationSource'), dataIndex: 'locationSource', render: (value: string) => value || '-' },
               { title: t('attackMap.attacks'), dataIndex: 'attacks' },
               { title: t('attackMap.riskLabel'), dataIndex: 'level', render: (level: ThreatLevel) => <Tag color={riskTagColor(level)}>{t(`attackMap.risk.${level}`)}</Tag> },
               { title: t('attackMap.top'), dataIndex: 'top', render: (top: string) => <Tag color="orange">{displayCategory(top, t)}</Tag> },
@@ -525,6 +531,14 @@ function AttackRegionCard({
         <div>
           <dt>{t('attackMap.precision')}</dt>
           <dd>{t(`attackMap.precisionLevel.${region.precision}`)}</dd>
+        </div>
+        <div>
+          <dt>{t('attackMap.accuracy')}</dt>
+          <dd>{formatAccuracy(region, t)}</dd>
+        </div>
+        <div>
+          <dt>{t('attackMap.locationSource')}</dt>
+          <dd>{region.locationSource || '-'}</dd>
         </div>
         <div>
           <dt>{t('attackMap.attacks')}</dt>
@@ -659,6 +673,8 @@ export function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
       mappable: location.mappable,
       locationName: location.locationName,
       precision: location.precision,
+      accuracyRadiusKm: location.accuracyRadiusKm,
+      locationSource: location.locationSource,
       sourcePrefixes: new Map<string, number>(),
       events: [],
     };
@@ -711,6 +727,8 @@ export function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
         size: Math.max(14, Math.min(40, 10 + Math.sqrt(bucket.attacks) * 3.6)),
         locationName: bucket.locationName,
         precision: bucket.precision,
+        accuracyRadiusKm: bucket.accuracyRadiusKm,
+        locationSource: bucket.locationSource,
         sourcePrefixes,
         events: bucket.events,
       };
@@ -761,14 +779,19 @@ function resolveLocation(entry: LogEntry) {
   const coord = countryCoordinates[countryCode];
   const metadataContinent = normalizeContinent(readMetadataString(metadata, ['continent', 'continent_name', 'geo.continent', 'geo.continent_name']));
   const metadataCountryName = readEntryString(entry, metadata, ['country_name', 'geo.country_name']);
-  const lat = readEntryNumber(entry, metadata, ['lat', 'latitude', 'geo_lat', 'geo.latitude', 'location.lat']);
-  const lon = readEntryNumber(entry, metadata, ['lon', 'lng', 'longitude', 'geo_lon', 'geo.longitude', 'location.lon', 'location.lng']);
-  const region = readEntryString(entry, metadata, ['district', 'county', 'area', 'city', 'region', 'province', 'state', 'subdivision', 'geo.region', 'geo.city']);
+  const lat = readEntryNumber(entry, metadata, ['lat', 'latitude', 'geo_lat', 'geo.lat', 'geo.latitude', 'location.lat', 'location.latitude']);
+  const lon = readEntryNumber(entry, metadata, ['lon', 'lng', 'longitude', 'geo_lon', 'geo.lon', 'geo.lng', 'geo.longitude', 'location.lon', 'location.lng', 'location.longitude']);
+  const street = readEntryString(entry, metadata, ['street', 'street_name', 'road', 'road_name', 'township', 'town', 'geo.street', 'geo.street_name', 'geo.road', 'geo.road_name', 'geo.township', 'geo.town', 'location.street', 'location.street_name', 'location.road', 'location.road_name']);
+  const district = readEntryString(entry, metadata, ['district', 'district_name', 'county', 'county_name', 'area', 'geo.district', 'geo.district_name', 'geo.county', 'geo.county_name', 'geo.area', 'location.district', 'location.district_name', 'location.county', 'location.county_name', 'location.area']);
+  const city = readEntryString(entry, metadata, ['city', 'city_name', 'geo.city', 'geo.city_name', 'location.city', 'location.city_name']);
+  const region = readEntryString(entry, metadata, ['region', 'region_name', 'province', 'province_name', 'state', 'subdivision', 'geo.region', 'geo.region_name', 'geo.province', 'geo.province_name', 'geo.state', 'geo.subdivision']);
+  const locationSource = readEntryString(entry, metadata, ['source', 'geo.source', 'location.source', 'provider', 'geo.provider']) || (lat !== null && lon !== null ? 'metadata' : (coord ? 'country-fallback' : 'unmapped'));
+  const accuracyRadiusKm = readEntryNumber(entry, metadata, ['accuracy_radius', 'accuracy', 'geo.accuracy_radius', 'geo.accuracy', 'accuracyRadius', 'geo.accuracyRadius', 'location.accuracy_radius', 'location.accuracy']);
   const precise = validCoordinate(lat, lon);
   const sourcePrefix = ipPrefix(entry.client_ip);
   const fallbackName = countryCode === 'UNLOCATED' ? (metadataCountryName || sourcePrefix || 'UNLOCATED') : countryCode;
-  const locationName = region || (sourcePrefix && !coord ? sourcePrefix : fallbackName);
-  const point = precise ? jitterCoordinate(lon, lat, entry.client_ip || locationName) : null;
+  const locationName = [region, city, district, street].filter(Boolean).join(' · ') || (sourcePrefix && !coord ? sourcePrefix : fallbackName);
+  const point = precise ? { lon: lon as number, lat: lat as number } : null;
   return {
     countryCode,
     continent: metadataContinent || (coord?.continent ?? 'UNLOCATED'),
@@ -776,16 +799,21 @@ function resolveLocation(entry: LogEntry) {
     lat: point?.lat ?? coord?.lat ?? 0,
     mappable: Boolean(point || coord),
     locationName,
-    precision: precisionForLocation({ precise, metadata, region, sourcePrefix, countryCode }),
+    precision: precisionForLocation({ precise, street, district, city, region, sourcePrefix, countryCode }),
+    accuracyRadiusKm: Number.isFinite(accuracyRadiusKm) && accuracyRadiusKm !== null ? Math.max(0, accuracyRadiusKm) : null,
+    locationSource,
     sourcePrefix,
   };
 }
 
-function precisionForLocation(input: { precise: boolean; metadata: Record<string, unknown>; region: string; sourcePrefix: string; countryCode: string }): LocationPrecision {
-  if (input.precise && readMetadataString(input.metadata, ['district', 'county', 'area'])) {
+function precisionForLocation(input: { precise: boolean; street: string; district: string; city: string; region: string; sourcePrefix: string; countryCode: string }): LocationPrecision {
+  if (input.precise && input.street) {
+    return 'street';
+  }
+  if (input.precise && input.district) {
     return 'district';
   }
-  if (input.precise && readMetadataString(input.metadata, ['city', 'geo.city'])) {
+  if (input.precise && input.city) {
     return 'city';
   }
   if (input.precise && input.region) {
@@ -988,12 +1016,27 @@ function formatRegionLocation(region: AttackRegion, t: (key: string, options?: R
 
 function formatRegionDetail(region: AttackRegion, t: (key: string, options?: Record<string, unknown>) => string) {
   const precision = t(`attackMap.precisionLevel.${region.precision}`);
+  const accuracy = formatAccuracy(region, t);
+  const locationSource = region.locationSource ? ` · ${region.locationSource}` : '';
   const source = region.sourcePrefixes[0] ? ` · ${region.sourcePrefixes[0]}` : '';
-  return `${precision}${source}`;
+  return `${precision} · ${accuracy}${locationSource}${source}`;
 }
 
 function formatRegionTooltip(region: AttackRegion, t: (key: string, options?: Record<string, unknown>) => string) {
   return `${formatRegionLocation(region, t)} · ${region.attacks} · ${displayCategory(region.top, t)} · ${t(`attackMap.risk.${region.level}`)} · ${formatRegionDetail(region, t)}`;
+}
+
+function formatAccuracy(region: AttackRegion, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (region.accuracyRadiusKm !== null && Number.isFinite(region.accuracyRadiusKm) && region.accuracyRadiusKm > 0) {
+    return t('attackMap.accuracyRadius', { value: Math.round(region.accuracyRadiusKm) });
+  }
+  if (region.precision === 'country') {
+    return t('attackMap.countryFallback');
+  }
+  if (region.precision === 'ip-range') {
+    return t('attackMap.ipRangeFallback');
+  }
+  return t('attackMap.accuracyUnknown');
 }
 
 function formatShortTime(value: string) {
@@ -1132,19 +1175,6 @@ function caseInsensitiveGet(record: Record<string, unknown>, key: string) {
 
 function validCoordinate(lat: number | null, lon: number | null) {
   return typeof lat === 'number' && typeof lon === 'number' && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
-}
-
-function jitterCoordinate(lon: number | null, lat: number | null, key: string) {
-  if (!validCoordinate(lat, lon)) {
-    return null;
-  }
-  const safeLon = lon as number;
-  const safeLat = lat as number;
-  const hash = Array.from(key).reduce((sum, char) => sum + char.charCodeAt(0), 0);
-  return {
-    lon: safeLon + ((hash % 9) - 4) * 0.12,
-    lat: safeLat + (((hash >> 3) % 9) - 4) * 0.08,
-  };
 }
 
 function ipPrefix(ip: string | undefined) {
