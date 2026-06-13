@@ -135,6 +135,7 @@ export type ProtectionConfig = {
     geoip: {
       enabled: boolean;
       database: string;
+      precision_database: string;
       blocked_countries: string[];
       country_cidrs: Record<string, string[]>;
     };
@@ -253,6 +254,13 @@ export type BlockPageConfig = {
   custom_html: string;
 };
 
+export type BlockPagePreview = {
+  html: string;
+  event_id: string;
+  trace_id: string;
+  status: number;
+};
+
 export type AIConfig = {
   enabled: boolean;
   provider: 'openai' | 'anthropic' | string;
@@ -267,6 +275,7 @@ export type AttackAnalysis = {
   log_id: string;
   risk: string;
   summary: string;
+  reasoning_summary?: string;
   evidence: string[];
   event_type: string;
   ai_used: boolean;
@@ -285,6 +294,7 @@ export type AIEventsAnalysisResponse = {
 
 export type AIAssistantReply = {
   answer: string;
+  reasoning_summary?: string;
   ai_used: boolean;
   log_ids: string[];
   events: number;

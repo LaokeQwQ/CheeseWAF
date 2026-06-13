@@ -16,6 +16,7 @@ type AttackAnalysis struct {
 	LogID              string   `json:"log_id"`
 	Risk               string   `json:"risk"`
 	Summary            string   `json:"summary"`
+	ReasoningSummary   string   `json:"reasoning_summary,omitempty"`
 	Evidence           []string `json:"evidence"`
 	EventType          string   `json:"event_type"`
 	AIUsed             bool     `json:"ai_used"`
@@ -28,19 +29,20 @@ type AttackAnalysis struct {
 }
 
 type AssistantReply struct {
-	Answer         string                `json:"answer"`
-	AIUsed         bool                  `json:"ai_used"`
-	LogIDs         []string              `json:"log_ids"`
-	Events         int                   `json:"events"`
-	Blocked        int                   `json:"blocked"`
-	Challenge      int                   `json:"challenge"`
-	Provider       string                `json:"provider,omitempty"`
-	Model          string                `json:"model,omitempty"`
-	InputTokens    int                   `json:"input_tokens,omitempty"`
-	OutputTokens   int                   `json:"output_tokens,omitempty"`
-	TotalTokens    int                   `json:"total_tokens,omitempty"`
-	ToolExecutions []AssistantToolCall   `json:"tool_executions,omitempty"`
-	Trace          []AssistantTraceEvent `json:"trace,omitempty"`
+	Answer           string                `json:"answer"`
+	ReasoningSummary string                `json:"reasoning_summary,omitempty"`
+	AIUsed           bool                  `json:"ai_used"`
+	LogIDs           []string              `json:"log_ids"`
+	Events           int                   `json:"events"`
+	Blocked          int                   `json:"blocked"`
+	Challenge        int                   `json:"challenge"`
+	Provider         string                `json:"provider,omitempty"`
+	Model            string                `json:"model,omitempty"`
+	InputTokens      int                   `json:"input_tokens,omitempty"`
+	OutputTokens     int                   `json:"output_tokens,omitempty"`
+	TotalTokens      int                   `json:"total_tokens,omitempty"`
+	ToolExecutions   []AssistantToolCall   `json:"tool_executions,omitempty"`
+	Trace            []AssistantTraceEvent `json:"trace,omitempty"`
 }
 
 type AssistantToolRequest struct {
@@ -49,14 +51,15 @@ type AssistantToolRequest struct {
 }
 
 type AssistantPlan struct {
-	Answer       string                 `json:"answer,omitempty"`
-	ToolRequests []AssistantToolRequest `json:"tool_calls,omitempty"`
-	Provider     string                 `json:"provider,omitempty"`
-	Model        string                 `json:"model,omitempty"`
-	Mode         string                 `json:"mode,omitempty"`
-	InputTokens  int                    `json:"input_tokens,omitempty"`
-	OutputTokens int                    `json:"output_tokens,omitempty"`
-	TotalTokens  int                    `json:"total_tokens,omitempty"`
+	Answer           string                 `json:"answer,omitempty"`
+	ReasoningSummary string                 `json:"reasoning_summary,omitempty"`
+	ToolRequests     []AssistantToolRequest `json:"tool_calls,omitempty"`
+	Provider         string                 `json:"provider,omitempty"`
+	Model            string                 `json:"model,omitempty"`
+	Mode             string                 `json:"mode,omitempty"`
+	InputTokens      int                    `json:"input_tokens,omitempty"`
+	OutputTokens     int                    `json:"output_tokens,omitempty"`
+	TotalTokens      int                    `json:"total_tokens,omitempty"`
 }
 
 func AnalyzeLog(ctx context.Context, client *Client, entry storage.LogEntry) (*AttackAnalysis, error) {
@@ -74,6 +77,7 @@ func AnalyzeLogWithLanguage(ctx context.Context, client *Client, entry storage.L
 	}
 	if strings.TrimSpace(result.Content) != "" {
 		base.Summary = result.Content
+		base.ReasoningSummary = result.ReasoningSummary
 		base.AIUsed = true
 		base.Provider = result.Provider
 		base.Model = result.Model
@@ -129,6 +133,7 @@ func AnswerAssistantWithLanguage(ctx context.Context, client *Client, question s
 	}
 	if strings.TrimSpace(result.Content) != "" {
 		reply.Answer = result.Content
+		reply.ReasoningSummary = result.ReasoningSummary
 		reply.AIUsed = true
 		reply.Provider = result.Provider
 		reply.Model = result.Model
@@ -161,6 +166,36 @@ func PlanAssistantToolCalls(ctx context.Context, client *Client, question, langu
 	plan.InputTokens = result.Usage.InputTokens
 	plan.OutputTokens = result.Usage.OutputTokens
 	plan.TotalTokens = result.Usage.TotalTokens
+	plan.ReasoningSummary = result.ReasoningSummary
+	return plan, nil
+}
+
+func PlanAssistantToolCallsStream(ctx context.Context, client *Client, question, language string, toolDefinitions []map[string]any, emit StreamEmitter) (*AssistantPlan, error) {
+	if client == nil {
+		return &AssistantPlan{}, nil
+	}
+	if emit == nil {
+		return PlanAssistantToolCalls(ctx, client, question, language, toolDefinitions)
+	}
+	if len(toolDefinitions) > 0 {
+		if plan, err := client.CompleteToolPlanStream(ctx, assistantNativeToolPlanningMessages(question, language), toolDefinitions, emit); err == nil {
+			return plan, nil
+		}
+	}
+	result, err := client.CompleteWithUsageStream(ctx, assistantToolPlanningMessages(question, language, toolDefinitions), emit)
+	if err != nil {
+		return nil, err
+	}
+	plan := parseAssistantPlan(result.Content)
+	plan.Provider = result.Provider
+	plan.Model = result.Model
+	if plan.Mode == "" {
+		plan.Mode = "json_contract_stream"
+	}
+	plan.InputTokens = result.Usage.InputTokens
+	plan.OutputTokens = result.Usage.OutputTokens
+	plan.TotalTokens = result.Usage.TotalTokens
+	plan.ReasoningSummary = result.ReasoningSummary
 	return plan, nil
 }
 
@@ -179,6 +214,35 @@ func AnswerAssistantWithToolResults(ctx context.Context, client *Client, questio
 	if strings.TrimSpace(result.Content) != "" {
 		reply.Answer = result.Content
 	}
+	reply.ReasoningSummary = result.ReasoningSummary
+	reply.AIUsed = true
+	reply.Provider = result.Provider
+	reply.Model = result.Model
+	reply.InputTokens = result.Usage.InputTokens
+	reply.OutputTokens = result.Usage.OutputTokens
+	reply.TotalTokens = result.Usage.TotalTokens
+	return reply, nil
+}
+
+func AnswerAssistantWithToolResultsStream(ctx context.Context, client *Client, question, language string, toolDefinitions []map[string]any, calls []AssistantToolCall, emit StreamEmitter) (*AssistantReply, error) {
+	reply := replyFromToolCalls(calls)
+	if client == nil {
+		if strings.TrimSpace(reply.Answer) == "" {
+			reply.Answer = localToolResultSummary(language, calls)
+		}
+		return reply, nil
+	}
+	if emit == nil {
+		return AnswerAssistantWithToolResults(ctx, client, question, language, toolDefinitions, calls)
+	}
+	result, err := client.CompleteWithUsageStream(ctx, assistantToolResultMessages(question, language, toolDefinitions, calls), emit)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(result.Content) != "" {
+		reply.Answer = result.Content
+	}
+	reply.ReasoningSummary = result.ReasoningSummary
 	reply.AIUsed = true
 	reply.Provider = result.Provider
 	reply.Model = result.Model
@@ -348,6 +412,15 @@ func firstStringValue(values map[string]any, keys ...string) string {
 	return ""
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func localToolResultSummary(language string, calls []AssistantToolCall) string {
 	readOnly, approvals, failed := 0, 0, 0
 	for _, call := range calls {
@@ -416,7 +489,7 @@ func HeuristicAnalysis(entry storage.LogEntry) *AttackAnalysis {
 		actions = append(actions, "Tag or block the source IP if repeated attempts continue.")
 	}
 	return &AttackAnalysis{
-		LogID:              entry.ID,
+		LogID:              firstNonEmpty(entry.ID, entry.TraceID),
 		Risk:               risk,
 		Summary:            fmt.Sprintf("%s request from %s matched %s on %s and was %s.", entry.Method, emptyAsUnknown(entry.ClientIP), category, emptyAsUnknown(entry.URI), emptyAs(entry.Action, "logged")),
 		Evidence:           eventEvidence(entry),

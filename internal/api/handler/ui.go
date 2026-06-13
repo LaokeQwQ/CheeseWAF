@@ -71,7 +71,8 @@ func (h *Handler) ReportUIError(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
-	writeData(w, map[string]any{"trace_id": traceID, "recorded": h.Sink != nil})
+	w.Header().Set("X-CheeseWAF-Event-ID", traceID)
+	writeData(w, map[string]any{"trace_id": traceID, "event_id": traceID, "recorded": h.Sink != nil})
 }
 
 func normalizeUITraceID(raw string) string {
