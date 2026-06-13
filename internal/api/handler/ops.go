@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -172,6 +173,42 @@ func (h *Handler) BlockPageConfig(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, h.Config.BlockPage)
 }
 
+func (h *Handler) PreviewBlockPageConfig(w http.ResponseWriter, r *http.Request) {
+	var req config.BlockPageConfig
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.TemplateID == "" {
+		req.TemplateID = h.Config.BlockPage.TemplateID
+		if req.TemplateID == "" {
+			req.TemplateID = config.Default().BlockPage.TemplateID
+		}
+	}
+	if strings.TrimSpace(req.CustomHTML) == "" {
+		req.CustomEnabled = false
+	}
+	renderer, err := blockpage.NewRendererFromConfig(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
+		return
+	}
+	eventID := blockpage.NewTraceID()
+	html, data := renderer.RenderHTML(http.StatusForbidden, blockpage.Data{
+		EventID:    eventID,
+		TraceID:    eventID,
+		AttackType: "preview",
+		ClientIP:   clientAddressForPreview(r.RemoteAddr),
+		Message:    "CheeseWAF rendered this response with the same runtime template engine used for blocked requests.",
+		Timestamp:  time.Now().UTC(),
+	})
+	writeData(w, map[string]any{
+		"html":     html,
+		"event_id": data.EventID,
+		"trace_id": data.TraceID,
+		"status":   data.Status,
+	})
+}
+
 func (h *Handler) UpdateBlockPageConfig(w http.ResponseWriter, r *http.Request) {
 	var req config.BlockPageConfig
 	if !decode(w, r, &req) {
@@ -217,6 +254,10 @@ func (h *Handler) UploadBlockPageHTML(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_EMPTY", "custom block page HTML is empty")
 		return
 	}
+	if !validBlockPageHTMLUpload(header.Filename, body) {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_NOT_HTML", "upload a .html or .htm file containing an HTML document or fragment")
+		return
+	}
 	next := h.Config.BlockPage
 	if templateID := strings.TrimSpace(r.FormValue("template_id")); templateID != "" {
 		next.TemplateID = templateID
@@ -230,6 +271,30 @@ func (h *Handler) UploadBlockPageHTML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, map[string]any{"config": h.Config.BlockPage, "filename": header.Filename, "bytes": len(body)})
+}
+
+func validBlockPageHTMLUpload(filename string, body []byte) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext != ".html" && ext != ".htm" {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(string(body)))
+	for _, marker := range []string{"<!doctype html", "<html", "<body", "<main", "<section", "<div"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func clientAddressForPreview(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil && host != "" {
+		return host
+	}
+	if strings.TrimSpace(remoteAddr) != "" {
+		return remoteAddr
+	}
+	return "console-preview"
 }
 
 func (h *Handler) DeleteCustomBlockPage(w http.ResponseWriter, _ *http.Request) {

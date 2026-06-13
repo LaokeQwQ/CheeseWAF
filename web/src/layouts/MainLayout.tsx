@@ -191,14 +191,18 @@ export default function MainLayout() {
       <div className="app-main">
         <header className="topbar">
           <Space className="topbar-left" size={10}>
-            <Tooltip content="Menu">
+            <Tooltip content={mobileNavOpen ? t('shell.closeSidebar') : sidebarCollapsed ? t('shell.expandSidebar') : t('shell.collapseSidebar')}>
               <Button
                 className="icon-button"
                 icon={<MenuIcon size={18} />}
                 aria-expanded={mobileNavOpen}
+                aria-label={mobileNavOpen ? t('shell.closeSidebar') : sidebarCollapsed ? t('shell.expandSidebar') : t('shell.collapseSidebar')}
                 onClick={() => {
+                  if (window.matchMedia('(max-width: 1024px)').matches) {
+                    setMobileNavOpen((open) => !open);
+                    return;
+                  }
                   setSidebarCollapsed(!sidebarCollapsed);
-                  setMobileNavOpen((open) => !open);
                 }}
               />
             </Tooltip>

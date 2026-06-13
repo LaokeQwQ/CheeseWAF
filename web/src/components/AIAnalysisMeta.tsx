@@ -21,6 +21,16 @@ export default function AIAnalysisMeta({ analysis }: Props) {
   );
 }
 
+export function AIReasoningSummary({ analysis }: Props) {
+  const { t } = useTranslation();
+  return (
+    <div className={analysis.reasoning_summary ? 'ai-reasoning-summary' : 'ai-reasoning-summary ai-reasoning-summary-muted'}>
+      <strong>{t('ai.reasoningSummary')}</strong>
+      <p>{analysis.reasoning_summary || t('ai.reasoningUnavailable')}</p>
+    </div>
+  );
+}
+
 function positive(value?: number) {
   return Number.isFinite(value) && Number(value) > 0;
 }

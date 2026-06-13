@@ -43,7 +43,7 @@ func TestAnalyzeEventsSkipsPlainAccessLogs(t *testing.T) {
 
 func TestAnalyzeLogIncludesProviderUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"event reviewed"}}],"usage":{"prompt_tokens":13,"completion_tokens":4,"total_tokens":17}}`)
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"event reviewed","reasoning_content":"matched event evidence before recommending action"}}],"usage":{"prompt_tokens":13,"completion_tokens":4,"total_tokens":17}}`)
 	}))
 	defer server.Close()
 	client := NewClient(config.AIConfig{
@@ -65,6 +65,9 @@ func TestAnalyzeLogIncludesProviderUsage(t *testing.T) {
 	if analysis.InputTokens != 13 || analysis.OutputTokens != 4 || analysis.TotalTokens != 17 {
 		t.Fatalf("expected token usage, got %+v", analysis)
 	}
+	if analysis.ReasoningSummary != "matched event evidence before recommending action" {
+		t.Fatalf("expected reasoning summary, got %q", analysis.ReasoningSummary)
+	}
 }
 
 func TestAssistantReplyUsesRealSecurityEvents(t *testing.T) {
@@ -81,7 +84,7 @@ func TestAssistantReplyUsesRealSecurityEvents(t *testing.T) {
 
 func TestAssistantReplyIncludesProviderUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"reviewed"}}],"usage":{"prompt_tokens":21,"completion_tokens":5,"total_tokens":26}}`)
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"reviewed","reasoning_content":"needed recent event evidence"}}],"usage":{"prompt_tokens":21,"completion_tokens":5,"total_tokens":26}}`)
 	}))
 	defer server.Close()
 	client := NewClient(config.AIConfig{
@@ -102,6 +105,9 @@ func TestAssistantReplyIncludesProviderUsage(t *testing.T) {
 	}
 	if reply.InputTokens != 21 || reply.OutputTokens != 5 || reply.TotalTokens != 26 {
 		t.Fatalf("expected token usage, got %+v", reply)
+	}
+	if reply.ReasoningSummary != "needed recent event evidence" {
+		t.Fatalf("expected reasoning summary, got %q", reply.ReasoningSummary)
 	}
 }
 
@@ -236,7 +242,7 @@ func TestClientParsesOpenAINativeToolCalls(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&parsed); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"recent_security_events","arguments":"{\"limit\":7}"}}]}}],"usage":{"prompt_tokens":19,"completion_tokens":5,"total_tokens":24}}`)
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"tool needed","tool_calls":[{"id":"call_1","type":"function","function":{"name":"recent_security_events","arguments":"{\"limit\":7}"}}]}}],"usage":{"prompt_tokens":19,"completion_tokens":5,"total_tokens":24}}`)
 	}))
 	defer server.Close()
 
@@ -269,6 +275,65 @@ func TestClientParsesOpenAINativeToolCalls(t *testing.T) {
 	}
 	if plan.InputTokens != 19 || plan.OutputTokens != 5 || plan.TotalTokens != 24 {
 		t.Fatalf("unexpected token usage: %+v", plan)
+	}
+	if plan.ReasoningSummary != "tool needed" {
+		t.Fatalf("expected tool planning reasoning summary, got %q", plan.ReasoningSummary)
+	}
+}
+
+func TestClientStreamsOpenAINativeToolCallsAndReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var parsed chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&parsed); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !parsed.Stream {
+			t.Fatalf("expected stream request: %+v", parsed)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"need live evidence\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"recent_security_events\",\"arguments\":\"{\\\"lim\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"it\\\":7}\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":23,\"completion_tokens\":6,\"total_tokens\":29}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AIConfig{
+		Enabled:  true,
+		Provider: "openai",
+		APIBase:  server.URL,
+		APIKey:   "test-secret",
+		Model:    "gpt-test",
+	}, server.Client())
+	var trace []AssistantTraceEvent
+	plan, err := client.CompleteToolPlanStream(context.Background(), []Message{{Role: "user", Content: "分析最近安全事件"}}, []map[string]any{{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "recent_security_events",
+			"description": "read recent events",
+			"parameters":  map[string]any{"type": "object"},
+		},
+	}}, func(event AssistantTraceEvent) {
+		trace = append(trace, event)
+	})
+	if err != nil {
+		t.Fatalf("tool plan stream: %v", err)
+	}
+	if plan.Mode != "native_openai_tool_calls_stream" || len(plan.ToolRequests) != 1 || plan.ToolRequests[0].Name != "recent_security_events" {
+		t.Fatalf("unexpected streamed plan: %+v", plan)
+	}
+	if got := plan.ToolRequests[0].Args["limit"]; got != json.Number("7") {
+		t.Fatalf("expected streamed parsed limit argument, got %#v", got)
+	}
+	if plan.ReasoningSummary != "need live evidence" {
+		t.Fatalf("expected streamed reasoning, got %q", plan.ReasoningSummary)
+	}
+	if plan.InputTokens != 23 || plan.OutputTokens != 6 || plan.TotalTokens != 29 {
+		t.Fatalf("unexpected streamed usage: %+v", plan)
+	}
+	if len(trace) < 3 || trace[0].Type != "provider_response_start" || trace[1].Type != "reasoning_delta" || trace[2].Type != "tool_call_delta" {
+		t.Fatalf("expected provider start, reasoning delta, and tool delta trace, got %+v", trace)
 	}
 }
 

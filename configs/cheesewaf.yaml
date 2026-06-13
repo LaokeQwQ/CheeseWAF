@@ -135,6 +135,7 @@ protection:
     geoip:
       enabled: false
       database: "./data/GeoLite2-Country.mmdb"
+      precision_database: ""
       blocked_countries: []
       country_cidrs: {}
   ratelimit:

@@ -80,3 +80,88 @@ func TestGeoIPPolicyRejectsInvalidDatabase(t *testing.T) {
 		t.Fatal("NewGeoIPPolicy returned nil error for invalid database")
 	}
 }
+
+func TestGeoIPLocationMetadataIncludesPrecisionFields(t *testing.T) {
+	location := GeoIPLocation{
+		CountryCode:  "CN",
+		CountryName:  "中国",
+		Continent:    "AS",
+		City:         "杭州",
+		Region:       "浙江",
+		RegionCode:   "ZJ",
+		District:     "西湖区",
+		DistrictCode: "XH",
+		Street:       "文三路",
+		StreetCode:   "WSL",
+		Latitude:     30.259,
+		Longitude:    120.13,
+		Accuracy:     12,
+		Source:       "mmdb",
+	}
+
+	metadata := location.Metadata()
+	for key, want := range map[string]any{
+		"country_code":    "CN",
+		"city":            "杭州",
+		"region":          "浙江",
+		"district":        "西湖区",
+		"district_code":   "XH",
+		"street":          "文三路",
+		"street_code":     "WSL",
+		"lat":             30.259,
+		"lon":             120.13,
+		"accuracy_radius": uint16(12),
+		"source":          "mmdb",
+	} {
+		if got := metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestGeoIPPolicyPrecisionDatabaseAddsStreetLevelLocation(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "precision.json")
+	raw := []byte(`{
+  "records": [
+    {
+      "cidr": "203.0.113.0/24",
+      "country_code": "CN",
+      "country_name": "中国",
+      "continent": "AS",
+      "region": "浙江",
+      "region_code": "ZJ",
+      "city": "杭州",
+      "district": "西湖区",
+      "street": "文三路",
+      "lat": 30.259,
+      "lon": 120.13,
+      "accuracy_radius": 2,
+      "source": "local-precision"
+    },
+    {
+      "cidr": "203.0.113.7/32",
+      "city": "杭州",
+      "district": "西湖区",
+      "street": "学院路",
+      "lat": 30.267,
+      "lon": 120.122,
+      "accuracy_radius": 1,
+      "source": "local-precision-host"
+    }
+  ]
+}`)
+	if err := os.WriteFile(database, raw, 0o600); err != nil {
+		t.Fatalf("write precision database: %v", err)
+	}
+	policy, err := NewGeoIPPolicy(config.GeoIPConfig{PrecisionDatabase: database})
+	if err != nil {
+		t.Fatalf("NewGeoIPPolicy returned error: %v", err)
+	}
+	location := policy.Lookup("203.0.113.7")
+	if location.CountryCode != "CN" || location.City != "杭州" || location.District != "西湖区" || location.Street != "学院路" {
+		t.Fatalf("unexpected precision location: %+v", location)
+	}
+	if location.Accuracy != 1 || location.Source != "local-precision-host" {
+		t.Fatalf("unexpected precision metadata: %+v", location)
+	}
+}

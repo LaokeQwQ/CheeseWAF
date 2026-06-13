@@ -140,6 +140,7 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("write:system")).Post("/backup/restore", h.RestoreBackup)
 			r.With(require("read:system")).Get("/block-pages/templates", h.BlockPageTemplates)
 			r.With(require("read:system")).Get("/block-pages/config", h.BlockPageConfig)
+			r.With(require("read:system")).Post("/block-pages/preview", h.PreviewBlockPageConfig)
 			r.With(require("write:system")).Put("/block-pages/config", h.UpdateBlockPageConfig)
 			r.With(require("write:system")).Post("/block-pages/upload", h.UploadBlockPageHTML)
 			r.With(require("write:system")).Delete("/block-pages/custom", h.DeleteCustomBlockPage)

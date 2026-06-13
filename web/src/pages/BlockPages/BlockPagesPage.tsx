@@ -8,6 +8,7 @@ import {
   deleteCustomBlockPage,
   fetchBlockPageConfig,
   fetchBlockTemplates,
+  previewBlockPageConfig,
   updateBlockPageConfig,
   uploadBlockPageHTML,
 } from '../../api/client';
@@ -22,6 +23,7 @@ export default function BlockPagesPage() {
   const activeConfig = configQuery.data;
   const [selected, setSelected] = useState('minimal');
   const [customHTML, setCustomHTML] = useState('');
+  const [previewDraft, setPreviewDraft] = useState('');
 
   useEffect(() => {
     if (!activeConfig) {
@@ -33,11 +35,33 @@ export default function BlockPagesPage() {
 
   const template = useMemo(() => data.find((item) => item.id === selected) ?? data[0], [data, selected]);
   const templateHTML = template?.html ?? '';
-  const previewHTML = customHTML.trim() ? customHTML : templateHTML;
-  const sourceLabel = activeConfig?.custom_enabled ? t('blockPages.customActive') : t('blockPages.builtInActive', { name: template?.name ?? selected });
+  const previewPayload = useMemo(() => ({
+    template_id: selected,
+    custom_enabled: Boolean(customHTML.trim()),
+    custom_html: customHTML,
+  }), [customHTML, selected]);
+  const templateName = (id: string, fallback: string) => t(`blockPages.templateNames.${id}`, { defaultValue: fallback });
+  const templateDescription = (id: string, fallback: string) => t(`blockPages.templateDescriptions.${id}`, { defaultValue: fallback });
+  const sourceLabel = activeConfig?.custom_enabled ? t('blockPages.customActive') : t('blockPages.builtInActive', { name: templateName(template?.id ?? selected, template?.name ?? selected) });
   const isLoading = templatesQuery.isLoading || configQuery.isLoading;
   const isError = templatesQuery.isError || configQuery.isError;
   const error = templatesQuery.error ?? configQuery.error;
+  const customBytes = new Blob([customHTML]).size;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setPreviewDraft(JSON.stringify(previewPayload));
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [previewPayload]);
+
+  const previewQuery = useQuery({
+    queryKey: ['block-page-preview', previewDraft],
+    queryFn: () => previewBlockPageConfig(JSON.parse(previewDraft) as typeof previewPayload),
+    enabled: Boolean(previewDraft) && !isLoading && Boolean(template || customHTML.trim()),
+    retry: false,
+  });
+  const previewHTML = previewQuery.data?.html ?? '';
 
   const saveBuiltInMutation = useMutation({
     mutationFn: () => updateBlockPageConfig({ template_id: selected, custom_enabled: false, custom_html: activeConfig?.custom_html ?? customHTML }),
@@ -77,11 +101,12 @@ export default function BlockPagesPage() {
   });
 
   async function copyTemplate() {
-    if (!previewHTML) {
+    const sourceHTML = customHTML.trim() ? customHTML : templateHTML;
+    if (!sourceHTML) {
       return;
     }
     try {
-      await navigator.clipboard.writeText(previewHTML);
+      await navigator.clipboard.writeText(sourceHTML);
       ArcoMessage.success(t('blockPages.copied'));
     } catch {
       ArcoMessage.error(t('blockPages.copyFailed'));
@@ -89,10 +114,11 @@ export default function BlockPagesPage() {
   }
 
   function downloadTemplate() {
-    if (!previewHTML) {
+    const sourceHTML = customHTML.trim() ? customHTML : templateHTML;
+    if (!sourceHTML) {
       return;
     }
-    const blob = new Blob([previewHTML], { type: 'text/html;charset=utf-8' });
+    const blob = new Blob([sourceHTML], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -158,8 +184,8 @@ export default function BlockPagesPage() {
                 >
                   <FileCode2 size={17} />
                   <span className="template-item-copy">
-                    <span className="template-item-name">{item.name}</span>
-                    <span className="template-item-desc">{item.description}</span>
+                    <span className="template-item-name">{templateName(item.id, item.name)}</span>
+                    <span className="template-item-desc">{templateDescription(item.id, item.description)}</span>
                   </span>
                   <span className="template-item-id">{item.id}</span>
                 </button>
@@ -179,7 +205,8 @@ export default function BlockPagesPage() {
               <p>{t('blockPages.customHint')}</p>
             </div>
             <div className="block-editor-actions">
-              <input ref={fileInputRef} type="file" accept=".html,text/html" hidden onChange={onUploadChange} />
+              <input ref={fileInputRef} type="file" accept=".html,.htm,text/html" hidden onChange={onUploadChange} />
+              <Tag>{t('blockPages.sizeLabel', { size: formatBytes(customBytes) })}</Tag>
               <Button icon={<FileUp size={14} />} loading={uploadMutation.isPending} onClick={() => fileInputRef.current?.click()}>{t('blockPages.uploadHtml')}</Button>
               <Button icon={<RotateCcw size={14} />} loading={restoreMutation.isPending} disabled={!activeConfig?.custom_enabled && !customHTML} onClick={() => restoreMutation.mutate()}>{t('blockPages.restoreBuiltIn')}</Button>
               <Button icon={<Save size={14} />} type="primary" loading={saveCustomMutation.isPending} onClick={saveCustom}>{t('blockPages.saveCustom')}</Button>
@@ -201,15 +228,32 @@ export default function BlockPagesPage() {
               <p>{t('blockPages.previewHint')}</p>
             </div>
             <div className="block-editor-actions">
-              <Button icon={<Copy size={14} />} disabled={!previewHTML} onClick={copyTemplate}>{t('blockPages.copyHtml')}</Button>
-              <Button icon={<Download size={14} />} disabled={!previewHTML} onClick={downloadTemplate}>{t('blockPages.downloadHtml')}</Button>
+              {previewQuery.data?.event_id && <Tag className="status-pill">{t('blockPages.previewEvent', { id: previewQuery.data.event_id })}</Tag>}
+              <Button icon={<Copy size={14} />} disabled={!templateHTML && !customHTML.trim()} onClick={copyTemplate}>{t('blockPages.copyHtml')}</Button>
+              <Button icon={<Download size={14} />} disabled={!templateHTML && !customHTML.trim()} onClick={downloadTemplate}>{t('blockPages.downloadHtml')}</Button>
             </div>
           </div>
+          {previewQuery.error instanceof APIRequestError && (
+            <div className="inline-error block-preview-error">
+              <span>{previewQuery.error.rawMessage}</span>
+              {previewQuery.error.traceID && <code>{previewQuery.error.traceID}</code>}
+            </div>
+          )}
           <div className="block-preview-frame">
-            <iframe title={t('blockPages.preview')} sandbox="" srcDoc={previewHTML} />
+            {previewQuery.isFetching && !previewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="" srcDoc={previewHTML} />}
           </div>
         </section>
       </div>
     </section>
   );
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
