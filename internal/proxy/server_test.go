@@ -51,6 +51,37 @@ func TestServerPassesAndBlocks(t *testing.T) {
 	}
 }
 
+func TestServerBlockPageUsesRequestLanguage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+
+	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewSQLDetector("block")), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/?id=1%27%20OR%201=1", nil)
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.1")
+	req.Header.Set("Sec-CH-Timezone", "Asia/Shanghai")
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected block, code=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{"访问已被拦截", "安全策略已执行", "Asia/Shanghai"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected localized block page to contain %q, body=%s", want, body)
+		}
+	}
+}
+
 func TestServerHotReloadsBlockPageTemplate(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))

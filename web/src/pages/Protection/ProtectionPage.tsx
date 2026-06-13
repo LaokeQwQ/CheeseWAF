@@ -17,7 +17,7 @@ const fallback: ProtectionConfig = {
     tags: {},
     threat_intel: [],
     providers: [],
-    geoip: { enabled: false, database: '', blocked_countries: [], country_cidrs: {} },
+    geoip: { enabled: false, database: '', precision_database: '', blocked_countries: [], country_cidrs: {} },
   },
   ratelimit: { enabled: false, default: { requests: 0, window: '', burst: 0 } },
   bot: {
@@ -278,6 +278,7 @@ export default function ProtectionPage() {
             initialValues={{
               enabled: protection.ip.geoip.enabled,
               database: protection.ip.geoip.database,
+              precisionDatabase: protection.ip.geoip.precision_database,
               blocked: protection.ip.geoip.blocked_countries,
               whitelist: protection.ip.whitelist.join(','),
               blacklist: protection.ip.blacklist.join(','),
@@ -286,12 +287,19 @@ export default function ProtectionPage() {
               ...protection.ip,
               whitelist: splitList(values.whitelist),
               blacklist: splitList(values.blacklist),
-              geoip: { ...protection.ip.geoip, enabled: values.enabled, database: String(values.database ?? '').trim(), blocked_countries: splitList(values.blocked).map((item) => item.toUpperCase()) },
+              geoip: {
+                ...protection.ip.geoip,
+                enabled: values.enabled,
+                database: String(values.database ?? '').trim(),
+                precision_database: String(values.precisionDatabase ?? '').trim(),
+                blocked_countries: splitList(values.blocked).map((item) => item.toUpperCase()),
+              },
             })}
           >
             <div className="protection-form-grid">
               <Form.Item label={t('protection.geoip')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
               <Form.Item label={t('protection.geoipDatabase')} field="database"><Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" /></Form.Item>
+              <Form.Item label={t('protection.geoipPrecisionDatabase')} field="precisionDatabase" extra={t('protection.geoipPrecisionDatabaseHint')}><Input placeholder="/var/lib/cheesewaf/ip-precision.json" /></Form.Item>
               <Form.Item label={t('protection.blockedCountries')} field="blocked" extra={t('protection.blockedCountriesHint')}><GeoRegionSelector /></Form.Item>
               <Form.Item label={t('ip.whitelist')} field="whitelist"><Input /></Form.Item>
               <Form.Item label={t('ip.blacklist')} field="blacklist"><Input /></Form.Item>
@@ -420,6 +428,7 @@ function normalizeProtection(input?: ProtectionConfig): ProtectionConfig {
         ...fallback.ip.geoip,
         ...next.ip?.geoip,
         blocked_countries: asArray(next.ip?.geoip?.blocked_countries),
+        precision_database: next.ip?.geoip?.precision_database ?? '',
         country_cidrs: next.ip?.geoip?.country_cidrs ?? {},
       },
     },

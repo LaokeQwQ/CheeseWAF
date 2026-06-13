@@ -293,10 +293,11 @@ type ThreatIntelProviderConfig struct {
 }
 
 type GeoIPConfig struct {
-	Enabled          bool                `yaml:"enabled" json:"enabled"`
-	Database         string              `yaml:"database" json:"database"`
-	BlockedCountries []string            `yaml:"blocked_countries" json:"blocked_countries"`
-	CountryCIDRs     map[string][]string `yaml:"country_cidrs" json:"country_cidrs"`
+	Enabled           bool                `yaml:"enabled" json:"enabled"`
+	Database          string              `yaml:"database" json:"database"`
+	PrecisionDatabase string              `yaml:"precision_database" json:"precision_database"`
+	BlockedCountries  []string            `yaml:"blocked_countries" json:"blocked_countries"`
+	CountryCIDRs      map[string][]string `yaml:"country_cidrs" json:"country_cidrs"`
 }
 
 type RateLimitProtectionConfig struct {
