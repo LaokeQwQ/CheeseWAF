@@ -41,6 +41,9 @@ func TestReportUIErrorWritesTraceableLogEntry(t *testing.T) {
 	if recorder.Header().Get("X-CheeseWAF-Trace-ID") != "cw-ui-test123" {
 		t.Fatalf("expected response trace header to match UI trace, got %q", recorder.Header().Get("X-CheeseWAF-Trace-ID"))
 	}
+	if recorder.Header().Get("X-CheeseWAF-Event-ID") != "cw-ui-test123" {
+		t.Fatalf("expected response event header to match UI trace, got %q", recorder.Header().Get("X-CheeseWAF-Event-ID"))
+	}
 	if len(sink.entries) != 1 {
 		t.Fatalf("expected one log entry, got %d", len(sink.entries))
 	}
@@ -94,9 +97,13 @@ func TestReportUIErrorKeepsTraceIDWhenSinkFails(t *testing.T) {
 	if recorder.Header().Get("X-CheeseWAF-Trace-ID") != "cw-ui-fail" {
 		t.Fatalf("expected sink failure response to keep UI trace id, got %q", recorder.Header().Get("X-CheeseWAF-Trace-ID"))
 	}
+	if recorder.Header().Get("X-CheeseWAF-Event-ID") != "cw-ui-fail" {
+		t.Fatalf("expected sink failure response to keep UI event id, got %q", recorder.Header().Get("X-CheeseWAF-Event-ID"))
+	}
 	var envelope struct {
 		Error struct {
 			TraceID string `json:"trace_id"`
+			EventID string `json:"event_id"`
 		} `json:"error"`
 	}
 	if err := json.NewDecoder(recorder.Body).Decode(&envelope); err != nil {
@@ -104,6 +111,9 @@ func TestReportUIErrorKeepsTraceIDWhenSinkFails(t *testing.T) {
 	}
 	if envelope.Error.TraceID != "cw-ui-fail" {
 		t.Fatalf("expected JSON error to keep UI trace id, got %q", envelope.Error.TraceID)
+	}
+	if envelope.Error.EventID != "cw-ui-fail" {
+		t.Fatalf("expected JSON error to keep UI event id, got %q", envelope.Error.EventID)
 	}
 }
 

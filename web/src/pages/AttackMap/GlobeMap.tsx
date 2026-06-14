@@ -52,7 +52,12 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const isDarkGlobe = visualTheme === 'dark';
     let renderer: any;
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        preserveDrawingBuffer: true,
+        powerPreference: 'high-performance',
+      });
     } catch {
       setWebglError(true);
       return undefined;

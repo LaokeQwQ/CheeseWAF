@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { BrainCircuit, ChevronLeft, ChevronRight, Eye, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
 import { analyzeEvents, analyzeLogReference, fetchAIConfig, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
-import AIAnalysisMeta from '../../components/AIAnalysisMeta';
+import AIAnalysisMeta, { AIReasoningSummary } from '../../components/AIAnalysisMeta';
 import type { AIConfig, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
 
@@ -99,6 +99,7 @@ export default function AIPage() {
     },
     onError: (error) => ArcoMessage.error(error.message),
   });
+  const analyzingEventKey = eventAnalysisMutation.variables ? eventKey(eventAnalysisMutation.variables) : '';
 
   return (
     <section className="page-surface">
@@ -217,7 +218,7 @@ export default function AIPage() {
                       </Link>
                       <Button
                         size="small"
-                        loading={eventAnalysisMutation.isPending && selectedId === key}
+                        loading={eventAnalysisMutation.isPending && analyzingEventKey === key}
                         onClick={() => {
                           setSelectedId(key);
                           eventAnalysisMutation.mutate(record);
@@ -278,6 +279,7 @@ export default function AIPage() {
               {selectedAnalysis ? (
                 <>
                   <p>{selectedAnalysis.summary}</p>
+                  <AIReasoningSummary analysis={selectedAnalysis} />
                   <div className="ai-analysis-columns">
                     <div>
                       <strong>{t('ai.evidence')}</strong>

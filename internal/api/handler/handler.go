@@ -585,6 +585,7 @@ func writeErrorWithTraceID(w http.ResponseWriter, status int, code, message, tra
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
+	w.Header().Set("X-CheeseWAF-Event-ID", traceID)
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(dto.Response{Error: &dto.APIError{Code: code, Message: message, TraceID: traceID}})
+	_ = json.NewEncoder(w).Encode(dto.Response{Error: &dto.APIError{Code: code, Message: message, TraceID: traceID, EventID: traceID}})
 }
