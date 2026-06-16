@@ -65,18 +65,14 @@ export default function LogsPage() {
       <div className="toolbar-row">
         <Input value={search} onChange={setSearch} prefix={<Search size={16} />} placeholder={t('common.search')} allowClear />
         <Select value={category} placeholder={t('logs.category')} allowClear onChange={(value) => setCategory(value as string | undefined)}>
-          <Select.Option value="sqli">SQLi</Select.Option>
-          <Select.Option value="xss">XSS</Select.Option>
-          <Select.Option value="rce">RCE</Select.Option>
-          <Select.Option value="lfi">LFI</Select.Option>
-          <Select.Option value="ssrf">SSRF</Select.Option>
-          <Select.Option value="bot">Bot</Select.Option>
+          {['sqli', 'xss', 'rce', 'lfi', 'ssrf', 'bot'].map((item) => (
+            <Select.Option key={item} value={item}>{displayCategory(item, t)}</Select.Option>
+          ))}
         </Select>
         <Select value={action} placeholder={t('logs.action')} allowClear onChange={(value) => setAction(value as string | undefined)}>
-          <Select.Option value="block">{t('common.block')}</Select.Option>
-          <Select.Option value="challenge">Challenge</Select.Option>
-          <Select.Option value="log">Log</Select.Option>
-          <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
+          {['block', 'challenge', 'log', 'monitor'].map((item) => (
+            <Select.Option key={item} value={item}>{displayAction(item, t)}</Select.Option>
+          ))}
         </Select>
       </div>
 

@@ -61,7 +61,7 @@ export default function BlockPagesPage() {
     enabled: Boolean(previewDraft) && !isLoading && Boolean(template || customHTML.trim()),
     retry: false,
   });
-  const previewHTML = previewQuery.data?.html ?? '';
+  const previewHTML = previewQuery.data?.html ?? (customHTML.trim() ? customHTML : templateHTML);
 
   const saveBuiltInMutation = useMutation({
     mutationFn: () => updateBlockPageConfig({ template_id: selected, custom_enabled: false, custom_html: activeConfig?.custom_html ?? customHTML }),
