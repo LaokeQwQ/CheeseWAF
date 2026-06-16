@@ -58,3 +58,21 @@ func TestAccessPolicySiteScope(t *testing.T) {
 		t.Fatalf("expected no match outside site, got %+v", decision)
 	}
 }
+
+func TestAccessPolicyMonitorDoesNotOverrideAllowOrBlock(t *testing.T) {
+	policy, err := NewAccessPolicy(config.IPProtectionConfig{
+		AccessRules: []config.IPAccessRuleConfig{
+			{ID: "monitor-global", Action: "monitor", Scope: "global", Entries: []string{"203.0.113.10"}, Enabled: true},
+			{ID: "block-admin", Action: "block", Scope: "path", SiteID: "site-a", PathPrefix: "/admin", Entries: []string{"203.0.113.10"}, Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if decision := policy.Evaluate("203.0.113.10", "site-a", "/"); !decision.Matched || decision.Action != AccessActionMonitor {
+		t.Fatalf("expected monitor match, got %+v", decision)
+	}
+	if decision := policy.Evaluate("203.0.113.10", "site-a", "/admin"); decision.Action != AccessActionBlock {
+		t.Fatalf("expected block to override monitor on path, got %+v", decision)
+	}
+}

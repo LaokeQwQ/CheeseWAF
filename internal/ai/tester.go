@@ -3,7 +3,6 @@ package ai
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -13,7 +12,7 @@ func TestConnection(ctx context.Context, cfg config.AIConfig) error {
 	if !cfg.Enabled {
 		return fmt.Errorf("ai is disabled")
 	}
-	client := NewClient(cfg, &http.Client{Timeout: 15 * time.Second})
+	client := NewClientWithTimeout(cfg, 45*time.Second)
 	reply, err := client.Complete(ctx, []Message{
 		{Role: "system", Content: "Reply with OK only."},
 		{Role: "user", Content: "Connectivity check."},

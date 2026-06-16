@@ -57,14 +57,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup Go from mirror
         shell: bash
         run: bash scripts/ci/setup-go-mirror.sh
       - name: Verify go.mod and go.sum
         shell: bash
         run: |
-          go mod tidy
+          bash scripts/ci/go-env.sh go mod tidy
           git diff --exit-code -- go.mod go.sum
 
   go-test:
@@ -72,20 +72,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup Go from mirror
         shell: bash
         run: bash scripts/ci/setup-go-mirror.sh
       - name: Test
         shell: bash
-        run: go test -race -count=1 ./cmd/... ./internal/...
+        run: bash scripts/ci/go-env.sh go test -race -count=1 ./cmd/... ./internal/...
 
   web-build:
     name: web-build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup Node from mirror
         shell: bash
         run: bash scripts/ci/setup-node-mirror.sh
@@ -98,25 +98,56 @@ jobs:
         shell: bash
         run: npm run build
 
+  go-vulncheck:
+    name: go-vulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Setup Go from mirror
+        shell: bash
+        run: bash scripts/ci/setup-go-mirror.sh
+      - name: Scan Go vulnerabilities
+        shell: bash
+        run: bash scripts/ci/go-env.sh go run golang.org/x/vuln/cmd/govulncheck@latest ./cmd/... ./internal/...
+
+  web-audit:
+    name: web-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Setup Node from mirror
+        shell: bash
+        run: bash scripts/ci/setup-node-mirror.sh
+      - name: Install dependencies
+        working-directory: web
+        shell: bash
+        run: npm ci
+      - name: Audit web dependencies
+        working-directory: web
+        shell: bash
+        run: npm audit --audit-level=high
+
   security-corpus:
     name: security-corpus
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup Go from mirror
         shell: bash
         run: bash scripts/ci/setup-go-mirror.sh
       - name: Run curated semantic corpus
         shell: bash
-        run: go run ./cmd/cheesewaf-corpus --mode analyzer
+        run: bash scripts/ci/go-env.sh go run ./cmd/cheesewaf-corpus --mode analyzer
 
   cross-build:
     name: cross-build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup Go from mirror
         shell: bash
         run: bash scripts/ci/setup-go-mirror.sh
@@ -144,7 +175,7 @@ jobs:
             fi
             output="bin/cheesewaf-${goos}-${goarch}${ext}"
             echo "building ${target} -> ${output}"
-            GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$output" ./cmd/cheesewaf/
+            GOOS="$goos" GOARCH="$goarch" bash scripts/ci/go-env.sh go build -trimpath -o "$output" ./cmd/cheesewaf/
           done
 
   release-artifacts:
@@ -155,11 +186,13 @@ jobs:
       - go-mod-tidy
       - go-test
       - web-build
+      - go-vulncheck
+      - web-audit
       - security-corpus
       - cross-build
     steps:
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup Go from mirror
         shell: bash
         run: bash scripts/ci/setup-go-mirror.sh
@@ -172,9 +205,9 @@ jobs:
           CHEESEWAF_REF_NAME: ${{ github.ref_name }}
           CHEESEWAF_RUN_NUMBER: ${{ github.run_number }}
           CHEESEWAF_COMMIT: ${{ github.sha }}
-        run: bash scripts/ci/package-release.sh
+        run: bash scripts/ci/go-env.sh bash scripts/ci/package-release.sh
       - name: Upload branch release artifacts
-        uses: https://data.forgejo.org/forgejo/upload-artifact@v4
+        uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
           path: release/*

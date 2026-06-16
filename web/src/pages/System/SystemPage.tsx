@@ -11,7 +11,7 @@ import {
   Tag,
 } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Database, Image, KeyRound, LockKeyhole, Plus, ServerCog, ShieldAlert, Trash2, UserRound } from 'lucide-react';
+import { Database, Image, KeyRound, LockKeyhole, MapPinned, Plus, ServerCog, ShieldAlert, Trash2, UserRound } from 'lucide-react';
 import QRCode from 'qrcode';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -107,6 +107,26 @@ export default function SystemPage() {
       },
     }));
   };
+  const patchConsoleMap = (patch: Partial<SystemConfig['console']['map']>) => {
+    setSystem((current) => normalizeSystem({
+      ...current,
+      console: {
+        ...current.console,
+        map: {
+          ...current.console.map,
+          ...patch,
+        },
+      },
+    }));
+  };
+  const patchChinaBoundary = (patch: Partial<SystemConfig['console']['map']['china_boundary']>) => {
+    patchConsoleMap({
+      china_boundary: {
+        ...system.console.map.china_boundary,
+        ...patch,
+      },
+    });
+  };
   const patchStorage = <K extends keyof SystemConfig['storage']>(key: K, patch: Partial<SystemConfig['storage'][K]>) => {
     setSystem((current) => ({
       ...current,
@@ -168,9 +188,6 @@ export default function SystemPage() {
           <h1>{t('system.title')}</h1>
           <p>{t('system.subtitle')}</p>
         </div>
-        <Button type="primary" onClick={() => saveMutation.mutate(system)} loading={saveMutation.isPending}>
-          {t('common.save')}
-        </Button>
       </header>
 
       <section className="panel system-settings-panel">
@@ -252,7 +269,7 @@ export default function SystemPage() {
                 <h2>{t('system.consoleLogin')}</h2>
                 <Button type="primary" onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending}>{t('common.save')}</Button>
               </div>
-              <div className="system-form-groups">
+              <div className="system-form-groups console-settings-grid">
                 <section className="system-fieldset">
                   <header>
                     <strong>{t('system.loginSecurity')}</strong>
@@ -398,6 +415,71 @@ export default function SystemPage() {
                         value={system.console.login.background.url}
                         placeholder="https://example.com/admin-bg.webp"
                         onChange={(url) => patchConsoleLogin({ background: { ...system.console.login.background, url } })}
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="system-fieldset console-map-fieldset">
+                  <header>
+                    <strong><MapPinned size={15} /> {t('system.mapData')}</strong>
+                    <span>{t('system.mapDataHint')}</span>
+                  </header>
+                  <div className="site-detail-grid console-map-grid">
+                    <label className="switch-line">
+                      <span>{t('system.chinaBoundaryEnabled')}</span>
+                      <Switch
+                        checked={system.console.map.china_boundary.enabled}
+                        onChange={(enabled) => patchChinaBoundary({ enabled })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.mapBoundarySourceType')}</span>
+                      <Select
+                        value={system.console.map.china_boundary.source_type || 'file'}
+                        onChange={(source_type) => patchChinaBoundary({ source_type: source_type as string })}
+                      >
+                        <Select.Option value="file">{t('system.mapBoundaryFile')}</Select.Option>
+                        <Select.Option value="url">{t('system.mapBoundaryURL')}</Select.Option>
+                      </Select>
+                    </label>
+                    <label className="wide-field">
+                      <span>{t('system.mapBoundarySource')}</span>
+                      <Input
+                        value={system.console.map.china_boundary.source}
+                        placeholder={system.console.map.china_boundary.source_type === 'url' ? 'https://example.com/china-boundary.geojson' : './data/maps/china-boundary.geojson'}
+                        onChange={(source) => patchChinaBoundary({ source })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.mapBoundaryLicense')}</span>
+                      <Input
+                        value={system.console.map.china_boundary.license}
+                        placeholder={t('system.mapBoundaryLicensePlaceholder')}
+                        onChange={(license) => patchChinaBoundary({ license })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('system.mapBoundaryReviewID')}</span>
+                      <Input
+                        value={system.console.map.china_boundary.review_id}
+                        placeholder={t('system.mapBoundaryReviewIDPlaceholder')}
+                        onChange={(review_id) => patchChinaBoundary({ review_id })}
+                      />
+                    </label>
+                    <label className="wide-field">
+                      <span>{t('system.mapBoundaryAttribution')}</span>
+                      <Input
+                        value={system.console.map.china_boundary.attribution}
+                        placeholder={t('system.mapBoundaryAttributionPlaceholder')}
+                        onChange={(attribution) => patchChinaBoundary({ attribution })}
+                      />
+                    </label>
+                    <label className="switch-line">
+                      <span>{t('system.mapBoundaryAllowInsecure')}</span>
+                      <Switch
+                        checked={system.console.map.china_boundary.allow_insecure}
+                        onChange={(allow_insecure) => patchChinaBoundary({ allow_insecure })}
                       />
                     </label>
                   </div>
