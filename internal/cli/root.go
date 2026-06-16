@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -16,8 +17,6 @@ const (
 )
 
 var (
-	appVersion = "0.1.0-dev"
-	buildTime  = "unknown"
 	configPath = "./data/cheesewaf.yaml"
 	dataDir    = "./data"
 )
@@ -26,7 +25,7 @@ var rootCmd = &cobra.Command{
 	Use:     appName,
 	Short:   "CheeseWAF — 高性能 Web 应用防火墙",
 	Long:    `CheeseWAF 是一个高性能、易用的 Web 应用防火墙 (WAF)，基于 Go 构建，支持语义分析引擎、AI 智能助手和 TUI 终端管理。`,
-	Version: appVersion,
+	Version: version.Version,
 }
 
 func init() {
@@ -38,13 +37,15 @@ func init() {
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(restartCmd)
 	rootCmd.AddCommand(userCmd)
+	rootCmd.AddCommand(versionCmd)
 }
 
 // Execute dispatches the root command based on the executable name (BusyBox pattern).
 // If called as "waf-cli", it defaults to the interactive TUI panel.
 // If called as "cheesewaf" (or anything else), it defaults to starting the WAF server.
 func Execute(execName string) {
-	rootCmd.Version = appVersion + " (" + buildTime + ")"
+	info := version.Current()
+	rootCmd.Version = info.Version + " (" + info.Channel + ", " + info.BuildTime + ")"
 	switch execName {
 	case cliName:
 		// waf-cli 直接执行 → 进入 TUI 管理面板

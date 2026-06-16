@@ -1,10 +1,9 @@
-import { Button, Form, Input, Modal } from '@arco-design/web-react';
+import { Button, Form, Input, Message as ArcoMessage, Modal } from '@arco-design/web-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { motion } from 'framer-motion';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { LockKeyhole, MoveRight, ShieldCheck, UserRound } from 'lucide-react';
-import { pressable } from '../../animations/micro';
 import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login, verifyLoginCaptcha } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import type {
@@ -24,6 +23,7 @@ export default function LoginPage() {
   const location = useLocation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [requires2FA, setRequires2FA] = useState(false);
   const [options, setOptions] = useState<LoginOptions | null>(null);
   const [challenge, setChallenge] = useState<LoginCAPTCHAChallenge | null>(null);
@@ -88,7 +88,7 @@ export default function LoginPage() {
     setCaptchaState('ready');
   }, [resetSlider, t]);
 
-  const refreshCaptcha = useCallback(async () => {
+  const refreshCaptcha = useCallback(async (clearFeedback = true) => {
     if (captchaRefreshTimerRef.current != null) {
       window.clearTimeout(captchaRefreshTimerRef.current);
       captchaRefreshTimerRef.current = null;
@@ -102,7 +102,10 @@ export default function LoginPage() {
       return;
     }
     setCaptchaState('loading');
-    setError('');
+    if (clearFeedback) {
+      setError('');
+      setSuccess('');
+    }
     try {
       applyCaptchaResponse(await fetchLoginCaptcha(mobileCaptcha ? 'pow' : undefined), options);
     } catch (err) {
@@ -217,10 +220,12 @@ export default function LoginPage() {
   async function handleSubmit(values: { username?: string; password?: string; totpCode?: string }) {
     setLoading(true);
     setError('');
+    setSuccess('');
     try {
       if (options?.captcha.enabled && activeCaptchaMode === 'slider' && !captchaReceipt) {
         setCaptchaModalOpen(true);
         setError(t('login.captchaRequired'));
+        ArcoMessage.warning(t('login.captchaRequired'));
         return;
       }
       const captcha = await buildLoginCaptchaIfNeeded({
@@ -235,22 +240,30 @@ export default function LoginPage() {
       });
       const result = await login(values.username ?? '', values.password ?? '', values.totpCode, captcha);
       localStorage.setItem('cheesewaf-token', result.token);
-      navigate(from, { replace: true });
+      const message = t('login.success');
+      setSuccess(message);
+      ArcoMessage.success(message);
+      window.setTimeout(() => navigate(from, { replace: true }), 220);
     } catch (err) {
       if (err instanceof APIRequestError && err.code === 'TWO_FA_REQUIRED') {
         setRequires2FA(true);
         setError(t('login.totpRequired'));
+        ArcoMessage.warning(t('login.totpRequired'));
         return;
       }
       if (err instanceof APIRequestError && err.code === 'INVALID_CAPTCHA') {
-        setError(t('login.captchaInvalid'));
-        await refreshCaptcha();
+        const message = t('login.captchaInvalid');
+        setError(message);
+        ArcoMessage.warning(message);
+        await refreshCaptcha(false);
         setCaptchaModalOpen(true);
         return;
       }
-      setError(err instanceof Error ? err.message : 'Login failed');
+      const message = loginErrorMessage(err, t);
+      setError(message);
+      ArcoMessage.error(message);
       if (options?.captcha.enabled) {
-        await refreshCaptcha();
+        await refreshCaptcha(false);
       }
     } finally {
       setLoading(false);
@@ -391,11 +404,8 @@ export default function LoginPage() {
       )}
       {backgroundURL && <div className="auth-background-shade" />}
       <div className="auth-stack">
-        <motion.section
+        <section
           className="auth-panel"
-          initial={{ opacity: 0, y: 14 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.24 }}
         >
           <div className="auth-brand">
             <span><BrandLogo /></span>
@@ -432,14 +442,15 @@ export default function LoginPage() {
                 </span>
               </button>
             )}
-            <motion.div {...pressable}>
+            <div className="pressable">
               <Button type="primary" htmlType="submit" loading={loading} long>
                 {t('login.submit')}
               </Button>
-            </motion.div>
-            {error && <p className="form-error">{error}</p>}
+            </div>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            {success && <p className="form-success" role="status">{success}</p>}
           </Form>
-        </motion.section>
+        </section>
         <div className="auth-load-time">
           {loadMs == null ? t('login.loading') : t('login.loadTime', { ms: loadMs })}
         </div>
@@ -723,6 +734,24 @@ function toServerSliderX(visualX: number, slider: LoginSliderCAPTCHAChallenge, t
     return Math.round(clamp(visualX, 0, serverTravel));
   }
   return Math.round(clamp((visualX / visualTravel) * serverTravel, 0, serverTravel));
+}
+
+function loginErrorMessage(error: unknown, t: TFunction) {
+  if (error instanceof APIRequestError) {
+    switch (error.code) {
+      case 'INVALID_CREDENTIALS':
+        return t('login.invalidCredentials');
+      case 'INVALID_TWO_FA_CODE':
+        return t('login.invalidTotp');
+      case 'REQUEST_TIMEOUT':
+        return t('login.requestTimeout');
+      case 'NETWORK_ERROR':
+        return t('login.networkError');
+      default:
+        return error.rawMessage || error.message || t('login.failed');
+    }
+  }
+  return error instanceof Error ? error.message : t('login.failed');
 }
 
 function resolveBackgroundKind(type: string | undefined, url: string) {

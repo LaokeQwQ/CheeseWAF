@@ -1,9 +1,7 @@
 import { Button, Form, Input, Select, Steps } from '@arco-design/web-react';
 import { useState } from 'react';
-import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { LockKeyhole, Network, UserRound } from 'lucide-react';
-import { pressable } from '../../animations/micro';
 import { setupAdmin } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 
@@ -58,11 +56,11 @@ export default function SetupPage() {
               <Select.Option value="public_tls">{t('setup.strategyPublicTLS')}</Select.Option>
             </Select>
           </Form.Item>
-          <motion.div {...pressable}>
+          <div className="pressable">
             <Button type="primary" htmlType="submit" loading={loading} long>
               {t('common.next')}
             </Button>
-          </motion.div>
+          </div>
           {message && <p className="form-error">{message}</p>}
         </Form>
       </section>

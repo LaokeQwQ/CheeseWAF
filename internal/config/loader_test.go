@@ -53,6 +53,33 @@ func TestValidateBlockPageCustomHTML(t *testing.T) {
 	}
 }
 
+func TestValidateAIAPIBaseRejectsPrivateByDefault(t *testing.T) {
+	cfg := Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = "http://127.0.0.1:11434/v1"
+	cfg.AI.APIKey = "secret"
+	cfg.AI.Model = "local-model"
+
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("expected private ai.api_base to be rejected by default")
+	}
+}
+
+func TestValidateAIAPIBaseAllowsPrivateWhenExplicit(t *testing.T) {
+	cfg := Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = "http://127.0.0.1:11434/v1"
+	cfg.AI.APIKey = "secret"
+	cfg.AI.Model = "local-model"
+	cfg.AI.AllowPrivateAPIBase = true
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected explicit private ai.api_base to validate: %v", err)
+	}
+}
+
 func TestLoadBackfillsNewSemanticEnginesForOldSiteConfig(t *testing.T) {
 	cfg := loadTempConfig(t, `
 sites:

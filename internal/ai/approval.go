@@ -50,7 +50,7 @@ func (s *ApprovalStore) Create(tool Tool, args map[string]any, diff string) (App
 	request := ApprovalRequest{
 		ID:          uuid.NewString(),
 		ToolName:    tool.Name(),
-		Args:        args,
+		Args:        cloneArgs(args),
 		Sensitivity: tool.Sensitivity(),
 		Diff:        diff,
 		Status:      ApprovalPending,
@@ -59,7 +59,7 @@ func (s *ApprovalStore) Create(tool Tool, args map[string]any, diff string) (App
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests[request.ID] = request
-	return request, nil
+	return cloneApprovalRequest(request), nil
 }
 
 func (s *ApprovalStore) Approve(id string) (ApprovalRequest, error) {
@@ -81,18 +81,18 @@ func (s *ApprovalStore) ConsumeApproved(id string, toolName string, args map[str
 		return ApprovalRequest{}, fmt.Errorf("approval request %q not found", id)
 	}
 	if request.Status != ApprovalApproved {
-		return request, fmt.Errorf("approval request %q is %s, not approved", id, request.Status)
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is %s, not approved", id, request.Status)
 	}
 	if request.ToolName != toolName {
-		return request, fmt.Errorf("approval request %q belongs to tool %q", id, request.ToolName)
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q belongs to tool %q", id, request.ToolName)
 	}
 	if !sameArgs(request.Args, args) {
-		return request, fmt.Errorf("approval request %q arguments do not match", id)
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q arguments do not match", id)
 	}
 	request.Status = ApprovalExecuted
 	request.DecidedAt = s.now().UTC()
 	s.requests[id] = request
-	return request, nil
+	return cloneApprovalRequest(request), nil
 }
 
 func (s *ApprovalStore) Get(id string) (ApprovalRequest, bool) {
@@ -102,7 +102,38 @@ func (s *ApprovalStore) Get(id string) (ApprovalRequest, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	request, ok := s.requests[id]
-	return request, ok
+	return cloneApprovalRequest(request), ok
+}
+
+func cloneApprovalRequest(request ApprovalRequest) ApprovalRequest {
+	request.Args = cloneArgs(request.Args)
+	return request
+}
+
+func cloneArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for key, value := range args {
+		out[key] = cloneArgValue(value)
+	}
+	return out
+}
+
+func cloneArgValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneArgs(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneArgValue(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func sameArgs(left, right map[string]any) bool {
@@ -144,10 +175,10 @@ func (s *ApprovalStore) decide(id string, status ApprovalStatus) (ApprovalReques
 		return ApprovalRequest{}, fmt.Errorf("approval request %q not found", id)
 	}
 	if request.Status != ApprovalPending {
-		return request, fmt.Errorf("approval request %q is already %s", id, request.Status)
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is already %s", id, request.Status)
 	}
 	request.Status = status
 	request.DecidedAt = s.now().UTC()
 	s.requests[id] = request
-	return request, nil
+	return cloneApprovalRequest(request), nil
 }

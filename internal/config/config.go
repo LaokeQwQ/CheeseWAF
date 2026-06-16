@@ -76,6 +76,7 @@ type SetupConfig struct {
 
 type ConsoleConfig struct {
 	Login ConsoleLoginConfig `yaml:"login" json:"login"`
+	Map   ConsoleMapConfig   `yaml:"map" json:"map"`
 }
 
 type ConsoleLoginConfig struct {
@@ -112,6 +113,20 @@ type LoginBackgroundConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Type    string `yaml:"type" json:"type"` // auto/image/video
 	URL     string `yaml:"url" json:"url"`
+}
+
+type ConsoleMapConfig struct {
+	ChinaBoundary MapBoundaryConfig `yaml:"china_boundary" json:"china_boundary"`
+}
+
+type MapBoundaryConfig struct {
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	SourceType    string `yaml:"source_type" json:"source_type"` // file/url
+	Source        string `yaml:"source" json:"source"`
+	License       string `yaml:"license" json:"license"`
+	ReviewID      string `yaml:"review_id" json:"review_id"`
+	Attribution   string `yaml:"attribution" json:"attribution"`
+	AllowInsecure bool   `yaml:"allow_insecure" json:"allow_insecure"`
 }
 
 type SiteConfig struct {
@@ -257,7 +272,7 @@ type IPAccessRuleConfig struct {
 	ID          string   `yaml:"id" json:"id"`
 	Name        string   `yaml:"name" json:"name"`
 	Description string   `yaml:"description" json:"description"`
-	Action      string   `yaml:"action" json:"action"` // allow/block
+	Action      string   `yaml:"action" json:"action"` // allow/block/monitor
 	Scope       string   `yaml:"scope" json:"scope"`   // global/site/path
 	SiteID      string   `yaml:"site_id" json:"site_id"`
 	PathPrefix  string   `yaml:"path_prefix" json:"path_prefix"`
@@ -284,11 +299,13 @@ type ThreatIntelProviderConfig struct {
 	Type        string            `yaml:"type" json:"type"`
 	Endpoint    string            `yaml:"endpoint" json:"endpoint"`
 	APIKey      string            `yaml:"api_key" json:"api_key"`
+	AuthType    string            `yaml:"auth_type" json:"auth_type"`
 	Format      string            `yaml:"format" json:"format"`
 	Action      string            `yaml:"action" json:"action"`
 	MinSeverity string            `yaml:"min_severity" json:"min_severity"`
 	Interval    time.Duration     `yaml:"interval" json:"interval"`
 	Headers     map[string]string `yaml:"headers" json:"headers"`
+	Notes       string            `yaml:"notes" json:"notes"`
 	Enabled     bool              `yaml:"enabled" json:"enabled"`
 }
 
@@ -496,13 +513,14 @@ type FileLogConfig struct {
 }
 
 type AIConfig struct {
-	Enabled      bool   `yaml:"enabled" json:"enabled"`
-	Provider     string `yaml:"provider" json:"provider"`
-	APIBase      string `yaml:"api_base" json:"api_base"`
-	APIKey       string `yaml:"api_key" json:"api_key"`
-	APIKeyHeader string `yaml:"api_key_header" json:"api_key_header"`
-	Model        string `yaml:"model" json:"model"`
-	Async        bool   `yaml:"async" json:"async"`
+	Enabled             bool   `yaml:"enabled" json:"enabled"`
+	Provider            string `yaml:"provider" json:"provider"`
+	APIBase             string `yaml:"api_base" json:"api_base"`
+	APIKey              string `yaml:"api_key" json:"api_key"`
+	APIKeyHeader        string `yaml:"api_key_header" json:"api_key_header"`
+	Model               string `yaml:"model" json:"model"`
+	Async               bool   `yaml:"async" json:"async"`
+	AllowPrivateAPIBase bool   `yaml:"allow_private_api_base" json:"allow_private_api_base"`
 }
 
 type UpdateConfig struct {

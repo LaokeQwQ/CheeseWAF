@@ -671,6 +671,15 @@ func removePID(runtimeDir string) {
 	_ = os.Remove(pidPath(runtimeDir))
 }
 
+type serviceStatusSnapshot struct {
+	RuntimeDir string
+	PIDPath    string
+	PID        int
+	HasPIDFile bool
+	Running    bool
+	Stale      bool
+}
+
 func authSecretPath(baseDir string) string {
 	if baseDir == "" {
 		baseDir = dataDir
@@ -703,9 +712,64 @@ func ensureAuthSecret(baseDir string) (string, error) {
 }
 
 func readPID() (int, error) {
-	raw, err := os.ReadFile(pidPath(filepath.Join(dataDir, "run")))
+	runtimeDir, err := resolveRuntimeDirForCLI()
+	if err != nil {
+		return 0, err
+	}
+	return readPIDFromRuntimeDir(runtimeDir)
+}
+
+func readPIDFromRuntimeDir(runtimeDir string) (int, error) {
+	raw, err := os.ReadFile(pidPath(runtimeDir))
 	if err != nil {
 		return 0, err
 	}
 	return strconv.Atoi(string(raw))
+}
+
+func resolveRuntimeDirForCLI() (string, error) {
+	if configPath != "" {
+		if _, err := os.Stat(configPath); err == nil {
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return "", err
+			}
+			if cfg.Setup.RuntimeDir != "" {
+				return filepath.Clean(cfg.Setup.RuntimeDir), nil
+			}
+			if cfg.Setup.DataDir != "" {
+				return filepath.Join(filepath.Clean(cfg.Setup.DataDir), "run"), nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return filepath.Join(dataDir, "run"), nil
+}
+
+func inspectServiceStatus() (serviceStatusSnapshot, error) {
+	runtimeDir, err := resolveRuntimeDirForCLI()
+	if err != nil {
+		return serviceStatusSnapshot{}, err
+	}
+	snapshot := serviceStatusSnapshot{
+		RuntimeDir: runtimeDir,
+		PIDPath:    pidPath(runtimeDir),
+	}
+	pid, err := readPIDFromRuntimeDir(runtimeDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return snapshot, nil
+		}
+		return snapshot, err
+	}
+	snapshot.HasPIDFile = true
+	snapshot.PID = pid
+	running, err := processRunning(pid)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Running = running
+	snapshot.Stale = !running
+	return snapshot, nil
 }

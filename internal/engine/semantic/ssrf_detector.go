@@ -30,23 +30,40 @@ func (d *SSRFDetector) Name() string  { return "SSRF Semantic Detector" }
 func (d *SSRFDetector) Priority() int { return 350 }
 
 func (d *SSRFDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
-	payload := decoder.Decode(requestText(reqCtx)).Text
-	for _, rawURL := range urlLikePattern.FindAllString(payload, -1) {
-		parsed, err := url.Parse(rawURL)
-		if err != nil || parsed.Hostname() == "" {
+	for _, candidate := range extractCandidates(reqCtx) {
+		if !ssrfFetchSink(candidate) {
 			continue
 		}
-		if isInternalHost(parsed.Hostname()) {
+		payload := decoder.Decode(candidate.text).Text
+		if strings.Contains(strings.ToLower(payload), "file://") {
 			return &engine.DetectionResult{
 				Detected:   true,
 				DetectorID: d.ID(),
 				Category:   "ssrf",
 				Severity:   engine.SeverityHigh,
 				Action:     actionForMode(d.mode),
-				Message:    "SSRF target points to local or private network",
-				Confidence: 0.82,
-				Payload:    rawURL,
+				Message:    "SSRF target points to local file scheme",
+				Confidence: 0.88,
+				Payload:    strings.TrimSpace(payload),
 			}, nil
+		}
+		for _, rawURL := range urlLikePattern.FindAllString(payload, -1) {
+			parsed, err := url.Parse(rawURL)
+			if err != nil || parsed.Hostname() == "" {
+				continue
+			}
+			if isInternalHost(parsed.Hostname()) {
+				return &engine.DetectionResult{
+					Detected:   true,
+					DetectorID: d.ID(),
+					Category:   "ssrf",
+					Severity:   engine.SeverityHigh,
+					Action:     actionForMode(d.mode),
+					Message:    "SSRF target points to local or private network",
+					Confidence: 0.82,
+					Payload:    rawURL,
+				}, nil
+			}
 		}
 	}
 	return nil, nil
