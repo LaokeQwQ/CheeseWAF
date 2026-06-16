@@ -57,6 +57,130 @@ func TestAIConfigUsesProviderAndHidesHeader(t *testing.T) {
 	}
 }
 
+func TestAIModelsCanUseUnsavedOpenAIConfig(t *testing.T) {
+	var gotPath string
+	var gotAuthorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"deepseek-chat","owned_by":"test"},{"id":"gpt-4o-mini","owned_by":"openai"}]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = false
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = "https://saved.invalid/v1"
+	cfg.AI.APIKey = "saved-key"
+	handler := New(Options{Config: &cfg})
+
+	raw, _ := json.Marshal(map[string]any{
+		"provider":               "openai",
+		"api_base":               upstream.URL,
+		"api_key":                "typed-key",
+		"allow_private_api_base": true,
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/models", bytes.NewReader(raw))
+	handler.AIModels(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected models ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if gotPath != "/models" || gotAuthorization != "Bearer typed-key" {
+		t.Fatalf("expected unsaved config to be used, path=%q authorization=%q", gotPath, gotAuthorization)
+	}
+	if cfg.AI.APIBase != "https://saved.invalid/v1" || cfg.AI.APIKey != "saved-key" || cfg.AI.Enabled {
+		t.Fatalf("AIModels should not persist temporary config: %+v", cfg.AI)
+	}
+	var response struct {
+		Data struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+			Total int `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Data.Total != 2 || response.Data.Items[0].ID != "deepseek-chat" {
+		t.Fatalf("unexpected model response: %+v", response.Data)
+	}
+}
+
+func TestAIModelsRejectsPrivateAPIBaseByDefault(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.APIKey = "saved-key"
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/models", bytes.NewReader([]byte(`{"provider":"openai","api_base":"http://127.0.0.1:11434/v1","api_key":"typed-key"}`)))
+	handler.AIModels(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected private api base to be rejected, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "AI_API_BASE_INVALID") {
+		t.Fatalf("expected invalid api base code, body=%s", recorder.Body.String())
+	}
+}
+
+func TestUpdateAIConfigRejectsPrivateAPIBaseByDefault(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	body := []byte(`{"enabled":true,"provider":"openai","api_base":"http://127.0.0.1:11434/v1","api_key":"typed-key","model":"local-model","async":true}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body))
+	handler.UpdateAIConfig(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected private api base config to be rejected, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "AI_API_BASE_INVALID") {
+		t.Fatalf("expected invalid api base code, body=%s", recorder.Body.String())
+	}
+}
+
+func TestUpdateAIConfigAllowsPrivateAPIBaseWhenExplicit(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	body := []byte(`{"enabled":true,"provider":"openai","api_base":"http://127.0.0.1:11434/v1","api_key":"typed-key","model":"local-model","async":true,"allow_private_api_base":true}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body))
+	handler.UpdateAIConfig(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected explicit private api base config ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !cfg.AI.AllowPrivateAPIBase || cfg.AI.APIBase != "http://127.0.0.1:11434/v1" {
+		t.Fatalf("expected private api base to be saved only after explicit opt-in, got %+v", cfg.AI)
+	}
+}
+
+func TestAIModelsRejectsInvalidAPIBase(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.APIKey = "saved-key"
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/models", bytes.NewReader([]byte(`{"provider":"openai","api_base":"file:///tmp/models","api_key":"typed-key"}`)))
+	handler.AIModels(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid api base to be rejected, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "AI_API_BASE_INVALID") {
+		t.Fatalf("expected invalid api base code, body=%s", recorder.Body.String())
+	}
+}
+
 func TestAnalyzeEventsAppliesTimeRange(t *testing.T) {
 	start := time.Date(2026, 6, 8, 10, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
@@ -249,6 +373,7 @@ func TestAIAssistantFetchesEventsOnlyAfterToolRequest(t *testing.T) {
 		raw := new(bytes.Buffer)
 		_, _ = raw.ReadFrom(r.Body)
 		bodies = append(bodies, raw.String())
+		w.Header().Set("Content-Type", "application/json")
 		if len(bodies) == 1 {
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"tool_calls\":[{\"name\":\"recent_security_events\",\"args\":{\"limit\":5}}]}"}}],"usage":{"prompt_tokens":31,"completion_tokens":9,"total_tokens":40}}`))
 			return
@@ -296,8 +421,11 @@ func TestAIAssistantFetchesEventsOnlyAfterToolRequest(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !response.Data.AIUsed || !strings.Contains(response.Data.Answer, "已读取工具结果") || len(response.Data.ToolExecutions) != 1 {
+	if !response.Data.AIUsed || !strings.Contains(response.Data.Answer, "最近 1 条安全事件") || len(response.Data.ToolExecutions) != 1 {
 		t.Fatalf("unexpected assistant response: %+v", response.Data)
+	}
+	if strings.Contains(response.Data.Answer, "工具结果") {
+		t.Fatalf("assistant final answer leaked tool process: %s", response.Data.Answer)
 	}
 	if response.Data.InputTokens != 72 || response.Data.OutputTokens != 21 {
 		t.Fatalf("expected aggregated token usage, got %+v", response.Data)
@@ -319,11 +447,16 @@ func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := new(bytes.Buffer)
 		_, _ = raw.ReadFrom(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
 		if strings.Contains(raw.String(), `"tools"`) {
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"recent_security_events","arguments":"{\"limit\":5}"}}]}}],"usage":{"prompt_tokens":31,"completion_tokens":5,"total_tokens":36}}`))
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"recent_security_events\",\"arguments\":\"{\\\"limit\\\":5}\"}}]}}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":31,\"completion_tokens\":5,\"total_tokens\":36}}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 			return
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"已基于工具 observation 完成分析。"}}],"usage":{"prompt_tokens":41,"completion_tokens":8,"total_tokens":49}}`))
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"已基于工具 observation 完成分析。\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":41,\"completion_tokens\":8,\"total_tokens\":49}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
 	cfg := config.Default()
@@ -348,7 +481,7 @@ func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {
 		`"type":"tool_result"`,
 		"event-stream-1",
 		"event: done",
-		`"answer":"已基于工具 observation 完成分析。"`,
+		`"answer":"已完成分析。"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream missing %q in body:\n%s", want, body)
@@ -409,7 +542,7 @@ func TestAIAssistantStreamEmitsProviderReasoningBeforeDone(t *testing.T) {
 		`"type":"provider_response_start"`,
 		`"type":"tool_call_delta"`,
 		`"type":"content_delta"`,
-		`"answer":"已基于真实工具 observation 完成分析。"`,
+		`"answer":"已完成分析。"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream missing %q in body:\n%s", want, body)

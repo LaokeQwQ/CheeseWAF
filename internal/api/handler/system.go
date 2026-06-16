@@ -3,7 +3,9 @@ package handler
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,8 +16,13 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+const maxMapBoundaryBytes = 5 << 20
+
+var systemHTTPClient = &http.Client{Timeout: 8 * time.Second}
 
 func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, map[string]any{
@@ -34,7 +41,12 @@ func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 		"monitor":       h.Config.Monitor,
 		"apisec":        h.Config.APISec,
 		"block_page":    h.Config.BlockPage,
+		"version":       version.Current(),
 	})
+}
+
+func (h *Handler) Version(w http.ResponseWriter, _ *http.Request) {
+	writeData(w, version.Current())
 }
 
 type systemPayload struct {
@@ -158,6 +170,107 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	h.System(w, r)
 }
 
+func (h *Handler) ChinaMapBoundary(w http.ResponseWriter, r *http.Request) {
+	boundary := h.Config.Console.Map.ChinaBoundary
+	if !boundary.Enabled {
+		writeData(w, map[string]any{
+			"enabled": false,
+			"reason":  "china boundary rendering is disabled",
+		})
+		return
+	}
+	body, err := h.readMapBoundary(r.Context(), boundary)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "MAP_BOUNDARY_UNAVAILABLE", err.Error())
+		return
+	}
+	var geojson any
+	if err := json.Unmarshal(body, &geojson); err != nil {
+		writeError(w, http.StatusBadRequest, "MAP_BOUNDARY_INVALID", "boundary source is not valid GeoJSON/JSON")
+		return
+	}
+	if err := validateGeoJSONFeatureCollection(geojson); err != nil {
+		writeError(w, http.StatusBadRequest, "MAP_BOUNDARY_INVALID", err.Error())
+		return
+	}
+	writeData(w, map[string]any{
+		"enabled":     true,
+		"source_type": sourceTypeOrDefault(boundary.SourceType),
+		"source":      boundary.Source,
+		"license":     boundary.License,
+		"review_id":   boundary.ReviewID,
+		"attribution": boundary.Attribution,
+		"geojson":     geojson,
+	})
+}
+
+func (h *Handler) readMapBoundary(ctx context.Context, boundary config.MapBoundaryConfig) ([]byte, error) {
+	sourceType := sourceTypeOrDefault(boundary.SourceType)
+	source := strings.TrimSpace(boundary.Source)
+	if source == "" {
+		return nil, fmt.Errorf("boundary source is empty")
+	}
+	if sourceType == "url" {
+		ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/geo+json, application/json;q=0.9, */*;q=0.1")
+		resp, err := systemHTTPClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("boundary source returned HTTP %d", resp.StatusCode)
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxMapBoundaryBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(body) > maxMapBoundaryBytes {
+			return nil, fmt.Errorf("boundary source exceeds %d bytes", maxMapBoundaryBytes)
+		}
+		return body, nil
+	}
+	body, err := os.ReadFile(source)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxMapBoundaryBytes {
+		return nil, fmt.Errorf("boundary source exceeds %d bytes", maxMapBoundaryBytes)
+	}
+	return body, nil
+}
+
+func validateGeoJSONFeatureCollection(value any) error {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("boundary source must be a GeoJSON FeatureCollection object")
+	}
+	if typeName, _ := root["type"].(string); typeName != "FeatureCollection" {
+		return fmt.Errorf("boundary source must be a GeoJSON FeatureCollection")
+	}
+	features, ok := root["features"].([]any)
+	if !ok {
+		return fmt.Errorf("boundary source features must be an array")
+	}
+	if len(features) == 0 {
+		return fmt.Errorf("boundary source must contain at least one feature")
+	}
+	return nil
+}
+
+func sourceTypeOrDefault(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "file"
+	}
+	return value
+}
+
 type storageTestPayload struct {
 	Backend string               `json:"backend"`
 	Storage config.StorageConfig `json:"storage"`
@@ -256,7 +369,7 @@ func testHTTP(ctx context.Context, endpoint, username, password, apiKey string) 
 	} else if username != "" {
 		req.SetBasicAuth(username, password)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := systemHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

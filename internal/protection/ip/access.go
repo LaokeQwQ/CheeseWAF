@@ -9,6 +9,7 @@ import (
 const (
 	AccessActionAllow = "allow"
 	AccessActionBlock = "block"
+	AccessActionMonitor = "monitor"
 )
 
 type AccessDecision struct {
@@ -107,6 +108,8 @@ func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
 	var allowScore int
 	var block AccessDecision
 	var blockScore int
+	var monitor AccessDecision
+	var monitorScore int
 	for _, rule := range p.rules {
 		if !rule.applies(clientIP, siteID, path) {
 			continue
@@ -124,6 +127,11 @@ func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
 				block = decision
 				blockScore = score
 			}
+		case AccessActionMonitor:
+			if !monitor.Matched || score > monitorScore {
+				monitor = decision
+				monitorScore = score
+			}
 		}
 	}
 	if allow.Matched {
@@ -131,6 +139,9 @@ func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
 	}
 	if block.Matched {
 		return block
+	}
+	if monitor.Matched {
+		return monitor
 	}
 	return AccessDecision{Action: "none"}
 }
@@ -184,6 +195,8 @@ func normalizeAccessAction(action string) string {
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case AccessActionBlock:
 		return AccessActionBlock
+	case AccessActionMonitor:
+		return AccessActionMonitor
 	default:
 		return AccessActionAllow
 	}

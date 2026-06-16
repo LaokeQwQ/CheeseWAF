@@ -63,6 +63,15 @@ func Default() Config {
 					Type:    "auto",
 				},
 			},
+			Map: ConsoleMapConfig{
+				ChinaBoundary: MapBoundaryConfig{
+					Enabled:     false,
+					SourceType:  "file",
+					License:     "",
+					ReviewID:    "",
+					Attribution: "",
+				},
+			},
 		},
 		Sites: []SiteConfig{
 			{

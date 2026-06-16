@@ -269,6 +269,13 @@ export type AIConfig = {
   api_key_set: boolean;
   model: string;
   async: boolean;
+  allow_private_api_base: boolean;
+};
+
+export type AIModelInfo = {
+  id: string;
+  owned_by?: string;
+  created?: number;
 };
 
 export type AttackAnalysis = {
@@ -422,7 +429,7 @@ export type IPAccessRule = {
   id: string;
   name: string;
   description: string;
-  action: 'allow' | 'block' | string;
+  action: 'allow' | 'block' | 'monitor' | string;
   scope: 'global' | 'site' | 'path' | 'directory' | string;
   site_id: string;
   path_prefix: string;
@@ -459,11 +466,13 @@ export type ThreatIntelProvider = {
   type: string;
   endpoint: string;
   api_key: string;
+  auth_type?: string;
   format: string;
   action: string;
   min_severity: string;
   interval: number | string;
   headers: Record<string, string>;
+  notes?: string;
   enabled: boolean;
 };
 
@@ -632,6 +641,9 @@ export type SystemConfig = {
       security_entry: LoginSecurityEntryConfig;
       background: LoginBackgroundConfig;
     };
+    map: {
+      china_boundary: MapBoundaryConfig;
+    };
   };
   server: {
     listen: string;
@@ -739,6 +751,38 @@ export type SystemConfig = {
   monitor: Record<string, unknown>;
   apisec: APISecSystemConfig;
   block_page: BlockPageConfig;
+  version?: VersionInfo;
+};
+
+export type VersionInfo = {
+  version: string;
+  commit: string;
+  build_time: string;
+  channel: string;
+  edition: string;
+  go_version: string;
+  platform: string;
+};
+
+export type MapBoundaryConfig = {
+  enabled: boolean;
+  source_type: 'file' | 'url' | string;
+  source: string;
+  license: string;
+  review_id: string;
+  attribution: string;
+  allow_insecure: boolean;
+};
+
+export type MapBoundaryResponse = {
+  enabled: boolean;
+  reason?: string;
+  source_type?: string;
+  source?: string;
+  license?: string;
+  review_id?: string;
+  attribution?: string;
+  geojson?: unknown;
 };
 
 export type MonitorSnapshot = {
