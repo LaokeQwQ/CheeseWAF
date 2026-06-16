@@ -28,13 +28,13 @@ export default defineConfig({
           if (id.includes('/three/')) {
             return 'vendor-three';
           }
-          if (id.includes('/echarts/') || id.includes('/d3-geo/') || id.includes('/topojson-client/') || id.includes('/world-atlas/')) {
+          if (id.includes('/d3-geo/') || id.includes('/topojson-client/') || id.includes('/world-atlas/')) {
             return 'vendor-visualization';
           }
           if (id.includes('/@tanstack/') || id.includes('/axios/') || id.includes('/i18next/') || id.includes('/react-i18next/') || id.includes('/zustand/')) {
             return 'vendor-runtime';
           }
-          if (id.includes('/framer-motion/') || id.includes('/lucide-react/') || id.includes('/qrcode/')) {
+          if (id.includes('/lucide-react/') || id.includes('/qrcode/')) {
             return 'vendor-ui-utils';
           }
           return 'vendor';

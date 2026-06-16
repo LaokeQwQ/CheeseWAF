@@ -367,6 +367,8 @@ func TestSSRFDetectorBlocksNumericHostVariants(t *testing.T) {
 		"/fetch?url=http://0x7f.0x0.0x0.0x1/admin",
 		"/fetch?url=http://0251.0376.0251.0376/latest/meta-data",
 		"/fetch?url=http://[::1]/admin",
+		"/fetch?url=gopher://127.0.0.1:6379/_INFO",
+		"/fetch?url=dict://169.254.169.254:11211/stat",
 	}
 	for _, target := range cases {
 		t.Run(target, func(t *testing.T) {
@@ -383,6 +385,26 @@ func TestSSRFDetectorBlocksNumericHostVariants(t *testing.T) {
 				t.Fatalf("expected SSRF detection, got %+v", result)
 			}
 		})
+	}
+}
+
+func TestSSRFDetectorRequiresFetchSink(t *testing.T) {
+	req, _ := http.NewRequest(
+		http.MethodPost,
+		"/docs",
+		strings.NewReader(`{"text":"Security documentation may mention gopher://127.0.0.1:6379 and dict://169.254.169.254 examples without asking this service to fetch them."}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSSRFDetector("block").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("expected SSRF documentation text to pass, got %+v", result)
 	}
 }
 

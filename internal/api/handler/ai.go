@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -15,13 +17,14 @@ import (
 )
 
 type aiConfigPayload struct {
-	Enabled   bool   `json:"enabled"`
-	Provider  string `json:"provider"`
-	APIBase   string `json:"api_base"`
-	APIKey    string `json:"api_key,omitempty"`
-	APIKeySet bool   `json:"api_key_set"`
-	Model     string `json:"model"`
-	Async     bool   `json:"async"`
+	Enabled             bool   `json:"enabled"`
+	Provider            string `json:"provider"`
+	APIBase             string `json:"api_base"`
+	APIKey              string `json:"api_key,omitempty"`
+	APIKeySet           bool   `json:"api_key_set"`
+	Model               string `json:"model"`
+	Async               bool   `json:"async"`
+	AllowPrivateAPIBase bool   `json:"allow_private_api_base"`
 }
 
 type aiEventsAnalyzePayload struct {
@@ -48,6 +51,13 @@ type aiAssistantPayload struct {
 	Language string `json:"language"`
 }
 
+type aiModelsPayload struct {
+	Provider            string `json:"provider"`
+	APIBase             string `json:"api_base"`
+	APIKey              string `json:"api_key,omitempty"`
+	AllowPrivateAPIBase bool   `json:"allow_private_api_base"`
+}
+
 func (h *Handler) AIConfig(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, aiConfigView(h.Config.AI))
 }
@@ -58,13 +68,14 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := config.AIConfig{
-		Enabled:      req.Enabled,
-		Provider:     req.Provider,
-		APIBase:      req.APIBase,
-		APIKey:       req.APIKey,
-		APIKeyHeader: h.Config.AI.APIKeyHeader,
-		Model:        req.Model,
-		Async:        req.Async,
+		Enabled:             req.Enabled,
+		Provider:            req.Provider,
+		APIBase:             req.APIBase,
+		APIKey:              req.APIKey,
+		APIKeyHeader:        h.Config.AI.APIKeyHeader,
+		Model:               req.Model,
+		Async:               req.Async,
+		AllowPrivateAPIBase: req.AllowPrivateAPIBase,
 	}
 	if next.Provider == "" {
 		next.Provider = h.Config.AI.Provider
@@ -74,6 +85,16 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if next.APIKey == "" {
 		next.APIKey = h.Config.AI.APIKey
+	}
+	if next.Enabled || strings.TrimSpace(next.APIBase) != "" {
+		if strings.TrimSpace(next.APIBase) == "" {
+			writeError(w, http.StatusBadRequest, "AI_API_BASE_REQUIRED", "ai api base is required")
+			return
+		}
+		if err := validateAIAPIBase(next.APIBase, next.AllowPrivateAPIBase); err != nil {
+			writeError(w, http.StatusBadRequest, "AI_API_BASE_INVALID", err.Error())
+			return
+		}
 	}
 	h.Config.AI = next
 	if err := h.persistConfig(); err != nil {
@@ -89,6 +110,119 @@ func (h *Handler) TestAIConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, map[string]any{"ok": true})
+}
+
+func (h *Handler) AIModels(w http.ResponseWriter, r *http.Request) {
+	cfg := h.aiModelsConfigFromRequest(w, r)
+	if cfg == nil {
+		return
+	}
+	if cfg.Provider == "" {
+		cfg.Provider = "openai"
+	}
+	if !cfg.Enabled {
+		writeError(w, http.StatusBadRequest, "AI_DISABLED", "ai is disabled")
+		return
+	}
+	if cfg.APIKey == "" {
+		writeError(w, http.StatusBadRequest, "AI_KEY_REQUIRED", "ai api key is required")
+		return
+	}
+	if strings.TrimSpace(cfg.APIBase) == "" {
+		writeError(w, http.StatusBadRequest, "AI_API_BASE_REQUIRED", "ai api base is required")
+		return
+	}
+	if err := validateAIAPIBase(cfg.APIBase, cfg.AllowPrivateAPIBase); err != nil {
+		writeError(w, http.StatusBadRequest, "AI_API_BASE_INVALID", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	models, err := ai.NewClientWithTimeout(*cfg, 45*time.Second).ListModels(ctx)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "AI_MODELS_FAILED", err.Error())
+		return
+	}
+	writeData(w, map[string]any{"items": models, "total": len(models)})
+}
+
+func (h *Handler) aiModelsConfigFromRequest(w http.ResponseWriter, r *http.Request) *config.AIConfig {
+	cfg := h.Config.AI
+	cfg.Enabled = true
+	if r.Method == http.MethodGet {
+		return &cfg
+	}
+	var req aiModelsPayload
+	if !decode(w, r, &req) {
+		return nil
+	}
+	if strings.TrimSpace(req.Provider) != "" {
+		cfg.Provider = strings.TrimSpace(req.Provider)
+	}
+	if strings.TrimSpace(req.APIBase) != "" {
+		cfg.APIBase = strings.TrimSpace(req.APIBase)
+	}
+	if strings.TrimSpace(req.APIKey) != "" {
+		cfg.APIKey = strings.TrimSpace(req.APIKey)
+	}
+	cfg.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+	return &cfg
+}
+
+func validateAIAPIBase(raw string, allowPrivate bool) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid ai api base: %w", err)
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return fmt.Errorf("ai api base must start with http:// or https://")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("ai api base host is required")
+	}
+	if allowPrivate {
+		return nil
+	}
+	host := parsed.Hostname()
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("ai api base host is required")
+	}
+	if isPrivateAIAPIBaseHost(host) {
+		return fmt.Errorf("ai api base points to a private, loopback, link-local, or unspecified host; enable allow_private_api_base only for trusted local model gateways")
+	}
+	return nil
+}
+
+func isPrivateAIAPIBaseHost(host string) bool {
+	normalized := strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	switch normalized {
+	case "", "localhost", "localhost.localdomain":
+		return true
+	}
+	if ip := net.ParseIP(normalized); ip != nil {
+		return isPrivateAIAPIBaseIP(ip)
+	}
+	ips, err := net.LookupIP(normalized)
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if isPrivateAIAPIBaseIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPrivateAIAPIBaseIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified()
 }
 
 func (h *Handler) AnalyzeLog(w http.ResponseWriter, r *http.Request) {
@@ -280,15 +414,45 @@ func (h *Handler) AIAssistantStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	var writeMu sync.Mutex
+	writeEvent := func(event string, payload any) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		writeAssistantSSE(w, flusher, event, payload)
+	}
+	heartbeatDone := make(chan struct{})
+	var heartbeatOnce sync.Once
+	stopHeartbeat := func() {
+		heartbeatOnce.Do(func() {
+			close(heartbeatDone)
+		})
+	}
+	defer stopHeartbeat()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)})
+			case <-heartbeatDone:
+				return
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}()
+	writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "流式连接已建立。", "Streaming connection is open.")})
 	emit := func(event ai.AssistantTraceEvent) {
-		writeAssistantSSE(w, flusher, "trace", event)
+		writeEvent("trace", event)
 	}
 	reply, err := h.runAssistantAgent(r.Context(), req, emit)
+	stopHeartbeat()
 	if err != nil {
-		writeAssistantSSE(w, flusher, "error", map[string]any{"message": err.Error()})
+		writeEvent("error", map[string]any{"message": err.Error()})
 		return
 	}
-	writeAssistantSSE(w, flusher, "done", reply)
+	writeEvent("done", reply)
 }
 
 func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload, emit func(ai.AssistantTraceEvent)) (*ai.AssistantReply, error) {
@@ -310,11 +474,11 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 			emit(event)
 		}
 	}
-	record(ai.AssistantTraceEvent{Type: "safety_boundary", Message: localizedTraceMessage(req.Language, "已建立安全边界：日志、payload、工具输出和用户问题都按不可信数据处理。", "Safety boundary established: logs, payloads, tool outputs, and operator questions are treated as untrusted data.")})
+	record(ai.AssistantTraceEvent{Type: "safety_boundary", Message: localizedTraceMessage(req.Language, "安全边界已启用。", "Safety boundary is enabled.")})
 	client := h.aiClient()
 	var reply *ai.AssistantReply
 	if client == nil {
-		record(ai.AssistantTraceEvent{Type: "local_router", Message: localizedTraceMessage(req.Language, "AI 未启用或未配置密钥，使用本地工具路由；不会伪装成模型原生工具调用。", "AI is disabled or missing a key; using the local tool router without pretending it is native model tool calling.")})
+		record(ai.AssistantTraceEvent{Type: "local_router", Message: localizedTraceMessage(req.Language, "AI 未配置，使用本地分析。", "AI is not configured; using local analysis.")})
 		entries := h.queryLogsFromContext(ctx, storage.LogFilter{Limit: limit})
 		runtime := map[string]any{"snapshot": h.monitorSnapshotFromContext(ctx)}
 		var err error
@@ -323,16 +487,13 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 			return nil, err
 		}
 		reply.ToolExecutions = append(reply.ToolExecutions, h.executeAssistantToolRequests(ctx, intentsToToolRequests(h.assistantToolIntents(req.Message)), record)...)
-		if len(reply.ToolExecutions) > 0 {
-			reply.Answer = appendToolExecutionSummary(reply.Answer, reply.ToolExecutions)
-		}
 		reply.Trace = trace
 		return reply, nil
 	}
 	registry := h.aiAssistantRegistry()
 	toolDefinitions := registry.ListForLLM()
-	record(ai.AssistantTraceEvent{Type: "tool_gateway_ready", Message: localizedTraceMessage(req.Language, fmt.Sprintf("工具网关已就绪：%d 个 CheeseWAF 工具可供模型按需调用。", len(toolDefinitions)), fmt.Sprintf("Tool gateway ready: %d CheeseWAF tools are available for model-requested calls.", len(toolDefinitions)))})
-	record(ai.AssistantTraceEvent{Type: "planning_start", Message: localizedTraceMessage(req.Language, "正在让模型通过原生工具接口选择需要调用的 CheeseWAF 工具。", "Asking the model to choose CheeseWAF tools through the native tool interface.")})
+	record(ai.AssistantTraceEvent{Type: "tool_gateway_ready", Message: localizedTraceMessage(req.Language, fmt.Sprintf("可用工具：%d 个。", len(toolDefinitions)), fmt.Sprintf("Available tools: %d.", len(toolDefinitions)))})
+	record(ai.AssistantTraceEvent{Type: "planning_start", Message: localizedTraceMessage(req.Language, "正在判断是否需要读取运行数据。", "Checking whether runtime data is needed.")})
 	var plan *ai.AssistantPlan
 	var err error
 	if emit != nil {
@@ -345,7 +506,7 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	if err != nil {
 		requests := intentsToToolRequests(h.assistantToolIntents(req.Message))
 		if len(requests) > 0 {
-			record(ai.AssistantTraceEvent{Type: "planning_error", Message: localizedTraceMessage(req.Language, "模型工具规划失败，转入本地保守意图路由。", "Model tool planning failed; switching to the conservative local intent router."), Error: err.Error()})
+			record(ai.AssistantTraceEvent{Type: "planning_error", Message: localizedTraceMessage(req.Language, "运行数据读取规划失败，改用本地分析。", "Runtime-data planning failed; using local analysis."), Error: err.Error()})
 			calls := h.executeAssistantToolRequests(ctx, requests, record)
 			reply, fallbackErr := ai.AnswerAssistantWithToolResults(ctx, nil, req.Message, req.Language, toolDefinitions, calls)
 			if fallbackErr == nil {
@@ -373,7 +534,7 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	if len(requests) == 0 {
 		requests = intentsToToolRequests(h.assistantToolIntents(req.Message))
 		if len(requests) > 0 {
-			record(ai.AssistantTraceEvent{Type: "local_intent_tools", Message: localizedTraceMessage(req.Language, "模型没有主动请求工具，本地路由根据明确意图补充了工具请求。", "The model did not request tools; local routing added tool requests from explicit operator intent.")})
+			record(ai.AssistantTraceEvent{Type: "local_intent_tools", Message: localizedTraceMessage(req.Language, "已根据问题补充读取运行数据。", "Runtime-data reads were added from the question.")})
 		}
 	}
 	if len(requests) == 0 {
@@ -391,7 +552,7 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 		return reply, nil
 	}
 	calls := h.executeAssistantToolRequests(ctx, requests, record)
-	record(ai.AssistantTraceEvent{Type: "final_start", Message: localizedTraceMessage(req.Language, "工具 observation 已返回，正在让模型基于这些真实结果生成最终回答。", "Tool observations have returned; asking the model to produce the final answer from those real results.")})
+	record(ai.AssistantTraceEvent{Type: "final_start", Message: localizedTraceMessage(req.Language, "运行数据已返回，正在生成回答。", "Runtime data has returned; generating the answer.")})
 	if emit != nil {
 		finalEmit, stopFinalWatch := providerStreamEmitter(ctx, req.Language, "final", record)
 		reply, err = ai.AnswerAssistantWithToolResultsStream(ctx, client, req.Message, req.Language, toolDefinitions, calls, finalEmit)
@@ -401,7 +562,7 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	}
 	if err != nil {
 		providerErr := err
-		record(ai.AssistantTraceEvent{Type: "final_error", Message: localizedTraceMessage(req.Language, "模型最终总结失败，保留真实工具结果并返回本地摘要。", "Model final summarization failed; keeping real tool results and returning a local summary."), Error: providerErr.Error()})
+		record(ai.AssistantTraceEvent{Type: "final_error", Message: localizedTraceMessage(req.Language, "AI 总结失败，返回本地摘要。", "AI summarization failed; returning a local summary."), Error: providerErr.Error()})
 		reply, err = ai.AnswerAssistantWithToolResults(ctx, nil, req.Message, req.Language, toolDefinitions, calls)
 		if err != nil {
 			return nil, err
@@ -424,7 +585,7 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	}
 	record(ai.AssistantTraceEvent{
 		Type:         "final_done",
-		Message:      localizedTraceMessage(req.Language, "最终回答已生成。", "Final answer generated."),
+		Message:      localizedTraceMessage(req.Language, "回答已生成。", "Answer generated."),
 		Provider:     reply.Provider,
 		Model:        reply.Model,
 		InputTokens:  reply.InputTokens,
@@ -559,47 +720,13 @@ func parseProtectionLevelIntent(message string) (string, string, bool) {
 	return area, level, area != "" && level != ""
 }
 
-func appendToolExecutionSummary(answer string, calls []ai.AssistantToolCall) string {
-	var readCount, approvalCount, executedCount int
-	for _, call := range calls {
-		if call.Approval != nil {
-			approvalCount++
-			continue
-		}
-		if call.Result != nil && call.Result.Success {
-			if call.Sensitivity == ai.SensitivityName(ai.ReadOnly) {
-				readCount++
-			} else {
-				executedCount++
-			}
-		}
-	}
-	parts := make([]string, 0, 3)
-	if readCount > 0 {
-		parts = append(parts, "已读取 "+itoa(readCount)+" 个只读工具结果。")
-	}
-	if approvalCount > 0 {
-		parts = append(parts, "检测到 "+itoa(approvalCount)+" 个需要审批的配置变更，请在下方审批卡确认后才会执行。")
-	}
-	if executedCount > 0 {
-		parts = append(parts, "已执行 "+itoa(executedCount)+" 个已审批工具。")
-	}
-	if len(parts) == 0 {
-		return answer
-	}
-	if strings.TrimSpace(answer) == "" {
-		return strings.Join(parts, " ")
-	}
-	return strings.TrimSpace(answer) + "\n\n" + strings.Join(parts, " ")
-}
-
 func appendProviderFailure(answer, language string, err error) string {
 	if err == nil {
 		return answer
 	}
-	message := "AI provider request failed after tool execution. The visible tool results above are still real, but the model summary was not completed: " + err.Error()
+	message := "AI provider request failed. Showing deterministic local analysis instead. Error: " + err.Error()
 	if strings.Contains(strings.ToLower(language), "zh") {
-		message = "AI provider 在工具执行后请求失败。上方工具结果仍是真实数据，但模型总结未完成：" + err.Error()
+		message = "AI provider 请求失败，已改为显示本地确定性分析。错误：" + err.Error()
 	}
 	if strings.TrimSpace(answer) == "" {
 		return message
@@ -730,10 +857,6 @@ func containsAny(value string, needles ...string) bool {
 	return false
 }
 
-func itoa(value int) string {
-	return fmt.Sprintf("%d", value)
-}
-
 func (h *Handler) aiClient() *ai.Client {
 	if h.Config.AI.Enabled && h.Config.AI.APIKey != "" {
 		return ai.NewClient(h.Config.AI, nil)
@@ -758,11 +881,12 @@ func aiConfigView(cfg config.AIConfig) aiConfigPayload {
 		provider = "openai"
 	}
 	return aiConfigPayload{
-		Enabled:   cfg.Enabled,
-		Provider:  provider,
-		APIBase:   cfg.APIBase,
-		APIKeySet: cfg.APIKey != "",
-		Model:     cfg.Model,
-		Async:     cfg.Async,
+		Enabled:             cfg.Enabled,
+		Provider:            provider,
+		APIBase:             cfg.APIBase,
+		APIKeySet:           cfg.APIKey != "",
+		Model:               cfg.Model,
+		Async:               cfg.Async,
+		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
 	}
 }

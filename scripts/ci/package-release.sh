@@ -42,7 +42,7 @@ esac
 
 artifact_version="${version//+/-}"
 module="$(go list -m)"
-ldflags="-s -w -X ${module}/internal/cli.appVersion=${version} -X ${module}/internal/cli.buildTime=${build_time}"
+ldflags="-s -w -X ${module}/internal/version.Version=${version} -X ${module}/internal/version.Commit=${commit} -X ${module}/internal/version.BuildTime=${build_time} -X ${module}/internal/version.Channel=${channel}"
 release_dir="${CHEESEWAF_RELEASE_DIR:-release}"
 work_dir="${CHEESEWAF_RELEASE_WORK_DIR:-tmp/release-packages}"
 

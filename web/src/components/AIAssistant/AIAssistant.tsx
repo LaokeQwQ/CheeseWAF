@@ -5,6 +5,7 @@ import { Bot, ChevronDown, ChevronUp, Send, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { approveAIApproval, askAIAssistantStream, executeAITool, fetchAITools, fetchLogs, fetchMonitorSummary, rejectAIApproval } from '../../api/client';
 import type { AIAssistantTraceEvent, AIToolExecution } from '../../types/api';
+import SafeMarkdown, { safeAssistantDisplayText } from '../SafeMarkdown';
 
 type AssistantMessage = {
   id: string;
@@ -15,6 +16,7 @@ type AssistantMessage = {
   meta?: AssistantMeta;
   process?: string[];
   processOpen?: boolean;
+  traceOpen?: boolean;
   tools?: AIToolExecution[];
   trace?: AIAssistantTraceEvent[];
 };
@@ -41,6 +43,7 @@ export default function AIAssistant() {
   const [thread, setThread] = useState<AssistantMessage[]>([]);
   const [pendingElapsedMs, setPendingElapsedMs] = useState(0);
   const [thinkingProcessOpen, setThinkingProcessOpen] = useState(true);
+  const [pendingTraceOpen, setPendingTraceOpen] = useState(true);
   const [pendingTrace, setPendingTrace] = useState<AIAssistantTraceEvent[]>([]);
   const pendingRef = useRef<{ startedAt: number; createdAt: string; inputTokens: number; providerStartedAt?: number } | null>(null);
   const pendingTraceRef = useRef<AIAssistantTraceEvent[]>([]);
@@ -69,11 +72,9 @@ export default function AIAssistant() {
         if (isProviderFirstTraceEvent(event.type) && pendingRef.current && !pendingRef.current.providerStartedAt) {
           pendingRef.current = { ...pendingRef.current, providerStartedAt: performance.now() };
         }
-        setPendingTrace((current) => {
-          const next = [...current, event];
-          pendingTraceRef.current = next;
-          return next;
-        });
+        const next = [...pendingTraceRef.current, event];
+        pendingTraceRef.current = next;
+        setPendingTrace(next);
       }, controller.signal);
     },
     onSuccess: (reply) => {
@@ -103,12 +104,9 @@ export default function AIAssistant() {
             provider: reply.provider,
             model: reply.model,
           },
-          process: [
-            ...buildReasoningProcess(t, reply.reasoning_summary, reply.ai_used),
-            ...buildTraceProcess(t, trace),
-            ...buildToolProcessSummary(t, reply.tool_executions ?? []),
-          ],
+          process: buildReasoningProcess(t, reply.reasoning_summary, reply.ai_used),
           processOpen: true,
+          traceOpen: false,
           trace,
           tools: reply.tool_executions,
         },
@@ -140,8 +138,9 @@ export default function AIAssistant() {
             blocked: liveContext.blocked,
             challenge: 0,
           },
-          process: [...buildTraceProcess(t, pendingTraceRef.current), t('assistant.processError')],
+          process: [t('assistant.processError')],
           processOpen: true,
+          traceOpen: false,
           trace: pendingTraceRef.current,
         },
       ]);
@@ -238,6 +237,7 @@ export default function AIAssistant() {
     if (!askMutation.isPending) {
       setPendingElapsedMs(0);
       setThinkingProcessOpen(true);
+      setPendingTraceOpen(true);
       return undefined;
     }
     const timer = window.setInterval(() => {
@@ -268,11 +268,9 @@ export default function AIAssistant() {
         blocked: liveContext.blocked,
         challenge: 0,
       },
-      process: [
-        t('assistant.reasoningPending'),
-        ...buildTraceProcess(t, pendingTrace),
-      ],
+      process: buildLiveReasoningProcess(t, pendingTrace),
       processOpen: thinkingProcessOpen,
+      traceOpen: pendingTraceOpen,
       trace: pendingTrace,
     }] : []),
   ];
@@ -288,13 +286,18 @@ export default function AIAssistant() {
   }, [open, messages.length, askMutation.isPending]);
 
   function submit() {
-    const message = draft.trim();
+    sendMessage(draft);
+  }
+
+  function sendMessage(raw: string) {
+    const message = raw.trim();
     if (!message) {
       return;
     }
     setDraft('');
     setPendingElapsedMs(0);
     setThinkingProcessOpen(true);
+    setPendingTraceOpen(true);
     pendingTraceRef.current = [];
     setPendingTrace([]);
     pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString(), inputTokens: estimateTokens(message) };
@@ -309,6 +312,16 @@ export default function AIAssistant() {
     }
     setThread((current) => current.map((message) => (
       message.id === messageID ? { ...message, processOpen: !message.processOpen } : message
+    )));
+  }
+
+  function toggleTrace(messageID: string) {
+    if (messageID === 'thinking') {
+      setPendingTraceOpen((value) => !value);
+      return;
+    }
+    setThread((current) => current.map((message) => (
+      message.id === messageID ? { ...message, traceOpen: !message.traceOpen } : message
     )));
   }
 
@@ -354,6 +367,25 @@ export default function AIAssistant() {
             </button>
           </header>
           <div className="assistant-thread" ref={threadRef} aria-live="polite">
+            {messages.length === 0 && (
+              <section className="assistant-empty-state">
+                <span className="assistant-empty-icon"><Bot size={30} /></span>
+                <strong>{t('assistant.emptyTitle')}</strong>
+                <p>{t('assistant.emptyHint')}</p>
+                <div className="assistant-quick-prompts">
+                  {assistantQuickPrompts(t).map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      disabled={askMutation.isPending}
+                      onClick={() => sendMessage(prompt)}
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
             {messages.map((message) => (
               <div
                 key={message.id}
@@ -363,40 +395,68 @@ export default function AIAssistant() {
                   message.id === 'thinking' ? 'assistant-thinking' : '',
                 ].filter(Boolean).join(' ')}
               >
-                <span>{message.text}</span>
-                {message.id === 'thinking' && (
-                  <span className="assistant-dots" aria-hidden="true">
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                )}
-                {message.status && <Tag>{message.status}</Tag>}
-                {message.meta && (
-                  <div className="assistant-meta">
-                    {message.meta.provider && <span>{message.meta.model ? `${message.meta.provider} / ${message.meta.model}` : message.meta.provider}</span>}
-                    <span>{t('assistant.thinkingDuration', { value: formatDuration(message.meta.thinkingMs) })}</span>
-                    <span>{t('assistant.totalDuration', { value: formatDuration(message.meta.totalMs) })}</span>
-                    <span>{t('assistant.outputTokens', { value: message.meta.outputTokens })}</span>
-                    <span>{t('assistant.tokenSpeed', { value: formatTokenSpeed(message.meta.tokenSpeed) })}</span>
-                    <span>{formatMessageTime(message.createdAt)}</span>
+                <div className="assistant-answer-block">
+                  <SafeMarkdown text={message.text} />
+                  {message.id === 'thinking' && (
+                    <span className="assistant-dots" aria-hidden="true">
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  )}
+                </div>
+                {(message.status || message.meta) && (
+                  <div className="assistant-message-status">
+                    {message.status && <Tag>{message.status}</Tag>}
+                    {message.meta && (
+                      <div className="assistant-meta">
+                        {message.meta.provider && <span>{message.meta.model ? `${message.meta.provider} / ${message.meta.model}` : message.meta.provider}</span>}
+                        <span>{t('assistant.thinkingDuration', { value: formatDuration(message.meta.thinkingMs) })}</span>
+                        <span>{t('assistant.totalDuration', { value: formatDuration(message.meta.totalMs) })}</span>
+                        <span>{t('assistant.outputTokens', { value: message.meta.outputTokens })}</span>
+                        <span>{t('assistant.tokenSpeed', { value: formatTokenSpeed(message.meta.tokenSpeed) })}</span>
+                        <span>{formatMessageTime(message.createdAt)}</span>
+                      </div>
+                    )}
                   </div>
                 )}
                 {message.process && message.process.length > 0 && (
-                  <div className="assistant-process">
-                    <button type="button" onClick={() => toggleProcess(message.id)}>
-                      {message.processOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                      <span>{message.processOpen ? t('assistant.hideProcess') : t('assistant.showProcess')}</span>
-                    </button>
+                  <section className="assistant-process" aria-label={t('assistant.processTitle')}>
+                    <div className="assistant-section-head">
+                      <strong>{t('assistant.processTitle')}</strong>
+                      <button type="button" onClick={() => toggleProcess(message.id)}>
+                        {message.processOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                        <span>{message.processOpen ? t('assistant.hideProcess') : t('assistant.showProcess')}</span>
+                      </button>
+                    </div>
                     {message.processOpen && (
                       <ol>
                         {message.process.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
                       </ol>
                     )}
-                  </div>
+                  </section>
+                )}
+                {message.trace && message.trace.length > 0 && (
+                  <section className="assistant-trace" aria-label={t('assistant.traceTitle')}>
+                    <div className="assistant-section-head">
+                      <strong>{t('assistant.traceTitle')}</strong>
+                      <button type="button" onClick={() => toggleTrace(message.id)}>
+                        {message.traceOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                        <span>{message.traceOpen ? t('assistant.hideTrace') : t('assistant.showTrace')}</span>
+                      </button>
+                    </div>
+                    {message.traceOpen && (
+                      <ol>
+                        {buildTraceProcess(t, message.trace).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
+                      </ol>
+                    )}
+                  </section>
                 )}
                 {message.tools && message.tools.length > 0 && (
-                  <div className="assistant-tools">
+                  <section className="assistant-tools" aria-label={t('assistant.toolsTitle')}>
+                    <div className="assistant-section-head">
+                      <strong className="assistant-section-title">{t('assistant.toolsTitle')}</strong>
+                    </div>
                     {message.tools.map((tool) => {
                       const toolName = toolDisplayName(t, tool.name);
                       const sensitivity = sensitivityDisplayName(t, tool.sensitivity);
@@ -494,7 +554,7 @@ export default function AIAssistant() {
                         </div>
                       );
                     })}
-                  </div>
+                  </section>
                 )}
               </div>
             ))}
@@ -506,12 +566,20 @@ export default function AIAssistant() {
               onChange={setDraft}
               onPressEnter={submit}
             />
-            <Button type="primary" icon={<Send size={14} />} loading={askMutation.isPending} onClick={submit} />
+            <Button className="assistant-send-button" type="primary" icon={<Send size={15} />} loading={askMutation.isPending} onClick={submit} />
           </div>
         </section>
       )}
     </>
   );
+}
+
+function assistantQuickPrompts(t: (key: string, options?: Record<string, unknown>) => string) {
+  return [
+    t('assistant.quickToday'),
+    t('assistant.quickWeek'),
+    t('assistant.quickSettings'),
+  ];
 }
 
 function markApprovalStatus(messages: AssistantMessage[], approvalID: string | undefined, status: string) {
@@ -553,19 +621,6 @@ function cssToken(value?: string) {
   return (value || 'unknown').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
 }
 
-function buildToolProcessSummary(
-  t: (key: string, options?: Record<string, unknown>) => string,
-  tools: AIToolExecution[],
-) {
-  if (tools.length === 0) {
-    return [];
-  }
-  const readOnly = tools.filter((tool) => tool.sensitivity === 'read_only' && tool.result?.success).length;
-  const approvals = tools.filter((tool) => tool.approval?.status === 'pending').length;
-  const executed = tools.filter((tool) => tool.sensitivity !== 'read_only' && tool.result?.success).length;
-  return [t('assistant.processTools', { readOnly, approvals, executed })];
-}
-
 function buildReasoningProcess(
   t: (key: string, options?: Record<string, unknown>) => string,
   reasoning: string | undefined,
@@ -574,33 +629,34 @@ function buildReasoningProcess(
   if (!aiUsed) {
     return [t('assistant.reasoningLocal')];
   }
-  const text = String(reasoning ?? '').trim();
+  const text = safeAssistantDisplayText(reasoning);
   if (!text) {
     return [t('assistant.reasoningUnavailable')];
   }
   return [t('assistant.reasoningSummary', { summary: summarizeOutput(text) })];
 }
 
+function buildLiveReasoningProcess(t: (key: string, options?: Record<string, unknown>) => string, trace: AIAssistantTraceEvent[]) {
+  const reasoning = safeAssistantDisplayText(trace.filter((event) => event.type === 'reasoning_delta').map((event) => event.message).join(''));
+  if (reasoning) {
+    return [t('assistant.reasoningLive', { summary: summarizeOutput(reasoning) })];
+  }
+  const slow = [...trace].reverse().find((event) => event.type === 'provider_first_event_slow');
+  if (slow) {
+    return [slow.message || t('assistant.providerSlow')];
+  }
+  return [t('assistant.reasoningPending')];
+}
+
 function buildTraceProcess(t: (key: string, options?: Record<string, unknown>) => string, trace: AIAssistantTraceEvent[]) {
   if (trace.length === 0) {
     return [t('assistant.traceWaiting')];
   }
-  const reasoning = trace.filter((event) => event.type === 'reasoning_delta').map((event) => event.message).join('');
-  const content = trace.filter((event) => event.type === 'content_delta').map((event) => event.message).join('');
-  const toolDeltas = trace.filter((event) => event.type === 'tool_call_delta');
-  const compacted: string[] = [];
-  if (reasoning.trim()) {
-    compacted.push(t('assistant.reasoningLive', { summary: summarizeOutput(reasoning) }));
+  const regular = trace.filter((event) => !['reasoning_delta', 'reasoning_summary', 'content_delta', 'tool_call_delta'].includes(event.type));
+  if (regular.length === 0) {
+    return [t('assistant.traceWaiting')];
   }
-  if (content.trim()) {
-    compacted.push(t('assistant.answerLive', { summary: summarizeOutput(content) }));
-  }
-  if (toolDeltas.length > 0) {
-    const latestTool = [...toolDeltas].reverse().find((event) => event.tool_name)?.tool_name ?? '-';
-    compacted.push(t('assistant.toolDeltaLive', { tool: latestTool, chunks: toolDeltas.length }));
-  }
-  const regular = trace.filter((event) => !['reasoning_delta', 'content_delta', 'tool_call_delta'].includes(event.type));
-  return [...compacted, ...regular.map((event) => formatTraceEvent(t, event))];
+  return regular.map((event) => formatTraceEvent(t, event));
 }
 
 function formatTraceEvent(t: (key: string, options?: Record<string, unknown>) => string, event: AIAssistantTraceEvent) {
@@ -610,13 +666,13 @@ function formatTraceEvent(t: (key: string, options?: Record<string, unknown>) =>
     case 'provider_first_event_slow':
       return event.message || t('assistant.providerSlow');
     case 'tool_call':
-      return t('assistant.traceToolCall', { tool: event.tool_name || '-', args: compactJson(event.args) });
+      return t('assistant.traceToolCall', { tool: toolDisplayName(t, event.tool_name || '-'), args: compactJson(event.args) });
     case 'tool_result':
-      return t('assistant.traceToolResult', { tool: event.tool_name || '-', output: summarizeOutput(event.result?.output) });
+      return t('assistant.traceToolResult', { tool: toolDisplayName(t, event.tool_name || '-'), output: summarizeOutput(event.result?.output) });
     case 'reasoning_summary':
       return t('assistant.reasoningSummary', { summary: summarizeOutput(event.message) });
     case 'approval_required':
-      return t('assistant.traceApproval', { tool: event.tool_name || '-' });
+      return t('assistant.traceApproval', { tool: toolDisplayName(t, event.tool_name || '-') });
     case 'tool_error':
     case 'planning_error':
     case 'final_error':
@@ -664,7 +720,7 @@ function compactJson(value: unknown) {
 }
 
 function summarizeOutput(value?: string) {
-  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  const text = safeAssistantDisplayText(value);
   if (!text) {
     return '-';
   }
