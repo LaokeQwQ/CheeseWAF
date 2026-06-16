@@ -1,6 +1,7 @@
 import { Tag } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import type { AttackAnalysis } from '../types/api';
+import SafeMarkdown from './SafeMarkdown';
 
 type Props = {
   analysis: AttackAnalysis;
@@ -26,9 +27,13 @@ export function AIReasoningSummary({ analysis }: Props) {
   return (
     <div className={analysis.reasoning_summary ? 'ai-reasoning-summary' : 'ai-reasoning-summary ai-reasoning-summary-muted'}>
       <strong>{t('ai.reasoningSummary')}</strong>
-      <p>{analysis.reasoning_summary || t('ai.reasoningUnavailable')}</p>
+      <SafeMarkdown text={analysis.reasoning_summary || t('ai.reasoningUnavailable')} />
     </div>
   );
+}
+
+export function AIAnalysisSummary({ analysis }: Props) {
+  return <SafeMarkdown text={analysis.summary} className="ai-analysis-markdown" />;
 }
 
 function positive(value?: number) {

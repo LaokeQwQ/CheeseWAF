@@ -20,6 +20,8 @@ import (
 	"github.com/google/uuid"
 )
 
+var threatIntelHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
 type threatIntelImportPayload struct {
 	Format     string   `json:"format"`
 	Contents   string   `json:"contents"`
@@ -386,7 +388,7 @@ func fetchProvider(ctx context.Context, provider config.ThreatIntelProviderConfi
 		return nil, err
 	}
 	applyProviderAuth(req, provider)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := threatIntelHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +443,7 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 		return nil, err
 	}
 	applyProviderAuth(req, provider)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := threatIntelHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -473,12 +475,32 @@ func applyProviderAuth(req *http.Request, provider config.ThreatIntelProviderCon
 	for key, value := range provider.Headers {
 		req.Header.Set(key, value)
 	}
-	if provider.APIKey != "" {
-		if req.Header.Get("Authorization") == "" {
-			req.Header.Set("Authorization", "Bearer "+provider.APIKey)
-		}
+	if provider.APIKey == "" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(provider.AuthType)) {
+	case "none":
+		return
+	case "header":
 		if req.Header.Get("X-API-Key") == "" {
 			req.Header.Set("X-API-Key", provider.APIKey)
+		}
+	case "query":
+		query := req.URL.Query()
+		if query.Get("api_key") == "" {
+			query.Set("api_key", provider.APIKey)
+			req.URL.RawQuery = query.Encode()
+		}
+	case "basic":
+		if req.Header.Get("Authorization") == "" {
+			user, pass, ok := strings.Cut(provider.APIKey, ":")
+			if ok {
+				req.SetBasicAuth(user, pass)
+			}
+		}
+	default:
+		if req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", "Bearer "+provider.APIKey)
 		}
 	}
 }

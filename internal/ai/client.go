@@ -12,6 +12,10 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	openaisdk "github.com/openai/openai-go"
+	openaioption "github.com/openai/openai-go/option"
+	openaiparam "github.com/openai/openai-go/packages/param"
+	openaishared "github.com/openai/openai-go/shared"
 )
 
 type Message struct {
@@ -35,26 +39,126 @@ type CompletionUsage struct {
 
 type StreamEmitter func(AssistantTraceEvent)
 
+type ModelInfo struct {
+	ID      string `json:"id"`
+	OwnedBy string `json:"owned_by,omitempty"`
+	Created int64  `json:"created,omitempty"`
+}
+
 type Client struct {
 	provider string
 	apiBase  string
 	apiKey   string
 	model    string
 	http     *http.Client
+	openai   openaisdk.Client
 }
 
 func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 120 * time.Second}
+		httpClient = &http.Client{}
 	}
 	provider := normalizeProvider(cfg.Provider)
-	return &Client{
+	client := &Client{
 		provider: provider,
 		apiBase:  strings.TrimRight(defaultAPIBase(provider, cfg.APIBase), "/"),
 		apiKey:   cfg.APIKey,
 		model:    cfg.Model,
 		http:     httpClient,
 	}
+	if provider == "openai" {
+		client.openai = newOpenAISDKClient(client.apiBase, client.apiKey, httpClient)
+	}
+	return client
+}
+
+func NewClientWithTimeout(cfg config.AIConfig, timeout time.Duration) *Client {
+	return NewClient(cfg, &http.Client{Timeout: timeout})
+}
+
+func newOpenAISDKClient(apiBase, apiKey string, httpClient *http.Client) openaisdk.Client {
+	options := []openaioption.RequestOption{
+		openaioption.WithHTTPClient(httpClient),
+		openaioption.WithMaxRetries(0),
+		openaioption.WithAPIKey(apiKey),
+	}
+	if strings.TrimSpace(apiBase) != "" {
+		options = append(options, openaioption.WithBaseURL(apiBase))
+	}
+	return openaisdk.NewClient(options...)
+}
+
+func openAIChatParams(model string, messages []Message) openaisdk.ChatCompletionNewParams {
+	return openaisdk.ChatCompletionNewParams{
+		Model:       openaishared.ChatModel(model),
+		Messages:    openAIMessageParams(messages),
+		Temperature: openaiparam.NewOpt(0.2),
+	}
+}
+
+func openAIChatToolParams(model string, messages []Message, tools []map[string]any) (openaisdk.ChatCompletionNewParams, error) {
+	params := openAIChatParams(model, messages)
+	converted, err := openAIToolParams(tools)
+	if err != nil {
+		return params, err
+	}
+	params.Tools = converted
+	params.ToolChoice = openaisdk.ChatCompletionToolChoiceOptionUnionParam{
+		OfAuto: openaiparam.NewOpt("auto"),
+	}
+	return params, nil
+}
+
+func openAIMessageParams(messages []Message) []openaisdk.ChatCompletionMessageParamUnion {
+	out := make([]openaisdk.ChatCompletionMessageParamUnion, 0, len(messages))
+	for _, message := range messages {
+		content := message.Content
+		switch strings.ToLower(strings.TrimSpace(message.Role)) {
+		case "system":
+			out = append(out, openaisdk.SystemMessage(content))
+		case "developer":
+			out = append(out, openaisdk.DeveloperMessage(content))
+		case "assistant":
+			out = append(out, openaisdk.AssistantMessage(content))
+		case "user", "":
+			out = append(out, openaisdk.UserMessage(content))
+		default:
+			out = append(out, openaisdk.UserMessage(content))
+		}
+	}
+	return out
+}
+
+func openAIToolParams(tools []map[string]any) ([]openaisdk.ChatCompletionToolParam, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		return nil, err
+	}
+	var converted []openaisdk.ChatCompletionToolParam
+	if err := json.Unmarshal(raw, &converted); err != nil {
+		return nil, err
+	}
+	return converted, nil
+}
+
+func openAIStreamOptions() openaisdk.ChatCompletionStreamOptionsParam {
+	return openaisdk.ChatCompletionStreamOptionsParam{
+		IncludeUsage: openaiparam.NewOpt(true),
+	}
+}
+
+func openAIChunkRawJSON(chunk openaisdk.ChatCompletionChunk) string {
+	if raw := strings.TrimSpace(chunk.RawJSON()); raw != "" {
+		return raw
+	}
+	raw, err := json.Marshal(chunk)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 func (c *Client) Complete(ctx context.Context, messages []Message) (string, error) {
@@ -63,6 +167,23 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (string, erro
 		return "", err
 	}
 	return result.Content, nil
+}
+
+func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	if c == nil {
+		return nil, fmt.Errorf("ai client is nil")
+	}
+	if c.apiBase == "" {
+		return nil, fmt.Errorf("ai api_base is required")
+	}
+	switch c.provider {
+	case "openai":
+		return c.listOpenAIModels(ctx)
+	case "anthropic":
+		return c.listAnthropicModels(ctx)
+	default:
+		return nil, fmt.Errorf("unsupported ai provider %q", c.provider)
+	}
 }
 
 func (c *Client) CompleteWithUsage(ctx context.Context, messages []Message) (*CompletionResult, error) {
@@ -162,29 +283,12 @@ func (c *Client) CompleteToolPlanStream(ctx context.Context, messages []Message,
 }
 
 func (c *Client) completeOpenAI(ctx context.Context, messages []Message) (*CompletionResult, error) {
-	payload := chatRequest{Model: c.model, Messages: messages, Temperature: 0.2}
-	body, err := json.Marshal(payload)
+	completion, err := c.openai.Chat.Completions.New(ctx, openAIChatParams(c.model, messages))
 	if err != nil {
 		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
 	var parsed chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := json.Unmarshal([]byte(completion.RawJSON()), &parsed); err != nil {
 		return nil, err
 	}
 	if len(parsed.Choices) == 0 {
@@ -192,7 +296,7 @@ func (c *Client) completeOpenAI(ctx context.Context, messages []Message) (*Compl
 	}
 	return &CompletionResult{
 		Content:          strings.TrimSpace(parsed.Choices[0].Message.Content),
-		ReasoningSummary: strings.TrimSpace(firstNonEmpty(parsed.Choices[0].Message.ReasoningContent, parsed.Choices[0].Message.Reasoning)),
+		ReasoningSummary: sanitizeAssistantReasoningSummary(firstNonEmpty(parsed.Choices[0].Message.ReasoningContent, parsed.Choices[0].Message.Reasoning)),
 		Provider:         c.provider,
 		Model:            c.model,
 		Usage: CompletionUsage{
@@ -204,29 +308,16 @@ func (c *Client) completeOpenAI(ctx context.Context, messages []Message) (*Compl
 }
 
 func (c *Client) completeOpenAIToolPlan(ctx context.Context, messages []Message, tools []map[string]any) (*AssistantPlan, error) {
-	payload := chatRequest{Model: c.model, Messages: messages, Temperature: 0.2, Tools: tools, ToolChoice: "auto"}
-	body, err := json.Marshal(payload)
+	params, err := openAIChatToolParams(c.model, messages, tools)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/chat/completions", bytes.NewReader(body))
+	completion, err := c.openai.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
 	var parsed chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := json.Unmarshal([]byte(completion.RawJSON()), &parsed); err != nil {
 		return nil, err
 	}
 	if len(parsed.Choices) == 0 {
@@ -261,33 +352,60 @@ func (c *Client) completeOpenAIToolPlan(ctx context.Context, messages []Message,
 	return plan, nil
 }
 
-func (c *Client) completeOpenAIStream(ctx context.Context, messages []Message, emit StreamEmitter) (*CompletionResult, bool, error) {
-	payload := chatRequest{
-		Model:         c.model,
-		Messages:      messages,
-		Temperature:   0.2,
-		Stream:        true,
-		StreamOptions: map[string]any{"include_usage": true},
-	}
-	body, err := json.Marshal(payload)
+func (c *Client) listOpenAIModels(ctx context.Context) ([]ModelInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/models", nil)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	resp, err := c.doOpenAIRequest(ctx, body)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, false, fmt.Errorf("ai api returned %s", resp.Status)
+		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
-	assembler := newOpenAIStreamAssembler(c.provider, c.model, emit)
-	if err := readSSE(resp.Body, func(_ string, data string) error {
-		if strings.TrimSpace(data) == "[DONE]" {
-			return nil
+	var parsed struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+			Created int64  `json:"created"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	models := make([]ModelInfo, 0, len(parsed.Data))
+	seen := map[string]bool{}
+	for _, item := range parsed.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || seen[id] {
+			continue
 		}
-		return assembler.accept(data)
-	}); err != nil {
+		seen[id] = true
+		models = append(models, ModelInfo{ID: id, OwnedBy: item.OwnedBy, Created: item.Created})
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("ai api returned no models")
+	}
+	return models, nil
+}
+
+func (c *Client) completeOpenAIStream(ctx context.Context, messages []Message, emit StreamEmitter) (*CompletionResult, bool, error) {
+	params := openAIChatParams(c.model, messages)
+	params.StreamOptions = openAIStreamOptions()
+	stream := c.openai.Chat.Completions.NewStreaming(ctx, params)
+	defer stream.Close()
+	assembler := newOpenAIStreamAssembler(c.provider, c.model, emit)
+	for stream.Next() {
+		if err := assembler.accept(openAIChunkRawJSON(stream.Current())); err != nil {
+			return nil, assembler.started, err
+		}
+	}
+	if err := stream.Err(); err != nil {
 		return nil, assembler.started, err
 	}
 	if !assembler.started {
@@ -297,52 +415,26 @@ func (c *Client) completeOpenAIStream(ctx context.Context, messages []Message, e
 }
 
 func (c *Client) completeOpenAIToolPlanStream(ctx context.Context, messages []Message, tools []map[string]any, emit StreamEmitter) (*AssistantPlan, bool, error) {
-	payload := chatRequest{
-		Model:         c.model,
-		Messages:      messages,
-		Temperature:   0.2,
-		Tools:         tools,
-		ToolChoice:    "auto",
-		Stream:        true,
-		StreamOptions: map[string]any{"include_usage": true},
-	}
-	body, err := json.Marshal(payload)
+	params, err := openAIChatToolParams(c.model, messages, tools)
 	if err != nil {
 		return nil, false, err
 	}
-	resp, err := c.doOpenAIRequest(ctx, body)
-	if err != nil {
-		return nil, false, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, false, fmt.Errorf("ai api returned %s", resp.Status)
-	}
+	params.StreamOptions = openAIStreamOptions()
+	stream := c.openai.Chat.Completions.NewStreaming(ctx, params)
+	defer stream.Close()
 	assembler := newOpenAIStreamAssembler(c.provider, c.model, emit)
-	if err := readSSE(resp.Body, func(_ string, data string) error {
-		if strings.TrimSpace(data) == "[DONE]" {
-			return nil
+	for stream.Next() {
+		if err := assembler.accept(openAIChunkRawJSON(stream.Current())); err != nil {
+			return nil, assembler.started, err
 		}
-		return assembler.accept(data)
-	}); err != nil {
+	}
+	if err := stream.Err(); err != nil {
 		return nil, assembler.started, err
 	}
 	if !assembler.started {
 		return nil, false, fmt.Errorf("ai stream returned no events")
 	}
 	return assembler.plan(), assembler.started, nil
-}
-
-func (c *Client) doOpenAIRequest(ctx context.Context, body []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	return c.http.Do(req)
 }
 
 func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*CompletionResult, error) {
@@ -402,7 +494,7 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*Co
 	}
 	return &CompletionResult{
 		Content:          strings.Join(parts, "\n"),
-		ReasoningSummary: strings.Join(reasoning, "\n"),
+		ReasoningSummary: sanitizeAssistantReasoningSummary(strings.Join(reasoning, "\n")),
 		Provider:         c.provider,
 		Model:            c.model,
 		Usage: CompletionUsage{
@@ -488,6 +580,49 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 	plan.OutputTokens = parsed.Usage.OutputTokens
 	plan.TotalTokens = parsed.Usage.InputTokens + parsed.Usage.OutputTokens
 	return plan, nil
+}
+
+func (c *Client) listAnthropicModels(ctx context.Context) ([]ModelInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if c.apiKey != "" {
+		req.Header.Set("x-api-key", c.apiKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("ai api returned %s", resp.Status)
+	}
+	var parsed struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+			CreatedAt   string `json:"created_at"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	models := make([]ModelInfo, 0, len(parsed.Data))
+	seen := map[string]bool{}
+	for _, item := range parsed.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		models = append(models, ModelInfo{ID: id, OwnedBy: strings.TrimSpace(item.DisplayName)})
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("ai api returned no models")
+	}
+	return models, nil
 }
 
 func (c *Client) completeAnthropicStream(ctx context.Context, messages []Message, emit StreamEmitter) (*CompletionResult, bool, error) {
@@ -823,7 +958,7 @@ func (a *openAIStreamAssembler) accept(data string) error {
 func (a *openAIStreamAssembler) completion() *CompletionResult {
 	return &CompletionResult{
 		Content:          strings.TrimSpace(a.content.String()),
-		ReasoningSummary: strings.TrimSpace(a.reasoning.String()),
+		ReasoningSummary: sanitizeAssistantReasoningSummary(a.reasoning.String()),
 		Provider:         a.provider,
 		Model:            a.model,
 		Usage:            a.usage,
@@ -998,7 +1133,7 @@ func (a *anthropicStreamAssembler) completion() *CompletionResult {
 	}
 	return &CompletionResult{
 		Content:          strings.TrimSpace(a.content.String()),
-		ReasoningSummary: strings.TrimSpace(a.reasoning.String()),
+		ReasoningSummary: sanitizeAssistantReasoningSummary(a.reasoning.String()),
 		Provider:         a.provider,
 		Model:            a.model,
 		Usage:            a.usage,
