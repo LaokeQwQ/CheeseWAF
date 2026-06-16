@@ -10,6 +10,9 @@
     "dependencies",
     "security"
   ],
+  "baseBranches": [
+    "dev"
+  ],
   "rangeStrategy": "bump",
   "prConcurrentLimit": 5,
   "vulnerabilityAlerts": {
