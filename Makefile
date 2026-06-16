@@ -5,8 +5,10 @@ BINARY_NAME  := cheesewaf
 CLI_NAME     := waf-cli
 MODULE       := github.com/LaokeQwQ/CheeseWAF
 VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+COMMIT       := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME   := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-LDFLAGS      := -s -w -X '$(MODULE)/internal/cli.appVersion=$(VERSION)' -X '$(MODULE)/internal/cli.buildTime=$(BUILD_TIME)'
+CHANNEL      := $(shell branch=$$(git branch --show-current 2>/dev/null || echo dev-local); case "$$branch" in master|main) echo stable ;; canary) echo canary ;; dev) echo dev ;; *) echo dev-local ;; esac)
+LDFLAGS      := -s -w -X '$(MODULE)/internal/version.Version=$(VERSION)' -X '$(MODULE)/internal/version.Commit=$(COMMIT)' -X '$(MODULE)/internal/version.BuildTime=$(BUILD_TIME)' -X '$(MODULE)/internal/version.Channel=$(CHANNEL)'
 
 GO           := go
 GOFLAGS      := -trimpath

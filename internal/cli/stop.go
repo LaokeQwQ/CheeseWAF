@@ -2,8 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -12,19 +10,25 @@ var stopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "优雅停止 CheeseWAF 服务",
 	Run: func(cmd *cobra.Command, args []string) {
-		pid, err := readPID()
+		snapshot, err := inspectServiceStatus()
 		if err != nil {
-			fmt.Println("CheeseWAF is not running")
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to inspect CheeseWAF status: %v\n", err)
 			return
 		}
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			fmt.Printf("failed to find process %d: %v\n", pid, err)
+		out := cmd.OutOrStdout()
+		if !snapshot.HasPIDFile {
+			fmt.Fprintf(out, "CheeseWAF is not running\n")
 			return
 		}
-		if err := proc.Signal(os.Interrupt); err != nil {
-			_ = proc.Signal(syscall.SIGTERM)
+		if snapshot.Stale {
+			removePID(snapshot.RuntimeDir)
+			fmt.Fprintf(out, "removed stale pid file at %s\n", snapshot.PIDPath)
+			return
 		}
-		fmt.Printf("sent graceful stop signal to pid=%d\n", pid)
+		if err := stopProcess(snapshot.PID); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to stop process %d: %v\n", snapshot.PID, err)
+			return
+		}
+		fmt.Fprintf(out, "sent stop signal to pid=%d\n", snapshot.PID)
 	},
 }

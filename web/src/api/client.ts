@@ -1,5 +1,5 @@
 import axios, { type AxiosResponse } from 'axios';
-import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User } from '../types/api';
+import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelInfo, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -310,6 +310,14 @@ export function fetchSystemConfig() {
   return unwrap<SystemConfig>(apiClient.get('/system'));
 }
 
+export function fetchVersion() {
+  return unwrap<VersionInfo>(apiClient.get('/version'));
+}
+
+export function fetchChinaMapBoundary() {
+  return unwrap<MapBoundaryResponse>(apiClient.get('/system/map/china-boundary'));
+}
+
 export function updateSystemConfig(payload: Partial<SystemConfig>) {
   return unwrap<SystemConfig>(apiClient.put('/system', payload));
 }
@@ -496,11 +504,13 @@ function normalizeThreatIntelProvider(provider: Partial<ThreatIntelProvider> | n
     type: provider?.type ?? 'generic',
     endpoint: provider?.endpoint ?? '',
     api_key: provider?.api_key ?? '',
+    auth_type: provider?.auth_type ?? 'bearer',
     format: provider?.format ?? 'stix',
     action: provider?.action ?? 'challenge',
     min_severity: provider?.min_severity ?? 'high',
     interval: provider?.interval ?? 24 * 60 * 60 * 1_000_000_000,
     headers: provider?.headers ?? {},
+    notes: provider?.notes ?? '',
     enabled: provider?.enabled ?? true,
   };
 }
@@ -614,8 +624,15 @@ export function updateAIConfig(config: AIConfig) {
   return unwrap<AIConfig>(apiClient.put('/ai/config', config));
 }
 
+export function fetchAIModels(config?: Pick<AIConfig, 'provider' | 'api_base'> & { api_key?: string; allow_private_api_base?: boolean }) {
+  if (config) {
+    return unwrap<{ items: AIModelInfo[]; total: number }>(apiClient.post('/ai/models', config, { timeout: 60_000 }));
+  }
+  return unwrap<{ items: AIModelInfo[]; total: number }>(apiClient.get('/ai/models', { timeout: 60_000 }));
+}
+
 export function testAIConnection() {
-  return unwrap<{ ok: boolean }>(apiClient.post('/ai/test', {}, { timeout: 20_000 }));
+  return unwrap<{ ok: boolean }>(apiClient.post('/ai/test', {}, { timeout: 60_000 }));
 }
 
 export function analyzeLog(entry: Record<string, unknown>, language?: string) {

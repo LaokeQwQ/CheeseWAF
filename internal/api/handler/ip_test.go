@@ -89,6 +89,106 @@ func TestUpdateIPAccessRulesNotifiesProtectionReload(t *testing.T) {
 	}
 }
 
+func TestApplyProviderAuthSupportsConfiguredAuthTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		provider config.ThreatIntelProviderConfig
+		verify   func(t *testing.T, request *http.Request)
+	}{
+		{
+			name:     "default bearer",
+			endpoint: "https://intel.example.test/feed",
+			provider: config.ThreatIntelProviderConfig{
+				APIKey: "bearer-key",
+			},
+			verify: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				if got := request.Header.Get("Authorization"); got != "Bearer bearer-key" {
+					t.Fatalf("expected bearer authorization, got %q", got)
+				}
+			},
+		},
+		{
+			name:     "header token keeps explicit provider header",
+			endpoint: "https://intel.example.test/feed",
+			provider: config.ThreatIntelProviderConfig{
+				APIKey:   "provider-key",
+				AuthType: "header",
+				Headers:  map[string]string{"X-API-Key": "header-key"},
+			},
+			verify: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				if got := request.Header.Get("X-API-Key"); got != "header-key" {
+					t.Fatalf("expected explicit X-API-Key to win, got %q", got)
+				}
+			},
+		},
+		{
+			name:     "query token keeps existing query value",
+			endpoint: "https://intel.example.test/feed?api_key=existing&resource=203.0.113.9",
+			provider: config.ThreatIntelProviderConfig{
+				APIKey:   "query-key",
+				AuthType: "query",
+			},
+			verify: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				query := request.URL.Query()
+				if got := query.Get("api_key"); got != "existing" {
+					t.Fatalf("expected existing api_key to win, got %q", got)
+				}
+				if got := query.Get("resource"); got != "203.0.113.9" {
+					t.Fatalf("expected existing resource query to remain, got %q", got)
+				}
+			},
+		},
+		{
+			name:     "basic auth",
+			endpoint: "https://intel.example.test/feed",
+			provider: config.ThreatIntelProviderConfig{
+				APIKey:   "user:pass",
+				AuthType: "basic",
+			},
+			verify: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				user, pass, ok := request.BasicAuth()
+				if !ok || user != "user" || pass != "pass" {
+					t.Fatalf("expected basic auth user/pass, got ok=%v user=%q pass=%q", ok, user, pass)
+				}
+			},
+		},
+		{
+			name:     "none only applies custom headers",
+			endpoint: "https://intel.example.test/feed",
+			provider: config.ThreatIntelProviderConfig{
+				APIKey:   "unused-key",
+				AuthType: "none",
+				Headers:  map[string]string{"X-Feed-Version": "2026-06"},
+			},
+			verify: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				if got := request.Header.Get("Authorization"); got != "" {
+					t.Fatalf("expected no authorization header, got %q", got)
+				}
+				if got := request.Header.Get("X-API-Key"); got != "" {
+					t.Fatalf("expected no api key header, got %q", got)
+				}
+				if got := request.Header.Get("X-Feed-Version"); got != "2026-06" {
+					t.Fatalf("expected custom header, got %q", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, tt.endpoint, nil)
+			applyProviderAuth(request, tt.provider)
+			tt.verify(t, request)
+		})
+	}
+}
+
 func TestLookupThreatIntelDoesNotImportCleanProviderResult(t *testing.T) {
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("resource") != "203.0.113.45" {

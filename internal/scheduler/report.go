@@ -17,6 +17,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
+var reportHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
 type ReportSummary struct {
 	GeneratedAt    time.Time      `json:"generated_at"`
 	Period         string         `json:"period"`
@@ -290,7 +292,7 @@ func postReport(ctx context.Context, endpoint, format string, report []byte) err
 		return err
 	}
 	req.Header.Set("Content-Type", reportContentType(format))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := reportHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

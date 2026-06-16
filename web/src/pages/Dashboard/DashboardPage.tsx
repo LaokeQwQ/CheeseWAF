@@ -1,11 +1,9 @@
 import { Button, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
 import { useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Activity, Cpu, HardDrive, MemoryStick, Network, Recycle, RotateCcw, ShieldCheck, Zap, ZoomIn, ZoomOut } from 'lucide-react';
-import { listItemVariants, listVariants } from '../../animations/variants';
+import { Activity, Cpu, HardDrive, MemoryStick, Recycle, RotateCcw, RotateCw, ShieldCheck, Zap } from 'lucide-react';
 import { fetchLogs, fetchMonitorSummary, fetchSites, reclaimSystemResources } from '../../api/client';
 import type { LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
@@ -28,6 +26,7 @@ export default function DashboardPage() {
   const [statsRange, setStatsRange] = useState(60);
   const [refreshMs, setRefreshMs] = useState(3000);
   const [chartScale, setChartScale] = useState(1);
+  const [hoveredTrafficIndex, setHoveredTrafficIndex] = useState<number | null>(null);
   const { data: monitor, isLoading: loadingMonitor, isFetching: fetchingMonitor, refetch: refetchMonitor } = useQuery({
     queryKey: ['dashboard-monitor'],
     queryFn: fetchMonitorSummary,
@@ -67,7 +66,7 @@ export default function DashboardPage() {
   const securityEntries = useMemo(() => entries.filter(isSecurityEvent), [entries]);
   const liveSeries = useMemo(() => buildRealtimeSeries(liveEntries, realtimeWindowSeconds), [liveEntries]);
   const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
-  const latency = useMemo(() => p95Latency(entries), [entries]);
+  const typicalLatency = useMemo(() => typicalRequestLatency(entries), [entries]);
   const periodRequests = traffic.reduce((sum, point) => sum + point.count, 0);
   const periodBlockedCount = entries.filter((entry) => entry.action === 'block').length;
   const liveRequests = liveEntries.length;
@@ -108,45 +107,72 @@ export default function DashboardPage() {
         </Tag>
       </header>
 
-      <motion.div className="metric-grid" variants={listVariants} initial="initial" animate="enter">
+      <div className="metric-grid">
         {[
           { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, t), icon: Zap },
           { label: t('dashboard.totalBlocked'), value: formatNumber(periodBlockedCount), delta: `${blockRate(periodBlockedCount, periodRequests)}%`, icon: ShieldCheck },
-          { label: t('dashboard.latencyP95'), value: formatLatency(latency), delta: t('dashboard.percentile95'), icon: Network },
+          { label: t('dashboard.responseSpeed'), value: formatLatency(typicalLatency), delta: t('dashboard.responseSpeedHint'), icon: Activity },
           { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: snapshot ? t('common.online') : t('common.unknown'), icon: HardDrive },
         ].map((item) => {
           const Icon = item.icon;
           return (
-            <motion.article className="metric-card" key={item.label} variants={listItemVariants}>
+            <article className="metric-card" key={item.label}>
               <Icon size={20} />
               <span>{item.label}</span>
               <strong>{item.value}</strong>
               <em>{item.delta}</em>
-            </motion.article>
+            </article>
           );
         })}
-      </motion.div>
+      </div>
 
       <div className="dashboard-grid">
         <div className="dashboard-main-stack">
           <section className="panel panel-wide">
             <div className="panel-heading">
-              <h2>{t('dashboard.totals')}</h2>
-              <div className="chart-controls chart-zoom-controls">
-                <Tooltip content={t('common.zoomOut')}>
-                  <Button icon={<ZoomOut size={14} />} onClick={() => setChartScale((value) => Math.max(0.5, Number((value - 0.25).toFixed(2))))} />
-                </Tooltip>
-                <span>{Math.round(chartScale * 100)}%</span>
-                <Tooltip content={t('common.zoomIn')}>
-                  <Button icon={<ZoomIn size={14} />} onClick={() => setChartScale((value) => Math.min(2.5, Number((value + 0.25).toFixed(2))))} />
-                </Tooltip>
-                <Tooltip content={t('common.reset')}>
-                  <Button icon={<RotateCcw size={14} />} onClick={() => setChartScale(1)} />
-                </Tooltip>
+              <div>
+                <h2>{t('dashboard.totals')}</h2>
+                <span>{t('dashboard.totalsHint')}</span>
+              </div>
+              <div className="dashboard-panel-tools">
+                <div className="control-cluster dashboard-footer-controls">
+                  <span>{t('dashboard.statsWindow')}</span>
+                  <Select className="dashboard-footer-select" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
+                    {statsRangeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
+                  </Select>
+                </div>
+                <div className="control-cluster dashboard-footer-controls">
+                  <span>{t('dashboard.autoRefresh')}</span>
+                  <Select className="dashboard-footer-select dashboard-refresh-select" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
+                    {refreshOptions.map((value) => <Select.Option key={value} value={value}>{value / 1000}s</Select.Option>)}
+                  </Select>
+                  <Tooltip content={t('dashboard.manualRefresh')}>
+                    <Button
+                      className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
+                      icon={<RotateCcw size={15} />}
+                      onClick={manualRefresh}
+                    />
+                  </Tooltip>
+                  <Tooltip content={t('dashboard.resetChartView')}>
+                    <Button
+                      className="icon-button"
+                      icon={<RotateCw size={15} />}
+                      onClick={() => setChartScale(1)}
+                    />
+                  </Tooltip>
+                </div>
               </div>
             </div>
             <Spin loading={loading}>
-              <div className="traffic-chart" aria-label={t('dashboard.totals')}>
+              <div
+                className="traffic-chart"
+                aria-label={t('dashboard.totals')}
+                onWheel={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setChartScale((value) => Math.max(0.5, Math.min(2.5, Number((value + (event.deltaY > 0 ? -0.12 : 0.12)).toFixed(2)))));
+                }}
+              >
                 <div className="chart-y-axis" aria-hidden="true">
                   <span>{yMax}</span>
                   <span>{yMid}</span>
@@ -154,16 +180,23 @@ export default function DashboardPage() {
                 </div>
                 <div className="chart-plot" style={{ '--bar-count': traffic.length } as CSSProperties}>
                   {traffic.map((point, index) => (
-                    <motion.span
+                    <span
                       key={`${point.label}-${index}`}
                       className="chart-bar"
-                      initial={{ height: 0 }}
-                      animate={{ height: `${Math.max((point.count / yMax) * 100, point.count > 0 ? 5 : 2)}%` }}
-                      transition={{ delay: index * 0.018, duration: 0.26 }}
-                      title={`${point.label}: ${point.count} ${t('dashboard.trafficRequests')}`}
+                      style={{ height: `${Math.max((point.count / yMax) * 100, point.count > 0 ? 5 : 2)}%` }}
+                      onMouseEnter={() => setHoveredTrafficIndex(index)}
+                      onMouseLeave={() => setHoveredTrafficIndex(null)}
+                      onFocus={() => setHoveredTrafficIndex(index)}
+                      onBlur={() => setHoveredTrafficIndex(null)}
+                      tabIndex={0}
                     >
                       <i />
-                    </motion.span>
+                      {hoveredTrafficIndex === index && (
+                        <span className="chart-hover-label">
+                          {point.label} · {point.count} {t('dashboard.trafficRequests')}
+                        </span>
+                      )}
+                    </span>
                   ))}
                 </div>
                 <div className="chart-x-axis" aria-hidden="true">
@@ -177,25 +210,7 @@ export default function DashboardPage() {
               <div className="chart-legend" aria-label={t('dashboard.trafficRequests')}>
                 <span><i /> {t('dashboard.trafficRequests')}</span>
               </div>
-              <div className="control-cluster dashboard-footer-controls">
-                <span>{t('dashboard.statsWindow')}</span>
-                <Select className="dashboard-footer-select" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
-                  {statsRangeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
-                </Select>
-              </div>
-              <div className="control-cluster dashboard-footer-controls">
-                <span>{t('dashboard.autoRefresh')}</span>
-                <Select className="dashboard-footer-select dashboard-refresh-select" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
-                  {refreshOptions.map((value) => <Select.Option key={value} value={value}>{value / 1000}s</Select.Option>)}
-                </Select>
-                <Tooltip content={t('dashboard.manualRefresh')}>
-                  <Button
-                    className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
-                    icon={<RotateCcw size={15} />}
-                    onClick={manualRefresh}
-                  />
-                </Tooltip>
-              </div>
+              <span className="chart-zoom-note">{t('dashboard.wheelZoomHint')}</span>
             </div>
           </section>
 
@@ -203,18 +218,35 @@ export default function DashboardPage() {
             <div className="panel-heading">
               <h2>{t('dashboard.events')}</h2>
             </div>
-            <div className="event-list">
+            <div className="event-list event-list-table" role="table" aria-label={t('dashboard.events')}>
+              <div className="event-row event-row-head" role="row">
+                <span>{t('dashboard.eventTime')}</span>
+                <span>{t('dashboard.eventId')}</span>
+                <span>{t('dashboard.sourceIp')}</span>
+                <span>{t('dashboard.ipLocation')}</span>
+                <span>{t('dashboard.attackType')}</span>
+                <span>{t('dashboard.action')}</span>
+              </div>
               {securityEntries.length === 0 && <div className="empty-state">{t('dashboard.noSecurityEvents')}</div>}
               {securityEntries.slice(0, 6).map((event) => (
                 <div className="event-row" key={event.id || event.trace_id || `${event.client_ip}-${event.timestamp}`}>
-                  <Link className="event-trace-link" to={`/logs/${encodeURIComponent(event.trace_id || event.id || '-')}`} title={event.trace_id || event.id || '-'}>
+                  <span className="event-time" data-label={t('dashboard.eventTime')} title={event.timestamp}>{formatEventTime(event.timestamp)}</span>
+                  <Link
+                    className="event-trace-link"
+                    data-label={t('dashboard.eventId')}
+                    to={`/logs/${encodeURIComponent(event.trace_id || event.id || '-')}`}
+                    title={event.trace_id || event.id || '-'}
+                  >
                     <code className="event-trace">{event.trace_id || event.id || '-'}</code>
                   </Link>
-                  <span className="event-source" title={event.client_ip || '-'}>
+                  <span className="event-source" data-label={t('dashboard.sourceIp')} title={event.client_ip || '-'}>
                     {event.client_ip || '-'}
                   </span>
-                  <span className="event-status-group">
+                  <span className="event-country" data-label={t('dashboard.ipLocation')} title={event.country || ''}>{event.country || t('geo.unlocated')}</span>
+                  <span className="event-status-group" data-label={t('dashboard.attackType')}>
                     <Tag color={event.category ? 'orange' : event.action === 'pass' || !event.action ? 'green' : 'blue'}>{eventCategoryLabel(event, t)}</Tag>
+                  </span>
+                  <span className="event-status-group" data-label={t('dashboard.action')}>
                     <Tag color={event.action === 'block' ? 'red' : 'blue'}>
                       {displayAction(event.action, t)}
                     </Tag>
@@ -305,17 +337,23 @@ export default function DashboardPage() {
                 <small>{formatCapacity(host?.disk_used ?? 0, host?.disk_total ?? 0, t)}</small>
               </div>
             </div>
-            <div className="resource-runtime">
-              <span>{t('dashboard.processRuntime')}</span>
-              <strong>{t('dashboard.processHint', { goroutines: snapshot?.goroutines ?? 0, heap: formatBytes(snapshot?.memory_alloc ?? 0) })}</strong>
-            </div>
-            <div className="resource-actions">
-              <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('memory')}>
-                {t('dashboard.reclaimMemory')}
-              </Button>
-              <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('swap')}>
-                {t('dashboard.reclaimSwap')}
-              </Button>
+            <div className="resource-runtime-grid" aria-label={t('dashboard.processRuntime')}>
+              <div className="resource-runtime-item">
+                <span>{t('dashboard.runtimeGoroutines')}</span>
+                <strong>{formatNumber(snapshot?.goroutines ?? 0)}</strong>
+              </div>
+              <div className="resource-runtime-item">
+                <span>{t('dashboard.runtimeServiceMemory')}</span>
+                <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
+              </div>
+              <div className="resource-runtime-actions">
+                <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('memory')}>
+                  {t('dashboard.reclaimMemory')}
+                </Button>
+                <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('swap')}>
+                  {t('dashboard.reclaimSwap')}
+                </Button>
+              </div>
             </div>
           </section>
 
@@ -431,7 +469,7 @@ function buildThreatMix(entries: LogEntry[], t: (key: string, options?: Record<s
     .map(([name, count]) => ({ name, value: total > 0 ? Math.round((count / total) * 100) : 0 }));
 }
 
-function p95Latency(entries: LogEntry[]) {
+function typicalRequestLatency(entries: LogEntry[]) {
   const values = entries.map((entry) => Number(entry.latency)).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
   if (values.length === 0) {
     return 0;
@@ -490,6 +528,20 @@ function formatNumber(value: number) {
 
 function formatRate(value: number) {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}/s`;
+}
+
+function formatEventTime(value: string) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) {
+    return '-';
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(time));
 }
 
 function rangeLabel(value: number, t: (key: string) => string) {
