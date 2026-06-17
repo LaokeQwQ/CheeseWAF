@@ -72,6 +72,13 @@ export default function IPManagePage() {
   const { data, isLoading } = useQuery({ queryKey: ['ip-rules'], queryFn: fetchIPRules, retry: false });
   const { data: sites = [] } = useQuery({ queryKey: ['sites-lite'], queryFn: fetchSites, retry: false });
   const entries = data?.entries ?? [];
+  const hasThreatIntel = (data?.threat_intel?.length ?? 0) > 0;
+  const tagsChanged = useMemo(() => {
+    if (!data?.tags) {
+      return Object.values(draftTags).some((tags) => tags.length > 0);
+    }
+    return stableTagSnapshot(draftTags) !== stableTagSnapshot(data.tags);
+  }, [data?.tags, draftTags]);
 
   useEffect(() => {
     if (data?.tags) {
@@ -241,11 +248,13 @@ export default function IPManagePage() {
         type: 'generic',
         endpoint: '',
         api_key: '',
+        auth_type: 'bearer',
         format: 'stix',
         action: 'challenge',
         min_severity: 'high',
         interval: 24 * 60 * 60 * second,
         headers: {},
+        notes: '',
         enabled: true,
       },
     ]);
@@ -257,6 +266,11 @@ export default function IPManagePage() {
     const entries = accessDraft.entries.length > 0 ? accessDraft.entries : splitList(accessDraft.entries.join(','));
     if (entries.length === 0) {
       ArcoMessage.warning(t('ip.entriesRequired'));
+      return;
+    }
+    const invalidEntries = entries.filter((entry) => !isValidIPOrCIDR(entry));
+    if (invalidEntries.length > 0) {
+      ArcoMessage.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
       return;
     }
     if (accessDraft.scope === 'site' && !accessDraft.site_id) {
@@ -290,14 +304,16 @@ export default function IPManagePage() {
     const cleaned = accessRules
       .map((rule) => ({ ...rule, entries: rule.entries.filter((entry) => entry !== ip) }))
       .filter((rule) => rule.entries.length > 0);
-    const nextRules = action === 'monitor'
-      ? cleaned
-      : [
+    const nextRules = [
         ...cleaned,
         {
           ...defaultAccessDraft,
           id: `manual-${action}-${safeRuleID(ip)}`,
-          name: action === 'allow' ? `${t('ip.allow')} ${ip}` : `${t('ip.block')} ${ip}`,
+          name: action === 'allow'
+            ? `${t('ip.allow')} ${ip}`
+            : action === 'block'
+              ? `${t('ip.block')} ${ip}`
+              : `${t('common.monitor')} ${ip}`,
           action,
           scope: 'global',
           entries: [ip],
@@ -317,22 +333,30 @@ export default function IPManagePage() {
   };
 
   return (
-    <section className="page-surface">
+    <section className="page-surface ip-manage-page">
       <header className="page-header">
         <div>
           <h1>{t('ip.title')}</h1>
           <p>{t('ip.subtitle')}</p>
         </div>
-        <span className="table-identity">
-          <Button icon={<FileDown size={16} />} onClick={() => saveIntelFile('csv')}>CSV</Button>
-          <Button icon={<FileDown size={16} />} onClick={() => saveIntelFile('stix')}>STIX</Button>
-          <Button type="primary" icon={<Tags size={16} />} loading={tagMutation.isPending} onClick={() => tagMutation.mutate(draftTags)}>
-            {t('ip.saveTags')}
-          </Button>
-        </span>
+        {(activeTab === 'entries' && tagsChanged) || ((activeTab === 'providers' || activeTab === 'import') && hasThreatIntel) ? (
+          <span className="table-identity ip-header-actions">
+            {(activeTab === 'providers' || activeTab === 'import') && hasThreatIntel && (
+              <>
+                <Button icon={<FileDown size={16} />} onClick={() => saveIntelFile('csv')}>{t('ip.exportCsv')}</Button>
+                <Button icon={<FileDown size={16} />} onClick={() => saveIntelFile('stix')}>{t('ip.exportStix')}</Button>
+              </>
+            )}
+            {activeTab === 'entries' && tagsChanged && (
+              <Button type="primary" icon={<Tags size={16} />} loading={tagMutation.isPending} onClick={() => tagMutation.mutate(draftTags)}>
+                {t('ip.saveTags')}
+              </Button>
+            )}
+          </span>
+        ) : null}
       </header>
 
-      <section className="panel">
+      <section className="panel ip-manage-panel">
         <Tabs
           activeTab={activeTab}
           onChange={(tab) => {
@@ -482,6 +506,7 @@ export default function IPManagePage() {
                     <Select value={accessDraft.action} onChange={(action) => setAccessDraft((current) => ({ ...current, action: action as string }))}>
                       <Select.Option value="allow">{t('ip.allow')}</Select.Option>
                       <Select.Option value="block">{t('ip.block')}</Select.Option>
+                      <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
                     </Select>
                   </label>
                   <label>
@@ -503,6 +528,7 @@ export default function IPManagePage() {
                     >
                       {sites.map((site) => <Select.Option key={site.id} value={site.id}>{site.name || site.id}</Select.Option>)}
                     </Select>
+                    <small>{accessDraft.scope === 'global' ? t('ip.globalScopeHint') : accessDraft.scope === 'site' ? t('ip.siteScopeHint') : t('ip.pathScopeSiteHint')}</small>
                   </label>
                   <label className="ip-access-path-field">
                     <span>{t('ip.pathPrefix')}</span>
@@ -512,6 +538,7 @@ export default function IPManagePage() {
                       placeholder="/admin"
                       onChange={(path_prefix) => setAccessDraft((current) => ({ ...current, path_prefix }))}
                     />
+                    <small>{accessDraft.scope === 'path' ? t('ip.pathScopeHint') : t('ip.pathDisabledHint')}</small>
                   </label>
                   <label className="ip-access-entries-field">
                     <span>{t('ip.entriesInput')}</span>
@@ -530,7 +557,7 @@ export default function IPManagePage() {
                   data={accessRules}
                   columns={[
                     { title: t('rules.name'), dataIndex: 'name', render: (_: string, rule: IPAccessRule) => <strong>{rule.name || rule.id}</strong> },
-                    { title: t('logs.action'), dataIndex: 'action', render: (action: string) => <Tag color={action === 'allow' ? 'green' : 'red'}>{action === 'allow' ? t('ip.allow') : t('ip.block')}</Tag> },
+                    { title: t('logs.action'), dataIndex: 'action', render: (action: string) => <Tag color={action === 'allow' ? 'green' : action === 'block' ? 'red' : 'blue'}>{action === 'allow' ? t('ip.allow') : action === 'block' ? t('ip.block') : t('common.monitor')}</Tag> },
                     { title: t('ip.scope'), dataIndex: 'scope', render: (_: string, rule: IPAccessRule) => scopeLabel(rule, t) },
                     { title: t('ip.entriesInput'), dataIndex: 'entries', render: (entries: string[]) => <span className="ip-access-entry-list">{entries.map((entry) => <code key={entry}>{entry}</code>)}</span> },
                     { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean, rule: IPAccessRule, index: number) => <Switch checked={enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} /> },
@@ -587,11 +614,13 @@ export default function IPManagePage() {
                         <label>
                           <span>{t('ip.providerType')}</span>
                           <Select value={provider.type} onChange={(type) => updateProvider(index, { type: type as string })}>
-                            <Select.Option value="generic">Generic</Select.Option>
-                            <Select.Option value="threatbook-cn">ThreatBook CN</Select.Option>
-                            <Select.Option value="threatbook-intl">ThreatBook Intl</Select.Option>
-                            <Select.Option value="misp">MISP</Select.Option>
-                            <Select.Option value="stix">STIX</Select.Option>
+                            <Select.Option value="generic">{t('ip.providerTypeGeneric')}</Select.Option>
+                            <Select.Option value="threatbook-cn">{t('ip.providerTypeThreatBookCN')}</Select.Option>
+                            <Select.Option value="threatbook-intl">{t('ip.providerTypeThreatBookIntl')}</Select.Option>
+                            <Select.Option value="abuseipdb">{t('ip.providerTypeAbuseIPDB')}</Select.Option>
+                            <Select.Option value="otx">{t('ip.providerTypeOTX')}</Select.Option>
+                            <Select.Option value="misp">{t('ip.providerTypeMISP')}</Select.Option>
+                            <Select.Option value="stix">{t('ip.providerTypeSTIX')}</Select.Option>
                           </Select>
                         </label>
                         <label>
@@ -601,14 +630,18 @@ export default function IPManagePage() {
                             <Select.Option value="csv">CSV</Select.Option>
                             <Select.Option value="json">JSON</Select.Option>
                             <Select.Option value="stix">STIX</Select.Option>
+                            <Select.Option value="misp">MISP Attribute</Select.Option>
+                            <Select.Option value="abuseipdb">AbuseIPDB</Select.Option>
+                            <Select.Option value="otx">AlienVault OTX</Select.Option>
                             <Select.Option value="threatbook">ThreatBook</Select.Option>
                           </Select>
                         </label>
                         <label>
                           <span>{t('logs.action')}</span>
                           <Select value={provider.action || 'challenge'} onChange={(action) => updateProvider(index, { action: action as string })}>
-                            <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
-                            <Select.Option value="block">{t('common.block')}</Select.Option>
+                            <Select.Option value="challenge">{displayAction('challenge', t)}</Select.Option>
+                            <Select.Option value="block">{displayAction('block', t)}</Select.Option>
+                            <Select.Option value="monitor">{displayAction('monitor', t)}</Select.Option>
                             <Select.Option value="log">{displayAction('log', t)}</Select.Option>
                           </Select>
                         </label>
@@ -617,12 +650,53 @@ export default function IPManagePage() {
                           <Input value={provider.endpoint} placeholder="https://..." onChange={(endpoint) => updateProvider(index, { endpoint })} />
                         </label>
                         <label>
-                          <span>API Key</span>
-                          <Input.Password value={provider.api_key} placeholder="API Key" onChange={(api_key) => updateProvider(index, { api_key })} />
+                          <span>{t('ip.providerAuth')}</span>
+                          <Select value={provider.auth_type || 'bearer'} onChange={(auth_type) => updateProvider(index, { auth_type: auth_type as string })}>
+                            <Select.Option value="bearer">{t('ip.authBearer')}</Select.Option>
+                            <Select.Option value="header">{t('ip.authHeader')}</Select.Option>
+                            <Select.Option value="query">{t('ip.authQuery')}</Select.Option>
+                            <Select.Option value="basic">{t('ip.authBasic')}</Select.Option>
+                            <Select.Option value="none">{t('ip.authNone')}</Select.Option>
+                          </Select>
                         </label>
                         <label>
-                          <span>{t('ip.intervalHours')}</span>
-                          <InputNumber value={durationSeconds(provider.interval) / 3600} min={1} max={720} onChange={(value) => updateProvider(index, { interval: secondsToDuration(Number(value || 24) * 3600) })} />
+                          <span>API Key</span>
+                          <Input.Password
+                            value={provider.api_key}
+                            placeholder={provider.auth_type === 'basic' ? 'user:password' : 'API Key'}
+                            disabled={provider.auth_type === 'none'}
+                            onChange={(api_key) => updateProvider(index, { api_key })}
+                          />
+                        </label>
+                        <label className="provider-interval-field">
+                          <span>{t('ip.intervalValue')}</span>
+                          <div className="duration-input-group">
+                            <InputNumber
+                              value={durationAmount(provider.interval)}
+                              min={1}
+                              max={intervalMax(provider.interval)}
+                              precision={0}
+                              onChange={(value) => updateProvider(index, { interval: secondsToDuration(Number(value || 1) * intervalUnitSeconds(intervalUnit(provider.interval))) })}
+                            />
+                            <Select
+                              value={intervalUnit(provider.interval)}
+                              onChange={(unit) => updateProvider(index, { interval: secondsToDuration(durationAmount(provider.interval) * intervalUnitSeconds(unit as string)) })}
+                            >
+                              <Select.Option value="minute">{t('common.minutes')}</Select.Option>
+                              <Select.Option value="hour">{t('common.hours')}</Select.Option>
+                              <Select.Option value="day">{t('common.days')}</Select.Option>
+                              <Select.Option value="month">30 {t('common.days')}</Select.Option>
+                            </Select>
+                          </div>
+                        </label>
+                        <label className="provider-notes-field">
+                          <span>{t('ip.providerNotes')}</span>
+                          <Input.TextArea
+                            value={provider.notes || ''}
+                            placeholder={t('ip.providerNotesPlaceholder')}
+                            autoSize={{ minRows: 2, maxRows: 4 }}
+                            onChange={(notes) => updateProvider(index, { notes })}
+                          />
                         </label>
                       </div>
                     </article>
@@ -636,7 +710,12 @@ export default function IPManagePage() {
           <Tabs.TabPane key="import" title={t('ip.import')}>
             <div className="ip-intel-workspace">
               <section className="system-card ip-import-card">
-                <div className="system-section-title"><h2>{t('ip.import')}</h2></div>
+                <div className="system-section-title">
+                  <div>
+                    <h2>{t('ip.import')}</h2>
+                    <p>{t('ip.importHint')}</p>
+                  </div>
+                </div>
                 <div className="ip-import-grid">
                   <label>
                     <span>{t('ip.format')}</span>
@@ -645,6 +724,9 @@ export default function IPManagePage() {
                       <Select.Option value="csv">CSV</Select.Option>
                       <Select.Option value="json">JSON</Select.Option>
                       <Select.Option value="stix">STIX</Select.Option>
+                      <Select.Option value="misp">MISP Attribute</Select.Option>
+                      <Select.Option value="abuseipdb">AbuseIPDB</Select.Option>
+                      <Select.Option value="otx">AlienVault OTX</Select.Option>
                       <Select.Option value="threatbook">ThreatBook</Select.Option>
                     </Select>
                   </label>
@@ -661,8 +743,9 @@ export default function IPManagePage() {
                   <label>
                     <span>{t('logs.action')}</span>
                     <Select value={importDraft.action} onChange={(action) => setImportDraft((current) => ({ ...current, action: action as string }))}>
-                      <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
-                      <Select.Option value="block">{t('common.block')}</Select.Option>
+                      <Select.Option value="challenge">{displayAction('challenge', t)}</Select.Option>
+                      <Select.Option value="block">{displayAction('block', t)}</Select.Option>
+                      <Select.Option value="monitor">{displayAction('monitor', t)}</Select.Option>
                       <Select.Option value="log">{displayAction('log', t)}</Select.Option>
                     </Select>
                   </label>
@@ -675,7 +758,7 @@ export default function IPManagePage() {
                       placeholder={t('ip.labelPlaceholder')}
                     />
                   </label>
-                  <label className="ioc-field"><span>IOC</span><Input.TextArea value={importDraft.contents} autoSize={{ minRows: 12, maxRows: 20 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /></label>
+                  <label className="ioc-field"><span>IOC</span><Input.TextArea value={importDraft.contents} placeholder={t('ip.iocPlaceholder')} autoSize={{ minRows: 10, maxRows: 16 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /></label>
                 </div>
                 <div className="form-action-row">
                   <Button
@@ -690,7 +773,12 @@ export default function IPManagePage() {
                 {importStatus && <IntelStatusPanel status={importStatus} t={t} />}
               </section>
               <section className="system-card ip-lookup-card">
-                <div className="system-section-title"><h2>{t('ip.lookup')}</h2></div>
+                <div className="system-section-title">
+                  <div>
+                    <h2>{t('ip.lookup')}</h2>
+                    <p>{t('ip.lookupHint')}</p>
+                  </div>
+                </div>
                 <div className="ip-lookup-grid">
                   <label>
                     <span>{t('ip.providerName')}</span>
@@ -1100,9 +1188,63 @@ function splitList(value: string) {
   return value.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
 }
 
+function isValidIPOrCIDR(value: string) {
+  const parts = value.split('/');
+  if (parts.length > 2) {
+    return false;
+  }
+  const address = parts[0];
+  const isIPv4 = isValidIPv4(address);
+  const isIPv6 = isLikelyIPv6(address);
+  if (!isIPv4 && !isIPv6) {
+    return false;
+  }
+  if (parts.length === 1) {
+    return true;
+  }
+  if (!/^\d+$/.test(parts[1])) {
+    return false;
+  }
+  const prefix = Number(parts[1]);
+  return Number.isInteger(prefix) && prefix >= 0 && prefix <= (isIPv4 ? 32 : 128);
+}
+
+function isValidIPv4(value: string) {
+  const parts = value.split('.');
+  return parts.length === 4 && parts.every((part) => {
+    if (!/^\d{1,3}$/.test(part)) {
+      return false;
+    }
+    const number = Number(part);
+    return number >= 0 && number <= 255 && String(number) === String(Number(part));
+  });
+}
+
+function isLikelyIPv6(value: string) {
+  if (!value.includes(':') || !/^[0-9a-f:]+$/i.test(value)) {
+    return false;
+  }
+  if ((value.match(/::/g) || []).length > 1) {
+    return false;
+  }
+  const segments = value.split(':').filter(Boolean);
+  if (segments.length > 8 || segments.some((segment) => segment.length > 4)) {
+    return false;
+  }
+  return value.includes('::') ? segments.length < 8 : segments.length === 8;
+}
+
 function tagsFor(entry: IPReputationEntry, draftTags: Record<string, string[]>) {
   const tags = draftTags[entry.ip] ?? entry.tags;
   return Array.isArray(tags) ? tags : [];
+}
+
+function stableTagSnapshot(tags: Record<string, string[]>) {
+  return JSON.stringify(
+    Object.keys(tags)
+      .sort()
+      .map((ip) => [ip, [...(tags[ip] ?? [])].map((tag) => tag.trim()).filter(Boolean).sort()]),
+  );
 }
 
 function intelFor(entry: IPReputationEntry) {
@@ -1139,6 +1281,46 @@ function secondsToDuration(value: number) {
   return Math.max(1, value) * second;
 }
 
+function intervalUnit(value: number | string | undefined) {
+  const seconds = durationSeconds(value);
+  if (seconds >= 30 * 24 * 3600) {
+    return 'month';
+  }
+  if (seconds >= 24 * 3600 && seconds % (24 * 3600) === 0) {
+    return 'day';
+  }
+  if (seconds >= 3600 && seconds % 3600 === 0) {
+    return 'hour';
+  }
+  return 'minute';
+}
+
+function intervalUnitSeconds(unit: string) {
+  switch (unit) {
+    case 'month':
+      return 30 * 24 * 3600;
+    case 'day':
+      return 24 * 3600;
+    case 'hour':
+      return 3600;
+    default:
+      return 60;
+  }
+}
+
+function durationAmount(value: number | string | undefined) {
+  const seconds = Math.max(60, durationSeconds(value));
+  return Math.max(1, Math.round(seconds / intervalUnitSeconds(intervalUnit(value))));
+}
+
+function intervalMax(value: number | string | undefined) {
+  const unit = intervalUnit(value);
+  if (unit === 'month') return 1;
+  if (unit === 'day') return 30;
+  if (unit === 'hour') return 720;
+  return 43_200;
+}
+
 function reputationColor(value: number) {
   if (value >= 80) {
     return 'green';
@@ -1169,7 +1351,7 @@ function normalizeAccessRuleForSave(rule: IPAccessRule): IPAccessRule {
     id: rule.id || `ip-rule-${Date.now()}`,
     name: rule.name || rule.id || 'IP access rule',
     description: rule.description || '',
-    action: rule.action === 'block' ? 'block' : 'allow',
+    action: rule.action === 'block' ? 'block' : rule.action === 'monitor' ? 'monitor' : 'allow',
     scope,
     site_id: scope === 'global' ? '' : rule.site_id,
     path_prefix: pathPrefix,

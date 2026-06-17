@@ -40,6 +40,17 @@ export const fallbackSystem: SystemConfig = {
       security_entry: { enabled: false, path: '/__cheesewaf-entry', cookie_name: 'cheesewaf_admin_entry' },
       background: { enabled: false, type: 'auto', url: '' },
     },
+    map: {
+      china_boundary: {
+        enabled: false,
+        source_type: 'file',
+        source: '',
+        license: '',
+        review_id: '',
+        attribution: '',
+        allow_insecure: false,
+      },
+    },
   },
   server: {
     listen: ':80',
@@ -105,6 +116,14 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
           ...next.console?.login?.security_entry,
         },
         background: { ...fallbackSystem.console.login.background, ...next.console?.login?.background },
+      },
+      map: {
+        ...fallbackSystem.console.map,
+        ...next.console?.map,
+        china_boundary: {
+          ...fallbackSystem.console.map.china_boundary,
+          ...next.console?.map?.china_boundary,
+        },
       },
     },
     server: {

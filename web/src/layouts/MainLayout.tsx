@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Dropdown, Input, Menu, Popover, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
-import { motion } from 'framer-motion';
 import {
   BrainCircuit,
   FileCode2,
@@ -28,8 +27,7 @@ import {
   SunMoon,
 } from 'lucide-react';
 import i18n from '../i18n';
-import { navItemMotion } from '../animations/micro';
-import { fetchHealth, fetchMonitorSummary, logout } from '../api/client';
+import { fetchHealth, fetchMonitorSummary, fetchVersion, logout } from '../api/client';
 import AIAssistant from '../components/AIAssistant/AIAssistant';
 import BrandLogo from '../components/BrandLogo';
 import { useAppStore, type Language } from '../stores';
@@ -66,6 +64,7 @@ export default function MainLayout() {
   const setLanguage = useAppStore((state) => state.setLanguage);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const { data: monitor } = useQuery({ queryKey: ['shell-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false });
+  const { data: version } = useQuery({ queryKey: ['version'], queryFn: fetchVersion, staleTime: 5 * 60_000, retry: false });
   const [healthFailures, setHealthFailures] = useState(0);
   const [lastHeartbeatAt, setLastHeartbeatAt] = useState(Date.now());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -126,6 +125,7 @@ export default function MainLayout() {
   ))?.key ?? '/';
   const snapshot = monitor?.snapshot;
   const connection = connectionState(healthFailures, healthQuery.data?.status, healthQuery.isFetching, lastHeartbeatAt);
+  const showGlobalAssistant = !location.pathname.startsWith('/ai');
 
   function reconnectHealth() {
     setHealthFailures(0);
@@ -161,8 +161,7 @@ export default function MainLayout() {
             const Icon = item.icon;
             const active = currentKey === item.key;
             return (
-              <motion.button
-                {...navItemMotion}
+              <button
                 key={item.key}
                 type="button"
                 className={active ? 'nav-item nav-item-active' : 'nav-item'}
@@ -173,18 +172,26 @@ export default function MainLayout() {
               >
                 <Icon size={18} />
                 <span>{t(item.labelKey)}</span>
-              </motion.button>
+              </button>
             );
           })}
         </nav>
 
-        <button className={`sidebar-status sidebar-status-${connection.state}`} type="button" onClick={reconnectHealth}>
-          <span className="status-dot" />
-          <div className="sidebar-status-copy">
-            <strong>{t(connection.titleKey)}</strong>
-            <span>{connectionDetail(connection.state, healthFailures, t)}</span>
-          </div>
-        </button>
+        <div className="sidebar-footer">
+          <button className={`sidebar-status sidebar-status-${connection.state}`} type="button" onClick={reconnectHealth}>
+            <span className="status-dot" />
+            <div className="sidebar-status-copy">
+              <strong>{t(connection.titleKey)}</strong>
+              <span>{connectionDetail(connection.state, healthFailures, t)}</span>
+            </div>
+          </button>
+          <Tooltip content={versionTooltip(version, t)}>
+            <button className="sidebar-version" type="button" onClick={() => navigate('/updates')}>
+              <span>CheeseWAF</span>
+              <strong>{version ? `${version.version} · ${channelLabel(version.channel, t)}` : t('shell.versionUnavailable')}</strong>
+            </button>
+          </Tooltip>
+        </div>
       </aside>
       <button className="mobile-nav-backdrop" type="button" aria-label={t('common.close')} onClick={() => setMobileNavOpen(false)} />
 
@@ -288,7 +295,7 @@ export default function MainLayout() {
         <main className="workspace">
           <Outlet />
         </main>
-        <AIAssistant />
+        {showGlobalAssistant && <AIAssistant />}
       </div>
     </div>
   );
@@ -335,6 +342,27 @@ function connectionDetail(state: string, failures: number, t: (key: string, opti
     return t('shell.connectionRetrying', { count: Math.max(1, failures), total: 5 });
   }
   return t('shell.connectionReady');
+}
+
+function channelLabel(channel: string | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
+  switch (channel) {
+    case 'stable':
+      return t('updates.channelStable');
+    case 'canary':
+      return t('updates.channelCanary');
+    case 'dev':
+    case 'dev-local':
+      return t('updates.channelDev');
+    default:
+      return channel || t('common.unknown');
+  }
+}
+
+function versionTooltip(version: { version: string; channel: string; commit: string; build_time: string; platform: string } | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (!version) {
+    return t('shell.versionUnavailable');
+  }
+  return `${version.version} · ${channelLabel(version.channel, t)} · ${version.commit} · ${version.platform} · ${version.build_time}`;
 }
 
 function currentAccount() {

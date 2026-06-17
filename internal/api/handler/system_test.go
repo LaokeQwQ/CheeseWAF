@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,6 +91,107 @@ func TestUpdateSystemPersistsConsoleSecurityEntry(t *testing.T) {
 	}
 	if !loaded.Console.Login.SecurityEntry.Enabled || loaded.Console.Login.SecurityEntry.Path != "/ops-door" || loaded.Console.Login.SecurityEntry.CookieName != "cw_ops_entry" {
 		t.Fatalf("security entry was not persisted: %+v", loaded.Console.Login.SecurityEntry)
+	}
+}
+
+func TestUpdateSystemRejectsEnabledChinaBoundaryWithoutSourceProof(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	nextConsole := cfg.Console
+	nextConsole.Map.ChinaBoundary.Enabled = true
+	nextConsole.Map.ChinaBoundary.SourceType = "file"
+	nextConsole.Map.ChinaBoundary.Source = "./data/maps/china-boundary.geojson"
+	raw, _ := json.Marshal(map[string]any{"console": nextConsole})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw))
+	handler.UpdateSystem(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for unlicensed boundary, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(configFileContents(t, configPath), "china-boundary.geojson") {
+		t.Fatalf("invalid boundary config was persisted")
+	}
+}
+
+func configFileContents(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+	return string(body)
+}
+
+func TestChinaMapBoundaryDisabled(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/system/map/china-boundary", nil)
+	handler.ChinaMapBoundary(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected disabled boundary response ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"enabled":false`) {
+		t.Fatalf("expected enabled=false response, body=%s", recorder.Body.String())
+	}
+}
+
+func TestChinaMapBoundaryReturnsValidFeatureCollection(t *testing.T) {
+	cfg := config.Default()
+	boundaryFile := filepath.Join(t.TempDir(), "china-boundary.geojson")
+	if err := os.WriteFile(boundaryFile, []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"coverage"},"geometry":{"type":"Point","coordinates":[116.4,39.9]}}]}`), 0o600); err != nil {
+		t.Fatalf("write boundary fixture: %v", err)
+	}
+	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
+		Enabled:    true,
+		SourceType: "file",
+		Source:     boundaryFile,
+		License:    "licensed test fixture",
+		ReviewID:   "GS-test",
+	}
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/system/map/china-boundary", nil)
+	handler.ChinaMapBoundary(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected valid boundary response ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"enabled":true`) || !strings.Contains(recorder.Body.String(), `"FeatureCollection"`) {
+		t.Fatalf("expected boundary payload, body=%s", recorder.Body.String())
+	}
+}
+
+func TestChinaMapBoundaryRejectsNonFeatureCollection(t *testing.T) {
+	cfg := config.Default()
+	boundaryFile := filepath.Join(t.TempDir(), "china-boundary.geojson")
+	if err := os.WriteFile(boundaryFile, []byte(`{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[116.4,39.9]}}`), 0o600); err != nil {
+		t.Fatalf("write boundary fixture: %v", err)
+	}
+	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
+		Enabled:    true,
+		SourceType: "file",
+		Source:     boundaryFile,
+		License:    "licensed test fixture",
+		ReviewID:   "GS-test",
+	}
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/system/map/china-boundary", nil)
+	handler.ChinaMapBoundary(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid boundary rejected, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "FeatureCollection") {
+		t.Fatalf("expected FeatureCollection error, body=%s", recorder.Body.String())
 	}
 }
 

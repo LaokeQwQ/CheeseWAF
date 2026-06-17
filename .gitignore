@@ -32,6 +32,7 @@ sqlmap-output/
 /tmp/
 /temp/
 /certs/
+*.log
 *.key
 *.pem
 *.crt
@@ -49,11 +50,13 @@ configs/versions/
 
 # Private planning/task files
 task.md
+fix_task.md
 implementation_plan.md
 *.private.md
 *.local.md
 
 # Frontend dependencies and build cache
+node_modules/
 web/node_modules/
 web/dist/
 web/.vite/

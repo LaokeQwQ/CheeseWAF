@@ -3,10 +3,10 @@ import { Button, Form, Input, Message as ArcoMessage, Select, Space, Switch, Tag
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { BrainCircuit, ChevronLeft, ChevronRight, Eye, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
-import { analyzeEvents, analyzeLogReference, fetchAIConfig, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
-import AIAnalysisMeta, { AIReasoningSummary } from '../../components/AIAnalysisMeta';
-import type { AIConfig, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
+import { BrainCircuit, ChevronLeft, ChevronRight, Eye, KeyRound, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
+import { analyzeEvents, analyzeLogReference, fetchAIConfig, fetchAIModels, fetchLogs, testAIConnection, updateAIConfig } from '../../api/client';
+import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
+import type { AIConfig, AIModelInfo, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
 
 const analysisRanges = [
@@ -26,15 +26,18 @@ const fallback: AIConfig = {
   api_key_set: false,
   model: 'gpt-4o-mini',
   async: true,
+  allow_private_api_base: false,
 };
 
 export default function AIPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
+  const [form] = Form.useForm();
   const [selectedId, setSelectedId] = useState('');
   const [analysisRange, setAnalysisRange] = useState('24h');
   const [eventPage, setEventPage] = useState(1);
   const [analyses, setAnalyses] = useState<Record<string, AttackAnalysis>>({});
+  const [models, setModels] = useState<AIModelInfo[]>([]);
   const { data } = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
   const { data: logs, isLoading } = useQuery({
     queryKey: ['ai-events', analysisRange],
@@ -43,6 +46,9 @@ export default function AIPage() {
     retry: false,
   });
   const config = data ?? fallback;
+  const providerLabel = config.provider === 'anthropic'
+    ? t('ai.providerAnthropic')
+    : t('ai.providerOpenAI');
   const events = useMemo(() => (logs?.items ?? []).filter(isSecurityEvent), [logs?.items]);
   const eventPageCount = Math.max(1, Math.ceil(events.length / AI_EVENT_PAGE_SIZE));
   const eventPageItems = events.slice((eventPage - 1) * AI_EVENT_PAGE_SIZE, eventPage * AI_EVENT_PAGE_SIZE);
@@ -56,6 +62,18 @@ export default function AIPage() {
       setSelectedId(eventKey(events[0]));
     }
   }, [events, selectedId]);
+
+  useEffect(() => {
+    form.setFieldsValue({
+      enabled: config.enabled,
+      provider: config.provider || 'openai',
+      apiBase: config.api_base,
+      apiKey: '',
+      model: config.model,
+      async: config.async,
+      allowPrivateAPIBase: config.allow_private_api_base,
+    });
+  }, [config.enabled, config.provider, config.api_base, config.model, config.async, config.allow_private_api_base, form]);
 
   useEffect(() => {
     setEventPage(1);
@@ -80,6 +98,22 @@ export default function AIPage() {
     onSuccess: () => ArcoMessage.success(t('ai.testOk')),
     onError: (error) => ArcoMessage.error(error.message),
   });
+  const modelsMutation = useMutation({
+    mutationFn: () => {
+      const values = form.getFieldsValue();
+      return fetchAIModels({
+        provider: values.provider || 'openai',
+        api_base: values.apiBase,
+        api_key: values.apiKey,
+        allow_private_api_base: values.allowPrivateAPIBase,
+      });
+    },
+    onSuccess: (result) => {
+      setModels(result.items ?? []);
+      ArcoMessage.success(t('ai.modelsLoaded', { count: result.total ?? result.items?.length ?? 0 }));
+    },
+    onError: (error) => ArcoMessage.error(error.message),
+  });
   const eventAnalysisMutation = useMutation({
     mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id, i18n.language),
     onSuccess: (analysis, entry) => setAnalyses((current) => ({ ...current, [eventKey(entry)]: analysis, [analysis.log_id]: analysis })),
@@ -102,7 +136,7 @@ export default function AIPage() {
   const analyzingEventKey = eventAnalysisMutation.variables ? eventKey(eventAnalysisMutation.variables) : '';
 
   return (
-    <section className="page-surface">
+    <section className="page-surface ai-page">
       <header className="page-header">
         <div>
           <h1>{t('ai.title')}</h1>
@@ -110,15 +144,32 @@ export default function AIPage() {
         </div>
       </header>
 
-      <div className="ai-workspace">
-        <section className="panel">
+      <div className="ai-dashboard-grid">
+        <section className="panel ai-config-panel">
           <div className="panel-heading">
             <h2><PlugZap size={16} /> {t('ai.connection')}</h2>
             <Button icon={<ShieldCheck size={14} />} onClick={() => testMutation.mutate()} loading={testMutation.isPending}>
               {t('ai.test')}
             </Button>
           </div>
+          <div className="ai-config-summary" aria-label={t('ai.connection')}>
+            <div className={config.enabled ? 'ai-config-state ai-config-state-on' : 'ai-config-state'}>
+              <span>{config.enabled ? t('common.enabled') : t('common.disabled')}</span>
+              <strong>{providerLabel}</strong>
+              <em title={config.model || '-'}>{config.model || '-'}</em>
+            </div>
+            <div className="ai-config-summary-item">
+              <span>{t('ai.apiBase')}</span>
+              <strong title={config.api_base || '-'}>{config.api_base || '-'}</strong>
+            </div>
+            <div className="ai-config-summary-item">
+              <span>{t('ai.apiKey')}</span>
+              <strong>{config.api_key_set ? t('ai.keyStored') : t('ai.keyMissing')}</strong>
+            </div>
+          </div>
           <Form
+            className="ai-config-form"
+            form={form}
             key={`ai-${config.enabled}-${config.provider}-${config.api_base}-${config.model}-${config.api_key_set}`}
             layout="vertical"
             initialValues={{
@@ -128,6 +179,7 @@ export default function AIPage() {
               apiKey: config.api_key ?? '',
               model: config.model,
               async: config.async,
+              allowPrivateAPIBase: config.allow_private_api_base,
             }}
             onSubmit={(values) => updateMutation.mutate({
               enabled: values.enabled,
@@ -137,21 +189,47 @@ export default function AIPage() {
               api_key_set: config.api_key_set,
               model: values.model,
               async: values.async,
+              allow_private_api_base: values.allowPrivateAPIBase,
             })}
           >
-            <Form.Item label={t('ai.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-            <Form.Item label={t('ai.provider')} field="provider">
+            <Form.Item className="ai-field-enabled" label={t('ai.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
+            <Form.Item className="ai-field-provider" label={t('ai.provider')} field="provider">
               <Select>
                 <Select.Option value="openai">{t('ai.providerOpenAI')}</Select.Option>
                 <Select.Option value="anthropic">{t('ai.providerAnthropic')}</Select.Option>
               </Select>
             </Form.Item>
-            <Form.Item label={t('ai.apiBase')} field="apiBase"><Input /></Form.Item>
-            <Form.Item label={t('ai.model')} field="model"><Input /></Form.Item>
-            <Form.Item label={t('ai.apiKey')} field="apiKey">
+            <Form.Item className="ai-field-api-base" label={t('ai.apiBase')} field="apiBase"><Input /></Form.Item>
+            <Form.Item className="ai-field-model" label={t('ai.model')} field="model">
+              <Select
+                allowCreate
+                showSearch
+                placeholder={t('ai.modelPlaceholder')}
+                notFoundContent={modelsMutation.isPending ? t('ai.modelsLoading') : t('ai.modelsEmpty')}
+              >
+                {modelOptions(models, config.model).map((model) => (
+                  <Select.Option key={model.id} value={model.id}>
+                    {model.owned_by ? `${model.id} · ${model.owned_by}` : model.id}
+                  </Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+            <Form.Item className="ai-field-api-key" label={t('ai.apiKey')} field="apiKey">
               <Input.Password placeholder={config.api_key_set ? t('ai.keyStored') : ''} />
             </Form.Item>
-            <Form.Item label={t('ai.async')} field="async" triggerPropName="checked"><Switch /></Form.Item>
+            <Form.Item
+              className="ai-field-private-api-base"
+              label={t('ai.allowPrivateAPIBase')}
+              field="allowPrivateAPIBase"
+              triggerPropName="checked"
+              extra={t('ai.allowPrivateAPIBaseHint')}
+            >
+              <Switch />
+            </Form.Item>
+            <Form.Item className="ai-field-async" label={t('ai.async')} field="async" triggerPropName="checked"><Switch /></Form.Item>
+            <Button className="ai-models-button" htmlType="button" icon={<KeyRound size={14} />} onClick={() => modelsMutation.mutate()} loading={modelsMutation.isPending}>
+              {t('ai.fetchModels')}
+            </Button>
             <Button className="ai-config-save" type="primary" htmlType="submit" loading={updateMutation.isPending}>{t('common.save')}</Button>
           </Form>
         </section>
@@ -231,6 +309,50 @@ export default function AIPage() {
                 );
               })}
             </div>
+            <div className="ai-events-mobile-list" aria-busy={isLoading}>
+              {isLoading && Array.from({ length: 4 }).map((_, index) => (
+                <article className="ai-event-mobile-card security-event-skeleton" key={index} />
+              ))}
+              {!isLoading && eventPageItems.length === 0 && <div className="empty-state">{t('ai.noEvents')}</div>}
+              {!isLoading && eventPageItems.map((record) => {
+                const key = eventKey(record);
+                const isSelected = Boolean(selected && eventKey(selected) === key);
+                return (
+                  <article
+                    className={`ai-event-mobile-card${isSelected ? ' ai-event-mobile-card-active' : ''}`}
+                    key={key}
+                    onClick={() => setSelectedId(key)}
+                  >
+                    <header className="ai-event-mobile-head">
+                      <div>
+                        <time dateTime={record.timestamp} title={formatTime(record.timestamp)}>{formatCompactTime(record.timestamp)}</time>
+                        <span>{record.client_ip || '-'}</span>
+                      </div>
+                      <div>
+                        <Tag color={actionColor(record.action)}>{displayAction(record.action, t)}</Tag>
+                        {record.category ? <Tag color="orange">{displayCategory(record.category, t)}</Tag> : <Tag>{t('common.monitor')}</Tag>}
+                      </div>
+                    </header>
+                    <code title={record.uri || '-'}>{record.uri || '-'}</code>
+                    <footer className="ai-event-mobile-actions" onClick={(event) => event.stopPropagation()}>
+                      <Link to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`} className="table-action-link">
+                        <Button size="small" icon={<Eye size={14} />}>{t('logs.detail')}</Button>
+                      </Link>
+                      <Button
+                        size="small"
+                        loading={eventAnalysisMutation.isPending && analyzingEventKey === key}
+                        onClick={() => {
+                          setSelectedId(key);
+                          eventAnalysisMutation.mutate(record);
+                        }}
+                      >
+                        {analyses[key] ? t('ai.reanalyze') : t('ai.run')}
+                      </Button>
+                    </footer>
+                  </article>
+                );
+              })}
+            </div>
             {!isLoading && events.length > AI_EVENT_PAGE_SIZE && (
               <footer className="security-events-pagination">
                 <span>{eventPageStart}-{eventPageEnd} / {events.length}</span>
@@ -253,9 +375,8 @@ export default function AIPage() {
             )}
           </div>
         </section>
-      </div>
 
-      <section className="table-panel ai-event-detail">
+        <section className="panel ai-event-detail">
         <div className="panel-heading">
           <h2><BrainCircuit size={16} /> {t('ai.eventAnalysis')}</h2>
           {selectedAnalysis && <Tag color={riskColor(selectedAnalysis.risk)}>{selectedAnalysis.risk}</Tag>}
@@ -265,12 +386,12 @@ export default function AIPage() {
             <div className="ai-event-card">
               <span>{t('ai.selectedEvent')}</span>
               <strong>{eventKey(selected)}</strong>
-              <code>{selected.method} {selected.uri}</code>
-              <Space wrap>
+              <div className="ai-selected-event-meta">
                 <Tag>{selected.client_ip || '-'}</Tag>
                 <Tag color={actionColor(selected.action)}>{displayAction(selected.action, t)}</Tag>
                 <Tag color="orange">{displayCategory(selected.category, t)}</Tag>
-              </Space>
+              </div>
+              <code>{selected.method} {selected.uri}</code>
               <Button type="primary" loading={eventAnalysisMutation.isPending} onClick={() => eventAnalysisMutation.mutate(selected)}>
                 {selectedAnalysis ? t('ai.reanalyze') : t('ai.run')}
               </Button>
@@ -278,7 +399,10 @@ export default function AIPage() {
             <div className="ai-analysis-card">
               {selectedAnalysis ? (
                 <>
-                  <p>{selectedAnalysis.summary}</p>
+                  <div className="ai-analysis-summary">
+                    <KeyRound size={16} />
+                    <AIAnalysisSummary analysis={selectedAnalysis} />
+                  </div>
                   <AIReasoningSummary analysis={selectedAnalysis} />
                   <div className="ai-analysis-columns">
                     <div>
@@ -300,7 +424,8 @@ export default function AIPage() {
         ) : (
           <div className="empty-state">{t('ai.noEvents')}</div>
         )}
-      </section>
+        </section>
+      </div>
     </section>
   );
 }
@@ -318,6 +443,24 @@ function buildAnalysisWindowQuery(rangeValue: string, limit: number): LogQuery {
 
 function eventKey(entry: LogEntry) {
   return entry.id || entry.trace_id;
+}
+
+function modelOptions(models: AIModelInfo[], currentModel: string) {
+  const seen = new Set<string>();
+  const out: AIModelInfo[] = [];
+  for (const model of models) {
+    const id = String(model.id || '').trim();
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    out.push({ ...model, id });
+  }
+  const current = currentModel.trim();
+  if (current && !seen.has(current)) {
+    out.unshift({ id: current });
+  }
+  return out;
 }
 
 function formatTime(value: string) {

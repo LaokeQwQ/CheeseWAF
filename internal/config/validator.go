@@ -70,6 +70,9 @@ func Validate(cfg *Config) error {
 	if err := validateLoginBackground(cfg.Console.Login.Background); err != nil {
 		return err
 	}
+	if err := validateConsoleMap(cfg.Console.Map); err != nil {
+		return err
+	}
 	if err := validateBlockPage(cfg.BlockPage); err != nil {
 		return err
 	}
@@ -103,6 +106,9 @@ func Validate(cfg *Config) error {
 		}
 		if _, err := url.ParseRequestURI(cfg.AI.APIBase); err != nil {
 			return fmt.Errorf("ai.api_base is invalid: %w", err)
+		}
+		if err := validateAIAPIBaseHost(cfg.AI.APIBase, cfg.AI.AllowPrivateAPIBase); err != nil {
+			return err
 		}
 		if strings.TrimSpace(cfg.AI.Model) == "" {
 			return fmt.Errorf("ai.model is required when ai is enabled")
@@ -377,6 +383,54 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
+func validateAIAPIBaseHost(raw string, allowPrivate bool) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("ai.api_base is invalid: %w", err)
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return fmt.Errorf("ai.api_base must start with http:// or https://")
+	}
+	if allowPrivate {
+		return nil
+	}
+	host := strings.Trim(strings.ToLower(parsed.Hostname()), "[]")
+	if host == "" {
+		return fmt.Errorf("ai.api_base host is required")
+	}
+	switch host {
+	case "localhost", "localhost.localdomain":
+		return fmt.Errorf("ai.api_base points to a private, loopback, link-local, or unspecified host; enable ai.allow_private_api_base only for trusted local model gateways")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isUnsafeAIAPIBaseIP(ip) {
+			return fmt.Errorf("ai.api_base points to a private, loopback, link-local, or unspecified host; enable ai.allow_private_api_base only for trusted local model gateways")
+		}
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil
+	}
+	for _, ip := range ips {
+		if isUnsafeAIAPIBaseIP(ip) {
+			return fmt.Errorf("ai.api_base resolves to a private, loopback, link-local, or unspecified host; enable ai.allow_private_api_base only for trusted local model gateways")
+		}
+	}
+	return nil
+}
+
+func isUnsafeAIAPIBaseIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified()
+}
+
 func validateBlockPage(page BlockPageConfig) error {
 	if strings.TrimSpace(page.TemplateID) == "" {
 		return fmt.Errorf("block_page.template_id is required")
@@ -474,6 +528,53 @@ func validateLoginBackground(background LoginBackgroundConfig) error {
 	return nil
 }
 
+func validateConsoleMap(consoleMap ConsoleMapConfig) error {
+	return validateMapBoundary("console.map.china_boundary", consoleMap.ChinaBoundary)
+}
+
+func validateMapBoundary(prefix string, boundary MapBoundaryConfig) error {
+	sourceType := strings.ToLower(strings.TrimSpace(boundary.SourceType))
+	if sourceType == "" {
+		sourceType = "file"
+	}
+	switch sourceType {
+	case "file", "url":
+	default:
+		return fmt.Errorf("%s.source_type must be file or url", prefix)
+	}
+	if !boundary.Enabled && strings.TrimSpace(boundary.Source) == "" {
+		return nil
+	}
+	source := strings.TrimSpace(boundary.Source)
+	if source == "" {
+		return fmt.Errorf("%s.source is required when boundary rendering is enabled", prefix)
+	}
+	if strings.TrimSpace(boundary.License) == "" && strings.TrimSpace(boundary.ReviewID) == "" {
+		return fmt.Errorf("%s.license or %s.review_id is required before rendering administrative boundaries", prefix, prefix)
+	}
+	if sourceType == "url" {
+		parsed, err := url.Parse(source)
+		if err != nil {
+			return fmt.Errorf("%s.source is invalid: %w", prefix, err)
+		}
+		if parsed.User != nil {
+			return fmt.Errorf("%s.source must not include credentials", prefix)
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("%s.source URL must include a host", prefix)
+		}
+		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && boundary.AllowInsecure) {
+			return fmt.Errorf("%s.source URL must use https unless allow_insecure is explicitly enabled", prefix)
+		}
+		return nil
+	}
+	lower := strings.ToLower(source)
+	if !(strings.HasSuffix(lower, ".geojson") || strings.HasSuffix(lower, ".json")) {
+		return fmt.Errorf("%s.source file must be .geojson or .json", prefix)
+	}
+	return nil
+}
+
 func validateIPEntry(entry string) error {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
@@ -499,7 +600,7 @@ func validateIPAccessRule(rule IPAccessRuleConfig) error {
 		return fmt.Errorf("ip access rule must define id")
 	}
 	action := strings.ToLower(strings.TrimSpace(rule.Action))
-	if action != "allow" && action != "block" {
+	if action != "allow" && action != "block" && action != "monitor" {
 		return fmt.Errorf("ip access rule %q has invalid action %q", rule.ID, rule.Action)
 	}
 	scope := strings.ToLower(strings.TrimSpace(rule.Scope))
