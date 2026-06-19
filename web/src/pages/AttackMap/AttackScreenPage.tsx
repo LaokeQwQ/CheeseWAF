@@ -1,4 +1,4 @@
-import { Suspense, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -25,14 +25,17 @@ export default function AttackScreenPage() {
     queryFn: () => fetchLogs({ limit: 1000 }),
     refetchInterval: screenRefreshMs,
     retry: false,
+    placeholderData: (previous) => previous,
   });
   const { data: monitor } = useQuery({
     queryKey: ['attack-screen-monitor'],
     queryFn: fetchMonitorSummary,
     refetchInterval: screenRefreshMs,
     retry: false,
+    placeholderData: (previous) => previous,
   });
   const entries = logs?.items ?? [];
+  const initialLoading = !logs && isFetching;
   const attackEntries = useMemo(() => entries.filter(isAttackEntry), [entries]);
   const visibleEntries = useMemo(() => filterEntriesByTimeline(entries, timelinePercent), [entries, timelinePercent]);
   const visibleAttackEntries = useMemo(() => visibleEntries.filter(isAttackEntry), [visibleEntries]);
@@ -82,7 +85,7 @@ export default function AttackScreenPage() {
       <section className="attack-screen-main">
         <header className="attack-screen-topbar">
           <span className="attack-screen-live"><i /> {t('attackMap.live')}</span>
-          <strong>{new Date().toLocaleTimeString()}</strong>
+          <LiveClock />
           <span>{monitor?.alerts?.length ? displaySeverity(monitor.alerts[0]?.severity, t) : t('common.healthy')}</span>
           <button type="button" onClick={() => refetch()} disabled={isFetching}>
             <RefreshCcw size={15} />
@@ -94,16 +97,18 @@ export default function AttackScreenPage() {
           <div className="attack-screen-left attack-screen-overlay attack-screen-overlay-left">
             <section className="attack-screen-panel">
               <h2>{t('dashboard.threatMix')}</h2>
-              <div className="attack-screen-stats">
-                <Metric label={t('attackMap.attacks')} value={totalAttacks} />
-                <Metric label={t('attackMap.perMinute')} value={perMinute} />
-                <Metric label={t('attackMap.blocked')} value={blocked} />
-                <Metric label={t('attackMap.critical')} value={critical} />
-              </div>
+              {initialLoading ? <PanelLoading label={t('common.loading')} /> : (
+                <div className="attack-screen-stats">
+                  <Metric label={t('attackMap.attacks')} value={totalAttacks} />
+                  <Metric label={t('attackMap.perMinute')} value={perMinute} />
+                  <Metric label={t('attackMap.blocked')} value={blocked} />
+                  <Metric label={t('attackMap.critical')} value={critical} />
+                </div>
+              )}
             </section>
             <section className="attack-screen-panel">
               <h2>{t('attackMap.attackTypes')}</h2>
-              <BarList items={attackTypes} />
+              {initialLoading ? <PanelLoading label={t('common.loading')} /> : <BarList items={attackTypes} emptyLabel={t('common.noData')} />}
             </section>
           </div>
 
@@ -124,7 +129,7 @@ export default function AttackScreenPage() {
           <div className="attack-screen-right attack-screen-overlay attack-screen-overlay-right">
             <section className="attack-screen-panel">
               <h2>{t('attackMap.sourceCountries')}</h2>
-              <CountryList regions={sourceCountries} t={t} />
+              {initialLoading ? <PanelLoading label={t('common.loading')} /> : <CountryList regions={sourceCountries} t={t} emptyLabel={t('common.noData')} />}
             </section>
             <section className="attack-screen-panel attack-screen-level">
               <h2>{t('attackMap.threatLevel')}</h2>
@@ -150,6 +155,15 @@ export default function AttackScreenPage() {
   );
 }
 
+function LiveClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <strong>{now.toLocaleTimeString()}</strong>;
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
   return (
     <div>
@@ -159,9 +173,18 @@ function Metric({ label, value }: { label: string; value: number }) {
   );
 }
 
-function BarList({ items }: { items: Array<{ label: string; value: number; percent: number }> }) {
+function PanelLoading({ label }: { label: string }) {
+  return (
+    <div className="attack-screen-loading" aria-busy="true">
+      <i />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function BarList({ items, emptyLabel }: { items: Array<{ label: string; value: number; percent: number }>; emptyLabel: string }) {
   if (items.length === 0) {
-    return <div className="attack-screen-empty">0</div>;
+    return <div className="attack-screen-empty">{emptyLabel}</div>;
   }
   return (
     <div className="attack-screen-bars">
@@ -176,9 +199,9 @@ function BarList({ items }: { items: Array<{ label: string; value: number; perce
   );
 }
 
-function CountryList({ regions, t }: { regions: AttackRegion[]; t: (key: string, options?: Record<string, unknown>) => string }) {
+function CountryList({ regions, t, emptyLabel }: { regions: AttackRegion[]; t: (key: string, options?: Record<string, unknown>) => string; emptyLabel: string }) {
   if (regions.length === 0) {
-    return <div className="attack-screen-empty">0</div>;
+    return <div className="attack-screen-empty">{emptyLabel}</div>;
   }
   const max = Math.max(...regions.map((region) => region.attacks), 1);
   return (

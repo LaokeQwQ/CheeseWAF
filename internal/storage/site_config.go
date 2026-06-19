@@ -18,10 +18,36 @@ func SiteFromConfig(site config.SiteConfig) Site {
 		Upstreams:   upstreams,
 		ListenPort:  site.ListenPort,
 		LoadBalance: site.LoadBalance,
+		EnableSSL:   site.EnableSSL,
+		CertFile:    site.CertFile,
+		KeyFile:     site.KeyFile,
 		WAFEnabled:  site.WAF.Enabled,
 		WAFMode:     site.WAF.Mode,
 		Enabled:     site.Enabled,
 		Advanced: SiteAdvanced{
+			Certificate: CertificateConfig{
+				Mode:          site.Certificate.Mode,
+				CertPEM:       site.Certificate.CertPEM,
+				KeyPEM:        site.Certificate.KeyPEM,
+				AutoRenew:     site.Certificate.AutoRenew,
+				ForceHTTPS:    site.Certificate.ForceHTTPS,
+				HSTS:          site.Certificate.HSTS,
+				MinTLSVersion: site.Certificate.MinTLSVersion,
+				ACME: SiteACMEConfig{
+					ProviderID:    site.Certificate.ACME.ProviderID,
+					DNSAPI:        site.Certificate.ACME.DNSAPI,
+					AccountEmail:  site.Certificate.ACME.AccountEmail,
+					Server:        site.Certificate.ACME.Server,
+					KeyType:       site.Certificate.ACME.KeyType,
+					ACMESHPath:    site.Certificate.ACME.ACMESHPath,
+					Home:          site.Certificate.ACME.Home,
+					CertDir:       site.Certificate.ACME.CertDir,
+					ReloadCommand: site.Certificate.ACME.ReloadCommand,
+					Domains:       cloneStrings(site.Certificate.ACME.Domains),
+					Env:           cloneStringMap(site.Certificate.ACME.Env),
+					Notify:        site.Certificate.ACME.Notify,
+				},
+			},
 			Origin: OriginConfig{
 				ProxyTimeout:  site.WAF.Performance.ProxyTimeout.String(),
 				MaxBodyBytes:  site.WAF.Performance.MaxBodyBytes,
@@ -78,15 +104,41 @@ func SiteToConfig(site Site) config.SiteConfig {
 		mode = "block"
 	}
 	timeout := parseDuration(site.Advanced.Origin.ProxyTimeout, 30*time.Second)
-	return config.SiteConfig{
-		ID:          site.ID,
-		Name:        site.Name,
-		Domains:     site.Domains,
-		Upstreams:   upstreams,
-		ListenPort:  site.ListenPort,
-		LoadBalance: site.LoadBalance,
-		Enabled:     site.Enabled,
-		WAF: config.WAFConfig{
+		return config.SiteConfig{
+			ID:          site.ID,
+			Name:        site.Name,
+			Domains:     site.Domains,
+			Upstreams:   upstreams,
+			ListenPort:  site.ListenPort,
+			LoadBalance: site.LoadBalance,
+			Enabled:     site.Enabled,
+			EnableSSL:   site.EnableSSL,
+			CertFile:    site.CertFile,
+			KeyFile:     site.KeyFile,
+			Certificate: config.SiteCertificateConfig{
+				Mode:          site.Advanced.Certificate.Mode,
+				CertPEM:       site.Advanced.Certificate.CertPEM,
+				KeyPEM:        site.Advanced.Certificate.KeyPEM,
+				AutoRenew:     site.Advanced.Certificate.AutoRenew,
+				ForceHTTPS:    site.Advanced.Certificate.ForceHTTPS,
+				HSTS:          site.Advanced.Certificate.HSTS,
+				MinTLSVersion: site.Advanced.Certificate.MinTLSVersion,
+				ACME: config.SiteACMEConfig{
+					ProviderID:    site.Advanced.Certificate.ACME.ProviderID,
+					DNSAPI:        site.Advanced.Certificate.ACME.DNSAPI,
+					AccountEmail:  site.Advanced.Certificate.ACME.AccountEmail,
+					Server:        site.Advanced.Certificate.ACME.Server,
+					KeyType:       site.Advanced.Certificate.ACME.KeyType,
+					ACMESHPath:    site.Advanced.Certificate.ACME.ACMESHPath,
+					Home:          site.Advanced.Certificate.ACME.Home,
+					CertDir:       site.Advanced.Certificate.ACME.CertDir,
+					ReloadCommand: site.Advanced.Certificate.ACME.ReloadCommand,
+					Domains:       cloneStrings(site.Advanced.Certificate.ACME.Domains),
+					Env:           cloneStringMap(site.Advanced.Certificate.ACME.Env),
+					Notify:        site.Advanced.Certificate.ACME.Notify,
+				},
+			},
+			WAF: config.WAFConfig{
 			Enabled: site.WAFEnabled,
 			Mode:    mode,
 			SemanticEngines: config.SemanticEngineSwitches{
@@ -162,6 +214,17 @@ func cloneStrings(values []string) []string {
 	}
 	out := make([]string, len(values))
 	copy(out, values)
+	return out
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
 	return out
 }
 

@@ -107,18 +107,24 @@ export default function UpdatesPage() {
             <Tag color={system.update.ota.enabled ? 'green' : 'gray'}>{system.update.ota.enabled ? t('system.enabled') : t('system.disabled')}</Tag>
           </div>
           <div className="updates-runtime-form">
-            <label className="switch-line updates-main-switch"><span>{t('updates.ota')}</span><Switch checked={system.update.ota.enabled} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
-            <label className="wide-field"><span>{t('system.updateServer')}</span><Input value={updateServer} placeholder={OFFICIAL_OTA_SERVER} onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
-            <div className="updates-official-note wide-field">
-              <Tag color="blue">{t('updates.officialServer')}</Tag>
-              <span>{OFFICIAL_OTA_SERVER}</span>
-            </div>
+            <label className="switch-line updates-main-switch"><span>{t('updates.enableAutoUpdate')}</span><Switch checked={system.update.ota.enabled} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
+            <label className="wide-field"><span>{t('system.updateServer')}</span>
+              <Select value={updateServer || OFFICIAL_OTA_SERVER} onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server: String(server) } } })}>
+                <Select.Option value={OFFICIAL_OTA_SERVER}>{t('updates.officialServer')} ({OFFICIAL_OTA_SERVER})</Select.Option>
+                <Select.Option value="https://git.laoker.cc/Laoke/CheeseWAF/releases">{t('updates.forgejoServer')}</Select.Option>
+                <Select.Option value="https://github.com/LaokeQwQ/CheeseWAF/releases">{t('updates.githubServer')}</Select.Option>
+                <Select.Option value="__custom__">{t('updates.customServer')}</Select.Option>
+              </Select>
+            </label>
+            {updateServer !== OFFICIAL_OTA_SERVER && updateServer !== 'https://git.laoker.cc/Laoke/CheeseWAF/releases' && updateServer !== 'https://github.com/LaokeQwQ/CheeseWAF/releases' && (
+              <label className="wide-field"><span>{t('updates.customURL')}</span><Input value={updateServer} placeholder="https://" onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
+            )}
             <label>
               <span>{t('system.channel')}</span>
               <Select value={system.update.ota.channel} onChange={(channel) => patchSystem({ update: { ota: { ...system.update.ota, channel: channel as string } } })}>
-                <Select.Option value="stable">stable</Select.Option>
-                <Select.Option value="canary">canary</Select.Option>
-                <Select.Option value="dev">dev</Select.Option>
+                <Select.Option value="stable">{t('updates.channelStable')}</Select.Option>
+                <Select.Option value="canary">{t('updates.channelCanary')}</Select.Option>
+                <Select.Option value="dev">{t('updates.channelDev')}</Select.Option>
               </Select>
             </label>
             <label><span>{t('system.checkIntervalHours')}</span><InputNumber value={durationSeconds(system.update.ota.check_interval) / 3600} min={1} max={168} onChange={(value) => patchSystem({ update: { ota: { ...system.update.ota, check_interval: secondsToDuration(Number(value || 1) * 3600) } } })} /></label>

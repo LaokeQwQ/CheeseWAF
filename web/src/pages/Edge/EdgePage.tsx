@@ -218,9 +218,9 @@ export default function EdgePage() {
               dataIndex: 'operation',
               render: (_: string, record: HeaderRule, index: number) => (
                 <Select value={record.operation} onChange={(value) => updateHeader(index, { operation: value as HeaderRule['operation'] })}>
-                  <Select.Option value="set">set</Select.Option>
-                  <Select.Option value="add">add</Select.Option>
-                  <Select.Option value="delete">delete</Select.Option>
+                  <Select.Option value="set">{t('edge.operationSet')}</Select.Option>
+                  <Select.Option value="add">{t('edge.operationAppend')}</Select.Option>
+                  <Select.Option value="delete">{t('edge.operationRemove')}</Select.Option>
                 </Select>
               ),
             },
