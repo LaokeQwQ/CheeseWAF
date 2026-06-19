@@ -399,6 +399,21 @@ func ensureSiteDefaults(site *Site) {
 	if site.Advanced.Certificate.MinTLSVersion == "" {
 		site.Advanced.Certificate.MinTLSVersion = "1.2"
 	}
+	if site.Advanced.Certificate.ACME.Env == nil {
+		site.Advanced.Certificate.ACME.Env = map[string]string{}
+	}
+	if site.Advanced.Certificate.ACME.KeyType == "" {
+		site.Advanced.Certificate.ACME.KeyType = "ec-256"
+	}
+	if site.Advanced.Certificate.ACME.Server == "" {
+		site.Advanced.Certificate.ACME.Server = "letsencrypt"
+	}
+	if site.Advanced.Certificate.ACME.ACMESHPath == "" {
+		site.Advanced.Certificate.ACME.ACMESHPath = "acme.sh"
+	}
+	if len(site.Advanced.Certificate.ACME.Domains) == 0 {
+		site.Advanced.Certificate.ACME.Domains = append([]string(nil), site.Domains...)
+	}
 	if site.Advanced.Origin.Scheme == "" {
 		site.Advanced.Origin.Scheme = "http"
 	}

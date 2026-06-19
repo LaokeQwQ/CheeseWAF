@@ -44,6 +44,87 @@ export type SiteCertificateConfig = {
   force_https: boolean;
   hsts: boolean;
   min_tls_version: string;
+  acme: SiteACMEConfig;
+};
+
+export type SiteACMEConfig = {
+  provider_id: string;
+  dns_api: string;
+  account_email: string;
+  server: string;
+  key_type: string;
+  acme_sh_path: string;
+  home: string;
+  cert_dir: string;
+  reload_command: string;
+  domains: string[];
+  env: Record<string, string>;
+  notify: boolean;
+  last_status?: string;
+  last_run_id?: string;
+  last_issued_at?: string;
+  expires_at?: string;
+};
+
+export type ACMEDNSProvider = {
+  id: string;
+  name: string;
+  api: string;
+  env?: Record<string, string>;
+  enabled: boolean;
+};
+
+export type ACMEEvent = {
+  step: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | string;
+  message?: string;
+  output?: string;
+  timestamp: string;
+};
+
+export type ACMEIssueRequest = {
+  provider_id: string;
+  dns_api: string;
+  dns_env: Record<string, string>;
+  account_email: string;
+  server: string;
+  key_type: string;
+  acme_sh_path: string;
+  home: string;
+  cert_dir: string;
+  reload_cmd: string;
+  auto_renew: boolean;
+  notify: boolean;
+};
+
+export type ACMEIssueResult = {
+  run_id: string;
+  site_id: string;
+  domains: string[];
+  cert_file: string;
+  key_file: string;
+  fullchain: string;
+  key_type: string;
+  server: string;
+  dns_api: string;
+  events: ACMEEvent[];
+  issued_at: string;
+  renew_after?: string;
+  auto_renew: boolean;
+  notify: boolean;
+  elapsed_ms: number;
+  provider_id?: string;
+  primary_name: string;
+};
+
+export type ACMEIssueResponse = {
+  site: Site;
+  result: ACMEIssueResult;
+  events: ACMEEvent[];
+  cert: { cert_file: string; key_file: string };
+  issued: boolean;
+  acme: SiteACMEConfig;
+  summary: { site_id: string; domains: string[]; run_id: string };
 };
 
 export type SiteOriginConfig = {
@@ -166,6 +247,8 @@ export type ProtectionConfig = {
     slider_captcha_piece: number;
     slider_captcha_tolerance: number;
     slider_captcha_min_drag: number | string;
+    slider_captcha_track_required: boolean;
+    captcha_mobile_type: 'pow' | 'image' | string;
     challenge_difficulty: number;
     altcha_max_number: number;
     altcha_header_name: string;
@@ -270,12 +353,72 @@ export type AIConfig = {
   model: string;
   async: boolean;
   allow_private_api_base: boolean;
+  assistant?: AIModelConfig;
+  reasoning?: AIModelConfig;
+  self_learning?: AISelfLearningConfig;
+  knowledge?: AIKnowledgeConfig;
+};
+
+export type AIModelConfig = {
+  provider: 'openai' | 'anthropic' | string;
+  api_base: string;
+  api_key?: string;
+  api_key_set: boolean;
+  model: string;
+  allow_private_api_base: boolean;
+};
+
+export type AISelfLearningConfig = {
+  enabled: boolean;
+  auto_apply: boolean;
+  dry_run: boolean;
+  interval: number | string;
+  at: string;
+  min_confidence: number;
+  min_events: number;
+  max_events: number;
+  max_rules_per_run: number;
+  action: 'block' | 'challenge' | 'log' | string;
+};
+
+export type AIKnowledgeConfig = {
+  enabled: boolean;
+  builtin: boolean;
+  max_snippets: number;
 };
 
 export type AIModelInfo = {
   id: string;
   owned_by?: string;
   created?: number;
+};
+
+export type AISelfLearningReport = {
+  started_at: string;
+  finished_at: string;
+  dry_run: boolean;
+  auto_apply: boolean;
+  window_start: string;
+  window_end: string;
+  scanned: number;
+  groups: number;
+  candidates: AISelfLearningCandidate[];
+  applied: Rule[];
+  skipped: Array<{ candidate: AISelfLearningCandidate; reason: string }>;
+};
+
+export type AISelfLearningCandidate = {
+  site_id: string;
+  category: string;
+  location: string;
+  pattern: string;
+  action: string;
+  severity: string;
+  confidence: number;
+  event_count: number;
+  evidence_ids: string[];
+  reason: string;
+  ai_reviewed: boolean;
 };
 
 export type AttackAnalysis = {
@@ -547,6 +690,7 @@ export type LoginSliderCAPTCHAPayload = {
   token: string;
   x: number;
   drag_ms: number;
+  track?: string;
 };
 
 export type LoginCAPTCHAChallenge = {
@@ -735,6 +879,18 @@ export type SystemConfig = {
       public_key: string;
     };
   };
+  acme: {
+    enabled: boolean;
+    acme_sh_path: string;
+    home: string;
+    server: string;
+    account_email: string;
+    cert_dir: string;
+    key_type: string;
+    reload_command: string;
+    dns_providers: ACMEDNSProvider[];
+    notify: boolean;
+  };
   vulnerability: {
     enabled: boolean;
     feeds: Array<{
@@ -789,6 +945,7 @@ export type MonitorSnapshot = {
   generated_at: string;
   uptime_seconds: number;
   goroutines: number;
+  process_count?: number;
   memory_alloc: number;
   host: HostStats;
   sites: number;

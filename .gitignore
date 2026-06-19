@@ -30,6 +30,7 @@ sqlmap-output/
 /logs/
 /run/
 /tmp/
+/.tmp/
 /temp/
 /certs/
 *.log
@@ -52,6 +53,8 @@ configs/versions/
 task.md
 fix_task.md
 implementation_plan.md
+deepseek_work.md
+engine_upgrade.md
 *.private.md
 *.local.md
 
@@ -59,8 +62,10 @@ implementation_plan.md
 node_modules/
 web/node_modules/
 web/dist/
+web-dist.tar.gz
 web/.vite/
 web/coverage/
+web/tmp/
 web/*.log
 
 # Go workspace and dependency cache

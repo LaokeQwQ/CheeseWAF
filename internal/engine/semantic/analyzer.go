@@ -89,7 +89,7 @@ func (a *Analyzer) Detect(_ context.Context, reqCtx *engine.RequestContext) (*en
 		report.Inputs = append(report.Inputs, candidate.input)
 		for _, hit := range a.analyzeCandidate(candidate) {
 			report.Hits = append(report.Hits, hit)
-			if best == nil || hit.Confidence > best.Confidence || hit.Severity > best.Severity {
+			if best == nil || betterHit(hit, *best) {
 				hit := hit
 				best = &hit
 			}
@@ -126,6 +126,94 @@ func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
 		}
 	}
 	return hits
+}
+
+func betterHit(candidate, current Hit) bool {
+	candidatePriority := categoryPriority(candidate)
+	currentPriority := categoryPriority(current)
+	if candidatePriority != currentPriority {
+		return candidatePriority > currentPriority
+	}
+	if candidate.Confidence != current.Confidence {
+		return candidate.Confidence > current.Confidence
+	}
+	return candidate.Severity > current.Severity
+}
+
+func categoryPriority(hit Hit) int {
+	payload := normalize(hit.Payload)
+	decodedPayload := normalize(decoder.Decode(hit.Payload).Text)
+	payloadContext := payload + " " + decodedPayload
+	context := strings.ToLower(hit.Syntax + " " + hit.Semantics)
+	switch hit.Category {
+	case "xxe":
+		if strings.Contains(payload, "<!doctype") || strings.Contains(payload, "<!entity") {
+			return 95
+		}
+		return 70
+	case "ssrf":
+		if strings.Contains(payload, `"url"`) ||
+			strings.Contains(payload, "url=") ||
+			strings.Contains(hit.Name, "url") ||
+			strings.Contains(hit.Name, "uri") ||
+			strings.Contains(payload, "/fetch") ||
+			strings.Contains(context, "server-side request") ||
+			strings.Contains(context, "fetch") {
+			return 90
+		}
+		return 65
+	case "rce":
+		if strings.Contains(payloadContext, "xp_cmdshell") ||
+			strings.Contains(payloadContext, "into outfile") ||
+			strings.Contains(payloadContext, "load_file") ||
+			strings.Contains(context, "sql server") ||
+			strings.Contains(context, "database") {
+			return 74
+		}
+		if rceExecutionSink(hit.Name) {
+			return 85
+		}
+		if strings.Contains(payload, "cmd=") ||
+			strings.Contains(payload, "command=") ||
+			strings.Contains(payload, "exec=") ||
+			rceWhitespaceEvasion.MatchString(payload) ||
+			rceInterpreterInline.MatchString(payload) ||
+			rcePowerShellSideFx.MatchString(payload) ||
+			rceDownloadExecChain.MatchString(payload) ||
+			rceReverseShellPrimitive.MatchString(payload) ||
+			strings.Contains(context, "download-to-shell") ||
+			strings.Contains(context, "reverse connection") ||
+			strings.Contains(context, "interpreter inline") {
+			return 85
+		}
+		return 55
+	case "lfi":
+		if strings.Contains(context, "file") ||
+			strings.Contains(payload, "../") ||
+			strings.Contains(payload, `..\`) ||
+			lfiSensitiveTarget.MatchString(payload) ||
+			lfiFileReadSink.MatchString(payload) ||
+			lfiCommandReadSink.MatchString(payload) {
+			return 80
+		}
+	case "sqli":
+		if strings.Contains(context, "database") ||
+			strings.Contains(context, "union select") ||
+			strings.Contains(context, "query composition") ||
+			strings.Contains(context, "boolean predicate") ||
+			strings.Contains(context, "query grammar") ||
+			strings.Contains(context, "sql") {
+			return 75
+		}
+		return 75
+	case "ssti":
+		return 60
+	case "xss":
+		return 50
+	case "nosqli":
+		return 45
+	}
+	return 0
 }
 
 func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
@@ -350,7 +438,6 @@ func decodeUnicodeEscapes(raw string) (string, bool) {
 
 func compactSQL(raw string) string {
 	text := executableSQLText(raw)
-	text = sqlBlockComment.ReplaceAllString(text, "")
 	text = sqlLineComment.ReplaceAllString(text, "")
 	text = strings.ReplaceAll(text, "#", "")
 	var b strings.Builder
@@ -364,7 +451,8 @@ func compactSQL(raw string) string {
 
 func executableSQLText(raw string) string {
 	text := normalize(raw)
-	return sqlMySQLVersionComment.ReplaceAllString(text, " $1 ")
+	text = sqlMySQLVersionComment.ReplaceAllString(text, " $1 ")
+	return sqlKeywordBridgeComment.ReplaceAllString(text, "$1$2")
 }
 
 func guessCategories(raw string) []string {
@@ -372,16 +460,16 @@ func guessCategories(raw string) []string {
 	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"}
 	scores := map[string]int{}
 	sqlCompact := compactSQL(text)
-	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(text, "procedure analyse") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlOrderByInference.MatchString(text) || sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) {
+	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "or'") || strings.Contains(text, "or\"") || strings.Contains(text, "sleep(") || strings.Contains(text, "benchmark(") || strings.Contains(text, "pg_sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(text, "procedure analyse") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) || sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) || sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) || sqlMetadataObject.MatchString(text) || sqlSubquery.MatchString(text) || sqlCaseWhen.MatchString(text) || sqlFileData.MatchString(text) {
 		scores["sqli"] += 2
 	}
 	if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") || strings.Contains(text, "<meta") || strings.Contains(text, "expression(") {
 		scores["xss"] += 2
 	}
-	if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") {
+	if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) {
 		scores["rce"] += 2
 	}
-	if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "/etc/passwd") || strings.Contains(text, "/proc/self/environ") || strings.Contains(text, "boot.ini") || strings.Contains(text, "win.ini") || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, ".env") || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") {
+	if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") {
 		scores["lfi"] += 2
 	}
 	if strings.Contains(text, "<!doctype") || strings.Contains(text, "<!entity") {
@@ -429,35 +517,50 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 }
 
 var (
-	sqlBooleanTautology    = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
-	sqlTimeFunction        = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
-	sqlComment             = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
-	sqlDangerousFunc       = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
-	sqlErrorFunction       = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name)\s*\(`)
-	sqlStringFunction      = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
-	sqlComparison          = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
-	sqlOrderByInference    = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
-	sqlHavingInference     = regexp.MustCompile(`(?i)\bhaving\s+(?:\d+|'[^']*'|"[^"]*")\s*=\s*(?:\d+|'[^']*'|"[^"]*")\s*(?:--|#|/\*)`)
-	sqlRegexProbe          = regexp.MustCompile(`(?i)\b(?:rlike|regexp|like)\s+(?:binary\s+)?(?:0x[0-9a-f]+|'[^']*'|"[^"]*")`)
-	sqlProcedureAnalyse    = regexp.MustCompile(`(?i)\bprocedure\s+analyse\s*\(`)
-	sqlMySQLVersionComment = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
-	xssEventPattern        = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
-	unicodeEscapePattern   = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
-	nosqlOperatorToken     = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
-	nosqlJSBehavior        = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.)`)
-	nosqlWideRegex         = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
-	nosqlOperatorNames     = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
-	sstiTemplateExpression = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|<%=?\s*.*?%>)`)
-	sstiArithmeticProbe    = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
-	sstiDangerousBehavior  = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime)`)
-	sqlBlockComment        = regexp.MustCompile(`(?is)/\*.*?\*/`)
-	sqlLineComment         = regexp.MustCompile(`(?m)--[^\r\n]*`)
-	rceShellControl        = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
-	rceWhitespaceEvasion   = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
-	rcePowerShellSideFx    = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b`)
-	rceEncodedPowerShell   = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,160}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{12,}`)
-	rceInterpreterInline   = regexp.MustCompile(`(?i)(?:^|[=&\s;|])(?:bash|sh|zsh|dash|ksh)\s+-c\s+['"]?(?:id|whoami|cat|curl|wget|uname|nc|ncat|python3?|perl|php|ruby|node|powershell|pwsh)\b|(?:^|[=&\s;|])cmd(?:\.exe)?\s*/c\s+(?:whoami|id|dir|type|powershell|certutil|curl|wget|ping|nslookup)\b|(?:python3?|perl|php|ruby|node)\s+(?:-c|-e|-r)\b`)
-	rceDownloadExecChain   = regexp.MustCompile(`(?i)(?:curl|wget|fetch)\s+[^\r\n|;&]+(?:\||;|&&)\s*(?:sh|bash|zsh|dash|ksh|python3?|php|perl|ruby|node)\b`)
+	sqlBooleanTautology           = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
+	sqlEmptyStringTautology       = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*(?:''|""|'[^']*'|"[^"]*"|['"])\s*=\s*(?:''|""|'[^']*'|"[^"]*"|['"])`)
+	sqlQuotedOrPredicate          = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']*'|"[^"]*"|[^\s]{1,64})`)
+	sqlTimeFunction               = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
+	sqlComment                    = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
+	sqlDangerousFunc              = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
+	sqlErrorFunction              = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name)\s*\(`)
+	sqlStringFunction             = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
+	sqlComparison                 = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
+	sqlOrderByInference           = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
+	sqlHavingInference            = regexp.MustCompile(`(?i)\bhaving\s+(?:\d+|'[^']*'|"[^"]*")\s*=\s*(?:\d+|'[^']*'|"[^"]*")\s*(?:--|#|/\*)`)
+	sqlRegexProbe                 = regexp.MustCompile(`(?i)\b(?:rlike|regexp|like)\s+(?:binary\s+)?(?:0x[0-9a-f]+|'[^']*'|"[^"]*")`)
+	sqlProcedureAnalyse           = regexp.MustCompile(`(?i)\bprocedure\s+analyse\s*\(`)
+	sqlMetadataObject             = regexp.MustCompile(`(?i)\b(?:information_schema|pg_catalog|pg_shadow|pg_group|sysibm|syscat|sysobjects|syscolumns|sysusers|master\.\.|sys\.|sqlite_master|mysql\.user|@@(?:version|datadir|hostname|basedir)|current\s+user|session_user|system_user)\b`)
+	sqlSubquery                   = regexp.MustCompile(`(?is)\(\s*select\b.+?\bfrom\b.+?\)`)
+	sqlCaseWhen                   = regexp.MustCompile(`(?is)\bcase\s+when\b.+?\bthen\b.+?\belse\b.+?\bend\b`)
+	sqlSelectFrom                 = regexp.MustCompile(`(?is)\bselect\b.{0,240}\bfrom\b`)
+	sqlFileData                   = regexp.MustCompile(`(?i)\b(?:load\s+data\s+infile|load_file\s*\(|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
+	sqlMySQLVersionComment        = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
+	sqlKeywordBridgeComment       = regexp.MustCompile(`(?i)\b([a-z]{2,8})/\*.*?\*/([a-z]{2,8})\b`)
+	xssEventPattern               = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
+	unicodeEscapePattern          = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
+	lfiEncodedTraversal           = regexp.MustCompile(`(?i)(?:%25)*%2e(?:%25)*%2e|(?:%25)*%5c|(?:%25)*%2f|%c0%af|%25c0%25af|\.{4,}[/\\]+`)
+	lfiDotEnvTarget               = regexp.MustCompile(`(?i)(?:^|[/\\])\.env(?:$|[?#.]|%00|%23)`)
+	lfiSensitiveTarget            = regexp.MustCompile(`(?i)(?:^|[/\\])(?:etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|issue|motd|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|root/\.bash_history|home/[^/\\]+/\.ssh/(?:id_rsa|id_dsa|authorized_keys)|var/log/(?:syslog|auth\.log|nginx/access\.log|nginx/error\.log|apache2/access\.log|apache2/error\.log|httpd-access\.log)|winnt/system32/cmd\.exe|windows/(?:win\.ini|system32/drivers/etc/hosts)|boot\.ini|web-inf/web\.xml|meta-inf/manifest\.mf|\.htaccess|_config\.php|config\.php|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|wp-config\.php|dump\.sql|database\.sql|id_rsa)(?:$|[?#\x00.]|%00|%23)`)
+	nosqlOperatorToken            = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
+	nosqlJSBehavior               = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.)`)
+	nosqlWideRegex                = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
+	nosqlOperatorNames            = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
+	sstiTemplateExpression        = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|<%=?\s*.*?%>)`)
+	sstiArithmeticProbe           = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
+	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime)`)
+	sqlBlockComment               = regexp.MustCompile(`(?is)/\*.*?\*/`)
+	sqlLineComment                = regexp.MustCompile(`(?m)--[^\r\n]*`)
+	rceShellControl               = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
+	rceWhitespaceEvasion          = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
+	rcePowerShellSideFx           = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b`)
+	rceEncodedPowerShell          = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,160}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{12,}`)
+	rceInterpreterInline          = regexp.MustCompile(`(?i)(?:^|[=&\s;|])(?:bash|sh|zsh|dash|ksh)\s+-c\s+['"]?(?:id|whoami|cat|curl|wget|uname|nc|ncat|python3?|perl|php|ruby|node|powershell|pwsh)\b|(?:^|[=&\s;|])cmd(?:\.exe)?\s*/c\s+(?:whoami|id|dir|type|powershell|certutil|curl|wget|ping|nslookup)\b|(?:python3?|perl|php|ruby|node)\s+(?:-c|-e|-r)\b`)
+	rceDownloadExecChain          = regexp.MustCompile(`(?i)(?:curl|wget|fetch)\s+[^\r\n|;&]+(?:\||;|&&)\s*(?:sh|bash|zsh|dash|ksh|python3?|php|perl|ruby|node)\b`)
+	rceReverseShellPrimitive      = regexp.MustCompile(`(?i)(?:/dev/tcp/|/dev/udp/|nc\s+-e|ncat\s+-e|bash\s+-i|sh\s*<\s*/dev/tcp)`)
+	rceTemplateExecutionPrimitive = regexp.MustCompile(`(?i)(?:registerundefinedfiltercallback\s*\(\s*['"]exec|filter\s*\(\s*['"]system|system\s*\(|exec\s*\(|popen\s*\(|passthru\s*\(|shell_exec\s*\()`)
+	lfiFileReadSink               = regexp.MustCompile(`(?i)(?:file\.read\s*\(|get_user_file\s*\(|readfile\s*\(|file_get_contents\s*\(|open\s*\()[^)]*(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
+	lfiCommandReadSink            = regexp.MustCompile(`(?i)\b(?:cat|type|more|less|head|tail)\s+(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
 )
 
 func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
@@ -477,10 +580,26 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlBooleanTautology.MatchString(text) {
 		reasons["syntax: boolean tautology predicate"] = true
 	}
+	if sqlEmptyStringTautology.MatchString(text) {
+		reasons["syntax: empty-string boolean tautology predicate"] = true
+	}
+	if sqlQuotedOrPredicate.MatchString(text) {
+		reasons["syntax: quoted OR predicate injection"] = true
+	}
 	if sqlTimeFunction.MatchString(text) {
 		reasons["semantics: time-based database side effect"] = true
 	}
-	if containsOrdered(words, "information_schema") || containsOrdered(words, "pg_catalog") {
+	if sqlSelectFrom.MatchString(text) {
+		reasons["syntax: SELECT FROM query grammar"] = true
+	}
+	if sqlSubquery.MatchString(text) {
+		reasons["syntax: parenthesized SELECT subquery"] = true
+	}
+	if sqlCaseWhen.MatchString(text) {
+		reasons["syntax: CASE WHEN conditional expression"] = true
+		reasons["semantics: conditional database value inference"] = true
+	}
+	if sqlMetadataObject.MatchString(text) || containsOrdered(words, "information_schema") || containsOrdered(words, "pg_catalog") {
 		reasons["semantics: database metadata enumeration"] = true
 	}
 	if (contains(words, "drop") && contains(words, "table")) || (contains(words, "delete") && contains(words, "from")) {
@@ -504,6 +623,9 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 	if sqlDangerousFunc.MatchString(text) {
 		reasons["semantics: database server file or command side effect"] = true
+	}
+	if sqlFileData.MatchString(text) {
+		reasons["semantics: database file-system import/export primitive"] = true
 	}
 	if strings.Contains(text, "xp_cmdshell") {
 		reasons["semantics: SQL Server command execution primitive"] = true
@@ -703,6 +825,12 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	if rceDownloadExecChain.MatchString(text) {
 		reasons["semantics: download-to-shell execution chain"] = true
 	}
+	if rceReverseShellPrimitive.MatchString(text) {
+		reasons["semantics: shell reverse connection primitive"] = true
+	}
+	if rceTemplateExecutionPrimitive.MatchString(text) {
+		reasons["semantics: template or language runtime command execution primitive"] = true
+	}
 	words := tokens(text)
 	for _, command := range []string{"cat", "whoami", "uname", "curl", "wget", "bash", "sh", "zsh", "dash", "pwsh", "powershell", "cmd", "python", "python3", "perl", "php", "ruby", "node", "nc", "ncat", "netcat", "socat", "lua", "iex", "invoke-expression"} {
 		if contains(words, command) {
@@ -745,7 +873,22 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 	lower := normalize(text)
-	for _, target := range []string{"/etc/passwd", "/etc/shadow", "/proc/self/environ", "boot.ini", "win.ini", "web-inf/web.xml", ".aws/credentials", ".git/config", ".env", ".ssh/id_rsa", "wp-config", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {
+	if lfiEncodedTraversal.MatchString(lower) || strings.Contains(lower, "..//") || strings.Contains(lower, `..\/`) || strings.Contains(lower, "....//") {
+		reasons["syntax: encoded or overlong traversal path"] = true
+	}
+	if strings.Contains(lower, "%00") || strings.Contains(lower, "\x00") {
+		reasons["syntax: null-byte path suffix bypass"] = true
+	}
+	if lfiSensitiveTarget.MatchString(lower) {
+		reasons["semantics: sensitive local file target"] = true
+	}
+	if lfiFileReadSink.MatchString(lower) {
+		reasons["semantics: application template reads a local file path"] = true
+	}
+	if lfiCommandReadSink.MatchString(lower) {
+		reasons["semantics: command reads a sensitive local file"] = true
+	}
+	for _, target := range []string{"/etc/passwd", "/etc/shadow", "/etc/group", "/etc/hosts", "/etc/hostname", "/etc/fstab", "/etc/sudoers", "/etc/crontab", "/etc/nginx/nginx.conf", "/etc/apache2/apache2.conf", "/etc/redis/redis.conf", "/etc/mysql/my.cnf", "/etc/php/php.ini", "/etc/ssh/sshd_config", "/proc/self/environ", "/proc/self/cmdline", "/proc/self/maps", "/proc/version", "/proc/cpuinfo", "/root/.bash_history", "boot.ini", "win.ini", "web-inf/web.xml", "meta-inf/manifest.mf", ".htaccess", ".aws/credentials", ".git/config", ".env", ".ssh/id_rsa", "wp-config", "_config.php", "dump.sql", "database.sql", "/var/log/syslog", "/var/log/auth.log", "/var/log/nginx/access.log", "/var/log/apache2/access.log", "httpd-access.log", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {
 		if strings.Contains(lower, target) {
 			reasons["semantics: sensitive local file target"] = true
 			break

@@ -7,7 +7,7 @@ import { ArrowLeft, BrainCircuit, ShieldAlert } from 'lucide-react';
 import { analyzeLogReference, fetchLogEvent } from '../../api/client';
 import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
 import type { AttackAnalysis, LogEntry } from '../../types/api';
-import { displayAction, displayCategory, displayCountry, displaySeverity } from '../../utils/display';
+import { displayAction, displayCategory, displaySeverity, formatLogLocation } from '../../utils/display';
 
 export default function LogDetailPage() {
   const { t, i18n } = useTranslation();
@@ -56,7 +56,7 @@ export default function LogDetailPage() {
                   <DetailKV label={t('logs.trace')} value={event.trace_id || event.id || '-'} />
                   <DetailKV label={t('logs.time')} value={formatTime(event.timestamp)} />
                   <DetailKV label={t('logs.source')} value={event.client_ip || '-'} />
-                  <DetailKV label={t('attackMap.country')} value={displayCountry(event.country, t)} />
+                  <DetailKV label={t('dashboard.ipLocation')} value={formatLogLocation(event, t)} />
                   <DetailKV label={t('logs.method')} value={event.method || '-'} />
                   <DetailKV label="URI" value={<code className="detail-inline-code">{event.uri || '-'}</code>} />
                   <DetailKV label={t('logs.status')} value={String(event.status_code || '-')} />

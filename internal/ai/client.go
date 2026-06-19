@@ -56,7 +56,7 @@ type Client struct {
 
 func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = &http.Client{}
+		httpClient = &http.Client{Transport: directTransport()}
 	}
 	provider := normalizeProvider(cfg.Provider)
 	client := &Client{
@@ -70,6 +70,12 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 		client.openai = newOpenAISDKClient(client.apiBase, client.apiKey, httpClient)
 	}
 	return client
+}
+
+func directTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return transport
 }
 
 func NewClientWithTimeout(cfg config.AIConfig, timeout time.Duration) *Client {

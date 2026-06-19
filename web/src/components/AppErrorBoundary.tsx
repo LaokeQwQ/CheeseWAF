@@ -6,6 +6,7 @@ type BoundaryTexts = {
   title: string;
   subtitle: string;
   traceLabel: string;
+  errorLabel: string;
   reload: string;
   home: string;
 };
@@ -29,6 +30,9 @@ class AppErrorBoundaryInner extends Component<BoundaryProps, BoundaryState> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('[CheeseWAF UI error]', this.state.traceID, error, info.componentStack);
+    if (isLikelyStaleChunkError(error)) {
+      scheduleStaleChunkRecovery();
+    }
     reportUIError(this.state.traceID, error, info);
   }
 
@@ -53,6 +57,10 @@ class AppErrorBoundaryInner extends Component<BoundaryProps, BoundaryState> {
           </header>
           <h1>{this.props.title}</h1>
           <p>{this.props.subtitle}</p>
+          <div className="ui-error-detail">
+            <span>{this.props.errorLabel}</span>
+            <code>{safeErrorSummary(this.state.error)}</code>
+          </div>
           <div className="ui-error-trace">
             <span>{this.props.traceLabel}</span>
             <code>{this.state.traceID}</code>
@@ -75,6 +83,7 @@ export function AppErrorBoundary({ children, resetKey }: { children: ReactNode; 
       title={t('uiError.title')}
       subtitle={t('uiError.subtitle')}
       traceLabel={t('uiError.traceLabel')}
+      errorLabel={t('uiError.errorLabel')}
       reload={t('uiError.reload')}
       home={t('uiError.home')}
     >
@@ -126,4 +135,33 @@ function truncateForReport(value: string | null | undefined, max = 8_000) {
     return '';
   }
   return value.length > max ? `${value.slice(0, max)}...(truncated)` : value;
+}
+
+function safeErrorSummary(error: Error | null) {
+  if (!error) {
+    return 'unknown error';
+  }
+  const name = error.name || 'Error';
+  const message = error.message || 'no message';
+  return truncateForReport(`${name}: ${message}`, 360);
+}
+
+function isLikelyStaleChunkError(error: Error) {
+  const message = `${error.name} ${error.message}`.toLowerCase();
+  return message.includes('failed to fetch dynamically imported module') ||
+    message.includes('importing a module script failed') ||
+    message.includes('loading chunk') ||
+    message.includes('dynamically imported module') ||
+    message.includes('css chunk load failed');
+}
+
+function scheduleStaleChunkRecovery() {
+  const key = 'cheesewaf-stale-chunk-recovery';
+  const now = Date.now();
+  const last = Number(sessionStorage.getItem(key) || '0');
+  if (Number.isFinite(last) && now - last < 60_000) {
+    return;
+  }
+  sessionStorage.setItem(key, String(now));
+  window.setTimeout(() => window.location.reload(), 800);
 }

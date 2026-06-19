@@ -43,8 +43,8 @@ export default function OperationsPage() {
         <section className="panel storage-ops-panel">
           <div className="panel-heading"><h2><Database size={16} /> {t('ops.storage')}</h2></div>
           <div className="resource-stack">
-            <div><Database size={18} /><span>Data</span><Progress percent={Math.round((dataSize / total) * 100)} /><code className="resource-value">{formatBytes(dataSize)}</code></div>
-            <div><Archive size={18} /><span>Logs</span><Progress percent={Math.round((logSize / total) * 100)} /><code className="resource-value">{formatBytes(logSize)}</code></div>
+            <div><Database size={18} /><span>{t('ops.dataDir')}</span><Progress percent={Math.round((dataSize / total) * 100)} status={dataSize / total > 0.9 ? 'error' : 'normal'} /><code className="resource-value">{formatBytes(dataSize)}</code></div>
+            <div><Archive size={18} /><span>{t('ops.logsDir')}</span><Progress percent={Math.round((logSize / total) * 100)} status={logSize / total > 0.9 ? 'error' : 'normal'} /><code className="resource-value">{formatBytes(logSize)}</code></div>
           </div>
           <div className="panel-actions">
             <Button icon={<RotateCcw size={16} />} onClick={() => cleanup.mutate()} loading={cleanup.isPending}>{t('ops.cleanup')}</Button>
@@ -70,6 +70,7 @@ export default function OperationsPage() {
               <Select>
                 <Select.Option value="daily">{t('ops.daily')}</Select.Option>
                 <Select.Option value="weekly">{t('ops.weekly')}</Select.Option>
+                <Select.Option value="monthly">{t('ops.monthly')}</Select.Option>
               </Select>
             </Form.Item>
             <Form.Item label={t('ops.at')} field="at"><Input placeholder="08:00" /></Form.Item>
