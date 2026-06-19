@@ -1,5 +1,5 @@
-import axios, { type AxiosResponse } from 'axios';
-import type { AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelInfo, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+﻿import axios, { type AxiosResponse } from 'axios';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -9,7 +9,7 @@ export const apiClient = axios.create({
   },
 });
 
-const AI_REQUEST_TIMEOUT_MS = 120_000;
+const AI_REQUEST_TIMEOUT_MS = 300_000;
 const tokenStorageKey = 'cheesewaf-token';
 const tokenRefreshWindowSeconds = 10 * 60;
 let refreshPromise: Promise<string> | null = null;
@@ -114,14 +114,16 @@ export class APIRequestError extends Error {
   status?: number;
   traceID?: string;
   rawMessage: string;
+  data?: unknown;
 
-  constructor(message: string, code?: string, status?: number, traceID?: string) {
+  constructor(message: string, code?: string, status?: number, traceID?: string, data?: unknown) {
     super(traceID ? `${message} · Event / Trace ID: ${traceID}` : message);
     this.name = 'APIRequestError';
     this.rawMessage = message;
     this.code = code;
     this.status = status;
     this.traceID = traceID;
+    this.data = data;
   }
 }
 
@@ -129,14 +131,14 @@ async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<
   try {
     const response = await promise;
     if (response.data.error) {
-      throw new APIRequestError(response.data.error.message, response.data.error.code, response.status, errorLookupID(response.data.error, response));
+      throw new APIRequestError(response.data.error.message, response.data.error.code, response.status, errorLookupID(response.data.error, response), response.data.data);
     }
     return response.data.data as T;
   } catch (error) {
     if (axios.isAxiosError<Envelope<unknown>>(error)) {
       const apiError = error.response?.data?.error;
       if (apiError) {
-        throw new APIRequestError(apiError.message, apiError.code, error.response?.status, errorLookupID(apiError, error.response));
+        throw new APIRequestError(apiError.message, apiError.code, error.response?.status, errorLookupID(apiError, error.response), error.response?.data?.data);
       }
       const traceID = responseLookupID(error.response);
       if (error.code === 'ECONNABORTED' || error.message.toLowerCase().includes('timeout')) {
@@ -237,6 +239,14 @@ export function updateSite(id: string, site: Partial<Site>) {
 
 export function deleteSite(id: string) {
   return unwrap<{ deleted: boolean }>(apiClient.delete(`/sites/${id}`));
+}
+
+export function fetchACMEProviders() {
+  return unwrap<ACMEDNSProvider[]>(apiClient.get('/acme/providers'));
+}
+
+export function issueSiteACMECertificate(siteId: string, payload: ACMEIssueRequest) {
+  return unwrap<ACMEIssueResponse>(apiClient.post(`/sites/${siteId}/acme/issue`, payload, { timeout: 180_000 }));
 }
 
 export function fetchStats() {
@@ -624,15 +634,15 @@ export function updateAIConfig(config: AIConfig) {
   return unwrap<AIConfig>(apiClient.put('/ai/config', config));
 }
 
-export function fetchAIModels(config?: Pick<AIConfig, 'provider' | 'api_base'> & { api_key?: string; allow_private_api_base?: boolean }) {
+export function fetchAIModels(config?: Pick<AIModelConfig, 'provider' | 'api_base'> & { api_key?: string; allow_private_api_base?: boolean; target?: 'assistant' | 'reasoning' | string }) {
   if (config) {
     return unwrap<{ items: AIModelInfo[]; total: number }>(apiClient.post('/ai/models', config, { timeout: 60_000 }));
   }
   return unwrap<{ items: AIModelInfo[]; total: number }>(apiClient.get('/ai/models', { timeout: 60_000 }));
 }
 
-export function testAIConnection() {
-  return unwrap<{ ok: boolean }>(apiClient.post('/ai/test', {}, { timeout: 60_000 }));
+export function testAIConnection(config: Pick<AIModelConfig, 'provider' | 'api_base' | 'model'> & { api_key?: string; allow_private_api_base?: boolean; target?: 'assistant' | 'reasoning' | string }) {
+  return unwrap<{ ok: boolean; target: string }>(apiClient.post('/ai/test', config, { timeout: 60_000 }));
 }
 
 export function analyzeLog(entry: Record<string, unknown>, language?: string) {
@@ -647,14 +657,15 @@ export function analyzeEvents(payload: { limit?: number; action?: string; catego
   return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
-export function askAIAssistant(message: string, limit = 30, language?: string) {
-  return unwrap<AIAssistantReply>(apiClient.post('/ai/assistant', { message, limit, language }, { timeout: AI_REQUEST_TIMEOUT_MS }));
+export function askAIAssistant(message: string, limit = 30, language?: string, deepThink = false) {
+  return unwrap<AIAssistantReply>(apiClient.post('/ai/assistant', { message, limit, language, deep_think: deepThink }, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
 export async function askAIAssistantStream(
   message: string,
   limit = 30,
   language = '',
+  deepThink = false,
   onTrace?: (event: AIAssistantTraceEvent) => void,
   signal?: AbortSignal,
 ) {
@@ -667,7 +678,7 @@ export async function askAIAssistantStream(
       'Content-Type': 'application/json',
       ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
     },
-    body: JSON.stringify({ message, limit, language }),
+    body: JSON.stringify({ message, limit, language, deep_think: deepThink }),
   });
   const traceID = fetchResponseTraceID(response);
   if (!response.ok) {
@@ -689,39 +700,59 @@ export async function askAIAssistantStream(
   const decoder = new TextDecoder();
   let buffer = '';
   let finalReply: AIAssistantReply | null = null;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split(/\n\n/);
-    buffer = parts.pop() ?? '';
-    for (const part of parts) {
-      const event = parseSSEBlock(part);
-      if (!event) {
-        continue;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
       }
-      if (event.event === 'trace') {
-        onTrace?.(event.data as AIAssistantTraceEvent);
-      } else if (event.event === 'done') {
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split(/\n\n/);
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        const event = parseSSEBlock(part);
+        if (!event) {
+          continue;
+        }
+        if (event.event === 'trace') {
+          onTrace?.(event.data as AIAssistantTraceEvent);
+        } else if (event.event === 'done') {
+          finalReply = event.data as AIAssistantReply;
+        } else if (event.event === 'error') {
+          const payload = event.data as { message?: string; code?: string; event_id?: string; trace_id?: string };
+          throw new APIRequestError(payload.message || 'AI assistant stream failed.', payload.code || 'AI_ASSISTANT_STREAM_FAILED', response.status, payload.event_id ?? payload.trace_id ?? traceID);
+        }
+      }
+    }
+    if (buffer.trim()) {
+      const event = parseSSEBlock(buffer);
+      if (event?.event === 'done') {
         finalReply = event.data as AIAssistantReply;
-      } else if (event.event === 'error') {
-        const payload = event.data as { message?: string; code?: string; event_id?: string; trace_id?: string };
-        throw new APIRequestError(payload.message || 'AI assistant stream failed.', payload.code || 'AI_ASSISTANT_STREAM_FAILED', response.status, payload.event_id ?? payload.trace_id ?? traceID);
       }
     }
-  }
-  if (buffer.trim()) {
-    const event = parseSSEBlock(buffer);
-    if (event?.event === 'done') {
-      finalReply = event.data as AIAssistantReply;
+  } catch (error) {
+    if (error instanceof APIRequestError) {
+      throw error;
     }
+    if ((error as DOMException)?.name === 'AbortError') {
+      throw new APIRequestError('AI assistant request was cancelled.', 'AI_ASSISTANT_CANCELLED', response.status, traceID);
+    }
+    throw new APIRequestError(
+      'AI assistant stream was interrupted before completion. The server keeps the stream alive with heartbeats; check provider latency, reverse proxy buffering, or network stability.',
+      'AI_ASSISTANT_STREAM_INTERRUPTED',
+      response.status,
+      traceID,
+      error,
+    );
   }
   if (!finalReply) {
     throw new APIRequestError('AI assistant stream ended without a final answer.', 'AI_ASSISTANT_STREAM_INCOMPLETE');
   }
   return finalReply;
+}
+
+export function runAISelfLearning(payload: { dry_run?: boolean; language?: string } = {}) {
+  return unwrap<AISelfLearningReport>(apiClient.post('/ai/self-learning/run', payload, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
 export function fetchAITools() {

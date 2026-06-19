@@ -9,11 +9,12 @@ import { displaySeverity } from '../../utils/display';
 
 export default function MonitorPage() {
   const { t } = useTranslation();
-  const { data } = useQuery({ queryKey: ['monitor'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false });
+  const { data, isLoading } = useQuery({ queryKey: ['monitor'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false });
   const snapshot = data?.snapshot;
   const disk = snapshot?.disk_usage ?? {};
   const dataBytes = disk.data ?? 0;
   const logBytes = disk.logs ?? 0;
+  const loading = isLoading && !data;
 
   return (
     <section className="page-surface">
@@ -25,10 +26,10 @@ export default function MonitorPage() {
       </header>
 
       <div className="metric-grid">
-        <Metric icon={<Activity size={18} />} label={t('monitor.requests')} value={String(snapshot?.requests ?? 0)} />
-        <Metric icon={<ShieldAlert size={18} />} label={t('monitor.blocked')} value={String(snapshot?.blocked ?? 0)} />
-        <Metric icon={<Cpu size={18} />} label={t('monitor.goroutines')} value={String(snapshot?.goroutines ?? 0)} />
-        <Metric icon={<Database size={18} />} label={t('monitor.memory')} value={formatBytes(snapshot?.memory_alloc ?? 0)} />
+        <Metric icon={<Activity size={18} />} label={t('monitor.requests')} value={loading ? '—' : String(snapshot?.requests ?? 0)} loading={loading} />
+        <Metric icon={<ShieldAlert size={18} />} label={t('monitor.blocked')} value={loading ? '—' : String(snapshot?.blocked ?? 0)} loading={loading} />
+        <Metric icon={<Cpu size={18} />} label={t('monitor.goroutines')} value={loading ? '—' : String(snapshot?.goroutines ?? 0)} loading={loading} />
+        <Metric icon={<Database size={18} />} label={t('monitor.memory')} value={loading ? '—' : formatBytes(snapshot?.memory_alloc ?? 0)} loading={loading} />
       </div>
 
       <div className="monitor-grid">
@@ -61,13 +62,14 @@ export default function MonitorPage() {
   );
 }
 
-function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+function Metric({ icon, label, value, loading }: { icon: ReactNode; label: string; value: string; loading?: boolean }) {
+  const { t } = useTranslation();
   return (
     <div className="metric-card">
       {icon}
       <span>{label}</span>
-      <strong>{value}</strong>
-      <em>live</em>
+      {loading ? <strong className="metric-loading" aria-busy="true">—</strong> : <strong>{value}</strong>}
+      <em>{t('monitor.live')}</em>
     </div>
   );
 }

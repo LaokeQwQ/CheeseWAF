@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
 type TaskFunc func(context.Context, Task) error
@@ -40,6 +42,17 @@ type HistoryEntry struct {
 }
 
 func FromConfig(cfg config.SchedulerConfig, dataDir, configPath, logPath string) []Task {
+	return FromConfigWithRuntime(cfg, dataDir, configPath, logPath, Runtime{})
+}
+
+type Runtime struct {
+	AIConfig config.AIConfig
+	Sink     storage.LogSink
+	Store    storage.RuleStore
+	Client   *ai.Client
+}
+
+func FromConfigWithRuntime(cfg config.SchedulerConfig, dataDir, configPath, logPath string, runtime Runtime) []Task {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -82,6 +95,8 @@ func FromConfig(cfg config.SchedulerConfig, dataDir, configPath, logPath string)
 			task.Run = CleanupOldFiles
 		case "security_report":
 			task.Run = SecurityReport(logPath, dataDir)
+		case "ai_self_learning", "self_learning_rules":
+			task.Run = AISelfLearning(runtime)
 		default:
 			task.Run = Noop
 		}

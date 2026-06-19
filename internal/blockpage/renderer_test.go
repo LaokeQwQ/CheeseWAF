@@ -310,3 +310,54 @@ func TestRendererAddsVisibleEventIDWhenCustomHTMLOmitsIt(t *testing.T) {
 		t.Fatalf("expected fallback badge to be injected before </body>, body=%s", body)
 	}
 }
+
+func TestRendererInjectsBrowserLanguageRuntimeForBuiltInTemplates(t *testing.T) {
+	for _, templateID := range []string{"minimal", "brand", "technical"} {
+		t.Run(templateID, func(t *testing.T) {
+			renderer, err := NewRendererFromConfig(config.BlockPageConfig{TemplateID: templateID})
+			if err != nil {
+				t.Fatalf("new renderer: %v", err)
+			}
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "https://example.test/blocked", nil)
+			req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+			renderer.RenderRequest(recorder, req, http.StatusForbidden, Data{
+				TraceID:   "cw-browser-locale-" + templateID,
+				Timestamp: time.Unix(0, 0).UTC(),
+			})
+			body := recorder.Body.String()
+			for _, want := range []string{"cw-language-runtime", "navigator.languages", "zh-CN", "ja", "document.documentElement.lang"} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("template %s missing browser language runtime marker %q in %s", templateID, want, body)
+				}
+			}
+		})
+	}
+}
+
+func TestRendererInjectsBrowserLanguageRuntimeForCustomHTML(t *testing.T) {
+	renderer, err := NewRendererFromConfig(config.BlockPageConfig{
+		TemplateID:    "minimal",
+		CustomEnabled: true,
+		CustomHTML:    `<html lang="en"><head><title>Request blocked | CheeseWAF</title></head><body><h1>Access was blocked</h1><p>Event / Trace ID</p><main>{{.EventID}}</main></body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("new renderer: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "https://example.test/blocked", nil)
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	renderer.RenderRequest(recorder, req, http.StatusForbidden, Data{
+		TraceID:   "cw-custom-runtime",
+		Timestamp: time.Unix(0, 0).UTC(),
+	})
+	body := recorder.Body.String()
+	for _, want := range []string{"cw-language-runtime", "navigator.languages", "Access was blocked", "访问已被拦截", "アクセスがブロックされました"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("custom template missing browser language runtime marker %q in %s", want, body)
+		}
+	}
+	if !strings.Contains(body, "cw-custom-runtime") {
+		t.Fatalf("custom runtime page lost event id: %s", body)
+	}
+}

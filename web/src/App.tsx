@@ -26,10 +26,14 @@ export default function App() {
     applyTheme(theme);
   }, [theme]);
 
+  useEffect(() => {
+    document.documentElement.lang = language === 'zh-CN' ? 'zh-CN' : 'en';
+  }, [language]);
+
   const locale = useMemo(() => (language === 'zh-CN' ? zhCN : enUS), [language]);
 
   return (
-    <ConfigProvider locale={locale}>
+    <ConfigProvider locale={locale} getPopupContainer={() => document.body}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <AppRoutes />

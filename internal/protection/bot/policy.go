@@ -39,6 +39,8 @@ type Policy struct {
 	sliderCAPTCHAPiece     int
 	sliderCAPTCHATolerance int
 	sliderCAPTCHAMinDrag   time.Duration
+	captchaMobileType      string
+	sliderTrackRequired    bool
 	challengeDifficulty    int
 	altchaMaxNumber        int
 	altchaHeaderName       string
@@ -123,6 +125,7 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 	if cfg.SliderCAPTCHAMinDrag <= 0 {
 		cfg.SliderCAPTCHAMinDrag = 450 * time.Millisecond
 	}
+	cfg.CAPTCHAMobileType = normalizeMobileCAPTCHAType(cfg.CAPTCHAMobileType)
 	if cfg.WaitingRoomMaxActive <= 0 {
 		cfg.WaitingRoomMaxActive = 1000
 	}
@@ -160,6 +163,8 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 		sliderCAPTCHAPiece:     cfg.SliderCAPTCHAPiece,
 		sliderCAPTCHATolerance: cfg.SliderCAPTCHATolerance,
 		sliderCAPTCHAMinDrag:   cfg.SliderCAPTCHAMinDrag,
+		captchaMobileType:      cfg.CAPTCHAMobileType,
+		sliderTrackRequired:    cfg.SliderCAPTCHATrackRequired,
 		challengeDifficulty:    cfg.ChallengeDifficulty,
 		altchaMaxNumber:        cfg.AltchaMaxNumber,
 		altchaHeaderName:       cfg.AltchaHeaderName,
@@ -196,7 +201,7 @@ func (p *Policy) Evaluate(r *http.Request, clientIP string) *engine.DetectionRes
 			Payload:    r.URL.Path,
 		}
 	}
-	if p.allowed(r.UserAgent()) || p.hasClearance(r, clientIP) || (p.captchaType == "pow" && p.validAltchaHeaderAnswer(r, clientIP)) {
+	if p.allowed(r.UserAgent()) || p.hasClearance(r, clientIP) || (p.effectiveCAPTCHAType(r) == "pow" && p.validAltchaHeaderAnswer(r, clientIP)) {
 		return nil
 	}
 	if !p.suspicious(r) {
@@ -248,7 +253,9 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 	var altcha *altchaChallenge
 	var imageChallenge *captcha.ImageChallenge
 	var sliderChallenge *captcha.SliderChallenge
-	if p.captcha && p.captchaType == "pow" {
+	failedCaptcha := r.URL.Query().Get("cw_image_token") != "" || r.URL.Query().Get("cw_slider_token") != "" || r.URL.Query().Get("cw_altcha") != "" || r.URL.Query().Get("cw_pow") != ""
+	captchaType := p.effectiveCAPTCHAType(r)
+	if p.captcha && captchaType == "pow" {
 		challenge, err := p.newAltchaChallenge(r, clientIP)
 		if err != nil {
 			http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
@@ -258,14 +265,14 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 		challengeJSON, _ := json.Marshal(challenge)
 		w.Header().Set("WWW-Authenticate", "Altcha challenge="+string(challengeJSON))
 		w.Header().Set("X-Altcha-Authorization-Header", p.altchaHeaderName)
-	} else if p.captcha && p.captchaType == "image" {
+	} else if p.captcha && captchaType == "image" {
 		challenge, err := p.newImageChallenge(r, clientIP)
 		if err != nil {
 			http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
 			return
 		}
 		imageChallenge = &challenge
-	} else if p.captcha && p.captchaType == "slider" {
+	} else if p.captcha && captchaType == "slider" {
 		challenge, err := p.newSliderChallenge(r, clientIP)
 		if err != nil {
 			http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
@@ -290,6 +297,7 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 		Signature:   p.signChallenge(r, clientIP, nonce, expires),
 		Difficulty:  p.challengeDifficulty,
 		UseAltcha:   altcha != nil,
+		Failed:      failedCaptcha,
 	}
 	if altcha != nil {
 		data.AltchaAlgorithm = altcha.Algorithm
@@ -641,13 +649,14 @@ func (p *Policy) newSliderChallenge(r *http.Request, clientIP string) (captcha.S
 }
 
 func (p *Policy) validChallengeAnswer(r *http.Request, clientIP string) bool {
-	if p.captchaType == "pow" && p.validAltchaQueryAnswer(r, clientIP) {
+	captchaType := p.effectiveCAPTCHAType(r)
+	if captchaType == "pow" && p.validAltchaQueryAnswer(r, clientIP) {
 		return true
 	}
-	if p.captchaType == "image" && p.validImageQueryAnswer(r, clientIP) {
+	if captchaType == "image" && p.validImageQueryAnswer(r, clientIP) {
 		return true
 	}
-	if p.captchaType == "slider" && p.validSliderQueryAnswer(r, clientIP) {
+	if captchaType == "slider" && p.validSliderQueryAnswer(r, clientIP) {
 		return true
 	}
 	query := r.URL.Query()
@@ -703,7 +712,12 @@ func (p *Policy) validSliderQueryAnswer(r *http.Request, clientIP string) bool {
 		p.recordCAPTCHAAnswer(r, clientIP, "slider", token, false)
 		return false
 	}
-	ok := captcha.VerifySlider(p.sliderOptions(r, clientIP), captcha.SliderPayload{Token: token, X: x, DragMS: dragMS})
+	track := query.Get("cw_slider_track")
+	if p.sliderTrackRequired && strings.TrimSpace(track) == "" {
+		p.recordCAPTCHAAnswer(r, clientIP, "slider", token, false)
+		return false
+	}
+	ok := captcha.VerifySlider(p.sliderOptions(r, clientIP), captcha.SliderPayload{Token: token, X: x, DragMS: dragMS, Track: track})
 	p.recordCAPTCHAAnswer(r, clientIP, "slider", token, ok)
 	return ok
 }
@@ -797,6 +811,14 @@ func parseAltchaPayload(raw string) (altchaPayload, bool) {
 	return payload, true
 }
 
+func (p *Policy) effectiveCAPTCHAType(r *http.Request) string {
+	captchaType := p.captchaType
+	if captchaType == "slider" && p.captchaMobileType != "" && isMobileClient(r) {
+		return p.captchaMobileType
+	}
+	return captchaType
+}
+
 func (p *Policy) applies(path string) bool {
 	for _, prefix := range p.exemptPathPrefixes {
 		if prefix != "" && strings.HasPrefix(path, prefix) {
@@ -870,6 +892,33 @@ func normalizeCAPTCHAType(value string) string {
 	}
 }
 
+func normalizeMobileCAPTCHAType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "off", "none", "inherit", "same":
+		return ""
+	case "image", "graphic":
+		return "image"
+	default:
+		return "pow"
+	}
+}
+
+func isMobileClient(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	ua := strings.ToLower(r.UserAgent())
+	if ua == "" {
+		return false
+	}
+	for _, marker := range []string{"mobile", "android", "iphone", "ipad", "ipod", "windows phone", "harmonyos", "micromessenger"} {
+		if strings.Contains(ua, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 type challengeData struct {
 	CookieName       string
 	CookieValue      string
@@ -901,6 +950,7 @@ type challengeData struct {
 	SliderImage      template.URL
 	SliderPiece      template.URL
 	SliderToken      string
+	Failed           bool
 }
 
 type waitingData struct {
@@ -1024,143 +1074,6 @@ func imageAudioURL(r *http.Request, token string) string {
 	return next.RequestURI()
 }
 
-var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Browser verification</title>
-  <style>
-    :root{color-scheme:dark;--bg:#0e1523;--panel:#111827;--line:#2d3b51;--text:#e5edf7;--muted:#9aa8bc;--accent:#11a58d;--accent2:#2dd4bf;--danger:#fca5a5}
-    *{box-sizing:border-box}
-    body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:radial-gradient(circle at 20% 20%,#19324a 0,#0e1523 38%,#090e18 100%);color:var(--text);display:grid;min-height:100vh;place-items:center;padding:12px;overflow-x:hidden}
-    main{width:min(390px,calc(100vw - 24px));max-width:100%;border:1px solid var(--line);border-radius:10px;background:color-mix(in srgb,var(--panel) 94%,transparent);padding:24px;box-shadow:0 24px 80px rgba(0,0,0,.38)}
-    h1{margin:0 0 8px;font-size:22px;line-height:1.2}
-    p{margin:0 0 18px;color:var(--muted);line-height:1.65}
-    .bar{height:6px;border-radius:999px;background:#1e293b;overflow:hidden}
-    .bar span{display:block;width:45%;height:100%;background:var(--accent2);animation:load 1.2s ease-in-out infinite alternate}
-    .captcha{display:grid;gap:14px}
-    .captcha-img,.slider-stage{border:1px solid var(--line);border-radius:9px;background:#dbe9e8;overflow:hidden}
-    .captcha-img{width:100%}
-    .captcha-img{display:block;height:auto}
-    .captcha-row{display:flex;gap:10px;align-items:center}
-    input{min-width:0;width:100%;height:42px;border:1px solid var(--line);border-radius:8px;background:#0b1220;color:var(--text);padding:0 12px;font-size:15px}
-    button{height:42px;border:0;border-radius:8px;background:var(--accent);color:white;padding:0 16px;font-weight:650;cursor:pointer}
-    button:disabled{opacity:.55;cursor:not-allowed}
-    audio{width:100%;height:36px}
-    .hint{font-size:12px;color:var(--muted);margin:0}
-    .slider-stage{position:relative;width:min(100%,var(--slider-width,100%));height:auto;line-height:0;user-select:none}
-    .slider-stage img{display:block;width:100%;height:auto;user-select:none;-webkit-user-drag:none}
-    .slider-piece{position:absolute;left:0;top:0;width:var(--piece);height:var(--piece);filter:drop-shadow(0 10px 16px rgba(15,23,42,.3));pointer-events:none}
-    .slider-track{position:relative;width:min(100%,var(--slider-width,100%));height:44px;border:1px solid var(--line);border-radius:8px;background:#0b1220;overflow:hidden;touch-action:none}
-    .slider-fill{position:absolute;inset:0 auto 0 0;background:rgba(17,165,141,.2);border-right:1px solid rgba(45,212,191,.32)}
-    .slider-thumb{position:absolute;left:0;top:1px;width:var(--piece);height:40px;display:grid;place-items:center;border-radius:7px;background:var(--accent);box-shadow:0 8px 18px rgba(17,165,141,.28);cursor:grab;touch-action:none}
-    .slider-copy{position:absolute;inset:0 14px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;pointer-events:none}
-    noscript{display:block;margin-top:16px;color:var(--danger)}
-    @keyframes load{from{transform:translateX(-30%)}to{transform:translateX(140%)}}
-    @media(max-width:460px){main{padding:20px}.captcha-row{display:grid}button{width:100%}}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Browser verification</h1>
-    {{if .UseImage}}
-      <p>CheeseWAF needs a visual CAPTCHA for this protected request. Enter the digits shown in the image, or use the audio challenge if the image is unclear.</p>
-      <form class="captcha" method="get" action="{{.ReturnURL}}" autocomplete="off">
-        <img class="captcha-img" src="{{.ImageData}}" width="{{.ImageWidth}}" height="{{.ImageHeight}}" alt="CAPTCHA image with {{.ImageLength}} digits">
-        <audio controls preload="none" src="{{.AudioURL}}"></audio>
-        <p class="hint">Audio is generated server-side from an opaque challenge token; the URL does not contain the answer.</p>
-        <input type="hidden" name="cw_image_token" value="{{.ImageToken}}">
-        <div class="captcha-row">
-          <input name="cw_image_answer" inputmode="numeric" pattern="[0-9]*" maxlength="{{.ImageLength}}" aria-label="CAPTCHA answer" placeholder="Enter digits" required>
-          <button type="submit">Verify</button>
-        </div>
-      </form>
-    {{else if .UseSlider}}
-      <p>CheeseWAF needs a puzzle slider verification for this protected request. Drag the piece until it fits the image gap.</p>
-      <form id="slider-form" class="captcha" method="get" action="{{.ReturnURL}}" autocomplete="off">
-        <div class="slider-stage" style="--piece:{{.SliderPieceSize}}px;--slider-width:{{.SliderWidth}}px">
-          <img src="{{.SliderImage}}" width="{{.SliderWidth}}" height="{{.SliderHeight}}" alt="Puzzle slider CAPTCHA image" draggable="false">
-          <img id="slider-piece" class="slider-piece" src="{{.SliderPiece}}" width="{{.SliderPieceSize}}" height="{{.SliderPieceSize}}" alt="" draggable="false">
-        </div>
-        <div id="slider-track" class="slider-track" role="slider" aria-label="Puzzle slider" aria-valuemin="0" aria-valuemax="{{.SliderTrackWidth}}" aria-valuenow="0" style="--piece:{{.SliderPieceSize}}px;--slider-width:{{.SliderWidth}}px">
-          <span id="slider-fill" class="slider-fill"></span>
-          <button id="slider-thumb" class="slider-thumb" type="button" aria-label="Drag slider">→</button>
-          <span id="slider-copy" class="slider-copy">Drag to fit the puzzle piece</span>
-        </div>
-        <input type="hidden" name="cw_slider_token" value="{{.SliderToken}}">
-        <input id="slider-x" type="hidden" name="cw_slider_x" value="">
-        <input id="slider-drag-ms" type="hidden" name="cw_slider_drag_ms" value="">
-        <button id="slider-submit" type="submit" disabled>Verify</button>
-      </form>
-    {{else if .UseAltcha}}
-      <p>CheeseWAF is running an Altcha-compatible proof-of-work CAPTCHA for this protected request. Verification runs locally in your browser.</p>
-      <div class="bar"><span></span></div>
-    {{else}}
-      <p>CheeseWAF is checking that this request comes from a browser. This page solves a short proof-of-work challenge and reloads automatically.</p>
-      <div class="bar"><span></span></div>
-    {{end}}
-    <noscript>JavaScript is required for PoW and slider verification. Use image CAPTCHA mode if JavaScript-free access is required.</noscript>
-  </main>
-  <script>
-    {{if .UseSlider}}
-    (function(){
-      const piece = document.getElementById("slider-piece");
-      const track = document.getElementById("slider-track");
-      const fill = document.getElementById("slider-fill");
-      const thumb = document.getElementById("slider-thumb");
-      const copy = document.getElementById("slider-copy");
-      const inputX = document.getElementById("slider-x");
-      const inputMS = document.getElementById("slider-drag-ms");
-      const submit = document.getElementById("slider-submit");
-      const pieceSize = {{.SliderPieceSize}};
-      const targetY = {{.SliderTargetY}};
-      const trackWidth = {{.SliderTrackWidth}};
-      let drag = null;
-      function apply(x){
-        const next = Math.max(0, Math.min(trackWidth, Math.round(x)));
-        thumb.style.transform = "translateX(" + next + "px)";
-        piece.style.transform = "translate3d(" + next + "px," + targetY + "px,0)";
-        fill.style.width = (next + pieceSize / 2) + "px";
-        track.setAttribute("aria-valuenow", String(next));
-        return next;
-      }
-      apply(0);
-      thumb.addEventListener("pointerdown", function(event){
-        thumb.setPointerCapture(event.pointerId);
-        drag = {id:event.pointerId, origin:event.clientX, start: Number(track.getAttribute("aria-valuenow") || "0"), at: performance.now()};
-      });
-      thumb.addEventListener("pointermove", function(event){
-        if (!drag || drag.id !== event.pointerId) return;
-        apply(drag.start + event.clientX - drag.origin);
-      });
-      function finish(event){
-        if (!drag || drag.id !== event.pointerId) return;
-        const x = apply(drag.start + event.clientX - drag.origin);
-        inputX.value = String(x);
-        inputMS.value = String(Math.max(0, Math.round(performance.now() - drag.at)));
-        submit.disabled = x <= 0;
-        copy.textContent = x > 0 ? "Release and submit verification" : "Drag to fit the puzzle piece";
-        drag = null;
-      }
-      thumb.addEventListener("pointerup", finish);
-      thumb.addEventListener("pointercancel", finish);
-    })();
-    {{else if .UseAltcha}}
-    const challenge = {algorithm:"{{.AltchaAlgorithm}}",challenge:"{{.AltchaChallenge}}",maxnumber:{{.AltchaMaxNumber}},salt:"{{.AltchaSalt}}",signature:"{{.AltchaSignature}}"};
-    async function sha256Hex(input){const data=new TextEncoder().encode(input);const digest=await crypto.subtle.digest("SHA-256",data);return Array.from(new Uint8Array(digest)).map((b)=>b.toString(16).padStart(2,"0")).join("")}
-    async function solve(){for(let i=0;i<=challenge.maxnumber;i++){const hash=await sha256Hex(challenge.salt+String(i));if(hash===challenge.challenge){const payload=btoa(JSON.stringify({algorithm:challenge.algorithm,challenge:challenge.challenge,number:i,salt:challenge.salt,signature:challenge.signature}));const target=new URL(window.location.href);target.searchParams.set("cw_altcha",payload);window.location.replace(target.toString());return}if(i>0&&i%500===0){await new Promise((resolve)=>window.setTimeout(resolve,0))}}window.setTimeout(function(){window.location.reload()},1000)}
-    if(window.crypto&&window.crypto.subtle){solve()}
-    {{else if not .UseImage}}
-    const nonce="{{.Nonce}}";const expires="{{.Expires}}";const signature="{{.Signature}}";const difficulty={{.Difficulty}};const prefix="0".repeat(difficulty);
-    async function sha256Hex(input){const data=new TextEncoder().encode(input);const digest=await crypto.subtle.digest("SHA-256",data);return Array.from(new Uint8Array(digest)).map((b)=>b.toString(16).padStart(2,"0")).join("")}
-    async function solve(){for(let i=0;i<12000000;i++){const hash=await sha256Hex(nonce+":"+i);if(hash.startsWith(prefix)){const target=new URL(window.location.href);target.searchParams.set("cw_nonce",nonce);target.searchParams.set("cw_expires",expires);target.searchParams.set("cw_sig",signature);target.searchParams.set("cw_pow",String(i));window.location.replace(target.toString());return}}window.setTimeout(function(){window.location.reload()},1000)}
-    if(window.crypto&&window.crypto.subtle){solve()}
-    {{end}}
-  </script>
-</body>
-</html>`))
-
 var waitingTemplate = template.Must(template.New("waiting-room").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -1196,5 +1109,202 @@ var waitingTemplate = template.Must(template.New("waiting-room").Parse(`<!doctyp
       </script>
     {{end}}
   </main>
+</body>
+</html>`))
+
+var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser verification</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f5f7fb;--panel:#fff;--soft:#f2f5f8;--line:#d8e0ea;--text:#172033;--muted:#66758a;--accent:#11a58d;--accent-strong:#07836f;--success:#15936e;--warning:#b66a14;--warning-bg:#fff4df;--danger:#c44545;--shadow:0 26px 78px rgba(24,34,52,.18),0 8px 24px rgba(24,34,52,.08)}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:radial-gradient(circle at 18% 10%,rgba(17,165,141,.18),transparent 28%),linear-gradient(180deg,#f8fafc,var(--bg));color:var(--text);display:grid;min-height:100vh;place-items:center;padding:16px;overflow-x:hidden}
+    main{width:min(368px,calc(100vw - 28px));max-width:100%;border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:12px 18px 14px;box-shadow:var(--shadow)}
+    header{display:grid;justify-items:center;gap:4px;margin:0 0 10px;text-align:center}
+    .mark{width:42px;height:42px;display:grid;place-items:center;border:1px solid rgba(17,165,141,.22);border-radius:10px;background:linear-gradient(180deg,#fff,#edf8f5);color:var(--accent);font-weight:800;letter-spacing:.02em}
+    h1{margin:0;font-size:18px;line-height:1.25}
+    p{margin:0;color:var(--muted);line-height:1.55;font-size:13px}
+    .bar{height:7px;border-radius:999px;background:#e7edf5;overflow:hidden}
+    .bar span{display:block;width:45%;height:100%;background:var(--accent);animation:load 1.2s ease-in-out infinite alternate}
+    .captcha{display:grid;gap:10px}
+    .captcha-img,.slider-stage{border:1px solid var(--line);border-radius:10px;background:#dbe9e8;overflow:hidden;box-shadow:0 10px 22px rgba(24,34,52,.13),0 3px 9px rgba(24,34,52,.08),inset 0 1px 0 rgba(255,255,255,.55)}
+    .captcha-img{display:block;width:100%;height:auto}
+    .captcha-row{display:flex;gap:10px;align-items:center}
+    input{min-width:0;width:100%;height:42px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--text);padding:0 14px;font-size:15px}
+    input:focus{outline:2px solid rgba(17,165,141,.22);border-color:rgba(17,165,141,.46)}
+    button{height:42px;border:0;border-radius:999px;background:var(--accent);color:white;padding:0 16px;font-weight:700;cursor:pointer;transition:background .15s ease,transform .15s ease,box-shadow .15s ease}
+    button:hover:not(:disabled){background:var(--accent-strong);box-shadow:0 10px 22px rgba(17,165,141,.22);transform:translateY(-1px)}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    audio{width:100%;height:36px}
+    .hint{font-size:12px;color:var(--muted);margin:0;text-align:center}
+    .notice{display:grid;gap:2px;min-height:42px;align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft);text-align:center}
+    .notice strong{font-size:13px;line-height:1.35}
+    .notice span{color:var(--muted);font-size:11px;line-height:1.35}
+    .notice.warning{color:var(--warning);background:var(--warning-bg);border-color:rgba(182,106,20,.36)}
+    .notice.warning span{color:var(--warning)}
+    .notice.success{color:var(--success);background:#e9f8f2;border-color:rgba(21,147,110,.34)}
+    .notice.success span{color:var(--success)}
+    .slider-stage{position:relative;width:min(100%,var(--slider-width,100%));height:auto;line-height:0;user-select:none}
+    .slider-stage img{display:block;width:100%;height:auto;user-select:none;-webkit-user-drag:none}
+    .slider-stage::after{position:absolute;inset:0;content:"";pointer-events:none;border-radius:inherit;box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 0 0 1px rgba(255,255,255,.12)}
+    .slider-piece{position:absolute;left:0;top:0;width:var(--piece);height:var(--piece);filter:drop-shadow(0 0 .8px rgba(255,255,255,.96)) drop-shadow(0 0 .7px rgba(15,23,42,.7)) drop-shadow(1.2px 0 0 rgba(255,255,255,.72)) drop-shadow(-1.2px 0 0 rgba(15,23,42,.5)) drop-shadow(0 -1.2px 0 rgba(15,23,42,.36)) drop-shadow(0 1.2px 0 rgba(255,255,255,.62)) drop-shadow(0 8px 12px rgba(15,23,42,.2));pointer-events:none;transition:transform .18s cubic-bezier(.22,.8,.22,1)}
+    .stage-tip{position:absolute;left:50%;bottom:10px;z-index:3;max-width:calc(100% - 28px);padding:7px 11px;border:1px solid rgba(182,106,20,.38);border-radius:999px;background:var(--warning-bg);color:var(--warning);box-shadow:0 12px 28px rgba(182,106,20,.12);font-size:12px;font-weight:700;line-height:1.35;text-align:center;transform:translateX(-50%)}
+    .slider-track{position:relative;width:min(100%,var(--slider-width,100%));height:40px;border:1px solid var(--line);border-radius:999px;background:linear-gradient(180deg,#fff,var(--soft));overflow:hidden;touch-action:none;cursor:grab;box-shadow:inset 0 1px 0 rgba(255,255,255,.52),0 8px 18px rgba(24,34,52,.08)}
+    .slider-track::after{position:absolute;inset:1px;content:"";border-radius:inherit;background:linear-gradient(100deg,transparent 0%,rgba(255,255,255,.56) 46%,transparent 58%);opacity:.28;pointer-events:none;transform:translateX(-100%);animation:shimmer 2.6s ease-in-out infinite}
+    .slider-fill{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,rgba(17,165,141,.16),rgba(17,165,141,.26));border-right:1px solid rgba(17,165,141,.28);transition:width .18s cubic-bezier(.22,.8,.22,1)}
+    .slider-thumb{position:absolute;left:0;top:2px;width:54px;height:34px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.24);border-radius:999px;background:var(--accent);box-shadow:0 9px 18px rgba(17,165,141,.24),inset 0 1px 0 rgba(255,255,255,.34);cursor:grab;touch-action:none;color:#fff;font-size:18px;transition:transform .18s cubic-bezier(.22,.8,.22,1)}
+    .slider-copy{position:absolute;inset:0 14px 0 56px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .captcha-foot{min-height:34px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;color:var(--muted);font-size:12px}
+    .captcha-brand{min-width:0;display:inline-flex;align-items:center;gap:7px;color:var(--text);font-weight:700}
+    .captcha-brand-mark{width:18px;height:18px;display:inline-grid;place-items:center;flex:0 0 18px;border:1px solid rgba(17,165,141,.24);border-radius:5px;background:linear-gradient(180deg,#fff,#edf8f5);color:var(--accent);font-size:9px;font-weight:800}
+    .captcha-foot button{width:32px;height:32px;display:inline-grid;place-items:center;padding:0;background:var(--soft);border:1px solid var(--line);color:var(--muted)}
+    .captcha-foot button:hover:not(:disabled){background:var(--panel);color:var(--text);box-shadow:none}
+    noscript{display:block;margin-top:16px;color:var(--danger)}
+    @keyframes load{from{transform:translateX(-30%)}to{transform:translateX(140%)}}
+    @keyframes shimmer{0%{transform:translateX(-110%)}55%,100%{transform:translateX(110%)}}
+    @media(prefers-color-scheme:dark){:root{--bg:#0e1523;--panel:#111827;--soft:#172033;--line:#2d3b51;--text:#e5edf7;--muted:#9aa8bc;--warning-bg:#2b2114;--shadow:0 28px 82px rgba(0,0,0,.38)}body{background:radial-gradient(circle at 18% 10%,rgba(17,165,141,.22),transparent 28%),linear-gradient(180deg,#101827,#090e18)}.mark{background:linear-gradient(180deg,#172033,#111827)}input{background:#0b1220}.slider-track{background:linear-gradient(180deg,#172033,#0b1220)}}
+    @media(max-width:460px){main{padding:14px}.captcha-row{display:grid}button{width:100%}.slider-copy{font-size:12px}}
+  </style>
+</head>
+<body>
+  <main>
+    <header><div class="mark">CW</div><h1>Browser verification</h1><p>CheeseWAF is protecting this request.</p></header>
+    {{if .Failed}}<div class="notice warning" role="alert"><strong>Verification failed</strong><span>A new challenge has been generated. Please try again.</span></div>{{end}}
+    {{if .UseImage}}
+      <p>Enter the digits shown in the image, or use the audio challenge if the image is unclear.</p>
+      <form class="captcha" method="get" action="{{.ReturnURL}}" autocomplete="off">
+        <img class="captcha-img" src="{{.ImageData}}" width="{{.ImageWidth}}" height="{{.ImageHeight}}" alt="CAPTCHA image with {{.ImageLength}} digits">
+        <audio controls preload="none" src="{{.AudioURL}}"></audio>
+        <p class="hint">Audio is generated server-side from an opaque challenge token; the URL does not contain the answer.</p>
+        <input type="hidden" name="cw_image_token" value="{{.ImageToken}}">
+        <div class="captcha-row">
+          <input name="cw_image_answer" inputmode="numeric" pattern="[0-9]*" maxlength="{{.ImageLength}}" aria-label="CAPTCHA answer" placeholder="Enter digits" required>
+          <button type="submit">Verify</button>
+        </div>
+      </form>
+    {{else if .UseSlider}}
+      <p>Drag the slider so the puzzle piece fits the image gap. Verification is checked when you release it.</p>
+      <form id="slider-form" class="captcha" method="get" action="{{.ReturnURL}}" autocomplete="off">
+        <div class="slider-stage" style="--piece:{{.SliderPieceSize}}px;--slider-width:{{.SliderWidth}}px">
+          <img src="{{.SliderImage}}" width="{{.SliderWidth}}" height="{{.SliderHeight}}" alt="Puzzle slider CAPTCHA image" draggable="false">
+          <img id="slider-piece" class="slider-piece" src="{{.SliderPiece}}" width="{{.SliderPieceSize}}" height="{{.SliderPieceSize}}" alt="" draggable="false">
+          <div id="stage-tip" class="stage-tip" hidden>Checking verification</div>
+        </div>
+        <div id="slider-notice" class="notice" hidden><strong>Drag to fill the image gap</strong><span>Security verification</span></div>
+        <div id="slider-track" class="slider-track" role="slider" aria-label="Puzzle slider" aria-valuemin="0" aria-valuemax="{{.SliderTrackWidth}}" aria-valuenow="0" style="--piece:{{.SliderPieceSize}}px;--slider-width:{{.SliderWidth}}px">
+          <span id="slider-fill" class="slider-fill"></span>
+          <button id="slider-thumb" class="slider-thumb" type="button" aria-label="Drag slider">&rarr;</button>
+          <span id="slider-copy" class="slider-copy">Drag to fit the puzzle piece</span>
+        </div>
+        <input type="hidden" name="cw_slider_token" value="{{.SliderToken}}">
+        <input id="slider-x" type="hidden" name="cw_slider_x" value="">
+        <input id="slider-drag-ms" type="hidden" name="cw_slider_drag_ms" value="">
+        <input id="slider-track-data" type="hidden" name="cw_slider_track" value="">
+        <div class="captcha-foot"><span class="captcha-brand"><span class="captcha-brand-mark">CW</span><strong>CheeseWAF</strong></span><button type="button" id="slider-refresh" aria-label="Refresh challenge">&#8635;</button></div>
+      </form>
+    {{else if .UseAltcha}}
+      <p>CheeseWAF is running an Altcha-compatible proof-of-work challenge locally in your browser.</p>
+      <div class="bar"><span></span></div>
+    {{else}}
+      <p>CheeseWAF is checking that this request comes from a browser. This page solves a short proof-of-work challenge and reloads automatically.</p>
+      <div class="bar"><span></span></div>
+    {{end}}
+    <noscript>JavaScript is required for PoW and slider verification. Use image CAPTCHA mode if JavaScript-free access is required.</noscript>
+  </main>
+  <script>
+    {{if .UseSlider}}
+    (function(){
+      const piece = document.getElementById("slider-piece");
+      const track = document.getElementById("slider-track");
+      const fill = document.getElementById("slider-fill");
+      const thumb = document.getElementById("slider-thumb");
+      const copy = document.getElementById("slider-copy");
+      const notice = document.getElementById("slider-notice");
+      const tip = document.getElementById("stage-tip");
+      const refresh = document.getElementById("slider-refresh");
+      const inputX = document.getElementById("slider-x");
+      const inputMS = document.getElementById("slider-drag-ms");
+      const inputTrack = document.getElementById("slider-track-data");
+      const pieceSize = {{.SliderPieceSize}};
+      const targetY = {{.SliderTargetY}};
+      const trackWidth = {{.SliderTrackWidth}};
+      let drag = null;
+      let locked = false;
+      let trackPoints = [];
+      function apply(x){
+        const next = Math.max(0, Math.min(trackWidth, Math.round(x)));
+        thumb.style.transform = "translateX(" + next + "px)";
+        piece.style.transform = "translate3d(" + next + "px," + targetY + "px,0)";
+        fill.style.width = (next + pieceSize / 2) + "px";
+        track.setAttribute("aria-valuenow", String(next));
+        return next;
+      }
+      function setNotice(kind, title, body){
+        notice.className = "notice" + (kind ? " " + kind : "");
+        notice.hidden = false;
+        notice.querySelector("strong").textContent = title;
+        notice.querySelector("span").textContent = body;
+      }
+      function rel(event, x, type){
+        const rect = track.getBoundingClientRect();
+        const scaledX = rect.width > 0 ? Math.round(Math.max(0, Math.min(trackWidth, x))) : Math.round(x);
+        const scaledY = rect.height > 0 ? Math.round(event.clientY - rect.top) : 0;
+        return {x: scaledX, y: scaledY, t: drag ? Math.max(0, Math.round(performance.now() - drag.at)) : 0, type: type};
+      }
+      function start(event){
+        if (locked) return;
+        track.setPointerCapture(event.pointerId);
+        event.preventDefault();
+        drag = {id:event.pointerId, origin:event.clientX, start: Number(track.getAttribute("aria-valuenow") || "0"), at: performance.now()};
+        trackPoints = [rel(event, drag.start, "down")];
+        setNotice("", "Release after aligning the piece", "Security verification");
+      }
+      function move(event){
+        if (!drag || drag.id !== event.pointerId) return;
+        const x = apply(drag.start + event.clientX - drag.origin);
+        trackPoints.push(rel(event, x, "move"));
+        if (trackPoints.length > 96) trackPoints.splice(1, trackPoints.length - 96);
+      }
+      function finish(event){
+        if (!drag || drag.id !== event.pointerId) return;
+        const x = apply(drag.start + event.clientX - drag.origin);
+        trackPoints.push(rel(event, x, "up"));
+        inputX.value = String(x);
+        inputMS.value = String(Math.max(0, Math.round(performance.now() - drag.at)));
+        inputTrack.value = JSON.stringify(trackPoints);
+        drag = null;
+        if (x <= 0) {
+          setNotice("warning", "Drag the slider first", "Move the puzzle piece to the image gap.");
+          apply(0);
+          return;
+        }
+        locked = true;
+        tip.hidden = false;
+        setNotice("success", "Verification submitted", "Elapsed " + (Number(inputMS.value) / 1000).toFixed(2) + "s");
+        copy.textContent = "Verification submitted";
+        window.setTimeout(function(){ document.getElementById("slider-form").submit(); }, 120);
+      }
+      apply(0);
+      track.addEventListener("pointerdown", start);
+      track.addEventListener("pointermove", move);
+      track.addEventListener("pointerup", finish);
+      track.addEventListener("pointercancel", finish);
+      refresh.addEventListener("click", function(){ window.location.replace("{{.ReturnURL}}"); });
+    })();
+    {{else if .UseAltcha}}
+    const challenge = {algorithm:"{{.AltchaAlgorithm}}",challenge:"{{.AltchaChallenge}}",maxnumber:{{.AltchaMaxNumber}},salt:"{{.AltchaSalt}}",signature:"{{.AltchaSignature}}"};
+    async function sha256Hex(input){const data=new TextEncoder().encode(input);const digest=await crypto.subtle.digest("SHA-256",data);return Array.from(new Uint8Array(digest)).map((b)=>b.toString(16).padStart(2,"0")).join("")}
+    async function solve(){for(let i=0;i<=challenge.maxnumber;i++){const hash=await sha256Hex(challenge.salt+String(i));if(hash===challenge.challenge){const payload=btoa(JSON.stringify({algorithm:challenge.algorithm,challenge:challenge.challenge,number:i,salt:challenge.salt,signature:challenge.signature}));const target=new URL(window.location.href);target.searchParams.set("cw_altcha",payload);window.location.replace(target.toString());return}if(i>0&&i%500===0){await new Promise((resolve)=>window.setTimeout(resolve,0))}}window.setTimeout(function(){window.location.reload()},1000)}
+    if(window.crypto&&window.crypto.subtle){solve()}
+    {{else if not .UseImage}}
+    const nonce="{{.Nonce}}";const expires="{{.Expires}}";const signature="{{.Signature}}";const difficulty={{.Difficulty}};const prefix="0".repeat(difficulty);
+    async function sha256Hex(input){const data=new TextEncoder().encode(input);const digest=await crypto.subtle.digest("SHA-256",data);return Array.from(new Uint8Array(digest)).map((b)=>b.toString(16).padStart(2,"0")).join("")}
+    async function solve(){for(let i=0;i<12000000;i++){const hash=await sha256Hex(nonce+":"+i);if(hash.startsWith(prefix)){const target=new URL(window.location.href);target.searchParams.set("cw_nonce",nonce);target.searchParams.set("cw_expires",expires);target.searchParams.set("cw_sig",signature);target.searchParams.set("cw_pow",String(i));window.location.replace(target.toString());return}}window.setTimeout(function(){window.location.reload()},1000)}
+    if(window.crypto&&window.crypto.subtle){solve()}
+    {{end}}
+  </script>
 </body>
 </html>`))

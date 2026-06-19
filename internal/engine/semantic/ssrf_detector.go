@@ -71,11 +71,20 @@ func (d *SSRFDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) 
 
 func isInternalHost(host string) bool {
 	host = strings.TrimSuffix(strings.Trim(strings.ToLower(host), "[]"), ".")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "metadata" || host == "metadata.google.internal" || host == "metadata.google.internal." {
+	if host == "" {
+		return false
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") ||
+		host == "metadata" || host == "metadata.google.internal" || host == "metadata.google.internal." ||
+		host == "0.0.0.0" || host == "0" {
 		return true
 	}
 	if dynamicDNSHostResolvesInternal(host) {
 		return true
+	}
+	// Handle IPv4-mapped IPv6 addresses like ::ffff:127.0.0.1
+	if ipv4, ok := extractIPv4FromMappedIPv6(host); ok {
+		return internalIP(ipv4)
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -84,10 +93,18 @@ func isInternalHost(host string) bool {
 	if ip == nil {
 		return false
 	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-		return true
+	return internalIP(ip)
+}
+
+func extractIPv4FromMappedIPv6(host string) (net.IP, bool) {
+	if !strings.HasPrefix(host, "::ffff:") {
+		return nil, false
 	}
-	return ip.Equal(net.ParseIP("169.254.169.254")) || ip.Equal(net.ParseIP("169.254.170.2")) || ip.Equal(net.ParseIP("100.100.100.200"))
+	ipv4 := net.ParseIP(strings.TrimPrefix(host, "::ffff:"))
+	if ipv4 != nil && ipv4.To4() != nil {
+		return ipv4, true
+	}
+	return nil, false
 }
 
 func dynamicDNSHostResolvesInternal(host string) bool {

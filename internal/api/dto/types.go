@@ -39,6 +39,7 @@ type SliderCAPTCHAPayload struct {
 	Token  string `json:"token"`
 	X      int    `json:"x"`
 	DragMS int    `json:"drag_ms"`
+	Track  string `json:"track,omitempty"`
 }
 
 type SetupRequest struct {
