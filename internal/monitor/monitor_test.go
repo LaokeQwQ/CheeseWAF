@@ -17,6 +17,9 @@ func TestRenderPrometheusIncludesCoreMetrics(t *testing.T) {
 	if !strings.Contains(out, "cheesewaf_blocked_total 1") || !strings.Contains(out, `category="sqli"`) {
 		t.Fatalf("unexpected prometheus output:\n%s", out)
 	}
+	if snapshot.ProcessCount <= 0 || !strings.Contains(out, "cheesewaf_process_count") {
+		t.Fatalf("expected process count metric, snapshot=%+v output:\n%s", snapshot, out)
+	}
 }
 
 func TestAlerterFiresRule(t *testing.T) {

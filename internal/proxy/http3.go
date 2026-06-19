@@ -16,13 +16,10 @@ func (s *Server) TLSServer(altSvc string) (*http.Server, error) {
 	if s.config.Server.ListenTLS == "" {
 		return nil, nil
 	}
-	tlsConfig, err := TLSConfig(s.config.TLS)
-	if err != nil {
-		return nil, err
-	}
-	if !HasCertificate(s.config.TLS) {
+	if s.certs == nil || !s.certs.HasCertificate() {
 		return nil, fmt.Errorf("tls.cert_file and tls.key_file are required when server.listen_tls is set")
 	}
+	tlsConfig := s.certs.TLSConfig(s.config.TLS)
 	handler := s.Handler()
 	if altSvc != "" {
 		handler = withAltSvc(handler, altSvc)
@@ -41,13 +38,10 @@ func (s *Server) HTTP3Server() (*http3.Server, string, error) {
 	if !s.config.Server.HTTP3.Enabled {
 		return nil, "", nil
 	}
-	if !HasCertificate(s.config.TLS) {
+	if s.certs == nil || !s.certs.HasCertificate() {
 		return nil, "", fmt.Errorf("tls.cert_file and tls.key_file are required when HTTP/3 is enabled")
 	}
-	tlsConfig, err := TLSConfig(s.config.TLS)
-	if err != nil {
-		return nil, "", err
-	}
+	tlsConfig := s.certs.TLSConfig(s.config.TLS)
 	addr := HTTP3ListenAddr(s.config.Server)
 	altSvc, err := HTTP3AltSvcValue(addr)
 	if err != nil {

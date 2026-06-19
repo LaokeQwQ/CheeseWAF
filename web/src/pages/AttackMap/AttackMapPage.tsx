@@ -1,15 +1,16 @@
 import { Button, Radio, Table, Tag } from '@arco-design/web-react';
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Maximize2, Minus, Plus, RotateCcw } from 'lucide-react';
+import { Maximize2, RotateCcw } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { geoGraticule10, geoMercator, geoNaturalEarth1, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
+import { ChinaData } from 'china-map-geojson';
 import worldTopology from 'world-atlas/countries-110m.json';
 import { fetchChinaMapBoundary, fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
-import { displayAction, displayCategory, displayCountry, displaySeverity, normalizeCountryCode } from '../../utils/display';
+import { displayAction, displayCategory, displayCountry, displayGeoPlace, displaySeverity, isSameGeoCountry, normalizeCountryCode } from '../../utils/display';
 
 const GlobeMap = lazy(() => import('./GlobeMap'));
 
@@ -240,27 +241,34 @@ const chinaProjection = geoMercator().fitExtent(
 const chinaMapPath = geoPath(chinaProjection);
 const chinaGraticulePath = chinaMapPath(geoGraticule10() as any) ?? '';
 const chinaViewBox = `0 0 ${chinaMapWidth} ${chinaMapHeight}`;
+const chinaReferenceCountryIds = new Set(['156', '158', '344', '446']);
+const chinaReferenceMapPaths = worldFeatures
+  .map((item, index) => ({
+    id: normalizeWorldId(item.id ?? index),
+    d: chinaMapPath(item as any) ?? '',
+  }))
+  .filter((item) => item.d && chinaReferenceCountryIds.has(item.id));
 const chinaReferencePoints = [
-  { key: 'beijing', zh: '北京', en: 'Beijing', lon: 116.4, lat: 39.9 },
-  { key: 'shanghai', zh: '上海', en: 'Shanghai', lon: 121.5, lat: 31.2 },
-  { key: 'guangzhou', zh: '广州', en: 'Guangzhou', lon: 113.3, lat: 23.1 },
-  { key: 'chengdu', zh: '成都', en: 'Chengdu', lon: 104.1, lat: 30.7 },
-  { key: 'wuhan', zh: '武汉', en: 'Wuhan', lon: 114.3, lat: 30.6 },
-  { key: 'xian', zh: '西安', en: "Xi'an", lon: 108.9, lat: 34.3 },
-  { key: 'urumqi', zh: '乌鲁木齐', en: 'Urumqi', lon: 87.6, lat: 43.8 },
-  { key: 'harbin', zh: '哈尔滨', en: 'Harbin', lon: 126.6, lat: 45.8 },
-  { key: 'kunming', zh: '昆明', en: 'Kunming', lon: 102.8, lat: 25.0 },
-  { key: 'lhasa', zh: '拉萨', en: 'Lhasa', lon: 91.1, lat: 29.7 },
-  { key: 'hongkong', zh: '香港', en: 'Hong Kong', lon: 114.2, lat: 22.3 },
-  { key: 'macau', zh: '澳门', en: 'Macau', lon: 113.5, lat: 22.2 },
-  { key: 'taipei', zh: '台北', en: 'Taipei', lon: 121.6, lat: 25.0 },
-  { key: 'haikou', zh: '海南', en: 'Hainan', lon: 110.3, lat: 20.0 },
+  { key: 'beijing', zh: '北京', en: 'Beijing', lon: 116.4, lat: 39.9, dx: 8, dy: -10 },
+  { key: 'shanghai', zh: '上海', en: 'Shanghai', lon: 121.5, lat: 31.2, dx: 9, dy: 3 },
+  { key: 'guangzhou', zh: '广州', en: 'Guangzhou', lon: 113.3, lat: 23.1, dx: -10, dy: 16, anchor: 'end' as const },
+  { key: 'chengdu', zh: '成都', en: 'Chengdu', lon: 104.1, lat: 30.7, dx: 8, dy: 5 },
+  { key: 'wuhan', zh: '武汉', en: 'Wuhan', lon: 114.3, lat: 30.6, dx: -11, dy: -9, anchor: 'end' as const },
+  { key: 'xian', zh: '西安', en: "Xi'an", lon: 108.9, lat: 34.3, dx: 8, dy: -9 },
+  { key: 'urumqi', zh: '乌鲁木齐', en: 'Urumqi', lon: 87.6, lat: 43.8, dx: 8, dy: 4 },
+  { key: 'harbin', zh: '哈尔滨', en: 'Harbin', lon: 126.6, lat: 45.8, dx: 8, dy: 4 },
+  { key: 'kunming', zh: '昆明', en: 'Kunming', lon: 102.8, lat: 25.0, dx: 8, dy: 5 },
+  { key: 'lhasa', zh: '拉萨', en: 'Lhasa', lon: 91.1, lat: 29.7, dx: 8, dy: 4 },
+  { key: 'hongkong', zh: '香港', en: 'Hong Kong', lon: 114.2, lat: 22.3, dx: 10, dy: 19 },
+  { key: 'macau', zh: '澳门', en: 'Macau', lon: 113.5, lat: 22.2, dx: -10, dy: 12, anchor: 'end' as const },
+  { key: 'taipei', zh: '台北', en: 'Taipei', lon: 121.6, lat: 25.0, dx: 8, dy: 10 },
+  { key: 'haikou', zh: '海南', en: 'Hainan', lon: 110.3, lat: 20.0, dx: 8, dy: 14 },
 ].map((item) => ({ ...item, point: projectChinaSvgPoint(item.lon, item.lat) })).filter((item) => item.point);
 const chinaIslandPoints = [
-  { key: 'diaoyu', zh: '钓鱼岛', en: 'Diaoyu Dao', lon: 123.5, lat: 25.8 },
-  { key: 'dongsha', zh: '东沙', en: 'Dongsha', lon: 116.8, lat: 20.7 },
-  { key: 'xisha', zh: '西沙', en: 'Xisha', lon: 112.0, lat: 16.8 },
-  { key: 'nansha', zh: '南沙', en: 'Nansha', lon: 114.2, lat: 10.2 },
+  { key: 'diaoyu', zh: '钓鱼岛', en: 'Diaoyu Dao', lon: 123.5, lat: 25.8, dx: 8, dy: -8 },
+  { key: 'dongsha', zh: '东沙', en: 'Dongsha', lon: 116.8, lat: 20.7, dx: 8, dy: 4 },
+  { key: 'xisha', zh: '西沙', en: 'Xisha', lon: 112.0, lat: 16.8, dx: 8, dy: 4 },
+  { key: 'nansha', zh: '南沙', en: 'Nansha', lon: 114.2, lat: 10.2, dx: 8, dy: 4 },
 ].map((item) => ({ ...item, point: projectChinaSvgPoint(item.lon, item.lat) })).filter((item) => item.point);
 
 const chinaPostureCells = [
@@ -346,14 +354,14 @@ export default function AttackMapPage() {
     setChinaBoundary(emptyChinaBoundary);
   }, [boundaryData]);
 
-  function updateZoom(next: number | ((current: number) => number)) {
+  const updateZoom = useCallback((next: number | ((current: number) => number)) => {
     setZoom((current) => {
       const raw = typeof next === 'function' ? next(current) : next;
       const clamped = Math.max(0.75, Math.min(3, Number(raw.toFixed(2))));
       setPan((currentPan) => clampPan(currentPan, clamped));
       return clamped;
     });
-  }
+  }, []);
 
   function resetView() {
     setZoom(1);
@@ -373,14 +381,21 @@ export default function AttackMapPage() {
     resetView();
   }
 
-  function handleWheel(event: WheelEvent<HTMLElement>) {
-    if (mode === '3d') {
-      return;
+  const mapCanvasRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const el = mapCanvasRef.current;
+    if (!el) return;
+    function onWheel(e: globalThis.WheelEvent) {
+      e.preventDefault();
+      if (mode === '3d') {
+        return;
+      }
+      updateZoom((current) => current + (e.deltaY > 0 ? -0.12 : 0.12));
     }
-    event.preventDefault();
-    event.stopPropagation();
-    updateZoom((current) => current + (event.deltaY > 0 ? -0.12 : 0.12));
-  }
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [mode, updateZoom]);
 
   function handlePointerDown(event: PointerEvent<HTMLElement>) {
     if (mode === '3d' || event.button !== 0 || zoom <= 1.01) {
@@ -453,13 +468,10 @@ export default function AttackMapPage() {
                   <Radio value="china">{t('attackMap.modeChina')}</Radio>
                 </Radio.Group>
               </span>
-              <span className="map-control-group map-zoom-group">
-                <Button icon={<Minus size={14} />} onClick={() => updateZoom((current) => current - 0.15)} title={t('attackMap.zoomOut')} />
-                <span>{Math.round(zoom * 100)}%</span>
-                <Button icon={<Plus size={14} />} onClick={() => updateZoom((current) => current + 0.15)} title={t('attackMap.zoomIn')} />
-                <Button icon={<RotateCcw size={14} />} onClick={resetView} title={t('attackMap.resetView')} />
-              </span>
               <span className="map-control-group map-action-group">
+                {(mode !== '3d' && (zoom !== 1 || pan.x !== 0 || pan.y !== 0)) && (
+                  <Button icon={<RotateCcw size={14} />} onClick={resetView}>{t('attackMap.resetView')}</Button>
+                )}
                 <Button icon={<Maximize2 size={14} />} onClick={() => navigate('/attack-map/screen')}>{t('attackMap.bigScreen')}</Button>
               </span>
             </div>
@@ -467,12 +479,12 @@ export default function AttackMapPage() {
         </div>
 
         <section
+          ref={mapCanvasRef}
           className={`map-canvas map-mode-${mode} ${mode !== '3d' && zoom > 1.01 ? 'map-can-pan' : ''} ${dragging ? 'map-panning' : ''}`}
-          onWheelCapture={handleWheel}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerEnd}
-          onPointerCancel={handlePointerEnd}
+          onPointerDown={mode === '3d' ? undefined : handlePointerDown}
+          onPointerMove={mode === '3d' ? undefined : handlePointerMove}
+          onPointerUp={mode === '3d' ? undefined : handlePointerEnd}
+          onPointerCancel={mode === '3d' ? undefined : handlePointerEnd}
         >
           {mode === '3d' ? (
             <Suspense fallback={<div className="globe-stage"><div className="page-spinner" aria-label={t('attackMap.loading')} aria-busy="true" /></div>}>
@@ -501,6 +513,8 @@ export default function AttackMapPage() {
                 <span
                   key={region.key}
                   tabIndex={0}
+                  role="button"
+                  aria-label={formatRegionTooltip(region, t)}
                   className={[
                     'map-marker',
                     `map-risk-${region.level}`,
@@ -513,6 +527,12 @@ export default function AttackMapPage() {
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedRegionKey(region.key);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setSelectedRegionKey(region.key);
+                    }
                   }}
                   onFocus={() => setSelectedRegionKey(region.key)}
                 >
@@ -533,6 +553,8 @@ export default function AttackMapPage() {
                   <span
                     key={region.key}
                     tabIndex={0}
+                    role="button"
+                    aria-label={formatRegionTooltip(region, t)}
                     className={[
                       'map-marker',
                       `map-risk-${region.level}`,
@@ -545,6 +567,12 @@ export default function AttackMapPage() {
                     onClick={(event) => {
                       event.stopPropagation();
                       setSelectedRegionKey(region.key);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setSelectedRegionKey(region.key);
+                      }
                     }}
                     onFocus={() => setSelectedRegionKey(region.key)}
                   >
@@ -700,6 +728,11 @@ function ChinaRegionFocusMap({ language, boundary, regions }: { language: 'zh' |
         </g>
       ) : (
         <>
+          {chinaReferenceMapPaths.length > 0 && (
+            <g className="china-reference-boundary-layer">
+              {chinaReferenceMapPaths.map((item) => <path key={item.id} className="china-reference-boundary-path" d={item.d} />)}
+            </g>
+          )}
           <g className="china-focus-rings">
             <ellipse cx="498" cy="304" rx="314" ry="188" />
             <ellipse cx="498" cy="304" rx="414" ry="250" />
@@ -734,7 +767,7 @@ function ChinaRegionFocusMap({ language, boundary, regions }: { language: 'zh' |
         {chinaIslandPoints.map((item) => (
           <g key={item.key} transform={`translate(${item.point?.x ?? 0} ${item.point?.y ?? 0})`}>
             <circle r="3" />
-            <text x="8" y="4">{language === 'zh' ? item.zh : item.en}</text>
+            <text x={item.dx} y={item.dy}>{language === 'zh' ? item.zh : item.en}</text>
           </g>
         ))}
       </g>
@@ -742,7 +775,7 @@ function ChinaRegionFocusMap({ language, boundary, regions }: { language: 'zh' |
         {chinaReferencePoints.map((item) => (
           <g key={item.key} transform={`translate(${item.point?.x ?? 0} ${item.point?.y ?? 0})`}>
             <circle r="3.2" />
-            <text x="8" y="4">{language === 'zh' ? item.zh : item.en}</text>
+            <text x={item.dx} y={item.dy} textAnchor={item.anchor ?? 'start'}>{language === 'zh' ? item.zh : item.en}</text>
           </g>
         ))}
       </g>
@@ -1129,7 +1162,13 @@ function isChinaRegion(region: AttackRegion) {
 function formatRegionLocation(region: AttackRegion, t: (key: string, options?: Record<string, unknown>) => string) {
   const country = displayCountry(region.countryCode, t);
   if (region.locationName && region.locationName !== region.countryCode && region.locationName !== 'UNLOCATED') {
-    return `${country} · ${region.locationName}`;
+    const location = region.locationName
+      .split(/\s*·\s*|\s*\/\s*/)
+      .filter((part) => !isSameGeoCountry(part, region.countryCode, t))
+      .map((part) => displayGeoPlace(part, region.countryCode, t))
+      .filter(Boolean)
+      .join(' / ');
+    return location ? `${country} / ${location}` : country;
   }
   return country;
 }

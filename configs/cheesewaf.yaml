@@ -159,6 +159,8 @@ protection:
     slider_captcha_piece: 42
     slider_captcha_tolerance: 6
     slider_captcha_min_drag: 450ms
+    slider_captcha_track_required: true
+    captcha_mobile_type: pow
     challenge_difficulty: 4
     altcha_max_number: 75000
     altcha_header_name: "X-CheeseWAF-Altcha"

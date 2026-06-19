@@ -1,8 +1,8 @@
-import { Button, Form, Input, InputNumber, Select, Switch, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, InputNumber, Select, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, Clock3, Globe2, Image as ImageIcon, KeyRound, Puzzle, Route, ShieldAlert, TimerReset } from 'lucide-react';
+import { Bot, Clock3, Globe2, Image as ImageIcon, KeyRound, List, Pencil, Plus, Puzzle, Route, ShieldAlert, TimerReset, Trash2 } from 'lucide-react';
 import { fetchProtection, updateACLProtection, updateBotProtection, updateIPProtection, updateProtectionPolicy, updateRateLimit } from '../../api/client';
 import type { ACLRule, ProtectionConfig } from '../../types/api';
 import { displayAction } from '../../utils/display';
@@ -35,6 +35,8 @@ const fallback: ProtectionConfig = {
     slider_captcha_piece: 42,
     slider_captcha_tolerance: 6,
     slider_captcha_min_drag: '450ms',
+    slider_captcha_track_required: true,
+    captcha_mobile_type: 'pow',
     challenge_difficulty: 4,
     altcha_max_number: 75000,
     altcha_header_name: 'X-CheeseWAF-Altcha',
@@ -53,7 +55,15 @@ const fallback: ProtectionConfig = {
 };
 type DurationUnit = 'ms' | 's' | 'm' | 'h' | 'd';
 
-const geoRegionOptions = ['CN', 'HK', 'MO', 'TW', 'US', 'RU', 'SG', 'JP', 'KR', 'DE', 'GB', 'FR', 'IN', 'BR', 'VN'] as const;
+const geoRegionGroups = [
+  { label: 'Asia', codes: ['CN', 'HK', 'MO', 'TW', 'JP', 'KR', 'SG', 'IN', 'VN', 'TH', 'MY', 'ID', 'PH', 'PK', 'KZ'] },
+  { label: 'Europe', codes: ['GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'SE', 'CH', 'PL', 'RO', 'CZ', 'AT', 'HU', 'FI', 'DK', 'NO', 'IE', 'GR', 'PT', 'BE', 'SK', 'SI'] },
+  { label: 'North America', codes: ['US', 'CA', 'MX'] },
+  { label: 'South America', codes: ['BR', 'AR', 'CL', 'CO', 'PE', 'VE'] },
+  { label: 'Africa', codes: ['ZA', 'EG', 'NG', 'KE', 'MA'] },
+  { label: 'Oceania', codes: ['AU', 'NZ'] },
+  { label: 'Middle East', codes: ['AE', 'SA', 'IL', 'IR', 'TR'] },
+] as const;
 
 export default function ProtectionPage() {
   const { t } = useTranslation();
@@ -66,11 +76,56 @@ export default function ProtectionPage() {
     { field: 'bot_cc', label: t('sites.botCCLevel'), hint: t('protection.botCCHint') },
     { field: 'threat_intel', label: t('sites.threatIntelLevel'), hint: t('protection.threatIntelHint') },
   ] as const;
-  const policyMutation = useMutation({ mutationFn: updateProtectionPolicy, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
+  const [policyDraft, setPolicyDraft] = useState(protection.policy);
+  const [policySaving, setPolicySaving] = useState<Record<string, boolean>>({});
+  useEffect(() => { setPolicyDraft(protection.policy); }, [protection.policy]);
+  const policyMutation = useMutation({
+    mutationFn: updateProtectionPolicy,
+    onSuccess: (_result, variables) => {
+      const fields = Object.keys(variables) as Array<keyof typeof variables>;
+      setPolicySaving((prev) => { const next = { ...prev }; for (const f of fields) delete next[f]; return next; });
+      queryClient.invalidateQueries({ queryKey: ['protection'] });
+    },
+    onError: (_error, variables) => {
+      const fields = Object.keys(variables) as Array<keyof typeof variables>;
+      setPolicySaving((prev) => { const next = { ...prev }; for (const f of fields) delete next[f]; return next; });
+      setPolicyDraft(protection.policy);
+    },
+  });
   const ipMutation = useMutation({ mutationFn: updateIPProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const rateMutation = useMutation({ mutationFn: updateRateLimit, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const botMutation = useMutation({ mutationFn: updateBotProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
   const aclMutation = useMutation({ mutationFn: updateACLProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
+  const [aclDraft, setAclDraft] = useState<ACLRule | null>(null);
+  const [aclEditing, setAclEditing] = useState(false);
+  const [aclChanged, setAclChanged] = useState(false);
+
+  function startNewACL() {
+    setAclDraft({ id: `acl-${Date.now()}`, name: '', method: '', path_prefix: '', header: '', header_value: '', action: 'block', severity: 'medium', enabled: true });
+    setAclEditing(true);
+  }
+  function editACL(rule: ACLRule) {
+    setAclDraft({ ...rule });
+    setAclEditing(true);
+  }
+  function saveACLDraft() {
+    if (!aclDraft) return;
+    const rules = [...protection.acl.rules];
+    const idx = rules.findIndex((r) => r.id === aclDraft.id);
+    if (idx >= 0) rules[idx] = aclDraft;
+    else rules.push(aclDraft);
+    aclMutation.mutate({ ...protection.acl, rules });
+    setAclDraft(null);
+    setAclEditing(false);
+    setAclChanged(false);
+    setAclUnsaved(false);
+  }
+  function deleteACL(id: string) {
+    const rules = protection.acl.rules.filter((r) => r.id !== id);
+    aclMutation.mutate({ ...protection.acl, rules });
+    setAclUnsaved(false);
+  }
+  const [aclUnsaved, setAclUnsaved] = useState(false);
 
   return (
     <section className="page-surface">
@@ -86,34 +141,42 @@ export default function ProtectionPage() {
           <h2><ShieldAlert size={16} /> {t('protection.policy')}</h2>
           <span className="policy-current-summary">{t('protection.policyDefaultHint')}</span>
         </div>
-        <Form
-          key={`policy-${Object.values(protection.policy).join('-')}`}
-          layout="vertical"
-          initialValues={protection.policy}
-          onSubmit={(values) => policyMutation.mutate(values as ProtectionConfig['policy'])}
-        >
-          <div className="policy-level-grid">
-            {policyItems.map((item) => (
-              <div className={`policy-level-card policy-level-card-${protection.policy[item.field] || 'smart'}`} key={item.field}>
+        <div className="policy-level-grid">
+          {policyItems.map((item) => {
+            const currentLevel = policyDraft[item.field] || 'smart';
+            const isSaving = policySaving[item.field];
+            return (
+              <div className={`policy-level-card policy-level-card-${currentLevel}`} key={item.field}>
                 <div className="policy-level-card-head">
                   <span>{item.label}</span>
-                  <strong>{policyLevelLabel(protection.policy[item.field], t)}</strong>
+                  <strong>{policyLevelLabel(currentLevel, t)}</strong>
                 </div>
                 <p>{item.hint}</p>
-                <Form.Item label={false} field={item.field}>
-                  <ProtectionLevelSelect />
-                </Form.Item>
+                <ProtectionLevelSelect
+                  value={currentLevel}
+                  disabled={isSaving}
+                  onChange={async (level) => {
+                    const prevLevel = policyDraft[item.field];
+                    setPolicyDraft((draft) => ({ ...draft, [item.field]: level }));
+                    setPolicySaving((prev) => ({ ...prev, [item.field]: true }));
+                    try {
+                      await policyMutation.mutateAsync({ [item.field]: level } as ProtectionConfig['policy']);
+                    } catch {
+                      setPolicyDraft((draft) => ({ ...draft, [item.field]: prevLevel }));
+                    }
+                  }}
+                />
+                {isSaving && <span className="policy-saving-indicator">{t('common.saving')}</span>}
               </div>
-            ))}
-          </div>
-          <Button type="primary" htmlType="submit" loading={policyMutation.isPending}>{t('common.save')}</Button>
-        </Form>
+            );
+          })}
+        </div>
       </section>
 
       <div className="settings-grid protection-settings-grid">
         <section className="panel protection-bot-panel">
           <div className="panel-heading">
-            <h2><Bot size={16} /> {t('protection.botChallenge')}</h2>
+            <h2><Bot size={16} /> {t('protection.bot')}</h2>
             <span className="policy-current-summary">{t('protection.botChallengeHint')}</span>
           </div>
           <Form
@@ -134,6 +197,8 @@ export default function ProtectionPage() {
               sliderCaptchaPiece: protection.bot.slider_captcha_piece,
               sliderCaptchaTolerance: protection.bot.slider_captcha_tolerance,
               sliderCaptchaMinDrag: protection.bot.slider_captcha_min_drag || '450ms',
+              sliderCaptchaTrackRequired: protection.bot.slider_captcha_track_required ?? true,
+              captchaMobileType: protection.bot.captcha_mobile_type || 'pow',
               challengeDifficulty: protection.bot.challenge_difficulty,
               altchaMaxNumber: protection.bot.altcha_max_number,
               altchaHeaderName: protection.bot.altcha_header_name,
@@ -143,10 +208,10 @@ export default function ProtectionPage() {
               challengeTtl: protection.bot.challenge_ttl || '30m',
               cookieName: protection.bot.cookie_name,
               secret: protection.bot.secret,
-              protectedPaths: protection.bot.path_prefixes.join(','),
-              exemptPaths: protection.bot.exempt_path_prefixes.join(','),
-              allowedUA: protection.bot.allowed_user_agents.join(','),
-              suspiciousUA: protection.bot.suspicious_user_agents.join(','),
+              protectedPaths: protection.bot.path_prefixes,
+              exemptPaths: protection.bot.exempt_path_prefixes,
+              allowedUA: protection.bot.allowed_user_agents,
+              suspiciousUA: protection.bot.suspicious_user_agents,
             }}
             onSubmit={(values) => botMutation.mutate({
               enabled: values.enabled,
@@ -163,6 +228,8 @@ export default function ProtectionPage() {
               slider_captcha_piece: values.sliderCaptchaPiece,
               slider_captcha_tolerance: values.sliderCaptchaTolerance,
               slider_captcha_min_drag: durationToNanoseconds(values.sliderCaptchaMinDrag, '450ms'),
+              slider_captcha_track_required: values.sliderCaptchaTrackRequired,
+              captcha_mobile_type: values.captchaMobileType,
               challenge_difficulty: values.challengeDifficulty,
               altcha_max_number: values.altchaMaxNumber,
               altcha_header_name: values.altchaHeaderName,
@@ -172,14 +239,19 @@ export default function ProtectionPage() {
               challenge_ttl: durationToNanoseconds(values.challengeTtl, '30m'),
               cookie_name: values.cookieName,
               secret: values.secret,
-              path_prefixes: splitList(values.protectedPaths),
-              exempt_path_prefixes: splitList(values.exemptPaths),
-              allowed_user_agents: splitList(values.allowedUA),
-              suspicious_user_agents: splitList(values.suspiciousUA),
+              path_prefixes: asArr(values.protectedPaths),
+              exempt_path_prefixes: asArr(values.exemptPaths),
+              allowed_user_agents: asArr(values.allowedUA),
+              suspicious_user_agents: asArr(values.suspiciousUA),
             })}
           >
-            <div className="protection-section-stack">
-              <div className="protection-section-card protection-section-card-main protection-section-card-plain">
+            <Tabs
+              defaultActiveTab="overview"
+              tabPosition="top"
+              size="small"
+              className="protection-bot-tabs"
+            >
+              <Tabs.TabPane key="overview" title={t('protection.botOverview')}>
                 <div className="protection-form-grid protection-form-grid-compact">
                   <Form.Item label={t('protection.bot')} field="enabled" triggerPropName="checked" extra={t('protection.botEnabledHint')}><Switch /></Form.Item>
                   <Form.Item label={t('protection.jsChallenge')} field="jsChallenge" triggerPropName="checked" extra={t('protection.jsChallengeHint')}><Switch /></Form.Item>
@@ -192,78 +264,72 @@ export default function ProtectionPage() {
                     </Select>
                   </Form.Item>
                   <Form.Item label={t('protection.captchaMaxAttempts')} field="captchaMaxAttempts" extra={t('protection.captchaMaxAttemptsHint')}><InputNumber min={1} max={20} /></Form.Item>
+                  <Form.Item label={t('protection.captchaMobileType')} field="captchaMobileType" extra={t('protection.captchaMobileTypeHint')}>
+                    <Select>
+                      <Select.Option value="pow">{t('protection.captchaTypePow')}</Select.Option>
+                      <Select.Option value="image">{t('protection.captchaTypeImage')}</Select.Option>
+                    </Select>
+                  </Form.Item>
                   <Form.Item className="duration-field" label={t('protection.challengeTtl')} field="challengeTtl" extra={t('protection.challengeTtlHint')}><DurationUnitInput /></Form.Item>
                 </div>
-              </div>
-
-              <div className="protection-subsection-grid">
-                <div className="protection-section-card">
-                  <header>
-                    <strong><KeyRound size={15} /> {t('protection.powAltcha')}</strong>
-                    <span>{t('protection.powAltchaHint')}</span>
-                  </header>
-                  <div className="protection-form-grid protection-form-grid-compact">
-                    <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty" extra={t('protection.challengeDifficultyHint')}><InputNumber min={1} max={6} /></Form.Item>
-                    <Form.Item label={t('protection.altchaMaxNumber')} field="altchaMaxNumber" extra={t('protection.altchaMaxNumberHint')}><InputNumber min={1000} max={50000000} /></Form.Item>
-                    <Form.Item label={t('protection.altchaHeader')} field="altchaHeaderName" extra={t('protection.altchaHeaderHint')}><Input /></Form.Item>
-                  </div>
+              </Tabs.TabPane>
+              <Tabs.TabPane key="pow" title={t('protection.powAltcha')}>
+                <div className="protection-form-grid protection-form-grid-compact">
+                  <Form.Item label={t('protection.challengeDifficulty')} field="challengeDifficulty" extra={t('protection.challengeDifficultyHint')}><InputNumber min={1} max={6} /></Form.Item>
+                  <Form.Item label={t('protection.altchaMaxNumber')} field="altchaMaxNumber" extra={t('protection.altchaMaxNumberHint')}><InputNumber min={1000} max={50000000} /></Form.Item>
+                  <Form.Item label={t('protection.altchaHeader')} field="altchaHeaderName" extra={t('protection.altchaHeaderHint')}><Input /></Form.Item>
                 </div>
-
-                <div className="protection-section-card">
-                  <header>
-                    <strong><ImageIcon size={15} /> {t('protection.imageCaptcha')}</strong>
-                    <span>{t('protection.imageCaptchaHint')}</span>
-                  </header>
-                  <div className="protection-form-grid protection-form-grid-compact">
-                    <Form.Item label={t('protection.imageCaptchaLength')} field="imageCaptchaLength" extra={t('protection.imageCaptchaLengthHint')}><InputNumber min={4} max={8} /></Form.Item>
-                    <Form.Item label={t('protection.imageCaptchaSize')} field="imageCaptchaWidth" extra={t('protection.imageCaptchaSizeHint')}><InputNumber min={160} max={420} /></Form.Item>
-                    <Form.Item label={t('protection.imageCaptchaHeight')} field="imageCaptchaHeight"><InputNumber min={60} max={180} /></Form.Item>
-                    <Form.Item label={t('protection.imageCaptchaAudioLimit')} field="imageCaptchaAudioLimit" extra={t('protection.imageCaptchaAudioLimitHint')}><InputNumber min={1} max={20} /></Form.Item>
-                  </div>
+              </Tabs.TabPane>
+              <Tabs.TabPane key="image" title={t('protection.imageCaptcha')}>
+                <div className="protection-form-grid protection-form-grid-compact">
+                  <Form.Item label={t('protection.imageCaptchaLength')} field="imageCaptchaLength" extra={t('protection.imageCaptchaLengthHint')}><InputNumber min={4} max={8} /></Form.Item>
+                  <Form.Item label={t('protection.imageCaptchaSize')} field="imageCaptchaWidth" extra={t('protection.imageCaptchaSizeHint')}><InputNumber min={160} max={420} /></Form.Item>
+                  <Form.Item label={t('protection.imageCaptchaHeight')} field="imageCaptchaHeight"><InputNumber min={60} max={180} /></Form.Item>
+                  <Form.Item label={t('protection.imageCaptchaAudioLimit')} field="imageCaptchaAudioLimit" extra={t('protection.imageCaptchaAudioLimitHint')}><InputNumber min={1} max={20} /></Form.Item>
                 </div>
-
-                <div className="protection-section-card">
-                  <header>
-                    <strong><Puzzle size={15} /> {t('protection.sliderCaptcha')}</strong>
-                    <span>{t('protection.sliderCaptchaHint')}</span>
-                  </header>
-                  <div className="protection-form-grid protection-form-grid-compact">
-                    <Form.Item label={t('protection.sliderCaptchaWidth')} field="sliderCaptchaWidth"><InputNumber min={240} max={520} /></Form.Item>
-                    <Form.Item label={t('protection.sliderCaptchaHeight')} field="sliderCaptchaHeight"><InputNumber min={100} max={260} /></Form.Item>
-                    <Form.Item label={t('protection.sliderCaptchaPiece')} field="sliderCaptchaPiece" extra={t('protection.sliderCaptchaPieceHint')}><InputNumber min={32} max={80} /></Form.Item>
-                    <Form.Item label={t('protection.sliderCaptchaTolerance')} field="sliderCaptchaTolerance" extra={t('protection.sliderCaptchaToleranceHint')}><InputNumber min={2} max={16} /></Form.Item>
-                    <Form.Item className="duration-field" label={t('protection.sliderCaptchaMinDrag')} field="sliderCaptchaMinDrag" extra={t('protection.sliderCaptchaMinDragHint')}><DurationUnitInput units={['ms', 's']} fallback="450ms" /></Form.Item>
+              </Tabs.TabPane>
+              <Tabs.TabPane key="slider" title={t('protection.sliderCaptcha')}>
+                <div className="captcha-preview-card captcha-preview-card-product">
+                  <div className="captcha-preview-stage">
+                    <span className="captcha-preview-gap" />
+                    <span className="captcha-preview-piece" />
                   </div>
-                </div>
-
-                <div className="protection-section-card">
-                  <header>
-                    <strong><Clock3 size={15} /> {t('protection.waitingRoom')}</strong>
-                    <span>{t('protection.waitingRoomHint')}</span>
-                  </header>
-                  <div className="protection-form-grid protection-form-grid-compact">
-                    <Form.Item label={t('protection.waitingRoom')} field="waitingRoom" triggerPropName="checked" extra={t('protection.waitingRoomEnabledHint')}><Switch /></Form.Item>
-                    <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive" extra={t('protection.waitingRoomMaxActiveHint')}><InputNumber min={1} max={1000000} /></Form.Item>
-                    <Form.Item className="duration-field" label={t('protection.waitingRoomTtl')} field="waitingRoomTtl" extra={t('protection.waitingRoomTtlHint')}><DurationUnitInput /></Form.Item>
+                  <div className="captcha-preview-track">
+                    <span className="captcha-preview-fill" />
+                    <span className="captcha-preview-thumb" aria-hidden="true">›</span>
+                    <span>{t('protection.sliderCaptchaPreview')}</span>
                   </div>
+                  <p>{t('protection.sliderCaptchaPreviewHint')}</p>
                 </div>
-              </div>
-
-              <div className="protection-section-card">
-                <header>
-                  <strong><Route size={15} /> {t('protection.scopeAndTrust')}</strong>
-                  <span>{t('protection.scopeAndTrustHint')}</span>
-                </header>
+                <div className="protection-form-grid protection-form-grid-compact">
+                  <Form.Item label={t('protection.sliderCaptchaWidth')} field="sliderCaptchaWidth" extra={t('protection.sliderCaptchaWidthHint')}><InputNumber min={240} max={520} /></Form.Item>
+                  <Form.Item label={t('protection.sliderCaptchaHeight')} field="sliderCaptchaHeight" extra={t('protection.sliderCaptchaHeightHint')}><InputNumber min={100} max={260} /></Form.Item>
+                  <Form.Item label={t('protection.sliderCaptchaPiece')} field="sliderCaptchaPiece" extra={t('protection.sliderCaptchaPieceHint')}><InputNumber min={32} max={80} /></Form.Item>
+                  <Form.Item label={t('protection.sliderCaptchaTolerance')} field="sliderCaptchaTolerance" extra={t('protection.sliderCaptchaToleranceHint')}><InputNumber min={2} max={16} /></Form.Item>
+                  <Form.Item className="duration-field" label={t('protection.sliderCaptchaMinDrag')} field="sliderCaptchaMinDrag" extra={t('protection.sliderCaptchaMinDragHint')}><DurationUnitInput units={['ms', 's']} fallback="450ms" /></Form.Item>
+                  <Form.Item label={t('protection.sliderCaptchaTrackRequired')} field="sliderCaptchaTrackRequired" triggerPropName="checked" extra={t('protection.sliderCaptchaTrackRequiredHint')}><Switch /></Form.Item>
+                </div>
+              </Tabs.TabPane>
+              <Tabs.TabPane key="waiting" title={t('protection.waitingRoom')}>
+                <div className="protection-form-grid protection-form-grid-compact">
+                  <Form.Item label={t('protection.waitingRoom')} field="waitingRoom" triggerPropName="checked" extra={t('protection.waitingRoomEnabledHint')}><Switch /></Form.Item>
+                  <Form.Item label={t('protection.waitingRoomMaxActive')} field="waitingRoomMaxActive" extra={t('protection.waitingRoomMaxActiveHint')}><InputNumber min={1} max={1000000} /></Form.Item>
+                  <Form.Item className="duration-field" label={t('protection.waitingRoomTtl')} field="waitingRoomTtl" extra={t('protection.waitingRoomTtlHint')}><DurationUnitInput /></Form.Item>
+                </div>
+              </Tabs.TabPane>
+              <Tabs.TabPane key="paths" title={t('protection.scopeAndTrust')}>
                 <div className="protection-form-grid">
                   <Form.Item label={t('protection.cookieName')} field="cookieName" extra={t('protection.cookieNameHint')}><Input /></Form.Item>
-                  <Form.Item label={t('protection.secret')} field="secret" extra={t('protection.secretHint')}><Input.Password /></Form.Item>
-                  <Form.Item label={t('protection.protectedPaths')} field="protectedPaths" extra={t('protection.protectedPathsHint')}><Input placeholder="/" /></Form.Item>
-                  <Form.Item label={t('protection.exemptPaths')} field="exemptPaths" extra={t('protection.exemptPathsHint')}><Input placeholder="/health,/api/" /></Form.Item>
-                  <Form.Item label={t('protection.allowedUA')} field="allowedUA" extra={t('protection.allowedUAHint')}><Input /></Form.Item>
-                  <Form.Item label={t('protection.suspiciousUA')} field="suspiciousUA" extra={t('protection.suspiciousUAHint')}><Input /></Form.Item>
+                  <Form.Item label={t('protection.secret')} field="secret" extra={t('protection.secretHint')}>
+                    <Input.Password />
+                  </Form.Item>
                 </div>
-              </div>
-            </div>
+                <ListEditor label={t('protection.protectedPaths')} field="protectedPaths" hint={t('protection.protectedPathsHint')} placeholder="/" />
+                <ListEditor label={t('protection.exemptPaths')} field="exemptPaths" hint={t('protection.exemptPathsHint')} placeholder="/health" />
+                <ListEditor label={t('protection.allowedUA')} field="allowedUA" hint={t('protection.allowedUAHint')} placeholder="Googlebot" />
+                <ListEditor label={t('protection.suspiciousUA')} field="suspiciousUA" hint={t('protection.suspiciousUAHint')} placeholder="curl" />
+              </Tabs.TabPane>
+            </Tabs>
             <div className="form-action-row">
               <Button type="primary" htmlType="submit" loading={botMutation.isPending}>{t('common.save')}</Button>
             </div>
@@ -273,20 +339,16 @@ export default function ProtectionPage() {
         <section className="panel">
           <div className="panel-heading"><h2><Globe2 size={16} /> {t('protection.geoip')}</h2></div>
           <Form
-            key={`geoip-${protection.ip.geoip.enabled}-${protection.ip.whitelist.join('|')}`}
+            key={`geoip-${protection.ip.geoip.enabled}`}
             layout="vertical"
             initialValues={{
               enabled: protection.ip.geoip.enabled,
               database: protection.ip.geoip.database,
               precisionDatabase: protection.ip.geoip.precision_database,
               blocked: protection.ip.geoip.blocked_countries,
-              whitelist: protection.ip.whitelist.join(','),
-              blacklist: protection.ip.blacklist.join(','),
             }}
             onSubmit={(values) => ipMutation.mutate({
               ...protection.ip,
-              whitelist: splitList(values.whitelist),
-              blacklist: splitList(values.blacklist),
               geoip: {
                 ...protection.ip.geoip,
                 enabled: values.enabled,
@@ -298,13 +360,14 @@ export default function ProtectionPage() {
           >
             <div className="protection-form-grid">
               <Form.Item label={t('protection.geoip')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-              <Form.Item label={t('protection.geoipDatabase')} field="database"><Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" /></Form.Item>
+              <Form.Item label={t('protection.geoipDatabase')} field="database" extra={t('protection.geoipDatabaseHint')}><Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" /></Form.Item>
               <Form.Item label={t('protection.geoipPrecisionDatabase')} field="precisionDatabase" extra={t('protection.geoipPrecisionDatabaseHint')}><Input placeholder="/var/lib/cheesewaf/ip-precision.json" /></Form.Item>
               <Form.Item label={t('protection.blockedCountries')} field="blocked" extra={t('protection.blockedCountriesHint')}><GeoRegionSelector /></Form.Item>
-              <Form.Item label={t('ip.whitelist')} field="whitelist"><Input /></Form.Item>
-              <Form.Item label={t('ip.blacklist')} field="blacklist"><Input /></Form.Item>
             </div>
-            <Button type="primary" htmlType="submit" loading={ipMutation.isPending}>{t('common.save')}</Button>
+            <div className="form-action-row">
+              <span className="field-help">{t('protection.geoipAccessNote')}</span>
+              <Button type="primary" htmlType="submit" loading={ipMutation.isPending}>{t('common.save')}</Button>
+            </div>
           </Form>
         </section>
 
@@ -329,30 +392,91 @@ export default function ProtectionPage() {
       <section className="table-panel">
         <div className="panel-heading">
           <h2><ShieldAlert size={16} /> {t('protection.acl')}</h2>
-          <Button onClick={() => aclMutation.mutate(protection.acl)} loading={aclMutation.isPending}>{t('common.save')}</Button>
+          <span>{t('protection.aclHint')}</span>
+          <Button type="primary" icon={<Plus size={15} />} size="small" onClick={startNewACL}>{t('common.add')}</Button>
         </div>
-        <Table
-          className="protection-acl-table"
-          rowKey="id"
-          pagination={false}
-          loading={isLoading}
-          data={protection.acl.rules}
-          columns={[
-            { title: t('rules.name'), dataIndex: 'name' },
-            { title: 'Method', dataIndex: 'method', render: (method: string) => method || '*' },
-            { title: 'Path', dataIndex: 'path_prefix', render: (path: string) => <code className="table-code" title={path || '*'}>{path || '*'}</code> },
-            {
-              title: t('logs.action'),
-              dataIndex: 'action',
-              render: (action: string) => (
-                <span className="status-group">
-                  <Tag color={action === 'block' ? 'red' : 'blue'}>{displayAction(action, t)}</Tag>
-                </span>
-              ),
-            },
-            { title: t('rules.enabled'), dataIndex: 'enabled', render: (_: boolean, record: ACLRule) => <Switch checked={record.enabled} size="small" /> },
-          ]}
-        />
+        {aclEditing && aclDraft && (
+          <div className="acl-editor-card">
+            <div className="protection-form-grid protection-form-grid-compact">
+              <label>
+                <span>{t('rules.name')}</span>
+                <Input value={aclDraft.name} placeholder={t('rules.namePlaceholder')} onChange={(name) => { setAclDraft((d) => d ? { ...d, name } : d); setAclUnsaved(true); }} />
+              </label>
+              <label>
+                <span>{t('rules.method')}</span>
+                <Select value={aclDraft.method || '*'} onChange={(method) => { setAclDraft((d) => d ? { ...d, method: String(method) } : d); setAclUnsaved(true); }}>
+                  <Select.Option value="*">*</Select.Option>
+                  <Select.Option value="GET">GET</Select.Option>
+                  <Select.Option value="POST">POST</Select.Option>
+                  <Select.Option value="PUT">PUT</Select.Option>
+                  <Select.Option value="DELETE">DELETE</Select.Option>
+                  <Select.Option value="PATCH">PATCH</Select.Option>
+                  <Select.Option value="HEAD">HEAD</Select.Option>
+                  <Select.Option value="OPTIONS">OPTIONS</Select.Option>
+                </Select>
+              </label>
+              <label>
+                <span>{t('rules.path')}</span>
+                <Input value={aclDraft.path_prefix || ''} placeholder="/admin" onChange={(path_prefix) => { setAclDraft((d) => d ? { ...d, path_prefix } : d); setAclUnsaved(true); }} />
+              </label>
+              <label>
+                <span>{t('logs.action')}</span>
+                <Select value={aclDraft.action} onChange={(action) => { setAclDraft((d) => d ? { ...d, action: String(action) } : d); setAclUnsaved(true); }}>
+                  <Select.Option value="block">{displayAction('block', t)}</Select.Option>
+                  <Select.Option value="challenge">{displayAction('challenge', t)}</Select.Option>
+                  <Select.Option value="log">{displayAction('log', t)}</Select.Option>
+                  <Select.Option value="pass">{displayAction('pass', t)}</Select.Option>
+                </Select>
+              </label>
+              <label>
+                <span>{t('rules.header')}</span>
+                <Input value={aclDraft.header || ''} placeholder="X-Custom-Header" onChange={(header) => { setAclDraft((d) => d ? { ...d, header } : d); setAclUnsaved(true); }} />
+              </label>
+              <label>
+                <span>{t('rules.enabled')}</span>
+                <Switch checked={aclDraft.enabled} onChange={(enabled) => { setAclDraft((d) => d ? { ...d, enabled } : d); setAclUnsaved(true); }} />
+              </label>
+            </div>
+            <div className="acl-editor-actions">
+              <Button onClick={() => { setAclDraft(null); setAclEditing(false); setAclUnsaved(false); }}>{t('common.cancel')}</Button>
+              <Button type="primary" disabled={!aclUnsaved} loading={aclMutation.isPending} onClick={saveACLDraft}>{t('common.save')}</Button>
+            </div>
+          </div>
+        )}
+        {protection.acl.rules.length === 0 && !aclEditing ? (
+          <div className="empty-state">
+            <span>{t('protection.aclEmpty')}</span>
+          </div>
+        ) : (
+          <Table
+            className="protection-acl-table"
+            rowKey="id"
+            pagination={false}
+            loading={isLoading}
+            data={protection.acl.rules}
+            columns={[
+              { title: t('rules.name'), dataIndex: 'name', render: (name: string) => <strong>{name}</strong> },
+              { title: t('rules.method'), dataIndex: 'method', render: (method: string) => method || '*' },
+              { title: t('rules.path'), dataIndex: 'path_prefix', render: (path: string) => <code className="table-code">{path || '*'}</code> },
+              {
+                title: t('logs.action'),
+                dataIndex: 'action',
+                render: (action: string) => <Tag color={action === 'block' ? 'red' : action === 'challenge' ? 'orange' : 'blue'}>{displayAction(action, t)}</Tag>,
+              },
+              { title: t('rules.enabled'), dataIndex: 'enabled', render: (_: boolean, record: ACLRule) => <Switch checked={record.enabled} size="small" /> },
+              {
+                title: t('ip.actions'),
+                dataIndex: 'actions',
+                render: (_: unknown, record: ACLRule) => (
+                  <span className="action-group">
+                    <Button size="small" icon={<Pencil size={14} />} onClick={() => editACL(record)}>{t('common.edit')}</Button>
+                    <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => deleteACL(record.id)}>{t('common.delete')}</Button>
+                  </span>
+                ),
+              },
+            ]}
+          />
+        )}
         <div className="protection-acl-cards">
           {protection.acl.rules.map((rule) => (
             <article className="protection-acl-card" key={rule.id}>
@@ -360,18 +484,13 @@ export default function ProtectionPage() {
                 <strong>{rule.name}</strong>
                 <Switch checked={rule.enabled} size="small" />
               </header>
-              <div>
-                <span>Method</span>
-                <strong>{rule.method || '*'}</strong>
-              </div>
-              <div>
-                <span>Path</span>
-                <code>{rule.path_prefix || '*'}</code>
-              </div>
-              <div>
-                <span>{t('logs.action')}</span>
-                <Tag color={rule.action === 'block' ? 'red' : 'blue'}>{displayAction(rule.action, t)}</Tag>
-              </div>
+              <div><span>{t('rules.method')}</span><strong>{rule.method || '*'}</strong></div>
+              <div><span>{t('rules.path')}</span><code>{rule.path_prefix || '*'}</code></div>
+              <div><span>{t('logs.action')}</span><Tag color={rule.action === 'block' ? 'red' : rule.action === 'challenge' ? 'orange' : 'blue'}>{displayAction(rule.action, t)}</Tag></div>
+              <footer>
+                <Button size="small" onClick={() => editACL(rule)}>{t('common.edit')}</Button>
+                <Button size="small" status="danger" onClick={() => deleteACL(rule.id)}>{t('common.delete')}</Button>
+              </footer>
             </article>
           ))}
         </div>
@@ -395,14 +514,19 @@ function GeoRegionSelector({ value, onChange }: { value?: string[]; onChange?: (
       className="geo-region-select"
       mode="multiple"
       allowClear
+      showSearch
       value={selected}
       placeholder={t('protection.blockedCountriesPlaceholder')}
       onChange={(next) => onChange?.((Array.isArray(next) ? next : []).map((item) => String(item).toUpperCase()))}
     >
-      {geoRegionOptions.map((code) => (
-        <Select.Option key={code} value={code}>
-          {t(`geo.countries.${code}`, { defaultValue: code })} ({code})
-        </Select.Option>
+      {geoRegionGroups.map((group) => (
+        <Select.OptGroup key={group.label} label={group.label}>
+          {group.codes.map((code) => (
+            <Select.Option key={code} value={code}>
+              {t(`geo.countries.${code}`, { defaultValue: code })} ({code})
+            </Select.Option>
+          ))}
+        </Select.OptGroup>
       ))}
     </Select>
   );
@@ -457,7 +581,7 @@ function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-function ProtectionLevelSelect({ value, onChange }: { value?: string; onChange?: (value: string) => void }) {
+function ProtectionLevelSelect({ value, onChange, disabled }: { value?: string; onChange?: (value: string) => void; disabled?: boolean }) {
   const { t } = useTranslation();
   const current = value || 'smart';
   const options = [
@@ -474,6 +598,7 @@ function ProtectionLevelSelect({ value, onChange }: { value?: string; onChange?:
           key={option.value}
           type="button"
           role="radio"
+          disabled={disabled}
           aria-checked={current === option.value}
           className={current === option.value ? `protection-level-option protection-level-option-${option.value} protection-level-option-active` : 'protection-level-option'}
           onClick={() => onChange?.(option.value)}
@@ -583,6 +708,32 @@ function durationUnitLabel(unit: DurationUnit, t: ReturnType<typeof useTranslati
   if (unit === 'm') return t('common.minutes');
   if (unit === 'h') return t('common.hours');
   return t('common.days');
+}
+
+function ListEditor({ label, field, hint, placeholder }: { label: string; field: string; hint?: string; placeholder?: string }) {
+  const { t } = useTranslation();
+  return (
+    <Form.Item label={label} field={field} extra={hint}>
+      <Form.List field={field}>
+        {(fields, { add, remove }) => (
+          <div className="list-editor">
+            {fields.map((f) => (
+              <div className="list-editor-item" key={f.key}>
+                <Form.Item field={f.field} noStyle><Input placeholder={placeholder} /></Form.Item>
+                <Button size="mini" icon={<Trash2 size={12} />} onClick={() => remove(f.key)} />
+              </div>
+            ))}
+            <Button size="mini" icon={<Plus size={12} />} onClick={() => add()}>{t('common.add')}</Button>
+          </div>
+        )}
+      </Form.List>
+    </Form.Item>
+  );
+}
+
+function asArr(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  return [];
 }
 
 function policyLevelLabel(level: string | undefined, t: ReturnType<typeof useTranslation>['t']) {

@@ -231,6 +231,33 @@ func TestSliderCAPTCHAChallengeWritesPuzzleForm(t *testing.T) {
 	if rr.Code != http.StatusForbidden || !strings.Contains(body, "cw_slider_token") || !strings.Contains(body, "cw_slider_x") || !strings.Contains(body, "slider-piece") {
 		t.Fatalf("unexpected slider captcha response: status=%d body=%s", rr.Code, body)
 	}
+	if !strings.Contains(body, "slider-notice") || !strings.Contains(body, "slider-refresh") || !strings.Contains(body, "captcha-foot") {
+		t.Fatalf("expected product slider card markup, body=%s", body)
+	}
+	if strings.Contains(body, "slider-submit") || strings.Contains(body, "鈫") {
+		t.Fatalf("legacy slider markup leaked into response: %s", body)
+	}
+}
+
+func TestSliderCAPTCHAUsesMobileFallback(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:           true,
+		CAPTCHA:           true,
+		CAPTCHAType:       "slider",
+		CAPTCHAMobileType: "pow",
+		ChallengeTTL:      time.Minute,
+		CookieName:        "cw_clearance",
+		Secret:            "test-secret",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148")
+	rr := httptest.NewRecorder()
+
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	body := rr.Body.String()
+	if rr.Code != http.StatusForbidden || !strings.Contains(body, "cw_altcha") || strings.Contains(body, "cw_slider_token") {
+		t.Fatalf("expected mobile fallback PoW challenge, status=%d body=%s", rr.Code, body)
+	}
 }
 
 func TestChallengeValidatesProofAndSetsClearance(t *testing.T) {

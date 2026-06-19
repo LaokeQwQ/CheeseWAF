@@ -3,6 +3,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -17,6 +18,7 @@ type Config struct {
 	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
 	Storage       StorageConfig       `yaml:"storage" json:"storage"`
 	Logging       LoggingConfig       `yaml:"logging" json:"logging"`
+	ACME          ACMEConfig          `yaml:"acme" json:"acme"`
 	AI            AIConfig            `yaml:"ai" json:"ai"`
 	Update        UpdateConfig        `yaml:"update" json:"update"`
 	Vulnerability VulnerabilityConfig `yaml:"vulnerability" json:"vulnerability"`
@@ -130,14 +132,44 @@ type MapBoundaryConfig struct {
 }
 
 type SiteConfig struct {
-	ID          string           `yaml:"id" json:"id"`
-	Name        string           `yaml:"name" json:"name"`
-	Domains     []string         `yaml:"domains" json:"domains"`
-	Upstreams   []UpstreamConfig `yaml:"upstreams" json:"upstreams"`
-	ListenPort  int              `yaml:"listen_port" json:"listen_port"`
-	LoadBalance string           `yaml:"loadbalance" json:"loadbalance"`
-	WAF         WAFConfig        `yaml:"waf" json:"waf"`
-	Enabled     bool             `yaml:"enabled" json:"enabled"`
+	ID          string                `yaml:"id" json:"id"`
+	Name        string                `yaml:"name" json:"name"`
+	Domains     []string              `yaml:"domains" json:"domains"`
+	Upstreams   []UpstreamConfig      `yaml:"upstreams" json:"upstreams"`
+	ListenPort  int                   `yaml:"listen_port" json:"listen_port"`
+	LoadBalance string                `yaml:"loadbalance" json:"loadbalance"`
+	EnableSSL   bool                  `yaml:"enable_ssl" json:"enable_ssl"`
+	CertFile    string                `yaml:"cert_file,omitempty" json:"cert_file,omitempty"`
+	KeyFile     string                `yaml:"key_file,omitempty" json:"key_file,omitempty"`
+	Certificate SiteCertificateConfig `yaml:"certificate" json:"certificate"`
+	WAF         WAFConfig             `yaml:"waf" json:"waf"`
+	Enabled     bool                  `yaml:"enabled" json:"enabled"`
+}
+
+type SiteCertificateConfig struct {
+	Mode          string         `yaml:"mode" json:"mode"`
+	CertPEM       string         `yaml:"cert_pem,omitempty" json:"cert_pem,omitempty"`
+	KeyPEM        string         `yaml:"key_pem,omitempty" json:"key_pem,omitempty"`
+	AutoRenew     bool           `yaml:"auto_renew" json:"auto_renew"`
+	ForceHTTPS    bool           `yaml:"force_https" json:"force_https"`
+	HSTS          bool           `yaml:"hsts" json:"hsts"`
+	MinTLSVersion string         `yaml:"min_tls_version" json:"min_tls_version"`
+	ACME          SiteACMEConfig `yaml:"acme" json:"acme"`
+}
+
+type SiteACMEConfig struct {
+	ProviderID    string            `yaml:"provider_id" json:"provider_id"`
+	DNSAPI        string            `yaml:"dns_api" json:"dns_api"`
+	AccountEmail  string            `yaml:"account_email" json:"account_email"`
+	Server        string            `yaml:"server" json:"server"`
+	KeyType       string            `yaml:"key_type" json:"key_type"`
+	ACMESHPath    string            `yaml:"acme_sh_path" json:"acme_sh_path"`
+	Home          string            `yaml:"home" json:"home"`
+	CertDir       string            `yaml:"cert_dir" json:"cert_dir"`
+	ReloadCommand string            `yaml:"reload_command" json:"reload_command"`
+	Domains       []string          `yaml:"domains" json:"domains"`
+	Env           map[string]string `yaml:"env" json:"env"`
+	Notify        bool              `yaml:"notify" json:"notify"`
 }
 
 type UpstreamConfig struct {
@@ -329,33 +361,35 @@ type RateLimitProfile struct {
 }
 
 type BotProtectionConfig struct {
-	Enabled                bool          `yaml:"enabled" json:"enabled"`
-	JSChallenge            bool          `yaml:"js_challenge" json:"js_challenge"`
-	CAPTCHA                bool          `yaml:"captcha" json:"captcha"`
-	CAPTCHAType            string        `yaml:"captcha_type" json:"captcha_type"`
-	CAPTCHAMaxAttempts     int           `yaml:"captcha_max_attempts" json:"captcha_max_attempts"`
-	ImageCAPTCHALength     int           `yaml:"image_captcha_length" json:"image_captcha_length"`
-	ImageCAPTCHAWidth      int           `yaml:"image_captcha_width" json:"image_captcha_width"`
-	ImageCAPTCHAHeight     int           `yaml:"image_captcha_height" json:"image_captcha_height"`
-	ImageCAPTCHAAudioLimit int           `yaml:"image_captcha_audio_limit" json:"image_captcha_audio_limit"`
-	SliderCAPTCHAWidth     int           `yaml:"slider_captcha_width" json:"slider_captcha_width"`
-	SliderCAPTCHAHeight    int           `yaml:"slider_captcha_height" json:"slider_captcha_height"`
-	SliderCAPTCHAPiece     int           `yaml:"slider_captcha_piece" json:"slider_captcha_piece"`
-	SliderCAPTCHATolerance int           `yaml:"slider_captcha_tolerance" json:"slider_captcha_tolerance"`
-	SliderCAPTCHAMinDrag   time.Duration `yaml:"slider_captcha_min_drag" json:"slider_captcha_min_drag"`
-	ChallengeDifficulty    int           `yaml:"challenge_difficulty" json:"challenge_difficulty"`
-	AltchaMaxNumber        int           `yaml:"altcha_max_number" json:"altcha_max_number"`
-	AltchaHeaderName       string        `yaml:"altcha_header_name" json:"altcha_header_name"`
-	WaitingRoom            bool          `yaml:"waiting_room" json:"waiting_room"`
-	WaitingRoomMaxActive   int           `yaml:"waiting_room_max_active" json:"waiting_room_max_active"`
-	WaitingRoomTTL         time.Duration `yaml:"waiting_room_ttl" json:"waiting_room_ttl"`
-	ChallengeTTL           time.Duration `yaml:"challenge_ttl" json:"challenge_ttl"`
-	CookieName             string        `yaml:"cookie_name" json:"cookie_name"`
-	Secret                 string        `yaml:"secret" json:"secret"`
-	PathPrefixes           []string      `yaml:"path_prefixes" json:"path_prefixes"`
-	ExemptPathPrefixes     []string      `yaml:"exempt_path_prefixes" json:"exempt_path_prefixes"`
-	AllowedUserAgents      []string      `yaml:"allowed_user_agents" json:"allowed_user_agents"`
-	SuspiciousUserAgents   []string      `yaml:"suspicious_user_agents" json:"suspicious_user_agents"`
+	Enabled                    bool          `yaml:"enabled" json:"enabled"`
+	JSChallenge                bool          `yaml:"js_challenge" json:"js_challenge"`
+	CAPTCHA                    bool          `yaml:"captcha" json:"captcha"`
+	CAPTCHAType                string        `yaml:"captcha_type" json:"captcha_type"`
+	CAPTCHAMaxAttempts         int           `yaml:"captcha_max_attempts" json:"captcha_max_attempts"`
+	ImageCAPTCHALength         int           `yaml:"image_captcha_length" json:"image_captcha_length"`
+	ImageCAPTCHAWidth          int           `yaml:"image_captcha_width" json:"image_captcha_width"`
+	ImageCAPTCHAHeight         int           `yaml:"image_captcha_height" json:"image_captcha_height"`
+	ImageCAPTCHAAudioLimit     int           `yaml:"image_captcha_audio_limit" json:"image_captcha_audio_limit"`
+	SliderCAPTCHAWidth         int           `yaml:"slider_captcha_width" json:"slider_captcha_width"`
+	SliderCAPTCHAHeight        int           `yaml:"slider_captcha_height" json:"slider_captcha_height"`
+	SliderCAPTCHAPiece         int           `yaml:"slider_captcha_piece" json:"slider_captcha_piece"`
+	SliderCAPTCHATolerance     int           `yaml:"slider_captcha_tolerance" json:"slider_captcha_tolerance"`
+	SliderCAPTCHAMinDrag       time.Duration `yaml:"slider_captcha_min_drag" json:"slider_captcha_min_drag"`
+	SliderCAPTCHATrackRequired bool          `yaml:"slider_captcha_track_required" json:"slider_captcha_track_required"`
+	CAPTCHAMobileType          string        `yaml:"captcha_mobile_type" json:"captcha_mobile_type"`
+	ChallengeDifficulty        int           `yaml:"challenge_difficulty" json:"challenge_difficulty"`
+	AltchaMaxNumber            int           `yaml:"altcha_max_number" json:"altcha_max_number"`
+	AltchaHeaderName           string        `yaml:"altcha_header_name" json:"altcha_header_name"`
+	WaitingRoom                bool          `yaml:"waiting_room" json:"waiting_room"`
+	WaitingRoomMaxActive       int           `yaml:"waiting_room_max_active" json:"waiting_room_max_active"`
+	WaitingRoomTTL             time.Duration `yaml:"waiting_room_ttl" json:"waiting_room_ttl"`
+	ChallengeTTL               time.Duration `yaml:"challenge_ttl" json:"challenge_ttl"`
+	CookieName                 string        `yaml:"cookie_name" json:"cookie_name"`
+	Secret                     string        `yaml:"secret" json:"secret"`
+	PathPrefixes               []string      `yaml:"path_prefixes" json:"path_prefixes"`
+	ExemptPathPrefixes         []string      `yaml:"exempt_path_prefixes" json:"exempt_path_prefixes"`
+	AllowedUserAgents          []string      `yaml:"allowed_user_agents" json:"allowed_user_agents"`
+	SuspiciousUserAgents       []string      `yaml:"suspicious_user_agents" json:"suspicious_user_agents"`
 }
 
 type ACLProtectionConfig struct {
@@ -512,15 +546,134 @@ type FileLogConfig struct {
 	MaxBackups int    `yaml:"max_backups" json:"max_backups"`
 }
 
+type ACMEConfig struct {
+	Enabled       bool                    `yaml:"enabled" json:"enabled"`
+	ACMESHPath    string                  `yaml:"acme_sh_path" json:"acme_sh_path"`
+	Home          string                  `yaml:"home" json:"home"`
+	Server        string                  `yaml:"server" json:"server"`
+	AccountEmail  string                  `yaml:"account_email" json:"account_email"`
+	CertDir       string                  `yaml:"cert_dir" json:"cert_dir"`
+	KeyType       string                  `yaml:"key_type" json:"key_type"`
+	ReloadCommand string                  `yaml:"reload_command" json:"reload_command"`
+	DNSProviders  []ACMEDNSProviderConfig `yaml:"dns_providers" json:"dns_providers"`
+	Notify        bool                    `yaml:"notify" json:"notify"`
+}
+
+type ACMEDNSProviderConfig struct {
+	ID      string            `yaml:"id" json:"id"`
+	Name    string            `yaml:"name" json:"name"`
+	API     string            `yaml:"api" json:"api"`
+	Env     map[string]string `yaml:"env" json:"env"`
+	Enabled bool              `yaml:"enabled" json:"enabled"`
+}
+
 type AIConfig struct {
-	Enabled             bool   `yaml:"enabled" json:"enabled"`
-	Provider            string `yaml:"provider" json:"provider"`
-	APIBase             string `yaml:"api_base" json:"api_base"`
-	APIKey              string `yaml:"api_key" json:"api_key"`
-	APIKeyHeader        string `yaml:"api_key_header" json:"api_key_header"`
-	Model               string `yaml:"model" json:"model"`
-	Async               bool   `yaml:"async" json:"async"`
-	AllowPrivateAPIBase bool   `yaml:"allow_private_api_base" json:"allow_private_api_base"`
+	Enabled             bool                 `yaml:"enabled" json:"enabled"`
+	Provider            string               `yaml:"provider" json:"provider"`
+	APIBase             string               `yaml:"api_base" json:"api_base"`
+	APIKey              string               `yaml:"api_key" json:"api_key"`
+	APIKeyHeader        string               `yaml:"api_key_header" json:"api_key_header"`
+	Model               string               `yaml:"model" json:"model"`
+	Async               bool                 `yaml:"async" json:"async"`
+	AllowPrivateAPIBase bool                 `yaml:"allow_private_api_base" json:"allow_private_api_base"`
+	Assistant           AIModelConfig        `yaml:"assistant" json:"assistant"`
+	Reasoning           AIModelConfig        `yaml:"reasoning" json:"reasoning"`
+	SelfLearning        AISelfLearningConfig `yaml:"self_learning" json:"self_learning"`
+	Knowledge           AIKnowledgeConfig    `yaml:"knowledge" json:"knowledge"`
+}
+
+type AIModelConfig struct {
+	Provider               string `yaml:"provider" json:"provider"`
+	APIBase                string `yaml:"api_base" json:"api_base"`
+	APIKey                 string `yaml:"api_key" json:"api_key"`
+	APIKeyHeader           string `yaml:"api_key_header" json:"api_key_header"`
+	Model                  string `yaml:"model" json:"model"`
+	AllowPrivateAPIBase    bool   `yaml:"allow_private_api_base" json:"allow_private_api_base"`
+	AllowPrivateAPIBaseSet bool   `yaml:"-" json:"-"`
+}
+
+type AISelfLearningConfig struct {
+	Enabled        bool          `yaml:"enabled" json:"enabled"`
+	AutoApply      bool          `yaml:"auto_apply" json:"auto_apply"`
+	DryRun         bool          `yaml:"dry_run" json:"dry_run"`
+	Interval       time.Duration `yaml:"interval" json:"interval"`
+	At             string        `yaml:"at" json:"at"`
+	MinConfidence  float64       `yaml:"min_confidence" json:"min_confidence"`
+	MinEvents      int           `yaml:"min_events" json:"min_events"`
+	MaxEvents      int           `yaml:"max_events" json:"max_events"`
+	MaxRulesPerRun int           `yaml:"max_rules_per_run" json:"max_rules_per_run"`
+	Action         string        `yaml:"action" json:"action"`
+}
+
+type AIKnowledgeConfig struct {
+	Enabled     bool `yaml:"enabled" json:"enabled"`
+	Builtin     bool `yaml:"builtin" json:"builtin"`
+	MaxSnippets int  `yaml:"max_snippets" json:"max_snippets"`
+}
+
+func (cfg AIConfig) AssistantRuntimeConfig() AIConfig {
+	return cfg.runtimeConfig(cfg.Assistant, cfg.legacyModelConfig())
+}
+
+func (cfg AIConfig) ReasoningRuntimeConfig() AIConfig {
+	assistant := cfg.AssistantRuntimeConfig()
+	if cfg.Reasoning.isZero() {
+		return assistant
+	}
+	return cfg.runtimeConfig(cfg.Reasoning, assistant.legacyModelConfig())
+}
+
+func (cfg AIConfig) legacyModelConfig() AIModelConfig {
+	return AIModelConfig{
+		Provider:            cfg.Provider,
+		APIBase:             cfg.APIBase,
+		APIKey:              cfg.APIKey,
+		APIKeyHeader:        cfg.APIKeyHeader,
+		Model:               cfg.Model,
+		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
+	}
+}
+
+func (cfg AIConfig) RuntimeModelConfig() AIModelConfig {
+	return cfg.legacyModelConfig()
+}
+
+func (cfg AIConfig) runtimeConfig(model AIModelConfig, fallback AIModelConfig) AIConfig {
+	if strings.TrimSpace(model.Provider) == "" {
+		model.Provider = fallback.Provider
+	}
+	if strings.TrimSpace(model.APIBase) == "" {
+		model.APIBase = fallback.APIBase
+	}
+	if strings.TrimSpace(model.APIKey) == "" {
+		model.APIKey = fallback.APIKey
+	}
+	if strings.TrimSpace(model.APIKeyHeader) == "" {
+		model.APIKeyHeader = fallback.APIKeyHeader
+	}
+	if strings.TrimSpace(model.Model) == "" {
+		model.Model = fallback.Model
+	}
+	if !model.AllowPrivateAPIBaseSet {
+		model.AllowPrivateAPIBase = fallback.AllowPrivateAPIBase
+	}
+	next := cfg
+	next.Provider = model.Provider
+	next.APIBase = model.APIBase
+	next.APIKey = model.APIKey
+	next.APIKeyHeader = model.APIKeyHeader
+	next.Model = model.Model
+	next.AllowPrivateAPIBase = model.AllowPrivateAPIBase
+	return next
+}
+
+func (model AIModelConfig) isZero() bool {
+	return strings.TrimSpace(model.Provider) == "" &&
+		strings.TrimSpace(model.APIBase) == "" &&
+		strings.TrimSpace(model.APIKey) == "" &&
+		strings.TrimSpace(model.APIKeyHeader) == "" &&
+		strings.TrimSpace(model.Model) == "" &&
+		!model.AllowPrivateAPIBase
 }
 
 type UpdateConfig struct {

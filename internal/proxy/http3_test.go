@@ -64,7 +64,11 @@ func TestHTTP3ServerBuildsQUICConfig(t *testing.T) {
 	cfg.TLS.CertFile = certFile
 	cfg.TLS.KeyFile = keyFile
 	cfg.Sites[0].WAF.Performance.MaxHeaderBytes = 2048
-	srv := &Server{config: &cfg}
+	certs, err := NewSiteCertificateStore(&cfg)
+	if err != nil {
+		t.Fatalf("build certificate store: %v", err)
+	}
+	srv := &Server{config: &cfg, certs: certs}
 
 	h3, altSvc, err := srv.HTTP3Server()
 	if err != nil {
