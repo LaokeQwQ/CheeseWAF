@@ -16,6 +16,7 @@ type Snapshot struct {
 	GeneratedAt   time.Time        `json:"generated_at"`
 	UptimeSeconds int64            `json:"uptime_seconds"`
 	Goroutines    int              `json:"goroutines"`
+	ProcessCount  int              `json:"process_count"`
 	MemoryAlloc   uint64           `json:"memory_alloc"`
 	Host          HostStats        `json:"host"`
 	Sites         int              `json:"sites"`
@@ -34,6 +35,7 @@ func Collect(startedAt time.Time, sites int, logs []storage.LogEntry, diskUsage 
 		GeneratedAt:   time.Now().UTC(),
 		UptimeSeconds: int64(time.Since(startedAt).Seconds()),
 		Goroutines:    runtime.NumGoroutine(),
+		ProcessCount:  CollectProcessCount(),
 		MemoryAlloc:   mem.Alloc,
 		Host:          CollectHostStats(),
 		Sites:         sites,
@@ -63,6 +65,7 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 	var buf bytes.Buffer
 	writeMetric(&buf, "cheesewaf_uptime_seconds", "CheeseWAF process uptime in seconds.", float64(snapshot.UptimeSeconds), nil)
 	writeMetric(&buf, "cheesewaf_goroutines", "Current goroutine count.", float64(snapshot.Goroutines), nil)
+	writeMetric(&buf, "cheesewaf_process_count", "CheeseWAF service process count.", float64(snapshot.ProcessCount), nil)
 	writeMetric(&buf, "cheesewaf_memory_alloc_bytes", "Current allocated heap bytes.", float64(snapshot.MemoryAlloc), nil)
 	writeMetric(&buf, "cheesewaf_host_cpu_percent", "Host CPU usage percent.", snapshot.Host.CPUPercent, nil)
 	writeMetric(&buf, "cheesewaf_host_memory_percent", "Host memory usage percent.", snapshot.Host.MemoryPercent, nil)
@@ -87,6 +90,7 @@ func Values(snapshot Snapshot) map[string]float64 {
 	values := map[string]float64{
 		"cheesewaf_uptime_seconds":      float64(snapshot.UptimeSeconds),
 		"cheesewaf_goroutines":          float64(snapshot.Goroutines),
+		"cheesewaf_process_count":       float64(snapshot.ProcessCount),
 		"cheesewaf_memory_alloc_bytes":  float64(snapshot.MemoryAlloc),
 		"cheesewaf_host_cpu_percent":    snapshot.Host.CPUPercent,
 		"cheesewaf_host_memory_percent": snapshot.Host.MemoryPercent,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Message, Tag } from '@arco-design/web-react';
+import { Button, Input, Message, Switch, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, ChevronDown, ChevronUp, Send, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -45,6 +45,7 @@ export default function AIAssistant() {
   const [thinkingProcessOpen, setThinkingProcessOpen] = useState(true);
   const [pendingTraceOpen, setPendingTraceOpen] = useState(true);
   const [pendingTrace, setPendingTrace] = useState<AIAssistantTraceEvent[]>([]);
+  const [deepThink, setDeepThink] = useState(false);
   const pendingRef = useRef<{ startedAt: number; createdAt: string; inputTokens: number; providerStartedAt?: number } | null>(null);
   const pendingTraceRef = useRef<AIAssistantTraceEvent[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -68,7 +69,7 @@ export default function AIAssistant() {
     mutationFn: (message: string) => {
       const controller = new AbortController();
       abortRef.current = controller;
-      return askAIAssistantStream(message, 30, i18n.language, (event) => {
+      return askAIAssistantStream(message, 30, i18n.language, deepThink, (event) => {
         if (isProviderFirstTraceEvent(event.type) && pendingRef.current && !pendingRef.current.providerStartedAt) {
           pendingRef.current = { ...pendingRef.current, providerStartedAt: performance.now() };
         }
@@ -560,6 +561,10 @@ export default function AIAssistant() {
             ))}
           </div>
           <div className="assistant-input">
+            <label className="assistant-deep-think-toggle">
+              <Switch size="small" checked={deepThink} onChange={setDeepThink} />
+              <span>{t('assistant.deepThink')}</span>
+            </label>
             <Input
               value={draft}
               placeholder={t('assistant.placeholder')}
@@ -633,19 +638,33 @@ function buildReasoningProcess(
   if (!text) {
     return [t('assistant.reasoningUnavailable')];
   }
-  return [t('assistant.reasoningSummary', { summary: summarizeOutput(text) })];
+  return splitReasoningLines(text, t('assistant.reasoningSummary', { summary: '' }));
 }
 
 function buildLiveReasoningProcess(t: (key: string, options?: Record<string, unknown>) => string, trace: AIAssistantTraceEvent[]) {
   const reasoning = safeAssistantDisplayText(trace.filter((event) => event.type === 'reasoning_delta').map((event) => event.message).join(''));
   if (reasoning) {
-    return [t('assistant.reasoningLive', { summary: summarizeOutput(reasoning) })];
+    return splitReasoningLines(reasoning, t('assistant.reasoningStreaming'));
   }
   const slow = [...trace].reverse().find((event) => event.type === 'provider_first_event_slow');
   if (slow) {
     return [slow.message || t('assistant.providerSlow')];
   }
   return [t('assistant.reasoningPending')];
+}
+
+function splitReasoningLines(text: string, fallbackPrefix: string) {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return [fallbackPrefix];
+  }
+  if (lines.length === 1) {
+    return [lines[0]];
+  }
+  return lines.slice(-6);
 }
 
 function buildTraceProcess(t: (key: string, options?: Record<string, unknown>) => string, trace: AIAssistantTraceEvent[]) {

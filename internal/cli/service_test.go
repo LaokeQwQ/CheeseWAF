@@ -56,6 +56,12 @@ func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 		assertAdminSecurityHeaders(t, rr, false)
 	}
 
+	missingAsset := httptest.NewRecorder()
+	handler.ServeHTTP(missingAsset, httptest.NewRequest(http.MethodGet, "/assets/old-hash.js", nil))
+	if missingAsset.Code != http.StatusNotFound || strings.Contains(missingAsset.Body.String(), "cheesewaf-ui") {
+		t.Fatalf("missing static assets must not fall back to SPA, got %d: %s", missingAsset.Code, missingAsset.Body.String())
+	}
+
 	reqMetrics := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rrMetrics := httptest.NewRecorder()
 	handler.ServeHTTP(rrMetrics, reqMetrics)

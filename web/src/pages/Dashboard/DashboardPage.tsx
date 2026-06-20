@@ -1,32 +1,54 @@
-import { Button, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
-import { useMemo, useState, type CSSProperties } from 'react';
+import { Button, DatePicker, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Activity, Cpu, HardDrive, MemoryStick, Recycle, RotateCcw, RotateCw, ShieldCheck, Zap } from 'lucide-react';
+import { Activity, Cpu, HardDrive, Maximize2, MemoryStick, Recycle, RotateCcw, ShieldCheck, Zap } from 'lucide-react';
 import { fetchLogs, fetchMonitorSummary, fetchSites, reclaimSystemResources } from '../../api/client';
 import type { LogEntry, LogQuery } from '../../types/api';
-import { displayAction, displayCategory } from '../../utils/display';
+import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
 
 const threatColors = ['var(--accent-danger)', 'var(--accent-warning)', 'var(--accent-purple)', 'var(--accent-info)'];
 const realtimeWindowSeconds = 60;
 const totalsRefreshMs = 10_000;
 const refreshOptions = [1000, 3000, 5000, 10000];
+const customStatsRangeValue = -1;
+const dateTimePickerFormat = 'YYYY-MM-DD HH:mm';
 const statsRangeOptions = [
   { value: 30, labelKey: 'dashboard.last30m' },
   { value: 60, labelKey: 'dashboard.last60m' },
   { value: 360, labelKey: 'dashboard.last6h' },
   { value: 1440, labelKey: 'dashboard.last24h' },
   { value: 10080, labelKey: 'dashboard.last7d' },
+  { value: customStatsRangeValue, labelKey: 'dashboard.customRange' },
 ];
+const defaultCustomRange = () => {
+  const end = new Date();
+  const start = new Date(end.getTime() - 6 * 60 * 60 * 1000);
+  return [start.toISOString(), end.toISOString()] as [string, string];
+};
+const DateRangePicker = DatePicker.RangePicker;
 
 export default function DashboardPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [statsRange, setStatsRange] = useState(60);
   const [refreshMs, setRefreshMs] = useState(3000);
-  const [chartScale, setChartScale] = useState(1);
+  const [customRange, setCustomRange] = useState<[string, string]>(() => defaultCustomRange());
+  const [chartWindowRatio, setChartWindowRatio] = useState(1);
   const [hoveredTrafficIndex, setHoveredTrafficIndex] = useState<number | null>(null);
+  const totalsChartRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = totalsChartRef.current;
+    if (!el) return;
+    function onWheel(e: globalThis.WheelEvent) {
+      e.preventDefault();
+      setChartWindowRatio((value) => Math.max(0.2, Math.min(1, Number((value + (e.deltaY > 0 ? 0.1 : -0.1)).toFixed(2)))));
+    }
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
   const { data: monitor, isLoading: loadingMonitor, isFetching: fetchingMonitor, refetch: refetchMonitor } = useQuery({
     queryKey: ['dashboard-monitor'],
     queryFn: fetchMonitorSummary,
@@ -34,8 +56,8 @@ export default function DashboardPage() {
     retry: false,
   });
   const { data: periodLogs, isLoading: loadingPeriod, refetch: refetchPeriodLogs } = useQuery({
-    queryKey: ['dashboard-period-logs', statsRange],
-    queryFn: () => fetchLogs(buildWindowQuery(statsRange * 60, 5000)),
+    queryKey: ['dashboard-period-logs', statsRange, customRange],
+    queryFn: () => fetchLogs(buildStatsQuery(statsRange, customRange, 5000)),
     refetchInterval: totalsRefreshMs,
     retry: false,
   });
@@ -62,11 +84,14 @@ export default function DashboardPage() {
   const snapshot = monitor?.snapshot;
   const entries = periodLogs?.items ?? [];
   const liveEntries = liveLogs?.items ?? [];
-  const traffic = useMemo(() => buildTraffic(entries, statsRange), [entries, statsRange]);
+  const statsWindow = useMemo(() => statsWindowFromState(statsRange, customRange), [customRange, statsRange]);
+  const customRangePickerValue = useMemo(() => customRange.map(formatDateTimePickerValue) as [string, string], [customRange]);
+  const traffic = useMemo(() => buildTraffic(entries, statsWindow.start, statsWindow.end), [entries, statsWindow.end, statsWindow.start]);
+  const visibleTraffic = useMemo(() => sliceVisibleTraffic(traffic, chartWindowRatio), [chartWindowRatio, traffic]);
   const securityEntries = useMemo(() => entries.filter(isSecurityEvent), [entries]);
   const liveSeries = useMemo(() => buildRealtimeSeries(liveEntries, realtimeWindowSeconds), [liveEntries]);
   const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
-  const typicalLatency = useMemo(() => typicalRequestLatency(entries), [entries]);
+  const averageLatency = useMemo(() => averageRequestLatency(entries), [entries]);
   const periodRequests = traffic.reduce((sum, point) => sum + point.count, 0);
   const periodBlockedCount = entries.filter((entry) => entry.action === 'block').length;
   const liveRequests = liveEntries.length;
@@ -82,9 +107,9 @@ export default function DashboardPage() {
   const loadPercent = clampPercent(cpuCount > 0 ? (load1 / cpuCount) * 100 : load1 * 25);
   const loading = loadingMonitor || loadingPeriod;
   const refreshingLiveResources = fetchingMonitor || fetchingLive;
-  const maxTraffic = Math.max(...traffic.map((point) => point.count), 1);
-  const yMax = Math.max(1, Math.ceil(maxTraffic / chartScale));
-  const yMid = yMax <= 1 ? '0.5' : formatNumber(Math.ceil(yMax / 2));
+  const maxTraffic = Math.max(...visibleTraffic.map((point) => point.count), 1);
+  const yMax = niceAxisMax(maxTraffic);
+  const yMid = formatNumber(Math.round(yMax / 2));
   const monitorState = snapshot
     ? { color: 'green', label: t('common.online') }
     : { color: loadingMonitor ? 'blue' : 'orange', label: loadingMonitor ? t('common.loading') : t('shell.connectionReconnecting') };
@@ -93,6 +118,20 @@ export default function DashboardPage() {
     void refetchLiveLogs();
     void refetchPeriodLogs();
     void refetchSites();
+  };
+  const handleStatsRangeChange = (value: number) => {
+    setStatsRange(value);
+    setChartWindowRatio(1);
+    if (value === customStatsRangeValue && !validCustomRange(customRange)) {
+      setCustomRange(defaultCustomRange());
+    }
+  };
+  const handleCustomRangeChange = (dateString: string[], date: unknown[]) => {
+    const next = normalizeDateRange(dateString) ?? normalizeDateRange(date);
+    if (next) {
+      setCustomRange(next);
+      setChartWindowRatio(1);
+    }
   };
 
   return (
@@ -109,9 +148,9 @@ export default function DashboardPage() {
 
       <div className="metric-grid">
         {[
-          { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, t), icon: Zap },
+          { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, customRange, t), icon: Zap },
           { label: t('dashboard.totalBlocked'), value: formatNumber(periodBlockedCount), delta: `${blockRate(periodBlockedCount, periodRequests)}%`, icon: ShieldCheck },
-          { label: t('dashboard.responseSpeed'), value: formatLatency(typicalLatency), delta: t('dashboard.responseSpeedHint'), icon: Activity },
+          { label: t('dashboard.responseSpeed'), value: formatLatency(averageLatency), delta: t('dashboard.responseSpeedHint'), icon: Activity },
           { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: snapshot ? t('common.online') : t('common.unknown'), icon: HardDrive },
         ].map((item) => {
           const Icon = item.icon;
@@ -128,24 +167,42 @@ export default function DashboardPage() {
 
       <div className="dashboard-grid">
         <div className="dashboard-main-stack">
-          <section className="panel panel-wide">
-            <div className="panel-heading">
-              <div>
+          <section className="panel panel-wide dashboard-traffic-panel">
+            <div className="panel-heading dashboard-chart-heading">
+              <div className="dashboard-chart-copy">
                 <h2>{t('dashboard.totals')}</h2>
-                <span>{t('dashboard.totalsHint')}</span>
+                <p>{t('dashboard.totalsHint')}</p>
               </div>
-              <div className="dashboard-panel-tools">
-                <div className="control-cluster dashboard-footer-controls">
-                  <span>{t('dashboard.statsWindow')}</span>
-                  <Select className="dashboard-footer-select" value={statsRange} onChange={(value) => setStatsRange(Number(value))}>
+              <div
+                className={statsRange === customStatsRangeValue ? 'dashboard-chart-toolbar dashboard-chart-toolbar-custom' : 'dashboard-chart-toolbar'}
+                aria-label={t('dashboard.totals')}
+              >
+                <div className="dashboard-chart-control">
+                  <span className="dashboard-chart-control-label">{t('dashboard.statsWindow')}</span>
+                  <Select className="dashboard-footer-select" value={statsRange} onChange={(value) => handleStatsRangeChange(Number(value))}>
                     {statsRangeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
                   </Select>
                 </div>
-                <div className="control-cluster dashboard-footer-controls">
-                  <span>{t('dashboard.autoRefresh')}</span>
+                {statsRange === customStatsRangeValue && (
+                  <div className="dashboard-chart-control dashboard-chart-custom-range">
+                    <span className="dashboard-chart-control-label">{t('dashboard.customTimeRange')}</span>
+                    <DateRangePicker
+                      className="dashboard-date-range"
+                      showTime
+                      value={customRangePickerValue}
+                      onChange={handleCustomRangeChange}
+                      allowClear={false}
+                      format={dateTimePickerFormat}
+                    />
+                  </div>
+                )}
+                <div className="dashboard-chart-control dashboard-chart-refresh-control">
+                  <span className="dashboard-chart-control-label">{t('dashboard.autoRefresh')}</span>
                   <Select className="dashboard-footer-select dashboard-refresh-select" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
                     {refreshOptions.map((value) => <Select.Option key={value} value={value}>{value / 1000}s</Select.Option>)}
                   </Select>
+                </div>
+                <div className="dashboard-chart-actions">
                   <Tooltip content={t('dashboard.manualRefresh')}>
                     <Button
                       className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
@@ -156,8 +213,8 @@ export default function DashboardPage() {
                   <Tooltip content={t('dashboard.resetChartView')}>
                     <Button
                       className="icon-button"
-                      icon={<RotateCw size={15} />}
-                      onClick={() => setChartScale(1)}
+                      icon={<Maximize2 size={15} />}
+                      onClick={() => setChartWindowRatio(1)}
                     />
                   </Tooltip>
                 </div>
@@ -165,44 +222,39 @@ export default function DashboardPage() {
             </div>
             <Spin loading={loading}>
               <div
+                ref={totalsChartRef}
                 className="traffic-chart"
                 aria-label={t('dashboard.totals')}
-                onWheel={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setChartScale((value) => Math.max(0.5, Math.min(2.5, Number((value + (event.deltaY > 0 ? -0.12 : 0.12)).toFixed(2)))));
-                }}
               >
                 <div className="chart-y-axis" aria-hidden="true">
                   <span>{yMax}</span>
                   <span>{yMid}</span>
                   <span>0</span>
                 </div>
-                <div className="chart-plot" style={{ '--bar-count': traffic.length } as CSSProperties}>
-                  {traffic.map((point, index) => (
+                <div className="chart-plot" style={{ '--bar-count': visibleTraffic.length } as CSSProperties}>
+                  {visibleTraffic.map((point, index) => (
                     <span
                       key={`${point.label}-${index}`}
                       className="chart-bar"
                       style={{ height: `${Math.max((point.count / yMax) * 100, point.count > 0 ? 5 : 2)}%` }}
                       onMouseEnter={() => setHoveredTrafficIndex(index)}
                       onMouseLeave={() => setHoveredTrafficIndex(null)}
-                      onFocus={() => setHoveredTrafficIndex(index)}
-                      onBlur={() => setHoveredTrafficIndex(null)}
-                      tabIndex={0}
+                      aria-hidden="true"
                     >
                       <i />
                       {hoveredTrafficIndex === index && (
                         <span className="chart-hover-label">
-                          {point.label} · {point.count} {t('dashboard.trafficRequests')}
+                          <strong>{formatNumber(point.count)}</strong>
+                          <span>{t('dashboard.trafficRequests')} | {point.label}</span>
                         </span>
                       )}
                     </span>
                   ))}
                 </div>
                 <div className="chart-x-axis" aria-hidden="true">
-                  <span>{traffic[0]?.label ?? '-'}</span>
-                  <span>{traffic[Math.floor(traffic.length / 2)]?.label ?? '-'}</span>
-                  <span>{traffic[traffic.length - 1]?.label ?? '-'}</span>
+                  <span>{visibleTraffic[0]?.label ?? '-'}</span>
+                  <span>{visibleTraffic[Math.floor(visibleTraffic.length / 2)]?.label ?? '-'}</span>
+                  <span>{visibleTraffic[visibleTraffic.length - 1]?.label ?? '-'}</span>
                 </div>
               </div>
             </Spin>
@@ -210,7 +262,6 @@ export default function DashboardPage() {
               <div className="chart-legend" aria-label={t('dashboard.trafficRequests')}>
                 <span><i /> {t('dashboard.trafficRequests')}</span>
               </div>
-              <span className="chart-zoom-note">{t('dashboard.wheelZoomHint')}</span>
             </div>
           </section>
 
@@ -242,7 +293,9 @@ export default function DashboardPage() {
                   <span className="event-source" data-label={t('dashboard.sourceIp')} title={event.client_ip || '-'}>
                     {event.client_ip || '-'}
                   </span>
-                  <span className="event-country" data-label={t('dashboard.ipLocation')} title={event.country || ''}>{event.country || t('geo.unlocated')}</span>
+                  <span className="event-country" data-label={t('dashboard.ipLocation')} title={eventLocationLabel(event, t)}>
+                    {eventLocationLabel(event, t)}
+                  </span>
                   <span className="event-status-group" data-label={t('dashboard.attackType')}>
                     <Tag color={event.category ? 'orange' : event.action === 'pass' || !event.action ? 'green' : 'blue'}>{eventCategoryLabel(event, t)}</Tag>
                   </span>
@@ -337,14 +390,16 @@ export default function DashboardPage() {
                 <small>{formatCapacity(host?.disk_used ?? 0, host?.disk_total ?? 0, t)}</small>
               </div>
             </div>
-            <div className="resource-runtime-grid" aria-label={t('dashboard.processRuntime')}>
-              <div className="resource-runtime-item">
-                <span>{t('dashboard.runtimeGoroutines')}</span>
-                <strong>{formatNumber(snapshot?.goroutines ?? 0)}</strong>
-              </div>
-              <div className="resource-runtime-item">
-                <span>{t('dashboard.runtimeServiceMemory')}</span>
-                <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
+            <div className="resource-runtime-block" aria-label={t('dashboard.processRuntime')}>
+              <div className="resource-runtime-grid">
+                <div className="resource-runtime-item">
+                  <span>{t('dashboard.runtimeServiceProcesses')}</span>
+                  <strong>{formatNumber(snapshot?.process_count ?? (snapshot ? 1 : 0))}</strong>
+                </div>
+                <div className="resource-runtime-item">
+                  <span>{t('dashboard.runtimeServiceMemory')}</span>
+                  <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
+                </div>
               </div>
               <div className="resource-runtime-actions">
                 <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('memory')}>
@@ -395,27 +450,70 @@ function buildWindowQuery(windowSeconds: number, limit: number, action?: string)
   };
 }
 
-function buildTraffic(entries: LogEntry[], rangeMinutes: number) {
-  const bucketCount = rangeMinutes <= 60 ? 12 : rangeMinutes <= 1440 ? 24 : 28;
+function buildStatsQuery(rangeMinutes: number, customRange: [string, string], limit: number): LogQuery {
+  if (rangeMinutes === customStatsRangeValue && validCustomRange(customRange)) {
+    return {
+      limit,
+      start: customRange[0],
+      end: customRange[1],
+    };
+  }
+  return buildWindowQuery(rangeMinutes * 60, limit);
+}
+
+function statsWindowFromState(rangeMinutes: number, customRange: [string, string]) {
+  if (rangeMinutes === customStatsRangeValue && validCustomRange(customRange)) {
+    return { start: new Date(customRange[0]), end: new Date(customRange[1]) };
+  }
+  const end = new Date();
+  const start = new Date(end.getTime() - rangeMinutes * 60 * 1000);
+  return { start, end };
+}
+
+function buildTraffic(entries: LogEntry[], start: Date, end: Date) {
+  const startTime = start.getTime();
+  const endTime = end.getTime();
+  const windowMs = Math.max(60_000, endTime - startTime);
+  const rangeMinutes = windowMs / 60_000;
+  const bucketCount = rangeMinutes <= 60 ? 12 : rangeMinutes <= 1440 ? 24 : Math.min(96, Math.max(28, Math.ceil(rangeMinutes / 360)));
   const buckets = Array.from({ length: bucketCount }, () => 0);
-  const now = Date.now();
-  const windowMs = rangeMinutes * 60 * 1000;
   const bucketMs = windowMs / buckets.length;
   for (const entry of entries) {
     const time = Date.parse(entry.timestamp);
-    if (!Number.isFinite(time) || time < now - windowMs || time > now + 60_000) {
+    if (!Number.isFinite(time) || time < startTime || time > endTime + 60_000) {
       continue;
     }
-    const index = Math.min(buckets.length - 1, Math.max(0, Math.floor((time - (now - windowMs)) / bucketMs)));
+    const index = Math.min(buckets.length - 1, Math.max(0, Math.floor((time - startTime) / bucketMs)));
     buckets[index] += 1;
   }
   return buckets.map((count, index) => {
-    const at = new Date(now - windowMs + bucketMs * index);
+    const at = new Date(startTime + bucketMs * index);
     return {
       count,
-      label: at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
+      label: rangeMinutes > 1440
+        ? at.toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' })
+        : at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
     };
   });
+}
+
+function sliceVisibleTraffic(points: Array<{ count: number; label: string }>, ratio: number) {
+  if (points.length <= 2 || ratio >= 0.99) {
+    return points;
+  }
+  const size = Math.max(2, Math.ceil(points.length * ratio));
+  return points.slice(Math.max(0, points.length - size));
+}
+
+function niceAxisMax(value: number) {
+  const target = Math.max(1, Math.ceil(value));
+  if (target <= 4) {
+    return target;
+  }
+  const magnitude = 10 ** Math.floor(Math.log10(target));
+  const normalized = target / magnitude;
+  const nice = normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return nice * magnitude;
 }
 
 function buildRealtimeSeries(entries: LogEntry[], windowSeconds: number) {
@@ -469,12 +567,12 @@ function buildThreatMix(entries: LogEntry[], t: (key: string, options?: Record<s
     .map(([name, count]) => ({ name, value: total > 0 ? Math.round((count / total) * 100) : 0 }));
 }
 
-function typicalRequestLatency(entries: LogEntry[]) {
-  const values = entries.map((entry) => Number(entry.latency)).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+function averageRequestLatency(entries: LogEntry[]) {
+  const values = entries.map((entry) => Number(entry.latency)).filter((value) => Number.isFinite(value) && value > 0);
   if (values.length === 0) {
     return 0;
   }
-  return values[Math.min(values.length - 1, Math.floor(values.length * 0.95))];
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 function formatLatency(nanoseconds: number) {
@@ -544,12 +642,82 @@ function formatEventTime(value: string) {
   }).format(new Date(time));
 }
 
-function rangeLabel(value: number, t: (key: string) => string) {
+function rangeLabel(value: number, customRange: [string, string], t: (key: string, options?: Record<string, unknown>) => string) {
+  if (value === customStatsRangeValue) {
+    return validCustomRange(customRange)
+      ? t('dashboard.customRangeSummary', { range: compactRangeLabel(customRange) })
+      : t('dashboard.customRange');
+  }
   if (value === 30) return t('dashboard.last30m');
   if (value === 360) return t('dashboard.last6h');
   if (value === 1440) return t('dashboard.last24h');
   if (value === 10080) return t('dashboard.last7d');
   return t('dashboard.last60m');
+}
+
+function validCustomRange(range: [string, string]) {
+  const start = Date.parse(range[0]);
+  const end = Date.parse(range[1]);
+  return Number.isFinite(start) && Number.isFinite(end) && end > start;
+}
+
+function normalizeDateRange(date: unknown[]): [string, string] | null {
+  if (!Array.isArray(date) || date.length !== 2) {
+    return null;
+  }
+  const start = dateLikeToDate(date[0]);
+  const end = dateLikeToDate(date[1]);
+  if (!start || !end || end.getTime() <= start.getTime()) {
+    return null;
+  }
+  return [start.toISOString(), end.toISOString()];
+}
+
+function dateLikeToDate(value: unknown) {
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    if (typeof value === 'string') {
+      const local = parsePickerDateTime(value);
+      if (local) {
+        return local;
+      }
+    }
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date : null;
+  }
+  if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date && Number.isFinite(date.getTime()) ? date : null;
+  }
+  return null;
+}
+
+function parsePickerDateTime(value: string) {
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  const [, year, month, day, hour, minute] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function formatDateTimePickerValue(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return '';
+  }
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function compactRangeLabel(range: [string, string]) {
+  const start = new Date(range[0]);
+  const end = new Date(range[1]);
+  const format = new Intl.DateTimeFormat(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return `${format.format(start)} - ${format.format(end)}`;
 }
 
 function blockRate(blocked: number, requests: number) {
@@ -567,6 +735,10 @@ function eventCategoryLabel(entry: LogEntry, t: (key: string, options?: Record<s
     return displayAction(entry.action, t);
   }
   return displayCategory('pass', t);
+}
+
+function eventLocationLabel(entry: LogEntry, t: (key: string, options?: Record<string, unknown>) => string) {
+  return formatLogLocation(entry, t);
 }
 
 function isSecurityEvent(entry: LogEntry) {

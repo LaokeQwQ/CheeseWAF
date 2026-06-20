@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -77,7 +78,16 @@ func runServe(ctx context.Context) error {
 	}
 	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
 	startRemoteWrite(ctx, cfg, sink, time.Now())
-	schedulerEngine := scheduler.NewEngine(scheduler.FromConfig(cfg.Scheduler, cfg.Setup.DataDir, loadedConfigPath, cfg.Logging.Output.File.Path))
+	var schedulerAIClient *ai.Client
+	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
+		schedulerAIClient = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
+	}
+	schedulerEngine := scheduler.NewEngine(scheduler.FromConfigWithRuntime(cfg.Scheduler, cfg.Setup.DataDir, loadedConfigPath, cfg.Logging.Output.File.Path, scheduler.Runtime{
+		AIConfig: cfg.AI,
+		Sink:     sink,
+		Store:    store,
+		Client:   schedulerAIClient,
+	}))
 	schedulerEngine.Start(ctx)
 	hub := realtime.NewHub()
 	authSecret, err := ensureAuthSecret(cfg.Setup.DataDir)
@@ -201,6 +211,10 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string
 			spa.ServeHTTP(w, r)
 			return
 		}
+		if isAdminStaticAssetPath(r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
 		index := filepath.Join(webDir, "index.html")
 		if _, err := os.Stat(index); err == nil {
 			setAdminStaticCacheHeaders(w, "index.html")
@@ -210,6 +224,14 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string
 		apiHandler.ServeHTTP(w, r)
 	})
 	return adminSecurityHeaders(adminGzip(handler, metricsPath))
+}
+
+func isAdminStaticAssetPath(path string) bool {
+	path = strings.TrimSpace(path)
+	return strings.HasPrefix(path, "/assets/") ||
+		path == "/favicon.ico" ||
+		path == "/cheesewaf-logo.png" ||
+		path == "/manifest.webmanifest"
 }
 
 func adminEntranceGate(cfg *config.Config, authSecret string, next http.Handler) http.Handler {
@@ -401,6 +423,10 @@ func (w gzipResponseWriter) WriteHeader(status int) {
 func (w gzipResponseWriter) Write(data []byte) (int, error) {
 	w.Header().Del("Content-Length")
 	return w.writer.Write(data)
+}
+
+func (w gzipResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func adminShouldGzip(r *http.Request, metricsPath string) bool {

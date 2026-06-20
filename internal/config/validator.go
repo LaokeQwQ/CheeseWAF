@@ -34,12 +34,12 @@ func Validate(cfg *Config) error {
 	if cfg.Server.AdminTLS.Enabled && (strings.TrimSpace(cfg.Server.AdminTLS.CertFile) == "" || strings.TrimSpace(cfg.Server.AdminTLS.KeyFile) == "") {
 		return fmt.Errorf("server.admin_tls.cert_file and server.admin_tls.key_file are required when admin TLS is enabled")
 	}
-	if cfg.Server.ListenTLS != "" && (cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "") {
-		return fmt.Errorf("tls.cert_file and tls.key_file are required when server.listen_tls is set")
+	if cfg.Server.ListenTLS != "" && !hasAnyTLSCertificate(cfg) {
+		return fmt.Errorf("tls.cert_file/key_file or at least one site certificate is required when server.listen_tls is set")
 	}
 	if cfg.Server.HTTP3.Enabled {
-		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
-			return fmt.Errorf("tls.cert_file and tls.key_file are required when HTTP/3 is enabled")
+		if !hasAnyTLSCertificate(cfg) {
+			return fmt.Errorf("tls.cert_file/key_file or at least one site certificate is required when HTTP/3 is enabled")
 		}
 		if _, err := net.ResolveUDPAddr("udp", http3ListenAddr(cfg.Server)); err != nil {
 			return fmt.Errorf("server.listen_http3 is invalid: %w", err)
@@ -76,6 +76,12 @@ func Validate(cfg *Config) error {
 	if err := validateBlockPage(cfg.BlockPage); err != nil {
 		return err
 	}
+	if err := validateBotProtection(cfg.Protection.Bot); err != nil {
+		return err
+	}
+	if err := validateACME(cfg.ACME); err != nil {
+		return err
+	}
 	if cfg.Storage.PostgreSQL.Enabled {
 		if strings.TrimSpace(cfg.Storage.PostgreSQL.DSN) == "" {
 			return fmt.Errorf("storage.postgresql.dsn is required when PostgreSQL log sink is enabled")
@@ -101,18 +107,20 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("ai.provider must be openai or anthropic")
 	}
 	if cfg.AI.Enabled {
-		if strings.TrimSpace(cfg.AI.APIBase) == "" {
-			return fmt.Errorf("ai.api_base is required when ai is enabled")
-		}
-		if _, err := url.ParseRequestURI(cfg.AI.APIBase); err != nil {
-			return fmt.Errorf("ai.api_base is invalid: %w", err)
-		}
-		if err := validateAIAPIBaseHost(cfg.AI.APIBase, cfg.AI.AllowPrivateAPIBase); err != nil {
+		if err := validateAIModelConfig("ai", cfg.AI.RuntimeModelConfig(), true); err != nil {
 			return err
 		}
-		if strings.TrimSpace(cfg.AI.Model) == "" {
-			return fmt.Errorf("ai.model is required when ai is enabled")
+		assistant := cfg.AI.AssistantRuntimeConfig()
+		if err := validateAIModelConfig("ai.assistant", assistant.RuntimeModelConfig(), true); err != nil {
+			return err
 		}
+		reasoning := cfg.AI.ReasoningRuntimeConfig()
+		if err := validateAIModelConfig("ai.reasoning", reasoning.RuntimeModelConfig(), true); err != nil {
+			return err
+		}
+	}
+	if err := validateAISelfLearning(cfg.AI.SelfLearning); err != nil {
+		return err
 	}
 	if len(cfg.Sites) == 0 {
 		return fmt.Errorf("at least one site is required")
@@ -140,6 +148,9 @@ func Validate(cfg *Config) error {
 		}
 		if site.WAF.Mode != "" && site.WAF.Mode != "block" && site.WAF.Mode != "monitor" && site.WAF.Mode != "off" {
 			return fmt.Errorf("site %q has invalid waf.mode %q", site.Name, site.WAF.Mode)
+		}
+		if err := validateSiteCertificate(site); err != nil {
+			return err
 		}
 		if err := validateProtectionPolicy("site "+site.Name+" waf.protection_policy", site.WAF.ProtectionPolicy, true); err != nil {
 			return err
@@ -420,6 +431,54 @@ func validateAIAPIBaseHost(raw string, allowPrivate bool) error {
 	return nil
 }
 
+func validateAIModelConfig(prefix string, model AIModelConfig, enabled bool) error {
+	switch strings.ToLower(strings.TrimSpace(model.Provider)) {
+	case "", "openai", "anthropic":
+	default:
+		return fmt.Errorf("%s.provider must be openai or anthropic", prefix)
+	}
+	if !enabled && strings.TrimSpace(model.APIBase) == "" && strings.TrimSpace(model.Model) == "" {
+		return nil
+	}
+	if strings.TrimSpace(model.APIBase) == "" {
+		return fmt.Errorf("%s.api_base is required when ai is enabled", prefix)
+	}
+	if _, err := url.ParseRequestURI(model.APIBase); err != nil {
+		return fmt.Errorf("%s.api_base is invalid: %w", prefix, err)
+	}
+	if err := validateAIAPIBaseHost(model.APIBase, model.AllowPrivateAPIBase); err != nil {
+		return fmt.Errorf("%s.%w", prefix, err)
+	}
+	if strings.TrimSpace(model.Model) == "" {
+		return fmt.Errorf("%s.model is required when ai is enabled", prefix)
+	}
+	return nil
+}
+
+func validateAISelfLearning(cfg AISelfLearningConfig) error {
+	if cfg.Interval != 0 && (cfg.Interval < time.Hour || cfg.Interval > 30*24*time.Hour) {
+		return fmt.Errorf("ai.self_learning.interval must be between 1h and 30d")
+	}
+	if cfg.MinConfidence != 0 && (cfg.MinConfidence < 0.9 || cfg.MinConfidence > 1) {
+		return fmt.Errorf("ai.self_learning.min_confidence must be between 0.9 and 1")
+	}
+	if cfg.MinEvents != 0 && (cfg.MinEvents < 2 || cfg.MinEvents > 1000) {
+		return fmt.Errorf("ai.self_learning.min_events must be between 2 and 1000")
+	}
+	if cfg.MaxEvents != 0 && (cfg.MaxEvents < 10 || cfg.MaxEvents > 5000) {
+		return fmt.Errorf("ai.self_learning.max_events must be between 10 and 5000")
+	}
+	if cfg.MaxRulesPerRun != 0 && (cfg.MaxRulesPerRun < 1 || cfg.MaxRulesPerRun > 20) {
+		return fmt.Errorf("ai.self_learning.max_rules_per_run must be between 1 and 20")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Action)) {
+	case "", "block", "log", "challenge":
+		return nil
+	default:
+		return fmt.Errorf("ai.self_learning.action must be block, log, or challenge")
+	}
+}
+
 func isUnsafeAIAPIBaseIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -471,6 +530,68 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 	}
 	if slider.PowEnabled && slider.PowMaxNumber == 0 {
 		return fmt.Errorf("console.login.captcha.slider.pow_max_number is required when slider auxiliary PoW is enabled")
+	}
+	return nil
+}
+
+func validateBotProtection(bot BotProtectionConfig) error {
+	switch strings.ToLower(strings.TrimSpace(bot.CAPTCHAType)) {
+	case "", "pow", "image", "graphic", "slider", "puzzle":
+	default:
+		return fmt.Errorf("protection.bot.captcha_type must be pow, image, or slider")
+	}
+	switch strings.ToLower(strings.TrimSpace(bot.CAPTCHAMobileType)) {
+	case "", "off", "none", "inherit", "same", "pow", "image", "graphic":
+	default:
+		return fmt.Errorf("protection.bot.captcha_mobile_type must be pow, image, or empty")
+	}
+	if bot.CAPTCHAMaxAttempts < 1 || bot.CAPTCHAMaxAttempts > 20 {
+		return fmt.Errorf("protection.bot.captcha_max_attempts must be between 1 and 20")
+	}
+	if bot.ImageCAPTCHALength < 4 || bot.ImageCAPTCHALength > 8 {
+		return fmt.Errorf("protection.bot.image_captcha_length must be between 4 and 8")
+	}
+	if bot.ImageCAPTCHAWidth < 160 || bot.ImageCAPTCHAWidth > 640 {
+		return fmt.Errorf("protection.bot.image_captcha_width must be between 160 and 640")
+	}
+	if bot.ImageCAPTCHAHeight < 60 || bot.ImageCAPTCHAHeight > 260 {
+		return fmt.Errorf("protection.bot.image_captcha_height must be between 60 and 260")
+	}
+	if bot.ImageCAPTCHAAudioLimit < 1 || bot.ImageCAPTCHAAudioLimit > 20 {
+		return fmt.Errorf("protection.bot.image_captcha_audio_limit must be between 1 and 20")
+	}
+	if bot.SliderCAPTCHAWidth < 240 || bot.SliderCAPTCHAWidth > 640 {
+		return fmt.Errorf("protection.bot.slider_captcha_width must be between 240 and 640")
+	}
+	if bot.SliderCAPTCHAHeight < 100 || bot.SliderCAPTCHAHeight > 360 {
+		return fmt.Errorf("protection.bot.slider_captcha_height must be between 100 and 360")
+	}
+	if bot.SliderCAPTCHAPiece < 28 || bot.SliderCAPTCHAPiece > 96 {
+		return fmt.Errorf("protection.bot.slider_captcha_piece must be between 28 and 96")
+	}
+	if bot.SliderCAPTCHAPiece*2 >= bot.SliderCAPTCHAWidth || bot.SliderCAPTCHAPiece+20 >= bot.SliderCAPTCHAHeight {
+		return fmt.Errorf("protection.bot.slider_captcha_piece is too large for the configured image")
+	}
+	if bot.SliderCAPTCHATolerance < 2 || bot.SliderCAPTCHATolerance > 20 {
+		return fmt.Errorf("protection.bot.slider_captcha_tolerance must be between 2 and 20")
+	}
+	if bot.SliderCAPTCHAMinDrag < 100*time.Millisecond || bot.SliderCAPTCHAMinDrag > 10*time.Second {
+		return fmt.Errorf("protection.bot.slider_captcha_min_drag must be between 100ms and 10s")
+	}
+	if bot.ChallengeDifficulty < 1 || bot.ChallengeDifficulty > 6 {
+		return fmt.Errorf("protection.bot.challenge_difficulty must be between 1 and 6")
+	}
+	if bot.AltchaMaxNumber < 1000 || bot.AltchaMaxNumber > 50000000 {
+		return fmt.Errorf("protection.bot.altcha_max_number must be between 1000 and 50000000")
+	}
+	if bot.WaitingRoomMaxActive < 1 || bot.WaitingRoomMaxActive > 1000000 {
+		return fmt.Errorf("protection.bot.waiting_room_max_active must be between 1 and 1000000")
+	}
+	if bot.WaitingRoomTTL < 30*time.Second || bot.WaitingRoomTTL > 24*time.Hour {
+		return fmt.Errorf("protection.bot.waiting_room_ttl must be between 30s and 24h")
+	}
+	if bot.ChallengeTTL < 30*time.Second || bot.ChallengeTTL > 24*time.Hour {
+		return fmt.Errorf("protection.bot.challenge_ttl must be between 30s and 24h")
 	}
 	return nil
 }
@@ -726,6 +847,81 @@ func validateSQLIdentifierPath(value string) error {
 		if !ident.MatchString(part) {
 			return fmt.Errorf("%q is not a safe SQL identifier", part)
 		}
+	}
+	return nil
+}
+
+func hasAnyTLSCertificate(cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
+		return true
+	}
+	for _, site := range cfg.Sites {
+		if site.EnableSSL && site.Certificate.Mode != "inline" && site.CertFile != "" && site.KeyFile != "" {
+			return true
+		}
+		if site.EnableSSL && site.Certificate.Mode == "inline" && site.Certificate.CertPEM != "" && site.Certificate.KeyPEM != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateACME(cfg ACMEConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.ACMESHPath) == "" {
+		return fmt.Errorf("acme.acme_sh_path is required when ACME is enabled")
+	}
+	if strings.TrimSpace(cfg.Home) == "" {
+		return fmt.Errorf("acme.home is required when ACME is enabled")
+	}
+	if strings.TrimSpace(cfg.CertDir) == "" {
+		return fmt.Errorf("acme.cert_dir is required when ACME is enabled")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.KeyType)) {
+	case "", "ec-256", "ec-384", "2048", "3072", "4096":
+	default:
+		return fmt.Errorf("acme.key_type has unsupported value %q", cfg.KeyType)
+	}
+	for _, provider := range cfg.DNSProviders {
+		if !provider.Enabled {
+			continue
+		}
+		if strings.TrimSpace(provider.ID) == "" || strings.TrimSpace(provider.API) == "" {
+			return fmt.Errorf("acme dns provider must define id and api")
+		}
+		for key := range provider.Env {
+			if !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(key) {
+				return fmt.Errorf("acme dns provider %q has invalid env key %q", provider.ID, key)
+			}
+		}
+	}
+	return nil
+}
+
+func validateSiteCertificate(site SiteConfig) error {
+	if strings.TrimSpace(site.Certificate.Mode) == "" {
+		return nil
+	}
+	switch site.Certificate.Mode {
+	case "file":
+		if site.EnableSSL && (strings.TrimSpace(site.CertFile) == "" || strings.TrimSpace(site.KeyFile) == "") {
+			return fmt.Errorf("site %q requires cert_file and key_file in file certificate mode", site.Name)
+		}
+	case "inline":
+		if site.EnableSSL && (strings.TrimSpace(site.Certificate.CertPEM) == "" || strings.TrimSpace(site.Certificate.KeyPEM) == "") {
+			return fmt.Errorf("site %q requires cert_pem and key_pem in inline certificate mode", site.Name)
+		}
+	case "acme":
+		if site.EnableSSL && len(site.Certificate.ACME.Domains) == 0 && len(site.Domains) == 0 {
+			return fmt.Errorf("site %q requires acme domains or site domains", site.Name)
+		}
+	default:
+		return fmt.Errorf("site %q has unsupported certificate mode %q", site.Name, site.Certificate.Mode)
 	}
 	return nil
 }

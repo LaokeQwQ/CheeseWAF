@@ -6,14 +6,17 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/acme"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
@@ -28,8 +31,14 @@ type Handler struct {
 	Secret              string
 	Auditor             *middleware.Auditor
 	AssistantApprovals  *ai.ApprovalStore
+	ACMEIssuer          acme.Issuer
 	LoginCAPTCHAState   *loginCAPTCHAState
 	StartedAt           time.Time
+	geoipMu             sync.Mutex
+	geoipCacheKey       string
+	geoipPolicy         *protectionip.GeoIPPolicy
+	geoipErrorKey       string
+	geoipRetryAfter     time.Time
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
@@ -45,6 +54,7 @@ type Options struct {
 	Secret              string
 	Auditor             *middleware.Auditor
 	AssistantApprovals  *ai.ApprovalStore
+	ACMEIssuer          acme.Issuer
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
@@ -65,6 +75,7 @@ func New(opts Options) *Handler {
 		Secret:              opts.Secret,
 		Auditor:             opts.Auditor,
 		AssistantApprovals:  approvals,
+		ACMEIssuer:          opts.ACMEIssuer,
 		LoginCAPTCHAState:   newLoginCAPTCHAState(),
 		StartedAt:           time.Now().UTC(),
 		OnSitesChanged:      opts.OnSitesChanged,
@@ -261,6 +272,10 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 			return false
 		}
 		expires := now.Add(login.CAPTCHA.TTL)
+		if strings.TrimSpace(payload.Slider.Track) == "" {
+			tracker.recordProofFailure(proofKey, expires, now)
+			return false
+		}
 		if !captcha.VerifySlider(captcha.SliderOptions{
 			Secret:    h.loginCaptchaSecret(),
 			Purpose:   "admin-login-slider",
@@ -276,6 +291,7 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 			Token:  payload.Slider.Token,
 			X:      payload.Slider.X,
 			DragMS: payload.Slider.DragMS,
+			Track:  payload.Slider.Track,
 		}) {
 			tracker.recordProofFailure(proofKey, expires, now)
 			return false

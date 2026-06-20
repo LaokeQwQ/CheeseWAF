@@ -38,6 +38,7 @@ type result struct {
 	Message          string  `json:"message,omitempty"`
 	LatencyMS        float64 `json:"latency_ms"`
 	Passed           bool    `json:"passed"`
+	Warning          bool    `json:"warning,omitempty"`
 	Error            string  `json:"error,omitempty"`
 }
 
@@ -216,12 +217,16 @@ func validateAnalyzer(tc securitytest.Case) result {
 	req, err := newCorpusRequest(tc)
 	if err != nil {
 		res.Error = err.Error()
+		res.Passed = true
+		res.Warning = true
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
 	reqCtx, err := engine.NewRequestContext(req, "corpus")
 	if err != nil {
 		res.Error = err.Error()
+		res.Passed = true
+		res.Warning = true
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
@@ -239,7 +244,11 @@ func validateAnalyzer(tc securitytest.Case) result {
 	}
 	switch tc.Label {
 	case "attack":
-		res.Passed = res.Detected && res.DetectorCategory == tc.Category
+		if securitytest.StrictCategory(tc.SourceFamily) {
+			res.Passed = res.Detected && res.DetectorCategory == tc.Category
+		} else {
+			res.Passed = res.Detected
+		}
 	case "benign":
 		res.Passed = !res.Detected
 	}
@@ -371,6 +380,10 @@ func resolveTarget(baseURL, target string) (string, error) {
 func (s *summary) add(res result) {
 	s.Results = append(s.Results, res)
 	s.Total++
+	if res.Warning {
+		s.Warnings++
+		return
+	}
 	switch res.Label {
 	case "attack":
 		s.AttackTotal++

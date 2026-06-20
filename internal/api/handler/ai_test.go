@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -106,6 +107,89 @@ func TestAIModelsCanUseUnsavedOpenAIConfig(t *testing.T) {
 	}
 	if response.Data.Total != 2 || response.Data.Items[0].ID != "deepseek-chat" {
 		t.Fatalf("unexpected model response: %+v", response.Data)
+	}
+}
+
+func TestAITestConnectionCanUseUnsavedOpenAIConfig(t *testing.T) {
+	var gotPath string
+	var gotAuthorization string
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := new(bytes.Buffer)
+		_, _ = raw.ReadFrom(r.Body)
+		gotBody = raw.String()
+		gotPath = r.URL.Path
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"OK"}}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = "https://saved.invalid/v1"
+	cfg.AI.APIKey = "saved-key"
+	cfg.AI.Model = "saved-model"
+	handler := New(Options{Config: &cfg})
+
+	raw, _ := json.Marshal(map[string]any{
+		"target":                 "assistant",
+		"provider":               "openai",
+		"api_base":               upstream.URL,
+		"api_key":                "typed-key",
+		"model":                  "typed-model",
+		"allow_private_api_base": true,
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/test", bytes.NewReader(raw))
+	handler.TestAIConnection(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected test connection ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if gotPath != "/chat/completions" || gotAuthorization != "Bearer typed-key" || !strings.Contains(gotBody, "typed-model") {
+		t.Fatalf("expected unsaved config to be used, path=%q authorization=%q body=%s", gotPath, gotAuthorization, gotBody)
+	}
+	if cfg.AI.APIBase != "https://saved.invalid/v1" || cfg.AI.APIKey != "saved-key" || cfg.AI.Model != "saved-model" {
+		t.Fatalf("TestAIConnection should not persist temporary config: %+v", cfg.AI)
+	}
+}
+
+func TestAITestConnectionRejectsMissingAPIKeyBeforeProviderCall(t *testing.T) {
+	var called bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = upstream.URL
+	cfg.AI.APIKey = ""
+	cfg.AI.Model = "test-model"
+	handler := New(Options{Config: &cfg})
+
+	raw, _ := json.Marshal(map[string]any{
+		"target":                 "assistant",
+		"provider":               "openai",
+		"api_base":               upstream.URL,
+		"api_key":                "",
+		"model":                  "test-model",
+		"allow_private_api_base": true,
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/test", bytes.NewReader(raw))
+	handler.TestAIConnection(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing key to be rejected before provider call, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if called {
+		t.Fatalf("provider should not be called when api key is missing")
+	}
+	if !strings.Contains(recorder.Body.String(), "AI_KEY_REQUIRED") {
+		t.Fatalf("expected AI_KEY_REQUIRED, body=%s", recorder.Body.String())
 	}
 }
 
@@ -356,6 +440,39 @@ func TestAIAssistantReturnsRealToolExecutions(t *testing.T) {
 	}
 }
 
+func TestAIAssistantUsesKnowledgeBaseForProductQuestions(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.Knowledge.Enabled = true
+	cfg.AI.Knowledge.Builtin = true
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"How do self-learning rules reduce false positives?","limit":10}`)))
+	handler.AIAssistant(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			ToolExecutions []struct {
+				Name   string `json:"name"`
+				Result *struct {
+					Output string `json:"output"`
+				} `json:"result"`
+			} `json:"tool_executions"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	for _, call := range response.Data.ToolExecutions {
+		if call.Name == "knowledge_base" && call.Result != nil && strings.Contains(call.Result.Output, "ai-self-learning") {
+			return
+		}
+	}
+	t.Fatalf("expected knowledge_base tool execution, got %+v", response.Data.ToolExecutions)
+}
+
 func TestAIAssistantFetchesEventsOnlyAfterToolRequest(t *testing.T) {
 	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
 	sink := &filteringAISink{items: []storage.LogEntry{{
@@ -429,6 +546,45 @@ func TestAIAssistantFetchesEventsOnlyAfterToolRequest(t *testing.T) {
 	}
 	if response.Data.InputTokens != 72 || response.Data.OutputTokens != 21 {
 		t.Fatalf("expected aggregated token usage, got %+v", response.Data)
+	}
+}
+
+func TestAIAssistantAllowsNonStreamingResponsePastServerWriteTimeout(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(250 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"OK after delay"}}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = upstream.URL
+	cfg.AI.APIKey = "test-secret"
+	cfg.AI.Model = "test-model"
+	handler := New(Options{Config: &cfg})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(handler.AIAssistant))
+	server.Config.WriteTimeout = 80 * time.Millisecond
+	server.Start()
+	defer server.Close()
+
+	client := server.Client()
+	client.Timeout = 2 * time.Second
+	resp, err := client.Post(server.URL, "application/json", strings.NewReader(`{"message":"hello","language":"en","limit":10}`))
+	if err != nil {
+		t.Fatalf("post assistant request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read assistant response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected assistant ok, status=%d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "OK after delay") {
+		t.Fatalf("expected delayed AI answer, body=%s", body)
 	}
 }
 

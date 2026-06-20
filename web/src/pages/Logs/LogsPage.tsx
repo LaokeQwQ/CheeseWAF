@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Eye, Search } from 'lucide-react';
 import { fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
-import { displayAction, displayCategory, displayCountry } from '../../utils/display';
+import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
 
 const PAGE_SIZE = 8;
 
@@ -36,8 +36,9 @@ export default function LogsPage() {
       entry.action,
       entry.message,
       entry.country,
+      formatLogLocation(entry, t),
     ].some((value) => value?.toLowerCase().includes(needle)));
-  }, [data?.items, search]);
+  }, [data?.items, search, t]);
   const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE));
   const pageItems = logs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const pageStart = logs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -65,7 +66,7 @@ export default function LogsPage() {
       <div className="toolbar-row">
         <Input value={search} onChange={setSearch} prefix={<Search size={16} />} placeholder={t('common.search')} allowClear />
         <Select value={category} placeholder={t('logs.category')} allowClear onChange={(value) => setCategory(value as string | undefined)}>
-          {['sqli', 'xss', 'rce', 'lfi', 'ssrf', 'bot'].map((item) => (
+          {['sqli', 'xss', 'rce', 'lfi', 'ssrf', 'nosqli', 'ssti', 'xxe', 'bot', 'threat_intel'].map((item) => (
             <Select.Option key={item} value={item}>{displayCategory(item, t)}</Select.Option>
           ))}
         </Select>
@@ -83,7 +84,7 @@ export default function LogsPage() {
           <span>{t('logs.category')}</span>
           <span>{t('logs.action')}</span>
           <span>URI</span>
-          <span>{t('attackMap.country')}</span>
+          <span>{t('dashboard.ipLocation')}</span>
           <span>{t('logs.time')}</span>
           <span>{t('logs.detail')}</span>
         </div>
@@ -109,8 +110,8 @@ export default function LogsPage() {
               <div className="security-event-cell security-event-uri" data-label="URI">
                 <code title={entry.uri || '-'}>{entry.uri || '-'}</code>
               </div>
-              <div className="security-event-cell" data-label={t('attackMap.country')}>
-                <span title={displayCountry(entry.country, t)}>{displayCountry(entry.country, t)}</span>
+              <div className="security-event-cell" data-label={t('dashboard.ipLocation')}>
+                <span title={formatLogLocation(entry, t)}>{formatLogLocation(entry, t)}</span>
               </div>
               <div className="security-event-cell" data-label={t('logs.time')}>
                 <time dateTime={entry.timestamp}>{formatTime(entry.timestamp)}</time>

@@ -68,6 +68,7 @@ func (h *Handler) aiAssistant() *ai.Assistant {
 func (h *Handler) aiAssistantRegistry() *ai.Registry {
 	registry := ai.NewDefaultRegistry(h.Config)
 	registry.Register(recentSecurityEventsTool{Sink: h.Sink})
+	registry.Register(knowledgeBaseTool{Config: h.Config})
 	registry.Register(setBotChallengeTool{Handler: h})
 	registry.Register(setProtectionLevelTool{Handler: h})
 	return registry
@@ -172,6 +173,44 @@ func (t recentSecurityEventsTool) Execute(ctx context.Context, args map[string]a
 		return nil, err
 	}
 	return &ai.ToolResult{Success: true, Output: string(raw)}, nil
+}
+
+type knowledgeBaseTool struct {
+	Config *config.Config
+}
+
+func (knowledgeBaseTool) Name() string {
+	return "knowledge_base"
+}
+
+func (knowledgeBaseTool) Description() string {
+	return "Search built-in CheeseWAF product and WAF operation knowledge snippets. Read-only."
+}
+
+func (knowledgeBaseTool) Sensitivity() ai.ToolSensitivity {
+	return ai.ReadOnly
+}
+
+func (knowledgeBaseTool) Parameters() map[string]any {
+	return map[string]any{
+		"type":     "object",
+		"required": []string{"query"},
+		"properties": map[string]any{
+			"query": map[string]any{"type": "string", "minLength": 1},
+			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+		},
+	}
+}
+
+func (t knowledgeBaseTool) Execute(_ context.Context, args map[string]any) (*ai.ToolResult, error) {
+	cfg := config.Default().AI.Knowledge
+	if t.Config != nil {
+		cfg = t.Config.AI.Knowledge
+	}
+	query, _ := stringArg(args, "query")
+	limit := intArg(args, "limit", cfg.MaxSnippets)
+	output := ai.NewKnowledgeBase(cfg).SearchJSON(query, limit)
+	return &ai.ToolResult{Success: true, Output: output}, nil
 }
 
 type setBotChallengeTool struct {
