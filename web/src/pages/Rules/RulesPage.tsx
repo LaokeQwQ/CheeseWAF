@@ -168,11 +168,11 @@ export default function RulesPage() {
               <h2>{t('rules.actionAndPriority')}</h2>
               <Form.Item label={t('rules.location')} field="location" extra={t('rules.locationHint')}>
                 <Select defaultValue="uri">
-                  <Select.Option value="uri">URI</Select.Option>
-                  <Select.Option value="header">Header</Select.Option>
-                  <Select.Option value="query">Query</Select.Option>
-                  <Select.Option value="body">Body</Select.Option>
-                  <Select.Option value="cookie">Cookie</Select.Option>
+                  <Select.Option value="uri">{t('rules.locationURI')}</Select.Option>
+                  <Select.Option value="header">{t('rules.locationHeader')}</Select.Option>
+                  <Select.Option value="query">{t('rules.locationQuery')}</Select.Option>
+                  <Select.Option value="body">{t('rules.locationBody')}</Select.Option>
+                  <Select.Option value="cookie">{t('rules.locationCookie')}</Select.Option>
                 </Select>
               </Form.Item>
               <Form.Item label={t('logs.action')} field="action" extra={t('rules.actionHint')}>
@@ -206,11 +206,17 @@ export default function RulesPage() {
 function ruleTemplates(t: (key: string, options?: Record<string, unknown>) => string): RuleTemplate[] {
   return [
     { key: 'path-admin', label: t('rules.templatePathPrefix'), pattern: '^/admin(?:/|$)', description: t('rules.templatePathPrefixHint') },
-    { key: 'sql-union', label: t('rules.templateSQLi'), pattern: '(?i)(?:union\\s+select|select\\s+.+\\s+from|sleep\\s*\\()', description: t('rules.templateSQLiHint') },
-    { key: 'xss-script', label: t('rules.templateXSS'), pattern: '(?i)<\\s*script|javascript:|onerror\\s*=', description: t('rules.templateXSSHint') },
-    { key: 'lfi', label: t('rules.templateLFI'), pattern: '(?:\\.\\./|\\.\\.\\\\|/etc/passwd|boot\\.ini)', description: t('rules.templateLFIHint') },
-    { key: 'rce', label: t('rules.templateRCE'), pattern: '(?i)(?:;|\\||&&)\\s*(?:cat|curl|wget|bash|sh|powershell)\\b', description: t('rules.templateRCEHint') },
-    { key: 'json-field', label: t('rules.templateJSONField'), pattern: '\"(?:role|is_admin|permission)\"\\s*:', description: t('rules.templateJSONFieldHint') },
+    { key: 'path-api', label: t('rules.templateAPIPath'), pattern: '^/api/(?:v[12]/)?(?:users|admin|config|internal)', description: t('rules.templateAPIPathHint') },
+    { key: 'path-backup', label: t('rules.templateBackupPath'), pattern: '\\.(?:bak|backup|old|tmp|swp|sql|zip|tar\\.gz|7z)$', description: t('rules.templateBackupPathHint') },
+    { key: 'sql-union', label: t('rules.templateSQLi'), pattern: '(?i)(?:union\\s+select|select\\s+.+\\s+from|sleep\\s*\\(|waitfor\\s+delay|benchmark\\s*\\()', description: t('rules.templateSQLiHint') },
+    { key: 'xss-script', label: t('rules.templateXSS'), pattern: '(?i)(?:<\\s*script|javascript:|on\\w+\\s*=|srcset\\s*=|formaction\\s*=)', description: t('rules.templateXSSHint') },
+    { key: 'lfi', label: t('rules.templateLFI'), pattern: '(?i)(?:\\.\\./|\\.\\.\\\\|/etc/(?:passwd|shadow|hosts)|boot\\.ini|win\\.ini|proc/self)', description: t('rules.templateLFIHint') },
+    { key: 'rce', label: t('rules.templateRCE'), pattern: '(?i)(?:;|\\|\\||&&|\\$\\()\\s*(?:cat|curl|wget|bash|sh|powershell|cmd|python|perl|php)\\b', description: t('rules.templateRCEHint') },
+    { key: 'ssrf-internal', label: t('rules.templateSSRF'), pattern: '(?i)(?:https?|gopher|dict|ftp)://(?:localhost|127\\.|10\\.|172\\.1[6-9]|172\\.2\\d|172\\.3[0-1]|192\\.168\\.|169\\.254)', description: t('rules.templateSSRFHint') },
+    { key: 'json-field', label: t('rules.templateJSONField'), pattern: '"(?:role|is_admin|permission|admin|root)"\\s*:\\s*(?:true|1|null)', description: t('rules.templateJSONFieldHint') },
+    { key: 'header-auth', label: t('rules.templateAuthHeader'), pattern: '^(?:Bearer\\s+(?:ey|invalid)|Basic\\s+(?:test|admin):|Authorization:\\s*$)', description: t('rules.templateAuthHeaderHint') },
+    { key: 'ua-bot', label: t('rules.templateBotUA'), pattern: '(?i)(?:sqlmap|nikto|nuclei|masscan|zgrab|dirbuster|burp|nessus)', description: t('rules.templateBotUAHint') },
+    { key: 'ssti', label: t('rules.templateSSTI'), pattern: '(?i)(?:\\{\\{.*?\\}\\}|\\$\\{.*?\\}|<%=.*?%>|__class__|__globals__|__import__)', description: t('rules.templateSSTIHint') },
   ];
 }
 

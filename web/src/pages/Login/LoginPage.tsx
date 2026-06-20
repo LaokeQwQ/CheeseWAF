@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LockKeyhole, MoveRight, ShieldCheck, UserRound } from 'lucide-react';
+import { LockKeyhole, MoveRight, RefreshCcw, ShieldCheck, UserRound, X } from 'lucide-react';
 import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login, verifyLoginCaptcha } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import type {
@@ -39,9 +39,11 @@ export default function LoginPage() {
   const [captchaState, setCaptchaState] = useState<CAPTCHAState>('loading');
   const [captchaModalOpen, setCaptchaModalOpen] = useState(false);
   const [loadMs, setLoadMs] = useState<number | null>(null);
+  const [sliderTrack, setSliderTrack] = useState<Array<{ x: number; y: number; t: number; type: 'down' | 'move' | 'up' }>>([]);
   const mobileCaptcha = useMobileCaptchaMode();
   const dragRef = useRef<{ pointerId: number; originX: number; startX: number; startedAt: number } | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const sliderImageRef = useRef<HTMLImageElement | null>(null);
   const captchaCloseTimerRef = useRef<number | null>(null);
   const captchaRefreshTimerRef = useRef<number | null>(null);
   const token = localStorage.getItem('cheesewaf-token');
@@ -59,6 +61,7 @@ export default function LoginPage() {
     setSliderPayload(null);
     setCaptchaReceipt(null);
     setLastSliderDragMs(null);
+    setSliderTrack([]);
   }, [resetSliderMotion]);
 
   const applyCaptchaResponse = useCallback((response: Awaited<ReturnType<typeof fetchLoginCaptcha>>, activeOptions: LoginOptions | null) => {
@@ -270,7 +273,7 @@ export default function LoginPage() {
     }
   }
 
-  function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+  function handlePointerDown(event: React.PointerEvent<HTMLElement>) {
     if (!slider || loading || captchaState === 'loading' || captchaState === 'solving' || captchaState === 'checking' || captchaState === 'verified' || captchaState === 'invalid' || captchaState === 'error') {
       return;
     }
@@ -278,6 +281,7 @@ export default function LoginPage() {
       window.clearTimeout(captchaRefreshTimerRef.current);
       captchaRefreshTimerRef.current = null;
     }
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     setError('');
     setSliderDragging(true);
@@ -287,47 +291,35 @@ export default function LoginPage() {
     setLastSliderDragMs(null);
     setCaptchaState('ready');
     dragRef.current = { pointerId: event.pointerId, originX: event.clientX, startX: sliderX, startedAt: performance.now() };
+    setSliderTrack([sliderTrackPoint(event, sliderX, 'down', 0)]);
   }
 
-  function handlePointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+  function handlePointerMove(event: React.PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId || !slider) {
       return;
     }
-    const trackWidth = getVisualSliderTravel(slider, trackRef.current);
-    setSliderX(Math.round(clamp(drag.startX + event.clientX - drag.originX, 0, trackWidth)));
+    const trackWidth = getSliderLayoutTravel(slider);
+    const delta = pointerDeltaToSliderDelta(event.clientX - drag.originX, sliderImageRef.current);
+    const nextX = Math.round(clamp(drag.startX + delta, 0, trackWidth));
+    setSliderX(nextX);
     setSliderDone(false);
+    const elapsed = Math.round(performance.now() - drag.startedAt);
+    const point = sliderTrackPoint(event, nextX, 'move', elapsed);
+    setSliderTrack((items) => [...items.slice(-90), point]);
   }
 
-  async function handlePointerUp(event: React.PointerEvent<HTMLButtonElement>) {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId || !slider) {
-      return;
-    }
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    const currentSlider = slider;
-    const trackWidth = getVisualSliderTravel(slider, trackRef.current);
-    const finalVisualX = Math.round(clamp(drag.startX + event.clientX - drag.originX, 0, trackWidth));
-    const finalServerX = toServerSliderX(finalVisualX, slider, trackRef.current);
-    const elapsed = Math.max(0, Math.round(performance.now() - drag.startedAt));
-    setLastSliderDragMs(elapsed);
-    dragRef.current = null;
-    setSliderDragging(false);
-    setSliderX(0);
-    setSliderDone(false);
-    setSliderPayload(null);
-    setCaptchaReceipt(null);
-    if (finalVisualX <= 0) {
+  async function verifySliderPosition(visualX: number, dragMs: number, currentSlider: LoginSliderCAPTCHAChallenge, track = sliderTrack) {
+    if (visualX <= 0) {
       setCaptchaState('invalid');
       setError('');
       scheduleCaptchaRefresh();
       return;
     }
+    const serverX = toServerSliderX(visualX, currentSlider);
     setCaptchaState('checking');
     try {
-      const nextSliderPayload = { token: currentSlider.token, x: finalServerX, drag_ms: elapsed };
+      const nextSliderPayload = { token: currentSlider.token, x: serverX, drag_ms: dragMs, track: serializeSliderTrack(track, currentSlider, visualX, dragMs) };
       const verifyPayload: LoginCAPTCHAPayload = { mode: 'slider', slider: nextSliderPayload };
       if (loginCAPTCHARequiresPow(options, 'slider') && powPayload) {
         Object.assign(verifyPayload, powPayload, { mode: 'slider' });
@@ -352,6 +344,73 @@ export default function LoginPage() {
     }
   }
 
+  async function handlePointerUp(event: React.PointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !slider) {
+      return;
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const currentSlider = slider;
+    const trackWidth = getSliderLayoutTravel(slider);
+    const delta = pointerDeltaToSliderDelta(event.clientX - drag.originX, sliderImageRef.current);
+    const finalVisualX = Math.round(clamp(drag.startX + delta, 0, trackWidth));
+    const elapsed = Math.max(0, Math.round(performance.now() - drag.startedAt));
+    setLastSliderDragMs(elapsed);
+    const finalTrack = [
+      ...sliderTrack.slice(-90),
+      sliderTrackPoint(event, finalVisualX, 'up', elapsed),
+    ];
+    setSliderTrack(finalTrack);
+    dragRef.current = null;
+    setSliderDragging(false);
+    setSliderX(0);
+    setSliderDone(false);
+    setSliderPayload(null);
+    setCaptchaReceipt(null);
+    await verifySliderPosition(finalVisualX, elapsed, currentSlider, finalTrack);
+  }
+
+  function handleSliderKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (!slider || captchaState === 'checking' || captchaState === 'verified') {
+      return;
+    }
+    const trackWidth = getSliderLayoutTravel(slider);
+    const step = Math.max(10, Math.round(trackWidth / 10));
+    switch (event.key) {
+      case 'ArrowLeft':
+        event.preventDefault();
+        setSliderX((x) => Math.max(0, x - step));
+        break;
+      case 'ArrowRight':
+        event.preventDefault();
+        setSliderX((x) => Math.min(trackWidth, x + step));
+        break;
+      case 'Home':
+        event.preventDefault();
+        setSliderX(0);
+        break;
+      case 'End':
+        event.preventDefault();
+        setSliderX(trackWidth);
+        break;
+      case 'PageUp':
+        event.preventDefault();
+        setSliderX((x) => Math.max(0, x - step * 3));
+        break;
+      case 'PageDown':
+        event.preventDefault();
+        setSliderX((x) => Math.min(trackWidth, x + step * 3));
+        break;
+      case 'Enter':
+      case ' ':
+        event.preventDefault();
+        void verifySliderPosition(sliderX, slider.min_drag_ms, slider);
+        break;
+    }
+  }
+
   function scheduleCaptchaRefresh() {
     if (captchaRefreshTimerRef.current != null) {
       window.clearTimeout(captchaRefreshTimerRef.current);
@@ -359,21 +418,26 @@ export default function LoginPage() {
     captchaRefreshTimerRef.current = window.setTimeout(() => {
       captchaRefreshTimerRef.current = null;
       void refreshCaptcha();
-    }, 850);
+    }, 560);
   }
 
   async function openCaptchaModal() {
     if (captchaState === 'verified') {
       return;
     }
-    if (activeCaptchaMode !== 'slider') {
-      await refreshCaptcha();
-      return;
-    }
-    setCaptchaModalOpen(true);
     if (!options?.captcha.enabled) {
       return;
     }
+    if (activeCaptchaMode !== 'slider' || !slider) {
+      await refreshCaptcha();
+      if (activeCaptchaMode !== 'slider') {
+        return;
+      }
+    }
+    if (activeCaptchaMode !== 'slider') {
+      return;
+    }
+    setCaptchaModalOpen(true);
     if (captchaState === 'error' || !slider) {
       await refreshCaptcha();
     }
@@ -388,6 +452,7 @@ export default function LoginPage() {
       : sliderDone
         ? t('login.sliderReleasedWithTime', { seconds: formatSeconds(lastSliderDragMs) })
         : t('login.sliderHint');
+  const showSliderFeedback = captchaState === 'checking' || captchaState === 'invalid';
   const captchaGateDisabled = loading
     || captchaState === 'loading'
     || captchaState === 'solving'
@@ -462,6 +527,7 @@ export default function LoginPage() {
         onCancel={() => setCaptchaModalOpen(false)}
         footer={null}
         closable={false}
+        aria-label={t('login.captchaWidgetTitle')}
       >
         <div className={`auth-captcha-widget auth-captcha-state-${captchaState}`}>
           <div className="auth-captcha-widget-head">
@@ -478,50 +544,69 @@ export default function LoginPage() {
           ) : sliderMode && slider ? (
             <div className={sliderClass} style={{ '--slider-width': `${slider.width}px`, '--piece-size': `${slider.piece_size}px` } as CSSProperties}>
               <div className="auth-slider-stage" aria-label={t('login.sliderImage')} role="img">
-                <img className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
+                <img ref={sliderImageRef} className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
                 {slider.piece && (
                   <img
                     className="auth-slider-piece"
                     src={slider.piece}
                     width={slider.piece_size}
                     height={slider.piece_size}
-                    alt=""
+                    alt={t('login.sliderPiece')}
                     draggable={false}
                     style={{ transform: `translate3d(${sliderX}px, ${slider.target_y}px, 0)` }}
                   />
                 )}
+                {(captchaState === 'invalid' || captchaState === 'checking') && (
+                  <div className="auth-slider-stage-tip">
+                    {captchaState === 'invalid'
+                      ? t('login.sliderInvalidRefreshing')
+                      : t('login.sliderChecking')}
+                  </div>
+                )}
               </div>
-              {(captchaState === 'invalid' || captchaState === 'checking') && (
-                <div className="auth-slider-feedback">
-                  {captchaState === 'invalid'
-                    ? t('login.sliderInvalidRefreshing')
-                    : t('login.sliderChecking')}
+              {showSliderFeedback && (
+                <div className="auth-slider-feedback" aria-live="polite">
+                  <div>
+                    <strong>{sliderCopy}</strong>
+                    <span>{captchaState === 'invalid' ? t('login.sliderReloading') : t('login.captchaGateHint')}</span>
+                  </div>
                 </div>
               )}
               <div
                 ref={trackRef}
                 className="auth-slider-track"
-                role="slider"
-                aria-valuemin={0}
-                aria-valuemax={slider.track_width}
-                aria-valuenow={sliderX}
-                aria-label={t('login.sliderLabel')}
-                aria-disabled={captchaState === 'checking'}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
               >
                 <span className="auth-slider-fill" style={{ width: sliderX > 0 ? `${sliderX + slider.piece_size / 2}px` : 0 }} />
                 <button
                   type="button"
                   className={sliderDone ? 'auth-slider-thumb auth-slider-thumb-done' : 'auth-slider-thumb'}
                   style={{ transform: `translateX(${sliderX}px)` }}
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerCancel={handlePointerUp}
-                  disabled={captchaState === 'solving' || captchaState === 'checking' || captchaState === 'invalid' || captchaState === 'loading'}
+                  role="slider"
+                  aria-valuemin={0}
+                  aria-valuemax={slider.track_width}
+                  aria-valuenow={toServerSliderX(sliderX, slider)}
+                  aria-label={t('login.sliderLabel')}
+                  aria-disabled={captchaState === 'checking'}
+                  onKeyDown={handleSliderKeyDown}
                 >
                   <MoveRight size={18} />
                 </button>
                 <span className={sliderDone ? 'auth-slider-copy auth-slider-copy-done' : 'auth-slider-copy'}>{sliderCopy}</span>
+              </div>
+              <div className="auth-captcha-widget-foot">
+                <span className="auth-captcha-widget-brand"><BrandLogo /> <strong>CheeseWAF</strong></span>
+                <div>
+                  <button type="button" onClick={() => void refreshCaptcha()} aria-label={t('login.captchaRefresh')} disabled={captchaState === 'checking' || captchaState === 'loading'}>
+                    <RefreshCcw size={15} />
+                  </button>
+                  <button type="button" onClick={() => setCaptchaModalOpen(false)} aria-label={t('login.captchaModalClose')} disabled={captchaState === 'checking'}>
+                    <X size={16} />
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
@@ -714,26 +799,72 @@ function formatSeconds(milliseconds: number | null) {
   return ((milliseconds ?? 0) / 1000).toFixed(2);
 }
 
-function getVisualSliderTravel(slider: LoginSliderCAPTCHAChallenge, track: HTMLDivElement | null) {
-  const serverTravel = slider.track_width || Math.max(0, slider.width - slider.piece_size);
-  if (!track) {
-    return serverTravel;
-  }
-  const rect = track.getBoundingClientRect();
-  if (!Number.isFinite(rect.width) || rect.width <= 0) {
-    return serverTravel;
-  }
-  const scale = rect.width / Math.max(1, slider.width);
-  return Math.max(0, rect.width - slider.piece_size * scale);
+function getSliderLayoutTravel(slider: LoginSliderCAPTCHAChallenge) {
+  return slider.track_width || Math.max(0, slider.width - slider.piece_size);
 }
 
-function toServerSliderX(visualX: number, slider: LoginSliderCAPTCHAChallenge, track: HTMLDivElement | null) {
-  const serverTravel = slider.track_width || Math.max(0, slider.width - slider.piece_size);
-  const visualTravel = getVisualSliderTravel(slider, track);
-  if (visualTravel <= 0 || serverTravel <= 0) {
+function pointerDeltaToSliderDelta(pointerDeltaX: number, image: HTMLImageElement | null) {
+  if (!image) {
+    return pointerDeltaX;
+  }
+  const rectWidth = image.getBoundingClientRect().width;
+  const layoutWidth = image.clientWidth || image.naturalWidth || rectWidth;
+  if (!Number.isFinite(rectWidth) || rectWidth <= 0 || !Number.isFinite(layoutWidth) || layoutWidth <= 0) {
+    return pointerDeltaX;
+  }
+  return pointerDeltaX * (layoutWidth / rectWidth);
+}
+
+function toServerSliderX(visualX: number, slider: LoginSliderCAPTCHAChallenge) {
+  const serverTravel = getSliderLayoutTravel(slider);
+  if (serverTravel <= 0) {
     return Math.round(clamp(visualX, 0, serverTravel));
   }
-  return Math.round(clamp((visualX / visualTravel) * serverTravel, 0, serverTravel));
+  return Math.round(clamp(visualX, 0, serverTravel));
+}
+
+function sliderTrackPoint(
+  event: React.PointerEvent<HTMLElement>,
+  sliderX: number,
+  type: 'down' | 'move' | 'up',
+  elapsedMs: number,
+) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return {
+    x: Math.round(sliderX),
+    y: Math.round(Number.isFinite(rect.height) && rect.height > 0 ? event.clientY - rect.top : 0),
+    t: Math.max(0, Math.round(elapsedMs)),
+    type,
+  };
+}
+
+function serializeSliderTrack(
+  points: Array<{ x: number; y: number; t: number; type: 'down' | 'move' | 'up' }>,
+  slider: LoginSliderCAPTCHAChallenge,
+  finalVisualX: number,
+  dragMs: number,
+) {
+  const normalized = points.slice(-96).map((point) => ({
+    ...point,
+    x: toServerSliderX(point.x, slider),
+    y: Math.round(point.y),
+    t: Math.max(0, Math.round(point.t)),
+  }));
+  if (normalized.length === 0) {
+    normalized.push({ x: 0, y: 0, t: 0, type: 'down' });
+  }
+  const first = normalized[0];
+  if (first.type !== 'down') {
+    normalized.unshift({ x: 0, y: first.y || 0, t: 0, type: 'down' });
+  }
+  const last = normalized[normalized.length - 1];
+  const finalX = toServerSliderX(finalVisualX, slider);
+  if (last.type !== 'up') {
+    normalized.push({ x: finalX, y: last.y || 0, t: Math.max(0, Math.round(dragMs)), type: 'up' });
+  } else {
+    normalized[normalized.length - 1] = { ...last, x: finalX, t: Math.max(0, Math.round(dragMs)), type: 'up' };
+  }
+  return JSON.stringify(normalized);
 }
 
 function loginErrorMessage(error: unknown, t: TFunction) {

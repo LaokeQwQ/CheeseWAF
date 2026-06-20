@@ -139,32 +139,34 @@ func Default() Config {
 				Default: RateLimitProfile{Requests: 100, Window: time.Minute, Burst: 20},
 			},
 			Bot: BotProtectionConfig{
-				Enabled:                false,
-				JSChallenge:            true,
-				CAPTCHA:                false,
-				CAPTCHAType:            "pow",
-				CAPTCHAMaxAttempts:     5,
-				ImageCAPTCHALength:     6,
-				ImageCAPTCHAWidth:      220,
-				ImageCAPTCHAHeight:     86,
-				ImageCAPTCHAAudioLimit: 6,
-				SliderCAPTCHAWidth:     320,
-				SliderCAPTCHAHeight:    150,
-				SliderCAPTCHAPiece:     42,
-				SliderCAPTCHATolerance: 6,
-				SliderCAPTCHAMinDrag:   450 * time.Millisecond,
-				ChallengeDifficulty:    4,
-				AltchaMaxNumber:        75000,
-				AltchaHeaderName:       "X-CheeseWAF-Altcha",
-				WaitingRoom:            false,
-				WaitingRoomMaxActive:   1000,
-				WaitingRoomTTL:         5 * time.Minute,
-				ChallengeTTL:           30 * time.Minute,
-				CookieName:             "cheesewaf_js_clearance",
-				Secret:                 "",
-				PathPrefixes:           []string{"/"},
-				ExemptPathPrefixes:     []string{"/health", "/api/"},
-				SuspiciousUserAgents:   []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
+				Enabled:                    false,
+				JSChallenge:                true,
+				CAPTCHA:                    false,
+				CAPTCHAType:                "pow",
+				CAPTCHAMaxAttempts:         5,
+				ImageCAPTCHALength:         6,
+				ImageCAPTCHAWidth:          220,
+				ImageCAPTCHAHeight:         86,
+				ImageCAPTCHAAudioLimit:     6,
+				SliderCAPTCHAWidth:         320,
+				SliderCAPTCHAHeight:        150,
+				SliderCAPTCHAPiece:         42,
+				SliderCAPTCHATolerance:     6,
+				SliderCAPTCHAMinDrag:       450 * time.Millisecond,
+				SliderCAPTCHATrackRequired: true,
+				CAPTCHAMobileType:          "pow",
+				ChallengeDifficulty:        4,
+				AltchaMaxNumber:            75000,
+				AltchaHeaderName:           "X-CheeseWAF-Altcha",
+				WaitingRoom:                false,
+				WaitingRoomMaxActive:       1000,
+				WaitingRoomTTL:             5 * time.Minute,
+				ChallengeTTL:               30 * time.Minute,
+				CookieName:                 "cheesewaf_js_clearance",
+				Secret:                     "",
+				PathPrefixes:               []string{"/"},
+				ExemptPathPrefixes:         []string{"/health", "/api/"},
+				SuspiciousUserAgents:       []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
 			},
 			ACL: ACLProtectionConfig{Enabled: true},
 		},
@@ -174,6 +176,7 @@ func Default() Config {
 				{ID: "log-cleanup", Name: "Log cleanup", Type: "cleanup", Every: 24 * time.Hour, Target: "./logs", Keep: 14, Enabled: true},
 				{ID: "config-backup", Name: "Config backup", Type: "backup", Every: 24 * time.Hour, Target: "./data/backups", Keep: 7, Enabled: false},
 				{ID: "security-daily-report", Name: "Security daily report", Type: "security_report", Frequency: "daily", At: "08:00", Channel: "file", Recipient: "./data/reports", Period: "daily", Format: "markdown", Enabled: false},
+				{ID: "ai-self-learning-rules", Name: "AI self-learning rule review", Type: "ai_self_learning", Frequency: "daily", At: "03:30", Period: "daily", Enabled: false},
 			},
 		},
 		Edge: EdgeConfig{
@@ -206,6 +209,18 @@ func Default() Config {
 			PostgreSQL:    PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
 			Elasticsearch: ElasticsearchConfig{Index: "cheesewaf-logs", Timeout: 10 * time.Second},
 		},
+		ACME: ACMEConfig{
+			Enabled:       false,
+			ACMESHPath:    "acme.sh",
+			Home:          "./data/acme",
+			Server:        "letsencrypt",
+			AccountEmail:  "",
+			CertDir:       "./data/certs",
+			KeyType:       "ec-256",
+			ReloadCommand: "",
+			DNSProviders:  []ACMEDNSProviderConfig{},
+			Notify:        true,
+		},
 		Logging: LoggingConfig{
 			Level:  "info",
 			Format: "json",
@@ -214,7 +229,34 @@ func Default() Config {
 				File: FileLogConfig{Path: "./logs/access.log", MaxSize: "100MB", MaxBackups: 10},
 			},
 		},
-		AI: AIConfig{Enabled: false, Provider: "openai", APIBase: "https://api.openai.com/v1", APIKeyHeader: "authorization", Model: "gpt-4o-mini", Async: true},
+		AI: AIConfig{
+			Enabled:             false,
+			Provider:            "openai",
+			APIBase:             "https://api.openai.com/v1",
+			APIKeyHeader:        "authorization",
+			Model:               "gpt-4o-mini",
+			Async:               true,
+			AllowPrivateAPIBase: false,
+			Assistant:           AIModelConfig{},
+			Reasoning:           AIModelConfig{},
+			SelfLearning: AISelfLearningConfig{
+				Enabled:        false,
+				AutoApply:      false,
+				DryRun:         true,
+				Interval:       24 * time.Hour,
+				At:             "03:30",
+				MinConfidence:  0.995,
+				MinEvents:      5,
+				MaxEvents:      200,
+				MaxRulesPerRun: 3,
+				Action:         "block",
+			},
+			Knowledge: AIKnowledgeConfig{
+				Enabled:     true,
+				Builtin:     true,
+				MaxSnippets: 5,
+			},
+		},
 		Update: UpdateConfig{
 			OTA: OTAConfig{
 				Enabled:          false,
@@ -261,10 +303,20 @@ func Default() Config {
 	}
 }
 
+const MaxConfigFileBytes = 16 * 1024 * 1024 // 16MB to prevent YAML bomb attacks
+
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	if path == "" {
 		return &cfg, nil
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat config %s: %w", path, err)
+	}
+	if info.Size() > MaxConfigFileBytes {
+		return nil, fmt.Errorf("config file %s exceeds max size (%d bytes > %d bytes)", path, info.Size(), MaxConfigFileBytes)
 	}
 
 	contents, err := os.ReadFile(path)
@@ -415,6 +467,21 @@ func applyDefaults(cfg *Config) {
 	if cfg.Storage.Elasticsearch.Headers == nil {
 		cfg.Storage.Elasticsearch.Headers = map[string]string{}
 	}
+	if cfg.ACME.ACMESHPath == "" {
+		cfg.ACME.ACMESHPath = def.ACME.ACMESHPath
+	}
+	if cfg.ACME.Home == "" {
+		cfg.ACME.Home = def.ACME.Home
+	}
+	if cfg.ACME.Server == "" {
+		cfg.ACME.Server = def.ACME.Server
+	}
+	if cfg.ACME.CertDir == "" {
+		cfg.ACME.CertDir = def.ACME.CertDir
+	}
+	if cfg.ACME.KeyType == "" {
+		cfg.ACME.KeyType = def.ACME.KeyType
+	}
 	if cfg.Logging.Output.Type == "" {
 		cfg.Logging.Output.Type = "file"
 	}
@@ -442,6 +509,33 @@ func applyDefaults(cfg *Config) {
 		default:
 			cfg.AI.Model = def.AI.Model
 		}
+	}
+	applyAIModelDefaults(&cfg.AI.Assistant, cfg.AI.RuntimeModelConfig())
+	assistantRuntime := cfg.AI.AssistantRuntimeConfig().RuntimeModelConfig()
+	applyAIModelDefaults(&cfg.AI.Reasoning, assistantRuntime)
+	if cfg.AI.SelfLearning.Interval == 0 {
+		cfg.AI.SelfLearning.Interval = def.AI.SelfLearning.Interval
+	}
+	if cfg.AI.SelfLearning.At == "" {
+		cfg.AI.SelfLearning.At = def.AI.SelfLearning.At
+	}
+	if cfg.AI.SelfLearning.MinConfidence == 0 {
+		cfg.AI.SelfLearning.MinConfidence = def.AI.SelfLearning.MinConfidence
+	}
+	if cfg.AI.SelfLearning.MinEvents == 0 {
+		cfg.AI.SelfLearning.MinEvents = def.AI.SelfLearning.MinEvents
+	}
+	if cfg.AI.SelfLearning.MaxEvents == 0 {
+		cfg.AI.SelfLearning.MaxEvents = def.AI.SelfLearning.MaxEvents
+	}
+	if cfg.AI.SelfLearning.MaxRulesPerRun == 0 {
+		cfg.AI.SelfLearning.MaxRulesPerRun = def.AI.SelfLearning.MaxRulesPerRun
+	}
+	if cfg.AI.SelfLearning.Action == "" {
+		cfg.AI.SelfLearning.Action = def.AI.SelfLearning.Action
+	}
+	if cfg.AI.Knowledge.MaxSnippets == 0 {
+		cfg.AI.Knowledge.MaxSnippets = def.AI.Knowledge.MaxSnippets
 	}
 	if len(cfg.Sites) == 0 {
 		cfg.Sites = def.Sites
@@ -525,6 +619,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Protection.Bot.SliderCAPTCHAMinDrag == 0 {
 		cfg.Protection.Bot.SliderCAPTCHAMinDrag = def.Protection.Bot.SliderCAPTCHAMinDrag
 	}
+	if cfg.Protection.Bot.CAPTCHAMobileType == "" {
+		cfg.Protection.Bot.CAPTCHAMobileType = def.Protection.Bot.CAPTCHAMobileType
+	}
 	if cfg.Protection.Bot.WaitingRoomMaxActive == 0 {
 		cfg.Protection.Bot.WaitingRoomMaxActive = def.Protection.Bot.WaitingRoomMaxActive
 	}
@@ -575,6 +672,12 @@ func applyDefaults(cfg *Config) {
 		if site.LoadBalance == "" {
 			site.LoadBalance = "round_robin"
 		}
+		if site.Certificate.Mode == "" {
+			site.Certificate.Mode = "file"
+		}
+		if site.Certificate.MinTLSVersion == "" {
+			site.Certificate.MinTLSVersion = "1.2"
+		}
 		if site.ListenPort == 0 {
 			site.ListenPort = 80
 		}
@@ -606,4 +709,26 @@ func applyDefaults(cfg *Config) {
 			site.WAF.HealthCheck.UnhealthyThreshold = 2
 		}
 	}
+}
+
+func applyAIModelDefaults(model *AIModelConfig, fallback AIModelConfig) {
+	if model == nil {
+		return
+	}
+	if model.Provider == "" {
+		model.Provider = fallback.Provider
+	}
+	if model.APIBase == "" {
+		model.APIBase = fallback.APIBase
+	}
+	if model.APIKey == "" {
+		model.APIKey = fallback.APIKey
+	}
+	if model.APIKeyHeader == "" {
+		model.APIKeyHeader = fallback.APIKeyHeader
+	}
+	if model.Model == "" {
+		model.Model = fallback.Model
+	}
+	model.AllowPrivateAPIBase = model.AllowPrivateAPIBase || fallback.AllowPrivateAPIBase
 }

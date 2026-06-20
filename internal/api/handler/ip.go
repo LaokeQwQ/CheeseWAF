@@ -412,32 +412,10 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 	if net.ParseIP(ip) == nil {
 		return nil, fmt.Errorf("invalid ip %q", ip)
 	}
-	endpoint := provider.Endpoint
-	if endpoint == "" {
-		switch strings.ToLower(provider.Type) {
-		case "threatbook", "threatbook-cn":
-			endpoint = "https://api.threatbook.cn/v3/ip/query"
-		case "threatbook-intl":
-			endpoint = "https://api.threatbook.io/v2/ip/query"
-		default:
-			return nil, fmt.Errorf("provider endpoint is required")
-		}
-	}
-	parsed, err := url.Parse(endpoint)
+	parsed, err := providerLookupURL(provider, ip)
 	if err != nil {
 		return nil, err
 	}
-	query := parsed.Query()
-	switch strings.ToLower(provider.Type) {
-	case "threatbook", "threatbook-cn":
-		if provider.APIKey != "" {
-			query.Set("apikey", provider.APIKey)
-		}
-		query.Set("resource", ip)
-	default:
-		query.Set("ip", ip)
-	}
-	parsed.RawQuery = query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return nil, err
@@ -471,12 +449,90 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 	return items, nil
 }
 
+func providerLookupURL(provider config.ThreatIntelProviderConfig, ip string) (*url.URL, error) {
+	providerType := strings.ToLower(strings.TrimSpace(provider.Type))
+	endpoint := strings.TrimSpace(provider.Endpoint)
+	if endpoint == "" {
+		switch providerType {
+		case "threatbook", "threatbook-cn":
+			endpoint = "https://api.threatbook.cn/v3/ip/query"
+		case "threatbook-intl":
+			endpoint = "https://api.threatbook.io/v2/ip/query"
+		case "abuseipdb":
+			endpoint = "https://api.abuseipdb.com/api/v2/check"
+		case "otx", "alienvault-otx":
+			kind := "IPv4"
+			if parsedIP := net.ParseIP(ip); parsedIP != nil && parsedIP.To4() == nil {
+				kind = "IPv6"
+			}
+			endpoint = "https://otx.alienvault.com/api/v1/indicators/" + kind + "/{ip}/general"
+		default:
+			return nil, fmt.Errorf("provider endpoint is required")
+		}
+	}
+	endpoint = strings.ReplaceAll(endpoint, "{ip}", url.PathEscape(ip))
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	query := parsed.Query()
+	switch providerType {
+	case "threatbook", "threatbook-cn", "threatbook-intl":
+		if provider.APIKey != "" && query.Get("apikey") == "" {
+			query.Set("apikey", provider.APIKey)
+		}
+		if query.Get("resource") == "" {
+			query.Set("resource", ip)
+		}
+	case "abuseipdb":
+		if query.Get("ipAddress") == "" {
+			query.Set("ipAddress", ip)
+		}
+		if query.Get("maxAgeInDays") == "" {
+			query.Set("maxAgeInDays", "90")
+		}
+	default:
+		if !strings.Contains(parsed.Path, ip) && query.Get("ip") == "" {
+			query.Set("ip", ip)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed, nil
+}
+
 func applyProviderAuth(req *http.Request, provider config.ThreatIntelProviderConfig) {
 	for key, value := range provider.Headers {
 		req.Header.Set(key, value)
 	}
 	if provider.APIKey == "" {
 		return
+	}
+	switch strings.ToLower(strings.TrimSpace(provider.Type)) {
+	case "abuseipdb":
+		if req.Header.Get("Key") == "" {
+			req.Header.Set("Key", provider.APIKey)
+		}
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/json")
+		}
+		return
+	case "otx", "alienvault-otx":
+		if req.Header.Get("X-OTX-API-KEY") == "" {
+			req.Header.Set("X-OTX-API-KEY", provider.APIKey)
+		}
+		return
+	case "misp":
+		if req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", provider.APIKey)
+		}
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/json")
+		}
+		return
+	case "threatbook", "threatbook-cn", "threatbook-intl":
+		if req.URL.Query().Get("apikey") != "" {
+			return
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(provider.AuthType)) {
 	case "none":

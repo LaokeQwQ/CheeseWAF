@@ -2,7 +2,7 @@ import { Button, Empty, Input, Message as ArcoMessage, Tag } from '@arco-design/
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CheckCircle2, Copy, Download, FileCode2, FileUp, RotateCcw, Save } from 'lucide-react';
+import { CheckCircle2, Copy, Download, ExternalLink, FileCode2, FileUp, RotateCcw, Save } from 'lucide-react';
 import {
   APIRequestError,
   deleteCustomBlockPage,
@@ -12,6 +12,9 @@ import {
   updateBlockPageConfig,
   uploadBlockPageHTML,
 } from '../../api/client';
+import type { BlockPageConfig } from '../../types/api';
+
+const blockPreviewStoragePrefix = 'cheesewaf-block-page-preview-html';
 
 export default function BlockPagesPage() {
   const { t } = useTranslation();
@@ -19,8 +22,8 @@ export default function BlockPagesPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const templatesQuery = useQuery({ queryKey: ['block-templates'], queryFn: fetchBlockTemplates, retry: false });
   const configQuery = useQuery({ queryKey: ['block-page-config'], queryFn: fetchBlockPageConfig, retry: false });
-  const data = templatesQuery.data ?? [];
-  const activeConfig = configQuery.data;
+  const data = Array.isArray(templatesQuery.data) ? templatesQuery.data : [];
+  const activeConfig = isBlockPageConfig(configQuery.data) ? configQuery.data : undefined;
   const [selected, setSelected] = useState('minimal');
   const [customHTML, setCustomHTML] = useState('');
   const [previewDraft, setPreviewDraft] = useState('');
@@ -62,6 +65,7 @@ export default function BlockPagesPage() {
     retry: false,
   });
   const previewHTML = previewQuery.data?.html ?? (customHTML.trim() ? customHTML : templateHTML);
+  const safePreviewHTML = useMemo(() => sanitizeBlockPreviewHTML(previewHTML), [previewHTML]);
 
   const saveBuiltInMutation = useMutation({
     mutationFn: () => updateBlockPageConfig({ template_id: selected, custom_enabled: false, custom_html: activeConfig?.custom_html ?? customHTML }),
@@ -125,6 +129,24 @@ export default function BlockPagesPage() {
     anchor.download = activeConfig?.custom_enabled ? 'cheesewaf-custom-block-page.html' : `${template?.id ?? 'block-page'}.html`;
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  function openPreviewWindow() {
+    if (!safePreviewHTML.trim()) {
+      ArcoMessage.warning(t('blockPages.noPreviewContent'));
+      return;
+    }
+    const blob = new Blob([safePreviewHTML], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const previewWindow = window.open('about:blank', '_blank');
+    if (!previewWindow) {
+      URL.revokeObjectURL(url);
+      ArcoMessage.error(t('blockPages.previewOpenFailed'));
+      return;
+    }
+    previewWindow.opener = null;
+    previewWindow.location.href = url;
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
   function saveCustom() {
@@ -229,6 +251,7 @@ export default function BlockPagesPage() {
             </div>
             <div className="block-editor-actions">
               {previewQuery.data?.event_id && <Tag className="status-pill">{t('blockPages.previewEvent', { id: previewQuery.data.event_id })}</Tag>}
+              <Button icon={<ExternalLink size={14} />} disabled={!previewHTML.trim()} onClick={openPreviewWindow}>{t('blockPages.openPreview')}</Button>
               <Button icon={<Copy size={14} />} disabled={!templateHTML && !customHTML.trim()} onClick={copyTemplate}>{t('blockPages.copyHtml')}</Button>
               <Button icon={<Download size={14} />} disabled={!templateHTML && !customHTML.trim()} onClick={downloadTemplate}>{t('blockPages.downloadHtml')}</Button>
             </div>
@@ -240,12 +263,66 @@ export default function BlockPagesPage() {
             </div>
           )}
           <div className="block-preview-frame">
-            {previewQuery.isFetching && !previewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="" srcDoc={previewHTML} />}
+            {previewQuery.isFetching && !safePreviewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="allow-same-origin" referrerPolicy="no-referrer" srcDoc={safePreviewHTML} />}
           </div>
         </section>
       </div>
     </section>
   );
+}
+
+export function BlockPagePreviewWindow() {
+  const { t } = useTranslation();
+  const [html] = useState(() => {
+    const token = new URLSearchParams(window.location.search).get('token') ?? '';
+    const raw = readPreviewPayload(token);
+    if (!raw) {
+      return '';
+    }
+    try {
+      const parsed = JSON.parse(raw) as { html?: string; created_at?: number };
+      if (!parsed.created_at || Date.now() - parsed.created_at > 10 * 60_000) {
+        return '';
+      }
+      return parsed.html ?? '';
+    } catch {
+      return '';
+    }
+  });
+
+  useEffect(() => {
+    document.title = t('blockPages.preview');
+  }, [t]);
+
+  if (!html.trim()) {
+    return (
+      <main className="block-preview-standalone block-preview-standalone-empty">
+        <section>
+          <h1>{t('blockPages.preview')}</h1>
+          <p>{t('blockPages.noPreviewContent')}</p>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="block-preview-standalone">
+      <iframe title={t('blockPages.preview')} sandbox="allow-same-origin" referrerPolicy="no-referrer" srcDoc={html} />
+    </main>
+  );
+}
+
+function readPreviewPayload(token: string) {
+  if (!token.startsWith(`${blockPreviewStoragePrefix}:`)) {
+    return '';
+  }
+  try {
+    const raw = localStorage.getItem(token);
+    localStorage.removeItem(token);
+    return raw ?? '';
+  } catch {
+    return '';
+  }
 }
 
 function formatBytes(bytes: number) {
@@ -256,4 +333,34 @@ function formatBytes(bytes: number) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function sanitizeBlockPreviewHTML(value: string) {
+  const html = value.trim();
+  if (!html) {
+    return '';
+  }
+  if (typeof DOMParser === 'undefined') {
+    return html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  }
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script').forEach((node) => node.remove());
+  doc.querySelectorAll('*').forEach((element) => {
+    Array.from(element.attributes).forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const attributeValue = attribute.value.trim().toLowerCase();
+      if (name.startsWith('on')) {
+        element.removeAttribute(attribute.name);
+        return;
+      }
+      if (['href', 'src', 'xlink:href', 'formaction'].includes(name) && attributeValue.startsWith('javascript:')) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+  });
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
+function isBlockPageConfig(value: unknown): value is BlockPageConfig {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }

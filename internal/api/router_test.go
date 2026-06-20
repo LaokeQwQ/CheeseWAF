@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -293,12 +294,14 @@ func TestRouterLoginCAPTCHAVerifySliderIssuesOneTimeReceipt(t *testing.T) {
 
 	challenge := requestSliderLoginCAPTCHA(t, router, []byte(`{}`))
 	validX := findValidSliderX(t, cfg, secret, challenge)
+	validTrack := sliderTrackForTest(validX, challenge.MinDragMS+50)
 	invalid, _ := json.Marshal(map[string]any{
 		"mode": "slider",
 		"slider": map[string]any{
 			"token":   challenge.Token,
 			"x":       0,
 			"drag_ms": challenge.MinDragMS + 50,
+			"track":   sliderTrackForTest(0, challenge.MinDragMS+50),
 		},
 	})
 	recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", invalid)
@@ -320,6 +323,24 @@ func TestRouterLoginCAPTCHAVerifySliderIssuesOneTimeReceipt(t *testing.T) {
 	})
 	recorder = perform(router, http.MethodPost, "/api/auth/login", "", rawLogin)
 	if recorder.Code != http.StatusUnauthorized || !bytes.Contains(recorder.Body.Bytes(), []byte("INVALID_CAPTCHA")) {
+		t.Fatalf("expected raw slider proof without behavior track to fail before receipt, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	rawLoginWithTrack, _ := json.Marshal(map[string]any{
+		"username": "admin",
+		"password": "admin-password",
+		"captcha": map[string]any{
+			"mode": "slider",
+			"slider": map[string]any{
+				"token":   challenge.Token,
+				"x":       validX,
+				"drag_ms": challenge.MinDragMS + 50,
+				"track":   validTrack,
+			},
+		},
+	})
+	recorder = perform(router, http.MethodPost, "/api/auth/login", "", rawLoginWithTrack)
+	if recorder.Code != http.StatusUnauthorized || !bytes.Contains(recorder.Body.Bytes(), []byte("INVALID_CAPTCHA")) {
 		t.Fatalf("expected raw slider proof login to require receipt, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 
@@ -329,6 +350,7 @@ func TestRouterLoginCAPTCHAVerifySliderIssuesOneTimeReceipt(t *testing.T) {
 			"token":   challenge.Token,
 			"x":       validX,
 			"drag_ms": challenge.MinDragMS + 50,
+			"track":   validTrack,
 		},
 	})
 	recorder = perform(router, http.MethodPost, "/api/auth/captcha/verify", "", valid)
@@ -393,10 +415,12 @@ func TestRouterLoginCAPTCHASliderVerifyLocksAfterFailures(t *testing.T) {
 
 	challenge := requestSliderLoginCAPTCHA(t, router, []byte(`{}`))
 	validX := findValidSliderX(t, cfg, secret, challenge)
+	validTrack := sliderTrackForTest(validX, challenge.MinDragMS+50)
 	badX := 0
 	if validX == 0 {
 		badX = challenge.TrackWidth
 	}
+	badTrack := sliderTrackForTest(badX, challenge.MinDragMS+50)
 	for i := 0; i < 5; i++ {
 		body, _ := json.Marshal(map[string]any{
 			"mode": "slider",
@@ -404,6 +428,7 @@ func TestRouterLoginCAPTCHASliderVerifyLocksAfterFailures(t *testing.T) {
 				"token":   challenge.Token,
 				"x":       badX,
 				"drag_ms": challenge.MinDragMS + 50,
+				"track":   badTrack,
 			},
 		})
 		recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", body)
@@ -417,6 +442,7 @@ func TestRouterLoginCAPTCHASliderVerifyLocksAfterFailures(t *testing.T) {
 			"token":   challenge.Token,
 			"x":       validX,
 			"drag_ms": challenge.MinDragMS + 50,
+			"track":   validTrack,
 		},
 	})
 	recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", valid)
@@ -739,6 +765,17 @@ func findValidSliderX(t *testing.T, cfg config.Config, secret string, challenge 
 	}
 	t.Fatalf("failed to find valid slider x within track width %d", challenge.TrackWidth)
 	return -1
+}
+
+func sliderTrackForTest(finalX, dragMS int) string {
+	midX := finalX / 2
+	return fmt.Sprintf(
+		`[{"x":0,"y":20,"t":0,"type":"down"},{"x":%d,"y":21,"t":%d,"type":"move"},{"x":%d,"y":22,"t":%d,"type":"up"}]`,
+		midX,
+		dragMS/2,
+		finalX,
+		dragMS,
+	)
 }
 
 func perform(router http.Handler, method, path, token string, body []byte) *httptest.ResponseRecorder {

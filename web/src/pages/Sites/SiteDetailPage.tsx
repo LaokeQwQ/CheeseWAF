@@ -7,18 +7,23 @@ import {
   Select,
   Space,
   Spin,
+  Steps,
   Switch,
   Tabs,
   Tag,
 } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle2, LockKeyhole, Network, Plus, Save, ShieldCheck, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ArrowLeft, CheckCircle2, CircleAlert, Clock3, KeyRound, LockKeyhole, Network, Plus, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
-import { deleteSite, fetchSite, updateSite } from '../../api/client';
-import type { Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
+import { APIRequestError, deleteSite, fetchACMEProviders, fetchSite, issueSiteACMECertificate, updateSite } from '../../api/client';
+import type { ACMEEvent, ACMEIssueRequest, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
 import { asCSV, normalizeSite, splitList } from './siteModel';
+
+type EnvRow = { id: string; key: string; value: string };
+
+const acmeStepOrder = ['validate', 'prepare', 'account', 'dns_create', 'issue', 'deploy', 'dns_cleanup', 'notify'];
 
 export default function SiteDetailPage() {
   const { t } = useTranslation();
@@ -26,6 +31,8 @@ export default function SiteDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [site, setSite] = useState<Site | null>(null);
+  const [acmeEvents, setAcmeEvents] = useState<ACMEEvent[]>([]);
+  const [envRows, setEnvRows] = useState<EnvRow[]>([]);
   const { data, isLoading } = useQuery({
     queryKey: ['site', id],
     queryFn: () => fetchSite(id),
@@ -35,9 +42,17 @@ export default function SiteDetailPage() {
 
   useEffect(() => {
     if (data) {
-      setSite(normalizeSite(data));
+      const next = normalizeSite(data);
+      setSite(next);
+      setEnvRows(envToRows(next.advanced.certificate.acme.env));
     }
   }, [data]);
+
+  const { data: acmeProviders = [] } = useQuery({
+    queryKey: ['acme-providers'],
+    queryFn: fetchACMEProviders,
+    retry: false,
+  });
 
   const saveMutation = useMutation({
     mutationFn: (payload: Site) => updateSite(payload.id, normalizeSite(payload)),
@@ -58,6 +73,23 @@ export default function SiteDetailPage() {
       navigate('/sites');
     },
     onError: (error) => ArcoMessage.error(error.message),
+  });
+  const acmeMutation = useMutation({
+    mutationFn: (payload: ACMEIssueRequest) => issueSiteACMECertificate(id, payload),
+    onSuccess: (response) => {
+      const next = normalizeSite(response.site);
+      setSite(next);
+      setEnvRows(envToRows(next.advanced.certificate.acme.env));
+      setAcmeEvents(response.events ?? response.result?.events ?? []);
+      queryClient.invalidateQueries({ queryKey: ['sites'] });
+      queryClient.invalidateQueries({ queryKey: ['site', id] });
+      ArcoMessage.success(t('sites.acmeIssued'));
+    },
+    onError: (error: Error) => {
+      const data = error instanceof APIRequestError ? error.data as { events?: ACMEEvent[]; result?: { events?: ACMEEvent[] } } | undefined : undefined;
+      setAcmeEvents(data?.events ?? data?.result?.events ?? []);
+      ArcoMessage.error(error.message);
+    },
   });
 
   if (isLoading) {
@@ -83,6 +115,28 @@ export default function SiteDetailPage() {
         },
       }
       : current);
+  };
+  const updateCertificate = (patch: Partial<SiteAdvanced['certificate']>) => updateAdvanced('certificate', patch);
+  const updateACME = (patch: Partial<SiteAdvanced['certificate']['acme']>) => {
+    setSite((current) => current
+      ? {
+        ...current,
+        advanced: {
+          ...current.advanced,
+          certificate: {
+            ...current.advanced.certificate,
+            acme: {
+              ...current.advanced.certificate.acme,
+              ...patch,
+            },
+          },
+        },
+      }
+      : current);
+  };
+  const syncEnvRows = (rows: EnvRow[]) => {
+    setEnvRows(rows);
+    updateACME({ env: rowsToEnv(rows) });
   };
   const updateRewrite = (index: number, patch: Partial<SiteRewriteRule>) => {
     setSite((current) => {
@@ -119,6 +173,32 @@ export default function SiteDetailPage() {
     setSite((current) => current
       ? { ...current, advanced: { ...current.advanced, rewrite: current.advanced.rewrite.filter((rule) => rule.id !== idToRemove) } }
       : current);
+  };
+  const selectedProvider = useMemo(
+    () => acmeProviders.find((provider) => provider.id === site?.advanced.certificate.acme.provider_id),
+    [acmeProviders, site?.advanced.certificate.acme.provider_id],
+  );
+  const submitACME = () => {
+    if (!site) {
+      return;
+    }
+    const acme = site.advanced.certificate.acme;
+    const payload: ACMEIssueRequest = {
+      provider_id: acme.provider_id,
+      dns_api: acme.dns_api,
+      dns_env: rowsToEnv(envRows),
+      account_email: acme.account_email,
+      server: acme.server,
+      key_type: acme.key_type,
+      acme_sh_path: acme.acme_sh_path || 'acme.sh',
+      home: acme.home,
+      cert_dir: acme.cert_dir,
+      reload_cmd: acme.reload_command,
+      auto_renew: site.advanced.certificate.auto_renew,
+      notify: acme.notify,
+    };
+    setAcmeEvents(initialACMEEvents());
+    acmeMutation.mutate(payload);
   };
 
   return (
@@ -213,6 +293,22 @@ export default function SiteDetailPage() {
                 </Select>
               </label>
             </div>
+            <ACMEWizard
+              site={site}
+              providers={acmeProviders}
+              selectedProviderName={selectedProvider?.name}
+              envRows={envRows}
+              events={acmeEvents}
+              loading={acmeMutation.isPending}
+              onEnableMode={() => {
+                updateField('enable_ssl', true);
+                updateCertificate({ mode: 'acme', auto_renew: true, force_https: true, hsts: true });
+              }}
+              onPatchACME={updateACME}
+              onEnvRowsChange={syncEnvRows}
+              onIssue={submitACME}
+              t={t}
+            />
           </Tabs.TabPane>
 
           <Tabs.TabPane key="protection" title={<span className="tab-title"><ShieldCheck size={15} />{t('sites.stepProtection')}</span>}>
@@ -324,4 +420,223 @@ function modeText(mode: string, t: (key: string) => string) {
     return t('sites.modeOff');
   }
   return mode || '-';
+}
+
+function ACMEWizard({
+  site,
+  providers,
+  selectedProviderName,
+  envRows,
+  events,
+  loading,
+  onEnableMode,
+  onPatchACME,
+  onEnvRowsChange,
+  onIssue,
+  t,
+}: {
+  site: Site;
+  providers: Array<{ id: string; name: string; api: string; env?: Record<string, string> }>;
+  selectedProviderName?: string;
+  envRows: EnvRow[];
+  events: ACMEEvent[];
+  loading: boolean;
+  onEnableMode: () => void;
+  onPatchACME: (patch: Partial<Site['advanced']['certificate']['acme']>) => void;
+  onEnvRowsChange: (rows: EnvRow[]) => void;
+  onIssue: () => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const acme = site.advanced.certificate.acme;
+  const currentStep = Math.max(0, acmeStepOrder.findIndex((step) => {
+    const event = latestEvent(events, step);
+    return event?.status === 'running' || event?.status === 'failed';
+  }));
+  const canIssue = Boolean(site.domains.length && acme.dns_api && (acme.provider_id || envRows.some((row) => row.key.trim() && row.value.trim())));
+  const updateEnv = (id: string, patch: Partial<EnvRow>) => {
+    onEnvRowsChange(envRows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  };
+  const addEnv = () => onEnvRowsChange([...envRows, { id: `env-${Date.now()}`, key: '', value: '' }]);
+  const removeEnv = (id: string) => onEnvRowsChange(envRows.filter((row) => row.id !== id));
+
+  return (
+    <section className="acme-wizard">
+      <header className="acme-wizard-header">
+        <div>
+          <h2><KeyRound size={17} /> {t('sites.acmeWizardTitle')}</h2>
+          <p>{t('sites.acmeWizardHint')}</p>
+        </div>
+        <Space wrap>
+          <Tag color={site.advanced.certificate.mode === 'acme' ? 'green' : 'gray'}>{site.advanced.certificate.mode === 'acme' ? t('sites.certAcme') : t('sites.acmeNotActive')}</Tag>
+          <Button onClick={onEnableMode}>{t('sites.acmeUseMode')}</Button>
+          <Button type="primary" loading={loading} disabled={!canIssue} onClick={onIssue}>
+            {t('sites.acmeIssue')}
+          </Button>
+        </Space>
+      </header>
+
+      <div className="acme-layout">
+        <section className="acme-config-block">
+          <div className="site-detail-grid acme-config-grid">
+            <label>
+              <span>{t('sites.acmeProvider')}</span>
+              <Select
+                value={acme.provider_id}
+                allowClear
+                placeholder={t('sites.acmeProviderPlaceholder')}
+                onChange={(providerID) => {
+                  const provider = providers.find((item) => item.id === providerID);
+                  onPatchACME({ provider_id: String(providerID ?? ''), dns_api: provider?.api ?? acme.dns_api });
+                }}
+              >
+                {providers.map((provider) => (
+                  <Select.Option key={provider.id} value={provider.id}>
+                    {provider.name || provider.id} · {provider.api}
+                  </Select.Option>
+                ))}
+              </Select>
+            </label>
+            <label>
+              <span>{t('sites.acmeDNSAPI')}</span>
+              <Input value={acme.dns_api} placeholder="dns_cf" onChange={(dns_api) => onPatchACME({ dns_api })} />
+            </label>
+            <label>
+              <span>{t('sites.acmeAccountEmail')}</span>
+              <Input value={acme.account_email} placeholder="ops@example.com" onChange={(account_email) => onPatchACME({ account_email })} />
+            </label>
+            <label>
+              <span>{t('sites.acmeServer')}</span>
+              <Select value={acme.server || 'letsencrypt'} onChange={(server) => onPatchACME({ server: server as string })}>
+                <Select.Option value="letsencrypt">Let's Encrypt</Select.Option>
+                <Select.Option value="zerossl">ZeroSSL</Select.Option>
+                <Select.Option value="https://acme-v02.api.letsencrypt.org/directory">Let's Encrypt API</Select.Option>
+                <Select.Option value="https://acme-staging-v02.api.letsencrypt.org/directory">Let's Encrypt Staging</Select.Option>
+              </Select>
+            </label>
+            <label>
+              <span>{t('sites.acmeKeyType')}</span>
+              <Select value={acme.key_type || 'ec-256'} onChange={(key_type) => onPatchACME({ key_type: key_type as string })}>
+                <Select.Option value="ec-256">ECDSA P-256</Select.Option>
+                <Select.Option value="ec-384">ECDSA P-384</Select.Option>
+                <Select.Option value="2048">RSA 2048</Select.Option>
+                <Select.Option value="3072">RSA 3072</Select.Option>
+                <Select.Option value="4096">RSA 4096</Select.Option>
+              </Select>
+            </label>
+            <label>
+              <span>{t('sites.acmePath')}</span>
+              <Input value={acme.acme_sh_path || 'acme.sh'} onChange={(acme_sh_path) => onPatchACME({ acme_sh_path })} />
+            </label>
+            <label>
+              <span>{t('sites.acmeHome')}</span>
+              <Input value={acme.home} placeholder="./data/acme" onChange={(home) => onPatchACME({ home })} />
+            </label>
+            <label>
+              <span>{t('sites.acmeCertDir')}</span>
+              <Input value={acme.cert_dir} placeholder="./data/certs/example.com" onChange={(cert_dir) => onPatchACME({ cert_dir })} />
+            </label>
+            <label className="wide-field">
+              <span>{t('sites.acmeReloadCommand')}</span>
+              <Input value={acme.reload_command} placeholder="systemctl reload cheesewaf" onChange={(reload_command) => onPatchACME({ reload_command })} />
+            </label>
+            <label className="switch-line">
+              <span>{t('sites.acmeNotify')}</span>
+              <Switch checked={acme.notify} onChange={(notify) => onPatchACME({ notify })} />
+            </label>
+          </div>
+        </section>
+
+        <section className="acme-env-block">
+          <header className="fieldset-header-action">
+            <div>
+              <strong>{t('sites.acmeDNSEnv')}</strong>
+              <span>{selectedProviderName ? t('sites.acmeProviderUsingSavedEnv', { name: selectedProviderName }) : t('sites.acmeDNSEnvHint')}</span>
+            </div>
+            <Button size="small" icon={<Plus size={14} />} onClick={addEnv}>{t('common.add')}</Button>
+          </header>
+          <div className="acme-env-list">
+            {envRows.map((row) => (
+              <div className="acme-env-row" key={row.id}>
+                <Input value={row.key} placeholder="CF_TOKEN" onChange={(key) => updateEnv(row.id, { key: key.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} />
+                <Input.Password value={row.value} placeholder={t('sites.acmeSecretValue')} onChange={(value) => updateEnv(row.id, { value })} />
+                <Button icon={<Trash2 size={14} />} status="danger" onClick={() => removeEnv(row.id)} />
+              </div>
+            ))}
+            {!envRows.length && (
+              <div className="empty-state"><CircleAlert size={16} /> {t('sites.acmeDNSEnvEmpty')}</div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <section className="acme-pipeline">
+        <Steps current={currentStep} size="small" className="acme-steps">
+          {acmeStepOrder.map((step) => {
+            const event = latestEvent(events, step);
+            const status = event?.status === 'failed' ? 'error' : event?.status === 'succeeded' ? 'finish' : event?.status === 'running' ? 'process' : 'wait';
+            return <Steps.Step key={step} status={status} title={t(`sites.acmeStep.${step}`)} description={event?.message} />;
+          })}
+        </Steps>
+        <div className="acme-events">
+          {events.length ? events.map((event, index) => (
+            <details className={`acme-event acme-event-${event.status}`} key={`${event.step}-${index}`} open={event.status === 'failed'}>
+              <summary>
+                <span><Clock3 size={14} /> {t(`sites.acmeStep.${event.step}`)}</span>
+                <Tag color={event.status === 'failed' ? 'red' : event.status === 'succeeded' ? 'green' : 'blue'}>{stepStatusText(event.status, t)}</Tag>
+              </summary>
+              <p>{event.message}</p>
+              {event.output && <pre>{event.output}</pre>}
+            </details>
+          )) : (
+            <div className="empty-state"><LockKeyhole size={16} /> {t('sites.acmeNoEvents')}</div>
+          )}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function envToRows(env: Record<string, string> | undefined): EnvRow[] {
+  return Object.entries(env ?? {}).map(([key, value]) => ({ id: `env-${key}-${Math.random().toString(16).slice(2)}`, key, value }));
+}
+
+function rowsToEnv(rows: EnvRow[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const row of rows) {
+    const key = row.key.trim().toUpperCase();
+    if (key && row.value.trim()) {
+      env[key] = row.value;
+    }
+  }
+  return env;
+}
+
+function latestEvent(events: ACMEEvent[], step: string) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index].step === step) {
+      return events[index];
+    }
+  }
+  return undefined;
+}
+
+function initialACMEEvents(): ACMEEvent[] {
+  return acmeStepOrder.map((step) => ({
+    step,
+    status: 'pending',
+    timestamp: new Date().toISOString(),
+  }));
+}
+
+function stepStatusText(status: string, t: (key: string) => string) {
+  if (status === 'succeeded') {
+    return t('sites.acmeSucceeded');
+  }
+  if (status === 'failed') {
+    return t('sites.acmeFailed');
+  }
+  if (status === 'running') {
+    return t('sites.acmeRunning');
+  }
+  return t('sites.acmePending');
 }

@@ -10,12 +10,13 @@ import (
 )
 
 var lfiPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(?:\.\.[/\\]){2,}`),
-	regexp.MustCompile(`(?i)(?:\.\.\.\.[/\\]{2}){2,}`),
-	regexp.MustCompile(`(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|boot\.ini|win\.ini|windows[/\\]win\.ini)`),
+	regexp.MustCompile(`(?i)(?:\.\.[/\\])+`),
+	regexp.MustCompile(`(?i)(?:\.\.\.\.[/\\]{2,})+`),
+	regexp.MustCompile(`(?i)(?:%25)*%2e(?:%25)*%2e|(?:%25)*%2f|(?:%25)*%5c|%c0%af|%25c0%25af|%00`),
+	regexp.MustCompile(`(?i)(?:/etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|/proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|boot\.ini|win\.ini|windows[/\\]win\.ini|winnt[/\\]system32[/\\]cmd\.exe)`),
 	regexp.MustCompile(`(?i)(?:php|zip|data|file)://`),
 	regexp.MustCompile(`(?i)(?:WEB-INF/web\.xml|META-INF/MANIFEST\.MF)`),
-	regexp.MustCompile(`(?i)(?:^|/|\b)(?:\.aws/credentials|\.git/config|\.env|\.ssh/(?:id_rsa|id_dsa)|wp-config(?:\.php)?|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|WEB-INF/web\.xml|var/run/secrets/kubernetes\.io/serviceaccount/(?:token|ca\.crt|namespace))(?:$|\b)`),
+	regexp.MustCompile(`(?i)(?:^|/|\b)(?:\.aws/credentials|\.git/config|\.env|\.htaccess|\.ssh/(?:id_rsa|id_dsa|authorized_keys)|wp-config(?:\.php)?|_config\.php|dump\.sql|database\.sql|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|WEB-INF/web\.xml|var/log/(?:syslog|auth\.log|nginx/access\.log|nginx/error\.log|apache2/access\.log|apache2/error\.log|httpd-access\.log)|var/run/secrets/kubernetes\.io/serviceaccount/(?:token|ca\.crt|namespace))(?:$|\b|%00|%23|\.)`),
 }
 
 type LFIDetector struct {

@@ -13,3 +13,13 @@ export const themeAttribute: Record<ThemeName, string> = {
   blackGold: 'black-gold',
   blueWhite: 'blue-white',
 };
+
+export const themeMeta: Record<
+  ThemeName,
+  { themeColor: string; colorScheme: 'light' | 'dark' }
+> = {
+  light: { themeColor: '#f6f8fb', colorScheme: 'light' },
+  dark: { themeColor: '#0d1117', colorScheme: 'dark' },
+  blackGold: { themeColor: '#0a0a08', colorScheme: 'dark' },
+  blueWhite: { themeColor: '#eef6ff', colorScheme: 'light' },
+};

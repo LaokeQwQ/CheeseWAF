@@ -31,6 +31,20 @@ func (d *SQLDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (
 		candidates = append(candidates, b64)
 	}
 	for _, candidate := range candidates {
+		// libinjection-style deep tokenization first (fast, high precision)
+		if fp, detected := engine.SQLLibinjectionFingerprint(candidate); detected {
+			return &engine.DetectionResult{
+				Detected:   true,
+				DetectorID: d.ID(),
+				Category:   "sqli",
+				Severity:   engine.SeverityHigh,
+				Action:     actionForMode(d.mode),
+				Message:    "SQL injection token fingerprint matched: " + truncate(fp, 40),
+				Confidence: 0.92,
+				Payload:    candidate,
+			}, nil
+		}
+		// Fallback to signature-based detection
 		if detected, reason := looksLikeSQLi(candidate); detected {
 			return &engine.DetectionResult{
 				Detected:   true,
@@ -45,6 +59,11 @@ func (d *SQLDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (
 		}
 	}
 	return nil, nil
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max { return s }
+	return s[:max]
 }
 
 func looksLikeSQLi(raw string) (bool, string) {

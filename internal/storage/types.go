@@ -162,13 +162,33 @@ type SiteAdvanced struct {
 }
 
 type CertificateConfig struct {
-	Mode          string `json:"mode"`
-	CertPEM       string `json:"cert_pem,omitempty"`
-	KeyPEM        string `json:"key_pem,omitempty"`
-	AutoRenew     bool   `json:"auto_renew"`
-	ForceHTTPS    bool   `json:"force_https"`
-	HSTS          bool   `json:"hsts"`
-	MinTLSVersion string `json:"min_tls_version"`
+	Mode          string         `json:"mode"`
+	CertPEM       string         `json:"cert_pem,omitempty"`
+	KeyPEM        string         `json:"key_pem,omitempty"`
+	AutoRenew     bool           `json:"auto_renew"`
+	ForceHTTPS    bool           `json:"force_https"`
+	HSTS          bool           `json:"hsts"`
+	MinTLSVersion string         `json:"min_tls_version"`
+	ACME          SiteACMEConfig `json:"acme"`
+}
+
+type SiteACMEConfig struct {
+	ProviderID    string            `json:"provider_id"`
+	DNSAPI        string            `json:"dns_api"`
+	AccountEmail  string            `json:"account_email"`
+	Server        string            `json:"server"`
+	KeyType       string            `json:"key_type"`
+	ACMESHPath    string            `json:"acme_sh_path"`
+	Home          string            `json:"home"`
+	CertDir       string            `json:"cert_dir"`
+	ReloadCommand string            `json:"reload_command"`
+	Domains       []string          `json:"domains"`
+	Env           map[string]string `json:"env"`
+	Notify        bool              `json:"notify"`
+	LastStatus    string            `json:"last_status"`
+	LastRunID     string            `json:"last_run_id"`
+	LastIssuedAt  time.Time         `json:"last_issued_at,omitempty"`
+	ExpiresAt     time.Time         `json:"expires_at,omitempty"`
 }
 
 type OriginConfig struct {

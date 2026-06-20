@@ -2,12 +2,14 @@ import { lazy, Suspense, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppErrorBoundary } from '../components/AppErrorBoundary';
 import MainLayout from '../layouts/MainLayout';
+import { preloadAIPage, preloadAPISecurityPage } from './preload';
 
-const AIPage = lazy(() => import('../pages/AI/AIPage'));
-const APISecurityPage = lazy(() => import('../pages/APISecurity/APISecurityPage'));
+const AIPage = lazy(preloadAIPage);
+const APISecurityPage = lazy(preloadAPISecurityPage);
 const AttackMapPage = lazy(() => import('../pages/AttackMap/AttackMapPage'));
 const AttackScreenPage = lazy(() => import('../pages/AttackMap/AttackScreenPage'));
 const BlockPagesPage = lazy(() => import('../pages/BlockPages/BlockPagesPage'));
+const BlockPagePreviewWindow = lazy(() => import('../pages/BlockPages/BlockPagesPage').then((module) => ({ default: module.BlockPagePreviewWindow })));
 const DashboardPage = lazy(() => import('../pages/Dashboard/DashboardPage'));
 const EdgePage = lazy(() => import('../pages/Edge/EdgePage'));
 const IPManagePage = lazy(() => import('../pages/IPManage/IPManagePage'));
@@ -64,6 +66,7 @@ export default function AppRoutes() {
         <Route path="/login" element={<LazyPage><LoginPage /></LazyPage>} />
         <Route path="/setup" element={<LazyPage><SetupPage /></LazyPage>} />
         <Route path="/attack-map/screen" element={<ProtectedStandalone><LazyPage><AttackScreenPage /></LazyPage></ProtectedStandalone>} />
+        <Route path="/block-pages/preview" element={<ProtectedStandalone><LazyPage><BlockPagePreviewWindow /></LazyPage></ProtectedStandalone>} />
         <Route element={<ProtectedLayout />}>
           <Route index element={<Page><LazyPage><DashboardPage /></LazyPage></Page>} />
           <Route path="sites" element={<Page><LazyPage><SitesPage /></LazyPage></Page>} />

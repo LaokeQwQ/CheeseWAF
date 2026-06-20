@@ -189,6 +189,148 @@ func TestApplyProviderAuthSupportsConfiguredAuthTypes(t *testing.T) {
 	}
 }
 
+func TestProviderLookupURLBuildsKnownProviderQueries(t *testing.T) {
+	tests := []struct {
+		name       string
+		provider   config.ThreatIntelProviderConfig
+		ip         string
+		wantHost   string
+		wantPath   string
+		wantQuery  map[string]string
+		wantPrefix string
+	}{
+		{
+			name: "abuseipdb default check endpoint",
+			provider: config.ThreatIntelProviderConfig{
+				Type: "abuseipdb",
+			},
+			ip:       "203.0.113.60",
+			wantHost: "api.abuseipdb.com",
+			wantPath: "/api/v2/check",
+			wantQuery: map[string]string{
+				"ipAddress":    "203.0.113.60",
+				"maxAgeInDays": "90",
+			},
+		},
+		{
+			name: "otx ipv4 general endpoint",
+			provider: config.ThreatIntelProviderConfig{
+				Type: "otx",
+			},
+			ip:       "203.0.113.62",
+			wantHost: "otx.alienvault.com",
+			wantPath: "/api/v1/indicators/IPv4/203.0.113.62/general",
+		},
+		{
+			name: "otx ipv6 general endpoint",
+			provider: config.ThreatIntelProviderConfig{
+				Type: "otx",
+			},
+			ip:       "2001:db8::1",
+			wantHost: "otx.alienvault.com",
+			wantPath: "/api/v1/indicators/IPv6/2001:db8::1/general",
+		},
+		{
+			name: "threatbook keeps resource and apikey query",
+			provider: config.ThreatIntelProviderConfig{
+				Type:   "threatbook-intl",
+				APIKey: "unit-key",
+			},
+			ip:       "203.0.113.44",
+			wantHost: "api.threatbook.io",
+			wantPath: "/v2/ip/query",
+			wantQuery: map[string]string{
+				"apikey":  "unit-key",
+				"resource": "203.0.113.44",
+			},
+		},
+		{
+			name: "custom endpoint can use ip path template",
+			provider: config.ThreatIntelProviderConfig{
+				Type:     "generic",
+				Endpoint: "https://intel.example.test/feed/{ip}.json",
+			},
+			ip:       "203.0.113.70",
+			wantHost: "intel.example.test",
+			wantPath: "/feed/203.0.113.70.json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := providerLookupURL(tt.provider, tt.ip)
+			if err != nil {
+				t.Fatalf("providerLookupURL returned error: %v", err)
+			}
+			if got.Host != tt.wantHost {
+				t.Fatalf("host mismatch: got %q want %q", got.Host, tt.wantHost)
+			}
+			if got.Path != tt.wantPath {
+				t.Fatalf("path mismatch: got %q want %q", got.Path, tt.wantPath)
+			}
+			query := got.Query()
+			for key, value := range tt.wantQuery {
+				if actual := query.Get(key); actual != value {
+					t.Fatalf("query %s mismatch: got %q want %q; raw=%s", key, actual, value, got.RawQuery)
+				}
+			}
+		})
+	}
+}
+
+func TestApplyProviderAuthUsesVendorHeaders(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider config.ThreatIntelProviderConfig
+		verify   func(t *testing.T, request *http.Request)
+	}{
+		{
+			name:     "abuseipdb key header",
+			provider: config.ThreatIntelProviderConfig{Type: "abuseipdb", APIKey: "abuse-key"},
+			verify: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				if got := request.Header.Get("Key"); got != "abuse-key" {
+					t.Fatalf("expected AbuseIPDB Key header, got %q", got)
+				}
+				if got := request.Header.Get("Accept"); got != "application/json" {
+					t.Fatalf("expected JSON accept header, got %q", got)
+				}
+			},
+		},
+		{
+			name:     "otx api key header",
+			provider: config.ThreatIntelProviderConfig{Type: "otx", APIKey: "otx-key"},
+			verify: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				if got := request.Header.Get("X-OTX-API-KEY"); got != "otx-key" {
+					t.Fatalf("expected OTX API key header, got %q", got)
+				}
+			},
+		},
+		{
+			name:     "misp authorization header",
+			provider: config.ThreatIntelProviderConfig{Type: "misp", APIKey: "misp-key"},
+			verify: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				if got := request.Header.Get("Authorization"); got != "misp-key" {
+					t.Fatalf("expected MISP Authorization header, got %q", got)
+				}
+				if got := request.Header.Get("Accept"); got != "application/json" {
+					t.Fatalf("expected JSON accept header, got %q", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "https://intel.example.test/feed", nil)
+			applyProviderAuth(request, tt.provider)
+			tt.verify(t, request)
+		})
+	}
+}
+
 func TestLookupThreatIntelDoesNotImportCleanProviderResult(t *testing.T) {
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("resource") != "203.0.113.45" {
