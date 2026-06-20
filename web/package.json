@@ -15,7 +15,7 @@
     "axios": "^1.16.1",
     "china-map-geojson": "^1.0.4",
     "d3-geo": "^3.1.1",
-    "i18next": "^26.2.0",
+    "i18next": "^26.3.1",
     "lucide-react": "^1.16.0",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
@@ -25,7 +25,7 @@
     "three": "^0.184.0",
     "topojson-client": "^3.1.0",
     "world-atlas": "^2.0.2",
-    "zustand": "^5.0.13"
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@types/d3-geo": "^3.1.0",
