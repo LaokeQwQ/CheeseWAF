@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,6 +152,7 @@ func (r *Renderer) RenderHTML(status int, data Data) (string, Data) {
 		_ = template.Must(template.New("block").Parse(defaultBlockTemplate)).Execute(&buf, data)
 	}
 	ensureVisibleEventID(&buf, data)
+	ensureLanguageRuntime(&buf, data)
 	return buf.String(), data
 }
 
@@ -555,6 +557,97 @@ func ensureVisibleEventID(buf *bytes.Buffer, data Data) {
 		return
 	}
 	buf.WriteString(badge)
+}
+
+func ensureLanguageRuntime(buf *bytes.Buffer, data Data) {
+	if buf == nil || bytes.Contains(buf.Bytes(), []byte("cw-language-runtime")) {
+		return
+	}
+	payload := string(data.TranslationsJSON)
+	if strings.TrimSpace(payload) == "" {
+		payload = localizationJSON()
+	}
+	script := `<script id="cw-language-runtime" type="application/json">` + payload + `</script>` + `<script>
+(function(){
+  var status = Number(document.documentElement.getAttribute("data-status") || "` + template.JSEscapeString(strconv.Itoa(data.Status)) + `");
+  var blocked = status < 500;
+  var dict = {};
+  try { dict = JSON.parse(document.getElementById("cw-language-runtime").textContent || "{}"); } catch (_) {}
+  function chooseLocale(){
+    var langs = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || document.documentElement.lang || "` + template.JSEscapeString(data.Locale) + `"];
+    for (var i = 0; i < langs.length; i++) {
+      var lang = String(langs[i] || "").toLowerCase();
+      if (lang.indexOf("zh") === 0) {
+        return lang.indexOf("tw") > -1 || lang.indexOf("hk") > -1 || lang.indexOf("hant") > -1 ? "zh-Hant" : "zh-CN";
+      }
+      if (lang.indexOf("ja") === 0) return "ja";
+      if (lang.indexOf("en") === 0) return "en";
+    }
+    return "` + template.JSEscapeString(data.Locale) + `" || "en";
+  }
+  var locale = chooseLocale();
+  var t = dict[locale] || dict.en || {};
+  if (t.HTMLLang) document.documentElement.lang = t.HTMLLang;
+  if (t.Title || t.HeadlineError) document.title = (blocked ? (t.Title || t.HeadlineBlocked || "Access blocked") : (t.EyebrowError || t.HeadlineError || "Service error")) + " | CheeseWAF";
+  var byData = {
+    eyebrow: blocked ? t.EyebrowSecurity : t.EyebrowError,
+    headline: blocked ? t.HeadlineBlocked : t.HeadlineError,
+    client: t.Client,
+    requestReceived: t.RequestReceived,
+    wafState: blocked ? t.SecurityApplied : t.ErrorRecorded,
+    origin: t.Origin,
+    originState: blocked ? t.Protected : t.NeedsReview,
+    noticePrefix: t.NoticePrefix,
+    noticeBody: t.NoticeBody,
+    eventTraceID: t.EventTraceID,
+    httpStatus: t.HTTPStatus,
+    eventType: t.EventType,
+    clientIP: t.ClientIP,
+    time: t.Time,
+    action: t.Action,
+    actionValue: blocked ? t.ActionBlocked : t.ActionRecorded,
+    visitor: t.Visitor,
+    visitorHelp: t.VisitorHelp,
+    siteOperator: t.SiteOperator,
+    siteOperatorHelp: t.SiteOperatorHelp,
+    footer: t.Footer
+  };
+  Object.keys(byData).forEach(function(key){
+    var value = byData[key];
+    if (!value) return;
+    document.querySelectorAll("[data-i18n='" + key + "']").forEach(function(el){ el.textContent = value; });
+  });
+  document.querySelectorAll("[data-i18n-default-message='1']").forEach(function(el){ el.textContent = blocked ? t.DefaultBlocked : t.DefaultError; });
+  var replacements = {};
+  Object.keys(dict).forEach(function(localeKey){
+    var item = dict[localeKey] || {};
+    Object.keys(item).forEach(function(key){
+      var source = String(item[key] || "").trim();
+      var target = String((key === "HeadlineBlocked" && !blocked ? t.HeadlineError : key === "DefaultBlocked" && !blocked ? t.DefaultError : t[key]) || "").trim();
+      if (source && target) replacements[source] = target;
+    });
+  });
+  var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+  var nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(function(node){
+    var text = String(node.nodeValue || "");
+    var trimmed = text.trim();
+    if (!trimmed || !replacements[trimmed]) return;
+    node.nodeValue = text.replace(trimmed, replacements[trimmed]);
+  });
+})();
+</script>`
+	body := buf.String()
+	lower := strings.ToLower(body)
+	if idx := strings.LastIndex(lower, "</body>"); idx >= 0 {
+		buf.Reset()
+		buf.WriteString(body[:idx])
+		buf.WriteString(script)
+		buf.WriteString(body[idx:])
+		return
+	}
+	buf.WriteString(script)
 }
 
 const defaultBlockTemplate = `<!doctype html>

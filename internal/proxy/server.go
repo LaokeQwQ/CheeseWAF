@@ -41,6 +41,7 @@ type Server struct {
 	apiSchema *apisec.Validator
 	apiLimit  *apisec.RateLimiter
 	apiAuth   *apisec.Authenticator
+	certs     *SiteCertificateStore
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
@@ -81,6 +82,10 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 	if err != nil {
 		return nil, err
 	}
+	certs, err := NewSiteCertificateStore(cfg)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		config:    cfg,
 		pipeline:  pipeline,
@@ -102,6 +107,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		apiSchema: apiSchema,
 		apiLimit:  apiLimit,
 		apiAuth:   apiAuth,
+		certs:     certs,
 	}, nil
 }
 
@@ -127,6 +133,9 @@ func (s *Server) UpdateSites(sites []config.SiteConfig) {
 		return
 	}
 	s.config.Sites = append([]config.SiteConfig(nil), sites...)
+	if s.certs != nil {
+		_ = s.certs.Update(s.config)
+	}
 	s.health = NewHealthRegistry(s.config.Sites)
 	s.lb.UpdateSites(s.config.Sites, s.health)
 }
@@ -217,6 +226,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	site := s.lb.SiteForHost(r.Host)
 	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
+
+	// Protocol enforcement: HTTP smuggling, chunked encoding abuse, header injection
+	if violation := engine.DetectProtocolViolations(r); violation != nil {
+		s.block(w, &engine.RequestContext{
+			Request:  r,
+			ClientIP: engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs),
+			TraceID:  blockpage.NewTraceID(),
+			SiteID:   site.ID,
+			Metadata: map[string]any{"protocol_violation": violation.Type},
+		}, "protocol_enforcement", violation.Message, http.StatusBadRequest, start)
+		return
+	}
+
 	reqCtx, err := engine.NewRequestContextWithTrustedProxies(r, site.ID, site.WAF.AccessControl.TrustedCIDRs)
 	if err != nil {
 		s.proxyError(w, r, site, nil, "proxy_error", "failed to read request", http.StatusBadRequest, start, err)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,13 +18,26 @@ import (
 )
 
 type aiConfigPayload struct {
-	Enabled             bool   `json:"enabled"`
+	Enabled             bool                      `json:"enabled"`
+	Provider            string                    `json:"provider"`
+	APIBase             string                    `json:"api_base"`
+	APIKey              string                    `json:"api_key,omitempty"`
+	APIKeySet           bool                      `json:"api_key_set"`
+	Model               string                    `json:"model"`
+	Async               bool                      `json:"async"`
+	AllowPrivateAPIBase bool                      `json:"allow_private_api_base"`
+	Assistant           *aiModelConfigPayload     `json:"assistant,omitempty"`
+	Reasoning           *aiModelConfigPayload     `json:"reasoning,omitempty"`
+	SelfLearning        any                       `json:"self_learning,omitempty"`
+	Knowledge           *config.AIKnowledgeConfig `json:"knowledge,omitempty"`
+}
+
+type aiModelConfigPayload struct {
 	Provider            string `json:"provider"`
 	APIBase             string `json:"api_base"`
 	APIKey              string `json:"api_key,omitempty"`
 	APIKeySet           bool   `json:"api_key_set"`
 	Model               string `json:"model"`
-	Async               bool   `json:"async"`
 	AllowPrivateAPIBase bool   `json:"allow_private_api_base"`
 }
 
@@ -46,16 +60,47 @@ type aiAnalyzeLogPayload struct {
 }
 
 type aiAssistantPayload struct {
-	Message  string `json:"message"`
-	Limit    int    `json:"limit"`
-	Language string `json:"language"`
+	Message   string `json:"message"`
+	Limit     int    `json:"limit"`
+	Language  string `json:"language"`
+	DeepThink bool   `json:"deep_think"`
 }
 
 type aiModelsPayload struct {
 	Provider            string `json:"provider"`
 	APIBase             string `json:"api_base"`
 	APIKey              string `json:"api_key,omitempty"`
+	Target              string `json:"target,omitempty"`
 	AllowPrivateAPIBase bool   `json:"allow_private_api_base"`
+}
+
+type aiTestPayload struct {
+	Provider            string `json:"provider"`
+	APIBase             string `json:"api_base"`
+	APIKey              string `json:"api_key,omitempty"`
+	Model               string `json:"model"`
+	Target              string `json:"target"`
+	AllowPrivateAPIBase bool   `json:"allow_private_api_base"`
+}
+
+type aiSelfLearningRunPayload struct {
+	DryRun   *bool  `json:"dry_run,omitempty"`
+	Language string `json:"language"`
+}
+
+const aiLongRequestTimeout = 5 * time.Minute
+
+type aiSelfLearningConfigView struct {
+	Enabled        bool    `json:"enabled"`
+	AutoApply      bool    `json:"auto_apply"`
+	DryRun         bool    `json:"dry_run"`
+	Interval       string  `json:"interval"`
+	At             string  `json:"at"`
+	MinConfidence  float64 `json:"min_confidence"`
+	MinEvents      int     `json:"min_events"`
+	MaxEvents      int     `json:"max_events"`
+	MaxRulesPerRun int     `json:"max_rules_per_run"`
+	Action         string  `json:"action"`
 }
 
 func (h *Handler) AIConfig(w http.ResponseWriter, _ *http.Request) {
@@ -67,15 +112,15 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	next := config.AIConfig{
-		Enabled:             req.Enabled,
-		Provider:            req.Provider,
-		APIBase:             req.APIBase,
-		APIKey:              req.APIKey,
-		APIKeyHeader:        h.Config.AI.APIKeyHeader,
-		Model:               req.Model,
-		Async:               req.Async,
-		AllowPrivateAPIBase: req.AllowPrivateAPIBase,
+	next := h.Config.AI
+	next.Enabled = req.Enabled
+	next.Provider = firstNonEmpty(req.Provider, next.Provider)
+	next.APIBase = firstNonEmpty(req.APIBase, next.APIBase)
+	next.Model = firstNonEmpty(req.Model, next.Model)
+	next.Async = req.Async
+	next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+	if req.APIKey != "" {
+		next.APIKey = req.APIKey
 	}
 	if next.Provider == "" {
 		next.Provider = h.Config.AI.Provider
@@ -83,18 +128,32 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 	if next.Provider == "" {
 		next.Provider = "openai"
 	}
-	if next.APIKey == "" {
-		next.APIKey = h.Config.AI.APIKey
+	if req.Assistant != nil {
+		next.Assistant = mergeAIModelPayload(next.Assistant, *req.Assistant)
 	}
-	if next.Enabled || strings.TrimSpace(next.APIBase) != "" {
-		if strings.TrimSpace(next.APIBase) == "" {
-			writeError(w, http.StatusBadRequest, "AI_API_BASE_REQUIRED", "ai api base is required")
+	if req.Reasoning != nil {
+		next.Reasoning = mergeAIModelPayload(next.Reasoning, *req.Reasoning)
+	}
+	next.Assistant = mergeAIModelPayload(next.Assistant, legacyAIModelPayload(next))
+	next.Reasoning = mergeAIModelPayload(next.Reasoning, aiModelPayloadFromConfig(next.Assistant))
+	if req.SelfLearning != nil {
+		selfLearning, err := parseAISelfLearningConfig(req.SelfLearning, next.SelfLearning)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "AI_CONFIG_INVALID", err.Error())
 			return
 		}
-		if err := validateAIAPIBase(next.APIBase, next.AllowPrivateAPIBase); err != nil {
-			writeError(w, http.StatusBadRequest, "AI_API_BASE_INVALID", err.Error())
-			return
+		next.SelfLearning = selfLearning
+	}
+	if req.Knowledge != nil {
+		next.Knowledge = *req.Knowledge
+	}
+	if err := validateAIConfigForSave(next); err != nil {
+		code := "AI_CONFIG_INVALID"
+		if isAIAPIBaseValidationError(err) {
+			code = "AI_API_BASE_INVALID"
 		}
+		writeError(w, http.StatusBadRequest, code, err.Error())
+		return
 	}
 	h.Config.AI = next
 	if err := h.persistConfig(); err != nil {
@@ -105,14 +164,47 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) TestAIConnection(w http.ResponseWriter, r *http.Request) {
-	if err := ai.TestConnection(r.Context(), h.Config.AI); err != nil {
+	allowLongResponseWrite(w)
+	target := ""
+	var cfg config.AIConfig
+	if r.Body != nil && r.ContentLength != 0 {
+		var req aiTestPayload
+		if !decode(w, r, &req) {
+			return
+		}
+		target = req.Target
+		cfg = h.aiRuntimeConfig(target)
+		cfg.Enabled = true
+		if strings.TrimSpace(req.Provider) != "" {
+			cfg.Provider = strings.TrimSpace(req.Provider)
+		}
+		if strings.TrimSpace(req.APIBase) != "" {
+			cfg.APIBase = strings.TrimSpace(req.APIBase)
+		}
+		if strings.TrimSpace(req.APIKey) != "" {
+			cfg.APIKey = strings.TrimSpace(req.APIKey)
+		}
+		if strings.TrimSpace(req.Model) != "" {
+			cfg.Model = strings.TrimSpace(req.Model)
+		}
+		cfg.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+	} else {
+		cfg = h.aiRuntimeConfig(target)
+	}
+	cfg.Enabled = true
+	if err := validateAITestConfig(cfg); err != nil {
+		writeError(w, http.StatusBadRequest, aiTestValidationErrorCode(err), err.Error())
+		return
+	}
+	if err := ai.TestConnection(r.Context(), cfg); err != nil {
 		writeError(w, http.StatusBadGateway, "AI_CONNECTION_FAILED", err.Error())
 		return
 	}
-	writeData(w, map[string]any{"ok": true})
+	writeData(w, map[string]any{"ok": true, "target": normalizeAITarget(target)})
 }
 
 func (h *Handler) AIModels(w http.ResponseWriter, r *http.Request) {
+	allowLongResponseWrite(w)
 	cfg := h.aiModelsConfigFromRequest(w, r)
 	if cfg == nil {
 		return
@@ -147,7 +239,8 @@ func (h *Handler) AIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) aiModelsConfigFromRequest(w http.ResponseWriter, r *http.Request) *config.AIConfig {
-	cfg := h.Config.AI
+	target := ""
+	cfg := h.Config.AI.AssistantRuntimeConfig()
 	cfg.Enabled = true
 	if r.Method == http.MethodGet {
 		return &cfg
@@ -156,6 +249,9 @@ func (h *Handler) aiModelsConfigFromRequest(w http.ResponseWriter, r *http.Reque
 	if !decode(w, r, &req) {
 		return nil
 	}
+	target = req.Target
+	cfg = h.aiRuntimeConfig(target)
+	cfg.Enabled = true
 	if strings.TrimSpace(req.Provider) != "" {
 		cfg.Provider = strings.TrimSpace(req.Provider)
 	}
@@ -226,6 +322,7 @@ func isPrivateAIAPIBaseIP(ip net.IP) bool {
 }
 
 func (h *Handler) AnalyzeLog(w http.ResponseWriter, r *http.Request) {
+	allowLongResponseWrite(w)
 	var req aiAnalyzeLogPayload
 	if !decode(w, r, &req) {
 		return
@@ -235,7 +332,9 @@ func (h *Handler) AnalyzeLog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code, err.Error())
 		return
 	}
-	analysis, err := ai.AnalyzeLogWithLanguage(r.Context(), h.aiClient(), entry, req.Language)
+	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+	defer cancel()
+	analysis, err := ai.AnalyzeLogWithLanguage(ctx, h.aiReasoningClient(), entry, req.Language)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AI_ANALYSIS_FAILED", err.Error())
 		return
@@ -332,6 +431,7 @@ func errLogReferenceRequired() error {
 }
 
 func (h *Handler) AnalyzeEvents(w http.ResponseWriter, r *http.Request) {
+	allowLongResponseWrite(w)
 	var req aiEventsAnalyzePayload
 	if !decode(w, r, &req) {
 		return
@@ -361,12 +461,46 @@ func (h *Handler) AnalyzeEvents(w http.ResponseWriter, r *http.Request) {
 		StartTime: startTime,
 		EndTime:   endTime,
 	})
-	analyses, err := ai.AnalyzeEventsWithLanguage(r.Context(), h.aiClient(), entries, req.Language)
+	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+	defer cancel()
+	analyses, err := ai.AnalyzeEventsWithLanguage(ctx, h.aiReasoningClient(), entries, req.Language)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AI_ANALYSIS_FAILED", err.Error())
 		return
 	}
 	writeData(w, map[string]any{"items": analyses, "total": len(analyses)})
+}
+
+func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
+	allowLongResponseWrite(w)
+	var req aiSelfLearningRunPayload
+	if r.Body != nil && r.ContentLength != 0 {
+		if !decode(w, r, &req) {
+			return
+		}
+	}
+	if h.Config == nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_ERROR", "config is nil")
+		return
+	}
+	cfg := h.Config.AI.SelfLearning
+	if req.DryRun != nil {
+		cfg.DryRun = *req.DryRun
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+	defer cancel()
+	report, err := ai.RunSelfLearning(ctx, ai.SelfLearningOptions{
+		Config:   cfg,
+		Client:   h.aiReasoningClient(),
+		Sink:     h.Sink,
+		Rules:    h.Store,
+		Language: req.Language,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "AI_SELF_LEARNING_FAILED", err.Error())
+		return
+	}
+	writeData(w, report)
 }
 
 func parsePayloadTime(w http.ResponseWriter, raw string, name string) (time.Time, bool) {
@@ -382,11 +516,14 @@ func parsePayloadTime(w http.ResponseWriter, raw string, name string) (time.Time
 }
 
 func (h *Handler) AIAssistant(w http.ResponseWriter, r *http.Request) {
+	allowLongResponseWrite(w)
 	var req aiAssistantPayload
 	if !decode(w, r, &req) {
 		return
 	}
-	reply, err := h.runAssistantAgent(r.Context(), req, nil)
+	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+	defer cancel()
+	reply, err := h.runAssistantAgent(ctx, req, nil)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AI_ASSISTANT_FAILED", err.Error())
 		return
@@ -414,6 +551,7 @@ func (h *Handler) AIAssistantStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	allowLongResponseWrite(w)
 	var writeMu sync.Mutex
 	writeEvent := func(event string, payload any) {
 		writeMu.Lock()
@@ -455,6 +593,12 @@ func (h *Handler) AIAssistantStream(w http.ResponseWriter, r *http.Request) {
 	writeEvent("done", reply)
 }
 
+func allowLongResponseWrite(w http.ResponseWriter) {
+	if controller := http.NewResponseController(w); controller != nil {
+		_ = controller.SetWriteDeadline(time.Time{})
+	}
+}
+
 func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload, emit func(ai.AssistantTraceEvent)) (*ai.AssistantReply, error) {
 	if strings.TrimSpace(req.Message) == "" {
 		return nil, fmt.Errorf("message is required")
@@ -475,7 +619,7 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 		}
 	}
 	record(ai.AssistantTraceEvent{Type: "safety_boundary", Message: localizedTraceMessage(req.Language, "安全边界已启用。", "Safety boundary is enabled.")})
-	client := h.aiClient()
+	client := h.aiClientForAssistant(req.DeepThink)
 	var reply *ai.AssistantReply
 	if client == nil {
 		record(ai.AssistantTraceEvent{Type: "local_router", Message: localizedTraceMessage(req.Language, "AI 未配置，使用本地分析。", "AI is not configured; using local analysis.")})
@@ -685,6 +829,11 @@ func (h *Handler) assistantToolIntents(message string) []assistantToolIntent {
 	if area, level, ok := parseProtectionLevelIntent(normalized); ok {
 		intents = append(intents, assistantToolIntent{Name: "set_protection_level", Args: map[string]any{"area": area, "level": level}})
 	}
+	if len(intents) == 0 && containsAny(normalized,
+		"knowledge", "docs", "how", "why", "rule", "policy", "config", "certificate", "acme", "false positive", "false negative", "cache", "compression",
+	) {
+		intents = append(intents, assistantToolIntent{Name: "knowledge_base", Args: map[string]any{"query": normalized, "limit": 5}})
+	}
 	return intents
 }
 
@@ -858,10 +1007,52 @@ func containsAny(value string, needles ...string) bool {
 }
 
 func (h *Handler) aiClient() *ai.Client {
-	if h.Config.AI.Enabled && h.Config.AI.APIKey != "" {
-		return ai.NewClient(h.Config.AI, nil)
+	return h.aiAssistantClient()
+}
+
+func (h *Handler) aiAssistantClient() *ai.Client {
+	if h == nil || h.Config == nil {
+		return nil
+	}
+	cfg := h.Config.AI.AssistantRuntimeConfig()
+	if cfg.Enabled && cfg.APIKey != "" {
+		return ai.NewClient(cfg, nil)
 	}
 	return nil
+}
+
+func (h *Handler) aiReasoningClient() *ai.Client {
+	if h == nil || h.Config == nil {
+		return nil
+	}
+	cfg := h.Config.AI.ReasoningRuntimeConfig()
+	if cfg.Enabled && cfg.APIKey != "" {
+		return ai.NewClient(cfg, nil)
+	}
+	return nil
+}
+
+func (h *Handler) aiClientForAssistant(deepThink bool) *ai.Client {
+	if deepThink {
+		if client := h.aiReasoningClient(); client != nil {
+			return client
+		}
+	}
+	return h.aiAssistantClient()
+}
+
+func (h *Handler) aiRuntimeConfig(target string) config.AIConfig {
+	if h == nil || h.Config == nil {
+		cfg := config.Default().AI
+		cfg.Enabled = false
+		return cfg
+	}
+	switch normalizeAITarget(target) {
+	case "reasoning":
+		return h.Config.AI.ReasoningRuntimeConfig()
+	default:
+		return h.Config.AI.AssistantRuntimeConfig()
+	}
 }
 
 func (h *Handler) queryLogs(r *http.Request, filter storage.LogFilter) []storage.LogEntry {
@@ -876,17 +1067,289 @@ func (h *Handler) queryLogs(r *http.Request, filter storage.LogFilter) []storage
 }
 
 func aiConfigView(cfg config.AIConfig) aiConfigPayload {
+	assistant := cfg.AssistantRuntimeConfig()
+	reasoning := cfg.ReasoningRuntimeConfig()
+	return aiConfigPayload{
+		Enabled:             cfg.Enabled,
+		Provider:            assistant.Provider,
+		APIBase:             assistant.APIBase,
+		APIKeySet:           assistant.APIKey != "",
+		Model:               assistant.Model,
+		Async:               cfg.Async,
+		AllowPrivateAPIBase: assistant.AllowPrivateAPIBase,
+		Assistant:           aiModelConfigView(assistant.RuntimeModelConfig()),
+		Reasoning:           aiModelConfigView(reasoning.RuntimeModelConfig()),
+		SelfLearning:        aiSelfLearningView(cfg.SelfLearning),
+		Knowledge:           &cfg.Knowledge,
+	}
+}
+
+func aiSelfLearningView(cfg config.AISelfLearningConfig) *aiSelfLearningConfigView {
+	interval := cfg.Interval
+	if interval == 0 {
+		interval = 24 * time.Hour
+	}
+	return &aiSelfLearningConfigView{
+		Enabled:        cfg.Enabled,
+		AutoApply:      cfg.AutoApply,
+		DryRun:         cfg.DryRun,
+		Interval:       durationForDisplay(interval),
+		At:             cfg.At,
+		MinConfidence:  cfg.MinConfidence,
+		MinEvents:      cfg.MinEvents,
+		MaxEvents:      cfg.MaxEvents,
+		MaxRulesPerRun: cfg.MaxRulesPerRun,
+		Action:         cfg.Action,
+	}
+}
+
+func parseAISelfLearningConfig(value any, fallback config.AISelfLearningConfig) (config.AISelfLearningConfig, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fallback, fmt.Errorf("encode self_learning config: %w", err)
+	}
+	var loose map[string]any
+	if err := json.Unmarshal(raw, &loose); err != nil {
+		return fallback, fmt.Errorf("decode self_learning config: %w", err)
+	}
+	next := fallback
+	if value, ok := loose["enabled"].(bool); ok {
+		next.Enabled = value
+	}
+	if value, ok := loose["auto_apply"].(bool); ok {
+		next.AutoApply = value
+	}
+	if value, ok := loose["dry_run"].(bool); ok {
+		next.DryRun = value
+	}
+	if value, ok := loose["at"].(string); ok {
+		next.At = value
+	}
+	if value, ok := loose["action"].(string); ok {
+		next.Action = value
+	}
+	if value, ok := readLooseFloat(loose["min_confidence"]); ok {
+		next.MinConfidence = value
+	}
+	if value, ok := readLooseInt(loose["min_events"]); ok {
+		next.MinEvents = value
+	}
+	if value, ok := readLooseInt(loose["max_events"]); ok {
+		next.MaxEvents = value
+	}
+	if value, ok := readLooseInt(loose["max_rules_per_run"]); ok {
+		next.MaxRulesPerRun = value
+	}
+	if duration, ok, err := readLooseDuration(loose["interval"]); err != nil {
+		return fallback, err
+	} else if ok {
+		next.Interval = duration
+	}
+	return next, nil
+}
+
+func readLooseDuration(value any) (time.Duration, bool, error) {
+	switch typed := value.(type) {
+	case nil:
+		return 0, false, nil
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, false, nil
+		}
+		if strings.HasSuffix(trimmed, "d") {
+			days, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "d"), 64)
+			if err != nil {
+				return 0, false, fmt.Errorf("self_learning.interval must be a duration such as 24h: %w", err)
+			}
+			return time.Duration(days * float64(24*time.Hour)), true, nil
+		}
+		parsed, err := time.ParseDuration(trimmed)
+		if err != nil {
+			return 0, false, fmt.Errorf("self_learning.interval must be a duration such as 24h: %w", err)
+		}
+		return parsed, true, nil
+	case float64:
+		if typed <= 0 {
+			return 0, false, nil
+		}
+		return time.Duration(typed), true, nil
+	default:
+		return 0, false, fmt.Errorf("self_learning.interval must be a duration string or nanoseconds")
+	}
+}
+
+func readLooseFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func readLooseInt(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func durationForDisplay(value time.Duration) string {
+	if value%time.Hour == 0 {
+		return fmt.Sprintf("%dh", int(value/time.Hour))
+	}
+	if value%time.Minute == 0 {
+		return fmt.Sprintf("%dm", int(value/time.Minute))
+	}
+	if value%time.Second == 0 {
+		return fmt.Sprintf("%ds", int(value/time.Second))
+	}
+	return value.String()
+}
+
+func aiModelConfigView(cfg config.AIModelConfig) *aiModelConfigPayload {
 	provider := cfg.Provider
 	if provider == "" {
 		provider = "openai"
 	}
-	return aiConfigPayload{
-		Enabled:             cfg.Enabled,
+	return &aiModelConfigPayload{
 		Provider:            provider,
 		APIBase:             cfg.APIBase,
 		APIKeySet:           cfg.APIKey != "",
 		Model:               cfg.Model,
-		Async:               cfg.Async,
 		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
+	}
+}
+
+func mergeAIModelPayload(current config.AIModelConfig, req aiModelConfigPayload) config.AIModelConfig {
+	next := current
+	if strings.TrimSpace(req.Provider) != "" {
+		next.Provider = strings.TrimSpace(req.Provider)
+	}
+	if strings.TrimSpace(req.APIBase) != "" {
+		next.APIBase = strings.TrimSpace(req.APIBase)
+	}
+	if strings.TrimSpace(req.APIKey) != "" {
+		next.APIKey = req.APIKey
+	}
+	if strings.TrimSpace(req.Model) != "" {
+		next.Model = strings.TrimSpace(req.Model)
+	}
+	next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+	if strings.TrimSpace(next.APIKeyHeader) == "" {
+		next.APIKeyHeader = "authorization"
+	}
+	return next
+}
+
+func aiModelPayloadFromConfig(model config.AIModelConfig) aiModelConfigPayload {
+	return aiModelConfigPayload{
+		Provider:            model.Provider,
+		APIBase:             model.APIBase,
+		APIKey:              model.APIKey,
+		Model:               model.Model,
+		AllowPrivateAPIBase: model.AllowPrivateAPIBase,
+	}
+}
+
+func legacyAIModelPayload(cfg config.AIConfig) aiModelConfigPayload {
+	return aiModelConfigPayload{
+		Provider:            cfg.Provider,
+		APIBase:             cfg.APIBase,
+		APIKey:              cfg.APIKey,
+		Model:               cfg.Model,
+		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
+	}
+}
+
+func validateAIConfigForSave(cfg config.AIConfig) error {
+	if cfg.Enabled {
+		if err := validateRuntimeAIConfig("assistant", cfg.AssistantRuntimeConfig()); err != nil {
+			return err
+		}
+		if err := validateRuntimeAIConfig("reasoning", cfg.ReasoningRuntimeConfig()); err != nil {
+			return err
+		}
+	}
+	if cfg.SelfLearning.MinConfidence < 0 || cfg.SelfLearning.MinConfidence > 1 {
+		return fmt.Errorf("self_learning.min_confidence must be between 0 and 1")
+	}
+	if cfg.SelfLearning.Interval != 0 && cfg.SelfLearning.Interval < time.Hour {
+		return fmt.Errorf("self_learning.interval must be at least 1h")
+	}
+	return nil
+}
+
+func validateRuntimeAIConfig(target string, cfg config.AIConfig) error {
+	if strings.TrimSpace(cfg.APIBase) == "" {
+		return fmt.Errorf("%s api base is required", target)
+	}
+	if err := validateAIAPIBase(cfg.APIBase, cfg.AllowPrivateAPIBase); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.Model) == "" {
+		return fmt.Errorf("%s model is required", target)
+	}
+	return nil
+}
+
+func validateAITestConfig(cfg config.AIConfig) error {
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return fmt.Errorf("ai api key is required")
+	}
+	if strings.TrimSpace(cfg.APIBase) == "" {
+		return fmt.Errorf("ai api base is required")
+	}
+	if err := validateAIAPIBase(cfg.APIBase, cfg.AllowPrivateAPIBase); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.Model) == "" {
+		return fmt.Errorf("ai model is required")
+	}
+	return nil
+}
+
+func aiTestValidationErrorCode(err error) string {
+	if err == nil {
+		return "AI_CONFIG_INVALID"
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "api key"):
+		return "AI_KEY_REQUIRED"
+	case strings.Contains(message, "api base is required"):
+		return "AI_API_BASE_REQUIRED"
+	case isAIAPIBaseValidationError(err):
+		return "AI_API_BASE_INVALID"
+	case strings.Contains(message, "model"):
+		return "AI_MODEL_REQUIRED"
+	default:
+		return "AI_CONFIG_INVALID"
+	}
+}
+
+func isAIAPIBaseValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "api base") || strings.Contains(message, "api_base")
+}
+
+func normalizeAITarget(target string) string {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "reasoning", "reason", "deep_think", "deep-think", "鎺ㄧ悊":
+		return "reasoning"
+	default:
+		return "assistant"
 	}
 }

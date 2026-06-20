@@ -21,6 +21,16 @@ import type { IPAccessRule, IPReputationEntry, ThreatIntelProvider } from '../..
 import { displayAction, displaySeverity } from '../../utils/display';
 
 const second = 1_000_000_000;
+const formatOptions = ['cidr', 'csv', 'json', 'stix', 'misp', 'abuseipdb', 'otx', 'threatbook'] as const;
+const providerTemplates = [
+  { type: 'generic', format: 'stix', auth_type: 'bearer', endpoint: '', nameKey: 'ip.providerTypeGeneric', hintKey: 'ip.providerGenericHint' },
+  { type: 'threatbook-cn', format: 'threatbook', auth_type: 'query', endpoint: 'https://api.threatbook.cn/v3/ip/query', nameKey: 'ip.providerTypeThreatBookCN', hintKey: 'ip.providerThreatBookCNHint' },
+  { type: 'threatbook-intl', format: 'threatbook', auth_type: 'query', endpoint: 'https://api.threatbook.io/v2/ip/query', nameKey: 'ip.providerTypeThreatBookIntl', hintKey: 'ip.providerThreatBookIntlHint' },
+  { type: 'abuseipdb', format: 'abuseipdb', auth_type: 'header', endpoint: 'https://api.abuseipdb.com/api/v2/check', nameKey: 'ip.providerTypeAbuseIPDB', hintKey: 'ip.providerAbuseIPDBHint' },
+  { type: 'otx', format: 'otx', auth_type: 'header', endpoint: 'https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general', nameKey: 'ip.providerTypeOTX', hintKey: 'ip.providerOTXHint' },
+  { type: 'misp', format: 'misp', auth_type: 'header', endpoint: '', nameKey: 'ip.providerTypeMISP', hintKey: 'ip.providerMISPHint' },
+  { type: 'stix', format: 'stix', auth_type: 'bearer', endpoint: '', nameKey: 'ip.providerTypeSTIX', hintKey: 'ip.providerSTIXHint' },
+] as const;
 type IntelStatusTone = 'success' | 'warning' | 'error';
 type IntelOperationStatus = {
   tone: IntelStatusTone;
@@ -240,16 +250,17 @@ export default function IPManagePage() {
     setProviders((current) => current.filter((provider) => provider.id !== id));
   };
   const addProvider = () => {
+    const template = providerTemplates[0];
     setProviders((current) => [
       ...current,
       {
         id: `provider-${Date.now()}`,
         name: '',
-        type: 'generic',
-        endpoint: '',
+        type: template.type,
+        endpoint: template.endpoint,
         api_key: '',
-        auth_type: 'bearer',
-        format: 'stix',
+        auth_type: template.auth_type,
+        format: template.format,
         action: 'challenge',
         min_severity: 'high',
         interval: 24 * 60 * 60 * second,
@@ -258,6 +269,26 @@ export default function IPManagePage() {
         enabled: true,
       },
     ]);
+  };
+  const applyProviderTemplate = (index: number, type: string) => {
+    const template = providerTemplates.find((item) => item.type === type);
+    if (!template) {
+      updateProvider(index, { type });
+      return;
+    }
+    setProviders((current) => current.map((provider, providerIndex) => {
+      if (providerIndex !== index) {
+        return provider;
+      }
+      return {
+        ...provider,
+        type: template.type,
+        format: template.format,
+        auth_type: template.auth_type,
+        endpoint: template.endpoint || provider.endpoint,
+        name: provider.name || t(template.nameKey),
+      };
+    }));
   };
   const saveAccessRules = (nextRules = accessRules) => {
     accessRulesMutation.mutate(nextRules.map(normalizeAccessRuleForSave).filter((rule) => rule.entries.length > 0));
@@ -290,6 +321,29 @@ export default function IPManagePage() {
     const nextRules = [...accessRules, nextRule];
     setAccessRules(nextRules);
     setAccessDraft(defaultAccessDraft);
+    saveAccessRules(nextRules);
+  };
+  const saveEditedAccessRule = (index: number) => {
+    const nextRules = accessRules.map((rule, ruleIndex) => (ruleIndex === index ? normalizeAccessRuleForSave(rule) : rule));
+    const current = nextRules[index];
+    if (!current || current.entries.length === 0) {
+      ArcoMessage.warning(t('ip.entriesRequired'));
+      return;
+    }
+    const invalidEntries = current.entries.filter((entry) => !isValidIPOrCIDR(entry));
+    if (invalidEntries.length > 0) {
+      ArcoMessage.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
+      return;
+    }
+    if (current.scope === 'site' && !current.site_id) {
+      ArcoMessage.warning(t('ip.siteRequired'));
+      return;
+    }
+    if (current.scope === 'path' && !current.path_prefix.trim()) {
+      ArcoMessage.warning(t('ip.pathRequired'));
+      return;
+    }
+    setAccessRules(nextRules);
     saveAccessRules(nextRules);
   };
   const removeAccessRule = (id: string) => {
@@ -330,6 +384,35 @@ export default function IPManagePage() {
     const next = { ...reputationOverrides };
     delete next[ip];
     reputationMutation.mutate(next);
+  };
+  const validateImportDraft = () => {
+    if (!importDraft.contents.trim()) {
+      ArcoMessage.warning(t('ip.iocRequired'));
+      return false;
+    }
+    if (!importDraft.source.trim()) {
+      ArcoMessage.warning(t('ip.sourceRequired'));
+      return false;
+    }
+    const confidencePercent = importDraft.confidence * 100;
+    if (!Number.isFinite(confidencePercent) || confidencePercent < 0 || confidencePercent > 100) {
+      ArcoMessage.warning(t('ip.confidenceInvalid'));
+      return false;
+    }
+    if (importDraft.format === 'cidr') {
+      const invalid = splitLines(importDraft.contents).filter((line) => !line.startsWith('#') && !isValidIPOrCIDR(firstToken(line)));
+      if (invalid.length > 0) {
+        ArcoMessage.warning(t('ip.entriesInvalid', { value: invalid.slice(0, 3).join(', ') }));
+        return false;
+      }
+    }
+    return true;
+  };
+  const runImport = () => {
+    if (!validateImportDraft()) {
+      return;
+    }
+    importMutation.mutate({ ...importDraft, source: importDraft.source.trim(), labels: importDraft.labels });
   };
 
   return (
@@ -508,6 +591,7 @@ export default function IPManagePage() {
                       <Select.Option value="block">{t('ip.block')}</Select.Option>
                       <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
                     </Select>
+                    <small>{t('ip.accessActionHint')}</small>
                   </label>
                   <label>
                     <span>{t('ip.scope')}</span>
@@ -516,6 +600,7 @@ export default function IPManagePage() {
                       <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
                       <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
                     </Select>
+                    <small>{t('ip.accessScopeHint')}</small>
                   </label>
                   <label className="ip-access-site-field">
                     <span>{t('sites.title')}</span>
@@ -543,6 +628,7 @@ export default function IPManagePage() {
                   <label className="ip-access-entries-field">
                     <span>{t('ip.entriesInput')}</span>
                     <Input value={accessDraft.entries.join(', ')} placeholder="203.0.113.10, 198.51.100.0/24" onChange={(value) => setAccessDraft((current) => ({ ...current, entries: splitList(value) }))} />
+                    <small>{t('ip.entriesHint')}</small>
                   </label>
                   <div className="ip-access-draft-actions">
                     <label className="switch-line ip-access-enabled"><span>{t('rules.enabled')}</span><Switch checked={accessDraft.enabled} onChange={(enabled) => setAccessDraft((current) => ({ ...current, enabled }))} /></label>
@@ -551,27 +637,108 @@ export default function IPManagePage() {
                 </div>
               </section>
               <div className="table-panel table-panel-embedded ip-access-table">
-                <Table
-                  rowKey="id"
-                  pagination={false}
-                  data={accessRules}
-                  columns={[
-                    { title: t('rules.name'), dataIndex: 'name', render: (_: string, rule: IPAccessRule) => <strong>{rule.name || rule.id}</strong> },
-                    { title: t('logs.action'), dataIndex: 'action', render: (action: string) => <Tag color={action === 'allow' ? 'green' : action === 'block' ? 'red' : 'blue'}>{action === 'allow' ? t('ip.allow') : action === 'block' ? t('ip.block') : t('common.monitor')}</Tag> },
-                    { title: t('ip.scope'), dataIndex: 'scope', render: (_: string, rule: IPAccessRule) => scopeLabel(rule, t) },
-                    { title: t('ip.entriesInput'), dataIndex: 'entries', render: (entries: string[]) => <span className="ip-access-entry-list">{entries.map((entry) => <code key={entry}>{entry}</code>)}</span> },
-                    { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean, rule: IPAccessRule, index: number) => <Switch checked={enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} /> },
-                    {
-                      title: t('ip.actions'),
-                      dataIndex: 'actions',
-                      render: (_: unknown, rule: IPAccessRule) => (
+                <div className="ip-access-table-desktop">
+                  <Table
+                    rowKey="id"
+                    pagination={false}
+                    data={accessRules}
+                    columns={[
+                      {
+                        title: t('rules.name'),
+                        dataIndex: 'name',
+                        render: (name: string, rule: IPAccessRule, index: number) => (
+                          <Input value={name || rule.id} onChange={(value) => updateAccessRule(index, { name: value })} />
+                        ),
+                      },
+                      {
+                        title: t('logs.action'),
+                        dataIndex: 'action',
+                        render: (action: string, _rule: IPAccessRule, index: number) => (
+                          <Select value={action || 'allow'} onChange={(value) => updateAccessRule(index, { action: value as string })}>
+                            <Select.Option value="allow">{t('ip.allow')}</Select.Option>
+                            <Select.Option value="block">{t('ip.block')}</Select.Option>
+                            <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
+                          </Select>
+                        ),
+                      },
+                      {
+                        title: t('ip.scope'),
+                        dataIndex: 'scope',
+                        render: (scope: string, rule: IPAccessRule, index: number) => (
+                          <div className="ip-access-scope-edit">
+                            <Select value={scope || 'global'} onChange={(value) => updateAccessRule(index, normalizeAccessScopePatch(rule, value as string))}>
+                              <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
+                              <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
+                              <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
+                            </Select>
+                            <small>{scopeLabel(rule, t)}</small>
+                          </div>
+                        ),
+                      },
+                      { title: t('ip.entriesInput'), dataIndex: 'entries', render: (entries: string[], _rule: IPAccessRule, index: number) => <Input value={(entries || []).join(', ')} onChange={(value) => updateAccessRule(index, { entries: splitList(value) })} /> },
+                      { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean, _rule: IPAccessRule, index: number) => <Switch checked={enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} /> },
+                      {
+                        title: t('ip.actions'),
+                        dataIndex: 'actions',
+                        render: (_: unknown, rule: IPAccessRule, index: number) => (
+                          <span className="action-group ip-access-row-actions">
+                            <Button size="small" loading={accessRulesMutation.isPending} onClick={() => saveEditedAccessRule(index)}>
+                              {t('common.save')}
+                            </Button>
+                            <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeAccessRule(rule.id)}>
+                              {t('common.delete')}
+                            </Button>
+                          </span>
+                        ),
+                      },
+                    ]}
+                  />
+                </div>
+                <div className="ip-access-card-list">
+                  {accessRules.map((rule, index) => (
+                    <article className="ip-access-rule-card" key={rule.id || index}>
+                      <label className="ip-access-rule-card-name">
+                        <span>{t('rules.name')}</span>
+                        <Input value={rule.name || rule.id} onChange={(value) => updateAccessRule(index, { name: value })} />
+                      </label>
+                      <div className="ip-access-rule-card-grid">
+                        <label>
+                          <span>{t('logs.action')}</span>
+                          <Select value={rule.action || 'allow'} onChange={(value) => updateAccessRule(index, { action: value as string })}>
+                            <Select.Option value="allow">{t('ip.allow')}</Select.Option>
+                            <Select.Option value="block">{t('ip.block')}</Select.Option>
+                            <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
+                          </Select>
+                        </label>
+                        <label>
+                          <span>{t('ip.scope')}</span>
+                          <Select value={rule.scope || 'global'} onChange={(value) => updateAccessRule(index, normalizeAccessScopePatch(rule, value as string))}>
+                            <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
+                            <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
+                            <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
+                          </Select>
+                        </label>
+                        <label className="ip-access-rule-card-entries">
+                          <span>{t('ip.entriesInput')}</span>
+                          <Input value={(rule.entries || []).join(', ')} onChange={(value) => updateAccessRule(index, { entries: splitList(value) })} />
+                        </label>
+                        <label className="switch-line ip-access-rule-card-enabled">
+                          <span>{t('rules.enabled')}</span>
+                          <Switch checked={rule.enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} />
+                        </label>
+                      </div>
+                      <small className="ip-access-rule-card-scope">{scopeLabel(rule, t)}</small>
+                      <div className="ip-access-rule-card-actions">
+                        <Button size="small" loading={accessRulesMutation.isPending} onClick={() => saveEditedAccessRule(index)}>
+                          {t('common.save')}
+                        </Button>
                         <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeAccessRule(rule.id)}>
                           {t('common.delete')}
                         </Button>
-                      ),
-                    },
-                  ]}
-                />
+                      </div>
+                    </article>
+                  ))}
+                </div>
               </div>
             </div>
           </Tabs.TabPane>
@@ -613,28 +780,19 @@ export default function IPManagePage() {
                         </label>
                         <label>
                           <span>{t('ip.providerType')}</span>
-                          <Select value={provider.type} onChange={(type) => updateProvider(index, { type: type as string })}>
-                            <Select.Option value="generic">{t('ip.providerTypeGeneric')}</Select.Option>
-                            <Select.Option value="threatbook-cn">{t('ip.providerTypeThreatBookCN')}</Select.Option>
-                            <Select.Option value="threatbook-intl">{t('ip.providerTypeThreatBookIntl')}</Select.Option>
-                            <Select.Option value="abuseipdb">{t('ip.providerTypeAbuseIPDB')}</Select.Option>
-                            <Select.Option value="otx">{t('ip.providerTypeOTX')}</Select.Option>
-                            <Select.Option value="misp">{t('ip.providerTypeMISP')}</Select.Option>
-                            <Select.Option value="stix">{t('ip.providerTypeSTIX')}</Select.Option>
+                          <Select value={provider.type} onChange={(type) => applyProviderTemplate(index, type as string)}>
+                            {providerTemplates.map((template) => (
+                              <Select.Option key={template.type} value={template.type}>{t(template.nameKey)}</Select.Option>
+                            ))}
                           </Select>
+                          <small>{t(providerTemplateFor(provider.type).hintKey)}</small>
                         </label>
                         <label>
                           <span>{t('ip.format')}</span>
                           <Select value={provider.format || 'stix'} onChange={(format) => updateProvider(index, { format: format as string })}>
-                            <Select.Option value="cidr">CIDR/TXT</Select.Option>
-                            <Select.Option value="csv">CSV</Select.Option>
-                            <Select.Option value="json">JSON</Select.Option>
-                            <Select.Option value="stix">STIX</Select.Option>
-                            <Select.Option value="misp">MISP Attribute</Select.Option>
-                            <Select.Option value="abuseipdb">AbuseIPDB</Select.Option>
-                            <Select.Option value="otx">AlienVault OTX</Select.Option>
-                            <Select.Option value="threatbook">ThreatBook</Select.Option>
+                            {formatOptions.map((format) => <Select.Option key={format} value={format}>{formatLabel(format)}</Select.Option>)}
                           </Select>
+                          <small>{t('ip.formatHint')}</small>
                         </label>
                         <label>
                           <span>{t('logs.action')}</span>
@@ -648,6 +806,7 @@ export default function IPManagePage() {
                         <label className="provider-endpoint-field">
                           <span>{t('ip.endpoint')}</span>
                           <Input value={provider.endpoint} placeholder="https://..." onChange={(endpoint) => updateProvider(index, { endpoint })} />
+                          <small>{t('ip.endpointHint')}</small>
                         </label>
                         <label>
                           <span>{t('ip.providerAuth')}</span>
@@ -658,15 +817,17 @@ export default function IPManagePage() {
                             <Select.Option value="basic">{t('ip.authBasic')}</Select.Option>
                             <Select.Option value="none">{t('ip.authNone')}</Select.Option>
                           </Select>
+                          <small>{t('ip.authHint')}</small>
                         </label>
                         <label>
-                          <span>API Key</span>
+                          <span>{t('ip.apiKey')}</span>
                           <Input.Password
                             value={provider.api_key}
-                            placeholder={provider.auth_type === 'basic' ? 'user:password' : 'API Key'}
+                            placeholder={provider.auth_type === 'basic' ? 'user:password' : t('ip.apiKey')}
                             disabled={provider.auth_type === 'none'}
                             onChange={(api_key) => updateProvider(index, { api_key })}
                           />
+                          <small>{provider.auth_type === 'none' ? t('ip.authNoneHint') : t('ip.apiKeyHint')}</small>
                         </label>
                         <label className="provider-interval-field">
                           <span>{t('ip.intervalValue')}</span>
@@ -688,6 +849,7 @@ export default function IPManagePage() {
                               <Select.Option value="month">30 {t('common.days')}</Select.Option>
                             </Select>
                           </div>
+                          <small>{t('ip.intervalHint')}</small>
                         </label>
                         <label className="provider-notes-field">
                           <span>{t('ip.providerNotes')}</span>
@@ -720,17 +882,11 @@ export default function IPManagePage() {
                   <label>
                     <span>{t('ip.format')}</span>
                     <Select value={importDraft.format} onChange={(format) => setImportDraft((current) => ({ ...current, format: format as string }))}>
-                      <Select.Option value="cidr">CIDR/TXT</Select.Option>
-                      <Select.Option value="csv">CSV</Select.Option>
-                      <Select.Option value="json">JSON</Select.Option>
-                      <Select.Option value="stix">STIX</Select.Option>
-                      <Select.Option value="misp">MISP Attribute</Select.Option>
-                      <Select.Option value="abuseipdb">AbuseIPDB</Select.Option>
-                      <Select.Option value="otx">AlienVault OTX</Select.Option>
-                      <Select.Option value="threatbook">ThreatBook</Select.Option>
+                      {formatOptions.map((format) => <Select.Option key={format} value={format}>{formatLabel(format)}</Select.Option>)}
                     </Select>
+                    <small>{formatHelp(importDraft.format, t)}</small>
                   </label>
-                  <label><span>{t('ip.source')}</span><Input value={importDraft.source} onChange={(source) => setImportDraft((current) => ({ ...current, source }))} /></label>
+                  <label><span>{t('ip.source')}</span><Input value={importDraft.source} onChange={(source) => setImportDraft((current) => ({ ...current, source }))} /><small>{t('ip.sourceHint')}</small></label>
                   <label>
                     <span>{t('rules.severity')}</span>
                     <Select value={importDraft.severity} onChange={(severity) => setImportDraft((current) => ({ ...current, severity: severity as string }))}>
@@ -749,7 +905,7 @@ export default function IPManagePage() {
                       <Select.Option value="log">{displayAction('log', t)}</Select.Option>
                     </Select>
                   </label>
-                  <label><span>{t('ip.confidence')}</span><InputNumber value={importDraft.confidence * 100} min={0} max={100} precision={0} onChange={(value) => setImportDraft((current) => ({ ...current, confidence: Number(value || 0) / 100 }))} /></label>
+                  <label><span>{t('ip.confidence')}</span><InputNumber value={importDraft.confidence * 100} min={0} max={100} precision={0} suffix="%" onChange={(value) => setImportDraft((current) => ({ ...current, confidence: Number(value || 0) / 100 }))} /><small>{t('ip.confidenceHint')}</small></label>
                   <label className="wide-field tag-token-field">
                     <span>{t('ip.labels')}</span>
                     <TagTokenInput
@@ -758,14 +914,14 @@ export default function IPManagePage() {
                       placeholder={t('ip.labelPlaceholder')}
                     />
                   </label>
-                  <label className="ioc-field"><span>IOC</span><Input.TextArea value={importDraft.contents} placeholder={t('ip.iocPlaceholder')} autoSize={{ minRows: 10, maxRows: 16 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /></label>
+                  <label className="ioc-field"><span>{t('ip.ioc')}</span><Input.TextArea value={importDraft.contents} placeholder={t('ip.iocPlaceholder')} autoSize={{ minRows: 10, maxRows: 16 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /><small>{t('ip.iocHint')}</small></label>
                 </div>
                 <div className="form-action-row">
                   <Button
                     type="primary"
                     disabled={!importDraft.contents.trim()}
                     loading={importMutation.isPending}
-                    onClick={() => importMutation.mutate({ ...importDraft, labels: importDraft.labels })}
+                    onClick={runImport}
                   >
                     {t('ip.import')}
                   </Button>
@@ -785,8 +941,9 @@ export default function IPManagePage() {
                     <Select value={lookupDraft.providerId} onChange={(providerId) => setLookupDraft((current) => ({ ...current, providerId: providerId as string }))}>
                       {providers.map((provider) => <Select.Option key={provider.id} value={provider.id}>{provider.name || provider.id}</Select.Option>)}
                     </Select>
+                    <small>{providers.length ? t('ip.lookupProviderHint') : t('ip.noProviders')}</small>
                   </label>
-                  <label><span>IP</span><Input value={lookupDraft.ip} placeholder="8.8.8.8" onChange={(ip) => setLookupDraft((current) => ({ ...current, ip }))} /></label>
+                  <label><span>IP</span><Input value={lookupDraft.ip} placeholder="8.8.8.8" onChange={(ip) => setLookupDraft((current) => ({ ...current, ip }))} /><small>{t('ip.lookupIPHint')}</small></label>
                 </div>
                 <div className="form-action-row">
                   <Button type="primary" disabled={!lookupDraft.providerId || !lookupDraft.ip} loading={lookupMutation.isPending} onClick={() => lookupMutation.mutate()}>
@@ -1052,7 +1209,7 @@ function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags:
           position="bottom"
           content={(
             <div className="ip-tag-popover">
-              <TagTokenInput value={draft} onChange={setDraft} placeholder={t('ip.labelPlaceholder')} autoFocus />
+              <TagTokenInput value={draft} onChange={setDraft} placeholder={t('ip.labelPlaceholder')} />
               <div>
                 <Button size="mini" onClick={() => setDraft(tags)}>{t('common.reset')}</Button>
                 <Button size="mini" type="primary" onClick={commit}>{t('common.save')}</Button>
@@ -1071,13 +1228,12 @@ function TagTokenInput({
   value,
   onChange,
   placeholder,
-  autoFocus,
 }: {
   value: string[];
   onChange: (next: string[]) => void;
   placeholder?: string;
-  autoFocus?: boolean;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState('');
 
   const addToken = (raw: string) => {
@@ -1117,17 +1273,16 @@ function TagTokenInput({
   };
 
   return (
-    <div className="tag-token-input" onClick={(event) => event.currentTarget.querySelector('input')?.focus()}>
+    <div className="tag-token-input">
       {value.map((tag) => (
         <span className="ip-token tag-token-input-item" key={tag}>
           {tag}
-          <button type="button" aria-label={`Remove ${tag}`} onClick={() => removeToken(tag)}>
+          <button type="button" aria-label={t('ip.removeTag', { tag })} onClick={() => removeToken(tag)}>
             <X size={12} />
           </button>
         </span>
       ))}
       <Input
-        autoFocus={autoFocus}
         size="small"
         value={draft}
         placeholder={value.length ? '' : placeholder}
@@ -1185,7 +1340,59 @@ function ReputationOverrideEditor({
 }
 
 function splitList(value: string) {
-  return value.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
+  return value.split(/[\n,]+/).map((item) => item.trim().toLowerCase()).filter(Boolean);
+}
+
+function splitLines(value: string) {
+  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function firstToken(value: string) {
+  return value.split('#')[0].trim().split(/\s+/)[0] || '';
+}
+
+function providerTemplateFor(type: string) {
+  return providerTemplates.find((item) => item.type === type) ?? providerTemplates[0];
+}
+
+function formatLabel(format: string) {
+  switch (format) {
+    case 'cidr':
+      return 'CIDR/TXT';
+    case 'misp':
+      return 'MISP Attribute';
+    case 'abuseipdb':
+      return 'AbuseIPDB';
+    case 'otx':
+      return 'AlienVault OTX';
+    case 'threatbook':
+      return 'ThreatBook';
+    default:
+      return format.toUpperCase();
+  }
+}
+
+function formatHelp(format: string, t: (key: string) => string) {
+  switch (format) {
+    case 'cidr':
+      return t('ip.formatCIDRHint');
+    case 'csv':
+      return t('ip.formatCSVHint');
+    case 'json':
+      return t('ip.formatJSONHint');
+    case 'stix':
+      return t('ip.formatSTIXHint');
+    case 'misp':
+      return t('ip.formatMISPHint');
+    case 'abuseipdb':
+      return t('ip.formatAbuseIPDBHint');
+    case 'otx':
+      return t('ip.formatOTXHint');
+    case 'threatbook':
+      return t('ip.formatThreatBookHint');
+    default:
+      return t('ip.formatHint');
+  }
 }
 
 function isValidIPOrCIDR(value: string) {
@@ -1358,6 +1565,16 @@ function normalizeAccessRuleForSave(rule: IPAccessRule): IPAccessRule {
     entries: rule.entries.map((entry) => entry.trim()).filter(Boolean),
     enabled: rule.enabled,
   };
+}
+
+function normalizeAccessScopePatch(rule: IPAccessRule, scope: string): Partial<IPAccessRule> {
+  if (scope === 'global') {
+    return { scope, site_id: '', path_prefix: '' };
+  }
+  if (scope === 'site') {
+    return { scope, path_prefix: '' };
+  }
+  return { scope, site_id: rule.site_id || '', path_prefix: rule.path_prefix || '/' };
 }
 
 function normalizePathPrefix(value: string) {

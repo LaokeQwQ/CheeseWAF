@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/acme"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -22,6 +23,7 @@ type Options struct {
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error
+	ACMEIssuer          acme.Issuer
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -39,6 +41,7 @@ func NewRouter(opts Options) http.Handler {
 		Tokens:              tokens,
 		Secret:              opts.Secret,
 		Auditor:             auditor,
+		ACMEIssuer:          opts.ACMEIssuer,
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
 		OnAPISecChanged:     opts.OnAPISecChanged,
@@ -112,10 +115,12 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("write:protection")).Put("/protection/bot", h.UpdateBotProtection)
 			r.With(require("read:sites")).Get("/sites", h.ListSites)
 			r.With(require("read:sites")).Get("/sites/{id}", h.GetSite)
-			r.With(require("write:sites")).Post("/sites", h.CreateSite)
-			r.With(require("write:sites")).Put("/sites/{id}", h.UpdateSite)
-			r.With(require("write:sites")).Delete("/sites/{id}", h.DeleteSite)
-			r.With(require("read:rules")).Get("/rules", h.ListRules)
+		r.With(require("write:sites")).Post("/sites", h.CreateSite)
+		r.With(require("write:sites")).Put("/sites/{id}", h.UpdateSite)
+		r.With(require("write:sites")).Delete("/sites/{id}", h.DeleteSite)
+		r.With(require("read:sites")).Get("/acme/providers", h.ACMEDNSProviders)
+		r.With(require("write:sites")).Post("/sites/{id}/acme/issue", h.IssueSiteACME)
+		r.With(require("read:rules")).Get("/rules", h.ListRules)
 			r.With(require("write:rules")).Post("/rules", h.CreateRule)
 			r.With(require("write:rules")).Put("/rules/{id}", h.UpdateRule)
 			r.With(require("write:rules")).Delete("/rules/{id}", h.DeleteRule)
@@ -131,6 +136,7 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:ai")).Post("/ai/test", h.TestAIConnection)
 			r.With(require("read:ai")).Post("/ai/analyze", h.AnalyzeLog)
 			r.With(require("read:ai")).Post("/ai/events/analyze", h.AnalyzeEvents)
+			r.With(require("write:ai")).Post("/ai/self-learning/run", h.RunAISelfLearning)
 			r.With(require("read:ai")).Post("/ai/assistant", h.AIAssistant)
 			r.With(require("read:ai")).Post("/ai/assistant/stream", h.AIAssistantStream)
 			r.With(require("read:ai")).Get("/ai/tools", h.AITools)

@@ -198,11 +198,17 @@ func readinessRequest(tb testing.TB, method, target, contentType, body string) *
 		if err := writer.Close(); err != nil {
 			tb.Fatal(err)
 		}
-		req, _ := http.NewRequest(method, target, &buf)
+		req, err := http.NewRequest(method, target, &buf)
+		if err != nil || req == nil {
+			return nil // malformed target
+		}
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 		return req
 	}
-	req, _ := http.NewRequest(method, target, strings.NewReader(body))
+	req, err := http.NewRequest(method, target, strings.NewReader(body))
+	if err != nil || req == nil {
+		return nil // malformed target, caller should handle nil
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}

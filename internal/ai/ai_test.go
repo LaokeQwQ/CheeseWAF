@@ -501,6 +501,17 @@ func TestRegistryListsToolsForLLM(t *testing.T) {
 	}
 }
 
+func TestKnowledgeBaseSearchReturnsRelevantSnippets(t *testing.T) {
+	kb := NewKnowledgeBase(config.AIKnowledgeConfig{Enabled: true, Builtin: true, MaxSnippets: 3})
+	items := kb.Search("AI 自学习 规则 误报", 3)
+	if len(items) == 0 {
+		t.Fatal("expected knowledge snippets")
+	}
+	if items[0].ID != "ai-self-learning" {
+		t.Fatalf("expected self-learning snippet first, got %+v", items)
+	}
+}
+
 func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	registry := NewRegistry()
 	registry.Register(fakeTool{sensitivity: Modify})
