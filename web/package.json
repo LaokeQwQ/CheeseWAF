@@ -22,7 +22,7 @@
     "react-dom": "^18.3.1",
     "react-i18next": "^17.0.8",
     "react-router-dom": "^7.18.0",
-    "three": "^0.184.0",
+    "three": "^0.185.0",
     "topojson-client": "^3.1.0",
     "world-atlas": "^2.0.2",
     "zustand": "^5.0.14"
