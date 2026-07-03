@@ -12,17 +12,17 @@
   "dependencies": {
     "@arco-design/web-react": "^2.66.15",
     "@tanstack/react-query": "^5.101.0",
-    "axios": "^1.18.0",
+    "axios": "^1.18.1",
     "china-map-geojson": "^1.0.4",
     "d3-geo": "^3.1.1",
     "i18next": "^26.3.1",
-    "lucide-react": "^1.21.0",
+    "lucide-react": "^1.23.0",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-i18next": "^17.0.8",
     "react-router-dom": "^7.18.0",
-    "three": "^0.184.0",
+    "three": "^0.185.1",
     "topojson-client": "^3.1.0",
     "world-atlas": "^2.0.2",
     "zustand": "^5.0.14"
@@ -33,8 +33,8 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/topojson-client": "^3.1.5",
-    "@vitejs/plugin-react": "^6.0.2",
+    "@vitejs/plugin-react": "^6.0.3",
     "typescript": "^6.0.3",
-    "vite": "^8.0.14"
+    "vite": "^8.1.3"
   }
 }
