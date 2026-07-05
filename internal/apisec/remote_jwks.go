@@ -41,6 +41,7 @@ type remoteJWKSSource struct {
 	done        chan struct{}
 	startedOnce sync.Once
 	closedOnce  sync.Once
+	running     bool
 }
 
 func newRemoteJWKSSource(cfg config.APIAuthConfig) (*remoteJWKSSource, error) {
@@ -118,6 +119,9 @@ func (s *remoteJWKSSource) Start() {
 		return
 	}
 	s.startedOnce.Do(func() {
+		s.mu.Lock()
+		s.running = true
+		s.mu.Unlock()
 		go s.run()
 	})
 }
@@ -127,8 +131,11 @@ func (s *remoteJWKSSource) Close() {
 		return
 	}
 	s.closedOnce.Do(func() {
+		s.mu.RLock()
+		running := s.running
+		s.mu.RUnlock()
 		close(s.stop)
-		if s.url != "" && s.refreshInterval > 0 {
+		if running {
 			<-s.done
 		}
 	})

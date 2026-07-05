@@ -832,6 +832,7 @@ export type SystemConfig = {
     clickhouse: {
       enabled: boolean;
       endpoint: string;
+      allow_private_endpoint: boolean;
       database: string;
       table: string;
       username: string;
@@ -841,6 +842,7 @@ export type SystemConfig = {
     victorialogs: {
       enabled: boolean;
       endpoint: string;
+      allow_private_endpoint: boolean;
       timeout: number | string;
     };
     postgresql: {
@@ -852,6 +854,7 @@ export type SystemConfig = {
     elasticsearch: {
       enabled: boolean;
       endpoint: string;
+      allow_private_endpoint: boolean;
       index: string;
       username: string;
       password: string;
@@ -933,6 +936,7 @@ export type MapBoundaryConfig = {
   review_id: string;
   attribution: string;
   allow_insecure: boolean;
+  allow_private: boolean;
 };
 
 export type MapBoundaryResponse = {

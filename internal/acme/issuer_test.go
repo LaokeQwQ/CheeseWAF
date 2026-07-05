@@ -146,6 +146,38 @@ func TestIssuerFailureKeepsEventsAndDoesNotRemoveCertificate(t *testing.T) {
 	}
 }
 
+func TestIssuerRejectsUnsafeACMEServerBeforeCommandExecution(t *testing.T) {
+	for _, server := range []string{
+		"http://acme.example.com/directory",
+		"https://127.0.0.1/acme/directory",
+		"https://user:pass@acme.example.com/directory",
+	} {
+		runner := &fakeRunner{}
+		issuer := NewIssuer(IssuerOptions{
+			Config: &config.Config{Setup: config.SetupConfig{DataDir: t.TempDir()}},
+			Runner: runner,
+			Now:    fixedClock(),
+		})
+
+		_, err := issuer.Issue(context.Background(), IssueRequest{
+			SiteID:     "site-a",
+			Domains:    []string{"example.com"},
+			DNSAPI:     "dns_cf",
+			DNSEnv:     map[string]string{"CF_TOKEN": "secret"},
+			Server:     server,
+			ACMESHPath: "acme.sh",
+			Home:       t.TempDir(),
+			CertDir:    t.TempDir(),
+		})
+		if err == nil || !strings.Contains(err.Error(), "server is invalid") {
+			t.Fatalf("expected unsafe ACME server %q to fail validation, got %v", server, err)
+		}
+		if len(runner.commands) != 0 {
+			t.Fatalf("unsafe ACME server should not execute commands: %+v", runner.commands)
+		}
+	}
+}
+
 func TestIssuerProvidersMaskSecrets(t *testing.T) {
 	issuer := NewIssuer(IssuerOptions{Config: &config.Config{ACME: config.ACMEConfig{
 		DNSProviders: []config.ACMEDNSProviderConfig{

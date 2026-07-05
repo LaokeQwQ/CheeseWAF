@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -167,6 +168,38 @@ func TestAdminHandlerSecurityEntryReadsUpdatedConfig(t *testing.T) {
 	handler.ServeHTTP(newEntry, httptest.NewRequest(http.MethodGet, "/second-door", nil))
 	if newEntry.Code != http.StatusFound {
 		t.Fatalf("expected updated security entry to redirect, got %d: %s", newEntry.Code, newEntry.Body.String())
+	}
+}
+
+func TestAdminHandlerSecurityEntryFailsClosedWhenNonceUnavailable(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	previousNonceReader := readAdminEntryNonce
+	readAdminEntryNonce = func([]byte) (int, error) {
+		return 0, errors.New("entropy unavailable")
+	}
+	defer func() { readAdminEntryNonce = previousNonceReader }()
+
+	cfg := config.Default()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	cfg.Console.Login.SecurityEntry.CookieName = "cw_entry_test"
+	handler := adminHandler(&cfg, http.NotFoundHandler(), "security-entry-secret")
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/secure-admin", nil))
+	if recorder.Code != http.StatusTeapot {
+		t.Fatalf("expected entropy failure to return 418, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Set-Cookie"); got != "" {
+		t.Fatalf("expected no entry cookie when nonce generation fails, got %q", got)
+	}
+	if got := recorder.Header().Get("Location"); got != "" {
+		t.Fatalf("expected no redirect when nonce generation fails, got %q", got)
 	}
 }
 
