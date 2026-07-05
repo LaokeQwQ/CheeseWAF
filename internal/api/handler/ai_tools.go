@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -59,6 +61,152 @@ func (h *Handler) RejectAIApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, approval)
+}
+
+func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req aiAssistantPayload
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+	defer cancel()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		reply, err := h.continueAIApproval(ctx, id, req, nil)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "AI_APPROVAL_CONTINUE_FAILED", err.Error())
+			return
+		}
+		w.Header().Set("X-CheeseWAF-Stream-Fallback", "json")
+		writeData(w, reply)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	allowLongResponseWrite(w)
+	var writeMu sync.Mutex
+	writeEvent := func(event string, payload any) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		writeAssistantSSE(w, flusher, event, payload)
+	}
+	heartbeatDone := make(chan struct{})
+	var heartbeatOnce sync.Once
+	stopHeartbeat := func() {
+		heartbeatOnce.Do(func() {
+			close(heartbeatDone)
+		})
+	}
+	defer stopHeartbeat()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)})
+			case <-heartbeatDone:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "审批执行流式连接已建立。", "Approval execution stream is open.")})
+	reply, err := h.continueAIApproval(ctx, id, req, func(event ai.AssistantTraceEvent) {
+		writeEvent("trace", event)
+	})
+	stopHeartbeat()
+	if err != nil {
+		writeEvent("error", map[string]any{"message": err.Error()})
+		return
+	}
+	writeEvent("done", reply)
+}
+
+func (h *Handler) continueAIApproval(ctx context.Context, id string, req aiAssistantPayload, emit func(ai.AssistantTraceEvent)) (*ai.AssistantReply, error) {
+	if strings.TrimSpace(req.Message) == "" {
+		return nil, fmt.Errorf("message is required")
+	}
+	trace := make([]ai.AssistantTraceEvent, 0, 8)
+	var traceMu sync.Mutex
+	record := func(event ai.AssistantTraceEvent) {
+		traceMu.Lock()
+		defer traceMu.Unlock()
+		event.At = time.Now().UTC().Format(time.RFC3339Nano)
+		trace = append(trace, event)
+		if emit != nil {
+			emit(event)
+		}
+	}
+	approval, ok := h.AssistantApprovals.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("approval request %q not found", id)
+	}
+	switch approval.Status {
+	case ai.ApprovalPending:
+		var err error
+		approval, err = h.aiAssistant().Approve(id)
+		if err != nil {
+			return nil, err
+		}
+		record(ai.AssistantTraceEvent{Type: "approval_approved", ToolName: approval.ToolName, Args: approval.Args, Approval: &approval, Message: localizedTraceMessage(req.Language, "审批已批准，开始执行工具。", "Approval accepted; executing the tool.")})
+	case ai.ApprovalApproved:
+		record(ai.AssistantTraceEvent{Type: "approval_approved", ToolName: approval.ToolName, Args: approval.Args, Approval: &approval, Message: localizedTraceMessage(req.Language, "审批已批准，继续执行工具。", "Approval is accepted; continuing tool execution.")})
+	case ai.ApprovalRejected:
+		return nil, fmt.Errorf("approval request %q is rejected", id)
+	case ai.ApprovalExecuted:
+		return nil, fmt.Errorf("approval request %q is already executed", id)
+	default:
+		return nil, fmt.Errorf("approval request %q is %s", id, approval.Status)
+	}
+	record(ai.AssistantTraceEvent{Type: "tool_call", Message: "tool_call: " + approval.ToolName, ToolName: approval.ToolName, Args: approval.Args})
+	call, err := h.executeAssistantTool(ctx, approval.ToolName, approval.Args, approval.ID)
+	if executed, ok := h.AssistantApprovals.Get(id); ok {
+		call.Approval = &executed
+	}
+	if err != nil {
+		record(ai.AssistantTraceEvent{Type: "tool_error", Message: "tool_error: " + approval.ToolName, ToolName: call.Name, Args: call.Args, Result: call.Result, Approval: call.Approval, Error: err.Error()})
+		return nil, err
+	}
+	record(ai.AssistantTraceEvent{Type: "tool_result", Message: "tool_result: " + call.Name, ToolName: call.Name, Args: call.Args, Result: call.Result, Approval: call.Approval})
+	registry := h.aiAssistantRegistry()
+	toolDefinitions := registry.ListForLLM()
+	client := h.aiClientForAssistant(req.DeepThink)
+	record(ai.AssistantTraceEvent{Type: "final_start", Message: localizedTraceMessage(req.Language, "工具已执行，正在生成最终回答。", "Tool executed; generating the final answer.")})
+	var reply *ai.AssistantReply
+	if emit != nil && client != nil {
+		finalEmit, stopFinalWatch := providerStreamEmitter(ctx, req.Language, "final", record)
+		reply, err = ai.AnswerAssistantWithToolResultsStream(ctx, client, req.Message, req.Language, toolDefinitions, []ai.AssistantToolCall{call}, finalEmit)
+		stopFinalWatch()
+	} else {
+		reply, err = ai.AnswerAssistantWithToolResults(ctx, client, req.Message, req.Language, toolDefinitions, []ai.AssistantToolCall{call})
+	}
+	if err != nil {
+		providerErr := err
+		record(ai.AssistantTraceEvent{Type: "final_error", Message: localizedTraceMessage(req.Language, "AI 总结失败，返回本地摘要。", "AI summarization failed; returning a local summary."), Error: providerErr.Error()})
+		reply, err = ai.AnswerAssistantWithToolResults(ctx, nil, req.Message, req.Language, toolDefinitions, []ai.AssistantToolCall{call})
+		if err != nil {
+			return nil, err
+		}
+		reply.Answer = appendProviderFailure(reply.Answer, req.Language, providerErr)
+		reply.Trace = trace
+		return reply, nil
+	}
+	record(ai.AssistantTraceEvent{
+		Type:         "final_done",
+		Message:      localizedTraceMessage(req.Language, "回答已生成。", "Answer generated."),
+		Provider:     reply.Provider,
+		Model:        reply.Model,
+		InputTokens:  reply.InputTokens,
+		OutputTokens: reply.OutputTokens,
+		TotalTokens:  reply.TotalTokens,
+	})
+	reply.Trace = trace
+	return reply, nil
 }
 
 func (h *Handler) aiAssistant() *ai.Assistant {
@@ -387,11 +535,62 @@ func assistantSecurityEvent(entry storage.LogEntry) bool {
 }
 
 func diffJSON(before, after any) (string, error) {
-	raw, err := json.MarshalIndent(map[string]any{"before": before, "after": after}, "", "  ")
+	raw, err := json.MarshalIndent(map[string]any{
+		"before": redactDiffValue(before),
+		"after":  redactDiffValue(after),
+	}, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	return string(raw), nil
+}
+
+func redactDiffValue(value any) any {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return value
+	}
+	return redactDiffDecoded(decoded)
+}
+
+func redactDiffDecoded(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if isSensitiveDiffKey(key) {
+				out[key] = "[redacted]"
+				continue
+			}
+			out[key] = redactDiffDecoded(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for index, item := range typed {
+			out[index] = redactDiffDecoded(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func isSensitiveDiffKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	if normalized == "" {
+		return false
+	}
+	for _, marker := range []string{"secret", "token", "password", "api_key", "apikey", "private_key", "credential"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func intArg(args map[string]any, key string, fallback int) int {

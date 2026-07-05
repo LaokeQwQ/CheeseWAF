@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useEffect, useMemo, useState } from 'react';
-import { Button, Input, InputNumber, Message as ArcoMessage, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
+import { Button, Input, InputNumber, Message as ArcoMessage, Modal, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
@@ -347,9 +347,18 @@ export default function IPManagePage() {
     saveAccessRules(nextRules);
   };
   const removeAccessRule = (id: string) => {
-    const nextRules = accessRules.filter((rule) => rule.id !== id);
-    setAccessRules(nextRules);
-    saveAccessRules(nextRules);
+    Modal.confirm({
+      title: t('common.confirmDeleteTitle'),
+      content: t('common.confirmDeleteEntry'),
+      okText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { status: 'danger' },
+      onOk: () => {
+        const nextRules = accessRules.filter((rule) => rule.id !== id);
+        setAccessRules(nextRules);
+        saveAccessRules(nextRules);
+      },
+    });
   };
   const updateAccessRule = (index: number, patch: Partial<IPAccessRule>) => {
     setAccessRules((current) => current.map((rule, ruleIndex) => (ruleIndex === index ? { ...rule, ...patch } : rule)));

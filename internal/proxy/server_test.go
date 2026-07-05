@@ -82,6 +82,50 @@ func TestServerBlockPageUsesRequestLanguage(t *testing.T) {
 	}
 }
 
+func TestServerStreamsLargeCompressibleResponseWhenCaptureLimitExceeded(t *testing.T) {
+	body := strings.Repeat("large-response-", 512)
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Sites[0].WAF.Performance.MaxBodyBytes = 256
+	cfg.Sites[0].WAF.Response.Enabled = false
+	cfg.Edge.Cache.Enabled = false
+	cfg.Edge.Compression.Enabled = true
+	cfg.Edge.Compression.MinBytes = 1
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/large.txt", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected streaming fallback success, code=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != body {
+		t.Fatalf("expected full untruncated fallback body, got %d bytes", recorder.Body.Len())
+	}
+	if recorder.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("large fallback response should skip in-memory compression, got %q", recorder.Header().Get("Content-Encoding"))
+	}
+	if upstreamHits != 2 {
+		t.Fatalf("expected capture attempt plus streaming fallback, got %d upstream hits", upstreamHits)
+	}
+}
+
 func TestServerHotReloadsBlockPageTemplate(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))

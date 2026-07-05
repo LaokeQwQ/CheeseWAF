@@ -1,6 +1,11 @@
 package edge
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+)
+
+var ErrCaptureBodyTooLarge = errors.New("captured response body exceeds configured limit")
 
 type CapturedResponse struct {
 	Status int
@@ -9,13 +14,22 @@ type CapturedResponse struct {
 }
 
 type CaptureWriter struct {
-	header http.Header
-	status int
-	body   []byte
+	header      http.Header
+	status      int
+	body        []byte
+	maxBody     int64
+	writtenBody int64
+	tooLarge    bool
 }
 
 func NewCaptureWriter() *CaptureWriter {
 	return &CaptureWriter{header: make(http.Header), status: http.StatusOK}
+}
+
+func NewLimitedCaptureWriter(maxBody int64) *CaptureWriter {
+	writer := NewCaptureWriter()
+	writer.maxBody = maxBody
+	return writer
 }
 
 func (w *CaptureWriter) Header() http.Header {
@@ -27,8 +41,21 @@ func (w *CaptureWriter) WriteHeader(status int) {
 }
 
 func (w *CaptureWriter) Write(body []byte) (int, error) {
+	if w.tooLarge {
+		return len(body), nil
+	}
+	next := w.writtenBody + int64(len(body))
+	if w.maxBody > 0 && next > w.maxBody {
+		w.tooLarge = true
+		return len(body), nil
+	}
 	w.body = append(w.body, body...)
+	w.writtenBody = next
 	return len(body), nil
+}
+
+func (w *CaptureWriter) TooLarge() bool {
+	return w != nil && w.tooLarge
 }
 
 func (w *CaptureWriter) Response() CapturedResponse {

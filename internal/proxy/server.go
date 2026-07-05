@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -214,11 +215,13 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) HTTPServer() *http.Server {
 	return &http.Server{
-		Addr:         s.config.Server.Listen,
-		Handler:      s.Handler(),
-		ReadTimeout:  s.config.Server.ReadTimeout,
-		WriteTimeout: s.config.Server.WriteTimeout,
-		IdleTimeout:  s.config.Server.IdleTimeout,
+		Addr:              s.config.Server.Listen,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: s.config.Server.ReadTimeout,
+		ReadTimeout:       s.config.Server.ReadTimeout,
+		WriteTimeout:      s.config.Server.WriteTimeout,
+		IdleTimeout:       s.config.Server.IdleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes(s.config),
 	}
 }
 
@@ -401,7 +404,43 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeLog(r.Context(), reqCtx, "pass", http.StatusSwitchingProtocols, start, nil)
 		return
 	}
-	capture := edge.NewCaptureWriter()
+	retrySafe := retrySafeRequest(r)
+	cacheCandidate := retrySafe && s.cache.CaptureCandidate(r)
+	compressCandidate := retrySafe && s.compress.MayApplyRequest(r)
+	if !cacheCandidate && !compressCandidate {
+		rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
+		var proxyErr error
+		rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
+			proxyErr = err
+		}
+		if site.WAF.Response.Enabled {
+			inspector, err := response.New(site.WAF.Response)
+			if err != nil {
+				s.proxyError(w, r, site, reqCtx, "proxy_error", "response inspector configuration error", http.StatusInternalServerError, start, err)
+				return
+			}
+			rp.ModifyResponse = func(resp *http.Response) error {
+				finding, err := inspector.InspectHTTP(resp)
+				if err != nil {
+					return err
+				}
+				if finding != nil {
+					resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
+					reqCtx.Metadata["response_finding"] = finding
+				}
+				return nil
+			}
+		}
+		recorder := &proxyStatusRecorder{ResponseWriter: w, status: http.StatusOK}
+		rp.ServeHTTP(recorder, r)
+		if proxyErr != nil {
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
+			return
+		}
+		s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
+		return
+	}
+	capture := edge.NewLimitedCaptureWriter(edgeCaptureLimit(site, s.cache, cacheCandidate, compressCandidate))
 	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
 	var proxyErr error
 	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
@@ -426,16 +465,99 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rp.ServeHTTP(capture, r)
+	if capture.TooLarge() {
+		s.streamWithoutEdgeCapture(w, r, site, reqCtx, target, start)
+		return
+	}
 	if proxyErr != nil {
 		s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
 		return
 	}
 	captured := capture.Response()
-	s.cache.Store(r, captured)
-	captured.Header.Set("X-CheeseWAF-Cache", "MISS")
+	if cacheCandidate {
+		s.cache.Store(r, captured)
+		captured.Header.Set("X-CheeseWAF-Cache", "MISS")
+	}
 	s.compress.Apply(r, &captured)
 	edge.WriteCaptured(w, captured)
 	s.writeLog(r.Context(), reqCtx, "pass", captured.Status, start, nil)
+}
+
+func edgeCaptureLimit(site config.SiteConfig, cache *edge.Cache, cacheCandidate bool, compressCandidate bool) int64 {
+	var limit int64
+	if cacheCandidate {
+		limit = cache.MaxBodyBytes()
+	}
+	if compressCandidate {
+		compressLimit := site.WAF.Performance.MaxBodyBytes
+		if compressLimit <= 0 {
+			compressLimit = 8 << 20
+		}
+		if limit == 0 || compressLimit > limit {
+			limit = compressLimit
+		}
+	}
+	return limit
+}
+
+func retrySafeRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.ContentLength <= 0
+}
+
+func (s *Server) streamWithoutEdgeCapture(w http.ResponseWriter, r *http.Request, site config.SiteConfig, reqCtx *engine.RequestContext, target *url.URL, start time.Time) {
+	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
+	var proxyErr error
+	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
+		proxyErr = err
+	}
+	if site.WAF.Response.Enabled {
+		inspector, err := response.New(site.WAF.Response)
+		if err != nil {
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "response inspector configuration error", http.StatusInternalServerError, start, err)
+			return
+		}
+		rp.ModifyResponse = func(resp *http.Response) error {
+			finding, err := inspector.InspectHTTP(resp)
+			if err != nil {
+				return err
+			}
+			if finding != nil {
+				resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
+				reqCtx.Metadata["response_finding"] = finding
+			}
+			return nil
+		}
+	}
+	recorder := &proxyStatusRecorder{ResponseWriter: w, status: http.StatusOK}
+	rp.ServeHTTP(recorder, r)
+	if proxyErr != nil {
+		s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
+		return
+	}
+	s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
+}
+
+type proxyStatusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *proxyStatusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *proxyStatusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *proxyStatusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func (s *Server) proxyError(w http.ResponseWriter, r *http.Request, site config.SiteConfig, reqCtx *engine.RequestContext, category, message string, status int, start time.Time, cause error) {

@@ -24,8 +24,12 @@ const (
 )
 
 var (
-	dnsAPIPattern = regexp.MustCompile(`^dns_[a-z0-9_]+$`)
-	envKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	dnsAPIPattern           = regexp.MustCompile(`^dns_[a-z0-9_]+$`)
+	envKeyPattern           = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	sensitiveOutputPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASS|API[_-]?KEY|ACCESS[_-]?KEY)[A-Z0-9_]*\s*=\s*)[^\s'"]+`),
+		regexp.MustCompile(`(?i)((?:authorization|x-api-key|api-key)\s*[:=]\s*(?:bearer\s+)?)\S+`),
+	}
 )
 
 type CommandRunner interface {
@@ -385,12 +389,20 @@ func maskSecret(value string) string {
 }
 
 func truncateOutput(value string) string {
-	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(redactSensitiveOutput(value))
 	const max = 4096
 	if len(value) <= max {
 		return value
 	}
 	return value[:max] + "...(truncated)"
+}
+
+func redactSensitiveOutput(value string) string {
+	out := value
+	for _, pattern := range sensitiveOutputPatterns {
+		out = pattern.ReplaceAllString(out, "${1}******")
+	}
+	return out
 }
 
 func newRunID() string {
