@@ -34,6 +34,8 @@ import (
 	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
 )
 
+var readAdminEntryNonce = rand.Read
+
 func runServe(ctx context.Context) error {
 	cfg, loadedConfigPath, err := loadConfig()
 	if err != nil {
@@ -297,7 +299,10 @@ func allowAdminEntrance(cfg *config.Config, authSecret, metricsPath string, metr
 			writeAdminTeapot(w)
 			return false
 		}
-		issueAdminEntryCookie(w, r, entry.CookieName, secret)
+		if !issueAdminEntryCookie(w, r, entry.CookieName, secret) {
+			writeAdminTeapot(w)
+			return false
+		}
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return false
 	}
@@ -316,11 +321,11 @@ func cleanAdminEntryPath(path string) string {
 	return cleaned
 }
 
-func issueAdminEntryCookie(w http.ResponseWriter, r *http.Request, name, secret string) {
+func issueAdminEntryCookie(w http.ResponseWriter, r *http.Request, name, secret string) bool {
 	expires := time.Now().UTC().Add(config.AdminSessionTTL)
 	nonceBytes := make([]byte, 16)
-	if _, err := rand.Read(nonceBytes); err != nil {
-		nonceBytes = []byte(fmt.Sprintf("%d", time.Now().UnixNano()))
+	if _, err := readAdminEntryNonce(nonceBytes); err != nil {
+		return false
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	value := signedAdminEntryValue(secret, r.UserAgent(), expires.Unix(), nonce)
@@ -334,6 +339,7 @@ func issueAdminEntryCookie(w http.ResponseWriter, r *http.Request, name, secret 
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteLaxMode,
 	})
+	return true
 }
 
 func validAdminEntryCookie(r *http.Request, name, secret string, now func() time.Time) bool {

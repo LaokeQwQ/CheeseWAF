@@ -68,8 +68,15 @@ func NewHealthChecker(sites []config.SiteConfig, registry *HealthRegistry) *Heal
 	return &HealthChecker{
 		registry: registry,
 		sites:    sites,
-		client:   &http.Client{Timeout: 3 * time.Second},
+		client: &http.Client{
+			Timeout:       3 * time.Second,
+			CheckRedirect: healthCheckNoRedirect,
+		},
 	}
+}
+
+func healthCheckNoRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 func (h *HealthChecker) Start(ctx context.Context) {

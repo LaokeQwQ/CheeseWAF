@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
 type RemoteWriter struct {
@@ -20,7 +21,10 @@ func NewRemoteWriter(cfg config.RemoteWriteConfig, client *http.Client) *RemoteW
 		cfg.Timeout = 10 * time.Second
 	}
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		client = netguard.NewHTTPClient(netguard.HTTPClientOptions{
+			Timeout: cfg.Timeout,
+			Policy:  remoteWriteURLPolicy(cfg.AllowPrivateEndpoint),
+		})
 	}
 	return &RemoteWriter{cfg: cfg, client: client}
 }
@@ -47,4 +51,13 @@ func (w *RemoteWriter) Push(ctx context.Context, snapshot Snapshot) error {
 		return fmt.Errorf("remote_write returned %s", resp.Status)
 	}
 	return nil
+}
+
+func remoteWriteURLPolicy(allowPrivate bool) netguard.URLPolicy {
+	return netguard.URLPolicy{
+		Purpose:        "remote_write",
+		HostPurpose:    "remote_write endpoint",
+		AllowedSchemes: []string{"http", "https"},
+		AllowPrivate:   allowPrivate,
+	}
 }
