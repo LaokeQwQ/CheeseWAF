@@ -151,6 +151,33 @@ func TestImportThreatIntelNotifiesProtectionReload(t *testing.T) {
 	}
 }
 
+func TestSyncThreatIntelAllowsEmptyOptionalBody(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ip/threat-intel/sync", nil)
+	handler.SyncThreatIntel(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected empty optional body to be accepted, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSyncThreatIntelRejectsTrailingJSONDocument(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ip/threat-intel/sync", strings.NewReader(`{"provider_id":"demo"} {}`))
+	handler.SyncThreatIntel(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected trailing JSON to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "exactly one JSON document") {
+		t.Fatalf("expected explicit trailing JSON error, body=%s", recorder.Body.String())
+	}
+}
+
 func TestUpdateIPAccessRulesNotifiesProtectionReload(t *testing.T) {
 	cfg := config.Default()
 	cfg.Protection.IP.Whitelist = nil
@@ -586,6 +613,13 @@ func TestThreatIntelProviderRejectsUnsafeEndpoints(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.want, err)
 			}
 		})
+	}
+}
+
+func TestReadLimitedResponseBodyRejectsOversizedBody(t *testing.T) {
+	_, err := readLimitedResponseBody(strings.NewReader("12345"), 4, "provider response")
+	if err == nil || !strings.Contains(err.Error(), "provider response exceeds 4 bytes") {
+		t.Fatalf("expected oversized response error, got %v", err)
 	}
 }
 

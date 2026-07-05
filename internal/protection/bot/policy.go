@@ -51,6 +51,7 @@ type Policy struct {
 	cookieName             string
 	waitingCookieName      string
 	secret                 []byte
+	secretReady            bool
 	pathPrefixes           []string
 	exemptPathPrefixes     []string
 	allowedUserAgents      []string
@@ -68,6 +69,8 @@ type captchaAttempt struct {
 }
 
 const maxCAPTCHAAttemptEntries = 20000
+
+var generateBotPolicySecret = config.GenerateSecret
 
 func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 	if cfg.ChallengeTTL <= 0 {
@@ -132,11 +135,13 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 	if cfg.WaitingRoomTTL <= 0 {
 		cfg.WaitingRoomTTL = 5 * time.Minute
 	}
+	secretReady := true
 	if config.IsWeakBotSecret(cfg.Secret) {
-		if secret, err := config.GenerateSecret(); err == nil {
+		if secret, err := generateBotPolicySecret(); err == nil {
 			cfg.Secret = secret
 		} else {
-			cfg.Secret = "cheesewaf-ephemeral-bot-secret"
+			cfg.Secret = ""
+			secretReady = false
 		}
 	}
 	if len(cfg.PathPrefixes) == 0 {
@@ -175,6 +180,7 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 		cookieName:             cfg.CookieName,
 		waitingCookieName:      cfg.CookieName + "_queue",
 		secret:                 []byte(cfg.Secret),
+		secretReady:            secretReady,
 		pathPrefixes:           cleanList(cfg.PathPrefixes),
 		exemptPathPrefixes:     cleanList(cfg.ExemptPathPrefixes),
 		allowedUserAgents:      lowerList(cfg.AllowedUserAgents),
@@ -228,6 +234,10 @@ func (p *Policy) Evaluate(r *http.Request, clientIP string) *engine.DetectionRes
 func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP string) {
 	if p == nil {
 		http.Error(w, "bot challenge unavailable", http.StatusForbidden)
+		return
+	}
+	if !p.secretReady {
+		http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	if p.waitingRoom && !p.hasWaitingTicket(r, clientIP) {
@@ -360,6 +370,9 @@ func (p *Policy) clearance(r *http.Request, clientIP string) (string, int) {
 }
 
 func (p *Policy) hasClearance(r *http.Request, clientIP string) bool {
+	if p == nil || !p.secretReady {
+		return false
+	}
 	cookie, err := r.Cookie(p.cookieName)
 	if err != nil {
 		return false
@@ -377,6 +390,9 @@ func (p *Policy) hasClearance(r *http.Request, clientIP string) bool {
 }
 
 func (p *Policy) hasWaitingTicket(r *http.Request, clientIP string) bool {
+	if p == nil || !p.secretReady {
+		return false
+	}
 	cookie, err := r.Cookie(p.waitingCookieName)
 	if err != nil {
 		return false
@@ -649,6 +665,9 @@ func (p *Policy) newSliderChallenge(r *http.Request, clientIP string) (captcha.S
 }
 
 func (p *Policy) validChallengeAnswer(r *http.Request, clientIP string) bool {
+	if p == nil || !p.secretReady {
+		return false
+	}
 	captchaType := p.effectiveCAPTCHAType(r)
 	if captchaType == "pow" && p.validAltchaQueryAnswer(r, clientIP) {
 		return true
@@ -679,7 +698,7 @@ func (p *Policy) validChallengeAnswer(r *http.Request, clientIP string) bool {
 }
 
 func (p *Policy) validImageQueryAnswer(r *http.Request, clientIP string) bool {
-	if p == nil || r == nil || !p.captcha {
+	if p == nil || r == nil || !p.captcha || !p.secretReady {
 		return false
 	}
 	query := r.URL.Query()
@@ -694,7 +713,7 @@ func (p *Policy) validImageQueryAnswer(r *http.Request, clientIP string) bool {
 }
 
 func (p *Policy) validSliderQueryAnswer(r *http.Request, clientIP string) bool {
-	if p == nil || r == nil || !p.captcha {
+	if p == nil || r == nil || !p.captcha || !p.secretReady {
 		return false
 	}
 	query := r.URL.Query()
@@ -723,14 +742,14 @@ func (p *Policy) validSliderQueryAnswer(r *http.Request, clientIP string) bool {
 }
 
 func (p *Policy) validAltchaHeaderAnswer(r *http.Request, clientIP string) bool {
-	if p == nil || r == nil || !p.captcha {
+	if p == nil || r == nil || !p.captcha || !p.secretReady {
 		return false
 	}
 	return p.validAltchaPayload(r, clientIP, altchaPayloadFromHeaders(r, p.altchaHeaderName))
 }
 
 func (p *Policy) validAltchaQueryAnswer(r *http.Request, clientIP string) bool {
-	if p == nil || r == nil || !p.captcha {
+	if p == nil || r == nil || !p.captcha || !p.secretReady {
 		return false
 	}
 	return p.validAltchaPayload(r, clientIP, r.URL.Query().Get("cw_altcha"))
@@ -1056,7 +1075,7 @@ func cleanChallengeURL(r *http.Request) string {
 	}
 	next := *r.URL
 	query := next.Query()
-	for _, key := range []string{"cw_nonce", "cw_expires", "cw_sig", "cw_pow", "cw_altcha", "cw_image_token", "cw_image_answer", "cw_slider_token", "cw_slider_x", "cw_slider_drag_ms", "cw_audio"} {
+	for _, key := range []string{"cw_nonce", "cw_expires", "cw_sig", "cw_pow", "cw_altcha", "cw_image_token", "cw_image_answer", "cw_slider_token", "cw_slider_x", "cw_slider_drag_ms", "cw_slider_track", "cw_audio"} {
 		query.Del(key)
 	}
 	next.RawQuery = query.Encode()

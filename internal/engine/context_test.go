@@ -1,9 +1,47 @@
 package engine
 
 import (
+	"bytes"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
+
+func TestNewRequestContextPreservesLargeBodyForUpstream(t *testing.T) {
+	body := strings.Repeat("a", requestContextBodyPreviewLimit) + "tail"
+	req, _ := http.NewRequest(http.MethodPost, "http://example.test/upload", io.NopCloser(bytes.NewBufferString(body)))
+
+	ctx, err := NewRequestContext(req, "site-a")
+	if err != nil {
+		t.Fatalf("new request context: %v", err)
+	}
+	if len(ctx.DecodedBody) != requestContextBodyPreviewLimit {
+		t.Fatalf("expected decoded preview to be capped at %d bytes, got %d", requestContextBodyPreviewLimit, len(ctx.DecodedBody))
+	}
+	if got, ok := ctx.Metadata["body_preview_truncated"].(bool); !ok || !got {
+		t.Fatalf("expected body_preview_truncated metadata, got %+v", ctx.Metadata)
+	}
+	replayed, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read replayed body: %v", err)
+	}
+	if string(replayed) != body {
+		t.Fatalf("request body was not preserved for upstream, got len=%d want=%d", len(replayed), len(body))
+	}
+}
+
+func TestClientIPIgnoresForwardedHeadersByDefault(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	req.RemoteAddr = "198.51.100.20:1234"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.10")
+	req.Header.Set("X-Real-IP", "203.0.113.11")
+	req.Header.Set("X-Forwarded-For", "203.0.113.12")
+
+	if got := ClientIP(req); got != "198.51.100.20" {
+		t.Fatalf("expected default client IP to use socket peer only, got %q", got)
+	}
+}
 
 func TestClientIPWithTrustedProxiesRequiresTrustedRemote(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)

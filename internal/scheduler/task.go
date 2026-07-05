@@ -124,6 +124,9 @@ func applyScheduleDefaults(task *Task) {
 	case "weekly":
 		task.Every = 7 * 24 * time.Hour
 		task.InitialDelay = nextWallClockDelay(task.At, time.Now)
+	case "monthly":
+		task.Every = 30 * 24 * time.Hour
+		task.InitialDelay = nextWallClockDelay(task.At, time.Now)
 	default:
 		if task.Every <= 0 {
 			task.Every = 24 * time.Hour
