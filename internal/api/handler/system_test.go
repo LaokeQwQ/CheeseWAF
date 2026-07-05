@@ -397,6 +397,105 @@ func TestChinaMapBoundaryRejectsNonFeatureCollection(t *testing.T) {
 	}
 }
 
+func TestChinaMapBoundaryRejectsPrivateRemoteSourceByDefault(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/geo+json")
+		_, _ = w.Write([]byte(`{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"coverage"},"geometry":{"type":"Point","coordinates":[116.4,39.9]}}]}`))
+	}))
+	t.Cleanup(source.Close)
+
+	cfg := config.Default()
+	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
+		Enabled:       true,
+		SourceType:    "url",
+		Source:        source.URL,
+		License:       "licensed test fixture",
+		ReviewID:      "GS-test",
+		AllowInsecure: true,
+	}
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/system/map/china-boundary", nil)
+	handler.ChinaMapBoundary(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected private remote boundary source rejected, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "public") {
+		t.Fatalf("expected public-host guard error, body=%s", recorder.Body.String())
+	}
+}
+
+func TestChinaMapBoundaryAllowsExplicitPrivateRemoteSource(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/geo+json")
+		_, _ = w.Write([]byte(`{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"coverage"},"geometry":{"type":"Point","coordinates":[116.4,39.9]}}]}`))
+	}))
+	t.Cleanup(source.Close)
+
+	cfg := config.Default()
+	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
+		Enabled:       true,
+		SourceType:    "url",
+		Source:        source.URL,
+		License:       "licensed test fixture",
+		ReviewID:      "GS-test",
+		AllowInsecure: true,
+		AllowPrivate:  true,
+	}
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/system/map/china-boundary", nil)
+	handler.ChinaMapBoundary(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected explicitly allowed private remote boundary source ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"enabled":true`) || !strings.Contains(recorder.Body.String(), `"FeatureCollection"`) {
+		t.Fatalf("expected remote boundary payload, body=%s", recorder.Body.String())
+	}
+}
+
+func TestStorageBackendTestRejectsPrivateHTTPEndpointByDefault(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("private storage endpoint should not receive test request by default")
+	}))
+	t.Cleanup(source.Close)
+
+	storage := config.Default().Storage
+	storage.ClickHouse.Enabled = true
+	storage.ClickHouse.Endpoint = source.URL
+
+	err := testStorage(context.Background(), "clickhouse", storage)
+	if err == nil || !strings.Contains(err.Error(), "public") {
+		t.Fatalf("expected private endpoint guard error, got %v", err)
+	}
+}
+
+func TestStorageBackendTestAllowsExplicitPrivateHTTPEndpoint(t *testing.T) {
+	var gotAuth bool
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, ok := r.BasicAuth()
+		gotAuth = ok && user == "cw" && password == "secret"
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(source.Close)
+
+	storage := config.Default().Storage
+	storage.ClickHouse.Enabled = true
+	storage.ClickHouse.Endpoint = source.URL
+	storage.ClickHouse.Username = "cw"
+	storage.ClickHouse.Password = "secret"
+	storage.ClickHouse.AllowPrivateEndpoint = true
+
+	if err := testStorage(context.Background(), "clickhouse", storage); err != nil {
+		t.Fatalf("expected explicitly allowed private endpoint to pass storage test: %v", err)
+	}
+	if !gotAuth {
+		t.Fatal("expected storage test to preserve configured basic auth")
+	}
+}
+
 func TestChinaMapBoundaryByCodeRejectsInvalidAdcode(t *testing.T) {
 	cfg := config.Default()
 	handler := New(Options{Config: &cfg})

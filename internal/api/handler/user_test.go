@@ -74,6 +74,27 @@ func TestCreateUserAllowsConfiguredCustomRole(t *testing.T) {
 	}
 }
 
+func TestCreateUserRejectsTrailingJSONDocument(t *testing.T) {
+	handler, store := newUserTestHandler(t)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"operator","password":"correct-horse-battery","role":"operator"}{}`)))
+	handler.CreateUser(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected trailing JSON to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "exactly one JSON document") {
+		t.Fatalf("expected explicit trailing JSON error, body=%s", recorder.Body.String())
+	}
+	user, err := store.GetUserByUsername(context.Background(), "operator")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if user != nil {
+		t.Fatalf("trailing JSON request should not create user: %+v", user)
+	}
+}
+
 func newUserTestHandler(t *testing.T) (*Handler, *storage.SQLiteStore) {
 	t.Helper()
 	ctx := context.Background()

@@ -39,7 +39,7 @@ func NewClickHouseSink(cfg config.ClickHouseConfig, client *http.Client) (*Click
 		return nil, err
 	}
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		client = guardedLogSinkHTTPClient(cfg.Timeout, "clickhouse endpoint", cfg.AllowPrivateEndpoint)
 	}
 	return &ClickHouseSink{cfg: cfg, client: client}, nil
 }

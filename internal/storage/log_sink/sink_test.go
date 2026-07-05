@@ -2,8 +2,13 @@ package log_sink
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -31,5 +36,58 @@ func TestMultiSinkQueryFallsBackWhenFirstSinkIsEmpty(t *testing.T) {
 	}
 	if total != 1 || len(items) != 1 || items[0].ID != "external" {
 		t.Fatalf("unexpected fallback result total=%d items=%+v", total, items)
+	}
+}
+
+func TestNewFromConfigBlocksPrivateHTTPLogSinkByDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	sink, err := NewFromConfig(config.StorageConfig{
+		ClickHouse: config.ClickHouseConfig{
+			Enabled:  true,
+			Endpoint: server.URL,
+			Database: "default",
+			Table:    "cheesewaf_logs",
+		},
+	}, filepath.Join(t.TempDir(), "access.log"))
+	if err != nil {
+		t.Fatalf("new sink: %v", err)
+	}
+	t.Cleanup(func() { _ = sink.Close() })
+
+	err = sink.Write(context.Background(), &storage.LogEntry{ID: "private-sink-test"})
+	if err == nil || !strings.Contains(err.Error(), "public") {
+		t.Fatalf("expected private log sink endpoint to be blocked, got %v", err)
+	}
+}
+
+func TestNewFromConfigAllowsExplicitPrivateHTTPLogSink(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	sink, err := NewFromConfig(config.StorageConfig{
+		VictoriaLogs: config.VictoriaLogsConfig{
+			Enabled:              true,
+			Endpoint:             server.URL,
+			AllowPrivateEndpoint: true,
+		},
+	}, filepath.Join(t.TempDir(), "access.log"))
+	if err != nil {
+		t.Fatalf("new sink: %v", err)
+	}
+	t.Cleanup(func() { _ = sink.Close() })
+
+	if err := sink.Write(context.Background(), &storage.LogEntry{ID: "private-sink-allowed"}); err != nil {
+		t.Fatalf("expected explicit private log sink endpoint to write: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected one remote write request, got %d", requests)
 	}
 }

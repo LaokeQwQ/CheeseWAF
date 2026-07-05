@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
 const (
@@ -282,6 +283,9 @@ func validateIssueRequest(req IssueRequest) error {
 	default:
 		return fmt.Errorf("unsupported key_type %q", req.KeyType)
 	}
+	if err := validateACMEServer(req.Server); err != nil {
+		return fmt.Errorf("server is invalid: %w", err)
+	}
 	if strings.TrimSpace(req.ACMESHPath) == "" {
 		return fmt.Errorf("acme_sh_path is required")
 	}
@@ -297,6 +301,23 @@ func validateIssueRequest(req IssueRequest) error {
 		}
 	}
 	return nil
+}
+
+func validateACMEServer(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	switch strings.ToLower(value) {
+	case "letsencrypt", "zerossl", "buypass", "ssl.com", "google", "letsencrypt_test", "zerossl_test", "buypass_test", "google_test":
+		return nil
+	}
+	_, err := netguard.ValidateURL(value, netguard.URLPolicy{
+		Purpose:        "ACME directory",
+		HostPurpose:    "ACME directory",
+		AllowedSchemes: []string{"https"},
+	})
+	return err
 }
 
 func envList(values map[string]string) []string {

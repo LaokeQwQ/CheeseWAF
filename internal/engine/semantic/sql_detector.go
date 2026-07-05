@@ -62,7 +62,9 @@ func (d *SQLDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max { return s }
+	if len(s) <= max {
+		return s
+	}
 	return s[:max]
 }
 
@@ -112,6 +114,15 @@ func looksLikeSQLi(raw string) (bool, string) {
 	if sqlProcedureAnalyse.MatchString(text) {
 		return true, "MySQL PROCEDURE ANALYSE enumeration primitive matched"
 	}
+	if sqlTimeFunction.MatchString(text) {
+		return true, "SQL time-delay primitive matched"
+	}
+	if sqlDialectTimeFunction.MatchString(text) && sqlExecutionContext(text, compact) {
+		return true, "SQL dialect-specific time-delay primitive matched"
+	}
+	if sqlDangerousFunc.MatchString(text) && sqlExecutionContext(text, compact) {
+		return true, "SQL dialect-specific command or network side effect matched"
+	}
 	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || strings.Contains(compact, "select")) {
 		return true, "error-based SQL function with query composition matched"
 	}
@@ -119,6 +130,20 @@ func looksLikeSQLi(raw string) (bool, string) {
 		return true, "SQL function comparison inside boolean predicate matched"
 	}
 	return false, ""
+}
+
+func sqlExecutionContext(text, compact string) bool {
+	return strings.Contains(text, "'") ||
+		strings.Contains(text, ";") ||
+		strings.Contains(text, "--") ||
+		strings.Contains(text, "/*") ||
+		strings.Contains(text, " select ") ||
+		strings.Contains(text, " exec ") ||
+		strings.Contains(text, " execute ") ||
+		strings.Contains(text, " begin ") ||
+		strings.Contains(text, " declare ") ||
+		strings.Contains(compact, "unionselect") ||
+		strings.Contains(compact, "or1=1")
 }
 
 func requestText(reqCtx *engine.RequestContext) string {
