@@ -18,7 +18,7 @@ func (h *Handler) ListSites(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
-	writeData(w, sites)
+	writeData(w, sitesView(sites))
 }
 
 func (h *Handler) GetSite(w http.ResponseWriter, r *http.Request) {
@@ -31,12 +31,19 @@ func (h *Handler) GetSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "site not found")
 		return
 	}
-	writeData(w, site)
+	writeData(w, siteView(*site))
 }
 
 func (h *Handler) CreateSite(w http.ResponseWriter, r *http.Request) {
 	var site storage.Site
 	if !decode(w, r, &site) {
+		return
+	}
+	storage.NormalizeSiteForWrite(&site)
+	if err := h.validateCandidateSites(r, func(sites []storage.Site) []storage.Site {
+		return append(sites, site)
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "SITE_INVALID", err.Error())
 		return
 	}
 	if err := h.Store.CreateSite(r.Context(), &site); err != nil {
@@ -47,7 +54,7 @@ func (h *Handler) CreateSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SYNC_ERROR", err.Error())
 		return
 	}
-	writeData(w, site)
+	writeData(w, siteView(site))
 }
 
 func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +63,26 @@ func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	site.ID = chi.URLParam(r, "id")
+	storage.NormalizeSiteForWrite(&site)
+	if existing, err := h.Store.GetSite(r.Context(), site.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	} else if existing == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "site not found")
+		return
+	}
+	if err := h.validateCandidateSites(r, func(sites []storage.Site) []storage.Site {
+		for index := range sites {
+			if sites[index].ID == site.ID {
+				sites[index] = site
+				return sites
+			}
+		}
+		return append(sites, site)
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "SITE_INVALID", err.Error())
+		return
+	}
 	if err := h.Store.UpdateSite(r.Context(), &site); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
@@ -64,11 +91,31 @@ func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SYNC_ERROR", err.Error())
 		return
 	}
-	writeData(w, site)
+	writeData(w, siteView(site))
 }
 
 func (h *Handler) DeleteSite(w http.ResponseWriter, r *http.Request) {
-	if err := h.Store.DeleteSite(r.Context(), chi.URLParam(r, "id")); err != nil {
+	siteID := chi.URLParam(r, "id")
+	if existing, err := h.Store.GetSite(r.Context(), siteID); err != nil {
+		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	} else if existing == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "site not found")
+		return
+	}
+	if err := h.validateCandidateSites(r, func(sites []storage.Site) []storage.Site {
+		out := make([]storage.Site, 0, len(sites))
+		for _, site := range sites {
+			if site.ID != siteID {
+				out = append(out, site)
+			}
+		}
+		return out
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "SITE_INVALID", err.Error())
+		return
+	}
+	if err := h.Store.DeleteSite(r.Context(), siteID); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
@@ -85,15 +132,32 @@ func (h *Handler) syncSites(r *http.Request) error {
 		return err
 	}
 	configSites := storage.SitesToConfig(sites)
-	if len(configSites) == 0 {
-		return fmt.Errorf("at least one site is required")
-	}
 	h.Config.Sites = configSites
 	if err := h.persistConfig(); err != nil {
 		return err
 	}
 	if h.OnSitesChanged != nil {
 		h.OnSitesChanged(configSites)
+	}
+	return nil
+}
+
+func (h *Handler) validateCandidateSites(r *http.Request, mutate func([]storage.Site) []storage.Site) error {
+	if h == nil || h.Store == nil || h.Config == nil {
+		return nil
+	}
+	current, err := h.Store.ListSites(r.Context())
+	if err != nil {
+		return err
+	}
+	candidate := mutate(append([]storage.Site(nil), current...))
+	if len(candidate) == 0 {
+		return fmt.Errorf("at least one site is required")
+	}
+	next := *h.Config
+	next.Sites = storage.SitesToConfig(candidate)
+	if err := config.Validate(&next); err != nil {
+		return err
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -10,24 +11,166 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/scheduler"
 )
 
+type scheduledTaskResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	Schedule  string    `json:"schedule"`
+	Every     string    `json:"every"`
+	Frequency string    `json:"frequency"`
+	At        string    `json:"at"`
+	Target    string    `json:"target"`
+	Channel   string    `json:"channel"`
+	Recipient string    `json:"recipient"`
+	Period    string    `json:"period"`
+	Format    string    `json:"format"`
+	Keep      int       `json:"keep"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type scheduledTaskPayload struct {
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	Type      string           `json:"type"`
+	Schedule  string           `json:"schedule"`
+	Every     flexibleDuration `json:"every"`
+	Frequency string           `json:"frequency"`
+	At        string           `json:"at"`
+	Target    string           `json:"target"`
+	Channel   string           `json:"channel"`
+	Recipient string           `json:"recipient"`
+	Period    string           `json:"period"`
+	Format    string           `json:"format"`
+	Keep      int              `json:"keep"`
+	Enabled   bool             `json:"enabled"`
+	CreatedAt time.Time        `json:"created_at"`
+}
+
+type flexibleDuration time.Duration
+
 func (h *Handler) ListTasks(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, h.Config.Scheduler.Tasks)
+	tasks := h.normalizedTaskConfigs()
+	writeData(w, scheduledTaskResponses(tasks))
 }
 
 func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
-	var req []config.ScheduledTaskConfig
-	if !decode(w, r, &req) {
+	payload, ok := decodeScheduledTaskPayload(w, r)
+	if !ok {
 		return
 	}
+	req := make([]config.ScheduledTaskConfig, 0, len(payload))
+	for _, item := range payload {
+		req = append(req, item.config())
+	}
+	for index := range req {
+		normalizeScheduledTask(&req[index])
+	}
+	previous := h.Config.Scheduler.Tasks
 	h.Config.Scheduler.Tasks = req
-	writeData(w, h.Config.Scheduler.Tasks)
+	if err := h.persistConfig(); err != nil {
+		h.Config.Scheduler.Tasks = previous
+		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
+	writeData(w, scheduledTaskResponses(h.Config.Scheduler.Tasks))
+}
+
+func decodeScheduledTaskPayload(w http.ResponseWriter, r *http.Request) ([]scheduledTaskPayload, bool) {
+	var raw json.RawMessage
+	if !decode(w, r, &raw) {
+		return nil, false
+	}
+	var payload []scheduledTaskPayload
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		return payload, true
+	}
+	var wrapped struct {
+		Tasks []scheduledTaskPayload `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "scheduler tasks must be an array or {\"tasks\":[...]}")
+		return nil, false
+	}
+	return wrapped.Tasks, true
+}
+
+func (payload scheduledTaskPayload) config() config.ScheduledTaskConfig {
+	return config.ScheduledTaskConfig{
+		ID:        payload.ID,
+		Name:      payload.Name,
+		Type:      payload.Type,
+		Schedule:  payload.Schedule,
+		Every:     time.Duration(payload.Every),
+		Frequency: payload.Frequency,
+		At:        payload.At,
+		Target:    payload.Target,
+		Channel:   payload.Channel,
+		Recipient: payload.Recipient,
+		Period:    payload.Period,
+		Format:    payload.Format,
+		Keep:      payload.Keep,
+		Enabled:   payload.Enabled,
+		CreatedAt: payload.CreatedAt,
+	}
+}
+
+func (d *flexibleDuration) UnmarshalJSON(raw []byte) error {
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == `""` {
+		*d = 0
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if strings.TrimSpace(text) == "" {
+			*d = 0
+			return nil
+		}
+		if nanos, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64); err == nil {
+			*d = flexibleDuration(time.Duration(nanos))
+			return nil
+		}
+		parsed, err := parseTaskDuration(text)
+		if err != nil {
+			return err
+		}
+		*d = flexibleDuration(parsed)
+		return nil
+	}
+	var nanos int64
+	if err := json.Unmarshal(raw, &nanos); err != nil {
+		return err
+	}
+	*d = flexibleDuration(time.Duration(nanos))
+	return nil
+}
+
+func parseTaskDuration(value string) (time.Duration, error) {
+	text := strings.TrimSpace(strings.ToLower(value))
+	if text == "" {
+		return 0, nil
+	}
+	if strings.HasSuffix(text, "d") {
+		days, err := strconv.ParseFloat(strings.TrimSuffix(text, "d"), 64)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(days * float64(24*time.Hour)), nil
+	}
+	return time.ParseDuration(text)
+}
+
+func (d flexibleDuration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(durationForJSON(time.Duration(d)))
 }
 
 func (h *Handler) TaskHistory(w http.ResponseWriter, _ *http.Request) {
@@ -57,7 +200,176 @@ func (h *Handler) StorageStats(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) CleanupStorage(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, map[string]any{"cleaned": true, "timestamp": time.Now().UTC()})
+	task := storageCleanupTask(h.Config)
+	result, err := scheduler.CleanupOldFilesWithResult(scheduler.Task{
+		ID:     task.ID,
+		Name:   task.Name,
+		Type:   task.Type,
+		Target: task.Target,
+		Keep:   task.Keep,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORAGE_CLEANUP_ERROR", err.Error())
+		return
+	}
+	writeData(w, map[string]any{
+		"cleaned":   true,
+		"target":    result.Target,
+		"keep":      result.Keep,
+		"scanned":   result.Scanned,
+		"removed":   result.Removed,
+		"timestamp": time.Now().UTC(),
+	})
+}
+
+func storageCleanupTask(cfg *config.Config) config.ScheduledTaskConfig {
+	if cfg != nil {
+		for _, task := range cfg.Scheduler.Tasks {
+			if task.Type == "cleanup" {
+				normalizeScheduledTask(&task)
+				return task
+			}
+		}
+		logDir := filepath.Dir(cfg.Logging.Output.File.Path)
+		if strings.TrimSpace(logDir) != "" && logDir != "." {
+			return config.ScheduledTaskConfig{
+				ID:      "log-cleanup",
+				Name:    "Log cleanup",
+				Type:    "cleanup",
+				Target:  logDir,
+				Keep:    14,
+				Enabled: true,
+			}
+		}
+	}
+	return config.ScheduledTaskConfig{
+		ID:      "log-cleanup",
+		Name:    "Log cleanup",
+		Type:    "cleanup",
+		Target:  "./logs",
+		Keep:    14,
+		Enabled: true,
+	}
+}
+
+func normalizeScheduledTask(task *config.ScheduledTaskConfig) {
+	task.ID = strings.TrimSpace(task.ID)
+	task.Name = strings.TrimSpace(task.Name)
+	task.Type = strings.TrimSpace(task.Type)
+	task.Schedule = strings.TrimSpace(task.Schedule)
+	task.Frequency = strings.TrimSpace(task.Frequency)
+	task.At = strings.TrimSpace(task.At)
+	task.Target = strings.TrimSpace(task.Target)
+	task.Channel = strings.TrimSpace(task.Channel)
+	task.Recipient = strings.TrimSpace(task.Recipient)
+	task.Period = strings.TrimSpace(task.Period)
+	task.Format = strings.TrimSpace(task.Format)
+	if task.Type == "" {
+		task.Type = "cleanup"
+	}
+	if task.ID == "" {
+		task.ID = task.Type + "-" + strings.ReplaceAll(task.Target, string(filepath.Separator), "-")
+	}
+	if task.Name == "" {
+		task.Name = task.ID
+	}
+	if task.Keep <= 0 {
+		task.Keep = 7
+	}
+	if task.Frequency == "" {
+		if task.Schedule != "" {
+			task.Frequency = task.Schedule
+		} else if task.Type == "security_report" || task.Type == "ai_self_learning" || task.Type == "self_learning_rules" {
+			task.Frequency = "daily"
+		} else {
+			task.Frequency = "interval"
+		}
+	}
+	if task.Frequency == "daily" || task.Frequency == "weekly" || task.Frequency == "monthly" {
+		if task.At == "" {
+			task.At = "08:00"
+		}
+	}
+	if task.Frequency == "interval" && task.Every <= 0 {
+		task.Every = 24 * time.Hour
+	}
+	if task.Type == "security_report" {
+		if task.Channel == "" {
+			task.Channel = "file"
+		}
+		if task.Recipient == "" {
+			task.Recipient = "./data/reports"
+		}
+		if task.Period == "" {
+			task.Period = "daily"
+		}
+		if task.Format == "" {
+			task.Format = "markdown"
+		}
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now().UTC()
+	}
+}
+
+func (h *Handler) normalizedTaskConfigs() []config.ScheduledTaskConfig {
+	if h == nil || h.Config == nil {
+		return nil
+	}
+	tasks := make([]config.ScheduledTaskConfig, len(h.Config.Scheduler.Tasks))
+	copy(tasks, h.Config.Scheduler.Tasks)
+	for index := range tasks {
+		normalizeScheduledTask(&tasks[index])
+	}
+	return tasks
+}
+
+func scheduledTaskResponses(tasks []config.ScheduledTaskConfig) []scheduledTaskResponse {
+	out := make([]scheduledTaskResponse, 0, len(tasks))
+	for _, task := range tasks {
+		normalizeScheduledTask(&task)
+		out = append(out, scheduledTaskResponse{
+			ID:        task.ID,
+			Name:      task.Name,
+			Type:      task.Type,
+			Schedule:  task.Schedule,
+			Every:     durationForJSON(task.Every),
+			Frequency: task.Frequency,
+			At:        task.At,
+			Target:    task.Target,
+			Channel:   task.Channel,
+			Recipient: task.Recipient,
+			Period:    task.Period,
+			Format:    task.Format,
+			Keep:      task.Keep,
+			Enabled:   task.Enabled,
+			CreatedAt: task.CreatedAt,
+		})
+	}
+	return out
+}
+
+func durationForJSON(value time.Duration) string {
+	if value <= 0 {
+		return ""
+	}
+	if value%(24*time.Hour) == 0 {
+		return formatDurationUnit(value/(24*time.Hour), "d")
+	}
+	if value%time.Hour == 0 {
+		return formatDurationUnit(value/time.Hour, "h")
+	}
+	if value%time.Minute == 0 {
+		return formatDurationUnit(value/time.Minute, "m")
+	}
+	if value%time.Second == 0 {
+		return formatDurationUnit(value/time.Second, "s")
+	}
+	return value.String()
+}
+
+func formatDurationUnit(value time.Duration, unit string) string {
+	return strconv.FormatInt(int64(value), 10) + unit
 }
 
 type reclaimPayload struct {

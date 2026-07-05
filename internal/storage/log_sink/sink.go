@@ -91,6 +91,23 @@ func (s *MultiSink) Query(ctx context.Context, filter storage.LogFilter) ([]stor
 	return nil, 0, nil
 }
 
+func (s *MultiSink) Count(ctx context.Context, filter storage.LogFilter) (int64, bool, error) {
+	for _, sink := range s.sinks {
+		counter, ok := sink.(interface {
+			Count(context.Context, storage.LogFilter) (int64, bool, error)
+		})
+		if !ok {
+			continue
+		}
+		total, supported, err := counter.Count(ctx, filter)
+		if err != nil || !supported {
+			continue
+		}
+		return total, true, nil
+	}
+	return 0, false, nil
+}
+
 func (s *MultiSink) Flush(ctx context.Context) error {
 	for _, sink := range s.sinks {
 		if err := sink.Flush(ctx); err != nil {

@@ -4,7 +4,9 @@
   --surface-soft: #f0f4f8;
   --surface-raised: #ffffff;
   --border: #d8e0ea;
+  --border-subtle: color-mix(in srgb, var(--border) 55%, var(--surface));
   --text: #182232;
+  --text-main: var(--text);
   --text-muted: #64748b;
   --accent: #165dff;
   --accent-strong: #0e46c9;

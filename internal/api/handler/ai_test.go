@@ -167,6 +167,7 @@ func TestAITestConnectionRejectsMissingAPIKeyBeforeProviderCall(t *testing.T) {
 	cfg.AI.Enabled = true
 	cfg.AI.Provider = "openai"
 	cfg.AI.APIBase = upstream.URL
+	cfg.AI.AllowPrivateAPIBase = true
 	cfg.AI.APIKey = ""
 	cfg.AI.Model = "test-model"
 	handler := New(Options{Config: &cfg})
@@ -388,6 +389,64 @@ func TestAnalyzeLogLegacyPayloadPrefersStoredEvent(t *testing.T) {
 	}
 }
 
+func TestAnalyzeLogStreamEmitsProviderTraceAndDone(t *testing.T) {
+	sink := &filteringAISink{items: []storage.LogEntry{{
+		ID:        "event-stream-analysis",
+		TraceID:   "trace-stream-analysis",
+		Action:    "block",
+		Category:  "sqli",
+		Severity:  "high",
+		Method:    http.MethodGet,
+		URI:       "/search?q=1",
+		ClientIP:  "203.0.113.9",
+		Timestamp: time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC),
+	}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Checking\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" \"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"evidence\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"SQLi\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":17,\"completion_tokens\":4,\"total_tokens\":21}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = server.URL
+	cfg.AI.AllowPrivateAPIBase = true
+	cfg.AI.APIKey = "test-secret"
+	cfg.AI.Model = "test-model"
+	handler := New(Options{Config: &cfg, Sink: sink})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/analyze/stream", bytes.NewReader([]byte(`{"reference":"trace-stream-analysis","language":"zh-CN"}`)))
+	handler.AnalyzeLogStream(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected stream ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("expected SSE content type, got %q", got)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"event: trace",
+		`"type":"stream_open"`,
+		`"type":"provider_response_start"`,
+		`"type":"reasoning_delta","message":" "`,
+		`"type":"content_delta"`,
+		"event: done",
+		`"summary":"SQLi"`,
+		`"reasoning_summary":"Checking evidence"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream missing %q in body:\n%s", want, body)
+		}
+	}
+}
+
 func TestAIAssistantReturnsRealToolExecutions(t *testing.T) {
 	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
 	sink := &filteringAISink{items: []storage.LogEntry{{
@@ -502,6 +561,7 @@ func TestAIAssistantFetchesEventsOnlyAfterToolRequest(t *testing.T) {
 	cfg.AI.Enabled = true
 	cfg.AI.Provider = "openai"
 	cfg.AI.APIBase = server.URL
+	cfg.AI.AllowPrivateAPIBase = true
 	cfg.AI.APIKey = "test-secret"
 	cfg.AI.Model = "test-model"
 	handler := New(Options{Config: &cfg, Sink: sink})
@@ -561,6 +621,7 @@ func TestAIAssistantAllowsNonStreamingResponsePastServerWriteTimeout(t *testing.
 	cfg.AI.Enabled = true
 	cfg.AI.Provider = "openai"
 	cfg.AI.APIBase = upstream.URL
+	cfg.AI.AllowPrivateAPIBase = true
 	cfg.AI.APIKey = "test-secret"
 	cfg.AI.Model = "test-model"
 	handler := New(Options{Config: &cfg})
@@ -619,6 +680,7 @@ func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {
 	cfg.AI.Enabled = true
 	cfg.AI.Provider = "openai"
 	cfg.AI.APIBase = server.URL
+	cfg.AI.AllowPrivateAPIBase = true
 	cfg.AI.APIKey = "test-secret"
 	cfg.AI.Model = "test-model"
 	handler := New(Options{Config: &cfg, Sink: sink})
@@ -678,6 +740,7 @@ func TestAIAssistantStreamEmitsProviderReasoningBeforeDone(t *testing.T) {
 	cfg.AI.Enabled = true
 	cfg.AI.Provider = "openai"
 	cfg.AI.APIBase = server.URL
+	cfg.AI.AllowPrivateAPIBase = true
 	cfg.AI.APIKey = "test-secret"
 	cfg.AI.Model = "test-model"
 	handler := New(Options{Config: &cfg, Sink: sink})
@@ -708,6 +771,7 @@ func TestAIAssistantStreamEmitsProviderReasoningBeforeDone(t *testing.T) {
 
 func TestAIAssistantCreatesApprovalForConfigIntent(t *testing.T) {
 	cfg := config.Default()
+	cfg.Protection.Bot.Secret = "test-bot-secret-value"
 	handler := New(Options{Config: &cfg})
 
 	recorder := httptest.NewRecorder()
@@ -739,6 +803,9 @@ func TestAIAssistantCreatesApprovalForConfigIntent(t *testing.T) {
 	approval := response.Data.ToolExecutions[0].Approval
 	if approval.ToolName != "set_bot_challenge" || approval.Status != "pending" || approval.Args["captcha_type"] != "slider" {
 		t.Fatalf("unexpected approval: %+v", approval)
+	}
+	if strings.Contains(approval.Diff, cfg.Protection.Bot.Secret) || !strings.Contains(approval.Diff, "[redacted]") {
+		t.Fatalf("approval diff should redact bot secret, got %s", approval.Diff)
 	}
 	if cfg.Protection.Bot.CAPTCHAType == "slider" && cfg.Protection.Bot.CAPTCHA {
 		t.Fatal("bot captcha changed before approval")

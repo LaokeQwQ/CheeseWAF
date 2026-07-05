@@ -1,4 +1,4 @@
-import { Button, Form, Input, InputNumber, Select, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Select, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -92,10 +92,10 @@ export default function ProtectionPage() {
       setPolicyDraft(protection.policy);
     },
   });
-  const ipMutation = useMutation({ mutationFn: updateIPProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
-  const rateMutation = useMutation({ mutationFn: updateRateLimit, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
-  const botMutation = useMutation({ mutationFn: updateBotProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
-  const aclMutation = useMutation({ mutationFn: updateACLProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }) });
+  const ipMutation = useMutation({ mutationFn: updateIPProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }), onError: (error) => ArcoMessage.error(error.message) });
+  const rateMutation = useMutation({ mutationFn: updateRateLimit, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }), onError: (error) => ArcoMessage.error(error.message) });
+  const botMutation = useMutation({ mutationFn: updateBotProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }), onError: (error) => ArcoMessage.error(error.message) });
+  const aclMutation = useMutation({ mutationFn: updateACLProtection, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['protection'] }), onError: (error) => ArcoMessage.error(error.message) });
   const [aclDraft, setAclDraft] = useState<ACLRule | null>(null);
   const [aclEditing, setAclEditing] = useState(false);
   const [aclChanged, setAclChanged] = useState(false);
@@ -121,9 +121,18 @@ export default function ProtectionPage() {
     setAclUnsaved(false);
   }
   function deleteACL(id: string) {
-    const rules = protection.acl.rules.filter((r) => r.id !== id);
-    aclMutation.mutate({ ...protection.acl, rules });
-    setAclUnsaved(false);
+    Modal.confirm({
+      title: t('common.confirmDeleteTitle'),
+      content: t('common.confirmDeleteEntry'),
+      okText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { status: 'danger' },
+      onOk: () => {
+        const rules = protection.acl.rules.filter((r) => r.id !== id);
+        aclMutation.mutate({ ...protection.acl, rules });
+        setAclUnsaved(false);
+      },
+    });
   }
   const [aclUnsaved, setAclUnsaved] = useState(false);
 
