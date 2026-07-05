@@ -31,6 +31,18 @@ func TestNewRequestContextPreservesLargeBodyForUpstream(t *testing.T) {
 	}
 }
 
+func TestClientIPIgnoresForwardedHeadersByDefault(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	req.RemoteAddr = "198.51.100.20:1234"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.10")
+	req.Header.Set("X-Real-IP", "203.0.113.11")
+	req.Header.Set("X-Forwarded-For", "203.0.113.12")
+
+	if got := ClientIP(req); got != "198.51.100.20" {
+		t.Fatalf("expected default client IP to use socket peer only, got %q", got)
+	}
+}
+
 func TestClientIPWithTrustedProxiesRequiresTrustedRemote(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
 	req.RemoteAddr = "198.51.100.20:1234"

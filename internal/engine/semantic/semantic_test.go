@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,6 +37,7 @@ func TestSQLDetectorBlocksFunctionBasedPayloads(t *testing.T) {
 		"/search?q=1%27%7C%7Cdbms_lock.sleep(5)%7C%7C%27",
 		"/api?id=1%3Bexec%20sp_oacreate%20%27wscript.shell%27--",
 		"/api?id=1%3Bselect%20*%20from%20openrowset(%27SQLOLEDB%27,%27server=x%27,%27select%201%27)--",
+		"/search?q=JyBvciAxPTEtLQ%3D%3D",
 	}
 	for _, target := range cases {
 		t.Run(target, func(t *testing.T) {
@@ -51,6 +54,52 @@ func TestSQLDetectorBlocksFunctionBasedPayloads(t *testing.T) {
 				t.Fatalf("expected SQLi block, got %+v", result)
 			}
 		})
+	}
+}
+
+func TestSQLDetectorKeepsBenignEncodedQueryClean(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "/docs?q=c2VsZWN0IGEgdGhlbWUgZnJvbSB0aGUgbWVudQ%3D%3D", nil)
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("expected benign encoded SQL documentation to pass, got %+v", result)
+	}
+}
+
+func TestSQLDetectorScansBoundedLongParameterTail(t *testing.T) {
+	payload := strings.Repeat("a", maxSQLCandidateBytes+256) + "' or 1=1--"
+	req, _ := http.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(payload), nil)
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Action != engine.ActionBlock {
+		t.Fatalf("expected bounded long SQLi parameter to block, got %+v", result)
+	}
+}
+
+func TestSQLCandidateTextsAreBounded(t *testing.T) {
+	values := url.Values{}
+	for i := 0; i < maxSQLCandidateTexts*2; i++ {
+		values.Add("q", strings.Repeat("a", 16)+strconv.Itoa(i))
+	}
+	req, _ := http.NewRequest(http.MethodGet, "/search?"+values.Encode(), nil)
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(sqlCandidateTexts(reqCtx)); got > maxSQLCandidateTexts {
+		t.Fatalf("expected SQL candidate list capped at %d, got %d", maxSQLCandidateTexts, got)
 	}
 }
 

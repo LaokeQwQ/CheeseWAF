@@ -2,10 +2,16 @@ package semantic
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
+)
+
+const (
+	maxSQLCandidateTexts = 64
+	maxSQLCandidateBytes = 8192
 )
 
 type SQLDetector struct {
@@ -24,13 +30,7 @@ func (d *SQLDetector) Name() string  { return "SQL Injection Semantic Detector" 
 func (d *SQLDetector) Priority() int { return 300 }
 
 func (d *SQLDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
-	payload := requestText(reqCtx)
-	decoded := decoder.Decode(payload).Text
-	candidates := []string{payload, decoded}
-	if b64, ok := decoder.TryBase64(decoded); ok {
-		candidates = append(candidates, b64)
-	}
-	for _, candidate := range candidates {
+	for _, candidate := range sqlCandidateTexts(reqCtx) {
 		// libinjection-style deep tokenization first (fast, high precision)
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate); detected {
 			return &engine.DetectionResult{
@@ -59,6 +59,76 @@ func (d *SQLDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (
 		}
 	}
 	return nil, nil
+}
+
+func sqlCandidateTexts(reqCtx *engine.RequestContext) []string {
+	seen := map[string]struct{}{}
+	candidates := make([]string, 0, 8)
+	addRaw := func(text string) {
+		if len(candidates) >= maxSQLCandidateTexts {
+			return
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		if _, ok := seen[text]; ok {
+			return
+		}
+		seen[text] = struct{}{}
+		candidates = append(candidates, text)
+	}
+	addVariants := func(text string) {
+		for _, segment := range sqlCandidateSegments(text) {
+			addRaw(segment)
+			for _, decoded := range decoder.DecodeAll(segment) {
+				addRaw(decoded.Text)
+				if b64, ok := decoder.TryBase64(strings.TrimSpace(decoded.Text)); ok {
+					addRaw(b64)
+				}
+			}
+		}
+	}
+
+	addVariants(requestText(reqCtx))
+	if reqCtx == nil || reqCtx.Request == nil {
+		return candidates
+	}
+	for _, values := range reqCtx.Request.URL.Query() {
+		for _, value := range values {
+			addVariants(value)
+		}
+	}
+	contentType := strings.ToLower(reqCtx.Request.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+		if values, err := url.ParseQuery(string(reqCtx.DecodedBody)); err == nil {
+			for _, items := range values {
+				for _, value := range items {
+					addVariants(value)
+				}
+			}
+		}
+	}
+	return candidates
+}
+
+func sqlCandidateSegments(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if len(text) <= maxSQLCandidateBytes {
+		return []string{text}
+	}
+	head := strings.TrimSpace(text[:maxSQLCandidateBytes])
+	tail := strings.TrimSpace(text[len(text)-maxSQLCandidateBytes:])
+	if head == tail || tail == "" {
+		return []string{head}
+	}
+	if head == "" {
+		return []string{tail}
+	}
+	return []string{head, tail}
 }
 
 func truncate(s string, max int) string {

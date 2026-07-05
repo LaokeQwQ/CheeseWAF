@@ -291,3 +291,11 @@ CheeseWAF 当前已经覆盖以下方向：
 - WAF 滑块 challenge 跳转清理补齐 `cw_slider_track`，避免拖动轨迹 JSON 残留在用户 URL 中。
 - 拦截 / 报错页补充 5xx 多语言回归：`Accept-Language` 为简体中文或日文时，502 页面会返回对应 `Content-Language`、本地化错误文案、可见 Event / Trace ID 和 HTTP 状态。
 - 本地验证通过：`go test ./internal/protection/bot ./internal/blockpage ./internal/api ./internal/captcha -run "CAPTCHA|Captcha|captcha|Challenge|CleanChallenge|Block|ErrorTemplate|Template|Renderer" -count=1`、`go test ./cmd/... ./internal/... -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`；浏览器烟测截图位于 `output/playwright/login-captcha-modal-smoke-20260706.png`。
+
+### 2026-07-06 本地补充：dev/canary 合并前安全筛查与语义小步加固
+
+- 已将 `codex/local-md-followups-20260705` 合并到本地 `dev`，并在合并后继续做登录网关与语义引擎安全筛查；当前改动保持小步可回归，不引入演示逻辑。
+- 登录网关 / 数据面 IP 边界：默认 `engine.ClientIP` 不再信任客户端可伪造的 `CF-Connecting-IP`、`X-Real-IP`、`X-Forwarded-For` 等请求头，只使用 socket peer；需要 CDN / 反代真实 IP 时继续走 `ClientIPWithTrustedProxies` 的可信代理链路。
+- 语义引擎：独立 `SQLDetector` 的候选源从整条请求文本扩展到查询参数和 `application/x-www-form-urlencoded` 字段值，并对每个候选做 bounded decode / base64 变体检测；候选数量与超长字段扫描长度已设置硬上限，长字段保留头尾片段检测，避免参数洪泛把语义检测变成资源消耗点；补充 base64 SQLi、超长字段尾部 SQLi 和 benign encoded documentation 样本，继续以降低漏检且控制误报为优先。
+- 已通过定向验证：`go test ./internal/engine ./internal/engine/semantic -count=1`、`go test ./internal/api/handler ./internal/api/middleware ./internal/cli -run "Login|CAPTCHA|Admin|Token|Session|Entrance|ClientIP" -count=1`。
+- 收口前仍需重新执行全量 Go、Web typecheck/build、`git diff --check`，再提交、推送 `dev`，合并到 `canary` 并同步 Forgejo。
