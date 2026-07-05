@@ -11,9 +11,12 @@
   },
   "dependencies": {
     "@arco-design/web-react": "^2.66.15",
+    "@province-city-china/area": "^8.5.8",
+    "@province-city-china/city": "^8.5.8",
+    "@province-city-china/province": "^8.5.8",
     "@tanstack/react-query": "^5.101.0",
     "axios": "^1.18.0",
-    "china-map-geojson": "^1.0.4",
+    "china-map-echarts": "^1.0.5",
     "d3-geo": "^3.1.1",
     "i18next": "^26.3.1",
     "lucide-react": "^1.21.0",

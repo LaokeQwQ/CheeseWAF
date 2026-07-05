@@ -39,7 +39,9 @@ export default function APISecurityPage() {
                 },
                 { title: '', dataIndex: 'actions', width: 64,
                   render: (_: unknown, rec: APIEndpoint) => (
-                    <Button size="mini" icon={<Trash2 size={12} />} onClick={() => setIgnoredEndpoints((prev) => new Set([...prev, rec.method + rec.path]))}>{t('common.ignore')}</Button>
+                    <span className="api-table-actions">
+                      <Button size="mini" icon={<Trash2 size={12} />} onClick={() => setIgnoredEndpoints((prev) => new Set([...prev, rec.method + rec.path]))}>{t('common.ignore')}</Button>
+                    </span>
                   ),
                 },
               ]}

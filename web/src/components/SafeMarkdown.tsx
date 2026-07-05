@@ -2,7 +2,8 @@ type MarkdownBlock =
   | { type: 'paragraph'; text: string }
   | { type: 'heading'; level: number; text: string }
   | { type: 'list'; items: string[] }
-  | { type: 'table'; headers: string[]; rows: string[][] };
+  | { type: 'table'; headers: string[]; rows: string[][] }
+  | { type: 'code'; language: string; text: string };
 
 type Props = {
   text: string;
@@ -14,6 +15,13 @@ export default function SafeMarkdown({ text, className = '' }: Props) {
   return (
     <div className={['assistant-markdown', className].filter(Boolean).join(' ')}>
       {blocks.map((block, index) => {
+        if (block.type === 'code') {
+          return (
+            <pre className="assistant-markdown-code" key={`code-${index}`}>
+              <code data-language={block.language || undefined}>{block.text}</code>
+            </pre>
+          );
+        }
         if (block.type === 'table') {
           return (
             <div className="assistant-markdown-table-wrap" key={`table-${index}`}>
@@ -50,6 +58,7 @@ function parseMarkdownBlocks(value: string): MarkdownBlock[] {
   const blocks: MarkdownBlock[] = [];
   let paragraph: string[] = [];
   let list: string[] = [];
+  let code: { language: string; lines: string[] } | null = null;
   const flushParagraph = () => {
     if (paragraph.length > 0) {
       blocks.push({ type: 'paragraph', text: paragraph.join('\n').trim() });
@@ -63,7 +72,24 @@ function parseMarkdownBlocks(value: string): MarkdownBlock[] {
     }
   };
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trim();
+    const rawLine = lines[index];
+    const line = rawLine.trim();
+    const codeFence = /^```\s*([A-Za-z0-9_+-]*)\s*$/.exec(line);
+    if (code) {
+      if (codeFence) {
+        blocks.push({ type: 'code', language: code.language, text: code.lines.join('\n') });
+        code = null;
+      } else {
+        code.lines.push(rawLine);
+      }
+      continue;
+    }
+    if (codeFence) {
+      flushParagraph();
+      flushList();
+      code = { language: codeFence[1] || '', lines: [] };
+      continue;
+    }
     if (!line) {
       flushParagraph();
       flushList();
@@ -98,6 +124,9 @@ function parseMarkdownBlocks(value: string): MarkdownBlock[] {
     }
     flushList();
     paragraph.push(line);
+  }
+  if (code) {
+    blocks.push({ type: 'code', language: code.language, text: code.lines.join('\n') });
   }
   flushParagraph();
   flushList();

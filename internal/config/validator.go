@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
 func Validate(cfg *Config) error {
@@ -480,14 +482,7 @@ func validateAISelfLearning(cfg AISelfLearningConfig) error {
 }
 
 func isUnsafeAIAPIBaseIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-	return ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
+	return !netguard.IsPublicIP(ip)
 }
 
 func validateBlockPage(page BlockPageConfig) error {
@@ -749,38 +744,12 @@ func validateIPAccessRule(rule IPAccessRuleConfig) error {
 }
 
 func validateRemoteJWKSURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return err
-	}
-	if parsed.Scheme != "https" {
-		return fmt.Errorf("only https JWKS URLs are allowed")
-	}
-	if parsed.User != nil {
-		return fmt.Errorf("credentials in JWKS URL are not allowed")
-	}
-	if parsed.Fragment != "" {
-		return fmt.Errorf("fragments in JWKS URL are not allowed")
-	}
-	host := strings.Trim(parsed.Hostname(), "[]")
-	if host == "" {
-		return fmt.Errorf("host is required")
-	}
-	if ip := net.ParseIP(host); ip != nil && !isPublicJWKSIP(ip) {
-		return fmt.Errorf("host IP must be public")
-	}
-	return nil
-}
-
-func isPublicJWKSIP(ip net.IP) bool {
-	return ip != nil &&
-		ip.IsGlobalUnicast() &&
-		!ip.IsLoopback() &&
-		!ip.IsPrivate() &&
-		!ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() &&
-		!ip.IsMulticast() &&
-		!ip.IsUnspecified()
+	_, err := netguard.ValidateURL(raw, netguard.URLPolicy{
+		Purpose:        "JWKS",
+		HostPurpose:    "remote JWKS",
+		AllowedSchemes: []string{"https"},
+	})
+	return err
 }
 
 func isPublicAdminListen(addr string) (bool, error) {

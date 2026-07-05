@@ -1,16 +1,26 @@
 import { Button, Radio, Table, Tag } from '@arco-design/web-react';
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Maximize2, RotateCcw } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { geoGraticule10, geoMercator, geoNaturalEarth1, geoPath } from 'd3-geo';
+import { geoGraticule10, geoNaturalEarth1, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
-import { ChinaData } from 'china-map-geojson';
 import worldTopology from 'world-atlas/countries-110m.json';
-import { fetchChinaMapBoundary, fetchLogs } from '../../api/client';
+import { fetchChinaMapBoundaryByCode, fetchLogs } from '../../api/client';
 import type { LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry, displayGeoPlace, displaySeverity, isSameGeoCountry, normalizeCountryCode } from '../../utils/display';
+import {
+  boundaryAdcodesFromRegions,
+  chinaBoundarySourceLabel,
+  createChinaAdministrativeMap,
+  loadBuiltinChinaBoundary,
+  loadChinaMapAssets,
+  projectChinaAdministrativePercent,
+  type ChinaAdministrativeMap,
+  type ChinaBoundaryLayer,
+  type GeoFeatureCollection,
+} from './chinaBoundaries';
 
 const GlobeMap = lazy(() => import('./GlobeMap'));
 
@@ -24,10 +34,6 @@ export type WorldFeature = {
   properties?: Record<string, unknown>;
 };
 type WorldFeatureCollection = {
-  type: 'FeatureCollection';
-  features: WorldFeature[];
-};
-type BoundaryFeatureCollection = {
   type: 'FeatureCollection';
   features: WorldFeature[];
 };
@@ -52,6 +58,7 @@ export type AttackRegion = {
   y: number;
   size: number;
   locationName: string;
+  adminCode: string;
   precision: LocationPrecision;
   accuracyRadiusKm: number | null;
   locationSource: string;
@@ -69,6 +76,7 @@ type RegionBucket = {
   lat: number;
   mappable: boolean;
   locationName: string;
+  adminCode: string;
   precision: LocationPrecision;
   accuracyRadiusKm: number | null;
   locationSource: string;
@@ -78,8 +86,6 @@ type RegionBucket = {
 
 const mapWidth = 1000;
 const mapHeight = 500;
-const chinaMapWidth = 960;
-const chinaMapHeight = 620;
 const topo = worldTopology as any;
 const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as WorldFeatureCollection;
 export const worldFeatures = worldFeatureCollection.features.filter((item) => item.geometry);
@@ -218,87 +224,6 @@ const countryNumericIds: Record<string, string> = {
   ZA: '710',
 };
 
-const chinaFocusBounds = {
-  type: 'FeatureCollection',
-  features: [{
-    type: 'Feature',
-    properties: {},
-    geometry: {
-      type: 'MultiPoint',
-      coordinates: [
-        [73, 3],
-        [135, 54],
-        [114.2, 10.2],
-        [123.5, 25.8],
-      ],
-    },
-  }],
-};
-const chinaProjection = geoMercator().fitExtent(
-  [[42, 34], [chinaMapWidth - 42, chinaMapHeight - 34]],
-  chinaFocusBounds as any,
-);
-const chinaMapPath = geoPath(chinaProjection);
-const chinaGraticulePath = chinaMapPath(geoGraticule10() as any) ?? '';
-const chinaViewBox = `0 0 ${chinaMapWidth} ${chinaMapHeight}`;
-const chinaReferenceCountryIds = new Set(['156', '158', '344', '446']);
-const chinaReferenceMapPaths = worldFeatures
-  .map((item, index) => ({
-    id: normalizeWorldId(item.id ?? index),
-    d: chinaMapPath(item as any) ?? '',
-  }))
-  .filter((item) => item.d && chinaReferenceCountryIds.has(item.id));
-const chinaReferencePoints = [
-  { key: 'beijing', zh: '北京', en: 'Beijing', lon: 116.4, lat: 39.9, dx: 8, dy: -10 },
-  { key: 'shanghai', zh: '上海', en: 'Shanghai', lon: 121.5, lat: 31.2, dx: 9, dy: 3 },
-  { key: 'guangzhou', zh: '广州', en: 'Guangzhou', lon: 113.3, lat: 23.1, dx: -10, dy: 16, anchor: 'end' as const },
-  { key: 'chengdu', zh: '成都', en: 'Chengdu', lon: 104.1, lat: 30.7, dx: 8, dy: 5 },
-  { key: 'wuhan', zh: '武汉', en: 'Wuhan', lon: 114.3, lat: 30.6, dx: -11, dy: -9, anchor: 'end' as const },
-  { key: 'xian', zh: '西安', en: "Xi'an", lon: 108.9, lat: 34.3, dx: 8, dy: -9 },
-  { key: 'urumqi', zh: '乌鲁木齐', en: 'Urumqi', lon: 87.6, lat: 43.8, dx: 8, dy: 4 },
-  { key: 'harbin', zh: '哈尔滨', en: 'Harbin', lon: 126.6, lat: 45.8, dx: 8, dy: 4 },
-  { key: 'kunming', zh: '昆明', en: 'Kunming', lon: 102.8, lat: 25.0, dx: 8, dy: 5 },
-  { key: 'lhasa', zh: '拉萨', en: 'Lhasa', lon: 91.1, lat: 29.7, dx: 8, dy: 4 },
-  { key: 'hongkong', zh: '香港', en: 'Hong Kong', lon: 114.2, lat: 22.3, dx: 10, dy: 19 },
-  { key: 'macau', zh: '澳门', en: 'Macau', lon: 113.5, lat: 22.2, dx: -10, dy: 12, anchor: 'end' as const },
-  { key: 'taipei', zh: '台北', en: 'Taipei', lon: 121.6, lat: 25.0, dx: 8, dy: 10 },
-  { key: 'haikou', zh: '海南', en: 'Hainan', lon: 110.3, lat: 20.0, dx: 8, dy: 14 },
-].map((item) => ({ ...item, point: projectChinaSvgPoint(item.lon, item.lat) })).filter((item) => item.point);
-const chinaIslandPoints = [
-  { key: 'diaoyu', zh: '钓鱼岛', en: 'Diaoyu Dao', lon: 123.5, lat: 25.8, dx: 8, dy: -8 },
-  { key: 'dongsha', zh: '东沙', en: 'Dongsha', lon: 116.8, lat: 20.7, dx: 8, dy: 4 },
-  { key: 'xisha', zh: '西沙', en: 'Xisha', lon: 112.0, lat: 16.8, dx: 8, dy: 4 },
-  { key: 'nansha', zh: '南沙', en: 'Nansha', lon: 114.2, lat: 10.2, dx: 8, dy: 4 },
-].map((item) => ({ ...item, point: projectChinaSvgPoint(item.lon, item.lat) })).filter((item) => item.point);
-
-const chinaPostureCells = [
-  { key: 'xinjiang', lon: 87.6, lat: 43.8, tone: 1, radius: 44 },
-  { key: 'xibei', lon: 101.8, lat: 36.6, tone: 1, radius: 42 },
-  { key: 'huabei', lon: 116.4, lat: 39.9, tone: 2, radius: 46 },
-  { key: 'dongbei', lon: 126.6, lat: 45.8, tone: 1, radius: 38 },
-  { key: 'xinan', lon: 102.8, lat: 25.0, tone: 2, radius: 42 },
-  { key: 'huazhong', lon: 114.3, lat: 30.6, tone: 2, radius: 48 },
-  { key: 'huadong', lon: 121.5, lat: 31.2, tone: 3, radius: 48 },
-  { key: 'huanan', lon: 113.3, lat: 23.1, tone: 2, radius: 42 },
-  { key: 'hainan', lon: 110.3, lat: 20.0, tone: 1, radius: 30 },
-  { key: 'taiwan', lon: 121.0, lat: 23.7, tone: 2, radius: 30 },
-].map((item) => ({ ...item, point: projectChinaSvgPoint(item.lon, item.lat) })).filter((item) => item.point);
-
-const chinaHeatPoints = [
-  { key: 'yangtze-delta', lon: 121.0, lat: 31.0, rx: 62, ry: 38 },
-  { key: 'pearl-delta', lon: 113.5, lat: 23.0, rx: 56, ry: 32 },
-  { key: 'bohai', lon: 117.6, lat: 39.1, rx: 56, ry: 34 },
-  { key: 'chengdu-chongqing', lon: 105.7, lat: 30.4, rx: 52, ry: 32 },
-].map((item) => ({ ...item, point: projectChinaSvgPoint(item.lon, item.lat) })).filter((item) => item.point);
-
-const emptyChinaBoundary = {
-  enabled: false,
-  paths: [] as Array<{ key: string; d: string }>,
-  attribution: '',
-  reviewID: '',
-  license: '',
-};
-
 export default function AttackMapPage() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -308,19 +233,49 @@ export default function AttackMapPage() {
   const [pan, setPan] = useState<MapPan>({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [selectedRegionKey, setSelectedRegionKey] = useState<string | null>(null);
-  const [chinaBoundary, setChinaBoundary] = useState(emptyChinaBoundary);
   const dragRef = useRef<DragState | null>(null);
   const { data, isLoading } = useQuery({ queryKey: ['attack-map-logs'], queryFn: () => fetchLogs({ limit: 1000 }), refetchInterval: 5_000, retry: false });
-  const { data: boundaryData } = useQuery({
-    queryKey: ['attack-map-china-boundary'],
-    queryFn: fetchChinaMapBoundary,
-    enabled: mode === 'china',
-    retry: false,
-    staleTime: 30 * 60_000,
-  });
   const regions = useMemo(() => aggregateRegions(data?.items ?? []), [data?.items]);
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
   const chinaRegions = useMemo(() => mappedRegions.filter(isChinaRegion), [mappedRegions]);
+  const { data: chinaAssets, isLoading: isChinaAssetsLoading } = useQuery({
+    queryKey: ['attack-map-china-assets'],
+    queryFn: loadChinaMapAssets,
+    enabled: mode === 'china',
+    retry: false,
+    staleTime: 60 * 60_000,
+  });
+  const chinaBoundaryAdcodes = useMemo(
+    () => boundaryAdcodesFromRegions(chinaRegions, chinaAssets?.adminIndex),
+    [chinaAssets?.adminIndex, chinaRegions],
+  );
+  const { data: externalChinaBoundary, isFetching: isExternalBoundaryLoading } = useQuery({
+    queryKey: ['attack-map-china-boundary-external', chinaBoundaryAdcodes],
+    queryFn: async () => {
+      const collections = await Promise.all(chinaBoundaryAdcodes.map(async (adcode) => {
+        const response = await fetchChinaMapBoundaryByCode(adcode);
+        return response.enabled && isFeatureCollection(response.geojson) ? response.geojson : null;
+      }));
+      const features = collections.flatMap((collection) => collection?.features ?? []);
+      return features.length > 0 ? { type: 'FeatureCollection', features } as GeoFeatureCollection : null;
+    },
+    enabled: mode === 'china' && Boolean(chinaAssets) && chinaBoundaryAdcodes.length > 0,
+    retry: false,
+    staleTime: 30 * 60_000,
+  });
+  const { data: builtinChinaBoundary, isFetching: isBuiltinBoundaryLoading } = useQuery({
+    queryKey: ['attack-map-china-boundary-builtin', chinaBoundaryAdcodes],
+    queryFn: () => loadBuiltinChinaBoundary(chinaBoundaryAdcodes),
+    enabled: mode === 'china' && Boolean(chinaAssets) && chinaBoundaryAdcodes.length > 0,
+    retry: false,
+    staleTime: 60 * 60_000,
+  });
+  const chinaAdministrativeMap = useMemo(
+    () => chinaAssets
+      ? createChinaAdministrativeMap(chinaAssets, chinaRegions, externalChinaBoundary ?? null, builtinChinaBoundary ?? null)
+      : null,
+    [builtinChinaBoundary, chinaAssets, chinaRegions, externalChinaBoundary],
+  );
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
   const protectedTarget = useMemo(() => resolveProtectedTarget(data?.items ?? [], t), [data?.items, t]);
   const total = regions.reduce((sum, region) => sum + region.attacks, 0);
@@ -332,27 +287,7 @@ export default function AttackMapPage() {
   const showDetailedLabels = zoom >= 1.25;
   const visibleMapRegions = mode === 'china' ? chinaRegions : mappedRegions;
   const highlightedRegionKey = selectedRegionKey ?? (showDetailedLabels ? (visibleMapRegions[0]?.key ?? null) : null);
-
-  useEffect(() => {
-    if (boundaryData?.enabled && isFeatureCollection(boundaryData.geojson)) {
-      const geojson = boundaryData.geojson;
-      const geometryPaths = geojson.features
-        .map((featureItem, index) => {
-          const path = chinaMapPath(featureItem as any) ?? '';
-          return path ? { key: `${String(featureItem.id ?? index)}`, d: path } : null;
-        })
-        .filter((item): item is { key: string; d: string } => Boolean(item));
-      setChinaBoundary({
-        enabled: true,
-        paths: geometryPaths,
-        attribution: boundaryData.attribution ?? '',
-        reviewID: boundaryData.review_id ?? '',
-        license: boundaryData.license ?? '',
-      });
-      return;
-    }
-    setChinaBoundary(emptyChinaBoundary);
-  }, [boundaryData]);
+  const chinaBoundaryLoading = isChinaAssetsLoading || isExternalBoundaryLoading || isBuiltinBoundaryLoading || (mode === 'china' && !chinaAdministrativeMap);
 
   const updateZoom = useCallback((next: number | ((current: number) => number)) => {
     setZoom((current) => {
@@ -450,7 +385,14 @@ export default function AttackMapPage() {
             <small>{mode === 'china' ? t('attackMap.chinaRegionMapped', { count: mapMappedTotal }) : t('attackMap.mapped', { count: mapMappedTotal })}</small>
             {mode === 'china' && total > chinaTotal && <small>{t('attackMap.otherRegions', { count: total - chinaTotal })}</small>}
             {mode === 'china' && (
-              <small>{chinaBoundary.enabled ? t('attackMap.boundarySource', { source: chinaBoundary.reviewID || chinaBoundary.attribution || chinaBoundary.license }) : t('attackMap.postureProjection')}</small>
+              <small>
+                {chinaAdministrativeMap && !chinaBoundaryLoading
+                  ? t('attackMap.boundarySource', { source: chinaBoundarySourceLabel(chinaAdministrativeMap.sourceSummary, t) })
+                  : t('attackMap.boundaryLoading')}
+              </small>
+            )}
+            {mode === 'china' && chinaAdministrativeMap && !chinaBoundaryLoading && chinaBoundaryAdcodes.length > 0 && chinaAdministrativeMap.sourceSummary !== 'external' && (
+              <small>{t('attackMap.districtBoundarySourceHint')}</small>
             )}
             {mode !== 'china' && unmappedTotal > 0 && <small>{t('attackMap.unmapped', { count: unmappedTotal })}</small>}
           </div>
@@ -503,11 +445,9 @@ export default function AttackMapPage() {
               style={{ '--map-zoom': zoom, '--map-pan-x': `${pan.x}px`, '--map-pan-y': `${pan.y}px` } as CSSProperties}
             >
               {mode === 'china' ? (
-                <ChinaRegionFocusMap
-                  language={i18n.language.startsWith('zh') ? 'zh' : 'en'}
-                  boundary={chinaBoundary}
-                  regions={chinaRegions}
-                />
+                chinaAdministrativeMap
+                  ? <ChinaAdministrativeMapSVG map={chinaAdministrativeMap} language={i18n.language.startsWith('zh') ? 'zh' : 'en'} />
+                  : null
               ) : <WorldMapSVG countryLevels={countryLevels} />}
               {mode === '2d' && mappedRegions.map((region) => (
                 <span
@@ -544,8 +484,8 @@ export default function AttackMapPage() {
                   </span>
                 </span>
               ))}
-              {mode === 'china' && chinaRegions.map((region) => {
-                const point = projectChinaPoint(region.lon, region.lat);
+              {mode === 'china' && chinaAdministrativeMap && chinaRegions.map((region) => {
+                const point = projectChinaAdministrativePercent(chinaAdministrativeMap, region.lon, region.lat);
                 if (!point) {
                   return null;
                 }
@@ -709,77 +649,60 @@ function WorldMapSVG({ countryLevels, variant = 'default' }: { countryLevels: Ma
   );
 }
 
-function ChinaRegionFocusMap({ language, boundary, regions }: { language: 'zh' | 'en'; boundary: typeof emptyChinaBoundary; regions: AttackRegion[] }) {
-  const regionMax = Math.max(...regions.map((region) => region.attacks), 1);
+function ChinaAdministrativeMapSVG({ map, language }: { map: ChinaAdministrativeMap; language: 'zh' | 'en' }) {
+  const activeLabels = [
+    ...map.customLayers,
+    ...map.districtLayers,
+    ...map.cityLayers.filter((layer) => layer.attacks > 0),
+    ...map.provinceLayers.filter((layer) => layer.attacks > 0),
+  ].filter((layer, index, items) => layer.labelPoint && items.findIndex((item) => item.adcode === layer.adcode) === index).slice(0, 18);
   return (
-    <svg className="china-map-svg china-focus-map world-map-svg" viewBox={chinaViewBox} aria-hidden="true">
-      <defs>
-        <radialGradient id="china-posture-glow" cx="50%" cy="52%" r="62%">
-          <stop offset="0%" stopColor="currentColor" stopOpacity="0.16" />
-          <stop offset="58%" stopColor="currentColor" stopOpacity="0.06" />
-          <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
-        </radialGradient>
-      </defs>
-      <rect className="map-ocean china-map-ocean" x="0" y="0" width={chinaMapWidth} height={chinaMapHeight} rx="24" />
-      <path className="map-graticule china-map-graticule" d={chinaGraticulePath} />
-      {boundary.enabled ? (
-        <g className="china-boundary-layer">
-          {boundary.paths.map((item) => <path key={item.key} className="china-boundary-path" d={item.d} />)}
+    <svg className="china-map-svg china-admin-map world-map-svg" viewBox={map.viewBox} aria-hidden="true">
+      <rect className="map-ocean china-map-ocean" x="0" y="0" width={map.width} height={map.height} rx="18" />
+      <g className="china-admin-layer china-admin-layer-province">
+        {map.provinceLayers.map((layer) => <ChinaBoundaryPath key={layer.key} layer={layer} />)}
+      </g>
+      {map.cityLayers.length > 0 && (
+        <g className="china-admin-layer china-admin-layer-city">
+          {map.cityLayers.map((layer) => <ChinaBoundaryPath key={layer.key} layer={layer} />)}
         </g>
-      ) : (
-        <>
-          {chinaReferenceMapPaths.length > 0 && (
-            <g className="china-reference-boundary-layer">
-              {chinaReferenceMapPaths.map((item) => <path key={item.id} className="china-reference-boundary-path" d={item.d} />)}
-            </g>
-          )}
-          <g className="china-focus-rings">
-            <ellipse cx="498" cy="304" rx="314" ry="188" />
-            <ellipse cx="498" cy="304" rx="414" ry="250" />
-          </g>
-          <g className="china-posture-layer">
-            {chinaPostureCells.map((item) => (
-              <circle
-                key={item.key}
-                className={`china-posture-cell china-posture-cell-${item.tone}`}
-                cx={item.point?.x ?? 0}
-                cy={item.point?.y ?? 0}
-                r={item.radius}
-              />
-            ))}
-          </g>
-        </>
       )}
-      <g className="china-heat-layer">
-        {chinaHeatPoints.map((item) => (
-          <ellipse key={item.key} cx={item.point?.x ?? 0} cy={item.point?.y ?? 0} rx={item.rx} ry={item.ry} />
-        ))}
-        {regions.map((region) => {
-          const point = projectChinaSvgPoint(region.lon, region.lat);
-          if (!point) {
-            return null;
-          }
-          const radius = Math.max(10, Math.min(34, 10 + (region.attacks / regionMax) * 24));
-          return <circle key={region.key} className={`china-attack-pulse map-risk-${region.level}`} cx={point.x} cy={point.y} r={radius} />;
-        })}
-      </g>
-      <g className="china-focus-reference">
-        {chinaIslandPoints.map((item) => (
-          <g key={item.key} transform={`translate(${item.point?.x ?? 0} ${item.point?.y ?? 0})`}>
-            <circle r="3" />
-            <text x={item.dx} y={item.dy}>{language === 'zh' ? item.zh : item.en}</text>
-          </g>
-        ))}
-      </g>
+      {map.districtLayers.length > 0 && (
+        <g className="china-admin-layer china-admin-layer-district">
+          {map.districtLayers.map((layer) => <ChinaBoundaryPath key={layer.key} layer={layer} />)}
+        </g>
+      )}
+      {map.customLayers.length > 0 && (
+        <g className="china-admin-layer china-admin-layer-external">
+          {map.customLayers.map((layer) => <ChinaBoundaryPath key={layer.key} layer={layer} />)}
+        </g>
+      )}
       <g className="china-map-labels">
-        {chinaReferencePoints.map((item) => (
-          <g key={item.key} transform={`translate(${item.point?.x ?? 0} ${item.point?.y ?? 0})`}>
-            <circle r="3.2" />
-            <text x={item.dx} y={item.dy} textAnchor={item.anchor ?? 'start'}>{language === 'zh' ? item.zh : item.en}</text>
+        {activeLabels.map((layer) => (
+          <g key={layer.key} transform={`translate(${layer.labelPoint?.x ?? 0} ${layer.labelPoint?.y ?? 0})`}>
+            <circle r="3" />
+            <text x="7" y="-7">{language === 'zh' ? layer.name : (layer.englishName || layer.name)}</text>
           </g>
         ))}
       </g>
     </svg>
+  );
+}
+
+function ChinaBoundaryPath({ layer }: { layer: ChinaBoundaryLayer }) {
+  return (
+    <path
+      className={[
+        'china-boundary-path',
+        'china-admin-path',
+        `china-admin-${layer.source.replace('builtin-', '')}`,
+        `map-risk-${layer.level}`,
+        layer.attacks > 0 ? 'china-admin-active' : '',
+      ].filter(Boolean).join(' ')}
+      d={layer.d}
+    >
+      <title>{`${layer.name} · ${layer.attacks}`}</title>
+    </path>
   );
 }
 
@@ -811,7 +734,7 @@ export function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
       continue;
     }
     const location = resolveLocation(entry);
-    const key = `${location.countryCode}|${location.locationName}|${location.sourcePrefix}`;
+    const key = `${location.countryCode}|${location.adminCode}|${location.locationName}|${location.sourcePrefix}`;
     const current = buckets.get(key) ?? {
       countryCode: location.countryCode,
       continent: location.continent,
@@ -823,6 +746,7 @@ export function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
       lat: location.lat,
       mappable: location.mappable,
       locationName: location.locationName,
+      adminCode: location.adminCode,
       precision: location.precision,
       accuracyRadiusKm: location.accuracyRadiusKm,
       locationSource: location.locationSource,
@@ -877,6 +801,7 @@ export function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
         y: point ? point.y : 50,
         size: Math.max(14, Math.min(40, 10 + Math.sqrt(bucket.attacks) * 3.6)),
         locationName: bucket.locationName,
+        adminCode: bucket.adminCode,
         precision: bucket.precision,
         accuracyRadiusKm: bucket.accuracyRadiusKm,
         locationSource: bucket.locationSource,
@@ -936,6 +861,7 @@ function resolveLocation(entry: LogEntry) {
   const district = readEntryString(entry, metadata, ['district', 'district_name', 'county', 'county_name', 'area', 'geo.district', 'geo.district_name', 'geo.county', 'geo.county_name', 'geo.area', 'location.district', 'location.district_name', 'location.county', 'location.county_name', 'location.area']);
   const city = readEntryString(entry, metadata, ['city', 'city_name', 'geo.city', 'geo.city_name', 'location.city', 'location.city_name']);
   const region = readEntryString(entry, metadata, ['region', 'region_name', 'province', 'province_name', 'state', 'subdivision', 'geo.region', 'geo.region_name', 'geo.province', 'geo.province_name', 'geo.state', 'geo.subdivision']);
+  const adminCode = readAdminCode(entry, metadata);
   const locationSource = readEntryString(entry, metadata, ['source', 'geo.source', 'location.source', 'provider', 'geo.provider']) || (lat !== null && lon !== null ? 'metadata' : (coord ? 'country-fallback' : 'unmapped'));
   const accuracyRadiusKm = readEntryNumber(entry, metadata, ['accuracy_radius', 'accuracy', 'geo.accuracy_radius', 'geo.accuracy', 'accuracyRadius', 'geo.accuracyRadius', 'location.accuracy_radius', 'location.accuracy']);
   const precise = validCoordinate(lat, lon);
@@ -950,6 +876,7 @@ function resolveLocation(entry: LogEntry) {
     lat: point?.lat ?? coord?.lat ?? 0,
     mappable: Boolean(point || coord),
     locationName,
+    adminCode,
     precision: precisionForLocation({ precise, street, district, city, region, sourcePrefix, countryCode }),
     accuracyRadiusKm: Number.isFinite(accuracyRadiusKm) && accuracyRadiusKm !== null ? Math.max(0, accuracyRadiusKm) : null,
     locationSource,
@@ -998,6 +925,54 @@ function inferCountry(entry: LogEntry) {
     return country;
   }
   return inferCountryFromIP(entry.client_ip);
+}
+
+function readAdminCode(entry: LogEntry, metadata: Record<string, unknown>) {
+  const code = readEntryString(entry, metadata, [
+    'adcode',
+    'admin_code',
+    'adminCode',
+    'region_code',
+    'regionCode',
+    'province_code',
+    'provinceCode',
+    'city_code',
+    'cityCode',
+    'district_code',
+    'districtCode',
+    'county_code',
+    'countyCode',
+    'geo.adcode',
+    'geo.admin_code',
+    'geo.adminCode',
+    'geo.region_code',
+    'geo.regionCode',
+    'geo.province_code',
+    'geo.provinceCode',
+    'geo.city_code',
+    'geo.cityCode',
+    'geo.district_code',
+    'geo.districtCode',
+    'geo.county_code',
+    'geo.countyCode',
+    'location.adcode',
+    'location.admin_code',
+    'location.adminCode',
+    'location.region_code',
+    'location.regionCode',
+    'location.province_code',
+    'location.provinceCode',
+    'location.city_code',
+    'location.cityCode',
+    'location.district_code',
+    'location.districtCode',
+    'client.geo.adcode',
+    'client.geo.admin_code',
+    'client.geo.city_code',
+    'client.geo.district_code',
+  ]);
+  const digits = code.replace(/\D+/g, '');
+  return /^\d{6}$/.test(digits) ? digits : '';
 }
 
 function inferCountryFromIP(ip: string | undefined) {
@@ -1125,29 +1100,7 @@ function projectMapPoint(lon: number, lat: number) {
   };
 }
 
-function projectChinaPoint(lon: number, lat: number) {
-  const point = projectChinaSvgPoint(lon, lat);
-  if (!point) {
-    return null;
-  }
-  return {
-    x: (point.x / chinaMapWidth) * 100,
-    y: (point.y / chinaMapHeight) * 100,
-  };
-}
-
-function projectChinaSvgPoint(lon: number, lat: number) {
-  const point = chinaProjection([lon, lat]);
-  if (!point) {
-    return null;
-  }
-  return {
-    x: point[0],
-    y: point[1],
-  };
-}
-
-function isFeatureCollection(value: unknown): value is BoundaryFeatureCollection {
+function isFeatureCollection(value: unknown): value is GeoFeatureCollection {
   if (!value || typeof value !== 'object') {
     return false;
   }
@@ -1163,7 +1116,7 @@ function formatRegionLocation(region: AttackRegion, t: (key: string, options?: R
   const country = displayCountry(region.countryCode, t);
   if (region.locationName && region.locationName !== region.countryCode && region.locationName !== 'UNLOCATED') {
     const location = region.locationName
-      .split(/\s*·\s*|\s*\/\s*/)
+      .split(/\s+路\s+|\s*·\s*|\s*\/\s*/)
       .filter((part) => !isSameGeoCountry(part, region.countryCode, t))
       .map((part) => displayGeoPlace(part, region.countryCode, t))
       .filter(Boolean)

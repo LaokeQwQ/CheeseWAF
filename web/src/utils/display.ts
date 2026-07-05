@@ -242,6 +242,7 @@ function normalizePlaceKey(value: string) {
   return value
     .trim()
     .toLowerCase()
+    .replace(/\b(province|city|district|county|prefecture|municipality|autonomous|region|special administrative region)\b/g, '')
     .replace(/省|市|自治区|特别行政区|维吾尔|壮族|回族/g, '')
     .replace(/['’]/g, '')
     .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '');

@@ -1,0 +1,103 @@
+package handler
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+)
+
+func TestListTasksReturnsReadableDurations(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scheduler.Tasks = []config.ScheduledTaskConfig{{
+		ID:        "log-cleanup",
+		Name:      "Log cleanup",
+		Type:      "cleanup",
+		Frequency: "interval",
+		Every:     24 * time.Hour,
+		Target:    "./logs",
+		Keep:      14,
+		Enabled:   true,
+	}}
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/scheduler/tasks", nil)
+	handler.ListTasks(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected list tasks ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "86400000000000") {
+		t.Fatalf("duration leaked as raw nanoseconds: %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"every":"1d"`) {
+		t.Fatalf("expected readable duration, body=%s", recorder.Body.String())
+	}
+}
+
+func TestUpdateTasksAcceptsReadableDurationsAndWrappedPayload(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+	body := []byte(`{"tasks":[{"id":"security-report","name":"Security report","type":"security_report","frequency":"daily","every":"24h","at":"09:30","target":"","keep":7,"enabled":true}]}`)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/scheduler/tasks", bytes.NewReader(body))
+	handler.UpdateTasks(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected update tasks ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(cfg.Scheduler.Tasks) != 1 || cfg.Scheduler.Tasks[0].Every != 24*time.Hour || cfg.Scheduler.Tasks[0].Channel != "file" {
+		t.Fatalf("task was not normalized in memory: %+v", cfg.Scheduler.Tasks)
+	}
+	var response struct {
+		Data []struct {
+			Every string `json:"every"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if got := response.Data[0].Every; got != "1d" {
+		t.Fatalf("expected readable response duration, got %q", got)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.Scheduler.Tasks) != 1 || loaded.Scheduler.Tasks[0].Every != 24*time.Hour {
+		t.Fatalf("task was not persisted with parsed duration: %+v", loaded.Scheduler.Tasks)
+	}
+}
+
+func TestUpdateTasksAcceptsDayDurationFromListResponse(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+	body := []byte(`[{"id":"log-cleanup","name":"Log cleanup","type":"cleanup","frequency":"interval","every":"1d","target":"./logs","keep":14,"enabled":true}]`)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/scheduler/tasks", bytes.NewReader(body))
+	handler.UpdateTasks(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected update tasks ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(cfg.Scheduler.Tasks) != 1 || cfg.Scheduler.Tasks[0].Every != 24*time.Hour {
+		t.Fatalf("expected 1d parsed as 24h, got %+v", cfg.Scheduler.Tasks)
+	}
+}

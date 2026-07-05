@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
 const (
@@ -241,66 +240,21 @@ func (s *remoteJWKSSource) setError(err error) {
 }
 
 func validateRemoteJWKSURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return err
-	}
-	if parsed.Scheme != "https" {
-		return fmt.Errorf("only https JWKS URLs are allowed")
-	}
-	if parsed.User != nil {
-		return fmt.Errorf("credentials in JWKS URL are not allowed")
-	}
-	if parsed.Fragment != "" {
-		return fmt.Errorf("fragments in JWKS URL are not allowed")
-	}
-	host := strings.Trim(parsed.Hostname(), "[]")
-	if host == "" {
-		return fmt.Errorf("host is required")
-	}
-	if ip := net.ParseIP(host); ip != nil && !publicJWKSIP(ip) {
-		return fmt.Errorf("host IP must be public")
-	}
-	return nil
+	_, err := netguard.ValidateURL(raw, netguard.URLPolicy{
+		Purpose:        "JWKS",
+		HostPurpose:    "remote JWKS",
+		AllowedSchemes: []string{"https"},
+	})
+	return err
 }
 
 func newRemoteJWKSHTTPClient(timeout time.Duration) *http.Client {
-	dialer := &net.Dialer{Timeout: timeout}
-	return &http.Client{
+	return netguard.NewHTTPClient(netguard.HTTPClientOptions{
 		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-				host, port, err := net.SplitHostPort(address)
-				if err != nil {
-					return nil, err
-				}
-				ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-				if err != nil {
-					return nil, err
-				}
-				for _, ip := range ips {
-					if !publicJWKSIP(ip) {
-						return nil, fmt.Errorf("remote JWKS host resolved to non-public IP %s", ip)
-					}
-				}
-				if len(ips) == 0 {
-					return nil, fmt.Errorf("remote JWKS host resolved to no IP addresses")
-				}
-				return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
-			},
-			TLSHandshakeTimeout:   timeout,
-			ResponseHeaderTimeout: timeout,
+		Policy: netguard.URLPolicy{
+			Purpose:        "JWKS",
+			HostPurpose:    "remote JWKS",
+			AllowedSchemes: []string{"https"},
 		},
-	}
-}
-
-func publicJWKSIP(ip net.IP) bool {
-	return ip != nil &&
-		ip.IsGlobalUnicast() &&
-		!ip.IsLoopback() &&
-		!ip.IsPrivate() &&
-		!ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() &&
-		!ip.IsMulticast() &&
-		!ip.IsUnspecified()
+	})
 }
