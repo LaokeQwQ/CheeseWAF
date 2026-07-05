@@ -99,12 +99,14 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	admin := &http.Server{
-		Addr:         cfg.Server.AdminListen,
-		Handler:      adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec, OnBlockPageChanged: proxyServer.UpdateBlockPage}), authSecret),
-		TLSConfig:    adminTLS,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-		IdleTimeout:  cfg.Server.IdleTimeout,
+		Addr:              cfg.Server.AdminListen,
+		Handler:           adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec, OnBlockPageChanged: proxyServer.UpdateBlockPage}), authSecret),
+		TLSConfig:         adminTLS,
+		ReadHeaderTimeout: cfg.Server.ReadTimeout,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		IdleTimeout:       cfg.Server.IdleTimeout,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	http3Server, altSvc, err := proxyServer.HTTP3Server()
@@ -285,16 +287,21 @@ func allowAdminEntrance(cfg *config.Config, authSecret, metricsPath string, metr
 	}
 	entryPath := cleanAdminEntryPath(entry.Path)
 	requestPath := cleanAdminEntryPath(r.URL.Path)
+	secret := adminEntrySecret(authSecret, cfg)
+	if secret == "" {
+		writeAdminTeapot(w)
+		return false
+	}
 	if requestPath == entryPath {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			writeAdminTeapot(w)
 			return false
 		}
-		issueAdminEntryCookie(w, r, entry.CookieName, adminEntrySecret(authSecret, cfg))
+		issueAdminEntryCookie(w, r, entry.CookieName, secret)
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return false
 	}
-	if validAdminEntryCookie(r, entry.CookieName, adminEntrySecret(authSecret, cfg), time.Now) {
+	if validAdminEntryCookie(r, entry.CookieName, secret, time.Now) {
 		return true
 	}
 	writeAdminTeapot(w)
@@ -366,7 +373,7 @@ func adminEntrySecret(authSecret string, cfg *config.Config) string {
 	if cfg != nil && !config.IsWeakBotSecret(cfg.Protection.Bot.Secret) {
 		return cfg.Protection.Bot.Secret
 	}
-	return "cheesewaf-admin-entry"
+	return ""
 }
 
 func writeAdminTeapot(w http.ResponseWriter) {

@@ -41,6 +41,52 @@ func TestAnalyzeEventsSkipsPlainAccessLogs(t *testing.T) {
 	}
 }
 
+func TestClientRejectsPrivateAPIBaseByDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("private API base should be blocked before provider call, got %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AIConfig{
+		Enabled:  true,
+		Provider: "openai",
+		APIBase:  server.URL,
+		APIKey:   "test-secret",
+		Model:    "gpt-test",
+	}, nil)
+	_, err := client.ListModels(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "AI API base host IP must be public") {
+		t.Fatalf("expected private API base guard error, got %v", err)
+	}
+}
+
+func TestClientAllowsPrivateAPIBaseWhenExplicit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"local-model","owned_by":"test"}]}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AIConfig{
+		Enabled:             true,
+		Provider:            "openai",
+		APIBase:             server.URL,
+		APIKey:              "test-secret",
+		Model:               "gpt-test",
+		AllowPrivateAPIBase: true,
+	}, nil)
+	models, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("list models: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "local-model" {
+		t.Fatalf("unexpected models: %+v", models)
+	}
+}
+
 func TestAnalyzeLogIncludesProviderUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -68,6 +114,66 @@ func TestAnalyzeLogIncludesProviderUsage(t *testing.T) {
 	}
 	if analysis.ReasoningSummary != "matched event evidence before recommending action" {
 		t.Fatalf("expected reasoning summary, got %q", analysis.ReasoningSummary)
+	}
+}
+
+func TestAnalyzeLogFallsBackToHeuristicWhenProviderFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad key", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	client := NewClient(config.AIConfig{
+		Enabled:  true,
+		Provider: "openai",
+		APIBase:  server.URL,
+		APIKey:   "bad-secret",
+		Model:    "gpt-test",
+	}, server.Client())
+	analysis, err := AnalyzeLogWithLanguage(context.Background(), client, storage.LogEntry{
+		ID:       "event-fallback",
+		Action:   "block",
+		Category: "sqli",
+		Method:   "GET",
+		URI:      "/search?id=1",
+	}, "zh-CN")
+	if err != nil {
+		t.Fatalf("provider failure should return heuristic fallback, got error: %v", err)
+	}
+	if analysis == nil || analysis.AIUsed {
+		t.Fatalf("expected local fallback analysis without AI usage, got %+v", analysis)
+	}
+	if analysis.LogID != "event-fallback" || analysis.Risk != "high" || !strings.Contains(analysis.Summary, "Provider 错误") {
+		t.Fatalf("fallback analysis should preserve event risk and explain provider failure, got %+v", analysis)
+	}
+}
+
+func TestAnalyzeLogStreamFallsBackToHeuristicWhenProviderFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad key", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	client := NewClient(config.AIConfig{
+		Enabled:  true,
+		Provider: "openai",
+		APIBase:  server.URL,
+		APIKey:   "bad-secret",
+		Model:    "gpt-test",
+	}, server.Client())
+	analysis, err := AnalyzeLogWithLanguageStream(context.Background(), client, storage.LogEntry{
+		ID:       "event-stream-fallback",
+		Action:   "block",
+		Category: "xss",
+		Method:   "POST",
+		URI:      "/comment",
+	}, "en-US", func(AssistantTraceEvent) {})
+	if err != nil {
+		t.Fatalf("stream provider failure should return heuristic fallback, got error: %v", err)
+	}
+	if analysis == nil || analysis.AIUsed {
+		t.Fatalf("expected local stream fallback analysis without AI usage, got %+v", analysis)
+	}
+	if analysis.LogID != "event-stream-fallback" || analysis.Risk != "medium" || !strings.Contains(analysis.Summary, "Provider error") {
+		t.Fatalf("unexpected stream fallback analysis: %+v", analysis)
 	}
 }
 
@@ -429,6 +535,60 @@ func TestClientStreamsOpenAINativeToolCallsAndReasoning(t *testing.T) {
 	}
 	if len(trace) < 3 || trace[0].Type != "provider_response_start" || trace[1].Type != "reasoning_delta" || trace[2].Type != "tool_call_delta" {
 		t.Fatalf("expected provider start, reasoning delta, and tool delta trace, got %+v", trace)
+	}
+}
+
+func TestClientStreamKeepsWhitespaceDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var parsed chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&parsed); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !parsed.Stream {
+			t.Fatalf("expected stream request: %+v", parsed)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Checking\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" \"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"evidence\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Analyzing\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\" \"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"now\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AIConfig{
+		Enabled:  true,
+		Provider: "openai",
+		APIBase:  server.URL,
+		APIKey:   "test-secret",
+		Model:    "gpt-test",
+	}, server.Client())
+	var trace []AssistantTraceEvent
+	result, err := client.CompleteWithUsageStream(context.Background(), []Message{{Role: "user", Content: "Analyze"}}, func(event AssistantTraceEvent) {
+		trace = append(trace, event)
+	})
+	if err != nil {
+		t.Fatalf("completion stream: %v", err)
+	}
+	if result.Content != "Analyzing now" {
+		t.Fatalf("expected content whitespace to be preserved, got %q", result.Content)
+	}
+	if result.ReasoningSummary != "Checking evidence" {
+		t.Fatalf("expected reasoning whitespace to be preserved, got %q", result.ReasoningSummary)
+	}
+	var contentSpace, reasoningSpace bool
+	for _, event := range trace {
+		if event.Type == "content_delta" && event.Message == " " {
+			contentSpace = true
+		}
+		if event.Type == "reasoning_delta" && event.Message == " " {
+			reasoningSpace = true
+		}
+	}
+	if !contentSpace || !reasoningSpace {
+		t.Fatalf("expected standalone whitespace deltas in trace, contentSpace=%v reasoningSpace=%v trace=%+v", contentSpace, reasoningSpace, trace)
 	}
 }
 

@@ -11,39 +11,27 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
+	"github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const maxMapBoundaryBytes = 5 << 20
 
+var chinaMapAdcodePattern = regexp.MustCompile(`^\d{6}$`)
+
 var systemHTTPClient = &http.Client{Timeout: 8 * time.Second}
 
 func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, map[string]any{
-		"server":        h.Config.Server,
-		"tls":           h.Config.TLS,
-		"storage":       h.Config.Storage,
-		"logging":       h.Config.Logging,
-		"console":       h.Config.Console,
-		"acme":          h.Config.ACME,
-		"protection":    h.Config.Protection,
-		"setup":         h.Config.Setup,
-		"scheduler":     h.Config.Scheduler,
-		"edge":          h.Config.Edge,
-		"ai":            aiConfigView(h.Config.AI),
-		"update":        h.Config.Update,
-		"vulnerability": h.Config.Vulnerability,
-		"monitor":       h.Config.Monitor,
-		"apisec":        h.Config.APISec,
-		"block_page":    h.Config.BlockPage,
-		"version":       version.Current(),
-	})
+	view := systemConfigView(h.Config)
+	view["version"] = version.Current()
+	writeData(w, view)
 }
 
 func (h *Handler) Version(w http.ResponseWriter, _ *http.Request) {
@@ -137,6 +125,7 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	preserveSystemSecrets(*h.Config, &next)
 	next.Protection.Policy = next.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
 	if _, err := config.EnsureRuntimeSecrets(&next); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_REPAIR_ERROR", err.Error())
@@ -209,6 +198,57 @@ func (h *Handler) ChinaMapBoundary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) ChinaMapBoundaryByCode(w http.ResponseWriter, r *http.Request) {
+	adcode := chi.URLParam(r, "adcode")
+	if !chinaMapAdcodePattern.MatchString(adcode) {
+		writeError(w, http.StatusBadRequest, "MAP_BOUNDARY_BAD_ADCODE", "adcode must be a 6 digit administrative code")
+		return
+	}
+	boundary := h.Config.Console.Map.ChinaBoundary
+	if !boundary.Enabled {
+		writeData(w, map[string]any{
+			"enabled": false,
+			"adcode":  adcode,
+			"reason":  "china boundary rendering is disabled",
+		})
+		return
+	}
+	body, resolved, err := h.readMapBoundaryByCode(r.Context(), boundary, adcode)
+	if err != nil {
+		writeData(w, map[string]any{
+			"enabled":     false,
+			"adcode":      adcode,
+			"source_type": sourceTypeOrDefault(boundary.SourceType),
+			"source":      boundary.Source,
+			"license":     boundary.License,
+			"review_id":   boundary.ReviewID,
+			"attribution": boundary.Attribution,
+			"reason":      err.Error(),
+		})
+		return
+	}
+	var geojson any
+	if err := json.Unmarshal(body, &geojson); err != nil {
+		writeError(w, http.StatusBadRequest, "MAP_BOUNDARY_INVALID", "boundary source is not valid GeoJSON/JSON")
+		return
+	}
+	if err := validateGeoJSONFeatureCollection(geojson); err != nil {
+		writeError(w, http.StatusBadRequest, "MAP_BOUNDARY_INVALID", err.Error())
+		return
+	}
+	writeData(w, map[string]any{
+		"enabled":         true,
+		"adcode":          adcode,
+		"source_type":     sourceTypeOrDefault(boundary.SourceType),
+		"source":          boundary.Source,
+		"resolved_source": resolved,
+		"license":         boundary.License,
+		"review_id":       boundary.ReviewID,
+		"attribution":     boundary.Attribution,
+		"geojson":         geojson,
+	})
+}
+
 func (h *Handler) readMapBoundary(ctx context.Context, boundary config.MapBoundaryConfig) ([]byte, error) {
 	sourceType := sourceTypeOrDefault(boundary.SourceType)
 	source := strings.TrimSpace(boundary.Source)
@@ -216,29 +256,7 @@ func (h *Handler) readMapBoundary(ctx context.Context, boundary config.MapBounda
 		return nil, fmt.Errorf("boundary source is empty")
 	}
 	if sourceType == "url" {
-		ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Accept", "application/geo+json, application/json;q=0.9, */*;q=0.1")
-		resp, err := systemHTTPClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("boundary source returned HTTP %d", resp.StatusCode)
-		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxMapBoundaryBytes+1))
-		if err != nil {
-			return nil, err
-		}
-		if len(body) > maxMapBoundaryBytes {
-			return nil, fmt.Errorf("boundary source exceeds %d bytes", maxMapBoundaryBytes)
-		}
-		return body, nil
+		return h.readRemoteMapBoundary(ctx, source)
 	}
 	body, err := os.ReadFile(source)
 	if err != nil {
@@ -248,6 +266,88 @@ func (h *Handler) readMapBoundary(ctx context.Context, boundary config.MapBounda
 		return nil, fmt.Errorf("boundary source exceeds %d bytes", maxMapBoundaryBytes)
 	}
 	return body, nil
+}
+
+func (h *Handler) readMapBoundaryByCode(ctx context.Context, boundary config.MapBoundaryConfig, adcode string) ([]byte, string, error) {
+	sourceType := sourceTypeOrDefault(boundary.SourceType)
+	source := strings.TrimSpace(boundary.Source)
+	if source == "" {
+		return nil, "", fmt.Errorf("boundary source is empty")
+	}
+	if sourceType == "url" {
+		urlSource := boundarySourceForAdcode(source, adcode)
+		body, err := h.readRemoteMapBoundary(ctx, urlSource)
+		return body, urlSource, err
+	}
+	for _, candidate := range boundaryFileCandidates(source, adcode) {
+		body, err := os.ReadFile(candidate)
+		if err == nil {
+			if len(body) > maxMapBoundaryBytes {
+				return nil, candidate, fmt.Errorf("boundary source exceeds %d bytes", maxMapBoundaryBytes)
+			}
+			return body, candidate, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return nil, candidate, err
+		}
+	}
+	return nil, "", fmt.Errorf("boundary file for adcode %s is not configured", adcode)
+}
+
+func (h *Handler) readRemoteMapBoundary(ctx context.Context, source string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/geo+json, application/json;q=0.9, */*;q=0.1")
+	resp, err := systemHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("boundary source returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMapBoundaryBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxMapBoundaryBytes {
+		return nil, fmt.Errorf("boundary source exceeds %d bytes", maxMapBoundaryBytes)
+	}
+	return body, nil
+}
+
+func boundarySourceForAdcode(source, adcode string) string {
+	if strings.Contains(source, "{adcode}") {
+		return strings.ReplaceAll(source, "{adcode}", adcode)
+	}
+	if strings.Contains(source, "%s") {
+		return fmt.Sprintf(source, adcode)
+	}
+	base := strings.TrimRight(source, "/")
+	return base + "/" + adcode + ".json"
+}
+
+func boundaryFileCandidates(source, adcode string) []string {
+	if strings.Contains(source, "{adcode}") {
+		return []string{strings.ReplaceAll(source, "{adcode}", adcode)}
+	}
+	if strings.Contains(source, "%s") {
+		return []string{fmt.Sprintf(source, adcode)}
+	}
+	info, err := os.Stat(source)
+	if err == nil && !info.IsDir() {
+		return []string{source}
+	}
+	return []string{
+		filepath.Join(source, adcode+".json"),
+		filepath.Join(source, adcode+"_full.json"),
+		filepath.Join(source, adcode, adcode+".json"),
+		filepath.Join(source, adcode, adcode+"_full.json"),
+	}
 }
 
 func validateGeoJSONFeatureCollection(value any) error {

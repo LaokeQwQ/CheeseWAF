@@ -74,7 +74,29 @@ func AnalyzeLogWithLanguage(ctx context.Context, client *Client, entry storage.L
 	}
 	result, err := client.CompleteWithUsage(ctx, analysisMessagesWithLanguage(entry, language))
 	if err != nil {
-		return nil, err
+		return analysisWithProviderFailure(base, language, err), nil
+	}
+	if strings.TrimSpace(result.Content) != "" {
+		base.Summary = sanitizeAssistantFinalAnswer(result.Content)
+		base.ReasoningSummary = sanitizeAssistantReasoningSummary(result.ReasoningSummary)
+		base.AIUsed = true
+		base.Provider = result.Provider
+		base.Model = result.Model
+		base.InputTokens = result.Usage.InputTokens
+		base.OutputTokens = result.Usage.OutputTokens
+		base.TotalTokens = result.Usage.TotalTokens
+	}
+	return base, nil
+}
+
+func AnalyzeLogWithLanguageStream(ctx context.Context, client *Client, entry storage.LogEntry, language string, emit StreamEmitter) (*AttackAnalysis, error) {
+	base := HeuristicAnalysis(entry)
+	if client == nil {
+		return base, nil
+	}
+	result, err := client.CompleteWithUsageStream(ctx, analysisMessagesWithLanguage(entry, language), emit)
+	if err != nil {
+		return analysisWithProviderFailure(base, language, err), nil
 	}
 	if strings.TrimSpace(result.Content) != "" {
 		base.Summary = sanitizeAssistantFinalAnswer(result.Content)
@@ -95,6 +117,14 @@ func AnalyzeLogBestEffortWithLanguage(ctx context.Context, client *Client, entry
 		return analysis
 	}
 	base := HeuristicAnalysis(entry)
+	return analysisWithProviderFailure(base, language, err)
+}
+
+func analysisWithProviderFailure(base *AttackAnalysis, language string, err error) *AttackAnalysis {
+	if base == nil {
+		base = &AttackAnalysis{}
+	}
+	base.AIUsed = false
 	base.Summary = appendAIAnalysisFailure(base.Summary, language, err)
 	base.ReasoningSummary = appendAIAnalysisFailure("", language, err)
 	return base
@@ -587,7 +617,7 @@ func localToolResultSummary(language string, calls []AssistantToolCall) string {
 }
 
 func languagePrompt(language string) string {
-	return "Language directive: 使用{%Language}交流和输出信息(即以用户当前语言为准). Current {%Language}: " + normalizedPromptLanguage(language) + ". Reply only in {%Language}; keep protocol keys, code identifiers, IPs, CVEs, rule IDs, and tool names unchanged."
+	return "Language directive: 使用{%Language}交流和输出信息(即以用户当前语言为准). Current {%Language}: " + normalizedPromptLanguage(language) + ". Reply only in {%Language}; visible reasoning summaries and final output must use {%Language}; keep protocol keys, code identifiers, IPs, CVEs, rule IDs, and tool names unchanged."
 }
 
 func normalizedPromptLanguage(language string) string {

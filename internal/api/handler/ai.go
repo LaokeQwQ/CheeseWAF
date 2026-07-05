@@ -14,6 +14,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -311,14 +312,7 @@ func isPrivateAIAPIBaseHost(host string) bool {
 }
 
 func isPrivateAIAPIBaseIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-	return ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
+	return !netguard.IsPublicIP(ip)
 }
 
 func (h *Handler) AnalyzeLog(w http.ResponseWriter, r *http.Request) {
@@ -340,6 +334,77 @@ func (h *Handler) AnalyzeLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, analysis)
+}
+
+func (h *Handler) AnalyzeLogStream(w http.ResponseWriter, r *http.Request) {
+	var req aiAnalyzeLogPayload
+	if !decode(w, r, &req) {
+		return
+	}
+	entry, status, code, err := h.resolveAnalyzeLogEntry(r, req)
+	if err != nil {
+		writeError(w, status, code, err.Error())
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+		defer cancel()
+		analysis, err := ai.AnalyzeLogWithLanguage(ctx, h.aiReasoningClient(), entry, req.Language)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "AI_ANALYSIS_FAILED", err.Error())
+			return
+		}
+		w.Header().Set("X-CheeseWAF-Stream-Fallback", "json")
+		writeData(w, analysis)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	allowLongResponseWrite(w)
+	var writeMu sync.Mutex
+	writeEvent := func(event string, payload any) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		writeAssistantSSE(w, flusher, event, payload)
+	}
+	heartbeatDone := make(chan struct{})
+	var heartbeatOnce sync.Once
+	stopHeartbeat := func() {
+		heartbeatOnce.Do(func() { close(heartbeatDone) })
+	}
+	defer stopHeartbeat()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)})
+			case <-heartbeatDone:
+				return
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}()
+	writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "流式分析连接已建立。", "Streaming analysis connection is open.")})
+	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+	defer cancel()
+	emit, stopProviderWatch := providerStreamEmitter(ctx, req.Language, "analysis", func(event ai.AssistantTraceEvent) {
+		writeEvent("trace", event)
+	})
+	defer stopProviderWatch()
+	analysis, err := ai.AnalyzeLogWithLanguageStream(ctx, h.aiReasoningClient(), entry, req.Language, emit)
+	stopProviderWatch()
+	stopHeartbeat()
+	if err != nil {
+		writeEvent("error", map[string]any{"message": err.Error(), "code": "AI_ANALYSIS_FAILED"})
+		return
+	}
+	writeEvent("done", analysis)
 }
 
 func (h *Handler) resolveAnalyzeLogEntry(r *http.Request, req aiAnalyzeLogPayload) (storage.LogEntry, int, string, error) {
@@ -954,6 +1019,8 @@ func localizedProviderSlowMessage(language, phase string) string {
 		return "AI provider 在 10 秒内还没有开始规划回流；请求会继续保持，不会把最终回答误判为超时。"
 	case "final":
 		return "AI provider 在 10 秒内还没有开始生成最终回答；请求会继续保持，不会把完整回复耗时误判为首包超时。"
+	case "analysis":
+		return "AI provider 在 10 秒内还没有开始事件分析回流；请求会继续保持，不会把完整分析耗时误判为首包超时。"
 	default:
 		return "AI provider 在 10 秒内还没有开始回流；请求会继续保持。"
 	}

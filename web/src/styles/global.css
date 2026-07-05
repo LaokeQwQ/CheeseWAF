@@ -247,12 +247,14 @@ select {
   display: grid;
   gap: 4px;
   overflow: hidden;
-  transition: max-height 180ms ease, opacity 180ms ease;
+  transition: max-height 180ms ease, opacity 180ms ease, visibility 0s linear 0s;
 }
 
 .nav-group-collapsed {
   max-height: 0;
   opacity: 0;
+  visibility: hidden;
+  transition: max-height 180ms ease, opacity 180ms ease, visibility 0s linear 180ms;
 }
 
 .app-shell-collapsed .nav-group-heading {
@@ -529,6 +531,14 @@ select {
   flex: 0 0 36px;
 }
 
+.notification-shell {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  isolation: isolate;
+  z-index: 120;
+}
+
 .notification-trigger {
   position: relative;
   display: inline-grid;
@@ -685,6 +695,10 @@ select {
 }
 
 .notification-panel {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  z-index: 1200;
   width: min(380px, calc(100vw - 32px));
   display: grid;
   gap: 12px;
@@ -695,6 +709,20 @@ select {
   box-shadow:
     0 22px 70px color-mix(in srgb, #000000 16%, transparent),
     0 1px 0 color-mix(in srgb, #ffffff 64%, transparent) inset;
+  transform-origin: top right;
+  animation: notification-panel-in 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes notification-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .notification-panel header {
@@ -704,11 +732,79 @@ select {
   gap: 12px;
 }
 
-.notification-panel span {
+.notification-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.notification-filter-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-soft) 84%, var(--surface));
+}
+
+.notification-filter-tabs button {
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 120ms ease;
+}
+
+.notification-filter-tabs button:active {
+  transform: scale(0.97);
+}
+
+.notification-filter-tabs button.notification-filter-active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow:
+    0 8px 20px color-mix(in srgb, #000000 7%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent) inset;
+}
+
+.notification-actions .arco-btn {
+  border-radius: 999px;
+  transition:
+    background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.notification-actions .arco-btn:active {
+  transform: scale(0.98);
+}
+
+.notification-item-title,
+.notification-open em,
+.notification-read-toggle {
   color: var(--text-muted);
 }
 
-.notification-panel strong {
+.notification-panel header > strong,
+.notification-open strong,
+.notification-item-title {
   color: var(--text);
 }
 
@@ -723,17 +819,18 @@ select {
   position: relative;
   min-width: 0;
   display: grid;
-  gap: 4px;
-  padding: 10px 12px 10px 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 14px;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   color: var(--text);
   background: color-mix(in srgb, var(--surface-soft) 58%, var(--surface));
   text-align: left;
-  cursor: pointer;
   transition:
     border-color 150ms ease,
-    background 150ms ease,
+    background-color 150ms ease,
     transform 150ms ease;
 }
 
@@ -756,16 +853,116 @@ select {
   background: var(--accent-danger);
 }
 
-.notification-item:hover,
+.notification-item-pinned {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent 48%),
+    color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
+}
+
+.notification-open {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 3px 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notification-open:focus-visible,
+.notification-pin:focus-visible,
+.notification-read-toggle:focus-visible,
+.notification-filter-tabs button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  outline-offset: 2px;
+}
+
+.notification-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.notification-read-toggle {
+  height: 26px;
+  min-width: 42px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 120ms ease;
+}
+
+.notification-pin {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 120ms ease;
+}
+
+.notification-item-pinned .notification-pin {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.notification-pin:active {
+  transform: scale(0.96);
+}
+
+.notification-read-toggle:active {
+  transform: scale(0.96);
+}
+
 .notification-item:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
   background: var(--surface-soft);
-  transform: translateY(-1px);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .notification-item:hover {
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+    background: var(--surface-soft);
+    transform: translateY(-1px);
+  }
+
+  .notification-pin:hover {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+  }
+
+  .notification-read-toggle:hover {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  }
 }
 
 .notification-item-title,
-.notification-item strong,
-.notification-item em {
+.notification-open strong,
+.notification-open em {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -773,17 +970,37 @@ select {
 }
 
 .notification-item-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 650;
 }
 
-.notification-item strong {
+.notification-item-title i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--accent-danger);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-danger) 13%, transparent);
+}
+
+.notification-item-read {
+  opacity: 0.72;
+}
+
+.notification-item-read::before {
+  background: var(--border-strong);
+}
+
+.notification-open strong {
   font-size: 13px;
   font-weight: 650;
 }
 
-.notification-item em {
+.notification-open em {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1397,11 +1614,11 @@ select {
   gap: 8px;
   white-space: nowrap;
   padding: 7px 10px;
-  border: 1px solid color-mix(in srgb, white 16%, transparent);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  color: #ffffff;
-  background: rgba(9, 14, 25, 0.88);
-  box-shadow: 0 14px 32px color-mix(in srgb, #000 20%, transparent);
+  color: var(--text);
+  background: var(--surface-raised);
+  box-shadow: 0 14px 32px color-mix(in srgb, var(--app-bg) 40%, transparent);
   font-size: 12px;
   line-height: 1;
   pointer-events: none;
@@ -1416,9 +1633,9 @@ select {
   width: 8px;
   height: 8px;
   transform: translateX(-50%) rotate(45deg);
-  border-right: 1px solid color-mix(in srgb, white 16%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, white 16%, transparent);
-  background: rgba(9, 14, 25, 0.88);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
 }
 
 .chart-hover-label strong {
@@ -2566,6 +2783,14 @@ code {
   gap: 7px;
 }
 
+.site-detail-grid label > em,
+.site-form-section-header > span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.5;
+}
+
 .form-grid label > span,
 .site-detail-grid label > span {
   color: var(--text-muted);
@@ -2609,6 +2834,15 @@ code {
   min-width: 0;
 }
 
+.site-detail-actions {
+  flex-shrink: 0;
+  justify-content: flex-end;
+}
+
+.site-detail-actions .arco-btn {
+  white-space: nowrap;
+}
+
 .site-detail-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2644,6 +2878,62 @@ code {
   gap: 6px;
 }
 
+.site-detail-panel {
+  min-width: 0;
+}
+
+.site-detail-tabs .arco-tabs-header-nav {
+  min-width: 0;
+}
+
+.site-detail-tabs .arco-tabs-header-title {
+  white-space: nowrap;
+}
+
+.site-form-section {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.site-form-section + .site-form-section {
+  margin-top: 14px;
+}
+
+.site-form-section-header {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.site-form-section-header > strong {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 680;
+}
+
+.site-protection-switch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.site-protection-switch-grid .switch-line {
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.site-unit-input {
+  grid-template-columns: minmax(0, 1fr) 116px;
+}
+
 .rewrite-toolbar {
   display: flex;
   justify-content: flex-end;
@@ -2657,9 +2947,46 @@ code {
 
 .rewrite-row {
   display: grid;
-  grid-template-columns: auto minmax(160px, 1fr) minmax(160px, 1fr) 110px auto;
-  gap: 8px;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.rewrite-row-head {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
+  gap: 12px;
+}
+
+.rewrite-row-head .switch-line {
+  flex: 1 1 auto;
+  max-width: 220px;
+}
+
+.rewrite-row-head .arco-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.rewrite-row-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(180px, 1.2fr) minmax(110px, 0.45fr);
+  gap: 10px;
+}
+
+.rewrite-row-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.rewrite-row-grid label > span {
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .acme-wizard {
@@ -2985,6 +3312,7 @@ code {
 .storage-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
   gap: 12px;
 }
 
@@ -3002,6 +3330,7 @@ code {
 .storage-card-body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
   gap: 12px;
 }
 
@@ -3338,7 +3667,7 @@ code {
 
 .ip-intel-workspace {
   display: grid;
-  grid-template-columns: minmax(560px, 1.35fr) minmax(360px, 0.65fr);
+  grid-template-columns: minmax(410px, 1.35fr) minmax(260px, 0.65fr);
   gap: 14px;
   align-items: start;
 }
@@ -3517,7 +3846,7 @@ code {
 
 .ip-access-draft-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1.1fr) minmax(140px, 0.72fr) minmax(150px, 0.8fr) minmax(190px, 1fr) minmax(180px, 1fr);
+  grid-template-columns: minmax(160px, 1.1fr) minmax(100px, 0.72fr) minmax(110px, 0.8fr) minmax(140px, 1fr) minmax(130px, 1fr);
   gap: 12px;
   align-items: end;
 }
@@ -3630,7 +3959,7 @@ code {
 
 .api-security-grid {
   display: grid;
-  grid-template-columns: minmax(620px, 1fr) minmax(360px, 420px);
+  grid-template-columns: minmax(420px, 1fr) minmax(250px, 420px);
   gap: 14px;
   align-items: start;
 }
@@ -3650,11 +3979,11 @@ code {
 }
 
 .monitor-grid {
-  grid-template-columns: minmax(360px, 0.42fr) minmax(520px, 0.58fr);
+  grid-template-columns: minmax(270px, 0.42fr) minmax(400px, 0.58fr);
 }
 
 .users-grid {
-  grid-template-columns: minmax(320px, 0.36fr) minmax(620px, 0.64fr);
+  grid-template-columns: minmax(230px, 0.36fr) minmax(440px, 0.64fr);
 }
 
 .api-discovery-panel,
@@ -3678,7 +4007,20 @@ code {
 }
 
 .api-endpoints-table .arco-table {
-  min-width: 780px;
+  min-width: 900px;
+}
+
+.api-table-actions {
+  min-width: max-content;
+  display: inline-flex;
+  justify-content: flex-end;
+}
+
+.api-table-actions .arco-btn {
+  width: auto;
+  min-width: 68px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .monitor-alerts-table .arco-table {
@@ -3756,7 +4098,13 @@ code {
 }
 
 .users-table-wrap {
-  overflow-x: auto;
+  overflow: visible;
+}
+
+.users-table-wrap .arco-table-container,
+.users-table-wrap .arco-table-content,
+.users-table-wrap .arco-table-body {
+  overflow: visible !important;
 }
 
 .user-identity-cell {
@@ -3821,7 +4169,60 @@ code {
 
 .users-twofa-setup {
   display: grid;
-  gap: 14px;
+  gap: 16px;
+}
+
+.users-twofa-status {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 44%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: 10px;
+}
+
+.users-twofa-status > svg {
+  width: 38px;
+  height: 38px;
+  padding: 9px;
+  color: var(--accent-strong);
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 10px;
+}
+
+.users-twofa-status > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.users-twofa-status strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.users-twofa-status span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.users-twofa-body {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.users-twofa-steps {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 12px;
 }
 
 .users-twofa-setup img {
@@ -3834,12 +4235,12 @@ code {
   background: #fff;
 }
 
-.users-twofa-setup > div {
+.users-twofa-steps > div {
   display: grid;
   gap: 6px;
 }
 
-.users-twofa-setup > div > span {
+.users-twofa-steps > div > span {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 650;
@@ -3880,7 +4281,7 @@ code {
 
 .ops-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 0.36fr) minmax(560px, 0.64fr);
+  grid-template-columns: minmax(230px, 0.36fr) minmax(440px, 0.64fr);
   gap: 14px;
   align-items: stretch;
 }
@@ -3974,6 +4375,21 @@ code {
   min-width: 64px;
   justify-content: center;
   white-space: nowrap;
+}
+
+.ops-task-form {
+  display: grid;
+  gap: 14px;
+}
+
+.ops-task-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ops-task-form-grid .arco-form-item {
+  margin-bottom: 0;
 }
 
 .template-list {
@@ -4365,7 +4781,7 @@ code {
 }
 
 .updates-grid {
-  grid-template-columns: minmax(380px, 0.42fr) minmax(560px, 0.58fr);
+  grid-template-columns: minmax(270px, 0.42fr) minmax(400px, 0.58fr);
   align-items: start;
 }
 
@@ -4761,7 +5177,7 @@ code {
 
 :root[data-theme='dark'] .protection-level-picker,
 :root[data-theme='black-gold'] .protection-level-picker {
-  background: color-mix(in srgb, var(--surface-soft) 68%, #0b111b);
+  background: color-mix(in srgb, var(--surface-soft) 68%, var(--app-bg));
   border-color: color-mix(in srgb, var(--border) 72%, var(--accent-info) 12%);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #ffffff 8%, transparent),
@@ -4771,7 +5187,7 @@ code {
 :root[data-theme='dark'] .protection-level-option,
 :root[data-theme='black-gold'] .protection-level-option {
   color: color-mix(in srgb, var(--text) 86%, #ffffff);
-  background: color-mix(in srgb, var(--surface) 74%, #0c1724);
+  background: color-mix(in srgb, var(--surface) 74%, var(--app-bg));
   border-color: color-mix(in srgb, var(--border) 82%, #ffffff 7%);
 }
 
@@ -5213,7 +5629,7 @@ code {
 }
 
 .console-settings-grid {
-  grid-template-columns: minmax(340px, 1fr) minmax(320px, 1fr) minmax(320px, 1fr);
+  grid-template-columns: minmax(230px, 1fr) minmax(220px, 1fr) minmax(220px, 1fr);
 }
 
 .console-settings-grid .console-map-fieldset {
@@ -5512,6 +5928,63 @@ code {
   margin-top: 14px;
 }
 
+.analysis-live-trace {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-info) 8%, transparent), transparent 42%),
+    var(--surface-soft);
+  border: 1px solid color-mix(in srgb, var(--accent-info) 18%, var(--border));
+  border-radius: 10px;
+}
+
+.analysis-live-trace > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.analysis-live-trace section {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.analysis-live-trace section > span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.analysis-live-trace ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.analysis-live-trace li {
+  min-width: 0;
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.analysis-live-trace li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .analysis-result p {
   margin: 0;
   color: var(--text);
@@ -5619,6 +6092,10 @@ code {
   transform: translate3d(var(--map-pan-x, 0), var(--map-pan-y, 0), 0) scale(var(--map-zoom, 1));
   transform-origin: center;
   transition: transform 120ms ease;
+  will-change: auto;
+}
+
+.map-panning .flat-map-stage {
   will-change: transform;
 }
 
@@ -6035,7 +6512,7 @@ code {
 :root[data-theme='black-gold'] .map-mode-3d .map-legend,
 :root[data-theme='black-gold'] .map-mode-3d .map-risk-legend {
   color: color-mix(in srgb, #ffffff 88%, var(--accent-info));
-  background: color-mix(in srgb, #07111d 72%, transparent);
+  background: color-mix(in srgb, var(--app-bg) 72%, transparent);
   border-color: color-mix(in srgb, var(--accent-info) 26%, transparent);
   box-shadow: 0 12px 28px color-mix(in srgb, #000000 24%, transparent);
 }
@@ -6468,7 +6945,7 @@ code {
 .attack-screen-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(230px, 0.68fr) minmax(420px, 1.55fr) minmax(250px, 0.72fr);
+  grid-template-columns: minmax(170px, 0.68fr) minmax(310px, 1.55fr) minmax(180px, 0.72fr);
   gap: 16px;
   padding: 16px;
 }
@@ -7207,9 +7684,11 @@ code {
     transform 160ms ease;
 }
 
-.auth-captcha-gate:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--surface-soft) 92%, var(--accent) 8%);
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+@media (hover: hover) and (pointer: fine) {
+  .auth-captcha-gate:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--surface-soft) 92%, var(--accent) 8%);
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  }
 }
 
 .auth-captcha-gate:active:not(:disabled) {
@@ -7307,6 +7786,7 @@ code {
 }
 
 .auth-captcha-modal .arco-modal-content {
+  position: relative;
   overflow: hidden;
   padding: 0 !important;
   background: var(--surface);
@@ -7316,6 +7796,25 @@ code {
     0 32px 86px rgba(15, 23, 42, 0.24),
     0 10px 28px rgba(15, 23, 42, 0.13),
     inset 0 1px 0 color-mix(in srgb, #ffffff 68%, transparent);
+}
+
+.auth-captcha-modal .arco-modal-content::before {
+  position: absolute;
+  inset: -24%;
+  z-index: 0;
+  content: "";
+  background:
+    radial-gradient(circle at 20% 18%, color-mix(in srgb, var(--accent-info) 18%, transparent), transparent 30%),
+    radial-gradient(circle at 82% 30%, color-mix(in srgb, var(--accent-success) 16%, transparent), transparent 32%),
+    conic-gradient(from 140deg, transparent, color-mix(in srgb, var(--accent-warning) 12%, transparent), transparent 44%);
+  opacity: 0.68;
+  transform: rotate(0deg);
+  animation: captcha-modal-ambient 8s linear infinite;
+}
+
+.auth-captcha-modal .arco-modal-content > * {
+  position: relative;
+  z-index: 1;
 }
 
 .arco-modal-wrapper:has(.auth-captcha-modal) {
@@ -7337,13 +7836,33 @@ code {
 }
 
 .auth-captcha-widget {
+  position: relative;
   display: grid;
   justify-items: center;
   gap: 12px;
   padding: 18px;
+  overflow: hidden;
   background:
     radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-soft) 46%, transparent), transparent 34%),
+    radial-gradient(circle at 92% 18%, color-mix(in srgb, var(--accent-info) 12%, transparent), transparent 28%),
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 97%, #ffffff 3%), var(--surface));
+}
+
+.auth-captcha-widget::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 0%, color-mix(in srgb, #ffffff 16%, transparent) 28%, transparent 48%);
+  opacity: 0.86;
+  transform: translateX(-120%);
+  animation: captcha-widget-sheen 4.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.auth-captcha-widget > * {
+  position: relative;
+  z-index: 1;
 }
 
 .auth-captcha-widget-head {
@@ -7678,6 +8197,42 @@ code {
   }
 }
 
+@keyframes captcha-modal-ambient {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes captcha-widget-sheen {
+  0%,
+  42% {
+    transform: translateX(-120%);
+  }
+
+  76%,
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-item,
+  .auth-captcha-gate,
+  .auth-captcha-widget-foot button,
+  .auth-slider-piece,
+  .auth-slider-fill,
+  .auth-slider-thumb,
+  .auth-slider-copy {
+    transition: none;
+  }
+
+  .auth-captcha-modal .arco-modal-content::before,
+  .auth-captcha-widget::before,
+  .auth-slider-track::after {
+    animation: none;
+  }
+}
+
 .auth-captcha-widget-foot {
   min-height: 34px;
   display: grid;
@@ -7738,11 +8293,13 @@ code {
     transform 150ms ease;
 }
 
-.auth-captcha-widget-foot button:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--surface);
-  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
-  transform: translateY(-1px);
+@media (hover: hover) and (pointer: fine) {
+  .auth-captcha-widget-foot button:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface);
+    border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+    transform: translateY(-1px);
+  }
 }
 
 .auth-captcha-widget-foot button:disabled {
@@ -7750,7 +8307,7 @@ code {
   opacity: 0.62;
 }
 
-/* Login CAPTCHA layout closure: one compact content column, no duplicated idle status card. */
+/* Login CAPTCHA layout. */
 .auth-captcha-modal {
   width: min(94vw, 368px) !important;
 }
@@ -8067,7 +8624,7 @@ code {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
   width: min(520px, calc(100vw - 32px));
-  height: min(640px, calc(100dvh - 136px));
+  height: min(620px, calc(100dvh - 136px));
   min-height: min(430px, calc(100dvh - 136px));
   max-height: min(620px, calc(100dvh - 136px));
   padding: 16px;
@@ -8232,6 +8789,31 @@ code {
   background: color-mix(in srgb, var(--surface) 78%, transparent);
   font-family: var(--font-mono);
   font-size: 0.92em;
+}
+
+.assistant-markdown-code {
+  max-width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--surface-soft) 78%, #000 4%);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.assistant-markdown-code code {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  font-size: inherit;
 }
 
 .assistant-markdown-table-wrap {
@@ -8549,7 +9131,7 @@ code {
 }
 
 .assistant-tool-card p,
-.assistant-approval span {
+.assistant-approval-head > span {
   margin: 0;
   color: var(--text);
   font-size: 12px;
@@ -8595,7 +9177,7 @@ code {
   font-size: 11.5px;
   line-height: 1.45;
   white-space: pre-wrap;
-  word-break: break-word;
+  word-break: normal;
 }
 
 .assistant-tool-result-error pre {
@@ -8612,9 +9194,18 @@ code {
   border-radius: 12px;
 }
 
+.assistant-approval-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
 .assistant-approval-head {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
 .assistant-approval-head strong {
@@ -8623,17 +9214,21 @@ code {
 }
 
 .assistant-approval-actions {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+  flex: 0 0 auto;
 }
 
 .assistant-approval-actions .arco-btn {
   min-width: 86px;
   flex-shrink: 0;
+  pointer-events: auto;
 }
 
 .assistant-approval-state {
@@ -8936,7 +9531,7 @@ code {
     z-index: 25;
     display: block;
     border: 0;
-    background: color-mix(in srgb, #081713 42%, transparent);
+    background: color-mix(in srgb, var(--app-bg) 42%, transparent);
     opacity: 0;
     pointer-events: none;
     backdrop-filter: blur(2px);
@@ -9282,6 +9877,24 @@ code {
 
   .console-settings-grid .console-map-fieldset {
     grid-column: 1 / -1;
+  }
+
+  .rewrite-row-grid,
+  .users-twofa-body {
+    grid-template-columns: 1fr;
+  }
+
+  .rewrite-row-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rewrite-row-head .switch-line {
+    max-width: none;
+  }
+
+  .users-twofa-setup img {
+    justify-self: center;
   }
 
   .metric-grid {
@@ -10626,7 +11239,7 @@ code {
   }
 }
 
-/* Product-console polish pass: keep dense security pages coherent instead of card soup. */
+/* Dense security page polish. */
 .page-surface {
   gap: 18px;
 }
@@ -10983,7 +11596,7 @@ code {
 }
 
 .block-page-workspace {
-  grid-template-columns: minmax(250px, 300px) minmax(360px, 1fr) minmax(360px, 1fr);
+  grid-template-columns: minmax(170px, 300px) minmax(250px, 1fr) minmax(250px, 1fr);
   grid-template-areas: "templates editor preview";
   gap: 14px;
   align-items: start;
@@ -11382,6 +11995,17 @@ code {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
   .ai-fab::before,
   .ai-fab-working svg,
   .ai-assistant-panel,
@@ -11402,7 +12026,7 @@ code {
   }
 }
 
-/* Visual harmonization pass: keep the control console calmer and more legible. */
+/* Console visual pass. */
 .page-surface {
   gap: 16px;
 }
@@ -11577,7 +12201,7 @@ code {
   }
 }
 
-/* Product-grade console reset: one calm system for dense security operations UI. */
+/* Console layout system. */
 .workspace {
   padding-inline: clamp(24px, 3vw, 44px);
 }
@@ -11682,8 +12306,8 @@ code {
 .page-surface .arco-btn-primary:not(.arco-btn-disabled):not(:disabled) {
   color: #ffffff;
   border-color: color-mix(in srgb, var(--accent-info) 34%, var(--accent));
-  background: linear-gradient(180deg, color-mix(in srgb, #2f6dff 82%, var(--accent)), #165dff);
-  box-shadow: 0 8px 18px color-mix(in srgb, #165dff 18%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 82%, var(--surface)), var(--accent-strong));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .page-surface .arco-btn-primary:not(.arco-btn-disabled):not(:disabled) *,
@@ -12200,7 +12824,7 @@ code {
   }
 }
 
-/* Console QA hardening pass: fewer mixed densities, clearer states, less visual noise. */
+/* QA density/state pass. */
 .topbar {
   grid-template-columns: minmax(260px, 430px) minmax(0, 1fr);
   padding-inline: clamp(18px, 2.4vw, 30px);
@@ -12708,7 +13332,7 @@ code {
   }
 }
 
-/* Current QA pass: tighten AI, intel import, preview, and map surfaces after screenshot review. */
+/* QA pass: AI, intel import, preview, map. */
 .ai-page .ai-config-summary {
   display: grid;
   grid-template-columns: 1fr !important;
@@ -12869,7 +13493,7 @@ code {
   }
 }
 
-/* Follow-up QA pass: reduce vertical drift in narrow admin panels. */
+/* QA pass: narrow panel drift. */
 .ai-page .ai-config-form {
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
 }
@@ -12926,7 +13550,7 @@ code {
   }
 }
 
-/* AI settings form hardening: keep the private gateway switch readable across legacy overrides. */
+/* AI settings form overrides. */
 .ai-page .ai-config-form .ai-field-private-api-base {
   grid-column: span 4 !important;
   min-height: 56px !important;
@@ -12958,7 +13582,7 @@ code {
   }
 }
 
-/* Final QA hardening: keep page-specific mobile tools compact and clear of the assistant FAB. */
+/* QA: mobile tool strip / FAB clearance. */
 .ip-manage-page .ip-header-actions {
   display: flex;
   align-items: center;
@@ -13106,7 +13730,7 @@ code {
   }
 }
 
-/* AI page structural correction: connection settings belong above the workbench, not in a cramped side rail. */
+/* AI page layout: config above workbench. */
 .ai-page .ai-dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) !important;
@@ -13465,7 +14089,7 @@ code {
   }
 }
 
-/* Fix-task closure overrides: scoped to concrete product surfaces. */
+/* Scoped product-surface overrides. */
 .assistant-empty-state {
   min-height: 100%;
   display: grid;
@@ -13530,12 +14154,17 @@ code {
   transform: translateY(-1px);
 }
 
+.assistant-quick-prompts button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .assistant-input .arco-input-inner-wrapper {
   min-height: 42px;
   border-radius: 999px !important;
 }
 
-/* AI dual-model and self-learning settings. Keep this after legacy AI form overrides. */
+/* AI dual-model and self-learning settings. Keep after legacy AI form overrides. */
 .ai-page .ai-config-form .ai-config-subpanel,
 .ai-page .ai-config-form .ai-config-section-global,
 .ai-page .ai-config-form .ai-self-learning-report {
@@ -13590,10 +14219,10 @@ code {
 
 .ai-model-config-grid {
   grid-template-columns:
-    minmax(150px, 0.72fr)
-    minmax(220px, 1fr)
-    minmax(190px, 0.9fr)
-    minmax(190px, 0.9fr);
+    minmax(130px, 0.72fr)
+    minmax(190px, 1fr)
+    minmax(160px, 0.9fr)
+    minmax(160px, 0.9fr);
   align-items: start;
 }
 
@@ -13647,6 +14276,7 @@ code {
 
   .assistant-deep-think-toggle {
     grid-column: 1 / -1;
+    min-width: 0;
   }
 }
 
@@ -13918,7 +14548,7 @@ code {
   }
 }
 
-/* Map, globe, AI analysis, and block-page preview stabilization. Keep this final enough to override older QA patches. */
+/* Map, globe, AI analysis, block-page preview. Keep after older QA patches. */
 .attack-map-page .map-workbench-header {
   display: grid;
   grid-template-columns: minmax(220px, 0.78fr) minmax(220px, 0.58fr) minmax(360px, 1fr);
@@ -14158,12 +14788,12 @@ code {
 .ai-page .ai-events-list-header,
 .ai-page .ai-events-list-row {
   grid-template-columns:
-    minmax(92px, 0.5fr)
-    minmax(132px, 0.56fr)
-    minmax(90px, 0.38fr)
-    minmax(110px, 0.46fr)
-    minmax(260px, 1fr)
-    minmax(188px, 0.68fr) !important;
+    minmax(60px, 0.5fr)
+    minmax(90px, 0.56fr)
+    minmax(60px, 0.38fr)
+    minmax(80px, 0.46fr)
+    minmax(180px, 1fr)
+    minmax(130px, 0.68fr) !important;
   gap: 10px;
 }
 
@@ -14308,7 +14938,7 @@ code {
   }
 }
 
-/* Final AI page polish for compact model configuration. */
+/* AI model config compact layout. */
 .ai-page .ai-model-config-grid {
   grid-template-columns:
     minmax(150px, 0.72fr)
@@ -14338,7 +14968,7 @@ code {
   }
 }
 
-/* Dashboard responsive repair: 640-860px is a compact console, not a phone. */
+/* Dashboard 640-860px: compact console. */
 @media (max-width: 860px) and (min-width: 521px) {
   .topbar {
     min-height: 58px;
@@ -14500,7 +15130,7 @@ code {
   }
 }
 
-/* Dashboard compact-desktop contract: narrow browser windows are not phone UI. */
+/* Dashboard 521-860px: compact topbar. */
 @media (max-width: 860px) and (min-width: 521px) {
   .topbar {
     min-height: 56px !important;
@@ -14779,7 +15409,7 @@ code {
   }
 }
 
-/* Dashboard chart toolbar final contract: chart controls are a horizontal tool strip, not a form. */
+/* Dashboard chart toolbar. */
 .dashboard-page .dashboard-traffic-panel .dashboard-chart-heading {
   width: 100% !important;
   min-width: 0 !important;
@@ -14944,10 +15574,10 @@ code {
   }
 }
 
-/* Final acceptance overrides for 2026-06 map/globe/AI/block-preview fixes. */
+/* Map/globe/AI/block-preview overrides 2026-06. */
 .attack-map-page .map-workbench-header {
   display: grid !important;
-  grid-template-columns: minmax(220px, 0.78fr) minmax(220px, 0.58fr) minmax(360px, 1fr) !important;
+  grid-template-columns: minmax(180px, 0.78fr) minmax(180px, 0.58fr) minmax(300px, 1fr) !important;
   align-items: center !important;
   gap: 12px !important;
   overflow: visible !important;
@@ -15145,12 +15775,12 @@ code {
 .ai-page .ai-events-list-header,
 .ai-page .ai-events-list-row {
   grid-template-columns:
-    minmax(92px, 0.5fr)
-    minmax(132px, 0.56fr)
-    minmax(90px, 0.38fr)
-    minmax(110px, 0.46fr)
-    minmax(260px, 1fr)
-    minmax(188px, 0.68fr) !important;
+    minmax(60px, 0.5fr)
+    minmax(90px, 0.56fr)
+    minmax(60px, 0.38fr)
+    minmax(80px, 0.46fr)
+    minmax(180px, 1fr)
+    minmax(130px, 0.68fr) !important;
   gap: 10px !important;
 }
 
@@ -15270,6 +15900,10 @@ code {
 }
 
 .attack-map-page .flat-map-stage {
+  will-change: auto !important;
+}
+
+.attack-map-page .map-panning .flat-map-stage {
   will-change: transform !important;
 }
 
@@ -15677,26 +16311,98 @@ code {
 }
 
 .attack-map-page .map-mode-china .flat-map-stage::after {
-  opacity: 0.18 !important;
+  display: none !important;
 }
 
-.attack-map-page .china-reference-boundary-layer {
-  filter: drop-shadow(0 18px 42px color-mix(in srgb, var(--accent-info) 9%, transparent)) !important;
+.attack-map-page .china-admin-map {
+  filter: drop-shadow(0 18px 42px color-mix(in srgb, var(--text) 8%, transparent)) !important;
 }
 
-.attack-map-page .china-reference-boundary-path {
-  fill: color-mix(in srgb, var(--accent-info) 10%, var(--surface)) !important;
-  stroke: color-mix(in srgb, var(--accent-info) 58%, var(--text-muted)) !important;
-  stroke-width: 1.65 !important;
-  opacity: 0.86 !important;
+.attack-map-page .china-admin-layer {
+  transform-box: fill-box;
 }
 
-.attack-map-page .china-focus-rings ellipse {
-  opacity: 0.18 !important;
+.attack-map-page .china-admin-path {
+  fill: color-mix(in srgb, var(--accent-info) 5%, var(--surface)) !important;
+  stroke: color-mix(in srgb, var(--text-muted) 56%, var(--border)) !important;
+  stroke-width: 1.15 !important;
+  vector-effect: non-scaling-stroke !important;
+  transition:
+    fill 180ms ease,
+    stroke 180ms ease,
+    stroke-width 180ms ease,
+    opacity 180ms ease !important;
 }
 
-.attack-map-page .china-posture-cell {
-  opacity: 0.58 !important;
+.attack-map-page .china-admin-layer-province .china-admin-path {
+  fill: color-mix(in srgb, var(--accent-info) 6%, var(--surface)) !important;
+  stroke: color-mix(in srgb, var(--text-muted) 62%, var(--accent-info)) !important;
+  stroke-width: 1.45 !important;
+}
+
+.attack-map-page .china-admin-layer-city .china-admin-path {
+  fill: color-mix(in srgb, var(--surface) 88%, var(--accent-info) 6%) !important;
+  stroke: color-mix(in srgb, var(--text-muted) 42%, var(--accent-info)) !important;
+  stroke-width: 0.9 !important;
+  opacity: 0.88 !important;
+}
+
+.attack-map-page .china-admin-layer-district .china-admin-path,
+.attack-map-page .china-admin-layer-external .china-admin-path {
+  fill: color-mix(in srgb, var(--surface) 90%, var(--accent-info) 4%) !important;
+  stroke: color-mix(in srgb, var(--text-muted) 36%, var(--accent-info)) !important;
+  stroke-width: 0.78 !important;
+  opacity: 0.9 !important;
+}
+
+.attack-map-page .china-admin-path.map-risk-low {
+  fill: color-mix(in srgb, var(--accent-info) 18%, var(--surface)) !important;
+  stroke: color-mix(in srgb, var(--accent-info) 54%, var(--text-muted)) !important;
+}
+
+.attack-map-page .china-admin-path.map-risk-medium {
+  fill: color-mix(in srgb, var(--accent-warning) 22%, var(--surface)) !important;
+  stroke: color-mix(in srgb, var(--accent-warning) 62%, var(--text-muted)) !important;
+}
+
+.attack-map-page .china-admin-path.map-risk-high {
+  fill: color-mix(in srgb, #f97316 24%, var(--surface)) !important;
+  stroke: color-mix(in srgb, #f97316 68%, var(--text-muted)) !important;
+}
+
+.attack-map-page .china-admin-path.map-risk-critical {
+  fill: color-mix(in srgb, var(--accent-danger) 28%, var(--surface)) !important;
+  stroke: color-mix(in srgb, var(--accent-danger) 74%, var(--text)) !important;
+}
+
+.attack-map-page .china-admin-active {
+  stroke-width: 1.9 !important;
+}
+
+.attack-map-page .china-admin-layer-district .china-admin-active,
+.attack-map-page .china-admin-layer-external .china-admin-active {
+  stroke-width: 1.35 !important;
+}
+
+.attack-map-page .china-map-labels {
+  pointer-events: none !important;
+}
+
+.attack-map-page .china-map-labels text {
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+  fill: color-mix(in srgb, var(--text) 82%, var(--accent-info)) !important;
+  stroke: color-mix(in srgb, var(--surface) 96%, transparent) !important;
+  stroke-width: 4px !important;
+  paint-order: stroke !important;
+}
+
+.attack-map-page .china-map-labels circle {
+  fill: color-mix(in srgb, var(--surface) 94%, transparent) !important;
+  stroke: color-mix(in srgb, var(--accent-info) 62%, var(--text-muted)) !important;
+  stroke-width: 1.6 !important;
+  vector-effect: non-scaling-stroke !important;
 }
 
 .ai-page .ai-dashboard-grid {
@@ -16112,7 +16818,7 @@ code {
   }
 }
 
-/* AI settings hierarchy: keep daily event triage above advanced automation controls. */
+/* AI settings: event triage above automation. */
 .ai-page .ai-advanced-settings {
   grid-column: 1 / -1 !important;
   min-width: 0 !important;
@@ -16188,7 +16894,7 @@ code {
   gap: 10px !important;
 }
 
-/* Highest-priority AI page repair: override legacy 12-column form rules that squeezed custom blocks. */
+/* AI page: override legacy 12-column form rules. */
 .ai-page .ai-config-panel > .ai-config-form {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
   grid-auto-flow: row !important;
@@ -16246,7 +16952,7 @@ code {
   }
 }
 
-/* AI form layout isolation: Form provides state only; ai-config-main owns visual layout. */
+/* AI form layout: Form owns state; ai-config-main owns visual layout. */
 .ai-page .ai-config-panel .ai-config-form {
   display: block !important;
   grid-template-columns: none !important;
@@ -16302,7 +17008,7 @@ code {
   }
 }
 
-/* Compact AI configuration for desktop: no vertical text, no oversized empty cards. */
+/* AI config desktop compact. */
 .ai-page .ai-config-main > .ai-config-section-global {
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   gap: 10px !important;

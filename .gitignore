@@ -55,6 +55,9 @@ fix_task.md
 implementation_plan.md
 deepseek_work.md
 engine_upgrade.md
+claude_fix.md
+deepseek_advice.md
+security_best_practices_report.md
 *.private.md
 *.local.md
 
@@ -73,6 +76,7 @@ go.work
 go.work.sum
 vendor/
 .cache/
+.gocache/
 
 # Editors and local agent state
 .idea/

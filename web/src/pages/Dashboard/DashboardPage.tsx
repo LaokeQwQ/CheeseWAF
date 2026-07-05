@@ -50,24 +50,33 @@ export default function DashboardPage() {
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
   const { data: monitor, isLoading: loadingMonitor, isFetching: fetchingMonitor, refetch: refetchMonitor } = useQuery({
-    queryKey: ['dashboard-monitor'],
+    queryKey: ['monitor-summary'],
     queryFn: fetchMonitorSummary,
     refetchInterval: refreshMs,
     retry: false,
+    staleTime: Math.max(1000, Math.floor(refreshMs * 0.8)),
   });
   const { data: periodLogs, isLoading: loadingPeriod, refetch: refetchPeriodLogs } = useQuery({
     queryKey: ['dashboard-period-logs', statsRange, customRange],
-    queryFn: () => fetchLogs(buildStatsQuery(statsRange, customRange, 5000)),
+    queryFn: () => fetchLogs(buildStatsQuery(statsRange, customRange, statsRange === customStatsRangeValue ? 2500 : 1500)),
     refetchInterval: totalsRefreshMs,
     retry: false,
+    staleTime: 20_000,
   });
   const { data: liveLogs, isLoading: loadingLive, isFetching: fetchingLive, refetch: refetchLiveLogs } = useQuery({
     queryKey: ['dashboard-live-logs'],
-    queryFn: () => fetchLogs(buildWindowQuery(realtimeWindowSeconds, 500)),
+    queryFn: () => fetchLogs(buildWindowQuery(realtimeWindowSeconds, 180)),
     refetchInterval: refreshMs,
     retry: false,
+    staleTime: Math.max(1000, Math.floor(refreshMs * 0.8)),
   });
-  const { data: sites, refetch: refetchSites } = useQuery({ queryKey: ['dashboard-sites'], queryFn: fetchSites, refetchInterval: 30_000, retry: false });
+  const { data: sites, refetch: refetchSites } = useQuery({
+    queryKey: ['sites'],
+    queryFn: fetchSites,
+    refetchInterval: 60_000,
+    retry: false,
+    staleTime: 60_000,
+  });
   const reclaimMutation = useMutation({
     mutationFn: reclaimSystemResources,
     onSuccess: (result) => {
@@ -77,7 +86,7 @@ export default function DashboardPage() {
       } else {
         ArcoMessage.warning(message);
       }
-      queryClient.invalidateQueries({ queryKey: ['dashboard-monitor'] });
+      queryClient.invalidateQueries({ queryKey: ['monitor-summary'] });
     },
     onError: (error) => ArcoMessage.error(error.message),
   });
@@ -97,6 +106,12 @@ export default function DashboardPage() {
   const liveRequests = liveEntries.length;
   const liveBlockedCount = liveEntries.filter((entry) => entry.action === 'block').length;
   const siteCount = sites?.length ?? snapshot?.sites ?? 0;
+  const enabledSiteCount = sites?.filter((site) => site.enabled !== false).length ?? 0;
+  const siteDelta = sites
+    ? t('dashboard.sitesEnabled', { enabled: enabledSiteCount, total: sites.length })
+    : snapshot
+      ? t('dashboard.sitesFromRuntime')
+      : t('dashboard.sitesLoading');
   const host = snapshot?.host;
   const cpuPercent = clampPercent(host?.cpu_percent ?? 0);
   const memoryHostPercent = clampPercent(host?.memory_percent ?? 0);
@@ -105,7 +120,7 @@ export default function DashboardPage() {
   const cpuCount = host?.cpu_count ?? 0;
   const load1 = host?.load1 ?? 0;
   const loadPercent = clampPercent(cpuCount > 0 ? (load1 / cpuCount) * 100 : load1 * 25);
-  const loading = loadingMonitor || loadingPeriod;
+  const loading = (loadingMonitor && !monitor) || (loadingPeriod && !periodLogs);
   const refreshingLiveResources = fetchingMonitor || fetchingLive;
   const maxTraffic = Math.max(...visibleTraffic.map((point) => point.count), 1);
   const yMax = niceAxisMax(maxTraffic);
@@ -151,7 +166,7 @@ export default function DashboardPage() {
           { label: t('dashboard.totalRequests'), value: formatNumber(periodRequests), delta: rangeLabel(statsRange, customRange, t), icon: Zap },
           { label: t('dashboard.totalBlocked'), value: formatNumber(periodBlockedCount), delta: `${blockRate(periodBlockedCount, periodRequests)}%`, icon: ShieldCheck },
           { label: t('dashboard.responseSpeed'), value: formatLatency(averageLatency), delta: t('dashboard.responseSpeedHint'), icon: Activity },
-          { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: snapshot ? t('common.online') : t('common.unknown'), icon: HardDrive },
+          { label: t('dashboard.sites'), value: formatNumber(siteCount), delta: siteDelta, icon: HardDrive },
         ].map((item) => {
           const Icon = item.icon;
           return (
@@ -322,7 +337,7 @@ export default function DashboardPage() {
                 />
               </Tooltip>
             </div>
-            <Spin loading={loadingLive}>
+            <Spin loading={loadingLive && !liveLogs}>
               <div className="realtime-summary">
                 <div>
                   <span>{t('dashboard.liveRequests')}</span>

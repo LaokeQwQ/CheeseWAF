@@ -25,12 +25,14 @@ func (s *Server) TLSServer(altSvc string) (*http.Server, error) {
 		handler = withAltSvc(handler, altSvc)
 	}
 	return &http.Server{
-		Addr:         s.config.Server.ListenTLS,
-		Handler:      handler,
-		TLSConfig:    tlsConfig,
-		ReadTimeout:  s.config.Server.ReadTimeout,
-		WriteTimeout: s.config.Server.WriteTimeout,
-		IdleTimeout:  s.config.Server.IdleTimeout,
+		Addr:              s.config.Server.ListenTLS,
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: s.config.Server.ReadTimeout,
+		ReadTimeout:       s.config.Server.ReadTimeout,
+		WriteTimeout:      s.config.Server.WriteTimeout,
+		IdleTimeout:       s.config.Server.IdleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes(s.config),
 	}, nil
 }
 
@@ -114,6 +116,9 @@ func maxHeaderBytes(cfg *config.Config) int {
 		if site.WAF.Performance.MaxHeaderBytes > maxHeaderBytes {
 			maxHeaderBytes = site.WAF.Performance.MaxHeaderBytes
 		}
+	}
+	if maxHeaderBytes <= 0 {
+		return 1 << 20
 	}
 	return maxHeaderBytes
 }
