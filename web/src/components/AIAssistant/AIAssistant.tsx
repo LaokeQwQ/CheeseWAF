@@ -3,8 +3,8 @@ import { Button, Input, Message, Switch, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, ChevronDown, ChevronUp, Send, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { approveAIApproval, askAIAssistantStream, executeAITool, fetchAITools, fetchLogs, fetchMonitorSummary, rejectAIApproval } from '../../api/client';
-import type { AIAssistantTraceEvent, AIToolExecution } from '../../types/api';
+import { askAIAssistantStream, continueAIApprovalStream, fetchAITools, fetchLogs, fetchMonitorSummary, rejectAIApproval } from '../../api/client';
+import type { AIAssistantReply, AIAssistantTraceEvent, AIToolExecution } from '../../types/api';
 import SafeMarkdown, { safeAssistantDisplayText } from '../SafeMarkdown';
 
 type AssistantMessage = {
@@ -19,6 +19,7 @@ type AssistantMessage = {
   traceOpen?: boolean;
   tools?: AIToolExecution[];
   trace?: AIAssistantTraceEvent[];
+  prompt?: string;
 };
 
 type AssistantMeta = {
@@ -35,6 +36,11 @@ type AssistantMeta = {
   model?: string;
 };
 
+type ApprovalContinuationInput = {
+  execution: AIToolExecution;
+  prompt: string;
+};
+
 export default function AIAssistant() {
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -45,9 +51,12 @@ export default function AIAssistant() {
   const [thinkingProcessOpen, setThinkingProcessOpen] = useState(true);
   const [pendingTraceOpen, setPendingTraceOpen] = useState(true);
   const [pendingTrace, setPendingTrace] = useState<AIAssistantTraceEvent[]>([]);
+  const [pendingContent, setPendingContent] = useState('');
   const [deepThink, setDeepThink] = useState(false);
-  const pendingRef = useRef<{ startedAt: number; createdAt: string; inputTokens: number; providerStartedAt?: number } | null>(null);
+  const [continuingApprovalID, setContinuingApprovalID] = useState<string | null>(null);
+  const pendingRef = useRef<{ startedAt: number; createdAt: string; inputTokens: number; prompt?: string; providerStartedAt?: number } | null>(null);
   const pendingTraceRef = useRef<AIAssistantTraceEvent[]>([]);
+  const pendingContentRef = useRef('');
   const threadRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -65,33 +74,45 @@ export default function AIAssistant() {
     };
   }, [logs?.items, monitor?.snapshot]);
 
-  const askMutation = useMutation({
-    mutationFn: (message: string) => {
-      const controller = new AbortController();
-      abortRef.current = controller;
-      return askAIAssistantStream(message, 30, i18n.language, deepThink, (event) => {
-        if (isProviderFirstTraceEvent(event.type) && pendingRef.current && !pendingRef.current.providerStartedAt) {
-          pendingRef.current = { ...pendingRef.current, providerStartedAt: performance.now() };
-        }
-        const next = [...pendingTraceRef.current, event];
-        pendingTraceRef.current = next;
-        setPendingTrace(next);
-      }, controller.signal);
-    },
-    onSuccess: (reply) => {
-      const pending = pendingRef.current;
-      const totalMs = pending ? performance.now() - pending.startedAt : 0;
-      const thinkingMs = pending?.providerStartedAt ? pending.providerStartedAt - pending.startedAt : totalMs;
-      const outputTokens = reply.output_tokens || estimateTokens(reply.answer);
-      const trace = reply.trace?.length ? reply.trace : pendingTraceRef.current;
-      setThread((current) => [
-        ...current,
+  const recordPendingTrace = (event: AIAssistantTraceEvent) => {
+    if (isProviderFirstTraceEvent(event.type) && pendingRef.current && !pendingRef.current.providerStartedAt) {
+      pendingRef.current = { ...pendingRef.current, providerStartedAt: performance.now() };
+    }
+    if (event.type === 'content_delta') {
+      pendingContentRef.current += event.message ?? '';
+      setPendingContent(pendingContentRef.current);
+    }
+    const next = [...pendingTraceRef.current, event];
+    pendingTraceRef.current = next;
+    setPendingTrace(next);
+  };
+
+  function clearPendingState() {
+    pendingRef.current = null;
+    pendingTraceRef.current = [];
+    pendingContentRef.current = '';
+    setPendingTrace([]);
+    setPendingContent('');
+    abortRef.current = null;
+  }
+
+  function appendAssistantReply(reply: AIAssistantReply, options: { approvalID?: string } = {}) {
+    const pending = pendingRef.current;
+    const totalMs = pending ? performance.now() - pending.startedAt : 0;
+    const thinkingMs = pending?.providerStartedAt ? pending.providerStartedAt - pending.startedAt : totalMs;
+    const outputTokens = reply.output_tokens || estimateTokens(reply.answer);
+    const trace = reply.trace?.length ? reply.trace : pendingTraceRef.current;
+    setThread((current) => {
+      const base = options.approvalID ? markApprovalStatus(current, options.approvalID, 'executed') : current;
+      return [
+        ...base,
         {
           id: `assistant-${Date.now()}`,
           role: 'assistant',
           text: reply.answer,
           status: reply.ai_used ? 'AI' : t('ai.heuristicUsed'),
           createdAt: new Date().toISOString(),
+          prompt: pending?.prompt,
           meta: {
             thinkingMs,
             totalMs,
@@ -111,70 +132,71 @@ export default function AIAssistant() {
           trace,
           tools: reply.tool_executions,
         },
-      ]);
-      pendingRef.current = null;
-      pendingTraceRef.current = [];
-      setPendingTrace([]);
-      abortRef.current = null;
-    },
-    onError: (error) => {
-      const pending = pendingRef.current;
-      const totalMs = pending ? performance.now() - pending.startedAt : 0;
-      setThread((current) => [
-        ...current,
-        {
-          id: `assistant-error-${Date.now()}`,
-          role: 'assistant',
-          text: error.message,
-          status: 'error',
-          createdAt: new Date().toISOString(),
-          meta: {
-            thinkingMs: totalMs,
-            totalMs,
-            inputTokens: 0,
-            outputTokens: 0,
-            totalTokens: 0,
-            tokenSpeed: 0,
-            events: liveContext.events,
-            blocked: liveContext.blocked,
-            challenge: 0,
-          },
-          process: [t('assistant.processError')],
-          processOpen: true,
-          traceOpen: false,
-          trace: pendingTraceRef.current,
+      ];
+    });
+    clearPendingState();
+  }
+
+  function appendAssistantError(error: Error) {
+    const pending = pendingRef.current;
+    const totalMs = pending ? performance.now() - pending.startedAt : 0;
+    setThread((current) => [
+      ...current,
+      {
+        id: `assistant-error-${Date.now()}`,
+        role: 'assistant',
+        text: error.message,
+        status: 'error',
+        createdAt: new Date().toISOString(),
+        prompt: pending?.prompt,
+        meta: {
+          thinkingMs: totalMs,
+          totalMs,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          tokenSpeed: 0,
+          events: liveContext.events,
+          blocked: liveContext.blocked,
+          challenge: 0,
         },
-      ]);
-      pendingRef.current = null;
-      pendingTraceRef.current = [];
-      setPendingTrace([]);
-      abortRef.current = null;
+        process: [t('assistant.processError')],
+        processOpen: true,
+        traceOpen: false,
+        trace: pendingTraceRef.current,
+      },
+    ]);
+    clearPendingState();
+  }
+
+  const askMutation = useMutation({
+    mutationFn: (message: string) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      return askAIAssistantStream(message, 30, i18n.language, deepThink, recordPendingTrace, controller.signal);
     },
+    onSuccess: (reply) => appendAssistantReply(reply),
+    onError: (error) => appendAssistantError(error),
   });
-  const approveToolMutation = useMutation({
-    mutationFn: async (execution: AIToolExecution) => {
+  const continueApprovalMutation = useMutation({
+    mutationFn: async ({ execution, prompt }: ApprovalContinuationInput) => {
       if (!execution.approval?.id) {
         throw new Error(t('assistant.missingApproval'));
       }
-      await approveAIApproval(execution.approval.id);
-      return executeAITool(execution.name, execution.args ?? {}, execution.approval.id);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      return continueAIApprovalStream(execution.approval.id, prompt, 30, i18n.language, deepThink, recordPendingTrace, controller.signal);
     },
-    onSuccess: (result, execution) => {
+    onSuccess: (reply, { execution }) => {
       Message.success(t('assistant.toolExecuted'));
-      const approvalID = execution.approval?.id;
-      setThread((current) => [
-        ...markApprovalStatus(current, approvalID, 'executed'),
-        {
-          id: `tool-${Date.now()}`,
-          role: 'tool',
-          text: t('assistant.toolExecutionCompleted', { tool: toolDisplayName(t, result.name) }),
-          status: result.result?.success ? t('assistant.toolExecuted') : 'error',
-          createdAt: new Date().toISOString(),
-          tools: [result],
-        },
-      ]);
+      appendAssistantReply(reply, { approvalID: execution.approval?.id });
+      setContinuingApprovalID(null);
     },
-    onError: (error) => Message.error(error.message),
+    onError: (error) => {
+      Message.error(error.message);
+      appendAssistantError(error);
+      setContinuingApprovalID(null);
+    },
   });
   const rejectToolMutation = useMutation({
     mutationFn: async (execution: AIToolExecution) => {
@@ -218,7 +240,7 @@ export default function AIAssistant() {
     closeTimerRef.current = window.setTimeout(() => {
       setRenderPanel(false);
       closeTimerRef.current = null;
-    }, 180);
+    }, 140);
   }
 
   function toggleAssistant() {
@@ -234,8 +256,10 @@ export default function AIAssistant() {
     abortRef.current?.abort();
   }, []);
 
+  const assistantBusy = askMutation.isPending || continueApprovalMutation.isPending;
+
   useEffect(() => {
-    if (!askMutation.isPending) {
+    if (!assistantBusy) {
       setPendingElapsedMs(0);
       setThinkingProcessOpen(true);
       setPendingTraceOpen(true);
@@ -248,14 +272,14 @@ export default function AIAssistant() {
       }
     }, 250);
     return () => window.clearInterval(timer);
-  }, [askMutation.isPending]);
+  }, [assistantBusy]);
 
   const messages: AssistantMessage[] = [
     ...thread,
-    ...(askMutation.isPending ? [{
+    ...(assistantBusy ? [{
       id: 'thinking',
       role: 'assistant' as const,
-      text: pendingAssistantText(t, pendingTrace),
+      text: pendingContent || pendingAssistantText(t, pendingTrace),
       status: t('assistant.working'),
       createdAt: pendingRef.current?.createdAt,
       meta: {
@@ -280,11 +304,16 @@ export default function AIAssistant() {
     if (!open || !threadRef.current) {
       return;
     }
+    const thread = threadRef.current;
+    const isAtBottom = thread.scrollHeight - (thread.scrollTop + thread.clientHeight) < 64;
+    if (!isAtBottom && !assistantBusy) {
+      return;
+    }
     const frame = window.requestAnimationFrame(() => {
-      threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'auto' });
+      thread.scrollTo({ top: thread.scrollHeight, behavior: 'auto' });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [open, messages.length, askMutation.isPending]);
+  }, [open, messages.length, assistantBusy, pendingContent, pendingTrace.length]);
 
   function submit() {
     sendMessage(draft);
@@ -292,7 +321,7 @@ export default function AIAssistant() {
 
   function sendMessage(raw: string) {
     const message = raw.trim();
-    if (!message) {
+    if (!message || assistantBusy) {
       return;
     }
     setDraft('');
@@ -300,10 +329,30 @@ export default function AIAssistant() {
     setThinkingProcessOpen(true);
     setPendingTraceOpen(true);
     pendingTraceRef.current = [];
+    pendingContentRef.current = '';
     setPendingTrace([]);
-    pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString(), inputTokens: estimateTokens(message) };
-    setThread((current) => [...current, { id: `user-${Date.now()}`, role: 'user', text: message, createdAt: new Date().toISOString() }]);
+    setPendingContent('');
+    pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString(), inputTokens: estimateTokens(message), prompt: message };
+    setThread((current) => [...current, { id: `user-${Date.now()}`, role: 'user', text: message, createdAt: new Date().toISOString(), prompt: message }]);
     askMutation.mutate(message);
+  }
+
+  function continueApproval(tool: AIToolExecution, prompt: string | undefined) {
+    const approvalID = tool.approval?.id;
+    if (!approvalID || continueApprovalMutation.isPending) {
+      return;
+    }
+    const message = (prompt || lastUserPrompt(thread) || t('assistant.approvalContinueFallback', { tool: toolDisplayName(t, tool.name) })).trim();
+    setPendingElapsedMs(0);
+    setThinkingProcessOpen(true);
+    setPendingTraceOpen(true);
+    pendingTraceRef.current = [];
+    pendingContentRef.current = '';
+    setPendingTrace([]);
+    setPendingContent('');
+    pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString(), inputTokens: estimateTokens(message), prompt: message };
+    setContinuingApprovalID(approvalID);
+    continueApprovalMutation.mutate({ execution: tool, prompt: message });
   }
 
   function toggleProcess(messageID: string) {
@@ -333,7 +382,7 @@ export default function AIAssistant() {
         className={[
           'ai-fab',
           open ? 'ai-fab-open' : '',
-          askMutation.isPending ? 'ai-fab-working' : '',
+          assistantBusy ? 'ai-fab-working' : '',
         ].filter(Boolean).join(' ')}
         type="primary"
         shape="circle"
@@ -378,7 +427,7 @@ export default function AIAssistant() {
                     <button
                       key={prompt}
                       type="button"
-                      disabled={askMutation.isPending}
+                      disabled={assistantBusy}
                       onClick={() => sendMessage(prompt)}
                     >
                       {prompt}
@@ -522,9 +571,31 @@ export default function AIAssistant() {
                           )}
                           {tool.approval && tool.approval.status === 'pending' && (
                             <div className="assistant-approval">
-                              <div className="assistant-approval-head">
-                                <strong>{t('assistant.approvalRequired')}</strong>
-                                <span>{t('assistant.approvalTool', { tool: toolName })}</span>
+                              <div className="assistant-approval-top">
+                                <div className="assistant-approval-head">
+                                  <strong>{t('assistant.approvalRequired')}</strong>
+                                  <span>{t('assistant.approvalTool', { tool: toolName })}</span>
+                                </div>
+                                <div className="assistant-approval-actions">
+                                  <Button
+                                    size="small"
+                                    type="primary"
+                                    loading={continuingApprovalID === tool.approval.id && continueApprovalMutation.isPending}
+                                    disabled={continueApprovalMutation.isPending}
+                                    onClick={() => continueApproval(tool, message.prompt)}
+                                  >
+                                    {t('assistant.approveAndRun')}
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    status="warning"
+                                    disabled={rejectToolMutation.isPending}
+                                    loading={rejectToolMutation.isPending}
+                                    onClick={() => rejectToolMutation.mutate(tool)}
+                                  >
+                                    {t('assistant.reject')}
+                                  </Button>
+                                </div>
                               </div>
                               {tool.approval.diff && (
                                 <div className="assistant-tool-section assistant-tool-section-diff">
@@ -532,24 +603,6 @@ export default function AIAssistant() {
                                   <pre>{tool.approval.diff}</pre>
                                 </div>
                               )}
-                              <div className="assistant-approval-actions">
-                                <Button
-                                  size="small"
-                                  type="primary"
-                                  loading={approveToolMutation.isPending}
-                                  onClick={() => approveToolMutation.mutate(tool)}
-                                >
-                                  {t('assistant.approve')}
-                                </Button>
-                                <Button
-                                  size="small"
-                                  status="warning"
-                                  loading={rejectToolMutation.isPending}
-                                  onClick={() => rejectToolMutation.mutate(tool)}
-                                >
-                                  {t('assistant.reject')}
-                                </Button>
-                              </div>
                             </div>
                           )}
                         </div>
@@ -567,11 +620,12 @@ export default function AIAssistant() {
             </label>
             <Input
               value={draft}
+              aria-label={t('assistant.inputLabel')}
               placeholder={t('assistant.placeholder')}
               onChange={setDraft}
               onPressEnter={submit}
             />
-            <Button className="assistant-send-button" type="primary" icon={<Send size={15} />} loading={askMutation.isPending} onClick={submit} />
+            <Button className="assistant-send-button" type="primary" icon={<Send size={15} />} loading={assistantBusy} onClick={submit} />
           </div>
         </section>
       )}
@@ -585,6 +639,19 @@ function assistantQuickPrompts(t: (key: string, options?: Record<string, unknown
     t('assistant.quickWeek'),
     t('assistant.quickSettings'),
   ];
+}
+
+function lastUserPrompt(messages: AssistantMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === 'user' && message.text.trim()) {
+      return message.text;
+    }
+    if (message.prompt?.trim()) {
+      return message.prompt;
+    }
+  }
+  return '';
 }
 
 function markApprovalStatus(messages: AssistantMessage[], approvalID: string | undefined, status: string) {

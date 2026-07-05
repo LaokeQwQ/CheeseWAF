@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/go-chi/chi/v5"
 )
 
 func TestUpdateSystemNotifiesAPISecReload(t *testing.T) {
@@ -91,6 +93,206 @@ func TestUpdateSystemPersistsConsoleSecurityEntry(t *testing.T) {
 	}
 	if !loaded.Console.Login.SecurityEntry.Enabled || loaded.Console.Login.SecurityEntry.Path != "/ops-door" || loaded.Console.Login.SecurityEntry.CookieName != "cw_ops_entry" {
 		t.Fatalf("security entry was not persisted: %+v", loaded.Console.Login.SecurityEntry)
+	}
+}
+
+func TestSystemRedactsSensitiveConfigValues(t *testing.T) {
+	cfg := config.Default()
+	cfg.Storage.ClickHouse.Password = "clickhouse-secret"
+	cfg.Storage.PostgreSQL.DSN = "postgres://user:postgres-secret@example.test/db"
+	cfg.Storage.Elasticsearch.Password = "elastic-secret"
+	cfg.Storage.Elasticsearch.APIKey = "elastic-api-secret"
+	cfg.Storage.Elasticsearch.Headers = map[string]string{"Authorization": "Bearer elastic-header-secret"}
+	cfg.ACME.DNSProviders = []config.ACMEDNSProviderConfig{{
+		ID:      "cf",
+		Name:    "Cloudflare",
+		API:     "dns_cf",
+		Env:     map[string]string{"CF_TOKEN": "cf-secret"},
+		Enabled: true,
+	}}
+	cfg.Protection.Bot.Secret = "strong-bot-secret-for-redaction"
+	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
+		ID:      "otx",
+		Name:    "OTX",
+		APIKey:  "otx-secret",
+		Headers: map[string]string{"X-OTX-API-KEY": "otx-header-secret"},
+		Enabled: true,
+	}}
+	cfg.Monitor.Notifiers = []config.NotifierConfig{{
+		ID:      "webhook",
+		Name:    "Webhook",
+		Type:    "webhook",
+		Token:   "notify-secret",
+		Headers: map[string]string{"Authorization": "Bearer notify-header-secret"},
+		Enabled: true,
+	}}
+	cfg.APISec.Auth.JWTSharedSecret = "jwt-secret"
+	cfg.APISec.Auth.JWTPublicKeyPEM = "public-key-pem-secret"
+	cfg.APISec.Auth.JWKSJSON = `{"keys":["jwks-secret"]}`
+	cfg.AI.Enabled = true
+	cfg.AI.APIKey = "legacy-ai-secret"
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = "https://api.example.test/v1"
+	cfg.AI.Model = "gpt-test"
+	cfg.AI.Assistant.APIKey = "assistant-ai-secret"
+	cfg.AI.Assistant.Provider = "openai"
+	cfg.AI.Assistant.APIBase = "https://api.example.test/v1"
+	cfg.AI.Assistant.Model = "gpt-test"
+	cfg.AI.Reasoning.APIKey = "reasoning-ai-secret"
+	cfg.AI.Reasoning.Provider = "openai"
+	cfg.AI.Reasoning.APIBase = "https://api.example.test/v1"
+	cfg.AI.Reasoning.Model = "gpt-reason"
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/system", nil)
+	handler.System(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected system response ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, secret := range []string{
+		"clickhouse-secret",
+		"postgres-secret",
+		"elastic-secret",
+		"elastic-api-secret",
+		"elastic-header-secret",
+		"cf-secret",
+		"strong-bot-secret-for-redaction",
+		"otx-secret",
+		"otx-header-secret",
+		"notify-secret",
+		"notify-header-secret",
+		"jwt-secret",
+		"public-key-pem-secret",
+		"jwks-secret",
+		"legacy-ai-secret",
+		"assistant-ai-secret",
+		"reasoning-ai-secret",
+	} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("system response leaked secret %q: %s", secret, body)
+		}
+	}
+	if !strings.Contains(body, `"api_key_set":true`) {
+		t.Fatalf("system response should preserve AI key presence status, body=%s", body)
+	}
+	if !strings.Contains(body, `"env_keys":["CF_TOKEN"]`) || !strings.Contains(body, `"env_set":true`) {
+		t.Fatalf("system response should expose ACME env presence without values, body=%s", body)
+	}
+}
+
+func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
+	cfg := config.Default()
+	cfg.Storage.ClickHouse.Password = "old-clickhouse-secret"
+	cfg.Storage.PostgreSQL.DSN = "postgres://user:old-postgres-secret@example.test/db"
+	cfg.Storage.Elasticsearch.Password = "old-elastic-secret"
+	cfg.Storage.Elasticsearch.APIKey = "old-elastic-api-secret"
+	cfg.Storage.Elasticsearch.Headers = map[string]string{"Authorization": "Bearer old-elastic-header-secret"}
+	cfg.ACME.DNSProviders = []config.ACMEDNSProviderConfig{{
+		ID:      "cf",
+		Name:    "Cloudflare",
+		API:     "dns_cf",
+		Env:     map[string]string{"CF_TOKEN": "old-cf-secret"},
+		Enabled: true,
+	}}
+	cfg.Protection.Bot.Secret = "old-strong-bot-secret"
+	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
+		ID:      "otx",
+		Name:    "OTX",
+		APIKey:  "old-otx-secret",
+		Headers: map[string]string{"X-OTX-API-KEY": "old-otx-header-secret"},
+		Enabled: true,
+	}}
+	cfg.Monitor.Notifiers = []config.NotifierConfig{{
+		ID:      "webhook",
+		Name:    "Webhook",
+		Type:    "webhook",
+		Token:   "old-notify-secret",
+		Headers: map[string]string{"Authorization": "Bearer old-notify-header-secret"},
+		Enabled: true,
+	}}
+	cfg.APISec.Auth.JWTSharedSecret = "old-jwt-secret"
+	cfg.APISec.Auth.JWTPublicKeyPEM = "old-public-key-pem"
+	cfg.APISec.Auth.JWKSJSON = `{"keys":["old-jwks-secret"]}`
+	cfg.AI.APIKey = "old-ai-secret"
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	nextStorage := cfg.Storage
+	nextStorage.ClickHouse.Password = ""
+	nextStorage.PostgreSQL.DSN = ""
+	nextStorage.Elasticsearch.Password = ""
+	nextStorage.Elasticsearch.APIKey = ""
+	nextStorage.Elasticsearch.Headers = map[string]string{"Authorization": ""}
+	nextACME := cfg.ACME
+	nextACME.DNSProviders = append([]config.ACMEDNSProviderConfig(nil), cfg.ACME.DNSProviders...)
+	nextACME.DNSProviders[0].Env = map[string]string{"CF_TOKEN": ""}
+	nextProtection := cfg.Protection
+	nextProtection.Bot.Secret = ""
+	nextProtection.IP.Providers = append([]config.ThreatIntelProviderConfig(nil), cfg.Protection.IP.Providers...)
+	nextProtection.IP.Providers[0].APIKey = ""
+	nextProtection.IP.Providers[0].Headers = map[string]string{"X-OTX-API-KEY": ""}
+	nextMonitor := cfg.Monitor
+	nextMonitor.Notifiers = append([]config.NotifierConfig(nil), cfg.Monitor.Notifiers...)
+	nextMonitor.Notifiers[0].Token = ""
+	nextMonitor.Notifiers[0].Headers = map[string]string{"Authorization": ""}
+	nextAPISec := cfg.APISec
+	nextAPISec.Auth.JWTSharedSecret = ""
+	nextAPISec.Auth.JWTPublicKeyPEM = ""
+	nextAPISec.Auth.JWKSJSON = ""
+	nextAI := cfg.AI
+	nextAI.APIKey = ""
+	raw, _ := json.Marshal(map[string]any{
+		"storage":    nextStorage,
+		"acme":       nextACME,
+		"protection": nextProtection,
+		"monitor":    nextMonitor,
+		"apisec":     nextAPISec,
+		"ai":         nextAI,
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw))
+	handler.UpdateSystem(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected system update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Storage.ClickHouse.Password != "old-clickhouse-secret" ||
+		cfg.Storage.PostgreSQL.DSN != "postgres://user:old-postgres-secret@example.test/db" ||
+		cfg.Storage.Elasticsearch.Password != "old-elastic-secret" ||
+		cfg.Storage.Elasticsearch.APIKey != "old-elastic-api-secret" ||
+		cfg.Storage.Elasticsearch.Headers["Authorization"] != "Bearer old-elastic-header-secret" ||
+		cfg.ACME.DNSProviders[0].Env["CF_TOKEN"] != "old-cf-secret" ||
+		cfg.Protection.Bot.Secret != "old-strong-bot-secret" ||
+		cfg.Protection.IP.Providers[0].APIKey != "old-otx-secret" ||
+		cfg.Protection.IP.Providers[0].Headers["X-OTX-API-KEY"] != "old-otx-header-secret" ||
+		cfg.Monitor.Notifiers[0].Token != "old-notify-secret" ||
+		cfg.Monitor.Notifiers[0].Headers["Authorization"] != "Bearer old-notify-header-secret" ||
+		cfg.APISec.Auth.JWTSharedSecret != "old-jwt-secret" ||
+		cfg.APISec.Auth.JWTPublicKeyPEM != "old-public-key-pem" ||
+		cfg.APISec.Auth.JWKSJSON != `{"keys":["old-jwks-secret"]}` ||
+		cfg.AI.APIKey != "old-ai-secret" {
+		t.Fatal("redacted empty update did not preserve one or more existing secret values")
+	}
+	body := recorder.Body.String()
+	for _, secret := range []string{
+		"old-clickhouse-secret",
+		"old-postgres-secret",
+		"old-elastic-secret",
+		"old-cf-secret",
+		"old-strong-bot-secret",
+		"old-otx-secret",
+		"old-notify-secret",
+		"old-jwt-secret",
+		"old-ai-secret",
+	} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("update response leaked preserved secret %q: %s", secret, body)
+		}
 	}
 }
 
@@ -193,6 +395,93 @@ func TestChinaMapBoundaryRejectsNonFeatureCollection(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), "FeatureCollection") {
 		t.Fatalf("expected FeatureCollection error, body=%s", recorder.Body.String())
 	}
+}
+
+func TestChinaMapBoundaryByCodeRejectsInvalidAdcode(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := requestWithAdcode(http.MethodGet, "/api/system/map/china-boundary/not-code", "not-code")
+	handler.ChinaMapBoundaryByCode(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad adcode rejected, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestChinaMapBoundaryByCodeDisabled(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := requestWithAdcode(http.MethodGet, "/api/system/map/china-boundary/330100", "330100")
+	handler.ChinaMapBoundaryByCode(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected disabled boundary response ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"enabled":false`) || !strings.Contains(body, `"adcode":"330100"`) {
+		t.Fatalf("expected disabled adcode response, body=%s", body)
+	}
+}
+
+func TestChinaMapBoundaryByCodeLoadsDirectoryCandidate(t *testing.T) {
+	cfg := config.Default()
+	boundaryDir := t.TempDir()
+	boundaryFile := filepath.Join(boundaryDir, "330100.json")
+	if err := os.WriteFile(boundaryFile, []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"杭州市","adcode":"330100"},"geometry":{"type":"Point","coordinates":[120.2,30.3]}}]}`), 0o600); err != nil {
+		t.Fatalf("write boundary fixture: %v", err)
+	}
+	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
+		Enabled:     true,
+		SourceType:  "file",
+		Source:      boundaryDir,
+		License:     "licensed test fixture",
+		ReviewID:    "GS-test",
+		Attribution: "unit-test",
+	}
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := requestWithAdcode(http.MethodGet, "/api/system/map/china-boundary/330100", "330100")
+	handler.ChinaMapBoundaryByCode(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected valid adcode boundary response ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"enabled":true`) || !strings.Contains(body, `"adcode":"330100"`) || !strings.Contains(body, `"resolved_source"`) {
+		t.Fatalf("expected adcode boundary payload, body=%s", body)
+	}
+}
+
+func TestChinaMapBoundaryByCodeReportsMissingCandidate(t *testing.T) {
+	cfg := config.Default()
+	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
+		Enabled:    true,
+		SourceType: "file",
+		Source:     t.TempDir(),
+		License:    "licensed test fixture",
+		ReviewID:   "GS-test",
+	}
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	request := requestWithAdcode(http.MethodGet, "/api/system/map/china-boundary/330100", "330100")
+	handler.ChinaMapBoundaryByCode(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected missing adcode to be a soft disabled response, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"enabled":false`) || !strings.Contains(body, "330100") {
+		t.Fatalf("expected missing boundary reason, body=%s", body)
+	}
+}
+
+func requestWithAdcode(method, target, adcode string) *http.Request {
+	request := httptest.NewRequest(method, target, nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("adcode", adcode)
+	return request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
 }
 
 func TestUpdateBlockPageConfigPersistsAndNotifies(t *testing.T) {

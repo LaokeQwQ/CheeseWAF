@@ -90,7 +90,7 @@ CheeseWAF 当前已经覆盖以下方向：
 - 资源占用展示覆盖 CPU、系统负载、内存、Swap、磁盘、服务状态和健康状态。
 - AI 助手已从表单式交互改为对话式交互，并展示可公开的流式过程与工具轨迹。
 - 登录页已去掉默认账号密码提示，支持验证码、安全入口和自定义背景配置。
-- 攻击地图支持 2D、3D 和中国区域态势模式。中国区域模式默认不渲染不完整行政边界；如需边界展示，需要导入合规 GeoJSON 数据源。
+- 攻击地图支持 2D、3D 和中国区域模式。中国区域模式已改为真实 GeoJSON 行政边界渲染：优先使用用户配置的合规 GeoJSON 数据源，缺省按需加载内置省/市/区县边界资源；缺少高精度 GeoIP 或情报定位时仍明确降级，不伪造街道级位置。
 
 ### 9. 拦截页与错误页
 
@@ -193,3 +193,20 @@ CheeseWAF 当前已经覆盖以下方向：
 - 控制台前端错误边界不再用“请求无法完成”这类误导文案，改为显示前端运行时异常、错误摘要和 Trace ID。
 - 对部署后旧静态资源混用导致的动态模块加载失败增加一次自动刷新恢复。
 - 已部署到 38.76 测试环境并用浏览器自动化验证：登录入口、CAPTCHA API、验证码弹窗和控制台日志均正常。
+
+### 2026-07-04 本地未提交：威胁情报 Provider 出站 SSRF 防护
+- 阶段目标：处理安全审查中提出的威胁情报出站请求风险，避免管理员配置的情报源 endpoint 被用作访问本机、内网或云元数据地址的跳板。
+- 后端实现：`fetchProvider` 与 `lookupProviderIP` 在请求前统一校验 provider URL，只允许 `http` / `https`，拒绝 URL userinfo、fragment、空 host，以及 IP 字面量指向 loopback/private/link-local/multicast/unspecified/metadata 地址。
+- 连接层防护：默认威胁情报 HTTP client 改为专用 guarded client，禁用系统代理，连接前解析 DNS 并拒绝任何解析到非公网或 metadata IP 的结果；实际拨号使用已校验的解析 IP，降低 DNS rebinding 风险。
+- 元数据地址覆盖：明确阻断 `169.254.169.254`、`169.254.170.2`、`100.100.100.200` 和 `fd00:ec2::254` 等常见云元数据地址。
+- 测试处理：现有本地 `httptest` provider 测试通过测试专用 client 与 URL validator 注入保留覆盖，不放宽生产默认策略。
+- 当前验证：`go test ./internal/api/handler -run "ThreatIntel|Provider" -count=1` 通过；`go test ./internal/api/handler -count=1` 通过。测试使用工作区内 `GOCACHE=.cache/go-build`，避免 Windows 用户目录 build cache 权限问题。
+
+### 2026-07-05 本地收口：地图、站点详情与安全加固复验
+
+- 根目录计划文档已重新核对：当前可闭环项优先收口，语义引擎 CRS/FTW 对标、paranoia/anomaly scoring、Windows GUI 安装器和完整外部动态扫描继续作为后续路线图，不提前宣称完成。
+- 站点详情页修复 ACME provider 数据异常时的运行时崩溃；当 `/api/acme/providers` 返回非数组或包装对象时，页面会安全归一化 provider 列表，不再白屏。
+- 中国区域攻击地图完成真实浏览器专项复验：省/市/区县边界不再出现大矩形异常，浙江与西湖区定位框正常，滚轮缩放不会带动页面滚动。
+- 高风险页面桌面/移动端 UI 回归覆盖 Dashboard、站点、站点详情、IP 管理、AI、用户、拦截页、攻击地图 2D/3D/中国区域和系统设置，自动检查 overflow、窄列、内部横向滚动和浏览器错误均为 0。
+- 安全审查项复核：WebSocket Origin 校验、Admin Server header timeout、弱默认安全入口 secret、AI provider timeout 已闭环；威胁情报 provider 出站请求已加 SSRF guard。其它出站 sink 的 SSRF 专项复审仍需后续继续。
+- 本轮验证命令包括：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`go test ./internal/netguard ./internal/ai ./internal/apisec ./internal/blockpage ./internal/proxy ./internal/storage/log_sink ./internal/api/handler -count=1`、`node tmp/china-map-check.cjs` 和高风险页面 `full-ui-regression`。

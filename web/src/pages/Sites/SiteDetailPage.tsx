@@ -18,10 +18,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { APIRequestError, deleteSite, fetchACMEProviders, fetchSite, issueSiteACMECertificate, updateSite } from '../../api/client';
-import type { ACMEEvent, ACMEIssueRequest, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
+import type { ACMEDNSProvider, ACMEEvent, ACMEIssueRequest, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
 import { asCSV, normalizeSite, splitList } from './siteModel';
 
 type EnvRow = { id: string; key: string; value: string };
+type DurationUnit = 's' | 'm' | 'h' | 'd';
+type ByteUnit = 'KB' | 'MB' | 'GB';
 
 const acmeStepOrder = ['validate', 'prepare', 'account', 'dns_create', 'issue', 'deploy', 'dns_cleanup', 'notify'];
 
@@ -48,11 +50,12 @@ export default function SiteDetailPage() {
     }
   }, [data]);
 
-  const { data: acmeProviders = [] } = useQuery({
+  const { data: acmeProvidersData = [] } = useQuery({
     queryKey: ['acme-providers'],
     queryFn: fetchACMEProviders,
     retry: false,
   });
+  const acmeProviderList = useMemo(() => normalizeACMEProviderList(acmeProvidersData), [acmeProvidersData]);
 
   const saveMutation = useMutation({
     mutationFn: (payload: Site) => updateSite(payload.id, normalizeSite(payload)),
@@ -91,6 +94,10 @@ export default function SiteDetailPage() {
       ArcoMessage.error(error.message);
     },
   });
+  const selectedProvider = useMemo(
+    () => acmeProviderList.find((provider) => provider.id === site?.advanced.certificate.acme.provider_id),
+    [acmeProviderList, site?.advanced.certificate.acme.provider_id],
+  );
 
   if (isLoading) {
     return <Spin className="page-spinner" />;
@@ -163,7 +170,7 @@ export default function SiteDetailPage() {
           ...current.advanced,
           rewrite: [
             ...current.advanced.rewrite,
-            { id: `rewrite-${Date.now()}`, pattern: '^/old/(.*)$', replacement: '/new/$1', redirect_code: 0, enabled: true },
+            { id: `rewrite-${Date.now()}`, pattern: '', replacement: '', redirect_code: 0, enabled: false },
           ],
         },
       };
@@ -174,10 +181,6 @@ export default function SiteDetailPage() {
       ? { ...current, advanced: { ...current.advanced, rewrite: current.advanced.rewrite.filter((rule) => rule.id !== idToRemove) } }
       : current);
   };
-  const selectedProvider = useMemo(
-    () => acmeProviders.find((provider) => provider.id === site?.advanced.certificate.acme.provider_id),
-    [acmeProviders, site?.advanced.certificate.acme.provider_id],
-  );
   const submitACME = () => {
     if (!site) {
       return;
@@ -190,15 +193,19 @@ export default function SiteDetailPage() {
       account_email: acme.account_email,
       server: acme.server,
       key_type: acme.key_type,
-      acme_sh_path: acme.acme_sh_path || 'acme.sh',
-      home: acme.home,
-      cert_dir: acme.cert_dir,
-      reload_cmd: acme.reload_command,
       auto_renew: site.advanced.certificate.auto_renew,
       notify: acme.notify,
     };
     setAcmeEvents(initialACMEEvents());
     acmeMutation.mutate(payload);
+  };
+  const saveSite = () => {
+    const problem = validateSiteDraft(site, t);
+    if (problem) {
+      ArcoMessage.warning(problem);
+      return;
+    }
+    saveMutation.mutate(site);
   };
 
   return (
@@ -213,7 +220,7 @@ export default function SiteDetailPage() {
             <p>{site.domains.join(', ')}</p>
           </div>
         </div>
-        <Space wrap>
+        <Space wrap className="site-detail-actions">
           <Tag color={site.enabled ? 'green' : 'gray'}>{site.enabled ? t('common.online') : t('sites.disabled')}</Tag>
           <Button status="danger" icon={<Trash2 size={16} />} loading={deleteMutation.isPending} onClick={() => {
             if (window.confirm(t('sites.deleteConfirm'))) {
@@ -222,7 +229,7 @@ export default function SiteDetailPage() {
           }}>
             {t('common.delete')}
           </Button>
-          <Button type="primary" icon={<Save size={16} />} loading={saveMutation.isPending} onClick={() => saveMutation.mutate(site)}>
+          <Button type="primary" icon={<Save size={16} />} loading={saveMutation.isPending} onClick={saveSite}>
             {t('common.save')}
           </Button>
         </Space>
@@ -235,13 +242,18 @@ export default function SiteDetailPage() {
         <div><span>{t('sites.wafMode')}</span><strong>{modeText(site.waf_mode, t)}</strong></div>
       </div>
 
-      <section className="panel">
-        <Tabs defaultActiveTab="basic">
+      <section className="panel site-detail-panel">
+        <Tabs defaultActiveTab="basic" className="site-detail-tabs">
           <Tabs.TabPane key="basic" title={<span className="tab-title"><Network size={15} />{t('sites.stepBasic')}</span>}>
-            <div className="site-detail-grid">
+            <section className="site-form-section">
+              <header className="site-form-section-header">
+                <strong>{t('sites.basicIngress')}</strong>
+                <span>{t('sites.basicIngressHint')}</span>
+              </header>
+              <div className="site-detail-grid">
               <label><span>{t('sites.name')}</span><Input value={site.name} onChange={(value) => updateField('name', value)} /></label>
-              <label><span>{t('sites.domain')}</span><Input value={asCSV(site.domains)} onChange={(value) => updateField('domains', splitList(value))} /></label>
-              <label><span>{t('sites.upstream')}</span><Input value={asCSV(site.upstreams)} onChange={(value) => updateField('upstreams', splitList(value))} /></label>
+              <label><span>{t('sites.domain')}</span><Input value={asCSV(site.domains)} placeholder="example.com, www.example.com" onChange={(value) => updateField('domains', splitList(value))} /><em>{t('sites.domainHint')}</em></label>
+              <label><span>{t('sites.upstream')}</span><Input value={asCSV(site.upstreams)} placeholder="127.0.0.1:9000, https://origin.example.com" onChange={(value) => updateField('upstreams', splitList(value))} /><em>{t('sites.upstreamHint')}</em></label>
               <label><span>{t('sites.listen')}</span><InputNumber value={site.listen_port} min={1} max={65535} onChange={(value) => updateField('listen_port', Number(value || 80))} /></label>
               <label>
                 <span>{t('sites.loadBalance')}</span>
@@ -252,6 +264,15 @@ export default function SiteDetailPage() {
                 </Select>
               </label>
               <label className="switch-line"><span>{t('common.online')}</span><Switch checked={site.enabled} onChange={(value) => updateField('enabled', value)} /></label>
+              </div>
+            </section>
+
+            <section className="site-form-section">
+              <header className="site-form-section-header">
+                <strong>{t('sites.originSettings')}</strong>
+                <span>{t('sites.originSettingsHint')}</span>
+              </header>
+              <div className="site-detail-grid">
               <label>
                 <span>{t('sites.originScheme')}</span>
                 <Select value={site.advanced.origin.scheme} onChange={(value) => updateAdvanced('origin', { scheme: value as string })}>
@@ -261,10 +282,11 @@ export default function SiteDetailPage() {
               </label>
               <label className="switch-line"><span>{t('sites.passHost')}</span><Switch checked={site.advanced.origin.pass_host} onChange={(value) => updateAdvanced('origin', { pass_host: value })} /></label>
               <label><span>{t('sites.hostHeader')}</span><Input value={site.advanced.origin.host_header} onChange={(value) => updateAdvanced('origin', { host_header: value })} /></label>
-              <label><span>{t('sites.proxyTimeout')}</span><Input value={String(site.advanced.origin.proxy_timeout)} onChange={(value) => updateAdvanced('origin', { proxy_timeout: value })} /></label>
-              <label><span>{t('sites.maxBody')}</span><InputNumber value={site.advanced.origin.max_body_bytes} min={1024} step={1024 * 1024} onChange={(value) => updateAdvanced('origin', { max_body_bytes: Number(value || 0) })} /></label>
-              <label><span>{t('sites.maxHeader')}</span><InputNumber value={site.advanced.origin.max_header_size} min={1024} step={1024} onChange={(value) => updateAdvanced('origin', { max_header_size: Number(value || 0) })} /></label>
-            </div>
+              <label><span>{t('sites.proxyTimeout')}</span><DurationStringInput value={site.advanced.origin.proxy_timeout} fallback="30s" onChange={(value) => updateAdvanced('origin', { proxy_timeout: value })} /><em>{t('sites.proxyTimeoutHint')}</em></label>
+              <label><span>{t('sites.maxBody')}</span><ByteUnitInput value={site.advanced.origin.max_body_bytes} minBytes={1024} onChange={(value) => updateAdvanced('origin', { max_body_bytes: value })} /><em>{t('sites.maxBodyHint')}</em></label>
+              <label><span>{t('sites.maxHeader')}</span><ByteUnitInput value={site.advanced.origin.max_header_size} minBytes={1024} defaultUnit="KB" onChange={(value) => updateAdvanced('origin', { max_header_size: value })} /><em>{t('sites.maxHeaderHint')}</em></label>
+              </div>
+            </section>
           </Tabs.TabPane>
 
           <Tabs.TabPane key="tls" title={<span className="tab-title"><LockKeyhole size={15} />{t('sites.stepTls')}</span>}>
@@ -295,7 +317,7 @@ export default function SiteDetailPage() {
             </div>
             <ACMEWizard
               site={site}
-              providers={acmeProviders}
+                providers={acmeProviderList}
               selectedProviderName={selectedProvider?.name}
               envRows={envRows}
               events={acmeEvents}
@@ -312,7 +334,12 @@ export default function SiteDetailPage() {
           </Tabs.TabPane>
 
           <Tabs.TabPane key="protection" title={<span className="tab-title"><ShieldCheck size={15} />{t('sites.stepProtection')}</span>}>
-            <div className="site-detail-grid">
+            <section className="site-form-section">
+              <header className="site-form-section-header">
+                <strong>{t('sites.sitePolicy')}</strong>
+                <span>{t('sites.sitePolicyHint')}</span>
+              </header>
+              <div className="site-detail-grid">
               <label className="switch-line"><span>{t('sites.wafEnabled')}</span><Switch checked={site.waf_enabled} onChange={(value) => updateField('waf_enabled', value)} /></label>
               <label>
                 <span>{t('sites.wafMode')}</span>
@@ -343,6 +370,15 @@ export default function SiteDetailPage() {
                   </Select>
                 </label>
               ))}
+              </div>
+            </section>
+
+            <section className="site-form-section">
+              <header className="site-form-section-header">
+                <strong>{t('sites.detectors')}</strong>
+                <span>{t('sites.detectorsHint')}</span>
+              </header>
+              <div className="site-protection-switch-grid">
               {[
                 ['semantic_sql', 'SQLi'],
                 ['semantic_xss', 'XSS'],
@@ -365,22 +401,32 @@ export default function SiteDetailPage() {
                   />
                 </label>
               ))}
+              </div>
+            </section>
+
+            <section className="site-form-section">
+              <header className="site-form-section-header">
+                <strong>{t('sites.responseAndAccess')}</strong>
+                <span>{t('sites.responseAndAccessHint')}</span>
+              </header>
+              <div className="site-detail-grid">
               <label className="switch-line"><span>{t('sites.responseInspection')}</span><Switch checked={site.advanced.response.enabled} onChange={(value) => updateAdvanced('response', { enabled: value })} /></label>
-              <label><span>{t('sites.responseMaxBody')}</span><InputNumber value={site.advanced.response.max_body_bytes} min={1024} step={1024 * 1024} onChange={(value) => updateAdvanced('response', { max_body_bytes: Number(value || 0) })} /></label>
-              <label className="wide-field"><span>{t('sites.sensitivePatterns')}</span><Input value={asCSV(site.advanced.response.sensitive_patterns)} onChange={(value) => updateAdvanced('response', { sensitive_patterns: splitList(value) })} /></label>
+              <label><span>{t('sites.responseMaxBody')}</span><ByteUnitInput value={site.advanced.response.max_body_bytes} minBytes={1024} onChange={(value) => updateAdvanced('response', { max_body_bytes: value })} /></label>
+              <label className="wide-field"><span>{t('sites.sensitivePatterns')}</span><Input value={asCSV(site.advanced.response.sensitive_patterns)} placeholder="password, token, secret" onChange={(value) => updateAdvanced('response', { sensitive_patterns: splitList(value) })} /><em>{t('sites.sensitivePatternsHint')}</em></label>
               <label className="switch-line"><span>{t('sites.authEnabled')}</span><Switch checked={site.advanced.access_control.auth_enabled} onChange={(value) => updateAdvanced('access_control', { auth_enabled: value })} /></label>
               <label className="switch-line"><span>{t('sites.waitingRoom')}</span><Switch checked={site.advanced.access_control.waiting_room} onChange={(value) => updateAdvanced('access_control', { waiting_room: value })} /></label>
               <label className="switch-line"><span>{t('sites.dynamicGuard')}</span><Switch checked={site.advanced.access_control.dynamic_guard} onChange={(value) => updateAdvanced('access_control', { dynamic_guard: value })} /></label>
-              <label className="wide-field"><span>{t('sites.trustedCidrs')}</span><Input value={asCSV(site.advanced.access_control.trusted_cidrs)} onChange={(value) => updateAdvanced('access_control', { trusted_cidrs: splitList(value) })} /></label>
-            </div>
+              <label className="wide-field"><span>{t('sites.trustedCidrs')}</span><Input value={asCSV(site.advanced.access_control.trusted_cidrs)} placeholder="203.0.113.10, 198.51.100.0/24" onChange={(value) => updateAdvanced('access_control', { trusted_cidrs: splitList(value) })} /><em>{t('sites.trustedCidrsHint')}</em></label>
+              </div>
+            </section>
           </Tabs.TabPane>
 
           <Tabs.TabPane key="health" title={<span className="tab-title"><CheckCircle2 size={15} />{t('sites.healthCheck')}</span>}>
             <div className="site-detail-grid">
               <label className="switch-line"><span>{t('sites.healthCheck')}</span><Switch checked={site.advanced.health_check.enabled} onChange={(value) => updateAdvanced('health_check', { enabled: value })} /></label>
               <label><span>{t('sites.healthPath')}</span><Input value={site.advanced.health_check.path} onChange={(value) => updateAdvanced('health_check', { path: value })} /></label>
-              <label><span>{t('sites.healthInterval')}</span><Input value={String(site.advanced.health_check.interval)} onChange={(value) => updateAdvanced('health_check', { interval: value })} /></label>
-              <label><span>{t('sites.healthTimeout')}</span><Input value={String(site.advanced.health_check.timeout)} onChange={(value) => updateAdvanced('health_check', { timeout: value })} /></label>
+              <label><span>{t('sites.healthInterval')}</span><DurationStringInput value={site.advanced.health_check.interval} fallback="30s" onChange={(value) => updateAdvanced('health_check', { interval: value })} /></label>
+              <label><span>{t('sites.healthTimeout')}</span><DurationStringInput value={site.advanced.health_check.timeout} fallback="3s" onChange={(value) => updateAdvanced('health_check', { timeout: value })} /></label>
               <label><span>{t('sites.healthyThreshold')}</span><InputNumber value={site.advanced.health_check.healthy_threshold} min={1} onChange={(value) => updateAdvanced('health_check', { healthy_threshold: Number(value || 1) })} /></label>
               <label><span>{t('sites.unhealthyThreshold')}</span><InputNumber value={site.advanced.health_check.unhealthy_threshold} min={1} onChange={(value) => updateAdvanced('health_check', { unhealthy_threshold: Number(value || 1) })} /></label>
             </div>
@@ -393,11 +439,15 @@ export default function SiteDetailPage() {
             <div className="rewrite-list">
               {site.advanced.rewrite.map((rule, index) => (
                 <div className="rewrite-row" key={rule.id}>
-                  <Switch checked={rule.enabled} onChange={(value) => updateRewrite(index, { enabled: value })} />
-                  <Input value={rule.pattern} placeholder="^/old/(.*)$" onChange={(value) => updateRewrite(index, { pattern: value })} />
-                  <Input value={rule.replacement} placeholder="/new/$1" onChange={(value) => updateRewrite(index, { replacement: value })} />
-                  <InputNumber value={rule.redirect_code} min={0} max={308} onChange={(value) => updateRewrite(index, { redirect_code: Number(value || 0) })} />
-                  <Button status="danger" icon={<Trash2 size={15} />} onClick={() => removeRewrite(rule.id)} />
+                  <div className="rewrite-row-head">
+                    <label className="switch-line"><span>{t('sites.rewriteEnabled')}</span><Switch checked={rule.enabled} onChange={(value) => updateRewrite(index, { enabled: value })} /></label>
+                    <Button status="danger" icon={<Trash2 size={15} />} onClick={() => removeRewrite(rule.id)}>{t('common.delete')}</Button>
+                  </div>
+                  <div className="rewrite-row-grid">
+                    <label><span>{t('sites.rewritePattern')}</span><Input value={rule.pattern} placeholder="^/old/(.*)$" onChange={(value) => updateRewrite(index, { pattern: value })} /></label>
+                    <label><span>{t('sites.rewriteReplacement')}</span><Input value={rule.replacement} placeholder="/new/$1" onChange={(value) => updateRewrite(index, { replacement: value })} /></label>
+                    <label><span>{t('sites.rewriteCode')}</span><InputNumber value={rule.redirect_code} min={0} max={308} onChange={(value) => updateRewrite(index, { redirect_code: Number(value || 0) })} /></label>
+                  </div>
                 </div>
               ))}
               {!site.advanced.rewrite.length && <Empty description={t('sites.noRewrite')} />}
@@ -420,6 +470,149 @@ function modeText(mode: string, t: (key: string) => string) {
     return t('sites.modeOff');
   }
   return mode || '-';
+}
+
+function DurationStringInput({
+  value,
+  fallback,
+  onChange,
+}: {
+  value?: string | number;
+  fallback: string;
+  onChange: (next: string) => void;
+}) {
+  const { t } = useTranslation();
+  const parts = durationStringToParts(value, fallback);
+  const [unit, setUnit] = useState<DurationUnit>(parts.unit);
+  useEffect(() => {
+    setUnit(parts.unit);
+  }, [parts.unit, parts.amount]);
+  const emit = (amount: number | string | null | undefined, nextUnit = unit) => {
+    const numeric = Math.max(1, Math.round(Number(amount || 1)));
+    onChange(`${numeric}${nextUnit}`);
+  };
+  return (
+    <div className="compound-input site-unit-input">
+      <InputNumber min={1} value={parts.amount} onChange={(next) => emit(next)} />
+      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as DurationUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
+        <Select.Option value="s">{t('common.seconds')}</Select.Option>
+        <Select.Option value="m">{t('common.minutes')}</Select.Option>
+        <Select.Option value="h">{t('common.hours')}</Select.Option>
+        <Select.Option value="d">{t('common.days')}</Select.Option>
+      </Select>
+    </div>
+  );
+}
+
+function ByteUnitInput({
+  value,
+  minBytes = 0,
+  defaultUnit = 'MB',
+  onChange,
+}: {
+  value?: number;
+  minBytes?: number;
+  defaultUnit?: ByteUnit;
+  onChange: (next: number) => void;
+}) {
+  const parts = bytesToUnitParts(value, defaultUnit);
+  const [unit, setUnit] = useState<ByteUnit>(parts.unit);
+  useEffect(() => {
+    setUnit(parts.unit);
+  }, [parts.unit, parts.amount]);
+  const emit = (amount: number | string | null | undefined, nextUnit = unit) => {
+    const numeric = Math.max(0, Number(amount || 0));
+    onChange(Math.max(minBytes, Math.round(numeric * byteUnitMultiplier(nextUnit))));
+  };
+  return (
+    <div className="compound-input site-unit-input">
+      <InputNumber min={0} value={parts.amount} precision={parts.unit === 'GB' || parts.unit === 'MB' ? 2 : 0} onChange={(next) => emit(next)} />
+      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as ByteUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
+        <Select.Option value="KB">KB</Select.Option>
+        <Select.Option value="MB">MB</Select.Option>
+        <Select.Option value="GB">GB</Select.Option>
+      </Select>
+    </div>
+  );
+}
+
+function durationStringToParts(value: string | number | undefined, fallback: string): { amount: number; unit: DurationUnit } {
+  const raw = String(value || fallback).trim();
+  const match = raw.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d)?$/i);
+  if (!match) {
+    return durationStringToParts(fallback, '30s');
+  }
+  const amount = Math.max(1, Math.round(Number(match[1]) || 1));
+  const unit = String(match[2] || 's').toLowerCase();
+  if (unit === 'ms') {
+    return { amount: Math.max(1, Math.round(amount / 1000)), unit: 's' };
+  }
+  if (unit === 'm' || unit === 'h' || unit === 'd') {
+    return { amount, unit };
+  }
+  return { amount, unit: 's' };
+}
+
+function bytesToUnitParts(value: number | undefined, defaultUnit: ByteUnit): { amount: number; unit: ByteUnit } {
+  const bytes = Math.max(0, Number(value || 0));
+  const units: ByteUnit[] = ['GB', 'MB', 'KB'];
+  for (const unit of units) {
+    const divisor = byteUnitMultiplier(unit);
+    if (bytes >= divisor && bytes % divisor === 0) {
+      return { amount: bytes / divisor, unit };
+    }
+  }
+  if (bytes > 0) {
+    const divisor = byteUnitMultiplier(defaultUnit);
+    return { amount: Number((bytes / divisor).toFixed(defaultUnit === 'KB' ? 0 : 2)), unit: defaultUnit };
+  }
+  return { amount: 0, unit: defaultUnit };
+}
+
+function byteUnitMultiplier(unit: ByteUnit) {
+  switch (unit) {
+    case 'GB':
+      return 1024 * 1024 * 1024;
+    case 'MB':
+      return 1024 * 1024;
+    default:
+      return 1024;
+  }
+}
+
+function validateSiteDraft(site: Site, t: (key: string) => string) {
+  if (!site.name.trim()) {
+    return t('sites.validationName');
+  }
+  if (!site.domains.some((domain) => domain.trim())) {
+    return t('sites.validationDomain');
+  }
+  if (!site.upstreams.some((upstream) => upstream.trim())) {
+    return t('sites.validationUpstream');
+  }
+  if (!Number.isInteger(site.listen_port) || site.listen_port < 1 || site.listen_port > 65535) {
+    return t('sites.validationListen');
+  }
+  if (site.enable_ssl && site.advanced.certificate.mode === 'file' && (!site.cert_file?.trim() || !site.key_file?.trim())) {
+    return t('sites.validationCertFile');
+  }
+  if (site.enable_ssl && site.advanced.certificate.mode === 'inline' && (!site.advanced.certificate.cert_pem?.trim() || !site.advanced.certificate.key_pem?.trim())) {
+    return t('sites.validationCertInline');
+  }
+  for (const rule of site.advanced.rewrite) {
+    if (!rule.enabled) {
+      continue;
+    }
+    if (!rule.pattern.trim()) {
+      return t('sites.validationRewrite');
+    }
+    try {
+      new RegExp(rule.pattern);
+    } catch {
+      return t('sites.validationRewrite');
+    }
+  }
+  return '';
 }
 
 function ACMEWizard({
@@ -523,22 +716,6 @@ function ACMEWizard({
                 <Select.Option value="4096">RSA 4096</Select.Option>
               </Select>
             </label>
-            <label>
-              <span>{t('sites.acmePath')}</span>
-              <Input value={acme.acme_sh_path || 'acme.sh'} onChange={(acme_sh_path) => onPatchACME({ acme_sh_path })} />
-            </label>
-            <label>
-              <span>{t('sites.acmeHome')}</span>
-              <Input value={acme.home} placeholder="./data/acme" onChange={(home) => onPatchACME({ home })} />
-            </label>
-            <label>
-              <span>{t('sites.acmeCertDir')}</span>
-              <Input value={acme.cert_dir} placeholder="./data/certs/example.com" onChange={(cert_dir) => onPatchACME({ cert_dir })} />
-            </label>
-            <label className="wide-field">
-              <span>{t('sites.acmeReloadCommand')}</span>
-              <Input value={acme.reload_command} placeholder="systemctl reload cheesewaf" onChange={(reload_command) => onPatchACME({ reload_command })} />
-            </label>
             <label className="switch-line">
               <span>{t('sites.acmeNotify')}</span>
               <Switch checked={acme.notify} onChange={(notify) => onPatchACME({ notify })} />
@@ -639,4 +816,27 @@ function stepStatusText(status: string, t: (key: string) => string) {
     return t('sites.acmeRunning');
   }
   return t('sites.acmePending');
+}
+
+function normalizeACMEProviderList(value: unknown): ACMEDNSProvider[] {
+  const maybeList = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object'
+      ? Object.values(value as Record<string, unknown>).find((item) => Array.isArray(item))
+      : [];
+  if (!Array.isArray(maybeList)) {
+    return [];
+  }
+  return maybeList
+    .filter((item): item is Partial<ACMEDNSProvider> => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      id: String(item.id ?? '').trim(),
+      name: String(item.name ?? item.id ?? '').trim(),
+      api: String(item.api ?? '').trim(),
+      env: item.env && typeof item.env === 'object' && !Array.isArray(item.env)
+        ? Object.fromEntries(Object.entries(item.env).map(([key, val]) => [key, String(val ?? '')]))
+        : {},
+      enabled: item.enabled !== false,
+    }))
+    .filter((provider) => provider.id !== '');
 }

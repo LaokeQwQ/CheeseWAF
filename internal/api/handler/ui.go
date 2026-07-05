@@ -1,13 +1,13 @@
 package handler
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
-	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -44,7 +44,7 @@ func (h *Handler) ReportUIError(w http.ResponseWriter, r *http.Request) {
 			Timestamp:  time.Now().UTC(),
 			TraceID:    traceID,
 			SiteID:     "admin-console",
-			ClientIP:   engine.ClientIP(r),
+			ClientIP:   remoteAddrHost(r),
 			Method:     "UI",
 			URI:        path,
 			Action:     "error",
@@ -73,6 +73,17 @@ func (h *Handler) ReportUIError(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
 	w.Header().Set("X-CheeseWAF-Event-ID", traceID)
 	writeData(w, map[string]any{"trace_id": traceID, "event_id": traceID, "recorded": h.Sink != nil})
+}
+
+func remoteAddrHost(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func normalizeUITraceID(raw string) string {

@@ -15,12 +15,19 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	ipprotect "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/google/uuid"
 )
 
-var threatIntelHTTPClient = &http.Client{Timeout: 15 * time.Second}
+const threatIntelHTTPTimeout = 15 * time.Second
+
+var (
+	threatIntelResolveIP            = net.DefaultResolver.LookupIP
+	threatIntelProviderURLValidator = validateThreatIntelProviderURL
+	threatIntelHTTPClient           = newThreatIntelHTTPClient(threatIntelHTTPTimeout)
+)
 
 type threatIntelImportPayload struct {
 	Format     string   `json:"format"`
@@ -55,21 +62,22 @@ func (h *Handler) ListIPRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "IP_POLICY_ERROR", err.Error())
 		return
 	}
+	view := protectionConfigView(h.Config.Protection)
 	writeData(w, map[string]any{
-		"whitelist":            h.Config.Protection.IP.Whitelist,
-		"blacklist":            h.Config.Protection.IP.Blacklist,
-		"access_rules":         h.Config.Protection.IP.AccessRules,
-		"reputation_overrides": h.Config.Protection.IP.ReputationOverrides,
-		"tags":                 h.Config.Protection.IP.Tags,
-		"threat_intel":         h.Config.Protection.IP.ThreatIntel,
-		"providers":            h.Config.Protection.IP.Providers,
-		"geoip":                h.Config.Protection.IP.GeoIP,
+		"whitelist":            view.IP.Whitelist,
+		"blacklist":            view.IP.Blacklist,
+		"access_rules":         view.IP.AccessRules,
+		"reputation_overrides": view.IP.ReputationOverrides,
+		"tags":                 view.IP.Tags,
+		"threat_intel":         view.IP.ThreatIntel,
+		"providers":            view.IP.Providers,
+		"geoip":                view.IP.GeoIP,
 		"entries":              profiles,
 	})
 }
 
 func (h *Handler) Protection(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, h.Config.Protection)
+	writeData(w, protectionConfigView(h.Config.Protection))
 }
 
 func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +102,7 @@ func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	req.Providers = preserveThreatIntelProviderSecrets(h.Config.Protection.IP.Providers, req.Providers)
 	h.Config.Protection.IP = req
 	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
@@ -103,7 +112,7 @@ func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
 		return
 	}
-	writeData(w, h.Config.Protection.IP)
+	writeData(w, protectionConfigView(h.Config.Protection).IP)
 }
 
 func (h *Handler) UpdateIPAccessRules(w http.ResponseWriter, r *http.Request) {
@@ -161,12 +170,13 @@ func (h *Handler) UpdateThreatIntelProviders(w http.ResponseWriter, r *http.Requ
 	if !decode(w, r, &req) {
 		return
 	}
+	req = preserveThreatIntelProviderSecrets(h.Config.Protection.IP.Providers, req)
 	h.Config.Protection.IP.Providers = req
 	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 		return
 	}
-	writeData(w, h.Config.Protection.IP.Providers)
+	writeData(w, protectionConfigView(h.Config.Protection).IP.Providers)
 }
 
 func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
@@ -353,6 +363,9 @@ func (h *Handler) UpdateBotProtection(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if req.Secret == "" {
+		req.Secret = h.Config.Protection.Bot.Secret
+	}
 	h.Config.Protection.Bot = req
 	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
@@ -362,7 +375,7 @@ func (h *Handler) UpdateBotProtection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
 		return
 	}
-	writeData(w, h.Config.Protection.Bot)
+	writeData(w, protectionConfigView(h.Config.Protection).Bot)
 }
 
 func selectedProviders(providers []config.ThreatIntelProviderConfig, id string) []config.ThreatIntelProviderConfig {
@@ -383,7 +396,11 @@ func fetchProvider(ctx context.Context, provider config.ThreatIntelProviderConfi
 	if provider.Endpoint == "" {
 		return nil, fmt.Errorf("provider endpoint is required")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, provider.Endpoint, nil)
+	endpoint, err := threatIntelProviderURLValidator(provider.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid provider endpoint: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +433,11 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	endpoint, err := threatIntelProviderURLValidator(parsed.String())
+	if err != nil {
+		return nil, fmt.Errorf("invalid provider endpoint: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -498,6 +519,26 @@ func providerLookupURL(provider config.ThreatIntelProviderConfig, ip string) (*u
 	}
 	parsed.RawQuery = query.Encode()
 	return parsed, nil
+}
+
+func validateThreatIntelProviderURL(raw string) (*url.URL, error) {
+	return netguard.ValidateURL(raw, netguard.URLPolicy{
+		Purpose:        "provider",
+		AllowedSchemes: []string{"http", "https"},
+	})
+}
+
+func newThreatIntelHTTPClient(timeout time.Duration) *http.Client {
+	return netguard.NewHTTPClient(netguard.HTTPClientOptions{
+		Timeout: timeout,
+		Resolver: func(ctx context.Context, network, host string) ([]net.IP, error) {
+			return threatIntelResolveIP(ctx, network, host)
+		},
+		Policy: netguard.URLPolicy{
+			Purpose:        "provider",
+			AllowedSchemes: []string{"http", "https"},
+		},
+	})
 }
 
 func applyProviderAuth(req *http.Request, provider config.ThreatIntelProviderConfig) {

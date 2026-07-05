@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -46,6 +49,10 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Role == "" {
 		req.Role = "readonly"
+	}
+	if err := h.validateUserRole(req.Role); err != nil {
+		writeError(w, http.StatusBadRequest, "ROLE_INVALID", err.Error())
+		return
 	}
 	user := &storage.User{ID: uuid.NewString(), Username: req.Username, PasswordHash: string(hash), Role: req.Role}
 	if err := h.Store.CreateUser(r.Context(), user); err != nil {
@@ -161,6 +168,10 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		user.Username = req.Username
 	}
 	if req.Role != "" {
+		if err := h.validateUserRole(req.Role); err != nil {
+			writeError(w, http.StatusBadRequest, "ROLE_INVALID", err.Error())
+			return
+		}
 		user.Role = req.Role
 	}
 	if req.Password != "" {
@@ -179,4 +190,22 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, user)
+}
+
+func (h *Handler) validateUserRole(role string) error {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return fmt.Errorf("role is required")
+	}
+	if strings.Contains(role, "*") || strings.Contains(role, ":") || strings.ContainsAny(role, " \t\r\n") {
+		return fmt.Errorf("role must be a configured role name, not a permission expression")
+	}
+	permissions := config.Default().APISec.Permissions
+	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
+		permissions = h.Config.APISec.Permissions
+	}
+	if _, ok := permissions[role]; ok {
+		return nil
+	}
+	return fmt.Errorf("unknown role %q", role)
 }

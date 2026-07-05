@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/acme"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -22,10 +25,6 @@ type acmeIssuePayload struct {
 	AccountEmail string            `json:"account_email"`
 	Server       string            `json:"server"`
 	KeyType      string            `json:"key_type"`
-	ACMESHPath   string            `json:"acme_sh_path"`
-	Home         string            `json:"home"`
-	CertDir      string            `json:"cert_dir"`
-	ReloadCmd    string            `json:"reload_cmd"`
 	AutoRenew    bool              `json:"auto_renew"`
 	Notify       bool              `json:"notify"`
 }
@@ -59,6 +58,7 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	runtime := h.trustedSiteACMERuntime(site)
 	certReq := acme.IssueRequest{
 		SiteID:       site.ID,
 		Domains:      append([]string(nil), site.Domains...),
@@ -68,10 +68,10 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 		AccountEmail: req.AccountEmail,
 		Server:       req.Server,
 		KeyType:      req.KeyType,
-		ACMESHPath:   req.ACMESHPath,
-		Home:         req.Home,
-		CertDir:      req.CertDir,
-		ReloadCmd:    req.ReloadCmd,
+		ACMESHPath:   runtime.ACMESHPath,
+		Home:         runtime.Home,
+		CertDir:      runtime.CertDir,
+		ReloadCmd:    runtime.ReloadCmd,
 		AutoRenew:    req.AutoRenew,
 		Notify:       req.Notify,
 	}
@@ -101,10 +101,10 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 		AccountEmail:  req.AccountEmail,
 		Server:        req.Server,
 		KeyType:       req.KeyType,
-		ACMESHPath:    req.ACMESHPath,
-		Home:          req.Home,
-		CertDir:       req.CertDir,
-		ReloadCommand: req.ReloadCmd,
+		ACMESHPath:    runtime.ACMESHPath,
+		Home:          runtime.Home,
+		CertDir:       runtime.CertDir,
+		ReloadCommand: runtime.ReloadCmd,
 		Domains:       append([]string(nil), site.Domains...),
 		Env:           cloneStringMap(req.DNSEnv),
 		Notify:        req.Notify,
@@ -126,14 +126,69 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 	}
 	h.notifyACMEIssue(r, site, result, nil)
 	writeData(w, map[string]any{
-		"site":    site,
+		"site":    siteView(*site),
 		"result":  result,
 		"events":  result.Events,
 		"cert":    map[string]any{"cert_file": result.CertFile, "key_file": result.KeyFile},
 		"issued":  true,
-		"acme":    site.Advanced.Certificate.ACME,
+		"acme":    siteACMEConfigView(site.Advanced.Certificate.ACME),
 		"summary": map[string]any{"site_id": site.ID, "domains": result.Domains, "run_id": result.RunID},
 	})
+}
+
+type trustedACMERuntime struct {
+	ACMESHPath string
+	Home       string
+	CertDir    string
+	ReloadCmd  string
+}
+
+func (h *Handler) trustedSiteACMERuntime(site *storage.Site) trustedACMERuntime {
+	cfg := config.Default()
+	if h != nil && h.Config != nil {
+		cfg = *h.Config
+	}
+	acmeCfg := cfg.ACME
+	baseDir := cfg.Setup.DataDir
+	primary := "site"
+	if site != nil {
+		primary = firstNonEmpty(firstSiteDomain(site), site.ID, site.Name, "site")
+	}
+	if strings.TrimSpace(acmeCfg.ACMESHPath) == "" {
+		acmeCfg.ACMESHPath = "acme.sh"
+	}
+	if strings.TrimSpace(acmeCfg.Home) == "" {
+		acmeCfg.Home = filepath.Join(firstNonEmpty(baseDir, "."), "acme")
+	}
+	if strings.TrimSpace(acmeCfg.CertDir) == "" {
+		acmeCfg.CertDir = filepath.Join(firstNonEmpty(baseDir, "."), "certs")
+	}
+	return trustedACMERuntime{
+		ACMESHPath: acmeCfg.ACMESHPath,
+		Home:       acmeCfg.Home,
+		CertDir:    trustedSiteCertDir(acmeCfg.CertDir, primary),
+		ReloadCmd:  acmeCfg.ReloadCommand,
+	}
+}
+
+func trustedSiteCertDir(base string, primary string) string {
+	segment := safeACMEPathSegment(primary)
+	if filepath.Base(filepath.Clean(base)) == segment {
+		return base
+	}
+	return filepath.Join(base, segment)
+}
+
+func firstSiteDomain(site *storage.Site) string {
+	if site == nil {
+		return ""
+	}
+	for _, domain := range site.Domains {
+		if strings.TrimSpace(domain) != "" {
+			return domain
+		}
+	}
+	return ""
 }
 
 func (h *Handler) ensureACMEIssuer() acme.Issuer {
@@ -198,6 +253,23 @@ func cloneStringMap(values map[string]string) map[string]string {
 	out := make(map[string]string, len(values))
 	for key, value := range values {
 		out[key] = value
+	}
+	return out
+}
+
+func safeACMEPathSegment(value string) string {
+	value = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), "*.")
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('-')
+	}
+	out := strings.Trim(b.String(), ".-")
+	if out == "" {
+		return "site"
 	}
 	return out
 }

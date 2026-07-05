@@ -1,12 +1,13 @@
 import { Button, Message as ArcoMessage, Space, Spin, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, BrainCircuit, ShieldAlert } from 'lucide-react';
-import { analyzeLogReference, fetchLogEvent } from '../../api/client';
+import { analyzeLogReferenceStream, fetchLogEvent } from '../../api/client';
 import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
-import type { AttackAnalysis, LogEntry } from '../../types/api';
+import SafeMarkdown from '../../components/SafeMarkdown';
+import type { AIAssistantTraceEvent, AttackAnalysis, LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displaySeverity, formatLogLocation } from '../../utils/display';
 
 export default function LogDetailPage() {
@@ -14,6 +15,10 @@ export default function LogDetailPage() {
   const navigate = useNavigate();
   const { traceId = '' } = useParams();
   const reference = decodeURIComponent(traceId);
+  const abortRef = useRef<AbortController | null>(null);
+  const [analysisTrace, setAnalysisTrace] = useState<AIAssistantTraceEvent[]>([]);
+  const [streamReasoning, setStreamReasoning] = useState('');
+  const [streamContent, setStreamContent] = useState('');
   const { data: event, isLoading, error } = useQuery({
     queryKey: ['log-detail', reference],
     queryFn: () => fetchLogEvent(reference),
@@ -21,10 +26,30 @@ export default function LogDetailPage() {
     retry: false,
   });
   const analysisMutation = useMutation({
-    mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id || reference, i18n.language),
+    mutationFn: async (entry: LogEntry) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setAnalysisTrace([]);
+      setStreamReasoning('');
+      setStreamContent('');
+      return analyzeLogReferenceStream(entry.trace_id || entry.id || reference, i18n.language, (trace) => {
+        setAnalysisTrace((items) => [...items.slice(-40), trace]);
+        if (trace.type === 'reasoning_delta') {
+          setStreamReasoning((value) => appendStreamText(value, trace.message));
+        }
+        if (trace.type === 'content_delta') {
+          setStreamContent((value) => appendStreamText(value, trace.message));
+        }
+      }, controller.signal);
+    },
     onError: (mutationError) => ArcoMessage.error(mutationError.message),
   });
   const analysis = analysisMutation.data;
+
+  useEffect(() => () => {
+    abortRef.current?.abort();
+  }, []);
 
   return (
     <section className="page-surface log-detail-page">
@@ -93,6 +118,12 @@ export default function LogDetailPage() {
                 >
                   {analysis ? t('ai.reanalyze') : t('ai.run')}
                 </Button>
+                <AnalysisLiveTrace
+                  pending={analysisMutation.isPending}
+                  trace={analysisTrace}
+                  reasoning={streamReasoning}
+                  content={streamContent}
+                />
                 <AnalysisResult analysis={analysis} />
               </section>
             </aside>
@@ -121,6 +152,78 @@ function DetailKV({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+function AnalysisLiveTrace({
+  pending,
+  trace,
+  reasoning,
+  content,
+}: {
+  pending: boolean;
+  trace: AIAssistantTraceEvent[];
+  reasoning: string;
+  content: string;
+}) {
+  const { t } = useTranslation();
+  if (!pending && trace.length === 0 && !reasoning && !content) {
+    return null;
+  }
+  const visibleTrace = trace
+    .map((item) => formatAnalysisTraceEvent(item, t))
+    .filter((item): item is string => Boolean(item))
+    .slice(-5);
+  return (
+    <div className="analysis-live-trace">
+      <div>
+        <strong>{pending ? t('ai.thinking') : t('ai.analysisTrace')}</strong>
+        {pending && <Spin size={14} />}
+      </div>
+      {reasoning && (
+        <section>
+          <span>{t('ai.liveReasoning')}</span>
+          <SafeMarkdown text={reasoning} />
+        </section>
+      )}
+      {content && (
+        <section>
+          <span>{t('ai.streamingAnswer')}</span>
+          <SafeMarkdown text={content} />
+        </section>
+      )}
+      {visibleTrace.length > 0 && (
+        <ul>
+          {visibleTrace.map((item) => (
+            <li key={item}>
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function formatAnalysisTraceEvent(event: AIAssistantTraceEvent, t: (key: string, options?: Record<string, unknown>) => string) {
+  switch (event.type) {
+    case 'heartbeat':
+    case 'reasoning_delta':
+    case 'content_delta':
+    case 'tool_call_delta':
+      return '';
+    case 'stream_open':
+      return event.message || t('ai.streamConnected');
+    case 'provider_response_start':
+      return event.message || t('ai.providerStarted');
+    case 'provider_first_event_slow':
+      return event.message || t('ai.providerSlow');
+    case 'tool_error':
+    case 'planning_error':
+    case 'final_error':
+      return event.error || event.message || t('ai.providerSlow');
+    default:
+      return event.message || '';
+  }
+}
+
 function AnalysisResult({ analysis }: { analysis?: AttackAnalysis }) {
   const { t } = useTranslation();
   if (!analysis) {
@@ -141,6 +244,22 @@ function AnalysisResult({ analysis }: { analysis?: AttackAnalysis }) {
       </div>
     </div>
   );
+}
+
+function appendStreamText(current: string, delta: string) {
+  if (!delta) {
+    return current;
+  }
+  if (!current) {
+    return delta;
+  }
+  if (/^\s/.test(delta) || /\s$/.test(current)) {
+    return `${current}${delta}`;
+  }
+  const last = current[current.length - 1] ?? '';
+  const first = delta[0] ?? '';
+  const needsSpace = /[A-Za-z0-9)]/.test(last) && /[A-Za-z0-9([]/.test(first);
+  return `${current}${needsSpace ? ' ' : ''}${delta}`;
 }
 
 function formatMetadata(metadata?: Record<string, unknown>) {

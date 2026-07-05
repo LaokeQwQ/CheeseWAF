@@ -76,6 +76,17 @@ func (c *Cache) Get(r *http.Request) (CapturedResponse, bool) {
 	return resp, true
 }
 
+func (c *Cache) CaptureCandidate(r *http.Request) bool {
+	return c.cacheableRequest(r)
+}
+
+func (c *Cache) MaxBodyBytes() int64 {
+	if c == nil || c.maxBody <= 0 {
+		return 0
+	}
+	return c.maxBody
+}
+
 func (c *Cache) Store(r *http.Request, resp CapturedResponse) {
 	if !c.cacheableRequest(r) || !c.cacheableResponse(resp) {
 		return

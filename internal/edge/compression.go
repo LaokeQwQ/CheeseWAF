@@ -96,6 +96,13 @@ func (c *Compressor) Apply(r *http.Request, resp *CapturedResponse) {
 	resp.Header.Del("Content-MD5")
 }
 
+func (c *Compressor) MayApplyRequest(r *http.Request) bool {
+	if c == nil || !c.enabled || r == nil {
+		return false
+	}
+	return c.negotiateEncoding(r.Header.Get("Accept-Encoding")) != ""
+}
+
 func (c *Compressor) negotiateEncoding(acceptEncoding string) string {
 	if _, ok := c.algos["br"]; ok && acceptsEncoding(acceptEncoding, "br") {
 		return "br"
