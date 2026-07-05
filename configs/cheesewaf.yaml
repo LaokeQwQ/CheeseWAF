@@ -52,6 +52,16 @@ console:
       enabled: false
       type: "auto"
       url: ""
+  map:
+    china_boundary:
+      enabled: false
+      source_type: "file"
+      source: ""
+      license: ""
+      review_id: ""
+      attribution: ""
+      allow_insecure: false
+      allow_private: false
 
 sites:
   - id: "default"
@@ -212,6 +222,7 @@ storage:
   clickhouse:
     enabled: false
     endpoint: ""
+    allow_private_endpoint: false
     database: "default"
     table: "cheesewaf_logs"
     username: ""
@@ -220,6 +231,7 @@ storage:
   victorialogs:
     enabled: false
     endpoint: ""
+    allow_private_endpoint: false
     timeout: 10s
   postgresql:
     enabled: false
@@ -329,6 +341,7 @@ monitor:
   remote_write:
     enabled: false
     endpoint: ""
+    allow_private_endpoint: false
     interval: 30s
     timeout: 10s
   alerts:
@@ -355,6 +368,7 @@ monitor:
       name: "Default webhook"
       type: "webhook"
       endpoint: ""
+      allow_private_endpoint: false
       to: ""
       token: ""
       headers: {}

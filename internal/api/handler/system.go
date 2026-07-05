@@ -17,6 +17,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -26,7 +27,12 @@ const maxMapBoundaryBytes = 5 << 20
 
 var chinaMapAdcodePattern = regexp.MustCompile(`^\d{6}$`)
 
-var systemHTTPClient = &http.Client{Timeout: 8 * time.Second}
+var systemHTTPClient = func(policy netguard.URLPolicy) *http.Client {
+	return netguard.NewHTTPClient(netguard.HTTPClientOptions{
+		Timeout: 8 * time.Second,
+		Policy:  policy,
+	})
+}
 
 func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 	view := systemConfigView(h.Config)
@@ -256,7 +262,7 @@ func (h *Handler) readMapBoundary(ctx context.Context, boundary config.MapBounda
 		return nil, fmt.Errorf("boundary source is empty")
 	}
 	if sourceType == "url" {
-		return h.readRemoteMapBoundary(ctx, source)
+		return h.readRemoteMapBoundary(ctx, source, boundary)
 	}
 	body, err := os.ReadFile(source)
 	if err != nil {
@@ -276,7 +282,7 @@ func (h *Handler) readMapBoundaryByCode(ctx context.Context, boundary config.Map
 	}
 	if sourceType == "url" {
 		urlSource := boundarySourceForAdcode(source, adcode)
-		body, err := h.readRemoteMapBoundary(ctx, urlSource)
+		body, err := h.readRemoteMapBoundary(ctx, urlSource, boundary)
 		return body, urlSource, err
 	}
 	for _, candidate := range boundaryFileCandidates(source, adcode) {
@@ -294,7 +300,7 @@ func (h *Handler) readMapBoundaryByCode(ctx context.Context, boundary config.Map
 	return nil, "", fmt.Errorf("boundary file for adcode %s is not configured", adcode)
 }
 
-func (h *Handler) readRemoteMapBoundary(ctx context.Context, source string) ([]byte, error) {
+func (h *Handler) readRemoteMapBoundary(ctx context.Context, source string, boundary config.MapBoundaryConfig) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
@@ -302,7 +308,11 @@ func (h *Handler) readRemoteMapBoundary(ctx context.Context, source string) ([]b
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/geo+json, application/json;q=0.9, */*;q=0.1")
-	resp, err := systemHTTPClient.Do(req)
+	client := netguard.NewHTTPClient(netguard.HTTPClientOptions{
+		Timeout: 8 * time.Second,
+		Policy:  mapBoundaryURLPolicy(boundary),
+	})
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +328,19 @@ func (h *Handler) readRemoteMapBoundary(ctx context.Context, source string) ([]b
 		return nil, fmt.Errorf("boundary source exceeds %d bytes", maxMapBoundaryBytes)
 	}
 	return body, nil
+}
+
+func mapBoundaryURLPolicy(boundary config.MapBoundaryConfig) netguard.URLPolicy {
+	schemes := []string{"https"}
+	if boundary.AllowInsecure {
+		schemes = []string{"http", "https"}
+	}
+	return netguard.URLPolicy{
+		Purpose:        "map boundary",
+		HostPurpose:    "map boundary",
+		AllowedSchemes: schemes,
+		AllowPrivate:   boundary.AllowPrivate,
+	}
 }
 
 func boundarySourceForAdcode(source, adcode string) string {
@@ -441,23 +464,23 @@ func testStorage(ctx context.Context, backend string, storage config.StorageConf
 		if !storage.ClickHouse.Enabled {
 			return fmt.Errorf("clickhouse is disabled")
 		}
-		return testHTTP(ctx, storage.ClickHouse.Endpoint, storage.ClickHouse.Username, storage.ClickHouse.Password, "")
+		return testHTTP(ctx, storage.ClickHouse.Endpoint, storage.ClickHouse.Username, storage.ClickHouse.Password, "", storage.ClickHouse.AllowPrivateEndpoint, "clickhouse endpoint")
 	case "victorialogs":
 		if !storage.VictoriaLogs.Enabled {
 			return fmt.Errorf("victorialogs is disabled")
 		}
-		return testHTTP(ctx, storage.VictoriaLogs.Endpoint, "", "", "")
+		return testHTTP(ctx, storage.VictoriaLogs.Endpoint, "", "", "", storage.VictoriaLogs.AllowPrivateEndpoint, "victorialogs endpoint")
 	case "elasticsearch", "elastic":
 		if !storage.Elasticsearch.Enabled {
 			return fmt.Errorf("elasticsearch is disabled")
 		}
-		return testHTTP(ctx, storage.Elasticsearch.Endpoint, storage.Elasticsearch.Username, storage.Elasticsearch.Password, storage.Elasticsearch.APIKey)
+		return testHTTP(ctx, storage.Elasticsearch.Endpoint, storage.Elasticsearch.Username, storage.Elasticsearch.Password, storage.Elasticsearch.APIKey, storage.Elasticsearch.AllowPrivateEndpoint, "elasticsearch endpoint")
 	default:
 		return fmt.Errorf("unsupported backend %q", backend)
 	}
 }
 
-func testHTTP(ctx context.Context, endpoint, username, password, apiKey string) error {
+func testHTTP(ctx context.Context, endpoint, username, password, apiKey string, allowPrivate bool, purpose string) error {
 	if endpoint == "" {
 		return fmt.Errorf("endpoint is required")
 	}
@@ -474,7 +497,13 @@ func testHTTP(ctx context.Context, endpoint, username, password, apiKey string) 
 	} else if username != "" {
 		req.SetBasicAuth(username, password)
 	}
-	resp, err := systemHTTPClient.Do(req)
+	client := systemHTTPClient(netguard.URLPolicy{
+		Purpose:        purpose,
+		HostPurpose:    purpose,
+		AllowedSchemes: []string{"http", "https"},
+		AllowPrivate:   allowPrivate,
+	})
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

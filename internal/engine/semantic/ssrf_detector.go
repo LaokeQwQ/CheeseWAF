@@ -12,7 +12,10 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
 )
 
-var urlLikePattern = regexp.MustCompile(`(?i)(?:https?|gopher|dict|ftp|file)://[^\s'"<>]+`)
+var (
+	urlLikePattern           = regexp.MustCompile(`(?i)(?:https?|gopher|dict|ftp|file)://[^\s'"<>]+`)
+	schemeRelativeURLPattern = regexp.MustCompile(`(?i)(?:^|[\s"'(])//[^\s'"<>]+`)
+)
 
 type SSRFDetector struct {
 	mode string
@@ -35,38 +38,119 @@ func (d *SSRFDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) 
 			continue
 		}
 		payload := decoder.Decode(candidate.text).Text
-		if strings.Contains(strings.ToLower(payload), "file://") {
+		target, reason, ok := ssrfDangerousTarget(payload)
+		if ok {
 			return &engine.DetectionResult{
 				Detected:   true,
 				DetectorID: d.ID(),
 				Category:   "ssrf",
 				Severity:   engine.SeverityHigh,
 				Action:     actionForMode(d.mode),
-				Message:    "SSRF target points to local file scheme",
-				Confidence: 0.88,
-				Payload:    strings.TrimSpace(payload),
+				Message:    reason,
+				Confidence: 0.84,
+				Payload:    target,
 			}, nil
-		}
-		for _, rawURL := range urlLikePattern.FindAllString(payload, -1) {
-			parsed, err := url.Parse(rawURL)
-			if err != nil || parsed.Hostname() == "" {
-				continue
-			}
-			if isInternalHost(parsed.Hostname()) {
-				return &engine.DetectionResult{
-					Detected:   true,
-					DetectorID: d.ID(),
-					Category:   "ssrf",
-					Severity:   engine.SeverityHigh,
-					Action:     actionForMode(d.mode),
-					Message:    "SSRF target points to local or private network",
-					Confidence: 0.82,
-					Payload:    rawURL,
-				}, nil
-			}
 		}
 	}
 	return nil, nil
+}
+
+func ssrfDangerousTarget(payload string) (string, string, bool) {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return "", "", false
+	}
+	if strings.Contains(strings.ToLower(payload), "file://") {
+		return payload, "SSRF target points to local file scheme", true
+	}
+	for _, rawURL := range ssrfURLCandidates(payload) {
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Hostname() == "" {
+			continue
+		}
+		if isInternalHost(parsed.Hostname()) {
+			return rawURL, "SSRF target points to local or private network", true
+		}
+	}
+	for _, host := range ssrfHostCandidates(payload) {
+		if isInternalHost(host) {
+			return host, "SSRF target host points to local or private network", true
+		}
+	}
+	return "", "", false
+}
+
+func looksLikeSSRFTarget(payload string) bool {
+	for _, host := range ssrfHostCandidates(payload) {
+		if isInternalHost(host) {
+			return true
+		}
+	}
+	return false
+}
+
+func ssrfURLCandidates(payload string) []string {
+	candidates := urlLikePattern.FindAllString(payload, -1)
+	for _, match := range schemeRelativeURLPattern.FindAllString(payload, -1) {
+		match = strings.TrimSpace(strings.Trim(match, `"'()`))
+		if strings.HasPrefix(match, "//") {
+			candidates = append(candidates, match)
+		}
+	}
+	return candidates
+}
+
+func ssrfHostCandidates(payload string) []string {
+	fields := strings.FieldsFunc(payload, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\r', '\n', '"', '\'', '<', '>', '(', ')', ',', ';':
+			return true
+		default:
+			return false
+		}
+	})
+	fields = append(fields, payload)
+	hosts := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if host := ssrfHostFromField(field); host != "" {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}
+
+func ssrfHostFromField(field string) string {
+	field = strings.TrimSpace(strings.Trim(field, `"'<>(),;`))
+	if field == "" || strings.Contains(field, "://") {
+		return ""
+	}
+	field = strings.TrimPrefix(field, "//")
+	if at := strings.LastIndex(field, "@"); at >= 0 {
+		field = field[at+1:]
+	}
+	if strings.HasPrefix(field, "[") {
+		if end := strings.Index(field, "]"); end > 0 {
+			return field[1:end]
+		}
+	}
+	for _, sep := range []string{"/", "?", "#"} {
+		if idx := strings.Index(field, sep); idx >= 0 {
+			field = field[:idx]
+		}
+	}
+	if host, _, err := net.SplitHostPort(field); err == nil {
+		return strings.Trim(host, "[]")
+	}
+	if strings.Count(field, ":") > 1 {
+		if ip := net.ParseIP(strings.Trim(field, "[]")); ip != nil {
+			return strings.Trim(field, "[]")
+		}
+		return ""
+	}
+	if host, _, ok := strings.Cut(field, ":"); ok {
+		return strings.Trim(host, "[]")
+	}
+	return strings.Trim(field, "[]")
 }
 
 func isInternalHost(host string) bool {

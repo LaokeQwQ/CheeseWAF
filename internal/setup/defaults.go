@@ -179,17 +179,31 @@ console:
       enabled: false
       type: "auto"
       url: ""
+  map:
+    china_boundary:
+      enabled: false
+      source_type: "file"
+      source: ""
+      license: ""
+      review_id: ""
+      attribution: ""
+      allow_insecure: false
+      allow_private: false
 
 storage:
   sqlite:
     path: %s
   clickhouse:
     enabled: false
+    endpoint: ""
+    allow_private_endpoint: false
     database: "default"
     table: "cheesewaf_logs"
     timeout: "10s"
   victorialogs:
     enabled: false
+    endpoint: ""
+    allow_private_endpoint: false
     timeout: "10s"
   postgresql:
     enabled: false
@@ -270,11 +284,13 @@ ai:
 update:
   ota:
     enabled: false
+    server: "https://ota.waf.laoker.cc/"
     channel: "stable"
     check_interval: "6h"
     auto_update_rules: true
     auto_update_binary: false
     verify_signature: true
+    public_key: ""
 
 scheduler:
   enabled: true
@@ -333,6 +349,8 @@ monitor:
     public: false
   remote_write:
     enabled: false
+    endpoint: ""
+    allow_private_endpoint: false
     interval: "30s"
     timeout: "10s"
   alerts:
@@ -350,6 +368,8 @@ monitor:
     - id: "default-webhook"
       name: "Default webhook"
       type: "webhook"
+      endpoint: ""
+      allow_private_endpoint: false
       enabled: false
 
 apisec:
