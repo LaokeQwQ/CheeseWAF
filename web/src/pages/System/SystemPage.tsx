@@ -442,6 +442,13 @@ export default function SystemPage() {
                         onChange={(allow_insecure) => patchChinaBoundary({ allow_insecure })}
                       />
                     </label>
+                    <label className="switch-line">
+                      <span>{t('system.mapBoundaryAllowPrivate')}</span>
+                      <Switch
+                        checked={system.console.map.china_boundary.allow_private}
+                        onChange={(allow_private) => patchChinaBoundary({ allow_private })}
+                      />
+                    </label>
                   </div>
                 </section>
               </div>
@@ -471,6 +478,7 @@ export default function SystemPage() {
 
                 <StoragePanel title="Elasticsearch" enabled={system.storage.elasticsearch.enabled} onToggle={(enabled) => patchStorage('elasticsearch', { enabled })} action={() => storageTestMutation.mutate('elasticsearch')} loading={storageTestMutation.isPending}>
                   <label><span>{t('system.endpoint')}</span><Input value={system.storage.elasticsearch.endpoint} onChange={(endpoint) => patchStorage('elasticsearch', { endpoint })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.elasticsearch.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('elasticsearch', { allow_private_endpoint })} /></label>
                   <label><span>{t('system.index')}</span><Input value={system.storage.elasticsearch.index} onChange={(index) => patchStorage('elasticsearch', { index })} /></label>
                   <label><span>{t('setup.username')}</span><Input value={system.storage.elasticsearch.username} onChange={(username) => patchStorage('elasticsearch', { username })} /></label>
                   <label><span>{t('system.apiKey')}</span><Input.Password value={system.storage.elasticsearch.api_key} onChange={(api_key) => patchStorage('elasticsearch', { api_key })} /></label>
@@ -479,6 +487,7 @@ export default function SystemPage() {
 
                 <StoragePanel title="ClickHouse" enabled={system.storage.clickhouse.enabled} onToggle={(enabled) => patchStorage('clickhouse', { enabled })} action={() => storageTestMutation.mutate('clickhouse')} loading={storageTestMutation.isPending}>
                   <label><span>{t('system.endpoint')}</span><Input value={system.storage.clickhouse.endpoint} onChange={(endpoint) => patchStorage('clickhouse', { endpoint })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.clickhouse.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('clickhouse', { allow_private_endpoint })} /></label>
                   <label><span>{t('system.database')}</span><Input value={system.storage.clickhouse.database} onChange={(database) => patchStorage('clickhouse', { database })} /></label>
                   <label><span>{t('system.table')}</span><Input value={system.storage.clickhouse.table} onChange={(table) => patchStorage('clickhouse', { table })} /></label>
                   <label><span>{t('setup.username')}</span><Input value={system.storage.clickhouse.username} onChange={(username) => patchStorage('clickhouse', { username })} /></label>
@@ -486,6 +495,7 @@ export default function SystemPage() {
 
                 <StoragePanel title="VictoriaLogs" enabled={system.storage.victorialogs.enabled} onToggle={(enabled) => patchStorage('victorialogs', { enabled })} action={() => storageTestMutation.mutate('victorialogs')} loading={storageTestMutation.isPending}>
                   <label><span>{t('system.endpoint')}</span><Input value={system.storage.victorialogs.endpoint} onChange={(endpoint) => patchStorage('victorialogs', { endpoint })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.victorialogs.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('victorialogs', { allow_private_endpoint })} /></label>
                   <label><span>{t('system.timeoutSeconds')}</span><InputNumber value={durationSeconds(system.storage.victorialogs.timeout)} min={1} max={120} onChange={(value) => patchStorage('victorialogs', { timeout: secondsToDuration(value) })} /></label>
                 </StoragePanel>
               </div>

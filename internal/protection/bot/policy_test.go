@@ -3,6 +3,7 @@ package bot
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -80,6 +81,41 @@ func TestChallengeWritesClearanceScript(t *testing.T) {
 	body := rr.Body.String()
 	if rr.Code != http.StatusForbidden || !strings.Contains(body, "cw_nonce") || !strings.Contains(body, "crypto.subtle") {
 		t.Fatalf("unexpected challenge response: status=%d body=%s", rr.Code, body)
+	}
+}
+
+func TestChallengeFailsClosedWhenRuntimeSecretGenerationFails(t *testing.T) {
+	original := generateBotPolicySecret
+	generateBotPolicySecret = func() (string, error) {
+		return "", errors.New("entropy unavailable")
+	}
+	t.Cleanup(func() { generateBotPolicySecret = original })
+
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:      true,
+		CAPTCHA:      true,
+		CAPTCHAType:  "slider",
+		ChallengeTTL: time.Minute,
+		CookieName:   "cw_clearance",
+		Secret:       config.BotSecretPlaceholder,
+	})
+	if policy.secretReady {
+		t.Fatal("expected policy to mark the signing secret unavailable")
+	}
+	if string(policy.secret) == "cheesewaf-ephemeral-bot-secret" {
+		t.Fatal("policy must not fall back to the historical fixed bot secret")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	rr := httptest.NewRecorder()
+
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	if rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), "bot challenge unavailable") {
+		t.Fatalf("expected fail-closed challenge response, got status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	req.Header.Set("X-CheeseWAF-Altcha", "challenge=invalid")
+	if policy.validAltchaHeaderAnswer(req, "203.0.113.10") {
+		t.Fatal("Altcha header must not verify without a ready signing secret")
 	}
 }
 
@@ -257,6 +293,19 @@ func TestSliderCAPTCHAUsesMobileFallback(t *testing.T) {
 	body := rr.Body.String()
 	if rr.Code != http.StatusForbidden || !strings.Contains(body, "cw_altcha") || strings.Contains(body, "cw_slider_token") {
 		t.Fatalf("expected mobile fallback PoW challenge, status=%d body=%s", rr.Code, body)
+	}
+}
+
+func TestCleanChallengeURLDropsCAPTCHAPayloadFields(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/login?keep=1&cw_slider_token=t&cw_slider_x=10&cw_slider_drag_ms=500&cw_slider_track=%5B%5D&cw_audio=a&cw_pow=1", nil)
+	cleaned := cleanChallengeURL(req)
+	for _, leaked := range []string{"cw_slider_token", "cw_slider_x", "cw_slider_drag_ms", "cw_slider_track", "cw_audio", "cw_pow"} {
+		if strings.Contains(cleaned, leaked) {
+			t.Fatalf("challenge payload field %q leaked into cleaned URL %q", leaked, cleaned)
+		}
+	}
+	if !strings.Contains(cleaned, "keep=1") {
+		t.Fatalf("unrelated query parameter was lost: %q", cleaned)
 	}
 }
 

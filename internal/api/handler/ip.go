@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -21,7 +20,11 @@ import (
 	"github.com/google/uuid"
 )
 
-const threatIntelHTTPTimeout = 15 * time.Second
+const (
+	threatIntelHTTPTimeout          = 15 * time.Second
+	threatIntelProviderMaxBodyBytes = 20 << 20
+	threatIntelLookupMaxBodyBytes   = 4 << 20
+)
 
 var (
 	threatIntelResolveIP            = net.DefaultResolver.LookupIP
@@ -216,11 +219,8 @@ func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
 	var req threatIntelSyncPayload
-	if r.Body != nil {
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if len(bytes.TrimSpace(body)) > 0 {
-			_ = json.Unmarshal(body, &req)
-		}
+	if !decodeOptional(w, r, &req, defaultJSONBodyLimit, "invalid threat intelligence sync request") {
+		return
 	}
 	providers := selectedProviders(h.Config.Protection.IP.Providers, req.ProviderID)
 	var total int
@@ -413,7 +413,7 @@ func fetchProvider(ctx context.Context, provider config.ThreatIntelProviderConfi
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("provider returned %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	body, err := readLimitedResponseBody(resp.Body, threatIntelProviderMaxBodyBytes, "provider response")
 	if err != nil {
 		return nil, err
 	}
@@ -450,7 +450,7 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("provider returned %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := readLimitedResponseBody(resp.Body, threatIntelLookupMaxBodyBytes, "provider lookup response")
 	if err != nil {
 		return nil, err
 	}
@@ -468,6 +468,20 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 		return nil, err
 	}
 	return items, nil
+}
+
+func readLimitedResponseBody(body io.Reader, maxBytes int64, purpose string) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("%s size limit is invalid", purpose)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", purpose, maxBytes)
+	}
+	return data, nil
 }
 
 func providerLookupURL(provider config.ThreatIntelProviderConfig, ip string) (*url.URL, error) {

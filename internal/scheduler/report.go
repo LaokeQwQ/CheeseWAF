@@ -14,10 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
-var reportHTTPClient = &http.Client{Timeout: 15 * time.Second}
+var reportHTTPClient = netguard.NewHTTPClient(netguard.HTTPClientOptions{
+	Timeout: 15 * time.Second,
+	Policy:  reportWebhookURLPolicy(),
+})
 
 type ReportSummary struct {
 	GeneratedAt    time.Time      `json:"generated_at"`
@@ -94,6 +98,8 @@ func SummarizeSecurityLogs(logPath, period string, nowFn func() time.Time) (Repo
 	since := now.Add(-24 * time.Hour)
 	if period == "weekly" {
 		since = now.Add(-7 * 24 * time.Hour)
+	} else if period == "monthly" {
+		since = now.Add(-30 * 24 * time.Hour)
 	}
 	summary := ReportSummary{
 		GeneratedAt:  now,
@@ -301,6 +307,14 @@ func postReport(ctx context.Context, endpoint, format string, report []byte) err
 		return fmt.Errorf("webhook returned %s", resp.Status)
 	}
 	return nil
+}
+
+func reportWebhookURLPolicy() netguard.URLPolicy {
+	return netguard.URLPolicy{
+		Purpose:        "security report webhook",
+		HostPurpose:    "security report webhook",
+		AllowedSchemes: []string{"https"},
+	}
 }
 
 func normalizedOr(value, fallback string) string {

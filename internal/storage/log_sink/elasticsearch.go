@@ -34,7 +34,7 @@ func NewElasticsearchSink(cfg config.ElasticsearchConfig, client *http.Client) (
 		cfg.Timeout = 10 * time.Second
 	}
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		client = guardedLogSinkHTTPClient(cfg.Timeout, "elasticsearch endpoint", cfg.AllowPrivateEndpoint)
 	}
 	return &ElasticsearchSink{cfg: cfg, client: client}, nil
 }

@@ -62,6 +62,51 @@ func TestAuthenticatorDisabledSkipsJWKSInitialization(t *testing.T) {
 	}
 }
 
+func TestRemoteJWKSSourceCloseBeforeStartDoesNotBlock(t *testing.T) {
+	source, err := newRemoteJWKSSource(config.APIAuthConfig{
+		JWKSURL:     "https://keys.example.com/.well-known/jwks.json",
+		JWKSRefresh: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("remote jwks source: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		source.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked before remote JWKS source was started")
+	}
+}
+
+func TestRemoteJWKSSourceCloseAfterStartStopsWorker(t *testing.T) {
+	source, err := newRemoteJWKSSource(config.APIAuthConfig{
+		JWKSURL:     "https://keys.example.com/.well-known/jwks.json",
+		JWKSRefresh: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("remote jwks source: %v", err)
+	}
+	source.Start()
+
+	done := make(chan struct{})
+	go func() {
+		source.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked after remote JWKS source was started")
+	}
+}
+
 func TestAuthenticatorEvaluatesAPIAuthClaims(t *testing.T) {
 	auth, err := NewAuthenticator(config.APISecConfig{
 		Auth: config.APIAuthConfig{

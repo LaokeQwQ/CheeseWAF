@@ -29,7 +29,7 @@ func NewVictoriaLogsSink(cfg config.VictoriaLogsConfig, client *http.Client) (*V
 		cfg.Timeout = 10 * time.Second
 	}
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		client = guardedLogSinkHTTPClient(cfg.Timeout, "victorialogs endpoint", cfg.AllowPrivateEndpoint)
 	}
 	return &VictoriaLogsSink{cfg: cfg, client: client}, nil
 }

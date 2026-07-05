@@ -188,6 +188,39 @@ func TestRouterLoginCAPTCHAIsEnabledByDefault(t *testing.T) {
 	}
 }
 
+func TestRouterLoginCAPTCHAUsesStableEphemeralSecretWhenRuntimeSecretMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Mode = "pow"
+	cfg.Protection.Bot.Secret = config.BotSecretPlaceholder
+	cfg.APISec.Audit.Enabled = false
+	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
+	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	router := NewRouter(Options{Config: &cfg, ConfigPath: configPath, Store: store})
+
+	payload := solveLoginCAPTCHA(t, router)
+	if payload == nil {
+		t.Fatal("expected a login captcha payload")
+	}
+	body, _ := json.Marshal(payload)
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected captcha signed with ephemeral secret to verify, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRouterSliderCAPTCHARequiresSliderProof(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := config.Default()
@@ -268,6 +301,18 @@ func TestRouterSliderCAPTCHADoesNotIssuePowByDefault(t *testing.T) {
 	}
 	if envelope.Data.Slider == nil || envelope.Data.Slider.Token == "" || envelope.Data.Slider.Image == "" {
 		t.Fatalf("expected real slider challenge, got %+v", envelope.Data.Slider)
+	}
+}
+
+func TestRouterLoginCAPTCHARejectsTrailingJSONDocument(t *testing.T) {
+	router, _, _ := newAuthzTestRouter(t)
+
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha", "", []byte(`{} {}`))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected trailing JSON captcha request to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("exactly one JSON document")) {
+		t.Fatalf("expected explicit trailing JSON error, body=%s", recorder.Body.String())
 	}
 }
 

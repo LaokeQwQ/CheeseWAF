@@ -75,6 +75,10 @@ func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
 	for index := range req {
 		normalizeScheduledTask(&req[index])
 	}
+	if err := h.validateSchedulerTasks(req); err != nil {
+		writeError(w, http.StatusBadRequest, "SCHEDULER_TASK_INVALID", err.Error())
+		return
+	}
 	previous := h.Config.Scheduler.Tasks
 	h.Config.Scheduler.Tasks = req
 	if err := h.persistConfig(); err != nil {
@@ -83,6 +87,15 @@ func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, scheduledTaskResponses(h.Config.Scheduler.Tasks))
+}
+
+func (h *Handler) validateSchedulerTasks(tasks []config.ScheduledTaskConfig) error {
+	if h == nil || h.Config == nil {
+		return nil
+	}
+	candidate := *h.Config
+	candidate.Scheduler.Tasks = tasks
+	return config.Validate(&candidate)
 }
 
 func decodeScheduledTaskPayload(w http.ResponseWriter, r *http.Request) ([]scheduledTaskPayload, bool) {
@@ -191,11 +204,12 @@ func (h *Handler) UpdateEdgePolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) StorageStats(w http.ResponseWriter, _ *http.Request) {
+	logDir := filepath.Dir(h.Config.Logging.Output.File.Path)
 	writeData(w, map[string]any{
 		"data_dir": h.Config.Setup.DataDir,
-		"log_dir":  filepath.Dir(h.Config.Logging.Output.File.Path),
-		"data":     dirSize(h.Config.Setup.DataDir),
-		"logs":     dirSize(filepath.Dir(h.Config.Logging.Output.File.Path)),
+		"log_dir":  logDir,
+		"data":     h.cachedDirSize(h.Config.Setup.DataDir),
+		"logs":     h.cachedDirSize(logDir),
 	})
 }
 
@@ -648,9 +662,14 @@ func (h *Handler) applyBlockPageConfig(w http.ResponseWriter, next config.BlockP
 }
 
 func (h *Handler) ImportNginx(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	const maxNginxImportBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxNginxImportBytes+1))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if len(body) > maxNginxImportBytes {
+		writeError(w, http.StatusBadRequest, "NGINX_IMPORT_TOO_LARGE", "nginx configuration exceeds maximum import size")
 		return
 	}
 	sites, err := config.ParseNginxServerBlock(body)
