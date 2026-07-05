@@ -298,17 +298,36 @@ export default function UsersPage() {
         className="users-modal users-twofa-modal"
       >
         {twoFASetupMutation.isPending && <div className="empty-state">{t('common.loading')}</div>}
+        {twoFA.user && !twoFASetupMutation.isPending && !twoFA.setup && (
+          <div className="empty-state">{t('users.twoFASetupUnavailable')}</div>
+        )}
         {twoFA.setup && (
           <div className="twofa-setup users-twofa-setup">
-            {twoFA.qr && <img src={twoFA.qr} alt="2FA QR" />}
-            <div>
-              <span>{t('users.twoFASecret')}</span>
-              <code>{twoFA.setup.secret}</code>
+            <div className="users-twofa-status">
+              <ShieldCheck size={18} />
+              <div>
+                <strong>{t('users.verify2FA')}</strong>
+                <span>{t('users.twoFAGuide')}</span>
+              </div>
             </div>
-            <Input value={twoFA.code} placeholder="000000" maxLength={6} onChange={(code) => setTwoFA((current) => ({ ...current, code }))} />
-            <Button type="primary" disabled={twoFA.code.length !== 6} loading={twoFAEnableMutation.isPending} onClick={() => twoFAEnableMutation.mutate()} long>
-              {t('users.enable2FA')}
-            </Button>
+            <div className="users-twofa-body">
+              {twoFA.qr && <img src={twoFA.qr} alt={t('users.twoFAQRCode')} />}
+              <div className="users-twofa-steps">
+                <div>
+                  <span>{t('users.twoFASecret')}</span>
+                  <code>{twoFA.setup.secret}</code>
+                </div>
+                <Input
+                  value={twoFA.code}
+                  placeholder={t('users.twoFACodePlaceholder')}
+                  maxLength={6}
+                  onChange={(code) => setTwoFA((current) => ({ ...current, code: code.replace(/\D/g, '').slice(0, 6) }))}
+                />
+                <Button type="primary" disabled={twoFA.code.length !== 6} loading={twoFAEnableMutation.isPending} onClick={() => twoFAEnableMutation.mutate()} long>
+                  {t('users.enable2FA')}
+                </Button>
+              </div>
+            </div>
           </div>
         )}
       </Modal>

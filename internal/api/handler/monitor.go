@@ -12,6 +12,12 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
+const monitorDiskUsageCacheTTL = 10 * time.Second
+
+type logCounter interface {
+	Count(context.Context, storage.LogFilter) (int64, bool, error)
+}
+
 type validateRequestPayload struct {
 	Method        string            `json:"method"`
 	Path          string            `json:"path"`
@@ -81,8 +87,8 @@ func (h *Handler) monitorSnapshot(r *http.Request) monitor.Snapshot {
 func (h *Handler) monitorSnapshotFromContext(ctx context.Context) monitor.Snapshot {
 	logs, total, ok := h.queryLogsWithTotalContext(ctx, storage.LogFilter{Limit: 1000})
 	snapshot := monitor.Collect(h.StartedAt, len(h.Config.Sites), logs, map[string]int64{
-		"data": dirSize(h.Config.Setup.DataDir),
-		"logs": dirSize(logDir(h.Config.Logging.Output.File.Path)),
+		"data": h.cachedDirSize(h.Config.Setup.DataDir),
+		"logs": h.cachedDirSize(logDir(h.Config.Logging.Output.File.Path)),
 	})
 	if ok {
 		snapshot.Requests = intFromTotal(total)
@@ -106,6 +112,15 @@ func (h *Handler) logCount(r *http.Request, filter storage.LogFilter) (int64, bo
 }
 
 func (h *Handler) logCountFromContext(ctx context.Context, filter storage.LogFilter) (int64, bool) {
+	if h.Sink == nil {
+		return 0, false
+	}
+	if counter, ok := h.Sink.(logCounter); ok {
+		total, supported, err := counter.Count(ctx, filter)
+		if err == nil && supported {
+			return total, true
+		}
+	}
 	filter.Limit = 1
 	_, total, ok := h.queryLogsWithTotalContext(ctx, filter)
 	return total, ok
@@ -147,4 +162,43 @@ func logDir(path string) string {
 		return "."
 	}
 	return filepath.Dir(path)
+}
+
+func (h *Handler) cachedDirSize(root string) int64 {
+	if root == "" {
+		return 0
+	}
+	if h == nil {
+		return dirSize(root)
+	}
+	for {
+		now := time.Now()
+		h.diskUsageMu.Lock()
+		if h.diskUsageCache == nil {
+			h.diskUsageCache = map[string]cachedDirSize{}
+		}
+		cached, hasCached := h.diskUsageCache[root]
+		if hasCached {
+			if cached.loading && cached.ready != nil {
+				ready := cached.ready
+				h.diskUsageMu.Unlock()
+				<-ready
+				continue
+			}
+			if now.Before(cached.expiresAt) {
+				h.diskUsageMu.Unlock()
+				return cached.value
+			}
+		}
+		ready := make(chan struct{})
+		h.diskUsageCache[root] = cachedDirSize{value: cached.value, loading: true, ready: ready}
+		h.diskUsageMu.Unlock()
+
+		value := dirSize(root)
+		h.diskUsageMu.Lock()
+		h.diskUsageCache[root] = cachedDirSize{value: value, expiresAt: time.Now().Add(monitorDiskUsageCacheTTL)}
+		close(ready)
+		h.diskUsageMu.Unlock()
+		return value
+	}
 }

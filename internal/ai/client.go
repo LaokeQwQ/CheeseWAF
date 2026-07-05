@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	openaisdk "github.com/openai/openai-go"
 	openaioption "github.com/openai/openai-go/option"
 	openaiparam "github.com/openai/openai-go/packages/param"
@@ -54,9 +55,11 @@ type Client struct {
 	openai   openaisdk.Client
 }
 
+const defaultAIHTTPTimeout = 5 * time.Minute
+
 func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = &http.Client{Transport: directTransport()}
+		httpClient = newAIHTTPClient(cfg, defaultAIHTTPTimeout)
 	}
 	provider := normalizeProvider(cfg.Provider)
 	client := &Client{
@@ -72,14 +75,20 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 	return client
 }
 
-func directTransport() *http.Transport {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	return transport
+func NewClientWithTimeout(cfg config.AIConfig, timeout time.Duration) *Client {
+	return NewClient(cfg, newAIHTTPClient(cfg, timeout))
 }
 
-func NewClientWithTimeout(cfg config.AIConfig, timeout time.Duration) *Client {
-	return NewClient(cfg, &http.Client{Timeout: timeout})
+func newAIHTTPClient(cfg config.AIConfig, timeout time.Duration) *http.Client {
+	return netguard.NewHTTPClient(netguard.HTTPClientOptions{
+		Timeout: timeout,
+		Policy: netguard.URLPolicy{
+			Purpose:        "AI API base",
+			HostPurpose:    "AI API base",
+			AllowedSchemes: []string{"http", "https"},
+			AllowPrivate:   cfg.AllowPrivateAPIBase,
+		},
+	})
 }
 
 func newOpenAISDKClient(apiBase, apiKey string, httpClient *http.Client) openaisdk.Client {
@@ -923,7 +932,7 @@ func (a *openAIStreamAssembler) accept(data string) error {
 	}
 	for _, choice := range chunk.Choices {
 		a.markStarted()
-		if delta := firstNonEmpty(choice.Delta.ReasoningContent, choice.Delta.Reasoning); delta != "" {
+		if delta := firstPresent(choice.Delta.ReasoningContent, choice.Delta.Reasoning); delta != "" {
 			a.reasoning.WriteString(delta)
 			a.emitDelta("reasoning_delta", delta, "")
 		}
@@ -959,6 +968,15 @@ func (a *openAIStreamAssembler) accept(data string) error {
 		}
 	}
 	return nil
+}
+
+func firstPresent(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (a *openAIStreamAssembler) completion() *CompletionResult {
@@ -1020,7 +1038,7 @@ func (a *openAIStreamAssembler) markStarted() {
 }
 
 func (a *openAIStreamAssembler) emitDelta(kind, delta, tool string) {
-	if strings.TrimSpace(delta) == "" {
+	if delta == "" {
 		return
 	}
 	a.emitEvent(AssistantTraceEvent{Type: kind, Message: delta, ToolName: tool, Provider: a.provider, Model: a.model})
@@ -1203,7 +1221,7 @@ func (a *anthropicStreamAssembler) markStarted() {
 }
 
 func (a *anthropicStreamAssembler) emitDelta(kind, delta, tool string) {
-	if strings.TrimSpace(delta) == "" {
+	if delta == "" {
 		return
 	}
 	a.emitEvent(AssistantTraceEvent{Type: kind, Message: delta, ToolName: tool, Provider: a.provider, Model: a.model})

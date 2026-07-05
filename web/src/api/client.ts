@@ -1,5 +1,5 @@
 ﻿import axios, { type AxiosResponse } from 'axios';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -328,6 +328,10 @@ export function fetchChinaMapBoundary() {
   return unwrap<MapBoundaryResponse>(apiClient.get('/system/map/china-boundary'));
 }
 
+export function fetchChinaMapBoundaryByCode(adcode: string) {
+  return unwrap<MapBoundaryResponse>(apiClient.get(`/system/map/china-boundary/${encodeURIComponent(adcode)}`));
+}
+
 export function updateSystemConfig(payload: Partial<SystemConfig>) {
   return unwrap<SystemConfig>(apiClient.put('/system', payload));
 }
@@ -564,7 +568,7 @@ export function fetchStorageStats() {
 }
 
 export function cleanupStorage() {
-  return unwrap<{ cleaned: boolean }>(apiClient.post('/storage/cleanup'));
+  return unwrap<StorageCleanupResult>(apiClient.post('/storage/cleanup'));
 }
 
 export function reclaimSystemResources(target: 'memory' | 'swap' | 'all') {
@@ -653,6 +657,95 @@ export function analyzeLogReference(reference: string, language?: string) {
   return unwrap<AttackAnalysis>(apiClient.post('/ai/analyze', { reference, language }, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
 
+export async function analyzeLogReferenceStream(
+  reference: string,
+  language = '',
+  onTrace?: (event: AIAssistantTraceEvent) => void,
+  signal?: AbortSignal,
+) {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/analyze/stream') : '';
+  const response = await fetch('/api/ai/analyze/stream', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+    },
+    body: JSON.stringify({ reference, language }),
+  });
+  const traceID = fetchResponseTraceID(response);
+  if (!response.ok) {
+    const errorBody = await readableFetchError(response);
+    throw new APIRequestError(errorBody.message, 'AI_ANALYSIS_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
+    const payload = await response.json() as Envelope<AttackAnalysis>;
+    if (payload.error) {
+      throw new APIRequestError(payload.error.message, payload.error.code, response.status, payload.error.event_id ?? payload.error.trace_id ?? traceID);
+    }
+    return payload.data as AttackAnalysis;
+  }
+  if (!response.body) {
+    throw new APIRequestError('Streaming response body is not available.', 'AI_ANALYSIS_STREAM_UNAVAILABLE', response.status, traceID);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalAnalysis: AttackAnalysis | null = null;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split(/\n\n/);
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        const event = parseSSEBlock(part);
+        if (!event) continue;
+        if (event.event === 'trace') {
+          onTrace?.(event.data as AIAssistantTraceEvent);
+        } else if (event.event === 'done') {
+          finalAnalysis = event.data as AttackAnalysis;
+        } else if (event.event === 'error') {
+          const payload = event.data as { message?: string; code?: string; event_id?: string; trace_id?: string };
+          throw new APIRequestError(payload.message || 'AI analysis stream failed.', payload.code || 'AI_ANALYSIS_STREAM_FAILED', response.status, payload.event_id ?? payload.trace_id ?? traceID);
+        }
+      }
+    }
+    if (buffer.trim()) {
+      const event = parseSSEBlock(buffer);
+      if (event?.event === 'done') {
+        finalAnalysis = event.data as AttackAnalysis;
+      }
+    }
+  } catch (error) {
+    if (error instanceof APIRequestError) {
+      throw error;
+    }
+    if ((error as DOMException)?.name === 'AbortError') {
+      throw new APIRequestError('AI analysis request was cancelled.', 'AI_ANALYSIS_CANCELLED', response.status, traceID);
+    }
+    throw new APIRequestError(
+      streamInterruptedMessage('AI analysis stream was interrupted before completion', error),
+      'AI_ANALYSIS_STREAM_INTERRUPTED',
+      response.status,
+      traceID,
+      error,
+    );
+  }
+  if (!finalAnalysis) {
+    throw new APIRequestError(
+      streamInterruptedMessage('AI analysis stream ended without a final result', 'missing final done event'),
+      'AI_ANALYSIS_STREAM_INCOMPLETE',
+      response.status,
+      traceID,
+    );
+  }
+  return finalAnalysis;
+}
+
 export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string; language?: string }) {
   return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload, { timeout: AI_REQUEST_TIMEOUT_MS }));
 }
@@ -738,7 +831,7 @@ export async function askAIAssistantStream(
       throw new APIRequestError('AI assistant request was cancelled.', 'AI_ASSISTANT_CANCELLED', response.status, traceID);
     }
     throw new APIRequestError(
-      'AI assistant stream was interrupted before completion. The server keeps the stream alive with heartbeats; check provider latency, reverse proxy buffering, or network stability.',
+      streamInterruptedMessage('AI assistant stream was interrupted before completion', error),
       'AI_ASSISTANT_STREAM_INTERRUPTED',
       response.status,
       traceID,
@@ -746,7 +839,108 @@ export async function askAIAssistantStream(
     );
   }
   if (!finalReply) {
-    throw new APIRequestError('AI assistant stream ended without a final answer.', 'AI_ASSISTANT_STREAM_INCOMPLETE');
+    throw new APIRequestError(
+      streamInterruptedMessage('AI assistant stream ended without a final answer', 'missing final done event'),
+      'AI_ASSISTANT_STREAM_INCOMPLETE',
+      response.status,
+      traceID,
+    );
+  }
+  return finalReply;
+}
+
+export async function continueAIApprovalStream(
+  approvalID: string,
+  message: string,
+  limit = 30,
+  language = '',
+  deepThink = false,
+  onTrace?: (event: AIAssistantTraceEvent) => void,
+  signal?: AbortSignal,
+) {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/tools/approvals/continue/stream') : '';
+  const response = await fetch(`/api/ai/tools/approvals/${encodeURIComponent(approvalID)}/continue/stream`, {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+    },
+    body: JSON.stringify({ message, limit, language, deep_think: deepThink }),
+  });
+  const traceID = fetchResponseTraceID(response);
+  if (!response.ok) {
+    const errorBody = await readableFetchError(response);
+    throw new APIRequestError(errorBody.message, 'AI_APPROVAL_CONTINUE_FAILED', response.status, errorBody.traceID ?? traceID);
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
+    const payload = await response.json() as Envelope<AIAssistantReply>;
+    if (payload.error) {
+      throw new APIRequestError(payload.error.message, payload.error.code, response.status, payload.error.event_id ?? payload.error.trace_id ?? traceID);
+    }
+    return payload.data as AIAssistantReply;
+  }
+  if (!response.body) {
+    throw new APIRequestError('AI approval continuation stream is not available.', 'AI_APPROVAL_CONTINUE_STREAM_UNAVAILABLE', response.status);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalReply: AIAssistantReply | null = null;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split(/\n\n/);
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        const event = parseSSEBlock(part);
+        if (!event) {
+          continue;
+        }
+        if (event.event === 'trace') {
+          onTrace?.(event.data as AIAssistantTraceEvent);
+        } else if (event.event === 'done') {
+          finalReply = event.data as AIAssistantReply;
+        } else if (event.event === 'error') {
+          const payload = event.data as { message?: string; code?: string; event_id?: string; trace_id?: string };
+          throw new APIRequestError(payload.message || 'AI approval continuation failed.', payload.code || 'AI_APPROVAL_CONTINUE_FAILED', response.status, payload.event_id ?? payload.trace_id ?? traceID);
+        }
+      }
+    }
+    if (buffer.trim()) {
+      const event = parseSSEBlock(buffer);
+      if (event?.event === 'done') {
+        finalReply = event.data as AIAssistantReply;
+      }
+    }
+  } catch (error) {
+    if (error instanceof APIRequestError) {
+      throw error;
+    }
+    if ((error as DOMException)?.name === 'AbortError') {
+      throw new APIRequestError('AI approval continuation was cancelled.', 'AI_APPROVAL_CONTINUE_CANCELLED', response.status, traceID);
+    }
+    throw new APIRequestError(
+      streamInterruptedMessage('AI approval continuation stream was interrupted before completion', error),
+      'AI_APPROVAL_CONTINUE_STREAM_INTERRUPTED',
+      response.status,
+      traceID,
+      error,
+    );
+  }
+  if (!finalReply) {
+    throw new APIRequestError(
+      streamInterruptedMessage('AI approval continuation stream ended without a final answer', 'missing final done event'),
+      'AI_APPROVAL_CONTINUE_STREAM_INCOMPLETE',
+      response.status,
+      traceID,
+    );
   }
   return finalReply;
 }
@@ -799,4 +993,10 @@ async function readableFetchError(response: Response): Promise<{ message: string
   } catch {
     return { message: text, traceID: fetchResponseTraceID(response) };
   }
+}
+
+function streamInterruptedMessage(prefix: string, error: unknown) {
+  const cause = error instanceof Error ? error.message : String(error || '');
+  const detail = cause.trim() ? ` Cause: ${cause.trim()}.` : '';
+  return `${prefix}.${detail} The server keeps the stream alive with heartbeats; check provider latency, reverse proxy buffering, or network stability.`;
 }

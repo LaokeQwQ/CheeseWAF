@@ -23,6 +23,7 @@ const RulesPage = lazy(() => import('../pages/Rules/RulesPage'));
 const SetupPage = lazy(() => import('../pages/Setup/SetupPage'));
 const SiteDetailPage = lazy(() => import('../pages/Sites/SiteDetailPage'));
 const SitesPage = lazy(() => import('../pages/Sites/SitesPage'));
+const SSLPage = lazy(() => import('../pages/SSL/SSLPage'));
 const SystemPage = lazy(() => import('../pages/System/SystemPage'));
 const UpdatesPage = lazy(() => import('../pages/Updates/UpdatesPage'));
 const UsersPage = lazy(() => import('../pages/Users/UsersPage'));
@@ -71,6 +72,7 @@ export default function AppRoutes() {
           <Route index element={<Page><LazyPage><DashboardPage /></LazyPage></Page>} />
           <Route path="sites" element={<Page><LazyPage><SitesPage /></LazyPage></Page>} />
           <Route path="sites/:id" element={<Page><LazyPage><SiteDetailPage /></LazyPage></Page>} />
+          <Route path="ssl" element={<Page><LazyPage><SSLPage /></LazyPage></Page>} />
           <Route path="rules" element={<Page><LazyPage><RulesPage /></LazyPage></Page>} />
           <Route path="logs" element={<Page><LazyPage><LogsPage /></LazyPage></Page>} />
           <Route path="logs/:traceId" element={<Page><LazyPage><LogDetailPage /></LazyPage></Page>} />

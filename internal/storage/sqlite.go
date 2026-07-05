@@ -123,6 +123,12 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site *Site) error {
 	return err
 }
 
+// NormalizeSiteForWrite applies the same defaulting used by the persistent
+// store so API validation sees the effective site configuration.
+func NormalizeSiteForWrite(site *Site) {
+	ensureSite(site)
+}
+
 func (s *SQLiteStore) UpdateSite(ctx context.Context, site *Site) error {
 	if site == nil {
 		return fmt.Errorf("site is nil")

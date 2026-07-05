@@ -2,6 +2,7 @@
 package response
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -68,16 +69,38 @@ func (i *Inspector) InspectHTTP(resp *http.Response) (*Finding, error) {
 	if !i.Enabled() || resp == nil || resp.Body == nil {
 		return nil, nil
 	}
-	body, err := io.ReadAll(resp.Body)
+	limit := i.maxBody
+	if limit <= 0 {
+		limit = 1 << 20
+	}
+	originalBody := resp.Body
+	body, err := io.ReadAll(io.LimitReader(originalBody, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	resp.Body.Close()
+	if int64(len(body)) > limit {
+		resp.Body = replayThenClose(body, originalBody)
+		return nil, nil
+	}
+	originalBody.Close()
 	resp.Body = io.NopCloser(newReplayReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	if int64(len(body)) > i.maxBody {
-		return nil, nil
-	}
 	return i.Inspect(body), nil
+}
+
+type replayReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r replayReadCloser) Close() error {
+	return r.closer.Close()
+}
+
+func replayThenClose(prefix []byte, rest io.ReadCloser) io.ReadCloser {
+	return replayReadCloser{
+		Reader: io.MultiReader(bytes.NewReader(prefix), rest),
+		closer: rest,
+	}
 }

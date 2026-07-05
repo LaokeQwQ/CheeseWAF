@@ -89,10 +89,6 @@ export type ACMEIssueRequest = {
   account_email: string;
   server: string;
   key_type: string;
-  acme_sh_path: string;
-  home: string;
-  cert_dir: string;
-  reload_cmd: string;
   auto_renew: boolean;
   notify: boolean;
 };
@@ -322,6 +318,15 @@ export type StorageStats = {
   log_dir: string;
   data: number;
   logs: number;
+};
+
+export type StorageCleanupResult = {
+  cleaned: boolean;
+  target: string;
+  keep: number;
+  scanned: number;
+  removed: number;
+  timestamp: string;
 };
 
 export type BlockTemplate = {

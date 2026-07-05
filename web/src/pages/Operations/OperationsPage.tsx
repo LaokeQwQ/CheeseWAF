@@ -1,19 +1,44 @@
-import { Button, Form, Input, Modal, Progress, Select, Switch, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Progress, Select, Switch, Table, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Archive, Database, Edit3, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, Database, Edit3, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { cleanupStorage, exportBackup, fetchStorageStats, fetchTasks, updateTasks } from '../../api/client';
 import type { ScheduledTask } from '../../types/api';
+
+type DurationUnit = 'm' | 'h' | 'd';
+
+type TaskFormValues = ScheduledTask & {
+  everyValue?: number;
+  everyUnit?: DurationUnit;
+};
+
+const durationUnitOptions: DurationUnit[] = ['m', 'h', 'd'];
+const taskTypeOptions = ['cleanup', 'backup', 'security_report', 'ai_self_learning'];
+const taskFrequencyOptions = ['interval', 'daily', 'weekly', 'monthly'];
 
 export default function OperationsPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: tasks = [] } = useQuery({ queryKey: ['tasks'], queryFn: fetchTasks, retry: false });
   const { data: storage } = useQuery({ queryKey: ['storage'], queryFn: fetchStorageStats, retry: false });
-  const cleanup = useMutation({ mutationFn: cleanupStorage, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['storage'] }) });
+  const cleanup = useMutation({
+    mutationFn: cleanupStorage,
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ['storage'] });
+      ArcoMessage.success(t('ops.cleanupDone', { removed: result.removed, scanned: result.scanned }));
+    },
+    onError: (error) => ArcoMessage.error(error.message),
+  });
   const backup = useMutation({ mutationFn: exportBackup });
-  const tasksMutation = useMutation({ mutationFn: updateTasks, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tasks'] }) });
+  const tasksMutation = useMutation({
+    mutationFn: updateTasks,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      ArcoMessage.success(t('ops.tasksSaved'));
+    },
+    onError: (error) => ArcoMessage.error(error.message),
+  });
   const dataSize = storage?.data ?? 0;
   const logSize = storage?.logs ?? 0;
   const total = Math.max(dataSize + logSize, 1);
@@ -23,8 +48,20 @@ export default function OperationsPage() {
   const patchTask = (id: string, patch: Partial<ScheduledTask>) => {
     persistTasks(tasks.map((task) => (task.id === id ? { ...task, ...patch } : task)));
   };
+  const saveTask = (task: ScheduledTask, patch: Partial<ScheduledTask>) => {
+    const nextTask = { ...task, ...patch };
+    const exists = tasks.some((item) => item.id === task.id);
+    persistTasks(exists ? tasks.map((item) => (item.id === task.id ? nextTask : item)) : [...tasks, nextTask]);
+  };
   const removeTask = (id: string) => {
-    persistTasks(tasks.filter((task) => task.id !== id));
+    Modal.confirm({
+      title: t('common.confirmDeleteTitle'),
+      content: t('common.confirmDeleteEntry'),
+      okText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { status: 'danger' },
+      onOk: () => persistTasks(tasks.filter((task) => task.id !== id)),
+    });
   };
 
   return (
@@ -91,6 +128,7 @@ export default function OperationsPage() {
       <section className="table-panel ops-task-panel">
         <div className="panel-heading">
           <h2>{t('ops.taskList')}</h2>
+          <Button icon={<Plus size={15} />} onClick={() => setEditingTask(newScheduledTask())}>{t('common.add')}</Button>
         </div>
         <div className="desktop-table-wrap">
           <Table
@@ -101,7 +139,7 @@ export default function OperationsPage() {
             columns={[
               { title: t('ops.task'), dataIndex: 'name' },
               { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <span className="status-group"><Tag>{taskTypeLabel(type, t)}</Tag></span> },
-              { title: t('ops.every'), dataIndex: 'every' },
+              { title: t('ops.every'), dataIndex: 'every', render: (_: unknown, record: ScheduledTask) => formatTaskSchedule(record, t) },
               { title: t('ops.target'), dataIndex: 'target', render: (target: string) => <code className="table-code" title={target || '-'}>{target || '-'}</code> },
               {
                 title: t('rules.enabled'),
@@ -160,21 +198,47 @@ export default function OperationsPage() {
         {editingTask && (
           <Form
             key={editingTask.id}
+            className="ops-task-form"
             layout="vertical"
-            initialValues={editingTask}
-            onSubmit={(values) => {
-              patchTask(editingTask.id, {
-                name: values.name,
-                every: values.every,
-                target: values.target,
-                enabled: values.enabled,
-              });
+            initialValues={taskToFormValues(editingTask)}
+            onSubmit={(values: TaskFormValues) => {
+              saveTask(editingTask, normalizeTaskFormValues(editingTask, values));
               setEditingTask(null);
             }}
           >
-            <Form.Item label={t('ops.task')} field="name"><Input /></Form.Item>
-            <Form.Item label={t('ops.every')} field="every"><Input /></Form.Item>
-            <Form.Item label={t('ops.target')} field="target"><Input /></Form.Item>
+            <div className="ops-task-form-grid">
+              <Form.Item label={t('ops.task')} field="name" rules={[{ required: true }]}>
+                <Input placeholder={t('ops.taskNamePlaceholder')} />
+              </Form.Item>
+              <Form.Item label={t('ops.type')} field="type" rules={[{ required: true }]}>
+                <Select>
+                  {taskTypeOptions.map((type) => <Select.Option key={type} value={type}>{taskTypeLabel(type, t)}</Select.Option>)}
+                </Select>
+              </Form.Item>
+              <Form.Item label={t('ops.frequency')} field="frequency" rules={[{ required: true }]}>
+                <Select>
+                  {taskFrequencyOptions.map((frequency) => <Select.Option key={frequency} value={frequency}>{frequencyLabel(frequency, t)}</Select.Option>)}
+                </Select>
+              </Form.Item>
+              <Form.Item label={t('ops.at')} field="at"><Input placeholder="08:00" /></Form.Item>
+              <Form.Item label={t('ops.everyValue')} field="everyValue">
+                <InputNumber min={1} max={31 * 24 * 60} />
+              </Form.Item>
+              <Form.Item label={t('ops.everyUnit')} field="everyUnit">
+                <Select>
+                  {durationUnitOptions.map((unit) => <Select.Option key={unit} value={unit}>{durationUnitLabel(unit, t)}</Select.Option>)}
+                </Select>
+              </Form.Item>
+              <Form.Item label={t('ops.target')} field="target"><Input placeholder="./logs" /></Form.Item>
+              <Form.Item label={t('ops.keep')} field="keep"><InputNumber min={1} max={365} /></Form.Item>
+              <Form.Item label={t('ops.channel')} field="channel">
+                <Select allowClear>
+                  <Select.Option value="file">{t('ops.file')}</Select.Option>
+                  <Select.Option value="webhook">Webhook</Select.Option>
+                </Select>
+              </Form.Item>
+              <Form.Item label={t('ops.recipient')} field="recipient"><Input placeholder="./data/reports" /></Form.Item>
+            </div>
             <Form.Item label={t('rules.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
             <div className="form-action-row">
               <Button onClick={() => setEditingTask(null)}>{t('common.close')}</Button>
@@ -211,6 +275,8 @@ function upsertReportTask(tasks: ScheduledTask[], next: ScheduledTask) {
     period: next.period ?? next.frequency ?? 'daily',
     format: next.format ?? 'markdown',
     name: next.name || 'Security report',
+    frequency: next.frequency || 'daily',
+    schedule: next.frequency || 'daily',
   };
   const found = tasks.some((task) => task.id === normalized.id);
   if (found) {
@@ -232,7 +298,141 @@ function taskTypeLabel(type: string, t: (key: string, options?: Record<string, u
   if (type === 'cleanup') {
     return t('ops.cleanup');
   }
+  if (type === 'backup') {
+    return t('ops.backupTask');
+  }
+  if (type === 'ai_self_learning' || type === 'self_learning_rules') {
+    return t('ops.aiSelfLearning');
+  }
   return type || '-';
+}
+
+function frequencyLabel(frequency: string, t: (key: string, options?: Record<string, unknown>) => string) {
+  switch (frequency) {
+    case 'daily':
+      return t('ops.daily');
+    case 'weekly':
+      return t('ops.weekly');
+    case 'monthly':
+      return t('ops.monthly');
+    case 'interval':
+      return t('ops.interval');
+    default:
+      return frequency || t('common.unknown');
+  }
+}
+
+function taskToFormValues(task: ScheduledTask): TaskFormValues {
+  const duration = parseDuration(task.every);
+  return {
+    ...task,
+    type: task.type || 'cleanup',
+    frequency: task.frequency || task.schedule || 'interval',
+    at: task.at || '08:00',
+    everyValue: duration.value,
+    everyUnit: duration.unit,
+    keep: task.keep || 7,
+  };
+}
+
+function normalizeTaskFormValues(base: ScheduledTask, values: TaskFormValues): Partial<ScheduledTask> {
+  const frequency = values.frequency || 'interval';
+  return {
+    name: values.name,
+    type: values.type || 'cleanup',
+    frequency,
+    schedule: frequency,
+    at: values.at || '08:00',
+    every: durationToString(values.everyValue, values.everyUnit),
+    target: values.target || base.target || '',
+    channel: values.channel || '',
+    recipient: values.recipient || '',
+    keep: Number(values.keep || 7),
+    enabled: values.enabled,
+  };
+}
+
+function formatTaskSchedule(task: ScheduledTask, t: (key: string, options?: Record<string, unknown>) => string) {
+  const frequency = task.frequency || task.schedule;
+  if (frequency === 'daily' || frequency === 'weekly' || frequency === 'monthly') {
+    return `${frequencyLabel(frequency, t)} ${task.at || '08:00'}`;
+  }
+  const duration = parseDuration(task.every);
+  return t('ops.intervalEvery', { value: duration.value, unit: durationUnitLabel(duration.unit, t) });
+}
+
+function parseDuration(value: number | string | undefined): { value: number; unit: DurationUnit } {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return minutesToDurationUnit(Math.max(1, Math.round(value / 60_000_000_000)));
+  }
+  const text = String(value ?? '').trim().toLowerCase();
+  const match = text.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/);
+  if (!match) {
+    return { value: 24, unit: 'h' };
+  }
+  const amount = Number(match[1]);
+  const unit = match[2];
+  if (unit === 'd') return { value: Math.max(1, Math.round(amount)), unit: 'd' };
+  if (unit === 'h') return { value: Math.max(1, Math.round(amount)), unit: 'h' };
+  if (unit === 'm') return { value: Math.max(1, Math.round(amount)), unit: 'm' };
+  if (unit === 's') return minutesToDurationUnit(Math.max(1, Math.round(amount / 60)));
+  if (unit === 'ms') return minutesToDurationUnit(Math.max(1, Math.round(amount / 60_000)));
+  return { value: 24, unit: 'h' };
+}
+
+function minutesToDurationUnit(minutes: number): { value: number; unit: DurationUnit } {
+  if (minutes % (24 * 60) === 0) {
+    return { value: Math.max(1, minutes / (24 * 60)), unit: 'd' };
+  }
+  if (minutes % 60 === 0) {
+    return { value: Math.max(1, minutes / 60), unit: 'h' };
+  }
+  return { value: Math.max(1, minutes), unit: 'm' };
+}
+
+function durationToString(value: number | undefined, unit: DurationUnit | undefined) {
+  const amount = Math.max(1, Number(value || 1));
+  switch (unit) {
+    case 'd':
+      return `${amount}d`;
+    case 'h':
+      return `${amount}h`;
+    case 'm':
+    default:
+      return `${amount}m`;
+  }
+}
+
+function newScheduledTask(): ScheduledTask {
+  const stamp = Date.now();
+  return {
+    id: `cleanup-${stamp}`,
+    name: 'Log cleanup',
+    type: 'cleanup',
+    schedule: 'interval',
+    every: '24h',
+    frequency: 'interval',
+    at: '08:00',
+    target: './logs',
+    channel: '',
+    recipient: '',
+    period: '',
+    format: '',
+    keep: 14,
+    enabled: true,
+  };
+}
+
+function durationUnitLabel(unit: DurationUnit, t: (key: string, options?: Record<string, unknown>) => string) {
+  switch (unit) {
+    case 'd':
+      return t('ops.days');
+    case 'h':
+      return t('ops.hours');
+    case 'm':
+    default:
+      return t('ops.minutes');
+  }
 }
 
 function TaskCard({
@@ -259,7 +459,7 @@ function TaskCard({
       <dl>
         <div>
           <dt>{t('ops.every')}</dt>
-          <dd>{task.every || '-'}</dd>
+          <dd>{formatTaskSchedule(task, t)}</dd>
         </div>
         <div>
           <dt>{t('ops.target')}</dt>

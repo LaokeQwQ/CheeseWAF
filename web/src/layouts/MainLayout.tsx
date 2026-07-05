@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Input, Menu, Popover, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Dropdown, Input, Menu, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
 import {
   BrainCircuit,
   FileCode2,
@@ -12,12 +12,15 @@ import {
   LineChart,
   Map,
   Globe2,
+  LockKeyhole,
   Languages,
   LayoutDashboard,
   ListFilter,
   ListChecks,
   Menu as MenuIcon,
   Radar,
+  Pin,
+  PinOff,
   Search,
   Settings,
   Shield,
@@ -55,6 +58,7 @@ const navGroups: NavGroup[] = [
     labelKey: 'navGroup.security',
     items: [
       { key: '/sites', labelKey: 'nav.sites', icon: Globe2 },
+      { key: '/ssl', labelKey: 'nav.ssl', icon: LockKeyhole },
       { key: '/rules', labelKey: 'nav.rules', icon: ListChecks },
       { key: '/logs', labelKey: 'nav.logs', icon: ListFilter },
       { key: '/ip', labelKey: 'nav.ip', icon: Shield },
@@ -77,6 +81,7 @@ const navGroups: NavGroup[] = [
 ];
 
 const allNavItems = navGroups.flatMap((group) => group.items);
+const notificationStateStorageKey = 'cheesewaf-notification-state';
 
 export default function MainLayout() {
   const { t } = useTranslation();
@@ -88,9 +93,9 @@ export default function MainLayout() {
   const setTheme = useAppStore((state) => state.setTheme);
   const setLanguage = useAppStore((state) => state.setLanguage);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
-  const { data: monitor } = useQuery({ queryKey: ['shell-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false });
+  const { data: monitor } = useQuery({ queryKey: ['monitor-summary'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false, staleTime: 10_000 });
   const { data: version } = useQuery({ queryKey: ['version'], queryFn: fetchVersion, staleTime: 5 * 60_000, retry: false });
-  const { data: recentLogs } = useQuery({ queryKey: ['shell-logs'], queryFn: () => fetchLogs({ limit: 12 }), refetchInterval: 20_000, retry: false });
+  const { data: recentLogs } = useQuery({ queryKey: ['recent-security-logs', 12], queryFn: () => fetchLogs({ limit: 12 }), refetchInterval: 30_000, staleTime: 20_000, retry: false });
   const { data: auditEntries } = useQuery({ queryKey: ['shell-audit'], queryFn: fetchAuditEntries, staleTime: 30_000, refetchInterval: 60_000, retry: false });
   const { data: users } = useQuery({ queryKey: ['shell-users'], queryFn: fetchUsers, staleTime: 60_000, retry: false });
   const [healthFailures, setHealthFailures] = useState(0);
@@ -104,8 +109,10 @@ export default function MainLayout() {
     retry: false,
   });
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationState, setNotificationState] = useState<NotificationState>(() => loadNotificationState());
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
+  const notificationShellRef = useRef<HTMLDivElement | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const account = currentAccount();
   const shellClassName = [
@@ -138,6 +145,43 @@ export default function MainLayout() {
     setNotificationsOpen(false);
     setMobileNavOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!notificationsOpen) {
+      return undefined;
+    }
+    const closeFromOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && notificationShellRef.current?.contains(target)) {
+        return;
+      }
+      setNotificationsOpen(false);
+    };
+    const closeFromEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setNotificationsOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', closeFromOutside, { capture: true });
+    window.addEventListener('keydown', closeFromEscape);
+    return () => {
+      window.removeEventListener('pointerdown', closeFromOutside, { capture: true });
+      window.removeEventListener('keydown', closeFromEscape);
+    };
+  }, [notificationsOpen]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) {
+      return undefined;
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMobileNavOpen(false);
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     if (healthQuery.isSuccess) {
@@ -173,19 +217,109 @@ export default function MainLayout() {
   ))?.key ?? '/';
   const connection = connectionState(healthFailures, healthQuery.data?.status, healthQuery.isFetching, lastHeartbeatAt);
   const showGlobalAssistant = !location.pathname.startsWith('/ai');
+  const recentLogItems = useMemo(() => safeArray<LogEntry>(recentLogs?.items), [recentLogs?.items]);
+  const auditItems = useMemo(() => safeArray<AuditEntry>(auditEntries), [auditEntries]);
+  const alertItems = useMemo(() => safeArray<Alert>(monitor?.alerts), [monitor?.alerts]);
+  const userItems = useMemo(() => safeArray<User>(users), [users]);
   const notificationItems = useMemo(
-    () => buildNotifications(recentLogs?.items ?? [], auditEntries ?? [], monitor?.alerts ?? [], t),
-    [auditEntries, monitor?.alerts, recentLogs?.items, t],
+    () => buildNotifications(recentLogItems, auditItems, alertItems, t),
+    [alertItems, auditItems, recentLogItems, t],
   );
-  const unreadNotifications = notificationItems.filter((item) => item.severity !== 'info').length;
+  const visibleNotificationItems = useMemo(
+    () => notificationItems
+      .filter((item) => !notificationState.cleared[item.id])
+      .map((item) => ({
+        ...item,
+        pinned: Boolean(notificationState.pinned[item.id]),
+        read: Boolean(notificationState.read[item.id]),
+      }))
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned)),
+    [notificationItems, notificationState.cleared, notificationState.pinned, notificationState.read],
+  );
+  const [notificationFilter, setNotificationFilter] = useState<NotificationFilter>('all');
+  const filteredNotificationItems = useMemo(
+    () => visibleNotificationItems.filter((item) => {
+      if (notificationFilter === 'unread') {
+        return !item.read;
+      }
+      if (notificationFilter === 'read') {
+        return item.read;
+      }
+      if (notificationFilter === 'pinned') {
+        return item.pinned;
+      }
+      return true;
+    }),
+    [notificationFilter, visibleNotificationItems],
+  );
+  const unreadNotifications = visibleNotificationItems.filter((item) => !item.read).length;
   const searchResults = useMemo(
-    () => buildSearchResults(searchValue, recentLogs?.items ?? [], auditEntries ?? [], users ?? [], t),
-    [auditEntries, recentLogs?.items, searchValue, t, users],
+    () => buildSearchResults(searchValue, recentLogItems, auditItems, userItems, t),
+    [auditItems, recentLogItems, searchValue, t, userItems],
   );
 
   function reconnectHealth() {
     setHealthFailures(0);
     void healthQuery.refetch();
+  }
+
+  function updateNotifications(updater: (state: NotificationState) => NotificationState) {
+    setNotificationState((current) => {
+      const next = updater(current);
+      saveNotificationState(next);
+      return next;
+    });
+  }
+
+  function markNotificationRead(id: string) {
+    updateNotifications((current) => ({
+      ...current,
+      read: { ...current.read, [id]: true },
+    }));
+  }
+
+  function toggleNotificationRead(id: string) {
+    updateNotifications((current) => {
+      const read = { ...current.read };
+      if (read[id]) {
+        delete read[id];
+      } else {
+        read[id] = true;
+      }
+      return { ...current, read };
+    });
+  }
+
+  function markAllNotificationsRead() {
+    updateNotifications((current) => ({
+      ...current,
+      read: visibleNotificationItems.reduce((acc, item) => ({ ...acc, [item.id]: true }), { ...current.read }),
+    }));
+  }
+
+  function clearAllNotifications() {
+    updateNotifications((current) => ({
+      ...current,
+      cleared: visibleNotificationItems.reduce((acc, item) => ({ ...acc, [item.id]: true }), { ...current.cleared }),
+      read: visibleNotificationItems.reduce((acc, item) => ({ ...acc, [item.id]: true }), { ...current.read }),
+      pinned: visibleNotificationItems.reduce((acc, item) => {
+        const next = { ...acc };
+        delete next[item.id];
+        return next;
+      }, { ...current.pinned }),
+    }));
+  }
+
+  function toggleNotificationPin(id: string) {
+    updateNotifications((current) => {
+      const pinned = { ...current.pinned };
+      if (pinned[id]) {
+        delete pinned[id];
+      } else {
+        pinned[id] = true;
+      }
+      return { ...current, pinned };
+    });
   }
 
   async function handleLogout() {
@@ -342,27 +476,39 @@ export default function MainLayout() {
 
           <div className="topbar-right">
             <div className="topbar-actions">
-              <Popover
-                popupVisible={notificationsOpen}
-                onVisibleChange={(visible) => {
-                  setNotificationsOpen(visible);
-                  if (visible) {
-                    setSearchOpen(false);
-                  }
-                }}
-                trigger="click"
-                position="bottom"
-                content={<NotificationPanel items={notificationItems} onOpen={(to) => { navigate(to); setNotificationsOpen(false); }} />}
-              >
+              <div className="notification-shell" ref={notificationShellRef}>
                 <span className="notification-trigger">
                   <Button
                     className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
                     icon={<Bell size={18} />}
                     aria-label={t('shell.notifications')}
+                    aria-expanded={notificationsOpen}
+                    onClick={() => {
+                      setSearchOpen(false);
+                      setNotificationsOpen((open) => !open);
+                    }}
                   />
-                  {unreadNotifications > 0 && <span className="notification-dot">{Math.min(9, unreadNotifications)}</span>}
+                  {unreadNotifications > 0 && <span className="notification-dot">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span>}
                 </span>
-              </Popover>
+                {notificationsOpen && (
+                  <NotificationPanel
+                    items={filteredNotificationItems}
+                    total={visibleNotificationItems.length}
+                    unread={unreadNotifications}
+                    filter={notificationFilter}
+                    onFilterChange={setNotificationFilter}
+                    onMarkAllRead={markAllNotificationsRead}
+                    onClearAll={clearAllNotifications}
+                    onToggleRead={toggleNotificationRead}
+                    onTogglePin={toggleNotificationPin}
+                    onOpen={(item) => {
+                      markNotificationRead(item.id);
+                      navigate(item.to);
+                      setNotificationsOpen(false);
+                    }}
+                  />
+                )}
+              </div>
               <Select
                 aria-label={t('system.theme')}
                 className="topbar-select"
@@ -425,25 +571,103 @@ export default function MainLayout() {
   );
 }
 
-function NotificationPanel({ items, onOpen }: { items: NotificationItem[]; onOpen: (to: string) => void }) {
+function NotificationPanel({
+  items,
+  total,
+  unread,
+  filter,
+  onFilterChange,
+  onOpen,
+  onMarkAllRead,
+  onClearAll,
+  onToggleRead,
+  onTogglePin,
+}: {
+  items: NotificationItemView[];
+  total: number;
+  unread: number;
+  filter: NotificationFilter;
+  onFilterChange: (filter: NotificationFilter) => void;
+  onOpen: (item: NotificationItemView) => void;
+  onMarkAllRead: () => void;
+  onClearAll: () => void;
+  onToggleRead: (id: string) => void;
+  onTogglePin: (id: string) => void;
+}) {
   const { t } = useTranslation();
+  const filterOptions: Array<{ key: NotificationFilter; label: string }> = [
+    { key: 'all', label: t('shell.notificationFilterAll') },
+    { key: 'unread', label: t('shell.notificationFilterUnread') },
+    { key: 'read', label: t('shell.notificationFilterRead') },
+    { key: 'pinned', label: t('shell.notificationFilterPinned') },
+  ];
   return (
     <section className="notification-panel">
       <header>
         <strong>{t('shell.notifications')}</strong>
-        <Tag color={items.some((item) => item.severity !== 'info') ? 'orange' : 'green'}>
-          {items.length ? t('shell.notificationCount', { count: items.length }) : t('common.healthy')}
+        <Tag color={unread > 0 ? 'orange' : 'green'}>
+          {total ? t('shell.notificationPanelSummary', { unread, total }) : t('common.healthy')}
         </Tag>
       </header>
+      {total > 0 && (
+        <div className="notification-filter-tabs" role="tablist" aria-label={t('shell.notifications')}>
+          {filterOptions.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              className={filter === option.key ? 'notification-filter-active' : ''}
+              aria-selected={filter === option.key}
+              onClick={() => onFilterChange(option.key)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {total > 0 && (
+        <div className="notification-actions">
+          <Button size="mini" disabled={unread === 0} onClick={onMarkAllRead}>{t('shell.markAllRead')}</Button>
+          <Button size="mini" status="warning" disabled={total === 0} onClick={onClearAll}>{t('shell.clearAllNotifications')}</Button>
+        </div>
+      )}
       <div className="notification-list">
         {items.length === 0 ? (
-          <div className="notification-empty">{t('shell.noNotifications')}</div>
+          <div className="notification-empty">{total ? t('shell.noFilteredNotifications') : t('shell.noNotifications')}</div>
         ) : items.map((item) => (
-          <button key={item.id} type="button" className={`notification-item notification-item-${item.severity}`} onClick={() => onOpen(item.to)}>
-            <span className="notification-item-title">{item.title}</span>
-            <strong>{item.description}</strong>
-            <em><Clock3 size={12} /> {item.time}</em>
-          </button>
+          <article
+            key={item.id}
+            className={`notification-item notification-item-${item.severity}${item.read ? ' notification-item-read' : ''}${item.pinned ? ' notification-item-pinned' : ''}`}
+          >
+            <button type="button" className="notification-open" onClick={() => onOpen(item)}>
+              <span className="notification-item-title">
+                {!item.read && <i aria-hidden="true" />}
+                {item.title}
+                {item.pinned && <Tag size="small" color="arcoblue">{t('shell.pinnedNotification')}</Tag>}
+              </span>
+              <strong>{item.description}</strong>
+              <em><Clock3 size={12} /> {item.time}</em>
+            </button>
+            <div className="notification-item-actions">
+              <button
+                type="button"
+                className="notification-read-toggle"
+                aria-label={item.read ? t('shell.markUnread') : t('shell.markRead')}
+                title={item.read ? t('shell.markUnread') : t('shell.markRead')}
+                onClick={() => onToggleRead(item.id)}
+              >
+                {item.read ? t('shell.readState') : t('shell.unreadState')}
+              </button>
+              <button
+                type="button"
+                className="notification-pin"
+                aria-label={item.pinned ? t('shell.unpinNotification') : t('shell.pinNotification')}
+                title={item.pinned ? t('shell.unpinNotification') : t('shell.pinNotification')}
+                onClick={() => onTogglePin(item.id)}
+              >
+                {item.pinned ? <PinOff size={13} /> : <Pin size={13} />}
+              </button>
+            </div>
+          </article>
         ))}
       </div>
     </section>
@@ -457,6 +681,19 @@ type NotificationItem = {
   time: string;
   severity: 'critical' | 'warning' | 'info';
   to: string;
+};
+
+type NotificationItemView = NotificationItem & {
+  pinned: boolean;
+  read: boolean;
+};
+
+type NotificationFilter = 'all' | 'unread' | 'read' | 'pinned';
+
+type NotificationState = {
+  read: Record<string, boolean>;
+  cleared: Record<string, boolean>;
+  pinned: Record<string, boolean>;
 };
 
 type SearchResult = {
@@ -553,6 +790,36 @@ function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[
 
 function matchesSearch(needle: string, ...values: Array<string | undefined>) {
   return values.some((value) => String(value ?? '').toLowerCase().includes(needle));
+}
+
+function safeArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+function loadNotificationState(): NotificationState {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(notificationStateStorageKey) || '{}') as Partial<NotificationState>;
+    return {
+      read: parsed.read && typeof parsed.read === 'object' ? parsed.read : {},
+      cleared: parsed.cleared && typeof parsed.cleared === 'object' ? parsed.cleared : {},
+      pinned: parsed.pinned && typeof parsed.pinned === 'object' ? parsed.pinned : {},
+    };
+  } catch {
+    return { read: {}, cleared: {}, pinned: {} };
+  }
+}
+
+function saveNotificationState(state: NotificationState) {
+  const limitEntries = (values: Record<string, boolean>) => Object.fromEntries(Object.entries(values).slice(-300));
+  try {
+    localStorage.setItem(notificationStateStorageKey, JSON.stringify({
+      read: limitEntries(state.read),
+      cleared: limitEntries(state.cleared),
+      pinned: limitEntries(state.pinned),
+    }));
+  } catch {
+    // Notification read state is a UI convenience; storage failures must not break the console.
+  }
 }
 
 function formatRelativeTime(value: string) {
