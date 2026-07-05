@@ -22,7 +22,10 @@ const UserContextKey contextKey = "user"
 type TokenManager struct {
 	secret []byte
 	ttl    time.Duration
+	ready  bool
 }
+
+var readTokenManagerSecret = rand.Read
 
 type Claims struct {
 	Subject  string   `json:"sub"`
@@ -35,18 +38,19 @@ type Claims struct {
 }
 
 func NewTokenManager(secret string, ttl time.Duration) *TokenManager {
+	ready := true
 	if secret == "" {
 		buf := make([]byte, 32)
-		if _, err := rand.Read(buf); err == nil {
+		if _, err := readTokenManagerSecret(buf); err == nil {
 			secret = base64.RawURLEncoding.EncodeToString(buf)
 		} else {
-			secret = fmt.Sprintf("cheesewaf-ephemeral-%d", time.Now().UnixNano())
+			ready = false
 		}
 	}
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
-	return &TokenManager{secret: []byte(secret), ttl: ttl}
+	return &TokenManager{secret: []byte(secret), ttl: ttl, ready: ready && secret != ""}
 }
 
 func (m *TokenManager) Sign(subject, username, role string) (string, error) {
@@ -55,6 +59,9 @@ func (m *TokenManager) Sign(subject, username, role string) (string, error) {
 }
 
 func (m *TokenManager) SignWithClaims(subject, username, role string) (string, *Claims, error) {
+	if m == nil || !m.ready || len(m.secret) == 0 {
+		return "", nil, fmt.Errorf("token manager signing secret is unavailable")
+	}
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	now := time.Now().UTC()
 	tokenID, err := randomTokenID()
@@ -76,6 +83,9 @@ func (m *TokenManager) SignWithClaims(subject, username, role string) (string, *
 }
 
 func (m *TokenManager) Verify(token string) (*Claims, error) {
+	if m == nil || !m.ready || len(m.secret) == 0 {
+		return nil, fmt.Errorf("token manager signing secret is unavailable")
+	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid token")

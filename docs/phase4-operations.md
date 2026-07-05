@@ -6,7 +6,26 @@
 - JSON monitor summary: `/api/monitor`.
 - Alerts are configured under `monitor.alerts.rules`.
 - Webhook style notifications are configured under `monitor.notifiers`.
+- `monitor.remote_write` and `monitor.notifiers[*].endpoint` use SSRF-aware
+  HTTP clients by default. They allow only `http` / `https`, reject URL
+  credentials and fragments, block loopback/private/link-local/cloud metadata
+  targets, and re-check DNS results before dialing. Set
+  `allow_private_endpoint: true` only for trusted internal monitoring or
+  notification services.
 - `waf-cli` exposes a local monitoring summary for no-browser server sessions.
+
+## Console Map Boundary Sources
+
+- China-region map boundary rendering is configured under
+  `console.map.china_boundary`.
+- Local file sources should point to licensed GeoJSON/JSON FeatureCollection
+  data and include either `license` or `review_id`.
+- Remote URL sources use the same SSRF-aware outbound guard as other controlled
+  background fetchers. HTTPS is required by default; URL credentials, fragments,
+  loopback/private/link-local/cloud metadata targets, and DNS results resolving
+  to non-public addresses are blocked.
+- Set `allow_insecure: true` only when an operator knowingly trusts an HTTP
+  source, and set `allow_private: true` only for a trusted internal map service.
 
 ## API Security
 
@@ -44,6 +63,27 @@
 - ClickHouse uses JSONEachRow inserts.
 - VictoriaLogs uses stream JSON ingestion.
 - PostgreSQL uses the pgx driver, creates the configured table when needed, and stores tags/metadata as JSONB.
+- ClickHouse, VictoriaLogs, and Elasticsearch HTTP endpoints use SSRF-aware
+  clients by default. They allow only `http` / `https`, reject URL credentials
+  and fragments, block loopback/private/link-local/cloud metadata targets,
+  re-check DNS results before dialing, and ignore system proxy settings. Set
+  `allow_private_endpoint: true` only for trusted internal storage services.
+
+## ACME Certificates
+
+- ACME issuance is executed through the configured local `acme.sh` binary, not
+  through an embedded Go ACME client.
+- The ACME server value accepts known `acme.sh` aliases such as `letsencrypt`
+  and `zerossl`, or a public HTTPS directory URL. HTTP, private/link-local, URL
+  credential, and fragment-bearing directory values are rejected before command
+  execution.
+- DNS API names must use the `dns_*` provider format, and DNS environment
+  variable names must use uppercase shell-style names.
+- `reload_command` is optional and is rejected if it contains newline, carriage
+  return, or NUL characters. Keep it restricted to an operator-owned local
+  service reload command.
+- ACME notifications reuse the configured monitoring notifier path and inherit
+  notifier endpoint SSRF protections.
 
 ## Deployment
 

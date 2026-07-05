@@ -136,6 +136,24 @@ func TestSecurityReportWeeklyWindowAndJSON(t *testing.T) {
 	}
 }
 
+func TestSecurityReportMonthlyWindow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "access.log")
+	now := time.Date(2026, 5, 24, 8, 0, 0, 0, time.UTC)
+	entries := []storage.LogEntry{
+		{Timestamp: now.Add(-29 * 24 * time.Hour), Action: "block", Category: "ssrf", Severity: "high", ClientIP: "203.0.113.30"},
+		{Timestamp: now.Add(-31 * 24 * time.Hour), Action: "block", Category: "sqli", Severity: "critical", ClientIP: "203.0.113.31"},
+	}
+	writeLogEntries(t, path, entries)
+	summary, err := SummarizeSecurityLogs(path, "monthly", func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Total != 1 || summary.ByCategory["ssrf"] != 1 || summary.ByCategory["sqli"] != 0 {
+		t.Fatalf("unexpected monthly summary: %+v", summary)
+	}
+}
+
 func TestSecurityReportWritesJSONFileAndWebhookContentType(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "access.log")
@@ -172,6 +190,9 @@ func TestSecurityReportWritesJSONFileAndWebhookContentType(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
+	oldClient := reportHTTPClient
+	reportHTTPClient = server.Client()
+	t.Cleanup(func() { reportHTTPClient = oldClient })
 	err = SecurityReport(logPath, dir)(context.Background(), Task{
 		ID:        "security-weekly",
 		Type:      "security_report",
@@ -182,6 +203,34 @@ func TestSecurityReportWritesJSONFileAndWebhookContentType(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSecurityReportWebhookRejectsPrivateEndpointByDefault(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "access.log")
+	writeLogEntries(t, logPath, []storage.LogEntry{{
+		Timestamp: time.Now().UTC().Add(-time.Minute),
+		Action:    "block",
+		Category:  "sqli",
+		Severity:  "critical",
+		ClientIP:  "203.0.113.44",
+	}})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("private webhook endpoint should not receive report")
+	}))
+	defer server.Close()
+
+	err := SecurityReport(logPath, dir)(context.Background(), Task{
+		ID:        "security-private",
+		Type:      "security_report",
+		Channel:   "webhook",
+		Recipient: server.URL,
+		Period:    "daily",
+		Format:    "json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "public") {
+		t.Fatalf("expected private webhook endpoint to be rejected, got %v", err)
 	}
 }
 

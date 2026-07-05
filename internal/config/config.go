@@ -129,6 +129,7 @@ type MapBoundaryConfig struct {
 	ReviewID      string `yaml:"review_id" json:"review_id"`
 	Attribution   string `yaml:"attribution" json:"attribution"`
 	AllowInsecure bool   `yaml:"allow_insecure" json:"allow_insecure"`
+	AllowPrivate  bool   `yaml:"allow_private" json:"allow_private"`
 }
 
 type SiteConfig struct {
@@ -496,19 +497,21 @@ type RedisConfig struct {
 }
 
 type ClickHouseConfig struct {
-	Enabled  bool          `yaml:"enabled" json:"enabled"`
-	Endpoint string        `yaml:"endpoint" json:"endpoint"`
-	Database string        `yaml:"database" json:"database"`
-	Table    string        `yaml:"table" json:"table"`
-	Username string        `yaml:"username" json:"username"`
-	Password string        `yaml:"password" json:"password"`
-	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+	Enabled              bool          `yaml:"enabled" json:"enabled"`
+	Endpoint             string        `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool          `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	Database             string        `yaml:"database" json:"database"`
+	Table                string        `yaml:"table" json:"table"`
+	Username             string        `yaml:"username" json:"username"`
+	Password             string        `yaml:"password" json:"password"`
+	Timeout              time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type VictoriaLogsConfig struct {
-	Enabled  bool          `yaml:"enabled" json:"enabled"`
-	Endpoint string        `yaml:"endpoint" json:"endpoint"`
-	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+	Enabled              bool          `yaml:"enabled" json:"enabled"`
+	Endpoint             string        `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool          `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	Timeout              time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type PostgreSQLConfig struct {
@@ -519,14 +522,15 @@ type PostgreSQLConfig struct {
 }
 
 type ElasticsearchConfig struct {
-	Enabled  bool              `yaml:"enabled" json:"enabled"`
-	Endpoint string            `yaml:"endpoint" json:"endpoint"`
-	Index    string            `yaml:"index" json:"index"`
-	Username string            `yaml:"username" json:"username"`
-	Password string            `yaml:"password" json:"password"`
-	APIKey   string            `yaml:"api_key" json:"api_key"`
-	Headers  map[string]string `yaml:"headers" json:"headers"`
-	Timeout  time.Duration     `yaml:"timeout" json:"timeout"`
+	Enabled              bool              `yaml:"enabled" json:"enabled"`
+	Endpoint             string            `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool              `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	Index                string            `yaml:"index" json:"index"`
+	Username             string            `yaml:"username" json:"username"`
+	Password             string            `yaml:"password" json:"password"`
+	APIKey               string            `yaml:"api_key" json:"api_key"`
+	Headers              map[string]string `yaml:"headers" json:"headers"`
+	Timeout              time.Duration     `yaml:"timeout" json:"timeout"`
 }
 
 type LoggingConfig struct {
@@ -744,10 +748,11 @@ type PrometheusConfig struct {
 }
 
 type RemoteWriteConfig struct {
-	Enabled  bool          `yaml:"enabled" json:"enabled"`
-	Endpoint string        `yaml:"endpoint" json:"endpoint"`
-	Interval time.Duration `yaml:"interval" json:"interval"`
-	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+	Enabled              bool          `yaml:"enabled" json:"enabled"`
+	Endpoint             string        `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool          `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	Interval             time.Duration `yaml:"interval" json:"interval"`
+	Timeout              time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type AlertEngineConfig struct {
@@ -767,14 +772,15 @@ type AlertRuleConfig struct {
 }
 
 type NotifierConfig struct {
-	ID       string            `yaml:"id" json:"id"`
-	Name     string            `yaml:"name" json:"name"`
-	Type     string            `yaml:"type" json:"type"`
-	Endpoint string            `yaml:"endpoint" json:"endpoint"`
-	To       string            `yaml:"to" json:"to"`
-	Token    string            `yaml:"token" json:"token"`
-	Headers  map[string]string `yaml:"headers" json:"headers"`
-	Enabled  bool              `yaml:"enabled" json:"enabled"`
+	ID                   string            `yaml:"id" json:"id"`
+	Name                 string            `yaml:"name" json:"name"`
+	Type                 string            `yaml:"type" json:"type"`
+	Endpoint             string            `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool              `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	To                   string            `yaml:"to" json:"to"`
+	Token                string            `yaml:"token" json:"token"`
+	Headers              map[string]string `yaml:"headers" json:"headers"`
+	Enabled              bool              `yaml:"enabled" json:"enabled"`
 }
 
 type APISecConfig struct {

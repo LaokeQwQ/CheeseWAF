@@ -460,7 +460,7 @@ func guessCategories(raw string) []string {
 	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"}
 	scores := map[string]int{}
 	sqlCompact := compactSQL(text)
-	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "or'") || strings.Contains(text, "or\"") || strings.Contains(text, "sleep(") || strings.Contains(text, "benchmark(") || strings.Contains(text, "pg_sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(text, "procedure analyse") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) || sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) || sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) || sqlMetadataObject.MatchString(text) || sqlSubquery.MatchString(text) || sqlCaseWhen.MatchString(text) || sqlFileData.MatchString(text) {
+	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "or'") || strings.Contains(text, "or\"") || strings.Contains(text, "sleep(") || strings.Contains(text, "benchmark(") || strings.Contains(text, "pg_sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(text, "procedure analyse") || strings.Contains(text, "dbms_lock.sleep") || strings.Contains(text, "sp_oacreate") || strings.Contains(text, "openrowset") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) || sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) || sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) || sqlMetadataObject.MatchString(text) || sqlSubquery.MatchString(text) || sqlCaseWhen.MatchString(text) || sqlFileData.MatchString(text) || sqlTimeFunction.MatchString(text) || sqlDangerousFunc.MatchString(text) {
 		scores["sqli"] += 2
 	}
 	if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") || strings.Contains(text, "<meta") || strings.Contains(text, "expression(") {
@@ -475,7 +475,7 @@ func guessCategories(raw string) []string {
 	if strings.Contains(text, "<!doctype") || strings.Contains(text, "<!entity") {
 		scores["xxe"] += 2
 	}
-	if urlLikePattern.MatchString(text) || strings.Contains(text, "169.254.169.254") || strings.Contains(text, "metadata.google.internal") {
+	if urlLikePattern.MatchString(text) || schemeRelativeURLPattern.MatchString(text) || strings.Contains(text, "169.254.169.254") || strings.Contains(text, "metadata.google.internal") || looksLikeSSRFTarget(text) {
 		scores["ssrf"] += 2
 	}
 	if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "$function") || strings.Contains(text, "this.") || strings.Contains(text, "function(") {
@@ -521,9 +521,10 @@ var (
 	sqlEmptyStringTautology       = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*(?:''|""|'[^']*'|"[^"]*"|['"])\s*=\s*(?:''|""|'[^']*'|"[^"]*"|['"])`)
 	sqlQuotedOrPredicate          = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']*'|"[^"]*"|[^\s]{1,64})`)
 	sqlTimeFunction               = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
+	sqlDialectTimeFunction        = regexp.MustCompile(`(?i)\bdbms_(?:lock|session)\.sleep\s*\(`)
 	sqlComment                    = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
-	sqlDangerousFunc              = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
-	sqlErrorFunction              = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name)\s*\(`)
+	sqlDangerousFunc              = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|sp_oa(?:create|method)|openrowset|opendatasource|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
+	sqlErrorFunction              = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name|utl_http\.request)\s*\(`)
 	sqlStringFunction             = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
 	sqlComparison                 = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
 	sqlOrderByInference           = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
@@ -589,6 +590,9 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlTimeFunction.MatchString(text) {
 		reasons["semantics: time-based database side effect"] = true
 	}
+	if sqlDialectTimeFunction.MatchString(text) && sqlExecutionContext(text, compact) {
+		reasons["semantics: dialect-specific database time-delay side effect"] = true
+	}
 	if sqlSelectFrom.MatchString(text) {
 		reasons["syntax: SELECT FROM query grammar"] = true
 	}
@@ -621,7 +625,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlProcedureAnalyse.MatchString(text) {
 		reasons["semantics: MySQL PROCEDURE ANALYSE enumeration primitive"] = true
 	}
-	if sqlDangerousFunc.MatchString(text) {
+	if sqlDangerousFunc.MatchString(text) && sqlExecutionContext(text, compact) {
 		reasons["semantics: database server file or command side effect"] = true
 	}
 	if sqlFileData.MatchString(text) {
@@ -689,6 +693,10 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	if nosqlContainsOperator(combined, "$expr") {
 		reasons["syntax: aggregation expression query operator"] = true
 		reasons["semantics: expression operator can replace application-side predicate logic"] = true
+	}
+	if nosqlContainsOperator(combined, "$jsonschema") {
+		reasons["syntax: JSON schema query operator"] = true
+		reasons["semantics: injected schema can replace expected server-side query constraints"] = true
 	}
 	if nosqlContainsOperator(combined, "$or", "$and", "$nor") {
 		reasons["syntax: logical query branch operator"] = true
@@ -924,38 +932,30 @@ func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
 		return Hit{}, false
 	}
 	payload := decoder.Decode(candidate.text).Text
-	lowerPayload := normalize(payload)
-	if strings.Contains(lowerPayload, "file://") {
-		return Hit{
-			Category:   "ssrf",
-			Source:     candidate.input.Source,
-			Name:       candidate.input.Name,
-			Syntax:     "syntax: URL parameter accepted by request",
-			Semantics:  "semantics: local file URL scheme would make the server access host files",
-			Severity:   engine.SeverityHigh,
-			Confidence: 0.88,
-			Payload:    strings.TrimSpace(payload),
-		}, true
+	target, reason, ok := ssrfDangerousTarget(payload)
+	if !ok {
+		return Hit{}, false
 	}
-	for _, rawURL := range urlLikePattern.FindAllString(payload, -1) {
-		parsed, err := url.Parse(rawURL)
-		if err != nil || parsed.Hostname() == "" {
-			continue
-		}
-		if isInternalHost(parsed.Hostname()) {
-			return Hit{
-				Category:   "ssrf",
-				Source:     candidate.input.Source,
-				Name:       candidate.input.Name,
-				Syntax:     "syntax: URL parameter accepted by request",
-				Semantics:  "semantics: target resolves to loopback, private, link-local, or metadata network",
-				Severity:   engine.SeverityHigh,
-				Confidence: 0.86,
-				Payload:    rawURL,
-			}, true
-		}
+	semantics := "semantics: target resolves to loopback, private, link-local, or metadata network"
+	confidence := 0.86
+	if strings.Contains(strings.ToLower(reason), "file scheme") {
+		semantics = "semantics: local file URL scheme would make the server access host files"
+		confidence = 0.88
 	}
-	return Hit{}, false
+	if strings.Contains(strings.ToLower(reason), "target host") {
+		semantics = "semantics: fetch sink received a bare host that resolves to loopback, private, link-local, or metadata network"
+		confidence = 0.84
+	}
+	return Hit{
+		Category:   "ssrf",
+		Source:     candidate.input.Source,
+		Name:       candidate.input.Name,
+		Syntax:     "syntax: URL or host parameter accepted by request",
+		Semantics:  semantics,
+		Severity:   engine.SeverityHigh,
+		Confidence: confidence,
+		Payload:    strings.TrimSpace(target),
+	}, true
 }
 
 func ssrfFetchSink(candidate semanticCandidate) bool {

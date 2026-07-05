@@ -210,3 +210,92 @@ CheeseWAF 当前已经覆盖以下方向：
 - 高风险页面桌面/移动端 UI 回归覆盖 Dashboard、站点、站点详情、IP 管理、AI、用户、拦截页、攻击地图 2D/3D/中国区域和系统设置，自动检查 overflow、窄列、内部横向滚动和浏览器错误均为 0。
 - 安全审查项复核：WebSocket Origin 校验、Admin Server header timeout、弱默认安全入口 secret、AI provider timeout 已闭环；威胁情报 provider 出站请求已加 SSRF guard。其它出站 sink 的 SSRF 专项复审仍需后续继续。
 - 本轮验证命令包括：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`go test ./internal/netguard ./internal/ai ./internal/apisec ./internal/blockpage ./internal/proxy ./internal/storage/log_sink ./internal/api/handler -count=1`、`node tmp/china-map-check.cjs` 和高风险页面 `full-ui-regression`。
+
+### 2026-07-05 本地补充：语义引擎与协议检测小步加固
+
+- 协议检测新增 HTTP/2 forbidden hop-by-hop / downgrade-smuggling 检查，以及 WebSocket upgrade 形态校验；有效 WebSocket upgrade 保持放行，异常方法、缺少 upgrade 语义或缺少 `Sec-WebSocket-Key` 会被识别为异常。
+- 语义检测补充 Oracle / T-SQL 高风险 SQL 原语、scheme-relative 和 bare-host SSRF fetch 目标、MongoDB `$jsonSchema` 注入语义，并为相关文档文本补 benign 邻居，继续优先降低误报。
+- 公开语义文档已同步说明新增覆盖和边界。当前仍不能宣称 ModSecurity / OWASP CRS parity；CRS/FTW 对标、异常评分模型和真实误报基线仍是后续路线图。
+- 本地验证通过：`go test ./internal/engine ./internal/engine/semantic -count=1`、`go test ./cmd/... ./internal/... -count=1`、`git diff --check`。
+
+### 2026-07-05 本地补充：监控外发 SSRF 防护
+
+- `monitor.remote_write` 和告警通知 `monitor.notifiers[*].endpoint` 默认接入 `netguard` 出站客户端，只允许 `http` / `https`，拒绝 URL 凭据、fragment、回环、私网、链路本地和常见云元数据目标，并在拨号前复核 DNS 解析结果。
+- 新增 `allow_private_endpoint` 显式开关，用于受信任的内网 VictoriaMetrics / Prometheus remote write / webhook 网关；默认仍为关闭，避免控制台配置被误用为内网探测跳板。
+- 样例配置、首次安装默认 YAML 和运维文档已同步该字段。ClickHouse / VictoriaLogs / Elasticsearch 日志 sink 已进入后续专项处理；ACME 等其它可配置出站 sink 仍保留为后续复审，不冒充本轮全部完成。
+- 本地验证通过：`go test ./internal/config ./internal/monitor ./internal/monitor/notifier ./internal/netguard -count=1`、`go test ./cmd/... ./internal/... -count=1`。
+
+### 2026-07-05 本地补充：地图边界远程源 SSRF 防护
+
+- `console.map.china_boundary` 新增 `allow_private` 显式开关；远程 GeoJSON URL 默认要求 HTTPS，并拒绝 URL 凭据、fragment、回环、私网、链路本地和常见云元数据地址。
+- 运行时地图边界拉取使用 `netguard.NewHTTPClient`，在拨号前复核 DNS 解析结果，降低 DNS rebinding 风险；只有显式开启 `allow_insecure` 与 `allow_private` 时才允许受信任的内网 HTTP 地图源。
+- 样例配置、首次安装默认 YAML、Web 类型模型、系统设置页和运维文档已同步该字段。
+- 测试覆盖新增配置校验和 handler 回归：本机 `httptest` GeoJSON 源默认拒绝，显式允许后可读取合法 FeatureCollection。
+
+### 2026-07-05 本地补充：外部日志存储 sink SSRF 防护
+
+- ClickHouse、VictoriaLogs 和 Elasticsearch HTTP 日志 sink 新增 `allow_private_endpoint` 显式开关，默认关闭；配置层会拒绝 URL 凭据、fragment、回环、私网、链路本地和常见云元数据目标。
+- 运行时写入与查询链路统一使用 `netguard.NewHTTPClient`，默认只允许 `http` / `https`，禁用系统代理，在拨号前复核 DNS 解析结果并校验重定向目标，降低 DNS rebinding 与内网探测风险。
+- 样例配置、首次安装默认 YAML、Web 类型模型、系统设置页、中英文 i18n 和运维文档已同步该字段；受信任内网日志服务需要由运维显式开启 `allow_private_endpoint`。
+- PostgreSQL 日志 sink 使用数据库驱动 DSN，不属于本轮 HTTP SSRF sink；ACME 等其它可配置出站能力仍保留为后续专项复审。
+- 本地验证通过：`go test ./internal/config ./internal/storage/log_sink ./internal/api/handler ./internal/monitor ./internal/monitor/notifier ./internal/netguard -count=1`、`go test ./cmd/... ./internal/... -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`。
+
+### 2026-07-05 本地补充：ACME 配置输入安全收口
+
+- ACME 签发继续通过本地 `acme.sh` 子进程执行；本轮没有把它冒充为 Go 内置 ACME HTTP 客户端。
+- 全局配置和单次站点签发请求都会校验 ACME server：允许 `letsencrypt`、`zerossl` 等内置别名，或公网 HTTPS directory URL；拒绝 HTTP、URL 凭据、fragment、回环、私网、链路本地和常见云元数据目标。
+- ACME DNS API 名称新增 `dns_*` 格式校验；DNS 环境变量继续要求大写 shell 风格键名；`reload_command` 拒绝换行、回车和 NUL 字符，降低配置误用风险。
+- 运维文档已同步 ACME 流水线边界；ACME 通知复用 monitor notifier 路径，因此继承 notifier endpoint 的 SSRF 防护。
+
+### 2026-07-05 本地补充：OTA、漏洞源、安全报告和存储测试出站安全收口
+
+- OTA 更新服务器配置新增安全校验：启用 OTA 或填写 server 时，默认只接受公网 HTTPS URL，拒绝 HTTP、URL 凭据、fragment、回环、私网、链路本地和常见云元数据目标；检查间隔限制为 1 小时到 30 天，通道限制为 `stable` / `canary` / `dev`。
+- 漏洞库订阅源新增安全校验：启用的 feed 必须有 ID 和公网 HTTPS URL，订阅间隔限制为 1 小时到 30 天，格式和最低严重级别使用白名单校验，避免配置层写入不可控或含糊的外部源。
+- 运维计划任务校验改为先按现有 API/调度器默认值归一化，再校验类型、频率和报告投递目标；旧配置中缺少 ID 的 cleanup 任务不会被误拒，`monthly` 周期已在校验、调度和安全报告统计窗口中保持一致。
+- 安全报告 Webhook 发送改用 `netguard` 出站客户端，默认只允许公网 HTTPS，并在运行时禁用系统代理、校验重定向和 DNS 解析结果，避免报告投递 URL 被用作内网探测跳板。
+- 系统设置中的 ClickHouse、VictoriaLogs、Elasticsearch “测试连接”也接入同一类 guarded HTTP client；默认拒绝本机/私网 endpoint，只有显式开启对应 `allow_private_endpoint` 后才允许测试受信任的内网日志服务。
+- 本轮未声明 OTA/漏洞库完整业务闭环完成；当前完成的是配置入口和运行时出站安全边界，后续仍需要补齐更新源选择器、订阅拉取、签名验证、通知、回滚和端到端发布验证。
+- 本地验证通过：`go test ./cmd/... ./internal/... -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`。
+
+### 2026-07-05 本地补充：控制面稳定性与安全回归闭环
+
+- 登录 CAPTCHA 签名密钥在 `Handler` 初始化时一次性确定；当管理端 auth secret 缺失且 Bot secret 仍是弱默认值时，会使用进程内随机临时密钥并保持挑战/验证一致，不再每次调用重新生成，也不再回退到固定字符串。若随机密钥不可用，签发和验证路径会 fail-closed。
+- 调度任务更新 API 在无 `ConfigPath` 的测试或嵌入式场景下也会先跑完整 `config.Validate`，避免绕过安全报告 Webhook、频率、任务类型等配置校验后直接修改内存配置。
+- AI 单事件流式分析在 provider 401、网络错误或不可用时，不再直接给前端 SSE `error` 让用户空等；会返回启发式分析的 `done` 事件，并标记 `ai_used=false` 与 provider 错误摘要。
+- 健康检查 HTTP client 不再跟随 3xx 重定向，避免源站健康检查被重定向到无关公网、内网或元数据地址；健康状态仅反映原始 upstream 响应。
+- WebSocket 实时通道新增同源 Origin 回归测试：同源 Origin 可升级，跨站 Origin 必须返回 403，防止后续误加 `InsecureSkipVerify` 类配置。
+- 存储统计继续使用目录大小缓存，避免 Dashboard / 运维页并发刷新时重复遍历大型数据目录；新增缓存行为回归测试。
+- 本轮没有触碰用户刚优化完的语义引擎业务逻辑，也没有进行服务器部署；新服务器未就绪前仅做本地可验证项。
+- 本地验证通过：`go test ./cmd/... ./internal/... -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`。
+
+### 2026-07-05 本地补充：认证随机数与关闭路径加固
+
+- 管理端安全入口 cookie nonce 不再在安全随机源失败时退回时间戳；熵源不可用时直接拒绝签发入口 cookie，避免产生可预测入口凭据。
+- API TokenManager 在缺少持久化 auth secret 且无法生成安全临时签名密钥时，会拒绝签发和验签，不再使用时间戳构造弱 HMAC secret；已有配置 secret 的生产部署不受影响。
+- 拦截页和 API 错误 Trace ID 的极端 fallback 改为时间戳 + 原子计数，随机源不可用时仍保持排障 ID 不重复。
+- 远程 JWKS 刷新源的 `Close()` 只等待已经启动过的后台任务，避免构造后未启动就关闭的边界卡死。
+- 本地验证通过：`go test ./internal/blockpage ./internal/api/middleware ./internal/cli ./internal/apisec -count=1`、`go test ./cmd/... ./internal/... -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`。
+
+### 2026-07-05 本地补充：解析边界与大请求体稳定性
+
+- 管理 API 的 JSON 解析现在要求一个请求体只包含一个 JSON 文档；用户创建、登录 CAPTCHA 和威胁情报同步等入口不再接受尾随第二段 JSON，避免部分解析后继续执行写操作。
+- 威胁情报 provider 和单 IP 查询的外部响应体超过限制时会明确失败，不再静默截断后解析半截情报。
+- Nginx 配置导入超过 1MB 时明确拒绝，避免半截配置被误解析。
+- 数据面请求体分析改为“预览不截流”：WAF 只预览前 8MB 用于检测，超出时标记预览截断，但转发给源站的请求体保持完整，避免大文件上传被控制面分析逻辑截断。
+- 本轮仅做本地可验证的后端鲁棒性补强；UI 验收、远端部署和双仓库同步等待新服务器目标明确后继续。
+
+### 2026-07-06 本地补充：登录 / WAF CAPTCHA 与拦截页语言回归
+
+- 登录 CAPTCHA 复核：后端继续覆盖默认开启、滑块 proof、一次性 receipt、失败锁定、PoW 兼容和尾随 JSON 拒绝；本轮用浏览器静态预览加 mock API 验证登录页正常渲染、滑块弹窗可打开且控制台无错误。
+- WAF Bot CAPTCHA 加固：弱默认 Bot secret 需要运行时生成安全随机密钥；若随机源不可用，不再回退历史固定字符串，而是 fail-closed 返回 `bot challenge unavailable`，Altcha/header proof 和已有 clearance 也不会在无密钥状态下误通过。
+- WAF 滑块 challenge 跳转清理补齐 `cw_slider_track`，避免拖动轨迹 JSON 残留在用户 URL 中。
+- 拦截 / 报错页补充 5xx 多语言回归：`Accept-Language` 为简体中文或日文时，502 页面会返回对应 `Content-Language`、本地化错误文案、可见 Event / Trace ID 和 HTTP 状态。
+- 本地验证通过：`go test ./internal/protection/bot ./internal/blockpage ./internal/api ./internal/captcha -run "CAPTCHA|Captcha|captcha|Challenge|CleanChallenge|Block|ErrorTemplate|Template|Renderer" -count=1`、`go test ./cmd/... ./internal/... -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`；浏览器烟测截图位于 `output/playwright/login-captcha-modal-smoke-20260706.png`。
+
+### 2026-07-06 本地补充：dev/canary 合并前安全筛查与语义小步加固
+
+- 已将 `codex/local-md-followups-20260705` 合并到本地 `dev`，并在合并后继续做登录网关与语义引擎安全筛查；当前改动保持小步可回归，不引入演示逻辑。
+- 登录网关 / 数据面 IP 边界：默认 `engine.ClientIP` 不再信任客户端可伪造的 `CF-Connecting-IP`、`X-Real-IP`、`X-Forwarded-For` 等请求头，只使用 socket peer；需要 CDN / 反代真实 IP 时继续走 `ClientIPWithTrustedProxies` 的可信代理链路。
+- 语义引擎：独立 `SQLDetector` 的候选源从整条请求文本扩展到查询参数和 `application/x-www-form-urlencoded` 字段值，并对每个候选做 bounded decode / base64 变体检测；候选数量与超长字段扫描长度已设置硬上限，长字段保留头尾片段检测，避免参数洪泛把语义检测变成资源消耗点；补充 base64 SQLi、超长字段尾部 SQLi 和 benign encoded documentation 样本，继续以降低漏检且控制误报为优先。
+- 已通过定向验证：`go test ./internal/engine ./internal/engine/semantic -count=1`、`go test ./internal/api/handler ./internal/api/middleware ./internal/cli -run "Login|CAPTCHA|Admin|Token|Session|Entrance|ClientIP" -count=1`。
+- 收口前仍需重新执行全量 Go、Web typecheck/build、`git diff --check`，再提交、推送 `dev`，合并到 `canary` 并同步 Forgejo。

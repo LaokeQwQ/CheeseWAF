@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -192,6 +193,373 @@ func TestValidatePublicPrometheusPathDoesNotConflictWithProtectedRoutes(t *testi
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("expected public prometheus /metrics to validate: %v", err)
 	}
+}
+
+func TestValidateRemoteWriteEndpointGuard(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://127.0.0.1:8428/api/v1/write",
+		"http://169.254.169.254/latest/meta-data",
+		"https://user:pass@metrics.example.com/write",
+		"file:///etc/passwd",
+	} {
+		cfg := Default()
+		cfg.Monitor.RemoteWrite.Enabled = true
+		cfg.Monitor.RemoteWrite.Endpoint = rawURL
+
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("expected unsafe remote_write endpoint %q to fail validation", rawURL)
+		}
+	}
+
+	cfg := Default()
+	cfg.Monitor.RemoteWrite.Enabled = true
+	cfg.Monitor.RemoteWrite.Endpoint = "http://127.0.0.1:8428/api/v1/write"
+	cfg.Monitor.RemoteWrite.AllowPrivateEndpoint = true
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected explicitly allowed private remote_write endpoint to validate: %v", err)
+	}
+}
+
+func TestValidateOTAEndpointGuard(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://updates.example.com/releases.json",
+		"https://127.0.0.1/releases.json",
+		"https://169.254.169.254/latest/meta-data",
+		"https://user:pass@updates.example.com/releases.json",
+		"https://updates.example.com/releases.json#token",
+	} {
+		cfg := Default()
+		cfg.Update.OTA.Enabled = true
+		cfg.Update.OTA.Server = rawURL
+
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("expected unsafe OTA server %q to fail validation", rawURL)
+		}
+	}
+
+	cfg := Default()
+	cfg.Update.OTA.Enabled = true
+	cfg.Update.OTA.Server = "https://ota.waf.laoker.cc/"
+	cfg.Update.OTA.Channel = "stable"
+	cfg.Update.OTA.CheckInterval = 6 * time.Hour
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected public HTTPS OTA server to validate: %v", err)
+	}
+
+	cfg.Update.OTA.CheckInterval = 30 * time.Minute
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("expected too frequent OTA check interval to fail validation")
+	}
+}
+
+func TestValidateVulnerabilityFeedGuard(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*VulnerabilityFeedConfig)
+		wantError string
+	}{
+		{
+			name: "unsafe url",
+			mutate: func(feed *VulnerabilityFeedConfig) {
+				feed.URL = "http://127.0.0.1/feed.json"
+			},
+			wantError: "url is invalid",
+		},
+		{
+			name: "short interval",
+			mutate: func(feed *VulnerabilityFeedConfig) {
+				feed.Interval = 30 * time.Minute
+			},
+			wantError: "interval",
+		},
+		{
+			name: "bad type",
+			mutate: func(feed *VulnerabilityFeedConfig) {
+				feed.Type = "shell"
+			},
+			wantError: "invalid type",
+		},
+		{
+			name: "bad severity",
+			mutate: func(feed *VulnerabilityFeedConfig) {
+				feed.MinSeverity = "urgent"
+			},
+			wantError: "invalid min_severity",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			feed := VulnerabilityFeedConfig{
+				ID:          "nvd",
+				Name:        "NVD",
+				Type:        "nvd",
+				URL:         "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-recent.json.gz",
+				Interval:    6 * time.Hour,
+				MinSeverity: "medium",
+				Enabled:     true,
+			}
+			tc.mutate(&feed)
+			cfg.Vulnerability.Feeds = []VulnerabilityFeedConfig{feed}
+
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantError, err)
+			}
+		})
+	}
+
+	cfg := Default()
+	cfg.Vulnerability.Feeds = []VulnerabilityFeedConfig{{
+		ID:          "osv",
+		Name:        "OSV",
+		Type:        "osv",
+		URL:         "https://osv-vulnerabilities.storage.googleapis.com/Go/all.zip",
+		Interval:    24 * time.Hour,
+		MinSeverity: "low",
+		Enabled:     true,
+	}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected public HTTPS vulnerability feed to validate: %v", err)
+	}
+}
+
+func TestValidateSchedulerTaskGuard(t *testing.T) {
+	cfg := Default()
+	cfg.Scheduler.Tasks = []ScheduledTaskConfig{{
+		Type:    "cleanup",
+		Target:  "./logs",
+		Enabled: true,
+	}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected legacy cleanup task without id to validate after normalization: %v", err)
+	}
+
+	cfg = Default()
+	cfg.Scheduler.Tasks = []ScheduledTaskConfig{{
+		ID:        "monthly-report",
+		Type:      "security_report",
+		Frequency: "monthly",
+		Period:    "monthly",
+		Channel:   "file",
+		Recipient: "./data/reports",
+		Enabled:   true,
+	}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected monthly security report task to validate: %v", err)
+	}
+
+	cfg = Default()
+	cfg.Scheduler.Tasks = []ScheduledTaskConfig{{
+		ID:        "unsafe-report",
+		Type:      "security_report",
+		Frequency: "daily",
+		Channel:   "webhook",
+		Recipient: "http://127.0.0.1:8080/hook",
+		Enabled:   true,
+	}}
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("expected private/insecure security report webhook to fail validation")
+	}
+
+	cfg = Default()
+	cfg.Scheduler.Tasks = []ScheduledTaskConfig{{
+		ID:        "webhook-report",
+		Type:      "security_report",
+		Frequency: "daily",
+		Channel:   "webhook",
+		Recipient: "https://hooks.example.com/cheesewaf/report",
+		Format:    "json",
+		Period:    "weekly",
+		Enabled:   true,
+	}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected public HTTPS security report webhook to validate: %v", err)
+	}
+}
+
+func TestValidateNotifierEndpointGuard(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://127.0.0.1:8080/hook",
+		"http://100.100.100.200/latest/meta-data",
+		"https://user:pass@hooks.example.com/notify",
+		"gopher://hooks.example.com/notify",
+	} {
+		cfg := Default()
+		cfg.Monitor.Notifiers = []NotifierConfig{{
+			ID:       "webhook",
+			Type:     "webhook",
+			Endpoint: rawURL,
+			Enabled:  true,
+		}}
+
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("expected unsafe notifier endpoint %q to fail validation", rawURL)
+		}
+	}
+
+	cfg := Default()
+	cfg.Monitor.Notifiers = []NotifierConfig{{
+		ID:                   "webhook",
+		Type:                 "webhook",
+		Endpoint:             "http://127.0.0.1:8080/hook",
+		AllowPrivateEndpoint: true,
+		Enabled:              true,
+	}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected explicitly allowed private notifier endpoint to validate: %v", err)
+	}
+}
+
+func TestValidateMapBoundaryURLGuard(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://maps.example.com/china-boundary.geojson",
+		"https://127.0.0.1/china-boundary.geojson",
+		"https://user:pass@maps.example.com/china-boundary.geojson",
+		"file:///etc/passwd",
+	} {
+		cfg := Default()
+		cfg.Console.Map.ChinaBoundary = MapBoundaryConfig{
+			Enabled:    true,
+			SourceType: "url",
+			Source:     rawURL,
+			License:    "licensed fixture",
+			ReviewID:   "GS-test",
+		}
+
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("expected unsafe map boundary URL %q to fail validation", rawURL)
+		}
+	}
+
+	cfg := Default()
+	cfg.Console.Map.ChinaBoundary = MapBoundaryConfig{
+		Enabled:       true,
+		SourceType:    "url",
+		Source:        "http://127.0.0.1/china-boundary.geojson",
+		License:       "licensed fixture",
+		ReviewID:      "GS-test",
+		AllowInsecure: true,
+		AllowPrivate:  true,
+	}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected explicitly allowed private map boundary URL to validate: %v", err)
+	}
+}
+
+func TestValidateStorageLogSinkEndpointGuard(t *testing.T) {
+	tests := []struct {
+		name        string
+		configure   func(*Config, string, bool)
+		unsafeURL   string
+		allowedURL  string
+		errContains string
+	}{
+		{
+			name: "clickhouse",
+			configure: func(cfg *Config, endpoint string, allowPrivate bool) {
+				cfg.Storage.ClickHouse.Enabled = true
+				cfg.Storage.ClickHouse.Endpoint = endpoint
+				cfg.Storage.ClickHouse.AllowPrivateEndpoint = allowPrivate
+			},
+			unsafeURL:   "http://127.0.0.1:8123",
+			allowedURL:  "http://127.0.0.1:8123",
+			errContains: "storage.clickhouse.endpoint",
+		},
+		{
+			name: "victorialogs",
+			configure: func(cfg *Config, endpoint string, allowPrivate bool) {
+				cfg.Storage.VictoriaLogs.Enabled = true
+				cfg.Storage.VictoriaLogs.Endpoint = endpoint
+				cfg.Storage.VictoriaLogs.AllowPrivateEndpoint = allowPrivate
+			},
+			unsafeURL:   "http://169.254.169.254/latest/meta-data",
+			allowedURL:  "http://127.0.0.1:9428/insert/jsonline",
+			errContains: "storage.victorialogs.endpoint",
+		},
+		{
+			name: "elasticsearch",
+			configure: func(cfg *Config, endpoint string, allowPrivate bool) {
+				cfg.Storage.Elasticsearch.Enabled = true
+				cfg.Storage.Elasticsearch.Endpoint = endpoint
+				cfg.Storage.Elasticsearch.AllowPrivateEndpoint = allowPrivate
+			},
+			unsafeURL:   "https://user:pass@es.example.com",
+			allowedURL:  "http://127.0.0.1:9200",
+			errContains: "storage.elasticsearch.endpoint",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.configure(&cfg, tc.unsafeURL, false)
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.errContains) {
+				t.Fatalf("expected unsafe endpoint rejected with %q, got %v", tc.errContains, err)
+			}
+
+			cfg = Default()
+			tc.configure(&cfg, tc.allowedURL, true)
+			if err := Validate(&cfg); err != nil {
+				t.Fatalf("expected explicitly allowed private endpoint to validate: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateACMEConfigurationGuard(t *testing.T) {
+	t.Run("rejects unsafe directory URL", func(t *testing.T) {
+		for _, server := range []string{
+			"http://acme.example.com/directory",
+			"https://127.0.0.1/acme/directory",
+			"https://user:pass@acme.example.com/directory",
+		} {
+			cfg := Default()
+			cfg.ACME.Enabled = true
+			cfg.ACME.Server = server
+
+			if err := Validate(&cfg); err == nil {
+				t.Fatalf("expected unsafe ACME server %q to fail validation", server)
+			}
+		}
+	})
+
+	t.Run("accepts known aliases and public https directory", func(t *testing.T) {
+		for _, server := range []string{
+			"letsencrypt",
+			"zerossl",
+			"https://acme-v02.api.letsencrypt.org/directory",
+		} {
+			cfg := Default()
+			cfg.ACME.Enabled = true
+			cfg.ACME.Server = server
+
+			if err := Validate(&cfg); err != nil {
+				t.Fatalf("expected ACME server %q to validate: %v", server, err)
+			}
+		}
+	})
+
+	t.Run("rejects unsafe dns api and reload command", func(t *testing.T) {
+		cfg := Default()
+		cfg.ACME.Enabled = true
+		cfg.ACME.DNSProviders = []ACMEDNSProviderConfig{{
+			ID:      "bad",
+			API:     "dns_cf;sh",
+			Enabled: true,
+		}}
+
+		if err := Validate(&cfg); err == nil {
+			t.Fatal("expected unsafe DNS API name to fail validation")
+		}
+
+		cfg = Default()
+		cfg.ACME.Enabled = true
+		cfg.ACME.ReloadCommand = "systemctl reload cheesewaf\ncurl https://example.com"
+		if err := Validate(&cfg); err == nil {
+			t.Fatal("expected multiline reload command to fail validation")
+		}
+	})
 }
 
 func TestValidateAPISecJWTSignatureConfig(t *testing.T) {

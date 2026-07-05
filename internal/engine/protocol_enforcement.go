@@ -38,7 +38,12 @@ func DetectProtocolViolations(r *http.Request) *ProtocolViolation {
 		return v
 	}
 
-	// 4. Header injection via encoding
+	// 4. HTTP/2 downgrade or WebSocket upgrade abuse
+	if v := detectUpgradeDowngradeAbuse(r); v != nil {
+		return v
+	}
+
+	// 5. Header injection via encoding
 	if v := detectHeaderInjection(r); v != nil {
 		return v
 	}
@@ -51,10 +56,14 @@ func DetectProtocolViolations(r *http.Request) *ProtocolViolation {
 func detectCLTESmuggling(r *http.Request) *ProtocolViolation {
 	cl := r.Header.Get("Content-Length")
 	te := r.Header.Get("Transfer-Encoding")
-	if cl == "" || te == "" { return nil }
+	if cl == "" || te == "" {
+		return nil
+	}
 
 	clVal, err := strconv.Atoi(strings.TrimSpace(cl))
-	if err != nil { return nil }
+	if err != nil {
+		return nil
+	}
 
 	te = strings.ToLower(strings.TrimSpace(te))
 	if strings.Contains(te, "chunked") && clVal > 0 {
@@ -69,9 +78,13 @@ func detectCLTESmuggling(r *http.Request) *ProtocolViolation {
 // TE.CL smuggling: Transfer-Encoding with trailing Content-Length in chunked body.
 func detectTECLSmuggling(r *http.Request) *ProtocolViolation {
 	te := r.Header.Get("Transfer-Encoding")
-	if te == "" { return nil }
+	if te == "" {
+		return nil
+	}
 	te = strings.ToLower(strings.TrimSpace(te))
-	if !strings.Contains(te, "chunked") { return nil }
+	if !strings.Contains(te, "chunked") {
+		return nil
+	}
 
 	// TE with multiple values (e.g., "chunked, identity")
 	values := strings.Split(te, ",")
@@ -99,15 +112,62 @@ func detectTECLSmuggling(r *http.Request) *ProtocolViolation {
 // Chunked encoding abuse: oversized chunks, malformed sizes, chunk size overflow.
 func detectChunkedAbuse(r *http.Request) *ProtocolViolation {
 	te := r.Header.Get("Transfer-Encoding")
-	if te == "" || !strings.Contains(strings.ToLower(te), "chunked") { return nil }
+	if te == "" || !strings.Contains(strings.ToLower(te), "chunked") {
+		return nil
+	}
 
 	// Detect overly large chunk size prefix (potential overflow attack)
 	body := r.ContentLength
-	if body < 0 { body = 0 }
+	if body < 0 {
+		body = 0
+	}
 	if body > 10*1024*1024 { // 10MB single chunk
 		return &ProtocolViolation{
 			Detected: true, Type: "chunked_abuse", Severity: SeverityHigh, Confidence: 0.82,
 			Message: "chunked encoding abuse: request body exceeds safe chunk size limit",
+		}
+	}
+	return nil
+}
+
+func detectUpgradeDowngradeAbuse(r *http.Request) *ProtocolViolation {
+	if r.ProtoMajor >= 2 {
+		if connection := r.Header.Get("Connection"); connection != "" {
+			return &ProtocolViolation{
+				Detected: true, Type: "smuggling", Severity: SeverityHigh, Confidence: 0.9,
+				Message: "HTTP/2 request contains forbidden hop-by-hop Connection header",
+			}
+		}
+		if upgrade := r.Header.Get("Upgrade"); upgrade != "" {
+			return &ProtocolViolation{
+				Detected: true, Type: "smuggling", Severity: SeverityHigh, Confidence: 0.9,
+				Message: "HTTP/2 request contains forbidden Upgrade header (downgrade smuggling vector)",
+			}
+		}
+		if te := strings.TrimSpace(strings.ToLower(r.Header.Get("TE"))); te != "" && te != "trailers" {
+			return &ProtocolViolation{
+				Detected: true, Type: "smuggling", Severity: SeverityHigh, Confidence: 0.88,
+				Message: "HTTP/2 request contains invalid TE header value: " + te,
+			}
+		}
+		if transferEncoding := r.Header.Get("Transfer-Encoding"); transferEncoding != "" {
+			return &ProtocolViolation{
+				Detected: true, Type: "smuggling", Severity: SeverityCritical, Confidence: 0.96,
+				Message: "HTTP/2 request contains forbidden Transfer-Encoding header",
+			}
+		}
+		return nil
+	}
+
+	upgrade := strings.TrimSpace(r.Header.Get("Upgrade"))
+	if !strings.EqualFold(upgrade, "websocket") {
+		return nil
+	}
+	connection := strings.ToLower(r.Header.Get("Connection"))
+	if r.Method != http.MethodGet || !strings.Contains(connection, "upgrade") || strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key")) == "" {
+		return &ProtocolViolation{
+			Detected: true, Type: "upgrade_abuse", Severity: SeverityMedium, Confidence: 0.78,
+			Message: "malformed WebSocket upgrade request",
 		}
 	}
 	return nil
