@@ -2,14 +2,116 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
+
+func TestProtectionAndIPRulesRedactSecrets(t *testing.T) {
+	cfg := config.Default()
+	cfg.Protection.Bot.Secret = "bot-secret"
+	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
+		ID:      "otx",
+		Name:    "OTX",
+		APIKey:  "provider-secret",
+		Headers: map[string]string{"Authorization": "Bearer provider-header-secret"},
+		Enabled: true,
+	}}
+	handler := New(Options{Config: &cfg})
+
+	for _, tc := range []struct {
+		name string
+		call func(*httptest.ResponseRecorder, *http.Request)
+	}{
+		{
+			name: "protection",
+			call: func(w *httptest.ResponseRecorder, r *http.Request) { handler.Protection(w, r) },
+		},
+		{
+			name: "ip",
+			call: func(w *httptest.ResponseRecorder, r *http.Request) { handler.ListIPRules(w, r) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/api/"+tc.name, nil)
+			tc.call(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected response ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			body := recorder.Body.String()
+			for _, secret := range []string{"bot-secret", "provider-secret", "provider-header-secret"} {
+				if strings.Contains(body, secret) {
+					t.Fatalf("%s response leaked secret %q: %s", tc.name, secret, body)
+				}
+			}
+		})
+	}
+}
+
+func TestProtectionSecretUpdatesPreserveExistingValuesWhenEmpty(t *testing.T) {
+	cfg := config.Default()
+	cfg.Protection.Bot.Secret = "existing-bot-secret"
+	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
+		ID:      "otx",
+		Name:    "OTX",
+		APIKey:  "existing-provider-secret",
+		Headers: map[string]string{"Authorization": "Bearer existing-provider-header"},
+		Enabled: true,
+	}}
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	nextBot := cfg.Protection.Bot
+	nextBot.Secret = ""
+	rawBot, _ := json.Marshal(nextBot)
+	botRecorder := httptest.NewRecorder()
+	botRequest := httptest.NewRequest(http.MethodPut, "/api/protection/bot", bytes.NewReader(rawBot))
+	handler.UpdateBotProtection(botRecorder, botRequest)
+	if botRecorder.Code != http.StatusOK {
+		t.Fatalf("expected bot update ok, code=%d body=%s", botRecorder.Code, botRecorder.Body.String())
+	}
+	if cfg.Protection.Bot.Secret != "existing-bot-secret" {
+		t.Fatalf("empty bot update cleared secret, got %q", cfg.Protection.Bot.Secret)
+	}
+	if strings.Contains(botRecorder.Body.String(), "existing-bot-secret") {
+		t.Fatalf("bot update response leaked secret: %s", botRecorder.Body.String())
+	}
+
+	providers := []config.ThreatIntelProviderConfig{{
+		ID:      "otx",
+		Name:    "OTX",
+		APIKey:  "",
+		Headers: map[string]string{"Authorization": ""},
+		Enabled: true,
+	}}
+	rawProviders, _ := json.Marshal(providers)
+	providerRecorder := httptest.NewRecorder()
+	providerRequest := httptest.NewRequest(http.MethodPut, "/api/ip/threat-intel/providers", bytes.NewReader(rawProviders))
+	handler.UpdateThreatIntelProviders(providerRecorder, providerRequest)
+	if providerRecorder.Code != http.StatusOK {
+		t.Fatalf("expected provider update ok, code=%d body=%s", providerRecorder.Code, providerRecorder.Body.String())
+	}
+	if cfg.Protection.IP.Providers[0].APIKey != "existing-provider-secret" ||
+		cfg.Protection.IP.Providers[0].Headers["Authorization"] != "Bearer existing-provider-header" {
+		t.Fatalf("empty provider update did not preserve secrets: %+v", cfg.Protection.IP.Providers[0])
+	}
+	body := providerRecorder.Body.String()
+	if strings.Contains(body, "existing-provider-secret") || strings.Contains(body, "existing-provider-header") {
+		t.Fatalf("provider update response leaked secret: %s", body)
+	}
+}
 
 func TestImportThreatIntelNotifiesProtectionReload(t *testing.T) {
 	cfg := config.Default()
@@ -240,7 +342,7 @@ func TestProviderLookupURLBuildsKnownProviderQueries(t *testing.T) {
 			wantHost: "api.threatbook.io",
 			wantPath: "/v2/ip/query",
 			wantQuery: map[string]string{
-				"apikey":  "unit-key",
+				"apikey":   "unit-key",
 				"resource": "203.0.113.44",
 			},
 		},
@@ -342,6 +444,8 @@ func TestLookupThreatIntelDoesNotImportCleanProviderResult(t *testing.T) {
 		_, _ = w.Write([]byte(`{"response_code":0,"data":{"203.0.113.45":{"judgments":[],"intelligences":{},"verdict":"clean"}}}`))
 	}))
 	t.Cleanup(providerServer.Close)
+	withThreatIntelHTTPClient(t, providerServer.Client())
+	withThreatIntelProviderURLValidator(t, url.Parse)
 
 	cfg := config.Default()
 	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
@@ -397,6 +501,8 @@ func TestLookupThreatIntelImportsProviderConfirmedIndicator(t *testing.T) {
 		_, _ = w.Write([]byte(`{"response_code":0,"data":{"203.0.113.46":{"judgments":["Scanner"],"intelligences":{"threatbook_lab":[{"source":"ThreatBook Labs","confidence":91,"intel_types":["Scanner"]}]}}}}`))
 	}))
 	t.Cleanup(providerServer.Close)
+	withThreatIntelHTTPClient(t, providerServer.Client())
+	withThreatIntelProviderURLValidator(t, url.Parse)
 
 	cfg := config.Default()
 	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
@@ -436,4 +542,90 @@ func TestLookupThreatIntelImportsProviderConfirmedIndicator(t *testing.T) {
 	if item.Value != "203.0.113.46" || item.Source != "ThreatBook Labs" || item.Confidence != 0.91 {
 		t.Fatalf("unexpected imported indicator: %+v", item)
 	}
+}
+
+func TestThreatIntelProviderRejectsUnsafeEndpoints(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{
+			name:     "loopback",
+			endpoint: "http://127.0.0.1/feed.json",
+			want:     "provider host IP must be public",
+		},
+		{
+			name:     "aws metadata",
+			endpoint: "http://169.254.169.254/latest/meta-data",
+			want:     "provider host IP must be public",
+		},
+		{
+			name:     "aliyun metadata",
+			endpoint: "http://100.100.100.200/latest/meta-data",
+			want:     "provider host IP must be public",
+		},
+		{
+			name:     "url credentials",
+			endpoint: "https://user:pass@intel.example.test/feed",
+			want:     "credentials in provider URL are not allowed",
+		},
+		{
+			name:     "unsupported scheme",
+			endpoint: "file:///etc/passwd",
+			want:     "only http and https provider URLs are allowed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := fetchProvider(context.Background(), config.ThreatIntelProviderConfig{
+				Endpoint: tt.endpoint,
+				Format:   "json",
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestThreatIntelProviderRejectsLookupEndpointResolvedToPrivateIP(t *testing.T) {
+	withThreatIntelResolver(t, func(ctx context.Context, network, host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.8")}, nil
+	})
+	_, err := lookupProviderIP(context.Background(), config.ThreatIntelProviderConfig{
+		Type:     "generic",
+		Endpoint: "https://intel.example.test/lookup/{ip}.json",
+		Format:   "json",
+	}, "203.0.113.88")
+	if err == nil || !strings.Contains(err.Error(), "provider host resolved to non-public IP") {
+		t.Fatalf("expected DNS rebinding guard error, got %v", err)
+	}
+}
+
+func withThreatIntelHTTPClient(t *testing.T, client *http.Client) {
+	t.Helper()
+	previous := threatIntelHTTPClient
+	threatIntelHTTPClient = client
+	t.Cleanup(func() {
+		threatIntelHTTPClient = previous
+	})
+}
+
+func withThreatIntelResolver(t *testing.T, resolver func(context.Context, string, string) ([]net.IP, error)) {
+	t.Helper()
+	previous := threatIntelResolveIP
+	threatIntelResolveIP = resolver
+	t.Cleanup(func() {
+		threatIntelResolveIP = previous
+	})
+}
+
+func withThreatIntelProviderURLValidator(t *testing.T, validator func(string) (*url.URL, error)) {
+	t.Helper()
+	previous := threatIntelProviderURLValidator
+	threatIntelProviderURLValidator = validator
+	t.Cleanup(func() {
+		threatIntelProviderURLValidator = previous
+	})
 }

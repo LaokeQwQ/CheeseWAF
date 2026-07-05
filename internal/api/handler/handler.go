@@ -39,11 +39,25 @@ type Handler struct {
 	geoipPolicy         *protectionip.GeoIPPolicy
 	geoipErrorKey       string
 	geoipRetryAfter     time.Time
+	diskUsageMu         sync.Mutex
+	diskUsageCache      map[string]cachedDirSize
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error
 }
+
+type cachedDirSize struct {
+	value     int64
+	expiresAt time.Time
+	loading   bool
+	ready     chan struct{}
+}
+
+const (
+	defaultJSONBodyLimit      = 1 << 20
+	loginCAPTCHAJSONBodyLimit = 16 << 10
+)
 
 type Options struct {
 	Config              *config.Config
@@ -78,6 +92,7 @@ func New(opts Options) *Handler {
 		ACMEIssuer:          opts.ACMEIssuer,
 		LoginCAPTCHAState:   newLoginCAPTCHAState(),
 		StartedAt:           time.Now().UTC(),
+		diskUsageCache:      map[string]cachedDirSize{},
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
 		OnAPISecChanged:     opts.OnAPISecChanged,
@@ -139,6 +154,7 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req dto.CAPTCHAChallengeRequest
+	r.Body = http.MaxBytesReader(w, r.Body, loginCAPTCHAJSONBodyLimit)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid captcha request")
 		return
@@ -579,6 +595,7 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dest any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, defaultJSONBodyLimit)
 	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return false

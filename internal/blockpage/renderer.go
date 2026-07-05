@@ -226,9 +226,10 @@ func localeFromAcceptLanguageMatch(header string) (string, string, bool) {
 	if header == "" {
 		return "", "", false
 	}
-	bestLocale := ""
-	bestLang := ""
-	bestQ := -1.0
+	// Pick the first supported language tag in listed order. Browsers list
+	// Accept-Language by descending preference, and the client-side runtime
+	// selects the first navigator.languages match — mirroring that here keeps
+	// the server-rendered language identical to the client, avoiding a flash.
 	for _, part := range strings.Split(header, ",") {
 		item := strings.TrimSpace(part)
 		if item == "" {
@@ -250,15 +251,9 @@ func localeFromAcceptLanguageMatch(header string) (string, string, bool) {
 		if q <= 0 || tag == "*" || tag == "" {
 			continue
 		}
-		locale, lang, supported := supportedLocale(tag)
-		if supported && q > bestQ {
-			bestLocale = locale
-			bestLang = lang
-			bestQ = q
+		if locale, lang, supported := supportedLocale(tag); supported {
+			return locale, lang, true
 		}
-	}
-	if bestLocale != "" {
-		return bestLocale, bestLang, true
 	}
 	return "", "", false
 }
@@ -560,7 +555,7 @@ func ensureVisibleEventID(buf *bytes.Buffer, data Data) {
 }
 
 func ensureLanguageRuntime(buf *bytes.Buffer, data Data) {
-	if buf == nil || bytes.Contains(buf.Bytes(), []byte("cw-language-runtime")) {
+	if buf == nil || bytes.Contains(buf.Bytes(), []byte("cw-language-runtime")) || bytes.Contains(buf.Bytes(), []byte(`id="cw-i18n"`)) {
 		return
 	}
 	payload := string(data.TranslationsJSON)
@@ -752,7 +747,7 @@ const defaultBlockTemplate = `<!doctype html>
       <footer data-i18n="footer">{{.Text.Footer}}</footer>
     </section>
   </main>
-  <script id="cw-i18n" type="application/json">{{.TranslationsJSON}}</script>
+  <script id="cw-i18n" data-runtime="cw-language-runtime" type="application/json">{{.TranslationsJSON}}</script>
   <script>
   (function(){
     var status = Number(document.documentElement.dataset.status || "0");

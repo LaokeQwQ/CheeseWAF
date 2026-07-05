@@ -13,28 +13,39 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap,
+    chunkSizeWarningLimit: 600,
     rolldownOptions: {
       output: {
         manualChunks(id) {
-          if (!id.includes('node_modules')) {
+          const modulePath = id.replace(/\\/g, '/');
+          if (!modulePath.includes('node_modules')) {
             return undefined;
           }
-          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
+          if (modulePath.includes('/react/') || modulePath.includes('/react-dom/') || modulePath.includes('/scheduler/')) {
             return 'vendor-react';
           }
-          if (id.includes('/@arco-design/')) {
+          if (modulePath.includes('/@arco-design/')) {
             return 'vendor-arco';
           }
-          if (id.includes('/three/')) {
-            return 'vendor-three';
+          if (modulePath.includes('/three/build/') || modulePath.includes('/three/src/renderers/shaders/') || modulePath.includes('/three/src/renderers/webgl/')) {
+            return 'vendor-three-webgl';
           }
-          if (id.includes('/d3-geo/') || id.includes('/topojson-client/') || id.includes('/world-atlas/')) {
+          if (modulePath.includes('/three/src/renderers/')) {
+            return 'vendor-three-renderer';
+          }
+          if (modulePath.includes('/three/src/materials/') || modulePath.includes('/three/src/geometries/') || modulePath.includes('/three/src/textures/')) {
+            return 'vendor-three-scene';
+          }
+          if (modulePath.includes('/three/src/')) {
+            return 'vendor-three-core';
+          }
+          if (modulePath.includes('/d3-geo/') || modulePath.includes('/topojson-client/') || modulePath.includes('/world-atlas/')) {
             return 'vendor-visualization';
           }
-          if (id.includes('/@tanstack/') || id.includes('/axios/') || id.includes('/i18next/') || id.includes('/react-i18next/') || id.includes('/zustand/')) {
+          if (modulePath.includes('/@tanstack/') || modulePath.includes('/axios/') || modulePath.includes('/i18next/') || modulePath.includes('/react-i18next/') || modulePath.includes('/zustand/')) {
             return 'vendor-runtime';
           }
-          if (id.includes('/lucide-react/') || id.includes('/qrcode/')) {
+          if (modulePath.includes('/lucide-react/') || modulePath.includes('/qrcode/')) {
             return 'vendor-ui-utils';
           }
           return 'vendor';
