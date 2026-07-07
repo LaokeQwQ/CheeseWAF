@@ -299,3 +299,10 @@ CheeseWAF 当前已经覆盖以下方向：
 - 语义引擎：独立 `SQLDetector` 的候选源从整条请求文本扩展到查询参数和 `application/x-www-form-urlencoded` 字段值，并对每个候选做 bounded decode / base64 变体检测；候选数量与超长字段扫描长度已设置硬上限，长字段保留头尾片段检测，避免参数洪泛把语义检测变成资源消耗点；补充 base64 SQLi、超长字段尾部 SQLi 和 benign encoded documentation 样本，继续以降低漏检且控制误报为优先。
 - 已通过定向验证：`go test ./internal/engine ./internal/engine/semantic -count=1`、`go test ./internal/api/handler ./internal/api/middleware ./internal/cli -run "Login|CAPTCHA|Admin|Token|Session|Entrance|ClientIP" -count=1`。
 - 收口前仍需重新执行全量 Go、Web typecheck/build、`git diff --check`，再提交、推送 `dev`，合并到 `canary` 并同步 Forgejo。
+
+
+## 2026-07-07 后续规划：Mesh HA 集群
+
+已完成集群方向设计梳理。CheeseWAF 后续仍默认以单机模式运行，用户可从控制台“集群”菜单扩展为多节点。目标是保持单 Go 二进制优先，不默认依赖 Nginx、HAProxy、etcd、Redis 或 PostgreSQL；外部组件只作为高级增强。规划中的集群形态包括单机模式、双节点负载均衡模式、双节点 + 监控节点的最小高可用模式，以及三台以上 WAF 节点的多节点高可用模式。
+
+集群设计将采用产品化表达：防数据偏差、监控节点、多数确认、协调节点、保护模式、部署前检查、仅检查不应用、开发版/预览版/正式版。核心路线分为四步：集群配置与声明式对象模型、Ansible/临时 SSH 部署与安全加入、内置一致性和多链路心跳、生产级内置流量调度与滚动升级。详细规划见 `docs/superpowers/plans/2026-07-07-cheesewaf-mesh-ha-cluster.md`。当前该能力尚未实现，现有产品仍按单机模式验收。

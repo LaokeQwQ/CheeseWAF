@@ -8,7 +8,12 @@
   --text: #10243b;
   --text-main: var(--text);
   --text-muted: #5a7190;
+  --text-strong: var(--text);
+  --text-subtle: var(--text-muted);
+  --text-primary: var(--text);
+  --text-secondary: var(--text-muted);
   --accent: #1769d1;
+  --accent-success: #16a34a;
   --accent-strong: #0c4fa7;
   --accent-soft: rgba(23, 105, 209, 0.12);
   --accent-danger: #df3f4c;
