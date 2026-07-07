@@ -5726,6 +5726,73 @@ code {
   min-width: 0;
 }
 
+.management-api-fieldset {
+  grid-column: 1 / -1;
+}
+
+.api-token-create-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(240px, 1.25fr) minmax(140px, 0.7fr) auto;
+  gap: 12px;
+  align-items: end;
+  min-width: 0;
+}
+
+.api-token-create-grid label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.api-token-create-grid label > span {
+  color: color-mix(in srgb, var(--text) 72%, var(--text-muted));
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.api-token-create-grid .wide-field {
+  grid-column: 1 / span 3;
+}
+
+.api-token-secret {
+  margin: 2px 0 4px;
+}
+
+.api-token-name {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.api-token-name strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-token-name span {
+  color: var(--text-muted);
+  font-family: var(--mono-font);
+  font-size: 12px;
+}
+
+.api-token-scope-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+@media (max-width: 900px) {
+  .api-token-create-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .api-token-create-grid .wide-field {
+    grid-column: auto;
+  }
+}
+
 .ai-events-panel .arco-table-tr {
   cursor: pointer;
 }

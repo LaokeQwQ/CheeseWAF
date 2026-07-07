@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"net"
@@ -433,6 +434,78 @@ func Validate(cfg *Config) error {
 				}
 			}
 		}
+	}
+	if err := validateManagementAPI(cfg.APISec.ManagementAPI); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateManagementAPI(api ManagementAPIConfig) error {
+	seen := map[string]struct{}{}
+	for _, token := range api.Tokens {
+		id := strings.TrimSpace(token.ID)
+		if id == "" {
+			return fmt.Errorf("management api token id is required")
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("management api token %q is duplicated", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(token.Name) == "" {
+			return fmt.Errorf("management api token %q name is required", id)
+		}
+		if strings.TrimSpace(token.Hash) == "" {
+			return fmt.Errorf("management api token %q hash is required", id)
+		}
+		digest := strings.TrimPrefix(token.Hash, "sha256:")
+		if !strings.HasPrefix(token.Hash, "sha256:") || len(digest) != 64 {
+			return fmt.Errorf("management api token %q hash must be sha256 digest", id)
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return fmt.Errorf("management api token %q hash must be hexadecimal sha256 digest", id)
+		}
+		if len(token.Scopes) == 0 {
+			return fmt.Errorf("management api token %q must define at least one scope", id)
+		}
+		for _, scope := range token.Scopes {
+			if err := validatePermissionExpression(scope); err != nil {
+				return fmt.Errorf("management api token %q scope is invalid: %w", id, err)
+			}
+		}
+		if !token.CreatedAt.IsZero() && !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(token.CreatedAt) {
+			return fmt.Errorf("management api token %q expires_at must be after created_at", id)
+		}
+	}
+	return nil
+}
+
+func validatePermissionExpression(scope string) error {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return fmt.Errorf("scope is required")
+	}
+	if scope == "*" {
+		return nil
+	}
+	if strings.Count(scope, ":") != 1 {
+		return fmt.Errorf("scope must use action:resource format")
+	}
+	parts := strings.Split(scope, ":")
+	switch parts[0] {
+	case "read", "write":
+	default:
+		return fmt.Errorf("scope action must be read or write")
+	}
+	resource := parts[1]
+	if resource == "" {
+		return fmt.Errorf("scope resource is required")
+	}
+	if strings.ContainsAny(resource, " \t\r\n") {
+		return fmt.Errorf("scope resource must not contain whitespace")
+	}
+	if strings.Contains(resource, "*") && !strings.HasSuffix(resource, "*") {
+		return fmt.Errorf("scope wildcard is only allowed at the end")
 	}
 	return nil
 }

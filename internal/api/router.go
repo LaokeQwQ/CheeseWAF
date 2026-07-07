@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/acme"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
@@ -47,6 +49,25 @@ func NewRouter(opts Options) http.Handler {
 		OnAPISecChanged:     opts.OnAPISecChanged,
 		OnBlockPageChanged:  opts.OnBlockPageChanged,
 	})
+	var managementAPIUseMu sync.Mutex
+	managementAuth := middleware.ManagementAPIOrSessionMiddleware(tokens, opts.Store, func() config.ManagementAPIConfig {
+		if opts.Config == nil {
+			return config.ManagementAPIConfig{}
+		}
+		return opts.Config.APISec.ManagementAPI
+	}, func(id string, at time.Time) {
+		if opts.Config == nil || id == "" {
+			return
+		}
+		managementAPIUseMu.Lock()
+		defer managementAPIUseMu.Unlock()
+		for idx := range opts.Config.APISec.ManagementAPI.Tokens {
+			if opts.Config.APISec.ManagementAPI.Tokens[idx].ID == id {
+				opts.Config.APISec.ManagementAPI.Tokens[idx].LastUsedAt = at
+				return
+			}
+		}
+	})
 	hub := opts.Hub
 	if hub == nil {
 		hub = realtime.NewHub()
@@ -76,8 +97,7 @@ func NewRouter(opts Options) http.Handler {
 		})
 
 		r.Group(func(r chi.Router) {
-			r.Use(tokens.Middleware)
-			r.Use(middleware.SessionMiddleware(opts.Store))
+			r.Use(managementAuth)
 			if opts.Config.APISec.Audit.Enabled {
 				r.Use(auditor.Middleware)
 			}
@@ -91,6 +111,9 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:audit")).Get("/audit", h.AuditEntries)
 			r.With(require("read:system")).Get("/version", h.Version)
 			r.With(require("read:system")).Get("/system", h.System)
+			r.With(require("read:system")).Get("/system/api-tokens", h.ListManagementAPITokens)
+			r.With(require("write:system")).Post("/system/api-tokens", h.CreateManagementAPIToken)
+			r.With(require("write:system")).Delete("/system/api-tokens/{id}", h.RevokeManagementAPIToken)
 			r.With(require("read:cluster")).Get("/cluster/status", h.ClusterStatus)
 			r.With(require("read:cluster")).Get("/cluster/nodes", h.ClusterListNodes)
 			r.With(require("write:cluster")).Post("/cluster/deploy/ansible", h.ClusterAnsiblePackage)

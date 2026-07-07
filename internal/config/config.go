@@ -834,13 +834,34 @@ type NotifierConfig struct {
 }
 
 type APISecConfig struct {
-	Enabled     bool                     `yaml:"enabled" json:"enabled"`
-	Discovery   APIDiscoveryConfig       `yaml:"discovery" json:"discovery"`
-	Validation  APIValidationConfig      `yaml:"validation" json:"validation"`
-	Auth        APIAuthConfig            `yaml:"auth" json:"auth"`
-	RateLimits  []APIEndpointLimitConfig `yaml:"rate_limits" json:"rate_limits"`
-	Permissions map[string][]string      `yaml:"permissions" json:"permissions"`
-	Audit       AuditConfig              `yaml:"audit" json:"audit"`
+	Enabled       bool                     `yaml:"enabled" json:"enabled"`
+	Discovery     APIDiscoveryConfig       `yaml:"discovery" json:"discovery"`
+	Validation    APIValidationConfig      `yaml:"validation" json:"validation"`
+	Auth          APIAuthConfig            `yaml:"auth" json:"auth"`
+	ManagementAPI ManagementAPIConfig      `yaml:"management_api" json:"management_api"`
+	RateLimits    []APIEndpointLimitConfig `yaml:"rate_limits" json:"rate_limits"`
+	Permissions   map[string][]string      `yaml:"permissions" json:"permissions"`
+	Audit         AuditConfig              `yaml:"audit" json:"audit"`
+}
+
+type ManagementAPIConfig struct {
+	Enabled bool                       `yaml:"enabled" json:"enabled"`
+	Tokens  []ManagementAPITokenConfig `yaml:"tokens" json:"tokens"`
+}
+
+type ManagementAPITokenConfig struct {
+	ID         string    `yaml:"id" json:"id"`
+	Name       string    `yaml:"name" json:"name"`
+	Prefix     string    `yaml:"prefix" json:"prefix"`
+	Hash       string    `yaml:"hash" json:"hash,omitempty"`
+	Scopes     []string  `yaml:"scopes" json:"scopes"`
+	Notes      string    `yaml:"notes" json:"notes,omitempty"`
+	Enabled    bool      `yaml:"enabled" json:"enabled"`
+	CreatedAt  time.Time `yaml:"created_at" json:"created_at,omitempty"`
+	UpdatedAt  time.Time `yaml:"updated_at" json:"updated_at,omitempty"`
+	LastUsedAt time.Time `yaml:"last_used_at" json:"last_used_at,omitempty"`
+	ExpiresAt  time.Time `yaml:"expires_at" json:"expires_at,omitempty"`
+	RevokedAt  time.Time `yaml:"revoked_at" json:"revoked_at,omitempty"`
 }
 
 type APIDiscoveryConfig struct {

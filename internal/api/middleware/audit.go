@@ -13,6 +13,7 @@ import (
 
 type AuditEntry struct {
 	Timestamp time.Time `json:"timestamp"`
+	Subject   string    `json:"subject,omitempty"`
 	User      string    `json:"user"`
 	Role      string    `json:"role"`
 	Method    string    `json:"method"`
@@ -46,6 +47,7 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 			LatencyMS: time.Since(start).Milliseconds(),
 		}
 		if claims != nil {
+			entry.Subject = claims.Subject
 			entry.User = claims.Username
 			entry.Role = claims.Role
 		}

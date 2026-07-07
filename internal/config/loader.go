@@ -308,8 +308,9 @@ func Default() Config {
 				Window:         time.Hour,
 				IgnorePrefixes: []string{"/assets/", "/static/", "/favicon"},
 			},
-			Validation: APIValidationConfig{Enabled: true},
-			Auth:       APIAuthConfig{Enabled: false, JWKSRefresh: time.Hour},
+			Validation:    APIValidationConfig{Enabled: true},
+			Auth:          APIAuthConfig{Enabled: false, JWKSRefresh: time.Hour},
+			ManagementAPI: ManagementAPIConfig{Enabled: false},
 			Permissions: map[string][]string{
 				"admin":    []string{"*"},
 				"readonly": []string{"read:*", "read:cluster"},

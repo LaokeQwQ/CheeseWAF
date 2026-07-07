@@ -713,7 +713,7 @@ function buildLiveReasoningProcess(t: (key: string, options?: Record<string, unk
   if (reasoning) {
     return splitReasoningLines(reasoning, t('assistant.reasoningStreaming'));
   }
-  const slow = [...trace].reverse().find((event) => event.type === 'provider_first_event_slow');
+  const slow = [...trace].reverse().find((event) => event.type === 'provider_waiting_progress' || event.type === 'provider_first_event_slow');
   if (slow) {
     return [slow.message || t('assistant.providerSlow')];
   }
@@ -750,6 +750,7 @@ function formatTraceEvent(t: (key: string, options?: Record<string, unknown>) =>
     case 'provider_response_start':
       return event.message || t('assistant.providerStarted');
     case 'provider_first_event_slow':
+    case 'provider_waiting_progress':
       return event.message || t('assistant.providerSlow');
     case 'tool_call':
       return t('assistant.traceToolCall', { tool: toolDisplayName(t, event.tool_name || '-'), args: compactJson(event.args) });
@@ -787,6 +788,7 @@ function pendingAssistantText(t: (key: string, options?: Record<string, unknown>
     case 'provider_response_start':
       return t('assistant.providerStarted');
     case 'provider_first_event_slow':
+    case 'provider_waiting_progress':
       return last.message || t('assistant.providerSlow');
     default:
       return last.message || t('assistant.thinking');

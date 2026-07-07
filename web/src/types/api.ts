@@ -774,9 +774,49 @@ export type APISecAuthEndpointPolicyConfig = {
   enabled: boolean;
 };
 
+export type ManagementAPIToken = {
+  id: string;
+  name: string;
+  prefix: string;
+  scopes: string[];
+  notes?: string;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+  last_used_at?: string;
+  expires_at?: string;
+  revoked_at?: string;
+};
+
+export type ManagementAPIConfig = {
+  enabled: boolean;
+  tokens?: ManagementAPIToken[];
+};
+
+export type ManagementAPITokenList = {
+  enabled: boolean;
+  items: ManagementAPIToken[];
+  total: number;
+};
+
+export type CreateManagementAPITokenRequest = {
+  name: string;
+  scopes: string[];
+  ttl?: string;
+  expires_at?: string;
+  notes?: string;
+  enabled?: boolean;
+};
+
+export type CreateManagementAPITokenResponse = {
+  token: string;
+  item: ManagementAPIToken;
+};
+
 export type APISecSystemConfig = {
   enabled?: boolean;
   auth?: Partial<APISecAuthConfig>;
+  management_api?: Partial<ManagementAPIConfig>;
   discovery?: Record<string, unknown>;
   validation?: Record<string, unknown>;
   rate_limits?: Array<Record<string, unknown>>;
