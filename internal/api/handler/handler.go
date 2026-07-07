@@ -16,6 +16,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
@@ -32,10 +33,12 @@ type Handler struct {
 	Secret               string
 	Auditor              *middleware.Auditor
 	AssistantApprovals   *ai.ApprovalStore
+	ClusterIdentity      *identity.MemoryIdentityService
 	ACMEIssuer           acme.Issuer
 	LoginCAPTCHAState    *loginCAPTCHAState
 	loginCAPTCHASecretMu sync.Mutex
 	loginCAPTCHASecret   string
+	clusterIdentityMu    sync.Mutex
 	StartedAt            time.Time
 	geoipMu              sync.Mutex
 	geoipCacheKey        string
@@ -71,6 +74,7 @@ type Options struct {
 	Secret              string
 	Auditor             *middleware.Auditor
 	AssistantApprovals  *ai.ApprovalStore
+	ClusterIdentity     *identity.MemoryIdentityService
 	ACMEIssuer          acme.Issuer
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
@@ -93,6 +97,7 @@ func New(opts Options) *Handler {
 		Secret:              opts.Secret,
 		Auditor:             opts.Auditor,
 		AssistantApprovals:  approvals,
+		ClusterIdentity:     opts.ClusterIdentity,
 		ACMEIssuer:          opts.ACMEIssuer,
 		LoginCAPTCHAState:   newLoginCAPTCHAState(),
 		loginCAPTCHASecret:  loginSecret,

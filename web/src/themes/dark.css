@@ -5,6 +5,8 @@
   --surface-raised: #1a2230;
   --border: #293449;
   --border-subtle: color-mix(in srgb, var(--border) 55%, var(--surface));
+  --border-strong: color-mix(in srgb, var(--border) 72%, var(--text));
+  --border-color: var(--border);
   --text: #edf2f8;
   --text-main: var(--text);
   --text-muted: #9aa8bc;
@@ -17,10 +19,12 @@
   --accent-strong: #6b9fff;
   --accent-soft: rgba(60, 126, 255, 0.13);
   --accent-danger: #ff6b6b;
+  --danger: var(--accent-danger);
   --accent-warning: #f5b85b;
   --accent-info: #6aa7ff;
   --accent-purple: #b58cff;
   --shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   --color-primary-6: #4fd6bd;
   --color-bg-1: #151b24;
   --color-bg-2: #10161f;

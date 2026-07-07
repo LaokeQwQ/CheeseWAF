@@ -839,7 +839,7 @@ git commit -m "feat: add cluster console entry"
 - Create: `internal/cluster/deploy/ansible_test.go`
 - Create: `deploy/ansible/cheesewaf-cluster/README.md`
 
-- [ ] **Step 1: Write generation test**
+- [x] **Step 1: Write generation test**
 
 ```go
 func TestGenerateAnsiblePackageIncludesInventoryAndNoSecrets(t *testing.T) {
@@ -858,7 +858,7 @@ func TestGenerateAnsiblePackageIncludesInventoryAndNoSecrets(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement package generator**
+- [x] **Step 2: Implement package generator**
 
 Generate these files in memory:
 
@@ -873,13 +873,15 @@ README.md
 
 Use product names `开发版`, `预览版`, `正式版` in comments while keeping machine values `dev`, `canary`, `stable`.
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```powershell
 go test ./internal/cluster/deploy -run Ansible -count=1
 ```
 
 - [ ] **Step 4: Commit**
+
+This task is now being committed as part of the combined M2 backend foundation change, together with the SSH deployment runner and identity service.
 
 ```powershell
 git add internal/cluster/deploy deploy/ansible/cheesewaf-cluster/README.md
@@ -893,7 +895,7 @@ git commit -m "feat: generate cluster ansible package"
 - Create: `internal/cluster/deploy/ssh_test.go`
 - Modify: `internal/api/handler/cluster.go`
 
-- [ ] **Step 1: Write test proving credentials are not persisted**
+- [x] **Step 1: Write test proving credentials are not persisted**
 
 ```go
 func TestSSHDeploymentDoesNotPersistCredentialsByDefault(t *testing.T) {
@@ -902,7 +904,6 @@ func TestSSHDeploymentDoesNotPersistCredentialsByDefault(t *testing.T) {
 	err := runner.Prepare(context.Background(), SSHDeploymentRequest{
 		Host: "192.0.2.10",
 		User: "root",
-		Password: "secret",
 		SaveCredential: false,
 	})
 	if err != nil { t.Fatal(err) }
@@ -915,7 +916,7 @@ func TestSSHDeploymentDoesNotPersistCredentialsByDefault(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement runner interface**
+- [x] **Step 2: Implement runner interface**
 
 Implement interfaces only in M2:
 
@@ -926,9 +927,9 @@ type SSHRunner interface {
 }
 ```
 
-Use `exec.CommandContext` to call system `ssh` only after validating host, user, port, and command arguments. Do not shell-concatenate user-controlled strings.
+Use `exec.CommandContext` to call system `ssh` only after validating host, user, port, and fixed action arguments. Do not shell-concatenate user-controlled strings. Password login remains unsupported in this temporary runner; use SSH agent or one-time `private_key` content, which is materialized into a temporary `0600` key file and cleaned up after the request.
 
-- [ ] **Step 3: Add API endpoint**
+- [x] **Step 3: Add API endpoint**
 
 Add authenticated endpoints:
 
@@ -940,13 +941,15 @@ POST /api/cluster/deploy/ansible
 
 RBAC permission: `write:cluster`.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```powershell
 go test ./internal/cluster/deploy ./internal/api/handler -run Cluster -count=1
 ```
 
 - [ ] **Step 5: Commit**
+
+This task is now being committed as part of the combined M2 backend foundation change, together with the Ansible package generator and identity service.
 
 ```powershell
 git add internal/cluster/deploy internal/api/handler/cluster.go internal/api/handler/cluster_test.go
@@ -961,7 +964,7 @@ git commit -m "feat: add cluster deployment runner api"
 - Modify: `internal/api/handler/cluster.go`
 - Modify: `internal/cli/cluster.go`
 
-- [ ] **Step 1: Write token and cert tests**
+- [x] **Step 1: Write token and cert tests**
 
 ```go
 func TestJoinTokenIsOneTimeAndExpires(t *testing.T) {
@@ -989,7 +992,7 @@ func TestIssuedNodeCertificateContainsNodeIdentity(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement identity service**
+- [x] **Step 2: Implement identity service**
 
 Implement:
 
@@ -1004,7 +1007,7 @@ type IdentityService interface {
 
 Tokens must be random, hashed at rest, have expiry, max use count, and audit fields.
 
-- [ ] **Step 3: Expose API and CLI**
+- [x] **Step 3: Expose API and CLI**
 
 Add:
 
@@ -1021,13 +1024,15 @@ cheesewaf cluster token create --role waf --ttl 15m --uses 1
 cheesewaf cluster token revoke TOKEN_ID
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```powershell
 go test ./internal/cluster/identity ./internal/api/handler ./internal/cli -run "Join|Token|Certificate|Cluster" -count=1
 ```
 
 - [ ] **Step 5: Commit**
+
+This task is now being committed as part of the combined M2 backend foundation change, together with the deployment package generator and SSH deployment runner.
 
 ```powershell
 git add internal/cluster/identity internal/api/handler/cluster.go internal/cli/cluster.go
@@ -1456,7 +1461,9 @@ After implementation starts, keep these files in sync:
 
 M1 is implemented as the cluster foundation. The repository now contains disabled-by-default cluster configuration, validation that prevents unsafe HA claims, declarative object types, a standalone object store, `cluster status/init/export` CLI commands, cluster status/health API endpoints, and a Web console Cluster status page.
 
-The current product still does not contain real cluster heartbeat, majority confirmation, monitor-node runtime, join-token consumption, node certificate issuance, Raft/etcd coordination, cluster object reconciliation, or production cluster traffic scheduling. Those remain M2-M4 work and must not be described as available until implemented and verified.
+M2 backend foundations are partially implemented. The repository now contains Ansible package generation, temporary SSH deployment checks/fixed actions, join token create/list/revoke API and CLI commands, hashed-at-rest one-time join tokens, persistent cluster CA state, and real node certificate bundles for later mTLS wiring. Deployment API responses do not include raw SSH credentials or join token hashes; SSH deployment supports SSH agent/one-time private key content, does not persist credentials, does not allow arbitrary server-side key paths, no longer accepts arbitrary remote command strings, and has timeout/output limits.
+
+The current product still does not contain real cluster heartbeat, majority confirmation, monitor-node runtime, full node join runtime, Raft/etcd coordination, cluster object reconciliation, protection-mode write freezing, Web deployment wizard completion, production cluster traffic scheduling, or rolling upgrade. Those remain M3-M4 and follow-up M2 UI/runtime work and must not be described as available until implemented and verified.
 
 M1 verification gates:
 

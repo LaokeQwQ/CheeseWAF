@@ -2,9 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	clusterobject "github.com/LaokeQwQ/CheeseWAF/internal/cluster/object"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/spf13/cobra"
@@ -19,6 +22,7 @@ func newClusterCommand() *cobra.Command {
 	cmd.AddCommand(newClusterStatusCommand())
 	cmd.AddCommand(newClusterInitCommand())
 	cmd.AddCommand(newClusterExportCommand())
+	cmd.AddCommand(newClusterTokenCommand())
 	cmd.AddCommand(&cobra.Command{
 		Use:   "monitor-node",
 		Short: "Run as a cluster monitor node",
@@ -27,6 +31,112 @@ func newClusterCommand() *cobra.Command {
 		},
 	})
 	return cmd
+}
+
+func newClusterTokenCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "token",
+		Short: "Manage one-time cluster join tokens",
+	}
+	cmd.AddCommand(newClusterTokenCreateCommand())
+	cmd.AddCommand(newClusterTokenListCommand())
+	cmd.AddCommand(newClusterTokenRevokeCommand())
+	return cmd
+}
+
+func newClusterTokenCreateCommand() *cobra.Command {
+	var role string
+	var ttl string
+	var uses int
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a one-time cluster join token",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, svc, err := clusterIdentityFromCLI()
+			if err != nil {
+				return err
+			}
+			duration := cfg.Cluster.Join.TokenTTL
+			if strings.TrimSpace(ttl) != "" {
+				duration, err = time.ParseDuration(strings.TrimSpace(ttl))
+				if err != nil {
+					return fmt.Errorf("ttl must be a duration such as 15m: %w", err)
+				}
+			}
+			if duration == 0 {
+				duration = 15 * time.Minute
+			}
+			if uses == 0 {
+				uses = 1
+			}
+			token, err := svc.CreateJoinToken(role, duration, uses)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "令牌ID: %s\n", token.ID)
+			fmt.Fprintf(out, "加入令牌: %s\n", token.Value)
+			fmt.Fprintf(out, "角色: %s\n", roleLabel(token.Role))
+			fmt.Fprintf(out, "有效期至: %s\n", token.ExpiresAt.Format(time.RFC3339))
+			fmt.Fprintln(out, "请立即保存加入令牌；CheeseWAF 只保存哈希，之后不会再次显示明文。")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&role, "role", "waf", "Node role: waf or monitor")
+	cmd.Flags().StringVar(&ttl, "ttl", "", "Token lifetime, for example 15m")
+	cmd.Flags().IntVar(&uses, "uses", 1, "Maximum token uses")
+	return cmd
+}
+
+func newClusterTokenListCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List stored cluster join tokens",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, svc, err := clusterIdentityFromCLI()
+			if err != nil {
+				return err
+			}
+			tokens := svc.ListJoinTokens()
+			out := cmd.OutOrStdout()
+			if len(tokens) == 0 {
+				fmt.Fprintln(out, "暂无加入令牌")
+				return nil
+			}
+			for _, token := range tokens {
+				state := "可用"
+				if token.Revoked {
+					state = "已撤销"
+				} else if token.UsedCount >= token.MaxUses {
+					state = "已用完"
+				} else if !time.Now().UTC().Before(token.ExpiresAt) {
+					state = "已过期"
+				}
+				fmt.Fprintf(out, "%s\t%s\t%s\t%d/%d\t%s\n", token.ID, roleLabel(token.Role), state, token.UsedCount, token.MaxUses, token.ExpiresAt.Format(time.RFC3339))
+			}
+			return nil
+		},
+	}
+}
+
+func newClusterTokenRevokeCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "revoke TOKEN_ID",
+		Short: "Revoke a cluster join token",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, svc, err := clusterIdentityFromCLI()
+			if err != nil {
+				return err
+			}
+			id := strings.TrimSpace(args[0])
+			if err := svc.RevokeJoinToken(id); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "已撤销加入令牌: %s\n", id)
+			return nil
+		},
+	}
 }
 
 func newClusterStatusCommand() *cobra.Command {
@@ -163,6 +273,26 @@ func runClusterInit(cmd *cobra.Command, opts clusterInitOptions) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "已初始化为单节点集群: %s / %s\n", clusterID, nodeID)
 	fmt.Fprintln(cmd.OutOrStdout(), "当前仍是单节点模式；M2 部署加入流程完成后可扩展更多机器。")
 	return nil
+}
+
+func clusterIdentityFromCLI() (*config.Config, *identity.MemoryIdentityService, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	clusterID := strings.TrimSpace(cfg.Cluster.ClusterID)
+	if clusterID == "" {
+		clusterID = "cheesewaf-local"
+	}
+	statePath := filepath.Join(dataDir, "cluster", "identity.json")
+	svc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{
+		ClusterID: clusterID,
+		StatePath: statePath,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return cfg, svc, nil
 }
 
 func clusterObjectsFromConfig(cfg *config.Config) ([]any, error) {

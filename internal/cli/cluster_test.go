@@ -104,6 +104,66 @@ func TestClusterExportOutputsDeclarativeObjects(t *testing.T) {
 	}
 }
 
+func TestClusterTokenCreatePersistsHashOnlyAndRevoke(t *testing.T) {
+	path := testClusterConfigPath(t)
+	root := t.TempDir()
+	oldConfigPath := configPath
+	oldDataDir := dataDir
+	t.Cleanup(func() {
+		configPath = oldConfigPath
+		dataDir = oldDataDir
+	})
+
+	createCmd := newRootCommand()
+	buf := bytes.NewBuffer(nil)
+	createCmd.SetOut(buf)
+	createCmd.SetErr(buf)
+	createCmd.SetArgs([]string{
+		"--config", path,
+		"--data-dir", root,
+		"cluster", "token", "create",
+		"--role", "waf",
+		"--ttl", "15m",
+		"--uses", "1",
+	})
+	if err := createCmd.Execute(); err != nil {
+		t.Fatalf("cluster token create failed: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "加入令牌") || !strings.Contains(out, "令牌ID") {
+		t.Fatalf("unexpected create output: %s", out)
+	}
+	tokenID := extractCLIValue(out, "令牌ID:")
+	tokenValue := extractCLIValue(out, "加入令牌:")
+	if tokenID == "" || tokenValue == "" {
+		t.Fatalf("missing token id/value in output: %s", out)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "cluster", "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(tokenValue)) {
+		t.Fatal("cluster token state must not persist raw token")
+	}
+
+	revokeCmd := newRootCommand()
+	buf = bytes.NewBuffer(nil)
+	revokeCmd.SetOut(buf)
+	revokeCmd.SetErr(buf)
+	revokeCmd.SetArgs([]string{
+		"--config", path,
+		"--data-dir", root,
+		"cluster", "token", "revoke",
+		tokenID,
+	})
+	if err := revokeCmd.Execute(); err != nil {
+		t.Fatalf("cluster token revoke failed: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "已撤销") {
+		t.Fatalf("unexpected revoke output: %s", buf.String())
+	}
+}
+
 func testClusterConfigPath(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
@@ -127,4 +187,14 @@ sites:
 		t.Fatal(err)
 	}
 	return path
+}
+
+func extractCLIValue(out, prefix string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }

@@ -22,7 +22,14 @@ M1 is implemented as the cluster foundation:
   - `GET /health/cluster`
 - The Web console has a Cluster entry and a standalone/cluster status page.
 
-M1 does not include real node interconnect, majority confirmation, monitor-node runtime, Raft/etcd coordination, join-token consumption, node certificate issuance, object reconciliation, or production traffic scheduling.
+M2 backend foundations are now partially implemented:
+
+- Ansible deployment package generation with no raw SSH password, private key, API token, or join token in generated files.
+- Temporary SSH deployment checks and fixed deployment actions from the management API. The runner supports SSH agent / one-time private key content, does not persist credentials, does not allow API callers to borrow arbitrary server-side key paths, does not accept arbitrary remote command strings, uses a timeout, and limits returned output.
+- One-time join token creation, listing, and revocation through API and CLI. Token values are shown only once; persisted state stores hashes, not raw token values.
+- Cluster identity state with a persistent cluster CA and real node certificate bundles suitable for later mTLS wiring.
+
+M2 does not yet mean a node can fully join a running multi-node control plane. M3 is still required for real node interconnect, majority confirmation, monitor-node runtime, Raft/etcd coordination, object reconciliation, protection-mode write freezing, and cluster-aware traffic decisions.
 
 ## Product Modes
 
@@ -54,7 +61,7 @@ Implemented. This milestone gives CheeseWAF a truthful cluster configuration sur
 
 ### M2: Deployment And Join Flow
 
-Planned next. This milestone will generate Ansible deployment packages, support temporary SSH deployment from an existing WAF node, create one-time join tokens, issue node certificates, and support node revocation. Temporary SSH credentials must not be stored by default.
+Backend foundation implemented. This milestone now has deployment package generation, temporary SSH deployment checks/fixed actions, one-time join tokens, persistent cluster CA, node certificate bundle issuance, and token/node revocation primitives. The Web wizard and the full node join runtime still need follow-up work before this can be presented as a complete guided cluster expansion flow.
 
 ### M3: Consistency And Protection Mode
 
