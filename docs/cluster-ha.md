@@ -27,7 +27,9 @@ M2 backend foundations are now partially implemented:
 - Ansible deployment package generation with no raw SSH password, private key, API token, or join token in generated files.
 - Temporary SSH deployment checks and fixed deployment actions from the management API. The runner uses Go's `x/crypto/ssh` and supports request-scoped one-time SSH password or one-time `private_key` content. It does not persist credentials or pass them through argv, environment variables, generated files, or temporary key files. It does not allow API callers to borrow arbitrary server-side key paths, does not accept arbitrary remote command strings, uses a timeout, and limits returned output.
 - One-time join token creation, listing, and revocation through API and CLI. Token values are shown only once; persisted state stores hashes, not raw token values.
-- Cluster identity state with a persistent cluster CA and real node certificate bundles suitable for later mTLS wiring.
+- Token-authenticated node enrollment through `POST /api/cluster/join`. The endpoint consumes a join token, checks the requested node role, signs a node-generated CSR, returns the CA and node certificate, and records the node. Node private keys stay local to the joining node.
+- CLI self-bootstrap through `cheesewaf cluster join`. The command can read the one-time token from a flag, file, or environment variable, generates the node private key and CSR locally, then writes local certificate files and cluster config.
+- Cluster identity state with a persistent cluster CA, registered node metadata, and real CSR-signed node certificates suitable for later mTLS wiring.
 
 M2 does not yet mean a node can fully join a running multi-node control plane. M3 is still required for real node interconnect, majority confirmation, monitor-node runtime, Raft/etcd coordination, object reconciliation, protection-mode write freezing, and cluster-aware traffic decisions.
 
@@ -61,11 +63,23 @@ Implemented. This milestone gives CheeseWAF a truthful cluster configuration sur
 
 ### M2: Deployment And Join Flow
 
-Backend foundation implemented. This milestone now has deployment package generation, temporary SSH deployment checks/fixed actions, one-time join tokens, persistent cluster CA, node certificate bundle issuance, and token/node revocation primitives. The Web wizard and the full node join runtime still need follow-up work before this can be presented as a complete guided cluster expansion flow.
+Backend foundation and bootstrap enrollment implemented. This milestone now has deployment package generation, temporary SSH deployment checks/fixed actions, one-time join tokens, token-authenticated CSR-based node enrollment, persistent cluster CA, local-key certificate issuance, local CLI bootstrap, Web token/node views, and token/node revocation primitives. The full guided Web deployment wizard, certificate rotation UI, job progress, audit visualization, rollback, and monitor-node runtime still need follow-up work before this can be presented as a complete cluster expansion experience.
 
 ### M3: Consistency And Protection Mode
 
 Planned. This milestone will add real node interconnect, multi-path heartbeat, built-in consistency service, optional external etcd, majority confirmation, write freezing in protection mode, and cluster-aware health decisions.
+
+### M4-0: Semantic Engine And AI Assistant Readiness Gate
+
+Planned before production traffic scheduling. The semantic engine and AI assistant must be tightened before traffic is distributed across nodes:
+
+- Curate corpus samples instead of blindly importing datasets.
+- Add realistic attack samples and realistic false-positive samples.
+- Keep protection levels tied to semantic confidence thresholds.
+- Default to low-confidence log/monitor behavior rather than blocking; business-impacting false positives are treated as worse than controlled misses.
+- Add performance and resource ceilings for semantic analysis.
+- Complete the AI assistant's built-in WAF knowledge base, prompt hardening, long reasoning stream keepalive, and real-time single-event analysis trace.
+- Add WAF settings API token management, permission matrices, lifecycle/audit records, and help documentation.
 
 ### M4: Traffic Scheduling And Rolling Upgrade
 

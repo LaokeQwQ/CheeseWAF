@@ -77,11 +77,30 @@ type NodeIdentity struct {
 	AdvertiseAddr string
 }
 
+type NodeRegistration struct {
+	NodeID            string    `json:"node_id"`
+	Role              string    `json:"role"`
+	ClusterID         string    `json:"cluster_id"`
+	AdvertiseAddr     string    `json:"advertise_addr"`
+	JoinedAt          time.Time `json:"joined_at"`
+	CertificateSerial string    `json:"certificate_serial"`
+	CertificateExpiry time.Time `json:"certificate_expiry"`
+	Revoked           bool      `json:"revoked"`
+	RevokedReason     string    `json:"revoked_reason,omitempty"`
+}
+
 type NodeCertificateBundle struct {
 	Certificate *x509.Certificate
 	CertPEM     []byte
 	KeyPEM      []byte
 	CAPEM       []byte
+}
+
+type NodeEnrollment struct {
+	Node     NodeRegistration
+	Bundle   NodeCertificateBundle
+	Token    JoinToken
+	rollback func() error
 }
 
 type MemoryIdentityService struct {
@@ -93,6 +112,7 @@ type MemoryIdentityService struct {
 	caCert    *x509.Certificate
 	caDER     []byte
 	tokens    map[string]*JoinToken
+	nodes     map[string]*NodeRegistration
 	revoked   map[string]string
 }
 
@@ -134,6 +154,7 @@ func NewMemoryIdentityService(opts ServiceOptions) (*MemoryIdentityService, erro
 		caCert:    cert,
 		caDER:     caDER,
 		tokens:    map[string]*JoinToken{},
+		nodes:     map[string]*NodeRegistration{},
 		revoked:   map[string]string{},
 	}
 	if err := svc.loadState(); err != nil {
@@ -191,27 +212,23 @@ func (s *MemoryIdentityService) ConsumeJoinToken(value string) error {
 	hash := tokenHash(strings.TrimSpace(value))
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, token := range s.tokens {
-		if token.Hash != hash {
-			continue
-		}
-		if token.Revoked {
-			return fmt.Errorf("join token revoked")
-		}
-		if !s.clock.Now().Before(token.ExpiresAt) {
-			return fmt.Errorf("join token expired")
-		}
-		if token.UsedCount >= token.MaxUses {
-			return fmt.Errorf("join token already used")
-		}
-		token.UsedCount++
-		if err := s.saveStateLocked(); err != nil {
-			token.UsedCount--
-			return err
-		}
-		return nil
+	token, err := s.consumeJoinTokenLocked(hash, "")
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("join token not found")
+	if err := s.saveStateLocked(); err != nil {
+		token.UsedCount--
+		return err
+	}
+	return nil
+}
+
+func (s *MemoryIdentityService) ValidateJoinToken(value string, expectedRole string) error {
+	hash := tokenHash(strings.TrimSpace(value))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.validateJoinTokenLocked(hash, strings.TrimSpace(expectedRole))
+	return err
 }
 
 func (s *MemoryIdentityService) ListJoinTokens() []JoinToken {
@@ -225,6 +242,155 @@ func (s *MemoryIdentityService) ListJoinTokens() []JoinToken {
 	}
 	sortJoinTokens(tokens)
 	return tokens
+}
+
+func (s *MemoryIdentityService) EnrollNode(value string, node NodeIdentity) (NodeEnrollment, error) {
+	if err := validateNodeIdentity(node, s.clusterID); err != nil {
+		return NodeEnrollment{}, err
+	}
+	hash := tokenHash(strings.TrimSpace(value))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.validateJoinTokenLocked(hash, node.Role); err != nil {
+		return NodeEnrollment{}, err
+	}
+	if _, revoked := s.revoked[node.NodeID]; revoked {
+		return NodeEnrollment{}, fmt.Errorf("node %q is revoked", node.NodeID)
+	}
+	if _, exists := s.nodes[node.NodeID]; exists {
+		return NodeEnrollment{}, fmt.Errorf("node %q is already enrolled; revoke or rotate it before rejoining", node.NodeID)
+	}
+	token, err := s.consumeJoinTokenLocked(hash, node.Role)
+	if err != nil {
+		return NodeEnrollment{}, err
+	}
+	bundle, err := s.issueNodeCertificateBundleLocked(node)
+	if err != nil {
+		token.UsedCount--
+		return NodeEnrollment{}, err
+	}
+	now := s.clock.Now()
+	registration := NodeRegistration{
+		NodeID:            node.NodeID,
+		Role:              node.Role,
+		ClusterID:         node.ClusterID,
+		AdvertiseAddr:     node.AdvertiseAddr,
+		JoinedAt:          now,
+		CertificateSerial: bundle.Certificate.SerialNumber.String(),
+		CertificateExpiry: bundle.Certificate.NotAfter,
+	}
+	stored := registration
+	s.nodes[node.NodeID] = &stored
+	if err := s.saveStateLocked(); err != nil {
+		token.UsedCount--
+		delete(s.nodes, node.NodeID)
+		return NodeEnrollment{}, err
+	}
+	tokenView := *token
+	tokenView.Value = ""
+	tokenView.Hash = ""
+	return NodeEnrollment{
+		Node:   registration,
+		Bundle: bundle,
+		Token:  tokenView,
+		rollback: func() error {
+			return s.rollbackNodeEnrollment(node.NodeID, token.ID)
+		},
+	}, nil
+}
+
+func (s *MemoryIdentityService) EnrollNodeWithCSR(value string, node NodeIdentity, csrPEM []byte) (NodeEnrollment, error) {
+	if err := validateNodeIdentity(node, s.clusterID); err != nil {
+		return NodeEnrollment{}, err
+	}
+	csr, err := parseCertificateRequestPEM(csrPEM)
+	if err != nil {
+		return NodeEnrollment{}, err
+	}
+	hash := tokenHash(strings.TrimSpace(value))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.validateJoinTokenLocked(hash, node.Role); err != nil {
+		return NodeEnrollment{}, err
+	}
+	if _, revoked := s.revoked[node.NodeID]; revoked {
+		return NodeEnrollment{}, fmt.Errorf("node %q is revoked", node.NodeID)
+	}
+	if _, exists := s.nodes[node.NodeID]; exists {
+		return NodeEnrollment{}, fmt.Errorf("node %q is already enrolled; revoke or rotate it before rejoining", node.NodeID)
+	}
+	token, err := s.consumeJoinTokenLocked(hash, node.Role)
+	if err != nil {
+		return NodeEnrollment{}, err
+	}
+	bundle, err := s.issueNodeCertificateBundleForPublicKeyLocked(node, csr.PublicKey)
+	if err != nil {
+		token.UsedCount--
+		return NodeEnrollment{}, err
+	}
+	now := s.clock.Now()
+	registration := NodeRegistration{
+		NodeID:            node.NodeID,
+		Role:              node.Role,
+		ClusterID:         node.ClusterID,
+		AdvertiseAddr:     node.AdvertiseAddr,
+		JoinedAt:          now,
+		CertificateSerial: bundle.Certificate.SerialNumber.String(),
+		CertificateExpiry: bundle.Certificate.NotAfter,
+	}
+	stored := registration
+	s.nodes[node.NodeID] = &stored
+	if err := s.saveStateLocked(); err != nil {
+		token.UsedCount--
+		delete(s.nodes, node.NodeID)
+		return NodeEnrollment{}, err
+	}
+	tokenView := *token
+	tokenView.Value = ""
+	tokenView.Hash = ""
+	return NodeEnrollment{
+		Node:   registration,
+		Bundle: bundle,
+		Token:  tokenView,
+		rollback: func() error {
+			return s.rollbackNodeEnrollment(node.NodeID, token.ID)
+		},
+	}, nil
+}
+
+func (s *MemoryIdentityService) ListNodes() []NodeRegistration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	nodes := make([]NodeRegistration, 0, len(s.nodes))
+	for _, node := range s.nodes {
+		next := *node
+		if reason, ok := s.revoked[next.NodeID]; ok {
+			next.Revoked = true
+			next.RevokedReason = reason
+		}
+		nodes = append(nodes, next)
+	}
+	sortNodeRegistrations(nodes)
+	return nodes
+}
+
+func (e NodeEnrollment) Rollback() error {
+	if e.rollback != nil {
+		return e.rollback()
+	}
+	return nil
+}
+
+func (s *MemoryIdentityService) rollbackNodeEnrollment(nodeID string, tokenID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.nodes, nodeID)
+	if tokenID != "" {
+		if token, ok := s.tokens[tokenID]; ok && token.UsedCount > 0 {
+			token.UsedCount--
+		}
+	}
+	return s.saveStateLocked()
 }
 
 func (s *MemoryIdentityService) RevokeJoinToken(id string) error {
@@ -258,6 +424,36 @@ func (s *MemoryIdentityService) IssueNodeCertificateBundle(identity NodeIdentity
 	if err != nil {
 		return NodeCertificateBundle{}, err
 	}
+	bundle, err := s.issueNodeCertificateBundleForPublicKeyLocked(identity, &key.PublicKey)
+	if err != nil {
+		return NodeCertificateBundle{}, err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return NodeCertificateBundle{}, err
+	}
+	bundle.KeyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return bundle, nil
+}
+
+func (s *MemoryIdentityService) issueNodeCertificateBundleLocked(identity NodeIdentity) (NodeCertificateBundle, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return NodeCertificateBundle{}, err
+	}
+	bundle, err := s.issueNodeCertificateBundleForPublicKeyLocked(identity, &key.PublicKey)
+	if err != nil {
+		return NodeCertificateBundle{}, err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return NodeCertificateBundle{}, err
+	}
+	bundle.KeyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return bundle, nil
+}
+
+func (s *MemoryIdentityService) issueNodeCertificateBundleForPublicKeyLocked(identity NodeIdentity, publicKey any) (NodeCertificateBundle, error) {
 	now := s.clock.Now()
 	cert := &x509.Certificate{
 		SerialNumber: newSerial(),
@@ -279,7 +475,7 @@ func (s *MemoryIdentityService) IssueNodeCertificateBundle(identity NodeIdentity
 			cert.DNSNames = append(cert.DNSNames, host)
 		}
 	}
-	der, err := x509.CreateCertificate(rand.Reader, cert, s.caCert, &key.PublicKey, s.caKey)
+	der, err := x509.CreateCertificate(rand.Reader, cert, s.caCert, publicKey, s.caKey)
 	if err != nil {
 		return NodeCertificateBundle{}, err
 	}
@@ -287,14 +483,9 @@ func (s *MemoryIdentityService) IssueNodeCertificateBundle(identity NodeIdentity
 	if err != nil {
 		return NodeCertificateBundle{}, err
 	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return NodeCertificateBundle{}, err
-	}
 	return NodeCertificateBundle{
 		Certificate: parsed,
 		CertPEM:     pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-		KeyPEM:      pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
 		CAPEM:       pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: s.caDER}),
 	}, nil
 }
@@ -307,6 +498,10 @@ func (s *MemoryIdentityService) RevokeNode(nodeID string, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.revoked[nodeID] = strings.TrimSpace(reason)
+	if node, ok := s.nodes[nodeID]; ok {
+		node.Revoked = true
+		node.RevokedReason = strings.TrimSpace(reason)
+	}
 	return s.saveStateLocked()
 }
 
@@ -318,9 +513,10 @@ func (s *MemoryIdentityService) IsRevoked(nodeID string) bool {
 }
 
 type persistedState struct {
-	CA      persistedCA       `json:"ca"`
-	Tokens  []JoinToken       `json:"tokens"`
-	Revoked map[string]string `json:"revoked"`
+	CA      persistedCA        `json:"ca"`
+	Tokens  []JoinToken        `json:"tokens"`
+	Nodes   []NodeRegistration `json:"nodes"`
+	Revoked map[string]string  `json:"revoked"`
 }
 
 type persistedCA struct {
@@ -367,6 +563,14 @@ func (s *MemoryIdentityService) loadState() error {
 		}
 		s.tokens[token.ID] = &token
 	}
+	s.nodes = map[string]*NodeRegistration{}
+	for i := range state.Nodes {
+		node := state.Nodes[i]
+		if strings.TrimSpace(node.NodeID) == "" {
+			continue
+		}
+		s.nodes[node.NodeID] = &node
+	}
 	if state.Revoked == nil {
 		state.Revoked = map[string]string{}
 	}
@@ -381,6 +585,7 @@ func (s *MemoryIdentityService) saveStateLocked() error {
 	state := persistedState{
 		CA:      s.persistedCA(),
 		Tokens:  make([]JoinToken, 0, len(s.tokens)),
+		Nodes:   make([]NodeRegistration, 0, len(s.nodes)),
 		Revoked: map[string]string{},
 	}
 	for _, token := range s.tokens {
@@ -389,6 +594,15 @@ func (s *MemoryIdentityService) saveStateLocked() error {
 		state.Tokens = append(state.Tokens, next)
 	}
 	sortJoinTokens(state.Tokens)
+	for _, node := range s.nodes {
+		next := *node
+		if reason, ok := s.revoked[next.NodeID]; ok {
+			next.Revoked = true
+			next.RevokedReason = reason
+		}
+		state.Nodes = append(state.Nodes, next)
+	}
+	sortNodeRegistrations(state.Nodes)
 	for nodeID, reason := range s.revoked {
 		state.Revoked[nodeID] = reason
 	}
@@ -423,13 +637,24 @@ func (s *MemoryIdentityService) saveStateLocked() error {
 		_ = tmp.Close()
 		return fmt.Errorf("write cluster identity state temp file: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync cluster identity state temp file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close cluster identity state temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, s.statePath); err != nil {
 		return fmt.Errorf("replace cluster identity state: %w", err)
 	}
-	return os.Chmod(s.statePath, 0o600)
+	if err := os.Chmod(s.statePath, 0o600); err != nil {
+		return err
+	}
+	if dirHandle, err := os.Open(filepath.Dir(s.statePath)); err == nil {
+		_ = dirHandle.Sync()
+		_ = dirHandle.Close()
+	}
+	return nil
 }
 
 func (s *MemoryIdentityService) loadCAFromState(state persistedCA) error {
@@ -484,6 +709,46 @@ func sortJoinTokens(tokens []JoinToken) {
 	})
 }
 
+func sortNodeRegistrations(nodes []NodeRegistration) {
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].JoinedAt.Equal(nodes[j].JoinedAt) {
+			return nodes[i].NodeID < nodes[j].NodeID
+		}
+		return nodes[i].JoinedAt.Before(nodes[j].JoinedAt)
+	})
+}
+
+func (s *MemoryIdentityService) consumeJoinTokenLocked(hash string, expectedRole string) (*JoinToken, error) {
+	token, err := s.validateJoinTokenLocked(hash, expectedRole)
+	if err != nil {
+		return nil, err
+	}
+	token.UsedCount++
+	return token, nil
+}
+
+func (s *MemoryIdentityService) validateJoinTokenLocked(hash string, expectedRole string) (*JoinToken, error) {
+	for _, token := range s.tokens {
+		if token.Hash != hash {
+			continue
+		}
+		if token.Revoked {
+			return nil, fmt.Errorf("join token revoked")
+		}
+		if !s.clock.Now().Before(token.ExpiresAt) {
+			return nil, fmt.Errorf("join token expired")
+		}
+		if token.UsedCount >= token.MaxUses {
+			return nil, fmt.Errorf("join token already used")
+		}
+		if expectedRole != "" && token.Role != expectedRole {
+			return nil, fmt.Errorf("join token role %q cannot enroll %q node", token.Role, expectedRole)
+		}
+		return token, nil
+	}
+	return nil, fmt.Errorf("join token not found")
+}
+
 func enforcePOSIXPrivateMode() bool {
 	return runtime.GOOS != "windows"
 }
@@ -491,6 +756,9 @@ func enforcePOSIXPrivateMode() bool {
 func validateNodeIdentity(identity NodeIdentity, expectedClusterID string) error {
 	if strings.TrimSpace(identity.NodeID) == "" {
 		return fmt.Errorf("node id is required")
+	}
+	if !isSafeNodeID(identity.NodeID) {
+		return fmt.Errorf("node id may only contain letters, numbers, dot, underscore, and dash")
 	}
 	if identity.Role != "waf" && identity.Role != "monitor" {
 		return fmt.Errorf("role must be waf or monitor")
@@ -505,6 +773,37 @@ func validateNodeIdentity(identity NodeIdentity, expectedClusterID string) error
 		return fmt.Errorf("advertise addr invalid: %w", err)
 	}
 	return nil
+}
+
+func isSafeNodeID(value string) bool {
+	if len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func parseCertificateRequestPEM(raw []byte) (*x509.CertificateRequest, error) {
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		return nil, fmt.Errorf("csr must be PEM encoded CERTIFICATE REQUEST")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse csr: %w", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("csr signature invalid: %w", err)
+	}
+	if csr.PublicKey == nil {
+		return nil, fmt.Errorf("csr public key is required")
+	}
+	return csr, nil
 }
 
 func randomTokenValue() (string, error) {

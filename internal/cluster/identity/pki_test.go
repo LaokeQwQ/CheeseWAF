@@ -184,6 +184,96 @@ func TestJoinTokenStatePersistsWithoutRawToken(t *testing.T) {
 	}
 }
 
+func TestValidateJoinTokenDoesNotConsume(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ValidateJoinToken(token.Value, "waf"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ValidateJoinToken(token.Value, "waf"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ConsumeJoinToken(token.Value); err != nil {
+		t.Fatalf("validated token should still be usable: %v", err)
+	}
+	if err := svc.ValidateJoinToken(token.Value, "waf"); err == nil {
+		t.Fatal("used token should no longer validate")
+	}
+}
+
+func TestEnrollNodeConsumesRoleScopedTokenAndPersistsNode(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	statePath := filepath.Join(t.TempDir(), "identity.json")
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test", StatePath: statePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitorToken, err := svc.CreateJoinToken("monitor", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnrollNode(monitorToken.Value, NodeIdentity{
+		NodeID:        "waf-a",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "10.0.0.1:9444",
+	}); err == nil {
+		t.Fatal("role-scoped token must not enroll a different node role")
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := svc.EnrollNode(token.Value, NodeIdentity{
+		NodeID:        "waf-a",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "10.0.0.1:9444",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enrollment.Token.Value != "" || enrollment.Token.Hash != "" {
+		t.Fatalf("enrollment response must redact token: %+v", enrollment.Token)
+	}
+	if enrollment.Node.NodeID != "waf-a" || enrollment.Node.CertificateSerial == "" {
+		t.Fatalf("unexpected node registration: %+v", enrollment.Node)
+	}
+	if len(enrollment.Bundle.CertPEM) == 0 || len(enrollment.Bundle.KeyPEM) == 0 || len(enrollment.Bundle.CAPEM) == 0 {
+		t.Fatal("enrollment must return cert/key/ca material")
+	}
+	if _, err := svc.EnrollNode(token.Value, NodeIdentity{
+		NodeID:        "waf-b",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "10.0.0.2:9444",
+	}); err == nil {
+		t.Fatal("enrollment token must be one-time by default")
+	}
+	reloaded, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test", StatePath: statePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := reloaded.ListNodes()
+	if len(nodes) != 1 || nodes[0].NodeID != "waf-a" {
+		t.Fatalf("persisted nodes=%+v, want waf-a", nodes)
+	}
+	if err := reloaded.RevokeNode("waf-a", "rotated"); err != nil {
+		t.Fatal(err)
+	}
+	nodes = reloaded.ListNodes()
+	if len(nodes) != 1 || !nodes[0].Revoked || nodes[0].RevokedReason != "rotated" {
+		t.Fatalf("revoked node not reflected in list: %+v", nodes)
+	}
+}
+
 func TestIdentityStateRejectsWeakPermissions(t *testing.T) {
 	if !enforcePOSIXPrivateMode() {
 		t.Skip("POSIX mode bits are not reliable on this platform")

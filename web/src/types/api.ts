@@ -1004,6 +1004,45 @@ export type ClusterStatus = {
   protection_mode_reason?: string;
 };
 
+export type ClusterJoinToken = {
+  id: string;
+  value?: string;
+  role: 'waf' | 'monitor' | string;
+  expires_at: string;
+  max_uses: number;
+  used_count: number;
+  created_at: string;
+  revoked: boolean;
+};
+
+export type ClusterJoinTokenList = {
+  items: ClusterJoinToken[];
+  total: number;
+};
+
+export type ClusterJoinTokenCreateRequest = {
+  role: 'waf' | 'monitor' | string;
+  ttl: string;
+  max_uses: number;
+};
+
+export type ClusterNodeRegistration = {
+  node_id: string;
+  role: 'waf' | 'monitor' | string;
+  cluster_id: string;
+  advertise_addr: string;
+  joined_at: string;
+  certificate_serial: string;
+  certificate_expiry: string;
+  revoked: boolean;
+  revoked_reason?: string;
+};
+
+export type ClusterNodeList = {
+  items: ClusterNodeRegistration[];
+  total: number;
+};
+
 export type ClusterDeploymentRequest = {
   host: string;
   user: string;

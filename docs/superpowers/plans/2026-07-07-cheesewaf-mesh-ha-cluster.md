@@ -4,7 +4,7 @@
 
 **Goal:** Build CheeseWAF from default single-node operation into a product-grade, single-Go-binary Mesh HA cluster with built-in deployment, node coordination, data consistency, and production traffic scheduling.
 
-**Architecture:** CheeseWAF keeps standalone mode as the default. A standalone node can expand into a cluster through the Web console, CLI, or generated Ansible package. Cluster mode uses a declarative object model, mTLS node identity, one-time join tokens, built-in Raft by default, optional external etcd, local SQLite as cache/buffer, and a built-in production traffic scheduler.
+**Architecture:** CheeseWAF keeps standalone mode as the default. A standalone node can expand into a cluster through the Web console, CLI, or generated Ansible package. The target cluster mode will use a declarative object model, mTLS node identity, one-time join tokens, built-in Raft by default, optional external etcd, local SQLite as cache/buffer, and a built-in production traffic scheduler.
 
 **Tech Stack:** Go, cobra CLI, chi API handlers, YAML/JSON object manifests, SQLite local cache, built-in Raft/DCS module, optional etcd adapter, mTLS using Go crypto/tls, React/TypeScript Web console, Ansible package generation.
 
@@ -796,7 +796,7 @@ Add Chinese:
 ```ts
 cluster: {
   title: '集群',
-  subtitle: '从单机扩展到多节点高可用，支持部署、节点状态和配置同步。',
+  subtitle: '从单机扩展到多节点部署，查看节点状态，并逐步启用配置同步能力。',
   currentMode: '当前模式',
   standalone: '单机模式',
   configWrites: '配置变更',
@@ -1266,6 +1266,63 @@ git commit -m "feat: enforce cluster protection mode writes"
 
 ---
 
+## M4-0: Semantic Engine And AI Assistant Readiness Gate
+
+Production traffic scheduling must not start before the semantic engine, risk thresholding, and AI assistant support surfaces are ready enough to avoid spreading bad decisions across nodes.
+
+### Task 10.5: Tighten Semantic Risk Decisions Before Scheduling
+
+**Files:**
+- Modify: `internal/engine/semantic/*`
+- Modify: `internal/protection/level.go`
+- Modify: `internal/proxy/*`
+- Modify: `web/src/pages/Protection/ProtectionPage.tsx`
+- Modify: `docs/semantic-readiness.md`
+
+- [ ] **Step 1: Curate corpus and baselines**
+
+Use public cybersecurity datasets and project-local samples only after review. Do not blindly import records. Keep separate sets for:
+
+- realistic attacks
+- realistic benign traffic
+- known false-positive traps
+- evasions that must be challenge/log before block unless confidence is high
+
+- [ ] **Step 2: Preserve business-first false-positive policy**
+
+Default policy remains: low confidence should log/monitor or challenge, not block. It is acceptable to miss low-confidence traffic when blocking it would likely interrupt business traffic.
+
+- [ ] **Step 3: Tie semantic confidence to protection levels**
+
+Keep confidence and action thresholds attached to `off / low / smart / high / strict`:
+
+- `off`: no semantic blocking
+- `low`: block only near-certain critical attacks
+- `smart`: default low false-positive mode
+- `high`: lower threshold but still require semantic evidence
+- `strict`: strongest mode, still auditable and reversible
+
+- [ ] **Step 4: Add performance ceilings**
+
+Benchmark corpus scanning and enforce bounded decoding, candidate count, input length, allocation, and timeout ceilings.
+
+- [ ] **Step 5: Complete AI assistant readiness**
+
+The assistant must use a built-in WAF knowledge base, hardened system prompts, tool approval boundaries, long reasoning stream keepalive, and real-time single-event analysis traces. It must not expose hidden system prompts or dump tool internals into final answers.
+
+- [ ] **Step 6: Add WAF API token product surface**
+
+Add WAF settings for API token management, permission scope matrix, token lifecycle, audit records, and user help docs. API tokens must reuse RBAC and approval boundaries, not bypass them.
+
+- [ ] **Step 7: Run tests**
+
+```powershell
+go test ./internal/engine ./internal/engine/semantic ./internal/protection ./internal/proxy -run "Semantic|Confidence|Protection|Corpus" -count=1
+npm.cmd --prefix web run typecheck -- --pretty false
+```
+
+---
+
 ## M4: Production Traffic Scheduling And Rolling Upgrade
 
 ### Task 11: Add Built-In Traffic Scheduler
@@ -1461,9 +1518,9 @@ After implementation starts, keep these files in sync:
 
 M1 is implemented as the cluster foundation. The repository now contains disabled-by-default cluster configuration, validation that prevents unsafe HA claims, declarative object types, a standalone object store, `cluster status/init/export` CLI commands, cluster status/health API endpoints, and a Web console Cluster status page.
 
-M2 backend foundations are partially implemented. The repository now contains Ansible package generation, temporary SSH deployment checks/fixed actions, join token create/list/revoke API and CLI commands, hashed-at-rest one-time join tokens, persistent cluster CA state, and real node certificate bundles for later mTLS wiring. Deployment API responses do not include raw SSH credentials or join token hashes; SSH deployment uses Go's `x/crypto/ssh` and supports request-scoped one-time SSH password or one-time `private_key` content, does not persist credentials or expose them through argv/env, generated files, or temporary key files, does not allow arbitrary server-side key paths, no longer accepts arbitrary remote command strings, and has timeout/output limits.
+M2 backend and bootstrap foundations are partially implemented. The repository now contains Ansible package generation, temporary SSH deployment checks/fixed actions, join token create/list/revoke API and CLI commands, hashed-at-rest one-time join tokens, token-authenticated `/api/cluster/join`, `cheesewaf cluster join`, persistent cluster CA state, registered node metadata, node-local private key generation, CSR-based certificate signing, and real node certificates for later mTLS wiring. Deployment API responses do not include raw SSH credentials or join token hashes; SSH deployment uses Go's `x/crypto/ssh` and supports request-scoped one-time SSH password or one-time `private_key` content, does not persist credentials or expose them through argv/env, generated files, or temporary key files, does not allow arbitrary server-side key paths, no longer accepts arbitrary remote command strings, and has timeout/output limits.
 
-The current product still does not contain real cluster heartbeat, majority confirmation, monitor-node runtime, full node join runtime, Raft/etcd coordination, cluster object reconciliation, protection-mode write freezing, Web deployment wizard completion, production cluster traffic scheduling, or rolling upgrade. Those remain M3-M4 and follow-up M2 UI/runtime work and must not be described as available until implemented and verified.
+The current product still does not contain real cluster heartbeat, majority confirmation, monitor-node runtime, Raft/etcd coordination, cluster object reconciliation, protection-mode write freezing, Web deployment wizard completion, production cluster traffic scheduling, or rolling upgrade. Those remain M3-M4 and follow-up M2 UI/runtime work and must not be described as available until implemented and verified. Before M4 scheduling, semantic engine readiness, confidence/protection-level linkage, AI assistant knowledge/streaming, and WAF API token management must be treated as M4-0 gating work.
 
 M1 verification gates:
 

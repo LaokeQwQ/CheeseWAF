@@ -476,6 +476,18 @@ func validateCluster(cfg *Config) error {
 			return fmt.Errorf("cluster.interconnect.listen is invalid: %w", err)
 		}
 	}
+	if cfg.Cluster.Interconnect.MTLSRequired {
+		hasPartialMaterial := strings.TrimSpace(cfg.Cluster.Interconnect.CAFile) != "" ||
+			strings.TrimSpace(cfg.Cluster.Interconnect.CertFile) != "" ||
+			strings.TrimSpace(cfg.Cluster.Interconnect.KeyFile) != ""
+		if hasPartialMaterial {
+			if strings.TrimSpace(cfg.Cluster.Interconnect.CAFile) == "" ||
+				strings.TrimSpace(cfg.Cluster.Interconnect.CertFile) == "" ||
+				strings.TrimSpace(cfg.Cluster.Interconnect.KeyFile) == "" {
+				return fmt.Errorf("cluster.interconnect ca_file, cert_file and key_file must be set together")
+			}
+		}
+	}
 	wafNodes := 0
 	monitorNodes := 0
 	seen := map[string]struct{}{}

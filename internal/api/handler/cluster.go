@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -78,6 +80,127 @@ type clusterJoinTokenRequest struct {
 	Role    string `json:"role"`
 	TTL     string `json:"ttl"`
 	MaxUses int    `json:"max_uses"`
+}
+
+type clusterJoinRequest struct {
+	Token         string `json:"token"`
+	NodeID        string `json:"node_id"`
+	Role          string `json:"role"`
+	AdvertiseAddr string `json:"advertise_addr"`
+	Listen        string `json:"listen"`
+	CSR           string `json:"csr"`
+}
+
+type clusterJoinResponse struct {
+	ClusterID     string                      `json:"cluster_id"`
+	NodeID        string                      `json:"node_id"`
+	Role          string                      `json:"role"`
+	AdvertiseAddr string                      `json:"advertise_addr"`
+	Listen        string                      `json:"listen"`
+	Interconnect  configInterconnectBootstrap `json:"interconnect"`
+	Certificates  clusterJoinCertificates     `json:"certificates"`
+	Node          identity.NodeRegistration   `json:"node"`
+}
+
+type configInterconnectBootstrap struct {
+	Listen        string `json:"listen"`
+	AdvertiseAddr string `json:"advertise_addr"`
+	MTLSRequired  bool   `json:"mtls_required"`
+	CAFile        string `json:"ca_file,omitempty"`
+	CertFile      string `json:"cert_file,omitempty"`
+	KeyFile       string `json:"key_file,omitempty"`
+}
+
+type clusterJoinCertificates struct {
+	CA   string `json:"ca"`
+	Cert string `json:"cert"`
+	Key  string `json:"key"`
+}
+
+func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
+	var req clusterJoinRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.Token = strings.TrimSpace(req.Token)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	req.Role = strings.TrimSpace(req.Role)
+	req.AdvertiseAddr = strings.TrimSpace(req.AdvertiseAddr)
+	req.Listen = strings.TrimSpace(req.Listen)
+	req.CSR = strings.TrimSpace(req.CSR)
+	if req.Token == "" {
+		writeError(w, http.StatusBadRequest, "CLUSTER_JOIN_INVALID", "join token is required")
+		return
+	}
+	if req.CSR == "" {
+		writeError(w, http.StatusBadRequest, "CLUSTER_JOIN_INVALID", "node csr is required")
+		return
+	}
+	if req.Listen == "" {
+		req.Listen = req.AdvertiseAddr
+	}
+	clusterID := "cheesewaf-local"
+	if h.Config != nil && strings.TrimSpace(h.Config.Cluster.ClusterID) != "" {
+		clusterID = h.Config.Cluster.ClusterID
+	}
+	svc, err := h.clusterIdentityService()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "CLUSTER_IDENTITY_UNAVAILABLE", err.Error())
+		return
+	}
+	if err := svc.ValidateJoinToken(req.Token, req.Role); err != nil {
+		writeClusterJoinRejected(w)
+		return
+	}
+	pendingNode := identity.NodeRegistration{
+		NodeID:        req.NodeID,
+		Role:          req.Role,
+		ClusterID:     clusterID,
+		AdvertiseAddr: req.AdvertiseAddr,
+	}
+	if err := h.validateJoinedClusterNodeConfig(pendingNode); err != nil {
+		writeError(w, http.StatusBadRequest, "CLUSTER_JOIN_INVALID", err.Error())
+		return
+	}
+	enrollment, err := svc.EnrollNodeWithCSR(req.Token, identity.NodeIdentity{
+		NodeID:        req.NodeID,
+		Role:          req.Role,
+		ClusterID:     clusterID,
+		AdvertiseAddr: req.AdvertiseAddr,
+	}, []byte(req.CSR))
+	if err != nil {
+		writeClusterJoinRejected(w)
+		return
+	}
+	if err := h.recordJoinedClusterNode(enrollment.Node); err != nil {
+		if rollbackErr := enrollment.Rollback(); rollbackErr != nil {
+			err = fmt.Errorf("%w; enrollment rollback failed: %v", err, rollbackErr)
+		}
+		writeError(w, http.StatusInternalServerError, "CLUSTER_JOIN_CONFIG_SAVE_FAILED", err.Error())
+		return
+	}
+	resp := clusterJoinResponse{
+		ClusterID:     clusterID,
+		NodeID:        enrollment.Node.NodeID,
+		Role:          enrollment.Node.Role,
+		AdvertiseAddr: enrollment.Node.AdvertiseAddr,
+		Listen:        req.Listen,
+		Interconnect: configInterconnectBootstrap{
+			Listen:        req.Listen,
+			AdvertiseAddr: enrollment.Node.AdvertiseAddr,
+			MTLSRequired:  true,
+		},
+		Certificates: clusterJoinCertificates{
+			CA:   string(enrollment.Bundle.CAPEM),
+			Cert: string(enrollment.Bundle.CertPEM),
+		},
+		Node: enrollment.Node,
+	}
+	writeData(w, resp)
+}
+
+func writeClusterJoinRejected(w http.ResponseWriter) {
+	writeError(w, http.StatusUnauthorized, "CLUSTER_JOIN_REJECTED", "invalid join token or join request")
 }
 
 func (h *Handler) ClusterCreateJoinToken(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +293,16 @@ func clusterJoinTokenViewFromToken(token identity.JoinToken) clusterJoinTokenVie
 	}
 }
 
+func (h *Handler) ClusterListNodes(w http.ResponseWriter, r *http.Request) {
+	svc, err := h.clusterIdentityService()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "CLUSTER_IDENTITY_UNAVAILABLE", err.Error())
+		return
+	}
+	nodes := svc.ListNodes()
+	writeData(w, map[string]any{"items": nodes, "total": len(nodes)})
+}
+
 func (h *Handler) ClusterRevokeNode(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(chi.URLParam(r, "id"))
 	if id == "" {
@@ -190,6 +323,64 @@ func (h *Handler) ClusterRevokeNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, map[string]any{"revoked": true, "id": id})
+}
+
+func (h *Handler) recordJoinedClusterNode(node identity.NodeRegistration) error {
+	if h == nil || h.Config == nil {
+		return nil
+	}
+	h.configMutationMu.Lock()
+	defer h.configMutationMu.Unlock()
+	next, err := h.joinedClusterNodeConfig(node)
+	if err != nil {
+		return err
+	}
+	previous := h.Config
+	h.Config = next
+	if err := h.persistConfigLocked(); err != nil {
+		h.Config = previous
+		return err
+	}
+	return nil
+}
+
+func (h *Handler) validateJoinedClusterNodeConfig(node identity.NodeRegistration) error {
+	if h == nil || h.Config == nil {
+		return nil
+	}
+	_, err := h.joinedClusterNodeConfig(node)
+	return err
+}
+
+func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*config.Config, error) {
+	if h == nil || h.Config == nil {
+		return nil, nil
+	}
+	next := *h.Config
+	next.Deployment.Mode = "cluster"
+	next.Cluster.Enabled = true
+	if strings.TrimSpace(next.Cluster.ClusterID) == "" {
+		next.Cluster.ClusterID = node.ClusterID
+	}
+	if strings.TrimSpace(next.Cluster.HAMode) == "" {
+		next.Cluster.HAMode = "single-node"
+	}
+	next.Cluster.Interconnect.MTLSRequired = true
+	for idx := range next.Cluster.Nodes {
+		if next.Cluster.Nodes[idx].ID != node.NodeID {
+			continue
+		}
+		return nil, fmt.Errorf("cluster node %q already exists; revoke or rotate it before rejoining", node.NodeID)
+	}
+	next.Cluster.Nodes = append(next.Cluster.Nodes, config.ClusterNodeConfig{
+		ID:            node.NodeID,
+		Role:          node.Role,
+		AdvertiseAddr: node.AdvertiseAddr,
+	})
+	if err := config.Validate(&next); err != nil {
+		return nil, err
+	}
+	return &next, nil
 }
 
 func (h *Handler) clusterIdentityService() (*identity.MemoryIdentityService, error) {

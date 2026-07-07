@@ -1,5 +1,5 @@
 ﻿import axios, { type AxiosResponse } from 'axios';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterDeploymentCheckResult, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterStatus, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterDeploymentCheckResult, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeList, ClusterStatus, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -282,6 +282,22 @@ export function fetchMonitorSummary() {
 
 export function fetchClusterStatus() {
   return unwrap<ClusterStatus>(apiClient.get('/cluster/status'));
+}
+
+export function fetchClusterJoinTokens() {
+  return unwrap<ClusterJoinTokenList>(apiClient.get('/cluster/join-tokens'));
+}
+
+export function createClusterJoinToken(payload: ClusterJoinTokenCreateRequest) {
+  return unwrap<ClusterJoinTokenList['items'][number]>(apiClient.post('/cluster/join-tokens', payload));
+}
+
+export function revokeClusterJoinToken(id: string) {
+  return unwrap<{ revoked: boolean; id: string }>(apiClient.delete(`/cluster/join-tokens/${encodeURIComponent(id)}`));
+}
+
+export function fetchClusterNodes() {
+  return unwrap<ClusterNodeList>(apiClient.get('/cluster/nodes'));
 }
 
 export function checkClusterDeployment(payload: ClusterDeploymentRequest) {

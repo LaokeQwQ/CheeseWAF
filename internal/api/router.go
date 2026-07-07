@@ -65,6 +65,7 @@ func NewRouter(opts Options) http.Handler {
 		r.Post("/auth/captcha/verify", h.VerifyLoginCAPTCHA)
 		r.Post("/auth/login", h.Login)
 		r.Post("/setup", h.Setup)
+		r.Post("/cluster/join", h.ClusterJoin)
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
@@ -91,6 +92,7 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:system")).Get("/version", h.Version)
 			r.With(require("read:system")).Get("/system", h.System)
 			r.With(require("read:cluster")).Get("/cluster/status", h.ClusterStatus)
+			r.With(require("read:cluster")).Get("/cluster/nodes", h.ClusterListNodes)
 			r.With(require("write:cluster")).Post("/cluster/deploy/ansible", h.ClusterAnsiblePackage)
 			r.With(require("write:cluster")).Post("/cluster/deploy/check", h.ClusterDeployCheck)
 			r.With(require("write:cluster")).Post("/cluster/deploy/run", h.ClusterDeployRun)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -362,7 +363,94 @@ func Save(path string, cfg *Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	return os.WriteFile(path, contents, 0o640)
+	return writeFileAtomic(path, contents, 0o640)
+}
+
+func writeFileAtomic(path string, contents []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return fmt.Errorf("config path %s is a directory", path)
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat config path: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp config: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp config: %w", err)
+	}
+	if _, err := tmp.Write(contents); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	backupName := ""
+	if runtime.GOOS == "windows" {
+		var err error
+		backupName, err = moveExistingFileAside(path, dir)
+		if err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		if backupName != "" {
+			_ = os.Rename(backupName, path)
+		}
+		return fmt.Errorf("replace config: %w", err)
+	}
+	cleanup = false
+	if backupName != "" {
+		_ = os.Remove(backupName)
+	}
+	if dirHandle, err := os.Open(dir); err == nil {
+		_ = dirHandle.Sync()
+		_ = dirHandle.Close()
+	}
+	return nil
+}
+
+func moveExistingFileAside(path, dir string) (string, error) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("stat existing config: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("config path %s is a directory", path)
+	}
+	backup, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.bak")
+	if err != nil {
+		return "", fmt.Errorf("create config backup placeholder: %w", err)
+	}
+	backupName := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(backupName)
+		return "", fmt.Errorf("close config backup placeholder: %w", err)
+	}
+	if err := os.Remove(backupName); err != nil {
+		return "", fmt.Errorf("remove config backup placeholder: %w", err)
+	}
+	if err := os.Rename(path, backupName); err != nil {
+		return "", fmt.Errorf("move existing config aside: %w", err)
+	}
+	return backupName, nil
 }
 
 func Watch(ctx context.Context, path string, interval time.Duration, onChange func(*Config)) error {

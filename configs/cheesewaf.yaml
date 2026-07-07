@@ -41,6 +41,9 @@ cluster:
     listen: "127.0.0.1:9444"
     advertise_addr: ""
     mtls_required: true
+    ca_file: ""
+    cert_file: ""
+    key_file: ""
   consensus:
     provider: "builtin"
     etcd_endpoints: []

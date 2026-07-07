@@ -53,6 +53,9 @@ type InterconnectConfig struct {
 	Listen        string `yaml:"listen" json:"listen"`
 	AdvertiseAddr string `yaml:"advertise_addr" json:"advertise_addr"`
 	MTLSRequired  bool   `yaml:"mtls_required" json:"mtls_required"`
+	CAFile        string `yaml:"ca_file" json:"ca_file"`
+	CertFile      string `yaml:"cert_file" json:"cert_file"`
+	KeyFile       string `yaml:"key_file" json:"key_file"`
 }
 
 type ConsensusConfig struct {

@@ -3,11 +3,17 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -171,8 +177,241 @@ func TestClusterJoinTokenAPIDefaultServicePersistsUnderDataDir(t *testing.T) {
 	}
 }
 
+func TestClusterJoinEnrollsNodeAndDoesNotLeakToken(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "cheesewaf.yaml")
+	cfg := config.Default()
+	cfg.Setup.DataDir = filepath.Join(root, "data")
+	cfg.Storage.SQLite.Path = filepath.Join(root, "data", "cheesewaf.db")
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.ClusterID = "cw-test"
+	cfg.Cluster.NodeID = "waf-controller"
+	cfg.Cluster.Interconnect.Listen = "127.0.0.1:9444"
+	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{{
+		ID:            "waf-controller",
+		Role:          "waf",
+		AdvertiseAddr: "127.0.0.1:9444",
+	}}
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{
+		Clock:     identity.NewFakeClock(time.Unix(1000, 0)),
+		ClusterID: "cw-test",
+		StatePath: filepath.Join(cfg.Setup.DataDir, "cluster", "identity.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := identitySvc.CreateJoinToken("waf", 15*time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrPEM := testNodeCSR(t, "waf-b")
+	h := New(Options{Config: &cfg, ConfigPath: configPath, ClusterIdentity: identitySvc})
+	body := strings.NewReader(`{"token":"` + token.Value + `","node_id":"waf-b","role":"waf","advertise_addr":"10.0.0.2:9444","listen":"0.0.0.0:9444","csr":` + strconv.Quote(string(csrPEM)) + `}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster/join", body)
+	rec := httptest.NewRecorder()
+	h.ClusterJoin(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), token.Value) {
+		t.Fatal("join response must not echo raw join token")
+	}
+	var envelope struct {
+		Data struct {
+			ClusterID    string `json:"cluster_id"`
+			NodeID       string `json:"node_id"`
+			Certificates struct {
+				CA   string `json:"ca"`
+				Cert string `json:"cert"`
+				Key  string `json:"key"`
+			} `json:"certificates"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.ClusterID != "cw-test" || envelope.Data.NodeID != "waf-b" {
+		t.Fatalf("unexpected join response: %+v", envelope.Data)
+	}
+	if envelope.Data.Certificates.CA == "" || envelope.Data.Certificates.Cert == "" {
+		t.Fatal("join response must include CA and certificate material")
+	}
+	if envelope.Data.Certificates.Key != "" {
+		t.Fatal("join response must not include node private key; the node generates it locally")
+	}
+	if err := identitySvc.ConsumeJoinToken(token.Value); err == nil {
+		t.Fatal("join token must be consumed by enrollment")
+	}
+	reloaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, node := range reloaded.Cluster.Nodes {
+		if node.ID == "waf-b" && node.AdvertiseAddr == "10.0.0.2:9444" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("joined node was not persisted to controller config: %+v", reloaded.Cluster.Nodes)
+	}
+}
+
+func TestClusterJoinRejectedDoesNotExposeTokenState(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Setup.DataDir = filepath.Join(root, "data")
+	cfg.Storage.SQLite.Path = filepath.Join(root, "data", "cheesewaf.db")
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.ClusterID = "cw-test"
+	cfg.Cluster.NodeID = "waf-controller"
+	cfg.Cluster.Interconnect.Listen = "127.0.0.1:9444"
+	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{
+		Clock:     identity.NewFakeClock(time.Unix(1000, 0)),
+		ClusterID: "cw-test",
+		StatePath: filepath.Join(cfg.Setup.DataDir, "cluster", "identity.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := identitySvc.CreateJoinToken("monitor", 15*time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrPEM := testNodeCSR(t, "waf-b")
+	h := New(Options{Config: &cfg, ConfigPath: filepath.Join(root, "cheesewaf.yaml"), ClusterIdentity: identitySvc})
+	body := strings.NewReader(`{"token":"` + token.Value + `","node_id":"waf-b","role":"waf","advertise_addr":"10.0.0.2:9444","csr":` + strconv.Quote(string(csrPEM)) + `}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster/join", body)
+	rec := httptest.NewRecorder()
+	h.ClusterJoin(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	bodyText := rec.Body.String()
+	for _, leaked := range []string{"monitor", "waf", "role", "expired", "revoked", "already used", "not found"} {
+		if strings.Contains(bodyText, leaked) {
+			t.Fatalf("join rejection leaked token state %q in body: %s", leaked, bodyText)
+		}
+	}
+	if !strings.Contains(bodyText, "invalid join token or join request") {
+		t.Fatalf("expected generic rejection message, got %s", bodyText)
+	}
+}
+
+func TestClusterJoinRejectsDuplicateNodeBeforeConsumingToken(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "cheesewaf.yaml")
+	cfg := config.Default()
+	cfg.Setup.DataDir = filepath.Join(root, "data")
+	cfg.Storage.SQLite.Path = filepath.Join(root, "data", "cheesewaf.db")
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.ClusterID = "cw-test"
+	cfg.Cluster.NodeID = "waf-controller"
+	cfg.Cluster.Interconnect.Listen = "127.0.0.1:9444"
+	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{{
+		ID:            "waf-b",
+		Role:          "waf",
+		AdvertiseAddr: "10.0.0.2:9444",
+	}}
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{
+		Clock:     identity.NewFakeClock(time.Unix(1000, 0)),
+		ClusterID: "cw-test",
+		StatePath: filepath.Join(cfg.Setup.DataDir, "cluster", "identity.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := identitySvc.CreateJoinToken("waf", 15*time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrPEM := testNodeCSR(t, "waf-b")
+	h := New(Options{Config: &cfg, ConfigPath: configPath, ClusterIdentity: identitySvc})
+	body := strings.NewReader(`{"token":"` + token.Value + `","node_id":"waf-b","role":"waf","advertise_addr":"10.0.0.2:9444","csr":` + strconv.Quote(string(csrPEM)) + `}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster/join", body)
+	rec := httptest.NewRecorder()
+	h.ClusterJoin(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := identitySvc.ConsumeJoinToken(token.Value); err != nil {
+		t.Fatalf("duplicate node preflight must not consume token: %v", err)
+	}
+}
+
+func TestClusterJoinRollsBackEnrollmentWhenConfigSaveFails(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config-is-directory")
+	if err := os.Mkdir(configPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Setup.DataDir = filepath.Join(root, "data")
+	cfg.Storage.SQLite.Path = filepath.Join(root, "data", "cheesewaf.db")
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.ClusterID = "cw-test"
+	cfg.Cluster.NodeID = "waf-controller"
+	cfg.Cluster.Interconnect.Listen = "127.0.0.1:9444"
+	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{
+		Clock:     identity.NewFakeClock(time.Unix(1000, 0)),
+		ClusterID: "cw-test",
+		StatePath: filepath.Join(cfg.Setup.DataDir, "cluster", "identity.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := identitySvc.CreateJoinToken("waf", 15*time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrPEM := testNodeCSR(t, "waf-b")
+	h := New(Options{Config: &cfg, ConfigPath: configPath, ClusterIdentity: identitySvc})
+	body := strings.NewReader(`{"token":"` + token.Value + `","node_id":"waf-b","role":"waf","advertise_addr":"10.0.0.2:9444","csr":` + strconv.Quote(string(csrPEM)) + `}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster/join", body)
+	rec := httptest.NewRecorder()
+	h.ClusterJoin(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if nodes := identitySvc.ListNodes(); len(nodes) != 0 {
+		t.Fatalf("failed join must roll back node registration: %+v", nodes)
+	}
+	if err := identitySvc.ConsumeJoinToken(token.Value); err != nil {
+		t.Fatalf("failed join must roll back token usage: %v", err)
+	}
+}
+
 func ptrClusterConfig(cfg config.Config) *config.Config {
 	return &cfg
+}
+
+func testNodeCSR(t *testing.T, nodeID string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		DNSNames: []string{nodeID},
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw})
 }
 
 func withURLParam(req *http.Request, key, value string) *http.Request {

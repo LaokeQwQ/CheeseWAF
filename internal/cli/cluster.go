@@ -21,6 +21,7 @@ func newClusterCommand() *cobra.Command {
 	}
 	cmd.AddCommand(newClusterStatusCommand())
 	cmd.AddCommand(newClusterInitCommand())
+	cmd.AddCommand(newClusterJoinCommand())
 	cmd.AddCommand(newClusterExportCommand())
 	cmd.AddCommand(newClusterTokenCommand())
 	cmd.AddCommand(&cobra.Command{

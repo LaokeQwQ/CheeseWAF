@@ -39,6 +39,7 @@ type Handler struct {
 	loginCAPTCHASecretMu sync.Mutex
 	loginCAPTCHASecret   string
 	clusterIdentityMu    sync.Mutex
+	configMutationMu     sync.Mutex
 	StartedAt            time.Time
 	geoipMu              sync.Mutex
 	geoipCacheKey        string
