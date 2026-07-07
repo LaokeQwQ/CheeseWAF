@@ -71,7 +71,7 @@ Use product wording in UI and docs:
 - Create: `internal/cluster/deploy/ansible.go`
   - Generates an Ansible package from inventory and cluster choices.
 - Create: `internal/cluster/deploy/ssh.go`
-  - Temporary SSH deployment runner with no long-term credential persistence by default.
+  - Temporary Go SSH deployment runner using request-scoped one-time SSH password or one-time `private_key` content, with no credential persistence and no argv/env credential exposure.
 - Create: `internal/cluster/identity/pki.go`
   - Cluster CA, join token signing, node certificate issuance, rotation, and revocation.
 - Create: `internal/cluster/health/health.go`
@@ -927,7 +927,7 @@ type SSHRunner interface {
 }
 ```
 
-Use `exec.CommandContext` to call system `ssh` only after validating host, user, port, and fixed action arguments. Do not shell-concatenate user-controlled strings. Password login remains unsupported in this temporary runner; use SSH agent or one-time `private_key` content, which is materialized into a temporary `0600` key file and cleaned up after the request.
+Use Go's `x/crypto/ssh` instead of spawning system `ssh`. Validate host, user, port, and fixed action arguments before connecting. Support only request-scoped one-time SSH password and one-time `private_key` content. Do not persist credentials, do not accept arbitrary server-side key paths, do not write private keys to temporary files, and do not pass secrets through argv or environment variables. The runner must not accept arbitrary remote command strings; it only executes fixed deployment actions, with timeout and output limits.
 
 - [x] **Step 3: Add API endpoint**
 
@@ -1440,7 +1440,7 @@ node tmp/full-ui-regression.cjs
 For deployment work, verify at least:
 
 - Generated Ansible package contains no raw SSH password or private key.
-- Temporary SSH mode clears credentials after task completion.
+- Temporary SSH mode keeps one-time password/private_key credentials request-scoped in memory and never persists them or exposes them through argv/env.
 - Cluster API returns `423 Locked` for mutating operations in protection mode.
 - `/health/live`, `/health/ready`, and `/health/cluster` return distinct and correct meanings.
 - Two-node mode never displays as full HA.
@@ -1461,7 +1461,7 @@ After implementation starts, keep these files in sync:
 
 M1 is implemented as the cluster foundation. The repository now contains disabled-by-default cluster configuration, validation that prevents unsafe HA claims, declarative object types, a standalone object store, `cluster status/init/export` CLI commands, cluster status/health API endpoints, and a Web console Cluster status page.
 
-M2 backend foundations are partially implemented. The repository now contains Ansible package generation, temporary SSH deployment checks/fixed actions, join token create/list/revoke API and CLI commands, hashed-at-rest one-time join tokens, persistent cluster CA state, and real node certificate bundles for later mTLS wiring. Deployment API responses do not include raw SSH credentials or join token hashes; SSH deployment supports SSH agent/one-time private key content, does not persist credentials, does not allow arbitrary server-side key paths, no longer accepts arbitrary remote command strings, and has timeout/output limits.
+M2 backend foundations are partially implemented. The repository now contains Ansible package generation, temporary SSH deployment checks/fixed actions, join token create/list/revoke API and CLI commands, hashed-at-rest one-time join tokens, persistent cluster CA state, and real node certificate bundles for later mTLS wiring. Deployment API responses do not include raw SSH credentials or join token hashes; SSH deployment uses Go's `x/crypto/ssh` and supports request-scoped one-time SSH password or one-time `private_key` content, does not persist credentials or expose them through argv/env, generated files, or temporary key files, does not allow arbitrary server-side key paths, no longer accepts arbitrary remote command strings, and has timeout/output limits.
 
 The current product still does not contain real cluster heartbeat, majority confirmation, monitor-node runtime, full node join runtime, Raft/etcd coordination, cluster object reconciliation, protection-mode write freezing, Web deployment wizard completion, production cluster traffic scheduling, or rolling upgrade. Those remain M3-M4 and follow-up M2 UI/runtime work and must not be described as available until implemented and verified.
 

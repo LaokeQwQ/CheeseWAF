@@ -25,7 +25,7 @@ M1 is implemented as the cluster foundation:
 M2 backend foundations are now partially implemented:
 
 - Ansible deployment package generation with no raw SSH password, private key, API token, or join token in generated files.
-- Temporary SSH deployment checks and fixed deployment actions from the management API. The runner supports SSH agent / one-time private key content, does not persist credentials, does not allow API callers to borrow arbitrary server-side key paths, does not accept arbitrary remote command strings, uses a timeout, and limits returned output.
+- Temporary SSH deployment checks and fixed deployment actions from the management API. The runner uses Go's `x/crypto/ssh` and supports request-scoped one-time SSH password or one-time `private_key` content. It does not persist credentials or pass them through argv, environment variables, generated files, or temporary key files. It does not allow API callers to borrow arbitrary server-side key paths, does not accept arbitrary remote command strings, uses a timeout, and limits returned output.
 - One-time join token creation, listing, and revocation through API and CLI. Token values are shown only once; persisted state stores hashes, not raw token values.
 - Cluster identity state with a persistent cluster CA and real node certificate bundles suitable for later mTLS wiring.
 

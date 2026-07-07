@@ -3,10 +3,19 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func TestSSHDeploymentDoesNotPersistCredentialsByDefault(t *testing.T) {
@@ -16,12 +25,16 @@ func TestSSHDeploymentDoesNotPersistCredentialsByDefault(t *testing.T) {
 		Host:           "192.0.2.10",
 		User:           "root",
 		Port:           22,
+		Password:       "secret",
 		SaveCredential: false,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if runner.StoredCredentialCount() != 0 {
 		t.Fatal("temporary SSH deployment must not persist credentials")
+	}
+	if rec.Contains("secret") {
+		t.Fatal("password must not appear in audit records")
 	}
 	if !rec.Contains("ssh_deploy.prepare") {
 		t.Fatal("deployment must be audited")
@@ -48,50 +61,100 @@ func TestSSHRunnerBuildsSafeArgumentVector(t *testing.T) {
 	}
 }
 
-func TestSSHRunnerSupportsEphemeralPrivateKeyContent(t *testing.T) {
+func TestSSHRunnerPasswordAuthExecutesFixedCheck(t *testing.T) {
+	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "ok\n"})
 	rec := NewMemoryAuditRecorder()
-	runner := NewSSHRunner(SSHRunnerOptions{Audit: rec})
-	key := "-----BEGIN OPENSSH PRIVATE KEY-----\nunit-test-key\n-----END OPENSSH PRIVATE KEY-----"
-	prepared, cleanup, err := runner.prepareRequest(context.Background(), SSHDeploymentRequest{
-		Host:       "192.0.2.10",
-		User:       "root",
-		Port:       2222,
-		PrivateKey: key,
-		Action:     "check",
+	runner := NewSSHRunner(SSHRunnerOptions{Audit: rec, Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
+	result, err := runner.Check(context.Background(), SSHDeploymentRequest{
+		Host:          server.host,
+		User:          "root",
+		Port:          server.port,
+		Password:      "secret",
+		HostKeySHA256: ssh.FingerprintSHA256(server.hostKey.PublicKey()),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.PrivateKey != "" {
-		t.Fatal("prepared request must not keep raw private key content")
+	if !result.OK || result.Message != "ok" {
+		t.Fatalf("check result=%+v", result)
 	}
-	if prepared.identityFile == "" {
-		t.Fatal("prepared request should point ssh at a temporary identity file")
+	if strings.Contains(strings.Join(result.Command, " "), "secret") || rec.Contains("secret") {
+		t.Fatal("password must not appear in command preview or audit records")
 	}
-	raw, err := os.ReadFile(prepared.identityFile)
+	if server.lastCommand() != "true" {
+		t.Fatalf("command=%q, want true", server.lastCommand())
+	}
+}
+
+func TestSSHRunnerPrivateKeyAuthExecutesFixedDeploy(t *testing.T) {
+	clientKey, privateKeyPEM := generateSSHPrivateKey(t)
+	server := startTestSSHServer(t, testSSHServerOptions{AuthorizedKey: clientKey.PublicKey(), Output: "CheeseWAF dev\n"})
+	rec := NewMemoryAuditRecorder()
+	tmp := t.TempDir()
+	runner := NewSSHRunner(SSHRunnerOptions{Audit: rec, Timeout: 5 * time.Second, KnownHosts: filepath.Join(tmp, "known_hosts")})
+	result, err := runner.Deploy(context.Background(), SSHDeploymentRequest{
+		Host:          server.host,
+		User:          "root",
+		Port:          server.port,
+		PrivateKey:    privateKeyPEM,
+		HostKeySHA256: ssh.FingerprintSHA256(server.hostKey.PublicKey()),
+		Action:        "install",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != key {
-		t.Fatal("temporary identity file did not contain provided key")
+	if !result.OK || strings.TrimSpace(result.Output) != "CheeseWAF dev" {
+		t.Fatalf("deploy result=%+v", result)
 	}
-	args, err := runner.BuildSSHArgs(prepared)
-	if err != nil {
+	if containsCheeseWAFTempKey(t, tmp) {
+		t.Fatal("private key flow must not create temporary ssh key files")
+	}
+	if rec.Contains(privateKeyPEM) {
+		t.Fatal("private key content must not appear in audit records")
+	}
+	if server.lastCommand() != "cheesewaf --version" {
+		t.Fatalf("command=%q, want cheesewaf --version", server.lastCommand())
+	}
+}
+
+func TestSSHRunnerRejectsHostKeyMismatch(t *testing.T) {
+	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "ok\n"})
+	otherKey, _ := generateSSHPrivateKey(t)
+	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
+	_, err := runner.Check(context.Background(), SSHDeploymentRequest{
+		Host:          server.host,
+		User:          "root",
+		Port:          server.port,
+		Password:      "secret",
+		HostKeySHA256: ssh.FingerprintSHA256(otherKey.PublicKey()),
+	})
+	if err == nil {
+		t.Fatal("host key mismatch must fail")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatal("error must not expose password")
+	}
+}
+
+func TestSSHRunnerRejectsKnownHostsChangedKey(t *testing.T) {
+	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "ok\n"})
+	otherKey, _ := generateSSHPrivateKey(t)
+	knownHosts := filepath.Join(t.TempDir(), "known_hosts")
+	if err := appendKnownHost(knownHosts, []string{net.JoinHostPort(server.host, strconv.Itoa(server.port))}, otherKey.PublicKey()); err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "unit-test-key") || rec.Contains("unit-test-key") {
-		t.Fatal("private key content must not appear in argv or audit records")
+	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, KnownHosts: knownHosts})
+	_, err := runner.Check(context.Background(), SSHDeploymentRequest{
+		Host:     server.host,
+		User:     "root",
+		Port:     server.port,
+		Password: "secret",
+	})
+	if err == nil {
+		t.Fatal("changed known_hosts key must fail")
 	}
-	redacted := redactedSSHArgs(args)
-	if strings.Contains(strings.Join(redacted, " "), prepared.identityFile) {
-		t.Fatal("redacted ssh args must not expose temporary identity file path")
-	}
-	if cleanup != nil {
-		cleanup()
-	}
-	if _, err := os.Stat(prepared.identityFile); !os.IsNotExist(err) {
-		t.Fatalf("temporary identity file should be removed, stat err=%v", err)
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatal("error must not expose password")
 	}
 }
 
@@ -104,25 +167,7 @@ func TestSSHRunnerRejectsExternalIdentityFilePath(t *testing.T) {
 	req := SSHDeploymentRequest{Host: "192.0.2.10", User: "root", Port: 22, Action: "check"}
 	req.identityFile = keyPath
 	if _, err := runner.BuildSSHArgs(req); err == nil {
-		t.Fatal("external identity file path must not be accepted unless prepared from private_key")
-	}
-}
-
-func TestSSHRunnerRejectsSymlinkIdentityFile(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "id_real")
-	link := filepath.Join(dir, "id_link")
-	if err := os.WriteFile(target, []byte("key"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
-	}
-	runner := NewSSHRunner(SSHRunnerOptions{})
-	req := SSHDeploymentRequest{Host: "192.0.2.10", User: "root", Port: 22, Action: "check"}
-	req.identityFile = link
-	if _, err := runner.BuildSSHArgs(req); err == nil {
-		t.Fatal("symlink identity file must be rejected")
+		t.Fatal("external identity file path must not be accepted")
 	}
 }
 
@@ -133,7 +178,7 @@ func TestSSHRunnerRejectsUnsafeHostAndCommand(t *testing.T) {
 		{Host: "192.0.2.10", User: "root;id", Port: 22},
 		{Host: "192.0.2.10", User: "root", Port: 70000},
 		{Host: "192.0.2.10", User: "root", Port: 22, Action: "echo ok; rm -rf /"},
-		{Host: "192.0.2.10", User: "root", Port: 22, Password: "secret"},
+		{Host: "192.0.2.10", User: "root", Port: 22, Password: "secret", PrivateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\ninvalid\n-----END OPENSSH PRIVATE KEY-----"},
 		{Host: "192.0.2.10", User: "root", Port: 22, SaveCredential: true},
 	} {
 		if _, err := runner.BuildSSHArgs(req); err == nil {
@@ -153,6 +198,25 @@ func TestSSHRunnerDeployRequiresExplicitFixedAction(t *testing.T) {
 	}
 }
 
+func TestSSHRunnerOutputLimit(t *testing.T) {
+	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "abcdef"})
+	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, OutputLimit: 4, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
+	result, err := runner.Deploy(context.Background(), SSHDeploymentRequest{
+		Host:          server.host,
+		User:          "root",
+		Port:          server.port,
+		Password:      "secret",
+		HostKeySHA256: ssh.FingerprintSHA256(server.hostKey.PublicKey()),
+		Action:        "install",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "abcd" || !result.OutputTruncated {
+		t.Fatalf("output=%q truncated=%v", result.Output, result.OutputTruncated)
+	}
+}
+
 func TestSSHRunnerOutputLimitWriter(t *testing.T) {
 	var buf bytes.Buffer
 	w := &limitWriter{w: &buf, limit: 4}
@@ -169,4 +233,136 @@ func TestSSHRunnerOutputLimitWriter(t *testing.T) {
 	if !w.Truncated() {
 		t.Fatal("writer should report truncation")
 	}
+}
+
+type testSSHServerOptions struct {
+	Password      string
+	AuthorizedKey ssh.PublicKey
+	Output        string
+}
+
+type testSSHServer struct {
+	host    string
+	port    int
+	hostKey ssh.Signer
+	command chan string
+}
+
+func (s *testSSHServer) lastCommand() string {
+	select {
+	case command := <-s.command:
+		return command
+	default:
+		return ""
+	}
+}
+
+func startTestSSHServer(t *testing.T, opts testSSHServerOptions) *testSSHServer {
+	t.Helper()
+	hostKey, _ := generateSSHPrivateKey(t)
+	config := &ssh.ServerConfig{
+		PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			if conn.User() == "root" && opts.Password != "" && string(password) == opts.Password {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unauthorized")
+		},
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if conn.User() == "root" && opts.AuthorizedKey != nil && bytes.Equal(key.Marshal(), opts.AuthorizedKey.Marshal()) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unauthorized")
+		},
+	}
+	config.AddHostKey(hostKey)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	server := &testSSHServer{
+		host:    "127.0.0.1",
+		port:    listener.Addr().(*net.TCPAddr).Port,
+		hostKey: hostKey,
+		command: make(chan string, 4),
+	}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go handleTestSSHConn(conn, config, opts.Output, server.command)
+		}
+	}()
+	return server
+}
+
+func handleTestSSHConn(conn net.Conn, config *ssh.ServerConfig, output string, commands chan<- string) {
+	sshConn, chans, reqs, err := ssh.NewServerConn(conn, config)
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	defer sshConn.Close()
+	go ssh.DiscardRequests(reqs)
+	for ch := range chans {
+		if ch.ChannelType() != "session" {
+			_ = ch.Reject(ssh.UnknownChannelType, "session only")
+			continue
+		}
+		channel, requests, err := ch.Accept()
+		if err != nil {
+			continue
+		}
+		go func() {
+			defer channel.Close()
+			for req := range requests {
+				switch req.Type {
+				case "exec":
+					var payload struct {
+						Command string
+					}
+					if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+						_ = req.Reply(false, nil)
+						continue
+					}
+					commands <- payload.Command
+					_ = req.Reply(true, nil)
+					_, _ = channel.Write([]byte(output))
+					_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+					return
+				default:
+					_ = req.Reply(false, nil)
+				}
+			}
+		}()
+	}
+}
+
+func generateSSHPrivateKey(t *testing.T) (ssh.Signer, string) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKey(privateKey, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes := pem.EncodeToMemory(block)
+	signer, err := ssh.ParsePrivateKey(pemBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer, string(pemBytes)
+}
+
+func containsCheeseWAFTempKey(t *testing.T, dir string) bool {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "cheesewaf-ssh-key-*.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(matches) > 0
 }

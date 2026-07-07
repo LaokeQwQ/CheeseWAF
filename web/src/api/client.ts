@@ -1,5 +1,5 @@
 ﻿import axios, { type AxiosResponse } from 'axios';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterStatus, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterDeploymentCheckResult, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterStatus, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -282,6 +282,14 @@ export function fetchMonitorSummary() {
 
 export function fetchClusterStatus() {
   return unwrap<ClusterStatus>(apiClient.get('/cluster/status'));
+}
+
+export function checkClusterDeployment(payload: ClusterDeploymentRequest) {
+  return unwrap<ClusterDeploymentCheckResult>(apiClient.post('/cluster/deploy/check', payload, { timeout: 60_000 }));
+}
+
+export function runClusterDeployment(payload: ClusterDeploymentRequest) {
+  return unwrap<ClusterDeploymentRunResult>(apiClient.post('/cluster/deploy/run', payload, { timeout: 180_000 }));
 }
 
 export function fetchAPISecEndpoints() {

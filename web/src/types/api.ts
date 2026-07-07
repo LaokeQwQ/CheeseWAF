@@ -1004,6 +1004,35 @@ export type ClusterStatus = {
   protection_mode_reason?: string;
 };
 
+export type ClusterDeploymentRequest = {
+  host: string;
+  user: string;
+  port: number;
+  password?: string;
+  private_key?: string;
+  host_key_sha256?: string;
+  action?: 'check' | 'install' | 'restart-service' | string;
+};
+
+export type ClusterDeploymentCheckResult = {
+  ok: boolean;
+  host: string;
+  user: string;
+  port: number;
+  command: string[];
+  message?: string;
+  checked_at: string;
+};
+
+export type ClusterDeploymentRunResult = {
+  ok: boolean;
+  host: string;
+  started_at: string;
+  finished_at: string;
+  output?: string;
+  output_truncated?: boolean;
+};
+
 export type Alert = {
   rule_id: string;
   name: string;

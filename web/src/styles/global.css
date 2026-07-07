@@ -12832,6 +12832,11 @@ code {
   border-radius: 8px;
 }
 
+.cluster-deploy-card {
+  margin-top: 16px;
+  border-radius: 8px;
+}
+
 .cluster-card-head {
   min-width: 0;
   display: grid;
@@ -12839,6 +12844,10 @@ code {
   gap: 12px;
   align-items: start;
   margin-bottom: 16px;
+}
+
+.cluster-card-head-compact {
+  grid-template-columns: 40px minmax(0, 1fr);
 }
 
 .cluster-card-head h5 {
@@ -12926,6 +12935,100 @@ code {
   line-height: 1.55;
 }
 
+.cluster-deploy-form {
+  min-width: 0;
+}
+
+.cluster-deploy-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(140px, 0.7fr) minmax(120px, 0.5fr) minmax(220px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.cluster-deploy-form .arco-form-item {
+  margin-bottom: 14px;
+}
+
+.cluster-deploy-secrets {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(320px, 1.25fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.cluster-deploy-form .arco-input,
+.cluster-deploy-form .arco-input-inner-wrapper,
+.cluster-deploy-form .arco-input-number,
+.cluster-deploy-form .arco-select-view {
+  border-radius: 8px;
+}
+
+.cluster-deploy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.cluster-deploy-actions .arco-btn,
+.cluster-deploy-actions .arco-button {
+  min-height: 36px;
+  border-radius: 8px;
+}
+
+.cluster-deploy-results {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.cluster-result-note {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+
+.cluster-result-note-ok {
+  border-color: color-mix(in srgb, var(--accent-success) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-success) 9%, var(--surface));
+}
+
+.cluster-result-note-error {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+}
+
+.cluster-result-note strong {
+  color: var(--text);
+}
+
+.cluster-result-note span,
+.cluster-result-note small {
+  color: var(--text-muted);
+}
+
+.cluster-result-note code,
+.cluster-result-note pre {
+  max-width: 100%;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @media (max-width: 900px) {
   .cluster-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -12943,6 +13046,14 @@ code {
   .cluster-status-main,
   .cluster-node-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cluster-deploy-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cluster-deploy-secrets {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .cluster-empty-action {
@@ -12969,6 +13080,19 @@ code {
   .cluster-status-main,
   .cluster-node-summary {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cluster-deploy-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cluster-deploy-secrets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cluster-deploy-actions .arco-btn,
+  .cluster-deploy-actions .arco-button {
+    flex: 1 1 100%;
   }
 }
 
