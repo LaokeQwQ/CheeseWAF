@@ -53,6 +53,9 @@ func NewRouter(opts Options) http.Handler {
 	}
 
 	r.Get("/health", h.Health)
+	r.Get("/health/live", h.Health)
+	r.Get("/health/ready", h.Health)
+	r.Get("/health/cluster", h.ClusterHealth)
 	if opts.Config.Monitor.Prometheus.Enabled && opts.Config.Monitor.Prometheus.Public {
 		r.Get(opts.Config.Monitor.Prometheus.Path, h.Metrics)
 	}
@@ -87,6 +90,7 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:audit")).Get("/audit", h.AuditEntries)
 			r.With(require("read:system")).Get("/version", h.Version)
 			r.With(require("read:system")).Get("/system", h.System)
+			r.With(require("read:cluster")).Get("/cluster/status", h.ClusterStatus)
 			r.With(require("read:system")).Get("/system/map/china-boundary", h.ChinaMapBoundary)
 			r.With(require("read:system")).Get("/system/map/china-boundary/{adcode}", h.ChinaMapBoundaryByCode)
 			r.With(require("write:system")).Put("/system", h.UpdateSystem)

@@ -10,9 +10,11 @@ import (
 )
 
 type Config struct {
+	Deployment    DeploymentConfig    `yaml:"deployment" json:"deployment"`
 	Server        ServerConfig        `yaml:"server" json:"server"`
 	TLS           TLSConfig           `yaml:"tls" json:"tls"`
 	Setup         SetupConfig         `yaml:"setup" json:"setup"`
+	Cluster       ClusterConfig       `yaml:"cluster" json:"cluster"`
 	Console       ConsoleConfig       `yaml:"console" json:"console"`
 	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
 	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
@@ -30,6 +32,51 @@ type Config struct {
 }
 
 const MaxBlockPageHTMLBytes = 512 * 1024
+
+type DeploymentConfig struct {
+	Mode string `yaml:"mode" json:"mode"`
+}
+
+type ClusterConfig struct {
+	Enabled      bool                    `yaml:"enabled" json:"enabled"`
+	ClusterID    string                  `yaml:"cluster_id" json:"cluster_id"`
+	NodeID       string                  `yaml:"node_id" json:"node_id"`
+	HAMode       string                  `yaml:"ha_mode" json:"ha_mode"`
+	Interconnect InterconnectConfig      `yaml:"interconnect" json:"interconnect"`
+	Consensus    ConsensusConfig         `yaml:"consensus" json:"consensus"`
+	Join         JoinConfig              `yaml:"join" json:"join"`
+	Nodes        []ClusterNodeConfig     `yaml:"nodes" json:"nodes"`
+	Protection   ClusterProtectionConfig `yaml:"protection" json:"protection"`
+}
+
+type InterconnectConfig struct {
+	Listen        string `yaml:"listen" json:"listen"`
+	AdvertiseAddr string `yaml:"advertise_addr" json:"advertise_addr"`
+	MTLSRequired  bool   `yaml:"mtls_required" json:"mtls_required"`
+}
+
+type ConsensusConfig struct {
+	Provider      string   `yaml:"provider" json:"provider"`
+	EtcdEndpoints []string `yaml:"etcd_endpoints" json:"etcd_endpoints"`
+}
+
+type JoinConfig struct {
+	RequireApproval bool          `yaml:"require_approval" json:"require_approval"`
+	TokenTTL        time.Duration `yaml:"token_ttl" json:"token_ttl"`
+}
+
+type ClusterNodeConfig struct {
+	ID            string `yaml:"id" json:"id"`
+	Role          string `yaml:"role" json:"role"`
+	AdvertiseAddr string `yaml:"advertise_addr" json:"advertise_addr"`
+	Region        string `yaml:"region" json:"region"`
+	Datacenter    string `yaml:"datacenter" json:"datacenter"`
+}
+
+type ClusterProtectionConfig struct {
+	FreezeWritesWithoutMajority  bool `yaml:"freeze_writes_without_majority" json:"freeze_writes_without_majority"`
+	AllowTrafficInProtectionMode bool `yaml:"allow_traffic_in_protection_mode" json:"allow_traffic_in_protection_mode"`
+}
 
 type BlockPageConfig struct {
 	TemplateID    string `yaml:"template_id" json:"template_id"`

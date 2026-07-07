@@ -988,6 +988,22 @@ export type HealthStatus = {
   uptime_seconds: number;
 };
 
+export type ClusterStatus = {
+  mode: 'standalone' | 'single-node' | 'dual-node-load-balancing' | 'minimum-ha' | 'multi-node-ha' | string;
+  enabled: boolean;
+  cluster_id?: string;
+  node_id?: string;
+  product_mode_label: string;
+  can_write_config: boolean;
+  can_receive_traffic: boolean;
+  majority_confirmed: boolean;
+  node_count: number;
+  waf_node_count: number;
+  monitor_node_count: number;
+  consensus_provider: string;
+  protection_mode_reason?: string;
+};
+
 export type Alert = {
   rule_id: string;
   name: string;

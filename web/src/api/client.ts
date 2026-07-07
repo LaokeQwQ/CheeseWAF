@@ -1,5 +1,5 @@
 ﻿import axios, { type AxiosResponse } from 'axios';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterStatus, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -278,6 +278,10 @@ export async function fetchLogEvent(reference: string) {
 
 export function fetchMonitorSummary() {
   return unwrap<MonitorSummary>(apiClient.get('/monitor'));
+}
+
+export function fetchClusterStatus() {
+  return unwrap<ClusterStatus>(apiClient.get('/cluster/status'));
 }
 
 export function fetchAPISecEndpoints() {

@@ -9629,6 +9629,7 @@ code {
   .edge-settings-grid,
   .monitor-grid,
   .users-grid,
+  .cluster-grid,
   .api-security-grid,
   .ops-grid {
     grid-template-columns: 1fr;
@@ -12817,6 +12818,158 @@ code {
 
 .page-header .attack-map-toolbar {
   align-self: center;
+}
+
+.cluster-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.cluster-status-card {
+  min-width: 0;
+  border-radius: 8px;
+}
+
+.cluster-card-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+
+.cluster-card-head h5 {
+  margin: 0 0 4px;
+  color: var(--text);
+}
+
+.cluster-card-head p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.cluster-icon {
+  width: 40px;
+  height: 40px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 8px;
+}
+
+.cluster-icon-safe {
+  color: var(--accent-success);
+  background: color-mix(in srgb, var(--accent-success) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-success) 24%, var(--border));
+}
+
+.cluster-status-main,
+.cluster-node-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cluster-status-main > div,
+.cluster-node-summary > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.cluster-status-main span,
+.cluster-node-summary span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.cluster-status-main strong,
+.cluster-node-summary strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.cluster-protection-note,
+.cluster-empty-action {
+  margin-top: 14px;
+  padding: 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-warning) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent-warning) 28%, var(--border));
+  border-radius: 8px;
+}
+
+.cluster-empty-action {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  background: color-mix(in srgb, var(--surface-soft) 82%, var(--surface));
+  border-color: var(--border);
+}
+
+.cluster-empty-action p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+@media (max-width: 900px) {
+  .cluster-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cluster-card-head {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  .cluster-card-head .arco-tag {
+    grid-column: 1 / -1;
+    justify-self: flex-start;
+  }
+
+  .cluster-status-main,
+  .cluster-node-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cluster-empty-action {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .cluster-empty-action .arco-btn,
+  .cluster-empty-action .arco-button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .cluster-page .page-header {
+    align-items: flex-start;
+  }
+
+  .cluster-page .page-header .arco-btn,
+  .cluster-page .page-header .arco-button {
+    width: 100%;
+  }
+
+  .cluster-status-main,
+  .cluster-node-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .page-surface .panel,

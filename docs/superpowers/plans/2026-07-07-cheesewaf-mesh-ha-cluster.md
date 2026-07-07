@@ -1452,6 +1452,19 @@ After implementation starts, keep these files in sync:
 - `docs/cluster-ha.md`: public cluster design guide.
 - `README.md` / `README_CN.md`: only add user-facing status when a milestone is actually implemented.
 
-## Current Non-Implementation Status
+## Current Implementation Status
 
-This document is a plan only. The current product still runs as a single-node WAF. The repository does not yet contain real cluster heartbeat, majority confirmation, monitor-node runtime, Raft/etcd coordination, cluster object reconciliation, or production cluster traffic scheduling.
+M1 is implemented as the cluster foundation. The repository now contains disabled-by-default cluster configuration, validation that prevents unsafe HA claims, declarative object types, a standalone object store, `cluster status/init/export` CLI commands, cluster status/health API endpoints, and a Web console Cluster status page.
+
+The current product still does not contain real cluster heartbeat, majority confirmation, monitor-node runtime, join-token consumption, node certificate issuance, Raft/etcd coordination, cluster object reconciliation, or production cluster traffic scheduling. Those remain M2-M4 work and must not be described as available until implemented and verified.
+
+M1 verification gates:
+
+```powershell
+go test ./internal/config ./internal/cluster/... ./internal/api/handler ./internal/cli -run "Cluster|Standalone" -count=1
+go test ./internal/cli -run Cluster -count=1
+go test ./cmd/... ./internal/... -count=1
+npm.cmd --prefix web run typecheck -- --pretty false
+npm.cmd --prefix web run build
+git diff --check
+```

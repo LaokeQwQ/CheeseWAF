@@ -15,6 +15,7 @@ const AdminSessionTTL = 24 * time.Hour
 
 func Default() Config {
 	return Config{
+		Deployment: DeploymentConfig{Mode: "standalone"},
 		Server: ServerConfig{
 			Listen:       ":8080",
 			ListenTLS:    "",
@@ -35,6 +36,23 @@ func Default() Config {
 			DataDir:         "./data",
 			RuntimeDir:      "./data/run",
 			ThreeEndUnified: true,
+		},
+		Cluster: ClusterConfig{
+			Enabled: false,
+			HAMode:  "single-node",
+			Interconnect: InterconnectConfig{
+				Listen:       "127.0.0.1:9444",
+				MTLSRequired: true,
+			},
+			Consensus: ConsensusConfig{Provider: "builtin"},
+			Join: JoinConfig{
+				RequireApproval: true,
+				TokenTTL:        15 * time.Minute,
+			},
+			Protection: ClusterProtectionConfig{
+				FreezeWritesWithoutMajority:  true,
+				AllowTrafficInProtectionMode: true,
+			},
 		},
 		Console: ConsoleConfig{
 			Login: ConsoleLoginConfig{
@@ -293,7 +311,7 @@ func Default() Config {
 			Auth:       APIAuthConfig{Enabled: false, JWKSRefresh: time.Hour},
 			Permissions: map[string][]string{
 				"admin":    []string{"*"},
-				"readonly": []string{"read:*"},
+				"readonly": []string{"read:*", "read:cluster"},
 			},
 			Audit: AuditConfig{Enabled: true, Path: "./logs/audit.log"},
 		},
@@ -377,6 +395,9 @@ func Watch(ctx context.Context, path string, interval time.Duration, onChange fu
 
 func applyDefaults(cfg *Config) {
 	def := Default()
+	if cfg.Deployment.Mode == "" {
+		cfg.Deployment.Mode = def.Deployment.Mode
+	}
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = def.Server.Listen
 	}
@@ -400,6 +421,18 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Setup.RuntimeDir == "" {
 		cfg.Setup.RuntimeDir = filepath.Join(cfg.Setup.DataDir, "run")
+	}
+	if cfg.Cluster.HAMode == "" {
+		cfg.Cluster.HAMode = def.Cluster.HAMode
+	}
+	if cfg.Cluster.Interconnect.Listen == "" {
+		cfg.Cluster.Interconnect.Listen = def.Cluster.Interconnect.Listen
+	}
+	if cfg.Cluster.Consensus.Provider == "" {
+		cfg.Cluster.Consensus.Provider = def.Cluster.Consensus.Provider
+	}
+	if cfg.Cluster.Join.TokenTTL == 0 {
+		cfg.Cluster.Join.TokenTTL = def.Cluster.Join.TokenTTL
 	}
 	if cfg.Console.Login.CAPTCHA.MaxNumber == 0 {
 		cfg.Console.Login.CAPTCHA.MaxNumber = def.Console.Login.CAPTCHA.MaxNumber
