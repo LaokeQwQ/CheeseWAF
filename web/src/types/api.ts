@@ -1103,7 +1103,7 @@ export type ClusterDeploymentRequest = {
   password?: string;
   private_key?: string;
   host_key_sha256?: string;
-  action?: 'check' | 'install' | 'restart-service' | string;
+  action?: 'check' | 'install' | 'rollback-install' | 'restart-service' | string;
 };
 
 export type ClusterAnsibleHost = {
@@ -1168,7 +1168,7 @@ export type ClusterDeploymentCompensationResult = {
 
 export type ClusterDeploymentTask = {
   id: string;
-  action: 'check' | 'install' | 'restart-service' | string;
+  action: 'check' | 'install' | 'rollback-install' | 'restart-service' | string;
   host: string;
   user: string;
   port: number;
