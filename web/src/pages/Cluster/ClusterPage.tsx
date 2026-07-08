@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconfirm, Select, Spin, Table, Tag, Typography } from '@arco-design/web-react';
+import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconfirm, Radio, Select, Spin, Steps, Table, Tag, Typography } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, KeyRound, Network, Play, RotateCcw, ShieldCheck } from 'lucide-react';
+import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask } from '../../api/client';
-import type { ClusterAuditEntry, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse } from '../../types/api';
+import { createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask } from '../../api/client';
+import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse } from '../../types/api';
 
 type ClusterDeployForm = {
   host?: string;
@@ -14,6 +14,11 @@ type ClusterDeployForm = {
   privateKey?: string;
   hostKeySHA256?: string;
   action?: string;
+};
+
+type ClusterAnsibleForm = {
+  clusterId?: string;
+  channel?: string;
 };
 
 type ClusterTokenForm = {
@@ -32,14 +37,28 @@ type ClusterCertificateForm = {
   csr?: string;
 };
 
+type DeployMethod = 'ansible' | 'ssh';
+type DeployAuthMethod = 'agent' | 'password' | 'private_key';
+type DeployHostKeyMode = 'known_hosts' | 'fingerprint';
+
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 export default function ClusterPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [form] = Form.useForm<ClusterDeployForm>();
+  const [ansibleForm] = Form.useForm<ClusterAnsibleForm>();
   const [tokenForm] = Form.useForm<ClusterTokenForm>();
   const [certificateForm] = Form.useForm<ClusterCertificateForm>();
+  const [deployMethod, setDeployMethod] = useState<DeployMethod>('ansible');
+  const [deployWizardStep, setDeployWizardStep] = useState(0);
+  const [deployAuthMethod, setDeployAuthMethod] = useState<DeployAuthMethod>('agent');
+  const [deployHostKeyMode, setDeployHostKeyMode] = useState<DeployHostKeyMode>('known_hosts');
+  const [ansibleNodes, setAnsibleNodes] = useState<ClusterAnsibleHost[]>([
+    { name: 'waf-a', address: '', role: 'waf', ssh_port: 22 },
+  ]);
+  const [ansiblePackage, setAnsiblePackage] = useState<ClusterAnsiblePackage | null>(null);
+  const [selectedAnsibleFile, setSelectedAnsibleFile] = useState('README.md');
   const [activeDeployTaskId, setActiveDeployTaskId] = useState<string | null>(null);
   const [submittedDeployTask, setSubmittedDeployTask] = useState<ClusterDeploymentTask | null>(null);
   const [latestToken, setLatestToken] = useState<ClusterJoinToken | null>(null);
@@ -121,6 +140,7 @@ export default function ClusterPage() {
     onSuccess: (task) => {
       setActiveDeployTaskId(task.id);
       setSubmittedDeployTask(task);
+      setDeployWizardStep((current) => Math.max(current, 3));
       clearDeploySecrets(form);
       void queryClient.invalidateQueries({ queryKey: ['cluster-deploy-tasks'] });
       void queryClient.invalidateQueries({ queryKey: ['cluster-status'] });
@@ -129,6 +149,34 @@ export default function ClusterPage() {
     onError: (error) => {
       clearDeploySecrets(form);
       ArcoMessage.error(error.message);
+    },
+  });
+  const ansiblePackageMutation = useMutation({
+    mutationFn: () => {
+      const values = ansibleForm.getFieldsValue();
+      const normalizedNodes = normalizeAnsibleNodes(ansibleNodes);
+      if (!normalizedNodes.length) {
+        throw new Error(t('cluster.deployWizardAnsibleNodeRequired'));
+      }
+      const invalidNode = normalizedNodes.find((node) => !node.name || !node.address || !node.role || !node.ssh_port);
+      if (invalidNode) {
+        throw new Error(t('cluster.deployWizardAnsibleNodeInvalid'));
+      }
+      return generateClusterAnsiblePackage({
+        cluster_id: String(values.clusterId || 'cheesewaf-mesh').trim(),
+        channel: String(values.channel || 'canary').trim(),
+        nodes: normalizedNodes,
+      });
+    },
+    onSuccess: (pkg) => {
+      setAnsiblePackage(pkg);
+      const files = Object.keys(pkg.files || {}).sort();
+      setSelectedAnsibleFile(files.includes('README.md') ? 'README.md' : files[0] || '');
+      setDeployWizardStep(3);
+      ArcoMessage.success(t('cluster.deployWizardAnsibleGenerated'));
+    },
+    onError: (error) => {
+      ArcoMessage.error(errorMessage(error));
     },
   });
   const rotateCertificateMutation = useMutation({
@@ -173,25 +221,67 @@ export default function ClusterPage() {
     };
     const password = String(values.password || '').trim();
     const privateKey = String(values.privateKey || '').trim();
-    if (password && privateKey) {
-      ArcoMessage.warning(t('cluster.deployCredentialConflict'));
+    if (deployAuthMethod === 'password' && !password) {
+      ArcoMessage.warning(t('cluster.deployPasswordRequired'));
       return;
     }
-    if (password) {
+    if (deployAuthMethod === 'private_key' && !privateKey) {
+      ArcoMessage.warning(t('cluster.deployPrivateKeyRequired'));
+      return;
+    }
+    if (deployAuthMethod === 'password' && password) {
       payload.password = password;
     }
-    if (privateKey) {
+    if (deployAuthMethod === 'private_key' && privateKey) {
       payload.private_key = privateKey;
     }
     const hostKeySHA256 = String(values.hostKeySHA256 || '').trim();
-    if (hostKeySHA256) {
+    if (deployHostKeyMode === 'fingerprint' && !hostKeySHA256) {
+      ArcoMessage.warning(t('cluster.deployHostKeyRequired'));
+      return;
+    }
+    if (deployHostKeyMode === 'fingerprint' && hostKeySHA256) {
       payload.host_key_sha256 = hostKeySHA256;
     }
     if (mode === 'check') {
+      setDeployWizardStep(2);
       deployTaskMutation.mutate(payload);
     } else {
+      if (!activeDeployTask || activeDeployTask.action !== 'check' || activeDeployTask.status !== 'succeeded') {
+        ArcoMessage.warning(t('cluster.deployWizardPrecheckRequired'));
+        return;
+      }
+      setDeployWizardStep(3);
       deployTaskMutation.mutate(payload);
     }
+  };
+
+  const addAnsibleNode = () => {
+    setAnsibleNodes((items) => [
+      ...items,
+      { name: `waf-${items.length + 1}`, address: '', role: 'waf', ssh_port: 22 },
+    ]);
+  };
+
+  const updateAnsibleNode = (index: number, patch: Partial<ClusterAnsibleHost>) => {
+    setAnsibleNodes((items) => items.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
+  };
+
+  const removeAnsibleNode = (index: number) => {
+    setAnsibleNodes((items) => (items.length <= 1 ? items : items.filter((_, itemIndex) => itemIndex !== index)));
+  };
+
+  const resetDeploymentWizard = () => {
+    form.resetFields();
+    ansibleForm.resetFields();
+    setDeployWizardStep(0);
+    setDeployMethod('ansible');
+    setDeployAuthMethod('agent');
+    setDeployHostKeyMode('known_hosts');
+    setActiveDeployTaskId(null);
+    setSubmittedDeployTask(null);
+    setAnsiblePackage(null);
+    setSelectedAnsibleFile('README.md');
   };
 
   const submitCertificateSigning = async () => {
@@ -278,7 +368,9 @@ export default function ClusterPage() {
               {!data.enabled && (
                 <div className="cluster-empty-action">
                   <p>{t('cluster.singleNodeHint')}</p>
-                  <Button disabled>{t('cluster.fullWizardPending')}</Button>
+                  <Button onClick={() => document.getElementById('cluster-deploy-wizard')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+                    {t('cluster.fullWizardPending')}
+                  </Button>
                 </div>
               )}
             </Card>
@@ -530,137 +622,245 @@ export default function ClusterPage() {
           </div>
         </Card>
 
-        <Card className="cluster-deploy-card">
+        <Card id="cluster-deploy-wizard" className="cluster-deploy-card">
           <div className="cluster-card-head cluster-card-head-compact">
-            <span className="cluster-icon"><KeyRound size={18} /></span>
+            <span className="cluster-icon"><PackageCheck size={18} /></span>
             <div>
-              <Typography.Title heading={5}>{t('cluster.deployTitle')}</Typography.Title>
-              <Typography.Paragraph>{t('cluster.deployHint')}</Typography.Paragraph>
+              <Typography.Title heading={5}>{t('cluster.deployWizardTitle')}</Typography.Title>
+              <Typography.Paragraph>{t('cluster.deployWizardHint')}</Typography.Paragraph>
             </div>
           </div>
-          <Form
-            form={form}
-            layout="vertical"
-            initialValues={{ user: 'root', port: 22, action: 'install' }}
-            className="cluster-deploy-form"
-          >
-            <div className="cluster-deploy-fields">
-              <Form.Item
-                label={t('cluster.deployHost')}
-                field="host"
-                rules={[{ required: true, message: t('cluster.deployHostRequired') }]}
-              >
-                <Input placeholder="192.168.6.249" allowClear />
-              </Form.Item>
-              <Form.Item
-                label={t('cluster.deployUser')}
-                field="user"
-                rules={[{ required: true, message: t('cluster.deployUserRequired') }]}
-              >
-                <Input placeholder="root" allowClear />
-              </Form.Item>
-              <Form.Item
-                label={t('cluster.deployPort')}
-                field="port"
-                rules={[{ required: true, message: t('cluster.deployPortRequired') }]}
-              >
-                <InputNumber min={1} max={65535} precision={0} />
-              </Form.Item>
-              <Form.Item label={t('cluster.deployAction')} field="action">
-                <Select>
-                  <Select.Option value="install">{t('cluster.deployActionInstall')}</Select.Option>
-                  <Select.Option value="restart-service">{t('cluster.deployActionRestart')}</Select.Option>
-                </Select>
-              </Form.Item>
-            </div>
-            <div className="cluster-deploy-secrets">
-              <Form.Item label={t('cluster.deployPassword')} field="password" extra={t('cluster.deployPasswordHint')}>
-                <Input.Password placeholder={t('cluster.deployPasswordPlaceholder')} autoComplete="new-password" allowClear />
-              </Form.Item>
-              <Form.Item label={t('cluster.deployPrivateKey')} field="privateKey" extra={t('cluster.deployPrivateKeyHint')}>
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />
-              </Form.Item>
-            </div>
-            <Form.Item label={t('cluster.deployHostKey')} field="hostKeySHA256" extra={t('cluster.deployHostKeyHint')}>
-              <Input placeholder="SHA256:..." allowClear />
-            </Form.Item>
-            <div className="cluster-deploy-actions">
-              <Button
-                icon={<ShieldCheck size={16} />}
-                loading={deployTaskMutation.isPending}
-                disabled={deployTaskMutation.isPending}
-                onClick={() => void submitDeployment('check')}
-              >
-                {t('cluster.deployCheck')}
-              </Button>
-              <Button
-                type="primary"
-                icon={<Play size={16} />}
-                loading={deployTaskMutation.isPending}
-                disabled={deployTaskMutation.isPending}
-                onClick={() => void submitDeployment('run')}
-              >
-                {t('cluster.deployRun')}
-              </Button>
-              <Button
-                icon={<RotateCcw size={16} />}
-                disabled={deployTaskMutation.isPending}
-                onClick={() => {
-                  form.resetFields();
-                  setActiveDeployTaskId(null);
-                  setSubmittedDeployTask(null);
-                }}
-              >
-                {t('common.reset')}
-              </Button>
-            </div>
-          </Form>
+          <Steps current={deployWizardStep + 1} size="small" className="cluster-deploy-steps">
+            <Steps.Step title={t('cluster.deployWizardStepMethod')} />
+            <Steps.Step title={t('cluster.deployWizardStepTarget')} />
+            <Steps.Step title={deployMethod === 'ssh' ? t('cluster.deployWizardStepPrecheck') : t('cluster.deployWizardStepPackage')} />
+            <Steps.Step title={t('cluster.deployWizardStepResult')} />
+          </Steps>
 
-          <div className="cluster-deploy-results">
-            {activeDeployTask ? (
-              <div className={`cluster-result-note ${deployTaskResultClass(activeDeployTask.status)}`}>
-                <div className="cluster-task-summary-line">
-                  <strong>{t('cluster.deployTaskCurrent')}</strong>
-                  {deployTaskStatusTag(activeDeployTask.status, t)}
-                </div>
-                <span>{activeDeployTask.user}@{activeDeployTask.host}:{activeDeployTask.port} · {deployActionLabel(activeDeployTask.action, t)} · {deployStageLabel(activeDeployTask.stage, t)}</span>
-                <span>{t('cluster.deployTaskID')}: <code>{activeDeployTask.id}</code></span>
-                <DeploymentTaskTimeline task={activeDeployTask} t={t} />
-                {activeDeployTask.command?.length ? <code>{activeDeployTask.command.join(' ')}</code> : null}
-                {activeDeployTask.message ? <span>{displayTaskText(activeDeployTask.message)}</span> : null}
-                {activeDeployTask.output ? <pre>{displayTaskText(activeDeployTask.output)}</pre> : null}
-                {activeDeployTask.error ? <pre>{displayTaskText(activeDeployTask.error)}</pre> : null}
-                {activeDeployTask.output_truncated && <small>{t('cluster.deployOutputTruncated')}</small>}
-                <DeploymentCompensationResult task={activeDeployTask} t={t} />
-              </div>
-            ) : (
-              <div className="cluster-result-note cluster-result-note-muted">
-                <strong>{t('cluster.deployTasksEmpty')}</strong>
-                <span>{t('cluster.deployTasksEmptyHint')}</span>
-              </div>
-            )}
-            <Table
-              rowKey="id"
-              loading={isFetchingDeployTasks}
-              pagination={false}
-              data={deployTasks?.items || []}
-              columns={[
-                { title: t('cluster.deployTaskID'), dataIndex: 'id', render: (value: string) => <code>{value}</code> },
-                { title: t('cluster.deployHost'), render: (_: unknown, item: ClusterDeploymentTask) => `${item.user}@${item.host}:${item.port}` },
-                { title: t('cluster.deployAction'), dataIndex: 'action', render: (value: string) => deployActionLabel(value, t) },
-                { title: t('cluster.deployTaskStatus'), dataIndex: 'status', render: (value: string) => deployTaskStatusTag(value, t) },
-                { title: t('cluster.deployTaskUpdated'), dataIndex: 'updated_at', render: formatTimestamp },
-                {
-                  title: t('common.actions'),
-                  render: (_: unknown, item: ClusterDeploymentTask) => (
-                    <Button size="mini" onClick={() => setActiveDeployTaskId(item.id)}>{t('cluster.deployTaskView')}</Button>
-                  ),
-                },
-              ]}
-              scroll={{ x: 840 }}
-            />
-            <Button size="small" loading={isFetchingDeployTasks} onClick={() => void refetchDeployTasks()}>{t('cluster.deployTaskRefresh')}</Button>
+          <div className="cluster-deploy-methods" role="radiogroup" aria-label={t('cluster.deployWizardMethodLabel')}>
+            <button
+              type="button"
+              className={`cluster-deploy-method ${deployMethod === 'ansible' ? 'cluster-deploy-method-active' : ''}`}
+              onClick={() => {
+                setDeployMethod('ansible');
+                setDeployWizardStep(0);
+              }}
+            >
+              <strong>{t('cluster.deployWizardMethodAnsible')}</strong>
+              <span>{t('cluster.deployWizardMethodAnsibleHint')}</span>
+            </button>
+            <button
+              type="button"
+              className={`cluster-deploy-method ${deployMethod === 'ssh' ? 'cluster-deploy-method-active' : ''}`}
+              onClick={() => {
+                setDeployMethod('ssh');
+                setDeployWizardStep(0);
+              }}
+            >
+              <strong>{t('cluster.deployWizardMethodSSH')}</strong>
+              <span>{t('cluster.deployWizardMethodSSHHint')}</span>
+            </button>
           </div>
+
+          {deployMethod === 'ansible' ? (
+            <div className="cluster-wizard-panel">
+              <Form
+                form={ansibleForm}
+                layout="vertical"
+                initialValues={{ clusterId: 'cheesewaf-mesh', channel: 'canary' }}
+                className="cluster-deploy-form"
+              >
+                <div className="cluster-ansible-summary">
+                  <Form.Item label={t('cluster.deployWizardClusterID')} field="clusterId" extra={t('cluster.deployWizardClusterIDHint')}>
+                    <Input placeholder="cheesewaf-mesh" allowClear />
+                  </Form.Item>
+                  <Form.Item label={t('cluster.deployWizardChannel')} field="channel" extra={t('cluster.deployWizardChannelHint')}>
+                    <Select>
+                      <Select.Option value="dev">{t('cluster.channelDev')}</Select.Option>
+                      <Select.Option value="canary">{t('cluster.channelCanary')}</Select.Option>
+                      <Select.Option value="stable">{t('cluster.channelStable')}</Select.Option>
+                    </Select>
+                  </Form.Item>
+                </div>
+              </Form>
+
+              <div className="cluster-ansible-node-list">
+                <div className="cluster-section-title">
+                  <strong>{t('cluster.deployWizardAnsibleNodes')}</strong>
+                  <Button size="small" icon={<Plus size={15} />} onClick={addAnsibleNode}>{t('cluster.deployWizardAddNode')}</Button>
+                </div>
+                {ansibleNodes.map((node, index) => (
+                  <div className="cluster-ansible-node" key={`ansible-node-${index}`}>
+                    <Input
+                      value={node.name}
+                      placeholder={t('cluster.deployWizardNodeName')}
+                      onChange={(value) => updateAnsibleNode(index, { name: value })}
+                    />
+                    <Input
+                      value={node.address}
+                      placeholder={t('cluster.deployWizardNodeAddress')}
+                      onChange={(value) => updateAnsibleNode(index, { address: value })}
+                    />
+                    <Select value={node.role} onChange={(value) => updateAnsibleNode(index, { role: String(value) })}>
+                      <Select.Option value="waf">{t('cluster.roleWaf')}</Select.Option>
+                      <Select.Option value="monitor">{t('cluster.roleMonitor')}</Select.Option>
+                    </Select>
+                    <InputNumber
+                      value={node.ssh_port}
+                      min={1}
+                      max={65535}
+                      precision={0}
+                      onChange={(value) => updateAnsibleNode(index, { ssh_port: Number(value || 22) })}
+                    />
+                    <Input
+                      value={node.region || ''}
+                      placeholder={t('cluster.deployWizardNodeRegion')}
+                      onChange={(value) => updateAnsibleNode(index, { region: value })}
+                    />
+                    <Button
+                      icon={<Trash2 size={15} />}
+                      disabled={ansibleNodes.length <= 1}
+                      onClick={() => removeAnsibleNode(index)}
+                    >
+                      {t('common.delete')}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="cluster-deploy-actions">
+                <Button
+                  type="primary"
+                  icon={<PackageCheck size={16} />}
+                  loading={ansiblePackageMutation.isPending}
+                  disabled={ansiblePackageMutation.isPending}
+                  onClick={() => ansiblePackageMutation.mutate()}
+                >
+                  {t('cluster.deployWizardGeneratePackage')}
+                </Button>
+                <Button icon={<RotateCcw size={16} />} onClick={resetDeploymentWizard}>{t('common.reset')}</Button>
+              </div>
+
+              {ansiblePackage && (
+                <AnsiblePackageViewer
+                  pkg={ansiblePackage}
+                  selectedFile={selectedAnsibleFile}
+                  setSelectedFile={setSelectedAnsibleFile}
+                  t={t}
+                />
+              )}
+            </div>
+          ) : (
+            <div className="cluster-wizard-panel">
+              <Form
+                form={form}
+                layout="vertical"
+                initialValues={{ user: 'root', port: 22, action: 'install' }}
+                className="cluster-deploy-form"
+              >
+                <div className="cluster-deploy-fields">
+                  <Form.Item
+                    label={t('cluster.deployHost')}
+                    field="host"
+                    rules={[{ required: true, message: t('cluster.deployHostRequired') }]}
+                    extra={t('cluster.deployWizardHostHint')}
+                  >
+                    <Input placeholder="192.168.6.249" allowClear onFocus={() => setDeployWizardStep(1)} />
+                  </Form.Item>
+                  <Form.Item
+                    label={t('cluster.deployUser')}
+                    field="user"
+                    rules={[{ required: true, message: t('cluster.deployUserRequired') }]}
+                  >
+                    <Input placeholder="root" allowClear onFocus={() => setDeployWizardStep(1)} />
+                  </Form.Item>
+                  <Form.Item
+                    label={t('cluster.deployPort')}
+                    field="port"
+                    rules={[{ required: true, message: t('cluster.deployPortRequired') }]}
+                  >
+                    <InputNumber min={1} max={65535} precision={0} onFocus={() => setDeployWizardStep(1)} />
+                  </Form.Item>
+                  <Form.Item label={t('cluster.deployAction')} field="action" extra={t('cluster.deployWizardActionHint')}>
+                    <Select onChange={() => setDeployWizardStep(1)}>
+                      <Select.Option value="install">{t('cluster.deployActionInstall')}</Select.Option>
+                      <Select.Option value="restart-service">{t('cluster.deployActionRestart')}</Select.Option>
+                    </Select>
+                  </Form.Item>
+                </div>
+
+                <div className="cluster-credential-panel">
+                  <div className="cluster-section-title">
+                    <strong>{t('cluster.deployWizardAuthTitle')}</strong>
+                    <span>{t('cluster.deployWizardAuthHint')}</span>
+                  </div>
+                  <Radio.Group type="button" value={deployAuthMethod} onChange={(value) => setDeployAuthMethod(value as DeployAuthMethod)}>
+                    <Radio value="agent">{t('cluster.deployWizardAuthAgent')}</Radio>
+                    <Radio value="password">{t('cluster.deployWizardAuthPassword')}</Radio>
+                    <Radio value="private_key">{t('cluster.deployWizardAuthPrivateKey')}</Radio>
+                  </Radio.Group>
+                  {deployAuthMethod === 'password' && (
+                    <Form.Item label={t('cluster.deployPassword')} field="password" extra={t('cluster.deployPasswordHint')}>
+                      <Input.Password placeholder={t('cluster.deployPasswordPlaceholder')} autoComplete="new-password" allowClear />
+                    </Form.Item>
+                  )}
+                  {deployAuthMethod === 'private_key' && (
+                    <Form.Item label={t('cluster.deployPrivateKey')} field="privateKey" extra={t('cluster.deployPrivateKeyHint')}>
+                      <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />
+                    </Form.Item>
+                  )}
+                </div>
+
+                <div className="cluster-hostkey-panel">
+                  <div className="cluster-section-title">
+                    <strong>{t('cluster.deployWizardHostKeyTitle')}</strong>
+                    <span>{t('cluster.deployWizardHostKeyHint')}</span>
+                  </div>
+                  <Radio.Group type="button" value={deployHostKeyMode} onChange={(value) => setDeployHostKeyMode(value as DeployHostKeyMode)}>
+                    <Radio value="known_hosts">{t('cluster.deployWizardHostKeyKnownHosts')}</Radio>
+                    <Radio value="fingerprint">{t('cluster.deployWizardHostKeyFingerprint')}</Radio>
+                  </Radio.Group>
+                  {deployHostKeyMode === 'fingerprint' && (
+                    <Form.Item label={t('cluster.deployHostKey')} field="hostKeySHA256" extra={t('cluster.deployHostKeyHint')}>
+                      <Input placeholder="SHA256:..." allowClear />
+                    </Form.Item>
+                  )}
+                </div>
+
+                <div className="cluster-deploy-actions">
+                  <Button
+                    icon={<ShieldCheck size={16} />}
+                    loading={deployTaskMutation.isPending}
+                    disabled={deployTaskMutation.isPending}
+                    onClick={() => void submitDeployment('check')}
+                  >
+                    {t('cluster.deployWizardRunPrecheck')}
+                  </Button>
+                  <Button
+                    type="primary"
+                    icon={<Play size={16} />}
+                    loading={deployTaskMutation.isPending}
+                    disabled={deployTaskMutation.isPending || !activeDeployTask || activeDeployTask.action !== 'check' || activeDeployTask.status !== 'succeeded'}
+                    onClick={() => void submitDeployment('run')}
+                  >
+                    {t('cluster.deployWizardStartAction')}
+                  </Button>
+                  <Button icon={<RotateCcw size={16} />} disabled={deployTaskMutation.isPending} onClick={resetDeploymentWizard}>
+                    {t('common.reset')}
+                  </Button>
+                </div>
+              </Form>
+
+              <DeploymentTaskPanel
+                activeDeployTask={activeDeployTask}
+                deployTasks={deployTasks?.items || []}
+                isFetchingDeployTasks={isFetchingDeployTasks}
+                setActiveDeployTaskId={setActiveDeployTaskId}
+                refetchDeployTasks={refetchDeployTasks}
+                t={t}
+              />
+            </div>
+          )}
         </Card>
 
         <Card className="cluster-audit-card">
@@ -896,6 +1096,140 @@ function DeploymentCompensationResult({ task, t }: { task: ClusterDeploymentTask
       {result.output ? <pre>{displayTaskText(result.output)}</pre> : null}
       {result.error ? <pre>{displayTaskText(result.error)}</pre> : null}
       {result.output_truncated ? <small>{t('cluster.deployOutputTruncated')}</small> : null}
+    </div>
+  );
+}
+
+function DeploymentTaskPanel({
+  activeDeployTask,
+  deployTasks,
+  isFetchingDeployTasks,
+  setActiveDeployTaskId,
+  refetchDeployTasks,
+  t,
+}: {
+  activeDeployTask: ClusterDeploymentTask | null;
+  deployTasks: ClusterDeploymentTask[];
+  isFetchingDeployTasks: boolean;
+  setActiveDeployTaskId: (id: string) => void;
+  refetchDeployTasks: () => void | Promise<unknown>;
+  t: Translate;
+}) {
+  return (
+    <div className="cluster-deploy-results">
+      {activeDeployTask ? (
+        <div className={`cluster-result-note ${deployTaskResultClass(activeDeployTask.status)}`}>
+          <div className="cluster-task-summary-line">
+            <strong>{t('cluster.deployTaskCurrent')}</strong>
+            {deployTaskStatusTag(activeDeployTask.status, t)}
+          </div>
+          <span>{activeDeployTask.user}@{activeDeployTask.host}:{activeDeployTask.port} · {deployActionLabel(activeDeployTask.action, t)} · {deployStageLabel(activeDeployTask.stage, t)}</span>
+          <span>{t('cluster.deployTaskID')}: <code>{activeDeployTask.id}</code></span>
+          <DeploymentTaskTimeline task={activeDeployTask} t={t} />
+          {activeDeployTask.command?.length ? <code>{activeDeployTask.command.join(' ')}</code> : null}
+          {activeDeployTask.message ? <span>{displayTaskText(activeDeployTask.message)}</span> : null}
+          {activeDeployTask.output ? <pre>{displayTaskText(activeDeployTask.output)}</pre> : null}
+          {activeDeployTask.error ? <pre>{displayTaskText(activeDeployTask.error)}</pre> : null}
+          {activeDeployTask.output_truncated && <small>{t('cluster.deployOutputTruncated')}</small>}
+          <DeploymentCompensationResult task={activeDeployTask} t={t} />
+        </div>
+      ) : (
+        <div className="cluster-result-note cluster-result-note-muted">
+          <strong>{t('cluster.deployTasksEmpty')}</strong>
+          <span>{t('cluster.deployTasksEmptyHint')}</span>
+        </div>
+      )}
+      <div className="table-scroll cluster-deploy-task-table">
+        <Table
+          rowKey="id"
+          loading={isFetchingDeployTasks && !deployTasks.length}
+          pagination={false}
+          data={deployTasks}
+          columns={[
+            { title: t('cluster.deployTaskID'), dataIndex: 'id', render: (value: string) => <code>{value}</code> },
+            { title: t('cluster.deployHost'), render: (_: unknown, item: ClusterDeploymentTask) => `${item.user}@${item.host}:${item.port}` },
+            { title: t('cluster.deployAction'), dataIndex: 'action', render: (value: string) => deployActionLabel(value, t) },
+            { title: t('cluster.deployTaskStatus'), dataIndex: 'status', render: (value: string) => deployTaskStatusTag(value, t) },
+            { title: t('cluster.deployTaskUpdated'), dataIndex: 'updated_at', render: formatTimestamp },
+            {
+              title: t('common.actions'),
+              render: (_: unknown, item: ClusterDeploymentTask) => (
+                <Button size="mini" onClick={() => setActiveDeployTaskId(item.id)}>{t('cluster.deployTaskView')}</Button>
+              ),
+            },
+          ]}
+          scroll={{ x: 840 }}
+        />
+      </div>
+      <div className="mobile-card-list cluster-deploy-task-cards">
+        {deployTasks.map((task) => (
+          <DeploymentTaskCard key={task.id} task={task} setActiveDeployTaskId={setActiveDeployTaskId} t={t} />
+        ))}
+      </div>
+      <Button size="small" loading={isFetchingDeployTasks} onClick={() => void refetchDeployTasks()}>{t('cluster.deployTaskRefresh')}</Button>
+    </div>
+  );
+}
+
+function DeploymentTaskCard({ task, setActiveDeployTaskId, t }: { task: ClusterDeploymentTask; setActiveDeployTaskId: (id: string) => void; t: Translate }) {
+  return (
+    <article className="mobile-data-card cluster-deploy-task-card-mobile">
+      <header>
+        <strong>{task.host}</strong>
+        {deployTaskStatusTag(task.status, t)}
+      </header>
+      <dl>
+        <div><dt>{t('cluster.deployTaskID')}</dt><dd><code className="table-code">{task.id}</code></dd></div>
+        <div><dt>{t('cluster.deployHost')}</dt><dd>{task.user}@{task.host}:{task.port}</dd></div>
+        <div><dt>{t('cluster.deployAction')}</dt><dd>{deployActionLabel(task.action, t)}</dd></div>
+        <div><dt>{t('cluster.deployTaskUpdated')}</dt><dd>{formatTimestamp(task.updated_at)}</dd></div>
+      </dl>
+      <Button size="small" onClick={() => setActiveDeployTaskId(task.id)}>{t('cluster.deployTaskView')}</Button>
+    </article>
+  );
+}
+
+function AnsiblePackageViewer({
+  pkg,
+  selectedFile,
+  setSelectedFile,
+  t,
+}: {
+  pkg: ClusterAnsiblePackage;
+  selectedFile: string;
+  setSelectedFile: (file: string) => void;
+  t: Translate;
+}) {
+  const files = Object.keys(pkg.files || {}).sort();
+  const activeFile = selectedFile && pkg.files[selectedFile] !== undefined ? selectedFile : files[0] || '';
+  const content = activeFile ? pkg.files[activeFile] || '' : '';
+  return (
+    <div className="cluster-ansible-package">
+      <div className="cluster-section-title">
+        <div>
+          <strong>{t('cluster.deployWizardPackageReady')}</strong>
+          <span>{t('cluster.deployWizardPackageReadyHint')}</span>
+        </div>
+        <div className="cluster-ansible-package-actions">
+          <Button icon={<Download size={15} />} disabled={!activeFile} onClick={() => downloadTextFile(activeFile, content)}>
+            {t('cluster.deployWizardDownloadFile')}
+          </Button>
+          <Button icon={<Download size={15} />} onClick={() => downloadAnsiblePackage(pkg)}>
+            {t('cluster.deployWizardDownloadPackage')}
+          </Button>
+        </div>
+      </div>
+      <div className="cluster-ansible-file-picker">
+        <Select value={activeFile} onChange={(value) => setSelectedFile(String(value))}>
+          {files.map((file) => (
+            <Select.Option key={file} value={file}>{file}</Select.Option>
+          ))}
+        </Select>
+        <Button icon={<Copy size={15} />} disabled={!content} onClick={() => void copyText(content, t('cluster.copied'), t('cluster.copyFailed'))}>
+          {t('common.copy')}
+        </Button>
+      </div>
+      <pre className="cluster-ansible-preview">{content || t('cluster.deployWizardPackageEmpty')}</pre>
     </div>
   );
 }
@@ -1278,6 +1612,36 @@ function buildJoinCommand(token: ClusterJoinToken, fields: JoinCommandFields) {
     shellArg(advertiseAddr),
   ];
   return parts.join(' ');
+}
+
+function normalizeAnsibleNodes(nodes: ClusterAnsibleHost[]) {
+  return nodes
+    .map((node) => ({
+      name: String(node.name || '').trim(),
+      address: String(node.address || '').trim(),
+      role: String(node.role || 'waf').trim(),
+      ssh_port: Number(node.ssh_port || 22),
+      region: String(node.region || '').trim() || undefined,
+    }))
+    .filter((node) => node.name || node.address);
+}
+
+function downloadAnsiblePackage(pkg: ClusterAnsiblePackage) {
+  const files = pkg.files || {};
+  const payload = JSON.stringify({ files }, null, 2);
+  downloadTextFile('cheesewaf-cluster-ansible-package.json', payload, 'application/json;charset=utf-8');
+}
+
+function downloadTextFile(filename: string, content: string, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename.replace(/[\\/]/g, '_') || 'cheesewaf-cluster-file.txt';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function shellArg(value: string) {
