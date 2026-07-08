@@ -64,6 +64,9 @@ type systemPayload struct {
 }
 
 func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req systemPayload
 	if !decode(w, r, &req) {
 		return

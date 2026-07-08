@@ -84,6 +84,9 @@ func (h *Handler) Protection(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.ProtectionPolicyConfig
 	if !decode(w, r, &req) {
 		return
@@ -101,6 +104,9 @@ func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.IPProtectionConfig
 	if !decode(w, r, &req) {
 		return
@@ -119,6 +125,9 @@ func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateIPAccessRules(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req []config.IPAccessRuleConfig
 	if !decode(w, r, &req) {
 		return
@@ -136,6 +145,9 @@ func (h *Handler) UpdateIPAccessRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateIPReputationOverrides(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req map[string]int
 	if !decode(w, r, &req) {
 		return
@@ -152,6 +164,9 @@ func (h *Handler) UpdateIPReputationOverrides(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) UpdateIPTags(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req map[string][]string
 	if !decode(w, r, &req) {
 		return
@@ -169,6 +184,9 @@ func (h *Handler) UpdateIPTags(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateThreatIntelProviders(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req []config.ThreatIntelProviderConfig
 	if !decode(w, r, &req) {
 		return
@@ -183,6 +201,9 @@ func (h *Handler) UpdateThreatIntelProviders(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req threatIntelImportPayload
 	if !decode(w, r, &req) {
 		return
@@ -218,6 +239,9 @@ func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req threatIntelSyncPayload
 	if !decodeOptional(w, r, &req, defaultJSONBodyLimit, "invalid threat intelligence sync request") {
 		return
@@ -267,6 +291,9 @@ func (h *Handler) TestThreatIntelProvider(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) LookupThreatIntel(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req threatIntelLookupPayload
 	if !decode(w, r, &req) {
 		return
@@ -325,6 +352,9 @@ func (h *Handler) ExportThreatIntel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateACLRules(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.ACLProtectionConfig
 	if !decode(w, r, &req) {
 		return
@@ -342,6 +372,9 @@ func (h *Handler) UpdateACLRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.RateLimitProtectionConfig
 	if !decode(w, r, &req) {
 		return
@@ -359,6 +392,9 @@ func (h *Handler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateBotProtection(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.BotProtectionConfig
 	if !decode(w, r, &req) {
 		return

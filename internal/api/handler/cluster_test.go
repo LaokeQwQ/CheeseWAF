@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -46,6 +48,160 @@ func TestClusterStatusStandalone(t *testing.T) {
 	}
 	if data["mode"] != "standalone" || data["product_mode_label"] != "单机模式" {
 		t.Fatalf("unexpected cluster status: %#v", data)
+	}
+}
+
+func TestClusterHeartbeatUpdatesStatusAndNodeList(t *testing.T) {
+	now := time.Unix(1000, 0).UTC()
+	cfg := minimumHAHandlerConfig()
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitorEnrollment := enrollTestClusterNode(t, identitySvc, cfg, "monitor-a")
+	h := New(Options{
+		Config:          &cfg,
+		ClusterIdentity: identitySvc,
+		ClusterHeartbeats: cluster.NewHeartbeatRegistry(cluster.HeartbeatRegistryOptions{
+			TTL: 30 * time.Second,
+			Now: func() time.Time {
+				return now
+			},
+		}),
+	})
+
+	rec := httptest.NewRecorder()
+	h.ClusterStatus(rec, httptest.NewRequest(http.MethodGet, "/api/cluster/status", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var before struct {
+		Data cluster.Status `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &before); err != nil {
+		t.Fatal(err)
+	}
+	if before.Data.MajorityConfirmed || before.Data.CanWriteConfig {
+		t.Fatalf("majority should be absent before remote heartbeat: %+v", before.Data)
+	}
+
+	body := strings.NewReader(`{"role":"monitor","advertise_addr":"10.0.0.3:9444","config_version":"v1"}`)
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/monitor-a/heartbeat", body), "id", "monitor-a")
+	attachClusterPeerCertificate(req, monitorEnrollment.Bundle.Certificate)
+	rec = httptest.NewRecorder()
+	h.ClusterNodeHeartbeat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ClusterStatus(rec, httptest.NewRequest(http.MethodGet, "/api/cluster/status", nil))
+	var after struct {
+		Data cluster.Status `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &after); err != nil {
+		t.Fatal(err)
+	}
+	if !after.Data.MajorityConfirmed || !after.Data.CanWriteConfig || after.Data.OnlineVotingCount != 2 {
+		t.Fatalf("monitor heartbeat should confirm majority: %+v", after.Data)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ClusterListNodes(rec, httptest.NewRequest(http.MethodGet, "/api/cluster/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Data struct {
+			Items []clusterNodeView `json:"items"`
+			Total int               `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if list.Data.Total != 3 {
+		t.Fatalf("expected config nodes to appear in node list, got %+v", list.Data.Items)
+	}
+	foundMonitor := false
+	for _, item := range list.Data.Items {
+		if item.NodeID == "monitor-a" {
+			foundMonitor = true
+			if item.Runtime.State != cluster.NodeStateOnline || item.Runtime.ConfigVersion != "v1" {
+				t.Fatalf("monitor runtime state missing heartbeat details: %+v", item.Runtime)
+			}
+		}
+	}
+	if !foundMonitor {
+		t.Fatalf("monitor node missing from list: %+v", list.Data.Items)
+	}
+}
+
+func TestClusterHeartbeatRejectsUnknownAndRevokedNodes(t *testing.T) {
+	cfg := minimumHAHandlerConfig()
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identitySvc.RevokeNode("waf-b", "retired"); err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{Config: &cfg, ClusterIdentity: identitySvc})
+
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/unknown/heartbeat", nil), "id", "unknown")
+	rec := httptest.NewRecorder()
+	h.ClusterNodeHeartbeat(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown node status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/monitor-a/heartbeat", nil), "id", "monitor-a")
+	rec = httptest.NewRecorder()
+	h.ClusterNodeHeartbeat(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing node certificate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/waf-b/heartbeat", nil), "id", "waf-b")
+	rec = httptest.NewRecorder()
+	h.ClusterNodeHeartbeat(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("revoked node status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestClusterHeartbeatRejectsMismatchedNodeCertificate(t *testing.T) {
+	cfg := minimumHAHandlerConfig()
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = enrollTestClusterNode(t, identitySvc, cfg, "monitor-a")
+	wafEnrollment := enrollTestClusterNode(t, identitySvc, cfg, "waf-b")
+	h := New(Options{Config: &cfg, ClusterIdentity: identitySvc})
+
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/monitor-a/heartbeat", nil), "id", "monitor-a")
+	attachClusterPeerCertificate(req, wafEnrollment.Bundle.Certificate)
+	rec := httptest.NewRecorder()
+	h.ClusterNodeHeartbeat(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("mismatched node certificate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestClusterProtectionModeRejectsSystemConfigWrite(t *testing.T) {
+	cfg := minimumHAHandlerConfig()
+	cfg.Logging.Level = "info"
+	h := New(Options{Config: &cfg})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/system", strings.NewReader(`{"logging":{"level":"debug"}}`))
+	rec := httptest.NewRecorder()
+	h.UpdateSystem(rec, req)
+	if rec.Code != http.StatusLocked {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if h.Config.Logging.Level != "info" {
+		t.Fatalf("config changed despite protection mode: %s", h.Config.Logging.Level)
 	}
 }
 
@@ -814,6 +970,58 @@ func waitClusterDeployTask(t *testing.T, h *Handler, id string, want string) dep
 
 func ptrClusterConfig(cfg config.Config) *config.Config {
 	return &cfg
+}
+
+func minimumHAHandlerConfig() config.Config {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.ClusterID = "cw-test"
+	cfg.Cluster.NodeID = "waf-a"
+	cfg.Cluster.HAMode = "minimum-ha"
+	cfg.Cluster.Protection.FreezeWritesWithoutMajority = true
+	cfg.Cluster.Protection.AllowTrafficInProtectionMode = true
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
+		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+		{ID: "monitor-a", Role: "monitor", AdvertiseAddr: "10.0.0.3:9444"},
+	}
+	return cfg
+}
+
+func enrollTestClusterNode(t *testing.T, svc *identity.MemoryIdentityService, cfg config.Config, nodeID string) identity.NodeEnrollment {
+	t.Helper()
+	var node config.ClusterNodeConfig
+	for _, candidate := range cfg.Cluster.Nodes {
+		if candidate.ID == nodeID {
+			node = candidate
+			break
+		}
+	}
+	if node.ID == "" {
+		t.Fatalf("node %q not found in test config", nodeID)
+	}
+	token, err := svc.CreateJoinToken(node.Role, time.Hour, 1)
+	if err != nil {
+		t.Fatalf("create join token: %v", err)
+	}
+	enrollment, err := svc.EnrollNode(token.Value, identity.NodeIdentity{
+		NodeID:        node.ID,
+		Role:          node.Role,
+		ClusterID:     cfg.Cluster.ClusterID,
+		AdvertiseAddr: node.AdvertiseAddr,
+	})
+	if err != nil {
+		t.Fatalf("enroll node %q: %v", nodeID, err)
+	}
+	return enrollment
+}
+
+func attachClusterPeerCertificate(req *http.Request, cert *x509.Certificate) {
+	req.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
+	}
 }
 
 func testNodeCSR(t *testing.T, nodeID string) []byte {
