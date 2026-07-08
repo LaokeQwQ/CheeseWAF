@@ -10,6 +10,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
 type Notifier interface {
@@ -52,7 +53,10 @@ type Webhook struct {
 
 func NewWebhook(cfg config.NotifierConfig, client *http.Client) *Webhook {
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = netguard.NewHTTPClient(netguard.HTTPClientOptions{
+			Timeout: 10 * time.Second,
+			Policy:  webhookURLPolicy(cfg.AllowPrivateEndpoint),
+		})
 	}
 	return &Webhook{cfg: cfg, client: client}
 }
@@ -91,4 +95,13 @@ func (w *Webhook) Notify(ctx context.Context, alert monitor.Alert) error {
 		return fmt.Errorf("notifier %q returned %s", w.cfg.ID, resp.Status)
 	}
 	return nil
+}
+
+func webhookURLPolicy(allowPrivate bool) netguard.URLPolicy {
+	return netguard.URLPolicy{
+		Purpose:        "notifier",
+		HostPurpose:    "notifier endpoint",
+		AllowedSchemes: []string{"http", "https"},
+		AllowPrivate:   allowPrivate,
+	}
 }

@@ -10,9 +10,11 @@ import (
 )
 
 type Config struct {
+	Deployment    DeploymentConfig    `yaml:"deployment" json:"deployment"`
 	Server        ServerConfig        `yaml:"server" json:"server"`
 	TLS           TLSConfig           `yaml:"tls" json:"tls"`
 	Setup         SetupConfig         `yaml:"setup" json:"setup"`
+	Cluster       ClusterConfig       `yaml:"cluster" json:"cluster"`
 	Console       ConsoleConfig       `yaml:"console" json:"console"`
 	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
 	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
@@ -30,6 +32,54 @@ type Config struct {
 }
 
 const MaxBlockPageHTMLBytes = 512 * 1024
+
+type DeploymentConfig struct {
+	Mode string `yaml:"mode" json:"mode"`
+}
+
+type ClusterConfig struct {
+	Enabled      bool                    `yaml:"enabled" json:"enabled"`
+	ClusterID    string                  `yaml:"cluster_id" json:"cluster_id"`
+	NodeID       string                  `yaml:"node_id" json:"node_id"`
+	HAMode       string                  `yaml:"ha_mode" json:"ha_mode"`
+	Interconnect InterconnectConfig      `yaml:"interconnect" json:"interconnect"`
+	Consensus    ConsensusConfig         `yaml:"consensus" json:"consensus"`
+	Join         JoinConfig              `yaml:"join" json:"join"`
+	Nodes        []ClusterNodeConfig     `yaml:"nodes" json:"nodes"`
+	Protection   ClusterProtectionConfig `yaml:"protection" json:"protection"`
+}
+
+type InterconnectConfig struct {
+	Listen        string `yaml:"listen" json:"listen"`
+	AdvertiseAddr string `yaml:"advertise_addr" json:"advertise_addr"`
+	MTLSRequired  bool   `yaml:"mtls_required" json:"mtls_required"`
+	CAFile        string `yaml:"ca_file" json:"ca_file"`
+	CertFile      string `yaml:"cert_file" json:"cert_file"`
+	KeyFile       string `yaml:"key_file" json:"key_file"`
+}
+
+type ConsensusConfig struct {
+	Provider      string   `yaml:"provider" json:"provider"`
+	EtcdEndpoints []string `yaml:"etcd_endpoints" json:"etcd_endpoints"`
+}
+
+type JoinConfig struct {
+	RequireApproval bool          `yaml:"require_approval" json:"require_approval"`
+	TokenTTL        time.Duration `yaml:"token_ttl" json:"token_ttl"`
+}
+
+type ClusterNodeConfig struct {
+	ID            string `yaml:"id" json:"id"`
+	Role          string `yaml:"role" json:"role"`
+	AdvertiseAddr string `yaml:"advertise_addr" json:"advertise_addr"`
+	Region        string `yaml:"region" json:"region"`
+	Datacenter    string `yaml:"datacenter" json:"datacenter"`
+}
+
+type ClusterProtectionConfig struct {
+	FreezeWritesWithoutMajority  bool `yaml:"freeze_writes_without_majority" json:"freeze_writes_without_majority"`
+	AllowTrafficInProtectionMode bool `yaml:"allow_traffic_in_protection_mode" json:"allow_traffic_in_protection_mode"`
+}
 
 type BlockPageConfig struct {
 	TemplateID    string `yaml:"template_id" json:"template_id"`
@@ -129,6 +179,7 @@ type MapBoundaryConfig struct {
 	ReviewID      string `yaml:"review_id" json:"review_id"`
 	Attribution   string `yaml:"attribution" json:"attribution"`
 	AllowInsecure bool   `yaml:"allow_insecure" json:"allow_insecure"`
+	AllowPrivate  bool   `yaml:"allow_private" json:"allow_private"`
 }
 
 type SiteConfig struct {
@@ -496,19 +547,21 @@ type RedisConfig struct {
 }
 
 type ClickHouseConfig struct {
-	Enabled  bool          `yaml:"enabled" json:"enabled"`
-	Endpoint string        `yaml:"endpoint" json:"endpoint"`
-	Database string        `yaml:"database" json:"database"`
-	Table    string        `yaml:"table" json:"table"`
-	Username string        `yaml:"username" json:"username"`
-	Password string        `yaml:"password" json:"password"`
-	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+	Enabled              bool          `yaml:"enabled" json:"enabled"`
+	Endpoint             string        `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool          `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	Database             string        `yaml:"database" json:"database"`
+	Table                string        `yaml:"table" json:"table"`
+	Username             string        `yaml:"username" json:"username"`
+	Password             string        `yaml:"password" json:"password"`
+	Timeout              time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type VictoriaLogsConfig struct {
-	Enabled  bool          `yaml:"enabled" json:"enabled"`
-	Endpoint string        `yaml:"endpoint" json:"endpoint"`
-	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+	Enabled              bool          `yaml:"enabled" json:"enabled"`
+	Endpoint             string        `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool          `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	Timeout              time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type PostgreSQLConfig struct {
@@ -519,14 +572,15 @@ type PostgreSQLConfig struct {
 }
 
 type ElasticsearchConfig struct {
-	Enabled  bool              `yaml:"enabled" json:"enabled"`
-	Endpoint string            `yaml:"endpoint" json:"endpoint"`
-	Index    string            `yaml:"index" json:"index"`
-	Username string            `yaml:"username" json:"username"`
-	Password string            `yaml:"password" json:"password"`
-	APIKey   string            `yaml:"api_key" json:"api_key"`
-	Headers  map[string]string `yaml:"headers" json:"headers"`
-	Timeout  time.Duration     `yaml:"timeout" json:"timeout"`
+	Enabled              bool              `yaml:"enabled" json:"enabled"`
+	Endpoint             string            `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool              `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	Index                string            `yaml:"index" json:"index"`
+	Username             string            `yaml:"username" json:"username"`
+	Password             string            `yaml:"password" json:"password"`
+	APIKey               string            `yaml:"api_key" json:"api_key"`
+	Headers              map[string]string `yaml:"headers" json:"headers"`
+	Timeout              time.Duration     `yaml:"timeout" json:"timeout"`
 }
 
 type LoggingConfig struct {
@@ -744,10 +798,11 @@ type PrometheusConfig struct {
 }
 
 type RemoteWriteConfig struct {
-	Enabled  bool          `yaml:"enabled" json:"enabled"`
-	Endpoint string        `yaml:"endpoint" json:"endpoint"`
-	Interval time.Duration `yaml:"interval" json:"interval"`
-	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+	Enabled              bool          `yaml:"enabled" json:"enabled"`
+	Endpoint             string        `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool          `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	Interval             time.Duration `yaml:"interval" json:"interval"`
+	Timeout              time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type AlertEngineConfig struct {
@@ -767,24 +822,46 @@ type AlertRuleConfig struct {
 }
 
 type NotifierConfig struct {
-	ID       string            `yaml:"id" json:"id"`
-	Name     string            `yaml:"name" json:"name"`
-	Type     string            `yaml:"type" json:"type"`
-	Endpoint string            `yaml:"endpoint" json:"endpoint"`
-	To       string            `yaml:"to" json:"to"`
-	Token    string            `yaml:"token" json:"token"`
-	Headers  map[string]string `yaml:"headers" json:"headers"`
-	Enabled  bool              `yaml:"enabled" json:"enabled"`
+	ID                   string            `yaml:"id" json:"id"`
+	Name                 string            `yaml:"name" json:"name"`
+	Type                 string            `yaml:"type" json:"type"`
+	Endpoint             string            `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool              `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	To                   string            `yaml:"to" json:"to"`
+	Token                string            `yaml:"token" json:"token"`
+	Headers              map[string]string `yaml:"headers" json:"headers"`
+	Enabled              bool              `yaml:"enabled" json:"enabled"`
 }
 
 type APISecConfig struct {
-	Enabled     bool                     `yaml:"enabled" json:"enabled"`
-	Discovery   APIDiscoveryConfig       `yaml:"discovery" json:"discovery"`
-	Validation  APIValidationConfig      `yaml:"validation" json:"validation"`
-	Auth        APIAuthConfig            `yaml:"auth" json:"auth"`
-	RateLimits  []APIEndpointLimitConfig `yaml:"rate_limits" json:"rate_limits"`
-	Permissions map[string][]string      `yaml:"permissions" json:"permissions"`
-	Audit       AuditConfig              `yaml:"audit" json:"audit"`
+	Enabled       bool                     `yaml:"enabled" json:"enabled"`
+	Discovery     APIDiscoveryConfig       `yaml:"discovery" json:"discovery"`
+	Validation    APIValidationConfig      `yaml:"validation" json:"validation"`
+	Auth          APIAuthConfig            `yaml:"auth" json:"auth"`
+	ManagementAPI ManagementAPIConfig      `yaml:"management_api" json:"management_api"`
+	RateLimits    []APIEndpointLimitConfig `yaml:"rate_limits" json:"rate_limits"`
+	Permissions   map[string][]string      `yaml:"permissions" json:"permissions"`
+	Audit         AuditConfig              `yaml:"audit" json:"audit"`
+}
+
+type ManagementAPIConfig struct {
+	Enabled bool                       `yaml:"enabled" json:"enabled"`
+	Tokens  []ManagementAPITokenConfig `yaml:"tokens" json:"tokens"`
+}
+
+type ManagementAPITokenConfig struct {
+	ID         string    `yaml:"id" json:"id"`
+	Name       string    `yaml:"name" json:"name"`
+	Prefix     string    `yaml:"prefix" json:"prefix"`
+	Hash       string    `yaml:"hash" json:"hash,omitempty"`
+	Scopes     []string  `yaml:"scopes" json:"scopes"`
+	Notes      string    `yaml:"notes" json:"notes,omitempty"`
+	Enabled    bool      `yaml:"enabled" json:"enabled"`
+	CreatedAt  time.Time `yaml:"created_at" json:"created_at,omitempty"`
+	UpdatedAt  time.Time `yaml:"updated_at" json:"updated_at,omitempty"`
+	LastUsedAt time.Time `yaml:"last_used_at" json:"last_used_at,omitempty"`
+	ExpiresAt  time.Time `yaml:"expires_at" json:"expires_at,omitempty"`
+	RevokedAt  time.Time `yaml:"revoked_at" json:"revoked_at,omitempty"`
 }
 
 type APIDiscoveryConfig struct {

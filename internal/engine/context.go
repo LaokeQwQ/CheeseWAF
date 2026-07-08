@@ -11,6 +11,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 )
 
+const requestContextBodyPreviewLimit = 8 << 20
+
 func NewRequestContext(r *http.Request, siteID string) (*RequestContext, error) {
 	return newRequestContext(r, siteID, ClientIP(r))
 }
@@ -29,34 +31,43 @@ func newRequestContext(r *http.Request, siteID, clientIP string) (*RequestContex
 	}
 	reqCtx.DecodedURI = r.URL.RequestURI()
 	if r.Body != nil {
-		body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+		originalBody := r.Body
+		body, err := io.ReadAll(io.LimitReader(originalBody, requestContextBodyPreviewLimit+1))
 		if err != nil {
 			return nil, err
 		}
-		reqCtx.DecodedBody = body
-		r.Body = io.NopCloser(bytes.NewReader(body))
+		if len(body) > requestContextBodyPreviewLimit {
+			reqCtx.DecodedBody = body[:requestContextBodyPreviewLimit]
+			reqCtx.Metadata["body_preview_truncated"] = true
+		} else {
+			reqCtx.DecodedBody = body
+		}
+		r.Body = replayRequestBody(body, originalBody)
 	}
 	return reqCtx, nil
 }
 
+type replayBody struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (b replayBody) Close() error {
+	if b.closer == nil {
+		return nil
+	}
+	return b.closer.Close()
+}
+
+func replayRequestBody(prefix []byte, rest io.ReadCloser) io.ReadCloser {
+	return replayBody{
+		Reader: io.MultiReader(bytes.NewReader(prefix), rest),
+		closer: rest,
+	}
+}
+
 func ClientIP(r *http.Request) string {
-	for _, header := range []string{"CF-Connecting-IP", "X-Real-IP", "X-Forwarded-For"} {
-		value := strings.TrimSpace(r.Header.Get(header))
-		if value == "" {
-			continue
-		}
-		if header == "X-Forwarded-For" {
-			value = strings.TrimSpace(strings.Split(value, ",")[0])
-		}
-		if ip := net.ParseIP(value); ip != nil {
-			return ip.String()
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return remoteAddrIP(r)
 }
 
 func ClientIPWithTrustedProxies(r *http.Request, trustedCIDRs []string) string {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"net"
@@ -50,6 +51,9 @@ func Validate(cfg *Config) error {
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
 	}
+	if err := validateCluster(cfg); err != nil {
+		return err
+	}
 	if cfg.Console.Login.CAPTCHA.Enabled {
 		switch strings.ToLower(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Mode)) {
 		case "", "slider", "pow":
@@ -84,6 +88,25 @@ func Validate(cfg *Config) error {
 	if err := validateACME(cfg.ACME); err != nil {
 		return err
 	}
+	if cfg.Storage.ClickHouse.Enabled {
+		if strings.TrimSpace(cfg.Storage.ClickHouse.Endpoint) == "" {
+			return fmt.Errorf("storage.clickhouse.endpoint is required when ClickHouse log sink is enabled")
+		}
+		if err := validateLogSinkEndpoint(cfg.Storage.ClickHouse.Endpoint, cfg.Storage.ClickHouse.AllowPrivateEndpoint, "clickhouse endpoint"); err != nil {
+			return fmt.Errorf("storage.clickhouse.endpoint is invalid: %w", err)
+		}
+		if err := validateSQLIdentifierPath(cfg.Storage.ClickHouse.Table); err != nil {
+			return fmt.Errorf("storage.clickhouse.table is invalid: %w", err)
+		}
+	}
+	if cfg.Storage.VictoriaLogs.Enabled {
+		if strings.TrimSpace(cfg.Storage.VictoriaLogs.Endpoint) == "" {
+			return fmt.Errorf("storage.victorialogs.endpoint is required when VictoriaLogs log sink is enabled")
+		}
+		if err := validateLogSinkEndpoint(cfg.Storage.VictoriaLogs.Endpoint, cfg.Storage.VictoriaLogs.AllowPrivateEndpoint, "victorialogs endpoint"); err != nil {
+			return fmt.Errorf("storage.victorialogs.endpoint is invalid: %w", err)
+		}
+	}
 	if cfg.Storage.PostgreSQL.Enabled {
 		if strings.TrimSpace(cfg.Storage.PostgreSQL.DSN) == "" {
 			return fmt.Errorf("storage.postgresql.dsn is required when PostgreSQL log sink is enabled")
@@ -96,7 +119,7 @@ func Validate(cfg *Config) error {
 		if strings.TrimSpace(cfg.Storage.Elasticsearch.Endpoint) == "" {
 			return fmt.Errorf("storage.elasticsearch.endpoint is required when Elasticsearch log sink is enabled")
 		}
-		if _, err := url.ParseRequestURI(cfg.Storage.Elasticsearch.Endpoint); err != nil {
+		if err := validateLogSinkEndpoint(cfg.Storage.Elasticsearch.Endpoint, cfg.Storage.Elasticsearch.AllowPrivateEndpoint, "elasticsearch endpoint"); err != nil {
 			return fmt.Errorf("storage.elasticsearch.endpoint is invalid: %w", err)
 		}
 		if strings.TrimSpace(cfg.Storage.Elasticsearch.Index) == "" {
@@ -122,6 +145,12 @@ func Validate(cfg *Config) error {
 		}
 	}
 	if err := validateAISelfLearning(cfg.AI.SelfLearning); err != nil {
+		return err
+	}
+	if err := validateUpdateConfig(cfg.Update); err != nil {
+		return err
+	}
+	if err := validateVulnerabilityConfig(cfg.Vulnerability); err != nil {
 		return err
 	}
 	if len(cfg.Sites) == 0 {
@@ -304,7 +333,10 @@ func Validate(cfg *Config) error {
 		}
 	}
 	if cfg.Monitor.RemoteWrite.Enabled {
-		if _, err := url.ParseRequestURI(cfg.Monitor.RemoteWrite.Endpoint); err != nil {
+		if strings.TrimSpace(cfg.Monitor.RemoteWrite.Endpoint) == "" {
+			return fmt.Errorf("monitor.remote_write.endpoint is required when remote write is enabled")
+		}
+		if err := validateRemoteWriteEndpoint(cfg.Monitor.RemoteWrite.Endpoint, cfg.Monitor.RemoteWrite.AllowPrivateEndpoint); err != nil {
 			return fmt.Errorf("monitor.remote_write.endpoint is invalid: %w", err)
 		}
 	}
@@ -329,6 +361,16 @@ func Validate(cfg *Config) error {
 		case "webhook", "email", "telegram", "dingtalk", "wecom":
 		default:
 			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
+		}
+		if strings.TrimSpace(notifier.Endpoint) != "" {
+			if err := validateNotifierEndpoint(notifier.Endpoint, notifier.AllowPrivateEndpoint); err != nil {
+				return fmt.Errorf("notifier %q endpoint is invalid: %w", notifier.ID, err)
+			}
+		}
+	}
+	for _, task := range cfg.Scheduler.Tasks {
+		if err := validateScheduledTask(task); err != nil {
+			return err
 		}
 	}
 	for _, schema := range cfg.APISec.Validation.Schemas {
@@ -392,6 +434,177 @@ func Validate(cfg *Config) error {
 				}
 			}
 		}
+	}
+	if err := validateManagementAPI(cfg.APISec.ManagementAPI); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateManagementAPI(api ManagementAPIConfig) error {
+	seen := map[string]struct{}{}
+	for _, token := range api.Tokens {
+		id := strings.TrimSpace(token.ID)
+		if id == "" {
+			return fmt.Errorf("management api token id is required")
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("management api token %q is duplicated", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(token.Name) == "" {
+			return fmt.Errorf("management api token %q name is required", id)
+		}
+		if strings.TrimSpace(token.Hash) == "" {
+			return fmt.Errorf("management api token %q hash is required", id)
+		}
+		digest := strings.TrimPrefix(token.Hash, "sha256:")
+		if !strings.HasPrefix(token.Hash, "sha256:") || len(digest) != 64 {
+			return fmt.Errorf("management api token %q hash must be sha256 digest", id)
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return fmt.Errorf("management api token %q hash must be hexadecimal sha256 digest", id)
+		}
+		if len(token.Scopes) == 0 {
+			return fmt.Errorf("management api token %q must define at least one scope", id)
+		}
+		for _, scope := range token.Scopes {
+			if err := validatePermissionExpression(scope); err != nil {
+				return fmt.Errorf("management api token %q scope is invalid: %w", id, err)
+			}
+		}
+		if !token.CreatedAt.IsZero() && !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(token.CreatedAt) {
+			return fmt.Errorf("management api token %q expires_at must be after created_at", id)
+		}
+	}
+	return nil
+}
+
+func validatePermissionExpression(scope string) error {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return fmt.Errorf("scope is required")
+	}
+	if scope == "*" {
+		return nil
+	}
+	if strings.Count(scope, ":") != 1 {
+		return fmt.Errorf("scope must use action:resource format")
+	}
+	parts := strings.Split(scope, ":")
+	switch parts[0] {
+	case "read", "write":
+	default:
+		return fmt.Errorf("scope action must be read or write")
+	}
+	resource := parts[1]
+	if resource == "" {
+		return fmt.Errorf("scope resource is required")
+	}
+	if strings.ContainsAny(resource, " \t\r\n") {
+		return fmt.Errorf("scope resource must not contain whitespace")
+	}
+	if strings.Contains(resource, "*") && !strings.HasSuffix(resource, "*") {
+		return fmt.Errorf("scope wildcard is only allowed at the end")
+	}
+	return nil
+}
+
+func validateCluster(cfg *Config) error {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Deployment.Mode))
+	if mode == "" {
+		mode = "standalone"
+		cfg.Deployment.Mode = mode
+	}
+	switch mode {
+	case "standalone", "cluster":
+	default:
+		return fmt.Errorf("deployment.mode must be standalone or cluster")
+	}
+	if mode == "standalone" {
+		if cfg.Cluster.Enabled {
+			return fmt.Errorf("cluster.enabled requires deployment.mode=cluster")
+		}
+		return nil
+	}
+	if !cfg.Cluster.Enabled {
+		return fmt.Errorf("deployment.mode=cluster requires cluster.enabled=true")
+	}
+	if cfg.Cluster.Consensus.Provider == "" {
+		cfg.Cluster.Consensus.Provider = "builtin"
+	}
+	switch cfg.Cluster.Consensus.Provider {
+	case "builtin", "etcd":
+	default:
+		return fmt.Errorf("cluster.consensus.provider must be builtin or etcd")
+	}
+	if cfg.Cluster.Consensus.Provider == "etcd" && len(cfg.Cluster.Consensus.EtcdEndpoints) == 0 {
+		return fmt.Errorf("cluster.consensus.etcd_endpoints is required when provider is etcd")
+	}
+	if cfg.Cluster.Join.TokenTTL <= 0 || cfg.Cluster.Join.TokenTTL > 24*time.Hour {
+		return fmt.Errorf("cluster.join.token_ttl must be between 1s and 24h")
+	}
+	if listen := strings.TrimSpace(cfg.Cluster.Interconnect.Listen); listen != "" {
+		if _, err := net.ResolveTCPAddr("tcp", listen); err != nil {
+			return fmt.Errorf("cluster.interconnect.listen is invalid: %w", err)
+		}
+	}
+	if cfg.Cluster.Interconnect.MTLSRequired {
+		hasPartialMaterial := strings.TrimSpace(cfg.Cluster.Interconnect.CAFile) != "" ||
+			strings.TrimSpace(cfg.Cluster.Interconnect.CertFile) != "" ||
+			strings.TrimSpace(cfg.Cluster.Interconnect.KeyFile) != ""
+		if hasPartialMaterial {
+			if strings.TrimSpace(cfg.Cluster.Interconnect.CAFile) == "" ||
+				strings.TrimSpace(cfg.Cluster.Interconnect.CertFile) == "" ||
+				strings.TrimSpace(cfg.Cluster.Interconnect.KeyFile) == "" {
+				return fmt.Errorf("cluster.interconnect ca_file, cert_file and key_file must be set together")
+			}
+		}
+	}
+	wafNodes := 0
+	monitorNodes := 0
+	seen := map[string]struct{}{}
+	for _, node := range cfg.Cluster.Nodes {
+		id := strings.TrimSpace(node.ID)
+		if id == "" {
+			return fmt.Errorf("cluster node id is required")
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("duplicate cluster node id %q", id)
+		}
+		seen[id] = struct{}{}
+		switch node.Role {
+		case "waf":
+			wafNodes++
+		case "monitor":
+			monitorNodes++
+		default:
+			return fmt.Errorf("cluster node %q role must be waf or monitor", id)
+		}
+		if strings.TrimSpace(node.AdvertiseAddr) == "" {
+			return fmt.Errorf("cluster node %q advertise_addr is required", id)
+		}
+		if _, err := net.ResolveTCPAddr("tcp", node.AdvertiseAddr); err != nil {
+			return fmt.Errorf("cluster node %q advertise_addr is invalid: %w", id, err)
+		}
+	}
+	switch strings.TrimSpace(cfg.Cluster.HAMode) {
+	case "", "single-node":
+		return nil
+	case "dual-node-load-balancing":
+		if wafNodes < 2 {
+			return fmt.Errorf("dual-node-load-balancing requires at least two WAF nodes")
+		}
+	case "minimum-ha":
+		if wafNodes < 2 || monitorNodes < 1 {
+			return fmt.Errorf("minimum-ha requires at least two WAF nodes and one monitor node")
+		}
+	case "multi-node-ha":
+		if wafNodes < 3 {
+			return fmt.Errorf("multi-node-ha requires at least three WAF nodes")
+		}
+	default:
+		return fmt.Errorf("unknown cluster.ha_mode %q", cfg.Cluster.HAMode)
 	}
 	return nil
 }
@@ -479,6 +692,176 @@ func validateAISelfLearning(cfg AISelfLearningConfig) error {
 	default:
 		return fmt.Errorf("ai.self_learning.action must be block, log, or challenge")
 	}
+}
+
+func validateUpdateConfig(cfg UpdateConfig) error {
+	ota := cfg.OTA
+	if !ota.Enabled && strings.TrimSpace(ota.Server) == "" {
+		return nil
+	}
+	if strings.TrimSpace(ota.Server) == "" {
+		return fmt.Errorf("update.ota.server is required when OTA updates are enabled")
+	}
+	if err := validateOutboundPublicURL(ota.Server, "OTA update server", []string{"https"}); err != nil {
+		return fmt.Errorf("update.ota.server is invalid: %w", err)
+	}
+	if ota.CheckInterval != 0 && (ota.CheckInterval < time.Hour || ota.CheckInterval > 30*24*time.Hour) {
+		return fmt.Errorf("update.ota.check_interval must be between 1h and 30d")
+	}
+	switch strings.ToLower(strings.TrimSpace(ota.Channel)) {
+	case "", "stable", "canary", "dev":
+	default:
+		return fmt.Errorf("update.ota.channel must be stable, canary, or dev")
+	}
+	return nil
+}
+
+func validateVulnerabilityConfig(cfg VulnerabilityConfig) error {
+	for _, feed := range cfg.Feeds {
+		if !feed.Enabled {
+			continue
+		}
+		if strings.TrimSpace(feed.ID) == "" {
+			return fmt.Errorf("vulnerability feed must define id")
+		}
+		if strings.TrimSpace(feed.URL) == "" {
+			return fmt.Errorf("vulnerability feed %q must define url", feed.ID)
+		}
+		if err := validateOutboundPublicURL(feed.URL, "vulnerability feed", []string{"https"}); err != nil {
+			return fmt.Errorf("vulnerability feed %q url is invalid: %w", feed.ID, err)
+		}
+		if feed.Interval != 0 && (feed.Interval < time.Hour || feed.Interval > 30*24*time.Hour) {
+			return fmt.Errorf("vulnerability feed %q interval must be between 1h and 30d", feed.ID)
+		}
+		switch strings.ToLower(strings.TrimSpace(feed.Type)) {
+		case "", "json", "csv", "stix", "taxii", "nvd", "osv", "cve":
+		default:
+			return fmt.Errorf("vulnerability feed %q has invalid type %q", feed.ID, feed.Type)
+		}
+		switch strings.ToLower(strings.TrimSpace(feed.MinSeverity)) {
+		case "", "info", "low", "medium", "high", "critical":
+		default:
+			return fmt.Errorf("vulnerability feed %q has invalid min_severity %q", feed.ID, feed.MinSeverity)
+		}
+	}
+	return nil
+}
+
+func validateScheduledTask(task ScheduledTaskConfig) error {
+	if !task.Enabled {
+		return nil
+	}
+	task = normalizeScheduledTaskForValidation(task)
+	if strings.TrimSpace(task.ID) == "" {
+		return fmt.Errorf("scheduled task must define id")
+	}
+	switch strings.ToLower(strings.TrimSpace(task.Type)) {
+	case "backup", "cleanup", "security_report", "ai_self_learning", "self_learning_rules":
+	default:
+		return fmt.Errorf("scheduled task %q has invalid type %q", task.ID, task.Type)
+	}
+	switch strings.ToLower(strings.TrimSpace(task.Frequency)) {
+	case "", "interval", "daily", "weekly", "monthly":
+	default:
+		return fmt.Errorf("scheduled task %q has invalid frequency %q", task.ID, task.Frequency)
+	}
+	if task.Every != 0 && (task.Every < time.Minute || task.Every > 365*24*time.Hour) {
+		return fmt.Errorf("scheduled task %q every must be between 1m and 365d", task.ID)
+	}
+	switch strings.ToLower(strings.TrimSpace(task.Type)) {
+	case "cleanup":
+		if strings.TrimSpace(task.Target) == "" {
+			return fmt.Errorf("scheduled task %q target is required for cleanup", task.ID)
+		}
+	case "security_report":
+		channel := strings.ToLower(strings.TrimSpace(task.Channel))
+		if channel == "" {
+			channel = "file"
+		}
+		switch channel {
+		case "file":
+			if strings.TrimSpace(task.Recipient) == "" {
+				return fmt.Errorf("scheduled task %q recipient directory is required for file reports", task.ID)
+			}
+		case "webhook":
+			if err := validateOutboundPublicURL(task.Recipient, "security report webhook", []string{"https"}); err != nil {
+				return fmt.Errorf("scheduled task %q recipient is invalid: %w", task.ID, err)
+			}
+		default:
+			return fmt.Errorf("scheduled task %q has invalid report channel %q", task.ID, task.Channel)
+		}
+		switch strings.ToLower(strings.TrimSpace(task.Format)) {
+		case "", "markdown", "md", "json":
+		default:
+			return fmt.Errorf("scheduled task %q has invalid report format %q", task.ID, task.Format)
+		}
+		switch strings.ToLower(strings.TrimSpace(task.Period)) {
+		case "", "daily", "weekly", "monthly":
+		default:
+			return fmt.Errorf("scheduled task %q has invalid report period %q", task.ID, task.Period)
+		}
+	}
+	return nil
+}
+
+func normalizeScheduledTaskForValidation(task ScheduledTaskConfig) ScheduledTaskConfig {
+	task.ID = strings.TrimSpace(task.ID)
+	task.Name = strings.TrimSpace(task.Name)
+	task.Type = strings.TrimSpace(task.Type)
+	task.Schedule = strings.TrimSpace(task.Schedule)
+	task.Frequency = strings.TrimSpace(task.Frequency)
+	task.At = strings.TrimSpace(task.At)
+	task.Target = strings.TrimSpace(task.Target)
+	task.Channel = strings.TrimSpace(task.Channel)
+	task.Recipient = strings.TrimSpace(task.Recipient)
+	task.Period = strings.TrimSpace(task.Period)
+	task.Format = strings.TrimSpace(task.Format)
+	if task.Type == "" {
+		task.Type = "cleanup"
+	}
+	if task.ID == "" {
+		target := strings.NewReplacer("/", "-", "\\", "-").Replace(task.Target)
+		task.ID = strings.Trim(task.Type+"-"+target, "-")
+		if task.ID == "" {
+			task.ID = task.Type
+		}
+	}
+	if task.Name == "" {
+		task.Name = task.ID
+	}
+	if task.Keep <= 0 {
+		task.Keep = 7
+	}
+	if task.Frequency == "" {
+		if task.Schedule != "" {
+			task.Frequency = task.Schedule
+		} else if task.Type == "security_report" || task.Type == "ai_self_learning" || task.Type == "self_learning_rules" {
+			task.Frequency = "daily"
+		} else {
+			task.Frequency = "interval"
+		}
+	}
+	if (task.Frequency == "daily" || task.Frequency == "weekly" || task.Frequency == "monthly") && task.At == "" {
+		task.At = "08:00"
+	}
+	if task.Frequency == "interval" && task.Every <= 0 {
+		task.Every = 24 * time.Hour
+	}
+	if task.Type == "security_report" {
+		if task.Channel == "" {
+			task.Channel = "file"
+		}
+		if task.Recipient == "" {
+			task.Recipient = "./data/reports"
+		}
+		if task.Period == "" {
+			task.Period = "daily"
+		}
+		if task.Format == "" {
+			task.Format = "markdown"
+		}
+	}
+	return task
 }
 
 func isUnsafeAIAPIBaseIP(ip net.IP) bool {
@@ -669,18 +1052,8 @@ func validateMapBoundary(prefix string, boundary MapBoundaryConfig) error {
 		return fmt.Errorf("%s.license or %s.review_id is required before rendering administrative boundaries", prefix, prefix)
 	}
 	if sourceType == "url" {
-		parsed, err := url.Parse(source)
-		if err != nil {
+		if err := validateMapBoundaryURL(source, boundary); err != nil {
 			return fmt.Errorf("%s.source is invalid: %w", prefix, err)
-		}
-		if parsed.User != nil {
-			return fmt.Errorf("%s.source must not include credentials", prefix)
-		}
-		if parsed.Host == "" {
-			return fmt.Errorf("%s.source URL must include a host", prefix)
-		}
-		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && boundary.AllowInsecure) {
-			return fmt.Errorf("%s.source URL must use https unless allow_insecure is explicitly enabled", prefix)
 		}
 		return nil
 	}
@@ -748,6 +1121,59 @@ func validateRemoteJWKSURL(raw string) error {
 		Purpose:        "JWKS",
 		HostPurpose:    "remote JWKS",
 		AllowedSchemes: []string{"https"},
+	})
+	return err
+}
+
+func validateOutboundPublicURL(raw, purpose string, schemes []string) error {
+	_, err := netguard.ValidateURL(raw, netguard.URLPolicy{
+		Purpose:        purpose,
+		HostPurpose:    purpose,
+		AllowedSchemes: schemes,
+	})
+	return err
+}
+
+func validateRemoteWriteEndpoint(raw string, allowPrivate bool) error {
+	_, err := netguard.ValidateURL(raw, netguard.URLPolicy{
+		Purpose:        "remote_write",
+		HostPurpose:    "remote_write endpoint",
+		AllowedSchemes: []string{"http", "https"},
+		AllowPrivate:   allowPrivate,
+	})
+	return err
+}
+
+func validateNotifierEndpoint(raw string, allowPrivate bool) error {
+	_, err := netguard.ValidateURL(raw, netguard.URLPolicy{
+		Purpose:        "notifier",
+		HostPurpose:    "notifier endpoint",
+		AllowedSchemes: []string{"http", "https"},
+		AllowPrivate:   allowPrivate,
+	})
+	return err
+}
+
+func validateLogSinkEndpoint(raw string, allowPrivate bool, purpose string) error {
+	_, err := netguard.ValidateURL(raw, netguard.URLPolicy{
+		Purpose:        purpose,
+		HostPurpose:    purpose,
+		AllowedSchemes: []string{"http", "https"},
+		AllowPrivate:   allowPrivate,
+	})
+	return err
+}
+
+func validateMapBoundaryURL(raw string, boundary MapBoundaryConfig) error {
+	schemes := []string{"https"}
+	if boundary.AllowInsecure {
+		schemes = []string{"http", "https"}
+	}
+	_, err := netguard.ValidateURL(raw, netguard.URLPolicy{
+		Purpose:        "map boundary",
+		HostPurpose:    "map boundary",
+		AllowedSchemes: schemes,
+		AllowPrivate:   boundary.AllowPrivate,
 	})
 	return err
 }
@@ -851,6 +1277,12 @@ func validateACME(cfg ACMEConfig) error {
 	if strings.TrimSpace(cfg.CertDir) == "" {
 		return fmt.Errorf("acme.cert_dir is required when ACME is enabled")
 	}
+	if err := validateACMEServer(cfg.Server); err != nil {
+		return fmt.Errorf("acme.server is invalid: %w", err)
+	}
+	if err := validateACMEReloadCommand(cfg.ReloadCommand); err != nil {
+		return fmt.Errorf("acme.reload_command is invalid: %w", err)
+	}
 	switch strings.ToLower(strings.TrimSpace(cfg.KeyType)) {
 	case "", "ec-256", "ec-384", "2048", "3072", "4096":
 	default:
@@ -863,11 +1295,42 @@ func validateACME(cfg ACMEConfig) error {
 		if strings.TrimSpace(provider.ID) == "" || strings.TrimSpace(provider.API) == "" {
 			return fmt.Errorf("acme dns provider must define id and api")
 		}
+		if !regexp.MustCompile(`^dns_[a-z0-9_]+$`).MatchString(strings.TrimSpace(provider.API)) {
+			return fmt.Errorf("acme dns provider %q has invalid api %q", provider.ID, provider.API)
+		}
 		for key := range provider.Env {
 			if !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(key) {
 				return fmt.Errorf("acme dns provider %q has invalid env key %q", provider.ID, key)
 			}
 		}
+	}
+	return nil
+}
+
+func validateACMEServer(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	switch strings.ToLower(value) {
+	case "letsencrypt", "zerossl", "buypass", "ssl.com", "google", "letsencrypt_test", "zerossl_test", "buypass_test", "google_test":
+		return nil
+	}
+	_, err := netguard.ValidateURL(value, netguard.URLPolicy{
+		Purpose:        "ACME directory",
+		HostPurpose:    "ACME directory",
+		AllowedSchemes: []string{"https"},
+	})
+	return err
+}
+
+func validateACMEReloadCommand(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("must not contain control characters")
 	}
 	return nil
 }

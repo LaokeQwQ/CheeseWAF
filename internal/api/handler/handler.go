@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
@@ -23,28 +26,35 @@ import (
 )
 
 type Handler struct {
-	Config              *config.Config
-	ConfigPath          string
-	Store               storage.Store
-	Sink                storage.LogSink
-	Tokens              *middleware.TokenManager
-	Secret              string
-	Auditor             *middleware.Auditor
-	AssistantApprovals  *ai.ApprovalStore
-	ACMEIssuer          acme.Issuer
-	LoginCAPTCHAState   *loginCAPTCHAState
-	StartedAt           time.Time
-	geoipMu             sync.Mutex
-	geoipCacheKey       string
-	geoipPolicy         *protectionip.GeoIPPolicy
-	geoipErrorKey       string
-	geoipRetryAfter     time.Time
-	diskUsageMu         sync.Mutex
-	diskUsageCache      map[string]cachedDirSize
-	OnSitesChanged      func([]config.SiteConfig)
-	OnProtectionChanged func(config.ProtectionConfig) error
-	OnAPISecChanged     func(config.APISecConfig) error
-	OnBlockPageChanged  func(config.BlockPageConfig) error
+	Config               *config.Config
+	ConfigPath           string
+	Store                storage.Store
+	Sink                 storage.LogSink
+	Tokens               *middleware.TokenManager
+	Secret               string
+	Auditor              *middleware.Auditor
+	AssistantApprovals   *ai.ApprovalStore
+	ClusterIdentity      *identity.MemoryIdentityService
+	ClusterDeployTasks   *deploy.TaskManager
+	ACMEIssuer           acme.Issuer
+	LoginCAPTCHAState    *loginCAPTCHAState
+	loginCAPTCHASecretMu sync.Mutex
+	loginCAPTCHASecret   string
+	clusterIdentityMu    sync.Mutex
+	clusterDeployTasksMu sync.Mutex
+	configMutationMu     sync.Mutex
+	StartedAt            time.Time
+	geoipMu              sync.Mutex
+	geoipCacheKey        string
+	geoipPolicy          *protectionip.GeoIPPolicy
+	geoipErrorKey        string
+	geoipRetryAfter      time.Time
+	diskUsageMu          sync.Mutex
+	diskUsageCache       map[string]cachedDirSize
+	OnSitesChanged       func([]config.SiteConfig)
+	OnProtectionChanged  func(config.ProtectionConfig) error
+	OnAPISecChanged      func(config.APISecConfig) error
+	OnBlockPageChanged   func(config.BlockPageConfig) error
 }
 
 type cachedDirSize struct {
@@ -68,6 +78,8 @@ type Options struct {
 	Secret              string
 	Auditor             *middleware.Auditor
 	AssistantApprovals  *ai.ApprovalStore
+	ClusterIdentity     *identity.MemoryIdentityService
+	ClusterDeployTasks  *deploy.TaskManager
 	ACMEIssuer          acme.Issuer
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
@@ -80,6 +92,7 @@ func New(opts Options) *Handler {
 	if approvals == nil {
 		approvals = ai.NewApprovalStore()
 	}
+	loginSecret := resolveLoginCAPTCHASecret(opts.Secret, opts.Config)
 	return &Handler{
 		Config:              opts.Config,
 		ConfigPath:          opts.ConfigPath,
@@ -89,8 +102,11 @@ func New(opts Options) *Handler {
 		Secret:              opts.Secret,
 		Auditor:             opts.Auditor,
 		AssistantApprovals:  approvals,
+		ClusterIdentity:     opts.ClusterIdentity,
+		ClusterDeployTasks:  opts.ClusterDeployTasks,
 		ACMEIssuer:          opts.ACMEIssuer,
 		LoginCAPTCHAState:   newLoginCAPTCHAState(),
+		loginCAPTCHASecret:  loginSecret,
 		StartedAt:           time.Now().UTC(),
 		diskUsageCache:      map[string]cachedDirSize{},
 		OnSitesChanged:      opts.OnSitesChanged,
@@ -154,16 +170,19 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req dto.CAPTCHAChallengeRequest
-	r.Body = http.MaxBytesReader(w, r.Body, loginCAPTCHAJSONBodyLimit)
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid captcha request")
+	if !decodeOptional(w, r, &req, loginCAPTCHAJSONBodyLimit, "invalid captcha request") {
 		return
 	}
 	mode := loginCaptchaRequestedMode(login.CAPTCHA, req.Mode)
+	secret := h.loginCaptchaSecret()
+	if secret == "" {
+		writeError(w, http.StatusInternalServerError, "CAPTCHA_SECRET_UNAVAILABLE", "captcha signing secret is unavailable")
+		return
+	}
 	response := map[string]any{"enabled": true, "mode": mode}
 	if loginCAPTCHARequiresPowForMode(login.CAPTCHA, mode) {
 		challenge, err := captcha.NewChallenge(captcha.Options{
-			Secret:    h.loginCaptchaSecret(),
+			Secret:    secret,
 			Purpose:   "admin-login",
 			ClientKey: loginCaptchaClientKey(r),
 			Path:      "admin-login",
@@ -178,7 +197,7 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 	}
 	if mode == "slider" {
 		slider, err := captcha.NewSliderChallenge(captcha.SliderOptions{
-			Secret:    h.loginCaptchaSecret(),
+			Secret:    secret,
 			Purpose:   "admin-login-slider",
 			ClientKey: loginCaptchaClientKey(r),
 			Path:      "admin-login",
@@ -277,6 +296,10 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 	if payload == nil {
 		return false
 	}
+	secret := h.loginCaptchaSecret()
+	if secret == "" {
+		return false
+	}
 	if mode == "slider" {
 		if payload.Slider == nil {
 			return false
@@ -293,7 +316,7 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 			return false
 		}
 		if !captcha.VerifySlider(captcha.SliderOptions{
-			Secret:    h.loginCaptchaSecret(),
+			Secret:    secret,
 			Purpose:   "admin-login-slider",
 			ClientKey: loginCaptchaClientKey(r),
 			Path:      "admin-login",
@@ -316,14 +339,14 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 			tracker.markProofUsed(proofKey, expires, now)
 			return true
 		}
-		if !verifyLoginCAPTCHAPow(r, h.loginCaptchaSecret(), login.CAPTCHA, mode, payload) {
+		if !verifyLoginCAPTCHAPow(r, secret, login.CAPTCHA, mode, payload) {
 			tracker.recordProofFailure(proofKey, expires, now)
 			return false
 		}
 		tracker.markProofUsed(proofKey, expires, now)
 		return true
 	}
-	return verifyLoginCAPTCHAPow(r, h.loginCaptchaSecret(), login.CAPTCHA, mode, payload)
+	return verifyLoginCAPTCHAPow(r, secret, login.CAPTCHA, mode, payload)
 }
 
 func verifyLoginCAPTCHAPow(r *http.Request, secret string, cfg config.LoginCAPTCHAConfig, mode string, payload *dto.CAPTCHAPayload) bool {
@@ -466,16 +489,28 @@ func loginCaptchaPayloadMode(cfg config.LoginCAPTCHAConfig, requested string) st
 }
 
 func (h *Handler) loginCaptchaSecret() string {
-	if h != nil && h.Secret != "" {
-		return h.Secret
+	if h == nil {
+		return resolveLoginCAPTCHASecret("", nil)
 	}
-	if h != nil && h.Config != nil && !config.IsWeakBotSecret(h.Config.Protection.Bot.Secret) {
-		return h.Config.Protection.Bot.Secret
+	h.loginCAPTCHASecretMu.Lock()
+	defer h.loginCAPTCHASecretMu.Unlock()
+	if h.loginCAPTCHASecret == "" {
+		h.loginCAPTCHASecret = resolveLoginCAPTCHASecret(h.Secret, h.Config)
+	}
+	return h.loginCAPTCHASecret
+}
+
+func resolveLoginCAPTCHASecret(authSecret string, cfg *config.Config) string {
+	if authSecret != "" {
+		return authSecret
+	}
+	if cfg != nil && !config.IsWeakBotSecret(cfg.Protection.Bot.Secret) {
+		return cfg.Protection.Bot.Secret
 	}
 	if secret, err := config.GenerateSecret(); err == nil {
 		return secret
 	}
-	return "cheesewaf-login-captcha"
+	return ""
 }
 
 func loginCaptchaClientKey(r *http.Request) string {
@@ -596,8 +631,42 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 
 func decode(w http.ResponseWriter, r *http.Request, dest any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, defaultJSONBodyLimit)
-	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(dest); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = errors.New("request body must contain exactly one JSON document")
+		}
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return false
+	}
+	return true
+}
+
+func decodeOptional(w http.ResponseWriter, r *http.Request, dest any, limit int64, invalidMessage string) bool {
+	if r.Body == nil {
+		return true
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(dest); err != nil {
+		if err == io.EOF {
+			return true
+		}
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", invalidMessage)
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		message := invalidMessage
+		if err == nil {
+			message = "request body must contain exactly one JSON document"
+		}
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", message)
 		return false
 	}
 	return true

@@ -136,6 +136,10 @@ func apiSecConfigView(in config.APISecConfig) config.APISecConfig {
 	out.Auth.JWTSharedSecret = ""
 	out.Auth.JWTPublicKeyPEM = ""
 	out.Auth.JWKSJSON = ""
+	out.ManagementAPI.Tokens = append([]config.ManagementAPITokenConfig(nil), in.ManagementAPI.Tokens...)
+	for idx := range out.ManagementAPI.Tokens {
+		out.ManagementAPI.Tokens[idx].Hash = ""
+	}
 	return out
 }
 
@@ -210,6 +214,28 @@ func preserveSystemSecrets(current config.Config, next *config.Config) {
 	if next.APISec.Auth.JWKSJSON == "" {
 		next.APISec.Auth.JWKSJSON = current.APISec.Auth.JWKSJSON
 	}
+	next.APISec.ManagementAPI.Tokens = preserveManagementAPITokenSecrets(current.APISec.ManagementAPI.Tokens, next.APISec.ManagementAPI.Tokens)
+}
+
+func preserveManagementAPITokenSecrets(current, next []config.ManagementAPITokenConfig) []config.ManagementAPITokenConfig {
+	byID := map[string]config.ManagementAPITokenConfig{}
+	for _, token := range current {
+		byID[token.ID] = token
+	}
+	for idx := range next {
+		if existing, ok := byID[next[idx].ID]; ok {
+			if next[idx].Hash == "" {
+				next[idx].Hash = existing.Hash
+			}
+			if next[idx].Prefix == "" {
+				next[idx].Prefix = existing.Prefix
+			}
+			if next[idx].CreatedAt.IsZero() {
+				next[idx].CreatedAt = existing.CreatedAt
+			}
+		}
+	}
+	return next
 }
 
 func preserveACMEDNSProviderSecrets(current, next []config.ACMEDNSProviderConfig) []config.ACMEDNSProviderConfig {

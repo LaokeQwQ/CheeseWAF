@@ -774,9 +774,49 @@ export type APISecAuthEndpointPolicyConfig = {
   enabled: boolean;
 };
 
+export type ManagementAPIToken = {
+  id: string;
+  name: string;
+  prefix: string;
+  scopes: string[];
+  notes?: string;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+  last_used_at?: string;
+  expires_at?: string;
+  revoked_at?: string;
+};
+
+export type ManagementAPIConfig = {
+  enabled: boolean;
+  tokens?: ManagementAPIToken[];
+};
+
+export type ManagementAPITokenList = {
+  enabled: boolean;
+  items: ManagementAPIToken[];
+  total: number;
+};
+
+export type CreateManagementAPITokenRequest = {
+  name: string;
+  scopes: string[];
+  ttl?: string;
+  expires_at?: string;
+  notes?: string;
+  enabled?: boolean;
+};
+
+export type CreateManagementAPITokenResponse = {
+  token: string;
+  item: ManagementAPIToken;
+};
+
 export type APISecSystemConfig = {
   enabled?: boolean;
   auth?: Partial<APISecAuthConfig>;
+  management_api?: Partial<ManagementAPIConfig>;
   discovery?: Record<string, unknown>;
   validation?: Record<string, unknown>;
   rate_limits?: Array<Record<string, unknown>>;
@@ -832,6 +872,7 @@ export type SystemConfig = {
     clickhouse: {
       enabled: boolean;
       endpoint: string;
+      allow_private_endpoint: boolean;
       database: string;
       table: string;
       username: string;
@@ -841,6 +882,7 @@ export type SystemConfig = {
     victorialogs: {
       enabled: boolean;
       endpoint: string;
+      allow_private_endpoint: boolean;
       timeout: number | string;
     };
     postgresql: {
@@ -852,6 +894,7 @@ export type SystemConfig = {
     elasticsearch: {
       enabled: boolean;
       endpoint: string;
+      allow_private_endpoint: boolean;
       index: string;
       username: string;
       password: string;
@@ -933,6 +976,7 @@ export type MapBoundaryConfig = {
   review_id: string;
   attribution: string;
   allow_insecure: boolean;
+  allow_private: boolean;
 };
 
 export type MapBoundaryResponse = {
@@ -982,6 +1026,178 @@ export type HostStats = {
 export type HealthStatus = {
   status: string;
   uptime_seconds: number;
+};
+
+export type ClusterStatus = {
+  mode: 'standalone' | 'single-node' | 'dual-node-load-balancing' | 'minimum-ha' | 'multi-node-ha' | string;
+  enabled: boolean;
+  cluster_id?: string;
+  node_id?: string;
+  product_mode_label: string;
+  can_write_config: boolean;
+  can_receive_traffic: boolean;
+  majority_confirmed: boolean;
+  node_count: number;
+  waf_node_count: number;
+  monitor_node_count: number;
+  consensus_provider: string;
+  protection_mode_reason?: string;
+};
+
+export type ClusterJoinToken = {
+  id: string;
+  value?: string;
+  role: 'waf' | 'monitor' | string;
+  expires_at: string;
+  max_uses: number;
+  used_count: number;
+  created_at: string;
+  revoked: boolean;
+};
+
+export type ClusterJoinTokenList = {
+  items: ClusterJoinToken[];
+  total: number;
+};
+
+export type ClusterJoinTokenCreateRequest = {
+  role: 'waf' | 'monitor' | string;
+  ttl: string;
+  max_uses: number;
+};
+
+export type ClusterNodeRegistration = {
+  node_id: string;
+  role: 'waf' | 'monitor' | string;
+  cluster_id: string;
+  advertise_addr: string;
+  joined_at: string;
+  certificate_serial: string;
+  certificate_expiry: string;
+  revoked: boolean;
+  revoked_reason?: string;
+};
+
+export type ClusterNodeList = {
+  items: ClusterNodeRegistration[];
+  total: number;
+};
+
+export type ClusterNodeCertificateRotateRequest = {
+  csr: string;
+};
+
+export type ClusterNodeCertificateRotateResponse = {
+  certificates: {
+    ca: string;
+    cert: string;
+    key?: string;
+  };
+  node: ClusterNodeRegistration;
+};
+
+export type ClusterDeploymentRequest = {
+  host: string;
+  user: string;
+  port: number;
+  password?: string;
+  private_key?: string;
+  host_key_sha256?: string;
+  action?: 'check' | 'install' | 'restart-service' | string;
+};
+
+export type ClusterDeploymentCheckResult = {
+  ok: boolean;
+  host: string;
+  user: string;
+  port: number;
+  command: string[];
+  message?: string;
+  checked_at: string;
+};
+
+export type ClusterDeploymentRunResult = {
+  ok: boolean;
+  host: string;
+  started_at: string;
+  finished_at: string;
+  output?: string;
+  output_truncated?: boolean;
+};
+
+export type ClusterDeploymentTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | string;
+
+export type ClusterDeploymentTaskEvent = {
+  at?: string;
+  timestamp?: string;
+  event?: string;
+  stage?: string;
+  status?: ClusterDeploymentTaskStatus;
+  message?: string;
+};
+
+export type ClusterDeploymentCompensationResult = {
+  attempted: boolean;
+  status: 'not_applicable' | 'succeeded' | 'failed' | string;
+  action?: string;
+  message?: string;
+  started_at?: string;
+  finished_at?: string;
+  output?: string;
+  output_truncated?: boolean;
+  error?: string;
+};
+
+export type ClusterDeploymentTask = {
+  id: string;
+  action: 'check' | 'install' | 'restart-service' | string;
+  host: string;
+  user: string;
+  port: number;
+  status: ClusterDeploymentTaskStatus;
+  stage: string;
+  command?: string[];
+  message?: string;
+  output?: string;
+  output_truncated?: boolean;
+  error?: string;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+  check_result?: ClusterDeploymentCheckResult;
+  deploy_result?: ClusterDeploymentRunResult;
+  compensation_result?: ClusterDeploymentCompensationResult;
+  events?: ClusterDeploymentTaskEvent[];
+};
+
+export type ClusterDeploymentTaskList = {
+  items: ClusterDeploymentTask[];
+  total: number;
+};
+
+export type ClusterAuditEntry = {
+  id: string;
+  source: 'management_api' | 'deploy_task' | 'cluster_join' | string;
+  event_type: string;
+  action?: string;
+  status?: string;
+  status_code?: number;
+  actor?: string;
+  role?: string;
+  method?: string;
+  path?: string;
+  remote_ip?: string;
+  target?: string;
+  message?: string;
+  task_id?: string;
+  node_id?: string;
+  latency_ms?: number;
+  timestamp: string;
+};
+
+export type ClusterAuditList = {
+  items: ClusterAuditEntry[];
+  total: number;
 };
 
 export type Alert = {
