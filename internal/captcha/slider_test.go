@@ -41,7 +41,8 @@ func TestSliderChallengeVerifiesUserDrag(t *testing.T) {
 	if !VerifySlider(opts, SliderPayload{Token: challenge.Token, X: token.TargetX + opts.Tolerance, DragMS: int(opts.MinDrag/time.Millisecond) + 50}) {
 		t.Fatal("expected solved slider payload to verify")
 	}
-	goodTrack := `[{"x":0,"y":20,"t":0,"type":"down"},{"x":80,"y":21,"t":180,"type":"move"},{"x":` + strconv.Itoa(token.TargetX) + `,"y":22,"t":520,"type":"up"}]`
+	midX := token.TargetX / 2
+	goodTrack := `[{"x":0,"y":20,"t":0,"type":"down"},{"x":` + strconv.Itoa(midX) + `,"y":21,"t":180,"type":"move"},{"x":` + strconv.Itoa(token.TargetX) + `,"y":22,"t":520,"type":"up"}]`
 	if !VerifySlider(opts, SliderPayload{Token: challenge.Token, X: token.TargetX, DragMS: int(opts.MinDrag/time.Millisecond) + 80, Track: goodTrack}) {
 		t.Fatal("expected solved slider payload with behavior track to verify")
 	}

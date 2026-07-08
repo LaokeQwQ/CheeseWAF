@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -447,6 +448,55 @@ func TestAnalyzeLogStreamEmitsProviderTraceAndDone(t *testing.T) {
 	}
 }
 
+func TestAnalyzeLogStreamFallsBackToDoneWhenProviderFails(t *testing.T) {
+	sink := &filteringAISink{items: []storage.LogEntry{{
+		ID:        "event-stream-provider-fail",
+		TraceID:   "trace-stream-provider-fail",
+		Action:    "block",
+		Category:  "xss",
+		Severity:  "medium",
+		Method:    http.MethodPost,
+		URI:       "/comment",
+		ClientIP:  "203.0.113.20",
+		Timestamp: time.Date(2026, 6, 11, 10, 5, 0, 0, time.UTC),
+	}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad api key", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = server.URL
+	cfg.AI.AllowPrivateAPIBase = true
+	cfg.AI.APIKey = "bad-secret"
+	cfg.AI.Model = "test-model"
+	handler := New(Options{Config: &cfg, Sink: sink})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/analyze/stream", bytes.NewReader([]byte(`{"reference":"trace-stream-provider-fail","language":"en-US"}`)))
+	handler.AnalyzeLogStream(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected stream fallback ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"event: trace",
+		"event: done",
+		`"log_id":"event-stream-provider-fail"`,
+		`"ai_used":false`,
+		"Provider error",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("fallback stream missing %q in body:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "event: error") {
+		t.Fatalf("provider failure should be returned as heuristic done result, got body:\n%s", body)
+	}
+}
+
 func TestAIAssistantReturnsRealToolExecutions(t *testing.T) {
 	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
 	sink := &filteringAISink{items: []storage.LogEntry{{
@@ -646,6 +696,44 @@ func TestAIAssistantAllowsNonStreamingResponsePastServerWriteTimeout(t *testing.
 	}
 	if !strings.Contains(string(body), "OK after delay") {
 		t.Fatalf("expected delayed AI answer, body=%s", body)
+	}
+}
+
+func TestProviderStreamEmitterEmitsRepeatedWaitingProgress(t *testing.T) {
+	oldSlowAfter := providerFirstEventSlowAfter
+	oldProgressInterval := providerWaitingProgressInterval
+	providerFirstEventSlowAfter = 5 * time.Millisecond
+	providerWaitingProgressInterval = 5 * time.Millisecond
+	t.Cleanup(func() {
+		providerFirstEventSlowAfter = oldSlowAfter
+		providerWaitingProgressInterval = oldProgressInterval
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan ai.AssistantTraceEvent, 4)
+	_, stop := providerStreamEmitter(ctx, "zh-CN", "planning", func(event ai.AssistantTraceEvent) {
+		events <- event
+	})
+	defer stop()
+
+	want := []string{"provider_first_event_slow", "provider_waiting_progress"}
+	got := make([]string, 0, len(want))
+	deadline := time.After(100 * time.Millisecond)
+	for len(got) < len(want) {
+		select {
+		case event := <-events:
+			if event.Type == "provider_first_event_slow" || event.Type == "provider_waiting_progress" {
+				got = append(got, event.Type)
+			}
+		case <-deadline:
+			t.Fatalf("expected repeated provider waiting progress %v, got %v", want, got)
+		}
+	}
+	for index, wantType := range want {
+		if got[index] != wantType {
+			t.Fatalf("event %d = %q, want %q; all=%v", index, got[index], wantType, got)
+		}
 	}
 }
 

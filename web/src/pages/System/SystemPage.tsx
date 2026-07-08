@@ -3,24 +3,30 @@ import {
   Input,
   InputNumber,
   Message as ArcoMessage,
+  Popconfirm,
   Select,
   Space,
   Switch,
+  Table,
   Tabs,
+  Tag,
 } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Database, Image, KeyRound, MapPinned, Plus, ServerCog, ShieldAlert, Trash2 } from 'lucide-react';
+import { Copy, Database, Image, KeyRound, MapPinned, Plus, ServerCog, ShieldAlert, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  createManagementAPIToken,
   fetchSystemConfig,
+  fetchManagementAPITokens,
+  revokeManagementAPIToken,
   testStorageBackend,
   updateSystemConfig,
 } from '../../api/client';
 import i18n from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
-import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, SystemConfig } from '../../types/api';
+import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, ManagementAPIConfig, ManagementAPIToken, SystemConfig } from '../../types/api';
 import { durationMilliseconds, durationSeconds, fallbackSystem, millisecondsToDuration, normalizeSystem, secondsToDuration } from './systemModel';
 
 export default function SystemPage() {
@@ -31,7 +37,10 @@ export default function SystemPage() {
   const setTheme = useAppStore((state) => state.setTheme);
   const setLanguage = useAppStore((state) => state.setLanguage);
   const [system, setSystem] = useState<SystemConfig>(fallbackSystem);
+  const [apiTokenDraft, setAPITokenDraft] = useState({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
+  const [latestAPIToken, setLatestAPIToken] = useState('');
   const { data } = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
+  const apiTokensQuery = useQuery({ queryKey: ['management-api-tokens'], queryFn: fetchManagementAPITokens, retry: false });
 
   useEffect(() => {
     if (data) {
@@ -44,6 +53,7 @@ export default function SystemPage() {
     onSuccess: (saved) => {
       setSystem(normalizeSystem(saved));
       queryClient.invalidateQueries({ queryKey: ['system'] });
+      queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
       ArcoMessage.success(t('system.saved'));
     },
     onError: (error) => ArcoMessage.error(error.message),
@@ -100,6 +110,8 @@ export default function SystemPage() {
     }));
   };
   const apiAuth = useMemo(() => readAPIAuth(system), [system]);
+  const managementAPI = useMemo(() => readManagementAPI(system), [system]);
+  const apiTokens = apiTokensQuery.data?.items ?? managementAPI.tokens ?? [];
   const patchAPISec = (patch: Partial<SystemConfig['apisec']>) => {
     setSystem((current) => normalizeSystem({ ...current, apisec: { ...current.apisec, ...patch } }));
   };
@@ -111,6 +123,18 @@ export default function SystemPage() {
         apisec: {
           ...current.apisec,
           auth: { ...auth, ...patch },
+        },
+      });
+    });
+  };
+  const patchManagementAPI = (patch: Partial<ManagementAPIConfig>) => {
+    setSystem((current) => {
+      const management = readManagementAPI(current);
+      return normalizeSystem({
+        ...current,
+        apisec: {
+          ...current.apisec,
+          management_api: { ...management, ...patch },
         },
       });
     });
@@ -139,6 +163,48 @@ export default function SystemPage() {
   };
   const removeAPIAuthEndpoint = (index: number) => {
     patchAPIAuth({ endpoint_policies: apiAuth.endpoint_policies.filter((_, policyIndex) => policyIndex !== index) });
+  };
+  const createAPITokenMutation = useMutation({
+    mutationFn: createManagementAPIToken,
+    onSuccess: (result) => {
+      setLatestAPIToken(result.token);
+      setAPITokenDraft({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
+      queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
+      queryClient.invalidateQueries({ queryKey: ['system'] });
+      ArcoMessage.success(t('system.apiTokenCreated'));
+    },
+    onError: (error) => ArcoMessage.error(error.message),
+  });
+  const revokeAPITokenMutation = useMutation({
+    mutationFn: revokeManagementAPIToken,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
+      queryClient.invalidateQueries({ queryKey: ['system'] });
+      ArcoMessage.success(t('system.apiTokenRevoked'));
+    },
+    onError: (error) => ArcoMessage.error(error.message),
+  });
+  const submitAPIToken = () => {
+    if (latestAPIToken) {
+      ArcoMessage.warning(t('system.apiTokenClearBeforeCreate'));
+      return;
+    }
+    const name = apiTokenDraft.name.trim();
+    if (!name) {
+      ArcoMessage.warning(t('system.apiTokenNameRequired'));
+      return;
+    }
+    if (apiTokenDraft.scopes.length === 0) {
+      ArcoMessage.warning(t('system.apiTokenScopesRequired'));
+      return;
+    }
+    createAPITokenMutation.mutate({
+      name,
+      scopes: apiTokenDraft.scopes,
+      ttl: apiTokenDraft.ttl || undefined,
+      notes: apiTokenDraft.notes.trim() || undefined,
+      enabled: true,
+    });
   };
 
   return (
@@ -442,6 +508,13 @@ export default function SystemPage() {
                         onChange={(allow_insecure) => patchChinaBoundary({ allow_insecure })}
                       />
                     </label>
+                    <label className="switch-line">
+                      <span>{t('system.mapBoundaryAllowPrivate')}</span>
+                      <Switch
+                        checked={system.console.map.china_boundary.allow_private}
+                        onChange={(allow_private) => patchChinaBoundary({ allow_private })}
+                      />
+                    </label>
                   </div>
                 </section>
               </div>
@@ -471,6 +544,7 @@ export default function SystemPage() {
 
                 <StoragePanel title="Elasticsearch" enabled={system.storage.elasticsearch.enabled} onToggle={(enabled) => patchStorage('elasticsearch', { enabled })} action={() => storageTestMutation.mutate('elasticsearch')} loading={storageTestMutation.isPending}>
                   <label><span>{t('system.endpoint')}</span><Input value={system.storage.elasticsearch.endpoint} onChange={(endpoint) => patchStorage('elasticsearch', { endpoint })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.elasticsearch.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('elasticsearch', { allow_private_endpoint })} /></label>
                   <label><span>{t('system.index')}</span><Input value={system.storage.elasticsearch.index} onChange={(index) => patchStorage('elasticsearch', { index })} /></label>
                   <label><span>{t('setup.username')}</span><Input value={system.storage.elasticsearch.username} onChange={(username) => patchStorage('elasticsearch', { username })} /></label>
                   <label><span>{t('system.apiKey')}</span><Input.Password value={system.storage.elasticsearch.api_key} onChange={(api_key) => patchStorage('elasticsearch', { api_key })} /></label>
@@ -479,6 +553,7 @@ export default function SystemPage() {
 
                 <StoragePanel title="ClickHouse" enabled={system.storage.clickhouse.enabled} onToggle={(enabled) => patchStorage('clickhouse', { enabled })} action={() => storageTestMutation.mutate('clickhouse')} loading={storageTestMutation.isPending}>
                   <label><span>{t('system.endpoint')}</span><Input value={system.storage.clickhouse.endpoint} onChange={(endpoint) => patchStorage('clickhouse', { endpoint })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.clickhouse.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('clickhouse', { allow_private_endpoint })} /></label>
                   <label><span>{t('system.database')}</span><Input value={system.storage.clickhouse.database} onChange={(database) => patchStorage('clickhouse', { database })} /></label>
                   <label><span>{t('system.table')}</span><Input value={system.storage.clickhouse.table} onChange={(table) => patchStorage('clickhouse', { table })} /></label>
                   <label><span>{t('setup.username')}</span><Input value={system.storage.clickhouse.username} onChange={(username) => patchStorage('clickhouse', { username })} /></label>
@@ -486,6 +561,7 @@ export default function SystemPage() {
 
                 <StoragePanel title="VictoriaLogs" enabled={system.storage.victorialogs.enabled} onToggle={(enabled) => patchStorage('victorialogs', { enabled })} action={() => storageTestMutation.mutate('victorialogs')} loading={storageTestMutation.isPending}>
                   <label><span>{t('system.endpoint')}</span><Input value={system.storage.victorialogs.endpoint} onChange={(endpoint) => patchStorage('victorialogs', { endpoint })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.victorialogs.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('victorialogs', { allow_private_endpoint })} /></label>
                   <label><span>{t('system.timeoutSeconds')}</span><InputNumber value={durationSeconds(system.storage.victorialogs.timeout)} min={1} max={120} onChange={(value) => patchStorage('victorialogs', { timeout: secondsToDuration(value) })} /></label>
                 </StoragePanel>
               </div>
@@ -530,6 +606,89 @@ export default function SystemPage() {
                       <Input value={joinList(apiAuth.required_scopes)} placeholder="orders:read, admin:read" onChange={(value) => patchAPIAuth({ required_scopes: splitList(value) })} />
                     </label>
                   </div>
+                </section>
+
+                <section className="system-fieldset management-api-fieldset">
+                  <header className="fieldset-header-action">
+                    <div>
+                      <strong><KeyRound size={15} /> {t('system.managementAPI')}</strong>
+                      <span>{t('system.managementAPIHint')}</span>
+                    </div>
+                    <Switch checked={managementAPI.enabled} onChange={(enabled) => patchManagementAPI({ enabled })} />
+                  </header>
+                  <div className="api-token-create-grid">
+                    <label>
+                      <span>{t('system.apiTokenName')}</span>
+                      <Input value={apiTokenDraft.name} placeholder={t('system.apiTokenNamePlaceholder')} onChange={(name) => setAPITokenDraft((draft) => ({ ...draft, name }))} />
+                    </label>
+                    <label>
+                      <span>{t('system.apiTokenScopes')}</span>
+                      <Select
+                        mode="multiple"
+                        allowCreate
+                        value={apiTokenDraft.scopes}
+                        placeholder="read:system"
+                        onChange={(scopes) => setAPITokenDraft((draft) => ({ ...draft, scopes: Array.isArray(scopes) ? scopes.map(String) : [] }))}
+                      >
+                        {apiTokenScopeOptions.map((scope) => <Select.Option key={scope} value={scope}>{scope}</Select.Option>)}
+                      </Select>
+                    </label>
+                    <label>
+                      <span>{t('system.apiTokenTTL')}</span>
+                      <Select value={apiTokenDraft.ttl} allowCreate onChange={(ttl) => setAPITokenDraft((draft) => ({ ...draft, ttl: String(ttl ?? '') }))}>
+                        <Select.Option value="1h">1h</Select.Option>
+                        <Select.Option value="24h">24h</Select.Option>
+                        <Select.Option value="168h">7d</Select.Option>
+                        <Select.Option value="720h">30d</Select.Option>
+                        <Select.Option value="">{t('system.apiTokenNoExpiry')}</Select.Option>
+                      </Select>
+                    </label>
+                    <label className="wide-field">
+                      <span>{t('system.apiTokenNotes')}</span>
+                      <Input value={apiTokenDraft.notes} placeholder={t('system.apiTokenNotesPlaceholder')} onChange={(notes) => setAPITokenDraft((draft) => ({ ...draft, notes }))} />
+                    </label>
+                    <Button type="primary" loading={createAPITokenMutation.isPending} disabled={!managementAPI.enabled || Boolean(latestAPIToken)} onClick={submitAPIToken}>
+                      {t('system.createAPIToken')}
+                    </Button>
+                  </div>
+                  {latestAPIToken && (
+                    <div className="cluster-result-note cluster-result-note-ok api-token-secret">
+                      <strong>{t('system.apiTokenSecretTitle')}</strong>
+                      <span>{t('system.apiTokenSecretHint')}</span>
+                      <code>{latestAPIToken}</code>
+                      <div className="cluster-token-actions">
+                        <Button icon={<Copy size={15} />} onClick={() => void copyText(latestAPIToken, t('system.apiTokenCopied'), t('system.apiTokenCopyFailed'))}>{t('system.copyAPIToken')}</Button>
+                        <Button onClick={() => {
+                          setLatestAPIToken('');
+                          ArcoMessage.success(t('system.apiTokenCleared'));
+                        }}>{t('system.clearAPIToken')}</Button>
+                      </div>
+                    </div>
+                  )}
+                  <Table
+                    rowKey="id"
+                    loading={apiTokensQuery.isFetching}
+                    pagination={{ pageSize: 6, sizeCanChange: true }}
+                    data={apiTokens}
+                    columns={[
+                      { title: t('system.apiTokenName'), dataIndex: 'name', render: (name: string, item: ManagementAPIToken) => <div className="api-token-name"><strong>{name}</strong><span>{item.prefix}</span></div> },
+                      { title: t('system.apiTokenScopes'), dataIndex: 'scopes', render: (scopes: string[]) => <span className="api-token-scope-list">{(scopes || []).map((scope) => <Tag key={scope}>{scope}</Tag>)}</span> },
+                      { title: t('system.apiTokenExpires'), dataIndex: 'expires_at', render: (value: string) => formatSystemTimestamp(value, t('system.apiTokenNoExpiry')) },
+                      { title: t('common.status'), render: (_: unknown, item: ManagementAPIToken) => <Tag color={item.enabled ? 'green' : 'gray'}>{item.enabled ? t('system.enabled') : t('system.disabled')}</Tag> },
+                      {
+                        title: t('common.actions'),
+                        render: (_: unknown, item: ManagementAPIToken) => (
+                          <Popconfirm
+                            title={t('system.apiTokenRevokeConfirmTitle')}
+                            content={t('system.apiTokenRevokeConfirm')}
+                            onOk={() => revokeAPITokenMutation.mutate(item.id)}
+                          >
+                            <Button size="mini" status="danger" disabled={!item.enabled} loading={revokeAPITokenMutation.isPending}>{t('common.revoke')}</Button>
+                          </Popconfirm>
+                        ),
+                      },
+                    ]}
+                  />
                 </section>
 
                 <section className="system-fieldset">
@@ -664,6 +823,33 @@ function readAPIAuth(system: SystemConfig): APISecAuthConfig {
   };
 }
 
+function readManagementAPI(system: SystemConfig): ManagementAPIConfig {
+  const management = system.apisec.management_api ?? {};
+  return {
+    enabled: Boolean(management.enabled),
+    tokens: Array.isArray(management.tokens) ? management.tokens : [],
+  };
+}
+
+const apiTokenScopeOptions = [
+  'read:system',
+  'write:system',
+  'read:monitor',
+  'read:logs',
+  'read:sites',
+  'write:sites',
+  'read:rules',
+  'write:rules',
+  'read:protection',
+  'write:protection',
+  'read:apisec',
+  'write:apisec',
+  'read:ai',
+  'write:ai',
+  'read:*',
+  'write:*',
+];
+
 function endpointPoliciesValue(value: unknown): APISecAuthEndpointPolicyConfig[] {
   if (!Array.isArray(value)) {
     return [];
@@ -702,6 +888,24 @@ function splitList(value: string) {
 
 function joinList(value: string[]) {
   return value.join(', ');
+}
+
+async function copyText(value: string, successMessage: string, failureMessage: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    ArcoMessage.success(successMessage);
+  } catch {
+    ArcoMessage.error(failureMessage);
+  }
+}
+
+function formatSystemTimestamp(value: string | undefined, fallback = '') {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
 }
 
 function StoragePanel({

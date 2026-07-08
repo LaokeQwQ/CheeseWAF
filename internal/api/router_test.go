@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -160,6 +162,156 @@ func TestRouterPrometheusMetricsCanBeExplicitlyPublic(t *testing.T) {
 	}
 }
 
+func TestRouterManagementAPITokenLifecycleAndScopes(t *testing.T) {
+	router, cfg, _, adminToken, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.ManagementAPI.Enabled = true
+	})
+
+	createBody := []byte(`{"name":"readonly automation","scopes":["read:system"],"ttl":"1h"}`)
+	created := perform(router, http.MethodPost, "/api/system/api-tokens", adminToken, createBody)
+	if created.Code != http.StatusOK {
+		t.Fatalf("expected api token creation to succeed, got %d: %s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Token string `json:"token"`
+			Item  struct {
+				ID     string   `json:"id"`
+				Name   string   `json:"name"`
+				Scopes []string `json:"scopes"`
+				Hash   string   `json:"hash"`
+			} `json:"item"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode create token response: %v", err)
+	}
+	if envelope.Data.Token == "" || envelope.Data.Item.ID == "" {
+		t.Fatalf("create response must include one-time token and item id: %+v", envelope.Data)
+	}
+	if envelope.Data.Item.Hash != "" {
+		t.Fatalf("create response must not expose persisted token hash: %+v", envelope.Data.Item)
+	}
+	if len(cfg.APISec.ManagementAPI.Tokens) != 1 {
+		t.Fatalf("expected one persisted api token, got %+v", cfg.APISec.ManagementAPI.Tokens)
+	}
+	if cfg.APISec.ManagementAPI.Tokens[0].Hash == "" || cfg.APISec.ManagementAPI.Tokens[0].Hash == envelope.Data.Token {
+		t.Fatalf("config must persist only a non-raw hash, got %+v", cfg.APISec.ManagementAPI.Tokens[0])
+	}
+
+	read := perform(router, http.MethodGet, "/api/system", envelope.Data.Token, nil)
+	if read.Code != http.StatusOK {
+		t.Fatalf("scoped api token should read system config, got %d: %s", read.Code, read.Body.String())
+	}
+	if cfg.APISec.ManagementAPI.Tokens[0].LastUsedAt.IsZero() {
+		t.Fatal("successful api token use should record last_used_at")
+	}
+	if bytes.Contains(read.Body.Bytes(), []byte(envelope.Data.Token)) || bytes.Contains(read.Body.Bytes(), []byte(cfg.APISec.ManagementAPI.Tokens[0].Hash)) {
+		t.Fatalf("system response leaked api token secret material: %s", read.Body.String())
+	}
+
+	write := perform(router, http.MethodPut, "/api/system", envelope.Data.Token, []byte(`{}`))
+	if write.Code != http.StatusForbidden {
+		t.Fatalf("read-only api token must not mutate system config, got %d: %s", write.Code, write.Body.String())
+	}
+
+	revoke := perform(router, http.MethodDelete, "/api/system/api-tokens/"+envelope.Data.Item.ID, adminToken, nil)
+	if revoke.Code != http.StatusOK {
+		t.Fatalf("expected revoke to succeed, got %d: %s", revoke.Code, revoke.Body.String())
+	}
+	after := perform(router, http.MethodGet, "/api/system", envelope.Data.Token, nil)
+	if after.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked api token must be rejected, got %d: %s", after.Code, after.Body.String())
+	}
+}
+
+func TestRouterManagementAPITokenCreateRequiresFeatureEnabled(t *testing.T) {
+	router, _, _, adminToken, _ := newAuthzTestRouterState(t, nil)
+
+	created := perform(router, http.MethodPost, "/api/system/api-tokens", adminToken, []byte(`{"name":"disabled automation","scopes":["read:system"],"ttl":"1h"}`))
+	if created.Code != http.StatusBadRequest {
+		t.Fatalf("disabled management api must reject token creation, got %d: %s", created.Code, created.Body.String())
+	}
+	if !bytes.Contains(created.Body.Bytes(), []byte("API_TOKEN_DISABLED")) {
+		t.Fatalf("expected API_TOKEN_DISABLED, body=%s", created.Body.String())
+	}
+}
+
+func TestRouterManagementAPITokenRejectsExpiredConfiguredToken(t *testing.T) {
+	rawToken := "cwapi_test_expired_secret"
+	router, _, _, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.ManagementAPI.Enabled = true
+		cfg.APISec.ManagementAPI.Tokens = []config.ManagementAPITokenConfig{{
+			ID:        "expired-token",
+			Name:      "expired automation",
+			Prefix:    "cwapi_test",
+			Hash:      middleware.HashManagementAPIToken(rawToken),
+			Scopes:    []string{"read:system"},
+			Enabled:   true,
+			ExpiresAt: time.Now().UTC().Add(-time.Minute),
+		}}
+	})
+
+	read := perform(router, http.MethodGet, "/api/system", rawToken, nil)
+	if read.Code != http.StatusUnauthorized {
+		t.Fatalf("expired api token must be rejected, got %d: %s", read.Code, read.Body.String())
+	}
+}
+
+func TestRouterManagementAPITokenAuditIncludesStableSubject(t *testing.T) {
+	router, _, _, adminToken, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.ManagementAPI.Enabled = true
+		cfg.APISec.Audit.Enabled = true
+	})
+
+	created := perform(router, http.MethodPost, "/api/system/api-tokens", adminToken, []byte(`{"name":"audit automation","scopes":["read:system"],"ttl":"1h"}`))
+	if created.Code != http.StatusOK {
+		t.Fatalf("expected api token creation to succeed, got %d: %s", created.Code, created.Body.String())
+	}
+	var createdEnvelope struct {
+		Data struct {
+			Token string `json:"token"`
+			Item  struct {
+				ID string `json:"id"`
+			} `json:"item"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createdEnvelope); err != nil {
+		t.Fatalf("decode create token response: %v", err)
+	}
+	if createdEnvelope.Data.Token == "" || createdEnvelope.Data.Item.ID == "" {
+		t.Fatalf("expected token and id in create response: %+v", createdEnvelope.Data)
+	}
+
+	read := perform(router, http.MethodGet, "/api/system", createdEnvelope.Data.Token, nil)
+	if read.Code != http.StatusOK {
+		t.Fatalf("api token should read system config, got %d: %s", read.Code, read.Body.String())
+	}
+
+	audit := perform(router, http.MethodGet, "/api/audit", adminToken, nil)
+	if audit.Code != http.StatusOK {
+		t.Fatalf("admin should read audit entries, got %d: %s", audit.Code, audit.Body.String())
+	}
+	var auditEnvelope struct {
+		Data []struct {
+			Subject string `json:"subject"`
+			User    string `json:"user"`
+			Role    string `json:"role"`
+			Path    string `json:"path"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(audit.Body).Decode(&auditEnvelope); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	wantSubject := "api-token:" + createdEnvelope.Data.Item.ID
+	for _, entry := range auditEnvelope.Data {
+		if entry.Path == "/api/system" && entry.Subject == wantSubject && entry.Role == "api_token" {
+			return
+		}
+	}
+	t.Fatalf("expected audit entry for %s on /api/system, got %+v", wantSubject, auditEnvelope.Data)
+}
+
 func TestRouterLoginCAPTCHAIsEnabledByDefault(t *testing.T) {
 	router, _, _ := newAuthzTestRouter(t)
 
@@ -185,6 +337,39 @@ func TestRouterLoginCAPTCHAIsEnabledByDefault(t *testing.T) {
 	recorder := perform(router, http.MethodPost, "/api/auth/login", "", body)
 	if recorder.Code != http.StatusUnauthorized || !bytes.Contains(recorder.Body.Bytes(), []byte("INVALID_CAPTCHA")) {
 		t.Fatalf("expected missing captcha to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRouterLoginCAPTCHAUsesStableEphemeralSecretWhenRuntimeSecretMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Mode = "pow"
+	cfg.Protection.Bot.Secret = config.BotSecretPlaceholder
+	cfg.APISec.Audit.Enabled = false
+	cfg.Storage.SQLite.Path = filepath.Join(tempDir, "cheesewaf.db")
+	cfg.Logging.Output.File.Path = filepath.Join(tempDir, "access.log")
+	configPath := filepath.Join(tempDir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	router := NewRouter(Options{Config: &cfg, ConfigPath: configPath, Store: store})
+
+	payload := solveLoginCAPTCHA(t, router)
+	if payload == nil {
+		t.Fatal("expected a login captcha payload")
+	}
+	body, _ := json.Marshal(payload)
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha/verify", "", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected captcha signed with ephemeral secret to verify, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -268,6 +453,18 @@ func TestRouterSliderCAPTCHADoesNotIssuePowByDefault(t *testing.T) {
 	}
 	if envelope.Data.Slider == nil || envelope.Data.Slider.Token == "" || envelope.Data.Slider.Image == "" {
 		t.Fatalf("expected real slider challenge, got %+v", envelope.Data.Slider)
+	}
+}
+
+func TestRouterLoginCAPTCHARejectsTrailingJSONDocument(t *testing.T) {
+	router, _, _ := newAuthzTestRouter(t)
+
+	recorder := perform(router, http.MethodPost, "/api/auth/captcha", "", []byte(`{} {}`))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected trailing JSON captcha request to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("exactly one JSON document")) {
+		t.Fatalf("expected explicit trailing JSON error, body=%s", recorder.Body.String())
 	}
 }
 
@@ -571,13 +768,19 @@ func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
 }
 
 func newAuthzTestRouter(t *testing.T) (http.Handler, string, string) {
-	return newAuthzTestRouterWithConfig(t, func(cfg *config.Config) {
+	router, _, _, adminToken, readerToken := newAuthzTestRouterState(t, func(cfg *config.Config) {
 		cfg.Monitor.Prometheus.Enabled = true
 		cfg.Monitor.Prometheus.Public = false
 	})
+	return router, adminToken, readerToken
 }
 
 func newAuthzTestRouterWithConfig(t *testing.T, mutate func(*config.Config)) (http.Handler, string, string) {
+	router, _, _, adminToken, readerToken := newAuthzTestRouterState(t, mutate)
+	return router, adminToken, readerToken
+}
+
+func newAuthzTestRouterState(t *testing.T, mutate func(*config.Config)) (http.Handler, *config.Config, storage.Store, string, string) {
 	t.Helper()
 	tempDir := t.TempDir()
 	cfg := config.Default()
@@ -611,7 +814,7 @@ func newAuthzTestRouterWithConfig(t *testing.T, mutate func(*config.Config)) (ht
 	})
 	adminToken := loginAuthzUser(t, router, "admin", "admin-password")
 	readerToken := loginAuthzUser(t, router, "reader", "reader-password")
-	return router, adminToken, readerToken
+	return router, &cfg, store, adminToken, readerToken
 }
 
 func createAuthzUser(t *testing.T, store storage.Store, id, username, password, role string) {

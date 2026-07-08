@@ -107,6 +107,51 @@ func TestDefaultTemplateSupportsJapaneseFallback(t *testing.T) {
 	}
 }
 
+func TestErrorTemplateLocalizesFromAcceptLanguage(t *testing.T) {
+	tests := []struct {
+		name   string
+		accept string
+		locale string
+		want   []string
+	}{
+		{
+			name:   "zh-CN",
+			accept: "zh-CN,zh;q=0.9,en;q=0.1",
+			locale: "zh-CN",
+			want:   []string{`<html lang="zh-CN"`, "服务错误", "受保护服务返回错误", "CheeseWAF 未能完成对受保护源站的请求。", "错误已记录", "已记录"},
+		},
+		{
+			name:   "ja",
+			accept: "ja,en;q=0.5",
+			locale: "ja",
+			want:   []string{`<html lang="ja"`, "サービスエラー", "保護対象サービスでエラーが発生しました", "CheeseWAF は保護対象オリジンへのリクエストを完了できませんでした。", "エラー記録済み", "記録済み"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			renderer := NewRenderer()
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "https://example.test/upstream", nil)
+			req.Header.Set("Accept-Language", tt.accept)
+			renderer.RenderRequest(recorder, req, http.StatusBadGateway, Data{
+				TraceID:    "cw-error-visible",
+				AttackType: "upstream_error",
+				ClientIP:   "198.51.100.11",
+				Timestamp:  time.Unix(0, 0).UTC(),
+			})
+			if recorder.Header().Get("Content-Language") != tt.locale {
+				t.Fatalf("expected %s content language, got %q", tt.locale, recorder.Header().Get("Content-Language"))
+			}
+			body := recorder.Body.String()
+			for _, want := range append(tt.want, "cw-error-visible", "502 Bad Gateway") {
+				if !strings.Contains(body, want) {
+					t.Fatalf("localized error page missing %q in %s", want, body)
+				}
+			}
+		})
+	}
+}
+
 func TestAcceptLanguageSkipsUnsupportedHigherPriorityLocale(t *testing.T) {
 	renderer := NewRenderer()
 	recorder := httptest.NewRecorder()

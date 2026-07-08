@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,16 +14,22 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
 type contextKey string
 
 const UserContextKey contextKey = "user"
 
+const ManagementAPITokenPrefix = "cwapi_"
+
 type TokenManager struct {
 	secret []byte
 	ttl    time.Duration
+	ready  bool
 }
+
+var readTokenManagerSecret = rand.Read
 
 type Claims struct {
 	Subject  string   `json:"sub"`
@@ -35,18 +42,19 @@ type Claims struct {
 }
 
 func NewTokenManager(secret string, ttl time.Duration) *TokenManager {
+	ready := true
 	if secret == "" {
 		buf := make([]byte, 32)
-		if _, err := rand.Read(buf); err == nil {
+		if _, err := readTokenManagerSecret(buf); err == nil {
 			secret = base64.RawURLEncoding.EncodeToString(buf)
 		} else {
-			secret = fmt.Sprintf("cheesewaf-ephemeral-%d", time.Now().UnixNano())
+			ready = false
 		}
 	}
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
-	return &TokenManager{secret: []byte(secret), ttl: ttl}
+	return &TokenManager{secret: []byte(secret), ttl: ttl, ready: ready && secret != ""}
 }
 
 func (m *TokenManager) Sign(subject, username, role string) (string, error) {
@@ -55,6 +63,9 @@ func (m *TokenManager) Sign(subject, username, role string) (string, error) {
 }
 
 func (m *TokenManager) SignWithClaims(subject, username, role string) (string, *Claims, error) {
+	if m == nil || !m.ready || len(m.secret) == 0 {
+		return "", nil, fmt.Errorf("token manager signing secret is unavailable")
+	}
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	now := time.Now().UTC()
 	tokenID, err := randomTokenID()
@@ -76,6 +87,9 @@ func (m *TokenManager) SignWithClaims(subject, username, role string) (string, *
 }
 
 func (m *TokenManager) Verify(token string) (*Claims, error) {
+	if m == nil || !m.ready || len(m.secret) == 0 {
+		return nil, fmt.Errorf("token manager signing secret is unavailable")
+	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid token")
@@ -100,9 +114,8 @@ func (m *TokenManager) Verify(token string) (*Claims, error) {
 
 func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(header, "Bearer ")
-		if token == "" || token == header {
+		token := bearerToken(r)
+		if token == "" {
 			writeUnauthorized(w)
 			return
 		}
@@ -114,6 +127,101 @@ func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), UserContextKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+type ManagementAPITokenConfigSource func() config.ManagementAPIConfig
+type ManagementAPITokenUseRecorder func(id string, at time.Time)
+
+func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionValidator, source ManagementAPITokenConfigSource, recordUse ManagementAPITokenUseRecorder) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := bearerToken(r)
+			if token == "" {
+				writeUnauthorized(w)
+				return
+			}
+			if strings.HasPrefix(token, ManagementAPITokenPrefix) {
+				claims, ok := verifyManagementAPIToken(token, source)
+				if !ok {
+					writeUnauthorized(w)
+					return
+				}
+				if recordUse != nil {
+					recordUse(claims.ID, time.Now().UTC())
+				}
+				ctx := context.WithValue(r.Context(), UserContextKey, claims)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			if manager == nil || validator == nil {
+				writeUnauthorized(w)
+				return
+			}
+			claims, err := manager.Verify(token)
+			if err != nil {
+				writeUnauthorized(w)
+				return
+			}
+			active, err := validator.IsSessionActive(r.Context(), claims.ID, claims.Subject, time.Now().UTC())
+			if err != nil || !active {
+				writeUnauthorized(w)
+				return
+			}
+			ctx := context.WithValue(r.Context(), UserContextKey, claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func HashManagementAPIToken(raw string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func verifyManagementAPIToken(raw string, source ManagementAPITokenConfigSource) (*Claims, bool) {
+	if source == nil {
+		return nil, false
+	}
+	cfg := source()
+	if !cfg.Enabled || strings.TrimSpace(raw) == "" {
+		return nil, false
+	}
+	now := time.Now().UTC()
+	hash := HashManagementAPIToken(raw)
+	for _, token := range cfg.Tokens {
+		if !token.Enabled || token.ID == "" || token.Hash == "" || !token.RevokedAt.IsZero() {
+			continue
+		}
+		if !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(now) {
+			continue
+		}
+		if !hmac.Equal([]byte(hash), []byte(token.Hash)) {
+			continue
+		}
+		expires := int64(0)
+		if !token.ExpiresAt.IsZero() {
+			expires = token.ExpiresAt.Unix()
+		}
+		issuedAt := token.CreatedAt
+		if issuedAt.IsZero() {
+			issuedAt = now
+		}
+		name := strings.TrimSpace(token.Name)
+		if name == "" {
+			name = token.ID
+		}
+		return &Claims{
+			Subject:  "api-token:" + token.ID,
+			ID:       token.ID,
+			Username: name,
+			Role:     "api_token",
+			Scopes:   append([]string(nil), token.Scopes...),
+			IssuedAt: issuedAt.Unix(),
+			Expires:  expires,
+		}, true
+	}
+	return nil, false
 }
 
 type SessionValidator interface {
@@ -140,6 +248,21 @@ func SessionMiddleware(validator SessionValidator) func(http.Handler) http.Handl
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func bearerToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	header := r.Header.Get("Authorization")
+	if header == "" {
+		return ""
+	}
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
 }
 
 func (m *TokenManager) sign(unsigned string) string {
