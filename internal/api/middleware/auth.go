@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,11 +14,14 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
 type contextKey string
 
 const UserContextKey contextKey = "user"
+
+const ManagementAPITokenPrefix = "cwapi_"
 
 type TokenManager struct {
 	secret []byte
@@ -110,9 +114,8 @@ func (m *TokenManager) Verify(token string) (*Claims, error) {
 
 func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(header, "Bearer ")
-		if token == "" || token == header {
+		token := bearerToken(r)
+		if token == "" {
 			writeUnauthorized(w)
 			return
 		}
@@ -124,6 +127,101 @@ func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), UserContextKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+type ManagementAPITokenConfigSource func() config.ManagementAPIConfig
+type ManagementAPITokenUseRecorder func(id string, at time.Time)
+
+func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionValidator, source ManagementAPITokenConfigSource, recordUse ManagementAPITokenUseRecorder) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := bearerToken(r)
+			if token == "" {
+				writeUnauthorized(w)
+				return
+			}
+			if strings.HasPrefix(token, ManagementAPITokenPrefix) {
+				claims, ok := verifyManagementAPIToken(token, source)
+				if !ok {
+					writeUnauthorized(w)
+					return
+				}
+				if recordUse != nil {
+					recordUse(claims.ID, time.Now().UTC())
+				}
+				ctx := context.WithValue(r.Context(), UserContextKey, claims)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			if manager == nil || validator == nil {
+				writeUnauthorized(w)
+				return
+			}
+			claims, err := manager.Verify(token)
+			if err != nil {
+				writeUnauthorized(w)
+				return
+			}
+			active, err := validator.IsSessionActive(r.Context(), claims.ID, claims.Subject, time.Now().UTC())
+			if err != nil || !active {
+				writeUnauthorized(w)
+				return
+			}
+			ctx := context.WithValue(r.Context(), UserContextKey, claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func HashManagementAPIToken(raw string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func verifyManagementAPIToken(raw string, source ManagementAPITokenConfigSource) (*Claims, bool) {
+	if source == nil {
+		return nil, false
+	}
+	cfg := source()
+	if !cfg.Enabled || strings.TrimSpace(raw) == "" {
+		return nil, false
+	}
+	now := time.Now().UTC()
+	hash := HashManagementAPIToken(raw)
+	for _, token := range cfg.Tokens {
+		if !token.Enabled || token.ID == "" || token.Hash == "" || !token.RevokedAt.IsZero() {
+			continue
+		}
+		if !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(now) {
+			continue
+		}
+		if !hmac.Equal([]byte(hash), []byte(token.Hash)) {
+			continue
+		}
+		expires := int64(0)
+		if !token.ExpiresAt.IsZero() {
+			expires = token.ExpiresAt.Unix()
+		}
+		issuedAt := token.CreatedAt
+		if issuedAt.IsZero() {
+			issuedAt = now
+		}
+		name := strings.TrimSpace(token.Name)
+		if name == "" {
+			name = token.ID
+		}
+		return &Claims{
+			Subject:  "api-token:" + token.ID,
+			ID:       token.ID,
+			Username: name,
+			Role:     "api_token",
+			Scopes:   append([]string(nil), token.Scopes...),
+			IssuedAt: issuedAt.Unix(),
+			Expires:  expires,
+		}, true
+	}
+	return nil, false
 }
 
 type SessionValidator interface {
@@ -150,6 +248,21 @@ func SessionMiddleware(validator SessionValidator) func(http.Handler) http.Handl
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func bearerToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	header := r.Header.Get("Authorization")
+	if header == "" {
+		return ""
+	}
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
 }
 
 func (m *TokenManager) sign(unsigned string) string {

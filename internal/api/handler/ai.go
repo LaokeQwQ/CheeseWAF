@@ -91,6 +91,11 @@ type aiSelfLearningRunPayload struct {
 
 const aiLongRequestTimeout = 5 * time.Minute
 
+var (
+	providerFirstEventSlowAfter     = 10 * time.Second
+	providerWaitingProgressInterval = 10 * time.Second
+)
+
 type aiSelfLearningConfigView struct {
 	Enabled        bool    `json:"enabled"`
 	AutoApply      bool    `json:"auto_apply"`
@@ -959,17 +964,47 @@ func providerStreamEmitter(ctx context.Context, language, phase string, record f
 		})
 	}
 	go func() {
-		timer := time.NewTimer(10 * time.Second)
+		slowAfter := providerFirstEventSlowAfter
+		if slowAfter <= 0 {
+			slowAfter = 10 * time.Second
+		}
+		progressInterval := providerWaitingProgressInterval
+		if progressInterval <= 0 {
+			progressInterval = slowAfter
+		}
+		timer := time.NewTimer(slowAfter)
 		defer timer.Stop()
 		select {
 		case <-first:
+			return
 		case <-done:
+			return
 		case <-ctx.Done():
+			return
 		case <-timer.C:
 			record(ai.AssistantTraceEvent{
 				Type:    "provider_first_event_slow",
+				Mode:    phase,
 				Message: localizedProviderSlowMessage(language, phase),
 			})
+		}
+		ticker := time.NewTicker(progressInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-first:
+				return
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				record(ai.AssistantTraceEvent{
+					Type:    "provider_waiting_progress",
+					Mode:    phase,
+					Message: localizedProviderWaitingMessage(language, phase),
+				})
+			}
 		}
 	}()
 	emit := func(event ai.AssistantTraceEvent) {
@@ -1005,6 +1040,11 @@ func localizedProviderTraceMessage(language string, event ai.AssistantTraceEvent
 			return event.Message
 		}
 		return localizedProviderSlowMessage(language, event.Mode)
+	case "provider_waiting_progress":
+		if strings.TrimSpace(event.Message) != "" {
+			return event.Message
+		}
+		return localizedProviderWaitingMessage(language, event.Mode)
 	default:
 		return event.Message
 	}
@@ -1023,6 +1063,22 @@ func localizedProviderSlowMessage(language, phase string) string {
 		return "AI provider 在 10 秒内还没有开始事件分析回流；请求会继续保持，不会把完整分析耗时误判为首包超时。"
 	default:
 		return "AI provider 在 10 秒内还没有开始回流；请求会继续保持。"
+	}
+}
+
+func localizedProviderWaitingMessage(language, phase string) string {
+	if strings.Contains(strings.ToLower(language), "en") {
+		return "AI provider is still processing during " + nonEmpty(phase, "this step") + "; keeping the stream alive."
+	}
+	switch phase {
+	case "planning":
+		return "AI provider 仍在规划工具调用，连接保持中。"
+	case "final":
+		return "AI provider 仍在生成最终回答，连接保持中。"
+	case "analysis":
+		return "AI provider 仍在分析事件，连接保持中。"
+	default:
+		return "AI provider 仍在处理，连接保持中。"
 	}
 }
 
