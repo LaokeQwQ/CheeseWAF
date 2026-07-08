@@ -161,14 +161,14 @@ func TestTaskManagerInstallFailureCompensationNotApplicable(t *testing.T) {
 	manager := NewTaskManager(TaskManagerOptions{
 		Runner: &stubCompensatingTaskRunner{
 			stubTaskRunner: stubTaskRunner{
-				deployResult: DeployResult{OK: false, Host: "node-install", Output: "version check failed"},
-				deployErr:    errors.New("version check failed"),
+				deployResult: DeployResult{OK: false, Host: "node-install", Output: "install failed"},
+				deployErr:    errors.New("install failed"),
 			},
 			compensateResult: CompensationResult{
 				Attempted: false,
 				Status:    CompensationStatusNotApplicable,
 				Action:    compensationNone,
-				Message:   "The install action only checks the CheeseWAF binary version; no remote change needs compensation",
+				Message:   "The install action performs inline backup and restore when possible; no separate compensation action is available after the SSH session ends",
 			},
 		},
 		NewID: func() string { return "task-install-not-applicable" },
