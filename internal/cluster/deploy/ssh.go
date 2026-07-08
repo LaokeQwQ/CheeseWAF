@@ -3,8 +3,11 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -227,7 +230,7 @@ func (r *SSHRunner) CompensationPlan(req SSHDeploymentRequest) CompensationPlan 
 		return CompensationPlan{
 			Applicable: false,
 			Action:     compensationNone,
-			Message:    "The install action only checks the CheeseWAF binary version; no remote change needs compensation",
+			Message:    "The install action performs inline backup and restore when possible; no separate compensation action is available after the SSH session ends",
 		}
 	default:
 		return CompensationPlan{
@@ -318,7 +321,7 @@ func (r *SSHRunner) BuildSSHArgs(req SSHDeploymentRequest) ([]string, error) {
 			return nil, err
 		}
 	}
-	command, err := remoteCommandForAction(req.Action)
+	command, err := remoteCommandPreviewForAction(req.Action)
 	if err != nil {
 		return nil, err
 	}
@@ -349,6 +352,9 @@ func (r *SSHRunner) prepareRequest(_ context.Context, req SSHDeploymentRequest) 
 }
 
 func (r *SSHRunner) runRemoteCommand(ctx context.Context, req SSHDeploymentRequest) (string, bool, error) {
+	if strings.TrimSpace(req.Action) == actionInstall {
+		return r.runRemoteInstall(ctx, req)
+	}
 	command, err := remoteCommandForAction(req.Action)
 	if err != nil {
 		return "", false, err
@@ -357,6 +363,10 @@ func (r *SSHRunner) runRemoteCommand(ctx context.Context, req SSHDeploymentReque
 }
 
 func (r *SSHRunner) runRemoteCommandRaw(ctx context.Context, req SSHDeploymentRequest, command string) (string, bool, error) {
+	return r.runRemoteCommandWithInput(ctx, req, command, nil)
+}
+
+func (r *SSHRunner) runRemoteCommandWithInput(ctx context.Context, req SSHDeploymentRequest, command string, input io.Reader) (string, bool, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return "", false, fmt.Errorf("remote command is required")
@@ -378,6 +388,9 @@ func (r *SSHRunner) runRemoteCommandRaw(ctx context.Context, req SSHDeploymentRe
 	limited := &limitWriter{w: &output, limit: r.outputLimit}
 	session.Stdout = limited
 	session.Stderr = limited
+	if input != nil {
+		session.Stdin = input
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -393,6 +406,15 @@ func (r *SSHRunner) runRemoteCommandRaw(ctx context.Context, req SSHDeploymentRe
 		err = fmt.Errorf("ssh deployment timed out after %s", r.timeout)
 	}
 	return output.String(), limited.Truncated(), err
+}
+
+func (r *SSHRunner) runRemoteInstall(ctx context.Context, req SSHDeploymentRequest) (string, bool, error) {
+	source, err := openInstallBinary()
+	if err != nil {
+		return "", false, err
+	}
+	defer source.file.Close()
+	return r.runRemoteCommandWithInput(ctx, req, installCommand(source.size, source.sha256), source.file)
 }
 
 func (r *SSHRunner) connect(ctx context.Context, req SSHDeploymentRequest) (*ssh.Client, error) {
@@ -595,6 +617,8 @@ const (
 	actionRestartService     = "restart-service"
 	compensationNone         = "none"
 	compensationStartService = "start-service"
+	defaultInstallTarget     = "/usr/local/bin/cheesewaf"
+	maxInstallBinarySize     = 512 * 1024 * 1024
 
 	CompensationStatusNotApplicable = "not_applicable"
 	CompensationStatusSucceeded     = "succeeded"
@@ -604,14 +628,127 @@ const (
 func remoteCommandForAction(action string) (string, error) {
 	switch strings.TrimSpace(action) {
 	case "", actionCheck:
-		return "true", nil
+		return remoteCheckCommand(), nil
 	case actionInstall:
-		return "cheesewaf --version", nil
+		return installCommand(0, strings.Repeat("0", 64)), nil
 	case actionRestartService:
 		return "systemctl restart cheesewaf", nil
 	default:
 		return "", fmt.Errorf("unsupported ssh deployment action")
 	}
+}
+
+func remoteCommandPreviewForAction(action string) (string, error) {
+	switch strings.TrimSpace(action) {
+	case "", actionCheck:
+		return remoteCheckCommand(), nil
+	case actionInstall:
+		return "upload current CheeseWAF binary, backup existing binary, install to " + defaultInstallTarget + ", then verify version", nil
+	case actionRestartService:
+		return "systemctl restart cheesewaf", nil
+	default:
+		return "", fmt.Errorf("unsupported ssh deployment action")
+	}
+}
+
+func remoteCheckCommand() string {
+	return strings.Join([]string{
+		"command -v sh >/dev/null 2>&1",
+		"command -v install >/dev/null 2>&1",
+		"command -v mktemp >/dev/null 2>&1",
+		"command -v chmod >/dev/null 2>&1",
+		"command -v cp >/dev/null 2>&1",
+		"command -v date >/dev/null 2>&1",
+		"command -v wc >/dev/null 2>&1",
+		"command -v tr >/dev/null 2>&1",
+		"command -v sha256sum >/dev/null 2>&1",
+		"command -v awk >/dev/null 2>&1",
+		"test -d /usr/local/bin",
+		"test -w /usr/local/bin",
+		"echo CheeseWAF deployment prerequisites OK",
+	}, " && ")
+}
+
+type installBinarySource struct {
+	file   *os.File
+	size   int64
+	sha256 string
+}
+
+func openInstallBinary() (installBinarySource, error) {
+	path := strings.TrimSpace(os.Getenv("CHEESEWAF_DEPLOY_BINARY"))
+	if path == "" {
+		executable, err := os.Executable()
+		if err != nil {
+			return installBinarySource{}, fmt.Errorf("install source binary is unavailable; set CHEESEWAF_DEPLOY_BINARY to a readable CheeseWAF binary")
+		}
+		path = executable
+	}
+	if strings.ContainsAny(path, "\x00\r\n") {
+		return installBinarySource{}, fmt.Errorf("install source binary path contains unsupported characters")
+	}
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return installBinarySource{}, fmt.Errorf("install source binary is unavailable; set CHEESEWAF_DEPLOY_BINARY to a readable CheeseWAF binary")
+	}
+	if !info.Mode().IsRegular() {
+		return installBinarySource{}, fmt.Errorf("install source binary must be a regular file")
+	}
+	if info.Size() <= 0 {
+		return installBinarySource{}, fmt.Errorf("install source binary is empty")
+	}
+	if info.Size() > maxInstallBinarySize {
+		return installBinarySource{}, fmt.Errorf("install source binary exceeds the safety limit")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return installBinarySource{}, fmt.Errorf("install source binary is unreadable")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		_ = file.Close()
+		return installBinarySource{}, fmt.Errorf("install source binary checksum failed")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return installBinarySource{}, fmt.Errorf("install source binary could not be rewound")
+	}
+	return installBinarySource{
+		file:   file,
+		size:   info.Size(),
+		sha256: hex.EncodeToString(hash.Sum(nil)),
+	}, nil
+}
+
+func installCommand(size int64, checksum string) string {
+	sizeValue := strconv.FormatInt(size, 10)
+	checksum = strings.ToLower(strings.TrimSpace(checksum))
+	if checksum == "" {
+		checksum = strings.Repeat("0", 64)
+	}
+	return strings.Join([]string{
+		"set -eu",
+		"target=" + defaultInstallTarget,
+		"tmp=$(mktemp /tmp/cheesewaf-install.XXXXXX)",
+		"backup=\"\"",
+		"restore() { status=$?; if [ \"$status\" -ne 0 ] && [ -n \"$backup\" ] && [ -f \"$backup\" ]; then cp -p \"$backup\" \"$target\" >/dev/null 2>&1 || true; fi; rm -f \"$tmp\"; exit \"$status\"; }",
+		"trap restore EXIT",
+		"cat > \"$tmp\"",
+		"actual_size=$(wc -c < \"$tmp\" | tr -d '[:space:]')",
+		"if [ \"$actual_size\" != \"" + sizeValue + "\" ]; then echo uploaded size mismatch >&2; exit 1; fi",
+		"actual_sha=$(sha256sum \"$tmp\" | awk '{print $1}')",
+		"if [ \"$actual_sha\" != \"" + checksum + "\" ]; then echo uploaded checksum mismatch >&2; exit 1; fi",
+		"chmod 0755 \"$tmp\"",
+		"\"$tmp\" --version",
+		"if [ -f \"$target\" ]; then backup=\"${target}.bak.$(date -u +%Y%m%d%H%M%S)\"; cp -p \"$target\" \"$backup\"; fi",
+		"install -m 0755 \"$tmp\" \"$target\"",
+		"\"$target\" --version",
+		"rm -f \"$tmp\"",
+		"trap - EXIT",
+		"echo CheeseWAF installed to \"$target\"",
+		"if [ -n \"$backup\" ]; then echo Previous binary backup: \"$backup\"; fi",
+	}, "; ")
 }
 
 func compensationCommandForAction(action string) string {
