@@ -177,7 +177,7 @@ func TestAnalyzeLogStreamFallsBackToHeuristicWhenProviderFails(t *testing.T) {
 	}
 }
 
-func TestAssistantReplyUsesRealSecurityEvents(t *testing.T) {
+func TestAssistantReplyUsesRecordedSecurityEvents(t *testing.T) {
 	reply, err := AnswerAssistant(context.Background(), nil, "最近拦截了什么", []storage.LogEntry{
 		{ID: "event-1", ClientIP: "203.0.113.10", Action: "block", Category: "sqli", URI: "/search?id=1"},
 	}, map[string]any{"requests": 10, "blocked": 1})
@@ -186,6 +186,9 @@ func TestAssistantReplyUsesRealSecurityEvents(t *testing.T) {
 	}
 	if reply.AIUsed || reply.Events != 1 || reply.Blocked != 1 || !strings.Contains(reply.Answer, "203.0.113.10") {
 		t.Fatalf("unexpected reply: %+v", reply)
+	}
+	if strings.Contains(reply.Answer, "真实") {
+		t.Fatalf("assistant fallback should use product copy without 真实 wording: %s", reply.Answer)
 	}
 }
 
@@ -398,6 +401,21 @@ func TestSanitizeAssistantFinalAnswerRemovesInlineProcessLeak(t *testing.T) {
 	for _, want := range []string{"## 近期攻击形式总结", "| 攻击类型 | 数量 | 严重程度 | 动作 | 典型特征 |", "| SQL 注入 | 2 | 高 | 拦截 | UNION SELECT |"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected sanitized answer to keep %q, got %s", want, got)
+		}
+	}
+}
+
+func TestSanitizeAssistantFinalAnswerRewritesObservationCopy(t *testing.T) {
+	raw := "这里提到真实工具 observation，也提到 real tool observation: high risk."
+	got := sanitizeAssistantFinalAnswer(raw)
+	for _, forbidden := range []string{"真实", "real tool observation", "tool observation", "real data"} {
+		if strings.Contains(strings.ToLower(got), strings.ToLower(forbidden)) {
+			t.Fatalf("sanitized answer still contains %q: %s", forbidden, got)
+		}
+	}
+	for _, want := range []string{"安全事件数据", "security event data"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected sanitized answer to contain %q, got %s", want, got)
 		}
 	}
 }
