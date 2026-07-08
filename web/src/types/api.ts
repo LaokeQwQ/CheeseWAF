@@ -1106,6 +1106,24 @@ export type ClusterDeploymentRequest = {
   action?: 'check' | 'install' | 'restart-service' | string;
 };
 
+export type ClusterAnsibleHost = {
+  name: string;
+  address: string;
+  role: 'waf' | 'monitor' | string;
+  ssh_port: number;
+  region?: string;
+};
+
+export type ClusterAnsiblePlan = {
+  cluster_id: string;
+  channel: 'dev' | 'canary' | 'stable' | string;
+  nodes: ClusterAnsibleHost[];
+};
+
+export type ClusterAnsiblePackage = {
+  files: Record<string, string>;
+};
+
 export type ClusterDeploymentCheckResult = {
   ok: boolean;
   host: string;

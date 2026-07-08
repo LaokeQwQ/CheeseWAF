@@ -12999,6 +12999,7 @@ code {
 
 .cluster-empty-action {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   justify-content: space-between;
@@ -13007,13 +13008,196 @@ code {
 }
 
 .cluster-empty-action p {
+  flex: 1 1 220px;
+  min-width: 0;
   margin: 0;
   color: var(--text-muted);
   line-height: 1.55;
 }
 
+.cluster-empty-action .arco-btn,
+.cluster-empty-action .arco-button {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: normal;
+}
+
 .cluster-deploy-form {
   min-width: 0;
+}
+
+.cluster-deploy-steps {
+  margin: 4px 0 18px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface-soft) 78%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 8px;
+}
+
+.cluster-deploy-methods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.cluster-deploy-method {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.cluster-deploy-method:hover,
+.cluster-deploy-method:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 8%, transparent);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.cluster-deploy-method strong {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.cluster-deploy-method span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.cluster-deploy-method-active {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 72%),
+    var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.cluster-wizard-panel {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface-soft) 74%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-radius: 8px;
+}
+
+.cluster-ansible-summary {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.1fr) minmax(180px, 0.7fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.cluster-section-title {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cluster-section-title > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.cluster-section-title strong {
+  min-width: 0;
+  color: var(--text);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.cluster-section-title span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.cluster-section-title .arco-btn,
+.cluster-section-title .arco-button {
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.cluster-ansible-node-list {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.cluster-ansible-node {
+  min-width: 0;
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 0.75fr)
+    minmax(170px, 1.1fr)
+    minmax(118px, 0.55fr)
+    minmax(104px, 0.45fr)
+    minmax(140px, 0.7fr)
+    auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-radius: 8px;
+}
+
+.cluster-ansible-node .arco-input,
+.cluster-ansible-node .arco-input-inner-wrapper,
+.cluster-ansible-node .arco-input-number,
+.cluster-ansible-node .arco-select-view {
+  border-radius: 8px;
+}
+
+.cluster-ansible-node .arco-btn,
+.cluster-ansible-node .arco-button {
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.cluster-credential-panel,
+.cluster-hostkey-panel {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-radius: 8px;
+}
+
+.cluster-credential-panel .arco-radio-group,
+.cluster-hostkey-panel .arco-radio-group {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cluster-credential-panel .arco-radio-button,
+.cluster-hostkey-panel .arco-radio-button {
+  border-radius: 8px !important;
 }
 
 .cluster-token-form {
@@ -13203,6 +13387,75 @@ code {
   display: grid;
   gap: 10px;
   margin-top: 14px;
+}
+
+.cluster-deploy-task-table .arco-table {
+  min-width: 840px;
+}
+
+.cluster-deploy-task-cards {
+  display: none;
+}
+
+.cluster-deploy-task-card-mobile .arco-btn,
+.cluster-deploy-task-card-mobile .arco-button {
+  justify-self: flex-start;
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.cluster-ansible-package {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+  border-radius: 8px;
+}
+
+.cluster-ansible-package-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.cluster-ansible-package-actions .arco-btn,
+.cluster-ansible-package-actions .arco-button {
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.cluster-ansible-file-picker {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.cluster-ansible-file-picker .arco-select-view,
+.cluster-ansible-file-picker .arco-btn,
+.cluster-ansible-file-picker .arco-button {
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.cluster-ansible-preview {
+  max-height: min(56vh, 520px);
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .cluster-audit-toolbar {
@@ -13425,6 +13678,15 @@ code {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .cluster-deploy-methods,
+  .cluster-ansible-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cluster-ansible-node {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .cluster-token-fields,
   .cluster-tables-grid,
   .cluster-cert-fields {
@@ -13500,6 +13762,32 @@ code {
     flex: 1 1 100%;
   }
 
+  .cluster-deploy-steps {
+    padding: 10px;
+    overflow-x: auto;
+  }
+
+  .cluster-wizard-panel {
+    padding: 12px;
+  }
+
+  .cluster-ansible-node {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cluster-ansible-node .arco-btn,
+  .cluster-ansible-node .arco-button,
+  .cluster-ansible-package-actions .arco-btn,
+  .cluster-ansible-package-actions .arco-button,
+  .cluster-ansible-file-picker .arco-btn,
+  .cluster-ansible-file-picker .arco-button {
+    width: 100%;
+  }
+
+  .cluster-ansible-file-picker {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .cluster-task-timeline {
     padding: 10px;
   }
@@ -13511,6 +13799,15 @@ code {
 }
 
 @media (max-width: 640px) {
+  .cluster-deploy-task-table {
+    display: none;
+  }
+
+  .cluster-deploy-task-cards {
+    display: grid;
+    gap: 12px;
+  }
+
   .cluster-audit-table {
     display: none;
   }
