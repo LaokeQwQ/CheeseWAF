@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -21,11 +22,11 @@ import (
 )
 
 func (h *Handler) ClusterStatus(w http.ResponseWriter, r *http.Request) {
-	writeData(w, cluster.FromConfig(h.Config, requestLanguage(r)))
+	writeData(w, cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)))
 }
 
 func (h *Handler) ClusterHealth(w http.ResponseWriter, r *http.Request) {
-	status := cluster.FromConfig(h.Config, requestLanguage(r))
+	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r))
 	code := http.StatusOK
 	if status.Enabled && !status.CanReceiveTraffic {
 		code = http.StatusServiceUnavailable
@@ -33,6 +34,77 @@ func (h *Handler) ClusterHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(dto.Response{Data: status})
+}
+
+type clusterHeartbeatRequest struct {
+	Role              string `json:"role"`
+	AdvertiseAddr     string `json:"advertise_addr"`
+	ConfigVersion     string `json:"config_version"`
+	CanReceiveTraffic *bool  `json:"can_receive_traffic"`
+	CanWriteConfig    *bool  `json:"can_write_config"`
+}
+
+func (h *Handler) ClusterNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
+	nodeID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if nodeID == "" {
+		writeError(w, http.StatusBadRequest, "CLUSTER_HEARTBEAT_INVALID", "node id is required")
+		return
+	}
+	if !h.clusterNodeConfigured(nodeID) {
+		writeError(w, http.StatusNotFound, "CLUSTER_NODE_NOT_FOUND", "cluster node is not configured")
+		return
+	}
+	svc, err := h.clusterIdentityService()
+	if err == nil && svc.IsRevoked(nodeID) {
+		writeError(w, http.StatusForbidden, "CLUSTER_NODE_REVOKED", "cluster node is revoked")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "CLUSTER_IDENTITY_UNAVAILABLE", err.Error())
+		return
+	}
+	if ok, code, message := h.authorizeClusterHeartbeatCertificate(r, svc, nodeID); !ok {
+		writeError(w, code, "CLUSTER_NODE_CERT_INVALID", message)
+		return
+	}
+	var req clusterHeartbeatRequest
+	if r.Body != nil && !decodeOptional(w, r, &req, defaultJSONBodyLimit, "invalid heartbeat request") {
+		return
+	}
+	heartbeat := cluster.Heartbeat{
+		NodeID:        nodeID,
+		Role:          req.Role,
+		AdvertiseAddr: req.AdvertiseAddr,
+		ConfigVersion: req.ConfigVersion,
+	}
+	if heartbeat.Role == "" || heartbeat.AdvertiseAddr == "" {
+		if node, ok := h.clusterNodeConfig(nodeID); ok {
+			if heartbeat.Role == "" {
+				heartbeat.Role = node.Role
+			}
+			if heartbeat.AdvertiseAddr == "" {
+				heartbeat.AdvertiseAddr = node.AdvertiseAddr
+			}
+		}
+	}
+	if req.CanReceiveTraffic != nil {
+		heartbeat.CanReceiveTraffic = *req.CanReceiveTraffic
+		heartbeat.CanReceiveTrafficSet = true
+	}
+	if req.CanWriteConfig != nil {
+		heartbeat.CanWriteConfig = *req.CanWriteConfig
+		heartbeat.CanWriteConfigSet = true
+	}
+	record, err := h.clusterHeartbeatRegistry().Record(heartbeat)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "CLUSTER_HEARTBEAT_INVALID", err.Error())
+		return
+	}
+	writeData(w, map[string]any{
+		"ok":        true,
+		"heartbeat": record,
+		"status":    cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)),
+	})
 }
 
 func (h *Handler) ClusterAnsiblePackage(w http.ResponseWriter, r *http.Request) {
@@ -288,6 +360,67 @@ func clusterAuditPathAction(method, path string) string {
 	default:
 		return strings.ToLower(method) + "_cluster"
 	}
+}
+
+func (h *Handler) authorizeClusterHeartbeatCertificate(r *http.Request, svc *identity.MemoryIdentityService, nodeID string) (bool, int, string) {
+	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return false, http.StatusUnauthorized, "node heartbeat requires a verified mTLS client certificate"
+	}
+	if len(r.TLS.VerifiedChains) == 0 {
+		return false, http.StatusUnauthorized, "node client certificate was not verified by the cluster CA"
+	}
+	cert := r.TLS.PeerCertificates[0]
+	if cert == nil {
+		return false, http.StatusUnauthorized, "node client certificate is empty"
+	}
+	registration, ok := clusterRegistrationByID(svc, nodeID)
+	if !ok {
+		return false, http.StatusForbidden, "cluster node is not enrolled"
+	}
+	if registration.Revoked {
+		return false, http.StatusForbidden, "cluster node is revoked"
+	}
+	now := time.Now().UTC()
+	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+		return false, http.StatusForbidden, "node client certificate is expired or not yet valid"
+	}
+	if strings.TrimSpace(registration.CertificateSerial) == "" || cert.SerialNumber == nil || cert.SerialNumber.String() != registration.CertificateSerial {
+		return false, http.StatusForbidden, "node client certificate serial does not match the enrolled node"
+	}
+	if !clusterCertificateIdentifiesNode(cert, registration) {
+		return false, http.StatusForbidden, "node client certificate identity does not match the heartbeat node"
+	}
+	return true, http.StatusOK, ""
+}
+
+func clusterRegistrationByID(svc *identity.MemoryIdentityService, nodeID string) (identity.NodeRegistration, bool) {
+	if svc == nil {
+		return identity.NodeRegistration{}, false
+	}
+	for _, node := range svc.ListNodes() {
+		if node.NodeID == nodeID {
+			return node, true
+		}
+	}
+	return identity.NodeRegistration{}, false
+}
+
+func clusterCertificateIdentifiesNode(cert *x509.Certificate, node identity.NodeRegistration) bool {
+	if cert == nil {
+		return false
+	}
+	expectedCN := strings.TrimSpace(node.ClusterID) + "/" + strings.TrimSpace(node.Role) + "/" + strings.TrimSpace(node.NodeID)
+	if cert.Subject.CommonName != expectedCN {
+		return false
+	}
+	hasNodeDNSName := false
+	for _, name := range cert.DNSNames {
+		if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(node.NodeID)) {
+			hasNodeDNSName = true
+			break
+		}
+	}
+	return hasNodeDNSName
 }
 
 func clusterAuditTargetFromPath(path string) string {
@@ -611,6 +744,11 @@ type clusterJoinTokenView struct {
 	Revoked   bool      `json:"revoked"`
 }
 
+type clusterNodeView struct {
+	identity.NodeRegistration
+	Runtime cluster.RuntimeNodeStatus `json:"runtime"`
+}
+
 func clusterJoinTokenViewFromToken(token identity.JoinToken) clusterJoinTokenView {
 	return clusterJoinTokenView{
 		ID:        token.ID,
@@ -623,6 +761,43 @@ func clusterJoinTokenViewFromToken(token identity.JoinToken) clusterJoinTokenVie
 	}
 }
 
+func (h *Handler) clusterNodeViews(registrations []identity.NodeRegistration, lang string) []clusterNodeView {
+	runtimeNodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	runtimeByID := make(map[string]cluster.RuntimeNodeStatus, len(runtimeNodes))
+	for _, node := range runtimeNodes {
+		runtimeByID[node.NodeID] = node
+	}
+	registrationByID := make(map[string]identity.NodeRegistration, len(registrations))
+	for _, node := range registrations {
+		registrationByID[node.NodeID] = node
+	}
+	for _, node := range runtimeNodes {
+		if _, ok := registrationByID[node.NodeID]; ok {
+			continue
+		}
+		registrationByID[node.NodeID] = identity.NodeRegistration{
+			NodeID:        node.NodeID,
+			Role:          node.Role,
+			ClusterID:     clusterIDFromConfig(h.Config),
+			AdvertiseAddr: node.AdvertiseAddr,
+		}
+	}
+	ids := make([]string, 0, len(registrationByID))
+	for id := range registrationByID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]clusterNodeView, 0, len(ids))
+	for _, id := range ids {
+		view := clusterNodeView{NodeRegistration: registrationByID[id]}
+		if runtimeNode, ok := runtimeByID[id]; ok {
+			view.Runtime = runtimeNode
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
 func (h *Handler) ClusterListNodes(w http.ResponseWriter, r *http.Request) {
 	svc, err := h.clusterIdentityService()
 	if err != nil {
@@ -630,7 +805,8 @@ func (h *Handler) ClusterListNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodes := svc.ListNodes()
-	writeData(w, map[string]any{"items": nodes, "total": len(nodes)})
+	items := h.clusterNodeViews(nodes, requestLanguage(r))
+	writeData(w, map[string]any{"items": items, "total": len(items)})
 }
 
 func (h *Handler) ClusterRevokeNode(w http.ResponseWriter, r *http.Request) {
@@ -778,11 +954,83 @@ func (h *Handler) clusterDeployTaskManager() *deploy.TaskManager {
 	return h.ClusterDeployTasks
 }
 
+func (h *Handler) clusterHeartbeatRegistry() *cluster.HeartbeatRegistry {
+	h.clusterHeartbeatsMu.Lock()
+	defer h.clusterHeartbeatsMu.Unlock()
+	if h.ClusterHeartbeats == nil {
+		h.ClusterHeartbeats = cluster.NewHeartbeatRegistry(cluster.HeartbeatRegistryOptions{})
+	}
+	return h.ClusterHeartbeats
+}
+
+func (h *Handler) clusterNodeConfigured(nodeID string) bool {
+	_, ok := h.clusterNodeConfig(nodeID)
+	return ok
+}
+
+func (h *Handler) clusterNodeConfig(nodeID string) (config.ClusterNodeConfig, bool) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" || h == nil || h.Config == nil {
+		return config.ClusterNodeConfig{}, false
+	}
+	for _, node := range h.Config.Cluster.Nodes {
+		if strings.TrimSpace(node.ID) == nodeID {
+			return node, true
+		}
+	}
+	if strings.TrimSpace(h.Config.Cluster.NodeID) == nodeID {
+		return config.ClusterNodeConfig{
+			ID:            nodeID,
+			Role:          "waf",
+			AdvertiseAddr: h.Config.Cluster.Interconnect.AdvertiseAddr,
+		}, true
+	}
+	return config.ClusterNodeConfig{}, false
+}
+
 func (h *Handler) defaultJoinTokenTTL() time.Duration {
 	if h != nil && h.Config != nil && h.Config.Cluster.Join.TokenTTL > 0 {
 		return h.Config.Cluster.Join.TokenTTL
 	}
 	return 15 * time.Minute
+}
+
+func clusterIDFromConfig(cfg *config.Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.Cluster.ClusterID) != "" {
+		return strings.TrimSpace(cfg.Cluster.ClusterID)
+	}
+	return "cheesewaf-local"
+}
+
+func (h *Handler) clusterConfigWritable(lang string) (bool, string) {
+	if h == nil || h.Config == nil {
+		return true, ""
+	}
+	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
+	if !status.Enabled || status.CanWriteConfig {
+		return true, ""
+	}
+	reason := status.ProtectionModeReason
+	if strings.TrimSpace(reason) == "" {
+		reason = clusterProtectionModeFallback(lang)
+	}
+	return false, reason
+}
+
+func (h *Handler) rejectClusterConfigWriteIfFrozen(w http.ResponseWriter, r *http.Request) bool {
+	ok, reason := h.clusterConfigWritable(requestLanguage(r))
+	if ok {
+		return false
+	}
+	writeError(w, http.StatusLocked, "CLUSTER_PROTECTION_MODE", reason)
+	return true
+}
+
+func clusterProtectionModeFallback(lang string) string {
+	if strings.HasPrefix(lang, "zh") {
+		return "集群处于保护模式，暂不允许配置变更"
+	}
+	return "Cluster is in protection mode and configuration writes are paused"
 }
 
 func requestLanguage(r *http.Request) string {

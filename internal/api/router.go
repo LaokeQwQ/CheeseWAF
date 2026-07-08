@@ -87,6 +87,7 @@ func NewRouter(opts Options) http.Handler {
 		r.Post("/auth/login", h.Login)
 		r.Post("/setup", h.Setup)
 		r.Post("/cluster/join", h.ClusterJoin)
+		r.Post("/cluster/nodes/{id}/heartbeat", h.ClusterNodeHeartbeat)
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)

@@ -114,6 +114,9 @@ func (h *Handler) AIConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req aiConfigPayload
 	if !decode(w, r, &req) {
 		return

@@ -406,6 +406,9 @@ func (t setBotChallengeTool) Execute(_ context.Context, args map[string]any) (*a
 	if t.Handler == nil || t.Handler.Config == nil {
 		return nil, fmt.Errorf("handler config is nil")
 	}
+	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
+		return nil, err
+	}
 	t.Handler.Config.Protection.Bot = after
 	if err := t.Handler.persistConfig(); err != nil {
 		return nil, err
@@ -485,6 +488,9 @@ func (t setProtectionLevelTool) Execute(_ context.Context, args map[string]any) 
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
+		return nil, err
+	}
 	t.Handler.Config.Protection.Policy = after
 	if err := t.Handler.persistConfig(); err != nil {
 		return nil, err
@@ -528,6 +534,16 @@ func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.Protecti
 		return before, after, fmt.Errorf("invalid protection area %q", area)
 	}
 	return before, after, nil
+}
+
+func ensureAssistantConfigWritable(h *Handler) error {
+	if h == nil || h.Config == nil {
+		return fmt.Errorf("handler config is nil")
+	}
+	if ok, reason := h.clusterConfigWritable("zh-CN"); !ok {
+		return fmt.Errorf("cluster protection mode: %s", reason)
+	}
+	return nil
 }
 
 func assistantSecurityEvent(entry storage.LogEntry) bool {
