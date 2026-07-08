@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -301,6 +303,67 @@ func TestClusterJoinWritesCertificatesAndConfig(t *testing.T) {
 	}
 }
 
+func TestClusterJoinRejectsControllerPrivateKeyMaterial(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeTestEnvelope(t, w, map[string]any{
+			"cluster_id":     "cw-test",
+			"node_id":        "waf-b",
+			"role":           "waf",
+			"advertise_addr": "127.0.0.1:9444",
+			"certificates": map[string]string{
+				"ca":   "ca",
+				"cert": "cert",
+				"key":  "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := requestClusterJoin(server.Client(), server.URL, map[string]string{
+		"token":          "join-secret",
+		"node_id":        "waf-b",
+		"role":           "waf",
+		"advertise_addr": "127.0.0.1:9444",
+		"csr":            string(testNodeCSRForCLIRotate(t, "waf-b")),
+	})
+	if err == nil || !strings.Contains(err.Error(), "private key material") {
+		t.Fatalf("expected private key material rejection, got %v", err)
+	}
+}
+
+func TestClusterCertificateMaterialRejectsMismatchedLocalKey(t *testing.T) {
+	svc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signedIdentity, err := generateClusterJoinLocalIdentity(clusterJoinOptions{NodeID: "waf-b", Role: "waf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherIdentity, err := generateClusterJoinLocalIdentity(clusterJoinOptions{NodeID: "waf-b", Role: "waf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := svc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
+		NodeID:        "waf-b",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "127.0.0.1:9444",
+	}, signedIdentity.CSRPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = validateClusterCertificateMaterial(string(enrollment.Bundle.CAPEM), string(enrollment.Bundle.CertPEM), otherIdentity.KeyPEM, "waf-b")
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("expected mismatched local key rejection, got %v", err)
+	}
+}
+
 func TestClusterJoinForceRestoresExistingFilesWhenConfigFails(t *testing.T) {
 	root := t.TempDir()
 	oldDataDir := dataDir
@@ -368,13 +431,155 @@ func TestClusterJoinConfigFailureMentionsControllerCompensation(t *testing.T) {
 	}
 }
 
+func TestClusterCertRotateWritesNewCertificateForLocalKey(t *testing.T) {
+	path := testClusterConfigPath(t)
+	root := t.TempDir()
+	oldConfigPath := configPath
+	oldDataDir := dataDir
+	t.Cleanup(func() {
+		configPath = oldConfigPath
+		dataDir = oldDataDir
+	})
+	configPath = path
+	dataDir = root
+
+	certDir := filepath.Join(root, "cluster", "certs", "waf-b")
+	if err := os.MkdirAll(certDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.ClusterID = "cw-test"
+	cfg.Cluster.NodeID = "waf-b"
+	cfg.Cluster.Interconnect.Listen = "127.0.0.1:9444"
+	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
+	cfg.Cluster.Interconnect.MTLSRequired = true
+	cfg.Cluster.Interconnect.CAFile = filepath.Join(certDir, "ca.pem")
+	cfg.Cluster.Interconnect.CertFile = filepath.Join(certDir, "node.crt")
+	cfg.Cluster.Interconnect.KeyFile = filepath.Join(certDir, "node.key")
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{{
+		ID:            "waf-b",
+		Role:          "waf",
+		AdvertiseAddr: "127.0.0.1:9444",
+	}}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.Cluster.Interconnect.CAFile, []byte("old-ca"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.Cluster.Interconnect.CertFile, []byte("old-cert"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.Cluster.Interconnect.KeyFile, []byte("old-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
+		NodeID:        "waf-b",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "127.0.0.1:9444",
+	}, testNodeCSRForCLIRotate(t, "waf-b")); err != nil {
+		t.Fatal(err)
+	}
+
+	var signedBundle identity.NodeCertificateBundle
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/cluster/nodes/waf-b/rotate-certificate" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer api-token-secret" {
+			t.Fatalf("unexpected authorization header %q", got)
+		}
+		var payload struct {
+			CSR string `json:"csr"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(payload.CSR) == "" {
+			t.Fatal("rotation request must include csr")
+		}
+		rotation, err := svc.RotateNodeCertificateWithCSR("waf-b", []byte(payload.CSR))
+		if err != nil {
+			t.Fatal(err)
+		}
+		signedBundle = rotation.Bundle
+		writeTestEnvelope(t, w, map[string]any{
+			"certificates": map[string]string{
+				"ca":   string(rotation.Bundle.CAPEM),
+				"cert": string(rotation.Bundle.CertPEM),
+			},
+			"node": rotation.Node,
+		})
+	}))
+	defer server.Close()
+
+	cmd := newRootCommand()
+	buf := bytes.NewBuffer(nil)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{
+		"--config", path,
+		"--data-dir", root,
+		"cluster", "cert", "rotate",
+		"--controller", server.URL,
+		"--allow-insecure-http",
+		"--api-token", "api-token-secret",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cluster cert rotate failed: %v\n%s", err, buf.String())
+	}
+	if strings.Contains(buf.String(), "api-token-secret") {
+		t.Fatal("cluster cert rotate output must not leak API token")
+	}
+	cert, err := readTestCertificate(cfg.Cluster.Interconnect.CertFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := readTestECPrivateKey(cfg.Cluster.Interconnect.KeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("certificate public key type=%T, want ECDSA", cert.PublicKey)
+	}
+	if certKey.X.Cmp(key.PublicKey.X) != 0 || certKey.Y.Cmp(key.PublicKey.Y) != 0 {
+		t.Fatal("rotated certificate must match the locally generated private key")
+	}
+	if cert.SerialNumber.String() != signedBundle.Certificate.SerialNumber.String() {
+		t.Fatalf("local certificate serial=%s, want signed serial=%s", cert.SerialNumber, signedBundle.Certificate.SerialNumber)
+	}
+	info, err := os.Stat(cfg.Cluster.Interconnect.KeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enforcePrivateFileModeInCLITest() && info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("rotated private key permissions=%#o, want private", info.Mode().Perm())
+	}
+}
+
 func enforcePrivateFileModeInCLITest() bool {
 	return os.PathSeparator == '/'
 }
 
 func TestClusterJoinRejectsPlainHTTPByDefault(t *testing.T) {
 	_, err := validateClusterJoinControllerURL("http://127.0.0.1:9443", false)
-	if err == nil || !strings.Contains(err.Error(), "requires HTTPS") {
+	if err == nil || !strings.Contains(err.Error(), "require HTTPS") || !strings.Contains(err.Error(), "sensitive credentials") {
 		t.Fatalf("expected HTTPS rejection, got %v", err)
 	}
 	if _, err := validateClusterJoinControllerURL("http://127.0.0.1:9443", true); err != nil {
@@ -448,6 +653,21 @@ sites:
 		t.Fatal(err)
 	}
 	return path
+}
+
+func testNodeCSRForCLIRotate(t *testing.T, nodeID string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		DNSNames: []string{nodeID},
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw})
 }
 
 func extractCLIValue(out, prefix string) string {

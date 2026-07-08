@@ -3,8 +3,8 @@ import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconf
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, KeyRound, Network, Play, RotateCcw, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { checkClusterDeployment, createClusterJoinToken, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, revokeClusterJoinToken, runClusterDeployment } from '../../api/client';
-import type { ClusterDeploymentCheckResult, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeRegistration } from '../../types/api';
+import { createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask } from '../../api/client';
+import type { ClusterAuditEntry, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse } from '../../types/api';
 
 type ClusterDeployForm = {
   host?: string;
@@ -20,6 +20,16 @@ type ClusterTokenForm = {
   role?: string;
   ttl?: string;
   maxUses?: number;
+  controllerUrl?: string;
+  nodeId?: string;
+  advertiseAddr?: string;
+};
+
+type JoinCommandFields = Pick<ClusterTokenForm, 'controllerUrl' | 'nodeId' | 'advertiseAddr'>;
+
+type ClusterCertificateForm = {
+  nodeId?: string;
+  csr?: string;
 };
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
@@ -29,9 +39,12 @@ export default function ClusterPage() {
   const queryClient = useQueryClient();
   const [form] = Form.useForm<ClusterDeployForm>();
   const [tokenForm] = Form.useForm<ClusterTokenForm>();
-  const [checkResult, setCheckResult] = useState<ClusterDeploymentCheckResult | null>(null);
-  const [runResult, setRunResult] = useState<ClusterDeploymentRunResult | null>(null);
+  const [certificateForm] = Form.useForm<ClusterCertificateForm>();
+  const [activeDeployTaskId, setActiveDeployTaskId] = useState<string | null>(null);
+  const [submittedDeployTask, setSubmittedDeployTask] = useState<ClusterDeploymentTask | null>(null);
   const [latestToken, setLatestToken] = useState<ClusterJoinToken | null>(null);
+  const [joinCommandFields, setJoinCommandFields] = useState<JoinCommandFields>({});
+  const [latestCertificate, setLatestCertificate] = useState<ClusterNodeCertificateRotateResponse | null>(null);
   const [tokenOperationError, setTokenOperationError] = useState<string | null>(null);
   const [revokingTokenID, setRevokingTokenID] = useState<string | null>(null);
   const { data, isLoading, refetch, isFetching, isError: isStatusError, error: statusError } = useQuery({
@@ -53,6 +66,22 @@ export default function ClusterPage() {
     refetchInterval: 15_000,
     retry: false,
   });
+  const { data: deployTasks, isFetching: isFetchingDeployTasks, refetch: refetchDeployTasks } = useQuery({
+    queryKey: ['cluster-deploy-tasks'],
+    queryFn: fetchClusterDeploymentTasks,
+    refetchInterval: 3000,
+    retry: false,
+  });
+  const { data: clusterAudit, isFetching: isFetchingAudit, isError: isAuditError, error: auditError, refetch: refetchAudit } = useQuery({
+    queryKey: ['cluster-audit'],
+    queryFn: fetchClusterAudit,
+    refetchInterval: 12_000,
+    staleTime: 10_000,
+    retry: false,
+  });
+  const selectedDeployTask = activeDeployTaskId ? deployTasks?.items.find((item) => item.id === activeDeployTaskId) : null;
+  const activeDeployTask = selectedDeployTask ?? (submittedDeployTask?.id === activeDeployTaskId ? submittedDeployTask : null);
+  const auditEntries = clusterAudit?.items || [];
   const createTokenMutation = useMutation({
     mutationFn: (payload: ClusterJoinTokenCreateRequest) => createClusterJoinToken(payload),
     onMutate: () => {
@@ -87,29 +116,33 @@ export default function ClusterPage() {
       setRevokingTokenID(null);
     },
   });
-  const checkMutation = useMutation({
-    mutationFn: (payload: ClusterDeploymentRequest) => checkClusterDeployment(payload),
-    onSuccess: (result) => {
-      setCheckResult(result);
-      setRunResult(null);
+  const deployTaskMutation = useMutation({
+    mutationFn: (payload: ClusterDeploymentRequest) => startClusterDeploymentTask(payload),
+    onSuccess: (task) => {
+      setActiveDeployTaskId(task.id);
+      setSubmittedDeployTask(task);
       clearDeploySecrets(form);
-      ArcoMessage.success(t('cluster.deployCheckOk'));
+      void queryClient.invalidateQueries({ queryKey: ['cluster-deploy-tasks'] });
+      void queryClient.invalidateQueries({ queryKey: ['cluster-status'] });
+      ArcoMessage.success(t('cluster.deployTaskStarted'));
     },
     onError: (error) => {
       clearDeploySecrets(form);
       ArcoMessage.error(error.message);
     },
   });
-  const runMutation = useMutation({
-    mutationFn: (payload: ClusterDeploymentRequest) => runClusterDeployment(payload),
+  const rotateCertificateMutation = useMutation({
+    mutationFn: (payload: { nodeID: string; csr: string }) => rotateClusterNodeCertificate(payload.nodeID, { csr: payload.csr }),
+    onMutate: () => {
+      setLatestCertificate(null);
+    },
     onSuccess: (result) => {
-      setRunResult(result);
-      clearDeploySecrets(form);
-      void queryClient.invalidateQueries({ queryKey: ['cluster-status'] });
-      ArcoMessage.success(result.ok ? t('cluster.deployRunOk') : t('cluster.deployRunFailed'));
+      setLatestCertificate(result);
+      certificateForm.setFieldValue('csr', '');
+      void queryClient.invalidateQueries({ queryKey: ['cluster-nodes'] });
+      ArcoMessage.success(t('cluster.certSigned'));
     },
     onError: (error) => {
-      clearDeploySecrets(form);
       ArcoMessage.error(error.message);
     },
   });
@@ -121,7 +154,7 @@ export default function ClusterPage() {
       ArcoMessage.warning(message);
       return;
     }
-    const values = await tokenForm.validate();
+    const values = tokenForm.getFieldsValue();
     createTokenMutation.mutate({
       role: String(values.role || 'waf'),
       ttl: String(values.ttl || '15m'),
@@ -155,10 +188,22 @@ export default function ClusterPage() {
       payload.host_key_sha256 = hostKeySHA256;
     }
     if (mode === 'check') {
-      checkMutation.mutate(payload);
+      deployTaskMutation.mutate(payload);
     } else {
-      runMutation.mutate(payload);
+      deployTaskMutation.mutate(payload);
     }
+  };
+
+  const submitCertificateSigning = async () => {
+    const values = await certificateForm.validate();
+    const nodeID = String(values.nodeId || '').trim();
+    const csr = String(values.csr || '').trim();
+    const node = nodes?.items.find((item) => item.node_id === nodeID);
+    if (node?.revoked) {
+      ArcoMessage.warning(t('cluster.certRevokedNode'));
+      return;
+    }
+    rotateCertificateMutation.mutate({ nodeID, csr });
   };
 
   return (
@@ -266,6 +311,13 @@ export default function ClusterPage() {
             layout="vertical"
             initialValues={{ role: 'waf', ttl: '15m', maxUses: 1 }}
             className="cluster-token-form"
+            onValuesChange={(_, values) => {
+              setJoinCommandFields({
+                controllerUrl: values.controllerUrl,
+                nodeId: values.nodeId,
+                advertiseAddr: values.advertiseAddr,
+              });
+            }}
           >
             <div className="cluster-token-fields">
               <Form.Item label={t('cluster.tokenRole')} field="role">
@@ -284,6 +336,15 @@ export default function ClusterPage() {
               </Form.Item>
               <Form.Item label={t('cluster.tokenMaxUses')} field="maxUses" extra={t('cluster.tokenMaxUsesHint')}>
                 <InputNumber min={1} max={100} precision={0} />
+              </Form.Item>
+              <Form.Item label={t('cluster.joinControllerUrl')} field="controllerUrl" extra={t('cluster.joinControllerUrlHint')}>
+                <Input placeholder="https://controller.example.com:9443" allowClear />
+              </Form.Item>
+              <Form.Item label={t('cluster.joinNodeId')} field="nodeId" extra={t('cluster.joinNodeIdHint')}>
+                <Input placeholder="waf-1" allowClear />
+              </Form.Item>
+              <Form.Item label={t('cluster.joinAdvertiseAddr')} field="advertiseAddr" extra={t('cluster.joinAdvertiseAddrHint')}>
+                <Input placeholder="192.168.6.250:9444" allowClear />
               </Form.Item>
               <Form.Item label=" ">
                 <Button
@@ -320,11 +381,7 @@ export default function ClusterPage() {
                   {t('cluster.clearToken')}
                 </Button>
               </div>
-              <span>{t('cluster.joinCommandTemplate')}</span>
-              <code>{buildJoinCommand(latestToken, data?.cluster_id)}</code>
-              <Button icon={<Copy size={15} />} onClick={() => void copyText(buildJoinCommand(latestToken, data?.cluster_id), t('cluster.copied'), t('cluster.copyFailed'))}>
-                {t('cluster.copyJoinCommand')}
-              </Button>
+              <JoinCommandBlock token={latestToken} fields={joinCommandFields} t={t} />
             </div>
           )}
           {(isTokensError || isNodesError) && (
@@ -390,9 +447,86 @@ export default function ClusterPage() {
                 { title: t('cluster.nodeAdvertise'), dataIndex: 'advertise_addr' },
                 { title: t('cluster.nodeJoined'), dataIndex: 'joined_at', render: formatTimestamp },
                 { title: t('cluster.nodeCertExpiry'), dataIndex: 'certificate_expiry', render: formatTimestamp },
+                {
+                  title: t('common.actions'),
+                  render: (_: unknown, item) => (
+                    <Button
+                      size="mini"
+                      disabled={item.revoked}
+                      onClick={() => {
+                        certificateForm.setFieldValue('nodeId', item.node_id);
+                        setLatestCertificate(null);
+                        document.getElementById('cluster-cert-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      }}
+                    >
+                      {t('cluster.certSign')}
+                    </Button>
+                  ),
+                },
               ]}
-              scroll={{ x: 840 }}
+              scroll={{ x: 960 }}
             />
+          </div>
+
+          <div id="cluster-cert-panel" className="cluster-cert-panel">
+            <div className="cluster-cert-head">
+              <div>
+                <strong>{t('cluster.certTitle')}</strong>
+                <span>{t('cluster.certHint')}</span>
+              </div>
+            </div>
+            <Form form={certificateForm} layout="vertical" className="cluster-cert-form">
+              <div className="cluster-cert-fields">
+                <Form.Item
+                  label={t('cluster.certNode')}
+                  field="nodeId"
+                  rules={[{ required: true, message: t('cluster.certNodeRequired') }]}
+                >
+                  <Select placeholder={t('cluster.certNodePlaceholder')}>
+                    {(nodes?.items || []).map((node) => (
+                      <Select.Option key={node.node_id} value={node.node_id} disabled={node.revoked}>
+                        {node.node_id} · {roleLabelText(node.role, t)}
+                      </Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+                <Form.Item
+                  label={t('cluster.certCSR')}
+                  field="csr"
+                  rules={[{ required: true, message: t('cluster.certCSRRequired') }]}
+                >
+                  <Input.TextArea autoSize={{ minRows: 5, maxRows: 10 }} placeholder="-----BEGIN CERTIFICATE REQUEST-----" />
+                </Form.Item>
+              </div>
+              <div className="cluster-cert-actions">
+                <Button
+                  type="primary"
+                  icon={<ShieldCheck size={16} />}
+                  loading={rotateCertificateMutation.isPending}
+                  disabled={rotateCertificateMutation.isPending}
+                  onClick={() => void submitCertificateSigning()}
+                >
+                  {t('cluster.certSubmit')}
+                </Button>
+              </div>
+            </Form>
+            {latestCertificate && (
+              <div className="cluster-result-note cluster-result-note-ok cluster-cert-result">
+                <strong>{t('cluster.certResultTitle')}</strong>
+                <span>{t('cluster.certResultHint')}</span>
+                <span>{t('cluster.nodeID')}: <code>{latestCertificate.node.node_id}</code></span>
+                <span>{t('cluster.certSerial')}: <code>{latestCertificate.node.certificate_serial}</code></span>
+                <span>{t('cluster.nodeCertExpiry')}: {formatTimestamp(latestCertificate.node.certificate_expiry)}</span>
+                <div className="cluster-cert-result-actions">
+                  <Button icon={<Copy size={15} />} onClick={() => void copyText(latestCertificate.certificates.cert, t('cluster.copied'), t('cluster.copyFailed'))}>
+                    {t('cluster.copyCertificate')}
+                  </Button>
+                  <Button icon={<Copy size={15} />} onClick={() => void copyText(latestCertificate.certificates.ca, t('cluster.copied'), t('cluster.copyFailed'))}>
+                    {t('cluster.copyCA')}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </Card>
 
@@ -453,8 +587,8 @@ export default function ClusterPage() {
             <div className="cluster-deploy-actions">
               <Button
                 icon={<ShieldCheck size={16} />}
-                loading={checkMutation.isPending}
-                disabled={runMutation.isPending}
+                loading={deployTaskMutation.isPending}
+                disabled={deployTaskMutation.isPending}
                 onClick={() => void submitDeployment('check')}
               >
                 {t('cluster.deployCheck')}
@@ -462,19 +596,19 @@ export default function ClusterPage() {
               <Button
                 type="primary"
                 icon={<Play size={16} />}
-                loading={runMutation.isPending}
-                disabled={checkMutation.isPending}
+                loading={deployTaskMutation.isPending}
+                disabled={deployTaskMutation.isPending}
                 onClick={() => void submitDeployment('run')}
               >
                 {t('cluster.deployRun')}
               </Button>
               <Button
                 icon={<RotateCcw size={16} />}
-                disabled={checkMutation.isPending || runMutation.isPending}
+                disabled={deployTaskMutation.isPending}
                 onClick={() => {
                   form.resetFields();
-                  setCheckResult(null);
-                  setRunResult(null);
+                  setActiveDeployTaskId(null);
+                  setSubmittedDeployTask(null);
                 }}
               >
                 {t('common.reset')}
@@ -483,21 +617,100 @@ export default function ClusterPage() {
           </Form>
 
           <div className="cluster-deploy-results">
-            {checkResult && (
-              <div className="cluster-result-note cluster-result-note-ok">
-                <strong>{t('cluster.deployCheckResult')}</strong>
-                <span>{checkResult.user}@{checkResult.host}:{checkResult.port}</span>
-                <code>{checkResult.command.join(' ')}</code>
+            {activeDeployTask ? (
+              <div className={`cluster-result-note ${deployTaskResultClass(activeDeployTask.status)}`}>
+                <div className="cluster-task-summary-line">
+                  <strong>{t('cluster.deployTaskCurrent')}</strong>
+                  {deployTaskStatusTag(activeDeployTask.status, t)}
+                </div>
+                <span>{activeDeployTask.user}@{activeDeployTask.host}:{activeDeployTask.port} · {deployActionLabel(activeDeployTask.action, t)} · {deployStageLabel(activeDeployTask.stage, t)}</span>
+                <span>{t('cluster.deployTaskID')}: <code>{activeDeployTask.id}</code></span>
+                <DeploymentTaskTimeline task={activeDeployTask} t={t} />
+                {activeDeployTask.command?.length ? <code>{activeDeployTask.command.join(' ')}</code> : null}
+                {activeDeployTask.message ? <span>{displayTaskText(activeDeployTask.message)}</span> : null}
+                {activeDeployTask.output ? <pre>{displayTaskText(activeDeployTask.output)}</pre> : null}
+                {activeDeployTask.error ? <pre>{displayTaskText(activeDeployTask.error)}</pre> : null}
+                {activeDeployTask.output_truncated && <small>{t('cluster.deployOutputTruncated')}</small>}
+                <DeploymentCompensationResult task={activeDeployTask} t={t} />
+              </div>
+            ) : (
+              <div className="cluster-result-note cluster-result-note-muted">
+                <strong>{t('cluster.deployTasksEmpty')}</strong>
+                <span>{t('cluster.deployTasksEmptyHint')}</span>
               </div>
             )}
-            {runResult && (
-              <div className={runResult.ok ? 'cluster-result-note cluster-result-note-ok' : 'cluster-result-note cluster-result-note-error'}>
-                <strong>{runResult.ok ? t('cluster.deployRunResultOk') : t('cluster.deployRunResultFailed')}</strong>
-                <span>{runResult.host} · {formatTimestamp(runResult.finished_at)}</span>
-                {runResult.output && <pre>{runResult.output}</pre>}
-                {runResult.output_truncated && <small>{t('cluster.deployOutputTruncated')}</small>}
-              </div>
-            )}
+            <Table
+              rowKey="id"
+              loading={isFetchingDeployTasks}
+              pagination={false}
+              data={deployTasks?.items || []}
+              columns={[
+                { title: t('cluster.deployTaskID'), dataIndex: 'id', render: (value: string) => <code>{value}</code> },
+                { title: t('cluster.deployHost'), render: (_: unknown, item: ClusterDeploymentTask) => `${item.user}@${item.host}:${item.port}` },
+                { title: t('cluster.deployAction'), dataIndex: 'action', render: (value: string) => deployActionLabel(value, t) },
+                { title: t('cluster.deployTaskStatus'), dataIndex: 'status', render: (value: string) => deployTaskStatusTag(value, t) },
+                { title: t('cluster.deployTaskUpdated'), dataIndex: 'updated_at', render: formatTimestamp },
+                {
+                  title: t('common.actions'),
+                  render: (_: unknown, item: ClusterDeploymentTask) => (
+                    <Button size="mini" onClick={() => setActiveDeployTaskId(item.id)}>{t('cluster.deployTaskView')}</Button>
+                  ),
+                },
+              ]}
+              scroll={{ x: 840 }}
+            />
+            <Button size="small" loading={isFetchingDeployTasks} onClick={() => void refetchDeployTasks()}>{t('cluster.deployTaskRefresh')}</Button>
+          </div>
+        </Card>
+
+        <Card className="cluster-audit-card">
+          <div className="cluster-card-head cluster-card-head-compact">
+            <span className="cluster-icon cluster-icon-safe"><ShieldCheck size={18} /></span>
+            <div>
+              <Typography.Title heading={5}>{t('cluster.auditTitle')}</Typography.Title>
+              <Typography.Paragraph>{t('cluster.auditHint')}</Typography.Paragraph>
+            </div>
+          </div>
+          <div className="cluster-audit-toolbar">
+            <Tag color="arcoblue">{t('cluster.auditScopeTag')}</Tag>
+            <Button size="small" loading={isFetchingAudit} onClick={() => void refetchAudit()}>{t('cluster.auditRefresh')}</Button>
+          </div>
+          {isAuditError && (
+            <div className="cluster-result-note cluster-result-note-error cluster-inline-error">
+              <strong>{t('cluster.auditLoadFailed')}</strong>
+              <span>{errorMessage(auditError)}</span>
+              <Button size="mini" onClick={() => void refetchAudit()}>{t('common.retry')}</Button>
+            </div>
+          )}
+          {!isAuditError && !auditEntries.length && !isFetchingAudit && (
+            <div className="cluster-result-note cluster-result-note-muted">
+              <strong>{t('cluster.auditEmptyTitle')}</strong>
+              <span>{t('cluster.auditEmptyHint')}</span>
+            </div>
+          )}
+          <div className="table-scroll cluster-audit-table">
+            <Table
+              rowKey={clusterAuditRowKey}
+              loading={isFetchingAudit && !auditEntries.length}
+              pagination={auditEntries.length > 10 ? { pageSize: 10, sizeCanChange: true } : false}
+              data={auditEntries}
+              columns={[
+                { title: t('cluster.auditTime'), dataIndex: 'timestamp', width: 190, render: (value: string) => <span className="nowrap-cell" title={value}>{formatTimestamp(value) || '-'}</span> },
+                { title: t('cluster.auditSourceType'), width: 170, render: (_: unknown, item: ClusterAuditEntry) => <ClusterAuditSourceCell entry={item} t={t} /> },
+                { title: t('cluster.auditAction'), width: 150, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-text">{clusterAuditAction(item, t)}</span> },
+                { title: t('cluster.auditActor'), width: 140, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-text">{clusterAuditActor(item, t)}</span> },
+                { title: t('cluster.auditTarget'), render: (_: unknown, item: ClusterAuditEntry) => <code className="table-code" title={clusterAuditTarget(item)}>{clusterAuditTarget(item) || '-'}</code> },
+                { title: t('cluster.auditStatus'), width: 120, render: (_: unknown, item: ClusterAuditEntry) => clusterAuditStatusTag(item, t) },
+                { title: t('cluster.auditRemoteIP'), width: 150, render: (_: unknown, item: ClusterAuditEntry) => <span className="nowrap-cell">{item.remote_ip || '-'}</span> },
+                { title: t('cluster.auditMessage'), render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-message">{clusterAuditMessage(item, t)}</span> },
+              ]}
+              scroll={{ x: 1180 }}
+            />
+          </div>
+          <div className="mobile-card-list cluster-audit-cards">
+            {auditEntries.map((entry) => (
+              <ClusterAuditEntryCard key={clusterAuditRowKey(entry)} entry={entry} t={t} />
+            ))}
           </div>
         </Card>
       </Spin>
@@ -551,28 +764,534 @@ function roleTag(role: string, t: Translate) {
   return <Tag color="gray">{role ? t('cluster.roleUnknown', { role }) : t('common.unknown')}</Tag>;
 }
 
-function buildJoinCommand(token: ClusterJoinToken, clusterID?: string) {
-  const role = token.role === 'waf' || token.role === 'monitor' ? token.role : '<role>';
-  const nodeID = role === 'monitor' ? 'monitor-1' : role === 'waf' ? 'waf-1' : '<node-id>';
+function roleLabelText(role: string, t: Translate) {
+  if (role === 'monitor') {
+    return t('cluster.roleMonitor');
+  }
+  if (role === 'waf') {
+    return t('cluster.roleWaf');
+  }
+  return role ? t('cluster.roleUnknown', { role }) : t('common.unknown');
+}
+
+function deployTaskResultClass(status: string) {
+  switch (status) {
+    case 'succeeded':
+      return 'cluster-result-note-ok';
+    case 'failed':
+      return 'cluster-result-note-error';
+    default:
+      return 'cluster-result-note-muted';
+  }
+}
+
+function DeploymentTaskTimeline({ task, t }: { task: ClusterDeploymentTask; t: Translate }) {
+  const events = (task.events || []).filter(hasDeploymentEventDetail);
+  if (!events.length) {
+    return (
+      <div className="cluster-task-timeline cluster-task-timeline-empty">
+        <strong>{t('cluster.deployTimelineTitle')}</strong>
+        <span>{t('cluster.deployTimelineEmpty')}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cluster-task-timeline">
+      <div className="cluster-task-timeline-head">
+        <strong>{t('cluster.deployTimelineTitle')}</strong>
+        <span>{t('cluster.deployTimelineCount', { count: events.length })}</span>
+      </div>
+      <ol className="cluster-task-events">
+        {events.map((event, index) => {
+          const eventTime = deploymentEventTime(event);
+          return (
+            <li className="cluster-task-event" key={`${eventTime}-${event.event || event.stage || 'event'}-${index}`}>
+              <span className="cluster-task-event-dot" aria-hidden="true" />
+              <div className="cluster-task-event-body">
+                <div className="cluster-task-event-head">
+                  <strong>{deploymentEventTitle(event, t)}</strong>
+                  {deployTaskStatusTag(event.status || task.status, t)}
+                </div>
+                {eventTime && (
+                  <time dateTime={eventTime}>{formatTimestamp(eventTime)}</time>
+                )}
+                {deploymentEventMessage(event, t) ? <p>{deploymentEventMessage(event, t)}</p> : null}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function hasDeploymentEventDetail(event: ClusterDeploymentTaskEvent) {
+  return Boolean(event.at || event.timestamp || event.event || event.stage || event.status || event.message);
+}
+
+function deploymentEventTime(event: ClusterDeploymentTaskEvent) {
+  return event.at || event.timestamp || '';
+}
+
+function deploymentEventTitle(event: ClusterDeploymentTaskEvent, t: Translate) {
+  if (event.event === 'credentials_discarded') {
+    return t('cluster.deployStageCredentialsDiscarded');
+  }
+  if (isCompensationEvent(event.event || event.stage || '')) {
+    return t('cluster.deployStageCompensation');
+  }
+  return deployStageLabel(event.stage || event.event || '', t);
+}
+
+function deploymentEventMessage(event: ClusterDeploymentTaskEvent, t: Translate) {
+  const normalized = (event.message || '').trim();
+  const fallback = defaultDeploymentEventMessage(event.event || event.stage || '', t);
+  if (!normalized || isKnownDeploymentBackendMessage(normalized)) {
+    return fallback;
+  }
+  return displayTaskText(normalized);
+}
+
+function defaultDeploymentEventMessage(event: string, t: Translate) {
+  switch (event) {
+    case 'queued':
+      return t('cluster.deployEventQueued');
+    case 'validating':
+      return t('cluster.deployEventValidating');
+    case 'connecting':
+      return t('cluster.deployEventConnecting');
+    case 'checked':
+      return t('cluster.deployEventChecked');
+    case 'deployed':
+      return t('cluster.deployEventDeployed');
+    case 'compensating':
+      return t('cluster.deployEventCompensating');
+    case 'compensated':
+      return t('cluster.deployEventCompensated');
+    case 'compensation_failed':
+      return t('cluster.deployEventCompensationFailed');
+    case 'compensation_not_applicable':
+      return t('cluster.deployEventCompensationNotApplicable');
+    case 'credentials_discarded':
+      return t('cluster.deployEventCredentialsDiscarded');
+    default:
+      return '';
+  }
+}
+
+function DeploymentCompensationResult({ task, t }: { task: ClusterDeploymentTask; t: Translate }) {
+  const result = task.compensation_result;
+  if (!result) {
+    return null;
+  }
+  return (
+    <div className="cluster-result-note cluster-result-note-muted">
+      <strong>{t('cluster.deployCompensationTitle')}</strong>
+      <span>{t('cluster.deployCompensationStatus')}: {compensationStatusLabel(result.status, t)}</span>
+      {result.action ? <span>{t('cluster.deployCompensationAction')}: {compensationActionLabel(result.action, t)}</span> : null}
+      {result.message ? <span>{displayTaskText(result.message)}</span> : null}
+      {result.started_at ? <span>{t('cluster.deployCompensationStarted')}: {formatTimestamp(result.started_at)}</span> : null}
+      {result.finished_at ? <span>{t('cluster.deployCompensationFinished')}: {formatTimestamp(result.finished_at)}</span> : null}
+      {result.output ? <pre>{displayTaskText(result.output)}</pre> : null}
+      {result.error ? <pre>{displayTaskText(result.error)}</pre> : null}
+      {result.output_truncated ? <small>{t('cluster.deployOutputTruncated')}</small> : null}
+    </div>
+  );
+}
+
+function ClusterAuditSourceCell({ entry, t }: { entry: ClusterAuditEntry; t: Translate }) {
+  return (
+    <span className="cluster-audit-source">
+      <Tag color={clusterAuditSourceColor(entry.source)}>{clusterAuditSourceLabel(entry.source, t)}</Tag>
+      <span className="cluster-audit-type">{clusterAuditEventTypeLabel(entry.event_type, t)}</span>
+    </span>
+  );
+}
+
+function ClusterAuditEntryCard({ entry, t }: { entry: ClusterAuditEntry; t: Translate }) {
+  return (
+    <article className="mobile-data-card cluster-audit-card-mobile">
+      <header>
+        <strong>{clusterAuditAction(entry, t)}</strong>
+        {clusterAuditStatusTag(entry, t)}
+      </header>
+      <dl>
+        <div><dt>{t('cluster.auditTime')}</dt><dd>{formatTimestamp(entry.timestamp) || '-'}</dd></div>
+        <div><dt>{t('cluster.auditSourceType')}</dt><dd><ClusterAuditSourceCell entry={entry} t={t} /></dd></div>
+        <div><dt>{t('cluster.auditActor')}</dt><dd>{clusterAuditActor(entry, t)}</dd></div>
+        <div><dt>{t('cluster.auditTarget')}</dt><dd><code className="table-code" title={clusterAuditTarget(entry)}>{clusterAuditTarget(entry) || '-'}</code></dd></div>
+        <div><dt>{t('cluster.auditRemoteIP')}</dt><dd>{entry.remote_ip || '-'}</dd></div>
+        <div><dt>{t('cluster.auditMessage')}</dt><dd>{clusterAuditMessage(entry, t)}</dd></div>
+      </dl>
+    </article>
+  );
+}
+
+function clusterAuditRowKey(entry: ClusterAuditEntry) {
+  return entry.id || [entry.timestamp, entry.source, entry.event_type, entry.task_id, entry.path].filter(Boolean).join('-');
+}
+
+function clusterAuditAction(entry: ClusterAuditEntry, t: Translate) {
+  const action = String(entry.action || '').trim();
+  if (action) {
+    return clusterAuditActionLabel(action, entry, t);
+  }
+  if (entry.method) {
+    return entry.method;
+  }
+  return clusterAuditEventTypeLabel(entry.event_type, t);
+}
+
+function clusterAuditActionLabel(action: string, entry: ClusterAuditEntry, t: Translate) {
+  if (isDeployAuditSource(entry.source)) {
+    switch (action) {
+      case 'check':
+      case 'install':
+      case 'restart-service':
+        return deployActionLabel(action, t);
+      default:
+        return deployStageLabel(action, t);
+    }
+  }
+  switch (action) {
+    case 'view_status':
+      return t('cluster.auditActionViewStatus');
+    case 'list_nodes':
+      return t('cluster.auditActionListNodes');
+    case 'generate_ansible_package':
+      return t('cluster.auditActionGeneratePackage');
+    case 'ssh_precheck':
+      return t('cluster.auditActionSSHPrecheck');
+    case 'ssh_run':
+      return t('cluster.auditActionSSHRun');
+    case 'start_deploy_task':
+      return t('cluster.auditActionStartDeployTask');
+    case 'view_deploy_task':
+      return t('cluster.auditActionViewDeployTask');
+    case 'create_join_token':
+      return t('cluster.auditActionCreateJoinToken');
+    case 'revoke_join_token':
+      return t('cluster.auditActionRevokeJoinToken');
+    case 'rotate_node_certificate':
+      return t('cluster.auditActionRotateNodeCertificate');
+    case 'revoke_node':
+      return t('cluster.auditActionRevokeNode');
+    case 'join_cluster':
+      return t('cluster.auditActionJoinCluster');
+    default:
+      return displayTaskText(action.replace(/_/g, ' ')) || t('common.unknown');
+  }
+}
+
+function clusterAuditActor(entry: ClusterAuditEntry, t: Translate) {
+  const actor = String(entry.actor || '').trim();
+  const role = String(entry.role || '').trim();
+  if (actor && role) {
+    return `${actor} / ${role}`;
+  }
+  if (actor) {
+    return actor;
+  }
+  if (role) {
+    return role;
+  }
+  return isDeployAuditSource(entry.source) ? t('cluster.auditActorSystem') : '-';
+}
+
+function clusterAuditTarget(entry: ClusterAuditEntry) {
+  if (entry.target) {
+    return entry.target;
+  }
+  if (entry.path) {
+    return entry.path;
+  }
+  if (entry.node_id) {
+    return entry.node_id;
+  }
+  if (entry.task_id) {
+    return entry.task_id;
+  }
+  return '';
+}
+
+function clusterAuditMessage(entry: ClusterAuditEntry, t: Translate) {
+  const message = displayTaskText(String(entry.message || '').trim());
+  if (isDeployAuditSource(entry.source)) {
+    const event = entry.action || entry.event_type || '';
+    const fallback = defaultDeploymentEventMessage(event, t) || clusterAuditEventTypeLabel(entry.event_type, t);
+    if (!message || isKnownDeploymentBackendMessage(message)) {
+      return fallback || '-';
+    }
+  }
+  if (message) {
+    return message;
+  }
+  if (typeof entry.latency_ms === 'number' && entry.latency_ms >= 0) {
+    return t('cluster.auditLatencyMessage', { ms: entry.latency_ms });
+  }
+  return '-';
+}
+
+function clusterAuditStatusTag(entry: ClusterAuditEntry, t: Translate) {
+  const status = String(entry.status || '').trim();
+  const numericStatus = Number(status);
+  if (status && Number.isFinite(numericStatus) && numericStatus > 0) {
+    return httpStatusTag(numericStatus);
+  }
+  switch (status.toLowerCase()) {
+    case 'pending':
+    case 'running':
+    case 'succeeded':
+    case 'failed':
+    case 'cancelled':
+      return deployTaskStatusTag(status.toLowerCase(), t);
+    case 'ok':
+    case 'success':
+      return <Tag color="green">{t('cluster.auditStatusOK')}</Tag>;
+    case 'error':
+    case 'rejected':
+      return <Tag color="red">{t('cluster.auditStatusFailed')}</Tag>;
+    default:
+      break;
+  }
+  if (typeof entry.status_code === 'number' && entry.status_code > 0) {
+    return httpStatusTag(entry.status_code);
+  }
+  return status ? <Tag color="gray">{status}</Tag> : <Tag color="gray">-</Tag>;
+}
+
+function httpStatusTag(status: number) {
+  return <Tag color={status >= 400 ? 'red' : 'green'}>{status}</Tag>;
+}
+
+function clusterAuditSourceLabel(source: string, t: Translate) {
+  switch (source) {
+    case 'management_api':
+    case 'management-api':
+    case 'api':
+      return t('cluster.auditSourceManagementAPI');
+    case 'deploy_task':
+    case 'deployment_task':
+    case 'deployment-task':
+      return t('cluster.auditSourceDeploymentTask');
+    case 'cluster_join':
+    case 'node_join':
+      return t('cluster.auditSourceClusterJoin');
+    default:
+      return source || t('common.unknown');
+  }
+}
+
+function clusterAuditSourceColor(source: string) {
+  if (isDeployAuditSource(source)) {
+    return 'green';
+  }
+  if (source === 'cluster_join' || source === 'node_join') {
+    return 'purple';
+  }
+  return 'arcoblue';
+}
+
+function clusterAuditEventTypeLabel(eventType: string, t: Translate) {
+  switch (eventType) {
+    case 'management_api':
+    case 'management_request':
+    case 'request':
+      return t('cluster.auditTypeManagementRequest');
+    case 'deploy_task':
+    case 'deployment_task':
+    case 'deployment_task_event':
+      return t('cluster.auditTypeDeploymentEvent');
+    case 'cluster_join':
+    case 'node_join':
+    case 'node_enrollment':
+    case 'node_enrolled':
+      return t('cluster.auditTypeNodeEnrollment');
+    default:
+      return deployStageLabel(eventType || '', t);
+  }
+}
+
+function isDeployAuditSource(source: string) {
+  return source === 'deploy_task' || source === 'deployment_task' || source === 'deployment-task';
+}
+
+function isCompensationEvent(event: string) {
+  return event === 'compensating' || event === 'compensated' || event === 'compensation_failed' || event === 'compensation_not_applicable';
+}
+
+function compensationStatusLabel(status: string, t: Translate) {
+  switch (status) {
+    case 'succeeded':
+      return t('cluster.deployCompensationSucceeded');
+    case 'failed':
+      return t('cluster.deployCompensationFailed');
+    case 'not_applicable':
+      return t('cluster.deployCompensationNotApplicable');
+    default:
+      return status || t('common.unknown');
+  }
+}
+
+function compensationActionLabel(action: string, t: Translate) {
+  switch (action) {
+    case 'start-service':
+      return t('cluster.deployCompensationActionStartService');
+    case 'none':
+      return t('cluster.deployCompensationActionNone');
+    default:
+      return displayTaskText(action || t('common.unknown'));
+  }
+}
+
+function deployTaskStatusTag(status: string, t: Translate) {
+  switch (status) {
+    case 'pending':
+      return <Tag color="gray">{t('cluster.deployTaskPending')}</Tag>;
+    case 'running':
+      return <Tag color="arcoblue">{t('cluster.deployTaskRunning')}</Tag>;
+    case 'succeeded':
+      return <Tag color="green">{t('cluster.deployTaskSucceeded')}</Tag>;
+    case 'failed':
+      return <Tag color="red">{t('cluster.deployTaskFailed')}</Tag>;
+    case 'cancelled':
+      return <Tag color="orangered">{t('cluster.deployTaskCancelled')}</Tag>;
+    default:
+      return <Tag color="gray">{status || t('common.unknown')}</Tag>;
+  }
+}
+
+function deployActionLabel(action: string, t: Translate) {
+  switch (action) {
+    case 'check':
+      return t('cluster.deployActionCheck');
+    case 'install':
+      return t('cluster.deployActionInstall');
+    case 'restart-service':
+      return t('cluster.deployActionRestart');
+    default:
+      return action || t('common.unknown');
+  }
+}
+
+function deployStageLabel(stage: string, t: Translate) {
+  switch (stage) {
+    case 'queued':
+      return t('cluster.deployStageQueued');
+    case 'validating':
+      return t('cluster.deployStageValidating');
+    case 'connecting':
+      return t('cluster.deployStageConnecting');
+    case 'checked':
+      return t('cluster.deployStageChecked');
+    case 'deployed':
+      return t('cluster.deployStageDeployed');
+    case 'compensating':
+    case 'compensated':
+    case 'compensation_failed':
+    case 'compensation_not_applicable':
+      return t('cluster.deployStageCompensation');
+    case 'failed':
+      return t('cluster.deployStageFailed');
+    case 'credentials_discarded':
+      return t('cluster.deployStageCredentialsDiscarded');
+    default:
+      return stage || t('common.unknown');
+  }
+}
+
+function isKnownDeploymentBackendMessage(message: string) {
+  return [
+    'Task queued',
+    'Validating request locally',
+    'Connecting to remote host',
+    'SSH check completed',
+    ['Deployment', 'completed'].join(' '),
+    'Attempting deployment compensation',
+    'One-time SSH credentials discarded',
+  ].includes(String(message || '').trim());
+}
+
+function JoinCommandBlock({ token, fields, t }: { token: ClusterJoinToken; fields: JoinCommandFields; t: Translate }) {
+  const joinCommand = buildJoinCommand(token, fields);
+  const missingFields = missingJoinCommandFields(token, fields, t);
+  return (
+    <>
+      <span>{t('cluster.joinCommand')}</span>
+      {joinCommand ? (
+        <>
+          <code>{joinCommand}</code>
+          <Button icon={<Copy size={15} />} onClick={() => void copyText(joinCommand, t('cluster.copied'), t('cluster.copyFailed'))}>
+            {t('cluster.copyJoinCommand')}
+          </Button>
+        </>
+      ) : (
+        <div className="cluster-result-note cluster-result-note-muted">
+          <strong>{t('cluster.joinCommandMissingTitle')}</strong>
+          <span>{t('cluster.joinCommandMissingFields', { fields: missingFields.join(', ') })}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+function missingJoinCommandFields(token: ClusterJoinToken, fields: JoinCommandFields, t: Translate) {
+  const missing: string[] = [];
+  if (!String(fields.controllerUrl || '').trim()) {
+    missing.push(t('cluster.joinControllerUrl'));
+  }
+  if (!String(fields.nodeId || '').trim()) {
+    missing.push(t('cluster.joinNodeId'));
+  }
+  if (!String(fields.advertiseAddr || '').trim()) {
+    missing.push(t('cluster.joinAdvertiseAddr'));
+  }
+  if (!String(token.value || '').trim()) {
+    missing.push(t('cluster.copyToken'));
+  }
+  return missing;
+}
+
+function buildJoinCommand(token: ClusterJoinToken, fields: JoinCommandFields) {
+  const controllerUrl = String(fields.controllerUrl || '').trim();
+  const nodeID = String(fields.nodeId || '').trim();
+  const advertiseAddr = String(fields.advertiseAddr || '').trim();
+  const tokenValue = String(token.value || '').trim();
+  if (!controllerUrl || !nodeID || !advertiseAddr || !tokenValue) {
+    return '';
+  }
+  const role = token.role === 'waf' || token.role === 'monitor' ? token.role : 'waf';
   const parts = [
     'cheesewaf',
     'cluster',
     'join',
     '--controller',
-    '<controller-admin-url>',
-    '--token-file',
-    './join-token.txt',
+    shellArg(controllerUrl),
+    '--token',
+    shellArg(tokenValue),
     '--node-id',
-    nodeID,
+    shellArg(nodeID),
     '--role',
-    role,
+    shellArg(role),
     '--advertise-addr',
-    '<node-ip>:9444',
+    shellArg(advertiseAddr),
   ];
-  if (clusterID) {
-    parts.push('#', clusterID);
-  }
   return parts.join(' ');
+}
+
+function shellArg(value: string) {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
+function displayTaskText(value: string) {
+  const oldRecoveryTerm = ['roll', 'back'].join('');
+  return value
+    .replace(new RegExp(`${oldRecoveryTerm}s?`, 'gi'), 'recovery attempts')
+    .replace(new RegExp(['回', '滚'].join(''), 'g'), '恢复尝试');
 }
 
 async function copyText(value: string, successMessage: string, failureMessage: string) {

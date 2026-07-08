@@ -1,6 +1,11 @@
 package identity
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -274,6 +279,187 @@ func TestEnrollNodeConsumesRoleScopedTokenAndPersistsNode(t *testing.T) {
 	}
 }
 
+func TestRotateNodeCertificateWithCSRUpdatesRegistrationWithoutPrivateKey(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	statePath := filepath.Join(t.TempDir(), "identity.json")
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test", StatePath: statePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollmentCSR, enrollmentKey := testIdentityNodeCSR(t, "waf-a")
+	enrollment, err := svc.EnrollNodeWithCSR(token.Value, NodeIdentity{
+		NodeID:        "waf-a",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "10.0.0.1:9444",
+	}, enrollmentCSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enrollment.Bundle.KeyPEM) != 0 {
+		t.Fatal("CSR enrollment must not return node private key")
+	}
+	originalSerial := enrollment.Node.CertificateSerial
+	originalExpiry := enrollment.Node.CertificateExpiry
+
+	clock.Advance(30 * 24 * time.Hour)
+	rotationCSR, rotationKey := testIdentityNodeCSR(t, "waf-a")
+	rotated, err := svc.RotateNodeCertificateWithCSR("waf-a", rotationCSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.Node.CertificateSerial == "" || rotated.Node.CertificateSerial == originalSerial {
+		t.Fatalf("rotation must update certificate serial, got old=%q new=%q", originalSerial, rotated.Node.CertificateSerial)
+	}
+	if !rotated.Node.CertificateExpiry.After(originalExpiry) {
+		t.Fatalf("rotation must extend certificate expiry, old=%s new=%s", originalExpiry, rotated.Node.CertificateExpiry)
+	}
+	if len(rotated.Bundle.CertPEM) == 0 || len(rotated.Bundle.CAPEM) == 0 {
+		t.Fatal("rotation must return new certificate and CA material")
+	}
+	if len(rotated.Bundle.KeyPEM) != 0 {
+		t.Fatal("rotation response must not include node private key")
+	}
+	if !certificatePublicKeyMatches(t, rotated.Bundle.Certificate, rotationKey) {
+		t.Fatal("rotated certificate must use the CSR public key")
+	}
+	if certificatePublicKeyMatches(t, rotated.Bundle.Certificate, enrollmentKey) {
+		t.Fatal("rotated certificate must not reuse the old enrollment key")
+	}
+
+	reloaded, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test", StatePath: statePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := reloaded.ListNodes()
+	if len(nodes) != 1 || nodes[0].NodeID != "waf-a" || nodes[0].CertificateSerial != rotated.Node.CertificateSerial {
+		t.Fatalf("rotated node registration was not persisted: %+v", nodes)
+	}
+}
+
+func TestEnrollNodeWithCSRRejectsCSRForDifferentNodeWithoutConsumingToken(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongCSR, _ := testIdentityNodeCSR(t, "waf-other")
+	if _, err := svc.EnrollNodeWithCSR(token.Value, NodeIdentity{
+		NodeID:        "waf-a",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "10.0.0.1:9444",
+	}, wrongCSR); err == nil {
+		t.Fatal("CSR for a different node must be rejected")
+	}
+	if err := svc.ValidateJoinToken(token.Value, "waf"); err != nil {
+		t.Fatalf("rejected CSR must not consume join token: %v", err)
+	}
+}
+
+func TestEnrollNodeWithCSRRejectsWeakPublicKeyWithoutConsumingToken(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	weakCSR := testIdentityRSANodeCSR(t, "waf-a", 1024)
+	if _, err := svc.EnrollNodeWithCSR(token.Value, NodeIdentity{
+		NodeID:        "waf-a",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "10.0.0.1:9444",
+	}, weakCSR); err == nil {
+		t.Fatal("CSR with a weak public key must be rejected")
+	}
+	if err := svc.ValidateJoinToken(token.Value, "waf"); err != nil {
+		t.Fatalf("rejected weak CSR must not consume join token: %v", err)
+	}
+}
+
+func TestParseCertificateRequestRejectsExtraPEMBlocks(t *testing.T) {
+	csrPEM, _ := testIdentityNodeCSR(t, "waf-a")
+	withExtra := append([]byte{}, csrPEM...)
+	withExtra = append(withExtra, []byte("\n-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n")...)
+	if _, err := parseCertificateRequestPEM(withExtra); err == nil {
+		t.Fatal("CSR parser must reject extra PEM blocks")
+	}
+}
+
+func TestRotateNodeCertificateWithCSRRejectsCSRForDifferentNode(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	statePath := filepath.Join(t.TempDir(), "identity.json")
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test", StatePath: statePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollmentCSR, _ := testIdentityNodeCSR(t, "waf-a")
+	enrollment, err := svc.EnrollNodeWithCSR(token.Value, NodeIdentity{
+		NodeID:        "waf-a",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "10.0.0.1:9444",
+	}, enrollmentCSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongCSR, _ := testIdentityNodeCSR(t, "waf-other")
+	if _, err := svc.RotateNodeCertificateWithCSR("waf-a", wrongCSR); err == nil {
+		t.Fatal("rotation CSR for a different node must be rejected")
+	}
+	nodes := svc.ListNodes()
+	if len(nodes) != 1 || nodes[0].CertificateSerial != enrollment.Node.CertificateSerial {
+		t.Fatalf("rejected rotation must not update node registration: %+v", nodes)
+	}
+}
+
+func TestRotateNodeCertificateRejectsUnknownOrRevokedNode(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrPEM, _ := testIdentityNodeCSR(t, "waf-a")
+	if _, err := svc.RotateNodeCertificateWithCSR("waf-a", csrPEM); err == nil {
+		t.Fatal("unknown node rotation must be rejected")
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnrollNodeWithCSR(token.Value, NodeIdentity{
+		NodeID:        "waf-a",
+		Role:          "waf",
+		ClusterID:     "cw-test",
+		AdvertiseAddr: "10.0.0.1:9444",
+	}, csrPEM); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RevokeNode("waf-a", "compromised"); err != nil {
+		t.Fatal(err)
+	}
+	nextCSR, _ := testIdentityNodeCSR(t, "waf-a")
+	if _, err := svc.RotateNodeCertificateWithCSR("waf-a", nextCSR); err == nil {
+		t.Fatal("revoked node rotation must be rejected")
+	}
+}
+
 func TestIdentityStateRejectsWeakPermissions(t *testing.T) {
 	if !enforcePOSIXPrivateMode() {
 		t.Skip("POSIX mode bits are not reliable on this platform")
@@ -306,4 +492,51 @@ func TestIdentityStateWriteUsesPrivatePermissions(t *testing.T) {
 	if enforcePOSIXPrivateMode() && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("identity state permissions=%#o, want private", info.Mode().Perm())
 	}
+}
+
+func testIdentityNodeCSR(t *testing.T, nodeID string) ([]byte, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		DNSNames: []string{nodeID},
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw}), key
+}
+
+func testIdentityRSANodeCSR(t *testing.T, nodeID string, bits int) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, bits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		DNSNames: []string{nodeID},
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw})
+}
+
+func certificatePublicKeyMatches(t *testing.T, cert *x509.Certificate, key *ecdsa.PrivateKey) bool {
+	t.Helper()
+	certKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("certificate public key type=%T, want ECDSA", cert.PublicKey)
+	}
+	certBytes, err := x509.MarshalPKIXPublicKey(certKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBytes, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.Equal(certBytes, keyBytes)
 }

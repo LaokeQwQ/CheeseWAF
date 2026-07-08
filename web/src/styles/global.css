@@ -12909,6 +12909,11 @@ code {
   border-radius: 8px;
 }
 
+.cluster-audit-card {
+  margin-top: 16px;
+  border-radius: 8px;
+}
+
 .cluster-card-head {
   min-width: 0;
   display: grid;
@@ -13073,6 +13078,84 @@ code {
   line-height: 1.45;
 }
 
+.cluster-cert-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface-soft) 76%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.cluster-cert-head {
+  min-width: 0;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.cluster-cert-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.cluster-cert-head strong {
+  color: var(--text);
+}
+
+.cluster-cert-head span {
+  max-width: 78ch;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.cluster-cert-form {
+  min-width: 0;
+}
+
+.cluster-cert-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(360px, 1.3fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.cluster-cert-form .arco-form-item {
+  margin-bottom: 0;
+}
+
+.cluster-cert-form .arco-input,
+.cluster-cert-form .arco-input-inner-wrapper,
+.cluster-cert-form .arco-select-view {
+  border-radius: 8px;
+}
+
+.cluster-cert-actions,
+.cluster-cert-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.cluster-cert-actions .arco-btn,
+.cluster-cert-actions .arco-button,
+.cluster-cert-head .arco-btn,
+.cluster-cert-head .arco-button,
+.cluster-cert-result-actions .arco-btn,
+.cluster-cert-result-actions .arco-button {
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.cluster-cert-result {
+  margin-top: 0;
+}
+
 .cluster-status-error,
 .cluster-inline-error {
   margin-bottom: 14px;
@@ -13122,6 +13205,67 @@ code {
   margin-top: 14px;
 }
 
+.cluster-audit-toolbar {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin: -2px 0 12px;
+}
+
+.cluster-audit-toolbar .arco-btn,
+.cluster-audit-toolbar .arco-button {
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.cluster-audit-table {
+  min-width: 0;
+}
+
+.cluster-audit-table .arco-table {
+  min-width: 1180px;
+}
+
+.cluster-audit-source {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  align-items: start;
+}
+
+.cluster-audit-source .arco-tag {
+  justify-self: flex-start;
+}
+
+.cluster-audit-type,
+.cluster-audit-text,
+.cluster-audit-message {
+  min-width: 0;
+  color: var(--text);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.cluster-audit-type {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.cluster-audit-message {
+  display: inline-block;
+  max-width: 52ch;
+}
+
+.cluster-audit-table .table-code,
+.cluster-audit-card-mobile .table-code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .cluster-result-note {
   display: grid;
   gap: 8px;
@@ -13140,6 +13284,96 @@ code {
 .cluster-result-note-error {
   border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
   background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+}
+
+.cluster-result-note-muted {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
+}
+
+.cluster-task-summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cluster-task-timeline {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.cluster-task-timeline-head,
+.cluster-task-event-head {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cluster-task-timeline-head span,
+.cluster-task-timeline-empty span,
+.cluster-task-event time {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.cluster-task-events {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cluster-task-event {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.cluster-task-event-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.cluster-task-event-body {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.cluster-task-event-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cluster-task-event-head .arco-tag {
+  flex: 0 0 auto;
+}
+
+.cluster-task-event p {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .cluster-result-note strong {
@@ -13192,8 +13426,14 @@ code {
   }
 
   .cluster-token-fields,
-  .cluster-tables-grid {
+  .cluster-tables-grid,
+  .cluster-cert-fields {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cluster-cert-head {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .cluster-deploy-secrets {
@@ -13234,6 +13474,23 @@ code {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .cluster-cert-panel {
+    padding: 12px;
+  }
+
+  .cluster-cert-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cluster-cert-actions .arco-btn,
+  .cluster-cert-actions .arco-button,
+  .cluster-cert-head .arco-btn,
+  .cluster-cert-head .arco-button,
+  .cluster-cert-result-actions .arco-btn,
+  .cluster-cert-result-actions .arco-button {
+    width: 100%;
+  }
+
   .cluster-deploy-secrets {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -13241,6 +13498,30 @@ code {
   .cluster-deploy-actions .arco-btn,
   .cluster-deploy-actions .arco-button {
     flex: 1 1 100%;
+  }
+
+  .cluster-task-timeline {
+    padding: 10px;
+  }
+
+  .cluster-task-event {
+    grid-template-columns: 12px minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .cluster-audit-table {
+    display: none;
+  }
+
+  .cluster-audit-cards {
+    display: grid;
+    gap: 12px;
+  }
+
+  .cluster-audit-card-mobile .cluster-audit-source {
+    gap: 6px;
   }
 }
 

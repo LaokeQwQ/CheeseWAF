@@ -1,14 +1,18 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
@@ -76,6 +80,304 @@ func (h *Handler) ClusterDeployRun(w http.ResponseWriter, r *http.Request) {
 	writeData(w, result)
 }
 
+func (h *Handler) ClusterStartDeployTask(w http.ResponseWriter, r *http.Request) {
+	var req deploy.SSHDeploymentRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	task, err := h.clusterDeployTaskManager().Start(context.Background(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "CLUSTER_DEPLOY_TASK_INVALID", err.Error())
+		return
+	}
+	writeData(w, task)
+}
+
+func (h *Handler) ClusterGetDeployTask(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "CLUSTER_DEPLOY_TASK_INVALID", "deploy task id is required")
+		return
+	}
+	task, ok := h.clusterDeployTaskManager().Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "CLUSTER_DEPLOY_TASK_NOT_FOUND", "deploy task not found")
+		return
+	}
+	writeData(w, task)
+}
+
+func (h *Handler) ClusterListDeployTasks(w http.ResponseWriter, _ *http.Request) {
+	items := h.clusterDeployTaskManager().List(50)
+	writeData(w, map[string]any{"items": items, "total": len(items)})
+}
+
+type clusterAuditEntry struct {
+	ID         string    `json:"id"`
+	Source     string    `json:"source"`
+	EventType  string    `json:"event_type"`
+	Action     string    `json:"action,omitempty"`
+	Status     string    `json:"status,omitempty"`
+	StatusCode int       `json:"status_code,omitempty"`
+	Actor      string    `json:"actor,omitempty"`
+	Role       string    `json:"role,omitempty"`
+	Method     string    `json:"method,omitempty"`
+	Path       string    `json:"path,omitempty"`
+	RemoteIP   string    `json:"remote_ip,omitempty"`
+	Target     string    `json:"target,omitempty"`
+	Message    string    `json:"message,omitempty"`
+	TaskID     string    `json:"task_id,omitempty"`
+	NodeID     string    `json:"node_id,omitempty"`
+	LatencyMS  int64     `json:"latency_ms,omitempty"`
+	Timestamp  time.Time `json:"timestamp"`
+}
+
+func (h *Handler) ClusterAudit(w http.ResponseWriter, _ *http.Request) {
+	items, err := h.clusterAuditEntries(250)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "CLUSTER_AUDIT_ERROR", err.Error())
+		return
+	}
+	writeData(w, map[string]any{"items": items, "total": len(items)})
+}
+
+func (h *Handler) clusterAuditEntries(limit int) ([]clusterAuditEntry, error) {
+	if limit <= 0 {
+		limit = 250
+	}
+	entries := make([]clusterAuditEntry, 0, limit)
+	if h != nil && h.Auditor != nil {
+		auditEntries, err := h.Auditor.Query(limit * 4)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range auditEntries {
+			item, ok := clusterAuditFromHTTP(entry)
+			if ok {
+				entries = append(entries, item)
+			}
+		}
+	}
+	if h != nil && h.ClusterDeployTasks != nil {
+		for _, task := range h.clusterDeployTaskManager().List(50) {
+			entries = append(entries, clusterAuditFromTask(task)...)
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].Timestamp.After(entries[j].Timestamp)
+	})
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries, nil
+}
+
+func clusterAuditFromHTTP(entry middleware.AuditEntry) (clusterAuditEntry, bool) {
+	path := strings.TrimSpace(entry.Path)
+	if path == "/api/cluster/audit" {
+		return clusterAuditEntry{}, false
+	}
+	if !strings.HasPrefix(path, "/api/cluster/") {
+		return clusterAuditEntry{}, false
+	}
+	action := clusterAuditPathAction(entry.Method, path)
+	source := "management_api"
+	eventType := "management_api"
+	if action == "join_cluster" {
+		source = "cluster_join"
+		eventType = "cluster_join"
+	}
+	item := clusterAuditEntry{
+		ID:         clusterAuditID("http", entry.Timestamp, entry.Method, path, entry.Subject),
+		Source:     source,
+		EventType:  eventType,
+		Action:     action,
+		Status:     clusterAuditHTTPStatus(entry.Status),
+		StatusCode: entry.Status,
+		Actor:      firstNonEmpty(entry.User, entry.Subject, "unknown"),
+		Role:       entry.Role,
+		Method:     entry.Method,
+		Path:       path,
+		RemoteIP:   entry.RemoteIP,
+		Target:     firstNonEmpty(entry.Target, clusterAuditTargetFromPath(path)),
+		Message:    entry.Message,
+		LatencyMS:  entry.LatencyMS,
+		Timestamp:  entry.Timestamp,
+	}
+	return item, true
+}
+
+func clusterAuditFromTask(task deploy.Task) []clusterAuditEntry {
+	items := make([]clusterAuditEntry, 0, len(task.Events)+1)
+	target := strings.TrimSpace(task.Host)
+	if target == "" {
+		target = task.ID
+	}
+	if len(task.Events) == 0 {
+		at := task.UpdatedAt
+		if at.IsZero() {
+			at = task.StartedAt
+		}
+		items = append(items, clusterAuditEntry{
+			ID:        clusterAuditID("task", at, task.ID, task.Stage, ""),
+			Source:    "deploy_task",
+			EventType: "deploy_task",
+			Action:    task.Action,
+			Status:    task.Status,
+			Actor:     "system",
+			Target:    target,
+			Message:   firstNonEmpty(task.Message, task.Error, task.Stage),
+			TaskID:    task.ID,
+			Timestamp: at,
+		})
+		return items
+	}
+	for index, event := range task.Events {
+		at := event.Timestamp
+		if at.IsZero() {
+			at = task.UpdatedAt
+		}
+		message := strings.TrimSpace(event.Message)
+		if message == "" {
+			message = event.Stage
+		}
+		items = append(items, clusterAuditEntry{
+			ID:        clusterAuditID("task", at, task.ID, event.Event, fmt.Sprint(index)),
+			Source:    "deploy_task",
+			EventType: "deploy_task",
+			Action:    firstNonEmpty(event.Event, task.Action),
+			Status:    firstNonEmpty(event.Status, task.Status),
+			Actor:     "system",
+			Target:    target,
+			Message:   message,
+			TaskID:    task.ID,
+			Timestamp: at,
+		})
+	}
+	return items
+}
+
+func clusterAuditPathAction(method, path string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	path = strings.TrimSpace(path)
+	switch {
+	case method == http.MethodGet && strings.HasSuffix(path, "/cluster/status"):
+		return "view_status"
+	case method == http.MethodGet && strings.HasSuffix(path, "/cluster/nodes"):
+		return "list_nodes"
+	case method == http.MethodPost && strings.Contains(path, "/cluster/deploy/ansible"):
+		return "generate_ansible_package"
+	case method == http.MethodPost && strings.Contains(path, "/cluster/deploy/check"):
+		return "ssh_precheck"
+	case method == http.MethodPost && strings.Contains(path, "/cluster/deploy/run"):
+		return "ssh_run"
+	case method == http.MethodPost && strings.Contains(path, "/cluster/deploy/tasks"):
+		return "start_deploy_task"
+	case method == http.MethodGet && strings.Contains(path, "/cluster/deploy/tasks"):
+		return "view_deploy_task"
+	case method == http.MethodPost && strings.Contains(path, "/cluster/join-tokens"):
+		return "create_join_token"
+	case method == http.MethodDelete && strings.Contains(path, "/cluster/join-tokens"):
+		return "revoke_join_token"
+	case method == http.MethodPost && strings.Contains(path, "/rotate-certificate"):
+		return "rotate_node_certificate"
+	case method == http.MethodPost && strings.Contains(path, "/revoke"):
+		return "revoke_node"
+	case method == http.MethodPost && strings.HasSuffix(path, "/cluster/join"):
+		return "join_cluster"
+	default:
+		return strings.ToLower(method) + "_cluster"
+	}
+}
+
+func clusterAuditTargetFromPath(path string) string {
+	path = strings.TrimSpace(path)
+	parts := strings.Split(path, "/")
+	for index, part := range parts {
+		if part == "join-tokens" && index+1 < len(parts) {
+			return "join-token:" + parts[index+1]
+		}
+		if part == "nodes" && index+1 < len(parts) {
+			return "node:" + parts[index+1]
+		}
+		if part == "tasks" && index+1 < len(parts) {
+			return "task:" + parts[index+1]
+		}
+	}
+	switch {
+	case strings.Contains(path, "/deploy/"):
+		return "deployment"
+	case strings.Contains(path, "/join-tokens"):
+		return "join-token"
+	case strings.Contains(path, "/nodes"):
+		return "node"
+	default:
+		return "cluster"
+	}
+}
+
+func clusterAuditHTTPStatus(status int) string {
+	switch {
+	case status >= 200 && status < 300:
+		return "succeeded"
+	case status >= 400:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func (h *Handler) recordClusterJoinAudit(r *http.Request, req clusterJoinRequest, status int, message string, latency time.Duration) {
+	if h == nil || h.Auditor == nil {
+		return
+	}
+	nodeID := strings.TrimSpace(req.NodeID)
+	target := "cluster"
+	if nodeID != "" {
+		target = "node:" + nodeID
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "join request processed"
+	}
+	_ = h.Auditor.Write(context.Background(), middleware.AuditEntry{
+		Timestamp: time.Now().UTC(),
+		Subject:   nodeID,
+		User:      "join-token",
+		Role:      strings.TrimSpace(req.Role),
+		Method:    http.MethodPost,
+		Path:      "/api/cluster/join",
+		Status:    status,
+		RemoteIP:  remoteIPFromRequest(r),
+		LatencyMS: latency.Milliseconds(),
+		Target:    target,
+		Message:   strings.TrimSpace(message),
+	})
+}
+
+func clusterAuditID(parts ...any) string {
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch value := part.(type) {
+		case time.Time:
+			values = append(values, value.UTC().Format(time.RFC3339Nano))
+		default:
+			values = append(values, strings.TrimSpace(fmt.Sprint(value)))
+		}
+	}
+	return strings.Join(values, ":")
+}
+
+func remoteIPFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	host := strings.TrimSpace(r.RemoteAddr)
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	return host
+}
+
 type clusterJoinTokenRequest struct {
 	Role    string `json:"role"`
 	TTL     string `json:"ttl"`
@@ -118,7 +420,13 @@ type clusterJoinCertificates struct {
 }
 
 func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	var req clusterJoinRequest
+	auditStatus := http.StatusBadRequest
+	auditMessage := "invalid join request"
+	defer func() {
+		h.recordClusterJoinAudit(r, req, auditStatus, auditMessage, time.Since(started))
+	}()
 	if !decode(w, r, &req) {
 		return
 	}
@@ -129,10 +437,12 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	req.Listen = strings.TrimSpace(req.Listen)
 	req.CSR = strings.TrimSpace(req.CSR)
 	if req.Token == "" {
+		auditMessage = "join token is required"
 		writeError(w, http.StatusBadRequest, "CLUSTER_JOIN_INVALID", "join token is required")
 		return
 	}
 	if req.CSR == "" {
+		auditMessage = "node csr is required"
 		writeError(w, http.StatusBadRequest, "CLUSTER_JOIN_INVALID", "node csr is required")
 		return
 	}
@@ -145,10 +455,14 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	svc, err := h.clusterIdentityService()
 	if err != nil {
+		auditStatus = http.StatusServiceUnavailable
+		auditMessage = "cluster identity is unavailable"
 		writeError(w, http.StatusServiceUnavailable, "CLUSTER_IDENTITY_UNAVAILABLE", err.Error())
 		return
 	}
 	if err := svc.ValidateJoinToken(req.Token, req.Role); err != nil {
+		auditStatus = http.StatusUnauthorized
+		auditMessage = "invalid join token or join request"
 		writeClusterJoinRejected(w)
 		return
 	}
@@ -159,6 +473,7 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		AdvertiseAddr: req.AdvertiseAddr,
 	}
 	if err := h.validateJoinedClusterNodeConfig(pendingNode); err != nil {
+		auditMessage = "join request failed local config validation"
 		writeError(w, http.StatusBadRequest, "CLUSTER_JOIN_INVALID", err.Error())
 		return
 	}
@@ -169,6 +484,8 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		AdvertiseAddr: req.AdvertiseAddr,
 	}, []byte(req.CSR))
 	if err != nil {
+		auditStatus = http.StatusUnauthorized
+		auditMessage = "invalid join token or join request"
 		writeClusterJoinRejected(w)
 		return
 	}
@@ -176,6 +493,8 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		if rollbackErr := enrollment.Rollback(); rollbackErr != nil {
 			err = fmt.Errorf("%w; enrollment rollback failed: %v", err, rollbackErr)
 		}
+		auditStatus = http.StatusInternalServerError
+		auditMessage = "joined node could not be persisted"
 		writeError(w, http.StatusInternalServerError, "CLUSTER_JOIN_CONFIG_SAVE_FAILED", err.Error())
 		return
 	}
@@ -196,6 +515,8 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		},
 		Node: enrollment.Node,
 	}
+	auditStatus = http.StatusOK
+	auditMessage = "node enrolled"
 	writeData(w, resp)
 }
 
@@ -271,6 +592,15 @@ type clusterRevokeNodeRequest struct {
 	Reason string `json:"reason"`
 }
 
+type clusterRotateNodeCertificateRequest struct {
+	CSR string `json:"csr"`
+}
+
+type clusterRotateNodeCertificateResponse struct {
+	Certificates clusterJoinCertificates   `json:"certificates"`
+	Node         identity.NodeRegistration `json:"node"`
+}
+
 type clusterJoinTokenView struct {
 	ID        string    `json:"id"`
 	Role      string    `json:"role"`
@@ -323,6 +653,40 @@ func (h *Handler) ClusterRevokeNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, map[string]any{"revoked": true, "id": id})
+}
+
+func (h *Handler) ClusterRotateNodeCertificate(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "CLUSTER_NODE_CERTIFICATE_INVALID", "node id is required")
+		return
+	}
+	var req clusterRotateNodeCertificateRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.CSR = strings.TrimSpace(req.CSR)
+	if req.CSR == "" {
+		writeError(w, http.StatusBadRequest, "CLUSTER_NODE_CERTIFICATE_INVALID", "node csr is required")
+		return
+	}
+	svc, err := h.clusterIdentityService()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "CLUSTER_IDENTITY_UNAVAILABLE", err.Error())
+		return
+	}
+	rotation, err := svc.RotateNodeCertificateWithCSR(id, []byte(req.CSR))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "CLUSTER_NODE_CERTIFICATE_INVALID", err.Error())
+		return
+	}
+	writeData(w, clusterRotateNodeCertificateResponse{
+		Certificates: clusterJoinCertificates{
+			CA:   string(rotation.Bundle.CAPEM),
+			Cert: string(rotation.Bundle.CertPEM),
+		},
+		Node: rotation.Node,
+	})
 }
 
 func (h *Handler) recordJoinedClusterNode(node identity.NodeRegistration) error {
@@ -403,6 +767,15 @@ func (h *Handler) clusterIdentityService() (*identity.MemoryIdentityService, err
 	}
 	h.ClusterIdentity = svc
 	return svc, nil
+}
+
+func (h *Handler) clusterDeployTaskManager() *deploy.TaskManager {
+	h.clusterDeployTasksMu.Lock()
+	defer h.clusterDeployTasksMu.Unlock()
+	if h.ClusterDeployTasks == nil {
+		h.ClusterDeployTasks = deploy.NewTaskManager(deploy.TaskManagerOptions{})
+	}
+	return h.ClusterDeployTasks
 }
 
 func (h *Handler) defaultJoinTokenTTL() time.Duration {

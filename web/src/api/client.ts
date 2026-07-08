@@ -1,5 +1,5 @@
 ﻿import axios, { type AxiosResponse } from 'axios';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterDeploymentCheckResult, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeList, ClusterStatus, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAuditList, ClusterDeploymentCheckResult, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterStatus, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -300,12 +300,32 @@ export function fetchClusterNodes() {
   return unwrap<ClusterNodeList>(apiClient.get('/cluster/nodes'));
 }
 
+export function rotateClusterNodeCertificate(nodeID: string, payload: ClusterNodeCertificateRotateRequest) {
+  return unwrap<ClusterNodeCertificateRotateResponse>(apiClient.post(`/cluster/nodes/${encodeURIComponent(nodeID)}/rotate-certificate`, payload));
+}
+
 export function checkClusterDeployment(payload: ClusterDeploymentRequest) {
   return unwrap<ClusterDeploymentCheckResult>(apiClient.post('/cluster/deploy/check', payload, { timeout: 60_000 }));
 }
 
 export function runClusterDeployment(payload: ClusterDeploymentRequest) {
   return unwrap<ClusterDeploymentRunResult>(apiClient.post('/cluster/deploy/run', payload, { timeout: 180_000 }));
+}
+
+export function startClusterDeploymentTask(payload: ClusterDeploymentRequest) {
+  return unwrap<ClusterDeploymentTask>(apiClient.post('/cluster/deploy/tasks', payload, { timeout: 15_000 }));
+}
+
+export function fetchClusterDeploymentTask(id: string) {
+  return unwrap<ClusterDeploymentTask>(apiClient.get(`/cluster/deploy/tasks/${encodeURIComponent(id)}`));
+}
+
+export function fetchClusterDeploymentTasks() {
+  return unwrap<ClusterDeploymentTaskList>(apiClient.get('/cluster/deploy/tasks'));
+}
+
+export function fetchClusterAudit() {
+  return unwrap<ClusterAuditList>(apiClient.get('/cluster/audit'));
 }
 
 export function fetchAPISecEndpoints() {

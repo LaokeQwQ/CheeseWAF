@@ -1083,6 +1083,19 @@ export type ClusterNodeList = {
   total: number;
 };
 
+export type ClusterNodeCertificateRotateRequest = {
+  csr: string;
+};
+
+export type ClusterNodeCertificateRotateResponse = {
+  certificates: {
+    ca: string;
+    cert: string;
+    key?: string;
+  };
+  node: ClusterNodeRegistration;
+};
+
 export type ClusterDeploymentRequest = {
   host: string;
   user: string;
@@ -1110,6 +1123,81 @@ export type ClusterDeploymentRunResult = {
   finished_at: string;
   output?: string;
   output_truncated?: boolean;
+};
+
+export type ClusterDeploymentTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | string;
+
+export type ClusterDeploymentTaskEvent = {
+  at?: string;
+  timestamp?: string;
+  event?: string;
+  stage?: string;
+  status?: ClusterDeploymentTaskStatus;
+  message?: string;
+};
+
+export type ClusterDeploymentCompensationResult = {
+  attempted: boolean;
+  status: 'not_applicable' | 'succeeded' | 'failed' | string;
+  action?: string;
+  message?: string;
+  started_at?: string;
+  finished_at?: string;
+  output?: string;
+  output_truncated?: boolean;
+  error?: string;
+};
+
+export type ClusterDeploymentTask = {
+  id: string;
+  action: 'check' | 'install' | 'restart-service' | string;
+  host: string;
+  user: string;
+  port: number;
+  status: ClusterDeploymentTaskStatus;
+  stage: string;
+  command?: string[];
+  message?: string;
+  output?: string;
+  output_truncated?: boolean;
+  error?: string;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+  check_result?: ClusterDeploymentCheckResult;
+  deploy_result?: ClusterDeploymentRunResult;
+  compensation_result?: ClusterDeploymentCompensationResult;
+  events?: ClusterDeploymentTaskEvent[];
+};
+
+export type ClusterDeploymentTaskList = {
+  items: ClusterDeploymentTask[];
+  total: number;
+};
+
+export type ClusterAuditEntry = {
+  id: string;
+  source: 'management_api' | 'deploy_task' | 'cluster_join' | string;
+  event_type: string;
+  action?: string;
+  status?: string;
+  status_code?: number;
+  actor?: string;
+  role?: string;
+  method?: string;
+  path?: string;
+  remote_ip?: string;
+  target?: string;
+  message?: string;
+  task_id?: string;
+  node_id?: string;
+  latency_ms?: number;
+  timestamp: string;
+};
+
+export type ClusterAuditList = {
+  items: ClusterAuditEntry[];
+  total: number;
 };
 
 export type Alert = {

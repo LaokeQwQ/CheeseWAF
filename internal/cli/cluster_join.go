@@ -147,6 +147,9 @@ func runClusterJoin(cmd *cobra.Command, opts clusterJoinOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := validateClusterCertificateMaterial(result.Certificates.CA, result.Certificates.Cert, localIdentity.KeyPEM, result.NodeID); err != nil {
+		return err
+	}
 	paths, err := writeClusterJoinFiles(result, opts, localIdentity)
 	if err != nil {
 		return err
@@ -257,7 +260,7 @@ func validateClusterJoinControllerURL(controllerURL string, allowInsecureHTTP bo
 	}
 	lower := strings.ToLower(base)
 	if strings.HasPrefix(lower, "http://") && !allowInsecureHTTP {
-		return "", fmt.Errorf("cluster join requires HTTPS because the request contains a join token; use --allow-insecure-http only for isolated local lab bootstrap")
+		return "", fmt.Errorf("cluster controller requests require HTTPS because they contain sensitive credentials; use --allow-insecure-http only for isolated local lab bootstrap")
 	}
 	if !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "http://") {
 		return "", fmt.Errorf("controller URL must start with https://")
@@ -301,7 +304,78 @@ func requestClusterJoin(client *http.Client, controllerURL string, payload map[s
 	if strings.TrimSpace(result.Certificates.CA) == "" || strings.TrimSpace(result.Certificates.Cert) == "" {
 		return clusterJoinAPIResponse{}, fmt.Errorf("cluster join response is missing certificate material")
 	}
+	if strings.TrimSpace(result.Certificates.Key) != "" {
+		return clusterJoinAPIResponse{}, fmt.Errorf("cluster join response unexpectedly included private key material")
+	}
 	return result, nil
+}
+
+func validateClusterCertificateMaterial(caPEM string, certPEM string, keyPEM []byte, nodeID string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return fmt.Errorf("cluster certificate node id is required")
+	}
+	ca, err := parseClusterCertificatePEM("cluster CA certificate", caPEM)
+	if err != nil {
+		return err
+	}
+	if !ca.IsCA {
+		return fmt.Errorf("cluster CA certificate is not a CA")
+	}
+	cert, err := parseClusterCertificatePEM("node certificate", certPEM)
+	if err != nil {
+		return err
+	}
+	key, err := parseClusterECPrivateKeyPEM(keyPEM)
+	if err != nil {
+		return err
+	}
+	certKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || certKey.X == nil || certKey.Y == nil ||
+		certKey.X.Cmp(key.PublicKey.X) != 0 || certKey.Y.Cmp(key.PublicKey.Y) != 0 {
+		return fmt.Errorf("node certificate public key does not match the local private key")
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(ca)
+	if _, err := cert.Verify(x509.VerifyOptions{
+		Roots:       roots,
+		DNSName:     nodeID,
+		CurrentTime: time.Now().UTC(),
+		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return fmt.Errorf("verify node certificate: %w", err)
+	}
+	return nil
+}
+
+func parseClusterCertificatePEM(label string, raw string) (*x509.Certificate, error) {
+	block, rest := pem.Decode([]byte(strings.TrimSpace(raw)))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("%s must be a PEM encoded CERTIFICATE", label)
+	}
+	if strings.TrimSpace(string(rest)) != "" {
+		return nil, fmt.Errorf("%s must contain exactly one PEM encoded CERTIFICATE", label)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", label, err)
+	}
+	return cert, nil
+}
+
+func parseClusterECPrivateKeyPEM(raw []byte) (*ecdsa.PrivateKey, error) {
+	block, rest := pem.Decode(bytes.TrimSpace(raw))
+	if block == nil || block.Type != "EC PRIVATE KEY" {
+		return nil, fmt.Errorf("local node private key must be a PEM encoded EC PRIVATE KEY")
+	}
+	if strings.TrimSpace(string(rest)) != "" {
+		return nil, fmt.Errorf("local node private key must contain exactly one PEM encoded EC PRIVATE KEY")
+	}
+	key, err := x509.ParseECPrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse local node private key: %w", err)
+	}
+	return key, nil
 }
 
 type clusterJoinPaths struct {

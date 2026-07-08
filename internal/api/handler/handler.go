@@ -16,6 +16,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
@@ -34,11 +35,13 @@ type Handler struct {
 	Auditor              *middleware.Auditor
 	AssistantApprovals   *ai.ApprovalStore
 	ClusterIdentity      *identity.MemoryIdentityService
+	ClusterDeployTasks   *deploy.TaskManager
 	ACMEIssuer           acme.Issuer
 	LoginCAPTCHAState    *loginCAPTCHAState
 	loginCAPTCHASecretMu sync.Mutex
 	loginCAPTCHASecret   string
 	clusterIdentityMu    sync.Mutex
+	clusterDeployTasksMu sync.Mutex
 	configMutationMu     sync.Mutex
 	StartedAt            time.Time
 	geoipMu              sync.Mutex
@@ -76,6 +79,7 @@ type Options struct {
 	Auditor             *middleware.Auditor
 	AssistantApprovals  *ai.ApprovalStore
 	ClusterIdentity     *identity.MemoryIdentityService
+	ClusterDeployTasks  *deploy.TaskManager
 	ACMEIssuer          acme.Issuer
 	OnSitesChanged      func([]config.SiteConfig)
 	OnProtectionChanged func(config.ProtectionConfig) error
@@ -99,6 +103,7 @@ func New(opts Options) *Handler {
 		Auditor:             opts.Auditor,
 		AssistantApprovals:  approvals,
 		ClusterIdentity:     opts.ClusterIdentity,
+		ClusterDeployTasks:  opts.ClusterDeployTasks,
 		ACMEIssuer:          opts.ACMEIssuer,
 		LoginCAPTCHAState:   newLoginCAPTCHAState(),
 		loginCAPTCHASecret:  loginSecret,

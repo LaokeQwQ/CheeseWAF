@@ -24,6 +24,7 @@ func newClusterCommand() *cobra.Command {
 	cmd.AddCommand(newClusterJoinCommand())
 	cmd.AddCommand(newClusterExportCommand())
 	cmd.AddCommand(newClusterTokenCommand())
+	cmd.AddCommand(newClusterCertCommand())
 	cmd.AddCommand(&cobra.Command{
 		Use:   "monitor-node",
 		Short: "Run as a cluster monitor node",

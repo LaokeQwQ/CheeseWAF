@@ -198,6 +198,41 @@ func TestSSHRunnerDeployRequiresExplicitFixedAction(t *testing.T) {
 	}
 }
 
+func TestSSHRunnerCompensationPlanUsesTruthfulActions(t *testing.T) {
+	runner := NewSSHRunner(SSHRunnerOptions{})
+	plan := runner.CompensationPlan(SSHDeploymentRequest{Action: actionRestartService})
+	if !plan.Applicable {
+		t.Fatalf("restart-service compensation should be applicable: %+v", plan)
+	}
+	if plan.Action != compensationStartService {
+		t.Fatalf("restart-service compensation action=%q, want %q", plan.Action, compensationStartService)
+	}
+	if command := compensationCommandForAction(plan.Action); command != "systemctl start cheesewaf" {
+		t.Fatalf("restart-service compensation command=%q", command)
+	}
+	if strings.Contains(strings.ToLower(plan.Message), "rollback") {
+		t.Fatalf("restart-service compensation must not imply rollback: %q", plan.Message)
+	}
+}
+
+func TestSSHRunnerInstallCompensationIsNotApplicable(t *testing.T) {
+	runner := NewSSHRunner(SSHRunnerOptions{})
+	plan := runner.CompensationPlan(SSHDeploymentRequest{Action: actionInstall})
+	if plan.Applicable || plan.Action != compensationNone {
+		t.Fatalf("install compensation plan=%+v, want not applicable none", plan)
+	}
+	result, err := runner.Compensate(context.Background(), SSHDeploymentRequest{Action: actionInstall}, fmt.Errorf("version check failed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Attempted || result.Status != CompensationStatusNotApplicable || result.Action != compensationNone {
+		t.Fatalf("install compensation result=%+v, want not_applicable without attempt", result)
+	}
+	if strings.Contains(strings.ToLower(result.Message), "rollback") {
+		t.Fatalf("install compensation must not imply rollback: %q", result.Message)
+	}
+}
+
 func TestSSHRunnerOutputLimit(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "abcdef"})
 	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, OutputLimit: 4, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})

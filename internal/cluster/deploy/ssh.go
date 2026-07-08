@@ -49,6 +49,24 @@ type DeployResult struct {
 	OutputTruncated bool      `json:"output_truncated,omitempty"`
 }
 
+type CompensationPlan struct {
+	Applicable bool   `json:"applicable"`
+	Action     string `json:"action,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
+type CompensationResult struct {
+	Attempted       bool       `json:"attempted"`
+	Status          string     `json:"status"`
+	Action          string     `json:"action,omitempty"`
+	Message         string     `json:"message,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	Output          string     `json:"output,omitempty"`
+	OutputTruncated bool       `json:"output_truncated,omitempty"`
+	Error           string     `json:"error,omitempty"`
+}
+
 type AuditRecorder interface {
 	Record(action string, fields map[string]string)
 }
@@ -142,9 +160,10 @@ func (r *SSHRunner) Check(ctx context.Context, req SSHDeploymentRequest) (CheckR
 	output, truncated, err := r.runRemoteCommand(ctx, prepared)
 	fields := map[string]string{"ok": strconv.FormatBool(err == nil)}
 	if err != nil {
-		fields["error"] = sanitizeCredentialText(err.Error(), prepared)
+		fields["error"] = sanitizeTaskText(err.Error(), prepared)
 	}
 	r.record("ssh_deploy.check", prepared, fields)
+	message := sanitizeTaskText(outputStatusMessage(output, truncated), prepared)
 	if err != nil {
 		return CheckResult{
 			OK:        false,
@@ -152,7 +171,7 @@ func (r *SSHRunner) Check(ctx context.Context, req SSHDeploymentRequest) (CheckR
 			User:      strings.TrimSpace(prepared.User),
 			Port:      normalizedSSHPort(prepared.Port),
 			Command:   append([]string{"ssh"}, redactedSSHArgs(args)...),
-			Message:   outputStatusMessage(output, truncated),
+			Message:   message,
 			CheckedAt: started,
 		}, sanitizeSSHError(err, prepared)
 	}
@@ -162,7 +181,7 @@ func (r *SSHRunner) Check(ctx context.Context, req SSHDeploymentRequest) (CheckR
 		User:      strings.TrimSpace(prepared.User),
 		Port:      normalizedSSHPort(prepared.Port),
 		Command:   append([]string{"ssh"}, redactedSSHArgs(args)...),
-		Message:   outputStatusMessage(output, truncated),
+		Message:   message,
 		CheckedAt: started,
 	}, nil
 }
@@ -182,14 +201,89 @@ func (r *SSHRunner) Deploy(ctx context.Context, req SSHDeploymentRequest) (Deplo
 		Host:            strings.TrimSpace(prepared.Host),
 		StartedAt:       started,
 		FinishedAt:      time.Now().UTC(),
-		Output:          output,
+		Output:          sanitizeTaskText(output, prepared),
 		OutputTruncated: truncated,
 	}
 	fields := map[string]string{"ok": strconv.FormatBool(result.OK)}
 	if err != nil {
-		fields["error"] = sanitizeCredentialText(err.Error(), prepared)
+		fields["error"] = sanitizeTaskText(err.Error(), prepared)
 	}
 	r.record("ssh_deploy.run", prepared, fields)
+	if err != nil {
+		return result, sanitizeSSHError(err, prepared)
+	}
+	return result, nil
+}
+
+func (r *SSHRunner) CompensationPlan(req SSHDeploymentRequest) CompensationPlan {
+	switch strings.TrimSpace(req.Action) {
+	case actionRestartService:
+		return CompensationPlan{
+			Applicable: true,
+			Action:     compensationStartService,
+			Message:    "Attempt to start the CheeseWAF service after restart failure",
+		}
+	case actionInstall:
+		return CompensationPlan{
+			Applicable: false,
+			Action:     compensationNone,
+			Message:    "The install action only checks the CheeseWAF binary version; no remote change needs compensation",
+		}
+	default:
+		return CompensationPlan{
+			Applicable: false,
+			Action:     compensationNone,
+			Message:    "No compensation action is defined for this deployment action",
+		}
+	}
+}
+
+func (r *SSHRunner) Compensate(ctx context.Context, req SSHDeploymentRequest, cause error) (CompensationResult, error) {
+	plan := r.CompensationPlan(req)
+	if !plan.Applicable {
+		return CompensationResult{
+			Attempted: false,
+			Status:    CompensationStatusNotApplicable,
+			Action:    plan.Action,
+			Message:   plan.Message,
+		}, nil
+	}
+	prepared, err := r.prepareRequest(ctx, req)
+	if err != nil {
+		return CompensationResult{
+			Attempted: false,
+			Status:    CompensationStatusFailed,
+			Action:    plan.Action,
+			Message:   "Compensation could not start because the original SSH request is no longer valid",
+			Error:     sanitizeTaskText(err.Error(), req),
+		}, err
+	}
+	started := time.Now().UTC()
+	output, truncated, err := r.runRemoteCommandRaw(ctx, prepared, compensationCommandForAction(plan.Action))
+	finished := time.Now().UTC()
+	result := CompensationResult{
+		Attempted:       true,
+		Status:          CompensationStatusSucceeded,
+		Action:          plan.Action,
+		Message:         plan.Message,
+		StartedAt:       &started,
+		FinishedAt:      &finished,
+		Output:          sanitizeTaskText(output, prepared),
+		OutputTruncated: truncated,
+	}
+	fields := map[string]string{
+		"action": plan.Action,
+		"ok":     strconv.FormatBool(err == nil),
+	}
+	if cause != nil {
+		fields["cause"] = sanitizeTaskText(cause.Error(), prepared)
+	}
+	if err != nil {
+		result.Status = CompensationStatusFailed
+		result.Error = sanitizeTaskText(err.Error(), prepared)
+		fields["error"] = result.Error
+	}
+	r.record("ssh_deploy.compensate", prepared, fields)
 	if err != nil {
 		return result, sanitizeSSHError(err, prepared)
 	}
@@ -258,6 +352,14 @@ func (r *SSHRunner) runRemoteCommand(ctx context.Context, req SSHDeploymentReque
 	command, err := remoteCommandForAction(req.Action)
 	if err != nil {
 		return "", false, err
+	}
+	return r.runRemoteCommandRaw(ctx, req, command)
+}
+
+func (r *SSHRunner) runRemoteCommandRaw(ctx context.Context, req SSHDeploymentRequest, command string) (string, bool, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", false, fmt.Errorf("remote command is required")
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
@@ -488,9 +590,15 @@ func knownHostAddresses(hostname string, remote net.Addr) []string {
 }
 
 const (
-	actionCheck          = "check"
-	actionInstall        = "install"
-	actionRestartService = "restart-service"
+	actionCheck              = "check"
+	actionInstall            = "install"
+	actionRestartService     = "restart-service"
+	compensationNone         = "none"
+	compensationStartService = "start-service"
+
+	CompensationStatusNotApplicable = "not_applicable"
+	CompensationStatusSucceeded     = "succeeded"
+	CompensationStatusFailed        = "failed"
 )
 
 func remoteCommandForAction(action string) (string, error) {
@@ -503,6 +611,15 @@ func remoteCommandForAction(action string) (string, error) {
 		return "systemctl restart cheesewaf", nil
 	default:
 		return "", fmt.Errorf("unsupported ssh deployment action")
+	}
+}
+
+func compensationCommandForAction(action string) string {
+	switch strings.TrimSpace(action) {
+	case compensationStartService:
+		return "systemctl start cheesewaf"
+	default:
+		return ""
 	}
 }
 
@@ -583,7 +700,7 @@ func sanitizeSSHError(err error, req SSHDeploymentRequest) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%s", sanitizeCredentialText(err.Error(), req))
+	return fmt.Errorf("%s", sanitizeTaskText(err.Error(), req))
 }
 
 func sanitizeCredentialText(value string, req SSHDeploymentRequest) string {

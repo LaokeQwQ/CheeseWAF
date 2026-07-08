@@ -2,9 +2,12 @@ package identity
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -101,6 +104,11 @@ type NodeEnrollment struct {
 	Bundle   NodeCertificateBundle
 	Token    JoinToken
 	rollback func() error
+}
+
+type NodeCertificateRotation struct {
+	Node   NodeRegistration
+	Bundle NodeCertificateBundle
 }
 
 type MemoryIdentityService struct {
@@ -307,6 +315,9 @@ func (s *MemoryIdentityService) EnrollNodeWithCSR(value string, node NodeIdentit
 	if err != nil {
 		return NodeEnrollment{}, err
 	}
+	if err := validateCSRMatchesNodeIdentity(csr, node); err != nil {
+		return NodeEnrollment{}, err
+	}
 	hash := tokenHash(strings.TrimSpace(value))
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -372,6 +383,54 @@ func (s *MemoryIdentityService) ListNodes() []NodeRegistration {
 	}
 	sortNodeRegistrations(nodes)
 	return nodes
+}
+
+func (s *MemoryIdentityService) RotateNodeCertificateWithCSR(nodeID string, csrPEM []byte) (NodeCertificateRotation, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return NodeCertificateRotation{}, fmt.Errorf("node id is required")
+	}
+	csr, err := parseCertificateRequestPEM(csrPEM)
+	if err != nil {
+		return NodeCertificateRotation{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return NodeCertificateRotation{}, fmt.Errorf("node %q is not enrolled", nodeID)
+	}
+	if node.Revoked {
+		return NodeCertificateRotation{}, fmt.Errorf("node %q is revoked", nodeID)
+	}
+	if _, revoked := s.revoked[nodeID]; revoked {
+		return NodeCertificateRotation{}, fmt.Errorf("node %q is revoked", nodeID)
+	}
+	identity := NodeIdentity{
+		NodeID:        node.NodeID,
+		Role:          node.Role,
+		ClusterID:     node.ClusterID,
+		AdvertiseAddr: node.AdvertiseAddr,
+	}
+	if err := validateNodeIdentity(identity, s.clusterID); err != nil {
+		return NodeCertificateRotation{}, err
+	}
+	if err := validateCSRMatchesNodeIdentity(csr, identity); err != nil {
+		return NodeCertificateRotation{}, err
+	}
+	bundle, err := s.issueNodeCertificateBundleForPublicKeyLocked(identity, csr.PublicKey)
+	if err != nil {
+		return NodeCertificateRotation{}, err
+	}
+	previous := *node
+	node.CertificateSerial = bundle.Certificate.SerialNumber.String()
+	node.CertificateExpiry = bundle.Certificate.NotAfter
+	if err := s.saveStateLocked(); err != nil {
+		*node = previous
+		return NodeCertificateRotation{}, err
+	}
+	updated := *node
+	return NodeCertificateRotation{Node: updated, Bundle: bundle}, nil
 }
 
 func (e NodeEnrollment) Rollback() error {
@@ -454,6 +513,9 @@ func (s *MemoryIdentityService) issueNodeCertificateBundleLocked(identity NodeId
 }
 
 func (s *MemoryIdentityService) issueNodeCertificateBundleForPublicKeyLocked(identity NodeIdentity, publicKey any) (NodeCertificateBundle, error) {
+	if err := validateNodeCertificatePublicKey(publicKey); err != nil {
+		return NodeCertificateBundle{}, err
+	}
 	now := s.clock.Now()
 	cert := &x509.Certificate{
 		SerialNumber: newSerial(),
@@ -729,7 +791,7 @@ func (s *MemoryIdentityService) consumeJoinTokenLocked(hash string, expectedRole
 
 func (s *MemoryIdentityService) validateJoinTokenLocked(hash string, expectedRole string) (*JoinToken, error) {
 	for _, token := range s.tokens {
-		if token.Hash != hash {
+		if subtle.ConstantTimeCompare([]byte(token.Hash), []byte(hash)) != 1 {
 			continue
 		}
 		if token.Revoked {
@@ -789,9 +851,12 @@ func isSafeNodeID(value string) bool {
 }
 
 func parseCertificateRequestPEM(raw []byte) (*x509.CertificateRequest, error) {
-	block, _ := pem.Decode(raw)
+	block, rest := pem.Decode(raw)
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
 		return nil, fmt.Errorf("csr must be PEM encoded CERTIFICATE REQUEST")
+	}
+	if strings.TrimSpace(string(rest)) != "" {
+		return nil, fmt.Errorf("csr must contain exactly one PEM encoded CERTIFICATE REQUEST")
 	}
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil {
@@ -803,7 +868,73 @@ func parseCertificateRequestPEM(raw []byte) (*x509.CertificateRequest, error) {
 	if csr.PublicKey == nil {
 		return nil, fmt.Errorf("csr public key is required")
 	}
+	if err := validateNodeCertificatePublicKey(csr.PublicKey); err != nil {
+		return nil, fmt.Errorf("csr public key invalid: %w", err)
+	}
 	return csr, nil
+}
+
+func validateNodeCertificatePublicKey(publicKey any) error {
+	switch key := publicKey.(type) {
+	case *ecdsa.PublicKey:
+		if key == nil || key.Curve == nil || key.X == nil || key.Y == nil || !key.Curve.IsOnCurve(key.X, key.Y) {
+			return fmt.Errorf("ECDSA public key is invalid")
+		}
+		switch key.Curve {
+		case elliptic.P256(), elliptic.P384(), elliptic.P521():
+			return nil
+		default:
+			return fmt.Errorf("ECDSA public key curve is not allowed")
+		}
+	case *rsa.PublicKey:
+		if key == nil || key.N == nil || key.E < 3 || key.N.BitLen() < 2048 {
+			return fmt.Errorf("RSA public key must be at least 2048 bits")
+		}
+		return nil
+	case ed25519.PublicKey:
+		if len(key) != ed25519.PublicKeySize {
+			return fmt.Errorf("Ed25519 public key is invalid")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported public key type %T", publicKey)
+	}
+}
+
+func validateCSRMatchesNodeIdentity(csr *x509.CertificateRequest, identity NodeIdentity) error {
+	if csr == nil {
+		return fmt.Errorf("csr is required")
+	}
+	nodeID := strings.TrimSpace(identity.NodeID)
+	if nodeID == "" {
+		return fmt.Errorf("node id is required")
+	}
+	for _, dnsName := range csr.DNSNames {
+		if strings.EqualFold(strings.TrimSpace(dnsName), nodeID) {
+			return nil
+		}
+	}
+	if ip := net.ParseIP(nodeID); ip != nil {
+		for _, csrIP := range csr.IPAddresses {
+			if csrIP.Equal(ip) {
+				return nil
+			}
+		}
+	}
+	commonName := strings.TrimSpace(csr.Subject.CommonName)
+	if commonName != "" {
+		allowedCommonNames := []string{
+			nodeID,
+			strings.TrimSpace(identity.Role) + "/" + nodeID,
+			strings.TrimSpace(identity.ClusterID) + "/" + strings.TrimSpace(identity.Role) + "/" + nodeID,
+		}
+		for _, allowed := range allowedCommonNames {
+			if allowed != "" && commonName == allowed {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("csr subject must identify node %q", nodeID)
 }
 
 func randomTokenValue() (string, error) {

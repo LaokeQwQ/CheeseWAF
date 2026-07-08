@@ -21,6 +21,8 @@ type AuditEntry struct {
 	Status    int       `json:"status"`
 	RemoteIP  string    `json:"remote_ip"`
 	LatencyMS int64     `json:"latency_ms"`
+	Target    string    `json:"target,omitempty"`
+	Message   string    `json:"message,omitempty"`
 }
 
 type Auditor struct {

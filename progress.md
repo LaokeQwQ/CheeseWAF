@@ -1,6 +1,6 @@
 # CheeseWAF 项目阶段进度
 
-更新时间：2026-06-16
+更新时间：2026-07-08
 
 ## 项目定位
 
@@ -143,8 +143,8 @@ CheeseWAF 当前已经覆盖以下方向：
 - 本轮验证通过：
   - `go test ./internal/ai ./internal/api/handler ./internal/config -count=1`
   - `npm run build`（Web）
-  - `node tmp/ai_assistant_render_check.cjs`
-  - `node tmp/ai-page-regression.cjs`
+  - AI 助手渲染检查脚本
+  - AI 页面回归脚本
   - `git diff --check`
 - 已部署到临时测试服务器并完成服务重启验证；管理端健康检查返回正常状态。
 - 当前测试环境启用了管理端安全入口，直接访问根路径或错误入口会返回 Nginx 风格 `418 I'm a teapot`，需从安全入口进入登录页。
@@ -201,7 +201,7 @@ CheeseWAF 当前已经覆盖以下方向：
 - 连接层防护：默认威胁情报 HTTP client 改为专用 guarded client，禁用系统代理，连接前解析 DNS 并拒绝任何解析到非公网或 metadata IP 的结果；实际拨号使用已校验的解析 IP，降低 DNS rebinding 风险。
 - 元数据地址覆盖：明确阻断 `169.254.169.254`、`169.254.170.2`、`100.100.100.200` 和 `fd00:ec2::254` 等常见云元数据地址。
 - 测试处理：现有本地 `httptest` provider 测试通过测试专用 client 与 URL validator 注入保留覆盖，不放宽生产默认策略。
-- 当前验证：`go test ./internal/api/handler -run "ThreatIntel|Provider" -count=1` 通过；`go test ./internal/api/handler -count=1` 通过。测试使用工作区内 `GOCACHE=.cache/go-build`，避免 Windows 用户目录 build cache 权限问题。
+- 当前验证：`go test ./internal/api/handler -run "ThreatIntel|Provider" -count=1` 通过；`go test ./internal/api/handler -count=1` 通过。测试使用隔离的构建缓存，避免用户目录 build cache 权限问题。
 
 ### 2026-07-05 本地收口：地图、站点详情与安全加固复验
 
@@ -210,7 +210,7 @@ CheeseWAF 当前已经覆盖以下方向：
 - 中国区域攻击地图完成真实浏览器专项复验：省/市/区县边界不再出现大矩形异常，浙江与西湖区定位框正常，滚轮缩放不会带动页面滚动。
 - 高风险页面桌面/移动端 UI 回归覆盖 Dashboard、站点、站点详情、IP 管理、AI、用户、拦截页、攻击地图 2D/3D/中国区域和系统设置，自动检查 overflow、窄列、内部横向滚动和浏览器错误均为 0。
 - 安全审查项复核：WebSocket Origin 校验、Admin Server header timeout、弱默认安全入口 secret、AI provider timeout 已闭环；威胁情报 provider 出站请求已加 SSRF guard。其它出站 sink 的 SSRF 专项复审仍需后续继续。
-- 本轮验证命令包括：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`go test ./internal/netguard ./internal/ai ./internal/apisec ./internal/blockpage ./internal/proxy ./internal/storage/log_sink ./internal/api/handler -count=1`、`node tmp/china-map-check.cjs` 和高风险页面 `full-ui-regression`。
+- 本轮验证命令包括：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`go test ./internal/netguard ./internal/ai ./internal/apisec ./internal/blockpage ./internal/proxy ./internal/storage/log_sink ./internal/api/handler -count=1`、地图检查脚本和高风险页面 `full-ui-regression`。
 
 ### 2026-07-05 本地补充：语义引擎与协议检测小步加固
 
@@ -291,7 +291,7 @@ CheeseWAF 当前已经覆盖以下方向：
 - WAF Bot CAPTCHA 加固：弱默认 Bot secret 需要运行时生成安全随机密钥；若随机源不可用，不再回退历史固定字符串，而是 fail-closed 返回 `bot challenge unavailable`，Altcha/header proof 和已有 clearance 也不会在无密钥状态下误通过。
 - WAF 滑块 challenge 跳转清理补齐 `cw_slider_track`，避免拖动轨迹 JSON 残留在用户 URL 中。
 - 拦截 / 报错页补充 5xx 多语言回归：`Accept-Language` 为简体中文或日文时，502 页面会返回对应 `Content-Language`、本地化错误文案、可见 Event / Trace ID 和 HTTP 状态。
-- 本地验证通过：`go test ./internal/protection/bot ./internal/blockpage ./internal/api ./internal/captcha -run "CAPTCHA|Captcha|captcha|Challenge|CleanChallenge|Block|ErrorTemplate|Template|Renderer" -count=1`、`go test ./cmd/... ./internal/... -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`；浏览器烟测截图位于 `output/playwright/login-captcha-modal-smoke-20260706.png`。
+- 本地验证通过：`go test ./internal/protection/bot ./internal/blockpage ./internal/api ./internal/captcha -run "CAPTCHA|Captcha|captcha|Challenge|CleanChallenge|Block|ErrorTemplate|Template|Renderer" -count=1`、`go test ./cmd/... ./internal/... -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`；浏览器烟测截图已本地归档，公开进度不记录本机路径。
 
 ### 2026-07-06 本地补充：dev/canary 合并前安全筛查与语义小步加固
 
@@ -310,19 +310,21 @@ CheeseWAF 当前已经覆盖以下方向：
 
 M1 已完成基础落地：配置层新增默认单机的 `deployment` / `cluster` 模型，校验会阻止“两台 WAF 节点被误标为完整高可用”；后端新增声明式对象模型和单机对象存储；CLI 新增 `cheesewaf cluster status/init/export`；API 新增集群状态与健康端点；Web 控制台新增“集群”菜单和状态页。
 
-M2 后端与自举加入闭环正在落地：已实现无明文凭据的 Ansible 部署包生成、临时 SSH 部署检查/固定动作执行、一次性加入令牌、token 驱动的节点加入 API、节点证书签发、节点登记、CLI `cluster join` 和 Web 令牌 / 节点列表。当前仍未实现 M3-M4 的真实多链路心跳、监控节点运行时、Raft/etcd 多数确认、配置对象调和、保护模式写冻结、生产流量调度和滚动升级。
+M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ansible 部署包生成、临时 SSH 部署检查/固定动作执行、真实异步部署任务、任务基础审计时间线、一次性加入令牌、令牌驱动的节点加入 API、真实 CSR 节点证书签发、节点登记、CLI `cluster join`、Web 令牌 / 节点 / 任务基础视图，以及基于真实管理审计与部署任务事件的集群操作记录。当前不能宣称 M2/M3/M4 完成；完整 Web 向导、真实 `monitor-node` runtime、真实心跳 / 多数确认、生产级部署回滚 / 滚动升级、生产流量调度仍是后续工作。现有 `restart-service` 失败后的处理是恢复尝试 / 补偿动作，不是回滚。
 
 ### 2026-07-08 本地补充：M2 集群部署与加入流后端基础
 
-- 集群 M2 后端基础已补齐：可生成无明文凭据的 Ansible 部署包；管理 API 新增部署包生成、部署检查和固定动作 SSH 部署入口；CLI 新增 `cluster token create/list/revoke`。
-- 临时 SSH runner 通过 Go `x/crypto/ssh` 建立连接，支持单次请求内的一次性 SSH 密码和一次性 `private_key` 内容；凭据只在请求内存中使用，不持久化、不写入临时密钥文件、不进入 argv/env，请求结束后释放。API 不允许借用服务端任意本地私钥路径。runner 不接受任意远端命令字符串，只允许固定部署动作；执行有默认超时和输出上限，避免管理 API 被远端命令卡死或输出撑爆内存。
+- 集群 M2 后端 / CLI / Web 基础能力继续推进：可生成无明文凭据的 Ansible 部署包；管理 API 新增部署包生成、部署检查和固定动作 SSH 部署入口；CLI 新增 `cluster token create/list/revoke`。固定动作中的 `install` 目前只是检查远端 CheeseWAF 二进制版本，不执行真实安装。
+- 临时 SSH runner 通过 Go `x/crypto/ssh` 建立连接，支持单次请求内的一次性 SSH 密码和一次性私钥内容；凭据只在请求内存中使用，不持久化、不写入临时密钥文件、不进入 argv/env，请求结束后释放。API 不允许借用服务端任意本地私钥路径。runner 不接受任意远端命令字符串，只允许固定部署动作；执行有默认超时和输出上限，避免管理 API 被远端命令卡死或输出撑爆内存。
 - 加入令牌使用随机值、哈希落盘、TTL、最大使用次数、一次性消费和撤销状态；API 创建令牌只返回一次明文，列表响应不暴露 token hash 或明文。
 - 节点加入自举新增 `/api/cluster/join` 和 `cheesewaf cluster join`：新节点使用一次性令牌和本地 CSR 换取真实 CA / 节点证书，CLI 在本地生成并保存节点私钥和 cluster 配置；控制端登记已加入节点，Web 控制台可查看加入令牌和节点登记表。
-- 2026-07-08 追加加固：节点加入改为 CSR 模式，新节点本地生成私钥和证书请求，控制端只签发 CA / 节点证书，不再默认生成或下发节点私钥；CLI `--dry-run` 不联系控制端、不消耗令牌。配置保存改为临时文件写入后替换，并在 join 配置落盘失败时回滚节点登记和令牌使用次数。
-- 节点证书签发已产出真实可解析、可用 CA 校验的节点证书和 CA PEM；节点私钥由加入节点本地生成和保存，用于后续 mTLS 互信。状态文件拒绝符号链接，POSIX 平台拒绝 group/world 可读文件，写入采用临时文件 + 原子替换并尽量收紧权限。
+- 2026-07-08 追加加固：节点加入改为 CSR 模式，新节点本地生成私钥和证书请求，控制端只签发 CA / 节点证书，不再默认生成或下发节点私钥；CLI 本地演练模式不联系控制端、不消耗令牌。配置保存改为临时文件写入后替换，并在 join 配置落盘失败时回滚节点登记和令牌使用次数。
+- 节点证书签发与轮换已走真实 CSR：加入和轮换时均由节点本机生成私钥与 CSR，控制端要求 CSR 标识当前申请 / 已登记节点，只签发 CA / 节点证书并更新节点登记，不生成、不保存、不返回节点私钥。CLI `cluster cert rotate` 会在目标节点本机生成新私钥和 CSR，拿到签发结果后本机落地 CA / 证书 / 私钥，并在本机写入失败时回滚本机文件；Web 只提供 CSR 签发入口和证书/CA 返回，不承载私钥。
+- 部署任务时间线基础已补齐：管理 API 新增异步部署任务创建、查询和列表；Web 集群页改为显示任务 ID、等待中 / 执行中 / 成功 / 失败状态、阶段、开始 / 更新 / 完成时间、脱敏命令 / 输出 / 错误摘要，形成可复核的任务审计时间线。任务事件按排队、本地校验、连接节点、检查完成、动作完成、失败、凭据清理记录；本地参数校验失败不会伪装成已经连接。一次性 SSH 密码和私钥内容不会出现在任务响应或任务列表中，任务结束后从内存请求对象清除；脱敏覆盖 password / private_key / privateKey / api_token / access_token / Authorization Token / Bearer 等常见形态。Web 当前任务不再在列表刷新窗口回退到旧任务，内置事件文案会按当前语言显示；旧同步检查 / 执行动作接口暂时保留兼容。
+- 集群操作记录基础已补齐：管理 API 新增 `GET /api/cluster/audit`，聚合真实控制台审计日志中 `/api/cluster/*` 操作、公开自举 `/api/cluster/join` 的安全审计记录，以及异步部署任务事件；Web 集群页新增“集群操作记录”面板，展示时间、来源、动作、执行者、目标、状态、远端 IP 和消息。加入令牌明文、CSR、证书私钥、SSH 密码和私钥不会写入该审计响应。该能力是基础操作记录，不等同于 M3 后的节点心跳、多数确认或对象调和审计。
 - M4 开始前新增语义引擎、AI 助手和 API 令牌收口门槛：语义置信度阈值要继续与防护等级联动，默认低置信不拦截；AI 助手要补齐内置 WAF 知识库、提示词加固、长推理流式保活和单事件实时思考输出；WAF API 令牌必须复用 RBAC / 审批边界，包含权限矩阵、生命周期、审计和帮助文档，不允许绕过控制台权限模型。
 - Kimi UI 修复经只读复核：主题变量、z-index、reduced-motion、AI 状态色等主要项已落地；本轮额外补齐 `--border-strong`、`--border-color`、`--danger`、`--font-mono` 主题变量，减少灰字/边框回退风险。
-- 当前仍不能宣称 M3/M4 能力已经完成：真实多链路心跳、监控节点运行时、多数确认、保护模式写冻结、Raft/etcd、一致性对象调和、生产流量调度和滚动升级仍是后续工作。
+- 当前仍不能宣称 M2/M3/M4 完成：完整 Web 部署向导、真实 `monitor-node` runtime、真实多链路心跳、多数确认、保护模式写冻结、Raft/etcd、一致性对象调和、生产级部署回滚 / 滚动升级和生产流量调度仍是后续工作。`restart-service` 失败后的 `systemctl start cheesewaf` 仅是恢复尝试 / 补偿动作，不是回滚能力。
 
 ### 2026-07-08 本地补充：M4-0 API 令牌与 AI 流式保活收口
 
