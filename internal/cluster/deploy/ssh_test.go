@@ -124,6 +124,34 @@ func TestSSHRunnerPrivateKeyAuthExecutesFixedDeploy(t *testing.T) {
 	}
 }
 
+func TestSSHRunnerExecutesFixedRollbackInstall(t *testing.T) {
+	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "CheeseWAF previous\n"})
+	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
+	result, err := runner.Deploy(context.Background(), SSHDeploymentRequest{
+		Host:          server.host,
+		User:          "root",
+		Port:          server.port,
+		Password:      "secret",
+		HostKeySHA256: ssh.FingerprintSHA256(server.hostKey.PublicKey()),
+		Action:        actionRollbackInstall,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || strings.TrimSpace(result.Output) != "CheeseWAF previous" {
+		t.Fatalf("rollback result=%+v", result)
+	}
+	exec := server.lastExec()
+	for _, want := range []string{`"$target".bak.*`, `install -m 0755 "$latest" "$target"`, `CheeseWAF restored from`} {
+		if !strings.Contains(exec.command, want) {
+			t.Fatalf("rollback command missing %q: %s", want, exec.command)
+		}
+	}
+	if len(exec.stdin) != 0 {
+		t.Fatalf("rollback action must not upload stdin, got %q", exec.stdin)
+	}
+}
+
 func TestSSHRunnerRejectsHostKeyMismatch(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "ok\n"})
 	otherKey, _ := generateSSHPrivateKey(t)
@@ -237,6 +265,21 @@ func TestSSHRunnerInstallCompensationIsNotApplicable(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(result.Message), "rollback") {
 		t.Fatalf("install compensation must not imply rollback: %q", result.Message)
+	}
+}
+
+func TestSSHRunnerRollbackInstallCompensationIsNotApplicable(t *testing.T) {
+	runner := NewSSHRunner(SSHRunnerOptions{})
+	plan := runner.CompensationPlan(SSHDeploymentRequest{Action: actionRollbackInstall})
+	if plan.Applicable || plan.Action != compensationNone {
+		t.Fatalf("rollback compensation plan=%+v, want not applicable none", plan)
+	}
+	result, err := runner.Compensate(context.Background(), SSHDeploymentRequest{Action: actionRollbackInstall}, fmt.Errorf("rollback failed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Attempted || result.Status != CompensationStatusNotApplicable || result.Action != compensationNone {
+		t.Fatalf("rollback compensation result=%+v, want not_applicable without attempt", result)
 	}
 }
 
