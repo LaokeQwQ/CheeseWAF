@@ -35,6 +35,9 @@ func (h *Handler) GetSite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateSite(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var site storage.Site
 	if !decode(w, r, &site) {
 		return
@@ -58,6 +61,9 @@ func (h *Handler) CreateSite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var site storage.Site
 	if !decode(w, r, &site) {
 		return
@@ -95,6 +101,9 @@ func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteSite(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	siteID := chi.URLParam(r, "id")
 	if existing, err := h.Store.GetSite(r.Context(), siteID); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
@@ -166,6 +175,9 @@ func (h *Handler) persistConfig() error {
 	if h != nil {
 		h.configMutationMu.Lock()
 		defer h.configMutationMu.Unlock()
+		if ok, reason := h.clusterConfigWritable("zh-CN"); !ok {
+			return fmt.Errorf("cluster protection mode: %s", reason)
+		}
 	}
 	return h.persistConfigLocked()
 }

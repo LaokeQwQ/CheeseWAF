@@ -1040,6 +1040,9 @@ export type ClusterStatus = {
   node_count: number;
   waf_node_count: number;
   monitor_node_count: number;
+  online_node_count?: number;
+  online_voting_count?: number;
+  voting_node_count?: number;
   consensus_provider: string;
   protection_mode_reason?: string;
 };
@@ -1076,6 +1079,23 @@ export type ClusterNodeRegistration = {
   certificate_expiry: string;
   revoked: boolean;
   revoked_reason?: string;
+  runtime?: ClusterRuntimeNodeStatus;
+};
+
+export type ClusterRuntimeNodeStatus = {
+  node_id: string;
+  role: 'waf' | 'monitor' | string;
+  advertise_addr?: string;
+  region?: string;
+  datacenter?: string;
+  state: 'online' | 'stale' | 'unknown' | string;
+  local: boolean;
+  last_heartbeat_at?: string;
+  last_seen_ago_seconds?: number;
+  config_version?: string;
+  can_receive_traffic: boolean;
+  can_write_config: boolean;
+  reason?: string;
 };
 
 export type ClusterNodeList = {
