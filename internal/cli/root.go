@@ -21,23 +21,26 @@ var (
 	dataDir    = "./data"
 )
 
-var rootCmd = &cobra.Command{
-	Use:     appName,
-	Short:   "CheeseWAF — 高性能 Web 应用防火墙",
-	Long:    `CheeseWAF 是一个高性能、易用的 Web 应用防火墙 (WAF)，基于 Go 构建，支持语义分析引擎、AI 智能助手和 TUI 终端管理。`,
-	Version: version.Version,
-}
+var rootCmd = newRootCommand()
 
-func init() {
-	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", configPath, "Path to cheesewaf.yaml")
-	rootCmd.PersistentFlags().StringVar(&dataDir, "data-dir", dataDir, "Runtime data directory")
-	rootCmd.AddCommand(serveCmd)
-	rootCmd.AddCommand(panelCmd)
-	rootCmd.AddCommand(statusCmd)
-	rootCmd.AddCommand(stopCmd)
-	rootCmd.AddCommand(restartCmd)
-	rootCmd.AddCommand(userCmd)
-	rootCmd.AddCommand(versionCmd)
+func newRootCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     appName,
+		Short:   "CheeseWAF - high-performance web application firewall",
+		Long:    "CheeseWAF is a high-performance Web Application Firewall (WAF) built with Go, semantic detection, AI assistant, and TUI management.",
+		Version: version.Version,
+	}
+	cmd.PersistentFlags().StringVarP(&configPath, "config", "c", configPath, "Path to cheesewaf.yaml")
+	cmd.PersistentFlags().StringVar(&dataDir, "data-dir", dataDir, "Runtime data directory")
+	cmd.AddCommand(serveCmd)
+	cmd.AddCommand(panelCmd)
+	cmd.AddCommand(statusCmd)
+	cmd.AddCommand(stopCmd)
+	cmd.AddCommand(restartCmd)
+	cmd.AddCommand(userCmd)
+	cmd.AddCommand(newClusterCommand())
+	cmd.AddCommand(versionCmd)
+	return cmd
 }
 
 // Execute dispatches the root command based on the executable name (BusyBox pattern).
@@ -48,14 +51,11 @@ func Execute(execName string) {
 	rootCmd.Version = info.Version + " (" + info.Channel + ", " + info.BuildTime + ")"
 	switch execName {
 	case cliName:
-		// waf-cli 直接执行 → 进入 TUI 管理面板
 		if len(os.Args) == 1 {
-			// 无子命令时直接进入 TUI
 			panelCmd.Run(panelCmd, nil)
 			return
 		}
 	case appName:
-		// cheesewaf 无子命令时默认 serve
 		if len(os.Args) == 1 {
 			serveCmd.Run(serveCmd, nil)
 			return

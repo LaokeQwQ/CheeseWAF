@@ -214,6 +214,7 @@ function formatAnalysisTraceEvent(event: AIAssistantTraceEvent, t: (key: string,
     case 'provider_response_start':
       return event.message || t('ai.providerStarted');
     case 'provider_first_event_slow':
+    case 'provider_waiting_progress':
       return event.message || t('ai.providerSlow');
     case 'tool_error':
     case 'planning_error':

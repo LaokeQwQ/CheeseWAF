@@ -29,6 +29,32 @@ setup:
   runtime_dir: "./data/run"
   three_end_unified: true
 
+deployment:
+  mode: "standalone"
+
+cluster:
+  enabled: false
+  cluster_id: ""
+  node_id: ""
+  ha_mode: "single-node"
+  interconnect:
+    listen: "127.0.0.1:9444"
+    advertise_addr: ""
+    mtls_required: true
+    ca_file: ""
+    cert_file: ""
+    key_file: ""
+  consensus:
+    provider: "builtin"
+    etcd_endpoints: []
+  join:
+    require_approval: true
+    token_ttl: 15m
+  nodes: []
+  protection:
+    freeze_writes_without_majority: true
+    allow_traffic_in_protection_mode: true
+
 console:
   login:
     captcha:
@@ -415,7 +441,7 @@ apisec:
       enabled: true
   permissions:
     admin: ["*"]
-    readonly: ["read:*"]
+    readonly: ["read:*", "read:cluster"]
   audit:
     enabled: true
     path: "./logs/audit.log"

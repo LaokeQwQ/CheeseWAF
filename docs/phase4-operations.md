@@ -32,12 +32,25 @@
 - Discovered endpoints are available at `/api/apisec/endpoints`.
 - Request schema validation can be tested with `/api/apisec/validate`.
 - Endpoint rate limits are configured under `apisec.rate_limits`.
+- Scoped management API tokens are configured under
+  `apisec.management_api` and documented in `docs/management-api.md`.
+- Management API tokens are disabled by default, use
+  `Authorization: Bearer cwapi_...`, store only a `sha256:` hash, and reuse
+  the same RBAC permission strings as console users.
+- Token secrets are returned only once at creation time. Revoked, disabled,
+  expired, malformed, or globally disabled tokens fail closed with `401`.
+- API tokens are intended for automation and integrations. They do not refresh
+  browser sessions and do not bypass AI tool approval or RBAC boundaries.
 
 ## RBAC And Audit
 
 - JWT roles are mapped through `apisec.permissions`.
 - Mutating protection and site routes require write permissions.
 - Audit logs are written to `apisec.audit.path` and exposed through `/api/audit`.
+- Management API token requests enter the same protected route group as normal
+  console requests, so route-level permissions and audit middleware continue to
+  apply. Review audit records for the `api-token:<id>` subject when tracing
+  automation actions.
 - `waf-cli` shows local audit and access log counts from the same configured paths.
 - Local password resets can be performed with `cheesewaf user password USERNAME`
   or `waf-cli user password USERNAME`; use `--password-stdin` for scripts or
