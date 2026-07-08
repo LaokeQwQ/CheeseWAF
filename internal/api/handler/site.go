@@ -163,6 +163,14 @@ func (h *Handler) validateCandidateSites(r *http.Request, mutate func([]storage.
 }
 
 func (h *Handler) persistConfig() error {
+	if h != nil {
+		h.configMutationMu.Lock()
+		defer h.configMutationMu.Unlock()
+	}
+	return h.persistConfigLocked()
+}
+
+func (h *Handler) persistConfigLocked() error {
 	if h == nil || h.Config == nil || h.ConfigPath == "" {
 		return nil
 	}

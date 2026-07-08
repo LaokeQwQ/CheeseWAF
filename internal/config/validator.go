@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"net"
@@ -49,6 +50,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
+	}
+	if err := validateCluster(cfg); err != nil {
+		return err
 	}
 	if cfg.Console.Login.CAPTCHA.Enabled {
 		switch strings.ToLower(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Mode)) {
@@ -430,6 +434,177 @@ func Validate(cfg *Config) error {
 				}
 			}
 		}
+	}
+	if err := validateManagementAPI(cfg.APISec.ManagementAPI); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateManagementAPI(api ManagementAPIConfig) error {
+	seen := map[string]struct{}{}
+	for _, token := range api.Tokens {
+		id := strings.TrimSpace(token.ID)
+		if id == "" {
+			return fmt.Errorf("management api token id is required")
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("management api token %q is duplicated", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(token.Name) == "" {
+			return fmt.Errorf("management api token %q name is required", id)
+		}
+		if strings.TrimSpace(token.Hash) == "" {
+			return fmt.Errorf("management api token %q hash is required", id)
+		}
+		digest := strings.TrimPrefix(token.Hash, "sha256:")
+		if !strings.HasPrefix(token.Hash, "sha256:") || len(digest) != 64 {
+			return fmt.Errorf("management api token %q hash must be sha256 digest", id)
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return fmt.Errorf("management api token %q hash must be hexadecimal sha256 digest", id)
+		}
+		if len(token.Scopes) == 0 {
+			return fmt.Errorf("management api token %q must define at least one scope", id)
+		}
+		for _, scope := range token.Scopes {
+			if err := validatePermissionExpression(scope); err != nil {
+				return fmt.Errorf("management api token %q scope is invalid: %w", id, err)
+			}
+		}
+		if !token.CreatedAt.IsZero() && !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(token.CreatedAt) {
+			return fmt.Errorf("management api token %q expires_at must be after created_at", id)
+		}
+	}
+	return nil
+}
+
+func validatePermissionExpression(scope string) error {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return fmt.Errorf("scope is required")
+	}
+	if scope == "*" {
+		return nil
+	}
+	if strings.Count(scope, ":") != 1 {
+		return fmt.Errorf("scope must use action:resource format")
+	}
+	parts := strings.Split(scope, ":")
+	switch parts[0] {
+	case "read", "write":
+	default:
+		return fmt.Errorf("scope action must be read or write")
+	}
+	resource := parts[1]
+	if resource == "" {
+		return fmt.Errorf("scope resource is required")
+	}
+	if strings.ContainsAny(resource, " \t\r\n") {
+		return fmt.Errorf("scope resource must not contain whitespace")
+	}
+	if strings.Contains(resource, "*") && !strings.HasSuffix(resource, "*") {
+		return fmt.Errorf("scope wildcard is only allowed at the end")
+	}
+	return nil
+}
+
+func validateCluster(cfg *Config) error {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Deployment.Mode))
+	if mode == "" {
+		mode = "standalone"
+		cfg.Deployment.Mode = mode
+	}
+	switch mode {
+	case "standalone", "cluster":
+	default:
+		return fmt.Errorf("deployment.mode must be standalone or cluster")
+	}
+	if mode == "standalone" {
+		if cfg.Cluster.Enabled {
+			return fmt.Errorf("cluster.enabled requires deployment.mode=cluster")
+		}
+		return nil
+	}
+	if !cfg.Cluster.Enabled {
+		return fmt.Errorf("deployment.mode=cluster requires cluster.enabled=true")
+	}
+	if cfg.Cluster.Consensus.Provider == "" {
+		cfg.Cluster.Consensus.Provider = "builtin"
+	}
+	switch cfg.Cluster.Consensus.Provider {
+	case "builtin", "etcd":
+	default:
+		return fmt.Errorf("cluster.consensus.provider must be builtin or etcd")
+	}
+	if cfg.Cluster.Consensus.Provider == "etcd" && len(cfg.Cluster.Consensus.EtcdEndpoints) == 0 {
+		return fmt.Errorf("cluster.consensus.etcd_endpoints is required when provider is etcd")
+	}
+	if cfg.Cluster.Join.TokenTTL <= 0 || cfg.Cluster.Join.TokenTTL > 24*time.Hour {
+		return fmt.Errorf("cluster.join.token_ttl must be between 1s and 24h")
+	}
+	if listen := strings.TrimSpace(cfg.Cluster.Interconnect.Listen); listen != "" {
+		if _, err := net.ResolveTCPAddr("tcp", listen); err != nil {
+			return fmt.Errorf("cluster.interconnect.listen is invalid: %w", err)
+		}
+	}
+	if cfg.Cluster.Interconnect.MTLSRequired {
+		hasPartialMaterial := strings.TrimSpace(cfg.Cluster.Interconnect.CAFile) != "" ||
+			strings.TrimSpace(cfg.Cluster.Interconnect.CertFile) != "" ||
+			strings.TrimSpace(cfg.Cluster.Interconnect.KeyFile) != ""
+		if hasPartialMaterial {
+			if strings.TrimSpace(cfg.Cluster.Interconnect.CAFile) == "" ||
+				strings.TrimSpace(cfg.Cluster.Interconnect.CertFile) == "" ||
+				strings.TrimSpace(cfg.Cluster.Interconnect.KeyFile) == "" {
+				return fmt.Errorf("cluster.interconnect ca_file, cert_file and key_file must be set together")
+			}
+		}
+	}
+	wafNodes := 0
+	monitorNodes := 0
+	seen := map[string]struct{}{}
+	for _, node := range cfg.Cluster.Nodes {
+		id := strings.TrimSpace(node.ID)
+		if id == "" {
+			return fmt.Errorf("cluster node id is required")
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("duplicate cluster node id %q", id)
+		}
+		seen[id] = struct{}{}
+		switch node.Role {
+		case "waf":
+			wafNodes++
+		case "monitor":
+			monitorNodes++
+		default:
+			return fmt.Errorf("cluster node %q role must be waf or monitor", id)
+		}
+		if strings.TrimSpace(node.AdvertiseAddr) == "" {
+			return fmt.Errorf("cluster node %q advertise_addr is required", id)
+		}
+		if _, err := net.ResolveTCPAddr("tcp", node.AdvertiseAddr); err != nil {
+			return fmt.Errorf("cluster node %q advertise_addr is invalid: %w", id, err)
+		}
+	}
+	switch strings.TrimSpace(cfg.Cluster.HAMode) {
+	case "", "single-node":
+		return nil
+	case "dual-node-load-balancing":
+		if wafNodes < 2 {
+			return fmt.Errorf("dual-node-load-balancing requires at least two WAF nodes")
+		}
+	case "minimum-ha":
+		if wafNodes < 2 || monitorNodes < 1 {
+			return fmt.Errorf("minimum-ha requires at least two WAF nodes and one monitor node")
+		}
+	case "multi-node-ha":
+		if wafNodes < 3 {
+			return fmt.Errorf("multi-node-ha requires at least three WAF nodes")
+		}
+	default:
+		return fmt.Errorf("unknown cluster.ha_mode %q", cfg.Cluster.HAMode)
 	}
 	return nil
 }

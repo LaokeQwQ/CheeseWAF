@@ -1,5 +1,5 @@
 ﻿import axios, { type AxiosResponse } from 'axios';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAuditList, ClusterDeploymentCheckResult, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterStatus, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -280,6 +280,54 @@ export function fetchMonitorSummary() {
   return unwrap<MonitorSummary>(apiClient.get('/monitor'));
 }
 
+export function fetchClusterStatus() {
+  return unwrap<ClusterStatus>(apiClient.get('/cluster/status'));
+}
+
+export function fetchClusterJoinTokens() {
+  return unwrap<ClusterJoinTokenList>(apiClient.get('/cluster/join-tokens'));
+}
+
+export function createClusterJoinToken(payload: ClusterJoinTokenCreateRequest) {
+  return unwrap<ClusterJoinTokenList['items'][number]>(apiClient.post('/cluster/join-tokens', payload));
+}
+
+export function revokeClusterJoinToken(id: string) {
+  return unwrap<{ revoked: boolean; id: string }>(apiClient.delete(`/cluster/join-tokens/${encodeURIComponent(id)}`));
+}
+
+export function fetchClusterNodes() {
+  return unwrap<ClusterNodeList>(apiClient.get('/cluster/nodes'));
+}
+
+export function rotateClusterNodeCertificate(nodeID: string, payload: ClusterNodeCertificateRotateRequest) {
+  return unwrap<ClusterNodeCertificateRotateResponse>(apiClient.post(`/cluster/nodes/${encodeURIComponent(nodeID)}/rotate-certificate`, payload));
+}
+
+export function checkClusterDeployment(payload: ClusterDeploymentRequest) {
+  return unwrap<ClusterDeploymentCheckResult>(apiClient.post('/cluster/deploy/check', payload, { timeout: 60_000 }));
+}
+
+export function runClusterDeployment(payload: ClusterDeploymentRequest) {
+  return unwrap<ClusterDeploymentRunResult>(apiClient.post('/cluster/deploy/run', payload, { timeout: 180_000 }));
+}
+
+export function startClusterDeploymentTask(payload: ClusterDeploymentRequest) {
+  return unwrap<ClusterDeploymentTask>(apiClient.post('/cluster/deploy/tasks', payload, { timeout: 15_000 }));
+}
+
+export function fetchClusterDeploymentTask(id: string) {
+  return unwrap<ClusterDeploymentTask>(apiClient.get(`/cluster/deploy/tasks/${encodeURIComponent(id)}`));
+}
+
+export function fetchClusterDeploymentTasks() {
+  return unwrap<ClusterDeploymentTaskList>(apiClient.get('/cluster/deploy/tasks'));
+}
+
+export function fetchClusterAudit() {
+  return unwrap<ClusterAuditList>(apiClient.get('/cluster/audit'));
+}
+
 export function fetchAPISecEndpoints() {
   return unwrap<APISecSummary>(apiClient.get('/apisec/endpoints'));
 }
@@ -334,6 +382,18 @@ export function fetchChinaMapBoundaryByCode(adcode: string) {
 
 export function updateSystemConfig(payload: Partial<SystemConfig>) {
   return unwrap<SystemConfig>(apiClient.put('/system', payload));
+}
+
+export function fetchManagementAPITokens() {
+  return unwrap<ManagementAPITokenList>(apiClient.get('/system/api-tokens'));
+}
+
+export function createManagementAPIToken(payload: CreateManagementAPITokenRequest) {
+  return unwrap<CreateManagementAPITokenResponse>(apiClient.post('/system/api-tokens', payload));
+}
+
+export function revokeManagementAPIToken(id: string) {
+  return unwrap<{ revoked: boolean }>(apiClient.delete(`/system/api-tokens/${encodeURIComponent(id)}`));
 }
 
 export function testStorageBackend(backend: string, storage: SystemConfig['storage']) {

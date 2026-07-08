@@ -672,6 +672,28 @@ func TestKnowledgeBaseSearchReturnsRelevantSnippets(t *testing.T) {
 	}
 }
 
+func TestKnowledgeBaseCoversM4ReadinessTopics(t *testing.T) {
+	kb := NewKnowledgeBase(config.AIKnowledgeConfig{Enabled: true, Builtin: true, MaxSnippets: 6})
+	cases := map[string]string{
+		"API token RBAC scopes audit lifecycle":               "waf-api-token-management",
+		"semantic confidence protection level false positive": "semantic-confidence-levels",
+		"assistant long reasoning streaming timeout approval": "ai-streaming-approval-readiness",
+	}
+	for query, wantID := range cases {
+		items := kb.Search(query, 6)
+		found := false
+		for _, item := range items {
+			if item.ID == wantID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("query %q expected snippet %q, got %+v", query, wantID, items)
+		}
+	}
+}
+
 func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	registry := NewRegistry()
 	registry.Register(fakeTool{sensitivity: Modify})
