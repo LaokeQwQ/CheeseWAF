@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -81,8 +82,8 @@ func TestSSHRunnerPasswordAuthExecutesFixedCheck(t *testing.T) {
 	if strings.Contains(strings.Join(result.Command, " "), "secret") || rec.Contains("secret") {
 		t.Fatal("password must not appear in command preview or audit records")
 	}
-	if server.lastCommand() != "true" {
-		t.Fatalf("command=%q, want true", server.lastCommand())
+	if command := server.lastCommand(); !strings.Contains(command, "CheeseWAF deployment prerequisites OK") {
+		t.Fatalf("command=%q, want deployment prerequisite check", command)
 	}
 }
 
@@ -91,6 +92,8 @@ func TestSSHRunnerPrivateKeyAuthExecutesFixedDeploy(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{AuthorizedKey: clientKey.PublicKey(), Output: "CheeseWAF dev\n"})
 	rec := NewMemoryAuditRecorder()
 	tmp := t.TempDir()
+	binary := writeTestDeployBinary(t, tmp, "cheesewaf-test-binary")
+	t.Setenv("CHEESEWAF_DEPLOY_BINARY", binary)
 	runner := NewSSHRunner(SSHRunnerOptions{Audit: rec, Timeout: 5 * time.Second, KnownHosts: filepath.Join(tmp, "known_hosts")})
 	result, err := runner.Deploy(context.Background(), SSHDeploymentRequest{
 		Host:          server.host,
@@ -112,8 +115,12 @@ func TestSSHRunnerPrivateKeyAuthExecutesFixedDeploy(t *testing.T) {
 	if rec.Contains(privateKeyPEM) {
 		t.Fatal("private key content must not appear in audit records")
 	}
-	if server.lastCommand() != "cheesewaf --version" {
-		t.Fatalf("command=%q, want cheesewaf --version", server.lastCommand())
+	exec := server.lastExec()
+	if !strings.Contains(exec.command, "install -m 0755") || !strings.Contains(exec.command, "/usr/local/bin/cheesewaf") {
+		t.Fatalf("command=%q, want fixed install command", exec.command)
+	}
+	if string(exec.stdin) != "cheesewaf-test-binary" {
+		t.Fatalf("uploaded stdin=%q, want deploy binary content", exec.stdin)
 	}
 }
 
@@ -221,7 +228,7 @@ func TestSSHRunnerInstallCompensationIsNotApplicable(t *testing.T) {
 	if plan.Applicable || plan.Action != compensationNone {
 		t.Fatalf("install compensation plan=%+v, want not applicable none", plan)
 	}
-	result, err := runner.Compensate(context.Background(), SSHDeploymentRequest{Action: actionInstall}, fmt.Errorf("version check failed"))
+	result, err := runner.Compensate(context.Background(), SSHDeploymentRequest{Action: actionInstall}, fmt.Errorf("install failed"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +242,8 @@ func TestSSHRunnerInstallCompensationIsNotApplicable(t *testing.T) {
 
 func TestSSHRunnerOutputLimit(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "abcdef"})
+	binary := writeTestDeployBinary(t, t.TempDir(), "abcdef")
+	t.Setenv("CHEESEWAF_DEPLOY_BINARY", binary)
 	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, OutputLimit: 4, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
 	result, err := runner.Deploy(context.Background(), SSHDeploymentRequest{
 		Host:          server.host,
@@ -280,15 +289,25 @@ type testSSHServer struct {
 	host    string
 	port    int
 	hostKey ssh.Signer
-	command chan string
+	command chan testSSHExec
+}
+
+type testSSHExec struct {
+	command string
+	stdin   []byte
 }
 
 func (s *testSSHServer) lastCommand() string {
+	exec := s.lastExec()
+	return exec.command
+}
+
+func (s *testSSHServer) lastExec() testSSHExec {
 	select {
-	case command := <-s.command:
-		return command
+	case exec := <-s.command:
+		return exec
 	default:
-		return ""
+		return testSSHExec{}
 	}
 }
 
@@ -319,7 +338,7 @@ func startTestSSHServer(t *testing.T, opts testSSHServerOptions) *testSSHServer 
 		host:    "127.0.0.1",
 		port:    listener.Addr().(*net.TCPAddr).Port,
 		hostKey: hostKey,
-		command: make(chan string, 4),
+		command: make(chan testSSHExec, 4),
 	}
 	go func() {
 		for {
@@ -333,7 +352,7 @@ func startTestSSHServer(t *testing.T, opts testSSHServerOptions) *testSSHServer 
 	return server
 }
 
-func handleTestSSHConn(conn net.Conn, config *ssh.ServerConfig, output string, commands chan<- string) {
+func handleTestSSHConn(conn net.Conn, config *ssh.ServerConfig, output string, commands chan<- testSSHExec) {
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
 		_ = conn.Close()
@@ -362,10 +381,20 @@ func handleTestSSHConn(conn net.Conn, config *ssh.ServerConfig, output string, c
 						_ = req.Reply(false, nil)
 						continue
 					}
-					commands <- payload.Command
 					_ = req.Reply(true, nil)
+					stdinCh := make(chan []byte, 1)
+					go func() {
+						stdin, _ := io.ReadAll(channel)
+						stdinCh <- stdin
+					}()
 					_, _ = channel.Write([]byte(output))
 					_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+					var stdin []byte
+					select {
+					case stdin = <-stdinCh:
+					case <-time.After(100 * time.Millisecond):
+					}
+					commands <- testSSHExec{command: payload.Command, stdin: stdin}
 					return
 				default:
 					_ = req.Reply(false, nil)
@@ -400,4 +429,13 @@ func containsCheeseWAFTempKey(t *testing.T, dir string) bool {
 		t.Fatal(err)
 	}
 	return len(matches) > 0
+}
+
+func writeTestDeployBinary(t *testing.T, dir string, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, "cheesewaf-test-bin")
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
