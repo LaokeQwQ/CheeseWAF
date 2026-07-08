@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -695,6 +696,44 @@ func TestAIAssistantAllowsNonStreamingResponsePastServerWriteTimeout(t *testing.
 	}
 	if !strings.Contains(string(body), "OK after delay") {
 		t.Fatalf("expected delayed AI answer, body=%s", body)
+	}
+}
+
+func TestProviderStreamEmitterEmitsRepeatedWaitingProgress(t *testing.T) {
+	oldSlowAfter := providerFirstEventSlowAfter
+	oldProgressInterval := providerWaitingProgressInterval
+	providerFirstEventSlowAfter = 5 * time.Millisecond
+	providerWaitingProgressInterval = 5 * time.Millisecond
+	t.Cleanup(func() {
+		providerFirstEventSlowAfter = oldSlowAfter
+		providerWaitingProgressInterval = oldProgressInterval
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan ai.AssistantTraceEvent, 4)
+	_, stop := providerStreamEmitter(ctx, "zh-CN", "planning", func(event ai.AssistantTraceEvent) {
+		events <- event
+	})
+	defer stop()
+
+	want := []string{"provider_first_event_slow", "provider_waiting_progress"}
+	got := make([]string, 0, len(want))
+	deadline := time.After(100 * time.Millisecond)
+	for len(got) < len(want) {
+		select {
+		case event := <-events:
+			if event.Type == "provider_first_event_slow" || event.Type == "provider_waiting_progress" {
+				got = append(got, event.Type)
+			}
+		case <-deadline:
+			t.Fatalf("expected repeated provider waiting progress %v, got %v", want, got)
+		}
+	}
+	for index, wantType := range want {
+		if got[index] != wantType {
+			t.Fatalf("event %d = %q, want %q; all=%v", index, got[index], wantType, got)
+		}
 	}
 }
 

@@ -41,6 +41,42 @@ func TestValidateSecurityEntryRejectsRouteConflicts(t *testing.T) {
 	}
 }
 
+func TestMoveExistingFileAsidePreservesOriginalForRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cheesewaf.yaml")
+	original := []byte("server:\n  listen: ':8080'\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := moveExistingFileAside(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup == "" {
+		t.Fatal("expected backup path")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected original path to be moved aside, got %v", err)
+	}
+	restored, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != string(original) {
+		t.Fatalf("backup content mismatch: %q", string(restored))
+	}
+	if err := os.Rename(backup, path); err != nil {
+		t.Fatal(err)
+	}
+	asserted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(asserted) != string(original) {
+		t.Fatalf("restored content mismatch: %q", string(asserted))
+	}
+}
+
 func TestValidateBlockPageCustomHTML(t *testing.T) {
 	cfg := Default()
 	cfg.BlockPage.CustomEnabled = true

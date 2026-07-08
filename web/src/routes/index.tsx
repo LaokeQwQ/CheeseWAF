@@ -10,6 +10,7 @@ const AttackMapPage = lazy(() => import('../pages/AttackMap/AttackMapPage'));
 const AttackScreenPage = lazy(() => import('../pages/AttackMap/AttackScreenPage'));
 const BlockPagesPage = lazy(() => import('../pages/BlockPages/BlockPagesPage'));
 const BlockPagePreviewWindow = lazy(() => import('../pages/BlockPages/BlockPagesPage').then((module) => ({ default: module.BlockPagePreviewWindow })));
+const ClusterPage = lazy(() => import('../pages/Cluster/ClusterPage'));
 const DashboardPage = lazy(() => import('../pages/Dashboard/DashboardPage'));
 const EdgePage = lazy(() => import('../pages/Edge/EdgePage'));
 const IPManagePage = lazy(() => import('../pages/IPManage/IPManagePage'));
@@ -87,6 +88,7 @@ export default function AppRoutes() {
           <Route path="updates" element={<Page><LazyPage><UpdatesPage /></LazyPage></Page>} />
           <Route path="block-pages" element={<Page><LazyPage><BlockPagesPage /></LazyPage></Page>} />
           <Route path="attack-map" element={<Page><LazyPage><AttackMapPage /></LazyPage></Page>} />
+          <Route path="cluster" element={<Page><LazyPage><ClusterPage /></LazyPage></Page>} />
           <Route path="system" element={<Page><LazyPage><SystemPage /></LazyPage></Page>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
