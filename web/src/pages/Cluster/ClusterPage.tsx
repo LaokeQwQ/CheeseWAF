@@ -784,6 +784,7 @@ export default function ClusterPage() {
                   <Form.Item label={t('cluster.deployAction')} field="action" extra={t('cluster.deployWizardActionHint')}>
                     <Select onChange={() => setDeployWizardStep(1)}>
                       <Select.Option value="install">{t('cluster.deployActionInstall')}</Select.Option>
+                      <Select.Option value="rollback-install">{t('cluster.deployActionRollbackInstall')}</Select.Option>
                       <Select.Option value="restart-service">{t('cluster.deployActionRestart')}</Select.Option>
                     </Select>
                   </Form.Item>
@@ -1502,6 +1503,8 @@ function deployActionLabel(action: string, t: Translate) {
       return t('cluster.deployActionCheck');
     case 'install':
       return t('cluster.deployActionInstall');
+    case 'rollback-install':
+      return t('cluster.deployActionRollbackInstall');
     case 'restart-service':
       return t('cluster.deployActionRestart');
     default:

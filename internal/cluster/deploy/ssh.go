@@ -191,7 +191,7 @@ func (r *SSHRunner) Check(ctx context.Context, req SSHDeploymentRequest) (CheckR
 
 func (r *SSHRunner) Deploy(ctx context.Context, req SSHDeploymentRequest) (DeployResult, error) {
 	if strings.TrimSpace(req.Action) == "" || strings.TrimSpace(req.Action) == actionCheck {
-		return DeployResult{}, fmt.Errorf("deploy action must be install or restart-service")
+		return DeployResult{}, fmt.Errorf("deploy action must be install, rollback-install, or restart-service")
 	}
 	prepared, err := r.prepareRequest(ctx, req)
 	if err != nil {
@@ -231,6 +231,12 @@ func (r *SSHRunner) CompensationPlan(req SSHDeploymentRequest) CompensationPlan 
 			Applicable: false,
 			Action:     compensationNone,
 			Message:    "The install action performs inline backup and restore when possible; no separate compensation action is available after the SSH session ends",
+		}
+	case actionRollbackInstall:
+		return CompensationPlan{
+			Applicable: false,
+			Action:     compensationNone,
+			Message:    "The rollback action restores the newest binary backup directly; no separate compensation action is available after the SSH session ends",
 		}
 	default:
 		return CompensationPlan{
@@ -614,6 +620,7 @@ func knownHostAddresses(hostname string, remote net.Addr) []string {
 const (
 	actionCheck              = "check"
 	actionInstall            = "install"
+	actionRollbackInstall    = "rollback-install"
 	actionRestartService     = "restart-service"
 	compensationNone         = "none"
 	compensationStartService = "start-service"
@@ -631,6 +638,8 @@ func remoteCommandForAction(action string) (string, error) {
 		return remoteCheckCommand(), nil
 	case actionInstall:
 		return installCommand(0, strings.Repeat("0", 64)), nil
+	case actionRollbackInstall:
+		return rollbackInstallCommand(), nil
 	case actionRestartService:
 		return "systemctl restart cheesewaf", nil
 	default:
@@ -644,6 +653,8 @@ func remoteCommandPreviewForAction(action string) (string, error) {
 		return remoteCheckCommand(), nil
 	case actionInstall:
 		return "upload current CheeseWAF binary, backup existing binary, install to " + defaultInstallTarget + ", then verify version", nil
+	case actionRollbackInstall:
+		return "restore the newest " + defaultInstallTarget + ".bak.* backup, then verify version", nil
 	case actionRestartService:
 		return "systemctl restart cheesewaf", nil
 	default:
@@ -748,6 +759,23 @@ func installCommand(size int64, checksum string) string {
 		"trap - EXIT",
 		"echo CheeseWAF installed to \"$target\"",
 		"if [ -n \"$backup\" ]; then echo Previous binary backup: \"$backup\"; fi",
+	}, "; ")
+}
+
+func rollbackInstallCommand() string {
+	return strings.Join([]string{
+		"set -eu",
+		"target=" + defaultInstallTarget,
+		"latest=\"\"",
+		"for candidate in \"$target\".bak.*; do [ -f \"$candidate\" ] || continue; latest=\"$candidate\"; done",
+		"if [ -z \"$latest\" ]; then echo no CheeseWAF binary backup found >&2; exit 1; fi",
+		"\"$latest\" --version",
+		"current_backup=\"\"",
+		"if [ -f \"$target\" ]; then current_backup=\"${target}.pre-rollback.$(date -u +%Y%m%d%H%M%S)\"; cp -p \"$target\" \"$current_backup\"; fi",
+		"install -m 0755 \"$latest\" \"$target\"",
+		"\"$target\" --version",
+		"echo CheeseWAF restored from \"$latest\"",
+		"if [ -n \"$current_backup\" ]; then echo Previous current binary backup: \"$current_backup\"; fi",
 	}, "; ")
 }
 
