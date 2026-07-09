@@ -13,6 +13,7 @@ import {
   uploadBlockPageHTML,
 } from '../../api/client';
 import type { BlockPageConfig } from '../../types/api';
+import '../../styles/block-pages.css';
 
 const blockPreviewStoragePrefix = 'cheesewaf-block-page-preview-html';
 
@@ -167,7 +168,7 @@ export default function BlockPagesPage() {
   }
 
   return (
-    <section className="page-surface">
+    <section className="page-surface block-pages-page">
       <header className="page-header block-page-header">
         <div>
           <h1>{t('blockPages.title')}</h1>

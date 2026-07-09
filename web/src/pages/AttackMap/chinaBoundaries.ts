@@ -1,5 +1,5 @@
 import { geoMercator, geoPath } from 'd3-geo';
-import type { AttackRegion, ThreatLevel, WorldFeature } from './AttackMapPage';
+import type { AttackRegion, ThreatLevel, WorldFeature } from './attackMapData';
 
 export type GeoFeatureCollection = {
   type: 'FeatureCollection';
@@ -49,13 +49,12 @@ export type ChinaAdminIndex = {
   codeToName: Map<string, string>;
 };
 
-type BuiltinMapModules = Record<string, () => Promise<string>>;
-
 const chinaMapWidth = 960;
 const chinaMapHeight = 620;
 const chinaViewBox = `0 0 ${chinaMapWidth} ${chinaMapHeight}`;
 const directAdminProvincePrefixes = new Set(['11', '12', '31', '50', '71', '81', '82']);
 const emptyFeatureCollection: GeoFeatureCollection = { type: 'FeatureCollection', features: [] };
+let builtinAdcodeManifest: Promise<Set<string>> | null = null;
 const chinaAdminNameAliases: Record<string, string> = {
   anhui: '安徽',
   beijing: '北京',
@@ -143,16 +142,6 @@ const chinaAdminNameAliases: Record<string, string> = {
   xihu: '西湖',
   xihudistrict: '西湖',
 };
-
-const builtinMapModules = import.meta.glob('/node_modules/china-map-echarts/map/*.json', {
-  query: '?url',
-  import: 'default',
-}) as BuiltinMapModules;
-
-const adminListModules = import.meta.glob('/node_modules/@province-city-china/{province,city,area}/*.json', {
-  query: '?url',
-  import: 'default',
-}) as Record<string, () => Promise<string>>;
 
 export async function loadChinaMapAssets(): Promise<ChinaMapAssets> {
   const [country, adminIndex] = await Promise.all([
@@ -310,20 +299,21 @@ async function loadBuiltinFeatureCollection(adcode: string) {
   if (!/^\d{6}$/.test(adcode)) {
     return null;
   }
-  const loader = builtinMapModules[`/node_modules/china-map-echarts/map/${adcode}.json`];
-  if (!loader) {
+  const availableAdcodes = await loadBuiltinAdcodeManifest();
+  if (availableAdcodes.size > 0 && !availableAdcodes.has(adcode)) {
     return null;
   }
-  const collection = asNullableFeatureCollection(await fetchJSONURL(loader));
+  const collection = asNullableFeatureCollection(await fetchChinaMapJSON(adcode));
   return collection ? rewindBuiltinFeatureCollection(collection) : null;
 }
 
 async function loadChinaAdminIndex(): Promise<ChinaAdminIndex> {
   const [provinceRecords, cityRecords, areaRecords] = await Promise.all([
-    loadAdminRecords('/node_modules/@province-city-china/province/province.json'),
-    loadAdminRecords('/node_modules/@province-city-china/city/city.json'),
-    loadAdminRecords('/node_modules/@province-city-china/area/area.json'),
+    fetchAdminRecords('province/province.json'),
+    fetchAdminRecords('city/city.json'),
+    fetchAdminRecords('area/area.json'),
   ]);
+  const records = [...provinceRecords, ...cityRecords, ...areaRecords];
   const nameToCodes = new Map<string, string[]>();
   const codeToName = new Map<string, string>();
   const add = (record: AdminRecord) => {
@@ -339,26 +329,71 @@ async function loadChinaAdminIndex(): Promise<ChinaAdminIndex> {
     items.push(record.code);
     nameToCodes.set(normalized, items);
   };
-  [...provinceRecords, ...cityRecords, ...areaRecords].forEach(add);
+  records.forEach(add);
   return { nameToCodes, codeToName };
 }
 
-async function loadAdminRecords(path: string): Promise<AdminRecord[]> {
-  const loader = adminListModules[path];
-  if (!loader) {
-    return [];
-  }
-  const value = await fetchJSONURL(loader);
-  return Array.isArray(value) ? value as AdminRecord[] : [];
-}
-
-async function fetchJSONURL(loader: () => Promise<string>) {
-  const url = await loader();
-  const response = await fetch(url);
-  if (!response.ok) {
+async function fetchChinaMapJSON(adcode: string) {
+  try {
+    const response = await fetch(chinaMapAssetURL(adcode), {
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return response.json();
+  } catch {
     return null;
   }
-  return response.json();
+}
+
+async function loadBuiltinAdcodeManifest() {
+  if (!builtinAdcodeManifest) {
+    builtinAdcodeManifest = fetchBuiltinAdcodeManifest();
+  }
+  return builtinAdcodeManifest;
+}
+
+async function fetchBuiltinAdcodeManifest() {
+  try {
+    const response = await fetch(staticAssetURL('china-map-echarts/map/index.json'), {
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      return new Set<string>();
+    }
+    const value = await response.json();
+    return new Set(Array.isArray(value) ? value.filter((item): item is string => /^\d{6}$/.test(String(item))) : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+async function fetchAdminRecords(path: string): Promise<AdminRecord[]> {
+  if (!/^(province\/province|city\/city|area\/area)\.json$/.test(path)) {
+    return [];
+  }
+  try {
+    const response = await fetch(staticAssetURL(`province-city-china/${path}`), {
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const value = await response.json();
+    return Array.isArray(value) ? value as AdminRecord[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function chinaMapAssetURL(adcode: string) {
+  return staticAssetURL(`china-map-echarts/map/${adcode}.json`);
+}
+
+function staticAssetURL(path: string) {
+  const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+  return `${base}${path}`;
 }
 
 function toLayer(

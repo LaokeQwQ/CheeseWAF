@@ -19,6 +19,7 @@ import {
 } from '../../api/client';
 import type { IPAccessRule, IPReputationEntry, ThreatIntelProvider } from '../../types/api';
 import { displayAction, displaySeverity } from '../../utils/display';
+import '../../styles/ip-manage.css';
 
 const second = 1_000_000_000;
 const formatOptions = ['cidr', 'csv', 'json', 'stix', 'misp', 'abuseipdb', 'otx', 'threatbook'] as const;
@@ -304,8 +305,8 @@ export default function IPManagePage() {
       ArcoMessage.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
       return;
     }
-    if (accessDraft.scope === 'site' && !accessDraft.site_id) {
-      ArcoMessage.warning(t('ip.siteRequired'));
+    if ((accessDraft.scope === 'site' || accessDraft.scope === 'path') && !accessDraft.site_id) {
+      ArcoMessage.warning(t('ip.scopedSiteRequired'));
       return;
     }
     if (accessDraft.scope === 'path' && !accessDraft.path_prefix.trim()) {
@@ -335,8 +336,8 @@ export default function IPManagePage() {
       ArcoMessage.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
       return;
     }
-    if (current.scope === 'site' && !current.site_id) {
-      ArcoMessage.warning(t('ip.siteRequired'));
+    if ((current.scope === 'site' || current.scope === 'path') && !current.site_id) {
+      ArcoMessage.warning(t('ip.scopedSiteRequired'));
       return;
     }
     if (current.scope === 'path' && !current.path_prefix.trim()) {
@@ -593,6 +594,11 @@ export default function IPManagePage() {
                     <span>{t('rules.name')}</span>
                     <Input value={accessDraft.name} placeholder={t('ip.ruleNamePlaceholder')} onChange={(name) => setAccessDraft((current) => ({ ...current, name }))} />
                   </label>
+                  <label className="ip-access-description-field">
+                    <span>{t('ip.ruleDescription')}</span>
+                    <Input value={accessDraft.description} placeholder={t('ip.ruleDescriptionPlaceholder')} onChange={(description) => setAccessDraft((current) => ({ ...current, description }))} />
+                    <small>{t('ip.ruleDescriptionHint')}</small>
+                  </label>
                   <label>
                     <span>{t('logs.action')}</span>
                     <Select value={accessDraft.action} onChange={(action) => setAccessDraft((current) => ({ ...current, action: action as string }))}>
@@ -604,7 +610,7 @@ export default function IPManagePage() {
                   </label>
                   <label>
                     <span>{t('ip.scope')}</span>
-                    <Select value={accessDraft.scope} onChange={(scope) => setAccessDraft((current) => ({ ...current, scope: scope as string }))}>
+                    <Select value={accessDraft.scope} onChange={(scope) => setAccessDraft((current) => ({ ...current, ...normalizeAccessScopePatch(current, String(scope || 'global')) }))}>
                       <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
                       <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
                       <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
@@ -651,17 +657,28 @@ export default function IPManagePage() {
                     rowKey="id"
                     pagination={false}
                     data={accessRules}
+                    scroll={{ x: 1320 }}
                     columns={[
                       {
                         title: t('rules.name'),
                         dataIndex: 'name',
+                        width: 220,
                         render: (name: string, rule: IPAccessRule, index: number) => (
-                          <Input value={name || rule.id} onChange={(value) => updateAccessRule(index, { name: value })} />
+                          <div className="ip-access-name-edit">
+                            <Input value={name || rule.id} onChange={(value) => updateAccessRule(index, { name: value })} />
+                            <Input.TextArea
+                              value={rule.description || ''}
+                              placeholder={t('ip.ruleDescriptionPlaceholder')}
+                              autoSize={{ minRows: 1, maxRows: 3 }}
+                              onChange={(description) => updateAccessRule(index, { description })}
+                            />
+                          </div>
                         ),
                       },
                       {
                         title: t('logs.action'),
                         dataIndex: 'action',
+                        width: 150,
                         render: (action: string, _rule: IPAccessRule, index: number) => (
                           <Select value={action || 'allow'} onChange={(value) => updateAccessRule(index, { action: value as string })}>
                             <Select.Option value="allow">{t('ip.allow')}</Select.Option>
@@ -673,22 +690,22 @@ export default function IPManagePage() {
                       {
                         title: t('ip.scope'),
                         dataIndex: 'scope',
-                        render: (scope: string, rule: IPAccessRule, index: number) => (
-                          <div className="ip-access-scope-edit">
-                            <Select value={scope || 'global'} onChange={(value) => updateAccessRule(index, normalizeAccessScopePatch(rule, value as string))}>
-                              <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
-                              <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
-                              <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
-                            </Select>
-                            <small>{scopeLabel(rule, t)}</small>
-                          </div>
+                        width: 560,
+                        render: (_scope: string, rule: IPAccessRule, index: number) => (
+                          <AccessRuleScopeEditor
+                            rule={rule}
+                            sites={sites}
+                            t={t}
+                            onChange={(patch) => updateAccessRule(index, patch)}
+                          />
                         ),
                       },
-                      { title: t('ip.entriesInput'), dataIndex: 'entries', render: (entries: string[], _rule: IPAccessRule, index: number) => <Input value={(entries || []).join(', ')} onChange={(value) => updateAccessRule(index, { entries: splitList(value) })} /> },
-                      { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean, _rule: IPAccessRule, index: number) => <Switch checked={enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} /> },
+                      { title: t('ip.entriesInput'), dataIndex: 'entries', width: 220, render: (entries: string[], _rule: IPAccessRule, index: number) => <Input value={(entries || []).join(', ')} onChange={(value) => updateAccessRule(index, { entries: splitList(value) })} /> },
+                      { title: t('rules.enabled'), dataIndex: 'enabled', width: 90, render: (enabled: boolean, _rule: IPAccessRule, index: number) => <Switch checked={enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} /> },
                       {
                         title: t('ip.actions'),
                         dataIndex: 'actions',
+                        width: 120,
                         render: (_: unknown, rule: IPAccessRule, index: number) => (
                           <span className="action-group ip-access-row-actions">
                             <Button size="small" loading={accessRulesMutation.isPending} onClick={() => saveEditedAccessRule(index)}>
@@ -710,6 +727,15 @@ export default function IPManagePage() {
                         <span>{t('rules.name')}</span>
                         <Input value={rule.name || rule.id} onChange={(value) => updateAccessRule(index, { name: value })} />
                       </label>
+                      <label className="ip-access-rule-card-description">
+                        <span>{t('ip.ruleDescription')}</span>
+                        <Input.TextArea
+                          value={rule.description || ''}
+                          placeholder={t('ip.ruleDescriptionPlaceholder')}
+                          autoSize={{ minRows: 1, maxRows: 3 }}
+                          onChange={(description) => updateAccessRule(index, { description })}
+                        />
+                      </label>
                       <div className="ip-access-rule-card-grid">
                         <label>
                           <span>{t('logs.action')}</span>
@@ -719,14 +745,13 @@ export default function IPManagePage() {
                             <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
                           </Select>
                         </label>
-                        <label>
-                          <span>{t('ip.scope')}</span>
-                          <Select value={rule.scope || 'global'} onChange={(value) => updateAccessRule(index, normalizeAccessScopePatch(rule, value as string))}>
-                            <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
-                            <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
-                            <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
-                          </Select>
-                        </label>
+                        <AccessRuleScopeEditor
+                          compact
+                          rule={rule}
+                          sites={sites}
+                          t={t}
+                          onChange={(patch) => updateAccessRule(index, patch)}
+                        />
                         <label className="ip-access-rule-card-entries">
                           <span>{t('ip.entriesInput')}</span>
                           <Input value={(rule.entries || []).join(', ')} onChange={(value) => updateAccessRule(index, { entries: splitList(value) })} />
@@ -759,7 +784,7 @@ export default function IPManagePage() {
                 <Space wrap>
                   <Button icon={<Plus size={15} />} onClick={addProvider}>{t('common.add')}</Button>
                   <Button onClick={() => syncMutation.mutate(undefined)} loading={syncMutation.isPending}>{t('ip.syncAll')}</Button>
-                  <Button type="primary" loading={providersMutation.isPending} onClick={() => providersMutation.mutate(providers)}>{t('common.save')}</Button>
+                  <Button type="primary" loading={providersMutation.isPending} onClick={() => providersMutation.mutate(providers.map(normalizeProviderForSave))}>{t('common.save')}</Button>
                 </Space>
               </div>
               <div className="provider-list">
@@ -774,7 +799,7 @@ export default function IPManagePage() {
                           <span>{provider.endpoint || t('ip.providerEndpointEmpty')}</span>
                         </div>
                         <div className="provider-actions">
-                          <Button size="small" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(provider)}>{t('system.test')}</Button>
+                          <Button size="small" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(normalizeProviderForSave(provider))}>{t('system.test')}</Button>
                           <Button size="small" loading={syncMutation.isPending} onClick={() => syncMutation.mutate(provider.id)}>{t('ip.sync')}</Button>
                           <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeProvider(provider.id)}>
                             {t('common.delete')}
@@ -805,12 +830,12 @@ export default function IPManagePage() {
                         </label>
                         <label>
                           <span>{t('logs.action')}</span>
-                          <Select value={provider.action || 'challenge'} onChange={(action) => updateProvider(index, { action: action as string })}>
+                          <Select value={normalizeProviderAction(provider.action)} onChange={(action) => updateProvider(index, { action: action as string })}>
                             <Select.Option value="challenge">{displayAction('challenge', t)}</Select.Option>
                             <Select.Option value="block">{displayAction('block', t)}</Select.Option>
-                            <Select.Option value="monitor">{displayAction('monitor', t)}</Select.Option>
                             <Select.Option value="log">{displayAction('log', t)}</Select.Option>
                           </Select>
+                          <small>{t('ip.providerActionHint')}</small>
                         </label>
                         <label className="provider-endpoint-field">
                           <span>{t('ip.endpoint')}</span>
@@ -836,7 +861,17 @@ export default function IPManagePage() {
                             disabled={provider.auth_type === 'none'}
                             onChange={(api_key) => updateProvider(index, { api_key })}
                           />
-                          <small>{provider.auth_type === 'none' ? t('ip.authNoneHint') : t('ip.apiKeyHint')}</small>
+                          <small>{provider.auth_type === 'none' ? t('ip.authNoneHint') : t('ip.apiKeyPreserveHint')}</small>
+                        </label>
+                        <label className="provider-headers-field">
+                          <span>{t('ip.providerHeaders')}</span>
+                          <Input.TextArea
+                            value={headersToText(provider.headers)}
+                            placeholder={t('ip.providerHeadersPlaceholder')}
+                            autoSize={{ minRows: 2, maxRows: 5 }}
+                            onChange={(raw) => updateProvider(index, { headers: textToHeaders(raw) })}
+                          />
+                          <small>{t('ip.providerHeadersHint')}</small>
                         </label>
                         <label className="provider-interval-field">
                           <span>{t('ip.intervalValue')}</span>
@@ -1348,8 +1383,106 @@ function ReputationOverrideEditor({
   );
 }
 
+function AccessRuleScopeEditor({
+  rule,
+  sites,
+  t,
+  onChange,
+  compact = false,
+}: {
+  rule: IPAccessRule;
+  sites: Array<{ id: string; name?: string }>;
+  t: (key: string) => string;
+  onChange: (patch: Partial<IPAccessRule>) => void;
+  compact?: boolean;
+}) {
+  const scope = rule.scope === 'directory' ? 'path' : rule.scope || 'global';
+  return (
+    <div className={compact ? 'ip-access-scope-fields ip-access-scope-fields-compact' : 'ip-access-scope-fields'}>
+      <label>
+        <span>{t('ip.scope')}</span>
+        <Select value={scope} onChange={(value) => onChange(normalizeAccessScopePatch(rule, String(value || 'global')))}>
+          <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
+          <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
+          <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
+        </Select>
+        <small>{scopeLabel(rule, t)}</small>
+      </label>
+      <label>
+        <span>{t('sites.title')}</span>
+        <Select
+          allowClear
+          disabled={scope === 'global'}
+          value={rule.site_id || undefined}
+          placeholder={t('ip.optionalSite')}
+          onChange={(site_id) => onChange({ site_id: String(site_id || '') })}
+        >
+          {sites.map((site) => <Select.Option key={site.id} value={site.id}>{site.name || site.id}</Select.Option>)}
+        </Select>
+        <small>{scope === 'global' ? t('ip.globalScopeHint') : scope === 'site' ? t('ip.siteScopeHint') : t('ip.pathScopeSiteHint')}</small>
+      </label>
+      <label>
+        <span>{t('ip.pathPrefix')}</span>
+        <Input
+          disabled={scope !== 'path'}
+          value={rule.path_prefix || ''}
+          placeholder="/admin"
+          onChange={(path_prefix) => onChange({ path_prefix })}
+        />
+        <small>{scope === 'path' ? t('ip.pathScopeHint') : t('ip.pathDisabledHint')}</small>
+      </label>
+    </div>
+  );
+}
+
 function splitList(value: string) {
   return value.split(/[\n,]+/).map((item) => item.trim().toLowerCase()).filter(Boolean);
+}
+
+function headersToText(headers: Record<string, string> | undefined) {
+  return Object.entries(headers ?? {})
+    .map(([key, value]) => (value ? `${key}: ${value}` : key))
+    .join('\n');
+}
+
+function textToHeaders(value: string) {
+  return value.split(/\r?\n/).reduce<Record<string, string>>((headers, line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return headers;
+    }
+    const separator = trimmed.indexOf(':');
+    const key = separator >= 0 ? trimmed.slice(0, separator) : trimmed;
+    const rawValue = separator >= 0 ? trimmed.slice(separator + 1) : '';
+    const header = key.trim();
+    if (header) {
+      headers[header] = rawValue.trim();
+    }
+    return headers;
+  }, {});
+}
+
+function normalizeProviderAction(action: string | undefined) {
+  switch ((action || '').trim().toLowerCase()) {
+    case 'block':
+    case 'challenge':
+    case 'log':
+      return action!.trim().toLowerCase();
+    default:
+      return 'challenge';
+  }
+}
+
+function normalizeProviderForSave(provider: ThreatIntelProvider): ThreatIntelProvider {
+  return {
+    ...provider,
+    action: normalizeProviderAction(provider.action),
+    headers: Object.fromEntries(
+      Object.entries(provider.headers ?? {})
+        .map(([key, value]) => [key.trim(), value.trim()] as const)
+        .filter(([key]) => key),
+    ),
+  };
 }
 
 function splitLines(value: string) {

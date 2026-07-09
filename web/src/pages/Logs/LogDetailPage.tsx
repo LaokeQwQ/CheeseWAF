@@ -6,6 +6,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, BrainCircuit, ShieldAlert } from 'lucide-react';
 import { analyzeLogReferenceStream, fetchLogEvent } from '../../api/client';
 import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
+import PolicyDecisionCard from '../../components/PolicyDecisionCard';
 import SafeMarkdown from '../../components/SafeMarkdown';
 import type { AIAssistantTraceEvent, AttackAnalysis, LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displaySeverity, formatLogLocation } from '../../utils/display';
@@ -83,13 +84,15 @@ export default function LogDetailPage() {
                   <DetailKV label={t('logs.source')} value={event.client_ip || '-'} />
                   <DetailKV label={t('dashboard.ipLocation')} value={formatLogLocation(event, t)} />
                   <DetailKV label={t('logs.method')} value={event.method || '-'} />
-                  <DetailKV label="URI" value={<code className="detail-inline-code">{event.uri || '-'}</code>} />
+                  <DetailKV label={t('logs.path')} value={<code className="detail-inline-code">{event.uri || '-'}</code>} />
                   <DetailKV label={t('logs.status')} value={String(event.status_code || '-')} />
                   <DetailKV label={t('logs.latency')} value={formatLatency(event.latency)} />
                   <DetailKV label={t('logs.site')} value={event.site_id || '-'} />
                   <DetailKV label={t('logs.detector')} value={event.detector_id || '-'} />
                 </div>
               </section>
+
+              <PolicyDecisionCard metadata={event.metadata} />
 
               <section className="panel">
                 <div className="panel-heading">
@@ -167,8 +170,7 @@ function AnalysisLiveTrace({
   if (!pending && trace.length === 0 && !reasoning && !content) {
     return null;
   }
-  const visibleTrace = trace
-    .map((item) => formatAnalysisTraceEvent(item, t))
+  const visibleTrace = formatAnalysisTraceEvents(trace, t)
     .filter((item): item is string => Boolean(item))
     .slice(-5);
   return (
@@ -202,12 +204,24 @@ function AnalysisLiveTrace({
   );
 }
 
+function formatAnalysisTraceEvents(trace: AIAssistantTraceEvent[], t: (key: string, options?: Record<string, unknown>) => string) {
+  const toolDeltaCounts = new Map<string, number>();
+  return trace.map((event) => {
+    if (event.type === 'tool_call_delta') {
+      const tool = event.tool_name || t('common.unknown');
+      const chunks = (toolDeltaCounts.get(tool) ?? 0) + 1;
+      toolDeltaCounts.set(tool, chunks);
+      return t('ai.toolDeltaLive', { tool, chunks });
+    }
+    return formatAnalysisTraceEvent(event, t);
+  });
+}
+
 function formatAnalysisTraceEvent(event: AIAssistantTraceEvent, t: (key: string, options?: Record<string, unknown>) => string) {
   switch (event.type) {
     case 'heartbeat':
     case 'reasoning_delta':
     case 'content_delta':
-    case 'tool_call_delta':
       return '';
     case 'stream_open':
       return event.message || t('ai.streamConnected');

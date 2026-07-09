@@ -253,19 +253,42 @@ func parseNumericIPv4(host string) net.IP {
 
 func parseDottedNumericIPv4(host string) net.IP {
 	parts := strings.Split(host, ".")
-	if len(parts) != 4 {
+	if len(parts) < 2 || len(parts) > 4 {
 		return nil
 	}
-	var octets [4]byte
+	values := make([]uint64, len(parts))
 	for i, part := range parts {
 		if part == "" {
 			return nil
 		}
-		value, err := strconv.ParseUint(part, 0, 8)
+		value, err := strconv.ParseUint(part, 0, 32)
 		if err != nil {
 			return nil
 		}
-		octets[i] = byte(value)
+		values[i] = value
 	}
-	return net.IPv4(octets[0], octets[1], octets[2], octets[3])
+	for i := 0; i < len(values)-1; i++ {
+		if values[i] > 0xff {
+			return nil
+		}
+	}
+	switch len(values) {
+	case 2:
+		if values[1] > 0xffffff {
+			return nil
+		}
+		return net.IPv4(byte(values[0]), byte(values[1]>>16), byte(values[1]>>8), byte(values[1]))
+	case 3:
+		if values[2] > 0xffff {
+			return nil
+		}
+		return net.IPv4(byte(values[0]), byte(values[1]), byte(values[2]>>8), byte(values[2]))
+	case 4:
+		if values[3] > 0xff {
+			return nil
+		}
+		return net.IPv4(byte(values[0]), byte(values[1]), byte(values[2]), byte(values[3]))
+	default:
+		return nil
+	}
 }

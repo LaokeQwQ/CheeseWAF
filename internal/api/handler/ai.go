@@ -544,6 +544,103 @@ func (h *Handler) AnalyzeEvents(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]any{"items": analyses, "total": len(analyses)})
 }
 
+func (h *Handler) AnalyzeEventsStream(w http.ResponseWriter, r *http.Request) {
+	var req aiEventsAnalyzePayload
+	if !decode(w, r, &req) {
+		return
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	startTime, ok := parsePayloadTime(w, req.Start, "start")
+	if !ok {
+		return
+	}
+	endTime, ok := parsePayloadTime(w, req.End, "end")
+	if !ok {
+		return
+	}
+	if !startTime.IsZero() && !endTime.IsZero() && endTime.Before(startTime) {
+		writeError(w, http.StatusBadRequest, "BAD_TIME_RANGE", "end must be after start")
+		return
+	}
+	entries := h.queryLogs(r, storage.LogFilter{
+		Limit:     limit,
+		Action:    req.Action,
+		Category:  req.Category,
+		ClientIP:  req.ClientIP,
+		TraceID:   req.TraceID,
+		StartTime: startTime,
+		EndTime:   endTime,
+	})
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+		defer cancel()
+		analyses, err := ai.AnalyzeEventsWithLanguage(ctx, h.aiReasoningClient(), entries, req.Language)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "AI_ANALYSIS_FAILED", err.Error())
+			return
+		}
+		w.Header().Set("X-CheeseWAF-Stream-Fallback", "json")
+		writeData(w, map[string]any{"items": analyses, "total": len(analyses)})
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	allowLongResponseWrite(w)
+	var writeMu sync.Mutex
+	writeEvent := func(event string, payload any) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		writeAssistantSSE(w, flusher, event, payload)
+	}
+	heartbeatDone := make(chan struct{})
+	var heartbeatOnce sync.Once
+	stopHeartbeat := func() {
+		heartbeatOnce.Do(func() { close(heartbeatDone) })
+	}
+	defer stopHeartbeat()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)})
+			case <-heartbeatDone:
+				return
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}()
+	writeEvent("trace", ai.AssistantTraceEvent{
+		Type:    "stream_open",
+		Mode:    "events_analysis",
+		Message: localizedTraceMessage(req.Language, "批量事件流式分析连接已建立。", "Batch event analysis stream is open."),
+	})
+	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
+	defer cancel()
+	emit, stopProviderWatch := providerStreamEmitter(ctx, req.Language, "events_analysis", func(event ai.AssistantTraceEvent) {
+		writeEvent("trace", event)
+	})
+	defer stopProviderWatch()
+	analyses, err := ai.AnalyzeEventsWithLanguageStream(ctx, h.aiReasoningClient(), entries, req.Language, emit, func(analysis ai.AttackAnalysis) {
+		writeEvent("item", analysis)
+	})
+	stopProviderWatch()
+	stopHeartbeat()
+	if err != nil {
+		writeEvent("error", map[string]any{"message": err.Error(), "code": "AI_ANALYSIS_FAILED"})
+		return
+	}
+	writeEvent("done", map[string]any{"items": analyses, "total": len(analyses)})
+}
+
 func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
 	allowLongResponseWrite(w)
 	var req aiSelfLearningRunPayload
@@ -946,9 +1043,9 @@ func appendProviderFailure(answer, language string, err error) string {
 	if err == nil {
 		return answer
 	}
-	message := "AI provider request failed. Showing deterministic local analysis instead. Error: " + err.Error()
+	message := "AI service provider request failed. Showing deterministic local analysis instead. Error: " + err.Error()
 	if strings.Contains(strings.ToLower(language), "zh") {
-		message = "AI provider 请求失败，已改为显示本地确定性分析。错误：" + err.Error()
+		message = "AI 服务商请求失败，已改为显示本地确定性分析。错误：" + err.Error()
 	}
 	if strings.TrimSpace(answer) == "" {
 		return message
@@ -1037,7 +1134,7 @@ func isProviderFirstEvent(kind string) bool {
 func localizedProviderTraceMessage(language string, event ai.AssistantTraceEvent) string {
 	switch event.Type {
 	case "provider_response_start":
-		return localizedTraceMessage(language, "AI provider 已开始回流响应。", "AI provider started streaming a response.")
+		return localizedTraceMessage(language, "AI 服务商已开始返回响应。", "AI service provider started streaming a response.")
 	case "provider_first_event_slow":
 		if strings.TrimSpace(event.Message) != "" {
 			return event.Message
@@ -1055,33 +1152,33 @@ func localizedProviderTraceMessage(language string, event ai.AssistantTraceEvent
 
 func localizedProviderSlowMessage(language, phase string) string {
 	if strings.Contains(strings.ToLower(language), "en") {
-		return "AI provider has not started streaming within 10s during " + nonEmpty(phase, "this step") + "; keeping the request open."
+		return "AI service provider has not started streaming within 10s during " + nonEmpty(phase, "this step") + "; keeping the request open."
 	}
 	switch phase {
 	case "planning":
-		return "AI provider 在 10 秒内还没有开始规划回流；请求会继续保持，不会把最终回答误判为超时。"
+		return "AI 服务商在 10 秒内还没有开始规划返回；请求会继续保持，不会把最终回答误判为超时。"
 	case "final":
-		return "AI provider 在 10 秒内还没有开始生成最终回答；请求会继续保持，不会把完整回复耗时误判为首包超时。"
+		return "AI 服务商在 10 秒内还没有开始生成最终回答；请求会继续保持，不会把完整回复耗时误判为首包超时。"
 	case "analysis":
-		return "AI provider 在 10 秒内还没有开始事件分析回流；请求会继续保持，不会把完整分析耗时误判为首包超时。"
+		return "AI 服务商在 10 秒内还没有开始返回事件分析；请求会继续保持，不会把完整分析耗时误判为首包超时。"
 	default:
-		return "AI provider 在 10 秒内还没有开始回流；请求会继续保持。"
+		return "AI 服务商在 10 秒内还没有开始返回响应；请求会继续保持。"
 	}
 }
 
 func localizedProviderWaitingMessage(language, phase string) string {
 	if strings.Contains(strings.ToLower(language), "en") {
-		return "AI provider is still processing during " + nonEmpty(phase, "this step") + "; keeping the stream alive."
+		return "AI service provider is still processing during " + nonEmpty(phase, "this step") + "; keeping the stream alive."
 	}
 	switch phase {
 	case "planning":
-		return "AI provider 仍在规划工具调用，连接保持中。"
+		return "AI 服务商仍在规划工具调用，连接保持中。"
 	case "final":
-		return "AI provider 仍在生成最终回答，连接保持中。"
+		return "AI 服务商仍在生成最终回答，连接保持中。"
 	case "analysis":
-		return "AI provider 仍在分析事件，连接保持中。"
+		return "AI 服务商仍在分析事件，连接保持中。"
 	default:
-		return "AI provider 仍在处理，连接保持中。"
+		return "AI 服务商仍在处理，连接保持中。"
 	}
 }
 

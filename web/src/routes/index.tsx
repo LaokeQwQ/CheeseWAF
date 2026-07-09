@@ -1,13 +1,13 @@
 import { lazy, Suspense, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppErrorBoundary } from '../components/AppErrorBoundary';
-import MainLayout from '../layouts/MainLayout';
-import { preloadAIPage, preloadAPISecurityPage } from './preload';
+import { preloadAIPage, preloadAPISecurityPage, preloadAttackMapPage, preloadAttackScreenPage } from './preload';
 
+const MainLayout = lazy(() => import('../layouts/MainLayout'));
 const AIPage = lazy(preloadAIPage);
 const APISecurityPage = lazy(preloadAPISecurityPage);
-const AttackMapPage = lazy(() => import('../pages/AttackMap/AttackMapPage'));
-const AttackScreenPage = lazy(() => import('../pages/AttackMap/AttackScreenPage'));
+const AttackMapPage = lazy(preloadAttackMapPage);
+const AttackScreenPage = lazy(preloadAttackScreenPage);
 const BlockPagesPage = lazy(() => import('../pages/BlockPages/BlockPagesPage'));
 const BlockPagePreviewWindow = lazy(() => import('../pages/BlockPages/BlockPagesPage').then((module) => ({ default: module.BlockPagePreviewWindow })));
 const ClusterPage = lazy(() => import('../pages/Cluster/ClusterPage'));
@@ -47,7 +47,11 @@ function ProtectedLayout() {
   if (!token) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
-  return <MainLayout />;
+  return (
+    <Suspense fallback={<div className="page-spinner" aria-label="Loading" aria-busy="true" />}>
+      <MainLayout />
+    </Suspense>
+  );
 }
 
 function ProtectedStandalone({ children }: { children: ReactNode }) {

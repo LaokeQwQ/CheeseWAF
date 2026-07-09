@@ -47,6 +47,11 @@ type threatIntelSyncPayload struct {
 	ProviderID string `json:"provider_id"`
 }
 
+type threatIntelTestPayload struct {
+	ProviderID string `json:"provider_id"`
+	config.ThreatIntelProviderConfig
+}
+
 type threatIntelLookupPayload struct {
 	ProviderID string `json:"provider_id"`
 	IP         string `json:"ip"`
@@ -91,7 +96,8 @@ func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request)
 	if !decode(w, r, &req) {
 		return
 	}
-	h.Config.Protection.Policy = req.WithDefaults(config.DefaultProtectionPolicy())
+	current := h.Config.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
+	h.Config.Protection.Policy = req.WithDefaults(current)
 	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 		return
@@ -278,8 +284,13 @@ func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) TestThreatIntelProvider(w http.ResponseWriter, r *http.Request) {
-	var provider config.ThreatIntelProviderConfig
-	if !decode(w, r, &provider) {
+	var req threatIntelTestPayload
+	if !decode(w, r, &req) {
+		return
+	}
+	provider := resolveThreatIntelProviderForTest(h.Config.Protection.IP.Providers, req.ThreatIntelProviderConfig, req.ProviderID)
+	if strings.TrimSpace(provider.Endpoint) == "" && strings.TrimSpace(req.ProviderID) != "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "provider not found")
 		return
 	}
 	imported, err := fetchProvider(r.Context(), provider)
@@ -426,6 +437,67 @@ func selectedProviders(providers []config.ThreatIntelProviderConfig, id string) 
 		out = append(out, provider)
 	}
 	return out
+}
+
+func resolveThreatIntelProviderForTest(current []config.ThreatIntelProviderConfig, submitted config.ThreatIntelProviderConfig, providerID string) config.ThreatIntelProviderConfig {
+	id := strings.TrimSpace(providerID)
+	if id == "" {
+		id = strings.TrimSpace(submitted.ID)
+	}
+	if id == "" {
+		return submitted
+	}
+	for _, existing := range current {
+		if existing.ID != id {
+			continue
+		}
+		merged := existing
+		overlayThreatIntelProvider(&merged, submitted)
+		merged.ID = id
+		if submitted.Headers != nil {
+			merged.Headers = preserveStringMapSecrets(existing.Headers, submitted.Headers)
+		}
+		if strings.TrimSpace(submitted.APIKey) == "" {
+			merged.APIKey = existing.APIKey
+		}
+		return merged
+	}
+	submitted.ID = ""
+	return submitted
+}
+
+func overlayThreatIntelProvider(base *config.ThreatIntelProviderConfig, submitted config.ThreatIntelProviderConfig) {
+	if strings.TrimSpace(submitted.Name) != "" {
+		base.Name = submitted.Name
+	}
+	if strings.TrimSpace(submitted.Type) != "" {
+		base.Type = submitted.Type
+	}
+	if strings.TrimSpace(submitted.Endpoint) != "" {
+		base.Endpoint = submitted.Endpoint
+	}
+	if strings.TrimSpace(submitted.APIKey) != "" {
+		base.APIKey = submitted.APIKey
+	}
+	if strings.TrimSpace(submitted.AuthType) != "" {
+		base.AuthType = submitted.AuthType
+	}
+	if strings.TrimSpace(submitted.Format) != "" {
+		base.Format = submitted.Format
+	}
+	if strings.TrimSpace(submitted.Action) != "" {
+		base.Action = submitted.Action
+	}
+	if strings.TrimSpace(submitted.MinSeverity) != "" {
+		base.MinSeverity = submitted.MinSeverity
+	}
+	if submitted.Interval > 0 {
+		base.Interval = submitted.Interval
+	}
+	if strings.TrimSpace(submitted.Notes) != "" {
+		base.Notes = submitted.Notes
+	}
+	base.Enabled = submitted.Enabled || base.Enabled
 }
 
 func fetchProvider(ctx context.Context, provider config.ThreatIntelProviderConfig) ([]config.ThreatIntelConfig, error) {

@@ -54,7 +54,7 @@ type Handler struct {
 	geoipRetryAfter      time.Time
 	diskUsageMu          sync.Mutex
 	diskUsageCache       map[string]cachedDirSize
-	OnSitesChanged       func([]config.SiteConfig)
+	OnSitesChanged       func([]config.SiteConfig) error
 	OnProtectionChanged  func(config.ProtectionConfig) error
 	OnAPISecChanged      func(config.APISecConfig) error
 	OnBlockPageChanged   func(config.BlockPageConfig) error
@@ -85,7 +85,7 @@ type Options struct {
 	ClusterDeployTasks  *deploy.TaskManager
 	ClusterHeartbeats   *cluster.HeartbeatRegistry
 	ACMEIssuer          acme.Issuer
-	OnSitesChanged      func([]config.SiteConfig)
+	OnSitesChanged      func([]config.SiteConfig) error
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error

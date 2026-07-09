@@ -146,7 +146,9 @@ func (h *Handler) syncSites(r *http.Request) error {
 		return err
 	}
 	if h.OnSitesChanged != nil {
-		h.OnSitesChanged(configSites)
+		if err := h.OnSitesChanged(configSites); err != nil {
+			return err
+		}
 	}
 	return nil
 }
