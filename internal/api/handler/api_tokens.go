@@ -44,6 +44,9 @@ func (h *Handler) ListManagementAPITokens(w http.ResponseWriter, _ *http.Request
 }
 
 func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	if h.Config == nil || !h.Config.APISec.ManagementAPI.Enabled {
 		writeError(w, http.StatusBadRequest, "API_TOKEN_DISABLED", "management api tokens are disabled")
 		return
@@ -104,6 +107,9 @@ func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) RevokeManagementAPIToken(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	id := strings.TrimSpace(chi.URLParam(r, "id"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", "token id is required")

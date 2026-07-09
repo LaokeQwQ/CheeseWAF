@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { askAIAssistantStream, continueAIApprovalStream, fetchAITools, fetchLogs, fetchMonitorSummary, rejectAIApproval } from '../../api/client';
 import type { AIAssistantReply, AIAssistantTraceEvent, AIToolExecution } from '../../types/api';
 import SafeMarkdown, { safeAssistantDisplayText } from '../SafeMarkdown';
+import './AIAssistant.css';
 
 type AssistantMessage = {
   id: string;
@@ -41,10 +42,14 @@ type ApprovalContinuationInput = {
   prompt: string;
 };
 
-export default function AIAssistant() {
+type AIAssistantProps = {
+  initialOpen?: boolean;
+};
+
+export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
   const { t, i18n } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const [renderPanel, setRenderPanel] = useState(false);
+  const [open, setOpen] = useState(initialOpen);
+  const [renderPanel, setRenderPanel] = useState(initialOpen);
   const [draft, setDraft] = useState('');
   const [thread, setThread] = useState<AssistantMessage[]>([]);
   const [pendingElapsedMs, setPendingElapsedMs] = useState(0);
@@ -60,9 +65,11 @@ export default function AIAssistant() {
   const threadRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const { data: tools } = useQuery({ queryKey: ['assistant-tools'], queryFn: fetchAITools, retry: false });
-  const { data: monitor } = useQuery({ queryKey: ['assistant-monitor'], queryFn: fetchMonitorSummary, refetchInterval: 10_000, retry: false });
-  const { data: logs } = useQuery({ queryKey: ['assistant-logs'], queryFn: () => fetchLogs({ limit: 5 }), refetchInterval: 10_000, retry: false });
+  const forceScrollRef = useRef(false);
+  const assistantActive = open || renderPanel;
+  const { data: tools } = useQuery({ queryKey: ['assistant-tools'], queryFn: fetchAITools, enabled: assistantActive, retry: false });
+  const { data: monitor } = useQuery({ queryKey: ['assistant-monitor'], queryFn: fetchMonitorSummary, enabled: assistantActive, refetchInterval: assistantActive ? 10_000 : false, retry: false });
+  const { data: logs } = useQuery({ queryKey: ['assistant-logs'], queryFn: () => fetchLogs({ limit: 5 }), enabled: assistantActive, refetchInterval: assistantActive ? 10_000 : false, retry: false });
   const liveContext = useMemo(() => {
     const snapshot = monitor?.snapshot;
     const events = (logs?.items ?? []).filter((entry) => entry.category || ['block', 'challenge', 'log'].includes(entry.action));
@@ -77,6 +84,9 @@ export default function AIAssistant() {
   const recordPendingTrace = (event: AIAssistantTraceEvent) => {
     if (isProviderFirstTraceEvent(event.type) && pendingRef.current && !pendingRef.current.providerStartedAt) {
       pendingRef.current = { ...pendingRef.current, providerStartedAt: performance.now() };
+    }
+    if (event.approval?.id && event.approval.status) {
+      setThread((current) => markApprovalStatus(current, event.approval?.id, event.approval?.status || 'pending', { preserveProgress: true }));
     }
     if (event.type === 'content_delta') {
       pendingContentRef.current += event.message ?? '';
@@ -192,8 +202,9 @@ export default function AIAssistant() {
       appendAssistantReply(reply, { approvalID: execution.approval?.id });
       setContinuingApprovalID(null);
     },
-    onError: (error) => {
+    onError: (error, { execution }) => {
       Message.error(error.message);
+      setThread((current) => markApprovalStatus(current, execution.approval?.id, 'approved'));
       appendAssistantError(error);
       setContinuingApprovalID(null);
     },
@@ -306,13 +317,30 @@ export default function AIAssistant() {
     }
     const thread = threadRef.current;
     const isAtBottom = thread.scrollHeight - (thread.scrollTop + thread.clientHeight) < 64;
-    if (!isAtBottom && !assistantBusy) {
+    const shouldForce = forceScrollRef.current;
+    if (!isAtBottom && !shouldForce) {
       return;
     }
-    const frame = window.requestAnimationFrame(() => {
+    let secondFrame = 0;
+    let fallbackTimer = 0;
+    const scrollToLatest = () => {
       thread.scrollTo({ top: thread.scrollHeight, behavior: 'auto' });
+      forceScrollRef.current = false;
+    };
+    const frame = window.requestAnimationFrame(() => {
+      scrollToLatest();
+      secondFrame = window.requestAnimationFrame(scrollToLatest);
+      fallbackTimer = window.setTimeout(scrollToLatest, 80);
     });
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (secondFrame) {
+        window.cancelAnimationFrame(secondFrame);
+      }
+      if (fallbackTimer) {
+        window.clearTimeout(fallbackTimer);
+      }
+    };
   }, [open, messages.length, assistantBusy, pendingContent, pendingTrace.length]);
 
   function submit() {
@@ -332,6 +360,7 @@ export default function AIAssistant() {
     pendingContentRef.current = '';
     setPendingTrace([]);
     setPendingContent('');
+    forceScrollRef.current = true;
     pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString(), inputTokens: estimateTokens(message), prompt: message };
     setThread((current) => [...current, { id: `user-${Date.now()}`, role: 'user', text: message, createdAt: new Date().toISOString(), prompt: message }]);
     askMutation.mutate(message);
@@ -339,7 +368,7 @@ export default function AIAssistant() {
 
   function continueApproval(tool: AIToolExecution, prompt: string | undefined) {
     const approvalID = tool.approval?.id;
-    if (!approvalID || continueApprovalMutation.isPending) {
+    if (!approvalID || assistantBusy || rejectToolMutation.isPending) {
       return;
     }
     const message = (prompt || lastUserPrompt(thread) || t('assistant.approvalContinueFallback', { tool: toolDisplayName(t, tool.name) })).trim();
@@ -350,8 +379,10 @@ export default function AIAssistant() {
     pendingContentRef.current = '';
     setPendingTrace([]);
     setPendingContent('');
+    forceScrollRef.current = true;
     pendingRef.current = { startedAt: performance.now(), createdAt: new Date().toISOString(), inputTokens: estimateTokens(message), prompt: message };
     setContinuingApprovalID(approvalID);
+    setThread((current) => markApprovalStatus(current, approvalID, 'executing'));
     continueApprovalMutation.mutate({ execution: tool, prompt: message });
   }
 
@@ -379,6 +410,9 @@ export default function AIAssistant() {
     <>
       <Button
         aria-label={t('assistant.title')}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={renderPanel ? 'cheesewaf-ai-assistant-panel' : undefined}
         className={[
           'ai-fab',
           open ? 'ai-fab-open' : '',
@@ -391,6 +425,10 @@ export default function AIAssistant() {
       />
       {renderPanel && (
         <section
+          id="cheesewaf-ai-assistant-panel"
+          role="dialog"
+          aria-modal="false"
+          aria-label={t('assistant.title')}
           className={open ? 'ai-assistant-panel' : 'ai-assistant-panel ai-assistant-panel-closing'}
           onAnimationEnd={() => {
             if (!open) {
@@ -511,6 +549,9 @@ export default function AIAssistant() {
                       const toolName = toolDisplayName(t, tool.name);
                       const sensitivity = sensitivityDisplayName(t, tool.sensitivity);
                       const approvalStatus = tool.approval?.status;
+                      const approvalRunnable = approvalStatus === 'pending' || approvalStatus === 'approved';
+                      const approvalExecuting = approvalStatus === 'executing' || (continuingApprovalID === tool.approval?.id && continueApprovalMutation.isPending);
+                      const approvalTerminal = approvalStatus === 'executed' || approvalStatus === 'rejected';
                       const status = approvalStatus ? approvalStatusDisplayName(t, approvalStatus) : undefined;
                       const description = toolDescription(t, tool);
                       return (
@@ -563,33 +604,45 @@ export default function AIAssistant() {
                               </div>
                             </div>
                           )}
-                          {tool.approval && tool.approval.status !== 'pending' && (
+                          {tool.approval && approvalTerminal && (
                             <div className={`assistant-approval-state assistant-approval-state-${cssToken(tool.approval.status)}`}>
                               <span>{approvalStatusDisplayName(t, tool.approval.status)}</span>
                               <small>{t('assistant.approvalCompleted', { tool: toolName })}</small>
                             </div>
                           )}
-                          {tool.approval && tool.approval.status === 'pending' && (
-                            <div className="assistant-approval">
+                          {tool.approval && approvalExecuting && !approvalTerminal && (
+                            <div className="assistant-approval assistant-approval-executing">
                               <div className="assistant-approval-top">
                                 <div className="assistant-approval-head">
-                                  <strong>{t('assistant.approvalRequired')}</strong>
-                                  <span>{t('assistant.approvalTool', { tool: toolName })}</span>
+                                  <strong>{t('assistant.approvalExecuting')}</strong>
+                                  <span>{t('assistant.approvalExecutingHint', { tool: toolName })}</span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          {tool.approval && approvalRunnable && !approvalExecuting && (
+                            <div className={`assistant-approval assistant-approval-${cssToken(tool.approval.status)}`}>
+                              <div className="assistant-approval-top">
+                                <div className="assistant-approval-head">
+                                  <strong>{tool.approval.status === 'approved' ? t('assistant.approvalReady') : t('assistant.approvalRequired')}</strong>
+                                  <span>{tool.approval.status === 'approved' ? t('assistant.approvalReadyHint', { tool: toolName }) : t('assistant.approvalTool', { tool: toolName })}</span>
                                 </div>
                                 <div className="assistant-approval-actions">
                                   <Button
                                     size="small"
                                     type="primary"
+                                    className="assistant-approval-approve"
                                     loading={continuingApprovalID === tool.approval.id && continueApprovalMutation.isPending}
-                                    disabled={continueApprovalMutation.isPending}
+                                    disabled={assistantBusy || rejectToolMutation.isPending}
                                     onClick={() => continueApproval(tool, message.prompt)}
                                   >
-                                    {t('assistant.approveAndRun')}
+                                    {tool.approval.status === 'approved' ? t('assistant.continueApproved') : t('assistant.approveAndRun')}
                                   </Button>
                                   <Button
                                     size="small"
                                     status="warning"
-                                    disabled={rejectToolMutation.isPending}
+                                    className="assistant-approval-reject"
+                                    disabled={assistantBusy || rejectToolMutation.isPending}
                                     loading={rejectToolMutation.isPending}
                                     onClick={() => rejectToolMutation.mutate(tool)}
                                   >
@@ -654,7 +707,7 @@ function lastUserPrompt(messages: AssistantMessage[]) {
   return '';
 }
 
-function markApprovalStatus(messages: AssistantMessage[], approvalID: string | undefined, status: string) {
+function markApprovalStatus(messages: AssistantMessage[], approvalID: string | undefined, status: string, options: { preserveProgress?: boolean } = {}) {
   if (!approvalID) {
     return messages;
   }
@@ -664,13 +717,33 @@ function markApprovalStatus(messages: AssistantMessage[], approvalID: string | u
     }
     return {
       ...message,
-      tools: message.tools.map((tool) => (
-        tool.approval?.id === approvalID
-          ? { ...tool, approval: { ...tool.approval, status } }
-          : tool
-      )),
+      tools: message.tools.map((tool) => {
+        if (tool.approval?.id !== approvalID) {
+          return tool;
+        }
+        const nextStatus = options.preserveProgress && approvalStatusRank(status) < approvalStatusRank(tool.approval.status)
+          ? tool.approval.status
+          : status;
+        return { ...tool, approval: { ...tool.approval, status: nextStatus } };
+      }),
     };
   });
+}
+
+function approvalStatusRank(status?: string) {
+  switch (status) {
+    case 'pending':
+      return 1;
+    case 'approved':
+      return 2;
+    case 'executing':
+      return 3;
+    case 'rejected':
+    case 'executed':
+      return 4;
+    default:
+      return 0;
+  }
 }
 
 function toolDisplayName(t: (key: string, options?: Record<string, unknown>) => string, name: string) {
@@ -713,6 +786,10 @@ function buildLiveReasoningProcess(t: (key: string, options?: Record<string, unk
   if (reasoning) {
     return splitReasoningLines(reasoning, t('assistant.reasoningStreaming'));
   }
+  const toolDelta = latestToolDeltaSummary(t, trace);
+  if (toolDelta) {
+    return [toolDelta];
+  }
   const slow = [...trace].reverse().find((event) => event.type === 'provider_waiting_progress' || event.type === 'provider_first_event_slow');
   if (slow) {
     return [slow.message || t('assistant.providerSlow')];
@@ -739,10 +816,24 @@ function buildTraceProcess(t: (key: string, options?: Record<string, unknown>) =
     return [t('assistant.traceWaiting')];
   }
   const regular = trace.filter((event) => !['reasoning_delta', 'reasoning_summary', 'content_delta', 'tool_call_delta'].includes(event.type));
-  if (regular.length === 0) {
-    return [t('assistant.traceWaiting')];
+  const formatted = regular.map((event) => formatTraceEvent(t, event));
+  const toolDelta = latestToolDeltaSummary(t, trace);
+  if (toolDelta) {
+    formatted.push(toolDelta);
   }
-  return regular.map((event) => formatTraceEvent(t, event));
+  return formatted.length ? formatted : [t('assistant.traceWaiting')];
+}
+
+function latestToolDeltaSummary(t: (key: string, options?: Record<string, unknown>) => string, trace: AIAssistantTraceEvent[]) {
+  const deltas = trace.filter((event) => event.type === 'tool_call_delta');
+  if (deltas.length === 0) {
+    return '';
+  }
+  const latest = deltas[deltas.length - 1];
+  return t('assistant.toolDeltaLive', {
+    tool: toolDisplayName(t, latest.tool_name || '-'),
+    chunks: deltas.length,
+  });
 }
 
 function formatTraceEvent(t: (key: string, options?: Record<string, unknown>) => string, event: AIAssistantTraceEvent) {
@@ -841,9 +932,9 @@ function formatDuration(ms: number) {
 
 function formatTokenSpeed(value: number) {
   if (!Number.isFinite(value) || value <= 0) {
-    return '0 tok/s';
+    return '0 token/s';
   }
-  return `${value.toFixed(value >= 10 ? 0 : 1)} tok/s`;
+  return `${value.toFixed(value >= 10 ? 0 : 1)} token/s`;
 }
 
 function formatMessageTime(value?: string) {

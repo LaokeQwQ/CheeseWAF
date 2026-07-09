@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ConfigProvider } from '@arco-design/web-react';
+import ConfigProvider from '@arco-design/web-react/es/ConfigProvider';
 import enUS from '@arco-design/web-react/es/locale/en-US';
 import zhCN from '@arco-design/web-react/es/locale/zh-CN';
 import AppRoutes from './routes';

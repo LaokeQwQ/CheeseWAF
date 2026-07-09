@@ -309,6 +309,13 @@ func TestCleanChallengeURLDropsCAPTCHAPayloadFields(t *testing.T) {
 	}
 }
 
+func TestSafeChallengeReturnURLRejectsAbsoluteRedirect(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "//evil.example/path?cw_pow=1", nil)
+	if got := safeChallengeReturnURL(req); got != "/" {
+		t.Fatalf("expected absolute redirect target to be rejected, got %q", got)
+	}
+}
+
 func TestChallengeValidatesProofAndSetsClearance(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{
 		Enabled:             true,
@@ -334,6 +341,33 @@ func TestChallengeValidatesProofAndSetsClearance(t *testing.T) {
 	}
 	if got := rr.Result().Cookies(); len(got) != 1 || got[0].Name != "cw_clearance" {
 		t.Fatalf("expected clearance cookie, got %+v", got)
+	}
+}
+
+func TestChallengeClearanceCookieSecureBehindHTTPSProxy(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:             true,
+		JSChallenge:         true,
+		ChallengeDifficulty: 2,
+		ChallengeTTL:        time.Minute,
+		CookieName:          "cw_clearance",
+		Secret:              "test-secret",
+	})
+	nonce := "test-nonce"
+	expires := time.Now().Add(time.Minute).Unix()
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	signature := policy.signChallenge(req, "203.0.113.10", nonce, expires)
+	answer := solveTestProof(nonce, 2)
+	req = httptest.NewRequest(http.MethodGet, "/login?cw_nonce="+nonce+"&cw_expires="+strconv.FormatInt(expires, 10)+"&cw_sig="+signature+"&cw_pow="+answer, nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	cookies := rr.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly {
+		t.Fatalf("expected secure httponly clearance cookie behind https proxy, got %+v", cookies)
 	}
 }
 
