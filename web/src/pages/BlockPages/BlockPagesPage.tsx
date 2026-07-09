@@ -289,12 +289,13 @@ export function BlockPagePreviewWindow() {
       return '';
     }
   });
+  const safeHTML = useMemo(() => sanitizeBlockPreviewHTML(html), [html]);
 
   useEffect(() => {
     document.title = t('blockPages.preview');
   }, [t]);
 
-  if (!html.trim()) {
+  if (!safeHTML.trim()) {
     return (
       <main className="block-preview-standalone block-preview-standalone-empty">
         <section>
@@ -307,7 +308,7 @@ export function BlockPagePreviewWindow() {
 
   return (
     <main className="block-preview-standalone">
-      <iframe title={t('blockPages.preview')} sandbox="allow-same-origin" referrerPolicy="no-referrer" srcDoc={html} />
+      <iframe title={t('blockPages.preview')} sandbox="allow-same-origin" referrerPolicy="no-referrer" srcDoc={safeHTML} />
     </main>
   );
 }
@@ -341,24 +342,47 @@ function sanitizeBlockPreviewHTML(value: string) {
     return '';
   }
   if (typeof DOMParser === 'undefined') {
-    return html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+    return '';
   }
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script').forEach((node) => node.remove());
+  doc.querySelectorAll('script, iframe, object, embed, link[rel="import"], meta[http-equiv="refresh"]').forEach((node) => node.remove());
   doc.querySelectorAll('*').forEach((element) => {
     Array.from(element.attributes).forEach((attribute) => {
       const name = attribute.name.toLowerCase();
-      const attributeValue = attribute.value.trim().toLowerCase();
       if (name.startsWith('on')) {
         element.removeAttribute(attribute.name);
         return;
       }
-      if (['href', 'src', 'xlink:href', 'formaction'].includes(name) && attributeValue.startsWith('javascript:')) {
+      if (name === 'srcset') {
+        element.removeAttribute(attribute.name);
+        return;
+      }
+      if (isDangerousPreviewURLAttribute(name, attribute.value)) {
         element.removeAttribute(attribute.name);
       }
     });
   });
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
+function isDangerousPreviewURLAttribute(name: string, rawValue: string) {
+  if (!['href', 'src', 'xlink:href', 'formaction'].includes(name.toLowerCase())) {
+    return false;
+  }
+  const normalized = compactURLScheme(rawValue).toLowerCase();
+  return normalized.startsWith('javascript:') || normalized.startsWith('vbscript:') || normalized.startsWith('data:');
+}
+
+function compactURLScheme(value: string) {
+  let output = '';
+  for (const char of value.trim()) {
+    const code = char.charCodeAt(0);
+    if (code <= 0x20 || code === 0x7f) {
+      continue;
+    }
+    output += char;
+  }
+  return output;
 }
 
 function isBlockPageConfig(value: unknown): value is BlockPageConfig {

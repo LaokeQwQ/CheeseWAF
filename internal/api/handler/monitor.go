@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"math"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -150,9 +151,8 @@ func intFromTotal(total int64) int {
 	if total <= 0 {
 		return 0
 	}
-	maxInt := int64(^uint(0) >> 1)
-	if total > maxInt {
-		return int(maxInt)
+	if total > int64(math.MaxInt) {
+		return math.MaxInt
 	}
 	return int(total)
 }

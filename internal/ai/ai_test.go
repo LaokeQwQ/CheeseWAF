@@ -625,11 +625,12 @@ func TestClientUsesAnthropicMessagesAPI(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(config.AIConfig{
-		Enabled:  true,
-		Provider: "anthropic",
-		APIBase:  server.URL,
-		APIKey:   "test-secret",
-		Model:    "claude-3-5-haiku-latest",
+		Enabled:             true,
+		Provider:            "anthropic",
+		APIBase:             server.URL,
+		APIKey:              "test-secret",
+		Model:               "claude-3-5-haiku-latest",
+		AllowPrivateAPIBase: true,
 	}, server.Client())
 	result, err := client.CompleteWithUsage(context.Background(), []Message{
 		{Role: "system", Content: "system policy"},

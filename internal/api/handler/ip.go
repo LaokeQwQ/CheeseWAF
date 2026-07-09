@@ -436,11 +436,10 @@ func fetchProvider(ctx context.Context, provider config.ThreatIntelProviderConfi
 	if err != nil {
 		return nil, fmt.Errorf("invalid provider endpoint: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	req, err := newThreatIntelRequest(ctx, endpoint, provider)
 	if err != nil {
 		return nil, err
 	}
-	applyProviderAuth(req, provider)
 	resp, err := threatIntelHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -473,11 +472,10 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 	if err != nil {
 		return nil, fmt.Errorf("invalid provider endpoint: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	req, err := newThreatIntelRequest(ctx, endpoint, provider)
 	if err != nil {
 		return nil, err
 	}
-	applyProviderAuth(req, provider)
 	resp, err := threatIntelHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -571,11 +569,31 @@ func providerLookupURL(provider config.ThreatIntelProviderConfig, ip string) (*u
 	return parsed, nil
 }
 
+func newThreatIntelRequest(ctx context.Context, endpoint *url.URL, provider config.ThreatIntelProviderConfig) (*http.Request, error) {
+	if endpoint == nil {
+		return nil, fmt.Errorf("provider endpoint is required")
+	}
+	validated, err := threatIntelProviderURLValidator(endpoint.String())
+	if err != nil {
+		return nil, fmt.Errorf("invalid provider endpoint: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, validated.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	applyProviderAuth(req, provider)
+	return req, nil
+}
+
 func validateThreatIntelProviderURL(raw string) (*url.URL, error) {
-	return netguard.ValidateURL(raw, netguard.URLPolicy{
+	return netguard.ValidateURL(raw, threatIntelProviderURLPolicy())
+}
+
+func threatIntelProviderURLPolicy() netguard.URLPolicy {
+	return netguard.URLPolicy{
 		Purpose:        "provider",
 		AllowedSchemes: []string{"http", "https"},
-	})
+	}
 }
 
 func newThreatIntelHTTPClient(timeout time.Duration) *http.Client {
