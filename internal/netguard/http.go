@@ -3,6 +3,7 @@ package netguard
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -60,6 +61,14 @@ func ValidateURL(raw string, policy URLPolicy) (*url.URL, error) {
 		}
 	}
 	return parsed, nil
+}
+
+func NewRequest(ctx context.Context, method, rawURL string, body io.Reader, policy URLPolicy) (*http.Request, error) {
+	parsed, err := ValidateURL(rawURL, policy)
+	if err != nil {
+		return nil, err
+	}
+	return http.NewRequestWithContext(ctx, method, parsed.String(), body)
 }
 
 func NewHTTPClient(opts HTTPClientOptions) *http.Client {
