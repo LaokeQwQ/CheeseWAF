@@ -248,24 +248,76 @@ func parseNumericIPv4(host string) net.IP {
 	if err != nil {
 		return nil
 	}
-	return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value))
+	return ipv4FromUint32(value)
 }
 
 func parseDottedNumericIPv4(host string) net.IP {
 	parts := strings.Split(host, ".")
-	if len(parts) != 4 {
+	if len(parts) < 2 || len(parts) > 4 {
 		return nil
 	}
-	var octets [4]byte
+	values := make([]uint64, len(parts))
 	for i, part := range parts {
 		if part == "" {
 			return nil
 		}
-		value, err := strconv.ParseUint(part, 0, 8)
+		value, err := strconv.ParseUint(part, 0, 32)
 		if err != nil {
 			return nil
 		}
-		octets[i] = byte(value)
+		values[i] = value
+	}
+	for i := 0; i < len(values)-1; i++ {
+		if values[i] > 0xff {
+			return nil
+		}
+	}
+	switch len(values) {
+	case 2:
+		if values[1] > 0xffffff {
+			return nil
+		}
+		return ipv4FromOctets(values[0], values[1]>>16, values[1]>>8, values[1])
+	case 3:
+		if values[2] > 0xffff {
+			return nil
+		}
+		return ipv4FromOctets(values[0], values[1], values[2]>>8, values[2])
+	case 4:
+		if values[3] > 0xff {
+			return nil
+		}
+		return ipv4FromOctets(values[0], values[1], values[2], values[3])
+	default:
+		return nil
+	}
+}
+
+func ipv4FromUint32(value uint64) net.IP {
+	if value > 0xffffffff {
+		return nil
+	}
+	return ipv4FromOctets((value>>24)&0xff, (value>>16)&0xff, (value>>8)&0xff, value&0xff)
+}
+
+func ipv4FromOctets(parts ...uint64) net.IP {
+	if len(parts) != 4 {
+		return nil
+	}
+	octets := [4]byte{}
+	for i, part := range parts {
+		octet, ok := ipv4Octet(part)
+		if !ok {
+			return nil
+		}
+		octets[i] = octet
 	}
 	return net.IPv4(octets[0], octets[1], octets[2], octets[3])
+}
+
+func ipv4Octet(value uint64) (byte, bool) {
+	if value > 0xff {
+		return 0, false
+	}
+	return byte(value), true
 }

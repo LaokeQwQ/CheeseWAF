@@ -3,44 +3,43 @@ import { geoEquirectangular, geoGraticule10, geoPath } from 'd3-geo';
 import {
   ACESFilmicToneMapping,
   AdditiveBlending,
-  AmbientLight,
   BackSide,
-  BufferAttribute,
-  BufferGeometry,
-  CanvasTexture,
-  CatmullRomCurve3,
-  Color,
-  CylinderGeometry,
-  DirectionalLight,
-  Group,
-  HemisphereLight,
-  Line,
   LinearFilter,
   LinearMipmapLinearFilter,
-  LineBasicMaterial,
-  Material,
-  Mesh,
-  MeshBasicMaterial,
-  MeshPhysicalMaterial,
   NormalBlending,
-  PerspectiveCamera,
-  Points,
-  PointsMaterial,
-  Raycaster,
   RepeatWrapping,
-  Scene,
-  ShaderMaterial,
-  SphereGeometry,
   SRGBColorSpace,
-  TorusGeometry,
-  TubeGeometry,
-  Vector2,
-  Vector3,
-  WebGLRenderer,
-} from 'three';
+} from 'three/src/constants.js';
+import { AmbientLight } from 'three/src/lights/AmbientLight.js';
+import { BufferAttribute } from 'three/src/core/BufferAttribute.js';
+import { BufferGeometry } from 'three/src/core/BufferGeometry.js';
+import { CanvasTexture } from 'three/src/textures/CanvasTexture.js';
+import { CatmullRomCurve3 } from 'three/src/extras/curves/CatmullRomCurve3.js';
+import { Color } from 'three/src/math/Color.js';
+import { CylinderGeometry } from 'three/src/geometries/CylinderGeometry.js';
+import { DirectionalLight } from 'three/src/lights/DirectionalLight.js';
+import { Group } from 'three/src/objects/Group.js';
+import { HemisphereLight } from 'three/src/lights/HemisphereLight.js';
+import { Line } from 'three/src/objects/Line.js';
+import { LineBasicMaterial } from 'three/src/materials/LineBasicMaterial.js';
+import { Material } from 'three/src/materials/Material.js';
+import { Mesh } from 'three/src/objects/Mesh.js';
+import { MeshBasicMaterial } from 'three/src/materials/MeshBasicMaterial.js';
+import { MeshPhysicalMaterial } from 'three/src/materials/MeshPhysicalMaterial.js';
+import { PerspectiveCamera } from 'three/src/cameras/PerspectiveCamera.js';
+import { Points } from 'three/src/objects/Points.js';
+import { PointsMaterial } from 'three/src/materials/PointsMaterial.js';
+import { Raycaster } from 'three/src/core/Raycaster.js';
+import { Scene } from 'three/src/scenes/Scene.js';
+import { ShaderMaterial } from 'three/src/materials/ShaderMaterial.js';
+import { SphereGeometry } from 'three/src/geometries/SphereGeometry.js';
+import { TorusGeometry } from 'three/src/geometries/TorusGeometry.js';
+import { TubeGeometry } from 'three/src/geometries/TubeGeometry.js';
+import { Vector2 } from 'three/src/math/Vector2.js';
+import { Vector3 } from 'three/src/math/Vector3.js';
+import { WebGLRenderer } from 'three/src/renderers/WebGLRenderer.js';
 import { useTranslation } from 'react-i18next';
-import type { AttackRegion, ProtectedTarget, ThreatLevel, WorldFeature } from './AttackMapPage';
-import { normalizeWorldId } from './AttackMapPage';
+import { normalizeWorldId, type AttackRegion, type ProtectedTarget, type ThreatLevel, type WorldFeature } from './attackMapData';
 import { displayCountry } from '../../utils/display';
 import { useAppStore } from '../../stores';
 import type { ThemeName } from '../../themes/tokens';
@@ -66,6 +65,22 @@ const globeLevelColors: Record<ThreatLevel, number> = {
 
 const markerColorFallback = 0x2176d2;
 
+type GlobeRuntime = {
+  renderer: any;
+  scene: any;
+  camera: any;
+  tooltip: HTMLDivElement;
+  markerGroup: any;
+  markerMeshes: any[];
+  regionObjects: Map<string, any[]>;
+  pulseRings: Array<{ mesh: any; material: any; phase: number }>;
+  flowArcs: Array<{ material: any; head: any; headMaterial: any; curve: any; phase: number }>;
+  globeMaterial: any;
+  worldTexture: any;
+  protectedTarget: ProtectedTarget;
+  render: () => void;
+};
+
 export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, target, fallback, visualTheme: forcedVisualTheme }: GlobeMapProps) {
   const { t } = useTranslation();
   const appTheme = useAppStore((state) => state.theme);
@@ -74,13 +89,21 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
   const zoomRef = useRef(zoom);
   const tRef = useRef(t);
   const resizeRef = useRef<(() => void) | null>(null);
+  const runtimeRef = useRef<GlobeRuntime | null>(null);
+  const regionsRef = useRef(regions);
+  const countryLevelsRef = useRef(countryLevels);
+  const worldFeaturesRef = useRef(worldFeatures);
+  const targetRef = useRef(target);
   const [webglError, setWebglError] = useState(false);
+  regionsRef.current = regions;
+  countryLevelsRef.current = countryLevels;
+  worldFeaturesRef.current = worldFeatures;
+  targetRef.current = target;
   const regionsSignature = useMemo(
     () => regions.map((region) => [
       region.key,
       region.lat.toFixed(4),
       region.lon.toFixed(4),
-      region.attacks,
       region.level,
       Math.round(region.size),
     ].join(':')).join('|'),
@@ -113,7 +136,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
 
     const scene = new Scene();
     const camera = new PerspectiveCamera(42, 1, 0.1, 100);
-    camera.position.set(0, 0.22, 3 / zoomRef.current);
+    camera.position.set(0, 0.08, 3.45 / zoomRef.current);
     const isDarkGlobe = visualTheme === 'dark';
     let renderer: any;
     try {
@@ -140,6 +163,9 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
 
     const tooltip = document.createElement('div');
     tooltip.className = 'globe-tooltip';
+    tooltip.setAttribute('role', 'status');
+    tooltip.setAttribute('aria-live', 'polite');
+    tooltip.setAttribute('aria-atomic', 'true');
     host.appendChild(tooltip);
 
     const starField = createStarField(visualTheme);
@@ -149,15 +175,6 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const globeGeometry = new SphereGeometry(1, 112, 112);
     const cloudGeometry = new SphereGeometry(1.018, 96, 96);
     const atmosphereGeometry = new SphereGeometry(1.085, 96, 96);
-    const markerTipGeometry = new SphereGeometry(1, 24, 24);
-    const flowHeadGeometry = new SphereGeometry(0.014, 14, 14);
-    const targetGeometry = new SphereGeometry(0.024, 24, 24);
-    const texture = createWorldTexture(countryLevels, worldFeatures, visualTheme);
-    if (texture) {
-      texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() ?? 1);
-      texture.minFilter = LinearMipmapLinearFilter;
-      texture.magFilter = LinearFilter;
-    }
     const cloudTexture = createCloudTexture();
     if (cloudTexture) {
       cloudTexture.wrapS = RepeatWrapping;
@@ -167,7 +184,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const globe = new Mesh(
       globeGeometry,
       new MeshPhysicalMaterial({
-        map: texture,
+        map: null,
         roughness: isDarkGlobe ? 0.76 : 0.82,
         metalness: 0.02,
         clearcoat: isDarkGlobe ? 0.18 : 0.1,
@@ -178,6 +195,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     );
     earthGroup.add(globe);
     earthGroup.add(gridSphere);
+    const globeMaterial = globe.material as any;
 
     const clouds = new Mesh(
       cloudGeometry,
@@ -221,93 +239,28 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     earthGroup.add(atmosphere);
 
     const markerGroup = new Group();
-    const markerMeshes: any[] = [];
-    const pulseRings: Array<{ mesh: any; material: any; phase: number }> = [];
-    const flowArcs: Array<{ material: any; head: any; headMaterial: any; curve: any; phase: number }> = [];
-    const protectedTarget = target ?? { lat: 35.9, lon: 104.2, label: tRef.current('attackMap.protectedTarget'), source: 'fallback' as const };
-    const protectedOrigin = latLonToVector(protectedTarget.lat, protectedTarget.lon, 1.052);
-    const targetMarker = new Mesh(
-      targetGeometry,
-      new MeshBasicMaterial({
-        color: isDarkGlobe ? 0xffffff : 0x0e7490,
-        transparent: true,
-        opacity: 0.96,
-        depthWrite: false,
-        blending: isDarkGlobe ? AdditiveBlending : NormalBlending,
-      }),
-    );
-    targetMarker.position.copy(protectedOrigin);
-    targetMarker.userData.region = { locationName: protectedTarget.label, attacks: tRef.current('attackMap.protectedTarget'), isTarget: true };
-    markerMeshes.push(targetMarker);
-    markerGroup.add(targetMarker);
-    for (const [index, region] of regions.entries()) {
-      const normal = latLonToVector(region.lat, region.lon, 1).normalize();
-      const color = globeLevelColors[region.level] ?? markerColorFallback;
-      const markerSize = Math.max(0.024, Math.min(0.076, region.size / 520));
-      const height = Math.max(0.055, Math.min(0.18, region.size / 250));
-
-      const ringMaterial = new MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.52,
-        depthWrite: false,
-        blending: AdditiveBlending,
-      });
-      const ring = new Mesh(new TorusGeometry(markerSize * 1.45, 0.0045, 10, 42), ringMaterial);
-      ring.position.copy(normal.clone().multiplyScalar(1.041));
-      orientNormal(ring, normal);
-      ring.userData.region = region;
-
-      const beamMaterial = new MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.7,
-        depthWrite: false,
-        blending: AdditiveBlending,
-      });
-      const beam = new Mesh(new CylinderGeometry(markerSize * 0.11, markerSize * 0.22, height, 16, 1, true), beamMaterial);
-      beam.position.copy(normal.clone().multiplyScalar(1.052 + height / 2));
-      beam.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), normal);
-      beam.userData.region = region;
-
-      const tip = new Mesh(
-        markerTipGeometry,
-        new MeshBasicMaterial({ color, transparent: true, opacity: 0.98, blending: AdditiveBlending }),
-      );
-      tip.scale.setScalar(markerSize);
-      tip.position.copy(normal.clone().multiplyScalar(1.072 + height));
-      tip.userData.region = region;
-
-      markerMeshes.push(ring, beam, tip);
-      pulseRings.push({ mesh: ring, material: ringMaterial, phase: index * 0.47 });
-      markerGroup.add(ring, beam, tip);
-      if (index < 48) {
-        const arcMaterial = new MeshBasicMaterial({
-          color,
-          transparent: true,
-          opacity: 0.28,
-          depthWrite: false,
-          blending: AdditiveBlending,
-        });
-        const arc = createArcMesh(normal.clone().multiplyScalar(1.038), protectedOrigin, arcMaterial);
-        const headMaterial = new MeshBasicMaterial({
-          color,
-          transparent: true,
-          opacity: 0.9,
-          depthWrite: false,
-          blending: AdditiveBlending,
-        });
-        const head = new Mesh(flowHeadGeometry, headMaterial);
-        head.position.copy(arc.curve.getPoint(0.12));
-        markerGroup.add(arc);
-        markerGroup.add(head);
-        flowArcs.push({ material: arcMaterial, head, headMaterial, curve: arc.curve, phase: index * 0.31 });
-      }
-    }
     earthGroup.add(markerGroup);
     earthGroup.rotation.y = -0.35;
     earthGroup.rotation.x = -0.08;
     scene.add(earthGroup);
+
+    const fallbackTarget = { lat: 35.9, lon: 104.2, label: tRef.current('attackMap.protectedTarget'), source: 'fallback' as const };
+    const runtime: GlobeRuntime = {
+      renderer,
+      scene,
+      camera,
+      tooltip,
+      markerGroup,
+      markerMeshes: [],
+      regionObjects: new Map(),
+      pulseRings: [],
+      flowArcs: [],
+      globeMaterial,
+      worldTexture: null,
+      protectedTarget: fallbackTarget,
+      render: () => renderer.render(scene, camera),
+    };
+    runtimeRef.current = runtime;
 
     let controlsActive = false;
     let dragging = false;
@@ -315,32 +268,37 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     let lastPointerY = 0;
     let rotationVelocityX = 0;
     let rotationVelocityY = 0;
-    let cameraDistanceBase = 3;
+    let cameraDistanceBase = 3.45;
     let cameraDistanceMultiplier = 1;
     let controlsIdleTimer = 0;
     const minDistance = 1.55;
     const maxDistance = 4.4;
     const rotateSpeed = isTouch ? 0.0062 : 0.0048;
+    let requestFrame = () => {};
     const setControlsActive = (active: boolean) => {
       window.clearTimeout(controlsIdleTimer);
       if (active) {
         controlsActive = true;
         tooltip.classList.remove('globe-tooltip-visible');
+        requestFrame();
         return;
       }
       controlsIdleTimer = window.setTimeout(() => {
         controlsActive = false;
       }, 120);
+      requestFrame();
     };
     const updateCameraDistance = () => {
       camera.position.z = clamp(cameraDistanceBase * cameraDistanceMultiplier / Math.max(0.2, zoomRef.current), minDistance, maxDistance);
       camera.updateProjectionMatrix();
+      runtime.render();
     };
     const applyRotationDelta = (dx: number, dy: number) => {
       rotationVelocityY = dx * rotateSpeed;
       rotationVelocityX = dy * rotateSpeed;
       earthGroup.rotation.y += rotationVelocityY;
       earthGroup.rotation.x = clamp(earthGroup.rotation.x + rotationVelocityX, -1.08, 1.08);
+      requestFrame();
     };
     const onPointerDown = (event: globalThis.PointerEvent) => {
       if (event.button !== 0) {
@@ -411,14 +369,14 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(markerMeshes, false)[0];
+      const hit = raycaster.intersectObjects(runtime.markerMeshes, false)[0];
       if (!hit) {
         tooltip.classList.remove('globe-tooltip-visible');
         return;
       }
       const region = hit.object.userData.region as AttackRegion & { isTarget?: boolean };
       tooltip.textContent = region.isTarget
-        ? `${protectedTarget.label} · ${tRef.current('attackMap.protectedTarget')}`
+        ? `${runtime.protectedTarget.label} · ${tRef.current('attackMap.protectedTarget')}`
         : `${formatGlobeRegionLocation(region, tRef.current)} · ${region.attacks}`;
       tooltip.style.left = `${event.clientX - rect.left + 12}px`;
       tooltip.style.top = `${event.clientY - rect.top + 12}px`;
@@ -439,10 +397,10 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       const narrow = width < 560;
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
-      camera.position.y = narrow ? 0.08 : 0.22;
-      cameraDistanceBase = narrow ? 3.65 : 3;
+      camera.position.y = narrow ? 0.04 : 0.08;
+      cameraDistanceBase = narrow ? 3.75 : 3.45;
       updateCameraDistance();
-      renderer.render(scene, camera);
+      runtime.render();
     };
     resizeRef.current = resize;
     const observer = new ResizeObserver(resize);
@@ -455,18 +413,17 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     let hidden = document.visibilityState === 'hidden';
     let reducedMotion = motionQuery.matches;
-    const updatePause = () => {
-      hidden = document.visibilityState === 'hidden';
-      reducedMotion = motionQuery.matches;
+    const stopFrame = () => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
     };
-    document.addEventListener('visibilitychange', updatePause);
-    motionQuery.addEventListener('change', updatePause);
-
     const tick = () => {
+      frame = 0;
       const now = performance.now();
       if (hidden) {
         lastFrameAt = now;
-        frame = requestAnimationFrame(tick);
         return;
       }
       const delta = Math.min((now - lastFrameAt) / 1000, 0.05);
@@ -479,26 +436,48 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
         rotationVelocityX *= reducedMotion ? 0.78 : 0.9;
       }
       const shouldAutoRotate = !controlsActive && !dragging;
-      earthGroup.rotation.y += shouldAutoRotate ? delta * (reducedMotion ? 0.01 : 0.038) : 0;
-      clouds.rotation.y += delta * (reducedMotion ? 0.008 : 0.024);
-      clouds.rotation.x = Math.sin(elapsed * 0.12) * (reducedMotion ? 0.004 : 0.012);
-      starField.rotation.y += delta * (reducedMotion ? 0.0015 : 0.004);
-      for (const item of pulseRings) {
-        const wave = (Math.sin(elapsed * (reducedMotion ? 1.2 : 2.4) + item.phase) + 1) / 2;
-        item.mesh.scale.setScalar(1 + wave * (reducedMotion ? 0.08 : 0.22));
-        item.material.opacity = 0.28 + wave * (reducedMotion ? 0.12 : 0.24);
+      if (!reducedMotion) {
+        earthGroup.rotation.y += shouldAutoRotate ? delta * 0.038 : 0;
+        clouds.rotation.y += delta * 0.024;
+        clouds.rotation.x = Math.sin(elapsed * 0.12) * 0.012;
+        starField.rotation.y += delta * 0.004;
+        for (const item of runtime.pulseRings) {
+          const wave = (Math.sin(elapsed * 2.4 + item.phase) + 1) / 2;
+          item.mesh.scale.setScalar(1 + wave * 0.22);
+          item.material.opacity = 0.28 + wave * 0.24;
+        }
+        for (const item of runtime.flowArcs) {
+          const wave = (Math.sin(elapsed * 1.6 + item.phase) + 1) / 2;
+          const progress = (elapsed * 0.16 + item.phase) % 1;
+          item.material.opacity = 0.14 + wave * 0.24;
+          item.head.position.copy(item.curve.getPoint(progress));
+          item.headMaterial.opacity = 0.32 + Math.sin(progress * Math.PI) * 0.58;
+        }
       }
-      for (const item of flowArcs) {
-        const wave = (Math.sin(elapsed * (reducedMotion ? 0.8 : 1.6) + item.phase) + 1) / 2;
-        const progress = (elapsed * (reducedMotion ? 0.06 : 0.16) + item.phase) % 1;
-        item.material.opacity = 0.14 + wave * (reducedMotion ? 0.12 : 0.24);
-        item.head.position.copy(item.curve.getPoint(progress));
-        item.headMaterial.opacity = 0.32 + Math.sin(progress * Math.PI) * (reducedMotion ? 0.3 : 0.58);
+      runtime.render();
+      const hasInertia = Math.abs(rotationVelocityX) > 0.00008 || Math.abs(rotationVelocityY) > 0.00008;
+      if (!reducedMotion || dragging || controlsActive || hasInertia) {
+        requestFrame();
       }
-      renderer.render(scene, camera);
-      frame = requestAnimationFrame(tick);
     };
-    tick();
+    requestFrame = () => {
+      if (!frame && !hidden) {
+        frame = requestAnimationFrame(tick);
+      }
+    };
+    const updatePause = () => {
+      hidden = document.visibilityState === 'hidden';
+      reducedMotion = motionQuery.matches;
+      if (hidden) {
+        stopFrame();
+        return;
+      }
+      lastFrameAt = performance.now();
+      requestFrame();
+    };
+    document.addEventListener('visibilitychange', updatePause);
+    motionQuery.addEventListener('change', updatePause);
+    requestFrame();
 
     return () => {
       cancelAnimationFrame(frame);
@@ -514,10 +493,13 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       renderer.domElement.removeEventListener('wheel', onWheel);
       renderer.dispose();
       disposeObjectTree(starField, earthGroup);
-      texture?.dispose();
+      runtime.worldTexture?.dispose();
       cloudTexture?.dispose();
       if (resizeRef.current === resize) {
         resizeRef.current = null;
+      }
+      if (runtimeRef.current === runtime) {
+        runtimeRef.current = null;
       }
       if (renderer.domElement.parentNode === host) {
         host.removeChild(renderer.domElement);
@@ -526,14 +508,186 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
         host.removeChild(tooltip);
       }
     };
-  }, [regionsSignature, countryLevelsSignature, worldSignature, targetSignature, webglError, visualTheme]);
+  }, [webglError, visualTheme]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) {
+      return;
+    }
+    updateGlobeTexture(runtime, countryLevelsRef.current, worldFeaturesRef.current, visualTheme);
+  }, [countryLevelsSignature, worldSignature, visualTheme]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) {
+      return;
+    }
+    updateGlobeMarkerData(runtime, regionsRef.current, targetRef.current, tRef.current);
+    rebuildGlobeMarkers(runtime, regionsRef.current, targetRef.current, tRef.current, visualTheme);
+  }, [regionsSignature, targetSignature, t, visualTheme]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) {
+      return;
+    }
+    updateGlobeMarkerData(runtime, regions, target, t);
+  }, [regions, target, t]);
 
   if (webglError) {
     return <>{fallback}</>;
   }
 
-  return <div ref={hostRef} className={`globe-stage globe-stage-${visualTheme}`} />;
+  return <div ref={hostRef} className={`globe-stage globe-stage-${visualTheme}`} role="img" aria-label={t('attackMap.title')} />;
 }
+
+function updateGlobeTexture(runtime: GlobeRuntime, countryLevels: Map<string, ThreatLevel>, worldFeatures: WorldFeature[], visualTheme: GlobeVisualTheme) {
+  const texture = createWorldTexture(countryLevels, worldFeatures, visualTheme);
+  if (texture) {
+    texture.anisotropy = Math.min(8, runtime.renderer.capabilities.getMaxAnisotropy?.() ?? 1);
+    texture.minFilter = LinearMipmapLinearFilter;
+    texture.magFilter = LinearFilter;
+  }
+  runtime.worldTexture?.dispose();
+  runtime.worldTexture = texture;
+  runtime.globeMaterial.map = texture;
+  runtime.globeMaterial.needsUpdate = true;
+  runtime.render();
+}
+
+function rebuildGlobeMarkers(
+  runtime: GlobeRuntime,
+  regions: AttackRegion[],
+  target: ProtectedTarget | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+  visualTheme: GlobeVisualTheme,
+) {
+  clearObjectGroup(runtime.markerGroup);
+  runtime.markerMeshes.length = 0;
+  runtime.regionObjects.clear();
+  runtime.pulseRings.length = 0;
+  runtime.flowArcs.length = 0;
+
+  const isDarkGlobe = visualTheme === 'dark';
+  const protectedTarget = target ?? { lat: 35.9, lon: 104.2, label: t('attackMap.protectedTarget'), source: 'fallback' as const };
+  runtime.protectedTarget = protectedTarget;
+  const protectedOrigin = latLonToVector(protectedTarget.lat, protectedTarget.lon, 1.052);
+  const targetMarker = new Mesh(
+    new SphereGeometry(0.024, 24, 24),
+    new MeshBasicMaterial({
+      color: isDarkGlobe ? 0xffffff : 0x0e7490,
+      transparent: true,
+      opacity: 0.96,
+      depthWrite: false,
+      blending: isDarkGlobe ? AdditiveBlending : NormalBlending,
+    }),
+  );
+  targetMarker.position.copy(protectedOrigin);
+  targetMarker.userData.region = { locationName: protectedTarget.label, attacks: t('attackMap.protectedTarget'), isTarget: true };
+  runtime.markerMeshes.push(targetMarker);
+  runtime.markerGroup.add(targetMarker);
+
+  for (const [index, region] of regions.entries()) {
+    const normal = latLonToVector(region.lat, region.lon, 1).normalize();
+    const color = globeLevelColors[region.level] ?? markerColorFallback;
+    const markerSize = Math.max(0.024, Math.min(0.076, region.size / 520));
+    const height = Math.max(0.055, Math.min(0.18, region.size / 250));
+
+    const ringMaterial = new MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.52,
+      depthWrite: false,
+      blending: AdditiveBlending,
+    });
+    const ring = new Mesh(new TorusGeometry(markerSize * 1.45, 0.0045, 10, 42), ringMaterial);
+    ring.position.copy(normal.clone().multiplyScalar(1.041));
+    orientNormal(ring, normal);
+    ring.userData.region = region;
+
+    const beamMaterial = new MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+      blending: AdditiveBlending,
+    });
+    const beam = new Mesh(new CylinderGeometry(markerSize * 0.11, markerSize * 0.22, height, 16, 1, true), beamMaterial);
+    beam.position.copy(normal.clone().multiplyScalar(1.052 + height / 2));
+    beam.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), normal);
+    beam.userData.region = region;
+
+    const tip = new Mesh(
+      new SphereGeometry(1, 24, 24),
+      new MeshBasicMaterial({ color, transparent: true, opacity: 0.98, blending: AdditiveBlending }),
+    );
+    tip.scale.setScalar(markerSize);
+    tip.position.copy(normal.clone().multiplyScalar(1.072 + height));
+    tip.userData.region = region;
+
+    runtime.markerMeshes.push(ring, beam, tip);
+    runtime.regionObjects.set(region.key, [ring, beam, tip]);
+    runtime.pulseRings.push({ mesh: ring, material: ringMaterial, phase: index * 0.47 });
+    runtime.markerGroup.add(ring, beam, tip);
+    if (index < 48) {
+      const arcMaterial = new MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.28,
+        depthWrite: false,
+        blending: AdditiveBlending,
+      });
+      const arc = createArcMesh(normal.clone().multiplyScalar(1.038), protectedOrigin, arcMaterial);
+      const headMaterial = new MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+        blending: AdditiveBlending,
+      });
+      const head = new Mesh(new SphereGeometry(0.014, 14, 14), headMaterial);
+      head.position.copy(arc.curve.getPoint(0.12));
+      runtime.markerGroup.add(arc);
+      runtime.markerGroup.add(head);
+      runtime.flowArcs.push({ material: arcMaterial, head, headMaterial, curve: arc.curve, phase: index * 0.31 });
+    }
+  }
+  runtime.render();
+}
+
+function updateGlobeMarkerData(
+  runtime: GlobeRuntime,
+  regions: AttackRegion[],
+  target: ProtectedTarget | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+) {
+  const protectedTarget = target ?? { lat: 35.9, lon: 104.2, label: t('attackMap.protectedTarget'), source: 'fallback' as const };
+  runtime.protectedTarget = protectedTarget;
+  for (const mesh of runtime.markerMeshes) {
+    if (mesh.userData.region?.isTarget) {
+      mesh.userData.region = { locationName: protectedTarget.label, attacks: t('attackMap.protectedTarget'), isTarget: true };
+    }
+  }
+  for (const region of regions) {
+    const objects = runtime.regionObjects.get(region.key);
+    if (!objects) {
+      continue;
+    }
+    for (const object of objects) {
+      object.userData.region = region;
+    }
+  }
+}
+
+function clearObjectGroup(group: any) {
+  const children = [...group.children];
+  for (const child of children) {
+    group.remove(child);
+    disposeObjectTree(child);
+  }
+}
+
 function resolveGlobeTheme(theme: ThemeName): GlobeVisualTheme {
   return theme === 'dark' || theme === 'blackGold' ? 'dark' : 'light';
 }

@@ -1,3 +1,4 @@
+:root,
 :root[data-theme='light'] {
   --app-bg: #f6f8fb;
   --surface: #ffffff;
@@ -16,6 +17,7 @@
   --text-secondary: var(--text-muted);
   --accent: #165dff;
   --accent-success: #16a34a;
+  --accent-contrast: #ffffff;
   --accent-strong: #0e46c9;
   --accent-soft: rgba(22, 93, 255, 0.12);
   --accent-danger: #dd3b3b;
@@ -24,7 +26,14 @@
   --accent-info: #2563eb;
   --accent-purple: #7b4fd6;
   --shadow: 0 18px 60px rgba(39, 54, 73, 0.1);
+  --shadow-color: rgba(39, 54, 73, 0.1);
+  --highlight-color: rgba(255, 255, 255, 0.72);
+  --map-canvas-3d-bg: linear-gradient(180deg, #eef4fb 0%, #f7faff 58%, #ffffff 100%);
+  --auth-media-bg: #102033;
+  --auth-shade: linear-gradient(90deg, rgba(11, 22, 35, 0.76), rgba(11, 22, 35, 0.48) 42%, rgba(11, 22, 35, 0.72));
+  --preview-page-bg: #ffffff;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  --mono-font: var(--font-mono);
   --color-primary-6: #165dff;
   --color-bg-1: #ffffff;
   --color-bg-2: #f6f8fb;

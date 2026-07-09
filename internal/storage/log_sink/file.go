@@ -15,7 +15,10 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
-const defaultFileSinkRecentCache = 20000
+const (
+	defaultFileSinkRecentCache = 20000
+	maxFileSinkQueryLimit      = 1000
+)
 
 type FileSink struct {
 	mu           sync.Mutex
@@ -233,6 +236,9 @@ func normalizedLimit(limit int) int {
 	if limit <= 0 {
 		return 100
 	}
+	if limit > maxFileSinkQueryLimit {
+		return maxFileSinkQueryLimit
+	}
 	return limit
 }
 
@@ -313,6 +319,13 @@ func hasTimeFilter(filter storage.LogFilter) bool {
 func requiredRows(offset, limit int) int {
 	if offset < 0 {
 		offset = 0
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	maxInt := int(^uint(0) >> 1)
+	if offset > maxInt-limit {
+		return maxInt
 	}
 	return offset + limit
 }

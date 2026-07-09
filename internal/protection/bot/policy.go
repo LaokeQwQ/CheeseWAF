@@ -255,9 +255,20 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
+			Secure:   true,
+			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
-		http.Redirect(w, r, cleanChallengeURL(r), http.StatusFound)
+		redirectTarget := strings.ReplaceAll(cleanChallengeURL(r), "\\", "/")
+		target, err := url.Parse(redirectTarget)
+		if err != nil || target.Hostname() != "" || target.IsAbs() {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		if target.Path == "" || !strings.HasPrefix(target.Path, "/") {
+			target.Path = "/" + target.Path
+		}
+		http.Redirect(w, r, target.String(), http.StatusFound)
 		return
 	}
 	var altcha *altchaChallenge
@@ -1080,6 +1091,21 @@ func cleanChallengeURL(r *http.Request) string {
 	}
 	next.RawQuery = query.Encode()
 	return next.RequestURI()
+}
+
+func safeChallengeReturnURL(r *http.Request) string {
+	cleaned := strings.ReplaceAll(cleanChallengeURL(r), "\\", "/")
+	if cleaned == "" || strings.HasPrefix(cleaned, "//") {
+		return "/"
+	}
+	parsed, err := url.Parse(cleaned)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" {
+		return "/"
+	}
+	if !strings.HasPrefix(parsed.Path, "/") {
+		parsed.Path = "/" + parsed.Path
+	}
+	return parsed.RequestURI()
 }
 
 func imageAudioURL(r *http.Request, token string) string {

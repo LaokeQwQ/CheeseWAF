@@ -51,6 +51,28 @@ func TestFileSinkQueryReturnsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestFileSinkQueryClampsLargeLimit(t *testing.T) {
+	sink, err := NewFileSink(filepath.Join(t.TempDir(), "access.log"))
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	defer sink.Close()
+	base := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < maxFileSinkQueryLimit+5; i++ {
+		if err := sink.Write(context.Background(), &storage.LogEntry{ID: fmt.Sprintf("entry-%04d", i), Timestamp: base.Add(time.Duration(i) * time.Second), Action: "block"}); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+
+	items, total, err := sink.Query(context.Background(), storage.LogFilter{Limit: maxFileSinkQueryLimit * 10})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if total != int64(maxFileSinkQueryLimit+5) || len(items) != maxFileSinkQueryLimit {
+		t.Fatalf("expected total preserved and page clamped, total=%d len=%d", total, len(items))
+	}
+}
+
 func TestFileSinkRecentCacheReturnsTotalWithoutFullPageLoss(t *testing.T) {
 	t.Setenv("CHEESEWAF_FILE_SINK_CACHE_LIMIT", "3")
 	sink, err := NewFileSink(filepath.Join(t.TempDir(), "access.log"))

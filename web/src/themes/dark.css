@@ -16,6 +16,7 @@
   --text-secondary: var(--text-muted);
   --accent: #3c7eff;
   --accent-success: #4ade80;
+  --accent-contrast: #ffffff;
   --accent-strong: #6b9fff;
   --accent-soft: rgba(60, 126, 255, 0.13);
   --accent-danger: #ff6b6b;
@@ -24,8 +25,15 @@
   --accent-info: #6aa7ff;
   --accent-purple: #b58cff;
   --shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
+  --shadow-color: rgba(0, 0, 0, 0.34);
+  --highlight-color: rgba(255, 255, 255, 0.16);
+  --map-canvas-3d-bg: linear-gradient(180deg, #111822 0%, #0f1722 54%, #0a1018 100%);
+  --auth-media-bg: #0b1118;
+  --auth-shade: linear-gradient(90deg, rgba(4, 8, 13, 0.78), rgba(4, 8, 13, 0.52) 42%, rgba(4, 8, 13, 0.76));
+  --preview-page-bg: #ffffff;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-  --color-primary-6: #4fd6bd;
+  --mono-font: var(--font-mono);
+  --color-primary-6: var(--accent);
   --color-bg-1: #151b24;
   --color-bg-2: #10161f;
   --color-text-1: #edf2f8;

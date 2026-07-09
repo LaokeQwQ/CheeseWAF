@@ -47,6 +47,11 @@ type threatIntelSyncPayload struct {
 	ProviderID string `json:"provider_id"`
 }
 
+type threatIntelTestPayload struct {
+	ProviderID string `json:"provider_id"`
+	config.ThreatIntelProviderConfig
+}
+
 type threatIntelLookupPayload struct {
 	ProviderID string `json:"provider_id"`
 	IP         string `json:"ip"`
@@ -84,11 +89,15 @@ func (h *Handler) Protection(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.ProtectionPolicyConfig
 	if !decode(w, r, &req) {
 		return
 	}
-	h.Config.Protection.Policy = req.WithDefaults(config.DefaultProtectionPolicy())
+	current := h.Config.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
+	h.Config.Protection.Policy = req.WithDefaults(current)
 	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 		return
@@ -101,6 +110,9 @@ func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.IPProtectionConfig
 	if !decode(w, r, &req) {
 		return
@@ -119,6 +131,9 @@ func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateIPAccessRules(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req []config.IPAccessRuleConfig
 	if !decode(w, r, &req) {
 		return
@@ -136,6 +151,9 @@ func (h *Handler) UpdateIPAccessRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateIPReputationOverrides(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req map[string]int
 	if !decode(w, r, &req) {
 		return
@@ -152,6 +170,9 @@ func (h *Handler) UpdateIPReputationOverrides(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) UpdateIPTags(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req map[string][]string
 	if !decode(w, r, &req) {
 		return
@@ -169,6 +190,9 @@ func (h *Handler) UpdateIPTags(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateThreatIntelProviders(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req []config.ThreatIntelProviderConfig
 	if !decode(w, r, &req) {
 		return
@@ -183,6 +207,9 @@ func (h *Handler) UpdateThreatIntelProviders(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req threatIntelImportPayload
 	if !decode(w, r, &req) {
 		return
@@ -218,6 +245,9 @@ func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req threatIntelSyncPayload
 	if !decodeOptional(w, r, &req, defaultJSONBodyLimit, "invalid threat intelligence sync request") {
 		return
@@ -254,8 +284,13 @@ func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) TestThreatIntelProvider(w http.ResponseWriter, r *http.Request) {
-	var provider config.ThreatIntelProviderConfig
-	if !decode(w, r, &provider) {
+	var req threatIntelTestPayload
+	if !decode(w, r, &req) {
+		return
+	}
+	provider := resolveThreatIntelProviderForTest(h.Config.Protection.IP.Providers, req.ThreatIntelProviderConfig, req.ProviderID)
+	if strings.TrimSpace(provider.Endpoint) == "" && strings.TrimSpace(req.ProviderID) != "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "provider not found")
 		return
 	}
 	imported, err := fetchProvider(r.Context(), provider)
@@ -267,6 +302,9 @@ func (h *Handler) TestThreatIntelProvider(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) LookupThreatIntel(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req threatIntelLookupPayload
 	if !decode(w, r, &req) {
 		return
@@ -325,6 +363,9 @@ func (h *Handler) ExportThreatIntel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateACLRules(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.ACLProtectionConfig
 	if !decode(w, r, &req) {
 		return
@@ -342,6 +383,9 @@ func (h *Handler) UpdateACLRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.RateLimitProtectionConfig
 	if !decode(w, r, &req) {
 		return
@@ -359,6 +403,9 @@ func (h *Handler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateBotProtection(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.BotProtectionConfig
 	if !decode(w, r, &req) {
 		return
@@ -392,6 +439,67 @@ func selectedProviders(providers []config.ThreatIntelProviderConfig, id string) 
 	return out
 }
 
+func resolveThreatIntelProviderForTest(current []config.ThreatIntelProviderConfig, submitted config.ThreatIntelProviderConfig, providerID string) config.ThreatIntelProviderConfig {
+	id := strings.TrimSpace(providerID)
+	if id == "" {
+		id = strings.TrimSpace(submitted.ID)
+	}
+	if id == "" {
+		return submitted
+	}
+	for _, existing := range current {
+		if existing.ID != id {
+			continue
+		}
+		merged := existing
+		overlayThreatIntelProvider(&merged, submitted)
+		merged.ID = id
+		if submitted.Headers != nil {
+			merged.Headers = preserveStringMapSecrets(existing.Headers, submitted.Headers)
+		}
+		if strings.TrimSpace(submitted.APIKey) == "" {
+			merged.APIKey = existing.APIKey
+		}
+		return merged
+	}
+	submitted.ID = ""
+	return submitted
+}
+
+func overlayThreatIntelProvider(base *config.ThreatIntelProviderConfig, submitted config.ThreatIntelProviderConfig) {
+	if strings.TrimSpace(submitted.Name) != "" {
+		base.Name = submitted.Name
+	}
+	if strings.TrimSpace(submitted.Type) != "" {
+		base.Type = submitted.Type
+	}
+	if strings.TrimSpace(submitted.Endpoint) != "" {
+		base.Endpoint = submitted.Endpoint
+	}
+	if strings.TrimSpace(submitted.APIKey) != "" {
+		base.APIKey = submitted.APIKey
+	}
+	if strings.TrimSpace(submitted.AuthType) != "" {
+		base.AuthType = submitted.AuthType
+	}
+	if strings.TrimSpace(submitted.Format) != "" {
+		base.Format = submitted.Format
+	}
+	if strings.TrimSpace(submitted.Action) != "" {
+		base.Action = submitted.Action
+	}
+	if strings.TrimSpace(submitted.MinSeverity) != "" {
+		base.MinSeverity = submitted.MinSeverity
+	}
+	if submitted.Interval > 0 {
+		base.Interval = submitted.Interval
+	}
+	if strings.TrimSpace(submitted.Notes) != "" {
+		base.Notes = submitted.Notes
+	}
+	base.Enabled = submitted.Enabled || base.Enabled
+}
+
 func fetchProvider(ctx context.Context, provider config.ThreatIntelProviderConfig) ([]config.ThreatIntelConfig, error) {
 	if provider.Endpoint == "" {
 		return nil, fmt.Errorf("provider endpoint is required")
@@ -400,11 +508,10 @@ func fetchProvider(ctx context.Context, provider config.ThreatIntelProviderConfi
 	if err != nil {
 		return nil, fmt.Errorf("invalid provider endpoint: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	req, err := newThreatIntelRequest(ctx, endpoint, provider)
 	if err != nil {
 		return nil, err
 	}
-	applyProviderAuth(req, provider)
 	resp, err := threatIntelHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -437,11 +544,10 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 	if err != nil {
 		return nil, fmt.Errorf("invalid provider endpoint: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	req, err := newThreatIntelRequest(ctx, endpoint, provider)
 	if err != nil {
 		return nil, err
 	}
-	applyProviderAuth(req, provider)
 	resp, err := threatIntelHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -535,11 +641,31 @@ func providerLookupURL(provider config.ThreatIntelProviderConfig, ip string) (*u
 	return parsed, nil
 }
 
+func newThreatIntelRequest(ctx context.Context, endpoint *url.URL, provider config.ThreatIntelProviderConfig) (*http.Request, error) {
+	if endpoint == nil {
+		return nil, fmt.Errorf("provider endpoint is required")
+	}
+	validated, err := threatIntelProviderURLValidator(endpoint.String())
+	if err != nil {
+		return nil, fmt.Errorf("invalid provider endpoint: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, validated.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	applyProviderAuth(req, provider)
+	return req, nil
+}
+
 func validateThreatIntelProviderURL(raw string) (*url.URL, error) {
-	return netguard.ValidateURL(raw, netguard.URLPolicy{
+	return netguard.ValidateURL(raw, threatIntelProviderURLPolicy())
+}
+
+func threatIntelProviderURLPolicy() netguard.URLPolicy {
+	return netguard.URLPolicy{
 		Purpose:        "provider",
 		AllowedSchemes: []string{"http", "https"},
-	})
+	}
 }
 
 func newThreatIntelHTTPClient(timeout time.Duration) *http.Client {

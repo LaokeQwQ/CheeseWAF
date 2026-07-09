@@ -13,10 +13,11 @@ import (
 type ApprovalStatus string
 
 const (
-	ApprovalPending  ApprovalStatus = "pending"
-	ApprovalApproved ApprovalStatus = "approved"
-	ApprovalRejected ApprovalStatus = "rejected"
-	ApprovalExecuted ApprovalStatus = "executed"
+	ApprovalPending   ApprovalStatus = "pending"
+	ApprovalApproved  ApprovalStatus = "approved"
+	ApprovalExecuting ApprovalStatus = "executing"
+	ApprovalRejected  ApprovalStatus = "rejected"
+	ApprovalExecuted  ApprovalStatus = "executed"
 )
 
 type ApprovalRequest struct {
@@ -63,14 +64,51 @@ func (s *ApprovalStore) Create(tool Tool, args map[string]any, diff string) (App
 }
 
 func (s *ApprovalStore) Approve(id string) (ApprovalRequest, error) {
-	return s.decide(id, ApprovalApproved)
+	if s == nil {
+		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	request, ok := s.requests[id]
+	if !ok {
+		return ApprovalRequest{}, fmt.Errorf("approval request %q not found", id)
+	}
+	if request.Status == ApprovalApproved {
+		return cloneApprovalRequest(request), nil
+	}
+	if request.Status != ApprovalPending {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is already %s", id, request.Status)
+	}
+	request.Status = ApprovalApproved
+	request.DecidedAt = s.now().UTC()
+	s.requests[id] = request
+	return cloneApprovalRequest(request), nil
 }
 
 func (s *ApprovalStore) Reject(id string) (ApprovalRequest, error) {
-	return s.decide(id, ApprovalRejected)
+	if s == nil {
+		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	request, ok := s.requests[id]
+	if !ok {
+		return ApprovalRequest{}, fmt.Errorf("approval request %q not found", id)
+	}
+	if request.Status != ApprovalPending && request.Status != ApprovalApproved {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is already %s", id, request.Status)
+	}
+	request.Status = ApprovalRejected
+	request.DecidedAt = s.now().UTC()
+	s.requests[id] = request
+	return cloneApprovalRequest(request), nil
 }
 
 func (s *ApprovalStore) ConsumeApproved(id string, toolName string, args map[string]any) (ApprovalRequest, error) {
+	return s.BeginExecution(id, toolName, args)
+}
+
+func (s *ApprovalStore) BeginExecution(id string, toolName string, args map[string]any) (ApprovalRequest, error) {
 	if s == nil {
 		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
 	}
@@ -89,7 +127,37 @@ func (s *ApprovalStore) ConsumeApproved(id string, toolName string, args map[str
 	if !sameArgs(request.Args, args) {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q arguments do not match", id)
 	}
-	request.Status = ApprovalExecuted
+	request.Status = ApprovalExecuting
+	request.DecidedAt = s.now().UTC()
+	s.requests[id] = request
+	return cloneApprovalRequest(request), nil
+}
+
+func (s *ApprovalStore) MarkExecuted(id string) (ApprovalRequest, error) {
+	return s.finishExecution(id, ApprovalExecuted)
+}
+
+func (s *ApprovalStore) MarkExecutionFailed(id string) (ApprovalRequest, error) {
+	return s.finishExecution(id, ApprovalApproved)
+}
+
+func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus) (ApprovalRequest, error) {
+	if s == nil {
+		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
+	}
+	if status != ApprovalApproved && status != ApprovalExecuted {
+		return ApprovalRequest{}, fmt.Errorf("unsupported approval execution status %q", status)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	request, ok := s.requests[id]
+	if !ok {
+		return ApprovalRequest{}, fmt.Errorf("approval request %q not found", id)
+	}
+	if request.Status != ApprovalExecuting {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is %s, not executing", id, request.Status)
+	}
+	request.Status = status
 	request.DecidedAt = s.now().UTC()
 	s.requests[id] = request
 	return cloneApprovalRequest(request), nil

@@ -64,6 +64,9 @@ func (h *Handler) ListTasks(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	payload, ok := decodeScheduledTaskPayload(w, r)
 	if !ok {
 		return
@@ -195,11 +198,20 @@ func (h *Handler) EdgePolicy(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) UpdateEdgePolicy(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.EdgeConfig
 	if !decode(w, r, &req) {
 		return
 	}
+	previous := h.Config.Edge
 	h.Config.Edge = req
+	if err := h.persistConfig(); err != nil {
+		h.Config.Edge = previous
+		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		return
+	}
 	writeData(w, h.Config.Edge)
 }
 
@@ -536,6 +548,9 @@ func (h *Handler) PreviewBlockPageConfig(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) UpdateBlockPageConfig(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req config.BlockPageConfig
 	if !decode(w, r, &req) {
 		return
@@ -556,6 +571,9 @@ func (h *Handler) UpdateBlockPageConfig(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) UploadBlockPageHTML(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, int64(config.MaxBlockPageHTMLBytes+4096))
 	if err := r.ParseMultipartForm(int64(config.MaxBlockPageHTMLBytes + 4096)); err != nil {
 		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_INVALID", err.Error())
@@ -623,7 +641,10 @@ func clientAddressForPreview(remoteAddr string) string {
 	return "console-preview"
 }
 
-func (h *Handler) DeleteCustomBlockPage(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) DeleteCustomBlockPage(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	next := h.Config.BlockPage
 	next.CustomEnabled = false
 	next.CustomHTML = ""

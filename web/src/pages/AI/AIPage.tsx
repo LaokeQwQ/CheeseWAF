@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Select, Space, Switch, Tag } from '@arco-design/web-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Form, Input, Message as ArcoMessage, Select, Space, Spin, Switch, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Eye, KeyRound, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
-import { analyzeEvents, analyzeLogReference, fetchAIConfig, fetchAIModels, fetchLogs, runAISelfLearning, testAIConnection, updateAIConfig } from '../../api/client';
+import { APIRequestError, analyzeEventsStream, analyzeLogReferenceStream, fetchAIConfig, fetchAIModels, fetchLogs, runAISelfLearning, testAIConnection, updateAIConfig } from '../../api/client';
 import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
-import type { AIConfig, AIModelConfig, AIModelInfo, AISelfLearningReport, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
+import PolicyDecisionCard from '../../components/PolicyDecisionCard';
+import SafeMarkdown from '../../components/SafeMarkdown';
+import type { AIAssistantTraceEvent, AIConfig, AIModelConfig, AIModelInfo, AISelfLearningReport, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
+import '../../styles/ai-page.css';
 
 const analysisRanges = [
   { value: '15m', labelKey: 'ai.range15m', seconds: 15 * 60 },
@@ -66,10 +69,17 @@ export default function AIPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
+  const singleAnalysisAbortRef = useRef<AbortController | null>(null);
   const [selectedId, setSelectedId] = useState('');
   const [analysisRange, setAnalysisRange] = useState('24h');
   const [eventPage, setEventPage] = useState(1);
   const [analyses, setAnalyses] = useState<Record<string, AttackAnalysis>>({});
+  const [liveAnalysis, setLiveAnalysis] = useState<{
+    key: string;
+    trace: AIAssistantTraceEvent[];
+    reasoning: string;
+    content: string;
+  } | null>(null);
   const [models, setModels] = useState<AIModelInfo[]>([]);
   const [reasoningModels, setReasoningModels] = useState<AIModelInfo[]>([]);
   const [selfLearningReport, setSelfLearningReport] = useState<AISelfLearningReport | null>(null);
@@ -94,6 +104,7 @@ export default function AIPage() {
   const eventPageEnd = Math.min(eventPage * AI_EVENT_PAGE_SIZE, events.length);
   const selected = events.find((event) => eventKey(event) === selectedId) ?? events[0];
   const selectedAnalysis = selected ? analyses[eventKey(selected)] : undefined;
+  const selectedLiveAnalysis = selected && liveAnalysis?.key === eventKey(selected) ? liveAnalysis : null;
 
   useEffect(() => {
     if (!selectedId && events.length > 0) {
@@ -146,6 +157,10 @@ export default function AIPage() {
     }
   }, [eventPage, eventPageCount]);
 
+  useEffect(() => () => {
+    singleAnalysisAbortRef.current?.abort();
+  }, []);
+
   const updateMutation = useMutation({
     mutationFn: updateAIConfig,
     onSuccess: () => {
@@ -182,12 +197,52 @@ export default function AIPage() {
     onError: (error) => ArcoMessage.error(error.message),
   });
   const eventAnalysisMutation = useMutation({
-    mutationFn: (entry: LogEntry) => analyzeLogReference(entry.trace_id || entry.id, i18n.language),
-    onSuccess: (analysis, entry) => setAnalyses((current) => ({ ...current, [eventKey(entry)]: analysis, [analysis.log_id]: analysis })),
-    onError: (error) => ArcoMessage.error(error.message),
+    mutationFn: async (entry: LogEntry) => {
+      const key = eventKey(entry);
+      singleAnalysisAbortRef.current?.abort();
+      const controller = new AbortController();
+      singleAnalysisAbortRef.current = controller;
+      setLiveAnalysis({ key, trace: [], reasoning: '', content: '' });
+      return analyzeLogReferenceStream(entry.trace_id || entry.id, i18n.language, (trace) => {
+        setLiveAnalysis((current) => {
+          if (!current || current.key !== key) {
+            return current;
+          }
+          return {
+            ...current,
+            trace: [...current.trace.slice(-40), trace],
+            reasoning: trace.type === 'reasoning_delta' ? appendStreamText(current.reasoning, trace.message) : current.reasoning,
+            content: trace.type === 'content_delta' ? appendStreamText(current.content, trace.message) : current.content,
+          };
+        });
+      }, controller.signal);
+    },
+    onSuccess: (analysis, entry) => {
+      const key = eventKey(entry);
+      setAnalyses((current) => ({ ...current, [key]: analysis, [analysis.log_id]: analysis }));
+      setLiveAnalysis((current) => (current?.key === key ? null : current));
+      singleAnalysisAbortRef.current = null;
+    },
+    onError: (error) => {
+      if (error instanceof APIRequestError && error.code === 'AI_ANALYSIS_CANCELLED') {
+        return;
+      }
+      ArcoMessage.error(error.message);
+    },
+    onSettled: (_data, _error, entry) => {
+      if (!entry) {
+        return;
+      }
+      const key = eventKey(entry);
+      setLiveAnalysis((current) => (current?.key === key ? null : current));
+      singleAnalysisAbortRef.current = null;
+    },
   });
   const batchAnalysisMutation = useMutation({
-    mutationFn: () => analyzeEvents({ ...buildAnalysisWindowQuery(analysisRange, 200), language: i18n.language }),
+    mutationFn: () => analyzeEventsStream(
+      { ...buildAnalysisWindowQuery(analysisRange, 200), language: i18n.language },
+      (item) => setAnalyses((current) => ({ ...current, [item.log_id]: item })),
+    ),
     onSuccess: (result) => {
       setAnalyses((current) => {
         const next = { ...current };
@@ -403,10 +458,10 @@ export default function AIPage() {
             <h2><ListChecks size={16} /> {t('ai.events')}</h2>
             <Space wrap>
               <Select
+                className="ai-analysis-range-select"
                 aria-label={t('ai.timeRange')}
                 value={analysisRange}
                 onChange={setAnalysisRange}
-                style={{ width: 132 }}
               >
                 {analysisRanges.map((range) => (
                   <Select.Option key={range.value} value={range.value}>{t(range.labelKey)}</Select.Option>
@@ -423,7 +478,7 @@ export default function AIPage() {
               <span>{t('logs.source')}</span>
               <span>{t('logs.action')}</span>
               <span>{t('logs.category')}</span>
-              <span>URI</span>
+              <span>{t('logs.path')}</span>
               <span>{t('ai.analysis')}</span>
             </div>
             <div className="ai-events-list" aria-busy={isLoading}>
@@ -437,74 +492,36 @@ export default function AIPage() {
                   <article
                     className={`ai-events-list-row${selected && eventKey(selected) === key ? ' ai-events-list-row-active' : ''}`}
                     key={key}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={Boolean(selected && eventKey(selected) === key)}
                     onClick={() => setSelectedId(key)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) {
+                        return;
+                      }
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setSelectedId(key);
+                      }
+                    }}
                   >
-                    <div className="security-event-cell" data-label={t('logs.time')}>
-                      <time dateTime={record.timestamp} title={formatTime(record.timestamp)}>{formatCompactTime(record.timestamp)}</time>
-                    </div>
-                    <div className="security-event-cell" data-label={t('logs.source')}>
-                      <span title={record.client_ip || '-'}>{record.client_ip || '-'}</span>
-                    </div>
-                    <div className="security-event-cell" data-label={t('logs.action')}>
-                      <Tag color={actionColor(record.action)}>{displayAction(record.action, t)}</Tag>
-                    </div>
-                    <div className="security-event-cell" data-label={t('logs.category')}>
-                      {record.category ? <Tag color="orange">{displayCategory(record.category, t)}</Tag> : <span>-</span>}
-                    </div>
-                    <div className="security-event-cell security-event-uri" data-label="URI">
-                      <code title={record.uri || '-'}>{record.uri || '-'}</code>
-                    </div>
-                    <div className="security-event-cell ai-events-row-actions" data-label={t('ai.analysis')} role="group" aria-label={t('ai.analysis')}>
-                      <Link
-                        to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`}
-                        className="table-action-link"
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <Button size="small" icon={<Eye size={14} />}>{t('logs.detail')}</Button>
-                      </Link>
-                      <Button
-                        size="small"
-                        loading={eventAnalysisMutation.isPending && analyzingEventKey === key}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSelectedId(key);
-                          eventAnalysisMutation.mutate(record);
-                        }}
-                      >
-                        {analyses[key] ? t('ai.reanalyze') : t('ai.run')}
-                      </Button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-            <div className="ai-events-mobile-list" aria-busy={isLoading}>
-              {isLoading && Array.from({ length: 4 }).map((_, index) => (
-                <article className="ai-event-mobile-card security-event-skeleton" key={index} />
-              ))}
-              {!isLoading && eventPageItems.length === 0 && <div className="empty-state">{t('ai.noEvents')}</div>}
-              {!isLoading && eventPageItems.map((record) => {
-                const key = eventKey(record);
-                const isSelected = Boolean(selected && eventKey(selected) === key);
-                return (
-                  <article
-                    className={`ai-event-mobile-card${isSelected ? ' ai-event-mobile-card-active' : ''}`}
-                    key={key}
-                    onClick={() => setSelectedId(key)}
-                  >
-                    <header className="ai-event-mobile-head">
-                      <div>
+                    <header className="ai-event-row-head">
+                      <div className="ai-event-row-identity">
                         <time dateTime={record.timestamp} title={formatTime(record.timestamp)}>{formatCompactTime(record.timestamp)}</time>
-                        <span>{record.client_ip || '-'}</span>
+                        <span title={record.client_ip || '-'}>{record.client_ip || '-'}</span>
                       </div>
-                      <div>
+                      <div className="ai-event-row-tags">
                         <Tag color={actionColor(record.action)}>{displayAction(record.action, t)}</Tag>
                         {record.category ? <Tag color="orange">{displayCategory(record.category, t)}</Tag> : <Tag>{t('common.monitor')}</Tag>}
                       </div>
                     </header>
-                    <code title={record.uri || '-'}>{record.uri || '-'}</code>
-                    <footer className="ai-event-mobile-actions" onClick={(event) => event.stopPropagation()}>
-                      <Link to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`} className="table-action-link">
+                    <code className="ai-event-row-uri" title={record.uri || '-'}>{record.uri || '-'}</code>
+                    <footer className="ai-events-row-actions" role="group" aria-label={t('ai.analysis')} onClick={(event) => event.stopPropagation()}>
+                      <Link
+                        to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`}
+                        className="table-action-link"
+                      >
                         <Button size="small" icon={<Eye size={14} />}>{t('logs.detail')}</Button>
                       </Link>
                       <Button
@@ -546,57 +563,186 @@ export default function AIPage() {
         </section>
 
         <section className="panel ai-event-detail">
-        <div className="panel-heading">
-          <h2><BrainCircuit size={16} /> {t('ai.eventAnalysis')}</h2>
-          {selectedAnalysis && <Tag color={riskColor(selectedAnalysis.risk)}>{selectedAnalysis.risk}</Tag>}
-        </div>
-        {selected ? (
-          <div className="ai-detail-grid">
-            <div className="ai-event-card">
-              <span>{t('ai.selectedEvent')}</span>
-              <strong>{eventKey(selected)}</strong>
-              <div className="ai-selected-event-meta">
-                <Tag>{selected.client_ip || '-'}</Tag>
-                <Tag color={actionColor(selected.action)}>{displayAction(selected.action, t)}</Tag>
-                <Tag color="orange">{displayCategory(selected.category, t)}</Tag>
-              </div>
-              <code>{selected.method} {selected.uri}</code>
-              <Button type="primary" loading={eventAnalysisMutation.isPending} onClick={() => eventAnalysisMutation.mutate(selected)}>
-                {selectedAnalysis ? t('ai.reanalyze') : t('ai.run')}
-              </Button>
-            </div>
-            <div className="ai-analysis-card">
-              {selectedAnalysis ? (
-                <>
-                  <div className="ai-analysis-summary">
-                    <KeyRound size={16} />
-                    <AIAnalysisSummary analysis={selectedAnalysis} />
-                  </div>
-                  <AIReasoningSummary analysis={selectedAnalysis} />
-                  <div className="ai-analysis-columns">
-                    <div>
-                      <strong>{t('ai.evidence')}</strong>
-                      {(selectedAnalysis.evidence ?? []).map((item) => <span key={item}>{item}</span>)}
-                    </div>
-                    <div>
-                      <strong>{t('ai.actions')}</strong>
-                      {selectedAnalysis.recommended_actions.map((item) => <span key={item}>{item}</span>)}
-                    </div>
-                  </div>
-                  <AIAnalysisMeta analysis={selectedAnalysis} />
-                </>
-              ) : (
-                <div className="empty-state">{t('ai.selectAndAnalyze')}</div>
-              )}
-            </div>
+          <div className="panel-heading">
+            <h2><BrainCircuit size={16} /> {t('ai.eventAnalysis')}</h2>
+            {selectedAnalysis && <Tag color={riskColor(selectedAnalysis.risk)}>{displayRisk(selectedAnalysis.risk, t)}</Tag>}
           </div>
-        ) : (
-          <div className="empty-state">{t('ai.noEvents')}</div>
-        )}
+          {selected ? (
+            <div className="ai-detail-workbench">
+              <div className="ai-event-summary-card">
+                <div className="ai-event-summary-main">
+                  <span>{t('ai.selectedEvent')}</span>
+                  <strong>{eventKey(selected)}</strong>
+                  <code>{selected.method} {selected.uri}</code>
+                </div>
+                <div className="ai-event-summary-meta">
+                  <Tag>{selected.client_ip || '-'}</Tag>
+                  <Tag color={actionColor(selected.action)}>{displayAction(selected.action, t)}</Tag>
+                  <Tag color="orange">{displayCategory(selected.category, t)}</Tag>
+                </div>
+                <Button
+                  className="ai-event-summary-action"
+                  type="primary"
+                  loading={eventAnalysisMutation.isPending && analyzingEventKey === eventKey(selected)}
+                  onClick={() => eventAnalysisMutation.mutate(selected)}
+                >
+                  {selectedAnalysis ? t('ai.reanalyze') : t('ai.run')}
+                </Button>
+              </div>
+              <PolicyDecisionCard metadata={selected.metadata} compact />
+
+              <div className="ai-analysis-workspace">
+                {(selectedLiveAnalysis || (eventAnalysisMutation.isPending && analyzingEventKey === eventKey(selected))) && (
+                  <div className="ai-analysis-card ai-analysis-live-card">
+                    <AnalysisLiveTrace
+                      pending={eventAnalysisMutation.isPending && analyzingEventKey === eventKey(selected)}
+                      trace={selectedLiveAnalysis?.trace ?? []}
+                      reasoning={selectedLiveAnalysis?.reasoning ?? ''}
+                      content={selectedLiveAnalysis?.content ?? ''}
+                    />
+                  </div>
+                )}
+                <div className="ai-analysis-card ai-analysis-result-card">
+                  {selectedAnalysis ? (
+                    <>
+                      <div className="ai-analysis-summary">
+                        <KeyRound size={16} />
+                        <AIAnalysisSummary analysis={selectedAnalysis} />
+                      </div>
+                      <AIReasoningSummary analysis={selectedAnalysis} />
+                      <div className="ai-analysis-lists">
+                        <section>
+                          <strong>{t('ai.evidence')}</strong>
+                          <ul>
+                            {(selectedAnalysis.evidence ?? []).length > 0
+                              ? selectedAnalysis.evidence.map((item) => <li key={item}>{item}</li>)
+                              : <li>-</li>}
+                          </ul>
+                        </section>
+                        <section>
+                          <strong>{t('ai.actions')}</strong>
+                          <ul>
+                            {(selectedAnalysis.recommended_actions ?? []).length > 0
+                              ? selectedAnalysis.recommended_actions.map((item) => <li key={item}>{item}</li>)
+                              : <li>-</li>}
+                          </ul>
+                        </section>
+                      </div>
+                      <AIAnalysisMeta analysis={selectedAnalysis} />
+                    </>
+                  ) : (
+                    <div className="empty-state">{t('ai.selectAndAnalyze')}</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-state">{t('ai.noEvents')}</div>
+          )}
         </section>
       </div>
     </section>
   );
+}
+
+function AnalysisLiveTrace({
+  pending,
+  trace,
+  reasoning,
+  content,
+}: {
+  pending: boolean;
+  trace: AIAssistantTraceEvent[];
+  reasoning: string;
+  content: string;
+}) {
+  const { t } = useTranslation();
+  if (!pending && trace.length === 0 && !reasoning && !content) {
+    return null;
+  }
+  const visibleTrace = formatAnalysisTraceEvents(trace, t)
+    .filter((item): item is string => Boolean(item))
+    .slice(-5);
+  return (
+    <div className="analysis-live-trace">
+      <div>
+        <strong>{pending ? t('ai.thinking') : t('ai.analysisTrace')}</strong>
+        {pending && <Spin size={14} />}
+      </div>
+      {reasoning && (
+        <section>
+          <span>{t('ai.liveReasoning')}</span>
+          <SafeMarkdown text={reasoning} />
+        </section>
+      )}
+      {content && (
+        <section>
+          <span>{t('ai.streamingAnswer')}</span>
+          <SafeMarkdown text={content} />
+        </section>
+      )}
+      {visibleTrace.length > 0 && (
+        <ul>
+          {visibleTrace.map((item) => (
+            <li key={item}>
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function formatAnalysisTraceEvents(trace: AIAssistantTraceEvent[], t: (key: string, options?: Record<string, unknown>) => string) {
+  const toolDeltaCounts = new Map<string, number>();
+  return trace.map((event) => {
+    if (event.type === 'tool_call_delta') {
+      const tool = event.tool_name || t('common.unknown');
+      const chunks = (toolDeltaCounts.get(tool) ?? 0) + 1;
+      toolDeltaCounts.set(tool, chunks);
+      return t('ai.toolDeltaLive', { tool, chunks });
+    }
+    return formatAnalysisTraceEvent(event, t);
+  });
+}
+
+function formatAnalysisTraceEvent(event: AIAssistantTraceEvent, t: (key: string, options?: Record<string, unknown>) => string) {
+  switch (event.type) {
+    case 'heartbeat':
+    case 'reasoning_delta':
+    case 'content_delta':
+      return '';
+    case 'stream_open':
+      return event.message || t('ai.streamConnected');
+    case 'provider_response_start':
+      return event.message || t('ai.providerStarted');
+    case 'provider_first_event_slow':
+    case 'provider_waiting_progress':
+      return event.message || t('ai.providerSlow');
+    case 'tool_error':
+    case 'planning_error':
+    case 'final_error':
+      return event.error || event.message || t('ai.providerSlow');
+    default:
+      return event.message || '';
+  }
+}
+
+function appendStreamText(current: string, delta: string) {
+  if (!delta) {
+    return current;
+  }
+  if (!current) {
+    return delta;
+  }
+  if (/^\s/.test(delta) || /\s$/.test(current)) {
+    return `${current}${delta}`;
+  }
+  const last = current[current.length - 1] ?? '';
+  const first = delta[0] ?? '';
+  const needsSpace = /[A-Za-z0-9)]/.test(last) && /[A-Za-z0-9([]/.test(first);
+  return `${current}${needsSpace ? ' ' : ''}${delta}`;
 }
 
 function buildAnalysisWindowQuery(rangeValue: string, limit: number): LogQuery {
@@ -791,7 +937,24 @@ function formatCompactTime(value: string) {
 }
 
 function isSecurityEvent(entry: LogEntry) {
-  return Boolean(entry.category || ['block', 'challenge', 'log'].includes(entry.action));
+  const action = (entry.action || '').toLowerCase();
+  const category = (entry.category || '').toLowerCase();
+  if (action === 'block' || action === 'challenge') {
+    return true;
+  }
+  if (!category) {
+    return action === 'log';
+  }
+  if (['normal', 'access', 'pass', 'cache', 'cache_hit', 'redirect', 'health', 'proxy_error'].includes(category)) {
+    return false;
+  }
+  if (['sqli', 'sql', 'xss', 'rce', 'lfi', 'xxe', 'ssrf', 'nosqli', 'ssti', 'webshell'].includes(category)) {
+    return true;
+  }
+  if (action === 'log') {
+    return true;
+  }
+  return ['threat_intel', 'ip_access', 'geoip', 'acl', 'bot', 'cc', 'ratelimit', 'api_security', 'protocol_enforcement', 'custom_rule'].includes(category);
 }
 
 function actionColor(action: string) {
@@ -817,5 +980,20 @@ function riskColor(risk: string) {
       return 'orange';
     default:
       return 'green';
+  }
+}
+
+function displayRisk(risk: string, t: (key: string) => string) {
+  switch (risk) {
+    case 'critical':
+      return t('rules.critical');
+    case 'high':
+      return t('rules.high');
+    case 'medium':
+      return t('rules.medium');
+    case 'low':
+      return t('rules.low');
+    default:
+      return risk || '-';
   }
 }

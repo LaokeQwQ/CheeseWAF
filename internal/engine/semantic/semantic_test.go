@@ -197,6 +197,111 @@ func TestAnalyzerDetectsSSTIWithEvidence(t *testing.T) {
 	}
 }
 
+func TestNoSQLiDetectorUsesAnalyzerGate(t *testing.T) {
+	attackReq, _ := http.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(`{"username":{"$ne":null},"password":{"$ne":null}}`))
+	attackReq.Header.Set("Content-Type", "application/json")
+	attackCtx, err := engine.NewRequestContext(attackReq, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewNoSQLiDetector("block").Detect(context.Background(), attackCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "nosqli" || result.DetectorID != "semantic.nosqli" {
+		t.Fatalf("expected direct NoSQLi detector to use semantic gate and keep detector ID, got %+v", result)
+	}
+
+	benignReq, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(`{"text":"MongoDB documentation can mention $ne, $regex, and $where operators without sending them as query structure."}`))
+	benignReq.Header.Set("Content-Type", "application/json")
+	benignCtx, err := engine.NewRequestContext(benignReq, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = NewNoSQLiDetector("block").Detect(context.Background(), benignCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("expected direct NoSQLi detector to keep documentation clean, got %+v", result)
+	}
+}
+
+func TestSSTIDetectorUsesAnalyzerGate(t *testing.T) {
+	attackReq, _ := http.NewRequest(http.MethodPost, "/render", bytes.NewBufferString("template=%25%7B%23context%5B%27xwork.MethodAccessor.denyMethodExecution%27%5D%3Dfalse%2C%40java.lang.Runtime%40getRuntime().exec(%27id%27)%7D"))
+	attackReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	attackCtx, err := engine.NewRequestContext(attackReq, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSSTIDetector("block").Detect(context.Background(), attackCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "ssti" || result.DetectorID != "semantic.ssti" {
+		t.Fatalf("expected direct SSTI detector to use semantic gate and keep detector ID, got %+v", result)
+	}
+
+	benignReq, _ := http.NewRequest(http.MethodPost, "/cms", bytes.NewBufferString(`{"content":"Use {{ user.name }} in the email template body."}`))
+	benignReq.Header.Set("Content-Type", "application/json")
+	benignCtx, err := engine.NewRequestContext(benignReq, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = NewSSTIDetector("block").Detect(context.Background(), benignCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("expected direct SSTI detector to keep template content clean, got %+v", result)
+	}
+}
+
+func TestXXEDetectorUsesAnalyzerGate(t *testing.T) {
+	xmlPayload := `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>`
+	attackReq, _ := http.NewRequest(http.MethodPost, "/xml", bytes.NewBufferString(xmlPayload))
+	attackReq.Header.Set("Content-Type", "application/xml")
+	attackCtx, err := engine.NewRequestContext(attackReq, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewXXEDetector("block").Detect(context.Background(), attackCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "xxe" || result.DetectorID != "semantic.xxe" {
+		t.Fatalf("expected gated XXE detector to block raw XML payload, got %+v", result)
+	}
+
+	formReq, _ := http.NewRequest(http.MethodPost, "/ingest", bytes.NewBufferString("payload="+url.QueryEscape(xmlPayload)))
+	formReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	formCtx, err := engine.NewRequestContext(formReq, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = NewXXEDetector("block").Detect(context.Background(), formCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "xxe" {
+		t.Fatalf("expected gated XXE detector to block XML payload field, got %+v", result)
+	}
+
+	benignReq, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(`{"text":"Documenting an XXE test: <!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]> should not mean this request is an XML parse target."}`))
+	benignReq.Header.Set("Content-Type", "application/json")
+	benignCtx, err := engine.NewRequestContext(benignReq, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = NewXXEDetector("block").Detect(context.Background(), benignCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("expected documentation XXE sample to stay clean, got %+v", result)
+	}
+}
+
 func TestAnalyzerUsesHeaderAndBodyInputs(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "/submit", bytes.NewBufferString("name=alice&comment=%3Csvg%20onload%3Dalert(1)%3E"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -419,6 +524,10 @@ func TestSSRFDetectorBlocksNumericHostVariants(t *testing.T) {
 	cases := []string{
 		"/fetch?url=http://0x7f.0x0.0x0.0x1/admin",
 		"/fetch?url=http://0251.0376.0251.0376/latest/meta-data",
+		"/fetch?url=http://127.1/admin",
+		"/fetch?url=http://0177.1/admin",
+		"/fetch?url=http://0x7f.1/admin",
+		"/fetch?url=http://10.1/admin",
 		"/fetch?url=http://[::1]/admin",
 		"/fetch?url=gopher://127.0.0.1:6379/_INFO",
 		"/fetch?url=dict://169.254.169.254:11211/stat",
@@ -448,7 +557,7 @@ func TestSSRFDetectorRequiresFetchSink(t *testing.T) {
 	req, _ := http.NewRequest(
 		http.MethodPost,
 		"/docs",
-		strings.NewReader(`{"text":"Security documentation may mention gopher://127.0.0.1:6379, dict://169.254.169.254, //127.0.0.1/admin, and 169.254.169.254/latest/meta-data examples without asking this service to fetch them."}`),
+		strings.NewReader(`{"text":"Security documentation may mention gopher://127.0.0.1:6379, dict://169.254.169.254, //127.0.0.1/admin, 127.1, and 169.254.169.254/latest/meta-data examples without asking this service to fetch them."}`),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	reqCtx, err := engine.NewRequestContext(req, "default")
