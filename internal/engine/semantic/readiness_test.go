@@ -97,6 +97,7 @@ func TestAnalyzerReadinessMatrix(t *testing.T) {
 		{name: "ssti-freemarker-execute", method: http.MethodPost, target: "/render", contentType: "application/json", body: `{"name":"${\"freemarker.template.utility.Execute\"?new()(\"id\")}"}`, category: "ssti"},
 		{name: "ssti-twig-filter-callback", method: http.MethodPost, target: "/render", contentType: "application/x-www-form-urlencoded", body: "name={{_self.env.registerUndefinedFilterCallback('system')}}{{_self.env.getFilter('id')}}", category: "ssti"},
 		{name: "ssti-erb-system", method: http.MethodPost, target: "/render", contentType: "application/x-www-form-urlencoded", body: "template=%3C%25%3D%20system('id')%20%25%3E", category: "ssti"},
+		{name: "ssti-ognl-runtime-exec", method: http.MethodPost, target: "/render", contentType: "application/x-www-form-urlencoded", body: "template=%25%7B%23context%5B%27xwork.MethodAccessor.denyMethodExecution%27%5D%3Dfalse%2C%40java.lang.Runtime%40getRuntime().exec(%27id%27)%7D", category: "ssti"},
 		{name: "ssti-arithmetic-probe-name", method: http.MethodPost, target: "/profile", contentType: "application/x-www-form-urlencoded", body: "name=%7B%7B7*7%7D%7D", category: "ssti"},
 		{name: "multipart-xss", method: http.MethodPost, target: "/upload", contentType: "multipart", body: "<xss onfocus=alert(1)>", category: "xss"},
 	}
@@ -156,6 +157,7 @@ func TestAnalyzerReadinessBenignMatrix(t *testing.T) {
 		{name: "template-arithmetic-documentation", target: "/docs", contentType: "application/json", body: `{"text":"Template documentation may show {{ 7 * 7 }} as a harmless arithmetic example."}`},
 		{name: "template-engine-documentation", target: "/docs", contentType: "application/json", body: `{"text":"This guide mentions Twig registerUndefinedFilterCallback and ERB system examples as escaped documentation."}`},
 		{name: "template-markdown-content", target: "/cms", contentType: "application/json", body: `{"content":"Use {{ user.name }} in the email template body."}`},
+		{name: "template-ognl-placeholder-documentation", target: "/docs", contentType: "application/json", body: `{"text":"Struts examples may show %{ user.name } as a view placeholder without runtime execution primitives."}`},
 		{name: "public-url", target: "/fetch?url=https://example.com/feed.xml"},
 	}
 	for _, tc := range cases {

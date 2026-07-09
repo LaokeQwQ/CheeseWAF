@@ -122,10 +122,7 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		mu.Lock()
 		reqCtx.Results = append(reqCtx.Results, *result)
 		mu.Unlock()
-		if result.Detected && result.Action == ActionBlock {
-			return result, nil
-		}
-		if result.Detected && firstDetected == nil {
+		if result.Detected && (firstDetected == nil || betterDetectionResult(result, firstDetected)) {
 			snapshot := *result
 			mu.Lock()
 			firstDetected = &snapshot
@@ -137,6 +134,37 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		return firstDetected, nil
 	}
 	return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
+}
+
+func betterDetectionResult(next, current *DetectionResult) bool {
+	if next == nil {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	if next.Action != current.Action {
+		return actionRank(next.Action) > actionRank(current.Action)
+	}
+	if next.Severity != current.Severity {
+		return next.Severity > current.Severity
+	}
+	return next.Confidence > current.Confidence
+}
+
+func actionRank(action Action) int {
+	switch action {
+	case ActionBlock:
+		return 4
+	case ActionChallenge:
+		return 3
+	case ActionLog:
+		return 2
+	case ActionPass:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func sanitizeBody(body []byte) []byte {

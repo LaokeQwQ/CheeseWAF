@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/apisec"
@@ -150,11 +151,11 @@ func intFromTotal(total int64) int {
 	if total <= 0 {
 		return 0
 	}
-	maxInt := int64(^uint(0) >> 1)
-	if total > maxInt {
-		return int(maxInt)
+	value, err := strconv.Atoi(strconv.FormatInt(total, 10))
+	if err != nil {
+		return 1<<(strconv.IntSize-1) - 1
 	}
-	return int(total)
+	return value
 }
 
 func logDir(path string) string {

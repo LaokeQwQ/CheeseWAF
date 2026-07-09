@@ -18,11 +18,18 @@ type Status struct {
 	NodeCount            int    `json:"node_count"`
 	WAFNodeCount         int    `json:"waf_node_count"`
 	MonitorNodeCount     int    `json:"monitor_node_count"`
+	OnlineNodeCount      int    `json:"online_node_count"`
+	OnlineVotingCount    int    `json:"online_voting_count"`
+	VotingNodeCount      int    `json:"voting_node_count"`
 	ConsensusProvider    string `json:"consensus_provider"`
 	ProtectionModeReason string `json:"protection_mode_reason,omitempty"`
 }
 
 func FromConfig(cfg *config.Config, lang string) Status {
+	return FromConfigWithRuntime(cfg, nil, lang)
+}
+
+func FromConfigWithRuntime(cfg *config.Config, registry *HeartbeatRegistry, lang string) Status {
 	if cfg == nil {
 		return standaloneStatus(lang)
 	}
@@ -42,7 +49,6 @@ func FromConfig(cfg *config.Config, lang string) Status {
 		NodeID:            cfg.Cluster.NodeID,
 		CanWriteConfig:    true,
 		CanReceiveTraffic: true,
-		MajorityConfirmed: mode == "single-node" || len(cfg.Cluster.Nodes) <= 1,
 		NodeCount:         len(cfg.Cluster.Nodes),
 		ConsensusProvider: defaultConsensusProvider(cfg.Cluster.Consensus.Provider),
 	}
@@ -54,10 +60,26 @@ func FromConfig(cfg *config.Config, lang string) Status {
 			status.MonitorNodeCount++
 		}
 	}
+	nodes := RuntimeNodes(cfg, registry, lang)
+	status.NodeCount = len(nodes)
+	status.VotingNodeCount = votingNodeCount(nodes)
+	status.OnlineVotingCount = onlineVotingNodeCount(nodes)
+	for _, node := range nodes {
+		if node.State == NodeStateOnline {
+			status.OnlineNodeCount++
+		}
+	}
+	status.MajorityConfirmed = majorityConfirmed(mode, status.VotingNodeCount, status.OnlineVotingCount)
 	if mode == "minimum-ha" || mode == "multi-node-ha" {
-		status.MajorityConfirmed = false
-		status.CanWriteConfig = false
-		status.ProtectionModeReason = label(lang, "等待集群一致性服务确认多数节点后允许配置变更", "Waiting for cluster consistency service to confirm majority before allowing configuration writes")
+		if !status.MajorityConfirmed {
+			if cfg.Cluster.Protection.FreezeWritesWithoutMajority {
+				status.CanWriteConfig = false
+			}
+			if !cfg.Cluster.Protection.AllowTrafficInProtectionMode {
+				status.CanReceiveTraffic = false
+			}
+			status.ProtectionModeReason = label(lang, "等待多数节点心跳确认后允许配置变更", "Waiting for majority node heartbeats before allowing configuration writes")
+		}
 	}
 	status.ProductModeLabel = ModeLabel(mode, lang)
 	return status
@@ -98,6 +120,18 @@ func defaultConsensusProvider(provider string) string {
 		return "builtin"
 	}
 	return provider
+}
+
+func majorityConfirmed(mode string, voters int, online int) bool {
+	mode = strings.TrimSpace(mode)
+	if mode == "" || mode == "single-node" || mode == "standalone" || mode == "dual-node-load-balancing" {
+		return true
+	}
+	if voters <= 1 {
+		return true
+	}
+	required := voters/2 + 1
+	return online >= required
 }
 
 func label(lang, zh, en string) string {

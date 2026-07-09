@@ -78,6 +78,17 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	reloadSites := func(sites []config.SiteConfig) error {
+		next := *cfg
+		next.Sites = append([]config.SiteConfig(nil), sites...)
+		nextPipeline, err := buildPipeline(&next)
+		if err != nil {
+			return err
+		}
+		proxyServer.UpdateSites(sites)
+		proxyServer.UpdatePipeline(nextPipeline)
+		return nil
+	}
 	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
 	startRemoteWrite(ctx, cfg, sink, time.Now())
 	var schedulerAIClient *ai.Client
@@ -102,7 +113,7 @@ func runServe(ctx context.Context) error {
 	}
 	admin := &http.Server{
 		Addr:              cfg.Server.AdminListen,
-		Handler:           adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: proxyServer.UpdateSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec, OnBlockPageChanged: proxyServer.UpdateBlockPage}), authSecret),
+		Handler:           adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: reloadSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec, OnBlockPageChanged: proxyServer.UpdateBlockPage}), authSecret),
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
@@ -566,48 +577,80 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 	if len(cfg.Sites) == 0 {
 		return engine.NewPipeline(), nil
 	}
-	site := cfg.Sites[0]
-	if compiled, err := enginerules.FromConfig(site.WAF.CustomRules); err != nil {
-		return nil, err
-	} else if len(compiled) > 0 {
-		detectors = append(detectors, enginerules.New(compiled))
-	}
-	switches := site.WAF.SemanticEngines
-	var semanticCategories []string
-	if switches.SQL {
-		semanticCategories = append(semanticCategories, "sqli")
-		detectors = append(detectors, semantic.NewSQLDetector(site.WAF.Mode))
-	}
-	if switches.XSS {
-		semanticCategories = append(semanticCategories, "xss")
-		detectors = append(detectors, semantic.NewXSSDetector(site.WAF.Mode))
-	}
-	if switches.RCE {
-		semanticCategories = append(semanticCategories, "rce")
-		detectors = append(detectors, semantic.NewRCEDetector(site.WAF.Mode))
-	}
-	if switches.LFI {
-		semanticCategories = append(semanticCategories, "lfi")
-		detectors = append(detectors, semantic.NewLFIDetector(site.WAF.Mode))
-	}
-	if switches.XXE {
-		semanticCategories = append(semanticCategories, "xxe")
-		detectors = append(detectors, semantic.NewXXEDetector(site.WAF.Mode))
-	}
-	if switches.SSRF {
-		semanticCategories = append(semanticCategories, "ssrf")
-		detectors = append(detectors, semantic.NewSSRFDetector(site.WAF.Mode))
-	}
-	if switches.NoSQL {
-		semanticCategories = append(semanticCategories, "nosqli")
-	}
-	if switches.SSTI {
-		semanticCategories = append(semanticCategories, "ssti")
-	}
-	if len(semanticCategories) > 0 {
-		detectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, detectors...)
+	for _, site := range cfg.Sites {
+		if !site.Enabled || !site.WAF.Enabled || site.WAF.Mode == "off" {
+			continue
+		}
+		if compiled, err := enginerules.FromConfig(site.WAF.CustomRules); err != nil {
+			return nil, err
+		} else if len(compiled) > 0 {
+			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: enginerules.New(compiled)})
+		}
+		switches := site.WAF.SemanticEngines
+		var semanticCategories []string
+		var siteDetectors []engine.Detector
+		if switches.SQL {
+			semanticCategories = append(semanticCategories, "sqli")
+			siteDetectors = append(siteDetectors, semantic.NewSQLDetector(site.WAF.Mode))
+		}
+		if switches.XSS {
+			semanticCategories = append(semanticCategories, "xss")
+			siteDetectors = append(siteDetectors, semantic.NewXSSDetector(site.WAF.Mode))
+		}
+		if switches.RCE {
+			semanticCategories = append(semanticCategories, "rce")
+			siteDetectors = append(siteDetectors, semantic.NewRCEDetector(site.WAF.Mode))
+		}
+		if switches.LFI {
+			semanticCategories = append(semanticCategories, "lfi")
+			siteDetectors = append(siteDetectors, semantic.NewLFIDetector(site.WAF.Mode))
+		}
+		if switches.XXE {
+			semanticCategories = append(semanticCategories, "xxe")
+			siteDetectors = append(siteDetectors, semantic.NewXXEDetector(site.WAF.Mode))
+		}
+		if switches.SSRF {
+			semanticCategories = append(semanticCategories, "ssrf")
+			siteDetectors = append(siteDetectors, semantic.NewSSRFDetector(site.WAF.Mode))
+		}
+		if switches.NoSQL {
+			semanticCategories = append(semanticCategories, "nosqli")
+		}
+		if switches.SSTI {
+			semanticCategories = append(semanticCategories, "ssti")
+		}
+		if len(semanticCategories) > 0 {
+			siteDetectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, siteDetectors...)
+		}
+		for _, detector := range siteDetectors {
+			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: detector})
+		}
 	}
 	return engine.NewPipeline(detectors...), nil
+}
+
+type siteScopedDetector struct {
+	siteID   string
+	detector engine.Detector
+}
+
+func (d siteScopedDetector) ID() string {
+	return d.detector.ID()
+}
+
+func (d siteScopedDetector) Name() string {
+	return d.detector.Name()
+}
+
+func (d siteScopedDetector) Priority() int {
+	return d.detector.Priority()
+}
+
+func (d siteScopedDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+	if reqCtx == nil || reqCtx.SiteID != d.siteID {
+		return nil, nil
+	}
+	return d.detector.Detect(ctx, reqCtx)
 }
 
 func loadConfig() (*config.Config, string, error) {

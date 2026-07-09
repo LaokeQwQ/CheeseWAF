@@ -496,6 +496,30 @@ func TestStorageBackendTestAllowsExplicitPrivateHTTPEndpoint(t *testing.T) {
 	}
 }
 
+func TestStorageBackendTestRejectsSQLitePathOutsideDataDir(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	storage := config.Default().Storage
+	storage.SQLite.Path = filepath.Join(t.TempDir(), "outside.db")
+
+	err := testStorageWithDataDir(context.Background(), "sqlite", storage, dataDir)
+	if err == nil || !strings.Contains(err.Error(), "data directory") {
+		t.Fatalf("expected sqlite path outside data dir to be rejected, got %v", err)
+	}
+}
+
+func TestStorageBackendTestAllowsSQLitePathUnderDataDir(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	storage := config.Default().Storage
+	storage.SQLite.Path = "nested/cheesewaf.db"
+
+	if err := testStorageWithDataDir(context.Background(), "sqlite", storage, dataDir); err != nil {
+		t.Fatalf("expected sqlite path under data dir to pass storage test: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "nested", "cheesewaf.db")); err != nil {
+		t.Fatalf("expected sqlite test file under data dir: %v", err)
+	}
+}
+
 func TestChinaMapBoundaryByCodeRejectsInvalidAdcode(t *testing.T) {
 	cfg := config.Default()
 	handler := New(Options{Config: &cfg})

@@ -1,0 +1,3280 @@
+/* Migrated from global.css: AI analysis page scoped rules. */
+.ai-page
+  .ai-events-row-actions
+  .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
+.ai-page
+  .ai-events-row-actions
+  .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(
+    :disabled
+  ) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-soft));
+  border-color: color-mix(in srgb, var(--border) 86%, var(--text-muted));
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--highlight-color) 52%, transparent)
+    inset;
+}
+.ai-page
+  .ai-events-row-actions
+  .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
+.ai-page
+  .ai-events-row-actions
+  .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(
+    :disabled
+  ):hover {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+.ai-page .ai-events-table .arco-table {
+  min-width: 860px;
+}
+.ai-page .ai-events-list-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-page .ai-events-list-panel {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.ai-page .ai-events-mobile-list {
+  display: none;
+}
+.ai-page .ai-events-list-header,
+.ai-page .ai-events-list-row {
+  display: grid;
+  min-width: 700px;
+  grid-template-columns:
+    minmax(78px, 0.52fr)
+    minmax(104px, 0.66fr)
+    minmax(68px, 0.4fr)
+    minmax(96px, 0.55fr)
+    minmax(140px, 1fr)
+    minmax(142px, 0.66fr);
+  gap: 8px;
+  align-items: center;
+}
+.ai-page .ai-events-list-header {
+  min-height: 42px;
+  padding: 0 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  background: color-mix(in srgb, var(--surface-soft) 78%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
+}
+.ai-page .ai-events-list {
+  min-width: 700px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+}
+.ai-page .ai-events-list-row {
+  min-width: 0;
+  min-height: 54px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-top: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+.ai-page .ai-events-list-row:first-child {
+  border-top: 0;
+}
+.ai-page .ai-events-list-row:hover,
+.ai-page .ai-events-list-row-active {
+  background: color-mix(in srgb, var(--accent-soft) 36%, var(--surface));
+}
+.ai-page .ai-events-list-row-active {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.ai-page .ai-events-row-actions {
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ai-page .ai-events-row-actions .table-action-link {
+  flex: 0 0 auto;
+}
+.ai-page .ai-events-row-actions .arco-btn {
+  width: auto;
+  flex: 0 0 auto;
+  min-width: 64px;
+  height: 30px;
+  padding: 0 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-soft));
+  border-color: var(--border);
+  justify-content: center;
+  white-space: nowrap;
+}
+.ai-page .ai-events-row-actions .arco-btn:hover {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+.ai-page .ai-events-row-actions .arco-btn-primary {
+  color: var(--accent-contrast);
+}
+.ai-page .ai-config-save {
+  width: auto;
+  min-width: 116px;
+}
+.ai-page .ai-analysis-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.ai-page .ai-analysis-meta .arco-tag {
+  margin: 0;
+}
+.ai-page .ai-analysis-meta > span {
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 8px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.ai-page .ai-config-panel {
+  min-width: 0;
+}
+.ai-page .ai-config-form {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px 16px;
+  align-items: end;
+}
+.ai-page .ai-config-form .arco-form-item {
+  min-width: 0;
+  margin-bottom: 0;
+}
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async,
+.ai-page .ai-config-form .ai-field-private-api-base {
+  grid-column: span 2;
+}
+.ai-page .ai-config-form .ai-field-provider,
+.ai-page .ai-config-form .ai-field-model {
+  grid-column: span 3;
+}
+.ai-page .ai-config-form .ai-field-api-base {
+  grid-column: span 7;
+}
+.ai-page .ai-config-form .ai-field-api-key {
+  grid-column: span 5;
+}
+.ai-page .ai-config-form .ai-config-save {
+  grid-column: span 2;
+  justify-self: stretch;
+  min-height: 34px;
+}
+.ai-page .ai-events-panel {
+  min-width: 0;
+}
+.ai-page .ai-events-panel .arco-table-tr {
+  cursor: pointer;
+}
+.ai-page .ai-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+.ai-page .ai-analysis-card {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.ai-page .ai-analysis-card .empty-state {
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  text-align: center;
+}
+.ai-page .ai-analysis-columns strong {
+  color: var(--text-muted);
+}
+.ai-page .ai-analysis-card p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.6;
+}
+.ai-page .ai-analysis-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.ai-page .ai-analysis-columns > div {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+.ai-page .ai-analysis-columns span {
+  min-width: 0;
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+@media (max-width: 1024px) {
+  .ai-page .ai-events-list-header {
+    display: none;
+  }
+  .ai-page .ai-events-list {
+    min-width: 0;
+    display: grid;
+    gap: 10px;
+    border: 0;
+    overflow: visible;
+  }
+  .ai-page .ai-events-list-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 18px;
+    min-height: 0;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .ai-page .ai-events-row-actions {
+    grid-column: 1 / -1;
+  }
+  .ai-page .ai-events-row-actions {
+    justify-content: flex-start;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async {
+    grid-column: span 2;
+  }
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: span 3;
+  }
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 860px) {
+  .ai-page .ai-detail-grid,
+  .ai-page .ai-analysis-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-page .ai-events-list-header {
+    display: none;
+  }
+  .ai-page .ai-events-list {
+    min-width: 0;
+    display: grid;
+    gap: 10px;
+    border: 0;
+    overflow: visible;
+  }
+  .ai-page .ai-events-list-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    min-height: 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .ai-page .ai-events-row-actions {
+    justify-content: stretch;
+  }
+  .ai-page .ai-events-row-actions .arco-btn {
+    flex: 1 1 0;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr;
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async,
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: 1 / -1;
+  }
+  .ai-page .ai-config-save {
+    width: 100%;
+  }
+}
+.ai-page .ai-dashboard-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  grid-template-areas:
+    "config events"
+    "detail detail";
+  gap: 14px;
+  align-items: start;
+}
+.ai-page .ai-config-panel {
+  grid-area: config;
+  position: sticky;
+  top: 84px;
+}
+.ai-page .ai-events-panel {
+  grid-area: events;
+}
+.ai-page .ai-event-detail {
+  grid-area: detail;
+}
+.ai-page .ai-config-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async {
+  grid-column: span 1;
+  min-height: 62px;
+  align-content: center;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface-soft) 76%, var(--surface));
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.ai-page .ai-config-form .ai-field-provider,
+.ai-page .ai-config-form .ai-field-model,
+.ai-page .ai-config-form .ai-field-api-base,
+.ai-page .ai-config-form .ai-field-api-key,
+.ai-page .ai-config-form .ai-config-save {
+  grid-column: 1 / -1;
+}
+.ai-page .ai-config-save {
+  justify-self: stretch;
+  width: 100%;
+}
+.ai-page .ai-events-list-panel {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.ai-page .ai-events-list-header,
+.ai-page .ai-events-list-row {
+  min-width: 0;
+  grid-template-columns:
+    minmax(72px, 0.45fr)
+    minmax(104px, 0.65fr)
+    minmax(70px, 0.42fr)
+    minmax(92px, 0.52fr)
+    minmax(180px, 1fr)
+    minmax(150px, 0.72fr);
+}
+.ai-page .ai-events-list-header {
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+.ai-page .ai-events-list {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+}
+.ai-page .ai-events-list-row {
+  min-height: 56px;
+  border-top-color: var(--border-subtle);
+}
+.ai-page .ai-events-list-row-active {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 11%, transparent),
+      transparent 58%
+    ),
+    color-mix(in srgb, var(--accent-soft) 34%, var(--surface));
+}
+.ai-page .ai-detail-grid {
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+}
+.ai-page .ai-event-card,
+.ai-page .ai-analysis-card {
+  background: color-mix(in srgb, var(--surface-soft) 62%, var(--surface));
+}
+.ai-page .ai-event-card code {
+  min-width: 0;
+  padding: 10px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+@media (max-width: 1360px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "config"
+      "events"
+      "detail";
+  }
+  .ai-page .ai-config-panel {
+    position: static;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async {
+    grid-column: span 2;
+  }
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: span 3;
+  }
+  .ai-page .ai-config-form .ai-field-api-base {
+    grid-column: span 7;
+  }
+  .ai-page .ai-config-form .ai-field-api-key {
+    grid-column: span 5;
+  }
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "config"
+      "events"
+      "detail";
+  }
+  .ai-page .ai-config-panel {
+    position: static;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async {
+    grid-column: span 2;
+  }
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: span 3;
+  }
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key {
+    grid-column: 1 / -1;
+  }
+  .ai-page .ai-events-list-panel {
+    border: 0;
+    background: transparent;
+    overflow: visible;
+  }
+  .ai-page .ai-events-list-header,
+  .ai-page .ai-events-list {
+    display: none;
+  }
+  .ai-page .ai-events-mobile-list {
+    display: grid;
+    gap: 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr;
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async,
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: 1 / -1;
+  }
+  .ai-page .ai-events-list-panel {
+    border: 0;
+    background: transparent;
+    overflow: visible;
+  }
+  .ai-page .ai-events-list-header,
+  .ai-page .ai-events-list {
+    display: none;
+  }
+  .ai-page .ai-events-mobile-list {
+    display: grid;
+    gap: 10px;
+  }
+  .ai-page .ai-events-list-row {
+    background: var(--surface);
+  }
+  .ai-page .ai-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.ai-page .ai-analysis-card,
+.ai-page .ai-config-summary {
+  background: var(--surface);
+  border-color: var(--border);
+  border-radius: 8px;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--highlight-color) 72%, transparent) inset,
+    0 10px 26px color-mix(in srgb, var(--shadow-color) 40%, transparent);
+}
+.ai-page .ai-config-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
+}
+.ai-page .ai-config-summary-item {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px 11px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.ai-page .ai-config-summary-item span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.ai-page .ai-config-summary-item strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-page .ai-config-panel {
+  overflow: hidden;
+}
+.ai-page .ai-event-card,
+.ai-page .ai-analysis-card {
+  background: var(--surface);
+}
+.ai-page .ai-event-card button,
+.ai-page .ai-analysis-card button {
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .ai-page .ai-config-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-page .ai-config-summary {
+    grid-template-columns: 1fr;
+  }
+}
+.ai-page .ai-analysis-card,
+.ai-page .ai-config-summary {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: none;
+}
+.ai-page .ai-config-summary,
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async {
+  background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
+  border: 1px solid var(--border-subtle);
+}
+.ai-page .ai-dashboard-grid {
+  grid-template-columns: minmax(360px, 400px) minmax(0, 1fr);
+  gap: 16px;
+}
+.ai-page .ai-config-panel {
+  position: sticky;
+  top: 84px;
+}
+.ai-page .ai-config-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 10px;
+}
+.ai-page .ai-config-summary-item {
+  padding: 9px 10px;
+  background: var(--surface);
+}
+.ai-page .ai-config-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.ai-page .ai-config-form .ai-field-provider,
+.ai-page .ai-config-form .ai-field-model,
+.ai-page .ai-config-form .ai-field-api-base,
+.ai-page .ai-config-form .ai-field-api-key,
+.ai-page .ai-config-form .ai-config-save {
+  grid-column: 1 / -1;
+}
+.ai-page .ai-events-list-row {
+  cursor: pointer;
+}
+.ai-page .ai-events-list-row:hover {
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--surface));
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+  .ai-page .ai-dashboard-grid {
+    grid-template-areas:
+      "config"
+      "events"
+      "detail";
+  }
+  .ai-page .ai-config-panel {
+    position: static;
+  }
+}
+
+@media (max-width: 860px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .ai-page .ai-config-summary {
+    grid-template-columns: 1fr;
+  }
+}
+.ai-page .ai-dashboard-grid {
+  grid-template-columns: minmax(380px, 420px) minmax(0, 1fr);
+}
+.ai-page .ai-config-summary {
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-soft) 56%, var(--surface));
+  border: 1px solid var(--border-subtle);
+}
+.ai-page .ai-config-form {
+  gap: 12px;
+}
+.ai-page .ai-config-form .arco-form-item {
+  margin-bottom: 0;
+}
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async {
+  min-height: 58px;
+  border-radius: 8px;
+}
+.ai-page .ai-config-summary-item {
+  border-color: transparent;
+  box-shadow: none;
+}
+.ai-page .ai-config-summary-item strong {
+  font-size: 12px;
+}
+.ai-page .ai-events-list-header,
+.ai-page .ai-events-list-row {
+  grid-template-columns:
+    minmax(68px, 0.4fr)
+    minmax(94px, 0.54fr)
+    minmax(68px, 0.38fr)
+    minmax(84px, 0.46fr)
+    minmax(170px, 1fr)
+    minmax(126px, 0.62fr);
+  gap: 8px;
+}
+.ai-page .ai-events-list-header > span,
+.ai-page .ai-events-list-row .security-event-cell {
+  min-width: 0;
+}
+.ai-page .security-event-uri code {
+  max-width: 100%;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-page .ai-events-row-actions {
+  justify-content: flex-end;
+}
+.ai-page .ai-events-row-actions .arco-btn {
+  min-width: 66px;
+}
+.ai-page .ai-detail-grid {
+  grid-template-columns: minmax(300px, 370px) minmax(0, 1fr);
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-dashboard-grid,
+  .ai-page .ai-detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async {
+    grid-column: span 2;
+  }
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: span 3;
+  }
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 560px) {
+  .ai-page .ai-events-row-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .ai-page .ai-events-row-actions .arco-btn {
+    width: 100%;
+    justify-content: center;
+  }
+  .ai-page .ai-config-form,
+  .ai-page .ai-config-summary {
+    grid-template-columns: 1fr;
+  }
+  .ai-page .ai-config-panel {
+    padding: 16px;
+  }
+  .ai-page .ai-config-summary {
+    padding: 8px;
+  }
+  .ai-page .ai-config-summary-item {
+    min-height: 54px;
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async {
+    min-height: 58px;
+  }
+}
+.ai-page .ai-config-summary {
+  display: grid;
+  grid-template-columns: 1fr !important;
+  gap: 10px;
+  padding: 0 !important;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.ai-page .ai-config-state,
+.ai-page .ai-config-summary-item {
+  min-width: 0;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 8px;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 62%,
+    var(--surface)
+  ) !important;
+  box-shadow: none !important;
+}
+.ai-page .ai-config-state {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  padding: 13px 14px;
+  border-color: color-mix(
+    in srgb,
+    var(--border) 78%,
+    var(--accent) 12%
+  ) !important;
+}
+.ai-page .ai-config-state::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  justify-self: end;
+  border-radius: 999px;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+.ai-page .ai-config-state-on::before {
+  background: var(--accent-success);
+  box-shadow: 0 0 0 4px
+    color-mix(in srgb, var(--accent-success) 16%, transparent);
+}
+.ai-page .ai-config-state span,
+.ai-page .ai-config-summary-item span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.ai-page .ai-config-state strong,
+.ai-page .ai-config-state em,
+.ai-page .ai-config-summary-item strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-page .ai-config-summary-item {
+  display: grid;
+  gap: 5px;
+  min-height: 58px;
+  padding: 11px 12px !important;
+}
+.ai-page .ai-analysis-card .ai-selected-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.ai-page .ai-analysis-summary {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 13px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-soft) 66%, var(--surface));
+}
+.ai-page .ai-analysis-summary p {
+  margin: 0;
+}
+.ai-page .ai-analysis-summary > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.ai-page .ai-analysis-summary .ai-analysis-markdown {
+  min-width: 0;
+} /* QA pass: narrow panel drift. */
+.ai-page .ai-config-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async,
+.ai-page .ai-config-form .ai-field-provider,
+.ai-page .ai-config-form .ai-field-model {
+  grid-column: span 1 !important;
+}
+.ai-page .ai-config-form .ai-field-api-base,
+.ai-page .ai-config-form .ai-field-api-key,
+.ai-page .ai-config-form .ai-config-save {
+  grid-column: 1 / -1 !important;
+}
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async {
+  min-height: 50px !important;
+  padding: 10px 12px !important;
+}
+.ai-page .ai-config-panel .arco-form-label-item {
+  margin-bottom: 5px;
+}
+
+@media (max-width: 640px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr !important;
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async,
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: 1 / -1 !important;
+  }
+} /* AI settings form overrides. */
+.ai-page .ai-config-form .ai-field-private-api-base {
+  grid-column: span 4 !important;
+  min-height: 56px !important;
+  padding: 10px 12px !important;
+}
+.ai-page .ai-config-form .ai-field-private-api-base .arco-form-extra {
+  max-width: 48rem;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1280px) {
+  .ai-page .ai-config-form .ai-field-private-api-base {
+    grid-column: span 4 !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .ai-page .ai-config-form .ai-field-private-api-base {
+    grid-column: 1 / -1 !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-page .ai-config-form .ai-field-private-api-base {
+    grid-column: 1 / -1 !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-page {
+    padding-bottom: calc(92px + env(safe-area-inset-bottom));
+  }
+  .ai-page .ai-config-panel {
+    padding-bottom: 86px !important;
+  }
+} /* AI page layout: config above workbench. */
+.ai-page .ai-dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-areas:
+    "config"
+    "events"
+    "detail" !important;
+  gap: 16px;
+  align-items: start;
+}
+.ai-page .ai-config-panel {
+  position: static !important;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.32fr) minmax(0, 1fr);
+  grid-template-areas:
+    "heading heading"
+    "summary form";
+  gap: 14px 16px;
+  padding: 18px !important;
+}
+.ai-page .ai-config-panel .panel-heading {
+  grid-area: heading;
+}
+.ai-page .ai-config-summary {
+  grid-area: summary;
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: 1fr !important;
+  gap: 8px;
+  padding: 0 !important;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.ai-page .ai-config-state,
+.ai-page .ai-config-summary-item {
+  min-height: 0;
+}
+.ai-page .ai-config-form {
+  grid-area: form;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+  align-items: end;
+}
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async,
+.ai-page .ai-config-form .ai-field-private-api-base {
+  grid-column: span 2 !important;
+}
+.ai-page .ai-config-form .ai-field-provider,
+.ai-page .ai-config-form .ai-field-model,
+.ai-page .ai-config-form .ai-config-save {
+  grid-column: span 3 !important;
+}
+.ai-page .ai-config-form .ai-field-api-base,
+.ai-page .ai-config-form .ai-field-api-key {
+  grid-column: span 6 !important;
+}
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async,
+.ai-page .ai-config-form .ai-field-private-api-base {
+  min-height: 56px !important;
+  padding: 10px 12px !important;
+}
+.ai-page .ai-config-save {
+  height: 36px;
+  align-self: end;
+}
+.ai-page .ai-events-panel,
+.ai-page .ai-event-detail {
+  min-width: 0;
+}
+.ai-page .ai-events-list-header,
+.ai-page .ai-events-list-row {
+  grid-template-columns:
+    minmax(82px, 0.45fr)
+    minmax(120px, 0.58fr)
+    minmax(92px, 0.44fr)
+    minmax(112px, 0.52fr)
+    minmax(240px, 1fr)
+    minmax(184px, 0.58fr) !important;
+  gap: 10px;
+}
+.ai-page .ai-events-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+}
+.ai-page .ai-events-row-actions .table-action-link,
+.ai-page .ai-events-row-actions .arco-btn {
+  flex: 0 0 auto;
+}
+.ai-page .ai-events-row-actions .arco-btn {
+  min-width: 72px;
+}
+.ai-page .ai-detail-grid {
+  grid-template-columns: minmax(340px, 0.36fr) minmax(0, 1fr) !important;
+}
+
+@media (max-width: 1280px) {
+  .ai-page .ai-config-panel {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "heading"
+      "summary"
+      "form";
+  }
+  .ai-page .ai-config-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async {
+    grid-column: span 2 !important;
+  }
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: span 3 !important;
+  }
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key {
+    grid-column: span 4 !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .ai-page .ai-config-summary {
+    grid-template-columns: 1fr !important;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async,
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model {
+    grid-column: span 1 !important;
+  }
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: 1 / -1 !important;
+  }
+  .ai-page .ai-detail-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .ai-page .ai-config-panel {
+    padding: 16px !important;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr !important;
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async,
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: 1 / -1 !important;
+  }
+} /* Final AI configuration layout override.
+   This block intentionally sits at the end because older QA patches above
+   contain conflicting grid rules for the same form. */
+.ai-page .ai-config-form {
+  display: grid !important;
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+  align-items: end !important;
+}
+.ai-page .ai-config-form .arco-form-item {
+  min-width: 0;
+  margin-bottom: 0 !important;
+}
+.ai-page .ai-config-form .ai-field-enabled,
+.ai-page .ai-config-form .ai-field-async {
+  grid-column: span 2 !important;
+  min-height: 56px !important;
+  padding: 10px 12px !important;
+}
+.ai-page .ai-config-form .ai-field-provider,
+.ai-page .ai-config-form .ai-field-model {
+  grid-column: span 3 !important;
+}
+.ai-page .ai-config-form .ai-field-api-base {
+  grid-column: span 7 !important;
+}
+.ai-page .ai-config-form .ai-field-api-key {
+  grid-column: span 5 !important;
+}
+.ai-page .ai-config-form .ai-field-private-api-base {
+  grid-column: 1 / 9 !important;
+  display: grid;
+  grid-template-columns: minmax(180px, max-content) minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: center;
+  min-height: 56px !important;
+  padding: 10px 12px !important;
+}
+.ai-page .ai-config-form .ai-field-private-api-base .arco-form-label-item {
+  margin-bottom: 0 !important;
+}
+.ai-page
+  .ai-config-form
+  .ai-field-private-api-base
+  .arco-form-item-control-wrapper {
+  min-width: 0;
+}
+.ai-page .ai-config-form .ai-field-private-api-base .arco-form-extra {
+  grid-column: 1 / -1;
+  max-width: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ai-page .ai-config-form .ai-models-button {
+  grid-column: 7 / 10 !important;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  justify-content: center;
+  white-space: nowrap;
+}
+.ai-page .ai-config-form .ai-config-save {
+  grid-column: 10 / 13 !important;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+@media (max-width: 1280px) {
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key,
+  .ai-page .ai-config-form .ai-field-private-api-base {
+    grid-column: 1 / -1 !important;
+  }
+  .ai-page .ai-config-form .ai-models-button {
+    grid-column: 7 / 10 !important;
+  }
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: 10 / 13 !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-config-form .ai-field-enabled,
+  .ai-page .ai-config-form .ai-field-async,
+  .ai-page .ai-config-form .ai-field-provider,
+  .ai-page .ai-config-form .ai-field-model,
+  .ai-page .ai-config-form .ai-field-api-base,
+  .ai-page .ai-config-form .ai-field-api-key,
+  .ai-page .ai-config-form .ai-field-private-api-base,
+  .ai-page .ai-config-form .ai-models-button,
+  .ai-page .ai-config-form .ai-config-save {
+    grid-column: 1 / -1 !important;
+  }
+}
+
+@media (max-width: 560px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr !important;
+  }
+  .ai-page .ai-config-form .ai-field-private-api-base {
+    display: block;
+  }
+  .ai-page .ai-config-form .ai-field-private-api-base .arco-form-label-item {
+    margin-bottom: 6px !important;
+  }
+} /* AI dual-model and self-learning settings. Keep after legacy AI form overrides. */
+.ai-page .ai-config-form .ai-config-subpanel,
+.ai-page .ai-config-form .ai-config-section-global,
+.ai-page .ai-config-form .ai-self-learning-report {
+  grid-column: 1 / -1 !important;
+}
+.ai-page .ai-config-subpanel {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-soft) 70%, var(--surface));
+}
+.ai-page .ai-config-subpanel > header {
+  display: grid;
+  gap: 4px;
+}
+.ai-page .ai-config-subpanel > header strong {
+  color: var(--text);
+  font-size: 14px;
+}
+.ai-page .ai-config-subpanel > header span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.ai-page .ai-config-section {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 14px;
+  align-items: start;
+}
+.ai-page .ai-config-section-global {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.ai-page .ai-model-config-subpanel {
+  align-content: start;
+}
+.ai-page .ai-model-config-grid {
+  grid-template-columns:
+    minmax(130px, 0.72fr)
+    minmax(190px, 1fr)
+    minmax(160px, 0.9fr)
+    minmax(160px, 0.9fr);
+  align-items: start;
+}
+.ai-page .ai-model-config-grid .ai-model-private-field {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(220px, max-content) minmax(0, 1fr);
+  gap: 6px 12px;
+  align-items: center;
+  margin-top: -2px;
+}
+.ai-page .ai-model-config-grid .ai-model-private-field .arco-form-label-item,
+.ai-page
+  .ai-model-config-grid
+  .ai-model-private-field
+  .arco-form-item-control-wrapper {
+  margin-bottom: 0 !important;
+}
+.ai-page .ai-model-config-grid .ai-model-private-field .arco-form-extra {
+  grid-column: 1 / -1;
+  max-width: none;
+}
+.ai-page .ai-model-config-actions {
+  margin-top: -2px;
+}
+.ai-page .ai-self-learning-report {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ai-page .ai-dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-areas:
+    "config"
+    "events"
+    "detail" !important;
+  gap: 16px;
+  align-items: start;
+}
+.ai-page .ai-config-panel {
+  position: static !important;
+  grid-area: config;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.28fr) minmax(0, 1fr);
+  grid-template-areas:
+    "heading heading"
+    "summary form";
+  gap: 14px 16px;
+  overflow: visible;
+}
+.ai-page .ai-config-panel .panel-heading {
+  grid-area: heading;
+  margin-bottom: 0;
+}
+.ai-page .ai-config-summary {
+  grid-area: summary;
+  align-self: stretch;
+  grid-template-columns: 1fr !important;
+  padding: 10px;
+}
+.ai-page .ai-config-form {
+  grid-area: form;
+  display: grid !important;
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+  align-items: start !important;
+}
+.ai-page .ai-config-form .ai-config-subpanel,
+.ai-page .ai-config-form .ai-config-section-global,
+.ai-page .ai-config-form .ai-self-learning-report {
+  grid-column: 1 / -1 !important;
+}
+.ai-page .ai-config-section,
+.ai-page .ai-config-section-global {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: start;
+}
+.ai-page .ai-config-form .arco-form-item {
+  min-width: 0;
+  margin-bottom: 0 !important;
+}
+.ai-page .ai-events-panel {
+  grid-area: events;
+  min-width: 0;
+}
+.ai-page .ai-event-detail {
+  grid-area: detail;
+  min-width: 0;
+}
+.ai-page .ai-events-list-panel {
+  overflow: hidden;
+}
+.ai-page .ai-events-list-header,
+.ai-page .ai-events-list-row {
+  grid-template-columns:
+    minmax(60px, 0.5fr)
+    minmax(90px, 0.56fr)
+    minmax(60px, 0.38fr)
+    minmax(80px, 0.46fr)
+    minmax(180px, 1fr)
+    minmax(130px, 0.68fr) !important;
+  gap: 10px;
+}
+.ai-page .ai-events-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ai-page .ai-events-row-actions .arco-btn {
+  min-width: 78px;
+}
+.ai-page .ai-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.34fr) minmax(0, 1fr) !important;
+  gap: 14px;
+  align-items: stretch;
+}
+.ai-page .ai-event-card,
+.ai-page .ai-analysis-card {
+  min-width: 0;
+  border-radius: 8px;
+}
+.ai-page .ai-analysis-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.ai-page .ai-analysis-columns > div {
+  min-width: 0;
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-config-panel {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "heading"
+      "summary"
+      "form";
+  }
+  .ai-page .ai-config-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-detail-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-config-summary,
+  .ai-page .ai-analysis-columns {
+    grid-template-columns: 1fr !important;
+  }
+  .ai-page .ai-events-list-header,
+  .ai-page .ai-events-list {
+    display: none;
+  }
+  .ai-page .ai-events-mobile-list {
+    display: grid;
+  }
+}
+
+@media (max-width: 560px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr !important;
+  }
+} /* AI model config compact layout. */
+.ai-page .ai-model-config-grid {
+  grid-template-columns:
+    minmax(150px, 0.72fr)
+    minmax(220px, 1fr)
+    minmax(190px, 0.9fr)
+    minmax(190px, 0.9fr) !important;
+  align-items: start !important;
+}
+.ai-page .ai-model-config-grid .ai-model-private-field {
+  grid-column: 1 / -1 !important;
+}
+.ai-page .ai-model-config-actions {
+  margin-top: -2px !important;
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-model-config-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-page .ai-model-config-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+.ai-page .ai-dashboard-grid {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-areas:
+    "config"
+    "events"
+    "detail" !important;
+  gap: 16px !important;
+  align-items: start !important;
+}
+.ai-page .ai-config-panel {
+  position: static !important;
+  grid-area: config !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-areas:
+    "heading"
+    "summary"
+    "form" !important;
+  gap: 14px !important;
+  overflow: visible !important;
+}
+.ai-page .ai-config-panel .panel-heading {
+  grid-area: heading !important;
+  margin-bottom: 0 !important;
+}
+.ai-page .ai-config-summary {
+  grid-area: summary !important;
+  align-self: start !important;
+  display: grid !important;
+  grid-template-columns: minmax(190px, 0.8fr) minmax(220px, 1fr) minmax(
+      170px,
+      0.72fr
+    ) !important;
+  gap: 10px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.ai-page .ai-config-state,
+.ai-page .ai-config-summary-item {
+  min-height: 74px !important;
+  display: grid !important;
+  align-content: center !important;
+  gap: 5px !important;
+  padding: 12px 14px !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 10px !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 58%,
+    var(--surface)
+  ) !important;
+  box-shadow: none !important;
+}
+.ai-page .ai-config-state {
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  gap: 5px 12px !important;
+}
+.ai-page .ai-config-state::before {
+  grid-column: 2 !important;
+  grid-row: 1 / span 3 !important;
+}
+.ai-page .ai-config-form {
+  grid-area: form !important;
+  display: grid !important;
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+  align-items: start !important;
+}
+.ai-page .ai-config-form .ai-config-subpanel,
+.ai-page .ai-config-form .ai-config-section-global,
+.ai-page .ai-config-form .ai-self-learning-report {
+  grid-column: 1 / -1 !important;
+}
+.ai-page .ai-events-panel {
+  grid-area: events !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-event-detail {
+  grid-area: detail !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-events-list-header,
+.ai-page .ai-events-list-row {
+  grid-template-columns:
+    minmax(60px, 0.5fr)
+    minmax(90px, 0.56fr)
+    minmax(60px, 0.38fr)
+    minmax(80px, 0.46fr)
+    minmax(180px, 1fr)
+    minmax(130px, 0.68fr) !important;
+  gap: 10px !important;
+}
+.ai-page .ai-events-row-actions {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+}
+.ai-page .ai-detail-grid {
+  display: grid !important;
+  grid-template-columns: minmax(320px, 0.34fr) minmax(0, 1fr) !important;
+  gap: 14px !important;
+  align-items: stretch !important;
+}
+.ai-page .ai-analysis-columns {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-config-panel {
+    grid-template-areas:
+      "heading"
+      "summary"
+      "form" !important;
+  }
+  .ai-page .ai-config-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-detail-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-config-summary,
+  .ai-page .ai-analysis-columns {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 560px) {
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr !important;
+  }
+}
+.ai-page .ai-dashboard-grid {
+  grid-template-columns: minmax(0, 1.12fr) minmax(360px, 0.88fr) !important;
+  grid-template-areas:
+    "config events"
+    "detail detail" !important;
+  gap: 16px !important;
+}
+.ai-page .ai-config-panel,
+.ai-page .ai-events-panel,
+.ai-page .ai-event-detail {
+  height: auto !important;
+}
+.ai-page .ai-config-panel {
+  gap: 12px !important;
+}
+.ai-page .ai-config-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+}
+.ai-page .ai-config-state,
+.ai-page .ai-config-summary-item {
+  min-height: 64px !important;
+  padding: 10px 12px !important;
+  border-radius: 8px !important;
+}
+.ai-page .ai-config-state strong,
+.ai-page .ai-config-state em,
+.ai-page .ai-config-summary-item strong {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+.ai-page .ai-config-form {
+  gap: 10px !important;
+}
+.ai-page .ai-config-form .ai-model-config-subpanel {
+  grid-column: 1 / -1 !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-model-config-subpanel {
+  display: grid !important;
+  gap: 10px !important;
+  padding: 12px !important;
+}
+.ai-page .ai-model-config-subpanel > header {
+  gap: 3px !important;
+}
+.ai-page .ai-model-config-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 9px !important;
+}
+.ai-page .ai-model-config-grid .arco-input,
+.ai-page .ai-model-config-grid .arco-input-inner-wrapper,
+.ai-page .ai-model-config-grid .arco-select,
+.ai-page .ai-model-config-grid .arco-select-view {
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+.ai-page .ai-model-config-grid .arco-form-item-label {
+  line-height: 1.2 !important;
+}
+.ai-page .ai-model-private-field {
+  grid-column: 1 / -1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(160px, 0.46fr) minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+.ai-page .ai-model-private-field .arco-form-label-item,
+.ai-page .ai-model-private-field .arco-form-item-control-wrapper {
+  min-width: 0 !important;
+}
+.ai-page .ai-model-private-field .arco-form-extra {
+  margin-top: 4px !important;
+  max-width: none !important;
+  font-size: 11px !important;
+  line-height: 1.45 !important;
+}
+.ai-page .ai-model-config-actions {
+  margin-top: 0 !important;
+}
+.ai-page .ai-config-section.ai-config-section-global {
+  padding: 10px 12px !important;
+  border-radius: 8px !important;
+}
+.ai-page .ai-config-save {
+  grid-column: 1 / -1 !important;
+  justify-self: end !important;
+  width: min(260px, 100%) !important;
+}
+.ai-page .ai-events-panel {
+  align-self: start !important;
+}
+.ai-page .ai-events-list-header,
+.ai-page .ai-events-list-row {
+  grid-template-columns:
+    minmax(70px, 0.44fr)
+    minmax(104px, 0.58fr)
+    minmax(78px, 0.42fr)
+    minmax(88px, 0.5fr)
+    minmax(150px, 1fr)
+    minmax(150px, 0.74fr) !important;
+}
+.ai-page .ai-detail-grid {
+  grid-template-columns: minmax(300px, 0.28fr) minmax(0, 1fr) !important;
+}
+
+@media (max-width: 1360px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-areas:
+      "config"
+      "events"
+      "detail" !important;
+  }
+}
+
+@media (min-width: 1680px) {
+  .ai-page .ai-config-form .ai-model-config-subpanel {
+    grid-column: span 6 !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .ai-page .ai-config-form .ai-model-config-subpanel,
+  .ai-page .ai-config-form .ai-config-section-global,
+  .ai-page .ai-config-form .ai-self-learning-report {
+    grid-column: 1 / -1 !important;
+  }
+  .ai-page .ai-model-config-grid,
+  .ai-page .ai-config-summary,
+  .ai-page .ai-detail-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .ai-page .ai-model-private-field {
+    grid-template-columns: 1fr !important;
+  }
+} /* Remote QA 2026-06-19: AI events live in a narrow side panel at common desktop widths.
+   Treat them as compact records instead of forcing a six-column data table. */
+.ai-page .ai-events-list-panel {
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+.ai-page .ai-events-list-header {
+  display: none !important;
+}
+.ai-page .ai-events-list {
+  min-width: 0 !important;
+  display: grid !important;
+  gap: 8px !important;
+  padding: 10px !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 34%,
+    var(--surface)
+  ) !important;
+  overflow: hidden !important;
+}
+.ai-page .ai-events-list-row {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  grid-template-areas:
+    "time action"
+    "source category"
+    "uri buttons" !important;
+  gap: 8px 10px !important;
+  align-items: center !important;
+  padding: 12px !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 8px !important;
+  background: var(--surface) !important;
+}
+.ai-page .ai-events-list-row:first-child {
+  border-top: 1px solid var(--border-subtle) !important;
+}
+.ai-page .ai-events-list-row .security-event-cell {
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+.ai-page .ai-events-list-row .security-event-cell:nth-child(1) {
+  grid-area: time !important;
+}
+.ai-page .ai-events-list-row .security-event-cell:nth-child(2) {
+  grid-area: source !important;
+}
+.ai-page .ai-events-list-row .security-event-cell:nth-child(3) {
+  grid-area: action !important;
+  justify-content: flex-end !important;
+}
+.ai-page .ai-events-list-row .security-event-cell:nth-child(4) {
+  grid-area: category !important;
+  justify-content: flex-end !important;
+}
+.ai-page .ai-events-list-row .security-event-uri {
+  grid-area: uri !important;
+}
+.ai-page .ai-events-list-row .security-event-uri code {
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+.ai-page .ai-events-row-actions {
+  grid-area: buttons !important;
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+}
+.ai-page .ai-events-row-actions .table-action-link,
+.ai-page .ai-events-row-actions .arco-btn {
+  max-width: 100% !important;
+  flex: 0 0 auto !important;
+}
+
+@media (max-width: 560px) {
+  .ai-page .ai-events-list-row {
+    grid-template-columns: 1fr !important;
+    grid-template-areas:
+      "time"
+      "source"
+      "action"
+      "category"
+      "uri"
+      "buttons" !important;
+  }
+  .ai-page .ai-events-list-row .security-event-cell:nth-child(3),
+  .ai-page .ai-events-list-row .security-event-cell:nth-child(4),
+  .ai-page .ai-events-row-actions {
+    justify-content: flex-start !important;
+  }
+}
+.ai-page .ai-dashboard-grid {
+  grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr) !important;
+  grid-template-areas:
+    "config config"
+    "events detail" !important;
+  gap: 18px !important;
+}
+.ai-page .ai-config-panel {
+  grid-template-columns: minmax(250px, 0.24fr) minmax(0, 1fr) !important;
+  gap: 16px !important;
+}
+.ai-page .ai-config-summary {
+  align-self: start !important;
+  gap: 10px !important;
+}
+.ai-page .ai-config-form {
+  grid-template-columns: repeat(2, minmax(280px, 1fr)) !important;
+  gap: 14px !important;
+}
+.ai-page .ai-config-form .ai-config-section-global {
+  grid-column: 1 / -1 !important;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)) !important;
+}
+.ai-page .ai-config-form .ai-model-config-subpanel {
+  grid-column: span 1 !important;
+  min-height: 100% !important;
+}
+.ai-page .ai-config-form .ai-model-config-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+.ai-page .ai-config-subpanel:not(.ai-model-config-subpanel) {
+  grid-column: 1 / -1 !important;
+}
+.ai-page .ai-events-panel,
+.ai-page .ai-event-detail {
+  min-height: 640px !important;
+}
+.ai-page .ai-events-list-panel,
+.ai-page .ai-analysis-card {
+  min-height: 520px !important;
+}
+.ai-page .ai-events-list {
+  max-height: 560px !important;
+  overflow: auto !important;
+  scrollbar-width: thin !important;
+}
+.ai-page .ai-events-list-row {
+  position: relative !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  gap: 10px 12px !important;
+  padding: 13px 14px 13px 16px !important;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    background 160ms ease !important;
+}
+.ai-page .ai-events-list-row:hover {
+  transform: translateY(-1px) !important;
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border)) !important;
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--accent) 9%, transparent) !important;
+}
+.ai-page .ai-events-list-row-active::before {
+  position: absolute !important;
+  inset: 12px auto 12px 0 !important;
+  width: 3px !important;
+  content: "" !important;
+  background: var(--accent) !important;
+  border-radius: 0 999px 999px 0 !important;
+}
+.ai-page .security-event-cell::before {
+  content: attr(data-label) !important;
+  flex: 0 0 auto !important;
+  min-width: auto !important;
+  color: var(--text-subtle) !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+}
+.ai-page .security-event-cell:nth-child(3)::before,
+.ai-page .security-event-cell:nth-child(4)::before,
+.ai-page .ai-events-row-actions::before {
+  display: none !important;
+}
+.ai-page .ai-detail-grid {
+  grid-template-columns: minmax(250px, 0.3fr) minmax(0, 1fr) !important;
+  gap: 14px !important;
+}
+.ai-page .ai-event-card {
+  align-self: stretch !important;
+}
+.ai-page .ai-analysis-card {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+}
+.ai-page .ai-analysis-card:has(.ai-analysis-summary) {
+  justify-content: flex-start !important;
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: 1fr !important;
+    grid-template-areas: none !important;
+  }
+  .ai-page .ai-config-panel {
+    grid-template-columns: 1fr !important;
+    grid-template-areas:
+      "heading"
+      "summary"
+      "form" !important;
+  }
+  .ai-page .ai-config-panel,
+  .ai-page .ai-events-panel,
+  .ai-page .ai-event-detail {
+    grid-area: auto !important;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .ai-page .ai-detail-grid,
+  .ai-page .ai-model-config-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .ai-page .ai-events-panel,
+  .ai-page .ai-event-detail,
+  .ai-page .ai-events-list-panel,
+  .ai-page .ai-analysis-card {
+    min-height: 0 !important;
+  }
+  .ai-page .security-event-cell::before {
+    min-width: 58px !important;
+  }
+} /* 2026-06-19 local verification pass: undo legacy AI form grid collisions. */
+.ai-page .ai-dashboard-grid {
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-areas:
+    "config"
+    "events"
+    "detail" !important;
+  gap: 18px !important;
+}
+.ai-page .ai-config-panel {
+  grid-area: config !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-areas:
+    "heading"
+    "summary"
+    "form" !important;
+  gap: 12px !important;
+  align-items: start !important;
+}
+.ai-page .ai-config-panel > .panel-heading {
+  grid-area: heading !important;
+}
+.ai-page .ai-config-summary {
+  grid-area: summary !important;
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.ai-page .ai-config-state,
+.ai-page .ai-config-summary-item {
+  min-height: 64px !important;
+  padding: 10px 12px !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 8px !important;
+  background: var(--surface) !important;
+}
+.ai-page .ai-config-form {
+  grid-area: form !important;
+  min-width: 0 !important;
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 14px !important;
+  align-items: start !important;
+}
+.ai-page .ai-config-form .ai-config-section-global {
+  grid-column: 1 / -1 !important;
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) !important;
+  gap: 12px !important;
+}
+.ai-page .ai-config-form .ai-model-config-subpanel {
+  grid-column: span 1 !important;
+  min-height: auto !important;
+}
+.ai-page .ai-config-subpanel {
+  min-width: 0 !important;
+  padding: 12px !important;
+  border-radius: 8px !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 56%,
+    var(--surface)
+  ) !important;
+}
+.ai-page .ai-config-subpanel > header {
+  min-width: 0 !important;
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  gap: 4px !important;
+}
+.ai-page .ai-config-subpanel > header strong,
+.ai-page .ai-config-subpanel > header span {
+  min-width: 0 !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  writing-mode: horizontal-tb !important;
+}
+.ai-page .ai-model-config-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+}
+.ai-page .ai-model-config-grid .arco-form-item,
+.ai-page .ai-config-section-global .arco-form-item,
+.ai-page .ai-config-subpanel .arco-form-item {
+  min-width: 0 !important;
+  margin-bottom: 0 !important;
+}
+.ai-page .ai-model-config-grid .arco-form-item-label,
+.ai-page .ai-model-config-grid .arco-form-label-item,
+.ai-page .ai-model-private-field .arco-form-item-label,
+.ai-page .ai-model-private-field .arco-form-label-item {
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+  writing-mode: horizontal-tb !important;
+  text-align: left !important;
+}
+.ai-page .ai-model-config-grid .arco-form-item-control-wrapper,
+.ai-page .ai-model-config-grid .arco-input,
+.ai-page .ai-model-config-grid .arco-input-inner-wrapper,
+.ai-page .ai-model-config-grid .arco-select,
+.ai-page .ai-model-config-grid .arco-select-view {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+.ai-page .ai-model-private-field {
+  grid-column: 1 / -1 !important;
+  display: block !important;
+}
+.ai-page .ai-model-private-field .arco-form-extra {
+  max-width: 74ch !important;
+  margin-top: 6px !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  white-space: normal !important;
+  writing-mode: horizontal-tb !important;
+}
+.ai-page .ai-model-config-actions {
+  margin-top: 0 !important;
+}
+.ai-page .ai-model-config-actions .arco-btn,
+.ai-page .ai-config-save {
+  white-space: nowrap !important;
+}
+.ai-page .ai-config-subpanel:not(.ai-model-config-subpanel) {
+  grid-column: 1 / -1 !important;
+}
+.ai-page .ai-config-subpanel:not(.ai-model-config-subpanel) .ai-config-section {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)) !important;
+  gap: 10px !important;
+}
+.ai-page .ai-config-save {
+  grid-column: 1 / -1 !important;
+  justify-self: end !important;
+  width: auto !important;
+  min-width: 120px !important;
+}
+.ai-page .ai-events-panel {
+  grid-area: events !important;
+}
+.ai-page .ai-event-detail {
+  grid-area: detail !important;
+}
+.ai-page .ai-events-panel,
+.ai-page .ai-event-detail {
+  min-height: 0 !important;
+}
+
+@media (min-width: 1280px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: minmax(0, 0.9fr) minmax(420px, 1.1fr) !important;
+    grid-template-areas:
+      "config config"
+      "events detail" !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .ai-page .ai-config-panel {
+    grid-template-columns: 1fr !important;
+    grid-template-areas:
+      "heading"
+      "summary"
+      "form" !important;
+  }
+  .ai-page .ai-config-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  .ai-page .ai-config-form {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-page .ai-config-summary,
+  .ai-page .ai-model-config-grid {
+    grid-template-columns: 1fr !important;
+  }
+} /* AI settings: event triage above automation. */
+.ai-page .ai-advanced-settings {
+  grid-column: 1 / -1 !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-advanced-toggle {
+  width: 100% !important;
+  min-height: 48px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  padding: 10px 12px !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 8px !important;
+  color: var(--text-primary) !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 64%,
+    var(--surface)
+  ) !important;
+  cursor: pointer !important;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease !important;
+}
+.ai-page .ai-advanced-toggle:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 34%,
+    var(--border-subtle)
+  ) !important;
+  background: color-mix(
+    in srgb,
+    var(--accent-soft) 28%,
+    var(--surface)
+  ) !important;
+}
+.ai-page .ai-advanced-toggle:active {
+  transform: translateY(1px) !important;
+}
+.ai-page .ai-advanced-toggle span {
+  min-width: 0 !important;
+  display: grid !important;
+  gap: 3px !important;
+  text-align: left !important;
+}
+.ai-page .ai-advanced-toggle strong,
+.ai-page .ai-advanced-toggle em {
+  min-width: 0 !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  writing-mode: horizontal-tb !important;
+}
+.ai-page .ai-advanced-toggle strong {
+  font-size: 13px !important;
+  font-weight: 700 !important;
+}
+.ai-page .ai-advanced-toggle em {
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-style: normal !important;
+  line-height: 1.45 !important;
+}
+.ai-page .ai-advanced-panel {
+  margin-top: 10px !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 12px !important;
+}
+.ai-page .ai-advanced-panel[hidden] {
+  display: none !important;
+}
+.ai-page .ai-knowledge-subpanel .ai-config-section,
+.ai-page .ai-knowledge-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) !important;
+  gap: 10px !important;
+} /* AI page: override legacy 12-column form rules. */
+.ai-page .ai-config-panel > .ai-config-form {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  grid-auto-flow: row !important;
+  grid-auto-columns: unset !important;
+}
+.ai-page .ai-config-panel > .ai-config-form > .ai-config-section-global,
+.ai-page .ai-config-panel > .ai-config-form > .ai-advanced-settings {
+  grid-column: 1 / -1 !important;
+  grid-area: auto / 1 / auto / -1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+.ai-page .ai-config-panel > .ai-config-form > .ai-config-section-global {
+  grid-template-columns: repeat(2, minmax(180px, 1fr)) !important;
+}
+.ai-page .ai-config-panel > .ai-config-form > .ai-model-config-subpanel {
+  grid-column: span 1 !important;
+  grid-area: auto / span 1 !important;
+  width: 100% !important;
+}
+.ai-page
+  .ai-config-panel
+  > .ai-config-form
+  > .ai-advanced-settings
+  > .ai-advanced-toggle {
+  inline-size: 100% !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: auto !important;
+  min-height: 52px !important;
+}
+.ai-page
+  .ai-config-panel
+  > .ai-config-form
+  > .ai-advanced-settings
+  > .ai-advanced-toggle
+  > span {
+  width: auto !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+.ai-page
+  .ai-config-panel
+  > .ai-config-form
+  > .ai-advanced-settings
+  > .ai-advanced-toggle
+  strong,
+.ai-page
+  .ai-config-panel
+  > .ai-config-form
+  > .ai-advanced-settings
+  > .ai-advanced-toggle
+  em {
+  display: block !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: auto !important;
+  writing-mode: horizontal-tb !important;
+  text-orientation: mixed !important;
+  word-break: normal !important;
+}
+
+@media (max-width: 720px) {
+  .ai-page .ai-config-panel > .ai-config-form,
+  .ai-page .ai-config-panel > .ai-config-form > .ai-config-section-global {
+    grid-template-columns: 1fr !important;
+  }
+} /* AI form layout: Form owns state; ai-config-main owns visual layout. */
+.ai-page .ai-config-panel .ai-config-form {
+  display: block !important;
+  grid-template-columns: none !important;
+  grid-template-areas: none !important;
+  gap: 0 !important;
+}
+.ai-page .ai-config-main {
+  min-width: 0 !important;
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+  align-items: start !important;
+}
+.ai-page .ai-config-main > .ai-config-section-global,
+.ai-page .ai-config-main > .ai-advanced-settings,
+.ai-page .ai-config-main > .ai-config-actions-row {
+  grid-column: 1 / -1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-config-main > .ai-config-section-global {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(180px, 1fr)) !important;
+  gap: 12px !important;
+}
+.ai-page .ai-config-main > .ai-model-config-subpanel {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-config-actions-row {
+  display: flex !important;
+  justify-content: flex-end !important;
+}
+.ai-page .ai-config-actions-row .ai-config-save {
+  width: auto !important;
+  min-width: 120px !important;
+}
+
+@media (max-width: 980px) {
+  .ai-page .ai-config-summary,
+  .ai-page .ai-config-main {
+    grid-template-columns: 1fr !important;
+  }
+  .ai-page .ai-config-main > .ai-config-section-global {
+    grid-template-columns: 1fr !important;
+  }
+} /* AI config desktop compact. */
+.ai-page .ai-config-main > .ai-config-section-global {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.ai-page .ai-config-main > .ai-config-section-global .arco-form-item,
+.ai-page .ai-config-main > .ai-config-section-global .ai-field-enabled,
+.ai-page .ai-config-main > .ai-config-section-global .ai-field-async {
+  min-height: 46px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  padding: 10px 12px !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 8px !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 58%,
+    var(--surface)
+  ) !important;
+}
+.ai-page .ai-config-main > .ai-config-section-global .arco-form-item-label,
+.ai-page .ai-config-main > .ai-config-section-global .arco-form-label-item {
+  margin: 0 !important;
+  padding: 0 !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: auto !important;
+  text-align: left !important;
+}
+.ai-page
+  .ai-config-main
+  > .ai-config-section-global
+  .arco-form-item-control-wrapper {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-config-main .ai-model-config-subpanel {
+  padding: 12px !important;
+}
+.ai-page .ai-config-main .ai-model-config-subpanel > header {
+  gap: 2px !important;
+  margin-bottom: 8px !important;
+}
+.ai-page .ai-config-main .ai-model-config-subpanel > header span {
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+}
+.ai-page .ai-config-main .ai-model-config-grid {
+  gap: 8px 10px !important;
+}
+.ai-page .ai-config-main .ai-model-config-grid .arco-form-item-label {
+  margin-bottom: 3px !important;
+  line-height: 1.25 !important;
+}
+.ai-page .ai-config-main .ai-model-config-grid .arco-input-inner-wrapper,
+.ai-page .ai-config-main .ai-model-config-grid .arco-select-view {
+  min-height: 32px !important;
+}
+.ai-page .ai-config-main .ai-model-private-field {
+  min-height: 0 !important;
+}
+.ai-page .ai-config-main .ai-model-private-field .arco-form-extra {
+  margin-top: 4px !important;
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+}
+.ai-page .ai-config-main .ai-model-config-actions {
+  gap: 8px !important;
+  margin-top: 8px !important;
+}
+.ai-page .ai-config-main .ai-model-config-actions .arco-btn {
+  min-height: 32px !important;
+  padding: 0 12px !important;
+}
+.ai-page .ai-config-actions-row {
+  margin-top: -2px !important;
+}
+
+@media (min-width: 1280px) {
+  .ai-page .ai-config-main {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  }
+}
+.ai-page .ai-config-header-actions {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-config-inline-switches {
+  width: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+}
+.ai-page .ai-config-inline-switches .arco-form-item {
+  min-height: 34px !important;
+  margin: 0 !important;
+  padding: 6px 10px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 8px !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 58%,
+    var(--surface)
+  ) !important;
+}
+.ai-page .ai-config-inline-switches .arco-form-item-label,
+.ai-page .ai-config-inline-switches .arco-form-label-item {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: auto !important;
+  min-width: 0 !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+}
+.ai-page .ai-config-inline-switches .arco-form-item-control-wrapper {
+  width: auto !important;
+  min-width: 0 !important;
+}
+.ai-page .ai-dashboard-grid {
+  grid-template-columns: minmax(430px, 0.88fr) minmax(0, 1.12fr) !important;
+  grid-template-areas:
+    "events detail"
+    "config config" !important;
+  gap: 18px !important;
+  align-items: start !important;
+}
+.ai-page .ai-events-panel,
+.ai-page .ai-event-detail,
+.ai-page .ai-config-panel {
+  border-radius: 10px !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface) 96%, transparent),
+    var(--surface)
+  ) !important;
+  box-shadow: 0 16px 46px color-mix(in srgb, var(--shadow) 12%, transparent) !important;
+}
+.ai-page .ai-events-panel {
+  grid-area: events !important;
+}
+.ai-page .ai-event-detail {
+  grid-area: detail !important;
+}
+.ai-page .ai-config-panel {
+  grid-area: config !important;
+}
+.ai-page .ai-events-panel > .panel-heading,
+.ai-page .ai-event-detail > .panel-heading,
+.ai-page .ai-config-panel > .panel-heading {
+  min-height: 44px !important;
+  padding-bottom: 12px !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+.ai-page .ai-events-list-panel,
+.ai-page .ai-analysis-card,
+.ai-page .ai-event-card {
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 42%,
+    var(--surface)
+  ) !important;
+}
+.ai-page .ai-events-list {
+  max-height: 520px !important;
+  padding-right: 4px !important;
+}
+.ai-page .ai-events-list-row {
+  background: var(--surface) !important;
+  box-shadow: none !important;
+}
+.ai-page .ai-events-list-row:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 10%, transparent) !important;
+}
+.ai-page .ai-detail-grid {
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) !important;
+  gap: 14px !important;
+  align-items: stretch !important;
+}
+.ai-page .ai-event-card {
+  min-height: 100% !important;
+  justify-content: space-between !important;
+}
+.ai-page .ai-event-card code {
+  max-height: 140px !important;
+  overflow: auto !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+.ai-page .ai-analysis-card {
+  min-height: 368px !important;
+  border-style: dashed !important;
+}
+.ai-page .ai-analysis-columns {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+.ai-page .ai-analysis-columns span {
+  display: block !important;
+  line-height: 1.55 !important;
+}
+.ai-page .ai-analysis-card:has(.ai-analysis-summary) {
+  border-style: solid !important;
+}
+.ai-page .ai-config-panel {
+  opacity: 0.98 !important;
+}
+.ai-page .ai-config-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+.ai-page .ai-config-state,
+.ai-page .ai-config-summary-item {
+  min-height: 58px !important;
+}
+.ai-page .ai-config-main {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+.ai-page .ai-config-main .ai-model-config-subpanel {
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 48%,
+    var(--surface)
+  ) !important;
+}
+
+@media (max-width: 1280px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-areas:
+      "events"
+      "detail"
+      "config" !important;
+  }
+} /* 2026-07-09 AI event analysis workbench: replace cramped two-column cards with a scan-friendly operator layout. */
+.ai-page .ai-detail-workbench {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.ai-page .ai-event-summary-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 14px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-soft) 44%, var(--surface));
+}
+.ai-page .ai-event-summary-main {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+.ai-page .ai-event-summary-main > span,
+.ai-page .ai-analysis-lists strong {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.ai-page .ai-event-summary-main > strong {
+  color: var(--text);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-page .ai-event-summary-main code {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-page .ai-event-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.ai-page .ai-event-summary-action {
+  min-width: 108px;
+}
+.ai-page .ai-analysis-workspace {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.42fr) minmax(0, 0.58fr);
+  gap: 14px;
+  align-items: start;
+  min-width: 0;
+}
+.ai-page .ai-analysis-workspace > .ai-analysis-card:only-child {
+  grid-column: 1 / -1;
+}
+.ai-page .ai-analysis-card {
+  min-height: 0 !important;
+  align-content: start;
+  border-style: solid !important;
+  background: var(--surface) !important;
+}
+.ai-page .ai-analysis-live-card {
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface)) !important;
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border)) !important;
+}
+.ai-page .ai-analysis-result-card {
+  gap: 14px;
+}
+.ai-page .ai-analysis-lists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.ai-page .ai-analysis-lists section {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-soft) 45%, var(--surface));
+}
+.ai-page .ai-analysis-lists ul {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ai-page .ai-analysis-lists li {
+  min-width: 0;
+  padding-left: 12px;
+  position: relative;
+  color: var(--text);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.ai-page .ai-analysis-lists li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.72em;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+@media (max-width: 1500px) {
+  .ai-page .ai-analysis-workspace,
+  .ai-page .ai-analysis-lists {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .ai-page .ai-event-summary-card {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .ai-page .ai-event-summary-meta {
+    justify-content: flex-start;
+  }
+  .ai-page .ai-event-summary-action {
+    width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .ai-page .ai-events-panel > .panel-heading,
+  .ai-page .ai-config-panel > .panel-heading {
+    align-items: stretch !important;
+  }
+  .ai-page .ai-events-panel > .panel-heading .arco-space,
+  .ai-page .ai-config-header-actions,
+  .ai-page .ai-config-inline-switches {
+    width: 100% !important;
+  }
+  .ai-page .ai-events-panel > .panel-heading .arco-select,
+  .ai-page .ai-events-panel > .panel-heading .arco-btn,
+  .ai-page .ai-config-header-actions .arco-btn {
+    width: 100% !important;
+  }
+  .ai-page .ai-detail-grid,
+  .ai-page .ai-config-summary,
+  .ai-page .ai-config-main {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+} /* AI analysis page final layout layer. Keep page-specific overrides out of global.css. */
+
+.ai-page .ai-dashboard-grid {
+  display: grid !important;
+  grid-template-columns: minmax(500px, 0.95fr) minmax(0, 1.05fr) !important;
+  grid-template-areas:
+    "events detail"
+    "config detail" !important;
+  gap: 18px !important;
+  align-items: start !important;
+}
+.ai-page .ai-events-panel {
+  grid-area: events !important;
+}
+.ai-page .ai-event-detail {
+  grid-area: detail !important;
+  align-self: stretch !important;
+}
+.ai-page .ai-config-panel {
+  grid-area: config !important;
+}
+.ai-page .ai-events-panel,
+.ai-page .ai-event-detail,
+.ai-page .ai-config-panel {
+  border-radius: 12px !important;
+  border-color: color-mix(in srgb, var(--border) 82%, transparent) !important;
+  background: var(--surface) !important;
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--text) 5%, transparent) !important;
+}
+.ai-page .ai-events-panel > .panel-heading,
+.ai-page .ai-event-detail > .panel-heading,
+.ai-page .ai-config-panel > .panel-heading {
+  min-height: 46px !important;
+  padding-bottom: 14px !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+.ai-page .ai-events-panel > .panel-heading h2,
+.ai-page .ai-event-detail > .panel-heading h2,
+.ai-page .ai-config-panel > .panel-heading h2 {
+  gap: 9px !important;
+}
+.ai-page .ai-analysis-range-select {
+  width: clamp(154px, 14vw, 196px) !important;
+  min-width: 154px !important;
+}
+.ai-page .ai-events-list-panel {
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+.ai-page .ai-events-list-header {
+  display: none !important;
+}
+.ai-page .ai-events-list {
+  max-height: none !important;
+  min-width: 0 !important;
+  display: grid !important;
+  gap: 9px !important;
+  padding: 10px !important;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 88%, transparent) !important;
+  border-radius: 10px !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 46%,
+    var(--surface)
+  ) !important;
+  overflow: visible !important;
+}
+.ai-page .ai-events-list-row {
+  position: relative !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  grid-template-areas:
+    "head actions"
+    "uri actions" !important;
+  gap: 9px 14px !important;
+  align-items: center !important;
+  padding: 14px !important;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 86%, transparent) !important;
+  border-radius: 10px !important;
+  background: var(--surface) !important;
+  box-shadow: none !important;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease !important;
+}
+.ai-page .ai-events-list-row::before {
+  content: "" !important;
+  position: absolute !important;
+  inset: 12px auto 12px 0 !important;
+  width: 3px !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+}
+.ai-page .ai-events-list-row:hover {
+  transform: translateY(-1px) !important;
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border)) !important;
+  background: color-mix(
+    in srgb,
+    var(--accent-soft) 14%,
+    var(--surface)
+  ) !important;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 8%, transparent) !important;
+}
+.ai-page .ai-events-list-row-active {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border)) !important;
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 10%, transparent),
+      transparent 58%
+    ),
+    var(--surface) !important;
+}
+.ai-page .ai-events-list-row-active::before {
+  background: var(--accent) !important;
+}
+.ai-page .ai-event-row-head,
+.ai-page .ai-event-row-identity,
+.ai-page .ai-event-row-tags {
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+}
+.ai-page .ai-event-row-head {
+  grid-area: head !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+}
+.ai-page .ai-event-row-identity {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+  color: var(--text) !important;
+  font-size: 13px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+.ai-page .ai-event-row-identity span {
+  color: var(--text-muted) !important;
+}
+.ai-page .ai-event-row-tags {
+  flex: 1 1 120px !important;
+  min-width: 0 !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+}
+.ai-page .ai-event-row-uri,
+.ai-page .ai-event-summary-main code {
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: color-mix(in srgb, var(--accent-strong) 82%, var(--text)) !important;
+  background: color-mix(
+    in srgb,
+    var(--accent-soft) 20%,
+    var(--surface)
+  ) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border-subtle)) !important;
+  border-radius: 8px !important;
+  padding: 6px 8px !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+.ai-page .ai-event-row-uri {
+  grid-area: uri !important;
+  display: block !important;
+}
+.ai-page .ai-events-row-actions {
+  grid-area: actions !important;
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+}
+.ai-page .ai-events-row-actions .table-action-link,
+.ai-page .ai-events-row-actions .arco-btn {
+  flex: 0 0 auto !important;
+  max-width: 100% !important;
+}
+.ai-page .ai-detail-workbench,
+.ai-page .ai-analysis-workspace,
+.ai-page .ai-event-summary-card,
+.ai-page .ai-analysis-lists {
+  min-width: 0 !important;
+}
+.ai-page .ai-detail-workbench {
+  display: grid !important;
+  gap: 14px !important;
+}
+.ai-page .ai-event-summary-card {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  grid-template-areas:
+    "main action"
+    "meta action" !important;
+  gap: 10px 14px !important;
+  align-items: center !important;
+  padding: 14px 16px !important;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 86%, transparent) !important;
+  border-radius: 10px !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 34%,
+    var(--surface)
+  ) !important;
+}
+.ai-page .ai-event-summary-main {
+  grid-area: main !important;
+  min-width: 0 !important;
+  display: grid !important;
+  gap: 6px !important;
+}
+.ai-page .ai-event-summary-main > span,
+.ai-page .ai-analysis-lists strong,
+.ai-page .analysis-live-trace section > span {
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+}
+.ai-page .ai-event-summary-main > strong {
+  color: var(--text) !important;
+  font-size: 18px !important;
+  line-height: 1.25 !important;
+  font-variant-numeric: tabular-nums !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.ai-page .ai-event-summary-meta {
+  grid-area: meta !important;
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 7px !important;
+  justify-content: flex-start !important;
+}
+.ai-page .ai-event-summary-action {
+  grid-area: action !important;
+  min-width: 112px !important;
+  justify-content: center !important;
+}
+.ai-page .ai-analysis-workspace {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 14px !important;
+}
+.ai-page .ai-analysis-card {
+  width: 100% !important;
+  min-height: 0 !important;
+  display: grid !important;
+  gap: 14px !important;
+  align-content: start !important;
+  padding: 16px !important;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 88%, transparent) !important;
+  border-radius: 10px !important;
+  background: var(--surface) !important;
+  box-shadow: none !important;
+}
+.ai-page .ai-analysis-live-card {
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border)) !important;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent) 7%, transparent),
+      transparent 46%
+    ),
+    color-mix(in srgb, var(--surface-soft) 28%, var(--surface)) !important;
+}
+.ai-page .analysis-live-trace {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.ai-page .analysis-live-trace > div:first-child {
+  padding-bottom: 2px !important;
+}
+.ai-page .analysis-live-trace section {
+  padding: 12px 14px !important;
+  border: 0 !important;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 38%, var(--border)) !important;
+  border-radius: 9px !important;
+  background: color-mix(in srgb, var(--surface) 84%, transparent) !important;
+}
+.ai-page .analysis-live-trace .safe-markdown,
+.ai-page .analysis-live-trace p {
+  margin: 0 !important;
+  color: var(--text) !important;
+  line-height: 1.62 !important;
+}
+.ai-page .analysis-live-trace ul {
+  margin-top: 2px !important;
+}
+.ai-page .ai-analysis-summary {
+  border-radius: 9px !important;
+  border-color: color-mix(
+    in srgb,
+    var(--border-subtle) 86%,
+    transparent
+  ) !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 42%,
+    var(--surface)
+  ) !important;
+}
+.ai-page .ai-analysis-lists {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+}
+.ai-page .ai-analysis-lists section {
+  min-width: 0 !important;
+  display: grid !important;
+  gap: 8px !important;
+  padding: 12px !important;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 86%, transparent) !important;
+  border-radius: 9px !important;
+  background: color-mix(
+    in srgb,
+    var(--surface-soft) 38%,
+    var(--surface)
+  ) !important;
+}
+.ai-page .ai-analysis-lists ul {
+  margin: 0 !important;
+  padding: 0 !important;
+  list-style: none !important;
+}
+.ai-page .ai-analysis-lists li {
+  min-width: 0 !important;
+  position: relative !important;
+  padding-left: 12px !important;
+  color: var(--text) !important;
+  line-height: 1.56 !important;
+  overflow-wrap: anywhere !important;
+}
+.ai-page .ai-analysis-lists li + li {
+  margin-top: 7px !important;
+}
+.ai-page .ai-analysis-lists li::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 0.72em !important;
+  width: 5px !important;
+  height: 5px !important;
+  border-radius: 999px !important;
+  background: var(--accent) !important;
+}
+.ai-page .ai-config-panel {
+  opacity: 1 !important;
+}
+.ai-page .ai-config-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+.ai-page .ai-config-main {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 14px !important;
+}
+.ai-page .ai-config-main > .ai-model-config-subpanel,
+.ai-page .ai-config-main > .ai-config-section-global,
+.ai-page .ai-config-main > .ai-advanced-settings,
+.ai-page .ai-config-main > .ai-config-actions-row {
+  min-width: 0 !important;
+  width: 100% !important;
+}
+.ai-page .ai-model-config-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+}
+.ai-page .ai-model-private-field {
+  grid-column: 1 / -1 !important;
+}
+.ai-page .ai-model-config-actions {
+  width: 100% !important;
+  display: flex !important;
+  justify-content: flex-start !important;
+  gap: 10px !important;
+}
+.ai-page .ai-model-config-actions .arco-btn {
+  flex: 1 1 160px !important;
+}
+
+@media (max-width: 1360px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: minmax(450px, 0.94fr) minmax(0, 1.06fr) !important;
+  }
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-areas:
+      "events"
+      "detail"
+      "config" !important;
+  }
+}
+
+@media (max-width: 820px) {
+  .ai-page .ai-events-panel > .panel-heading .arco-space {
+    width: 100% !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 10px !important;
+  }
+  .ai-page .ai-analysis-range-select,
+  .ai-page .ai-events-panel > .panel-heading .arco-btn,
+  .ai-page .ai-event-summary-action {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  .ai-page .ai-events-list {
+    padding: 8px !important;
+  }
+  .ai-page .ai-events-list-row {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-areas:
+      "head"
+      "uri"
+      "actions" !important;
+    gap: 9px !important;
+    padding: 13px !important;
+  }
+  .ai-page .ai-event-row-uri,
+  .ai-page .ai-event-summary-main code {
+    font-size: 11.5px !important;
+    padding: 6px 7px !important;
+  }
+  .ai-page .ai-event-row-head {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    justify-content: stretch !important;
+  }
+  .ai-page .ai-event-row-tags {
+    justify-content: flex-start !important;
+  }
+  .ai-page .ai-events-row-actions {
+    justify-content: stretch !important;
+    flex-wrap: wrap !important;
+  }
+  .ai-page .ai-events-row-actions .table-action-link,
+  .ai-page .ai-events-row-actions .arco-btn {
+    flex: 1 1 120px !important;
+  }
+  .ai-page .ai-event-summary-card {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-areas:
+      "main"
+      "meta"
+      "action" !important;
+  }
+  .ai-page .ai-analysis-lists,
+  .ai-page .ai-config-summary {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .ai-page .ai-model-config-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .ai-page .ai-event-row-identity {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 4px !important;
+    white-space: normal !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-page .ai-events-list-row {
+    transform: none !important;
+    transition: none !important;
+  }
+  .ai-page .ai-events-list-row:hover {
+    transform: none !important;
+  }
+}

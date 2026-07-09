@@ -497,6 +497,86 @@ func TestAnalyzeLogStreamFallsBackToDoneWhenProviderFails(t *testing.T) {
 	}
 }
 
+func TestAnalyzeEventsStreamEmitsItemsAndDone(t *testing.T) {
+	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	sink := &filteringAISink{items: []storage.LogEntry{
+		{
+			ID:        "batch-event-1",
+			TraceID:   "batch-trace-1",
+			Timestamp: now,
+			Action:    "block",
+			Category:  "sqli",
+			Severity:  "high",
+			ClientIP:  "203.0.113.10",
+			URI:       "/search?q=1",
+		},
+		{
+			ID:        "batch-event-pass",
+			TraceID:   "batch-trace-pass",
+			Timestamp: now.Add(time.Second),
+			Action:    "pass",
+			Category:  "normal",
+			Severity:  "info",
+			ClientIP:  "198.51.100.20",
+			URI:       "/",
+		},
+		{
+			ID:        "batch-event-2",
+			TraceID:   "batch-trace-2",
+			Timestamp: now.Add(2 * time.Second),
+			Action:    "challenge",
+			Category:  "xss",
+			Severity:  "medium",
+			ClientIP:  "203.0.113.11",
+			URI:       "/comment",
+		},
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Reviewing\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"batch analysis\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.Provider = "openai"
+	cfg.AI.APIBase = server.URL
+	cfg.AI.AllowPrivateAPIBase = true
+	cfg.AI.APIKey = "test-secret"
+	cfg.AI.Model = "test-model"
+	handler := New(Options{Config: &cfg, Sink: sink})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ai/events/analyze/stream", bytes.NewReader([]byte(`{"limit":10,"language":"zh-CN"}`)))
+	handler.AnalyzeEventsStream(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected event stream ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("expected SSE content type, got %q", got)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"event: trace",
+		`"type":"stream_open"`,
+		`"mode":"events_analysis"`,
+		"event: item",
+		`"log_id":"batch-event-1"`,
+		`"log_id":"batch-event-2"`,
+		"event: done",
+		`"total":2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("events stream missing %q in body:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "batch-event-pass") {
+		t.Fatalf("events stream should skip pass events, body:\n%s", body)
+	}
+}
+
 func TestAIAssistantReturnsRealToolExecutions(t *testing.T) {
 	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
 	sink := &filteringAISink{items: []storage.LogEntry{{
@@ -967,6 +1047,52 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected approval reuse to fail, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAIToolApprovalCannotWriteDuringClusterProtectionMode(t *testing.T) {
+	cfg := minimumHAHandlerConfig()
+	handler := New(Options{Config: &cfg})
+	router := chi.NewRouter()
+	router.Post("/execute", handler.ExecuteAITool)
+	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
+
+	args := `{"area":"bot_cc","level":"high"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","args":`+args+`}`)))
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected approval request ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var first struct {
+		Data struct {
+			Approval *struct {
+				ID string `json:"id"`
+			} `json:"approval"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+	if first.Data.Approval == nil || first.Data.Approval.ID == "" {
+		t.Fatalf("expected pending approval, got %+v", first.Data.Approval)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected approve ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`)))
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected protected execute to fail, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Protection.Policy.BotCC == "high" {
+		t.Fatalf("policy changed despite cluster protection mode: %+v", cfg.Protection.Policy)
 	}
 }
 

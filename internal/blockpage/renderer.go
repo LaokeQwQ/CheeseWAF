@@ -666,7 +666,7 @@ const defaultBlockTemplate = `<!doctype html>
     .card{background:var(--panel);border:1px solid var(--line);border-top:4px solid var(--accent);border-radius:8px;box-shadow:var(--shadow);overflow:hidden}
     .summary{padding:36px 40px 30px;border-bottom:1px solid var(--line)}
     .eyebrow{margin:0 0 12px;color:var(--accent-dark);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em}
-    h1{margin:0;color:var(--text);font-size:clamp(34px,5vw,54px);line-height:1.05;letter-spacing:0}
+    h1{margin:0;color:var(--text);font-size:clamp(30px,5vw,54px);line-height:1.08;letter-spacing:0;text-wrap:balance;word-break:keep-all;overflow-wrap:normal}
     .lead{max-width:70ch;margin:18px 0 0;color:var(--muted);font-size:16px;line-height:1.7}
     .checks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--panel),var(--panel-soft))}
     .check{min-width:0;padding:20px 24px;border-right:1px solid var(--line)}
@@ -688,7 +688,7 @@ const defaultBlockTemplate = `<!doctype html>
     .help h2{margin:0 0 8px;color:var(--text);font-size:15px}
     .help p{margin:0;color:var(--muted);font-size:13px;line-height:1.65}
     footer{padding:18px 40px 28px;border-top:1px solid var(--line);color:var(--muted);font-size:13px;line-height:1.65}
-    @media (max-width:720px){main{padding:24px 14px}.summary{padding:26px 22px}.top{gap:12px}.status-chip{width:100%;text-align:center}.checks{grid-template-columns:1fr}.check{border-right:0;border-bottom:1px solid var(--line)}.check:last-child{border-bottom:0}.notice{padding:18px 22px}.details{grid-template-columns:1fr;padding:8px 22px 20px}.item:nth-last-child(-n+2){border-bottom:1px solid var(--line)}.item:last-child{border-bottom:0}.help{grid-template-columns:1fr;padding:0 22px 24px}footer{padding:16px 22px 24px}h1{font-size:34px}}
+    @media (max-width:720px){main{padding:24px 14px}.summary{padding:26px 22px}.top{gap:12px}.status-chip{width:100%;text-align:center}.checks{grid-template-columns:1fr}.check{border-right:0;border-bottom:1px solid var(--line)}.check:last-child{border-bottom:0}.notice{padding:18px 22px}.details{grid-template-columns:1fr;padding:8px 22px 20px}.item:nth-last-child(-n+2){border-bottom:1px solid var(--line)}.item:last-child{border-bottom:0}.help{grid-template-columns:1fr;padding:0 22px 24px}footer{padding:16px 22px 24px}h1{font-size:clamp(26px,9vw,34px);line-height:1.12}}
   </style>
 </head>
 <body>

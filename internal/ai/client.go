@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -47,12 +48,13 @@ type ModelInfo struct {
 }
 
 type Client struct {
-	provider string
-	apiBase  string
-	apiKey   string
-	model    string
-	http     *http.Client
-	openai   openaisdk.Client
+	provider     string
+	apiBase      string
+	apiKey       string
+	model        string
+	allowPrivate bool
+	http         *http.Client
+	openai       openaisdk.Client
 }
 
 const defaultAIHTTPTimeout = 5 * time.Minute
@@ -63,11 +65,12 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 	}
 	provider := normalizeProvider(cfg.Provider)
 	client := &Client{
-		provider: provider,
-		apiBase:  strings.TrimRight(defaultAPIBase(provider, cfg.APIBase), "/"),
-		apiKey:   cfg.APIKey,
-		model:    cfg.Model,
-		http:     httpClient,
+		provider:     provider,
+		apiBase:      strings.TrimRight(defaultAPIBase(provider, cfg.APIBase), "/"),
+		apiKey:       cfg.APIKey,
+		model:        cfg.Model,
+		allowPrivate: cfg.AllowPrivateAPIBase,
+		http:         httpClient,
 	}
 	if provider == "openai" {
 		client.openai = newOpenAISDKClient(client.apiBase, client.apiKey, httpClient)
@@ -368,7 +371,11 @@ func (c *Client) completeOpenAIToolPlan(ctx context.Context, messages []Message,
 }
 
 func (c *Client) listOpenAIModels(ctx context.Context) ([]ModelInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/models", nil)
+	endpoint, err := c.endpoint("/models")
+	if err != nil {
+		return nil, err
+	}
+	req, err := netguard.NewRequest(ctx, http.MethodGet, endpoint, nil, c.urlPolicy())
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +475,11 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*Co
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/messages", bytes.NewReader(body))
+	endpoint, err := c.endpoint("/messages")
+	if err != nil {
+		return nil, err
+	}
+	req, err := netguard.NewRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(body), c.urlPolicy())
 	if err != nil {
 		return nil, err
 	}
@@ -537,7 +548,11 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/messages", bytes.NewReader(body))
+	endpoint, err := c.endpoint("/messages")
+	if err != nil {
+		return nil, err
+	}
+	req, err := netguard.NewRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(body), c.urlPolicy())
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +613,11 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 }
 
 func (c *Client) listAnthropicModels(ctx context.Context) ([]ModelInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/models", nil)
+	endpoint, err := c.endpoint("/models")
+	if err != nil {
+		return nil, err
+	}
+	req, err := netguard.NewRequest(ctx, http.MethodGet, endpoint, nil, c.urlPolicy())
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +732,11 @@ func (c *Client) anthropicPayload(messages []Message, tools []map[string]any) an
 }
 
 func (c *Client) doAnthropicRequest(ctx context.Context, body []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/messages", bytes.NewReader(body))
+	endpoint, err := c.endpoint("/messages")
+	if err != nil {
+		return nil, err
+	}
+	req, err := netguard.NewRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(body), c.urlPolicy())
 	if err != nil {
 		return nil, err
 	}
@@ -723,6 +746,30 @@ func (c *Client) doAnthropicRequest(ctx context.Context, body []byte) (*http.Res
 		req.Header.Set("x-api-key", c.apiKey)
 	}
 	return c.http.Do(req)
+}
+
+func (c *Client) endpoint(path string) (string, error) {
+	base, err := url.Parse(strings.TrimRight(c.apiBase, "/") + "/")
+	if err != nil {
+		return "", err
+	}
+	if base.Scheme != "http" && base.Scheme != "https" {
+		return "", fmt.Errorf("ai api base must use http or https")
+	}
+	if base.Host == "" {
+		return "", fmt.Errorf("ai api base host is required")
+	}
+	ref := &url.URL{Path: strings.TrimPrefix(path, "/")}
+	return base.ResolveReference(ref).String(), nil
+}
+
+func (c *Client) urlPolicy() netguard.URLPolicy {
+	return netguard.URLPolicy{
+		Purpose:        "AI API base",
+		HostPurpose:    "AI API base",
+		AllowedSchemes: []string{"http", "https"},
+		AllowPrivate:   c.allowPrivate,
+	}
 }
 
 func normalizeProvider(provider string) string {

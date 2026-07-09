@@ -113,6 +113,93 @@ func TestProtectionSecretUpdatesPreserveExistingValuesWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestUpdateProtectionPolicyMergesPartialPayload(t *testing.T) {
+	cfg := config.Default()
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelSmart,
+		APISecurity: config.ProtectionLevelHigh,
+		BotCC:       config.ProtectionLevelLow,
+		ThreatIntel: config.ProtectionLevelStrict,
+	}
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var reloaded config.ProtectionConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnProtectionChanged: func(next config.ProtectionConfig) error {
+			reloaded = next
+			return nil
+		},
+	})
+
+	raw, _ := json.Marshal(map[string]string{"web_attack": config.ProtectionLevelStrict})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/protection/policy", bytes.NewReader(raw))
+	handler.UpdateProtectionPolicy(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected policy update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	expected := config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelStrict,
+		APISecurity: config.ProtectionLevelHigh,
+		BotCC:       config.ProtectionLevelLow,
+		ThreatIntel: config.ProtectionLevelStrict,
+	}
+	if cfg.Protection.Policy != expected {
+		t.Fatalf("partial update did not preserve existing policy: got %+v want %+v", cfg.Protection.Policy, expected)
+	}
+	if reloaded.Policy != expected {
+		t.Fatalf("reload callback received wrong policy: got %+v want %+v", reloaded.Policy, expected)
+	}
+	if !strings.Contains(recorder.Body.String(), `"api_security":"high"`) ||
+		!strings.Contains(recorder.Body.String(), `"bot_cc":"low"`) ||
+		!strings.Contains(recorder.Body.String(), `"threat_intel":"strict"`) {
+		t.Fatalf("response did not include preserved policy fields: %s", recorder.Body.String())
+	}
+}
+
+func TestThreatIntelProviderTestUsesSavedSecretByProviderID(t *testing.T) {
+	var gotAPIKey string
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey = r.Header.Get("X-API-Key")
+		_, _ = w.Write([]byte("203.0.113.77\n"))
+	}))
+	t.Cleanup(providerServer.Close)
+	withThreatIntelHTTPClient(t, providerServer.Client())
+	withThreatIntelProviderURLValidator(t, url.Parse)
+
+	cfg := config.Default()
+	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
+		ID:       "saved",
+		Name:     "Saved Feed",
+		Type:     "generic",
+		Endpoint: providerServer.URL,
+		APIKey:   "saved-provider-key",
+		AuthType: "header",
+		Format:   "cidr",
+		Action:   "log",
+		Enabled:  true,
+	}}
+	handler := New(Options{Config: &cfg})
+
+	raw, _ := json.Marshal(map[string]any{"provider_id": "saved", "api_key": ""})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ip/threat-intel/test", bytes.NewReader(raw))
+	handler.TestThreatIntelProvider(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected provider test ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if gotAPIKey != "saved-provider-key" {
+		t.Fatalf("expected saved API key to be reused, got %q", gotAPIKey)
+	}
+	if !strings.Contains(recorder.Body.String(), `"count":1`) {
+		t.Fatalf("expected parsed count in response, body=%s", recorder.Body.String())
+	}
+}
+
 func TestImportThreatIntelNotifiesProtectionReload(t *testing.T) {
 	cfg := config.Default()
 	cfg.Protection.IP.Whitelist = nil

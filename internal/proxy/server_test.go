@@ -397,6 +397,136 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 			t.Fatalf("unexpected challenge decision: %#v", sink.entries[0].Metadata)
 		}
 	})
+
+	t.Run("smart uses aggregate evidence when single result is below direct threshold", func(t *testing.T) {
+		sqli := *result
+		sqli.DetectorID = "semantic.sqli"
+		sqli.Confidence = 0.82
+		xss := *result
+		xss.DetectorID = "semantic.xss"
+		xss.Category = "xss"
+		xss.Severity = engine.SeverityMedium
+		xss.Confidence = 0.75
+		xss.Payload = "<svg onload=alert(1)>"
+		server, sink, cleanup := newPolicyTestServerWithDetectors(t, config.ProtectionLevelSmart,
+			staticDetector{result: &sqli, priority: 300},
+			staticDetector{result: &xss, priority: 310},
+		)
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected aggregate evidence block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "block" || sink.entries[0].Category != "sqli" {
+			t.Fatalf("unexpected aggregate evidence log entry: %#v", sink.entries)
+		}
+		decision, ok := sink.entries[0].Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+		if !ok {
+			t.Fatalf("missing aggregate policy decision: %#v", sink.entries[0].Metadata)
+		}
+		if decision.Reason != "aggregate risk score meets policy threshold" || decision.EvidenceCount != 2 || decision.RiskScore < decision.MinimumRiskScore {
+			t.Fatalf("unexpected aggregate policy decision: %#v", decision)
+		}
+	})
+
+	t.Run("low keeps aggregate evidence as log below conservative threshold", func(t *testing.T) {
+		sqli := *result
+		sqli.DetectorID = "semantic.sqli"
+		sqli.Confidence = 0.82
+		xss := *result
+		xss.DetectorID = "semantic.xss"
+		xss.Category = "xss"
+		xss.Severity = engine.SeverityMedium
+		xss.Confidence = 0.75
+		xss.Payload = "<svg onload=alert(1)>"
+		server, sink, cleanup := newPolicyTestServerWithDetectors(t, config.ProtectionLevelLow,
+			staticDetector{result: &sqli, priority: 300},
+			staticDetector{result: &xss, priority: 310},
+		)
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected low policy to avoid aggregate block, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "log" {
+			t.Fatalf("unexpected conservative aggregate entries: %#v", sink.entries)
+		}
+		decision, ok := sink.entries[0].Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+		if !ok {
+			t.Fatalf("missing conservative aggregate policy decision: %#v", sink.entries[0].Metadata)
+		}
+		if decision.Action != engine.ActionLog.String() || decision.RiskScore >= decision.MinimumRiskScore || decision.EvidenceCount != 2 {
+			t.Fatalf("unexpected conservative aggregate policy decision: %#v", decision)
+		}
+	})
+
+	t.Run("aggregate evidence deduplicates analyzer and detector for same payload", func(t *testing.T) {
+		analyzer := engine.DetectionResult{
+			Detected:   true,
+			DetectorID: "semantic.analyzer.sqli",
+			Category:   "sqli",
+			Severity:   engine.SeverityHigh,
+			Action:     engine.ActionBlock,
+			Message:    "syntax: boolean predicate; semantics: tautology",
+			Confidence: 0.82,
+			Payload:    "id=1 or 1=1",
+		}
+		legacy := analyzer
+		legacy.DetectorID = "semantic.sql"
+		legacy.Message = "SQL injection pattern matched"
+		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, &analyzer, []engine.DetectionResult{analyzer, legacy})
+		if decision.EvidenceCount != 1 {
+			t.Fatalf("expected duplicate analyzer/legacy evidence to count once, got %#v", decision)
+		}
+		if decision.Action != engine.ActionLog.String() || decision.RiskScore >= decision.MinimumRiskScore {
+			t.Fatalf("duplicate evidence should not inflate smart policy to block, got %#v", decision)
+		}
+	})
+}
+
+func TestWebAttackPolicyThresholdsAreMonotonic(t *testing.T) {
+	levels := []struct {
+		level     string
+		paranoia  int
+		severity  engine.Severity
+		conf      float64
+		riskScore int
+	}{
+		{level: config.ProtectionLevelLow, paranoia: 1, severity: engine.SeverityCritical, conf: 0.90, riskScore: 90},
+		{level: config.ProtectionLevelSmart, paranoia: 2, severity: engine.SeverityHigh, conf: 0.85, riskScore: 73},
+		{level: config.ProtectionLevelHigh, paranoia: 3, severity: engine.SeverityMedium, conf: 0.78, riskScore: 48},
+		{level: config.ProtectionLevelStrict, paranoia: 4, severity: engine.SeverityLow, conf: 0.65, riskScore: 23},
+	}
+
+	var previousSeverity engine.Severity
+	var previousConfidence float64
+	var previousRiskScore int
+	for index, tc := range levels {
+		severity, confidence := webAttackThreshold(tc.level)
+		riskScore := webAttackRiskThreshold(tc.level)
+		paranoia := webAttackParanoiaLevel(tc.level)
+		if severity != tc.severity || confidence != tc.conf || riskScore != tc.riskScore || paranoia != tc.paranoia {
+			t.Fatalf("unexpected threshold for %s: severity=%s confidence=%.2f risk=%d paranoia=%d", tc.level, severity, confidence, riskScore, paranoia)
+		}
+		if index > 0 {
+			if severity > previousSeverity {
+				t.Fatalf("level %s should not require higher severity than previous level", tc.level)
+			}
+			if confidence > previousConfidence {
+				t.Fatalf("level %s should not require higher confidence than previous level", tc.level)
+			}
+			if riskScore > previousRiskScore {
+				t.Fatalf("level %s should not require higher aggregate risk than previous level", tc.level)
+			}
+		}
+		previousSeverity = severity
+		previousConfidence = confidence
+		previousRiskScore = riskScore
+	}
 }
 
 func TestServerThreatIntelPolicyLevels(t *testing.T) {
@@ -976,17 +1106,28 @@ func (s *captureSink) Flush(context.Context) error { return nil }
 func (s *captureSink) Close() error                { return nil }
 
 type staticDetector struct {
-	result *engine.DetectionResult
+	result   *engine.DetectionResult
+	priority int
 }
 
-func (d staticDetector) ID() string    { return "test.semantic" }
-func (d staticDetector) Name() string  { return "Test Semantic Detector" }
-func (d staticDetector) Priority() int { return 1 }
+func (d staticDetector) ID() string   { return "test.semantic" }
+func (d staticDetector) Name() string { return "Test Semantic Detector" }
+func (d staticDetector) Priority() int {
+	if d.priority != 0 {
+		return d.priority
+	}
+	return 1
+}
 func (d staticDetector) Detect(context.Context, *engine.RequestContext) (*engine.DetectionResult, error) {
 	return d.result, nil
 }
 
 func newPolicyTestServer(t *testing.T, level string, result *engine.DetectionResult) (*Server, *captureSink, func()) {
+	t.Helper()
+	return newPolicyTestServerWithDetectors(t, level, staticDetector{result: result})
+}
+
+func newPolicyTestServerWithDetectors(t *testing.T, level string, detectors ...engine.Detector) (*Server, *captureSink, func()) {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -998,7 +1139,7 @@ func newPolicyTestServer(t *testing.T, level string, result *engine.DetectionRes
 	cfg.Protection.IP.Blacklist = nil
 	cfg.Protection.RateLimit.Enabled = false
 	sink := &captureSink{}
-	server, err := NewServer(&cfg, engine.NewPipeline(staticDetector{result: result}), sink)
+	server, err := NewServer(&cfg, engine.NewPipeline(detectors...), sink)
 	if err != nil {
 		upstream.Close()
 		t.Fatal(err)

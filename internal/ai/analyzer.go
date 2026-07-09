@@ -146,13 +146,37 @@ func AnalyzeEventsWithLanguage(ctx context.Context, client *Client, entries []st
 	return out, nil
 }
 
+func AnalyzeEventsWithLanguageStream(ctx context.Context, client *Client, entries []storage.LogEntry, language string, emit StreamEmitter, emitAnalysis func(AttackAnalysis)) ([]AttackAnalysis, error) {
+	out := make([]AttackAnalysis, 0, len(entries))
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		if !isSecurityEvent(entry) {
+			continue
+		}
+		analysis, err := AnalyzeLogWithLanguageStream(ctx, client, entry, language, emit)
+		if err != nil {
+			return out, err
+		}
+		if analysis == nil {
+			continue
+		}
+		out = append(out, *analysis)
+		if emitAnalysis != nil {
+			emitAnalysis(*analysis)
+		}
+	}
+	return out, nil
+}
+
 func appendAIAnalysisFailure(summary, language string, err error) string {
 	if err == nil {
 		return summary
 	}
-	message := "AI provider request failed; showing local deterministic WAF analysis. Provider error: " + err.Error()
+	message := "AI service provider request failed; showing local deterministic WAF analysis. Provider error: " + err.Error()
 	if strings.Contains(strings.ToLower(language), "zh") {
-		message = "AI provider 请求失败；已显示本地确定性 WAF 分析。Provider 错误：" + err.Error()
+		message = "AI 服务商请求失败；已显示本地确定性 WAF 分析。服务商错误：" + err.Error()
 	}
 	if strings.TrimSpace(summary) == "" {
 		return message
@@ -715,7 +739,7 @@ func eventType(entry storage.LogEntry) string {
 
 func isHighSignalCategory(category string) bool {
 	switch strings.ToLower(category) {
-	case "sqli", "sql", "rce", "xxe", "ssrf", "webshell":
+	case "sqli", "sql", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti", "webshell":
 		return true
 	default:
 		return false
@@ -723,7 +747,35 @@ func isHighSignalCategory(category string) bool {
 }
 
 func isSecurityEvent(entry storage.LogEntry) bool {
-	return strings.TrimSpace(entry.Category) != "" || entry.Action == "block" || entry.Action == "challenge" || entry.Action == "log"
+	action := strings.ToLower(strings.TrimSpace(entry.Action))
+	category := strings.ToLower(strings.TrimSpace(entry.Category))
+	if action == "block" || action == "challenge" {
+		return true
+	}
+	if category == "" {
+		return action == "log"
+	}
+	if isBenignLogCategory(category) {
+		return false
+	}
+	if isHighSignalCategory(category) || action == "log" {
+		return true
+	}
+	switch category {
+	case "threat_intel", "ip_access", "geoip", "acl", "bot", "cc", "ratelimit", "api_security", "protocol_enforcement", "custom_rule":
+		return true
+	default:
+		return false
+	}
+}
+
+func isBenignLogCategory(category string) bool {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "", "normal", "access", "pass", "cache", "cache_hit", "redirect", "health", "proxy_error":
+		return true
+	default:
+		return false
+	}
 }
 
 func securityEvents(entries []storage.LogEntry) []storage.LogEntry {
