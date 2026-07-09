@@ -1,0 +1,3516 @@
+/* Migrated from global.css: attack map and attack screen rules. */
+.attack-map-page {
+  gap: 16px;
+  --attack-risk-high: var(--accent-warning);
+  --attack-on-risk: var(--accent-contrast);
+  --attack-highlight-white: var(--highlight-color);
+}
+
+.attack-map-page .attack-map-header {
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.attack-map-page .attack-map-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  flex: 1 1 560px;
+  min-width: 0;
+  max-width: 720px;
+}
+
+.attack-map-page .attack-map-toolbar .map-controls {
+  width: 100%;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 10px;
+}
+
+.attack-map-page .map-workbench {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.attack-map-page .map-workbench-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  min-width: 0;
+  padding: 0 2px;
+}
+
+.attack-map-page .map-workbench-header .map-legend,
+.attack-map-page .map-workbench-header .map-risk-legend {
+  position: static;
+  left: auto;
+  top: auto;
+  bottom: auto;
+  transform: none;
+  margin: 0;
+}
+
+.attack-map-page .map-workbench-header .map-legend {
+  min-width: min(360px, 100%);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  backdrop-filter: none;
+}
+
+.attack-map-page .map-workbench-header .map-legend strong {
+  display: inline-block;
+  min-width: 38px;
+  font-size: 22px;
+}
+
+.attack-map-page .map-workbench-header .map-legend span {
+  display: inline-block;
+  margin-left: 8px;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.attack-map-page .map-workbench-header .map-legend small {
+  display: inline-block;
+  margin-left: 10px;
+}
+
+.attack-map-page .map-workbench-header .map-risk-legend {
+  justify-content: flex-end;
+  max-width: min(100%, 520px);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--app-bg));
+  border-color: color-mix(in srgb, var(--border) 88%, var(--accent-info) 8%);
+  box-shadow: var(--shadow);
+}
+
+.attack-map-page .map-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attack-map-page .map-control-group {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.attack-map-page .map-mode-switch {
+  flex: 0 0 auto;
+}
+
+.attack-map-page .map-controls .arco-radio-group {
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attack-map-page .map-controls .arco-radio,
+.attack-map-page .map-controls .arco-radio-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.attack-map-page .map-mode-switch .arco-radio-group {
+  gap: 4px;
+}
+
+.attack-map-page .map-mode-switch .arco-radio-button {
+  min-width: 54px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px !important;
+  color: var(--text-muted);
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.attack-map-page .map-mode-switch .arco-radio-button::before,
+.attack-map-page .map-mode-switch .arco-radio-button::after {
+  display: none !important;
+}
+
+.attack-map-page .map-mode-switch .arco-radio-checked,
+.attack-map-page .map-mode-switch .arco-radio-button-checked {
+  color: var(--accent-strong) !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent-soft) 74%, var(--surface)),
+    var(--surface)
+  ) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)) !important;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--attack-highlight-white) 72%, transparent)
+      inset,
+    0 8px 18px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.attack-map-page .attack-map-table .arco-table {
+  min-width: 820px;
+}
+
+.attack-map-page .attack-map-table .arco-spin,
+.attack-map-page .attack-map-table .arco-spin-children {
+  min-width: 0;
+}
+
+.attack-map-page .attack-map-table .arco-table-th,
+.attack-map-page .attack-map-table .arco-table-td {
+  white-space: nowrap;
+}
+
+.attack-map-page .attack-map-table .arco-table-body .arco-table-tr {
+  cursor: pointer;
+}
+
+.attack-map-page .attack-map-table .attack-region-row-selected .arco-table-td {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent-info) 12%, transparent),
+      color-mix(in srgb, var(--accent) 7%, transparent)
+    ) !important;
+}
+
+.attack-map-page .attack-map-table .attack-region-row-selected .arco-table-td:first-child {
+  box-shadow: 3px 0 0 var(--accent-info) inset;
+}
+
+.attack-map-page .attack-region-card {
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.attack-map-page .attack-region-card:hover,
+.attack-map-page .attack-region-card:focus-visible {
+  border-color: color-mix(in srgb, var(--accent-info) 42%, var(--border));
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--shadow-color) 70%, transparent);
+}
+
+.attack-map-page .attack-region-card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-info) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.attack-map-page .attack-region-card-selected {
+  border-color: color-mix(in srgb, var(--accent-info) 54%, var(--border));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent-info) 10%, var(--surface)),
+      color-mix(in srgb, var(--accent) 6%, var(--surface))
+    );
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-info) 18%, transparent) inset;
+}
+
+.attack-map-page .map-canvas {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: clamp(500px, 50vw, 690px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent-info) 16%, var(--border));
+  border-radius: 12px;
+  background:
+    radial-gradient(
+      circle at 52% 50%,
+      color-mix(in srgb, var(--accent-info) 9%, transparent),
+      transparent 39%
+    ),
+    radial-gradient(
+      circle at 22% 16%,
+      color-mix(in srgb, var(--accent-info) 7%, transparent),
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at 74% 22%,
+      color-mix(in srgb, var(--accent) 6%, transparent),
+      transparent 32%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-soft) 72%, var(--surface)),
+      var(--surface)
+    );
+  background-color: var(--surface);
+  box-shadow:
+    0 26px 80px color-mix(in srgb, var(--shadow-color) 70%, transparent),
+    0 1px 0 color-mix(in srgb, var(--highlight-color) 72%, transparent) inset;
+  isolation: isolate;
+  touch-action: none;
+}
+
+.attack-map-page .map-canvas::before {
+  position: absolute;
+  inset: 22px;
+  content: "";
+  pointer-events: none;
+  border-radius: 12px;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0 49.94%,
+      color-mix(in srgb, var(--accent-info) 3%, transparent) 50%,
+      transparent 50.06%
+    ),
+    linear-gradient(
+      0deg,
+      transparent 0 49.94%,
+      color-mix(in srgb, var(--accent-info) 3%, transparent) 50%,
+      transparent 50.06%
+    );
+  opacity: 0.22;
+}
+
+.attack-map-page .map-controls .arco-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+
+.attack-map-page .map-can-pan {
+  cursor: grab;
+}
+
+.attack-map-page .map-panning {
+  cursor: grabbing;
+}
+
+.attack-map-page .flat-map-stage,
+.attack-map-page .globe-stage {
+  position: absolute;
+  inset: clamp(18px, 2.4vw, 30px);
+  display: grid;
+  place-items: center;
+}
+
+.attack-map-page .flat-map-stage {
+  transform: translate3d(var(--map-pan-x, 0), var(--map-pan-y, 0), 0)
+    scale(var(--map-zoom, 1));
+  transform-origin: center;
+  transition: transform 120ms ease;
+  will-change: auto;
+}
+
+.attack-map-page .map-panning .flat-map-stage {
+  will-change: transform;
+}
+
+.attack-map-page .flat-map-stage::after {
+  position: absolute;
+  inset: auto 7% 4% 7%;
+  z-index: -1;
+  height: 15%;
+  content: "";
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--text) 8%, transparent),
+    transparent 72%
+  );
+  filter: blur(8px);
+  opacity: 0.44;
+}
+
+.attack-map-page .world-map-svg {
+  width: min(100%, 1220px);
+  height: auto;
+  max-height: 100%;
+  filter: drop-shadow(
+    0 18px 30px color-mix(in srgb, var(--text) 8%, transparent)
+  );
+}
+
+.attack-map-page .map-mode-china {
+  background:
+    radial-gradient(
+      circle at 50% 44%,
+      color-mix(in srgb, var(--accent-info) 8%, transparent),
+      transparent 40%
+    ),
+    radial-gradient(
+      circle at 63% 63%,
+      color-mix(in srgb, var(--accent-danger) 5%, transparent),
+      transparent 28%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-soft) 88%, var(--surface)),
+      var(--surface)
+    );
+}
+
+.attack-map-page .map-mode-china .flat-map-stage {
+  inset: clamp(16px, 2.4vw, 28px);
+}
+
+.attack-map-page .map-mode-2d > .flat-map-stage,
+.attack-map-page .map-mode-china > .flat-map-stage {
+  inset: auto;
+  left: 50%;
+  top: 50%;
+  height: auto;
+  transform: translate(-50%, -50%)
+    translate3d(var(--map-pan-x, 0), var(--map-pan-y, 0), 0)
+    scale(var(--map-zoom, 1));
+}
+
+.attack-map-page .map-mode-2d > .flat-map-stage {
+  width: min(calc(100% - clamp(36px, 5vw, 60px)), 1220px);
+  aspect-ratio: 2 / 1;
+}
+
+.attack-map-page .map-mode-china > .flat-map-stage {
+  width: min(calc(100% - clamp(36px, 5vw, 58px)), 1010px);
+  aspect-ratio: 960 / 620;
+}
+
+.attack-map-page .map-mode-2d > .flat-map-stage .world-map-svg,
+.attack-map-page .map-mode-china > .flat-map-stage .world-map-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.attack-map-page .map-ocean {
+  fill: color-mix(in srgb, var(--accent-info) 6%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-info) 20%, var(--border));
+  stroke-width: 1;
+}
+
+.attack-map-page .map-graticule {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent-strong) 19%, transparent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.attack-map-page .map-land path {
+  fill: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-strong) 42%, var(--border));
+  stroke-width: 1.35;
+  vector-effect: non-scaling-stroke;
+  transition:
+    fill 160ms ease,
+    stroke 160ms ease,
+    opacity 160ms ease;
+}
+
+.attack-map-page .map-land path.map-risk-neutral {
+  fill: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+
+.attack-map-page .world-map-svg-continent .map-land path.map-risk-neutral {
+  opacity: 0.72;
+}
+
+.attack-map-page .china-map-svg {
+  width: min(100%, 1040px);
+  max-height: 100%;
+  overflow: visible;
+  color: var(--accent-info);
+}
+
+.attack-map-page .china-map-ocean {
+  fill: color-mix(in srgb, var(--surface-soft) 88%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-info) 14%, var(--border));
+}
+
+.attack-map-page .china-map-graticule {
+  opacity: 0.26;
+  stroke-width: 0.75;
+}
+
+.attack-map-page .china-focus-field {
+  fill: color-mix(in srgb, var(--surface) 86%, var(--accent-info) 5%);
+  stroke: color-mix(in srgb, var(--accent-info) 18%, var(--border));
+  stroke-width: 1;
+  filter: drop-shadow(
+    0 16px 34px color-mix(in srgb, var(--accent-info) 7%, transparent)
+  );
+  vector-effect: non-scaling-stroke;
+}
+
+.attack-map-page .china-posture-layer {
+  filter: drop-shadow(
+    0 12px 22px color-mix(in srgb, var(--text) 6%, transparent)
+  );
+}
+
+.attack-map-page .china-outline-layer {
+  filter: drop-shadow(
+    0 10px 20px color-mix(in srgb, var(--accent-info) 10%, transparent)
+  );
+}
+
+.attack-map-page .china-outline-path {
+  fill: color-mix(in srgb, var(--surface) 84%, var(--accent-info) 6%);
+  stroke: color-mix(in srgb, var(--text-muted) 64%, var(--accent-info));
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.attack-map-page .china-outline-path.map-risk-low {
+  fill: color-mix(in srgb, var(--accent-info) 10%, var(--surface));
+}
+
+.attack-map-page .china-outline-path.map-risk-medium {
+  fill: color-mix(in srgb, var(--accent-warning) 12%, var(--surface));
+}
+
+.attack-map-page .china-outline-path.map-risk-high {
+  fill: color-mix(in srgb, var(--attack-risk-high) 12%, var(--surface));
+}
+
+.attack-map-page .china-outline-path.map-risk-critical {
+  fill: color-mix(in srgb, var(--accent-danger) 14%, var(--surface));
+}
+
+.attack-map-page .china-posture-cell {
+  fill: color-mix(in srgb, var(--accent-info) 4%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-info) 18%, var(--border));
+  stroke-width: 0.95;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.7;
+}
+
+.attack-map-page .china-posture-cell-2 {
+  fill: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.attack-map-page .china-posture-cell-3 {
+  fill: color-mix(in srgb, var(--accent-warning) 7%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-warning) 18%, var(--border));
+}
+
+.attack-map-page .china-focus-rings ellipse {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent-info) 20%, var(--border));
+  stroke-width: 0.85;
+  stroke-dasharray: 6 14;
+  opacity: 0.34;
+  vector-effect: non-scaling-stroke;
+}
+
+.attack-map-page .china-heat-layer ellipse {
+  fill: url("#china-posture-glow");
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.attack-map-page .china-attack-pulse {
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  opacity: 0.1;
+  vector-effect: non-scaling-stroke;
+}
+
+.attack-map-page .china-attack-pulse.map-risk-low {
+  color: var(--accent-info);
+}
+
+.attack-map-page .china-attack-pulse.map-risk-medium {
+  color: var(--accent-warning);
+}
+
+.attack-map-page .china-attack-pulse.map-risk-high {
+  color: var(--attack-risk-high);
+}
+
+.attack-map-page .china-attack-pulse.map-risk-critical {
+  color: var(--accent-danger);
+  opacity: 0.16;
+}
+
+.attack-map-page .china-boundary-path {
+  fill: color-mix(in srgb, var(--accent-info) 6%, transparent);
+  stroke: color-mix(in srgb, var(--text) 54%, var(--accent-info));
+  stroke-width: 1.55;
+  vector-effect: non-scaling-stroke;
+}
+
+.attack-map-page .china-focus-reference {
+  color: color-mix(in srgb, var(--text-muted) 84%, var(--text));
+  font-size: 11px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+.attack-map-page .china-focus-reference circle {
+  fill: color-mix(
+    in srgb,
+    var(--accent-info) 66%,
+    var(--attack-highlight-white)
+  );
+  stroke: color-mix(in srgb, var(--surface) 86%, transparent);
+  stroke-width: 1.5;
+  filter: drop-shadow(
+    0 0 6px color-mix(in srgb, var(--accent-info) 32%, transparent)
+  );
+  vector-effect: non-scaling-stroke;
+}
+
+.attack-map-page .china-focus-reference text {
+  fill: currentColor;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--surface) 84%, transparent);
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+}
+
+.attack-map-page .china-map-labels {
+  color: color-mix(in srgb, var(--text-muted) 88%, var(--text));
+  font-size: 13px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+.attack-map-page .china-map-labels circle {
+  fill: color-mix(in srgb, var(--surface) 94%, transparent);
+  stroke: color-mix(in srgb, var(--accent-info) 52%, var(--border));
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.attack-map-page .china-map-labels text {
+  fill: currentColor;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--surface) 84%, transparent);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.attack-map-page .map-land path.map-risk-low {
+  fill: color-mix(in srgb, var(--accent-info) 26%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-info) 52%, var(--border));
+}
+
+.attack-map-page .map-land path.map-risk-medium {
+  fill: color-mix(in srgb, var(--accent-warning) 30%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-warning) 58%, var(--border));
+}
+
+.attack-map-page .map-land path.map-risk-high {
+  fill: color-mix(in srgb, var(--attack-risk-high) 34%, var(--surface));
+  stroke: color-mix(in srgb, var(--attack-risk-high) 64%, var(--border));
+}
+
+.attack-map-page .map-land path.map-risk-critical {
+  fill: color-mix(in srgb, var(--accent-danger) 38%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-danger) 68%, var(--border));
+}
+
+.attack-map-page .globe-stage {
+  position: absolute;
+  cursor: grab;
+  touch-action: none;
+}
+
+.attack-map-page .globe-stage-light {
+  background: transparent;
+}
+
+.attack-map-page .globe-stage-light canvas {
+  background: transparent !important;
+}
+
+.attack-map-page .globe-stage-dark {
+  background: transparent;
+}
+
+.attack-map-page .map-canvas.map-mode-3d {
+  background:
+    radial-gradient(
+      circle at 50% 44%,
+      color-mix(in srgb, var(--accent-info) 11%, transparent),
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at 28% 22%,
+      color-mix(in srgb, var(--accent) 7%, transparent),
+      transparent 32%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-soft) 88%, var(--surface)),
+      var(--surface)
+    );
+  background-color: var(--surface);
+}
+
+:root[data-theme="dark"] .attack-map-page .map-canvas.map-mode-3d,
+:root[data-theme="black-gold"] .attack-map-page .map-canvas.map-mode-3d {
+  background:
+    radial-gradient(
+      circle at 50% 45%,
+      color-mix(in srgb, var(--accent-info) 22%, transparent),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 30% 20%,
+      color-mix(in srgb, var(--accent) 18%, transparent),
+      transparent 30%
+    ),
+    var(--map-canvas-3d-bg);
+  background-color: var(--surface-soft);
+}
+
+.attack-map-page .globe-stage canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.attack-map-page .map-legend,
+.attack-map-page .map-empty {
+  position: absolute;
+  z-index: 4;
+  left: 18px;
+  top: 18px;
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+}
+
+.attack-map-page .map-workbench-header .map-empty {
+  position: static;
+  left: auto;
+  top: auto;
+  transform: none;
+}
+
+.attack-map-page .map-legend strong {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.attack-map-page .map-legend span,
+.attack-map-page .map-legend small,
+.attack-map-page .map-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.attack-map-page .map-legend small {
+  display: block;
+}
+
+.attack-map-page .map-risk-legend {
+  position: absolute;
+  z-index: 4;
+  left: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100% - 36px);
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+}
+
+.attack-map-page .map-risk-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.attack-map-page .map-risk-dot::before {
+  width: 10px;
+  height: 10px;
+  content: "";
+  border-radius: 999px;
+  background: var(--risk-color, var(--accent-info));
+  box-shadow: 0 0 0 4px
+    color-mix(in srgb, var(--risk-color, var(--accent-info)) 14%, transparent);
+}
+
+:root[data-theme="dark"] .attack-map-page .map-mode-3d .map-legend,
+:root[data-theme="dark"] .attack-map-page .map-mode-3d .map-risk-legend,
+:root[data-theme="black-gold"] .attack-map-page .map-mode-3d .map-legend,
+:root[data-theme="black-gold"] .attack-map-page .map-mode-3d .map-risk-legend {
+  color: color-mix(
+    in srgb,
+    var(--attack-highlight-white) 88%,
+    var(--accent-info)
+  );
+  background: color-mix(in srgb, var(--app-bg) 72%, transparent);
+  border-color: color-mix(in srgb, var(--accent-info) 26%, transparent);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--shadow-color) 24%, transparent);
+}
+
+:root[data-theme="dark"] .attack-map-page .map-mode-3d .map-legend span,
+:root[data-theme="dark"] .attack-map-page .map-mode-3d .map-legend small,
+:root[data-theme="dark"] .attack-map-page .map-mode-3d .map-risk-dot,
+:root[data-theme="black-gold"] .attack-map-page .map-mode-3d .map-legend span,
+:root[data-theme="black-gold"] .attack-map-page .map-mode-3d .map-legend small,
+:root[data-theme="black-gold"] .attack-map-page .map-mode-3d .map-risk-dot {
+  color: color-mix(
+    in srgb,
+    var(--attack-highlight-white) 72%,
+    var(--accent-info)
+  );
+}
+
+.attack-map-page .map-risk-low {
+  --risk-color: var(--accent-info);
+}
+
+.attack-map-page .map-risk-medium {
+  --risk-color: var(--accent-warning);
+}
+
+.attack-map-page .map-risk-high {
+  --risk-color: var(--attack-risk-high);
+}
+
+.attack-map-page .map-risk-critical {
+  --risk-color: var(--accent-danger);
+}
+
+.attack-map-page .map-empty {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.attack-map-page .map-marker {
+  position: absolute;
+  z-index: 5;
+  width: var(--marker-size, 13px);
+  height: var(--marker-size, 13px);
+  display: inline-grid;
+  place-items: center;
+  align-items: center;
+  transform: translate(-50%, -50%);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  text-shadow: 0 1px 8px var(--surface);
+  pointer-events: auto;
+  cursor: default;
+  filter: drop-shadow(
+    0 8px 18px
+      color-mix(in srgb, var(--risk-color, var(--accent-info)) 22%, transparent)
+  );
+}
+
+.attack-map-page .map-marker > span {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  display: inline-grid;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 6px;
+  max-width: min(240px, 34vw);
+  padding: 5px 7px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--app-bg));
+  border: 1px solid
+    color-mix(in srgb, var(--risk-color, var(--accent-info)) 38%, var(--border));
+  border-radius: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(-4px);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+  backdrop-filter: blur(8px);
+}
+
+.attack-map-page .map-marker > span strong {
+  min-width: max-content;
+  white-space: nowrap;
+}
+
+.attack-map-page .map-marker em {
+  min-width: 22px;
+  padding: 1px 5px;
+  color: var(--attack-on-risk);
+  background: var(--risk-color, var(--accent-info));
+  border-radius: 999px;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.attack-map-page .map-marker small {
+  display: none;
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.attack-map-page .map-marker i {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--risk-color, var(--accent-info));
+  box-shadow: 0 0 0 8px
+    color-mix(in srgb, var(--risk-color, var(--accent-info)) 18%, transparent);
+}
+
+.attack-map-page .map-marker i::after {
+  position: absolute;
+  inset: -8px;
+  content: "";
+  border: 1px solid
+    color-mix(in srgb, var(--risk-color, var(--accent-info)) 48%, transparent);
+  border-radius: inherit;
+  animation: map-marker-pulse 1.9s ease-out infinite;
+}
+
+.attack-map-page .map-marker-detailed > span {
+  grid-auto-flow: row;
+  align-items: start;
+  min-width: 128px;
+}
+
+.attack-map-page .map-marker-detailed > span strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attack-map-page .map-marker:hover > span,
+.attack-map-page .map-marker:focus-visible > span,
+.attack-map-page .map-marker-detailed > span {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+.attack-map-page .map-marker:focus-visible {
+  outline: 2px solid
+    color-mix(
+      in srgb,
+      var(--risk-color, var(--accent-info)) 72%,
+      var(--attack-highlight-white)
+    );
+  outline-offset: 8px;
+}
+
+.attack-map-page .map-marker-detailed em {
+  justify-self: start;
+}
+
+.attack-map-page .map-marker-detailed small {
+  display: block;
+}
+
+.attack-map-page .map-marker-label-left > span {
+  right: calc(100% + 10px);
+  left: auto;
+  transform: translateY(-50%) translateX(4px);
+}
+
+.attack-map-page .map-marker-label-left:hover > span,
+.attack-map-page .map-marker-label-left:focus-visible > span,
+.attack-map-page .map-marker-label-left.map-marker-detailed > span {
+  transform: translateY(-50%) translateX(0);
+}
+
+.attack-map-page .map-marker-label-bottom > span {
+  left: 50%;
+  top: calc(100% + 10px);
+  transform: translateX(-50%) translateY(-4px);
+}
+
+.attack-map-page .map-marker-label-bottom:hover > span,
+.attack-map-page .map-marker-label-bottom:focus-visible > span,
+.attack-map-page .map-marker-label-bottom.map-marker-detailed > span {
+  transform: translateX(-50%) translateY(0);
+}
+
+.attack-map-page .attack-region-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.attack-map-page .attack-region-detail-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.attack-map-page .attack-region-detail-summary span:first-child {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.attack-map-page .attack-region-detail-summary span:last-child {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.attack-map-page .attack-region-event-list {
+  display: grid;
+  gap: 8px;
+}
+
+.attack-map-page .attack-region-event {
+  min-width: 0;
+  display: grid;
+  grid-template-columns:
+    minmax(110px, 0.8fr) minmax(90px, auto) minmax(110px, auto)
+    minmax(220px, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.attack-map-page .attack-region-event code,
+.attack-map-page .attack-region-event span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attack-map-page .attack-region-event span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.attack-screen {
+  --attack-screen-text: #c8f7ff;
+  --attack-screen-cyan: #24cfff;
+  --attack-screen-live: #28f1d3;
+  --attack-screen-blue: #38d9ff;
+  --attack-screen-warn: #ff7256;
+  --attack-screen-track-start: #24cfff;
+  --attack-screen-track-end: #ff7256;
+  --attack-screen-glow: #04d9ff;
+  --attack-highlight-white: #ffffff;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr);
+  color: var(--attack-screen-text);
+  background:
+    radial-gradient(
+      circle at 50% 40%,
+      rgba(0, 179, 255, 0.16),
+      transparent 36%
+    ),
+    radial-gradient(
+      circle at 72% 20%,
+      rgba(255, 91, 55, 0.12),
+      transparent 28%
+    ),
+    linear-gradient(180deg, #06101e, #020611 62%, #01030a);
+  font-family: var(--mono-font);
+  letter-spacing: 0;
+  overflow: hidden;
+}
+
+.attack-screen::before {
+  position: fixed;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.72) 0 1px, transparent 1.4px),
+    linear-gradient(rgba(48, 196, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(48, 196, 255, 0.06) 1px, transparent 1px);
+  background-position:
+    0 0,
+    0 0,
+    0 0;
+  background-size:
+    94px 94px,
+    76px 76px,
+    76px 76px;
+  opacity: 0.32;
+}
+
+.attack-screen-rail,
+.attack-screen-topbar,
+.attack-screen-panel,
+.attack-screen-globe {
+  position: relative;
+  z-index: 1;
+  border: 1px solid rgba(44, 166, 255, 0.24);
+  background:
+    linear-gradient(180deg, rgba(8, 33, 64, 0.88), rgba(3, 14, 32, 0.72)),
+    rgba(2, 9, 22, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(116, 231, 255, 0.12),
+    0 16px 44px rgba(0, 0, 0, 0.32);
+}
+
+.attack-screen-rail {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 22px;
+  padding: 22px 14px;
+  border-width: 0 1px 0 0;
+}
+
+.attack-screen-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  color: #f4fbff;
+  text-transform: uppercase;
+}
+
+.attack-screen-brand span {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  overflow: hidden;
+  border: 1px solid #19ccff;
+  border-radius: 8px;
+  color: #20e6ff;
+  background: rgba(6, 25, 42, 0.72);
+  box-shadow: 0 0 20px rgba(0, 204, 255, 0.28);
+}
+
+.attack-screen-brand .brand-logo {
+  filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.28));
+}
+
+.attack-screen-brand strong {
+  font-size: 14px;
+  letter-spacing: 0.08em;
+}
+
+.attack-screen-rail nav {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.attack-screen-rail button {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px;
+  color: rgba(200, 247, 255, 0.68);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.attack-screen-rail button:hover,
+.attack-screen-rail .attack-screen-nav-active {
+  color: #28e7ff;
+  background: rgba(0, 179, 255, 0.11);
+  border-color: rgba(0, 208, 255, 0.28);
+  transform: translateX(2px);
+}
+
+.attack-screen-back {
+  align-self: end;
+}
+
+.attack-screen-main {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: 56px minmax(0, 1fr);
+}
+
+.attack-screen-topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 18px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.attack-screen-topbar strong {
+  color: rgba(225, 246, 255, 0.82);
+  font-size: 13px;
+}
+
+.attack-screen-topbar button {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: #c9f7ff;
+  background: rgba(20, 77, 130, 0.48);
+  border: 1px solid rgba(42, 174, 255, 0.28);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.attack-screen-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--attack-screen-live);
+  text-transform: uppercase;
+}
+
+.attack-screen-live i {
+  width: 8px;
+  height: 8px;
+  display: inline-block;
+  background: var(--attack-screen-live);
+  border-radius: 999px;
+  box-shadow: 0 0 18px var(--attack-screen-live);
+}
+
+.attack-screen-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(170px, 0.68fr) minmax(310px, 1.55fr) minmax(
+      180px,
+      0.72fr
+    );
+  gap: 16px;
+  padding: 16px;
+}
+
+.attack-screen-left,
+.attack-screen-right {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+.attack-screen-panel {
+  min-width: 0;
+  padding: 14px;
+  border-radius: 8px;
+}
+
+.attack-screen-panel h2 {
+  margin: 0 0 14px;
+  color: #40ddff;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.attack-screen-panel h2::before {
+  display: inline-block;
+  width: 4px;
+  height: 14px;
+  margin-right: 8px;
+  content: "";
+  vertical-align: -2px;
+  background: var(--attack-screen-glow);
+  box-shadow: 0 0 14px rgba(4, 217, 255, 0.9);
+}
+
+.attack-screen-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.attack-screen-stats > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 13px;
+  background: rgba(11, 43, 81, 0.68);
+  border: 1px solid rgba(47, 174, 255, 0.14);
+  border-radius: 8px;
+}
+
+.attack-screen-stats strong {
+  color: #ff6a4f;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.attack-screen-stats span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(200, 247, 255, 0.58);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.attack-screen-bars,
+.attack-screen-countries {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.attack-screen-bars > div,
+.attack-screen-countries > div {
+  min-width: 0;
+  display: grid;
+  align-items: center;
+  gap: 9px;
+  color: rgba(216, 247, 255, 0.82);
+  font-size: 12px;
+}
+
+.attack-screen-bars > div {
+  grid-template-columns: minmax(58px, 0.72fr) minmax(48px, 1fr) minmax(
+      20px,
+      auto
+    );
+  gap: 7px;
+}
+
+.attack-screen-countries > div {
+  grid-template-columns:
+    16px 16px minmax(50px, 0.86fr) minmax(46px, 1fr)
+    minmax(20px, auto);
+  gap: 7px;
+}
+
+.attack-screen-bars span,
+.attack-screen-countries strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attack-screen-bars i,
+.attack-screen-countries i,
+.attack-screen-level-meter {
+  min-width: 0;
+  height: 5px;
+  overflow: hidden;
+  background: rgba(75, 149, 207, 0.16);
+  border-radius: 999px;
+}
+
+.attack-screen-bars b,
+.attack-screen-countries b,
+.attack-screen-level-meter i {
+  height: 100%;
+  display: block;
+  background: linear-gradient(
+    90deg,
+    var(--attack-screen-track-start),
+    var(--attack-screen-track-end)
+  );
+  border-radius: inherit;
+  box-shadow: 0 0 18px rgba(255, 114, 86, 0.36);
+}
+
+.attack-screen-bars em,
+.attack-screen-countries em {
+  min-width: 0;
+  color: #ff795e;
+  font-style: normal;
+  text-align: right;
+}
+
+.attack-screen-countries svg {
+  color: var(--attack-screen-blue);
+}
+
+.attack-screen-globe {
+  position: relative;
+  min-width: 0;
+  min-height: 560px;
+  overflow: hidden;
+  border-radius: 8px;
+  background:
+    radial-gradient(
+      circle at 50% 48%,
+      rgba(17, 186, 255, 0.22),
+      transparent 36%
+    ),
+    radial-gradient(
+      circle at 44% 54%,
+      rgba(255, 112, 79, 0.14),
+      transparent 30%
+    ),
+    rgba(0, 0, 0, 0.22);
+}
+
+.attack-screen-globe .globe-stage {
+  inset: 0;
+}
+
+.attack-screen-globe .globe-stage {
+  z-index: 1;
+}
+
+.attack-screen-globe-empty,
+.attack-screen-empty {
+  color: rgba(200, 247, 255, 0.52);
+}
+
+.attack-screen-loading {
+  min-height: 74px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  color: rgba(200, 247, 255, 0.58);
+  font-size: 12px;
+}
+
+.attack-screen-loading i {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 2px solid rgba(47, 174, 255, 0.18);
+  border-top-color: var(--attack-screen-blue);
+  box-shadow: 0 0 24px rgba(56, 217, 255, 0.24);
+  animation: page-spinner-rotate 0.85s linear infinite;
+}
+
+.attack-screen-level {
+  text-align: center;
+}
+
+.attack-screen-level > strong {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 30px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.attack-screen-level-low {
+  color: #2cf0d5;
+}
+
+.attack-screen-level-medium {
+  color: #f5b85b;
+}
+
+.attack-screen-level-high,
+.attack-screen-level-critical {
+  color: var(--attack-screen-warn);
+}
+
+.attack-screen-level > span,
+.attack-screen-time span {
+  color: rgba(200, 247, 255, 0.56);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.attack-screen-level-meter {
+  margin-top: 18px;
+}
+
+.attack-screen-time {
+  display: grid;
+  gap: 10px;
+}
+
+.attack-screen {
+  grid-template-columns: 74px minmax(0, 1fr);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+.attack-screen-rail {
+  width: 74px;
+  z-index: 5;
+  gap: 14px;
+  padding: 18px 10px;
+  transition:
+    width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.attack-screen-rail-open {
+  width: 228px;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.46),
+    inset 0 1px 0 rgba(116, 231, 255, 0.12);
+}
+
+.attack-screen-brand {
+  justify-content: center;
+}
+
+.attack-screen-rail-open .attack-screen-brand {
+  justify-content: flex-start;
+}
+
+.attack-screen-brand strong,
+.attack-screen-rail button span {
+  opacity: 0;
+  transform: translateX(-6px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.attack-screen-rail-open .attack-screen-brand strong,
+.attack-screen-rail-open button span {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.attack-screen-rail button {
+  justify-content: center;
+  min-height: 42px;
+  padding: 10px;
+}
+
+.attack-screen-rail-open button {
+  justify-content: flex-start;
+  padding: 11px 12px;
+}
+
+.attack-screen-main {
+  overflow: hidden;
+}
+
+.attack-screen-grid {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 16px 20px 18px;
+}
+
+.attack-screen-globe {
+  min-height: 0;
+  height: 100%;
+  border-color: rgba(44, 166, 255, 0.18);
+  background:
+    radial-gradient(
+      circle at 50% 50%,
+      rgba(17, 186, 255, 0.26),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 50% 50%,
+      rgba(255, 112, 79, 0.1),
+      transparent 52%
+    ),
+    rgba(0, 0, 0, 0.18);
+}
+
+.attack-screen-globe .globe-stage {
+  inset: 2% 8% 5%;
+}
+
+.attack-screen-overlay {
+  position: absolute;
+  z-index: 3;
+  width: min(330px, 29vw);
+  max-height: calc(100% - 44px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  pointer-events: none;
+}
+
+.attack-screen-overlay .attack-screen-panel {
+  pointer-events: auto;
+  background:
+    linear-gradient(180deg, rgba(7, 31, 61, 0.82), rgba(3, 12, 27, 0.62)),
+    rgba(2, 9, 22, 0.62);
+  backdrop-filter: blur(14px);
+}
+
+.attack-screen-overlay-left {
+  left: 22px;
+  top: 22px;
+}
+
+.attack-screen-overlay-right {
+  right: 22px;
+  top: 22px;
+}
+
+.attack-screen-panel h2 {
+  margin-bottom: 10px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.attack-screen-stats strong {
+  font-size: 22px;
+}
+
+.attack-screen-level {
+  text-align: left;
+}
+
+.attack-screen-level > strong {
+  margin: 6px 0 5px;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.attack-screen-timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.attack-screen-timeline input {
+  width: 100%;
+  accent-color: var(--attack-screen-cyan);
+}
+
+.attack-screen-timeline > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.attack-screen-timeline span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(200, 247, 255, 0.58);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attack-screen-timeline span:last-child {
+  text-align: right;
+}
+
+.attack-screen-timeline strong {
+  color: var(--attack-screen-live);
+  font-size: 12px;
+}
+
+.attack-screen-light {
+  color: var(--text);
+  background:
+    radial-gradient(
+      circle at 50% 38%,
+      color-mix(in srgb, var(--accent-info) 13%, transparent),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 74% 18%,
+      color-mix(in srgb, var(--accent-warning) 10%, transparent),
+      transparent 28%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-soft) 92%, var(--surface)),
+      var(--surface) 62%,
+      var(--app-bg)
+    );
+}
+
+.attack-screen-light::before {
+  background-image:
+    radial-gradient(
+      circle,
+      color-mix(in srgb, var(--accent-info) 26%, transparent) 0 1px,
+      transparent 1.4px
+    ),
+    linear-gradient(
+      color-mix(in srgb, var(--accent-info) 11%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent-info) 10%, transparent) 1px,
+      transparent 1px
+    );
+  opacity: 0.34;
+}
+
+.attack-screen-light .attack-screen-rail,
+.attack-screen-light .attack-screen-topbar,
+.attack-screen-light .attack-screen-panel,
+.attack-screen-light .attack-screen-globe {
+  border-color: color-mix(in srgb, var(--accent-info) 22%, var(--border));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface) 92%, transparent),
+      color-mix(in srgb, var(--surface-soft) 78%, transparent)
+    ),
+    color-mix(in srgb, var(--surface) 88%, transparent);
+  box-shadow:
+    inset 0 1px 0
+      color-mix(in srgb, var(--attack-highlight-white) 74%, transparent),
+    0 16px 42px color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.attack-screen-light .attack-screen-rail-open {
+  box-shadow:
+    0 20px 56px color-mix(in srgb, var(--text) 14%, transparent),
+    inset 0 1px 0
+      color-mix(in srgb, var(--attack-highlight-white) 76%, transparent);
+}
+
+.attack-screen-light .attack-screen-brand {
+  color: var(--text);
+}
+
+.attack-screen-light .attack-screen-brand span {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--surface) 84%, var(--accent-soft));
+  border-color: color-mix(in srgb, var(--accent-info) 42%, var(--border));
+  box-shadow: 0 14px 28px
+    color-mix(in srgb, var(--accent-info) 14%, transparent);
+}
+
+.attack-screen-light .attack-screen-brand .brand-logo {
+  filter: drop-shadow(
+    0 8px 16px color-mix(in srgb, var(--accent-info) 14%, transparent)
+  );
+}
+
+.attack-screen-light .attack-screen-rail button {
+  color: var(--text-muted);
+}
+
+.attack-screen-light .attack-screen-rail button:hover,
+.attack-screen-light .attack-screen-rail .attack-screen-nav-active {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 74%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+
+.attack-screen-light .attack-screen-topbar strong {
+  color: var(--text);
+}
+
+.attack-screen-light .attack-screen-topbar button {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+}
+
+.attack-screen-light .attack-screen-live {
+  color: var(--accent-strong);
+}
+
+.attack-screen-light .attack-screen-live i {
+  background: var(--accent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.attack-screen-light .attack-screen-panel h2 {
+  color: var(--accent-strong);
+}
+
+.attack-screen-light .attack-screen-panel h2::before {
+  background: var(--accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 36%, transparent);
+}
+
+.attack-screen-light .attack-screen-stats > div {
+  background: color-mix(in srgb, var(--surface-soft) 76%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-info) 14%, var(--border));
+}
+
+.attack-screen-light .attack-screen-stats strong {
+  color: var(--accent-danger);
+}
+
+.attack-screen-light .attack-screen-stats span,
+.attack-screen-light .attack-screen-level > span,
+.attack-screen-light .attack-screen-time span,
+.attack-screen-light .attack-screen-timeline span {
+  color: var(--text-muted);
+}
+
+.attack-screen-light .attack-screen-bars > div,
+.attack-screen-light .attack-screen-countries > div {
+  color: color-mix(in srgb, var(--text) 88%, var(--text-muted));
+}
+
+.attack-screen-light .attack-screen-bars i,
+.attack-screen-light .attack-screen-countries i,
+.attack-screen-light .attack-screen-level-meter {
+  background: color-mix(in srgb, var(--accent-info) 13%, var(--surface-soft));
+}
+
+.attack-screen-light .attack-screen-bars b,
+.attack-screen-light .attack-screen-countries b,
+.attack-screen-light .attack-screen-level-meter i {
+  background: linear-gradient(
+    90deg,
+    var(--accent-info),
+    var(--accent-warning),
+    var(--accent-danger)
+  );
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent-danger) 18%, transparent);
+}
+
+.attack-screen-light .attack-screen-bars em,
+.attack-screen-light .attack-screen-countries em {
+  color: var(--accent-danger);
+}
+
+.attack-screen-light .attack-screen-countries svg {
+  color: var(--accent-info);
+}
+
+.attack-screen-light .attack-screen-globe {
+  overflow: hidden;
+  background:
+    radial-gradient(
+      circle at 50% 49%,
+      color-mix(in srgb, var(--accent-info) 17%, transparent),
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at 50% 52%,
+      color-mix(in srgb, var(--accent-warning) 8%, transparent),
+      transparent 53%
+    ),
+    linear-gradient(
+      180deg,
+      var(--attack-highlight-white),
+      color-mix(in srgb, var(--surface-soft) 82%, var(--attack-highlight-white))
+    );
+}
+
+.attack-screen-light .attack-screen-globe::before {
+  position: absolute;
+  inset: 7% 10%;
+  content: "";
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at center,
+      transparent 0 38%,
+      color-mix(in srgb, var(--accent-info) 16%, transparent) 38.2% 38.7%,
+      transparent 39% 56%,
+      color-mix(in srgb, var(--accent-info) 10%, transparent) 56.2% 56.7%,
+      transparent 57%
+    ),
+    linear-gradient(
+      90deg,
+      transparent 0 49.7%,
+      color-mix(in srgb, var(--accent-info) 12%, transparent) 49.9% 50.1%,
+      transparent 50.3%
+    ),
+    linear-gradient(
+      0deg,
+      transparent 0 49.7%,
+      color-mix(in srgb, var(--accent-info) 10%, transparent) 49.9% 50.1%,
+      transparent 50.3%
+    );
+  border-radius: 50%;
+  opacity: 0.72;
+  filter: blur(0.2px);
+}
+
+.attack-screen-light .attack-screen-globe .globe-stage-light {
+  background: transparent;
+}
+
+.attack-screen-light .attack-screen-globe canvas {
+  background: transparent !important;
+}
+
+.attack-screen-light .attack-screen-overlay .attack-screen-panel {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface) 88%, transparent),
+      color-mix(in srgb, var(--surface-soft) 76%, transparent)
+    ),
+    color-mix(in srgb, var(--surface) 76%, transparent);
+}
+
+.attack-screen-light .attack-screen-globe-empty,
+.attack-screen-light .attack-screen-empty {
+  color: var(--text-muted);
+}
+
+.attack-screen-light .attack-screen-level-low {
+  color: var(--accent);
+}
+
+.attack-screen-light .attack-screen-level-medium {
+  color: var(--accent-warning);
+}
+
+.attack-screen-light .attack-screen-level-high,
+.attack-screen-light .attack-screen-level-critical {
+  color: var(--accent-danger);
+}
+
+.attack-screen-light .attack-screen-timeline input {
+  accent-color: var(--accent-info);
+}
+
+.attack-screen-light .attack-screen-timeline strong {
+  color: var(--accent-strong);
+}
+
+@keyframes map-marker-pulse {
+  0% {
+    opacity: 0.72;
+    transform: scale(0.72);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.8);
+  }
+}
+
+@media (max-width: 1024px) {
+  .attack-screen {
+    min-height: 100dvh;
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .attack-screen-rail {
+    min-height: auto;
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: auto;
+    align-items: center;
+    gap: 12px;
+    overflow-x: auto;
+    border-width: 0 0 1px;
+  }
+
+  .attack-screen-rail nav {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .attack-screen-rail button {
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .attack-screen-main {
+    min-height: auto;
+  }
+
+  .attack-screen-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .attack-screen-globe {
+    min-height: 460px;
+  }
+
+  .attack-map-page .map-canvas {
+    min-height: 420px;
+  }
+
+  .attack-map-page .map-controls {
+    justify-content: flex-start;
+  }
+
+  .attack-map-page .map-marker > span {
+    max-width: min(220px, 42vw);
+  }
+}
+
+@media (max-width: 640px) {
+  .attack-map-page {
+    gap: 14px;
+  }
+
+  .attack-map-page .attack-map-header {
+    text-align: left;
+  }
+
+  .attack-map-page .attack-map-toolbar {
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .attack-map-page .attack-map-toolbar .map-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .attack-map-page .attack-map-toolbar .map-mode-switch {
+    grid-column: 1 / -1;
+  }
+
+  .attack-map-page .attack-map-toolbar .map-zoom-group,
+  .attack-map-page .attack-map-toolbar .map-action-group {
+    min-height: 38px;
+  }
+
+  .attack-map-page .map-workbench-header {
+    display: grid;
+    gap: 10px;
+    padding: 0;
+  }
+
+  .attack-map-page .map-workbench-header .map-legend {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 3px 10px;
+    align-items: start;
+  }
+
+  .attack-map-page .map-workbench-header .map-legend strong {
+    grid-row: 1 / span 3;
+    min-width: 0;
+    padding-top: 1px;
+    font-size: 23px;
+    line-height: 1;
+  }
+
+  .attack-map-page .map-workbench-header .map-legend span {
+    line-height: 1.15;
+  }
+
+  .attack-map-page .map-workbench-header .map-legend small {
+    line-height: 1.35;
+  }
+
+  .attack-map-page .map-workbench-header .map-legend span,
+  .attack-map-page .map-workbench-header .map-legend small {
+    margin-left: 0;
+  }
+
+  .attack-map-page .map-workbench-header .map-risk-legend {
+    width: fit-content;
+    justify-content: flex-start;
+    max-width: 100%;
+    box-shadow: none;
+  }
+
+  .attack-map-page .map-canvas {
+    min-height: 390px;
+  }
+
+  .attack-map-page .map-mode-2d > .flat-map-stage {
+    width: calc(100% - 18px);
+  }
+
+  .attack-map-page .map-mode-china > .flat-map-stage {
+    width: calc(100% - 22px);
+  }
+
+  .attack-map-page .map-legend {
+    left: 12px;
+    top: 12px;
+  }
+
+  .attack-map-page .map-risk-legend {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    max-width: none;
+  }
+
+  .attack-map-page .map-workbench-header .map-legend,
+  .attack-map-page .map-workbench-header .map-risk-legend {
+    position: static;
+    left: auto;
+    top: auto;
+    right: auto;
+    bottom: auto;
+  }
+
+  .attack-map-page .china-map-labels {
+    font-size: 11px;
+  }
+
+  .attack-map-page .map-mode-china .china-map-labels text,
+  .attack-map-page .map-mode-china .china-focus-reference text {
+    display: none;
+  }
+
+  .attack-map-page .map-mode-china .china-map-labels circle,
+  .attack-map-page .map-mode-china .china-focus-reference circle {
+    r: 2.4px;
+  }
+
+  .attack-map-page .map-marker > span {
+    left: 50%;
+    top: calc(100% + 10px);
+    max-width: min(210px, 72vw);
+    transform: translateX(-50%) translateY(-4px);
+  }
+
+  .attack-map-page .map-marker:not(.map-marker-detailed) > span {
+    display: none;
+  }
+
+  .attack-map-page .map-marker:hover > span,
+  .attack-map-page .map-marker:focus-visible > span,
+  .attack-map-page .map-marker-detailed > span {
+    transform: translateX(-50%) translateY(0);
+  }
+
+  .attack-map-page .map-marker-detailed > span {
+    max-width: min(170px, 58vw);
+    padding: 5px 6px;
+    gap: 5px;
+  }
+
+  .attack-map-page .map-marker-detailed:not(.map-marker-selected) > span {
+    display: none;
+  }
+
+  .attack-map-page .map-marker-detailed.map-marker-selected > span {
+    display: inline-grid;
+  }
+
+  .attack-map-page .map-marker-detailed strong {
+    max-width: 128px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .attack-map-page .map-marker-detailed small {
+    display: none;
+  }
+
+  .attack-map-page .map-marker-label-left > span {
+    right: calc(100% + 8px);
+    left: auto;
+    top: 50%;
+    transform: translateY(-50%) translateX(4px);
+  }
+
+  .attack-map-page .map-marker-label-left:hover > span,
+  .attack-map-page .map-marker-label-left:focus-visible > span,
+  .attack-map-page .map-marker-label-left.map-marker-detailed > span {
+    transform: translateY(-50%) translateX(0);
+  }
+
+  .attack-map-page .map-marker-label-right > span {
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%) translateX(-4px);
+  }
+
+  .attack-map-page .map-marker-label-right:hover > span,
+  .attack-map-page .map-marker-label-right:focus-visible > span,
+  .attack-map-page .map-marker-label-right.map-marker-detailed > span {
+    transform: translateY(-50%) translateX(0);
+  }
+
+  .attack-map-page .map-controls {
+    justify-content: flex-start;
+  }
+
+  .attack-map-page .map-controls {
+    width: 100%;
+    gap: 7px;
+  }
+
+  .attack-map-page .map-mode-switch {
+    flex: 1 1 100%;
+  }
+
+  .attack-map-page .map-mode-switch .arco-radio-group {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .attack-map-page .map-mode-switch .arco-radio-button {
+    justify-content: center;
+  }
+
+  .attack-screen-topbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 56px;
+    padding: 10px 12px;
+  }
+
+  .attack-screen-topbar button {
+    margin-left: 0;
+  }
+
+  .attack-map-page .attack-map-table > .desktop-table-wrap {
+    display: none;
+  }
+
+  .attack-map-page .attack-region-cards {
+    display: grid;
+    gap: 12px;
+  }
+
+  .attack-map-page .map-controls {
+    justify-content: flex-start;
+  }
+
+  .attack-screen-brand strong {
+    display: none;
+  }
+
+  .attack-screen-rail {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding: 10px 12px;
+  }
+
+  .attack-screen-rail nav {
+    min-width: 0;
+  }
+
+  .attack-screen-rail nav button,
+  .attack-screen-back {
+    min-width: 40px;
+    padding-inline: 10px;
+  }
+
+  .attack-screen-rail nav button:not(.attack-screen-nav-active) span,
+  .attack-screen-back span {
+    display: none;
+  }
+}
+
+.attack-screen-rail:not(.attack-screen-rail-open) .attack-screen-brand strong,
+.attack-screen-rail:not(.attack-screen-rail-open) button span {
+  display: none;
+}
+
+.attack-map-page .attack-map-table {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.attack-map-page .attack-map-table .arco-table,
+.attack-map-page .attack-map-table .arco-table-content-inner {
+  min-width: 760px;
+}
+
+.attack-map-page .attack-map-table .arco-table-content,
+.attack-map-page .attack-map-table .arco-table-content-inner {
+  overflow-x: auto !important;
+}
+
+@media (max-width: 1024px) {
+  .attack-screen {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .attack-screen-rail {
+    width: 64px;
+    min-height: 100dvh;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto;
+    align-items: stretch;
+    overflow: hidden;
+    border-width: 0 1px 0 0;
+  }
+
+  .attack-screen-rail-open {
+    width: min(228px, 72vw);
+  }
+
+  .attack-screen-rail nav {
+    display: grid;
+    justify-items: center;
+    overflow: hidden;
+  }
+
+  .attack-screen-rail button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .attack-screen-grid {
+    min-height: calc(100dvh - 56px);
+  }
+}
+
+@media (max-width: 640px) {
+  .attack-screen {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .attack-screen-rail {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    min-height: 0;
+    height: auto;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-width: 0 0 1px;
+    border-radius: 0;
+  }
+
+  .attack-screen-rail nav {
+    width: auto;
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .attack-screen-rail:not(.attack-screen-rail-open) button {
+    width: 38px;
+    min-width: 0;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .attack-screen-main {
+    min-height: 0;
+  }
+
+  .attack-screen-overlay {
+    position: static;
+    width: 100%;
+  }
+
+  .attack-screen-grid {
+    height: auto;
+    min-height: 100dvh;
+    display: grid;
+    gap: 12px;
+    padding: 12px 12px 14px;
+  }
+
+  .attack-screen-globe {
+    min-height: 420px;
+    order: -1;
+  }
+
+  .attack-screen-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .attack-screen-bars > div {
+    grid-template-columns: minmax(74px, 0.72fr) minmax(90px, 1fr) minmax(
+        22px,
+        auto
+      );
+  }
+
+  .attack-screen-countries > div {
+    grid-template-columns:
+      18px 16px minmax(68px, 0.8fr) minmax(92px, 1fr)
+      minmax(22px, auto);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attack-map-page .map-marker-pulse {
+    animation: none;
+  }
+}
+
+.attack-map-page .map-canvas {
+  border-radius: 9px;
+}
+
+.attack-map-page .map-mode-china {
+  background:
+    radial-gradient(
+      circle at 52% 44%,
+      color-mix(in srgb, var(--accent-info) 9%, transparent),
+      transparent 40%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-soft) 92%, var(--surface)),
+      var(--surface)
+    );
+}
+
+.attack-map-page .china-focus-field {
+  fill: color-mix(in srgb, var(--surface) 90%, var(--accent-info) 4%);
+  stroke: color-mix(in srgb, var(--accent-info) 18%, var(--border));
+}
+
+.attack-map-page .china-posture-cell {
+  fill: color-mix(in srgb, var(--accent-info) 7%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent-info) 22%, var(--border));
+  opacity: 0.78;
+}
+
+.attack-map-page .china-posture-cell-2 {
+  fill: color-mix(in srgb, var(--accent-warning) 7%, var(--surface));
+}
+
+.attack-map-page .china-posture-cell-3 {
+  fill: color-mix(in srgb, var(--accent-danger) 8%, var(--surface));
+}
+
+.attack-map-page .china-boundary-path {
+  fill: color-mix(in srgb, var(--accent-info) 7%, var(--surface));
+  stroke: color-mix(in srgb, var(--text) 58%, var(--accent-info));
+  stroke-width: 1.35;
+}
+
+.attack-map-page .map-mode-3d {
+  background-color: var(--surface) !important;
+}
+
+.attack-map-page .map-canvas.map-mode-3d {
+  background:
+    radial-gradient(
+      circle at 52% 45%,
+      color-mix(in srgb, var(--accent-info) 10%, transparent),
+      transparent 38%
+    ),
+    radial-gradient(
+      circle at 28% 20%,
+      color-mix(in srgb, var(--accent) 6%, transparent),
+      transparent 30%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-soft) 90%, var(--surface)),
+      var(--surface)
+    ) !important;
+}
+
+:root[data-theme="dark"] .attack-map-page .map-canvas.map-mode-3d,
+:root[data-theme="black-gold"] .attack-map-page .map-canvas.map-mode-3d {
+  background:
+    radial-gradient(
+      circle at 50% 45%,
+      color-mix(in srgb, var(--accent-info) 22%, transparent),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 30% 20%,
+      color-mix(in srgb, var(--accent) 18%, transparent),
+      transparent 30%
+    ),
+    var(--map-canvas-3d-bg) !important;
+}
+
+@media (max-width: 520px) {
+  .attack-map-page .map-workbench-header .map-risk-legend {
+    width: 100%;
+  }
+}
+
+.attack-map-page .page-header .attack-map-toolbar {
+  align-self: center;
+}
+
+.attack-map-page .attack-map-header {
+  align-items: flex-start;
+}
+
+.attack-map-page .attack-map-toolbar {
+  max-width: 620px;
+}
+
+.attack-map-page .attack-map-toolbar .map-controls {
+  gap: 8px;
+}
+
+.attack-map-page .map-workbench-header {
+  align-items: flex-start;
+}
+
+.attack-map-page .map-workbench-header .map-legend {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.attack-map-page .map-workbench-header .map-legend span,
+.attack-map-page .map-workbench-header .map-legend small {
+  margin-left: 0;
+}
+
+.attack-map-page .map-workbench-header .map-risk-legend {
+  box-shadow: none;
+}
+
+.attack-map-page .map-canvas {
+  min-height: clamp(500px, 48vw, 650px);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--highlight-color) 70%, transparent) inset,
+    0 12px 34px color-mix(in srgb, var(--shadow-color) 50%, transparent);
+}
+
+.attack-map-page .china-map-ocean {
+  fill: color-mix(in srgb, var(--surface-soft) 92%, var(--surface));
+}
+
+.attack-map-page .china-posture-layer {
+  filter: none;
+}
+
+.attack-map-page .china-posture-cell {
+  stroke-width: 1.15;
+  opacity: 0.82;
+}
+
+.attack-map-page .china-focus-rings ellipse {
+  opacity: 0.46;
+}
+
+.attack-map-page .china-focus-reference text,
+.attack-map-page .china-map-labels text {
+  stroke-width: 4.5px;
+}
+
+.attack-map-page .map-canvas.map-mode-3d,
+:root:not([data-theme="dark"]):not([data-theme="black-gold"])
+  .attack-map-page
+  .map-canvas.map-mode-3d {
+  background:
+    radial-gradient(
+      circle at 50% 44%,
+      color-mix(in srgb, var(--accent-info) 13%, transparent),
+      transparent 38%
+    ),
+    radial-gradient(
+      circle at 24% 24%,
+      color-mix(in srgb, var(--accent) 7%, transparent),
+      transparent 28%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-soft) 94%, var(--surface)),
+      var(--surface)
+    ) !important;
+  background-color: var(--surface) !important;
+}
+
+@media (max-width: 860px) {
+  .attack-map-page .attack-map-toolbar {
+    width: 100%;
+    max-width: none;
+  }
+
+  .attack-map-page .attack-map-toolbar .map-controls {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .attack-map-page .map-control-group {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .attack-map-page .map-mode-switch .arco-radio-group {
+    width: 100%;
+  }
+
+  .attack-map-page .map-mode-switch .arco-radio-button {
+    flex: 1 1 0;
+  }
+}
+
+.attack-map-page .map-canvas.map-mode-china {
+  background:
+    radial-gradient(
+      circle at 56% 45%,
+      color-mix(in srgb, var(--accent-info) 13%, transparent),
+      transparent 38%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-soft) 94%, var(--surface)),
+      var(--surface)
+    ) !important;
+}
+
+.attack-map-page .china-posture-cell {
+  stroke-width: 1.4;
+}
+
+.attack-map-page .china-heat-layer ellipse {
+  opacity: 0.42;
+}
+
+.attack-map-page .map-workbench-header {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.66fr) minmax(220px, 0.5fr) minmax(
+      0,
+      1fr
+    );
+  align-items: start;
+  overflow: hidden;
+}
+
+.attack-map-page .map-workbench-header .attack-map-toolbar {
+  max-width: none;
+  width: 100%;
+  min-width: 0;
+}
+
+.attack-map-page .map-workbench-header .attack-map-toolbar .map-controls {
+  min-width: 0;
+  justify-content: flex-end;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.attack-map-page
+  .map-workbench-header
+  .attack-map-toolbar
+  .map-controls::-webkit-scrollbar {
+  display: none;
+}
+
+.attack-map-page .map-workbench-header .map-control-group {
+  flex: 0 0 auto;
+  min-width: max-content;
+}
+
+.attack-map-page .map-workbench-header .map-zoom-group .arco-btn,
+.attack-map-page .map-workbench-header .map-action-group .arco-btn {
+  flex: 0 0 auto;
+  min-width: 34px;
+}
+
+@media (max-width: 1180px) {
+  .attack-map-page .map-workbench-header {
+    grid-template-columns: 1fr;
+  }
+
+  .attack-map-page .map-workbench-header .attack-map-toolbar .map-controls {
+    justify-content: flex-start;
+  }
+}
+
+.attack-map-page .map-workbench-header {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.78fr) minmax(220px, 0.58fr) minmax(
+      360px,
+      1fr
+    );
+  align-items: center;
+  gap: 12px;
+  overflow: visible;
+}
+
+.attack-map-page .map-workbench-header .map-legend,
+.attack-map-page .map-workbench-header .map-risk-legend {
+  position: static;
+  min-width: 0;
+  transform: none;
+}
+
+.attack-map-page .attack-map-toolbar {
+  max-width: none;
+  min-width: 0;
+}
+
+.attack-map-page .attack-map-toolbar .map-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow: visible;
+}
+
+.attack-map-page .map-control-group {
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.attack-map-page .map-mode-switch {
+  min-width: 236px;
+}
+
+.attack-map-page .map-mode-switch .arco-radio-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.attack-map-page .map-zoom-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.attack-map-page .map-canvas {
+  min-height: clamp(440px, calc(100dvh - 390px), 620px);
+  isolation: isolate;
+  overscroll-behavior: contain;
+}
+
+.attack-map-page .map-canvas.map-mode-3d,
+.attack-screen-globe {
+  touch-action: none;
+}
+
+.attack-map-page .map-canvas.map-mode-3d {
+  min-height: clamp(500px, calc(100dvh - 330px), 680px);
+}
+
+.attack-map-page .globe-stage {
+  z-index: 1;
+  min-width: 0;
+  inset: clamp(10px, 1.6vw, 22px);
+  overflow: hidden;
+  cursor: grab;
+  pointer-events: auto;
+  user-select: none;
+  touch-action: none;
+}
+
+.attack-map-page .globe-stage:active {
+  cursor: grabbing;
+}
+
+.attack-map-page .globe-stage canvas {
+  display: block;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.attack-map-page .map-canvas.map-mode-3d .map-empty {
+  pointer-events: none;
+}
+
+.attack-map-page .map-mode-2d > .flat-map-stage {
+  width: min(calc(100% - clamp(20px, 4vw, 44px)), 1240px);
+}
+
+.attack-map-page .map-mode-china > .flat-map-stage {
+  width: min(calc(100% - clamp(20px, 4vw, 44px)), 1080px);
+}
+
+.attack-map-page .china-map-svg,
+.attack-map-page .world-map-svg {
+  overflow: visible;
+}
+
+.attack-map-page .china-boundary-path {
+  fill: color-mix(in srgb, var(--accent-info) 7%, var(--surface));
+  stroke: color-mix(in srgb, var(--text) 58%, var(--accent-info));
+  stroke-width: 1.65;
+}
+
+.attack-map-page .china-map-labels text,
+.attack-map-page .china-focus-reference text {
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--surface) 88%, transparent);
+  stroke-width: 4.25px;
+  stroke-linejoin: round;
+}
+
+.attack-screen {
+  min-height: 100dvh;
+}
+
+.attack-screen-main {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.attack-screen-grid {
+  position: relative;
+  min-height: calc(100dvh - 56px);
+  height: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 16px 20px 18px;
+}
+
+.attack-screen-globe {
+  position: relative;
+  min-height: calc(100dvh - 90px);
+  overflow: hidden;
+}
+
+.attack-screen-globe .globe-stage {
+  inset: 0;
+}
+
+.attack-screen-overlay {
+  position: absolute;
+  z-index: 3;
+  width: clamp(250px, 24vw, 330px);
+  max-height: calc(100% - 44px);
+  overflow: auto;
+  pointer-events: none;
+  scrollbar-width: thin;
+}
+
+.attack-screen-overlay .attack-screen-panel {
+  pointer-events: auto;
+}
+
+.attack-screen-overlay-left {
+  left: 22px;
+  top: 22px;
+}
+
+.attack-screen-overlay-right {
+  right: 22px;
+  top: 22px;
+}
+
+@media (max-width: 1180px) {
+  .attack-map-page .map-workbench-header {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .attack-map-page .attack-map-toolbar .map-controls {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 860px) {
+  .attack-screen {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .attack-screen-grid {
+    min-height: 0;
+    gap: 12px;
+  }
+
+  .attack-screen-globe {
+    min-height: 460px;
+    order: -1;
+  }
+
+  .attack-screen-overlay {
+    position: static;
+    width: 100%;
+    max-height: none;
+    pointer-events: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .attack-map-page .map-mode-switch {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .attack-map-page .map-zoom-group,
+  .attack-map-page .map-action-group {
+    width: 100%;
+  }
+
+  .attack-map-page .map-action-group .arco-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* Map/globe/AI/block-preview overrides 2026-06. */
+.attack-map-page .map-workbench-header {
+  display: grid !important;
+  grid-template-columns: minmax(180px, 0.78fr) minmax(180px, 0.58fr) minmax(
+      300px,
+      1fr
+    ) !important;
+  align-items: center !important;
+  gap: 12px !important;
+  overflow: visible !important;
+}
+
+.attack-map-page .map-workbench-header .map-legend,
+.attack-map-page .map-workbench-header .map-risk-legend {
+  position: static !important;
+  min-width: 0 !important;
+  transform: none !important;
+}
+
+.attack-map-page .attack-map-toolbar {
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+}
+
+.attack-map-page .attack-map-toolbar .map-controls {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  overflow: visible !important;
+}
+
+.attack-map-page .map-mode-switch {
+  min-width: 236px !important;
+}
+
+.attack-map-page .map-mode-switch .arco-radio-group {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+.attack-map-page .map-canvas {
+  min-height: clamp(440px, calc(100dvh - 390px), 620px) !important;
+  overscroll-behavior: contain !important;
+}
+
+.attack-map-page .map-canvas.map-mode-3d {
+  min-height: clamp(500px, calc(100dvh - 330px), 680px) !important;
+}
+
+.attack-map-page .map-canvas.map-mode-3d,
+.attack-screen-globe,
+.attack-map-page .globe-stage,
+.attack-map-page .globe-stage canvas {
+  pointer-events: auto !important;
+  touch-action: none !important;
+}
+
+.attack-map-page .globe-stage {
+  inset: clamp(10px, 1.6vw, 22px) !important;
+  z-index: 1 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  cursor: grab !important;
+  user-select: none !important;
+}
+
+.attack-map-page .globe-stage:active {
+  cursor: grabbing !important;
+}
+
+.attack-map-page .globe-stage canvas {
+  display: block !important;
+}
+
+.attack-screen-grid {
+  position: relative !important;
+  min-height: calc(100dvh - 56px) !important;
+  height: auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  padding: 16px 20px 18px !important;
+}
+
+.attack-screen-globe {
+  position: relative !important;
+  min-height: calc(100dvh - 90px) !important;
+  overflow: hidden !important;
+}
+
+.attack-screen-globe .globe-stage {
+  inset: 0 !important;
+}
+
+.attack-screen-overlay {
+  position: absolute !important;
+  z-index: 3 !important;
+  width: clamp(250px, 24vw, 330px) !important;
+  max-height: calc(100% - 44px) !important;
+  overflow: auto !important;
+  pointer-events: none !important;
+}
+
+.attack-screen-overlay .attack-screen-panel {
+  pointer-events: auto !important;
+}
+
+.attack-screen-overlay-left {
+  left: 22px !important;
+  top: 22px !important;
+}
+
+.attack-screen-overlay-right {
+  right: 22px !important;
+  top: 22px !important;
+}
+
+@media (max-width: 1180px) {
+  .attack-map-page .map-workbench-header {
+    grid-template-columns: 1fr !important;
+    align-items: stretch !important;
+  }
+
+  .attack-map-page .attack-map-toolbar .map-controls {
+    justify-content: flex-start !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .attack-screen-grid {
+    min-height: 0 !important;
+    gap: 12px !important;
+  }
+
+  .attack-screen-globe {
+    min-height: 460px !important;
+    order: -1 !important;
+  }
+
+  .attack-screen-overlay {
+    position: static !important;
+    width: 100% !important;
+    max-height: none !important;
+    pointer-events: auto !important;
+  }
+}
+
+@media (max-width: 560px) {
+  .attack-map-page .map-mode-switch,
+  .attack-map-page .map-zoom-group,
+  .attack-map-page .map-action-group {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .attack-map-page .map-action-group .arco-btn {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+}
+
+.attack-map-page .map-canvas {
+  min-height: clamp(470px, 58dvh, 690px) !important;
+  contain: layout paint !important;
+}
+
+.attack-map-page .map-canvas.map-mode-3d {
+  cursor: default !important;
+}
+
+.attack-map-page .flat-map-stage {
+  will-change: auto !important;
+}
+
+.attack-map-page .map-panning .flat-map-stage {
+  will-change: transform !important;
+}
+
+.attack-map-page .china-reference-boundary-layer {
+  color: var(--accent-info) !important;
+}
+
+.attack-map-page .china-reference-boundary-path {
+  fill: color-mix(
+    in srgb,
+    var(--accent-info) 8%,
+    var(--surface-soft)
+  ) !important;
+  stroke: color-mix(
+    in srgb,
+    var(--accent-info) 42%,
+    var(--text-muted)
+  ) !important;
+  stroke-width: 1.4 !important;
+  vector-effect: non-scaling-stroke !important;
+  opacity: 0.72 !important;
+}
+
+.attack-map-page .china-focus-rings ellipse {
+  vector-effect: non-scaling-stroke !important;
+}
+
+.attack-map-page .china-map-labels text,
+.attack-map-page .china-focus-reference text {
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+  fill: color-mix(in srgb, var(--text) 78%, var(--accent-info)) !important;
+  stroke: color-mix(in srgb, var(--surface) 94%, transparent) !important;
+  stroke-width: 5px !important;
+  paint-order: stroke !important;
+}
+
+.attack-map-page .china-focus-reference text {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  opacity: 0.78 !important;
+}
+
+.attack-map-page .china-map-labels circle,
+.attack-map-page .china-focus-reference circle {
+  fill: var(--surface) !important;
+  stroke: var(--accent-info) !important;
+  stroke-width: 2 !important;
+  vector-effect: non-scaling-stroke !important;
+}
+
+.attack-map-page .china-heat-layer {
+  pointer-events: none !important;
+}
+
+.attack-map-page .desktop-table-wrap {
+  overflow-x: auto !important;
+  scrollbar-width: thin !important;
+}
+
+.attack-map-page .attack-map-table .arco-table {
+  min-width: 1040px !important;
+}
+
+.attack-screen .globe-stage,
+.attack-screen-globe canvas,
+.attack-map-page .map-mode-3d .globe-stage,
+.attack-map-page .map-mode-3d canvas {
+  pointer-events: auto !important;
+  touch-action: none !important;
+}
+
+.attack-screen-globe {
+  contain: layout paint !important;
+}
+
+@media (max-width: 720px) {
+  .attack-map-page .map-canvas {
+    min-height: 430px !important;
+  }
+
+  .attack-map-page .china-map-labels text {
+    font-size: 11px !important;
+  }
+
+  .attack-map-page .china-focus-reference text {
+    font-size: 10px !important;
+  }
+}
+
+.attack-map-page .map-workbench-header {
+  grid-template-columns: minmax(190px, auto) minmax(220px, 1fr) auto !important;
+}
+
+.attack-map-page .map-zoom-group > span {
+  min-width: 48px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.attack-map-page .map-legend small:last-child {
+  color: color-mix(in srgb, var(--text-muted) 84%, var(--text)) !important;
+}
+
+.attack-map-page .attack-map-toolbar .map-controls {
+  justify-content: flex-end !important;
+}
+
+.attack-map-page .map-action-group {
+  display: inline-flex !important;
+  gap: 8px !important;
+  align-items: center !important;
+  padding-inline: 5px;
+}
+
+.attack-map-page .map-action-group .arco-btn,
+.attack-map-page .map-action-group .arco-button {
+  width: auto;
+  min-width: 0 !important;
+  padding: 0 12px;
+  white-space: nowrap !important;
+}
+
+.attack-map-page .map-mode-switch {
+  min-width: min(330px, 100%) !important;
+}
+
+.attack-map-page .map-mode-china .flat-map-stage::after {
+  display: none !important;
+}
+
+.attack-map-page .china-admin-map {
+  filter: drop-shadow(
+    0 18px 42px color-mix(in srgb, var(--text) 8%, transparent)
+  ) !important;
+}
+
+.attack-map-page .china-admin-layer {
+  transform-box: fill-box;
+}
+
+.attack-map-page .china-admin-path {
+  fill: color-mix(in srgb, var(--accent-info) 5%, var(--surface)) !important;
+  stroke: color-mix(in srgb, var(--text-muted) 56%, var(--border)) !important;
+  stroke-width: 1.15 !important;
+  vector-effect: non-scaling-stroke !important;
+  transition:
+    fill 180ms ease,
+    stroke 180ms ease,
+    stroke-width 180ms ease,
+    opacity 180ms ease !important;
+}
+
+.attack-map-page .china-admin-layer-province .china-admin-path {
+  fill: color-mix(in srgb, var(--accent-info) 6%, var(--surface)) !important;
+  stroke: color-mix(
+    in srgb,
+    var(--text-muted) 62%,
+    var(--accent-info)
+  ) !important;
+  stroke-width: 1.45 !important;
+}
+
+.attack-map-page .china-admin-layer-city .china-admin-path {
+  fill: color-mix(
+    in srgb,
+    var(--surface) 88%,
+    var(--accent-info) 6%
+  ) !important;
+  stroke: color-mix(
+    in srgb,
+    var(--text-muted) 42%,
+    var(--accent-info)
+  ) !important;
+  stroke-width: 0.9 !important;
+  opacity: 0.88 !important;
+}
+
+.attack-map-page .china-admin-layer-district .china-admin-path,
+.attack-map-page .china-admin-layer-external .china-admin-path {
+  fill: color-mix(
+    in srgb,
+    var(--surface) 90%,
+    var(--accent-info) 4%
+  ) !important;
+  stroke: color-mix(
+    in srgb,
+    var(--text-muted) 36%,
+    var(--accent-info)
+  ) !important;
+  stroke-width: 0.78 !important;
+  opacity: 0.9 !important;
+}
+
+.attack-map-page .china-admin-path.map-risk-low {
+  fill: color-mix(in srgb, var(--accent-info) 18%, var(--surface)) !important;
+  stroke: color-mix(
+    in srgb,
+    var(--accent-info) 54%,
+    var(--text-muted)
+  ) !important;
+}
+
+.attack-map-page .china-admin-path.map-risk-medium {
+  fill: color-mix(
+    in srgb,
+    var(--accent-warning) 22%,
+    var(--surface)
+  ) !important;
+  stroke: color-mix(
+    in srgb,
+    var(--accent-warning) 62%,
+    var(--text-muted)
+  ) !important;
+}
+
+.attack-map-page .china-admin-path.map-risk-high {
+  fill: color-mix(
+    in srgb,
+    var(--attack-risk-high) 24%,
+    var(--surface)
+  ) !important;
+  stroke: color-mix(
+    in srgb,
+    var(--attack-risk-high) 68%,
+    var(--text-muted)
+  ) !important;
+}
+
+.attack-map-page .china-admin-path.map-risk-critical {
+  fill: color-mix(in srgb, var(--accent-danger) 28%, var(--surface)) !important;
+  stroke: color-mix(in srgb, var(--accent-danger) 74%, var(--text)) !important;
+}
+
+.attack-map-page .china-admin-active {
+  stroke-width: 1.9 !important;
+}
+
+.attack-map-page .china-admin-layer-district .china-admin-active,
+.attack-map-page .china-admin-layer-external .china-admin-active {
+  stroke-width: 1.35 !important;
+}
+
+.attack-map-page .china-map-labels {
+  pointer-events: none !important;
+}
+
+.attack-map-page .china-map-labels text {
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+  fill: color-mix(in srgb, var(--text) 82%, var(--accent-info)) !important;
+  stroke: color-mix(in srgb, var(--surface) 96%, transparent) !important;
+  stroke-width: 4px !important;
+  paint-order: stroke !important;
+}
+
+.attack-map-page .china-map-labels circle {
+  fill: color-mix(in srgb, var(--surface) 94%, transparent) !important;
+  stroke: color-mix(
+    in srgb,
+    var(--accent-info) 62%,
+    var(--text-muted)
+  ) !important;
+  stroke-width: 1.6 !important;
+  vector-effect: non-scaling-stroke !important;
+}
+
+.attack-map-page .globe-tooltip,
+.attack-screen .globe-tooltip {
+  position: absolute;
+  z-index: 4;
+  max-width: min(280px, 64vw);
+  padding: 8px 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  backdrop-filter: blur(10px);
+}
+
+.attack-map-page .globe-tooltip-visible,
+.attack-screen .globe-tooltip-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.attack-map-page .continent-badge,
+.attack-screen .continent-badge {
+  position: absolute;
+  z-index: 3;
+  min-width: 154px;
+  max-width: min(220px, 28vw);
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  transform: translate(-50%, -50%);
+  color: var(--text);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(
+        in srgb,
+        var(--risk-color, var(--accent-info)) 12%,
+        transparent
+      ),
+      transparent 70%
+    ),
+    color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid
+    color-mix(in srgb, var(--risk-color, var(--accent-info)) 34%, var(--border));
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+
+.attack-map-page .continent-badge strong,
+.attack-map-page .continent-badge small,
+.attack-screen .continent-badge strong,
+.attack-screen .continent-badge small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attack-map-page .continent-badge em,
+.attack-screen .continent-badge em {
+  color: var(--risk-color, var(--accent-danger));
+  font-size: 22px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.attack-map-page .continent-badge small,
+.attack-screen .continent-badge small {
+  color: var(--text-muted);
+}
+
+@media (max-width: 1180px) {
+  .attack-map-page .map-workbench-header {
+    grid-template-columns: 1fr !important;
+    grid-template-areas: none !important;
+  }
+}
+
+@media (min-width: 861px) and (max-width: 1180px) {
+  .attack-screen {
+    overflow: auto !important;
+  }
+
+  .attack-screen-rail-expanded {
+    grid-template-columns: min(228px, 72vw) minmax(0, 1fr) !important;
+  }
+
+  .attack-screen-main {
+    min-height: 100dvh !important;
+    overflow: visible !important;
+  }
+
+  .attack-screen-grid {
+    min-height: auto !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    grid-template-areas:
+      "globe globe"
+      "left right" !important;
+    gap: 14px !important;
+    padding: 14px !important;
+  }
+
+  .attack-screen-globe {
+    grid-area: globe !important;
+    min-height: clamp(480px, calc(100dvh - 188px), 660px) !important;
+  }
+
+  .attack-screen-globe .globe-stage {
+    inset: 0 !important;
+  }
+
+  .attack-screen-overlay {
+    position: static !important;
+    z-index: 2 !important;
+    width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    pointer-events: auto !important;
+  }
+
+  .attack-screen-overlay-left {
+    grid-area: left !important;
+  }
+
+  .attack-screen-overlay-right {
+    grid-area: right !important;
+  }
+
+  .attack-screen-overlay .attack-screen-panel {
+    min-height: 0 !important;
+  }
+}
+
+@media (min-width: 1181px) {
+  .attack-screen-rail-expanded {
+    grid-template-columns: 228px minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .attack-map-page .attack-map-toolbar .map-controls,
+  .attack-map-page .map-action-group {
+    width: 100% !important;
+  }
+
+  .attack-map-page .map-action-group .arco-btn {
+    flex: 1 1 0 !important;
+    justify-content: center !important;
+  }
+}
+
+/* Attack map final layer. Keep this after the migrated rules until the legacy map stack is fully normalized. */
+.attack-map-page .map-canvas {
+  min-height: clamp(440px, calc(100dvh - 390px), 620px) !important;
+  isolation: isolate;
+  overscroll-behavior: contain !important;
+}
+
+.attack-map-page .map-canvas.map-mode-3d {
+  min-height: clamp(500px, calc(100dvh - 330px), 680px) !important;
+}
+
+.attack-map-page .map-mode-2d > .flat-map-stage {
+  width: min(calc(100% - clamp(20px, 4vw, 44px)), 1240px);
+}
+
+.attack-map-page .map-mode-china > .flat-map-stage {
+  width: min(calc(100% - clamp(20px, 4vw, 44px)), 1080px);
+}
+
+.attack-map-page .globe-stage {
+  inset: clamp(10px, 1.6vw, 22px) !important;
+}
+
+.attack-map-page .map-empty.map-warning {
+  top: auto;
+  bottom: 18px;
+  max-width: min(520px, calc(100% - 36px));
+  gap: 6px;
+  line-height: 1.55;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-warning) 14%, var(--surface) 86%);
+  border-color: color-mix(in srgb, var(--accent-warning) 42%, var(--border));
+  box-shadow: 0 18px 42px
+    color-mix(in srgb, var(--shadow-color, #0f2740) 14%, transparent);
+}
+
+.attack-map-page .globe-stage,
+.attack-map-page .globe-stage canvas,
+.attack-screen-globe,
+.attack-screen-globe .globe-stage,
+.attack-screen-globe .globe-stage canvas {
+  pointer-events: auto !important;
+  touch-action: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attack-map-page .map-marker i::after,
+  .attack-map-page .china-attack-pulse {
+    animation: none !important;
+  }
+}

@@ -49,15 +49,26 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 			}
 			return &ToolExecution{Approval: &request}, nil
 		}
-		if _, err := a.approvals.ConsumeApproved(approvalID, name, args); err != nil {
+		if _, err := a.approvals.BeginExecution(approvalID, name, args); err != nil {
 			return nil, fmt.Errorf("tool %q requires approved request", name)
 		}
 	}
 	result, err := tool.Execute(ctx, args)
 	if err != nil {
+		if approvalID != "" {
+			_, _ = a.approvals.MarkExecutionFailed(approvalID)
+		}
 		return nil, err
 	}
-	return &ToolExecution{Result: result}, nil
+	execution := &ToolExecution{Result: result}
+	if approvalID != "" {
+		if approval, err := a.approvals.MarkExecuted(approvalID); err == nil {
+			execution.Approval = &approval
+		} else {
+			return nil, err
+		}
+	}
+	return execution, nil
 }
 
 func (a *Assistant) Approve(id string) (ApprovalRequest, error) {

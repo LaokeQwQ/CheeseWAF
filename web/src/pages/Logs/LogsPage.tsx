@@ -83,7 +83,7 @@ export default function LogsPage() {
           <span>{t('logs.source')}</span>
           <span>{t('logs.category')}</span>
           <span>{t('logs.action')}</span>
-          <span>URI</span>
+          <span>{t('logs.path')}</span>
           <span>{t('dashboard.ipLocation')}</span>
           <span>{t('logs.time')}</span>
           <span>{t('logs.detail')}</span>
@@ -107,7 +107,7 @@ export default function LogsPage() {
               <div className="security-event-cell" data-label={t('logs.action')}>
                 <Tag color={entry.action === 'block' ? 'red' : 'blue'}>{displayAction(entry.action, t)}</Tag>
               </div>
-              <div className="security-event-cell security-event-uri" data-label="URI">
+              <div className="security-event-cell security-event-uri" data-label={t('logs.path')}>
                 <code title={entry.uri || '-'}>{entry.uri || '-'}</code>
               </div>
               <div className="security-event-cell" data-label={t('dashboard.ipLocation')}>

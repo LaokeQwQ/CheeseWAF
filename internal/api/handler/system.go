@@ -150,7 +150,10 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.OnSitesChanged != nil {
-		h.OnSitesChanged(h.Config.Sites)
+		if err := h.OnSitesChanged(h.Config.Sites); err != nil {
+			writeError(w, http.StatusInternalServerError, "SITES_RELOAD_ERROR", err.Error())
+			return
+		}
 	}
 	if req.Protection != nil {
 		if err := h.notifyProtectionChanged(); err != nil {

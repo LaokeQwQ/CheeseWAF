@@ -473,7 +473,10 @@ export function syncThreatIntel(providerId?: string) {
 }
 
 export function testThreatIntelProvider(provider: ThreatIntelProvider) {
-  return unwrap<{ ok: boolean; count: number }>(apiClient.post('/ip/threat-intel/test', provider));
+  return unwrap<{ ok: boolean; count: number }>(apiClient.post('/ip/threat-intel/test', {
+    ...provider,
+    provider_id: provider.id,
+  }));
 }
 
 export function lookupThreatIntel(providerId: string, ip: string) {
@@ -812,6 +815,101 @@ export async function analyzeLogReferenceStream(
 
 export function analyzeEvents(payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string; language?: string }) {
   return unwrap<AIEventsAnalysisResponse>(apiClient.post('/ai/events/analyze', payload, { timeout: AI_REQUEST_TIMEOUT_MS }));
+}
+
+export async function analyzeEventsStream(
+  payload: { limit?: number; action?: string; category?: string; client_ip?: string; trace_id?: string; start?: string; end?: string; language?: string },
+  onItem?: (analysis: AttackAnalysis) => void,
+  onTrace?: (event: AIAssistantTraceEvent) => void,
+  signal?: AbortSignal,
+) {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/events/analyze/stream') : '';
+  const response = await fetch('/api/ai/events/analyze/stream', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+  const traceID = fetchResponseTraceID(response);
+  if (!response.ok) {
+    const errorBody = await readableFetchError(response);
+    throw new APIRequestError(errorBody.message, 'AI_EVENTS_ANALYSIS_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
+    const envelope = await response.json() as Envelope<AIEventsAnalysisResponse>;
+    if (envelope.error) {
+      throw new APIRequestError(envelope.error.message, envelope.error.code, response.status, envelope.error.event_id ?? envelope.error.trace_id ?? traceID);
+    }
+    return envelope.data as AIEventsAnalysisResponse;
+  }
+  if (!response.body) {
+    throw new APIRequestError('AI events analysis stream is not available.', 'AI_EVENTS_ANALYSIS_STREAM_UNAVAILABLE', response.status, traceID);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult: AIEventsAnalysisResponse | null = null;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split(/\n\n/);
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        const event = parseSSEBlock(part);
+        if (!event) {
+          continue;
+        }
+        if (event.event === 'trace') {
+          onTrace?.(event.data as AIAssistantTraceEvent);
+        } else if (event.event === 'item') {
+          onItem?.(event.data as AttackAnalysis);
+        } else if (event.event === 'done') {
+          finalResult = event.data as AIEventsAnalysisResponse;
+        } else if (event.event === 'error') {
+          const errorPayload = event.data as { message?: string; code?: string; event_id?: string; trace_id?: string };
+          throw new APIRequestError(errorPayload.message || 'AI events analysis stream failed.', errorPayload.code || 'AI_EVENTS_ANALYSIS_STREAM_FAILED', response.status, errorPayload.event_id ?? errorPayload.trace_id ?? traceID);
+        }
+      }
+    }
+    if (buffer.trim()) {
+      const event = parseSSEBlock(buffer);
+      if (event?.event === 'done') {
+        finalResult = event.data as AIEventsAnalysisResponse;
+      }
+    }
+  } catch (error) {
+    if (error instanceof APIRequestError) {
+      throw error;
+    }
+    if ((error as DOMException)?.name === 'AbortError') {
+      throw new APIRequestError('AI events analysis was cancelled.', 'AI_EVENTS_ANALYSIS_CANCELLED', response.status, traceID);
+    }
+    throw new APIRequestError(
+      streamInterruptedMessage('AI events analysis stream was interrupted before completion', error),
+      'AI_EVENTS_ANALYSIS_STREAM_INTERRUPTED',
+      response.status,
+      traceID,
+      error,
+    );
+  }
+  if (!finalResult) {
+    throw new APIRequestError(
+      streamInterruptedMessage('AI events analysis stream ended without a final result', 'missing final done event'),
+      'AI_EVENTS_ANALYSIS_STREAM_INCOMPLETE',
+      response.status,
+      traceID,
+    );
+  }
+  return finalResult;
 }
 
 export function askAIAssistant(message: string, limit = 30, language?: string, deepThink = false) {

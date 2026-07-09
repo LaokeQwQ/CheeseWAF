@@ -6,12 +6,12 @@ type MarkdownBlock =
   | { type: 'code'; language: string; text: string };
 
 type Props = {
-  text: string;
+  text?: string;
   className?: string;
 };
 
 export default function SafeMarkdown({ text, className = '' }: Props) {
-  const blocks = parseMarkdownBlocks(text);
+  const blocks = parseMarkdownBlocks(String(text ?? ''));
   return (
     <div className={['assistant-markdown', className].filter(Boolean).join(' ')}>
       {blocks.map((block, index) => {
