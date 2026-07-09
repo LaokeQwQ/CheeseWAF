@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -8,10 +8,13 @@ import BrandLogo from '../../components/BrandLogo';
 import { useAppStore } from '../../stores';
 import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry, displaySeverity } from '../../utils/display';
-import GlobeMap from './GlobeMap';
-import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './AttackMapPage';
+import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './attackMapData';
+import '../../styles/attack-map.css';
+
+const GlobeMap = lazy(() => import('./GlobeMap'));
 
 const screenRefreshMs = 3_000;
+const maxGlobeRegions = 80;
 
 export default function AttackScreenPage() {
   const { t } = useTranslation();
@@ -20,27 +23,34 @@ export default function AttackScreenPage() {
   const visualTheme = appTheme === 'dark' || appTheme === 'blackGold' ? 'dark' : 'light';
   const [railOpen, setRailOpen] = useState(false);
   const [timelinePercent, setTimelinePercent] = useState(100);
+  const [timelineInteracting, setTimelineInteracting] = useState(false);
+  const timelineResumeTimer = useRef<number | null>(null);
+  const timelinePointerActive = useRef(false);
+  const timelinePaused = timelineInteracting || timelinePercent < 100;
+  const refetchInterval = timelinePaused ? false : screenRefreshMs;
   const { data: logs, isFetching, refetch } = useQuery({
     queryKey: ['attack-screen-logs'],
     queryFn: () => fetchLogs({ limit: 1000 }),
-    refetchInterval: screenRefreshMs,
+    refetchInterval,
+    enabled: !timelinePaused,
     retry: false,
     placeholderData: (previous) => previous,
   });
   const { data: monitor } = useQuery({
     queryKey: ['attack-screen-monitor'],
     queryFn: fetchMonitorSummary,
-    refetchInterval: screenRefreshMs,
+    refetchInterval,
+    enabled: !timelinePaused,
     retry: false,
     placeholderData: (previous) => previous,
   });
   const entries = logs?.items ?? [];
   const initialLoading = !logs && isFetching;
   const attackEntries = useMemo(() => entries.filter(isAttackEntry), [entries]);
-  const visibleEntries = useMemo(() => filterEntriesByTimeline(entries, timelinePercent), [entries, timelinePercent]);
-  const visibleAttackEntries = useMemo(() => visibleEntries.filter(isAttackEntry), [visibleEntries]);
-  const regions = useMemo(() => aggregateRegions(visibleEntries), [visibleEntries]);
+  const visibleAttackEntries = useMemo(() => filterEntriesByTimeline(attackEntries, timelinePercent), [attackEntries, timelinePercent]);
+  const regions = useMemo(() => aggregateRegions(visibleAttackEntries), [visibleAttackEntries]);
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
+  const globeRegions = useMemo(() => mappedRegions.slice(0, maxGlobeRegions), [mappedRegions]);
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
   const attackTypes = useMemo(() => buildAttackTypes(visibleAttackEntries, t), [visibleAttackEntries, t]);
   const sourceCountries = useMemo(() => buildSourceCountries(mappedRegions), [mappedRegions]);
@@ -49,21 +59,66 @@ export default function AttackScreenPage() {
   const critical = regions.reduce((sum, region) => sum + (region.level === 'critical' ? region.attacks : 0), 0);
   const perMinute = visibleAttackEntries.filter((entry) => Date.parse(entry.timestamp) >= Date.now() - 60_000).length;
   const level = overallThreatLevel(regions);
-  const timeRange = formatTimeRange(entries);
+  const timeRange = formatTimeRange(attackEntries);
   const protectedTarget = useMemo<ProtectedTarget>(() => {
     const host = window.location.hostname;
     return { lat: host.startsWith('38.') ? 37.1 : 35.9, lon: host.startsWith('38.') ? -95.7 : 104.2, label: t('attackMap.protectedTarget'), source: 'admin-host' };
   }, [t]);
+  const beginTimelineInteraction = () => {
+    if (timelineResumeTimer.current !== null) {
+      window.clearTimeout(timelineResumeTimer.current);
+      timelineResumeTimer.current = null;
+    }
+    setTimelineInteracting(true);
+  };
+  const endTimelineInteraction = () => {
+    if (timelineResumeTimer.current !== null) {
+      window.clearTimeout(timelineResumeTimer.current);
+    }
+    timelineResumeTimer.current = window.setTimeout(() => {
+      setTimelineInteracting(false);
+      timelineResumeTimer.current = null;
+    }, 1200);
+  };
+  const handleTimelinePointerDown = (event: PointerEvent<HTMLInputElement>) => {
+    timelinePointerActive.current = true;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    beginTimelineInteraction();
+  };
+  const handleTimelinePointerEnd = (event: PointerEvent<HTMLInputElement>) => {
+    timelinePointerActive.current = false;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    endTimelineInteraction();
+  };
+  const handleTimelineChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setTimelinePercent(Number(event.currentTarget.value));
+    if (!timelinePointerActive.current) {
+      beginTimelineInteraction();
+      endTimelineInteraction();
+    }
+  };
+
+  useEffect(() => () => {
+    if (timelineResumeTimer.current !== null) {
+      window.clearTimeout(timelineResumeTimer.current);
+    }
+  }, []);
 
   return (
-    <main className={`attack-screen attack-screen-${visualTheme}`}>
+    <main className={['attack-screen', `attack-screen-${visualTheme}`, railOpen ? 'attack-screen-rail-expanded' : ''].filter(Boolean).join(' ')}>
       <aside className={railOpen ? 'attack-screen-rail attack-screen-rail-open' : 'attack-screen-rail'}>
         <div className="attack-screen-brand">
           <span><BrandLogo alt="" /></span>
           <strong>CheeseWAF</strong>
         </div>
         <nav>
-          <button className="attack-screen-nav-active" type="button" onClick={() => setRailOpen((value) => !value)}>
+          <button
+            className="attack-screen-nav-active"
+            type="button"
+            aria-current="page"
+            aria-expanded={railOpen}
+            onClick={() => setRailOpen((value) => !value)}
+          >
             <Globe2 size={16} />
             <span>{t('attackMap.globalThreatMap')}</span>
           </button>
@@ -84,7 +139,7 @@ export default function AttackScreenPage() {
 
       <section className="attack-screen-main">
         <header className="attack-screen-topbar">
-          <span className="attack-screen-live"><i /> {t('attackMap.live')}</span>
+          <span className="attack-screen-live"><i /> {timelinePaused ? t('attackMap.historyView') : t('attackMap.live')}</span>
           <LiveClock />
           <span>{monitor?.alerts?.length ? displaySeverity(monitor.alerts[0]?.severity, t) : t('common.healthy')}</span>
           <button type="button" onClick={() => refetch()} disabled={isFetching}>
@@ -115,7 +170,7 @@ export default function AttackScreenPage() {
           <section className="attack-screen-globe">
             <Suspense fallback={<div className="page-spinner" aria-label={t('attackMap.loading')} aria-busy="true" />}>
               <GlobeMap
-                regions={mappedRegions}
+                regions={globeRegions}
                 zoom={0.68}
                 countryLevels={countryLevels}
                 worldFeatures={worldFeatures}
@@ -140,7 +195,18 @@ export default function AttackScreenPage() {
             <section className="attack-screen-panel">
               <h2>{t('attackMap.timeline')}</h2>
               <div className="attack-screen-timeline">
-                <input type="range" min={0} max={100} value={timelinePercent} onChange={(event) => setTimelinePercent(Number(event.currentTarget.value))} />
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={timelinePercent}
+                  aria-label={t('attackMap.timelineRangeAria')}
+                  onPointerDown={handleTimelinePointerDown}
+                  onPointerUp={handleTimelinePointerEnd}
+                  onPointerCancel={handleTimelinePointerEnd}
+                  onBlur={endTimelineInteraction}
+                  onChange={handleTimelineChange}
+                />
                 <div>
                   <span>{timeRange.start}</span>
                   <strong>{timelinePercent}%</strong>

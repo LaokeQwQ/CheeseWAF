@@ -547,9 +547,9 @@ var (
 	nosqlJSBehavior               = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.)`)
 	nosqlWideRegex                = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
 	nosqlOperatorNames            = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
-	sstiTemplateExpression        = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|<%=?\s*.*?%>)`)
+	sstiTemplateExpression        = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|%\{.*?\}|<%=?\s*.*?%>)`)
 	sstiArithmeticProbe           = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
-	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime)`)
+	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|#(?:context|_memberaccess|request|session)|@[a-z0-9_.]+@|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime)`)
 	sqlBlockComment               = regexp.MustCompile(`(?is)/\*.*?\*/`)
 	sqlLineComment                = regexp.MustCompile(`(?m)--[^\r\n]*`)
 	rceShellControl               = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
@@ -909,22 +909,105 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 }
 
 func analyzeXXE(candidate semanticCandidate) (Hit, bool) {
-	text := candidate.text
+	text := strings.TrimSpace(candidate.text)
 	lower := normalize(text)
+	if !xxePayloadContext(candidate, lower) {
+		return Hit{}, false
+	}
 	reasons := map[string]bool{}
-	if strings.Contains(lower, "<!doctype") && strings.Contains(lower, "<!entity") {
+	syntax := strings.Contains(lower, "<!doctype") && strings.Contains(lower, "<!entity")
+	external := strings.Contains(lower, "system") || strings.Contains(lower, "public")
+	target := xxeDangerousTarget(lower)
+	if syntax {
 		reasons["syntax: XML DTD with entity declaration"] = true
 	}
-	if strings.Contains(lower, "system") || strings.Contains(lower, "public") {
+	if strings.Contains(lower, "<!entity %") {
+		reasons["syntax: XML parameter entity declaration"] = true
+	}
+	if external {
 		reasons["semantics: external entity resolution"] = true
 	}
-	if strings.Contains(lower, "file://") || strings.Contains(lower, "http://") || strings.Contains(lower, "https://") {
+	if target {
 		reasons["semantics: file or network disclosure target"] = true
 	}
-	if len(reasons) < 2 {
+	if !syntax || !external || !target {
 		return Hit{}, false
 	}
 	return hit(candidate, "xxe", engine.SeverityHigh, 0.84+confidenceBonus(reasons), reasons), true
+}
+
+func xxePayloadContext(candidate semanticCandidate, lower string) bool {
+	if !strings.Contains(lower, "<!entity") || !xxeLooksLikeXMLPayload(lower) {
+		return false
+	}
+	source := candidate.input.Source
+	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
+	if source == "body.raw" {
+		return true
+	}
+	if xxeDocumentationField(name) {
+		return false
+	}
+	switch source {
+	case "query", "body.form", "body.json", "body.multipart":
+		return xxePayloadField(name)
+	default:
+		return false
+	}
+}
+
+func xxeLooksLikeXMLPayload(lower string) bool {
+	trimmed := strings.TrimSpace(lower)
+	if strings.HasPrefix(trimmed, "<?xml") ||
+		strings.HasPrefix(trimmed, "<!doctype") ||
+		strings.HasPrefix(trimmed, "<soap") ||
+		strings.HasPrefix(trimmed, "<saml") ||
+		strings.HasPrefix(trimmed, "<assertion") ||
+		strings.HasPrefix(trimmed, "<svg") {
+		return true
+	}
+	return strings.Contains(trimmed, "<!doctype") && strings.Contains(trimmed, "<!entity")
+}
+
+func xxePayloadField(name string) bool {
+	if name == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
+	})
+	for _, part := range parts {
+		switch part {
+		case "xml", "body", "payload", "document", "soap", "saml", "assertion", "metadata", "dtd", "entity":
+			return true
+		}
+	}
+	return false
+}
+
+func xxeDocumentationField(name string) bool {
+	if name == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
+	})
+	for _, part := range parts {
+		switch part {
+		case "text", "note", "notes", "description", "desc", "docs", "docstring", "markdown", "article", "example", "examples", "content":
+			return true
+		}
+	}
+	return false
+}
+
+func xxeDangerousTarget(lower string) bool {
+	for _, marker := range []string{"file://", "http://", "https://", "ftp://", "php://", "expect://", "gopher://", "dict://", "169.254.169.254", "metadata.google.internal"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return lfiSensitiveTarget.MatchString(lower)
 }
 
 func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {

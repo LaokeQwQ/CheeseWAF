@@ -28,7 +28,7 @@ export default function MonitorPage() {
       <div className="metric-grid">
         <Metric icon={<Activity size={18} />} label={t('monitor.requests')} value={loading ? '—' : String(snapshot?.requests ?? 0)} loading={loading} />
         <Metric icon={<ShieldAlert size={18} />} label={t('monitor.blocked')} value={loading ? '—' : String(snapshot?.blocked ?? 0)} loading={loading} />
-        <Metric icon={<Cpu size={18} />} label={t('monitor.goroutines')} value={loading ? '—' : String(snapshot?.goroutines ?? 0)} loading={loading} />
+        <Metric icon={<Cpu size={18} />} label={t('monitor.processes')} value={loading ? '—' : String(snapshot?.process_count ?? (snapshot ? 1 : 0))} loading={loading} />
         <Metric icon={<Database size={18} />} label={t('monitor.memory')} value={loading ? '—' : formatBytes(snapshot?.memory_alloc ?? 0)} loading={loading} />
       </div>
 

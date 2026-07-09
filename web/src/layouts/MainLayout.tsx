@@ -34,14 +34,14 @@ import {
 } from 'lucide-react';
 import i18n from '../i18n';
 import { fetchAuditEntries, fetchHealth, fetchLogs, fetchMonitorSummary, fetchUsers, fetchVersion, logout } from '../api/client';
-import AIAssistant from '../components/AIAssistant/AIAssistant';
+import AIAssistantEntry from '../components/AIAssistant/AIAssistantEntry';
 import BrandLogo from '../components/BrandLogo';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
 import { useQuery } from '@tanstack/react-query';
 import type { Alert, AuditEntry, LogEntry, User } from '../types/api';
 import { displayAction, displayCategory } from '../utils/display';
-import { preloadAIPage, preloadAPISecurityPage, preloadRoute } from '../routes/preload';
+import { preloadRoute } from '../routes/preload';
 
 type NavItem = { key: string; labelKey: string; icon: LucideIcon };
 type NavGroup = { labelKey: string; items: NavItem[] };
@@ -125,23 +125,6 @@ export default function MainLayout() {
   useEffect(() => {
     i18n.changeLanguage(language);
   }, [language]);
-
-  useEffect(() => {
-    const preload = () => {
-      void preloadAPISecurityPage();
-      void preloadAIPage();
-    };
-    const idle = (window as Window & { requestIdleCallback?: (callback: () => void) => number }).requestIdleCallback;
-    if (idle) {
-      const id = idle(preload);
-      return () => {
-        const cancelIdle = (window as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
-        cancelIdle?.(id);
-      };
-    }
-    const timer = window.setTimeout(preload, 800);
-    return () => window.clearTimeout(timer);
-  }, []);
 
   useEffect(() => {
     setNotificationsOpen(false);
@@ -485,6 +468,8 @@ export default function MainLayout() {
                     icon={<Bell size={18} />}
                     aria-label={t('shell.notifications')}
                     aria-expanded={notificationsOpen}
+                    aria-haspopup="dialog"
+                    aria-controls="cheesewaf-notification-panel"
                     onClick={() => {
                       setSearchOpen(false);
                       setNotificationsOpen((open) => !open);
@@ -567,7 +552,7 @@ export default function MainLayout() {
         <main className="workspace">
           <Outlet />
         </main>
-        {showGlobalAssistant && <AIAssistant />}
+        {showGlobalAssistant && <AIAssistantEntry />}
       </div>
     </div>
   );
@@ -604,7 +589,12 @@ function NotificationPanel({
     { key: 'pinned', label: t('shell.notificationFilterPinned') },
   ];
   return (
-    <section className="notification-panel">
+    <section
+      id="cheesewaf-notification-panel"
+      className="notification-panel"
+      role="dialog"
+      aria-label={t('shell.notifications')}
+    >
       <header>
         <strong>{t('shell.notifications')}</strong>
         <Tag color={unread > 0 ? 'orange' : 'green'}>
@@ -617,6 +607,7 @@ function NotificationPanel({
             <button
               key={option.key}
               type="button"
+              role="tab"
               className={filter === option.key ? 'notification-filter-active' : ''}
               aria-selected={filter === option.key}
               onClick={() => onFilterChange(option.key)}
@@ -881,7 +872,7 @@ function channelLabel(channel: string | undefined, t: (key: string, options?: Re
 
 function versionTooltip(version: { version: string; channel: string; commit: string; build_time: string; platform: string } | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
   if (!version?.version) {
-    return fallbackText(t, 'shell.versionUnavailable', '版本信息不可用');
+    return fallbackText(t, 'shell.versionUnavailable', 'Version unavailable');
   }
   return [
     version.version,
@@ -894,7 +885,7 @@ function versionTooltip(version: { version: string; channel: string; commit: str
 
 function versionLabel(version: { version: string; channel: string } | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
   if (!version?.version) {
-    return fallbackText(t, 'shell.versionUnavailable', '版本信息不可用');
+    return fallbackText(t, 'shell.versionUnavailable', 'Version unavailable');
   }
   return `${version.version} · ${channelLabel(version.channel, t)}`;
 }

@@ -344,3 +344,127 @@ func TestBuildPipelineHonorsSSTISemanticSwitch(t *testing.T) {
 		t.Fatalf("expected SSTI detection from site semantic switch, got %+v", result)
 	}
 }
+
+func TestBuildPipelineScopesSemanticSwitchesPerSite(t *testing.T) {
+	cfg := &config.Config{
+		Sites: []config.SiteConfig{
+			{
+				ID:      "site-a",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+					SemanticEngines: config.SemanticEngineSwitches{
+						SQL: true,
+					},
+				},
+			},
+			{
+				ID:      "site-b",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+					SemanticEngines: config.SemanticEngineSwitches{
+						NoSQL: true,
+					},
+				},
+			},
+		},
+	}
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"username":{"$ne":null},"password":{"$ne":null}}`
+	reqA, _ := http.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(body))
+	reqA.Header.Set("Content-Type", "application/json")
+	ctxA, err := engine.NewRequestContext(reqA, "site-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultA, err := pipeline.Detect(context.Background(), ctxA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resultA != nil && resultA.Detected {
+		t.Fatalf("expected site-a NoSQL switch to remain disabled, got %+v", resultA)
+	}
+
+	reqB, _ := http.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(body))
+	reqB.Header.Set("Content-Type", "application/json")
+	ctxB, err := engine.NewRequestContext(reqB, "site-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultB, err := pipeline.Detect(context.Background(), ctxB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resultB == nil || !resultB.Detected || resultB.Category != "nosqli" {
+		t.Fatalf("expected site-b NoSQLi detection, got %+v", resultB)
+	}
+}
+
+func TestBuildPipelineScopesCustomRulesPerSite(t *testing.T) {
+	cfg := &config.Config{
+		Sites: []config.SiteConfig{
+			{
+				ID:      "site-a",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+				},
+			},
+			{
+				ID:      "site-b",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+					CustomRules: []config.CustomRuleConfig{
+						{
+							ID:       "block-admin-probe",
+							Name:     "Block admin probe",
+							Pattern:  `admin_probe_token`,
+							Location: "uri",
+							Action:   "block",
+							Severity: "high",
+							Enabled:  true,
+						},
+					},
+				},
+			},
+		},
+	}
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqA, _ := http.NewRequest(http.MethodGet, "/admin_probe_token", nil)
+	ctxA, err := engine.NewRequestContext(reqA, "site-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultA, err := pipeline.Detect(context.Background(), ctxA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resultA != nil && resultA.Detected {
+		t.Fatalf("expected site-a custom rule isolation, got %+v", resultA)
+	}
+
+	reqB, _ := http.NewRequest(http.MethodGet, "/admin_probe_token", nil)
+	ctxB, err := engine.NewRequestContext(reqB, "site-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultB, err := pipeline.Detect(context.Background(), ctxB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resultB == nil || !resultB.Detected || resultB.Category != "custom_rule" {
+		t.Fatalf("expected site-b custom rule detection, got %+v", resultB)
+	}
+}

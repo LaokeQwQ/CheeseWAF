@@ -80,7 +80,8 @@ export default function DashboardPage() {
   const reclaimMutation = useMutation({
     mutationFn: reclaimSystemResources,
     onSuccess: (result) => {
-      const message = `${t('dashboard.reclaimResult')}: ${result.actions.filter((item) => item.ok).length}/${result.actions.length}`;
+      const actions = Array.isArray(result.actions) ? result.actions : [];
+      const message = `${t('dashboard.reclaimResult')}: ${actions.filter((item) => item.ok).length}/${actions.length}`;
       if (result.ok) {
         ArcoMessage.success(message);
       } else {
@@ -91,8 +92,10 @@ export default function DashboardPage() {
     onError: (error) => ArcoMessage.error(error.message),
   });
   const snapshot = monitor?.snapshot;
-  const entries = periodLogs?.items ?? [];
-  const liveEntries = liveLogs?.items ?? [];
+  const entries = Array.isArray(periodLogs?.items) ? periodLogs.items : [];
+  const liveEntries = Array.isArray(liveLogs?.items) ? liveLogs.items : [];
+  const siteItems = Array.isArray(sites) ? sites : [];
+  const hasSiteItems = Array.isArray(sites);
   const statsWindow = useMemo(() => statsWindowFromState(statsRange, customRange), [customRange, statsRange]);
   const customRangePickerValue = useMemo(() => customRange.map(formatDateTimePickerValue) as [string, string], [customRange]);
   const traffic = useMemo(() => buildTraffic(entries, statsWindow.start, statsWindow.end), [entries, statsWindow.end, statsWindow.start]);
@@ -105,10 +108,10 @@ export default function DashboardPage() {
   const periodBlockedCount = entries.filter((entry) => entry.action === 'block').length;
   const liveRequests = liveEntries.length;
   const liveBlockedCount = liveEntries.filter((entry) => entry.action === 'block').length;
-  const siteCount = sites?.length ?? snapshot?.sites ?? 0;
-  const enabledSiteCount = sites?.filter((site) => site.enabled !== false).length ?? 0;
-  const siteDelta = sites
-    ? t('dashboard.sitesEnabled', { enabled: enabledSiteCount, total: sites.length })
+  const siteCount = hasSiteItems ? siteItems.length : snapshot?.sites ?? 0;
+  const enabledSiteCount = siteItems.filter((site) => site.enabled !== false).length;
+  const siteDelta = hasSiteItems
+    ? t('dashboard.sitesEnabled', { enabled: enabledSiteCount, total: siteItems.length })
     : snapshot
       ? t('dashboard.sitesFromRuntime')
       : t('dashboard.sitesLoading');

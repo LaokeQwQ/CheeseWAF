@@ -483,7 +483,7 @@ export type AIAssistantTraceEvent = {
 
 export type AIToolSensitivity = 'read_only' | 'modify' | 'destructive' | string;
 
-export type AIApprovalStatus = 'pending' | 'approved' | 'rejected' | 'executed' | string;
+export type AIApprovalStatus = 'pending' | 'approved' | 'executing' | 'rejected' | 'executed' | string;
 
 export type AIToolResult = {
   success: boolean;
