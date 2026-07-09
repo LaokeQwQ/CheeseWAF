@@ -970,6 +970,52 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 	}
 }
 
+func TestAIToolApprovalCannotWriteDuringClusterProtectionMode(t *testing.T) {
+	cfg := minimumHAHandlerConfig()
+	handler := New(Options{Config: &cfg})
+	router := chi.NewRouter()
+	router.Post("/execute", handler.ExecuteAITool)
+	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
+
+	args := `{"area":"bot_cc","level":"high"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","args":`+args+`}`)))
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected approval request ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var first struct {
+		Data struct {
+			Approval *struct {
+				ID string `json:"id"`
+			} `json:"approval"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+	if first.Data.Approval == nil || first.Data.Approval.ID == "" {
+		t.Fatalf("expected pending approval, got %+v", first.Data.Approval)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected approve ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`)))
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected protected execute to fail, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Protection.Policy.BotCC == "high" {
+		t.Fatalf("policy changed despite cluster protection mode: %+v", cfg.Protection.Policy)
+	}
+}
+
 type recordingAISink struct {
 	items  []storage.LogEntry
 	filter storage.LogFilter

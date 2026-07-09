@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -288,10 +289,7 @@ func (t recentSecurityEventsTool) Execute(ctx context.Context, args map[string]a
 	if t.Sink == nil {
 		return &ai.ToolResult{Success: true, Output: "[]"}, nil
 	}
-	limit := intArg(args, "limit", 10)
-	if limit <= 0 || limit > 50 {
-		limit = 10
-	}
+	limit := boundedIntArg(args, "limit", 10, 1, 50)
 	entries, _, err := t.Sink.Query(ctx, storage.LogFilter{Limit: limit * 4})
 	if err != nil {
 		return nil, err
@@ -356,7 +354,7 @@ func (t knowledgeBaseTool) Execute(_ context.Context, args map[string]any) (*ai.
 		cfg = t.Config.AI.Knowledge
 	}
 	query, _ := stringArg(args, "query")
-	limit := intArg(args, "limit", cfg.MaxSnippets)
+	limit := boundedIntArg(args, "limit", cfg.MaxSnippets, 1, 10)
 	output := ai.NewKnowledgeBase(cfg).SearchJSON(query, limit)
 	return &ai.ToolResult{Success: true, Output: output}, nil
 }
@@ -405,6 +403,9 @@ func (t setBotChallengeTool) Execute(_ context.Context, args map[string]any) (*a
 	}
 	if t.Handler == nil || t.Handler.Config == nil {
 		return nil, fmt.Errorf("handler config is nil")
+	}
+	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
+		return nil, err
 	}
 	t.Handler.Config.Protection.Bot = after
 	if err := t.Handler.persistConfig(); err != nil {
@@ -485,6 +486,9 @@ func (t setProtectionLevelTool) Execute(_ context.Context, args map[string]any) 
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
+		return nil, err
+	}
 	t.Handler.Config.Protection.Policy = after
 	if err := t.Handler.persistConfig(); err != nil {
 		return nil, err
@@ -528,6 +532,16 @@ func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.Protecti
 		return before, after, fmt.Errorf("invalid protection area %q", area)
 	}
 	return before, after, nil
+}
+
+func ensureAssistantConfigWritable(h *Handler) error {
+	if h == nil || h.Config == nil {
+		return fmt.Errorf("handler config is nil")
+	}
+	if ok, reason := h.clusterConfigWritable("zh-CN"); !ok {
+		return fmt.Errorf("cluster protection mode: %s", reason)
+	}
+	return nil
 }
 
 func assistantSecurityEvent(entry storage.LogEntry) bool {
@@ -605,11 +619,22 @@ func intArg(args map[string]any, key string, fallback int) int {
 		return int(typed)
 	case json.Number:
 		parsed, err := typed.Int64()
-		if err == nil {
+		if err == nil && parsed >= math.MinInt && parsed <= math.MaxInt {
 			return int(parsed)
 		}
 	}
 	return fallback
+}
+
+func boundedIntArg(args map[string]any, key string, fallback, minValue, maxValue int) int {
+	if minValue > maxValue {
+		return fallback
+	}
+	value := intArg(args, key, fallback)
+	if value < minValue || value > maxValue {
+		return fallback
+	}
+	return value
 }
 
 func boolArg(args map[string]any, key string) (bool, bool) {

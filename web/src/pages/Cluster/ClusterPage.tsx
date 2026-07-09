@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask } from '../../api/client';
-import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse } from '../../types/api';
+import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration } from '../../types/api';
 
 type ClusterDeployForm = {
   host?: string;
@@ -494,6 +494,7 @@ export default function ClusterPage() {
           )}
           <div className="cluster-tables-grid">
             <Table
+              className="cluster-token-table"
               rowKey="id"
               loading={isFetchingTokens}
               pagination={false}
@@ -529,6 +530,7 @@ export default function ClusterPage() {
               scroll={{ x: 720 }}
             />
             <Table
+              className="cluster-node-table"
               rowKey="node_id"
               loading={isFetchingNodes}
               pagination={false}
@@ -536,9 +538,10 @@ export default function ClusterPage() {
               columns={[
                 { title: t('cluster.nodeID'), dataIndex: 'node_id', render: (value: string) => <code>{value}</code> },
                 { title: t('cluster.nodeRole'), dataIndex: 'role', render: (value: string) => roleTag(value, t) },
+                { title: t('cluster.nodeRuntimeState'), render: (_: unknown, item: ClusterNodeRegistration) => runtimeStateTag(item, t) },
                 { title: t('cluster.nodeAdvertise'), dataIndex: 'advertise_addr' },
-                { title: t('cluster.nodeJoined'), dataIndex: 'joined_at', render: formatTimestamp },
-                { title: t('cluster.nodeCertExpiry'), dataIndex: 'certificate_expiry', render: formatTimestamp },
+                { title: t('cluster.nodeLastHeartbeat'), render: (_: unknown, item: ClusterNodeRegistration) => formatRuntimeHeartbeat(item) },
+                { title: t('cluster.nodeConfigVersion'), render: (_: unknown, item: ClusterNodeRegistration) => item.runtime?.config_version || '-' },
                 {
                   title: t('common.actions'),
                   render: (_: unknown, item) => (
@@ -555,9 +558,77 @@ export default function ClusterPage() {
                     </Button>
                   ),
                 },
+                { title: t('cluster.nodeJoined'), dataIndex: 'joined_at', render: formatTimestamp },
+                { title: t('cluster.nodeCertExpiry'), dataIndex: 'certificate_expiry', render: formatTimestamp },
               ]}
-              scroll={{ x: 960 }}
+              scroll={{ x: 1080 }}
             />
+          </div>
+          <div className="cluster-mobile-cards">
+            <section className="cluster-mobile-list" aria-label={t('cluster.joinTokenList')}>
+              <h3>{t('cluster.joinTokenList')}</h3>
+              {(tokens?.items || []).length ? (tokens?.items || []).map((item) => (
+                <article className="cluster-mobile-card" key={item.id}>
+                  <div className="cluster-mobile-card-head">
+                    <code>{item.id}</code>
+                    {roleTag(item.role, t)}
+                  </div>
+                  <dl>
+                    <div><dt>{t('cluster.tokenUsage')}</dt><dd>{item.used_count}/{item.max_uses}</dd></div>
+                    <div><dt>{t('cluster.tokenExpires')}</dt><dd>{formatTimestamp(item.expires_at)}</dd></div>
+                  </dl>
+                  <div className="cluster-mobile-actions">
+                    <Popconfirm
+                      title={t('cluster.revokeConfirmTitle')}
+                      content={t('cluster.revokeConfirmContent')}
+                      okText={t('common.confirm')}
+                      cancelText={t('common.cancel')}
+                      disabled={item.revoked || revokeTokenMutation.isPending}
+                      onOk={() => revokeTokenMutation.mutate(item.id)}
+                    >
+                      <Button
+                        size="small"
+                        status="danger"
+                        disabled={item.revoked || revokeTokenMutation.isPending}
+                        loading={revokingTokenID === item.id}
+                      >
+                        {item.revoked ? t('cluster.revoked') : t('cluster.revoke')}
+                      </Button>
+                    </Popconfirm>
+                  </div>
+                </article>
+              )) : <div className="cluster-mobile-empty">{t('common.noData')}</div>}
+            </section>
+            <section className="cluster-mobile-list" aria-label={t('cluster.registeredNodeList')}>
+              <h3>{t('cluster.registeredNodeList')}</h3>
+              {(nodes?.items || []).length ? (nodes?.items || []).map((item) => (
+                <article className="cluster-mobile-card" key={item.node_id}>
+                  <div className="cluster-mobile-card-head">
+                    <code>{item.node_id}</code>
+                    {runtimeStateTag(item, t)}
+                  </div>
+                  <dl>
+                    <div><dt>{t('cluster.nodeRole')}</dt><dd>{roleTag(item.role, t)}</dd></div>
+                    <div><dt>{t('cluster.nodeAdvertise')}</dt><dd>{item.advertise_addr || '-'}</dd></div>
+                    <div><dt>{t('cluster.nodeLastHeartbeat')}</dt><dd>{formatRuntimeHeartbeat(item)}</dd></div>
+                    <div><dt>{t('cluster.nodeConfigVersion')}</dt><dd>{item.runtime?.config_version || '-'}</dd></div>
+                  </dl>
+                  <div className="cluster-mobile-actions">
+                    <Button
+                      size="small"
+                      disabled={item.revoked}
+                      onClick={() => {
+                        certificateForm.setFieldValue('nodeId', item.node_id);
+                        setLatestCertificate(null);
+                        document.getElementById('cluster-cert-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      }}
+                    >
+                      {t('cluster.certSign')}
+                    </Button>
+                  </div>
+                </article>
+              )) : <div className="cluster-mobile-empty">{t('common.noData')}</div>}
+            </section>
           </div>
 
           <div id="cluster-cert-panel" className="cluster-cert-panel">
@@ -896,16 +967,14 @@ export default function ClusterPage() {
               pagination={auditEntries.length > 10 ? { pageSize: 10, sizeCanChange: true } : false}
               data={auditEntries}
               columns={[
-                { title: t('cluster.auditTime'), dataIndex: 'timestamp', width: 190, render: (value: string) => <span className="nowrap-cell" title={value}>{formatTimestamp(value) || '-'}</span> },
-                { title: t('cluster.auditSourceType'), width: 170, render: (_: unknown, item: ClusterAuditEntry) => <ClusterAuditSourceCell entry={item} t={t} /> },
-                { title: t('cluster.auditAction'), width: 150, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-text">{clusterAuditAction(item, t)}</span> },
-                { title: t('cluster.auditActor'), width: 140, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-text">{clusterAuditActor(item, t)}</span> },
-                { title: t('cluster.auditTarget'), render: (_: unknown, item: ClusterAuditEntry) => <code className="table-code" title={clusterAuditTarget(item)}>{clusterAuditTarget(item) || '-'}</code> },
-                { title: t('cluster.auditStatus'), width: 120, render: (_: unknown, item: ClusterAuditEntry) => clusterAuditStatusTag(item, t) },
-                { title: t('cluster.auditRemoteIP'), width: 150, render: (_: unknown, item: ClusterAuditEntry) => <span className="nowrap-cell">{item.remote_ip || '-'}</span> },
-                { title: t('cluster.auditMessage'), render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-message">{clusterAuditMessage(item, t)}</span> },
+                { title: t('cluster.auditTime'), dataIndex: 'timestamp', width: 150, render: (value: string) => <span className="nowrap-cell" title={value}>{formatTimestamp(value) || '-'}</span> },
+                { title: t('cluster.auditSourceType'), width: 130, render: (_: unknown, item: ClusterAuditEntry) => <ClusterAuditSourceCell entry={item} t={t} /> },
+                { title: t('cluster.auditAction'), width: 100, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-text">{clusterAuditAction(item, t)}</span> },
+                { title: t('cluster.auditActor'), width: 100, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-text">{clusterAuditActor(item, t)}</span> },
+                { title: t('cluster.auditStatus'), width: 80, render: (_: unknown, item: ClusterAuditEntry) => clusterAuditStatusTag(item, t) },
+                { title: t('cluster.auditMessage'), width: 180, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-message">{clusterAuditMessage(item, t)}</span> },
               ]}
-              scroll={{ x: 1180 }}
+              scroll={{ x: 740 }}
             />
           </div>
           <div className="mobile-card-list cluster-audit-cards">
@@ -963,6 +1032,30 @@ function roleTag(role: string, t: Translate) {
     return <Tag color="green">{t('cluster.roleWaf')}</Tag>;
   }
   return <Tag color="gray">{role ? t('cluster.roleUnknown', { role }) : t('common.unknown')}</Tag>;
+}
+
+function runtimeStateTag(item: ClusterNodeRegistration, t: Translate) {
+  const state = item.runtime?.state || 'unknown';
+  switch (state) {
+    case 'online':
+      return <Tag color="green">{item.runtime?.local ? t('cluster.nodeStateLocal') : t('cluster.nodeStateOnline')}</Tag>;
+    case 'stale':
+      return <Tag color="orangered">{t('cluster.nodeStateStale')}</Tag>;
+    case 'unknown':
+      return <Tag color="gray">{t('cluster.nodeStateUnknown')}</Tag>;
+    default:
+      return <Tag color="gray">{state}</Tag>;
+  }
+}
+
+function formatRuntimeHeartbeat(item: ClusterNodeRegistration) {
+  if (item.runtime?.last_heartbeat_at) {
+    return formatTimestamp(item.runtime.last_heartbeat_at);
+  }
+  if (item.runtime?.local) {
+    return '-';
+  }
+  return item.runtime?.reason || '-';
 }
 
 function roleLabelText(role: string, t: Translate) {

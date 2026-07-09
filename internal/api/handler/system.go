@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +17,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -64,6 +64,9 @@ type systemPayload struct {
 }
 
 func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var req systemPayload
 	if !decode(w, r, &req) {
 		return
@@ -303,14 +306,15 @@ func (h *Handler) readMapBoundaryByCode(ctx context.Context, boundary config.Map
 func (h *Handler) readRemoteMapBoundary(ctx context.Context, source string, boundary config.MapBoundaryConfig) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	policy := mapBoundaryURLPolicy(boundary)
+	req, err := netguard.NewRequest(ctx, http.MethodGet, source, nil, policy)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/geo+json, application/json;q=0.9, */*;q=0.1")
 	client := netguard.NewHTTPClient(netguard.HTTPClientOptions{
 		Timeout: 8 * time.Second,
-		Policy:  mapBoundaryURLPolicy(boundary),
+		Policy:  policy,
 	})
 	resp, err := client.Do(req)
 	if err != nil {
@@ -413,7 +417,11 @@ func (h *Handler) TestStorageBackend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "backend is required")
 		return
 	}
-	if err := testStorage(r.Context(), strings.ToLower(req.Backend), req.Storage); err != nil {
+	dataDir := ""
+	if h.Config != nil {
+		dataDir = h.Config.Setup.DataDir
+	}
+	if err := testStorageWithDataDir(r.Context(), strings.ToLower(req.Backend), req.Storage, dataDir); err != nil {
 		writeError(w, http.StatusBadRequest, "STORAGE_TEST_FAILED", err.Error())
 		return
 	}
@@ -421,11 +429,18 @@ func (h *Handler) TestStorageBackend(w http.ResponseWriter, r *http.Request) {
 }
 
 func testStorage(ctx context.Context, backend string, storage config.StorageConfig) error {
+	return testStorageWithDataDir(ctx, backend, storage, setup.DefaultDataDir)
+}
+
+func testStorageWithDataDir(ctx context.Context, backend string, storage config.StorageConfig, dataDir string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	switch backend {
 	case "sqlite":
-		path := storage.SQLite.Path
+		path, err := safeSQLiteTestPath(storage.SQLite.Path, dataDir)
+		if err != nil {
+			return err
+		}
 		if path == "" {
 			return fmt.Errorf("sqlite path is required")
 		}
@@ -480,15 +495,50 @@ func testStorage(ctx context.Context, backend string, storage config.StorageConf
 	}
 }
 
+func safeSQLiteTestPath(rawPath, dataDir string) (string, error) {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return "", nil
+	}
+	if dataDir == "" {
+		dataDir = setup.DefaultDataDir
+	}
+	allowedRoot, err := filepath.Abs(filepath.Clean(dataDir))
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(allowedRoot, path)
+	}
+	cleaned, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	if cleaned == allowedRoot || !isPathWithin(cleaned, allowedRoot) {
+		return "", fmt.Errorf("sqlite path must stay under data directory %s", allowedRoot)
+	}
+	return cleaned, nil
+}
+
+func isPathWithin(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != "" && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
+}
+
 func testHTTP(ctx context.Context, endpoint, username, password, apiKey string, allowPrivate bool, purpose string) error {
 	if endpoint == "" {
 		return fmt.Errorf("endpoint is required")
 	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return err
+	policy := netguard.URLPolicy{
+		Purpose:        purpose,
+		HostPurpose:    purpose,
+		AllowedSchemes: []string{"http", "https"},
+		AllowPrivate:   allowPrivate,
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	req, err := netguard.NewRequest(ctx, http.MethodGet, endpoint, nil, policy)
 	if err != nil {
 		return err
 	}
@@ -497,12 +547,7 @@ func testHTTP(ctx context.Context, endpoint, username, password, apiKey string, 
 	} else if username != "" {
 		req.SetBasicAuth(username, password)
 	}
-	client := systemHTTPClient(netguard.URLPolicy{
-		Purpose:        purpose,
-		HostPurpose:    purpose,
-		AllowedSchemes: []string{"http", "https"},
-		AllowPrivate:   allowPrivate,
-	})
+	client := systemHTTPClient(policy)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

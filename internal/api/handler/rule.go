@@ -17,6 +17,9 @@ func (h *Handler) ListRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var rule storage.Rule
 	if !decode(w, r, &rule) {
 		return
@@ -29,6 +32,9 @@ func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateRule(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	var rule storage.Rule
 	if !decode(w, r, &rule) {
 		return
@@ -42,6 +48,9 @@ func (h *Handler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	if err := h.Store.DeleteRule(r.Context(), chi.URLParam(r, "id")); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return

@@ -39,6 +39,9 @@ func (h *Handler) ACMEDNSProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
 	issuer := h.ensureACMEIssuer()
 	if issuer == nil {
 		writeError(w, http.StatusServiceUnavailable, "ACME_DISABLED", "acme issuer is not configured")
