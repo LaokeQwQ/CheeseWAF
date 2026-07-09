@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,7 @@ func TestHeuristicAnalysisFlagsHighSignalCategory(t *testing.T) {
 func TestAnalyzeEventsSkipsPlainAccessLogs(t *testing.T) {
 	analyses, err := AnalyzeEvents(context.Background(), nil, []storage.LogEntry{
 		{ID: "access-1", Action: "pass", URI: "/"},
+		{ID: "access-2", Action: "pass", Category: "normal", URI: "/home"},
 		{ID: "block-1", Action: "block", Category: "xss", URI: "/?q=<script>"},
 	})
 	if err != nil {
@@ -142,7 +144,7 @@ func TestAnalyzeLogFallsBackToHeuristicWhenProviderFails(t *testing.T) {
 	if analysis == nil || analysis.AIUsed {
 		t.Fatalf("expected local fallback analysis without AI usage, got %+v", analysis)
 	}
-	if analysis.LogID != "event-fallback" || analysis.Risk != "high" || !strings.Contains(analysis.Summary, "Provider 错误") {
+	if analysis.LogID != "event-fallback" || analysis.Risk != "high" || !strings.Contains(analysis.Summary, "服务商错误") {
 		t.Fatalf("fallback analysis should preserve event risk and explain provider failure, got %+v", analysis)
 	}
 }
@@ -172,7 +174,7 @@ func TestAnalyzeLogStreamFallsBackToHeuristicWhenProviderFails(t *testing.T) {
 	if analysis == nil || analysis.AIUsed {
 		t.Fatalf("expected local stream fallback analysis without AI usage, got %+v", analysis)
 	}
-	if analysis.LogID != "event-stream-fallback" || analysis.Risk != "medium" || !strings.Contains(analysis.Summary, "Provider error") {
+	if analysis.LogID != "event-stream-fallback" || analysis.Risk != "high" || !strings.Contains(analysis.Summary, "Provider error") {
 		t.Fatalf("unexpected stream fallback analysis: %+v", analysis)
 	}
 }
@@ -736,8 +738,87 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	if second.Result == nil || !second.Result.Success {
 		t.Fatalf("expected successful result, got %+v", second)
 	}
+	if second.Approval == nil || second.Approval.Status != ApprovalExecuted {
+		t.Fatalf("expected approval to be marked executed after tool success, got %+v", second.Approval)
+	}
 	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, approved.ID); err == nil {
 		t.Fatal("expected approved request to be single-use")
+	}
+}
+
+func TestApprovalApproveIsIdempotentForApprovedRequest(t *testing.T) {
+	store := NewApprovalStore()
+	request, err := store.Create(fakeTool{sensitivity: Modify}, map[string]any{"enabled": true}, "")
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	approved, err := store.Approve(request.ID)
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	approvedAgain, err := store.Approve(request.ID)
+	if err != nil {
+		t.Fatalf("approve approved request: %v", err)
+	}
+	if approvedAgain.ID != approved.ID || approvedAgain.Status != ApprovalApproved {
+		t.Fatalf("expected idempotent approved state, got %+v", approvedAgain)
+	}
+}
+
+func TestApprovalCanRejectApprovedRequestBeforeExecution(t *testing.T) {
+	store := NewApprovalStore()
+	request, err := store.Create(fakeTool{sensitivity: Modify}, map[string]any{"enabled": true}, "")
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	approved, err := store.Approve(request.ID)
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	rejected, err := store.Reject(approved.ID)
+	if err != nil {
+		t.Fatalf("reject approved request: %v", err)
+	}
+	if rejected.Status != ApprovalRejected {
+		t.Fatalf("expected rejected state, got %+v", rejected)
+	}
+	if _, err := store.BeginExecution(approved.ID, "fake_modify", map[string]any{"enabled": true}); err == nil {
+		t.Fatal("expected rejected approval to be non-executable")
+	}
+}
+
+func TestAssistantApprovedToolCanRetryAfterExecutionFailure(t *testing.T) {
+	registry := NewRegistry()
+	failOnce := true
+	registry.Register(failingOnceTool{fail: &failOnce})
+	store := NewApprovalStore()
+	assistant := NewAssistant(registry, store)
+	args := map[string]any{"enabled": true}
+
+	first, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, "")
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	approved, err := assistant.Approve(first.Approval.ID)
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if _, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, approved.ID); err == nil {
+		t.Fatal("expected first approved execution to fail")
+	}
+	stored, ok := store.Get(approved.ID)
+	if !ok {
+		t.Fatal("expected approval to remain stored after failure")
+	}
+	if stored.Status != ApprovalApproved {
+		t.Fatalf("failed execution should return approval to approved for retry, got %+v", stored)
+	}
+	second, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, approved.ID)
+	if err != nil {
+		t.Fatalf("retry approved execution: %v", err)
+	}
+	if second.Result == nil || !second.Result.Success || second.Approval == nil || second.Approval.Status != ApprovalExecuted {
+		t.Fatalf("expected retry to execute and close approval, got %+v", second)
 	}
 }
 
@@ -819,4 +900,32 @@ func (fakeTool) Parameters() map[string]any {
 
 func (fakeTool) Execute(context.Context, map[string]any) (*ToolResult, error) {
 	return &ToolResult{Success: true, Output: "ok"}, nil
+}
+
+type failingOnceTool struct {
+	fail *bool
+}
+
+func (f failingOnceTool) Name() string {
+	return "fake_fail_once"
+}
+
+func (failingOnceTool) Description() string {
+	return "fake fail once tool"
+}
+
+func (failingOnceTool) Sensitivity() ToolSensitivity {
+	return Modify
+}
+
+func (failingOnceTool) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+
+func (f failingOnceTool) Execute(context.Context, map[string]any) (*ToolResult, error) {
+	if f.fail != nil && *f.fail {
+		*f.fail = false
+		return nil, errors.New("temporary execution failure")
+	}
+	return &ToolResult{Success: true, Output: "retry ok"}, nil
 }

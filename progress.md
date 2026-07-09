@@ -1,6 +1,6 @@
 # CheeseWAF 项目阶段进度
 
-更新时间：2026-07-08
+更新时间：2026-07-09
 
 ## 项目定位
 
@@ -80,6 +80,7 @@ CheeseWAF 当前已经覆盖以下方向：
 - OpenAI 兼容路径已接入官方 Go SDK，并支持流式 Chat Completions。
 - AI 助手支持流式输出、工具调用轨迹、首包计时、总耗时、token 使用量和输出速度。
 - 事件分析面向攻击事件和拦截事件，按事件 ID / trace ID 拉取上下文后再分析。
+- 日志详情与 AI 事件分析页会展示 WAF 策略判定摘要，包括当前防护等级、最终动作、风险分、证据数量、阈值和检测器来源，便于解释“为什么记录、挑战或拦截”。
 - Prompt 边界已经加入安全约束：日志、payload、运行时上下文和用户输入均按不可信数据处理，避免提示词注入、密钥泄露和未授权策略变更。
 - 工具调用需要经过权限与审批边界；配置修改类操作不能由模型直接绕过审批执行。
 
@@ -133,6 +134,16 @@ CheeseWAF 当前已经覆盖以下方向：
 
 这些验证结果用于说明当前工程状态。正式发布前仍需要按 release gate 重新执行完整验证，不能只复用历史结果。
 
+### 2026-07-09 本地补充：IP 管理闭环与样式收口
+
+- IP 访问名单从桌面表格压缩布局改为自适应规则卡片网格，桌面与移动端均避免备注、站点、路径和 IP/CIDR 被挤成竖排。
+- 访问名单新增备注编辑，站点级和目录级规则保存前会校验站点选择，作用域切换会同步清理或保留站点 / 路径字段。
+- 威胁情报源动作选项与后端情报引擎对齐为记录、挑战和拦截；不再在情报源里暴露实际会被归一化的监控动作。
+- 情报源测试接口支持携带 `provider_id` 复用后端已保存的密钥和敏感请求头，同时允许当前表单里的端点、格式、认证方式和 Header 草稿参与测试。
+- 情报源 UI 增加自定义请求头编辑入口，并明确说明 API 密钥留空会沿用后端已保存密钥。
+- 样式上补充 IP 管理页面级 CSS，减少继续向全局样式堆补丁；轻量收口 light 主题默认 `:root` token 和拦截页预览背景变量。
+- 本轮验证通过：`npm.cmd --prefix web run build`、`go test ./internal/api/handler -run "ThreatIntelProviderTestUsesSavedSecretByProviderID|ThreatIntelProviderRejectsUnsafeEndpoints|ApplyProviderAuthSupportsConfiguredAuthTypes|ProtectionSecretUpdatesPreserveExistingValuesWhenEmpty|ImportThreatIntelNotifiesProtectionReload|UpdateIPAccessRulesNotifiesProtectionReload" -count=1`、`git diff --check`，并完成 IP 管理访问名单桌面 / 移动端、情报源桌面截图复核。
+
 ### 2026-06-16 AI 输出与远端验收部署
 
 - 修复 AI 助手最终回答的 Markdown 表格渲染，覆盖标题、说明和表格被模型压成同一行的情况。
@@ -148,6 +159,15 @@ CheeseWAF 当前已经覆盖以下方向：
   - `git diff --check`
 - 已部署到临时测试服务器并完成服务重启验证；管理端健康检查返回正常状态。
 - 当前测试环境启用了管理端安全入口，直接访问根路径或错误入口会返回 Nginx 风格 `418 I'm a teapot`，需从安全入口进入登录页。
+
+### 2026-07-09 Code Scanning 远端收口
+
+- 已复核 GitHub Code Scanning 当前 16 条 open 告警，覆盖出站请求 SSRF、SQLite 测试路径边界、整数转换、查询 limit 上限、Bot 验证 cookie / 跳转和拦截页 HTML 预览净化。
+- 本地已完成对应修复：统一出站请求 URL 校验入口，SQLite 测试路径限制在数据目录内，日志查询与 AI 工具参数增加上限保护，Bot 验证跳转限制为站内相对路径，拦截页预览移除脚本、事件属性和危险 URL 协议。
+- 修复已通过 PR #205、#206、#207 合入 `dev`，再经 PR #208 合入 `canary`、PR #209 合入 `master`；GitHub 与 Forgejo 的 `dev` / `canary` / `master` 分支已同步到相同提交。
+- GitHub CodeQL 已在 `master` 重新完成扫描，Code Scanning API 复核结果为 `master=0`、`all_open=0`。
+- 本地工作区已快进到最新 `dev` 并恢复 Kimi / 本地后续改动，冲突只发生在 `monitor.go` 与 Bot 策略 cookie / 跳转逻辑，已保留 CodeQL 安全修复并重新验证。
+- 本轮验证通过：`git diff --check`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`go test ./...`。
 
 ## 当前限制与风险
 
@@ -345,3 +365,216 @@ M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ans
 - 管理 API token 创建与控制台开关保持一致：功能关闭时后端拒绝创建新 token，避免出现“页面显示关闭但接口仍能生成凭据”的半启用状态。
 - 运维文档新增 `docs/management-api.md`，`docs/phase4-operations.md` 已同步安全模型、RBAC / 审计边界和控制台使用流程。
 - 当前仍不能宣称整个 M4-0 完成：语义语料筛选、误报 / 漏报基线、性能基线、AI 知识库订阅和审批策略可视化仍需继续推进。
+
+### 2026-07-09 本地补充：语义策略评分与防护等级联动
+
+- 本轮按减少 CI 消耗的原则只做本地开发与验证，暂不提交、不推远端。
+- 语义检测流水线不再在 semantic 组第一个 block 结果处立即返回，而是保留并比较同组检测结果，选择动作、严重度和置信度更高的主结果，同时保留 `RequestContext.Results` 供策略层使用。
+- Web 攻击策略决策新增内部防护强度级别、聚合风险分、风险阈值和证据数量；后续 UI 可以用这些字段解释“智能模式 / 保守模式 / 严格模式”的决策原因。
+- 默认智能模式仍按业务优先，单条证据继续先看严重度与置信度阈值；多条证据会进入聚合评分，只有达到当前防护等级阈值才升级为拦截或验证。
+- 低防护等级保持保守：低于阈值的聚合证据仍只记录日志，避免把可疑但不确定的业务请求误拦截。
+- 服务启动时的 WAF 检测流水线不再只使用第一个站点的语义开关和自定义规则；每个站点的语义 detector 与自定义规则会按站点 ID 作用域执行，避免多站点场景下漏检或误把其它站点规则套到当前站点。
+- AI 批量事件分析新增 SSE 流式接口，前端会随 `item` 事件逐条展示分析结果，避免用户点击“分析最近事件”后长时间干等；普通放行访问日志不再混入攻击 / 可疑事件分析。
+- AI 事件流式分析仍保留 provider 错误边界和启发式降级，后续还需要继续做审批恢复、知识库订阅和长推理 UI 细节打磨。
+- 本地验证通过：`go test ./internal/cli -run "BuildPipeline" -count=1`、`go test ./internal/ai ./internal/api/handler ./internal/engine ./internal/proxy -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`；AI 页面桌面 / 移动端截图复核已本地归档。
+
+### 2026-07-09 本地补充：Kimi UI 复核后的 AI 页排版收口
+
+- 已按 UTF-8 重新读取最新 `kimi_found.md`，确认新增重点包括 AI 页 CSS 碎片化、中文界面黑话、主题硬编码颜色和攻击地图专项问题；本轮只收口 AI 页可独立验证的问题，暂不提交、不推远端。
+- AI 页样式新增独立 `web/src/styles/ai-page.css` 并在 `main.tsx` 中后置加载，用于承接 AI 页最终布局层；事件列表移除旧移动端重复 DOM，改为一套响应式事件行，路径显示从裸代码蓝字调整为可截断的路径胶囊。
+- AI 页布局回到左侧“安全事件 + 连接配置”、右侧“事件分析详情”的稳定结构；连接配置中的助手模型和推理模型改为纵向卡片，避免桌面左栏内字段被挤碎。移动端保持单列，按钮与路径不横向溢出。
+- 单事件流式分析完成后会清理当前实时流状态和 AbortController，避免“分析过程”卡片在完成后长期占位并挤压最终结果。
+- 中文文案继续去掉 Kimi 点名的 AI 黑话：`LLM`、`深度思考`、`思考摘要`、`总览态势`、`总计态势`、`实时态势` 等不再出现在中文前端文案中；`URI` 等硬编码字段已改走日志路径本地化。
+- 主题层补充并接入部分变量：3D 地图背景、登录媒体背景、登录遮罩和拦截页预览背景改用主题变量，降低浅色 / 暗色 / 黑金 / 蓝白主题割裂。
+- 本地验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`go test ./internal/ai ./internal/api/handler -run "Approval|Assistant|AITool|Continue|Analyze" -count=1`、`npm.cmd --prefix web run build`、`git diff --check`、`node .\tmp\check-ai-page-ui.cjs`。AI 页桌面 / 移动端截图复核已本地归档。
+- 仍未完成且不能写成完成：`global.css` 中旧 AI 页规则仍需要逐步迁出，大量 `!important` 和硬编码颜色仍需继续消化；攻击地图专项中的 Three 场景增量更新、地图 / 大屏 CSS 拆分、按容器尺寸计算平移边界、Arco 大 chunk 拆分仍是下一批结构任务。
+
+### 2026-07-09 本地补充：攻击地图资源懒加载与大 chunk 收敛
+
+- 已按最新 `kimi_found.md` 复查攻击地图专项问题，并先处理对首屏性能和稳定性影响最大的资源加载路径；本轮继续不提交、不推远端，降低无效 CI 消耗。
+- 将攻击地图聚合、世界地图投影、国家风险分级和共享类型从 `AttackMapPage.tsx` 抽到 `web/src/pages/AttackMap/attackMapData.ts`，避免 `GlobeMap`、攻击大屏和中国边界模块继续反向依赖页面组件。
+- 将中国行政边界模块改为 `mode=china` 时动态加载；普通 2D 攻击地图不会提前加载中国边界处理逻辑。
+- 将 `china-map-echarts` 行政边界 JSON 和 `@province-city-china` 省 / 市 / 区索引改为运行时静态资源读取，由 Vite 插件在 dev / build 中通过白名单路径服务和复制；`dist/assets` 不再输出地图 JSON，通用 vendor chunk 从约 576KB 降到约 294KB。
+- 新增内置 adcode manifest 过滤：内置包缺少区县级 JSON 时不再用 404 探测，前端会静默降级到可用的市 / 省边界与真实地理坐标点，避免中国模式控制台红错。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、Playwright 攻击地图桌面 2D / 中国模式 / 移动 2D / 攻击大屏截图检查均为 0 issues；截图写入 `output/playwright/attack-map-*.png`。
+- 后续仍需继续：`GlobeMap` 日志刷新导致场景重建的问题、地图 / 大屏 CSS 从 `global.css` 拆分并消除重复覆盖、按容器尺寸计算平移边界、低端移动设备真实性能采样。
+
+### 2026-07-09 本地补充：3D 攻击地图运行时优化
+
+- 继续按最新 `kimi_found.md` 攻击地图专项建议推进，本轮仍保持本地开发，不提交、不推远端，减少无效 CI 消耗。
+- `GlobeMap` 已拆分 Three.js 生命周期：场景、相机、渲染器、云层、星场、光照和交互事件只在挂载 / 主题切换时创建；日志刷新时只更新世界风险贴图、攻击标记、脉冲圈和飞线，不再销毁并重建整套 WebGL 场景。
+- 3D 地图的动画循环补齐暂停逻辑：页面隐藏时取消 `requestAnimationFrame`，恢复可见后再继续；系统启用减少动态效果时停止自动旋转和流动动画，仅在交互或数据更新时渲染。
+- 3D 地图新增基础可访问性标签，tooltip 和命中检测读取运行时最新标记集合，避免数据更新后 hover 命中旧对象。
+- 地图卡片排版做了小步收敛：普通地图高度按视口收敛，3D 默认相机位置后退并居中，减少地球被卡片底部裁切；2D / 中国地图宽度减少左右空边。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、Playwright 攻击地图桌面 2D / 中国模式 / 3D / 攻击大屏 / 移动 2D 截图检查均为 0 issues；截图与报告写入 `output/playwright/attack-map-runtime-*`。
+- 后续仍需继续：`vendor-three-webgl`、`vendor-arco` 和 CSS 大包拆分，地图 / 大屏 CSS 从 `global.css` 迁出，平移边界按容器动态计算，真实低端设备性能采样，以及 Kimi 点名的全局 CSS 重复覆盖治理。
+
+### 2026-07-09 本地补充：首屏 chunk 与地图样式懒加载收口
+
+- 按最新 `kimi_found.md` 重新复查前端排版、主题和攻击地图专项建议后，先处理对首屏加载和白屏风险影响最大的部分；本轮仍保持本地开发，不提交、不推远端，避免每个小修都触发 CI。
+- `MainLayout` 已改为受保护路由下的懒加载 chunk，并在 `ProtectedLayout` 外层补齐 `Suspense`，避免登录 / 设置等公开页面提前携带侧栏、通知、AI 助手和监控查询逻辑，同时避免布局 chunk 首次加载时白屏。
+- Arco `ConfigProvider` 改为直接入口导入；二维码库从 lucide 图标工具包中拆为独立 `vendor-qrcode`；AI 页样式和攻击地图最终层样式改为随页面懒加载，不再从 `main.tsx` 全局入口加载。
+- `GlobeMap` 继续保持独立懒加载，并将 Three.js 相关产物拆成 core / webgl / renderer / scene 等 chunk；生产构建恢复 500KB 体积警戒线后，JS chunk 已无超限警告：最大 JS chunk 为 `vendor-arco` 约 496KB，`vendor-three-webgl` 约 342KB，入口 `index` 约 153KB。
+- Playwright 回归覆盖登录页和 3D 攻击地图：登录页未白屏，加载耗时仍在卡片下方；3D 地图浅色主题下实际渲染地球、飞线和控件，报告为 0 issues。
+- 中国区域地图补齐边界资源降级提示：当内置 / 外部行政区边界资源不可用时，页面不再无限显示加载中，而是明确提示边界数据不可用，并保留可用的定位点 / 统计数据展示路径。已用生产构建的 `vite preview` 模拟静态边界资源 404，截图验证无白屏、无无限转圈，报告为 0 issues。
+- 攻击地图可访问性与加载体验继续收口：2D / 中国地图 SVG 改为可读的 `role="img"` 和本地化 `aria-label`，攻击点补齐 `aria-pressed` 并移除原生 `title` 悬浮提示；攻击大屏当前页导航补齐 `aria-current`，时间轴滑杆补齐本地化 `aria-label`。`/attack-map` 导航 hover / focus 和页面空闲时会预加载地图与 3D 地球相关 chunk，切 3D 时用静态地图 fallback 替代空 spinner，降低首次打开的空白感。
+- 本轮追加验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`；生产构建 `vite preview` 下完成 2D / 3D / 攻击大屏截图回归，确认地图 ARIA、无原生 marker title、3D 地球渲染和大屏时间轴可用。
+- 仍不能宣称“大 chunk / CSS 治理完成”：Arco 官方 CSS 约 555KB、历史 `global.css` 构建后约 321KB，且 `kimi_found.md` 点名的全局选择器重复覆盖、硬编码颜色和 AI / 地图旧样式迁移仍需分批治理。Three 当前使用 `three/src/*` 子模块导入以降低 chunk 体积，已通过本地构建和浏览器回归，但长期仍需在“稳定入口导入”和“体积控制”之间做一次更完整的技术取舍。
+
+### 2026-07-09 本地补充：Kimi 复核后的 AI 审批与主题兜底
+
+- 重新读取最新 `kimi_found.md` 后，先处理低风险但影响明显的问题：AI 助手审批按钮在流式执行或拒绝请求进行中会进入统一禁用状态，避免重复点击导致同一审批并发执行或状态回退。
+- AI 助手补齐 `approved` / `executing` 工具状态和审批卡片样式，审批通过、执行中、已执行、已拒绝状态在 UI 上不再共用默认灰色标签。
+- AI 助手、AI 分析页和日志详情页均补齐 `tool_call_delta` 的可见展示：工具参数流式片段不会再被过滤掉，用户能看到“正在规划工具 / 已收到参数片段”的过程反馈；助手线程在用户发送消息或继续审批后会跟随最新消息，并增加双帧与短延迟滚动兜底，避免工具卡片被折叠区高度变化挤出视野。
+- 全局样式补充主题变量兜底，包括文本强弱、成功色、等宽字体、阴影 / 高光和 3D 地图背景变量；后置的 3D 地图深蓝硬编码背景已改为读取 `--map-canvas-3d-bg`，避免浅色 / 黑金主题被旧规则覆盖。
+- 中文文案继续小步清理残留 AI 味：运维任务中的“AI 自学习”改为“自动规则学习”，攻击地图“区域态势图”改为“区域分布图”；后端 AI 错误与 trace 中的 `AI provider` 混写改为“AI 服务商 / AI service provider”。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`go test ./internal/ai ./internal/api/handler -run "Approval|Assistant|AITool|Continue|Analyze|Provider" -count=1`、`git diff --check`、`node tmp\assistant-tool-ui-smoke.cjs`。AI 助手审批局部截图已复核：`tmp/screenshots/assistant-tools/approval-thread.png` 可见执行轨迹、参数片段、审批按钮和 diff 预览。本轮未提交、不推送；Arco / Three 大 chunk、攻击地图运行时性能和 `global.css` 重复覆盖治理仍按后续批次处理。
+
+### 2026-07-09 本地补充：攻击大屏刷新策略与中文术语收口
+
+- 按 `kimi_found.md` 与子代理复核建议继续收口攻击地图：攻击大屏时间轴停在历史范围（小于 100%）或正在拖动时会暂停 `/api/logs` 与 `/api/monitor` 自动轮询，避免用户回看历史时 3 秒刷新导致时间窗口漂移；回到 100% 后恢复实时刷新。
+- 攻击大屏顶部状态会随时间轴切换为“实时 / 历史视图”，减少“看历史数据但仍显示实时”的误导。3D 地球输入限制为攻击数最高的前 80 个可定位区域，国家/地区着色仍按全量区域计算，降低 Three marker 重建成本。
+- 中文界面继续去掉低价值英文术语：API 安全的 Schema 改为“接口结构”，管理 API 的 Bearer / RBAC / Scope / Audience 等文案改为访问令牌、角色权限、权限范围、受众；站点可信 CIDR、PoW / Altcha 改为带中文说明的术语。
+- 本轮追加验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\local-map-ai-block-check.cjs`。浏览器回归确认 3D 地图与攻击大屏仍可自动旋转 / 拖拽，页面滚动不被地图滚轮带动，中国区域边界仍加载 47 条 path，AI 页与拦截页预览无横向溢出；新增断言确认历史视图停留 3.8 秒不再继续轮询，回到 100% 后恢复刷新。
+- 仍未完成：`GlobeMap` marker 增量更新、攻击地图 / 大屏旧 CSS 从 `global.css` 继续迁出、Arco / Three / CSS 大包治理、真实低端设备性能采样，以及系统页更多专业术语的逐项说明。
+
+### 2026-07-09 本地补充：3D 地球 marker 刷新抖动收敛
+
+- 继续处理 `kimi_found.md` 点名的 3D 地图刷新跳动：`GlobeMap` 的 marker 重建签名不再包含原始攻击数，日志刷新只导致攻击数变化时不会清空并重建整组 marker、脉冲圈和飞线，降低动画相位重置与瞬时抖动。
+- 新增运行时 region 对象索引：当区域结构未变但攻击数、事件摘要等数据变化时，只更新已有 Three 对象的 `userData.region`；hover tooltip 继续读取最新 region 数据，不需要为了更新数字而重建几何对象。
+- 本轮浏览器回归通过：`node tmp\local-map-ai-block-check.cjs` 确认普通 3D 地图和攻击大屏仍可自动旋转 / 拖拽，页面滚轮不被地图带动，中国区域边界仍为 47 条 path，AI 页和拦截页预览无横向溢出，攻击大屏历史视图暂停轮询断言继续通过。
+- 仍未完成：当区域新增 / 删除 / 坐标 / 风险级别 / marker 尺寸变化时仍会重建 marker；后续若要进一步降抖，需要按 `region.key` 做对象复用、增删补丁和材质颜色/scale 原地更新。攻击地图 / 大屏旧 CSS 迁出、Arco / Three / CSS 大包治理和低端设备性能采样仍在后续批次。
+
+### 2026-07-09 本地补充：语义引擎低误报优先小步加固
+
+- 按低误报优先原则，本轮没有堆宽泛规则，而是补 SSTI 的 OGNL / Struts 危险语义识别：`%{...}` 只有同时出现 OGNL 上下文逃逸、Java Runtime 静态方法或类似执行原语时才命中；普通 `%{ user.name }` 占位符保持放行。
+- `NoSQLiDetector` 与 `SSTIDetector` 的独立调用路径已复用 `Analyzer` 的结构化输入、深度解码和语义门控，避免直接调用时绕过文档文本 / CMS 模板正文等良性上下文判断；日志侧仍保留原 detector ID。
+- SSRF 数字主机解析补齐 inet_aton 短 IPv4 绕过形态，包括 `127.1`、`0177.1`、`0x7f.1`、`10.1`，但仍严格要求 fetch sink，不对普通文档文本泛匹配。
+- readiness 与 curated corpus 新增 SSTI OGNL 攻击样本和 benign 邻居；direct detector 新增攻击 / 良性回归测试，确保增强不会变成误报扩大。
+- 当前验证通过：`go test ./internal/engine/semantic -run "TestAnalyzerReadinessMatrix|TestAnalyzerReadinessBenignMatrix|TestAnalyzerCuratedExternalCorpus|TestPhase2SemanticDetectors" -count=1`、`go test ./internal/engine/semantic -run "TestNoSQLiDetectorUsesAnalyzerGate|TestSSTIDetectorUsesAnalyzerGate|TestSSRFDetectorBlocksNumericHostVariants|TestSSRFDetectorRequiresFetchSink" -count=1`。
+- 仍未完成：XXE direct detector 误报面收窄、异常评分 / 防护等级联动的完整模型、CRS FTW 对标、真实误报基线、内存分配 profile，以及 Kimi 点名的前端布局 / 大 chunk 专项。
+
+### 2026-07-09 本地补充：Kimi 点名 UI 回归修复
+
+- 按最新 `kimi_found.md` 复查后，修复 IP 管理访问名单的响应式切换：桌面 / 笔记本恢复表格视图，窄屏继续使用规则卡片，避免页面级 CSS 把桌面表格永久隐藏。
+- AI 助手流式输出的滚动策略改为“在底部则跟随，用户手动上滚则停止跟随”；发送新消息或继续审批时只强制滚动一次，避免长回答 / 工具审批时把用户持续拉回底部。
+- `SafeMarkdown` 增加空值兜底，日志详情页和 AI 分析结果即使遇到后端未返回 summary / reasoning 也不会因 `undefined.replace` 崩溃。
+- AI 页事件列表修复时间 + IP 被标签挤压导致的内部横向溢出，中等宽度下不再出现 30px 窄列。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`node tmp\full-ui-regression.cjs`（112 个页面 / 视口组合，0 failures）、`node tmp\assistant-tool-ui-smoke.cjs`、`git diff --check`。已抽查 `desktop-ip-access`、`mobile-ip-access`、`laptop-ai`、`desktop-log-detail` 截图。
+- 大 chunk 治理仍作为后续专项：当前构建最大块仍为 Arco CSS / Arco JS / Three WebGL，短期不在本轮混入结构性拆包改动。
+
+### 2026-07-09 本地补充：XXE 误报收窄与首屏资源懒加载
+
+- 继续按低误报优先原则收敛语义引擎：`XXEDetector` 的独立调用路径已复用 `Analyzer` 的结构化输入、深度解码和语义门控，并保留 `semantic.xxe` detector ID；文档说明字段中的 XXE 样例不会再被直接正则误拦。
+- `analyzeXXE` 增加 XML / 载荷语境判断：只有 XML 文档或明确的 `xml/body/payload/document/soap/saml/metadata` 等载荷字段，同时具备 DTD/entity、SYSTEM/PUBLIC 外部解析和文件 / 网络 / 敏感目标时才命中。
+- 首屏资源加载按 `kimi_found.md` 与子代理建议收口：全局 AI 助手改为轻量入口，首次点击后才加载完整 `AIAssistant` chunk；完整助手的工具 / 监控 / 日志轮询只在面板打开或关闭动画期间启用。
+- `MainLayout` 去掉登录后无条件 idle 预加载 AI 页和 API 安全页；`/attack-map` 导航预加载不再提前拉 `GlobeMap` 与 Three，默认 2D 地图只在切换 3D 或进入攻击大屏时加载 3D 相关资源。
+- 本轮验证通过：`go test ./internal/engine/semantic -run "TestXXEDetectorUsesAnalyzerGate|TestPhase2SemanticDetectors|TestAnalyzerReadinessMatrix|TestAnalyzerReadinessBenignMatrix|TestAnalyzerCuratedExternalCorpus" -count=1`、`go test ./internal/engine ./internal/engine/semantic -count=1`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`。生产构建 `vite preview` + Chrome Canary 资源检查确认：首页不加载 `AIAssistant` / Three，默认 2D 地图不加载 Three，点击助手和 3D 模式才加载对应 chunk；截图写入 `tmp/screenshots/lazy-loading/`。
+- 仍未完成：Arco JS / CSS 大包、`global.css` 重复覆盖和攻击地图样式迁出仍需分批治理；Three 场景更细粒度对象复用和真实低端设备性能采样也仍在后续批次。
+
+### 2026-07-09 本地补充：Arco JS 大包拆分
+
+- 继续处理大 chunk 专项，但只做构建层低风险调整：`vite.config.ts` 中的 Arco JS 手动分块从单一 `vendor-arco` 拆为 `vendor-arco-core`、`vendor-arco-data`、`vendor-arco-form`、`vendor-arco-overlay`。
+- 生产构建结果：原 `vendor-arco` JS 约 496KB；拆分后最大 Arco JS chunk 为 `vendor-arco-core` 约 307KB，`vendor-arco-data` 约 104KB，`vendor-arco-form` 约 52KB，`vendor-arco-overlay` 约 35KB。`index.html` 只预加载 core，没有提前预加载 data/form/overlay。
+- Chrome Canary 回归确认：Dashboard 首屏加载 core/data，不加载 AI 助手和 Three；点击 AI 悬浮入口后才加载 `AIAssistant`；默认 2D 攻击地图仍不加载 Three，3D 模式才加载 `GlobeMap` 和 Three。运行时 console/pageerror 为 0，截图写入 `tmp/screenshots/chunk-split/`。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`。
+- 仍未完成：Arco CSS 仍约 555KB，`index.css` / `global.css` 仍偏大；后续需要继续拆页面级 CSS、评估 Arco 样式按需方案，并做真实网络瀑布与低端设备采样。
+
+### 2026-07-09 本地补充：AI 助手与 IP 管理样式按需加载
+
+- 继续按 `kimi_found.md` 的 CSS 治理建议推进，仍保持本地开发，不提交、不推远端，避免每个小修都触发 CI。
+- AI 助手面板的空状态、快捷问题、深度推理开关、输入框和发送按钮样式已迁入 `web/src/components/AIAssistant/AIAssistant.css`，由完整助手组件按需加载；全局只保留 FAB、基础面板和共享 Markdown 等必要样式。
+- 修复助手输入框圆角实际未生效的问题：当前 Arco 输入框渲染为 `.assistant-input .arco-input`，已与 `.arco-input-inner-wrapper` 一起覆盖，发送按钮和输入框均为圆角体系。
+- IP 管理页的 `.ip-*`、`.provider-*`、`.intel-*`、`.tag-token*`、`.duration-input-group` 残留样式已从 `global.css` 迁入 `web/src/styles/ip-manage.css`，并统一加上 `.ip-manage-page` 作用域，避免 provider / intel 这类泛命名继续污染全局。
+- 构建结果：入口 CSS 从约 322KB 降到约 302KB；IP 管理样式变为按路由加载的 `IPManagePage` CSS chunk，约 30KB。Arco CSS 仍约 555KB，不能写成已完成。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`。Chrome Canary + 生产构建 `vite preview` 复核确认：首页点击前不加载 `AIAssistant` JS/CSS，点击后才加载；IP 管理条目 / 访问名单 / 情报源 / 导入页在桌面和移动端均无横向溢出，访问名单桌面为表格、移动端为卡片。
+- 后续仍需继续：攻击地图 / 攻击大屏旧样式从 `global.css` 迁入 `attack-map.css`，AI 页旧样式继续拆分，`global.css` 重复选择器和硬编码颜色继续收敛，以及 Arco CSS 按需加载方案评估。
+
+### 2026-07-09 本地补充：攻击地图 / 大屏样式按路由加载
+
+- 继续按最新 `kimi_found.md` 和子代理只读复核推进 CSS 治理，本轮仍保持本地开发，不提交、不推远端，减少 CI 空转。
+- 攻击地图与攻击大屏相关的 `.attack-map-*`、`.attack-screen-*`、`.map-canvas`、`.flat-map-stage`、`.globe-stage`、`.world-map-svg`、`.china-*`、`.map-marker`、`.attack-region-*` 等旧规则已从 `global.css` 迁入 `web/src/styles/attack-map.css`，并补上 `.attack-map-page` / `.attack-screen` 作用域；`console-map-*` 系统设置样式和 `--map-canvas-3d-bg` 主题变量保留在全局。
+- 迁移过程中清理了两段历史半截注释导致的 CSS 语法残留；生产构建由 Lightning CSS 校验通过，避免“浏览器吞掉后半段样式”的隐性风险。
+- 构建结果：入口 `index.css` 从约 302KB 继续降到约 240KB，地图样式变为按路由加载的 `attack-map` CSS chunk，约 59KB；Arco 官方 CSS 仍约 555KB，不能写成完成。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\local-map-ai-block-check.cjs`。浏览器截图复核确认 3D 地图 / 攻击大屏 canvas 非空、可自动旋转和拖拽，地图滚轮不带动页面，中国区域边界仍加载 47 条 path，AI 页和拦截页预览无横向溢出。
+- 剩余风险：攻击大屏浅色模式地球视觉仍偏小且位置偏上，属于后续视觉打磨项；AI 页、拦截页、API 安全页和登录验证码样式仍有较多全局残留，后续按页面继续拆分。
+
+### 2026-07-09 本地补充：拦截页样式懒加载与运行时模板小修
+
+- 已重新读取最新 `kimi_found.md`，并用子代理只读复核当前 CSS 治理状态；确认已缓解的内容包括未定义 CSS 变量、登录面板职责混杂、攻击地图样式初步拆分和 Arco JS 分块，但 AI 页旧样式、攻击地图内部重复覆盖、Arco CSS 大包仍未完成。
+- 拦截/报错页样式已从 `global.css` 迁入 `web/src/styles/block-pages.css`，并通过 `.block-pages-page` 作用域隔离；独立预览路由的 `.block-preview-standalone*` 保持全局可用，避免新窗口预览丢样式。
+- Dashboard 增加接口返回形状兜底：周期日志、实时日志、站点列表和资源回收动作会先确认数组再 `.filter` / 统计，避免异常响应或测试 mock 返回对象时触发白屏。
+- 默认拦截页运行时模板微调移动端标题排版：中文标题在窄预览卡片中不再被硬拆成“拦 / 截”式断行，同时保留用户端语言自适应脚本和事件 ID 展示能力。
+- 本轮验证通过：`go test ./internal/blockpage`、`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\verify-block-pages-css.cjs`。生产预览下确认首页未提前加载 `BlockPagesPage` CSS，进入拦截页后才加载；桌面浅色 / 黑金、移动浅色和新窗口预览均无横向溢出、无浏览器错误。
+- 构建结果：拦截页样式输出为独立 `BlockPagesPage` CSS chunk 约 13.7KB，入口 CSS 约 229KB。Arco 官方 CSS 仍约 555KB，是当前最大样式资源，后续需作为单独回归批次处理。
+
+### 2026-07-09 本地补充：AI 页旧样式迁出 global.css
+
+- 继续按 `kimi_found.md` 点名的 P0 问题处理 AI 页样式所有权：`.ai-page`、`.ai-config-*`、`.ai-model-*`、`.ai-events-*`、`.ai-event-row-*`、`.ai-analysis-*`、`.ai-detail-*`、`.ai-knowledge-*`、`.ai-self-learning-*` 等 AI 页独有规则已从 `global.css` 迁入 `web/src/styles/ai-page.css`，并统一补 `.ai-page` 作用域。
+- 共享样式没有误搬：日志详情页仍使用的 `.analysis-live-trace` / `.analysis-result` 保留在 `global.css`；右下角 AI 助手共享的 `.assistant-approval*` 主体仍保留在全局 / 助手样式体系，避免破坏助手审批卡片。
+- 迁移后清理了两处历史半截注释导致的 CSS 语法错误，生产构建由 Lightning CSS minify 通过。
+- 构建结果：入口 `index.css` 从约 229KB 降到约 177KB，AI 页样式输出为独立 `AIPage` CSS chunk 约 67KB。Arco 官方 CSS 仍约 555KB，不能写成已完成。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\ai-page-regression.cjs`。生产 `dist` 静态服务下 AI 页桌面 / 1200px 回归无控制台错误、无横向溢出，事件分析 Markdown 表格可渲染，最终回答没有泄露内部工具过程词。
+- 剩余风险：`ai-page.css` 内部仍有多轮历史覆盖和局部 `!important`，需要下一批做页内去重；现有截图脚本 fullPage 模式会重复固定顶栏，后续应补 viewport 截图；Arco CSS 大包与攻击地图内部重复覆盖仍按后续专项处理。
+
+### 2026-07-09 本地补充：AI 助手审批样式按组件加载
+
+- 继续收敛 `global.css` 的组件职责：`.assistant-approval*` 审批卡片、审批按钮、审批状态和移动端补丁已从 `global.css` / `ai-page.css` 迁入 `web/src/components/AIAssistant/AIAssistant.css`。
+- 迁移后 `global.css` 与 `ai-page.css` 不再持有 `assistant-approval` 选择器；审批卡片样式随完整 AI 助手 chunk 加载，不污染首屏和 AI 分析页样式所有权。
+- 构建结果：入口 `index.css` 从约 177KB 降到约 174KB；`AIAssistant` CSS chunk 增至约 6.1KB，符合组件按需加载预期。Arco 官方 CSS 仍约 555KB，仍需后续专项处理。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\assistant-tool-ui-smoke.cjs`。验证脚本已修正为分别统计“执行前审批卡片”和“执行后结果状态”，确认执行前存在审批卡片，批准后转为工具执行结果，面板无横向溢出且可正常关闭。
+- 剩余风险：`AIAssistant.css` 仍可继续整理顺序和减少重复，但当前样式边界已经从全局迁到组件；下一步建议处理攻击地图 `attack-map.css` 内部重复覆盖和 AI 页 `ai-page.css` 页内去重。
+
+### 2026-07-09 本地补充：攻击地图颜色变量别名
+
+- 按只读审计建议，先做无视觉变化的攻击地图颜色变量化，为后续主题和大屏收口打底；本轮没有改拖拽、缩放、边界层级或 Three.js 逻辑。
+- `attack-map.css` 新增局部变量：`--attack-risk-high`、`--attack-on-risk`、`--attack-highlight-white`，并把高风险橙色、marker 前景色和白色高光改为同值变量引用。
+- 攻击大屏新增局部变量：`--attack-screen-text`、`--attack-screen-cyan`、`--attack-screen-live`、`--attack-screen-blue`、`--attack-screen-warn`、`--attack-screen-track-*`、`--attack-screen-glow`，并替换现有同值霓虹色硬编码。变量值保持原字面量，避免改变当前视觉。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\local-map-ai-block-check.cjs`。回归确认 3D 地图和攻击大屏 canvas 非空、自动旋转和拖拽仍可用，滚轮不带动页面，中国区域边界仍为 47 条 path，攻击大屏历史视图暂停 / 恢复轮询断言继续通过。
+- 剩余风险：`attack-map.css` 内部 `.map-canvas`、`.map-workbench-header`、`.attack-screen-grid` 等重复覆盖仍未整理；2D / 中国拖拽边界、Three.js 主题色和区县边界层级仍需要代码层处理。
+
+### 2026-07-09 本地补充：攻击地图拖拽边界与中国标签密度
+
+- 继续按最新 `kimi_found.md` 和子代理只读审查推进攻击地图专项，本轮仍不提交、不推远端，减少每个小修触发 CI 的开销。
+- 2D / 中国区域地图拖拽边界从固定 `420 / 260` 像素改为按 `map-canvas` 可视尺寸和 `flat-map-stage` 实际尺寸动态计算；缩放回默认、切换模式或窗口尺寸变化时会自动回收到合法视野内。
+- 中国区域地图标签改为随缩放逐级展开：默认只显示命中区域和必要上级，放大后再逐步显示城市 / 区县标签，避免浙江等高密度区域在默认视图下重叠成团。
+- 地图 marker、桌面表格行和移动卡片共用 `selectedRegionKey`：点击地图点后表格行会高亮，点击表格行 / 移动卡片也会更新选中态；选中样式使用主题变量，不写死突兀底色。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\local-map-ai-block-check.cjs`。截图复核 `tmp/screenshots/local-map-ai-block-check/attack-map-china.png`：中国边界完整、页面无横向溢出，默认标签从 14 个降到 7 个，点击 marker 后 `selectedMarkers=1`、`selectedRows=1`，3D 地图和攻击大屏仍可自动旋转、拖拽，滚轮不带动页面滚动。
+- 剩余风险：861-1180px 攻击大屏左右浮层仍需专项复核；3D 地图在轮询时仍可能重绘纹理和 marker / arc，后续需要性能录制和对象复用优化；移动卡片选中态已接入代码与样式，但还需要补到自动化截图断言。
+
+### 2026-07-09 本地补充：攻击大屏中宽度布局
+
+- 按子代理只读复核继续处理攻击大屏：861-1180px 不再使用左右绝对浮层压住地球，改为地球完整占上方一行，统计 / 来源 / 等级 / 时间轴面板在下方两列排列。
+- 侧栏展开状态已提升到根节点 class：`.attack-screen-rail-expanded` 会同步调整根 grid 宽度，避免 rail 自身展开后覆盖 main、topbar、globe 或左侧信息面板。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\local-map-ai-block-check.cjs`。中宽度截图复核：`tmp/screenshots/attack-screen-mid/screen-1180.png`、`screen-1024.png`、`screen-900.png`、`screen-861.png`，以及 rail 展开态 `screen-900-rail-open.png`；900px / 861px 下地球不再被面板遮挡，rail 展开态断言 `rail.right <= main.left + 1` 通过。
+- 剩余风险：中宽度截图脚本当前仍是临时脚本，后续应整理成稳定回归脚本；3D 地图轮询时的纹理 / marker / arc 更新性能还需要继续采样；Arco CSS 与历史全局布局重复覆盖仍需单独治理。
+
+### 2026-07-09 本地补充：Kimi UI 审计低风险收口
+
+- 已重新读取最新 `kimi_found.md`，并通过子代理只读复核当前 CSS / 主题状态。确认未定义 CSS 变量、登录面板职责混杂、攻击地图样式拆分等旧项多数已修；本轮只处理低风险且可验证的主题 / 文案 / 指标项，不做 `.workspace` / `.page-header` 大范围重构。
+- 中文界面继续清理用户可见术语：仪表盘 “95% 请求快于此值” 改为“大部分请求快于此值”；资源与监控页不再把 Go 协程直接展示给用户，监控页优先显示 `process_count` 作为“服务进程”，缺省时兜底为当前服务实例。
+- AI / 助手文案继续去黑话和中英混杂：`AI provider` / “模型思考摘要” / “执行轨迹” / “仅试运行” 等用户侧文案统一为“AI 服务 / 推理摘要 / 执行记录 / 仅模拟运行”等更明确表达。
+- 主题与按钮对比修复：Arco 主按钮、页面主按钮和 AI 页面事件按钮改用 `--accent-contrast`，黑金主题不再被白字覆盖；dark 主题 `--color-primary-6` 与 `--accent` 对齐；攻击地图高风险色改为 `--accent-warning`，局部高光 / 阴影和等宽字体继续改用主题变量。
+- 验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\dashboard-ui-regression.cjs`、`node tmp\check-ai-page-ui.cjs`、`node tmp\local-map-ai-block-check.cjs`。截图复核：`tmp/screenshots/dashboard-refined-desktop.png`、`tmp/screenshots/dashboard-refined-mobile.png`、`output/playwright/ai-page-desktop.png`、`output/playwright/ai-page-mobile.png`、`tmp/screenshots/local-map-ai-block-check/attack-map-china.png`。
+- 仍未完成：Arco 全量 CSS 仍约 555KB，需要单独评估按组件样式导入并做全页面截图回归；仪表盘移动端仍偏竖向密集，资源卡 “服务进程 / 服务内存” 可以进一步做横向视觉重排；攻击地图图例和 marker label 仍需专项打磨；`global.css` 的历史重复覆盖和验证码内部高光硬编码仍需分批治理。
+
+### 2026-07-09 本地补充：Kimi 低风险交互与可访问性收口
+
+- 继续按最新 `kimi_found.md` 和子代理只读审计推进，本轮保持本地开发，不提交、不推远端，避免小步提交触发重复 CI。
+- 仪表盘图表 hover 次级文字不再写死白色透明，改为跟随主题的 75% 文本色；资源运行状态卡片改为更明确的轻强调胶囊，移动端资源行和统计工具条增加 620px 内兜底，避免控件挤压或文本误读。
+- AI 分析事件行补齐键盘可选能力：事件卡片支持 `Enter` / `Space` 选中，并避免影响内部详情 / 分析按钮；减少动画模式下事件行不再瞬移上浮。
+- 通知面板补齐 `dialog` / `tab` 语义，通知触发按钮关联面板；通知描述从单行省略改为最多两行，避免 380px 面板内关键信息被切掉。
+- 右下角 AI 助手按钮补齐 `aria-expanded` / `aria-controls`，助手面板补 `dialog` 语义；攻击地图普通空状态补 `role=status`，3D 地球 tooltip 补 `aria-live` / `aria-atomic`。
+- 中国区域地图 marker 标签禁止拆字，并提高标签底色遮罩，避免底图地名穿透到 marker 标签内。
+- 本轮验证通过：`npm.cmd --prefix web run typecheck -- --pretty false`、`npm.cmd --prefix web run build`、`git diff --check`、`node tmp\dashboard-ui-regression.cjs`、`node tmp\check-ai-page-ui.cjs`、`node tmp\local-map-ai-block-check.cjs`。截图复核：`tmp/screenshots/dashboard-refined-desktop.png`、`tmp/screenshots/dashboard-refined-mobile.png`、`output/playwright/ai-page-desktop.png`、`output/playwright/ai-page-mobile.png`、`tmp/screenshots/local-map-ai-block-check/attack-map-china.png`。
+- 仍未完成：Arco CSS 大 chunk 仍约 555KB；仪表盘移动端工具条仍偏高但不溢出；攻击地图标签避让、攻击大屏视觉、Three.js 对象复用和 `global.css` 历史重复覆盖仍需作为后续专项处理。
+
+### 2026-07-09 本地补充：防护策略局部更新与站点热重载
+
+- 按 `engine_upgrade.md` 与子代理审计继续推进 M4 语义引擎 / 策略联动：当前 Web 攻击防护等级已具备 0-4 级策略层级、严重级别 / 置信度阈值和跨检测器聚合风险分，后续重点转为可解释展示、真实误报基线和 CRS FTW 对标。
+- 修复全局防护策略局部更新问题：`PUT /api/protection/policy` 现在以当前策略为默认值合并请求体，前端只切换一个方向时不会把其他三个方向重置为默认智能模式。
+- 新增 `TestUpdateProtectionPolicyMergesPartialPayload`，覆盖单字段更新、响应体保留其他字段、运行时 reload 回调拿到合并后策略。
+- 修复站点配置热生效链路：`OnSitesChanged` 回调改为返回错误，站点同步和系统设置更新会在保存后重建 WAF pipeline 并通过 `proxy.Server.UpdatePipeline` 热替换；如果自定义规则或检测器配置导致管线重建失败，API 会返回错误，不再静默显示成功。
+- `proxy.Server` 增加 pipeline 读写锁和快照读取，避免并发请求与热替换之间产生数据竞争。
+- 本轮验证通过：`go test ./internal/api/handler -count=1`、`go test ./internal/proxy -count=1`、`go test ./internal/cli -run "BuildPipeline|Service|Password|Username" -count=1`。
+- 仍未完成：策略决策 metadata 仍需要在日志详情 / AI 分析中更清晰展示；前端 `SiteProtectionConfig` 里的 `bot/ratelimit/acl/apisec` 布尔项与后端存储结构仍不一致，需要后续清理或补后端字段。

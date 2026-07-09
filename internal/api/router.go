@@ -21,7 +21,7 @@ type Options struct {
 	Sink                storage.LogSink
 	Hub                 *realtime.Hub
 	Secret              string
-	OnSitesChanged      func([]config.SiteConfig)
+	OnSitesChanged      func([]config.SiteConfig) error
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error
@@ -180,6 +180,7 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:ai")).Post("/ai/analyze", h.AnalyzeLog)
 			r.With(require("read:ai")).Post("/ai/analyze/stream", h.AnalyzeLogStream)
 			r.With(require("read:ai")).Post("/ai/events/analyze", h.AnalyzeEvents)
+			r.With(require("read:ai")).Post("/ai/events/analyze/stream", h.AnalyzeEventsStream)
 			r.With(require("write:ai")).Post("/ai/self-learning/run", h.RunAISelfLearning)
 			r.With(require("read:ai")).Post("/ai/assistant", h.AIAssistant)
 			r.With(require("read:ai")).Post("/ai/assistant/stream", h.AIAssistantStream)

@@ -3,9 +3,11 @@ package proxy
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/apisec"
@@ -22,27 +24,28 @@ import (
 )
 
 type Server struct {
-	config    *config.Config
-	pipeline  *engine.Pipeline
-	logSink   storage.LogSink
-	renderer  *blockpage.Renderer
-	lb        *LoadBalancer
-	blacklist *ip.Blacklist
-	whitelist *ip.Whitelist
-	access    *ip.AccessPolicy
-	geoip     *ip.GeoIPPolicy
-	intel     *ip.Intel
-	acl       *acl.Policy
-	bot       *bot.Policy
-	limiter   *ratelimit.Limiter
-	health    *HealthRegistry
-	headers   *edge.HeaderModifier
-	cache     *edge.Cache
-	compress  *edge.Compressor
-	apiSchema *apisec.Validator
-	apiLimit  *apisec.RateLimiter
-	apiAuth   *apisec.Authenticator
-	certs     *SiteCertificateStore
+	config     *config.Config
+	pipeline   *engine.Pipeline
+	pipelineMu sync.RWMutex
+	logSink    storage.LogSink
+	renderer   *blockpage.Renderer
+	lb         *LoadBalancer
+	blacklist  *ip.Blacklist
+	whitelist  *ip.Whitelist
+	access     *ip.AccessPolicy
+	geoip      *ip.GeoIPPolicy
+	intel      *ip.Intel
+	acl        *acl.Policy
+	bot        *bot.Policy
+	limiter    *ratelimit.Limiter
+	health     *HealthRegistry
+	headers    *edge.HeaderModifier
+	cache      *edge.Cache
+	compress   *edge.Compressor
+	apiSchema  *apisec.Validator
+	apiLimit   *apisec.RateLimiter
+	apiAuth    *apisec.Authenticator
+	certs      *SiteCertificateStore
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
@@ -139,6 +142,24 @@ func (s *Server) UpdateSites(sites []config.SiteConfig) {
 	}
 	s.health = NewHealthRegistry(s.config.Sites)
 	s.lb.UpdateSites(s.config.Sites, s.health)
+}
+
+func (s *Server) UpdatePipeline(pipeline *engine.Pipeline) {
+	if s == nil {
+		return
+	}
+	s.pipelineMu.Lock()
+	defer s.pipelineMu.Unlock()
+	s.pipeline = pipeline
+}
+
+func (s *Server) currentPipeline() *engine.Pipeline {
+	if s == nil {
+		return nil
+	}
+	s.pipelineMu.RLock()
+	defer s.pipelineMu.RUnlock()
+	return s.pipeline
 }
 
 func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
@@ -358,14 +379,15 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeLog(r.Context(), reqCtx, "redirect", code, start, nil)
 		return
 	}
-	if site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff && s.pipeline != nil {
-		result, err := s.pipeline.Detect(r.Context(), reqCtx)
+	pipeline := s.currentPipeline()
+	if site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff && pipeline != nil {
+		result, err := pipeline.Detect(r.Context(), reqCtx)
 		if err != nil {
 			s.proxyError(w, r, site, reqCtx, "proxy_error", "waf pipeline error", http.StatusInternalServerError, start, err)
 			return
 		}
 		if result != nil && result.Detected {
-			decision := evaluateWebAttackPolicy(policy.WebAttack, result)
+			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results)
 			reqCtx.Metadata["waf_policy_decision"] = decision
 			reqCtx.Metadata["detection"] = result
 			switch decision.Action {
@@ -654,8 +676,12 @@ type webAttackPolicyDecision struct {
 	Level             string  `json:"level"`
 	Action            string  `json:"action"`
 	Reason            string  `json:"reason"`
+	ParanoiaLevel     int     `json:"paranoia_level"`
 	MinimumSeverity   string  `json:"minimum_severity"`
 	MinimumConfidence float64 `json:"minimum_confidence"`
+	MinimumRiskScore  int     `json:"minimum_risk_score"`
+	RiskScore         int     `json:"risk_score"`
+	EvidenceCount     int     `json:"evidence_count"`
 	ResultSeverity    string  `json:"result_severity"`
 	ResultConfidence  float64 `json:"result_confidence"`
 	DetectorAction    string  `json:"detector_action"`
@@ -664,16 +690,23 @@ type webAttackPolicyDecision struct {
 }
 
 func evaluateWebAttackPolicy(level string, result *engine.DetectionResult) webAttackPolicyDecision {
+	return evaluateWebAttackPolicyWithEvidence(level, result, nil)
+}
+
+func evaluateWebAttackPolicyWithEvidence(level string, result *engine.DetectionResult, results []engine.DetectionResult) webAttackPolicyDecision {
 	if level == "" {
 		level = config.ProtectionLevelSmart
 	}
 	minSeverity, minConfidence := webAttackThreshold(level)
+	riskThreshold := webAttackRiskThreshold(level)
 	decision := webAttackPolicyDecision{
 		Level:             level,
 		Action:            engine.ActionLog.String(),
 		Reason:            "detected below policy threshold",
+		ParanoiaLevel:     webAttackParanoiaLevel(level),
 		MinimumSeverity:   minSeverity.String(),
 		MinimumConfidence: minConfidence,
+		MinimumRiskScore:  riskThreshold,
 		DetectorAction:    engine.ActionPass.String(),
 	}
 	if result == nil {
@@ -685,6 +718,9 @@ func evaluateWebAttackPolicy(level string, result *engine.DetectionResult) webAt
 	decision.DetectorAction = result.Action.String()
 	decision.DetectorCategory = result.Category
 	decision.DetectorID = result.DetectorID
+	evidence := aggregateWebAttackEvidence(result, results)
+	decision.RiskScore = evidence.Score
+	decision.EvidenceCount = evidence.Count
 	if result.Action == engine.ActionPass || result.Action == engine.ActionLog {
 		decision.Reason = "detector requested " + result.Action.String()
 		return decision
@@ -702,6 +738,15 @@ func evaluateWebAttackPolicy(level string, result *engine.DetectionResult) webAt
 		decision.Reason = "severity and confidence meet policy threshold"
 		return decision
 	}
+	if evidence.Score >= riskThreshold {
+		if evidence.Action == engine.ActionChallenge {
+			decision.Action = engine.ActionChallenge.String()
+		} else {
+			decision.Action = engine.ActionBlock.String()
+		}
+		decision.Reason = "aggregate risk score meets policy threshold"
+		return decision
+	}
 	return decision
 }
 
@@ -716,6 +761,124 @@ func webAttackThreshold(level string) (engine.Severity, float64) {
 	default:
 		return engine.SeverityHigh, 0.85
 	}
+}
+
+func webAttackRiskThreshold(level string) int {
+	switch level {
+	case config.ProtectionLevelLow:
+		return 90
+	case config.ProtectionLevelHigh:
+		return 48
+	case config.ProtectionLevelStrict:
+		return 23
+	default:
+		return 73
+	}
+}
+
+func webAttackParanoiaLevel(level string) int {
+	switch level {
+	case config.ProtectionLevelOff:
+		return 0
+	case config.ProtectionLevelLow:
+		return 1
+	case config.ProtectionLevelHigh:
+		return 3
+	case config.ProtectionLevelStrict:
+		return 4
+	default:
+		return 2
+	}
+}
+
+type webAttackEvidence struct {
+	Score  int
+	Count  int
+	Action engine.Action
+}
+
+func aggregateWebAttackEvidence(primary *engine.DetectionResult, results []engine.DetectionResult) webAttackEvidence {
+	evidence := webAttackEvidence{Action: engine.ActionLog}
+	seen := map[string]struct{}{}
+	categories := map[string]struct{}{}
+	add := func(result engine.DetectionResult) {
+		if !result.Detected || result.Action == engine.ActionPass || result.Action == engine.ActionLog {
+			return
+		}
+		key := webAttackEvidenceKey(result)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		categories[result.Category] = struct{}{}
+		score := webAttackResultScore(result)
+		if score > evidence.Score {
+			evidence.Score = score
+			evidence.Action = result.Action
+		}
+		evidence.Count++
+	}
+	if primary != nil {
+		add(*primary)
+	}
+	for _, result := range results {
+		add(result)
+	}
+	if evidence.Count > 1 {
+		evidence.Score += minInt((evidence.Count-1)*5, 15)
+	}
+	if len(categories) > 1 {
+		evidence.Score += minInt((len(categories)-1)*8, 16)
+	}
+	if evidence.Score > 100 {
+		evidence.Score = 100
+	}
+	return evidence
+}
+
+func webAttackEvidenceKey(result engine.DetectionResult) string {
+	category := strings.ToLower(strings.TrimSpace(result.Category))
+	payload := strings.TrimSpace(result.Payload)
+	if payload != "" {
+		return category + "\x00" + payload
+	}
+	return strings.TrimSpace(result.DetectorID) + "\x00" + category + "\x00" + strings.TrimSpace(result.Message)
+}
+
+func webAttackResultScore(result engine.DetectionResult) int {
+	confidence := result.Confidence
+	if confidence > 1 {
+		confidence = confidence / 100
+	}
+	if confidence < 0 {
+		confidence = 0
+	}
+	if confidence > 1 {
+		confidence = 1
+	}
+	return int(math.Round(float64(webAttackSeverityScore(result.Severity)) * confidence))
+}
+
+func webAttackSeverityScore(severity engine.Severity) int {
+	switch severity {
+	case engine.SeverityCritical:
+		return 100
+	case engine.SeverityHigh:
+		return 86
+	case engine.SeverityMedium:
+		return 62
+	case engine.SeverityLow:
+		return 35
+	default:
+		return 10
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 type botCCPolicyDecision struct {
