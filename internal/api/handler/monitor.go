@@ -3,9 +3,9 @@ package handler
 import (
 	"bytes"
 	"context"
-	"math"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/apisec"
@@ -151,8 +151,9 @@ func intFromTotal(total int64) int {
 	if total <= 0 {
 		return 0
 	}
-	if total > int64(math.MaxInt) {
-		return math.MaxInt
+	maxInt := int64(1<<(strconv.IntSize-1) - 1)
+	if total > maxInt {
+		return int(maxInt)
 	}
 	return int(total)
 }
