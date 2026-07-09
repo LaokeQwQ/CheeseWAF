@@ -255,7 +255,7 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
-			Secure:   requestIsHTTPS(r),
+			Secure:   true,
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -1106,17 +1106,6 @@ func safeChallengeReturnURL(r *http.Request) string {
 		parsed.Path = "/" + parsed.Path
 	}
 	return parsed.RequestURI()
-}
-
-func requestIsHTTPS(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	if r.TLS != nil {
-		return true
-	}
-	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") ||
-		strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Scheme")), "https")
 }
 
 func imageAudioURL(r *http.Request, token string) string {
