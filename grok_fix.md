@@ -216,9 +216,18 @@ cd web && npm test -- --run \
 - Lab：admin-only、opaque token、前端 abort/竞态测试较全  
 - Proxy：路径清洗、verify path 固定、未知 Host 421  
 
-### 建议下一批（CAPTCHA）
+### 建议下一批（CAPTCHA）— 已在后续提交处理
 
-1. 补 image/slider 全链路成功单测（含二次提交失败）  
-2. 删除或真正接线 `legacy-pow`  
-3. WAF 强制 `slider_captcha_track_required`  
-4. 图像验证码字体/字母表增强（OCR）  
+1. ~~补 image/slider 全链路成功单测~~ → `TestImageCAPTCHAFullCycleIssueAnswerConsume`  
+2. ~~删除或真正接线 `legacy-pow`~~ → 退役 query-param legacy PoW  
+3. ~~WAF 强制 track~~ → `sliderTrackRequired` 恒 true；空 track 失败  
+4. 图像 0–9 字母表已补；7 段字体/更强噪声仍可继续增强  
+
+### 推送 / 镜像（2026-07-14）
+
+| 项 | 值 |
+|----|-----|
+| 分支 | `feature/security-captcha-ui-hardening-20260714` |
+| HEAD | `94f3194ebb1a7a030d6e1cca82d9c7e45a69f132` |
+| GitHub PR | https://github.com/LaokeQwQ/CheeseWAF/pull/222 （base: `dev`，MERGEABLE） |
+| Forgejo mirror-sync | HTTP 200；`forgejo` 与 `origin` 同 SHA |
