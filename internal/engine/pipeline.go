@@ -38,22 +38,16 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 	}
 
 	// Pipeline-level timeout: 100ms total for all detection (fast-path guarantee)
+	parentCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
-
-	// Sanitize input before detection
-	if reqCtx.Request != nil {
-		reqCtx.DecodedBody = sanitizeBody(reqCtx.DecodedBody)
-	}
 
 	p.mu.RLock()
 	detectors := make([]Detector, len(p.detectors))
 	copy(detectors, p.detectors)
 	p.mu.RUnlock()
 
-	var mu sync.Mutex
 	var firstDetected *DetectionResult
-	var wg sync.WaitGroup
 
 	// Concurrent detection: run detectors in parallel using bounded workers.
 	// Detectors with priority < 300 run first (IP/ACL/bot), then semantic.
@@ -80,53 +74,37 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		if result == nil {
 			continue
 		}
-		mu.Lock()
 		reqCtx.Results = append(reqCtx.Results, *result)
-		mu.Unlock()
 		if result.Detected && result.Action == ActionBlock {
 			return result, nil
 		}
 		if result.Detected && firstDetected == nil {
 			snapshot := *result
-			mu.Lock()
 			firstDetected = &snapshot
-			mu.Unlock()
 		}
 	}
 
-	// Phase 2: Run semantic detectors concurrently with sandbox protection
-	results := make([]*DetectionResult, len(semanticGroup))
-	for i := range semanticGroup {
-		if ctx.Err() != nil {
+	// Detectors may enrich request metadata. Serial execution keeps those writes
+	// deterministic, honors cancellation, and avoids shared-map races.
+	for _, detector := range semanticGroup {
+		if err := ctx.Err(); err != nil {
+			if parentErr := parentCtx.Err(); parentErr != nil {
+				return nil, parentErr
+			}
+			reqCtx.Metadata["detection_budget_exhausted"] = true
 			break
 		}
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			result, err := Guard(func() (*DetectionResult, error) {
-				return semanticGroup[idx].Detect(ctx, reqCtx)
-			})
-			if err != nil {
-				results[idx] = nil
-				return
-			}
-			results[idx] = result
-		}(i)
-	}
-	wg.Wait()
-
-	for _, result := range results {
+		result, err := Guard(func() (*DetectionResult, error) { return detector.Detect(ctx, reqCtx) })
+		if err != nil {
+			continue
+		}
 		if result == nil {
 			continue
 		}
-		mu.Lock()
 		reqCtx.Results = append(reqCtx.Results, *result)
-		mu.Unlock()
 		if result.Detected && (firstDetected == nil || betterDetectionResult(result, firstDetected)) {
 			snapshot := *result
-			mu.Lock()
 			firstDetected = &snapshot
-			mu.Unlock()
 		}
 	}
 
@@ -165,13 +143,6 @@ func actionRank(action Action) int {
 	default:
 		return 0
 	}
-}
-
-func sanitizeBody(body []byte) []byte {
-	if len(body) > MaxInputBytes {
-		return body[:MaxInputBytes]
-	}
-	return body
 }
 
 func (p *Pipeline) Detectors() []Detector {

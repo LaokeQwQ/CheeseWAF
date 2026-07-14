@@ -13,7 +13,142 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
+	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
+
+func TestEnsureAdminTLSCertificateGeneratesOnce(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Server.AdminListen = "0.0.0.0:9443"
+	cfg.Server.AdminTLS.Enabled = true
+	cfg.Server.AdminTLS.SelfSigned = true
+	cfg.Server.AdminTLS.CertFile = filepath.Join(root, "certs", "admin.crt")
+	cfg.Server.AdminTLS.KeyFile = filepath.Join(root, "certs", "admin.key")
+
+	if err := ensureAdminTLSCertificate(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	certBefore, err := os.ReadFile(cfg.Server.AdminTLS.CertFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBefore, err := os.ReadFile(cfg.Server.AdminTLS.KeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certBefore) == 0 || len(keyBefore) == 0 {
+		t.Fatal("generated admin TLS material is empty")
+	}
+	if err = ensureAdminTLSCertificate(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	certAfter, _ := os.ReadFile(cfg.Server.AdminTLS.CertFile)
+	keyAfter, _ := os.ReadFile(cfg.Server.AdminTLS.KeyFile)
+	if !bytes.Equal(certBefore, certAfter) || !bytes.Equal(keyBefore, keyAfter) {
+		t.Fatal("existing admin TLS material was unexpectedly rotated")
+	}
+}
+
+func TestRepairRuntimeConfigPersistsSecretWhenConfigIsReadOnly(t *testing.T) {
+	root := t.TempDir()
+	configTarget := filepath.Join(root, "config-target")
+	if err := os.Mkdir(configTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Setup.RuntimeDir = filepath.Join(root, "run")
+	cfg.Protection.Bot.Secret = config.BotSecretPlaceholder
+	if err := repairRuntimeConfig(configTarget, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	firstSecret := cfg.Protection.Bot.Secret
+	if config.IsWeakBotSecret(firstSecret) {
+		t.Fatal("runtime fallback retained a weak Bot challenge secret")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Setup.RuntimeDir, "bot_secret")); err != nil {
+		t.Fatalf("runtime secret was not persisted: %v", err)
+	}
+
+	reloaded := config.Default()
+	reloaded.Setup.RuntimeDir = cfg.Setup.RuntimeDir
+	reloaded.Protection.Bot.Secret = config.BotSecretPlaceholder
+	if err := repairRuntimeConfig(configTarget, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Protection.Bot.Secret != firstSecret {
+		t.Fatal("runtime fallback secret was not stable across reload")
+	}
+}
+
+func TestResolveWebDirFindsReleaseAssetsBesideExecutable(t *testing.T) {
+	originalExecutablePath := executablePath
+	originalWebDir := os.Getenv("CHEESEWAF_WEB_DIR")
+	t.Cleanup(func() {
+		executablePath = originalExecutablePath
+		_ = os.Setenv("CHEESEWAF_WEB_DIR", originalWebDir)
+	})
+	_ = os.Unsetenv("CHEESEWAF_WEB_DIR")
+	root := t.TempDir()
+	webDir := filepath.Join(root, "web", "dist")
+	if err := os.MkdirAll(webDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return filepath.Join(root, "cheesewaf"), nil }
+	if got := resolveWebDir(); got != webDir {
+		t.Fatalf("resolveWebDir() = %q, want %q", got, webDir)
+	}
+}
+
+func TestValidateStartupUsersRejectsCompletedSetupWithoutAdministrator(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := storage.OpenSQLite(filepath.Join(dataDir, "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.MarkComplete(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartupUsers(ctx, dataDir, store); err == nil || !strings.Contains(err.Error(), "no administrator") {
+		t.Fatalf("expected missing administrator error, got %v", err)
+	}
+	if err := store.CreateUser(ctx, &storage.User{Username: "reader", PasswordHash: "hash", Role: "readonly"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartupUsers(ctx, dataDir, store); err == nil {
+		t.Fatal("expected readonly-only store to remain invalid")
+	}
+	if err := store.CreateUser(ctx, &storage.User{Username: "Cheese", PasswordHash: "hash", Role: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartupUsers(ctx, dataDir, store); err != nil {
+		t.Fatalf("expected administrator to satisfy integrity check: %v", err)
+	}
+}
+
+func TestValidateStartupUsersAllowsIncompleteFirstRun(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := storage.OpenSQLite(filepath.Join(dataDir, "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartupUsers(ctx, dataDir, store); err != nil {
+		t.Fatalf("first-run setup should remain available: %v", err)
+	}
+}
 
 func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 	webDir := t.TempDir()

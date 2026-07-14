@@ -129,10 +129,9 @@ func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-type ManagementAPITokenConfigSource func() config.ManagementAPIConfig
-type ManagementAPITokenUseRecorder func(id string, at time.Time)
+type ManagementAPITokenAuthenticator func(raw string, at time.Time) (*Claims, func(), bool)
 
-func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionValidator, source ManagementAPITokenConfigSource, recordUse ManagementAPITokenUseRecorder) func(http.Handler) http.Handler {
+func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionValidator, authenticate ManagementAPITokenAuthenticator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := bearerToken(r)
@@ -141,13 +140,17 @@ func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionVa
 				return
 			}
 			if strings.HasPrefix(token, ManagementAPITokenPrefix) {
-				claims, ok := verifyManagementAPIToken(token, source)
+				if authenticate == nil {
+					writeUnauthorized(w)
+					return
+				}
+				claims, release, ok := authenticate(token, time.Now().UTC())
 				if !ok {
 					writeUnauthorized(w)
 					return
 				}
-				if recordUse != nil {
-					recordUse(claims.ID, time.Now().UTC())
+				if release != nil {
+					defer release()
 				}
 				ctx := context.WithValue(r.Context(), UserContextKey, claims)
 				next.ServeHTTP(w, r.WithContext(ctx))
@@ -179,15 +182,11 @@ func HashManagementAPIToken(raw string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-func verifyManagementAPIToken(raw string, source ManagementAPITokenConfigSource) (*Claims, bool) {
-	if source == nil {
-		return nil, false
-	}
-	cfg := source()
+func VerifyManagementAPIToken(raw string, cfg config.ManagementAPIConfig, now time.Time) (*Claims, bool) {
 	if !cfg.Enabled || strings.TrimSpace(raw) == "" {
 		return nil, false
 	}
-	now := time.Now().UTC()
+	now = now.UTC()
 	hash := HashManagementAPIToken(raw)
 	for _, token := range cfg.Tokens {
 		if !token.Enabled || token.ID == "" || token.Hash == "" || !token.RevokedAt.IsZero() {

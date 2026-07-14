@@ -19,8 +19,6 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
 )
 
-const maxSemanticInputBytes = 256 * 1024
-
 type Analyzer struct {
 	mode    string
 	enabled map[string]bool
@@ -78,7 +76,7 @@ func (a *Analyzer) ID() string    { return "semantic.analyzer" }
 func (a *Analyzer) Name() string  { return "Staged Semantic Analyzer" }
 func (a *Analyzer) Priority() int { return 290 }
 
-func (a *Analyzer) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
 	if reqCtx == nil || reqCtx.Request == nil || a.mode == "off" {
 		return nil, nil
 	}
@@ -86,6 +84,9 @@ func (a *Analyzer) Detect(_ context.Context, reqCtx *engine.RequestContext) (*en
 	report := AnalysisReport{}
 	best := (*Hit)(nil)
 	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		report.Inputs = append(report.Inputs, candidate.input)
 		for _, hit := range a.analyzeCandidate(candidate) {
 			report.Hits = append(report.Hits, hit)
@@ -266,9 +267,6 @@ func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 func bodyInputs(r *http.Request, body []byte) []InputPoint {
 	if len(body) == 0 {
 		return nil
-	}
-	if len(body) > maxSemanticInputBytes {
-		body = body[:maxSemanticInputBytes]
 	}
 	var inputs []InputPoint
 	contentType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))

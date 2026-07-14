@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,27 +125,44 @@ func (h *Handler) ClusterAnsiblePackage(w http.ResponseWriter, r *http.Request) 
 	writeData(w, map[string]any{"files": files})
 }
 
+type clusterDeployRequest struct {
+	deploy.SSHDeploymentRequest
+	Authorization string `json:"authorization,omitempty"`
+}
+
+type clusterDeployTaskView struct {
+	deploy.Task
+	Authorization *deploy.Authorization `json:"authorization,omitempty"`
+}
+
 func (h *Handler) ClusterDeployCheck(w http.ResponseWriter, r *http.Request) {
-	var req deploy.SSHDeploymentRequest
+	var req clusterDeployRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	runner := deploy.NewSSHRunner(deploy.SSHRunnerOptions{})
-	result, err := runner.Check(r.Context(), req)
+	result, err := deploy.NewSSHRunner(deploy.SSHRunnerOptions{}).Check(r.Context(), req.SSHDeploymentRequest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "CLUSTER_SSH_INVALID", err.Error())
 		return
 	}
-	writeData(w, result)
+	auth, err := h.clusterDeployAuthorizationStore().Issue("", authorizationTarget(req.SSHDeploymentRequest))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "CLUSTER_SSH_AUTHORIZATION_FAILED", err.Error())
+		return
+	}
+	writeData(w, map[string]any{"result": result, "authorization": auth})
 }
 
 func (h *Handler) ClusterDeployRun(w http.ResponseWriter, r *http.Request) {
-	var req deploy.SSHDeploymentRequest
+	var req clusterDeployRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	runner := deploy.NewSSHRunner(deploy.SSHRunnerOptions{})
-	result, err := runner.Deploy(r.Context(), req)
+	if err := h.consumeClusterDeployAuthorization(req); err != nil {
+		writeError(w, http.StatusForbidden, "CLUSTER_SSH_PRECHECK_REQUIRED", err.Error())
+		return
+	}
+	result, err := deploy.NewSSHRunner(deploy.SSHRunnerOptions{}).Deploy(r.Context(), req.SSHDeploymentRequest)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "CLUSTER_SSH_FAILED", err.Error())
 		return
@@ -153,14 +171,25 @@ func (h *Handler) ClusterDeployRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ClusterStartDeployTask(w http.ResponseWriter, r *http.Request) {
-	var req deploy.SSHDeploymentRequest
+	var req clusterDeployRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	task, err := h.clusterDeployTaskManager().Start(context.Background(), req)
+	if strings.TrimSpace(req.Action) != "check" {
+		if err := h.consumeClusterDeployAuthorization(req); err != nil {
+			writeError(w, http.StatusForbidden, "CLUSTER_SSH_PRECHECK_REQUIRED", err.Error())
+			return
+		}
+	}
+	task, err := h.clusterDeployTaskManager().Start(context.Background(), req.SSHDeploymentRequest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "CLUSTER_DEPLOY_TASK_INVALID", err.Error())
 		return
+	}
+	if task.Action == "check" {
+		h.clusterDeployAuthMu.Lock()
+		h.clusterDeployPending[task.ID] = authorizationTarget(req.SSHDeploymentRequest)
+		h.clusterDeployAuthMu.Unlock()
 	}
 	writeData(w, task)
 }
@@ -176,12 +205,67 @@ func (h *Handler) ClusterGetDeployTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "CLUSTER_DEPLOY_TASK_NOT_FOUND", "deploy task not found")
 		return
 	}
-	writeData(w, task)
+	view := clusterDeployTaskView{Task: task}
+	if task.Action == "check" && task.Status == deploy.TaskStatusSucceeded {
+		if auth, ok := h.clusterDeployAuthorizationStore().GetByTask(id); ok {
+			view.Authorization = &auth
+			writeData(w, view)
+			return
+		}
+		h.clusterDeployAuthMu.Lock()
+		target, ok := h.clusterDeployPending[id]
+		h.clusterDeployAuthMu.Unlock()
+		if ok {
+			auth, err := h.clusterDeployAuthorizationStore().Issue(id, target)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "CLUSTER_SSH_AUTHORIZATION_FAILED", err.Error())
+				return
+			}
+			h.clusterDeployAuthMu.Lock()
+			delete(h.clusterDeployPending, id)
+			h.clusterDeployAuthMu.Unlock()
+			view.Authorization = &auth
+		}
+	}
+	writeData(w, view)
 }
 
-func (h *Handler) ClusterListDeployTasks(w http.ResponseWriter, _ *http.Request) {
-	items := h.clusterDeployTaskManager().List(50)
-	writeData(w, map[string]any{"items": items, "total": len(items)})
+func (h *Handler) ClusterListDeployTasks(w http.ResponseWriter, r *http.Request) {
+	page := clusterPositiveQueryInt(r, "page", 1, 1000000)
+	pageSize := clusterPositiveQueryInt(r, "page_size", 50, 100)
+	items, total := h.clusterDeployTaskManager().ListPage((page-1)*pageSize, pageSize)
+	writeData(w, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize})
+}
+
+func authorizationTarget(req deploy.SSHDeploymentRequest) deploy.AuthorizationTarget {
+	return deploy.AuthorizationTarget{Host: req.Host, User: req.User, Port: req.Port, HostKeySHA256: req.HostKeySHA256}
+}
+func (h *Handler) consumeClusterDeployAuthorization(req clusterDeployRequest) error {
+	return h.clusterDeployAuthorizationStore().Consume(req.Authorization, authorizationTarget(req.SSHDeploymentRequest))
+}
+func (h *Handler) clusterDeployAuthorizationStore() *deploy.AuthorizationStore {
+	h.clusterDeployAuthMu.Lock()
+	defer h.clusterDeployAuthMu.Unlock()
+	if h.ClusterDeployAuth == nil {
+		h.ClusterDeployAuth = deploy.NewAuthorizationStore(deploy.AuthorizationStoreOptions{})
+	}
+	if h.clusterDeployPending == nil {
+		h.clusterDeployPending = map[string]deploy.AuthorizationTarget{}
+	}
+	return h.ClusterDeployAuth
+}
+func clusterPositiveQueryInt(r *http.Request, name string, fallback, maximum int) int {
+	if r == nil {
+		return fallback
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get(name)))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 type clusterAuditEntry struct {
@@ -875,10 +959,14 @@ func (h *Handler) recordJoinedClusterNode(node identity.NodeRegistration) error 
 	if err != nil {
 		return err
 	}
-	previous := h.Config
-	h.Config = next
+	// Preserve process-wide pointer identity: other subsystems hold *h.Config.
+	previous, err := config.Clone(h.Config)
+	if err != nil {
+		return err
+	}
+	*h.Config = *next
 	if err := h.persistConfigLocked(); err != nil {
-		h.Config = previous
+		*h.Config = *previous
 		return err
 	}
 	return nil
@@ -896,7 +984,13 @@ func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*conf
 	if h == nil || h.Config == nil {
 		return nil, nil
 	}
-	next := *h.Config
+	// Full clone so validation/join never mutates the live config graph
+	// (shallow struct copy + append can write into the live Nodes backing array).
+	cloned, err := config.Clone(h.Config)
+	if err != nil {
+		return nil, err
+	}
+	next := cloned
 	next.Deployment.Mode = "cluster"
 	next.Cluster.Enabled = true
 	if strings.TrimSpace(next.Cluster.ClusterID) == "" {
@@ -912,15 +1006,15 @@ func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*conf
 		}
 		return nil, fmt.Errorf("cluster node %q already exists; revoke or rotate it before rejoining", node.NodeID)
 	}
-	next.Cluster.Nodes = append(next.Cluster.Nodes, config.ClusterNodeConfig{
+	next.Cluster.Nodes = append(append([]config.ClusterNodeConfig(nil), next.Cluster.Nodes...), config.ClusterNodeConfig{
 		ID:            node.NodeID,
 		Role:          node.Role,
 		AdvertiseAddr: node.AdvertiseAddr,
 	})
-	if err := config.Validate(&next); err != nil {
+	if err := config.Validate(next); err != nil {
 		return nil, err
 	}
-	return &next, nil
+	return next, nil
 }
 
 func (h *Handler) clusterIdentityService() (*identity.MemoryIdentityService, error) {
@@ -1018,6 +1112,16 @@ func (h *Handler) clusterConfigWritable(lang string) (bool, string) {
 }
 
 func (h *Handler) rejectClusterConfigWriteIfFrozen(w http.ResponseWriter, r *http.Request) bool {
+	h.configMutationMu.RLock()
+	frozen, freezeReason := h.configWriteFrozen, h.configFreezeReason
+	h.configMutationMu.RUnlock()
+	if frozen {
+		if strings.TrimSpace(freezeReason) == "" {
+			freezeReason = "configuration state could not be restored"
+		}
+		writeError(w, http.StatusLocked, "CONFIG_WRITES_FROZEN", freezeReason)
+		return true
+	}
 	ok, reason := h.clusterConfigWritable(requestLanguage(r))
 	if ok {
 		return false

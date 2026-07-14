@@ -82,14 +82,32 @@ func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "SCHEDULER_TASK_INVALID", err.Error())
 		return
 	}
-	previous := h.Config.Scheduler.Tasks
-	h.Config.Scheduler.Tasks = req
-	if err := h.persistConfig(); err != nil {
-		h.Config.Scheduler.Tasks = previous
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	for _, task := range req {
+		if !scheduler.SupportedTaskType(task.Type) {
+			writeError(w, http.StatusBadRequest, "SCHEDULER_TASK_TYPE_UNSUPPORTED", "unsupported scheduler task type: "+task.Type)
+			return
+		}
+	}
+	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
+		candidate.Scheduler.Tasks = req
+		return nil
+	}, func(candidate *config.Config) error {
+		engine := scheduler.Active()
+		if engine == nil {
+			return nil
+		}
+		tasks := scheduler.FromConfigWithRuntime(candidate.Scheduler, candidate.Setup.DataDir, h.ConfigPath, candidate.Logging.Output.File.Path, engine.Runtime())
+		return engine.Replace(tasks)
+	})
+	if err != nil {
+		code := "CONFIG_SAVE_ERROR"
+		if strings.Contains(err.Error(), "apply runtime config:") {
+			code = "SCHEDULER_RELOAD_ERROR"
+		}
+		writeError(w, http.StatusInternalServerError, code, err.Error())
 		return
 	}
-	writeData(w, scheduledTaskResponses(h.Config.Scheduler.Tasks))
+	writeData(w, scheduledTaskResponses(committed.Scheduler.Tasks))
 }
 
 func (h *Handler) validateSchedulerTasks(tasks []config.ScheduledTaskConfig) error {
@@ -190,7 +208,12 @@ func (d flexibleDuration) MarshalJSON() ([]byte, error) {
 }
 
 func (h *Handler) TaskHistory(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, []any{})
+	engine := scheduler.Active()
+	if engine == nil {
+		writeData(w, []scheduler.HistoryEntry{})
+		return
+	}
+	writeData(w, engine.History())
 }
 
 func (h *Handler) EdgePolicy(w http.ResponseWriter, _ *http.Request) {
@@ -205,14 +228,15 @@ func (h *Handler) UpdateEdgePolicy(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	previous := h.Config.Edge
-	h.Config.Edge = req
-	if err := h.persistConfig(); err != nil {
-		h.Config.Edge = previous
+	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
+		candidate.Edge = req
+		return nil
+	}, nil)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 		return
 	}
-	writeData(w, h.Config.Edge)
+	writeData(w, committed.Edge)
 }
 
 func (h *Handler) StorageStats(w http.ResponseWriter, _ *http.Request) {
@@ -298,6 +322,9 @@ func normalizeScheduledTask(task *config.ScheduledTaskConfig) {
 	}
 	if task.Name == "" {
 		task.Name = task.ID
+	}
+	if task.Type == "backup" && (task.Name == task.ID || strings.EqualFold(task.Name, "Config backup")) {
+		task.Name = "Config snapshot"
 	}
 	if task.Keep <= 0 {
 		task.Keep = 7
@@ -492,15 +519,12 @@ func runMaintenanceCommand(ctx context.Context, name string, command string, arg
 }
 
 func (h *Handler) ExportBackup(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, map[string]any{
-		"status": "ready",
-		"scope":  []string{"config", "sites", "rules", "ip", "scheduler"},
-	})
+	writeError(w, http.StatusNotImplemented, "BACKUP_EXPORT_NOT_IMPLEMENTED", "a verified restorable backup format is not available in this version")
 }
 
 func (h *Handler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
-	_, _ = io.Copy(io.Discard, r.Body)
-	writeData(w, map[string]any{"restored": true, "requires_restart": false})
+	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+	writeError(w, http.StatusNotImplemented, "BACKUP_RESTORE_NOT_IMPLEMENTED", "backup restore is disabled until atomic validation and rollback are available")
 }
 
 func (h *Handler) BlockPageTemplates(w http.ResponseWriter, _ *http.Request) {
@@ -666,17 +690,18 @@ func (h *Handler) applyBlockPageConfig(w http.ResponseWriter, next config.BlockP
 		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
 		return false
 	}
-	prev := h.Config.BlockPage
-	h.Config.BlockPage = next
-	if err := h.persistConfig(); err != nil {
-		h.Config.BlockPage = prev
-		writeError(w, http.StatusInternalServerError, "BLOCK_PAGE_SAVE_ERROR", err.Error())
-		return false
-	}
-	if err := h.notifyBlockPageChanged(); err != nil {
-		h.Config.BlockPage = prev
-		_ = h.persistConfig()
-		writeError(w, http.StatusInternalServerError, "BLOCK_PAGE_RELOAD_ERROR", err.Error())
+	_, err := h.commitConfigMutation(func(candidate *config.Config) error {
+		candidate.BlockPage = next
+		return nil
+	}, func(candidate *config.Config) error {
+		return h.notifyBlockPageConfigChanged(candidate.BlockPage)
+	})
+	if err != nil {
+		code := "BLOCK_PAGE_SAVE_ERROR"
+		if strings.Contains(err.Error(), "apply runtime config:") {
+			code = "BLOCK_PAGE_RELOAD_ERROR"
+		}
+		writeError(w, http.StatusInternalServerError, code, err.Error())
 		return false
 	}
 	return true

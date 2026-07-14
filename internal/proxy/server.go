@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -249,7 +249,31 @@ func (s *Server) HTTPServer() *http.Server {
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	site := s.lb.SiteForHost(r.Host)
+	// Never fall back to another tenant: unmatched Host gets 421 before bot/WAF.
+	if site.ID == "" {
+		http.Error(w, "Misdirected Request: no site matches this host", http.StatusMisdirectedRequest)
+		return
+	}
 	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
+
+	// Clean path for bot/IP/path policy only. Keep r.URL.Path unchanged so
+	// open-redirect guards (e.g. scheme-relative "//host") still see the raw path.
+	requestPath, pathOK := engine.NormalizeRequestPath(r.URL.Path)
+	if !pathOK {
+		s.block(w, &engine.RequestContext{
+			Request:  r,
+			ClientIP: engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs),
+			TraceID:  blockpage.NewTraceID(),
+			SiteID:   site.ID,
+			Metadata: map[string]any{"invalid_path": r.URL.Path},
+		}, "invalid_path", "invalid request path", http.StatusBadRequest, start)
+		return
+	}
+
+	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
+		s.handleBotBehaviorVerify(w, r, site)
+		return
+	}
 
 	// Protocol enforcement: HTTP smuggling, chunked encoding abuse, header injection
 	if violation := engine.DetectProtocolViolations(r); violation != nil {
@@ -263,12 +287,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reqCtx, err := engine.NewRequestContextWithTrustedProxies(r, site.ID, site.WAF.AccessControl.TrustedCIDRs)
+	maxRequestBody := site.WAF.Performance.MaxBodyBytes
+	if maxRequestBody <= 0 {
+		maxRequestBody = 8 << 20
+	}
+	reqCtx, err := engine.NewRequestContextWithLimits(r, site.ID, site.WAF.AccessControl.TrustedCIDRs, maxRequestBody)
 	if err != nil {
+		if errors.Is(err, engine.ErrRequestBodyTooLarge) {
+			s.proxyError(w, r, site, nil, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
+			return
+		}
 		s.proxyError(w, r, site, nil, "proxy_error", "failed to read request", http.StatusBadRequest, start, err)
 		return
 	}
-	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, r.URL.Path)
+	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, requestPath)
 	if accessDecision.Matched {
 		reqCtx.Metadata["ip_access_decision"] = accessDecision
 	}
@@ -304,7 +336,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if policy.BotCC != config.ProtectionLevelOff {
-		if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !ipAllowed {
+		if result := s.bot.EvaluateForSite(r, reqCtx.ClientIP, site.ID); result != nil && result.Detected && !ipAllowed {
 			decision := evaluateBotCCPolicy(policy.BotCC, result)
 			reqCtx.Metadata["bot_cc_policy_decision"] = decision
 			reqCtx.Metadata["detection"] = result
@@ -462,7 +494,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
 		return
 	}
-	capture := edge.NewLimitedCaptureWriter(edgeCaptureLimit(site, s.cache, cacheCandidate, compressCandidate))
+	capture := edge.NewAdaptiveCaptureWriter(w, edgeCaptureLimit(site, s.cache, cacheCandidate, compressCandidate))
 	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
 	var proxyErr error
 	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
@@ -488,7 +520,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	rp.ServeHTTP(capture, r)
 	if capture.TooLarge() {
-		s.streamWithoutEdgeCapture(w, r, site, reqCtx, target, start)
+		if proxyErr != nil || capture.Err() != nil {
+			err := proxyErr
+			if err == nil {
+				err = capture.Err()
+			}
+			s.writeLog(r.Context(), reqCtx, "proxy_error", capture.Response().Status, start, &storage.LogEntry{
+				Category: "proxy_error",
+				Severity: engine.SeverityHigh.String(),
+				Message:  err.Error(),
+			})
+			return
+		}
+		s.writeLog(r.Context(), reqCtx, "pass", capture.Response().Status, start, nil)
 		return
 	}
 	if proxyErr != nil {
@@ -503,6 +547,60 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.compress.Apply(r, &captured)
 	edge.WriteCaptured(w, captured)
 	s.writeLog(r.Context(), reqCtx, "pass", captured.Status, start, nil)
+}
+
+const botBehaviorVerifyPath = "/.well-known/cheesewaf/challenge/v1/verify"
+
+func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request, site config.SiteConfig) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const maxBody = int64(64 << 10)
+	if r.ContentLength > maxBody {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	clientIP := engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
+}
+
+func requestIsHTTPS(r *http.Request, trustedCIDRs []string) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if !remoteIPInCIDRs(r.RemoteAddr, trustedCIDRs) {
+		return false
+	}
+	proto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	return strings.EqualFold(proto, "https")
+}
+
+func remoteIPInCIDRs(remoteAddr string, cidrs []string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	addr := net.ParseIP(host)
+	if addr == nil {
+		return false
+	}
+	for _, raw := range cidrs {
+		if candidate := net.ParseIP(strings.TrimSpace(raw)); candidate != nil && candidate.Equal(addr) {
+			return true
+		}
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err == nil && network.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func edgeCaptureLimit(site config.SiteConfig, cache *edge.Cache, cacheCandidate bool, compressCandidate bool) int64 {
@@ -527,39 +625,6 @@ func retrySafeRequest(r *http.Request) bool {
 		return false
 	}
 	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.ContentLength <= 0
-}
-
-func (s *Server) streamWithoutEdgeCapture(w http.ResponseWriter, r *http.Request, site config.SiteConfig, reqCtx *engine.RequestContext, target *url.URL, start time.Time) {
-	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
-	var proxyErr error
-	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
-		proxyErr = err
-	}
-	if site.WAF.Response.Enabled {
-		inspector, err := response.New(site.WAF.Response)
-		if err != nil {
-			s.proxyError(w, r, site, reqCtx, "proxy_error", "response inspector configuration error", http.StatusInternalServerError, start, err)
-			return
-		}
-		rp.ModifyResponse = func(resp *http.Response) error {
-			finding, err := inspector.InspectHTTP(resp)
-			if err != nil {
-				return err
-			}
-			if finding != nil {
-				resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
-				reqCtx.Metadata["response_finding"] = finding
-			}
-			return nil
-		}
-	}
-	recorder := &proxyStatusRecorder{ResponseWriter: w, status: http.StatusOK}
-	rp.ServeHTTP(recorder, r)
-	if proxyErr != nil {
-		s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
-		return
-	}
-	s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
 }
 
 type proxyStatusRecorder struct {
@@ -1165,7 +1230,7 @@ func (s *Server) challenge(w http.ResponseWriter, r *http.Request, reqCtx *engin
 	if category == "" {
 		category = "bot"
 	}
-	s.bot.ServeChallenge(w, r, reqCtx.ClientIP)
+	s.bot.ServeChallengeForSite(w, r, reqCtx.ClientIP, reqCtx.SiteID)
 	s.writeLog(r.Context(), reqCtx, "challenge", http.StatusForbidden, start, &storage.LogEntry{
 		Category: category,
 		Message:  message,
@@ -1173,7 +1238,7 @@ func (s *Server) challenge(w http.ResponseWriter, r *http.Request, reqCtx *engin
 }
 
 func (s *Server) challengeThreatIntel(w http.ResponseWriter, r *http.Request, reqCtx *engine.RequestContext, decision ip.ThreatDecision, start time.Time) {
-	s.bot.ServeChallenge(w, r, reqCtx.ClientIP)
+	s.bot.ServeChallengeForSite(w, r, reqCtx.ClientIP, reqCtx.SiteID)
 	s.writeLog(r.Context(), reqCtx, "challenge", http.StatusForbidden, start, &storage.LogEntry{
 		Category:   "threat_intel",
 		Severity:   decision.Severity,

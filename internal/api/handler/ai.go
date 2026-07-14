@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,9 +14,11 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 type aiConfigPayload struct {
@@ -121,55 +124,58 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	next := h.Config.AI
-	next.Enabled = req.Enabled
-	next.Provider = firstNonEmpty(req.Provider, next.Provider)
-	next.APIBase = firstNonEmpty(req.APIBase, next.APIBase)
-	next.Model = firstNonEmpty(req.Model, next.Model)
-	next.Async = req.Async
-	next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
-	if req.APIKey != "" {
-		next.APIKey = req.APIKey
-	}
-	if next.Provider == "" {
-		next.Provider = h.Config.AI.Provider
-	}
-	if next.Provider == "" {
-		next.Provider = "openai"
-	}
-	if req.Assistant != nil {
-		next.Assistant = mergeAIModelPayload(next.Assistant, *req.Assistant)
-	}
-	if req.Reasoning != nil {
-		next.Reasoning = mergeAIModelPayload(next.Reasoning, *req.Reasoning)
-	}
-	next.Assistant = mergeAIModelPayload(next.Assistant, legacyAIModelPayload(next))
-	next.Reasoning = mergeAIModelPayload(next.Reasoning, aiModelPayloadFromConfig(next.Assistant))
-	if req.SelfLearning != nil {
-		selfLearning, err := parseAISelfLearningConfig(req.SelfLearning, next.SelfLearning)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "AI_CONFIG_INVALID", err.Error())
-			return
+	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
+		next := candidate.AI
+		next.Enabled = req.Enabled
+		next.Provider = firstNonEmpty(req.Provider, next.Provider)
+		next.APIBase = firstNonEmpty(req.APIBase, next.APIBase)
+		next.Model = firstNonEmpty(req.Model, next.Model)
+		next.Async = req.Async
+		next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+		if req.APIKey != "" {
+			next.APIKey = req.APIKey
 		}
-		next.SelfLearning = selfLearning
-	}
-	if req.Knowledge != nil {
-		next.Knowledge = *req.Knowledge
-	}
-	if err := validateAIConfigForSave(next); err != nil {
-		code := "AI_CONFIG_INVALID"
+		if next.Provider == "" {
+			next.Provider = "openai"
+		}
+		if req.Assistant != nil {
+			next.Assistant = mergeAIModelPayload(next.Assistant, *req.Assistant)
+		}
+		if req.Reasoning != nil {
+			next.Reasoning = mergeAIModelPayload(next.Reasoning, *req.Reasoning)
+		}
+		next.Assistant = mergeAIModelPayload(next.Assistant, legacyAIModelPayload(next))
+		next.Reasoning = mergeAIModelPayload(next.Reasoning, aiModelPayloadFromConfig(next.Assistant))
+		if req.SelfLearning != nil {
+			selfLearning, parseErr := parseAISelfLearningConfig(req.SelfLearning, next.SelfLearning)
+			if parseErr != nil {
+				return parseErr
+			}
+			next.SelfLearning = selfLearning
+		}
+		if req.Knowledge != nil {
+			next.Knowledge = *req.Knowledge
+		}
+		if validateErr := validateAIConfigForSave(next); validateErr != nil {
+			return validateErr
+		}
+		candidate.AI = next
+		return nil
+	}, nil)
+	if err != nil {
+		code := "CONFIG_SAVE_ERROR"
+		status := http.StatusInternalServerError
 		if isAIAPIBaseValidationError(err) {
 			code = "AI_API_BASE_INVALID"
+			status = http.StatusBadRequest
+		} else if strings.Contains(err.Error(), "AI") || strings.Contains(err.Error(), "model") || strings.Contains(err.Error(), "provider") {
+			code = "AI_CONFIG_INVALID"
+			status = http.StatusBadRequest
 		}
-		writeError(w, http.StatusBadRequest, code, err.Error())
+		writeError(w, status, code, err.Error())
 		return
 	}
-	h.Config.AI = next
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
-		return
-	}
-	writeData(w, aiConfigView(h.Config.AI))
+	writeData(w, aiConfigView(committed.AI))
 }
 
 func (h *Handler) TestAIConnection(w http.ResponseWriter, r *http.Request) {
@@ -367,16 +373,22 @@ func (h *Handler) AnalyzeLogStream(w http.ResponseWriter, r *http.Request) {
 		writeData(w, analysis)
 		return
 	}
+	ctx, cancel := newAIStreamContext(r.Context())
+	defer cancel()
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	allowLongResponseWrite(w)
 	var writeMu sync.Mutex
-	writeEvent := func(event string, payload any) {
+	writeEvent := func(event string, payload any) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		writeAssistantSSE(w, flusher, event, payload)
+		if err := writeAssistantSSE(w, flusher, event, payload); err != nil {
+			cancel()
+			return err
+		}
+		return nil
 	}
 	heartbeatDone := make(chan struct{})
 	var heartbeatOnce sync.Once
@@ -390,29 +402,33 @@ func (h *Handler) AnalyzeLogStream(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)})
+				if writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)}) != nil {
+					return
+				}
 			case <-heartbeatDone:
 				return
-			case <-r.Context().Done():
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
-	writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "流式分析连接已建立。", "Streaming analysis connection is open.")})
-	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
-	defer cancel()
+	if writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "流式分析连接已建立。", "Streaming analysis connection is open.")}) != nil {
+		return
+	}
 	emit, stopProviderWatch := providerStreamEmitter(ctx, req.Language, "analysis", func(event ai.AssistantTraceEvent) {
-		writeEvent("trace", event)
+		_ = writeEvent("trace", event)
 	})
 	defer stopProviderWatch()
 	analysis, err := ai.AnalyzeLogWithLanguageStream(ctx, h.aiReasoningClient(), entry, req.Language, emit)
 	stopProviderWatch()
 	stopHeartbeat()
 	if err != nil {
-		writeEvent("error", map[string]any{"message": err.Error(), "code": "AI_ANALYSIS_FAILED"})
+		if ctx.Err() == nil {
+			_ = writeEvent("error", map[string]any{"message": err.Error(), "code": "AI_ANALYSIS_FAILED"})
+		}
 		return
 	}
-	writeEvent("done", analysis)
+	_ = writeEvent("done", analysis)
 }
 
 func (h *Handler) resolveAnalyzeLogEntry(r *http.Request, req aiAnalyzeLogPayload) (storage.LogEntry, int, string, error) {
@@ -587,16 +603,22 @@ func (h *Handler) AnalyzeEventsStream(w http.ResponseWriter, r *http.Request) {
 		writeData(w, map[string]any{"items": analyses, "total": len(analyses)})
 		return
 	}
+	ctx, cancel := newAIStreamContext(r.Context())
+	defer cancel()
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	allowLongResponseWrite(w)
 	var writeMu sync.Mutex
-	writeEvent := func(event string, payload any) {
+	writeEvent := func(event string, payload any) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		writeAssistantSSE(w, flusher, event, payload)
+		if err := writeAssistantSSE(w, flusher, event, payload); err != nil {
+			cancel()
+			return err
+		}
+		return nil
 	}
 	heartbeatDone := make(chan struct{})
 	var heartbeatOnce sync.Once
@@ -610,35 +632,39 @@ func (h *Handler) AnalyzeEventsStream(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)})
+				if writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)}) != nil {
+					return
+				}
 			case <-heartbeatDone:
 				return
-			case <-r.Context().Done():
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
-	writeEvent("trace", ai.AssistantTraceEvent{
+	if writeEvent("trace", ai.AssistantTraceEvent{
 		Type:    "stream_open",
 		Mode:    "events_analysis",
 		Message: localizedTraceMessage(req.Language, "批量事件流式分析连接已建立。", "Batch event analysis stream is open."),
-	})
-	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
-	defer cancel()
+	}) != nil {
+		return
+	}
 	emit, stopProviderWatch := providerStreamEmitter(ctx, req.Language, "events_analysis", func(event ai.AssistantTraceEvent) {
-		writeEvent("trace", event)
+		_ = writeEvent("trace", event)
 	})
 	defer stopProviderWatch()
 	analyses, err := ai.AnalyzeEventsWithLanguageStream(ctx, h.aiReasoningClient(), entries, req.Language, emit, func(analysis ai.AttackAnalysis) {
-		writeEvent("item", analysis)
+		_ = writeEvent("item", analysis)
 	})
 	stopProviderWatch()
 	stopHeartbeat()
 	if err != nil {
-		writeEvent("error", map[string]any{"message": err.Error(), "code": "AI_ANALYSIS_FAILED"})
+		if ctx.Err() == nil {
+			_ = writeEvent("error", map[string]any{"message": err.Error(), "code": "AI_ANALYSIS_FAILED"})
+		}
 		return
 	}
-	writeEvent("done", map[string]any{"items": analyses, "total": len(analyses)})
+	_ = writeEvent("done", map[string]any{"items": analyses, "total": len(analyses)})
 }
 
 func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
@@ -657,6 +683,9 @@ func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
 	if req.DryRun != nil {
 		cfg.DryRun = *req.DryRun
 	}
+	// Self-learning may CreateRule when AutoApply && !DryRun. Reuse the same
+	// freeze / cluster-writable guards as CreateRule; on freeze, force dry-run
+	// only so the report still returns candidates without writing rules.
 	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
 	defer cancel()
 	report, err := ai.RunSelfLearning(ctx, ai.SelfLearningOptions{
@@ -665,12 +694,36 @@ func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
 		Sink:     h.Sink,
 		Rules:    h.Store,
 		Language: req.Language,
+		CanWriteRules: func() error {
+			return h.selfLearningRuleWriteAllowed(r)
+		},
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AI_SELF_LEARNING_FAILED", err.Error())
 		return
 	}
 	writeData(w, report)
+}
+
+// selfLearningRuleWriteAllowed mirrors rejectClusterConfigWriteIfFrozen /
+// commitConfigMutation write gates without writing an HTTP error response.
+func (h *Handler) selfLearningRuleWriteAllowed(r *http.Request) error {
+	if h == nil {
+		return fmt.Errorf("handler is nil")
+	}
+	h.configMutationMu.RLock()
+	frozen, freezeReason := h.configWriteFrozen, h.configFreezeReason
+	h.configMutationMu.RUnlock()
+	if frozen {
+		if strings.TrimSpace(freezeReason) == "" {
+			freezeReason = "configuration state could not be restored"
+		}
+		return fmt.Errorf("configuration writes are frozen: %s", freezeReason)
+	}
+	if ok, reason := h.clusterConfigWritable(requestLanguage(r)); !ok {
+		return fmt.Errorf("cluster protection mode: %s", reason)
+	}
+	return nil
 }
 
 func parsePayloadTime(w http.ResponseWriter, raw string, name string) (time.Time, bool) {
@@ -701,6 +754,48 @@ func (h *Handler) AIAssistant(w http.ResponseWriter, r *http.Request) {
 	writeData(w, reply)
 }
 
+func (h *Handler) ListAIApprovals(w http.ResponseWriter, r *http.Request) {
+	actor, canReviewAll := h.aiApprovalRecoveryAccess(r)
+	approvals := h.AssistantApprovals.List()
+	if !canReviewAll {
+		filtered := approvals[:0]
+		for _, approval := range approvals {
+			if approval.RequesterSubject == actor.Subject && approval.RequesterSessionID == actor.SessionID && actor.Subject != "" {
+				filtered = append(filtered, approval)
+			}
+		}
+		approvals = filtered
+	}
+	writeData(w, map[string]any{
+		"items": approvals,
+		"total": len(approvals),
+	})
+}
+
+func (h *Handler) GetAIApproval(w http.ResponseWriter, r *http.Request) {
+	approval, ok := h.AssistantApprovals.Get(strings.TrimSpace(chi.URLParam(r, "id")))
+	if !ok {
+		writeError(w, http.StatusNotFound, "AI_APPROVAL_NOT_FOUND", "approval request not found")
+		return
+	}
+	actor, canReviewAll := h.aiApprovalRecoveryAccess(r)
+	if !canReviewAll && (actor.Subject == "" || approval.RequesterSubject != actor.Subject || approval.RequesterSessionID != actor.SessionID) {
+		writeError(w, http.StatusForbidden, "AI_APPROVAL_FORBIDDEN", "approval belongs to another requester session")
+		return
+	}
+	writeData(w, approval)
+}
+
+func (h *Handler) aiApprovalRecoveryAccess(r *http.Request) (ai.ApprovalActor, bool) {
+	actor := h.aiApprovalActor(r)
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	permissions := config.Default().APISec.Permissions
+	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
+		permissions = h.Config.APISec.Permissions
+	}
+	return actor, callerHasPermission(claims, permissions, "approve:ai")
+}
+
 func (h *Handler) AIAssistantStream(w http.ResponseWriter, r *http.Request) {
 	var req aiAssistantPayload
 	if !decode(w, r, &req) {
@@ -708,7 +803,9 @@ func (h *Handler) AIAssistantStream(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		reply, err := h.runAssistantAgent(r.Context(), req, nil)
+		ctx, cancel := newAIStreamContext(r.Context())
+		defer cancel()
+		reply, err := h.runAssistantAgent(ctx, req, nil)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "AI_ASSISTANT_FAILED", err.Error())
 			return
@@ -717,16 +814,22 @@ func (h *Handler) AIAssistantStream(w http.ResponseWriter, r *http.Request) {
 		writeData(w, reply)
 		return
 	}
+	ctx, cancel := newAIStreamContext(r.Context())
+	defer cancel()
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	allowLongResponseWrite(w)
 	var writeMu sync.Mutex
-	writeEvent := func(event string, payload any) {
+	writeEvent := func(event string, payload any) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		writeAssistantSSE(w, flusher, event, payload)
+		if err := writeAssistantSSE(w, flusher, event, payload); err != nil {
+			cancel()
+			return err
+		}
+		return nil
 	}
 	heartbeatDone := make(chan struct{})
 	var heartbeatOnce sync.Once
@@ -742,25 +845,35 @@ func (h *Handler) AIAssistantStream(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)})
+				if err := writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+					return
+				}
 			case <-heartbeatDone:
 				return
-			case <-r.Context().Done():
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
-	writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "流式连接已建立。", "Streaming connection is open.")})
-	emit := func(event ai.AssistantTraceEvent) {
-		writeEvent("trace", event)
-	}
-	reply, err := h.runAssistantAgent(r.Context(), req, emit)
-	stopHeartbeat()
-	if err != nil {
-		writeEvent("error", map[string]any{"message": err.Error()})
+	if err := writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "流式连接已建立。", "Streaming connection is open.")}); err != nil {
 		return
 	}
-	writeEvent("done", reply)
+	emit := func(event ai.AssistantTraceEvent) {
+		_ = writeEvent("trace", event)
+	}
+	reply, err := h.runAssistantAgent(ctx, req, emit)
+	stopHeartbeat()
+	if err != nil {
+		if ctx.Err() == nil {
+			_ = writeEvent("error", map[string]any{"message": err.Error()})
+		}
+		return
+	}
+	_ = writeEvent("done", reply)
+}
+
+func newAIStreamContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, aiLongRequestTimeout)
 }
 
 func allowLongResponseWrite(w http.ResponseWriter) {
@@ -1209,15 +1322,18 @@ func nonEmpty(value, fallback string) string {
 	return value
 }
 
-func writeAssistantSSE(w http.ResponseWriter, flusher http.Flusher, event string, payload any) {
+func writeAssistantSSE(w http.ResponseWriter, flusher http.Flusher, event string, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		raw, _ = json.Marshal(map[string]any{"message": err.Error()})
 		event = "error"
 	}
-	_, _ = fmt.Fprintf(w, "event: %s\n", event)
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
+	frame := fmt.Sprintf("event: %s\ndata: %s\n\n", event, raw)
+	if _, err := io.WriteString(w, frame); err != nil {
+		return err
+	}
 	flusher.Flush()
+	return nil
 }
 
 func containsAny(value string, needles ...string) bool {
@@ -1570,7 +1686,7 @@ func isAIAPIBaseValidationError(err error) bool {
 
 func normalizeAITarget(target string) string {
 	switch strings.ToLower(strings.TrimSpace(target)) {
-	case "reasoning", "reason", "deep_think", "deep-think", "鎺ㄧ悊":
+	case "reasoning", "reason", "deep_think", "deep-think", "推理":
 		return "reasoning"
 	default:
 		return "assistant"

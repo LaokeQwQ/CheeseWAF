@@ -80,7 +80,7 @@ func (i *Inspector) InspectHTTP(resp *http.Response) (*Finding, error) {
 	}
 	if int64(len(body)) > limit {
 		resp.Body = replayThenClose(body, originalBody)
-		return nil, nil
+		return i.Inspect(body[:limit]), nil
 	}
 	originalBody.Close()
 	resp.Body = io.NopCloser(newReplayReader(body))

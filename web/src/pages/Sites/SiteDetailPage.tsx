@@ -20,6 +20,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { APIRequestError, deleteSite, fetchACMEProviders, fetchSite, issueSiteACMECertificate, updateSite } from '../../api/client';
 import type { ACMEDNSProvider, ACMEEvent, ACMEIssueRequest, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
 import { asCSV, normalizeSite, splitList } from './siteModel';
+import './SiteDetailPage.css';
 
 type EnvRow = { id: string; key: string; value: string };
 type DurationUnit = 's' | 'm' | 'h' | 'd';
@@ -35,7 +36,7 @@ export default function SiteDetailPage() {
   const [site, setSite] = useState<Site | null>(null);
   const [acmeEvents, setAcmeEvents] = useState<ACMEEvent[]>([]);
   const [envRows, setEnvRows] = useState<EnvRow[]>([]);
-  const { data, isLoading } = useQuery({
+  const { data, error, isError, isLoading, refetch } = useQuery({
     queryKey: ['site', id],
     queryFn: () => fetchSite(id),
     retry: false,
@@ -50,7 +51,13 @@ export default function SiteDetailPage() {
     }
   }, [data]);
 
-  const { data: acmeProvidersData = [] } = useQuery({
+  const {
+    data: acmeProvidersData = [],
+    error: acmeProvidersError,
+    isError: acmeProvidersFailed,
+    isLoading: acmeProvidersLoading,
+    refetch: refetchACMEProviders,
+  } = useQuery({
     queryKey: ['acme-providers'],
     queryFn: fetchACMEProviders,
     retry: false,
@@ -98,9 +105,26 @@ export default function SiteDetailPage() {
     () => acmeProviderList.find((provider) => provider.id === site?.advanced.certificate.acme.provider_id),
     [acmeProviderList, site?.advanced.certificate.acme.provider_id],
   );
+  const isMutating = saveMutation.isPending || deleteMutation.isPending || acmeMutation.isPending;
 
   if (isLoading) {
     return <Spin className="page-spinner" />;
+  }
+  if (isError) {
+    return (
+      <section className="page-surface site-detail-page">
+        <header className="page-header">
+          <div className="site-title-stack">
+            <Button icon={<ArrowLeft size={16} />} onClick={() => navigate('/sites')}>{t('common.back')}</Button>
+            <div><h1>{t('sites.title')}</h1></div>
+          </div>
+        </header>
+        <div className="inline-error site-detail-load-error" role="alert">
+          <span>{queryErrorMessage(error, t('sites.notFound'))}</span>
+          <Button size="small" onClick={() => refetch()}>{t('common.retry')}</Button>
+        </div>
+      </section>
+    );
   }
   if (!site) {
     return <Empty description={t('sites.notFound')} />;
@@ -209,27 +233,27 @@ export default function SiteDetailPage() {
   };
 
   return (
-    <section className="page-surface">
+    <section className="page-surface site-detail-page">
       <header className="page-header">
         <div className="site-title-stack">
-          <Button icon={<ArrowLeft size={16} />} onClick={() => navigate('/sites')}>
+          <Button icon={<ArrowLeft size={16} />} disabled={isMutating} onClick={() => navigate('/sites')}>
             {t('common.back')}
           </Button>
           <div>
-            <h1>{site.name}</h1>
-            <p>{site.domains.join(', ')}</p>
+            <h1 title={site.name}>{site.name}</h1>
+            <p title={site.domains.join(', ')}>{site.domains.join(', ')}</p>
           </div>
         </div>
         <Space wrap className="site-detail-actions">
           <Tag color={site.enabled ? 'green' : 'gray'}>{site.enabled ? t('common.online') : t('sites.disabled')}</Tag>
-          <Button status="danger" icon={<Trash2 size={16} />} loading={deleteMutation.isPending} onClick={() => {
+          <Button status="danger" icon={<Trash2 size={16} />} disabled={isMutating} loading={deleteMutation.isPending} onClick={() => {
             if (window.confirm(t('sites.deleteConfirm'))) {
               deleteMutation.mutate();
             }
           }}>
             {t('common.delete')}
           </Button>
-          <Button type="primary" icon={<Save size={16} />} loading={saveMutation.isPending} onClick={saveSite}>
+          <Button type="primary" icon={<Save size={16} />} disabled={isMutating} loading={saveMutation.isPending} onClick={saveSite}>
             {t('common.save')}
           </Button>
         </Space>
@@ -242,7 +266,7 @@ export default function SiteDetailPage() {
         <div><span>{t('sites.wafMode')}</span><strong>{modeText(site.waf_mode, t)}</strong></div>
       </div>
 
-      <section className="panel site-detail-panel">
+      <fieldset className="panel site-detail-panel site-detail-fieldset" disabled={isMutating} aria-busy={isMutating}>
         <Tabs defaultActiveTab="basic" className="site-detail-tabs">
           <Tabs.TabPane key="basic" title={<span className="tab-title"><Network size={15} />{t('sites.stepBasic')}</span>}>
             <section className="site-form-section">
@@ -317,7 +341,9 @@ export default function SiteDetailPage() {
             </div>
             <ACMEWizard
               site={site}
-                providers={acmeProviderList}
+              providers={acmeProviderList}
+              providersError={acmeProvidersFailed ? queryErrorMessage(acmeProvidersError, t('sites.notFound')) : ''}
+              providersLoading={acmeProvidersLoading}
               selectedProviderName={selectedProvider?.name}
               envRows={envRows}
               events={acmeEvents}
@@ -329,6 +355,7 @@ export default function SiteDetailPage() {
               onPatchACME={updateACME}
               onEnvRowsChange={syncEnvRows}
               onIssue={submitACME}
+              onRetryProviders={() => refetchACMEProviders()}
               t={t}
             />
           </Tabs.TabPane>
@@ -454,7 +481,7 @@ export default function SiteDetailPage() {
             </div>
           </Tabs.TabPane>
         </Tabs>
-      </section>
+      </fieldset>
     </section>
   );
 }
@@ -618,6 +645,8 @@ function validateSiteDraft(site: Site, t: (key: string) => string) {
 function ACMEWizard({
   site,
   providers,
+  providersError,
+  providersLoading,
   selectedProviderName,
   envRows,
   events,
@@ -626,10 +655,13 @@ function ACMEWizard({
   onPatchACME,
   onEnvRowsChange,
   onIssue,
+  onRetryProviders,
   t,
 }: {
   site: Site;
   providers: Array<{ id: string; name: string; api: string; env?: Record<string, string> }>;
+  providersError?: string;
+  providersLoading: boolean;
   selectedProviderName?: string;
   envRows: EnvRow[];
   events: ACMEEvent[];
@@ -638,6 +670,7 @@ function ACMEWizard({
   onPatchACME: (patch: Partial<Site['advanced']['certificate']['acme']>) => void;
   onEnvRowsChange: (rows: EnvRow[]) => void;
   onIssue: () => void;
+  onRetryProviders: () => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const acme = site.advanced.certificate.acme;
@@ -670,12 +703,19 @@ function ACMEWizard({
 
       <div className="acme-layout">
         <section className="acme-config-block">
+          {providersError && (
+            <div className="inline-error acme-provider-error" role="alert">
+              <span>{providersError}</span>
+              <Button size="small" onClick={onRetryProviders}>{t('common.retry')}</Button>
+            </div>
+          )}
           <div className="site-detail-grid acme-config-grid">
             <label>
               <span>{t('sites.acmeProvider')}</span>
               <Select
                 value={acme.provider_id}
                 allowClear
+                loading={providersLoading}
                 placeholder={t('sites.acmeProviderPlaceholder')}
                 onChange={(providerID) => {
                   const provider = providers.find((item) => item.id === providerID);
@@ -736,7 +776,13 @@ function ACMEWizard({
               <div className="acme-env-row" key={row.id}>
                 <Input value={row.key} placeholder="CF_TOKEN" onChange={(key) => updateEnv(row.id, { key: key.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} />
                 <Input.Password value={row.value} placeholder={t('sites.acmeSecretValue')} onChange={(value) => updateEnv(row.id, { value })} />
-                <Button icon={<Trash2 size={14} />} status="danger" onClick={() => removeEnv(row.id)} />
+                <Button
+                  icon={<Trash2 size={14} />}
+                  status="danger"
+                  aria-label={t('common.delete')}
+                  title={t('common.delete')}
+                  onClick={() => removeEnv(row.id)}
+                />
               </div>
             ))}
             {!envRows.length && (
@@ -771,6 +817,10 @@ function ACMEWizard({
       </section>
     </section>
   );
+}
+
+function queryErrorMessage(error: unknown, fallbackMessage: string) {
+  return error instanceof Error && error.message.trim() ? error.message : fallbackMessage;
 }
 
 function envToRows(env: Record<string, string> | undefined): EnvRow[] {

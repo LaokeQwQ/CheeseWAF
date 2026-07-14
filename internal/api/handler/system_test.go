@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +62,179 @@ func TestUpdateSystemNotifiesAPISecReload(t *testing.T) {
 	}
 	if cfg.APISec.Validation.Schemas[0].ID != "search" || cfg.APISec.RateLimits[0].ID != "search-rate" {
 		t.Fatalf("system config was not updated: %+v", cfg.APISec)
+	}
+}
+
+func TestUpdateSystemRollsBackMemoryDiskAndRuntimeOnReloadFailure(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	previous := cfg.APISec
+	var applied []bool
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnAPISecChanged: func(next config.APISecConfig) error {
+			applied = append(applied, next.Enabled)
+			if next.Enabled != previous.Enabled {
+				return errors.New("reload failed")
+			}
+			return nil
+		},
+	})
+	next := previous
+	next.Enabled = !previous.Enabled
+	raw, _ := json.Marshal(map[string]any{"apisec": next})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw))
+	handler.UpdateSystem(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected reload failure, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.APISec.Enabled != previous.Enabled {
+		t.Fatalf("memory config was not rolled back: %+v", cfg.APISec)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.APISec.Enabled != previous.Enabled {
+		t.Fatalf("disk config changed after failed reload: %+v", loaded.APISec)
+	}
+	if len(applied) != 2 || applied[0] != next.Enabled || applied[1] != previous.Enabled {
+		t.Fatalf("expected candidate apply followed by old runtime restore, got %v", applied)
+	}
+}
+
+func TestUpdateSystemFreezesWritesWhenRuntimeRollbackFails(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnAPISecChanged: func(config.APISecConfig) error {
+			return errors.New("runtime unavailable")
+		},
+	})
+	next := cfg.APISec
+	next.Enabled = !next.Enabled
+	raw, _ := json.Marshal(map[string]any{"apisec": next})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusInternalServerError || !handler.configWriteFrozen {
+		t.Fatalf("expected failed rollback to freeze writes, code=%d body=%s frozen=%v", recorder.Code, recorder.Body.String(), handler.configWriteFrozen)
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader([]byte(`{"logging":{"level":"debug"}}`))))
+	if recorder.Code != http.StatusLocked || !strings.Contains(recorder.Body.String(), "CONFIG_WRITES_FROZEN") {
+		t.Fatalf("expected subsequent write rejection, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUpdateSystemDoesNotReloadSitesForUnrelatedConfig(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var siteReloads int
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnSitesChanged: func([]config.SiteConfig) error {
+			siteReloads++
+			return nil
+		},
+	})
+	nextLogging := cfg.Logging
+	nextLogging.Level = "debug"
+	raw, _ := json.Marshal(map[string]any{"logging": nextLogging})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected update success, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if siteReloads != 0 {
+		t.Fatalf("unrelated logging update reloaded sites %d times", siteReloads)
+	}
+}
+
+func TestPersistConfigRestoresPreviousFileWhenVersionWriteFails(t *testing.T) {
+	cfg := config.Default()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "versions"), []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatalf("block primary versions directory: %v", err)
+	}
+	runtimeBlocker := filepath.Join(dir, "runtime-file")
+	if err := os.WriteFile(runtimeBlocker, []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatalf("block fallback runtime directory: %v", err)
+	}
+	cfg.Setup.RuntimeDir = runtimeBlocker
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	_, err := handler.commitConfigMutation(func(candidate *config.Config) error {
+		candidate.Logging.Level = "debug"
+		return nil
+	}, nil)
+	if err == nil {
+		t.Fatal("expected version write failure")
+	}
+	loaded, loadErr := config.Load(configPath)
+	if loadErr != nil {
+		t.Fatalf("load restored config: %v", loadErr)
+	}
+	if loaded.Logging.Level == "debug" {
+		t.Fatalf("new config remained after version failure: %+v", loaded.Logging)
+	}
+}
+
+func TestConfigMutationsMergeConcurrentIndependentUpdates(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		<-start
+		_, err := handler.commitConfigMutation(func(candidate *config.Config) error {
+			candidate.Logging.Level = "debug"
+			return nil
+		}, nil)
+		errs <- err
+	}()
+	go func() {
+		<-start
+		_, err := handler.commitConfigMutation(func(candidate *config.Config) error {
+			candidate.AI.Model = "transaction-test-model"
+			return nil
+		}, nil)
+		errs <- err
+	}()
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent mutation failed: %v", err)
+		}
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.Logging.Level != "debug" || loaded.AI.Model != "transaction-test-model" {
+		t.Fatalf("independent update was lost: logging=%q model=%q", loaded.Logging.Level, loaded.AI.Model)
 	}
 }
 

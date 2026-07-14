@@ -1,0 +1,167 @@
+.sites-list-panel {
+  overflow: hidden;
+}
+
+.sites-query-error {
+  margin-bottom: 14px;
+}
+
+.sites-desktop-table {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.sites-table table {
+  width: 100%;
+  min-width: 1058px;
+  table-layout: fixed;
+}
+
+.site-wizard-modal.arco-modal,
+.site-wizard-modal .arco-modal {
+  width: min(860px, calc(100vw - 24px)) !important;
+  max-width: calc(100vw - 24px);
+}
+
+.site-wizard-modal .arco-modal-body,
+.site-wizard-modal.arco-modal .arco-modal-body {
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sites-table .arco-table-cell,
+.site-table-link,
+.site-table-link span,
+.site-table-text {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.site-table-link {
+  width: 100%;
+}
+
+.site-table-link svg {
+  flex: 0 0 auto;
+}
+
+.site-table-link span,
+.site-table-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sites-mobile-list {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .sites-list-panel {
+    overflow: visible;
+  }
+
+  .sites-desktop-table {
+    display: none;
+  }
+
+  .sites-mobile-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .sites-mobile-card header,
+  .sites-mobile-card footer {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .sites-mobile-title {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    color: var(--accent-strong);
+    text-align: left;
+    background: transparent;
+    border: 0;
+  }
+
+  .sites-mobile-title svg {
+    flex: 0 0 auto;
+  }
+
+  .sites-mobile-title strong {
+    min-width: 0;
+    display: -webkit-box;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .sites-mobile-card dl {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+  }
+
+  .sites-mobile-card dl > div {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+  }
+
+  .sites-mobile-card dt {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .sites-mobile-card dd {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    color: var(--text);
+  }
+
+  .sites-mobile-card footer .arco-btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .site-wizard-modal .setup-steps,
+  .site-wizard-modal.arco-modal .setup-steps {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 8px;
+  }
+
+  .site-wizard-modal .setup-steps .arco-steps-item,
+  .site-wizard-modal.arco-modal .setup-steps .arco-steps-item {
+    width: auto !important;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .site-wizard-modal .setup-steps .arco-steps-item-title,
+  .site-wizard-modal.arco-modal .setup-steps .arco-steps-item-title {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .site-wizard-modal .setup-steps .arco-steps-item-tail,
+  .site-wizard-modal.arco-modal .setup-steps .arco-steps-item-tail {
+    display: none;
+  }
+}

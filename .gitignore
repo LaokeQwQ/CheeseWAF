@@ -29,6 +29,7 @@ sqlmap-output/
 /data/
 /logs/
 /run/
+**/data/run/
 /tmp/
 /.tmp/
 /temp/
@@ -84,6 +85,9 @@ vendor/
 .claude/
 .codex/
 .codegraph/
+.tmp-playwriter/
+.tmp-ui-runtime/
+artifacts/
 
 # OS metadata
 .DS_Store

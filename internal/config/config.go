@@ -16,6 +16,7 @@ type Config struct {
 	Setup         SetupConfig         `yaml:"setup" json:"setup"`
 	Cluster       ClusterConfig       `yaml:"cluster" json:"cluster"`
 	Console       ConsoleConfig       `yaml:"console" json:"console"`
+	CAPTCHAAssets CAPTCHAAssetsConfig `yaml:"captcha_assets" json:"captcha_assets"`
 	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
 	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
 	Storage       StorageConfig       `yaml:"storage" json:"storage"`
@@ -29,6 +30,34 @@ type Config struct {
 	Monitor       MonitorConfig       `yaml:"monitor" json:"monitor"`
 	APISec        APISecConfig        `yaml:"apisec" json:"apisec"`
 	BlockPage     BlockPageConfig     `yaml:"block_page" json:"block_page"`
+}
+
+type CAPTCHAAssetsConfig struct {
+	Backend string             `yaml:"backend" json:"backend"`
+	Local   CAPTCHAAssetLocal  `yaml:"local" json:"local"`
+	S3      CAPTCHAAssetS3     `yaml:"s3" json:"s3"`
+	Limits  CAPTCHAAssetLimits `yaml:"limits" json:"limits"`
+}
+
+type CAPTCHAAssetLocal struct {
+	Path string `yaml:"path" json:"path"`
+}
+type CAPTCHAAssetS3 struct {
+	Endpoint             string        `yaml:"endpoint" json:"endpoint"`
+	Bucket               string        `yaml:"bucket" json:"bucket"`
+	Region               string        `yaml:"region" json:"region"`
+	PathStyle            bool          `yaml:"path_style" json:"path_style"`
+	Prefix               string        `yaml:"prefix" json:"prefix"`
+	UseTLS               bool          `yaml:"use_tls" json:"use_tls"`
+	AllowPrivateEndpoint bool          `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	CredentialFile       string        `yaml:"credential_file" json:"-"`
+	MetadataKeyFile      string        `yaml:"metadata_key_file" json:"-"`
+	RequestTimeout       time.Duration `yaml:"request_timeout" json:"request_timeout"`
+}
+type CAPTCHAAssetLimits struct {
+	MaxImageBytes int64 `yaml:"max_image_bytes" json:"max_image_bytes"`
+	MaxFontBytes  int64 `yaml:"max_font_bytes" json:"max_font_bytes"`
+	MaxPixels     int64 `yaml:"max_pixels" json:"max_pixels"`
 }
 
 const MaxBlockPageHTMLBytes = 512 * 1024
@@ -413,9 +442,22 @@ type RateLimitProfile struct {
 
 type BotProtectionConfig struct {
 	Enabled                    bool          `yaml:"enabled" json:"enabled"`
+	RiskLevel                  int           `yaml:"risk_level" json:"risk_level"`
+	RiskLowThreshold           int           `yaml:"risk_low_threshold" json:"risk_low_threshold"`
+	RiskMediumThreshold        int           `yaml:"risk_medium_threshold" json:"risk_medium_threshold"`
+	RiskHighThreshold          int           `yaml:"risk_high_threshold" json:"risk_high_threshold"`
+	RiskBlockThreshold         int           `yaml:"risk_block_threshold" json:"risk_block_threshold"`
+	RiskConfidenceMin          float64       `yaml:"risk_confidence_min" json:"risk_confidence_min"`
 	JSChallenge                bool          `yaml:"js_challenge" json:"js_challenge"`
 	CAPTCHA                    bool          `yaml:"captcha" json:"captcha"`
 	CAPTCHAType                string        `yaml:"captcha_type" json:"captcha_type"`
+	CAPTCHATypes               []string      `yaml:"captcha_types" json:"captcha_types"`
+	CAPTCHAChallengeTTL        time.Duration `yaml:"captcha_challenge_ttl" json:"captcha_challenge_ttl"`
+	CAPTCHAFailureWindow       time.Duration `yaml:"captcha_failure_window" json:"captcha_failure_window"`
+	CAPTCHABlockDuration       time.Duration `yaml:"captcha_block_duration" json:"captcha_block_duration"`
+	CAPTCHAEscalationTypes     []string      `yaml:"captcha_escalation_types" json:"captcha_escalation_types"`
+	CAPTCHABindingMode         string        `yaml:"captcha_binding_mode" json:"captcha_binding_mode"`
+	CAPTCHAPolicyVersion       string        `yaml:"captcha_policy_version" json:"captcha_policy_version"`
 	CAPTCHAMaxAttempts         int           `yaml:"captcha_max_attempts" json:"captcha_max_attempts"`
 	ImageCAPTCHALength         int           `yaml:"image_captcha_length" json:"image_captcha_length"`
 	ImageCAPTCHAWidth          int           `yaml:"image_captcha_width" json:"image_captcha_width"`
@@ -431,6 +473,13 @@ type BotProtectionConfig struct {
 	ChallengeDifficulty        int           `yaml:"challenge_difficulty" json:"challenge_difficulty"`
 	AltchaMaxNumber            int           `yaml:"altcha_max_number" json:"altcha_max_number"`
 	AltchaHeaderName           string        `yaml:"altcha_header_name" json:"altcha_header_name"`
+	ClearanceHeaderEnabled     bool          `yaml:"clearance_header_enabled" json:"clearance_header_enabled"`
+	ClearanceHeaderName        string        `yaml:"clearance_header_name" json:"clearance_header_name"`
+	ClearanceMethodScope       bool          `yaml:"clearance_method_scope" json:"clearance_method_scope"`
+	ClearanceStateCapacity     int           `yaml:"clearance_state_capacity" json:"clearance_state_capacity"`
+	PoWMaxDifficulty           int           `yaml:"pow_max_difficulty" json:"pow_max_difficulty"`
+	PoWAcceptLegacy            bool          `yaml:"pow_accept_legacy" json:"pow_accept_legacy"`
+	ClearanceAcceptLegacy      bool          `yaml:"clearance_accept_legacy" json:"clearance_accept_legacy"`
 	WaitingRoom                bool          `yaml:"waiting_room" json:"waiting_room"`
 	WaitingRoomMaxActive       int           `yaml:"waiting_room_max_active" json:"waiting_room_max_active"`
 	WaitingRoomTTL             time.Duration `yaml:"waiting_room_ttl" json:"waiting_room_ttl"`

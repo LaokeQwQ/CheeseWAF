@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -36,7 +37,7 @@ func (h *Handler) ExecuteAITool(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	call, err := h.executeAssistantTool(r.Context(), req.Name, req.Args, req.ApprovalID)
+	call, err := h.executeAssistantTool(h.aiApprovalContext(r), req.Name, req.Args, req.ApprovalID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "AI_TOOL_ERROR", err.Error())
 		return
@@ -46,7 +47,11 @@ func (h *Handler) ExecuteAITool(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ApproveAIApproval(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	approval, err := h.aiAssistant().Approve(id)
+	if !h.canDecideAIApproval(r, id) {
+		writeError(w, http.StatusForbidden, "AI_APPROVAL_FORBIDDEN", "approval belongs to another requester")
+		return
+	}
+	approval, err := h.aiAssistant().ApproveFor(id, h.aiApprovalActor(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "AI_APPROVAL_ERROR", err.Error())
 		return
@@ -56,7 +61,11 @@ func (h *Handler) ApproveAIApproval(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RejectAIApproval(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	approval, err := h.aiAssistant().Reject(id)
+	if !h.canDecideAIApproval(r, id) {
+		writeError(w, http.StatusForbidden, "AI_APPROVAL_FORBIDDEN", "approval belongs to another requester")
+		return
+	}
+	approval, err := h.aiAssistant().RejectFor(id, h.aiApprovalActor(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "AI_APPROVAL_ERROR", err.Error())
 		return
@@ -64,8 +73,37 @@ func (h *Handler) RejectAIApproval(w http.ResponseWriter, r *http.Request) {
 	writeData(w, approval)
 }
 
+func (h *Handler) canDecideAIApproval(r *http.Request, id string) bool {
+	approval, ok := h.AssistantApprovals.Get(strings.TrimSpace(id))
+	if !ok {
+		return true // Preserve the normal not-found response from the store.
+	}
+	actor := h.aiApprovalActor(r)
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	permissions := config.Default().APISec.Permissions
+	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
+		permissions = h.Config.APISec.Permissions
+	}
+	self := approval.RequesterSubject == actor.Subject && approval.RequesterSessionID == actor.SessionID && actor.Subject != ""
+	// Modify/Destructive tools require a second person with approve:ai — never self-approve.
+	if approval.Sensitivity >= ai.Modify {
+		if self {
+			return false
+		}
+		return callerHasPermission(claims, permissions, "approve:ai")
+	}
+	if self {
+		return callerHasPermission(claims, permissions, "write:ai") || callerHasPermission(claims, permissions, "approve:ai")
+	}
+	return callerHasPermission(claims, permissions, "approve:ai")
+}
+
 func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !h.canContinueAIApproval(r, id) {
+		writeError(w, http.StatusForbidden, "AI_APPROVAL_CONTINUE_FORBIDDEN", "approval can only be continued by its original requester session")
+		return
+	}
 	var req aiAssistantPayload
 	if !decode(w, r, &req) {
 		return
@@ -74,7 +112,7 @@ func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Reques
 	defer cancel()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		reply, err := h.continueAIApproval(ctx, id, req, nil)
+		reply, err := h.continueAIApproval(h.aiApprovalContextWithBase(ctx, r), id, req, nil)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "AI_APPROVAL_CONTINUE_FAILED", err.Error())
 			return
@@ -117,7 +155,7 @@ func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Reques
 		}
 	}()
 	writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "审批执行流式连接已建立。", "Approval execution stream is open.")})
-	reply, err := h.continueAIApproval(ctx, id, req, func(event ai.AssistantTraceEvent) {
+	reply, err := h.continueAIApproval(h.aiApprovalContextWithBase(ctx, r), id, req, func(event ai.AssistantTraceEvent) {
 		writeEvent("trace", event)
 	})
 	stopHeartbeat()
@@ -126,6 +164,15 @@ func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeEvent("done", reply)
+}
+
+func (h *Handler) canContinueAIApproval(r *http.Request, id string) bool {
+	approval, ok := h.AssistantApprovals.Get(strings.TrimSpace(id))
+	if !ok {
+		return true // Preserve the normal not-found response from the continuation path.
+	}
+	actor := h.aiApprovalActor(r)
+	return actor.Subject != "" && approval.RequesterSubject == actor.Subject && approval.RequesterSessionID == actor.SessionID
 }
 
 func (h *Handler) continueAIApproval(ctx context.Context, id string, req aiAssistantPayload, emit func(ai.AssistantTraceEvent)) (*ai.AssistantReply, error) {
@@ -149,12 +196,7 @@ func (h *Handler) continueAIApproval(ctx context.Context, id string, req aiAssis
 	}
 	switch approval.Status {
 	case ai.ApprovalPending:
-		var err error
-		approval, err = h.aiAssistant().Approve(id)
-		if err != nil {
-			return nil, err
-		}
-		record(ai.AssistantTraceEvent{Type: "approval_approved", ToolName: approval.ToolName, Args: approval.Args, Approval: &approval, Message: localizedTraceMessage(req.Language, "审批已批准，开始执行工具。", "Approval accepted; executing the tool.")})
+		return nil, fmt.Errorf("approval request %q is pending approval", id)
 	case ai.ApprovalApproved:
 		record(ai.AssistantTraceEvent{Type: "approval_approved", ToolName: approval.ToolName, Args: approval.Args, Approval: &approval, Message: localizedTraceMessage(req.Language, "审批已批准，继续执行工具。", "Approval is accepted; continuing tool execution.")})
 	case ai.ApprovalRejected:
@@ -224,6 +266,7 @@ func (h *Handler) aiAssistantRegistry() *ai.Registry {
 }
 
 func (h *Handler) executeAssistantTool(ctx context.Context, name string, args map[string]any, approvalID string) (ai.AssistantToolCall, error) {
+	ctx = h.aiApprovalContextFromContext(ctx)
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return ai.AssistantToolCall{}, fmt.Errorf("tool name is required")
@@ -249,6 +292,39 @@ func (h *Handler) executeAssistantTool(ctx context.Context, name string, args ma
 		call.Approval = execution.Approval
 	}
 	return call, nil
+}
+
+func (h *Handler) aiApprovalContext(r *http.Request) context.Context {
+	if r == nil {
+		return context.Background()
+	}
+	return h.aiApprovalContextWithBase(r.Context(), r)
+}
+
+func (h *Handler) aiApprovalContextWithBase(ctx context.Context, r *http.Request) context.Context {
+	return ai.ContextWithApprovalActor(ctx, h.aiApprovalActor(r))
+}
+
+func (h *Handler) aiApprovalContextFromContext(ctx context.Context) context.Context {
+	if actor := ai.ApprovalActorFromContext(ctx); actor.Subject != "" {
+		return ctx
+	}
+	claims, _ := ctx.Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil {
+		return ctx
+	}
+	return ai.ContextWithApprovalActor(ctx, ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username})
+}
+
+func (h *Handler) aiApprovalActor(r *http.Request) ai.ApprovalActor {
+	if r == nil {
+		return ai.ApprovalActor{}
+	}
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil {
+		return ai.ApprovalActor{}
+	}
+	return ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username}
 }
 
 func aiToolView(tool ai.Tool) map[string]any {
@@ -407,11 +483,9 @@ func (t setBotChallengeTool) Execute(_ context.Context, args map[string]any) (*a
 	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
 		return nil, err
 	}
-	t.Handler.Config.Protection.Bot = after
-	if err := t.Handler.persistConfig(); err != nil {
-		return nil, err
-	}
-	if err := t.Handler.notifyProtectionChanged(); err != nil {
+	next := t.Handler.Config.Protection
+	next.Bot = after
+	if err := t.Handler.commitProtectionConfig(next); err != nil {
 		return nil, err
 	}
 	diff, _ := diffJSON(before, after)
@@ -489,15 +563,32 @@ func (t setProtectionLevelTool) Execute(_ context.Context, args map[string]any) 
 	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
 		return nil, err
 	}
-	t.Handler.Config.Protection.Policy = after
-	if err := t.Handler.persistConfig(); err != nil {
-		return nil, err
-	}
-	if err := t.Handler.notifyProtectionChanged(); err != nil {
+	next := t.Handler.Config.Protection
+	next.Policy = after
+	if err := t.Handler.commitProtectionConfig(next); err != nil {
 		return nil, err
 	}
 	diff, _ := diffJSON(before, after)
 	return &ai.ToolResult{Success: true, Output: "global protection level updated", Diff: diff}, nil
+}
+
+func (h *Handler) commitProtectionConfig(next config.ProtectionConfig) error {
+	if h == nil || h.Config == nil {
+		return fmt.Errorf("handler config is nil")
+	}
+	_, err := h.commitConfigMutation(
+		func(candidate *config.Config) error {
+			candidate.Protection = next
+			return nil
+		},
+		func(candidate *config.Config) error {
+			if h.OnProtectionChanged == nil {
+				return nil
+			}
+			return h.OnProtectionChanged(candidate.Protection)
+		},
+	)
+	return err
 }
 
 func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.ProtectionPolicyConfig, config.ProtectionPolicyConfig, error) {
@@ -537,6 +628,16 @@ func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.Protecti
 func ensureAssistantConfigWritable(h *Handler) error {
 	if h == nil || h.Config == nil {
 		return fmt.Errorf("handler config is nil")
+	}
+	// Align with commitConfigMutation: local freeze blocks writes too.
+	h.configMutationMu.RLock()
+	frozen, freezeReason := h.configWriteFrozen, h.configFreezeReason
+	h.configMutationMu.RUnlock()
+	if frozen {
+		if strings.TrimSpace(freezeReason) == "" {
+			freezeReason = "configuration state could not be restored"
+		}
+		return fmt.Errorf("configuration writes are frozen: %s", freezeReason)
 	}
 	if ok, reason := h.clusterConfigWritable("zh-CN"); !ok {
 		return fmt.Errorf("cluster protection mode: %s", reason)

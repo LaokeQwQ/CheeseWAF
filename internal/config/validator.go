@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -77,6 +78,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	if err := validateConsoleMap(cfg.Console.Map); err != nil {
+		return err
+	}
+	if err := validateCAPTCHAAssets(cfg.CAPTCHAAssets); err != nil {
 		return err
 	}
 	if err := validateBlockPage(cfg.BlockPage); err != nil {
@@ -273,6 +277,15 @@ func Validate(cfg *Config) error {
 		if cfg.Protection.Bot.ChallengeDifficulty < 1 || cfg.Protection.Bot.ChallengeDifficulty > 6 {
 			return fmt.Errorf("bot.challenge_difficulty must be between 1 and 6")
 		}
+		if cfg.Protection.Bot.ClearanceStateCapacity < 1 || cfg.Protection.Bot.ClearanceStateCapacity > 1000000 {
+			return fmt.Errorf("bot.clearance_state_capacity must be between 1 and 1000000")
+		}
+		if cfg.Protection.Bot.ClearanceHeaderEnabled && strings.TrimSpace(cfg.Protection.Bot.ClearanceHeaderName) == "" {
+			return fmt.Errorf("bot.clearance_header_name is required when clearance header is enabled")
+		}
+		if cfg.Protection.Bot.PoWMaxDifficulty < cfg.Protection.Bot.ChallengeDifficulty || cfg.Protection.Bot.PoWMaxDifficulty > 8 {
+			return fmt.Errorf("bot.pow_max_difficulty must be between challenge_difficulty and 8")
+		}
 		if cfg.Protection.Bot.CAPTCHA {
 			if cfg.Protection.Bot.AltchaMaxNumber < 1000 || cfg.Protection.Bot.AltchaMaxNumber > 50000000 {
 				return fmt.Errorf("bot.altcha_max_number must be between 1000 and 50000000")
@@ -368,9 +381,21 @@ func Validate(cfg *Config) error {
 			}
 		}
 	}
+	seenTaskIDs := make(map[string]struct{}, len(cfg.Scheduler.Tasks))
 	for _, task := range cfg.Scheduler.Tasks {
 		if err := validateScheduledTask(task); err != nil {
 			return err
+		}
+		normalized := normalizeScheduledTaskForValidation(task)
+		id := strings.ToLower(strings.TrimSpace(normalized.ID))
+		if _, exists := seenTaskIDs[id]; exists {
+			return fmt.Errorf("scheduled task id %q is duplicated", normalized.ID)
+		}
+		seenTaskIDs[id] = struct{}{}
+		if strings.EqualFold(strings.TrimSpace(normalized.Type), "cleanup") {
+			if err := validateManagedSchedulerPath(normalized.Target, cfg.Setup.DataDir, filepath.Dir(cfg.Logging.Output.File.Path)); err != nil {
+				return fmt.Errorf("scheduled task %q target is invalid: %w", normalized.ID, err)
+			}
 		}
 	}
 	for _, schema := range cfg.APISec.Validation.Schemas {
@@ -413,8 +438,9 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("api auth jwks_refresh_interval must be at least 1m")
 			}
 		}
-		if len(cfg.APISec.Auth.JWTAlgorithms) > 0 && strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSURL) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSCacheFile) == "" {
-			return fmt.Errorf("api auth jwt_algorithms requires jwt_shared_secret, jwt_public_key_file, jwt_public_key_pem, jwks_file, jwks_json, jwks_url, or jwks_cache_file")
+		// Fail closed: auth enabled without verification material is an auth bypass.
+		if strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSURL) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSCacheFile) == "" {
+			return fmt.Errorf("api auth enabled requires jwt_shared_secret, jwt_public_key_file, jwt_public_key_pem, jwks_file, jwks_json, jwks_url, or jwks_cache_file")
 		}
 		for _, policy := range cfg.APISec.Auth.EndpointPolicies {
 			if !policy.Enabled {
@@ -439,6 +465,83 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	return nil
+}
+
+func validateCAPTCHAAssets(cfg CAPTCHAAssetsConfig) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.Backend)) {
+	case "local", "s3":
+	default:
+		return fmt.Errorf("captcha_assets.backend must be local or s3")
+	}
+	if cfg.Limits.MaxImageBytes < 64<<10 || cfg.Limits.MaxImageBytes > 64<<20 {
+		return fmt.Errorf("captcha_assets.limits.max_image_bytes must be between 64KiB and 64MiB")
+	}
+	if cfg.Limits.MaxFontBytes < 64<<10 || cfg.Limits.MaxFontBytes > 64<<20 {
+		return fmt.Errorf("captcha_assets.limits.max_font_bytes must be between 64KiB and 64MiB")
+	}
+	if cfg.Limits.MaxPixels < 1_000_000 || cfg.Limits.MaxPixels > 64_000_000 {
+		return fmt.Errorf("captcha_assets.limits.max_pixels must be between 1000000 and 64000000")
+	}
+	if strings.EqualFold(cfg.Backend, "local") && strings.TrimSpace(cfg.Local.Path) == "" {
+		return fmt.Errorf("captcha_assets.local.path is required")
+	}
+	if strings.EqualFold(cfg.Backend, "s3") {
+		if strings.TrimSpace(cfg.S3.Endpoint) == "" || strings.TrimSpace(cfg.S3.Bucket) == "" || strings.TrimSpace(cfg.S3.Region) == "" || strings.TrimSpace(cfg.S3.CredentialFile) == "" || strings.TrimSpace(cfg.S3.MetadataKeyFile) == "" {
+			return fmt.Errorf("captcha_assets.s3 endpoint, bucket, region, credential_file and metadata_key_file are required")
+		}
+		if cfg.S3.RequestTimeout < time.Second || cfg.S3.RequestTimeout > time.Minute {
+			return fmt.Errorf("captcha_assets.s3.request_timeout must be between 1s and 1m")
+		}
+		if _, err := netguard.ValidateURL(cfg.S3.Endpoint, netguard.URLPolicy{Purpose: "CAPTCHA S3 endpoint", HostPurpose: "CAPTCHA S3 endpoint", AllowedSchemes: []string{"http", "https"}, AllowPrivate: cfg.S3.AllowPrivateEndpoint}); err != nil {
+			return fmt.Errorf("captcha_assets.s3.endpoint is invalid: %w", err)
+		}
+		if cfg.S3.UseTLS && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.S3.Endpoint)), "https://") {
+			return fmt.Errorf("captcha_assets.s3.endpoint must use https when use_tls is enabled")
+		}
+	}
+	return nil
+}
+
+func validateManagedSchedulerPath(target string, roots ...string) error {
+	cleanTarget := filepath.Clean(strings.TrimSpace(target))
+	if !filepath.IsAbs(cleanTarget) {
+		matchedRoot := false
+		for _, root := range roots {
+			cleanRoot := filepath.Clean(strings.TrimSpace(root))
+			if cleanRoot != "." && cleanRoot != "" && strings.EqualFold(cleanTarget, filepath.Base(cleanRoot)) {
+				cleanTarget = cleanRoot
+				matchedRoot = true
+				break
+			}
+		}
+		if !matchedRoot {
+			for _, root := range roots {
+				cleanRoot := filepath.Clean(strings.TrimSpace(root))
+				if cleanRoot != "." && cleanRoot != "" {
+					cleanTarget = filepath.Join(cleanRoot, cleanTarget)
+					break
+				}
+			}
+		}
+	}
+	targetAbs, err := filepath.Abs(cleanTarget)
+	if err != nil {
+		return err
+	}
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		rootAbs, err := filepath.Abs(filepath.Clean(root))
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(rootAbs, targetAbs)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("must be inside the configured data or log directory")
 }
 
 func validateManagementAPI(api ManagementAPIConfig) error {
@@ -493,9 +596,9 @@ func validatePermissionExpression(scope string) error {
 	}
 	parts := strings.Split(scope, ":")
 	switch parts[0] {
-	case "read", "write":
+	case "read", "write", "approve":
 	default:
-		return fmt.Errorf("scope action must be read or write")
+		return fmt.Errorf("scope action must be read, write, or approve")
 	}
 	resource := parts[1]
 	if resource == "" {
@@ -913,15 +1016,49 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 }
 
 func validateBotProtection(bot BotProtectionConfig) error {
-	switch strings.ToLower(strings.TrimSpace(bot.CAPTCHAType)) {
-	case "", "pow", "image", "graphic", "slider", "puzzle":
-	default:
-		return fmt.Errorf("protection.bot.captcha_type must be pow, image, or slider")
+	if bot.RiskLevel < 1 || bot.RiskLevel > 5 {
+		return fmt.Errorf("protection.bot.risk_level must be between 1 and 5")
+	}
+	if bot.RiskLowThreshold < 1 || bot.RiskBlockThreshold > 100 || !(bot.RiskLowThreshold < bot.RiskMediumThreshold && bot.RiskMediumThreshold < bot.RiskHighThreshold && bot.RiskHighThreshold < bot.RiskBlockThreshold) {
+		return fmt.Errorf("protection.bot risk thresholds must be ordered values between 1 and 100")
+	}
+	if bot.RiskConfidenceMin < 0.5 || bot.RiskConfidenceMin > 1 {
+		return fmt.Errorf("protection.bot.risk_confidence_min must be between 0.5 and 1")
+	}
+	if err := validateBehaviorCAPTCHAType("protection.bot.captcha_type", bot.CAPTCHAType, true); err != nil {
+		return err
+	}
+	for idx, kind := range bot.CAPTCHATypes {
+		if err := validateBehaviorCAPTCHAType(fmt.Sprintf("protection.bot.captcha_types[%d]", idx), kind, false); err != nil {
+			return err
+		}
+	}
+	for idx, kind := range bot.CAPTCHAEscalationTypes {
+		if err := validateBehaviorCAPTCHAType(fmt.Sprintf("protection.bot.captcha_escalation_types[%d]", idx), kind, false); err != nil {
+			return err
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(bot.CAPTCHAMobileType)) {
 	case "", "off", "none", "inherit", "same", "pow", "image", "graphic":
 	default:
 		return fmt.Errorf("protection.bot.captcha_mobile_type must be pow, image, or empty")
+	}
+	if bot.CAPTCHAChallengeTTL < 10*time.Second || bot.CAPTCHAChallengeTTL > 10*time.Minute {
+		return fmt.Errorf("protection.bot.captcha_challenge_ttl must be between 10s and 10m")
+	}
+	if bot.CAPTCHAFailureWindow < time.Minute || bot.CAPTCHAFailureWindow > 24*time.Hour {
+		return fmt.Errorf("protection.bot.captcha_failure_window must be between 1m and 24h")
+	}
+	if bot.CAPTCHABlockDuration < time.Minute || bot.CAPTCHABlockDuration > 24*time.Hour {
+		return fmt.Errorf("protection.bot.captcha_block_duration must be between 1m and 24h")
+	}
+	switch strings.ToLower(strings.TrimSpace(bot.CAPTCHABindingMode)) {
+	case "strict_ip_ua", "ip_prefix_ua":
+	default:
+		return fmt.Errorf("protection.bot.captcha_binding_mode must be strict_ip_ua or ip_prefix_ua")
+	}
+	if strings.TrimSpace(bot.CAPTCHAPolicyVersion) == "" || len(bot.CAPTCHAPolicyVersion) > 64 {
+		return fmt.Errorf("protection.bot.captcha_policy_version must be between 1 and 64 characters")
 	}
 	if bot.CAPTCHAMaxAttempts < 1 || bot.CAPTCHAMaxAttempts > 20 {
 		return fmt.Errorf("protection.bot.captcha_max_attempts must be between 1 and 20")
@@ -970,6 +1107,25 @@ func validateBotProtection(bot BotProtectionConfig) error {
 	}
 	if bot.ChallengeTTL < 30*time.Second || bot.ChallengeTTL > 24*time.Hour {
 		return fmt.Errorf("protection.bot.challenge_ttl must be between 30s and 24h")
+	}
+	return nil
+}
+
+func validateBehaviorCAPTCHAType(field, value string, allowAliases bool) error {
+	kind := strings.ToLower(strings.TrimSpace(value))
+	valid := map[string]struct{}{
+		"pow": {}, "image": {}, "curve_draw": {}, "curve_slider": {}, "curve_slider_v2": {}, "curve_slider_v3": {},
+		"shape_slider": {}, "slider_v2": {}, "rotate": {}, "restore_slider": {}, "angle": {}, "scratch": {},
+		"text_click": {}, "icon_click": {}, "random": {},
+	}
+	if allowAliases {
+		valid[""] = struct{}{}
+		valid["graphic"] = struct{}{}
+		valid["slider"] = struct{}{}
+		valid["puzzle"] = struct{}{}
+	}
+	if _, ok := valid[kind]; !ok {
+		return fmt.Errorf("%s contains unsupported CAPTCHA type %q", field, value)
 	}
 	return nil
 }
@@ -1331,6 +1487,20 @@ func validateACMEReloadCommand(value string) error {
 	}
 	if strings.ContainsAny(value, "\x00\r\n") {
 		return fmt.Errorf("must not contain control characters")
+	}
+	// Reject shell metacharacters and require an absolute executable path.
+	// acme.sh executes --reloadcmd through a shell, so free-form strings are RCE.
+	if strings.ContainsAny(value, ";|&<>$`\\!*?\n\r") {
+		return fmt.Errorf("must not contain shell metacharacters")
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return fmt.Errorf("must not be empty")
+	}
+	exe := fields[0]
+	// Accept Unix absolute paths even when validating on Windows.
+	if !filepath.IsAbs(exe) && !strings.HasPrefix(exe, "/") {
+		return fmt.Errorf("executable must be an absolute path")
 	}
 	return nil
 }

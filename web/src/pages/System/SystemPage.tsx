@@ -28,6 +28,7 @@ import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
 import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, ManagementAPIConfig, ManagementAPIToken, SystemConfig } from '../../types/api';
 import { durationMilliseconds, durationSeconds, fallbackSystem, millisecondsToDuration, normalizeSystem, secondsToDuration } from './systemModel';
+import './SystemPage.module.css';
 
 export default function SystemPage() {
   const { t } = useTranslation();
@@ -39,7 +40,8 @@ export default function SystemPage() {
   const [system, setSystem] = useState<SystemConfig>(fallbackSystem);
   const [apiTokenDraft, setAPITokenDraft] = useState({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
   const [latestAPIToken, setLatestAPIToken] = useState('');
-  const { data } = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
+  const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
+  const { data } = systemQuery;
   const apiTokensQuery = useQuery({ queryKey: ['management-api-tokens'], queryFn: fetchManagementAPITokens, retry: false });
 
   useEffect(() => {
@@ -222,7 +224,8 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.interface')}</h2>
-                <Button onClick={() => saveMutation.mutate({ server: system.server, tls: system.tls, logging: system.logging })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+                {systemQuery.isError && <Button onClick={() => systemQuery.refetch()} loading={systemQuery.isFetching}>{t('common.retry')}</Button>}
+                <Button onClick={() => saveMutation.mutate({ server: system.server, tls: system.tls, logging: system.logging })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups">
                 <section className="system-fieldset">
@@ -293,7 +296,7 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.consoleLogin')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+                <Button type="primary" onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups console-settings-grid">
                 <section className="system-fieldset">
@@ -525,7 +528,7 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.storage')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ storage: system.storage })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+                <Button type="primary" onClick={() => saveMutation.mutate({ storage: system.storage })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="storage-grid">
                 <StoragePanel title="SQLite" enabled action={() => storageTestMutation.mutate('sqlite')} loading={storageTestMutation.isPending}>
@@ -572,7 +575,7 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2><KeyRound size={16} /> {t('system.jwtAuth')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ apisec: system.apisec })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+                <Button type="primary" onClick={() => saveMutation.mutate({ apisec: system.apisec })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups">
                 <section className="system-fieldset">

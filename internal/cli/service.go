@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,10 +36,14 @@ import (
 )
 
 var readAdminEntryNonce = rand.Read
+var executablePath = os.Executable
 
 func runServe(ctx context.Context) error {
 	cfg, loadedConfigPath, err := loadConfig()
 	if err != nil {
+		return err
+	}
+	if err := ensureAdminTLSCertificate(cfg); err != nil {
 		return err
 	}
 	if cfg.Setup.DataDir == "" {
@@ -58,6 +63,9 @@ func runServe(ctx context.Context) error {
 	}
 	defer store.Close()
 	if err := store.Migrate(ctx); err != nil {
+		return err
+	}
+	if err := validateStartupUsers(ctx, cfg.Setup.DataDir, store); err != nil {
 		return err
 	}
 	if err := seedSites(ctx, store, cfg); err != nil {
@@ -90,7 +98,7 @@ func runServe(ctx context.Context) error {
 		return nil
 	}
 	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
-	startRemoteWrite(ctx, cfg, sink, time.Now())
+	startRemoteWrite(ctx, cfg, store, sink, time.Now())
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
 		schedulerAIClient = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
@@ -190,6 +198,22 @@ func runServe(ctx context.Context) error {
 	}
 	wg.Wait()
 	return nil
+}
+
+func validateStartupUsers(ctx context.Context, dataDir string, store storage.UserStore) error {
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		return fmt.Errorf(`startup user integrity check: %w`, err)
+	}
+	if setup.NeedsSetup(dataDir) {
+		return nil
+	}
+	for _, user := range users {
+		if strings.EqualFold(strings.TrimSpace(user.Role), `admin`) {
+			return nil
+		}
+	}
+	return fmt.Errorf(`startup user integrity check failed: setup is complete but no administrator exists; run waf-cli user ensure-admin USERNAME --password-stdin before starting the service`)
 }
 
 func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string) http.Handler {
@@ -295,7 +319,7 @@ func allowAdminEntrance(cfg *config.Config, authSecret, metricsPath string, metr
 	if entry.CookieName == "" {
 		entry.CookieName = config.Default().Console.Login.SecurityEntry.CookieName
 	}
-	if r.URL.Path == "/health" || (metricsPublic && r.URL.Path == metricsPath) {
+	if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/health/") || (metricsPublic && r.URL.Path == metricsPath) {
 		return true
 	}
 	entryPath := cleanAdminEntryPath(entry.Path)
@@ -460,7 +484,7 @@ func adminShouldGzip(r *http.Request, metricsPath string) bool {
 	if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		return false
 	}
-	if r.URL.Path == "/health" || r.URL.Path == metricsPath || strings.HasPrefix(r.URL.Path, "/api/") {
+	if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/health/") || r.URL.Path == metricsPath || strings.HasPrefix(r.URL.Path, "/api/") {
 		return false
 	}
 	ext := strings.ToLower(filepath.Ext(r.URL.Path))
@@ -494,7 +518,7 @@ func isAdminAPIPath(path, metricsPath string, metricsPublic bool) bool {
 	if path == "/api" || strings.HasPrefix(path, "/api/") {
 		return true
 	}
-	if path == "/health" {
+	if path == "/health" || strings.HasPrefix(path, "/health/") {
 		return true
 	}
 	if metricsPublic && path == metricsPath {
@@ -506,10 +530,19 @@ func isAdminAPIPath(path, metricsPath string, metricsPublic bool) bool {
 func resolveWebDir() string {
 	candidates := []string{
 		os.Getenv("CHEESEWAF_WEB_DIR"),
+	}
+	if executable, err := executablePath(); err == nil && strings.TrimSpace(executable) != "" {
+		executableDir := filepath.Dir(executable)
+		candidates = append(candidates,
+			filepath.Join(executableDir, "web", "dist"),
+			filepath.Join(executableDir, "web"),
+		)
+	}
+	candidates = append(candidates,
 		"/usr/share/cheesewaf/web",
 		filepath.Join("web", "dist"),
 		filepath.Join(".", "web", "dist"),
-	}
+	)
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
@@ -522,7 +555,7 @@ func resolveWebDir() string {
 	return ""
 }
 
-func startRemoteWrite(ctx context.Context, cfg *config.Config, sink storage.LogSink, startedAt time.Time) {
+func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time) {
 	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
 		return
 	}
@@ -547,7 +580,9 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, sink storage.LogS
 					"logs": serviceDirSize(filepath.Dir(cfg.Logging.Output.File.Path)),
 				})
 				_ = writer.Push(ctx, snapshot)
-				_ = notifiers.Notify(ctx, alerter.Evaluate(snapshot))
+				alerts := alerter.Evaluate(snapshot)
+				_ = monitornotify.PersistAlerts(ctx, store, alerts)
+				_ = notifiers.Notify(ctx, alerts)
 			}
 		}
 	}()
@@ -698,7 +733,71 @@ func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
 	}, "https", nil
 }
 
+func ensureAdminTLSCertificate(cfg *config.Config) error {
+	if cfg == nil || !cfg.Server.AdminTLS.Enabled || !cfg.Server.AdminTLS.SelfSigned {
+		return nil
+	}
+	certExists, err := regularFileExists(cfg.Server.AdminTLS.CertFile)
+	if err != nil {
+		return fmt.Errorf("inspect admin TLS certificate: %w", err)
+	}
+	keyExists, err := regularFileExists(cfg.Server.AdminTLS.KeyFile)
+	if err != nil {
+		return fmt.Errorf("inspect admin TLS private key: %w", err)
+	}
+	if certExists && keyExists {
+		return nil
+	}
+
+	hosts := append([]string(nil), setup.DefaultCertificateHosts...)
+	if host, _, splitErr := net.SplitHostPort(cfg.Server.AdminListen); splitErr == nil {
+		host = strings.TrimSpace(strings.Trim(host, "[]"))
+		if ip := net.ParseIP(host); ip == nil || !ip.IsUnspecified() {
+			if host != "" {
+				hosts = append(hosts, host)
+			}
+		}
+	}
+	if hostname, hostnameErr := os.Hostname(); hostnameErr == nil && strings.TrimSpace(hostname) != "" {
+		hosts = append(hosts, hostname)
+	}
+	if err := setup.GenerateSelfSignedCertificate(
+		cfg.Server.AdminTLS.CertFile,
+		cfg.Server.AdminTLS.KeyFile,
+		hosts,
+		825*24*time.Hour,
+	); err != nil {
+		return fmt.Errorf("generate self-signed admin TLS certificate: %w", err)
+	}
+	return nil
+}
+
+func regularFileExists(path string) (bool, error) {
+	info, err := os.Lstat(strings.TrimSpace(path))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%s is not a regular file", path)
+	}
+	return true, nil
+}
+
 func repairRuntimeConfig(path string, cfg *config.Config) error {
+	if cfg == nil || !config.IsWeakBotSecret(cfg.Protection.Bot.Secret) {
+		return nil
+	}
+	runtimeSecretPath := filepath.Join(cfg.Setup.RuntimeDir, "bot_secret")
+	if secret, err := readRuntimeBotSecret(runtimeSecretPath); err == nil {
+		cfg.Protection.Bot.Secret = secret
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("load runtime Bot challenge secret: %w", err)
+	}
+
 	changed, err := config.EnsureRuntimeSecrets(cfg)
 	if err != nil {
 		return err
@@ -706,10 +805,58 @@ func repairRuntimeConfig(path string, cfg *config.Config) error {
 	if !changed || path == "" {
 		return nil
 	}
-	if err := config.Save(path, cfg); err != nil {
-		return fmt.Errorf("save runtime config repair: %w", err)
+	if err := config.Save(path, cfg); err == nil {
+		fmt.Printf("CheeseWAF rotated weak Bot challenge secret and saved %s\n", path)
+		return nil
+	} else if persistErr := writeRuntimeBotSecret(runtimeSecretPath, cfg.Protection.Bot.Secret); persistErr != nil {
+		return errors.Join(fmt.Errorf("save runtime config repair: %w", err), fmt.Errorf("persist runtime Bot challenge secret: %w", persistErr))
 	}
-	fmt.Printf("CheeseWAF rotated weak Bot challenge secret and saved %s\n", path)
+	fmt.Printf("CheeseWAF rotated weak Bot challenge secret and stored it in the runtime directory\n")
+	return nil
+}
+
+func readRuntimeBotSecret(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("runtime Bot challenge secret is not a regular file")
+	}
+	if info.Size() < 32 || info.Size() > 256 {
+		return "", fmt.Errorf("runtime Bot challenge secret has invalid size")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	secret := strings.TrimSpace(string(raw))
+	if len(secret) < 32 || len(secret) > 256 || config.IsWeakBotSecret(secret) {
+		return "", fmt.Errorf("runtime Bot challenge secret is invalid")
+	}
+	return secret, nil
+}
+
+func writeRuntimeBotSecret(path, secret string) error {
+	if len(strings.TrimSpace(secret)) < 32 || len(secret) > 256 || config.IsWeakBotSecret(secret) {
+		return fmt.Errorf("runtime Bot challenge secret is invalid")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.WriteString(secret + "\n")
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		return errors.Join(writeErr, closeErr)
+	}
 	return nil
 }
 

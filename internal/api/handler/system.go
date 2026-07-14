@@ -71,7 +71,49 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	next := *h.Config
+	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
+		return applySystemPayload(candidate, req)
+	}, func(candidate *config.Config) error {
+		return h.applySystemRuntime(req, candidate)
+	})
+	if err != nil {
+		code := "CONFIG_SAVE_ERROR"
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "runtime") {
+			code = "CONFIG_RELOAD_ERROR"
+		}
+		if strings.Contains(err.Error(), "frozen") || h.configWriteFrozen {
+			code = "CONFIG_WRITES_FROZEN"
+		} else if strings.Contains(err.Error(), "unknown block page template") {
+			code = "BLOCK_PAGE_TEMPLATE_UNKNOWN"
+			status = http.StatusBadRequest
+		} else if strings.Contains(err.Error(), "block page") || strings.Contains(err.Error(), "template") {
+			code = "BLOCK_PAGE_TEMPLATE_INVALID"
+			status = http.StatusBadRequest
+		} else if strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "must ") {
+			code = "CONFIG_INVALID"
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, code, err.Error())
+		return
+	}
+	_ = committed
+	h.System(w, r)
+}
+
+func clonePermissionMap(in map[string][]string) map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for role, perms := range in {
+		out[role] = append([]string(nil), perms...)
+	}
+	return out
+}
+
+func applySystemPayload(next *config.Config, req systemPayload) error {
+	previous := *next
 	if req.Server != nil {
 		next.Server = *req.Server
 	}
@@ -105,7 +147,7 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	if req.AI != nil {
 		next.AI = *req.AI
 		if next.AI.APIKey == "" {
-			next.AI.APIKey = h.Config.AI.APIKey
+			next.AI.APIKey = previous.AI.APIKey
 		}
 	}
 	if req.Update != nil {
@@ -119,6 +161,13 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.APISec != nil {
 		next.APISec = *req.APISec
+		// Privileged control-plane fields must not be minted via generic system update.
+		// RBAC maps and management API tokens have dedicated endpoints with stricter checks.
+		next.APISec.Permissions = clonePermissionMap(previous.APISec.Permissions)
+		managementEnabled := next.APISec.ManagementAPI.Enabled
+		next.APISec.ManagementAPI = previous.APISec.ManagementAPI
+		next.APISec.ManagementAPI.Enabled = managementEnabled
+		next.APISec.ManagementAPI.Tokens = append([]config.ManagementAPITokenConfig(nil), previous.APISec.ManagementAPI.Tokens...)
 	}
 	if req.BlockPage != nil {
 		next.BlockPage = *req.BlockPage
@@ -126,54 +175,39 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 			next.BlockPage.TemplateID = config.Default().BlockPage.TemplateID
 		}
 		if _, ok := blockpage.TemplateByID(next.BlockPage.TemplateID); !ok {
-			writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_UNKNOWN", "unknown block page template")
-			return
+			return fmt.Errorf("unknown block page template")
 		}
 		if _, err := blockpage.NewRendererFromConfig(next.BlockPage); err != nil {
-			writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
-			return
+			return err
 		}
 	}
-	preserveSystemSecrets(*h.Config, &next)
+	preserveSystemSecrets(previous, next)
 	next.Protection.Policy = next.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
-	if _, err := config.EnsureRuntimeSecrets(&next); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_REPAIR_ERROR", err.Error())
-		return
-	}
-	if err := config.Validate(&next); err != nil {
-		writeError(w, http.StatusBadRequest, "CONFIG_INVALID", err.Error())
-		return
-	}
-	*h.Config = next
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
-		return
-	}
-	if h.OnSitesChanged != nil {
-		if err := h.OnSitesChanged(h.Config.Sites); err != nil {
-			writeError(w, http.StatusInternalServerError, "SITES_RELOAD_ERROR", err.Error())
-			return
+	return nil
+}
+
+func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config) error {
+	if (req.Server != nil || req.TLS != nil) && h.OnSitesChanged != nil {
+		if err := h.OnSitesChanged(candidate.Sites); err != nil {
+			return err
 		}
 	}
 	if req.Protection != nil {
-		if err := h.notifyProtectionChanged(); err != nil {
-			writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-			return
+		if err := h.notifyProtectionConfigChanged(candidate.Protection); err != nil {
+			return err
 		}
 	}
 	if req.APISec != nil {
-		if err := h.notifyAPISecChanged(); err != nil {
-			writeError(w, http.StatusInternalServerError, "APISEC_RELOAD_ERROR", err.Error())
-			return
+		if err := h.notifyAPISecConfigChanged(candidate.APISec); err != nil {
+			return err
 		}
 	}
 	if req.BlockPage != nil {
-		if err := h.notifyBlockPageChanged(); err != nil {
-			writeError(w, http.StatusInternalServerError, "BLOCK_PAGE_RELOAD_ERROR", err.Error())
-			return
+		if err := h.notifyBlockPageConfigChanged(candidate.BlockPage); err != nil {
+			return err
 		}
 	}
-	h.System(w, r)
+	return nil
 }
 
 func (h *Handler) ChinaMapBoundary(w http.ResponseWriter, r *http.Request) {
@@ -462,15 +496,20 @@ func testStorageWithDataDir(ctx context.Context, backend string, storage config.
 		if storage.Redis.Address == "" {
 			return fmt.Errorf("redis address is required")
 		}
-		dialer := &net.Dialer{Timeout: 5 * time.Second}
-		conn, err := dialer.DialContext(ctx, "tcp", storage.Redis.Address)
-		if err != nil {
+		if err := dialStorageEndpoint(ctx, storage.Redis.Address, "redis address", false); err != nil {
 			return err
 		}
-		return conn.Close()
+		return nil
 	case "postgresql", "postgres", "pg":
 		if !storage.PostgreSQL.Enabled {
 			return fmt.Errorf("postgresql is disabled")
+		}
+		hostPort, err := postgresDialTarget(storage.PostgreSQL.DSN)
+		if err != nil {
+			return err
+		}
+		if err := dialStorageEndpoint(ctx, hostPort, "postgresql endpoint", false); err != nil {
+			return err
 		}
 		db, err := sql.Open("pgx", storage.PostgreSQL.DSN)
 		if err != nil {
@@ -496,6 +535,91 @@ func testStorageWithDataDir(ctx context.Context, backend string, storage config.
 	default:
 		return fmt.Errorf("unsupported backend %q", backend)
 	}
+}
+
+func dialStorageEndpoint(ctx context.Context, address, purpose string, allowPrivate bool) error {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return fmt.Errorf("%s is required", purpose)
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		// Allow host-only redis-style addresses by defaulting to 6379? No — require host:port.
+		return fmt.Errorf("%s must be host:port: %w", purpose, err)
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return fmt.Errorf("%s host is required", purpose)
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", purpose, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("%s resolved to no addresses", purpose)
+	}
+	if !allowPrivate {
+		for _, ip := range ips {
+			if !netguard.IsPublicIP(ip) {
+				return fmt.Errorf("%s resolved to non-public IP %s", purpose, ip)
+			}
+		}
+	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ips[0].String(), port))
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func postgresDialTarget(dsn string) (string, error) {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return "", fmt.Errorf("postgresql dsn is required")
+	}
+	// Support URL form postgres://user:pass@host:port/db and keyword form host= port=
+	if strings.Contains(dsn, "://") {
+		u, err := netguard.ValidateURL(dsn, netguard.URLPolicy{
+			Purpose:        "postgresql endpoint",
+			HostPurpose:    "postgresql endpoint",
+			AllowedSchemes: []string{"postgres", "postgresql"},
+			AllowPrivate:   false,
+			AllowUserInfo:  true,
+		})
+		if err != nil {
+			return "", err
+		}
+		host := u.Hostname()
+		port := u.Port()
+		if port == "" {
+			port = "5432"
+		}
+		return net.JoinHostPort(host, port), nil
+	}
+	var host, port string
+	for _, part := range strings.Fields(dsn) {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "host", "hostname":
+			host = strings.TrimSpace(value)
+		case "port":
+			port = strings.TrimSpace(value)
+		}
+	}
+	if host == "" {
+		return "", fmt.Errorf("postgresql dsn host is required")
+	}
+	if port == "" {
+		port = "5432"
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && !netguard.IsPublicIP(ip) {
+		return "", fmt.Errorf("postgresql endpoint host IP must be public")
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 func safeSQLiteTestPath(rawPath, dataDir string) (string, error) {

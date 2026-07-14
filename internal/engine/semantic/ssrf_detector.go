@@ -32,8 +32,11 @@ func (d *SSRFDetector) ID() string    { return "semantic.ssrf" }
 func (d *SSRFDetector) Name() string  { return "SSRF Semantic Detector" }
 func (d *SSRFDetector) Priority() int { return 350 }
 
-func (d *SSRFDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+func (d *SSRFDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
 	for _, candidate := range extractCandidates(reqCtx) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !ssrfFetchSink(candidate) {
 			continue
 		}

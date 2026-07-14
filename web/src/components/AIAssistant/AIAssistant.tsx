@@ -3,8 +3,8 @@ import { Button, Input, Message, Switch, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, ChevronDown, ChevronUp, Send, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { askAIAssistantStream, continueAIApprovalStream, fetchAITools, fetchLogs, fetchMonitorSummary, rejectAIApproval } from '../../api/client';
-import type { AIAssistantReply, AIAssistantTraceEvent, AIToolExecution } from '../../types/api';
+import { APIRequestError, approveAIApproval, askAIAssistantStream, continueAIApprovalStream, fetchAIApprovals, fetchAITools, fetchLogs, fetchMonitorSummary, rejectAIApproval } from '../../api/client';
+import type { AIApprovalRequest, AIAssistantReply, AIAssistantTraceEvent, AIToolExecution } from '../../types/api';
 import SafeMarkdown, { safeAssistantDisplayText } from '../SafeMarkdown';
 import './AIAssistant.css';
 
@@ -68,6 +68,13 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
   const forceScrollRef = useRef(false);
   const assistantActive = open || renderPanel;
   const { data: tools } = useQuery({ queryKey: ['assistant-tools'], queryFn: fetchAITools, enabled: assistantActive, retry: false });
+  const { data: recoverableApprovals } = useQuery({
+    queryKey: ['assistant-approvals'],
+    queryFn: () => fetchAIApprovals(),
+    enabled: assistantActive,
+    retry: false,
+    refetchInterval: assistantActive ? 5_000 : false,
+  });
   const { data: monitor } = useQuery({ queryKey: ['assistant-monitor'], queryFn: fetchMonitorSummary, enabled: assistantActive, refetchInterval: assistantActive ? 10_000 : false, retry: false });
   const { data: logs } = useQuery({ queryKey: ['assistant-logs'], queryFn: () => fetchLogs({ limit: 5 }), enabled: assistantActive, refetchInterval: assistantActive ? 10_000 : false, retry: false });
   const liveContext = useMemo(() => {
@@ -203,11 +210,38 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
       setContinuingApprovalID(null);
     },
     onError: (error, { execution }) => {
-      Message.error(error.message);
-      setThread((current) => markApprovalStatus(current, execution.approval?.id, 'approved'));
-      appendAssistantError(error);
+      const reconciled = error instanceof APIRequestError ? error.approval : undefined;
+      if (reconciled) {
+        setThread((current) => markApprovalStatus(current, reconciled.id, reconciled.status));
+        if (reconciled.status === 'failed') {
+          Message.error(reconciled.error || error.message);
+        } else if (reconciled.status === 'executing') {
+          Message.info(t('assistant.approvalStatus.executing', { defaultValue: 'Execution continues on the server' }));
+        } else if (reconciled.status === 'executed') {
+          Message.success(t('assistant.approvalStatus.executed', { defaultValue: 'Executed' }));
+        } else {
+          Message.warning(t('assistant.approvalStatus.pending', { defaultValue: 'Approval is waiting to continue' }));
+        }
+        clearPendingState();
+      } else {
+        Message.warning(error.message);
+        appendAssistantError(error);
+      }
       setContinuingApprovalID(null);
     },
+  });
+  const approveToolMutation = useMutation({
+    mutationFn: async (execution: AIToolExecution) => {
+      if (!execution.approval?.id) {
+        throw new Error(t('assistant.missingApproval'));
+      }
+      return approveAIApproval(execution.approval.id);
+    },
+    onSuccess: (approval) => {
+      Message.success(t('assistant.approvalReady'));
+      setThread((current) => markApprovalStatus(current, approval.id, approval.status));
+    },
+    onError: (error) => Message.error(error.message),
   });
   const rejectToolMutation = useMutation({
     mutationFn: async (execution: AIToolExecution) => {
@@ -248,10 +282,11 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
   function closeAssistant() {
     clearCloseTimer();
     setOpen(false);
+    const closeDelay = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160;
     closeTimerRef.current = window.setTimeout(() => {
       setRenderPanel(false);
       closeTimerRef.current = null;
-    }, 140);
+    }, closeDelay);
   }
 
   function toggleAssistant() {
@@ -266,6 +301,14 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
     clearCloseTimer();
     abortRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    const approvals = recoverableApprovals?.items ?? [];
+    if (approvals.length === 0) {
+      return;
+    }
+    setThread((current) => mergeRecoveredApprovals(current, approvals, tools ?? [], t));
+  }, [recoverableApprovals?.items, t, tools]);
 
   const assistantBusy = askMutation.isPending || continueApprovalMutation.isPending;
 
@@ -415,7 +458,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
         aria-controls={renderPanel ? 'cheesewaf-ai-assistant-panel' : undefined}
         className={[
           'ai-fab',
-          open ? 'ai-fab-open' : '',
+          renderPanel ? 'ai-fab-open' : '',
           assistantBusy ? 'ai-fab-working' : '',
         ].filter(Boolean).join(' ')}
         type="primary"
@@ -430,8 +473,8 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
           aria-modal="false"
           aria-label={t('assistant.title')}
           className={open ? 'ai-assistant-panel' : 'ai-assistant-panel ai-assistant-panel-closing'}
-          onAnimationEnd={() => {
-            if (!open) {
+          onAnimationEnd={(event) => {
+            if (!open && event.target === event.currentTarget && event.animationName === 'assistant-panel-out') {
               clearCloseTimer();
               setRenderPanel(false);
             }
@@ -551,7 +594,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                       const approvalStatus = tool.approval?.status;
                       const approvalRunnable = approvalStatus === 'pending' || approvalStatus === 'approved';
                       const approvalExecuting = approvalStatus === 'executing' || (continuingApprovalID === tool.approval?.id && continueApprovalMutation.isPending);
-                      const approvalTerminal = approvalStatus === 'executed' || approvalStatus === 'rejected';
+                      const approvalTerminal = approvalStatus === 'executed' || approvalStatus === 'rejected' || approvalStatus === 'failed';
                       const status = approvalStatus ? approvalStatusDisplayName(t, approvalStatus) : undefined;
                       const description = toolDescription(t, tool);
                       return (
@@ -632,17 +675,17 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                                     size="small"
                                     type="primary"
                                     className="assistant-approval-approve"
-                                    loading={continuingApprovalID === tool.approval.id && continueApprovalMutation.isPending}
-                                    disabled={assistantBusy || rejectToolMutation.isPending}
-                                    onClick={() => continueApproval(tool, message.prompt)}
+                                    loading={tool.approval.status === 'pending' ? approveToolMutation.isPending : continuingApprovalID === tool.approval.id && continueApprovalMutation.isPending}
+                                    disabled={assistantBusy || rejectToolMutation.isPending || approveToolMutation.isPending}
+                                    onClick={() => tool.approval?.status === 'pending' ? approveToolMutation.mutate(tool) : continueApproval(tool, message.prompt)}
                                   >
-                                    {tool.approval.status === 'approved' ? t('assistant.continueApproved') : t('assistant.approveAndRun')}
+                                    {tool.approval.status === 'approved' ? t('assistant.continueApproved') : t('assistant.approve')}
                                   </Button>
                                   <Button
                                     size="small"
                                     status="warning"
                                     className="assistant-approval-reject"
-                                    disabled={assistantBusy || rejectToolMutation.isPending}
+                                    disabled={assistantBusy || rejectToolMutation.isPending || approveToolMutation.isPending}
                                     loading={rejectToolMutation.isPending}
                                     onClick={() => rejectToolMutation.mutate(tool)}
                                   >
@@ -730,6 +773,58 @@ function markApprovalStatus(messages: AssistantMessage[], approvalID: string | u
   });
 }
 
+export function mergeRecoveredApprovals(
+  messages: AssistantMessage[],
+  approvals: AIApprovalRequest[],
+  definitions: Array<{ name: string; description?: string }>,
+  t: (key: string, options?: Record<string, unknown>) => string,
+) {
+  const byID = new Map(approvals.map((approval) => [approval.id, approval]));
+  const seen = new Set<string>();
+  const updated = messages.map((message) => {
+    if (!message.tools) {
+      return message;
+    }
+    return {
+      ...message,
+      tools: message.tools.map((tool) => {
+        const id = tool.approval?.id;
+        const approval = id ? byID.get(id) : undefined;
+        if (!approval) {
+          return tool;
+        }
+        seen.add(approval.id);
+        return { ...tool, approval };
+      }),
+    };
+  });
+  const missing = approvals.filter((approval) => !seen.has(approval.id));
+  if (missing.length === 0) {
+    return updated;
+  }
+  return [
+    ...updated,
+    {
+      id: 'recovered-approvals',
+      role: 'tool' as const,
+      text: t('assistant.recoveredApprovals', { defaultValue: 'Recovered approvals' }),
+      status: t('assistant.approvalRecovered', { defaultValue: 'Recovered' }),
+      createdAt: missing[0]?.created_at,
+      tools: missing.map((approval) => {
+        const definition = definitions.find((item) => item.name === approval.tool_name);
+        return {
+          name: approval.tool_name,
+          description: definition?.description,
+          sensitivity: String(approval.sensitivity),
+          args: approval.args,
+          approval,
+          error: approval.error,
+        };
+      }),
+    },
+  ];
+}
+
 function approvalStatusRank(status?: string) {
   switch (status) {
     case 'pending':
@@ -740,6 +835,7 @@ function approvalStatusRank(status?: string) {
       return 3;
     case 'rejected':
     case 'executed':
+    case 'failed':
       return 4;
     default:
       return 0;

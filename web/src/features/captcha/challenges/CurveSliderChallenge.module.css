@@ -1,0 +1,77 @@
+.challenge {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 20 / 11;
+  overflow: hidden;
+  border: 1px solid var(--color-border-2, #d9dee7);
+  border-radius: 6px;
+  background: var(--color-fill-1, #f5f7fa);
+}
+
+.image,
+.curveLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.image {
+  display: block;
+  object-fit: cover;
+}
+
+.curveLayer { pointer-events: none; }
+
+.foreground {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 1px 2px rgb(15 23 42 / 72%));
+}
+
+.endpoint {
+  fill: #fff;
+  stroke: rgb(15 23 42 / 58%);
+  stroke-width: 1.5;
+}
+
+.controlRow {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+}
+
+.dragMark {
+  color: var(--color-text-3, #86909c);
+  font-size: 24px;
+  line-height: 1;
+  text-align: center;
+}
+
+.range {
+  width: 100%;
+  height: 40px;
+  margin: 0;
+  accent-color: var(--color-warning-6, #f59e0b);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.range:disabled { cursor: not-allowed; opacity: 0.55; }
+
+@media (max-width: 480px) {
+  .controlRow { grid-template-columns: 44px minmax(0, 1fr); gap: 8px; min-height: 44px; }
+  .dragMark { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
+  .range { height: 44px; }
+}

@@ -10,6 +10,7 @@ import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry, displaySeverity } from '../../utils/display';
 import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './attackMapData';
 import '../../styles/attack-map.css';
+import '../../styles/arco-components';
 
 const GlobeMap = lazy(() => import('./GlobeMap'));
 

@@ -5,6 +5,7 @@ import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, rmS
 import type { ServerResponse } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BACKEND_PROXY_PATTERN } from './vite.proxy';
 
 const sourcemap = process.env.VITE_SOURCEMAP === 'true';
 const projectRoot = fileURLToPath(new URL('.', import.meta.url));
@@ -15,11 +16,21 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     strictPort: false,
+    proxy: {
+      [BACKEND_PROXY_PATTERN]: {
+        target: process.env.VITE_DEV_API_TARGET || 'http://127.0.0.1:9443',
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     outDir: 'dist',
     sourcemap,
     chunkSizeWarningLimit: 500,
+    modulePreload: {
+      resolveDependencies: (_filename, dependencies, context) =>
+        context.hostType === 'html' ? dependencies.filter(isCriticalEntryPreload) : dependencies,
+    },
     rolldownOptions: {
       output: {
         manualChunks(id) {
@@ -63,6 +74,10 @@ export default defineConfig({
     },
   },
 });
+
+function isCriticalEntryPreload(dependency: string) {
+  return dependency.includes('rolldown-runtime') || dependency.includes('vendor-react');
+}
 
 function arcoChunk(modulePath: string) {
   const lowerPath = modulePath.toLowerCase();

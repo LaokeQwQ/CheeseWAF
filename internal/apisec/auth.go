@@ -158,10 +158,12 @@ func (a *Authenticator) Evaluate(r *http.Request) *AuthFinding {
 	if err != nil {
 		return &AuthFinding{Kind: "invalid", Field: "authorization", Message: "API authorization token is invalid", Severity: "high", Payload: err.Error()}
 	}
-	if a.verifier != nil && a.verifier.configured() {
-		if err := a.verifier.Verify(token); err != nil {
-			return &AuthFinding{Kind: "signature", Field: "authorization", Message: "API authorization token signature is invalid", Severity: "high", Payload: err.Error()}
-		}
+	// Fail closed: enabled API auth must always verify signatures.
+	if a.verifier == nil || !a.verifier.configured() {
+		return &AuthFinding{Kind: "signature", Field: "authorization", Message: "API authorization verifier is not configured", Severity: "high"}
+	}
+	if err := a.verifier.Verify(token); err != nil {
+		return &AuthFinding{Kind: "signature", Field: "authorization", Message: "API authorization token signature is invalid", Severity: "high", Payload: err.Error()}
 	}
 	claims := token.claims
 	if expires, ok := numericClaim(claims["exp"]); ok && expires > 0 && int64(expires) < a.now().Unix() {

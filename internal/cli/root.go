@@ -35,6 +35,7 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(serveCmd)
 	cmd.AddCommand(panelCmd)
 	cmd.AddCommand(statusCmd)
+	cmd.AddCommand(newHealthcheckCommand())
 	cmd.AddCommand(stopCmd)
 	cmd.AddCommand(restartCmd)
 	cmd.AddCommand(userCmd)

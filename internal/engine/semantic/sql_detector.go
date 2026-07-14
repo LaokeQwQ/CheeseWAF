@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	maxSQLCandidateTexts = 64
+	maxSQLCandidateTexts = 2048
 	maxSQLCandidateBytes = 8192
+	sqlCandidateOverlap  = 256
 )
 
 type SQLDetector struct {
@@ -29,8 +30,11 @@ func (d *SQLDetector) ID() string    { return "semantic.sql" }
 func (d *SQLDetector) Name() string  { return "SQL Injection Semantic Detector" }
 func (d *SQLDetector) Priority() int { return 300 }
 
-func (d *SQLDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
 	for _, candidate := range sqlCandidateTexts(reqCtx) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		// libinjection-style deep tokenization first (fast, high precision)
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate); detected {
 			return &engine.DetectionResult{
@@ -120,15 +124,22 @@ func sqlCandidateSegments(text string) []string {
 	if len(text) <= maxSQLCandidateBytes {
 		return []string{text}
 	}
-	head := strings.TrimSpace(text[:maxSQLCandidateBytes])
-	tail := strings.TrimSpace(text[len(text)-maxSQLCandidateBytes:])
-	if head == tail || tail == "" {
-		return []string{head}
+	segments := make([]string, 0, (len(text)/maxSQLCandidateBytes)+1)
+	step := maxSQLCandidateBytes - sqlCandidateOverlap
+	for start := 0; start < len(text); start += step {
+		end := start + maxSQLCandidateBytes
+		if end > len(text) {
+			end = len(text)
+		}
+		segment := strings.TrimSpace(text[start:end])
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+		if end == len(text) {
+			break
+		}
 	}
-	if head == "" {
-		return []string{tail}
-	}
-	return []string{head, tail}
+	return segments
 }
 
 func truncate(s string, max int) string {

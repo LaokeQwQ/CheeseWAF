@@ -1,6 +1,6 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { useTranslation } from 'react-i18next';
-import BrandLogo from './BrandLogo';
+import { Component, type ErrorInfo, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import BrandLogo from "./BrandLogo";
 
 type BoundaryTexts = {
   title: string;
@@ -22,23 +22,34 @@ type BoundaryState = {
 };
 
 class AppErrorBoundaryInner extends Component<BoundaryProps, BoundaryState> {
-  state: BoundaryState = { error: null, traceID: '' };
+  state: BoundaryState = {
+    error: null,
+    traceID: "",
+  };
 
   static getDerivedStateFromError(error: Error): BoundaryState {
-    return { error, traceID: newUITraceID() };
+    return {
+      error,
+      traceID: newUITraceID(),
+    };
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[CheeseWAF UI error]', this.state.traceID, error, info.componentStack);
-    if (isLikelyStaleChunkError(error)) {
-      scheduleStaleChunkRecovery();
-    }
+    console.error(
+      "[CheeseWAF UI error]",
+      this.state.traceID,
+      error,
+      info.componentStack,
+    );
     reportUIError(this.state.traceID, error, info);
   }
 
   componentDidUpdate(prevProps: BoundaryProps) {
     if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
-      this.setState({ error: null, traceID: '' });
+      this.setState({
+        error: null,
+        traceID: "",
+      });
     }
   }
 
@@ -66,8 +77,20 @@ class AppErrorBoundaryInner extends Component<BoundaryProps, BoundaryState> {
             <code>{this.state.traceID}</code>
           </div>
           <div className="ui-error-actions">
-            <button type="button" onClick={() => window.location.reload()}>{this.props.reload}</button>
-            <button type="button" onClick={() => { window.location.href = '/'; }}>{this.props.home}</button>
+            <button
+              type="button"
+              onClick={() => void reloadWithFreshModules(this.state.error)}
+            >
+              {this.props.reload}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = "/";
+              }}
+            >
+              {this.props.home}
+            </button>
           </div>
         </div>
       </section>
@@ -75,17 +98,23 @@ class AppErrorBoundaryInner extends Component<BoundaryProps, BoundaryState> {
   }
 }
 
-export function AppErrorBoundary({ children, resetKey }: { children: ReactNode; resetKey: string }) {
+export function AppErrorBoundary({
+  children,
+  resetKey,
+}: {
+  children: ReactNode;
+  resetKey: string;
+}) {
   const { t } = useTranslation();
   return (
     <AppErrorBoundaryInner
       resetKey={resetKey}
-      title={t('uiError.title')}
-      subtitle={t('uiError.subtitle')}
-      traceLabel={t('uiError.traceLabel')}
-      errorLabel={t('uiError.errorLabel')}
-      reload={t('uiError.reload')}
-      home={t('uiError.home')}
+      title={t("uiError.title")}
+      subtitle={t("uiError.subtitle")}
+      traceLabel={t("uiError.traceLabel")}
+      errorLabel={t("uiError.errorLabel")}
+      reload={t("uiError.reload")}
+      home={t("uiError.home")}
     >
       {children}
     </AppErrorBoundaryInner>
@@ -95,11 +124,11 @@ export function AppErrorBoundary({ children, resetKey }: { children: ReactNode; 
 function newUITraceID() {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
-  return `cw-${Array.from(bytes, (item) => item.toString(16).padStart(2, '0')).join('')}`;
+  return `cw-${Array.from(bytes, (item) => item.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
-  const token = localStorage.getItem('cheesewaf-token');
+  const token = localStorage.getItem("cheesewaf-token");
   if (!token) {
     return;
   }
@@ -107,7 +136,7 @@ function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
     trace_id: traceID || newUITraceID(),
     name: error.name,
     message: error.message,
-    stack: truncateForReport(error.stack ?? ''),
+    stack: truncateForReport(error.stack ?? ""),
     component_stack: truncateForReport(info.componentStack),
     path: `${window.location.pathname}${window.location.search}${window.location.hash}`,
     user_agent: navigator.userAgent,
@@ -117,51 +146,75 @@ function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
       height: window.innerHeight,
     },
   };
-  void fetch('/api/ui/errors', {
-    method: 'POST',
+  void fetch("/api/ui/errors", {
+    method: "POST",
     keepalive: true,
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(payload),
   }).catch((reportError) => {
-    console.error('[CheeseWAF UI error report failed]', payload.trace_id, reportError);
+    console.error(
+      "[CheeseWAF UI error report failed]",
+      payload.trace_id,
+      reportError,
+    );
   });
 }
 
 function truncateForReport(value: string | null | undefined, max = 8_000) {
   if (!value) {
-    return '';
+    return "";
   }
   return value.length > max ? `${value.slice(0, max)}...(truncated)` : value;
 }
 
 function safeErrorSummary(error: Error | null) {
   if (!error) {
-    return 'unknown error';
+    return "unknown error";
   }
-  const name = error.name || 'Error';
-  const message = error.message || 'no message';
+  const name = error.name || "Error";
+  const message = error.message || "no message";
   return truncateForReport(`${name}: ${message}`, 360);
 }
 
-function isLikelyStaleChunkError(error: Error) {
-  const message = `${error.name} ${error.message}`.toLowerCase();
-  return message.includes('failed to fetch dynamically imported module') ||
-    message.includes('importing a module script failed') ||
-    message.includes('loading chunk') ||
-    message.includes('dynamically imported module') ||
-    message.includes('css chunk load failed');
+async function reloadWithFreshModules(error: Error | null) {
+  const failedModuleURL = extractFailedModuleURL(error?.message);
+  if (failedModuleURL) {
+    try {
+      await fetch(buildFreshModuleURL(failedModuleURL, Date.now()), {
+        cache: "reload",
+        credentials: "same-origin",
+      });
+    } catch {
+      // Navigation remains authoritative and surfaces a native network error
+      // when the development server is unavailable.
+    }
+  }
+  window.location.replace(
+    buildFreshModuleURL(window.location.href, Date.now()),
+  );
 }
 
-function scheduleStaleChunkRecovery() {
-  const key = 'cheesewaf-stale-chunk-recovery';
-  const now = Date.now();
-  const last = Number(sessionStorage.getItem(key) || '0');
-  if (Number.isFinite(last) && now - last < 60_000) {
-    return;
+export function extractFailedModuleURL(message: string | null | undefined) {
+  if (!message) {
+    return null;
   }
-  sessionStorage.setItem(key, String(now));
-  window.setTimeout(() => window.location.reload(), 800);
+  const match = message.match(/https?:\/\/[^\s"'<>]+/i);
+  if (!match) {
+    return null;
+  }
+  try {
+    const url = new URL(match[0]);
+    return url.origin === window.location.origin ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildFreshModuleURL(currentURL: string, now: number) {
+  const url = new URL(currentURL);
+  url.searchParams.set("__cw_reload", now.toString(36));
+  return url.toString();
 }

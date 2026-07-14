@@ -88,6 +88,42 @@ type Store interface {
 
 	// Sessions
 	SessionStore
+
+	// Notifications
+	NotificationStore
+}
+
+// NotificationStore manages persistent, user-scoped management notifications.
+type NotificationStore interface {
+	ListNotifications(ctx context.Context, userID string, filter NotificationFilter) ([]Notification, int64, int64, int64, error)
+	UpdateNotification(ctx context.Context, userID, id string, patch NotificationPatch) (*Notification, error)
+	MarkAllNotificationsRead(ctx context.Context, userID string) (int64, error)
+	ClearNotifications(ctx context.Context, userID string) (int64, error)
+	CreateNotification(ctx context.Context, notification *Notification) error
+}
+
+type Notification struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"-"`
+	Type      string    `json:"type"`
+	Title     string    `json:"title"`
+	Message   string    `json:"message"`
+	Target    string    `json:"target,omitempty"`
+	Read      bool      `json:"read"`
+	Pinned    bool      `json:"pinned"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type NotificationFilter struct {
+	State  string
+	Offset int
+	Limit  int
+}
+
+type NotificationPatch struct {
+	Read   *bool
+	Pinned *bool
 }
 
 // SiteStore manages site configurations.
@@ -116,6 +152,7 @@ type UserStore interface {
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	CreateUser(ctx context.Context, user *User) error
 	UpdateUser(ctx context.Context, user *User) error
+	DeleteUser(ctx context.Context, id string) error
 	ListUsers(ctx context.Context) ([]User, error)
 }
 
