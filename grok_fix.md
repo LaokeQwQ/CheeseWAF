@@ -309,10 +309,11 @@ go test ./internal/ai/ -count=1
 go test ./internal/engine/semantic/ -bench=BenchmarkSemanticAnalyzer -benchmem -benchtime=200ms
 ```
 
-### 2.7 推送（本轮结束后回填）
+### 2.7 推送
 
 | 项 | 值 |
 |----|-----|
 | 分支 | `feature/security-captcha-ui-hardening-20260714` |
-| GitHub | `origin` push |
-| Forgejo | `forgejo` push 或 mirror-sync |
+| 提交 | `579464d0abadfbbb92aec46a4c68bddebf30030e` |
+| GitHub `origin` | **已 push** `ffc5350..579464d` |
+| Forgejo | **只读 pull mirror**：direct push 403；本机无 `FORGEJO_TOKEN`，未触发 mirror-sync API。待环境有 token 后 `POST /api/v1/repos/Laoke/CheeseWAF/mirror-sync` 对齐，或等定时 pull |
