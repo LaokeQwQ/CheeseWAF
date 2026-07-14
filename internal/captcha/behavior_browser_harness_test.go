@@ -23,9 +23,7 @@ type browserHarnessScenario struct {
 
 var browserHarnessScenarios = []browserHarnessScenario{
 	{Name: "curve_draw", Kind: BehaviorCurveDraw, Version: 3},
-	{Name: "curve_slider_v1", Kind: BehaviorCurveSlider, Version: 1},
-	{Name: "curve_slider_v2", Kind: BehaviorCurveSlider, Version: 2},
-	{Name: "curve_slider_v3", Kind: BehaviorCurveSlider, Version: 3},
+	{Name: "curve_slider", Kind: BehaviorCurveSlider, Version: 3},
 	{Name: "shape_slider", Kind: BehaviorShapeSlider, Version: 2},
 	{Name: "rotate", Kind: BehaviorRotate, Version: 3},
 	{Name: "restore_slider", Kind: BehaviorRestoreSlider, Version: 3},
@@ -105,8 +103,7 @@ func TestBehaviorFixedHarnessShapeMatchesLabV2(t *testing.T) {
 
 func TestBehaviorBrowserHarnessRegistry(t *testing.T) {
 	want := map[string]int{
-		"curve_draw": 3, "curve_slider_v1": 1, "curve_slider_v2": 2,
-		"curve_slider_v3": 3, "shape_slider": 2, "rotate": 3,
+		"curve_draw": 3, "curve_slider": 3, "shape_slider": 2, "rotate": 3,
 		"restore_slider": 3, "angle": 3, "scratch": 3,
 		"text_click": 3, "icon_click": 3,
 	}
@@ -315,8 +312,8 @@ func findBrowserHarnessScenario(name string) (browserHarnessScenario, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "random" {
 		name = "rotate"
-	} else if name == "curve_slider" {
-		name = "curve_slider_v1"
+	} else if name == "curve_slider_v1" || name == "curve_slider_v2" || name == "curve_slider_v3" {
+		name = "curve_slider"
 	}
 	for _, scenario := range browserHarnessScenarios {
 		if scenario.Name == name {
@@ -411,7 +408,10 @@ func browserHarnessResponse(fixture *browserHarnessFixture, interaction string, 
 			y = (presentation.PieceY + presentation.PieceSize/2) * behaviorCoordinateMax / maxBehavior(1, presentation.Height)
 			response.Point = &BehaviorPoint{X: value, Y: y}
 		case "curve_slider":
+			start = behaviorCoordinateMax / 2
 			response.Point = &BehaviorPoint{X: value, Y: y}
+			response.Track = harnessCurveSliderTrack(BehaviorPoint{X: value, Y: y}, duration)
+			return response
 		}
 		response.Track = harnessTrack([]BehaviorPoint{{X: start, Y: y}, {X: (start + value) / 2, Y: y}, {X: value, Y: y}}, duration)
 	case "surface":

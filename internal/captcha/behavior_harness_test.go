@@ -27,9 +27,7 @@ type harnessResult struct {
 
 var harnessScenarios = []harnessScenario{
 	{"curve_draw", BehaviorCurveDraw, 3},
-	{"curve_slider_v1", BehaviorCurveSlider, 1},
-	{"curve_slider_v2", BehaviorCurveSlider, 2},
-	{"curve_slider_v3", BehaviorCurveSlider, 3},
+	{"curve_slider", BehaviorCurveSlider, 3},
 	{"shape_slider", BehaviorShapeSlider, 3},
 	{"rotate", BehaviorRotate, 3},
 	{"restore_slider", BehaviorRestoreSlider, 3},
@@ -171,10 +169,14 @@ func solveHarnessAnswer(token string, tok behaviorToken) BehaviorResponse {
 	case "point":
 		point := tok.Point
 		response.Point = &point
-	case "slider", "curve_slider":
+	case "slider":
 		point := tok.Point
 		response.Point = &point
 		response.Track = harnessTrack([]BehaviorPoint{{X: 0, Y: point.Y}, {X: point.X / 2, Y: point.Y}, {X: point.X, Y: point.Y}}, duration)
+	case "curve_slider":
+		point := tok.Point
+		response.Point = &point
+		response.Track = harnessCurveSliderTrack(point, duration)
 	case "restore_offset":
 		response.Offset = float64(tok.Point.X) / 100
 		response.Track = harnessTrack([]BehaviorPoint{{X: 0, Y: 5000}, {X: 5000, Y: 5000}, {X: 10000, Y: 5000}}, duration)
@@ -201,6 +203,44 @@ func harnessTrack(points []BehaviorPoint, duration int) []BehaviorTrackPoint {
 			kind = "up"
 		}
 		track[index] = BehaviorTrackPoint{X: point.X, Y: point.Y, T: t, Type: kind}
+	}
+	return track
+}
+
+// harnessCurveSliderTrack builds a dense, jittered drag that satisfies anti-bot
+// variance checks while still landing on the sealed target.
+func harnessCurveSliderTrack(target BehaviorPoint, duration int) []BehaviorTrackPoint {
+	if duration < 650 {
+		duration = 650
+	}
+	startX := behaviorCoordinateMax / 2
+	// Ease-out sample grid with intentional spatial/temporal jitter.
+	fracs := []float64{0, 0.07, 0.16, 0.28, 0.41, 0.54, 0.66, 0.77, 0.87, 0.94, 1.0}
+	track := make([]BehaviorTrackPoint, len(fracs))
+	for i, frac := range fracs {
+		kind := "move"
+		if i == 0 {
+			kind = "down"
+		} else if i == len(fracs)-1 {
+			kind = "up"
+		}
+		x := startX + int(float64(target.X-startX)*frac)
+		if i > 0 && i < len(fracs)-1 {
+			if i%2 == 0 {
+				x += 20 + i*4
+			} else {
+				x -= 14 + i*3
+			}
+		}
+		if i == len(fracs)-1 {
+			x = target.X
+		}
+		// Non-uniform timing: slower near the end.
+		t := int(float64(duration) * (0.55*frac + 0.45*frac*frac))
+		if i == len(fracs)-1 {
+			t = duration
+		}
+		track[i] = BehaviorTrackPoint{X: clampVisualCoord(x), Y: target.Y, T: t, Type: kind}
 	}
 	return track
 }

@@ -212,8 +212,8 @@ func Default() Config {
 				PathPrefixes:               []string{"/"},
 				// Only health checks by default. Management API is on the admin
 				// port and must not be blanket-exempted on the data plane via /api/.
-				ExemptPathPrefixes:         []string{"/health"},
-				SuspiciousUserAgents:       []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
+				ExemptPathPrefixes:   []string{"/health"},
+				SuspiciousUserAgents: []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
 			},
 			ACL: ACLProtectionConfig{Enabled: true},
 		},

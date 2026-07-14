@@ -301,7 +301,8 @@ function ChallengeBody(props: BodyProps) {
     return (
       <CurveSliderChallenge
         imageSrc={image}
-        version={challenge.presentation.version}
+        pieceSrc={safeImageDataUri(challenge.presentation.piece)}
+        minDurationMs={challenge.presentation.track?.min_duration_ms}
         disabled={disabled}
         alt={localizedPrompt(challenge, locale)}
         onInteractionStart={() => setStatus("interacting")}
@@ -731,7 +732,7 @@ function localizedPrompt(challenge: CaptchaChallenge, locale: CaptchaLocale) {
     curve_draw:
       "\u8bf7\u4ece\u8d77\u70b9\u6cbf\u53ef\u89c1\u66f2\u7ebf\u7ed8\u5236\u5230\u7bad\u5934",
     curve_slider:
-      "\u8bf7\u6cbf\u53ef\u89c1\u8f68\u8ff9\u5c06\u6ed1\u5757\u62d6\u5230\u672b\u7aef",
+      "\u8bf7\u62d6\u52a8\u5b9e\u7ebf\u66f2\u7ebf\uff0c\u4f7f\u5176\u4e0e\u865a\u7ebf\u5f15\u5bfc\u5b8c\u5168\u91cd\u5408",
     shape_slider:
       "\u8bf7\u5c06\u6ed1\u5757\u62d6\u5165\u5339\u914d\u7684\u7f3a\u53e3",
     rotate:

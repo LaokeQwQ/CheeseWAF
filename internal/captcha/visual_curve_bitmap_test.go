@@ -22,6 +22,28 @@ func TestVisualCurveChallengesRenderPNGAtContractDimensions(t *testing.T) {
 			if decoded.Bounds().Dx() != 320 || decoded.Bounds().Dy() != 180 {
 				t.Fatalf("image dimensions = %v, want 320x180", decoded.Bounds())
 			}
+			if kind == BehaviorCurveSlider {
+				if !strings.HasPrefix(challenge.Presentation.Piece, "data:image/png;base64,") {
+					t.Fatal("curve slider piece is not a PNG data URI")
+				}
+				piece := decodeBehaviorPNG(t, challenge.Presentation.Piece)
+				if piece.Bounds().Dx() != 320 || piece.Bounds().Dy() != 180 {
+					t.Fatalf("piece dimensions = %v, want 320x180", piece.Bounds())
+				}
+				var opaque int
+				for y := 0; y < 180; y++ {
+					for x := 0; x < 320; x++ {
+						_, _, _, a := piece.At(x, y).RGBA()
+						if a > 0 {
+							opaque++
+						}
+					}
+				}
+				if opaque < 200 {
+					t.Fatalf("curve slider piece has too few opaque stroke pixels: %d", opaque)
+				}
+				return
+			}
 			var lightGuide, darkGuide, noise int
 			background := color.RGBA{R: 238, G: 242, B: 245, A: 255}
 			for y := 0; y < 180; y++ {

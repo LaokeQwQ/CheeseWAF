@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { assertReport, runFixedHarness } from './fixed-harness.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const types = ['curve_draw', 'curve_slider_v1', 'curve_slider_v2', 'curve_slider_v3', 'shape_slider', 'rotate', 'restore_slider', 'angle', 'scratch', 'text_click', 'icon_click'];
+const types = ['curve_draw', 'curve_slider', 'shape_slider', 'rotate', 'restore_slider', 'angle', 'scratch', 'text_click', 'icon_click'];
 
 test('fixed harness runs every registry and report audit test', { timeout: 60_000 }, async () => {
   const report = await runFixedHarness({ cwd: projectRoot });

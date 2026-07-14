@@ -9,8 +9,10 @@ import { publicIssuePayload, startPrivateHarness } from './private-harness.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const processFixture = fileURLToPath(new URL('./process-fixture.mjs', import.meta.url));
-const scenarios = ['curve_draw', 'curve_slider_v1', 'curve_slider_v2', 'curve_slider_v3', 'shape_slider', 'rotate', 'restore_slider', 'angle', 'scratch', 'text_click', 'icon_click'];
-const lifecycleTimeoutMs = 500;
+const scenarios = ['curve_draw', 'curve_slider', 'shape_slider', 'rotate', 'restore_slider', 'angle', 'scratch', 'text_click', 'icon_click'];
+// Allow normal Node fixture startup to survive CI CPU contention while keeping
+// each intentional hang well below the enclosing test timeout.
+const lifecycleTimeoutMs = 1_500;
 
 test('temporary cleanup failures are explicit and sanitized', async () => {
   const { removeTemporaryDirectory } = await import('./process-lifecycle.mjs');

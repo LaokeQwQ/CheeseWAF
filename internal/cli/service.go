@@ -608,6 +608,10 @@ func serviceDirSize(root string) int64 {
 }
 
 func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
+	// Wire budget metrics once; safe to re-assign.
+	engine.OnDetectionBudgetExhausted = func() {
+		semantic.ProcessMetrics().RecordBudgetExhausted()
+	}
 	var detectors []engine.Detector
 	if len(cfg.Sites) == 0 {
 		return engine.NewPipeline(), nil
@@ -622,31 +626,27 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: enginerules.New(compiled)})
 		}
 		switches := site.WAF.SemanticEngines
+		// Single decision path: staged Analyzer covers all enabled categories.
+		// Standalone SQL/XSS/RCE/LFI/XXE/SSRF detectors are intentionally not
+		// mounted here to avoid double-scan cost and divergent FP behavior.
 		var semanticCategories []string
-		var siteDetectors []engine.Detector
 		if switches.SQL {
 			semanticCategories = append(semanticCategories, "sqli")
-			siteDetectors = append(siteDetectors, semantic.NewSQLDetector(site.WAF.Mode))
 		}
 		if switches.XSS {
 			semanticCategories = append(semanticCategories, "xss")
-			siteDetectors = append(siteDetectors, semantic.NewXSSDetector(site.WAF.Mode))
 		}
 		if switches.RCE {
 			semanticCategories = append(semanticCategories, "rce")
-			siteDetectors = append(siteDetectors, semantic.NewRCEDetector(site.WAF.Mode))
 		}
 		if switches.LFI {
 			semanticCategories = append(semanticCategories, "lfi")
-			siteDetectors = append(siteDetectors, semantic.NewLFIDetector(site.WAF.Mode))
 		}
 		if switches.XXE {
 			semanticCategories = append(semanticCategories, "xxe")
-			siteDetectors = append(siteDetectors, semantic.NewXXEDetector(site.WAF.Mode))
 		}
 		if switches.SSRF {
 			semanticCategories = append(semanticCategories, "ssrf")
-			siteDetectors = append(siteDetectors, semantic.NewSSRFDetector(site.WAF.Mode))
 		}
 		if switches.NoSQL {
 			semanticCategories = append(semanticCategories, "nosqli")
@@ -655,10 +655,10 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			semanticCategories = append(semanticCategories, "ssti")
 		}
 		if len(semanticCategories) > 0 {
-			siteDetectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, siteDetectors...)
-		}
-		for _, detector := range siteDetectors {
-			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: detector})
+			detectors = append(detectors, siteScopedDetector{
+				siteID:   site.ID,
+				detector: semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...),
+			})
 		}
 	}
 	return engine.NewPipeline(detectors...), nil

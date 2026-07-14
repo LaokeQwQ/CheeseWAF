@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
@@ -22,6 +23,8 @@ import (
 type Analyzer struct {
 	mode    string
 	enabled map[string]bool
+	// catFP is a precomputed fingerprint of enabled categories for cache keys.
+	catFP uint64
 }
 
 type InputPoint struct {
@@ -69,7 +72,7 @@ func NewAnalyzer(mode string, categories ...string) *Analyzer {
 			}
 		}
 	}
-	return &Analyzer{mode: mode, enabled: enabled}
+	return &Analyzer{mode: mode, enabled: enabled, catFP: enabledCategoryFingerprint(enabled)}
 }
 
 func (a *Analyzer) ID() string    { return "semantic.analyzer" }
@@ -80,6 +83,12 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	if reqCtx == nil || reqCtx.Request == nil || a.mode == "off" {
 		return nil, nil
 	}
+	start := time.Now()
+	outcome, category := OutcomePass, ""
+	defer func() {
+		ProcessMetrics().RecordAnalysis(time.Since(start), outcome, category)
+	}()
+
 	candidates := extractCandidates(reqCtx)
 	report := AnalysisReport{}
 	best := (*Hit)(nil)
@@ -88,24 +97,41 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 			return nil, err
 		}
 		report.Inputs = append(report.Inputs, candidate.input)
-		for _, hit := range a.analyzeCandidate(candidate) {
-			report.Hits = append(report.Hits, hit)
-			if best == nil || betterHit(hit, *best) {
-				hit := hit
-				best = &hit
+		for _, next := range a.analyzeCandidate(candidate) {
+			// FP-first: weak single-signal hits never become block decisions.
+			if a.mode == "block" && !blockableHit(next) {
+				continue
+			}
+			report.Hits = append(report.Hits, next)
+			if best == nil || betterHit(next, *best) {
+				next := next
+				best = &next
 			}
 		}
+	}
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = map[string]any{}
 	}
 	reqCtx.Metadata["semantic_analysis"] = report
 	if best == nil {
 		return nil, nil
 	}
+	action := actionForMode(a.mode)
+	if a.mode == "block" && !blockableHit(*best) {
+		return nil, nil
+	}
+	if action == engine.ActionBlock {
+		outcome = OutcomeBlock
+	} else {
+		outcome = OutcomeHit
+	}
+	category = best.Category
 	return &engine.DetectionResult{
 		Detected:   true,
 		DetectorID: a.ID() + "." + best.Category,
 		Category:   best.Category,
 		Severity:   best.Severity,
-		Action:     actionForMode(a.mode),
+		Action:     action,
 		Message:    best.Syntax + "; " + best.Semantics,
 		Confidence: best.Confidence,
 		Payload:    best.Payload,
@@ -113,8 +139,24 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 }
 
 func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
+	// Fast empty-guess short circuit before cache: pure clean traffic often has no categories.
+	// Still cache empty results so repeated identical fields stay cheap.
+	key := candidateCacheKey(a.mode, a.catFP, candidate.text)
+	if cached, ok := processCandidateCache.get(key); ok {
+		ProcessMetrics().RecordCache(true)
+		return cached
+	}
+	ProcessMetrics().RecordCache(false)
+
+	// Cheap prefilter: very short plain tokens rarely need full detector suite.
+	if looksCleanASCIIField(candidate.text) {
+		processCandidateCache.put(key, nil)
+		return nil
+	}
+
 	guesses := guessCategories(candidate.text)
 	if len(guesses) == 0 {
+		processCandidateCache.put(key, nil)
 		return nil
 	}
 	var hits []Hit
@@ -126,7 +168,39 @@ func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
 			hits = append(hits, hit)
 		}
 	}
+	processCandidateCache.put(key, hits)
 	return hits
+}
+
+// looksCleanASCIIField is a pure-Go hot-path prefilter for ordinary business
+// identifiers (ids, slugs, versions). Multi-word text, hidden files (.env),
+// schemes, and paths never short-circuit — prefer miss risk is zero.
+func looksCleanASCIIField(raw string) bool {
+	if len(raw) == 0 || len(raw) > 48 {
+		return false
+	}
+	// Multi-word values (including "pwsh -EncodedCommand …") need full analysis.
+	if strings.Contains(raw, " ") || strings.Contains(raw, "\t") {
+		return false
+	}
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			continue
+		case c == '-' || c == '_':
+			continue
+		case c == '.':
+			// Allow version-like "1.2.3" / "v1.0" but not ".env" / "file.."
+			if i == 0 || i == len(raw)-1 {
+				return false
+			}
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func betterHit(candidate, current Hit) bool {
@@ -217,17 +291,31 @@ func categoryPriority(hit Hit) int {
 	return 0
 }
 
+const (
+	maxInputRawBytes   = 16 << 10 // 16 KiB per field
+	maxCandidates      = 64
+	maxDecodeVariants  = 8
+	maxJSONNodes       = 200
+	maxJSONDepth       = 8
+)
+
 func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 	if reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
 	var inputs []InputPoint
 	r := reqCtx.Request
-	inputs = append(inputs, InputPoint{Source: "uri", Name: "path_query", Raw: r.URL.RequestURI(), Layers: []string{"raw"}})
-	for key, values := range r.URL.Query() {
-		inputs = append(inputs, InputPoint{Source: "query", Name: key, Raw: key, Layers: []string{"raw"}})
+	inputs = append(inputs, InputPoint{Source: "uri", Name: "path_query", Raw: clipRaw(r.URL.RequestURI()), Layers: []string{"raw"}})
+	queryValues := r.URL.Query()
+	// Go's url.ParseQuery rejects/empties some attack payloads containing ';' in the
+	// query string. Fall back to lenient parsing so execution sinks still see cmd=.
+	if len(queryValues) == 0 && r.URL.RawQuery != "" {
+		queryValues = lenientQueryValues(r.URL.RawQuery)
+	}
+	for key, values := range queryValues {
+		inputs = append(inputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(key), Layers: []string{"raw"}})
 		for _, value := range values {
-			inputs = append(inputs, InputPoint{Source: "query", Name: key, Raw: value, Layers: []string{"raw"}})
+			inputs = append(inputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(value), Layers: []string{"raw"}})
 		}
 	}
 	for key, values := range r.Header {
@@ -235,18 +323,24 @@ func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 			continue
 		}
 		for _, value := range values {
-			inputs = append(inputs, InputPoint{Source: "header", Name: key, Raw: value, Layers: []string{"raw"}})
+			inputs = append(inputs, InputPoint{Source: "header", Name: key, Raw: clipRaw(value), Layers: []string{"raw"}})
 		}
 	}
 	for _, cookie := range r.Cookies() {
-		inputs = append(inputs, InputPoint{Source: "cookie", Name: cookie.Name, Raw: cookie.Value, Layers: []string{"raw"}})
+		inputs = append(inputs, InputPoint{Source: "cookie", Name: cookie.Name, Raw: clipRaw(cookie.Value), Layers: []string{"raw"}})
 	}
 	inputs = append(inputs, bodyInputs(r, reqCtx.DecodedBody)...)
 
 	var candidates []semanticCandidate
 	seen := map[string]struct{}{}
 	for _, input := range inputs {
+		if len(candidates) >= maxCandidates {
+			break
+		}
 		for _, variant := range decodeVariants(input.Raw) {
+			if len(candidates) >= maxCandidates {
+				break
+			}
 			text := strings.TrimSpace(variant.text)
 			if text == "" {
 				continue
@@ -262,6 +356,47 @@ func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 		}
 	}
 	return candidates
+}
+
+func clipRaw(raw string) string {
+	if len(raw) <= maxInputRawBytes {
+		return raw
+	}
+	return raw[:maxInputRawBytes]
+}
+
+// lenientQueryValues parses query strings that net/url.ParseQuery refuses
+// (notably values containing unescaped ';' used by many RCE/SQLi samples).
+func lenientQueryValues(rawQuery string) url.Values {
+	out := url.Values{}
+	if rawQuery == "" {
+		return out
+	}
+	parts := strings.FieldsFunc(rawQuery, func(r rune) bool { return r == '&' })
+	// If there is no '&', still try a single key=value (value may contain ';').
+	if len(parts) == 0 {
+		parts = []string{rawQuery}
+	}
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			key, value = part, ""
+		}
+		if unescaped, err := url.QueryUnescape(key); err == nil {
+			key = unescaped
+		}
+		if unescaped, err := url.QueryUnescape(value); err == nil {
+			value = unescaped
+		}
+		if key == "" {
+			continue
+		}
+		out.Add(key, value)
+	}
+	return out
 }
 
 func bodyInputs(r *http.Request, body []byte) []InputPoint {
@@ -308,27 +443,38 @@ func flattenJSONInputs(source, prefix string, raw []byte, inputs *[]InputPoint) 
 	if err := decoder.Decode(&value); err != nil {
 		return
 	}
-	flattenJSONValue(source, prefix, value, inputs)
+	nodes := 0
+	flattenJSONValue(source, prefix, value, inputs, 0, &nodes)
 }
 
-func flattenJSONValue(source, prefix string, value any, inputs *[]InputPoint) {
+func flattenJSONValue(source, prefix string, value any, inputs *[]InputPoint, depth int, nodes *int) {
+	if depth > maxJSONDepth || *nodes >= maxJSONNodes || len(*inputs) >= maxCandidates {
+		return
+	}
+	*nodes++
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, value := range typed {
+			if *nodes >= maxJSONNodes || len(*inputs) >= maxCandidates {
+				return
+			}
 			name := key
 			if prefix != "" {
 				name = prefix + "." + key
 			}
-			*inputs = append(*inputs, InputPoint{Source: source, Name: name, Raw: key, Layers: []string{"raw"}})
-			flattenJSONValue(source, name, value, inputs)
+			*inputs = append(*inputs, InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: []string{"raw"}})
+			flattenJSONValue(source, name, value, inputs, depth+1, nodes)
 		}
 	case []any:
 		for idx, value := range typed {
-			flattenJSONValue(source, prefix+"[]", value, inputs)
+			if *nodes >= maxJSONNodes {
+				return
+			}
+			flattenJSONValue(source, prefix+"[]", value, inputs, depth+1, nodes)
 			_ = idx
 		}
 	case string:
-		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: typed, Layers: []string{"raw"}})
+		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: clipRaw(typed), Layers: []string{"raw"}})
 	case json.Number, bool, float64:
 		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: toString(typed), Layers: []string{"raw"}})
 	}
@@ -376,7 +522,7 @@ func decodeVariants(raw string) []decodedVariant {
 	queue := []decodedVariant{{text: raw, layers: []string{"raw"}}}
 	var out []decodedVariant
 	seen := map[string]struct{}{}
-	for len(queue) > 0 && len(out) < 24 {
+	for len(queue) > 0 && len(out) < maxDecodeVariants {
 		item := queue[0]
 		queue = queue[1:]
 		if _, ok := seen[item.text]; ok {
@@ -384,7 +530,7 @@ func decodeVariants(raw string) []decodedVariant {
 		}
 		seen[item.text] = struct{}{}
 		out = append(out, item)
-		if len(item.layers) >= 6 {
+		if len(item.layers) >= 4 {
 			continue
 		}
 		if next := decoder.Decode(item.text); next.Text != item.text {
@@ -533,12 +679,14 @@ var (
 	sqlSubquery                   = regexp.MustCompile(`(?is)\(\s*select\b.+?\bfrom\b.+?\)`)
 	sqlCaseWhen                   = regexp.MustCompile(`(?is)\bcase\s+when\b.+?\bthen\b.+?\belse\b.+?\bend\b`)
 	sqlSelectFrom                 = regexp.MustCompile(`(?is)\bselect\b.{0,240}\bfrom\b`)
-	sqlFileData                   = regexp.MustCompile(`(?i)\b(?:load\s+data\s+infile|load_file\s*\(|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
+	sqlFileData                   = regexp.MustCompile(`(?i)\b(?:load\s+data\s+infile|load_file\s*\(|into\s+outfile|copy\s+\S+\s+to(?:\s+program|\s+['\"/]|\s+[a-z0-9_./\\-]+))\b`)
 	sqlMySQLVersionComment        = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
 	sqlKeywordBridgeComment       = regexp.MustCompile(`(?i)\b([a-z]{2,8})/\*.*?\*/([a-z]{2,8})\b`)
 	xssEventPattern               = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
 	unicodeEscapePattern          = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
-	lfiEncodedTraversal           = regexp.MustCompile(`(?i)(?:%25)*%2e(?:%25)*%2e|(?:%25)*%5c|(?:%25)*%2f|%c0%af|%25c0%25af|\.{4,}[/\\]+`)
+	// Encoded traversal only — bare %2f/%5c (normal URL path encoding) must NOT match.
+	// Matches: %2e%2e%2f, ..%2f, %2e%2e/, double-encoded dots, overlong dots, %c0%af abuse.
+	lfiEncodedTraversal = regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%25c0%25af|\.{4,}[/\\]+`)
 	lfiDotEnvTarget               = regexp.MustCompile(`(?i)(?:^|[/\\])\.env(?:$|[?#.]|%00|%23)`)
 	lfiSensitiveTarget            = regexp.MustCompile(`(?i)(?:^|[/\\])(?:etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|issue|motd|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|root/\.bash_history|home/[^/\\]+/\.ssh/(?:id_rsa|id_dsa|authorized_keys)|var/log/(?:syslog|auth\.log|nginx/access\.log|nginx/error\.log|apache2/access\.log|apache2/error\.log|httpd-access\.log)|winnt/system32/cmd\.exe|windows/(?:win\.ini|system32/drivers/etc/hosts)|boot\.ini|web-inf/web\.xml|meta-inf/manifest\.mf|\.htaccess|_config\.php|config\.php|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|wp-config\.php|dump\.sql|database\.sql|id_rsa)(?:$|[?#\x00.]|%00|%23)`)
 	nosqlOperatorToken            = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
@@ -641,7 +789,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || strings.Contains(compact, "orchar") || strings.Contains(compact, "andchar")) {
 		reasons["syntax: SQL function comparison inside boolean predicate"] = true
 	}
-	if len(reasons) == 0 {
+	if len(reasons) == 0 || !sqlReasonsBlockable(reasons) {
 		return Hit{}, false
 	}
 	severity := engine.SeverityHigh
@@ -807,19 +955,23 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	text := strings.TrimSpace(candidate.text)
 	lower := normalize(text)
+	sink := rceExecutionSink(candidate.input.Name)
 	reasons := map[string]bool{}
 	for _, pattern := range rcePatterns {
 		if pattern.MatchString(text) {
 			reasons["syntax: shell metacharacter plus executable command"] = true
 		}
 	}
-	if rceShellControl.MatchString(text) {
+	// Bare English ";" must not count outside execution sinks (major FP source in docs).
+	if sink && rceShellControl.MatchString(text) {
+		reasons["syntax: shell control operator or command substitution"] = true
+	} else if !sink && rceShellControlEvidence(lower) {
 		reasons["syntax: shell control operator or command substitution"] = true
 	}
 	if rceWhitespaceEvasion.MatchString(text) {
 		reasons["syntax: shell whitespace evasion"] = true
 	}
-	if rceExecutionSink(candidate.input.Name) {
+	if sink {
 		reasons["context: command execution parameter"] = true
 	}
 	if rcePowerShellSideFx.MatchString(text) || rceEncodedPowerShell.MatchString(text) {
@@ -837,10 +989,29 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	if rceTemplateExecutionPrimitive.MatchString(text) {
 		reasons["semantics: template or language runtime command execution primitive"] = true
 	}
+	if strings.Contains(lower, "<?php") && (strings.Contains(lower, "system(") || strings.Contains(lower, "passthru(") || strings.Contains(lower, "shell_exec(") || strings.Contains(lower, "exec(") || strings.Contains(lower, "include(") || strings.Contains(lower, "require(") || strings.Contains(lower, "eval(")) {
+		reasons["semantics: PHP runtime command or include execution"] = true
+	}
+	// Language runtime calls (also on path_query when query parse fell back).
+	if strings.Contains(lower, "system(") || strings.Contains(lower, "passthru(") || strings.Contains(lower, "shell_exec(") || strings.Contains(lower, "exec(") || strings.Contains(lower, "eval(") || strings.Contains(lower, "include(") || strings.Contains(lower, "require(") || strings.Contains(lower, "popen(") {
+		if sink || strings.Contains(lower, "cmd=") || strings.Contains(lower, "command=") || strings.Contains(lower, "exec=") || strings.Contains(candidate.input.Name, "cmd") {
+			reasons["semantics: language runtime command or include execution"] = true
+		}
+	}
+	if strings.Contains(lower, "{php}") || strings.Contains(lower, "{/php}") {
+		reasons["syntax: PHP template execution delimiter"] = true
+		reasons["semantics: PHP template runtime execution"] = true
+	}
+	if sink && (strings.Contains(lower, "print(") || strings.Contains(lower, "md5(")) && (strings.Contains(lower, ";") || strings.Contains(lower, "${")) {
+		reasons["semantics: template or language runtime command execution primitive"] = true
+	}
 	words := tokens(text)
-	for _, command := range []string{"cat", "whoami", "uname", "curl", "wget", "bash", "sh", "zsh", "dash", "pwsh", "powershell", "cmd", "python", "python3", "perl", "php", "ruby", "node", "nc", "ncat", "netcat", "socat", "lua", "iex", "invoke-expression"} {
+	for _, command := range []string{"cat", "whoami", "uname", "curl", "wget", "bash", "sh", "zsh", "dash", "pwsh", "powershell", "cmd", "python", "python3", "perl", "php", "ruby", "node", "nc", "ncat", "netcat", "socat", "lua", "iex", "invoke-expression", "sleep", "ping", "nslookup"} {
 		if contains(words, command) {
-			reasons["semantics: command execution intent"] = true
+			// Tool names alone in prose are not intent; require sink or hard execution shape.
+			if sink || rceShellControlEvidence(lower) || rceWhitespaceEvasion.MatchString(text) || rceInterpreterInline.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceEncodedPowerShell.MatchString(text) || rceDownloadExecChain.MatchString(text) {
+				reasons["semantics: command execution intent"] = true
+			}
 			break
 		}
 	}
@@ -850,7 +1021,36 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	if len(reasons) < 2 {
 		return Hit{}, false
 	}
+	// Outside execution-parameter sinks, require a hard execution signal (FP-first).
+	if !sink && !rceHardSignal(reasons) {
+		return Hit{}, false
+	}
 	return hit(candidate, "rce", engine.SeverityCritical, 0.87+confidenceBonus(reasons), reasons), true
+}
+
+var rceShellMetacharCommand = regexp.MustCompile(`(?i)(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b`)
+
+func rceShellControlEvidence(lower string) bool {
+	if strings.Contains(lower, "$(") || strings.Contains(lower, "`") || strings.Contains(lower, "&&") || strings.Contains(lower, "||") {
+		return true
+	}
+	return rceShellMetacharCommand.MatchString(lower)
+}
+
+func rceHardSignal(reasons map[string]bool) bool {
+	return reasons["syntax: shell metacharacter plus executable command"] ||
+		reasons["syntax: shell control operator or command substitution"] ||
+		reasons["syntax: shell whitespace evasion"] ||
+		reasons["semantics: PowerShell dynamic execution or encoded command"] ||
+		reasons["semantics: interpreter inline command execution"] ||
+		reasons["semantics: download-to-shell execution chain"] ||
+		reasons["semantics: shell reverse connection primitive"] ||
+		reasons["semantics: template or language runtime command execution primitive"] ||
+		reasons["semantics: fully qualified executable or shell interpreter"] ||
+		reasons["semantics: PHP runtime command or include execution"] ||
+		reasons["semantics: language runtime command or include execution"] ||
+		reasons["semantics: PHP template runtime execution"] ||
+		reasons["syntax: PHP template execution delimiter"]
 }
 
 func rceExecutionSink(name string) bool {
@@ -900,7 +1100,26 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 			break
 		}
 	}
+	if strings.Contains(lower, "php://") || strings.Contains(lower, "zip://") || strings.Contains(lower, "phar://") || strings.Contains(lower, "expect://") {
+		reasons["syntax: traversal or wrapper path expression"] = true
+		reasons["semantics: stream wrapper local file access"] = true
+	}
+	// FP-first: bare filenames without traversal/wrapper/sensitive path must not block.
 	if len(reasons) == 0 {
+		return Hit{}, false
+	}
+	if !hasSyntaxReason(reasons) && !hasSemanticReason(reasons) {
+		return Hit{}, false
+	}
+	// Require either (traversal/wrapper) or (sensitive target) — not a lone weak token.
+	hasPathSignal := reasons["syntax: traversal or wrapper path expression"] ||
+		reasons["syntax: encoded or overlong traversal path"] ||
+		reasons["syntax: null-byte path suffix bypass"] ||
+		reasons["semantics: sensitive local file target"] ||
+		reasons["semantics: stream wrapper local file access"] ||
+		reasons["semantics: application template reads a local file path"] ||
+		reasons["semantics: command reads a sensitive local file"]
+	if !hasPathSignal {
 		return Hit{}, false
 	}
 	return hit(candidate, "lfi", engine.SeverityHigh, 0.85+confidenceBonus(reasons), reasons), true
@@ -1066,20 +1285,27 @@ func ssrfFetchSink(candidate semanticCandidate) bool {
 
 func hit(candidate semanticCandidate, category string, severity engine.Severity, confidence float64, reasons map[string]bool) Hit {
 	parts := sortedReasons(reasons)
-	var syntax, semantics []string
+	var syntax, semantics, context []string
 	for _, reason := range parts {
-		if strings.HasPrefix(reason, "syntax:") {
+		switch {
+		case strings.HasPrefix(reason, "syntax:"):
 			syntax = append(syntax, strings.TrimSpace(strings.TrimPrefix(reason, "syntax:")))
-		}
-		if strings.HasPrefix(reason, "semantics:") {
+		case strings.HasPrefix(reason, "semantics:"):
 			semantics = append(semantics, strings.TrimSpace(strings.TrimPrefix(reason, "semantics:")))
+		case strings.HasPrefix(reason, "context:"):
+			context = append(context, strings.TrimSpace(strings.TrimPrefix(reason, "context:")))
 		}
 	}
-	if len(syntax) == 0 {
-		syntax = append(syntax, "attack grammar matched")
+	// Do not invent filler evidence: FP-first blockableHit relies on real signals only.
+	syntaxText := "syntax: none"
+	if len(syntax) > 0 {
+		syntaxText = "syntax: " + strings.Join(syntax, ", ")
+	} else if len(context) > 0 {
+		syntaxText = "syntax: " + strings.Join(context, ", ")
 	}
-	if len(semantics) == 0 {
-		semantics = append(semantics, "malicious behavior inferred from context")
+	semanticsText := "semantics: none"
+	if len(semantics) > 0 {
+		semanticsText = "semantics: " + strings.Join(semantics, ", ")
 	}
 	if confidence > 0.99 {
 		confidence = 0.99
@@ -1088,8 +1314,8 @@ func hit(candidate semanticCandidate, category string, severity engine.Severity,
 		Category:   category,
 		Source:     candidate.input.Source,
 		Name:       candidate.input.Name,
-		Syntax:     "syntax: " + strings.Join(syntax, ", "),
-		Semantics:  "semantics: " + strings.Join(semantics, ", "),
+		Syntax:     syntaxText,
+		Semantics:  semanticsText,
 		Severity:   severity,
 		Confidence: confidence,
 		Payload:    strings.TrimSpace(candidate.text),
@@ -1115,6 +1341,93 @@ func confidenceBonus(reasons map[string]bool) float64 {
 func hasSemanticReason(reasons map[string]bool) bool {
 	for reason := range reasons {
 		if strings.HasPrefix(reason, "semantics:") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSyntaxReason(reasons map[string]bool) bool {
+	for reason := range reasons {
+		if strings.HasPrefix(reason, "syntax:") || strings.HasPrefix(reason, "context:") {
+			return true
+		}
+	}
+	return false
+}
+
+// blockableHit enforces the FP-first policy for production block mode:
+// weak single-signal hits must not block legitimate traffic.
+// Prefer miss over wrong block.
+func blockableHit(h Hit) bool {
+	if h.Category == "" || h.Payload == "" {
+		return false
+	}
+	syntaxOK := h.Syntax != "" && !strings.HasSuffix(h.Syntax, "none") && !strings.Contains(h.Syntax, "attack grammar matched")
+	semanticsOK := h.Semantics != "" && !strings.HasSuffix(h.Semantics, "none") && !strings.Contains(h.Semantics, "malicious behavior inferred from context")
+	if syntaxOK && semanticsOK {
+		return true
+	}
+	switch h.Category {
+	case "xss":
+		// Executable HTML/JS contexts already embed multi-part structure.
+		return syntaxOK && (strings.Contains(h.Syntax, "executable") || strings.Contains(h.Syntax, ",") || strings.Contains(h.Syntax, "javascript") || strings.Contains(h.Syntax, "srcdoc") || strings.Contains(h.Syntax, "data URI"))
+	case "rce":
+		// analyzeRCE already requires ≥2 reasons.
+		return (syntaxOK || semanticsOK) && (strings.Contains(h.Syntax, ",") || semanticsOK || syntaxOK && semanticsOK || strings.Contains(h.Syntax, "shell") || strings.Contains(h.Semantics, "command") || strings.Contains(h.Semantics, "PowerShell") || strings.Contains(h.Semantics, "interpreter") || strings.Contains(h.Semantics, "download"))
+	case "xxe":
+		return syntaxOK && semanticsOK
+	case "sqli":
+		// Side-effect-only SQL (time delay, destructive ops, file/cmd primitives) is blockable.
+		if semanticsOK {
+			return true
+		}
+		if !syntaxOK {
+			return false
+		}
+		return strings.Contains(h.Syntax, "UNION") ||
+			strings.Contains(h.Syntax, "tautology") ||
+			strings.Contains(h.Syntax, "comment") ||
+			strings.Contains(h.Syntax, "OR predicate") ||
+			strings.Contains(h.Syntax, "ORDER/GROUP") ||
+			strings.Contains(h.Syntax, "HAVING") ||
+			strings.Contains(h.Syntax, "SQL function comparison") ||
+			strings.Contains(h.Syntax, ",")
+	case "lfi":
+		return (syntaxOK && semanticsOK) ||
+			(syntaxOK && (strings.Contains(h.Syntax, "wrapper") || strings.Contains(h.Syntax, "traversal"))) ||
+			(semanticsOK && strings.Contains(h.Semantics, "sensitive"))
+	case "ssrf":
+		return syntaxOK || semanticsOK
+	case "nosqli", "ssti":
+		return syntaxOK && semanticsOK || semanticsOK
+	default:
+		return syntaxOK && semanticsOK
+	}
+}
+
+// sqlReasonsBlockable requires multi-signal or high-precision SQL evidence before a Hit is emitted.
+func sqlReasonsBlockable(reasons map[string]bool) bool {
+	if len(reasons) == 0 {
+		return false
+	}
+	// Any explicit semantic side-effect is enough (time delay, destructive, file/cmd).
+	if hasSemanticReason(reasons) {
+		return true
+	}
+	if len(reasons) >= 2 && hasSyntaxReason(reasons) {
+		return true
+	}
+	// High-precision single syntax compositions (not lone SELECT/FROM docs).
+	for reason := range reasons {
+		if strings.Contains(reason, "UNION") ||
+			strings.Contains(reason, "tautology") ||
+			strings.Contains(reason, "comment") ||
+			strings.Contains(reason, "OR predicate") ||
+			strings.Contains(reason, "ORDER/GROUP") ||
+			strings.Contains(reason, "HAVING") ||
+			strings.Contains(reason, "regex or LIKE") ||
+			strings.Contains(reason, "SQL function comparison") {
 			return true
 		}
 	}

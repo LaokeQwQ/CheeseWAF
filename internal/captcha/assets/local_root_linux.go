@@ -4,6 +4,10 @@ package assets
 
 import "golang.org/x/sys/unix"
 
+func normalizeSecureRootPath(path string) string {
+	return path
+}
+
 func openSecureRootAt(dirfd int, name string) (int, error) {
 	return unix.Openat2(dirfd, name, secureRootOpenHow())
 }

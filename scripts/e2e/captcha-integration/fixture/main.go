@@ -62,15 +62,16 @@ type wafChallenge struct {
 }
 
 type controlRequest struct {
-	ID        uint64 `json:"id"`
-	Action    string `json:"action"`
-	Token     string `json:"token,omitempty"`
-	Cookie    string `json:"cookie,omitempty"`
-	UserAgent string `json:"user_agent,omitempty"`
-	Variant   string `json:"variant,omitempty"`
-	X         int    `json:"x,omitempty"`
-	DragMS    int    `json:"drag_ms,omitempty"`
-	Track     string `json:"track,omitempty"`
+	ID        uint64                   `json:"id"`
+	Action    string                   `json:"action"`
+	Token     string                   `json:"token,omitempty"`
+	Cookie    string                   `json:"cookie,omitempty"`
+	UserAgent string                   `json:"user_agent,omitempty"`
+	Variant   string                   `json:"variant,omitempty"`
+	X         int                      `json:"x,omitempty"`
+	DragMS    int                      `json:"drag_ms,omitempty"`
+	Track     string                   `json:"track,omitempty"`
+	Response  captcha.BehaviorResponse `json:"response,omitempty"`
 }
 
 type controlReply struct {
@@ -295,12 +296,32 @@ func (fx *fixture) handle(request controlRequest) (controlReply, bool) {
 			return controlReply{ID: request.ID, OK: false, Error: "waf_plan_unavailable"}, false
 		}
 		return controlReply{ID: request.ID, OK: true, X: plan.X, Y: plan.Y, DurationMS: plan.DurationMS, Generation: plan.Generation}, false
+	case "waf_diagnose":
+		reply.Diagnosis = fx.wafDiagnosis(request.UserAgent, request.Response)
 	case "shutdown":
 		return reply, true
 	default:
 		return controlReply{ID: request.ID, OK: false, Error: "unsupported_action"}, false
 	}
 	return reply, false
+}
+
+func (fx *fixture) wafDiagnosis(userAgent string, response captcha.BehaviorResponse) string {
+	if strings.TrimSpace(userAgent) == "" || strings.TrimSpace(response.Token) == "" {
+		return "incomplete"
+	}
+	result := captcha.VerifyBehaviorChallenge(captcha.BehaviorOptions{
+		Secret: fx.secret, Purpose: "waf-bot-behavior-v1", ClientKey: fixtureClientIP + "\n" + userAgent,
+		Path: protectedPath, Site: fixtureSite, TTL: fx.config.Protection.Bot.CAPTCHAChallengeTTL,
+		Type: captcha.BehaviorShapeSlider,
+	}, response)
+	if result.Valid {
+		return "proof_state"
+	}
+	if result.Reason == "binding_mismatch" || result.Reason == "incorrect" || result.Reason == "expired" || result.Reason == "invalid_response" {
+		return result.Reason
+	}
+	return "invalid_token"
 }
 
 func (fx *fixture) loginTarget(token, cookieValue, userAgent string) (int, error) {
@@ -311,7 +332,7 @@ func (fx *fixture) loginTarget(token, cookieValue, userAgent string) (int, error
 	first := 0
 	last := 0
 	for x := 1; x <= trackWidth; x++ {
-		if captcha.VerifySlider(options, captcha.SliderPayload{Token: token, X: x, DragMS: dragMS}) {
+		if captcha.VerifySlider(options, captcha.SliderPayload{Token: token, X: x, DragMS: dragMS, Track: loginSliderTrack(x, dragMS)}) {
 			if first == 0 {
 				first = x
 			}
@@ -324,6 +345,16 @@ func (fx *fixture) loginTarget(token, cookieValue, userAgent string) (int, error
 		return first + (last-first)/2, nil
 	}
 	return 0, errors.New("login target not found")
+}
+
+func loginSliderTrack(finalX, dragMS int) string {
+	return fmt.Sprintf(
+		`[{"x":0,"y":20,"t":0,"type":"down"},{"x":%d,"y":21,"t":%d,"type":"move"},{"x":%d,"y":22,"t":%d,"type":"up"}]`,
+		finalX/2,
+		dragMS/2,
+		finalX,
+		dragMS,
+	)
 }
 
 func (fx *fixture) loginDiagnosis(request controlRequest) (string, error) {
@@ -402,16 +433,22 @@ func (fx *fixture) wafTarget(userAgent, variant string) (wafPlan, bool) {
 		Type: captcha.BehaviorShapeSlider,
 	}
 	const duration = 620
-	target := 0
+	first := 0
+	last := 0
 	for x := 500; x <= 10000; x += 50 {
 		if captcha.VerifyBehaviorChallenge(options, behaviorShapeResponse(latest.challenge.Token, x, y, duration)).Valid {
-			target = x
+			if first == 0 {
+				first = x
+			}
+			last = x
+		} else if first != 0 {
 			break
 		}
 	}
-	if target == 0 {
+	if first == 0 {
 		return wafPlan{}, false
 	}
+	target := first + (last-first)/2
 	if variant == "wrong" {
 		if target <= 5000 {
 			target = min(10000, target+4000)

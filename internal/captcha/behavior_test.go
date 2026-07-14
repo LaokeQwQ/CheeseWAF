@@ -285,30 +285,26 @@ func TestBehaviorChallenge_ExpiresAndBindsEveryContextField(t *testing.T) {
 	}
 }
 
-func TestBehaviorChallenge_CurveSliderVersionsAndTrackLimits(t *testing.T) {
+func TestBehaviorChallenge_CurveSliderTrackLimits(t *testing.T) {
 	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
-	images := map[int]string{}
-	for _, version := range []int{1, 2, 3} {
-		opts := behaviorTestOptions(BehaviorCurveSlider, now)
-		opts.Version = version
-		opts.Intensity = 5
-		opts.MaxTrackPoints = 4
-		challenge, err := IssueBehaviorChallenge(opts)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if challenge.Presentation.Version != version || challenge.Presentation.Intensity != 5 || challenge.Presentation.Track["max_points"] != 4 {
-			t.Fatalf("missing v%d parameters: %+v", version, challenge.Presentation)
-		}
-		images[version] = challenge.Presentation.Image
-		response := correctBehaviorResponse(t, opts, challenge.Token)
-		response.Track = append(response.Track, BehaviorTrackPoint{X: 1, Y: 1, T: 200}, BehaviorTrackPoint{X: 2, Y: 2, T: 300}, BehaviorTrackPoint{X: 3, Y: 3, T: 500})
-		if VerifyBehaviorChallenge(opts, response).Valid {
-			t.Fatal("oversized track accepted")
-		}
+	opts := behaviorTestOptions(BehaviorCurveSlider, now)
+	opts.Version = 2
+	opts.Intensity = 5
+	opts.MaxTrackPoints = 4
+	challenge, err := IssueBehaviorChallenge(opts)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if images[1] == images[2] || images[2] == images[3] || images[1] == images[3] {
-		t.Fatal("curve slider versions are not visually distinct")
+	if challenge.Presentation.Version != 3 || challenge.Presentation.Intensity != 5 || challenge.Presentation.Track["max_points"] != 4 {
+		t.Fatalf("missing V3 align parameters: %+v", challenge.Presentation)
+	}
+	if challenge.Presentation.Piece == "" || challenge.Presentation.MaxOffset != 0 || challenge.Presentation.InitialOffset != 0 {
+		t.Fatalf("curve slider must publish only the pre-shifted piece: %+v", challenge.Presentation)
+	}
+	response := correctBehaviorResponse(t, opts, challenge.Token)
+	response.Track = append(response.Track, BehaviorTrackPoint{X: 1, Y: 1, T: 200}, BehaviorTrackPoint{X: 2, Y: 2, T: 300}, BehaviorTrackPoint{X: 3, Y: 3, T: 500})
+	if VerifyBehaviorChallenge(opts, response).Valid {
+		t.Fatal("oversized track accepted")
 	}
 }
 

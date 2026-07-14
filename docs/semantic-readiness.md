@@ -2,6 +2,24 @@
 
 This document is intentionally conservative. CheeseWAF's staged semantic analyzer is usable for the current product path, but it is not yet equivalent to ModSecurity with OWASP CRS.
 
+## Production policy (FP-first)
+
+In production WAF deployments, **false positives are worse than controlled misses**.
+
+| Priority | Rule |
+|----------|------|
+| 1 | Benign / production-shaped traffic must not be blocked |
+| 2 | Low-confidence or single-signal evidence must not force `block` |
+| 3 | Prefer log/challenge when policy levels require higher confidence |
+| 4 | Reduce false negatives only after the FP gate stays green |
+
+Implementation notes:
+
+- Analyzer block mode uses `blockableHit`: multi-signal evidence (syntax + semantics) or high-precision compositions (UNION / tautology / time-delay side effects, etc.).
+- Default pipeline mounts **one** staged Analyzer per site (no double-run of standalone SQL/XSS/RCE detectors alongside Analyzer).
+- Per-event fields already present (Codex): `detector_id`, `confidence`, request `latency`, policy `result_confidence` / `minimum_confidence`.
+- Process metrics (added): `cheesewaf_semantic_*` Prometheus counters for analyzed/hit/block/budget/avg latency and per-category hits.
+
 ## Current Coverage
 
 Implemented in `internal/engine/semantic/analyzer.go`:
@@ -62,8 +80,75 @@ per-case latency, and per-case pass/fail evidence. See
 Latest local baseline on Windows amd64 / Ryzen 5 5500:
 
 ```text
+# Historical (pre FP-first / single-path work; may be stale)
 BenchmarkAnalyzerReadinessCorpus-12  36810  32326 ns/op  6145 B/op  108 allocs/op
+
+# 2026-07-15 (after single Analyzer path + input budgets + FP gate + candidate cache)
+# Windows amd64 / Ryzen 5 5500
+# Warm-path benches (repeated identical fields hit pure-Go TTL/LRU cache):
+BenchmarkSemanticAnalyzer-12           ~18.7–19.0 µs/op   6671 B/op    83 allocs/op
+BenchmarkAnalyzerReadinessCorpus-12    ~14.5–14.6 µs/op   6035 B/op    67 allocs/op
+# Cold path remains full analysis cost; cache never weakens blockableHit / FP gates.
 ```
+
+### FP gate (2026-07-15)
+
+Command: `go test ./internal/engine/semantic -run TestFPGateReport -count=1 -v`
+
+| Metric | Value |
+|--------|------:|
+| Benign samples | **9620** (curated + production-shaped + neighbors corpus) |
+| False positives | **0** |
+| FP rate | **0%** (target ≤ 0.00001%) |
+| Attack samples | **17029** |
+| Detected | **17029** |
+| Detect rate | **100%** |
+| Budget exhausted | 0 |
+| Candidate cache (gate run) | hits ~65k / misses ~22k |
+
+Hard gate: any FP fails CI (`TestFPGateReport` + `TestAnalyzerReadinessBenignMatrix`).
+
+### Curated corpora
+
+| File | Role |
+|------|------|
+| `testdata/curated_external_shapes.jsonl` | Large mixed attack/benign shapes |
+| `testdata/benign_production_shapes.jsonl` | Filtered production FP cases (search keywords, CMS templates, PDO, CDN, CN search, kube-probe UA, etc.) |
+| `testdata/handcrafted_attack_neighbors.jsonl` | High-precision attacks paired with the benign neighbors |
+
+### Pure-Go candidate cache
+
+- Key: `mode` + enabled categories + candidate text (FNV-1a)
+- Policy: TTL 2m, max 8192 entries, approximate LRU eviction
+- Scope: `analyzeCandidate` only — never bypasses `blockableHit`
+- Metrics: `cheesewaf_semantic_cache_hits_total` / `..._misses_total`
+
+## Metrics
+
+### Per-event (existing)
+
+| Field | Where |
+|-------|--------|
+| `detector_id` | `DetectionResult` → logs / corpus report |
+| `confidence` | `DetectionResult` + log metadata `confidence` |
+| Request `latency` | `LogEntry.Latency` (full request path) |
+| Policy confidence | `waf_policy_decision.result_confidence` / `minimum_confidence` |
+
+### Process counters (semantic)
+
+| Metric | Meaning |
+|--------|---------|
+| `cheesewaf_semantic_analyzed_total` | Analyzer.Detect calls |
+| `cheesewaf_semantic_passed_total` | Clean pass |
+| `cheesewaf_semantic_hit_total` | Detection emitted |
+| `cheesewaf_semantic_blocked_total` | Block-mode detection |
+| `cheesewaf_semantic_budget_exhausted_total` | Pipeline 100ms budget hit |
+| `cheesewaf_semantic_avg_latency_ns` | Mean Analyzer wall time |
+| `cheesewaf_semantic_latency_bucket_total{bucket=...}` | under_50us / under_200us / under_1ms / over_1ms |
+| `cheesewaf_semantic_hit_by_category_total{category=...}` | Hits by category |
+| `cheesewaf_semantic_block_by_category_total{category=...}` | Blocks by category |
+
+In-process API: `semantic.ProcessMetrics().Snapshot()`.
 
 ## Not Yet ModSecurity/CRS Parity
 

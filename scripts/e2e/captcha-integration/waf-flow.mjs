@@ -40,25 +40,33 @@ export async function runWAFFlow({ page, context, profile, fixture, userAgent, t
   assertCondition(correctPlan.generation > wrongPlan.generation, 'WAF challenge failure reused the consumed challenge');
 
   await dragWAFShape(page, correctPlan.x, correctPlan.y, correctPlan.duration_ms);
-  const verifySuccessPromise = page.waitForResponse(responseMatches(VERIFY_PATH, { method: 'POST' }), { timeout: timeoutMs });
+  const verifyRequestPromise = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === VERIFY_PATH && request.method() === 'POST',
+    { timeout: timeoutMs },
+  );
+  const verifySuccessPromise = page.waitForResponse(
+    responseMatches(VERIFY_PATH, { method: 'POST' }),
+    { timeout: timeoutMs },
+  );
   const protectedSuccessPromise = page.waitForResponse(
     (response) => responseMatches(PROTECTED_PATH, { method: 'GET' })(response) && response.request().resourceType() === 'document',
     { timeout: timeoutMs },
   );
   await page.locator('#verify').click();
-  const [verifySuccess, protectedSuccess] = await Promise.all([verifySuccessPromise, protectedSuccessPromise]);
+  const [verifyRequest, verifySuccess] = await Promise.all([verifyRequestPromise, verifySuccessPromise]);
+  const submitted = safePostData(verifyRequest);
+  const protectedSuccess = await protectedSuccessPromise;
   if (verifySuccess.status() !== 200) {
-    const submitted = safePostData(verifySuccess.request());
     const point = submitted?.point;
     const track = Array.isArray(submitted?.track) ? submitted.track : [];
     const dx = Number.isFinite(point?.x) ? Number(point.x) - Number(correctPlan.x) : 'missing';
     const dy = Number.isFinite(point?.y) ? Number(point.y) - Number(correctPlan.y) : 'missing';
-    throw new Error(`WAF correct verification rejected: status=${verifySuccess.status()} dx=${dx} dy=${dy} duration=${Number(submitted?.duration_ms) || 0} points=${track.length}`);
+    const diagnosis = submitted ? await fixture.wafDiagnose({ user_agent: userAgent, response: submitted }) : { diagnosis: 'incomplete' };
+    throw new Error(`WAF correct verification rejected: status=${verifySuccess.status()} diagnosis=${safeDiagnosis(diagnosis.diagnosis)} dx=${dx} dy=${dy} duration=${Number(submitted?.duration_ms) || 0} points=${track.length}`);
   }
-  const verifyPayload = await verifySuccess.json();
-  assertCondition(verifyPayload?.data?.valid === true && verifyPayload?.data?.clearance === true, 'WAF verification did not issue clearance');
   assertCondition(protectedSuccess.status() === 200, 'WAF clearance did not release the protected resource');
-  const protectedPayload = await protectedSuccess.json();
+  await protectedSuccess.finished();
+  const protectedPayload = JSON.parse(await page.locator('body').innerText());
   assertCondition(protectedPayload?.protected === true && protectedPayload?.challenge === 'passed', 'WAF clearance did not release the protected resource');
 
   const cookies = await context.cookies(fixture.wafURL);
@@ -66,6 +74,10 @@ export async function runWAFFlow({ page, context, profile, fixture, userAgent, t
   assertCondition(clearance?.httpOnly === true && clearance.value.length > 20, 'WAF clearance cookie was not issued as HttpOnly');
   assertCondition(monitor.count('POST', VERIFY_PATH) === 2, 'WAF challenge verification count was unexpected');
   monitor.assertClean(`${profile.name}/waf`);
+}
+
+function safeDiagnosis(value) {
+  return ['binding_mismatch', 'incorrect', 'expired', 'invalid_response', 'invalid_token', 'proof_state', 'incomplete'].includes(value) ? value : 'unknown';
 }
 
 async function assertWAFChallengeReady(page) {
@@ -81,7 +93,13 @@ function assertCondition(condition, message) {
 
 function safePostData(request) {
   try {
-    return request.postDataJSON();
+    const parsed = request.postDataJSON();
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {
+    // Fall through to the raw request body.
+  }
+  try {
+    return JSON.parse(request.postData() ?? '');
   } catch {
     return undefined;
   }

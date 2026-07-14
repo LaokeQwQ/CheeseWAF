@@ -38,7 +38,7 @@ func openSecureRoot(path string) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	clean := filepath.Clean(abs)
+	clean := normalizeSecureRootPath(filepath.Clean(abs))
 	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, err

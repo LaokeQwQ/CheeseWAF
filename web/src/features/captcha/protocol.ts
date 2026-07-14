@@ -15,8 +15,6 @@ export const CAPTCHA_TYPES = [
   "pow",
   "curve_draw",
   "curve_slider",
-  "curve_slider_v2",
-  "curve_slider_v3",
   "shape_slider",
   "slider_v2",
   "rotate",

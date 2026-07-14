@@ -23,41 +23,56 @@ type Case struct {
 }
 
 func (tc *Case) UnmarshalJSON(data []byte) error {
+	// Accept both snake_case and PascalCase keys used across curated corpora.
 	type rawCase struct {
 		Name              string            `json:"name"`
+		NameCamel         string            `json:"Name"`
 		SourceFamily      string            `json:"source_family"`
 		SourceFamilyCamel string            `json:"SourceFamily"`
 		Label             string            `json:"label"`
+		LabelCamel        string            `json:"Label"`
 		Category          string            `json:"category,omitempty"`
+		CategoryCamel     string            `json:"Category,omitempty"`
 		Method            string            `json:"method"`
+		MethodCamel       string            `json:"Method"`
 		Target            string            `json:"target"`
+		TargetCamel       string            `json:"Target"`
 		ContentType       string            `json:"content_type,omitempty"`
 		ContentTypeCamel  string            `json:"ContentType,omitempty"`
 		Body              string            `json:"body,omitempty"`
+		BodyCamel         string            `json:"Body,omitempty"`
 		Header            map[string]string `json:"header,omitempty"`
+		HeaderCamel       map[string]string `json:"Header,omitempty"`
 		Rationale         string            `json:"rationale,omitempty"`
+		RationaleCamel    string            `json:"Rationale,omitempty"`
 	}
 	var raw rawCase
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	tc.Name = raw.Name
-	tc.SourceFamily = raw.SourceFamily
-	if tc.SourceFamily == "" {
-		tc.SourceFamily = raw.SourceFamilyCamel
-	}
-	tc.Label = raw.Label
-	tc.Category = raw.Category
-	tc.Method = raw.Method
-	tc.Target = raw.Target
-	tc.ContentType = raw.ContentType
-	if tc.ContentType == "" {
-		tc.ContentType = raw.ContentTypeCamel
-	}
-	tc.Body = raw.Body
+	tc.Name = firstNonEmpty(raw.Name, raw.NameCamel)
+	tc.SourceFamily = firstNonEmpty(raw.SourceFamily, raw.SourceFamilyCamel)
+	tc.Label = strings.ToLower(firstNonEmpty(raw.Label, raw.LabelCamel))
+	tc.Category = strings.ToLower(firstNonEmpty(raw.Category, raw.CategoryCamel))
+	tc.Method = firstNonEmpty(raw.Method, raw.MethodCamel)
+	tc.Target = firstNonEmpty(raw.Target, raw.TargetCamel)
+	tc.ContentType = firstNonEmpty(raw.ContentType, raw.ContentTypeCamel)
+	tc.Body = firstNonEmpty(raw.Body, raw.BodyCamel)
 	tc.Header = raw.Header
-	tc.Rationale = raw.Rationale
+	if len(tc.Header) == 0 {
+		tc.Header = raw.HeaderCamel
+	}
+	tc.Rationale = firstNonEmpty(raw.Rationale, raw.RationaleCamel)
 	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // StrictCategory identifies curated corpora whose labels are expected to match the

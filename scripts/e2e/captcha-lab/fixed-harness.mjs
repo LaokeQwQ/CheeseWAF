@@ -19,7 +19,7 @@ export async function runFixedHarness({ cwd = process.cwd(), timeoutMs = 60_000 
 }
 
 export function assertReport(report) {
-  const expected = new Set(['curve_draw', 'curve_slider_v1', 'curve_slider_v2', 'curve_slider_v3', 'shape_slider', 'rotate', 'restore_slider', 'angle', 'scratch', 'text_click', 'icon_click']);
+  const expected = new Set(['curve_draw', 'curve_slider', 'shape_slider', 'rotate', 'restore_slider', 'angle', 'scratch', 'text_click', 'icon_click']);
   const allowedFields = ['correct_accepted', 'correct_replay_rejected', 'type', 'wrong_rejected', 'wrong_replay_rejected'];
   if (!Array.isArray(report) || report.length !== expected.size) throw new Error('fixed CAPTCHA harness returned an incomplete scenario set');
   for (const item of report) {

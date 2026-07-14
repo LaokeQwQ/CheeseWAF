@@ -120,6 +120,9 @@ func TestBehaviorPageHasTypeSpecificControls(t *testing.T) {
 			t.Errorf("missing interactive behavior %q", behavior)
 		}
 	}
+	if !strings.Contains(page, `#challenge-piece{`) || !strings.Contains(page, `filter:drop-shadow(0 2px 2px #0005);pointer-events:none}`) {
+		t.Fatal("shape puzzle piece intercepts pointer input intended for the interaction surface")
+	}
 }
 
 func TestBehaviorPageSuccessRequiresServerValid(t *testing.T) {

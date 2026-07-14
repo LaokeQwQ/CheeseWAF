@@ -197,8 +197,6 @@ const zhCN = {
       pow: '浏览器安全校验',
       curve_draw: '曲线绘制',
       curve_slider: '滑动曲线',
-      curve_slider_v2: '滑动曲线（加强）',
-      curve_slider_v3: '滑动曲线（高级）',
       shape_slider: '滑块验证',
       slider_v2: '异形滑块',
       rotate: '旋转验证',

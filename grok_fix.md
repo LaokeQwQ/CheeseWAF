@@ -231,3 +231,88 @@ cd web && npm test -- --run \
 | HEAD | `94f3194ebb1a7a030d6e1cca82d9c7e45a69f132` |
 | GitHub PR | https://github.com/LaokeQwQ/CheeseWAF/pull/222 （base: `dev`，MERGEABLE） |
 | Forgejo mirror-sync | HTTP 200；`forgejo` 与 `origin` 同 SHA |
+
+---
+
+## 2. 续作纪要（2026-07-15）— 语义 / Cache / 语料 / 滑块 / AI / 计划缺口
+
+> 语气故意偏「神秘」一点：下面写的是**证据**，不是愿景海报。
+
+### 2.1 语义引擎：误报优先 + 纯 Go Cache
+
+| 项 | 证据 |
+|----|------|
+| FP 门禁 | `TestFPGateReport`：**9650 benign / 0 FP**，**17037 attack / 0 miss**，`fp_gate_pass=true` |
+| 热路径 Cache | 新增 `internal/engine/semantic/cache.go`：32-shard TTL+近似 LRU、FNV-1a 无 `hash.Hash` 堆分配、类别指纹预计算、`get` 零拷贝返回 |
+| 进程指标 | `metrics.go`：`cache_hits/misses`、按类别 block、延迟桶；Prometheus 已挂 |
+| 预过滤 | `looksCleanASCIIField`：仅单 token 标识符（禁止空格/前导点），避免 `.env` / `pwsh -EncodedCommand` 被误短路 |
+| LFI FP 修复 | 裸 `%2f/%5c`（正常 URL 编码）不再当穿越；OAuth `redirect_uri`、IANA timezone 等生产形状通过 |
+| Bench | `BenchmarkSemanticAnalyzer` 约 **10.1µs/op · 5804 B · 76 allocs**（相对此前 ~19µs/83allocs 的暖路径） |
+| 约束 | **仍 100% Go**，无 CGO / 无第三方缓存依赖 |
+
+### 2.2 误报案例数据集与攻击邻居（精筛）
+
+写入 `testdata/`，**不是**盲导 SecLists 全量：
+
+| 文件 | 规模（约） | 内容 |
+|------|------------|------|
+| `benign_production_shapes.jsonl` | **60** | OData `$filter`、GraphQL、JWT、OAuth/PKCE、ES match、Slack webhook、data:image、Handlebars、中文购物车、JSON:API、CORS、session cookie… |
+| `handcrafted_attack_neighbors.jsonl` | **18** | 与上述 benign **成对**的 SQLi/XSS/RCE/LFI/SSRF/NoSQLi/SSTI/XXE |
+| `curated_external_shapes.jsonl` | ~2.6 万行 | 既有 bulk+curated 混合语料（仍经 label/gate 回归） |
+
+导入原则：每个高风险族至少有一个生产形状邻居；宁可漏拦也不允许「文档/业务 JSON」被 block。
+
+### 2.3 CAPTCHA 曲线滑块：抗图灵 / 黑产轨迹
+
+`verifyVisualCurveSlider` 加固（目标仍 V3 位图对齐，服务端密封 offset）：
+
+- 最少 **8** 个轨迹点、时长 **≥280ms**
+- 拒绝恒步长线性 ramp（经典脚本）
+- 拒绝高平均速度 / 单步 teleport / 过大瞬时速度
+- 要求空间或时间方差（`sliderTrackHasHumanVariance`）
+- 测试：linear bot、fast drag、teleport、folded 均 reject；合法人机夹具仍 accept
+- harness 改为 `harnessCurveSliderTrack`  dense+jitter 轨迹
+
+### 2.4 AI 助手 / 流式 / 知识库 / 提示词 / 注入 / MCP / 自学习 / 审批
+
+本轮**加固边界与知识**，未重写整条链路（原链路已具备 stream + tool plan + approval）：
+
+| 面 | 状态 |
+|----|------|
+| 系统安全提示词 | 扩展 jailbreak/DAN/MCP 参数/自学习 apply 等不可信边界（`aiSafetySystemPrompt`） |
+| 知识库内置条目 | 增补 prompt-injection、MCP+审批、语义 FP-first、curve_slider 抗自动化 |
+| 流式对话 | 既有 provider delta / reasoning / tool_call / heartbeat（本轮未改协议） |
+| MCP Tools | Registry + sensitivity；改配仍走 ApprovalStore fail-closed |
+| 自学习 | 既有 `reviewOK` 门闩 + `CanWriteRules`；LLM 评审失败禁止 AutoApply |
+| 审批 | 自批禁止 + `approve:ai` RBAC（历史已修，本轮回归 `./internal/ai` PASS） |
+
+### 2.5 `implementation_plan.md` 缺口速览（空壳 / 未完 / 不可用）
+
+| 能力 | 判断 | 说明 |
+|------|------|------|
+| Windows **GUI 服务控制器** | **未实现** | 计划有；代码无 WinForms/WPF/webview 控制器 |
+| Windows **NSIS 安装器** | **未实现** | 仅规划；发行现状是 zip/bin CLI |
+| CRS/FTW / Coraza 对标 | **未宣称完成** | 有 curated corpus + external gate 证据，非 CRS 等价 |
+| Paranoia / anomaly scoring | **路线图** | 未做 CRS 式 anomaly 累计 |
+| 集群 M2–M4 完整 HA | **部分** | mTLS/join 等有基础；Raft/etcd/写冻结/流量调度未齐 |
+| CLI / TUI / Web 管理 | **可用** | `cmd/cheesewaf` + panel + embed web |
+| 语义引擎生产 block | **可用** | FP-first + gate 0 FP（标注集） |
+| AI 助手全链路 | **可用（需配置 Provider）** | 无 key 时降级；有 key 时 tool+stream+审批 |
+| CAPTCHA behavior / login | **可用** | 滑块轨迹门槛本轮加严 |
+
+### 2.6 验证命令（本轮）
+
+```text
+go test ./internal/engine/semantic/ -count=1
+go test ./internal/captcha/ -count=1
+go test ./internal/ai/ -count=1
+go test ./internal/engine/semantic/ -bench=BenchmarkSemanticAnalyzer -benchmem -benchtime=200ms
+```
+
+### 2.7 推送（本轮结束后回填）
+
+| 项 | 值 |
+|----|-----|
+| 分支 | `feature/security-captcha-ui-hardening-20260714` |
+| GitHub | `origin` push |
+| Forgejo | `forgejo` push 或 mirror-sync |

@@ -430,8 +430,7 @@ func TestRouterCaptchaLabIssuesEverySupportedTypeWithoutExposingAnswers(t *testi
 		wantVersion int
 	}{
 		{"pow", captcha.BehaviorPOW, 3}, {"curve_draw", captcha.BehaviorCurveDraw, 3},
-		{"curve_slider", captcha.BehaviorCurveSlider, 1}, {"curve_slider_v2", captcha.BehaviorCurveSlider, 2},
-		{"curve_slider_v3", captcha.BehaviorCurveSlider, 3}, {"shape_slider", captcha.BehaviorShapeSlider, 2},
+		{"curve_slider", captcha.BehaviorCurveSlider, 3}, {"shape_slider", captcha.BehaviorShapeSlider, 2},
 		{"slider_v2", captcha.BehaviorShapeSlider, 2}, {"rotate", captcha.BehaviorRotate, 3},
 		{"restore_slider", captcha.BehaviorRestoreSlider, 3}, {"angle", captcha.BehaviorAngle, 3},
 		{"scratch", captcha.BehaviorScratch, 3}, {"text_click", captcha.BehaviorTextClick, 3},
@@ -1744,6 +1743,7 @@ func findValidSliderX(t *testing.T, cfg config.Config, secret string, client *lo
 			Token:  challenge.Token,
 			X:      x,
 			DragMS: challenge.MinDragMS + 50,
+			Track:  sliderTrackForTest(x, challenge.MinDragMS+50),
 		}) {
 			return x
 		}

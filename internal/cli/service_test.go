@@ -410,6 +410,49 @@ func assertAdminSecurityHeaders(t *testing.T, rr *httptest.ResponseRecorder, wan
 	}
 }
 
+func TestBuildPipelineUsesSingleSemanticAnalyzerPath(t *testing.T) {
+	cfg := &config.Config{
+		Sites: []config.SiteConfig{
+			{
+				ID:      "default",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+					SemanticEngines: config.SemanticEngineSwitches{
+						SQL:  true,
+						XSS:  true,
+						RCE:  true,
+						LFI:  true,
+						XXE:  true,
+						SSRF: true,
+					},
+				},
+			},
+		},
+	}
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SQLi should be detected by Analyzer, not a standalone detector id.
+	req, _ := http.NewRequest(http.MethodGet, "/search?q=1%20union%20select%20password%20from%20users", nil)
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pipeline.Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "sqli" {
+		t.Fatalf("expected analyzer sqli detection, got %+v", result)
+	}
+	if !strings.HasPrefix(result.DetectorID, "semantic.analyzer") {
+		t.Fatalf("expected single analyzer detector id, got %q", result.DetectorID)
+	}
+}
+
 func TestBuildPipelineHonorsNoSQLSemanticSwitch(t *testing.T) {
 	cfg := &config.Config{
 		Sites: []config.SiteConfig{

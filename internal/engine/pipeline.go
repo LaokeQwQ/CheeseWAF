@@ -12,6 +12,11 @@ type Pipeline struct {
 	mu        sync.RWMutex
 }
 
+// OnDetectionBudgetExhausted is an optional hook for metrics when the 100ms
+// semantic budget is exhausted. Set from package main/service wiring to avoid
+// import cycles with semantic metrics.
+var OnDetectionBudgetExhausted func()
+
 func NewPipeline(detectors ...Detector) *Pipeline {
 	p := &Pipeline{}
 	for _, detector := range detectors {
@@ -91,7 +96,13 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 			if parentErr := parentCtx.Err(); parentErr != nil {
 				return nil, parentErr
 			}
+			if reqCtx.Metadata == nil {
+				reqCtx.Metadata = map[string]any{}
+			}
 			reqCtx.Metadata["detection_budget_exhausted"] = true
+			if OnDetectionBudgetExhausted != nil {
+				OnDetectionBudgetExhausted()
+			}
 			break
 		}
 		result, err := Guard(func() (*DetectionResult, error) { return detector.Detect(ctx, reqCtx) })

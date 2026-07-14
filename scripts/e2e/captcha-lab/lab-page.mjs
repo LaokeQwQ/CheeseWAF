@@ -6,10 +6,12 @@ export async function prepareLab(page, config, { locale, theme }) {
     localStorage.setItem('cheesewaf-theme', theme);
   }, { token: config.token, locale, theme });
   await page.goto(new URL(config.labPath, config.baseURL).toString(), { waitUntil: 'domcontentloaded' });
-  await page.getByRole('heading', { name: 'Captcha Lab' }).waitFor();
+  await page.locator('#captcha-lab-title').waitFor();
 }
 
 export async function selectScenario(page, type) {
-  const option = type === 'curve_slider_v1' ? 'curve_slider' : type;
+  const option = (type === 'curve_slider_v1' || type === 'curve_slider_v2' || type === 'curve_slider_v3')
+    ? 'curve_slider'
+    : type;
   await page.getByRole('combobox').selectOption(option);
 }

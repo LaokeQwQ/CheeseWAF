@@ -30,9 +30,16 @@ with benign counterexamples when a pattern is likely to affect normal traffic.
 
 ## Current Curated Corpus
 
-`internal/engine/semantic/testdata/curated_external_shapes.jsonl` contains
-small, reviewed samples inspired by public dataset families. It currently
-focuses on:
+Primary files under `internal/engine/semantic/testdata/`:
+
+| File | Purpose |
+| --- | --- |
+| `curated_external_shapes.jsonl` | Large mixed attack/benign corpus (bulk + curated families) |
+| `benign_production_shapes.jsonl` | **FP-focused** production-like benign traffic (search, CMS, docs, CN text, probe UA, OData/GraphQL/OAuth/JWT/webhook shapes) |
+| `handcrafted_attack_neighbors.jsonl` | High-precision attacks paired with the production benign neighbors |
+
+`curated_external_shapes.jsonl` contains reviewed samples inspired by public
+dataset families. It currently focuses on:
 
 - SQLi hex tautology, ORDER BY/HAVING inference, regex value probes, MySQL `PROCEDURE ANALYSE`, Oracle `DBMS_LOCK.SLEEP` / `DBMS_SESSION.SLEEP`, T-SQL `sp_OA*` / `OPENROWSET` / `OPENDATASOURCE`, SQL Server `xp_cmdshell`, and `UNION ... INTO OUTFILE` escalation shapes.
 - XSS meta refresh, CSS execution, `formaction=javascript:`, `srcset=javascript:`, and entity-decoded `iframe srcdoc` contexts.

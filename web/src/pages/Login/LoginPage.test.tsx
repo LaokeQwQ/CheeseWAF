@@ -54,7 +54,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-let mediaListener: (() => void) | undefined;
+let mobileMediaListener: (() => void) | undefined;
 
 class LoadedImageMock {
   onload: (() => void) | null = null;
@@ -79,22 +79,26 @@ beforeEach(() => {
   api.login.mockReset();
   api.verifyLoginCaptcha.mockReset();
   let mobile = false;
-  mediaListener = undefined;
-  const mediaQuery = {
-    get matches() { return mobile; },
-    media: '',
-    onchange: null,
-    addListener: vi.fn(),
-    removeListener: vi.fn(),
-    addEventListener: vi.fn((_name: string, listener: EventListenerOrEventListenerObject) => { mediaListener = () => { mobile = true; typeof listener === 'function' ? listener(new Event('change')) : listener.handleEvent(new Event('change')); }; }),
-    removeEventListener: vi.fn(),
-    dispatchEvent: vi.fn(),
-  };
-  vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
-    ...mediaQuery,
-    get matches() { return mobile; },
-    media: query,
-  }));
+  mobileMediaListener = undefined;
+  vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => {
+    const mobileQuery = query.includes('max-width');
+    return {
+      get matches() { return mobileQuery ? mobile : false; },
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn((_name: string, listener: EventListenerOrEventListenerObject) => {
+        if (!mobileQuery) return;
+        mobileMediaListener = () => {
+          mobile = true;
+          typeof listener === 'function' ? listener(new Event('change')) : listener.handleEvent(new Event('change'));
+        };
+      }),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+  });
 });
 
 afterEach(() => {
@@ -181,8 +185,8 @@ describe('Login CAPTCHA request isolation', () => {
 	fillUsername();
     await waitFor(() => expect(api.fetchLoginCaptcha).toHaveBeenCalledTimes(1));
 
-    expect(mediaListener).toBeTypeOf('function');
-    await act(async () => { mediaListener?.(); });
+    expect(mobileMediaListener).toBeTypeOf('function');
+    await act(async () => { mobileMediaListener?.(); });
     await waitFor(() => expect(api.fetchLoginCaptcha).toHaveBeenCalledTimes(2));
     currentIssue.resolve(captcha('current-token', 'data:image/png;base64,current'));
     const gate = await screen.findByRole('button', { name: /login\.captchaState\.ready/ });
@@ -209,8 +213,8 @@ describe('Login CAPTCHA request isolation', () => {
     fireEvent.keyDown(slider, { key: 'Enter' });
     await waitFor(() => expect(api.verifyLoginCaptcha).toHaveBeenCalledTimes(1));
 
-    expect(mediaListener).toBeTypeOf('function');
-    await act(async () => { mediaListener?.(); });
+    expect(mobileMediaListener).toBeTypeOf('function');
+    await act(async () => { mobileMediaListener?.(); });
     await waitFor(() => expect(api.fetchLoginCaptcha).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole('slider')).toBeTruthy();
     oldVerify.resolve({ valid: true, receipt: 'obsolete-receipt' });
@@ -284,9 +288,9 @@ describe('Login CAPTCHA username binding', () => {
     await waitFor(() => expect(api.fetchLoginCaptcha).toHaveBeenCalledTimes(1));
     const desktopSignal = api.fetchLoginCaptcha.mock.calls[0]?.[1] as AbortSignal;
     expect(desktopSignal.aborted).toBe(false);
-    expect(mediaListener).toBeTypeOf('function');
+    expect(mobileMediaListener).toBeTypeOf('function');
 
-    await act(async () => { mediaListener?.(); });
+    await act(async () => { mobileMediaListener?.(); });
     await waitFor(() => expect(api.fetchLoginCaptcha).toHaveBeenCalledTimes(2));
 
     expect(desktopSignal.aborted).toBe(true);
@@ -309,8 +313,8 @@ describe('Login CAPTCHA username binding', () => {
       },
     });
     renderLogin();
-    expect(mediaListener).toBeTypeOf('function');
-    await act(async () => { mediaListener?.(); });
+    expect(mobileMediaListener).toBeTypeOf('function');
+    await act(async () => { mobileMediaListener?.(); });
     fillUsername();
 
     await waitFor(() => expect(digest).toHaveBeenCalled());

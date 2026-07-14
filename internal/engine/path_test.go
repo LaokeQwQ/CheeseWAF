@@ -5,9 +5,9 @@ import "testing"
 func TestNormalizeRequestPath(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		in      string
-		want    string
-		wantOK  bool
+		in     string
+		want   string
+		wantOK bool
 	}{
 		{"/api/foo", "/api/foo", true},
 		{"/api/../admin", "/admin", true},

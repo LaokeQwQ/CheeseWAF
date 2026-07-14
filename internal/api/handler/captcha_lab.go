@@ -137,11 +137,8 @@ func captchaLabBehaviorType(raw string) (captcha.BehaviorType, int, bool) {
 		return captcha.BehaviorPOW, 3, true
 	case "curve_draw":
 		return captcha.BehaviorCurveDraw, 3, true
-	case "curve_slider":
-		return captcha.BehaviorCurveSlider, 1, true
-	case "curve_slider_v2":
-		return captcha.BehaviorCurveSlider, 2, true
-	case "curve_slider_v3":
+	case "curve_slider", "curve_slider_v2", "curve_slider_v3":
+		// Only the V3 drag-to-align product remains; legacy aliases map to it.
 		return captcha.BehaviorCurveSlider, 3, true
 	case "shape_slider", "slider_v2":
 		return captcha.BehaviorShapeSlider, 2, true

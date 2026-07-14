@@ -39,6 +39,16 @@ runtime_user="$(docker image inspect --format '{{.Config.User}}' "$image_tag")"
   exit 1
 }
 
+command -v python3 >/dev/null 2>&1 || {
+  echo "::error::python3 is required to reserve a loopback port for the container smoke" >&2
+  exit 1
+}
+host_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+[[ "$host_port" =~ ^[0-9]+$ ]] || {
+  echo "::error::unable to reserve a loopback port for the container smoke" >&2
+  exit 1
+}
+
 docker run --detach \
   --name "$container_name" \
   --read-only \
@@ -47,13 +57,13 @@ docker run --detach \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \
   --tmpfs /var/lib/cheesewaf:rw,nosuid,nodev,size=64m \
   --tmpfs /var/log/cheesewaf:rw,noexec,nosuid,nodev,size=32m \
-  --publish 127.0.0.1::9443 \
+  --publish "127.0.0.1:${host_port}:9443/tcp" \
   "$image_tag" >/dev/null
 
-host_port="$(docker port "$container_name" 9443/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1)"
-[[ "$host_port" =~ ^[0-9]+$ ]] || {
+mapped_port="$(docker inspect --format '{{with index .NetworkSettings.Ports "9443/tcp"}}{{(index . 0).HostPort}}{{end}}' "$container_name")"
+[[ "$mapped_port" == "$host_port" ]] || {
   docker logs "$container_name" >&2 || true
-  echo "::error::unable to discover mapped admin port" >&2
+  echo "::error::container admin port mapping does not match the reserved loopback port" >&2
   exit 1
 }
 

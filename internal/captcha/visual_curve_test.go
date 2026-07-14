@@ -2,9 +2,6 @@ package captcha
 
 import (
 	"encoding/json"
-	"fmt"
-	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,20 +45,43 @@ func TestVisualCurveDrawRequiresOrderedCoverageAndContinuity(t *testing.T) {
 	}
 }
 
-func TestVisualCurveSliderKeepsTargetParameterSealedAndChecksDrag(t *testing.T) {
+func TestVisualCurveSliderKeepsTargetOffsetSealedAndChecksDrag(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	opts := behaviorTestOptions(BehaviorCurveSlider, now)
+	opts.Version = 1 // callers may still pass old version numbers; product is always V3 align.
 	challenge, err := IssueBehaviorChallenge(opts)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if challenge.Presentation.Version != 3 {
+		t.Fatalf("curve slider must always publish version 3, got %d", challenge.Presentation.Version)
+	}
+	if challenge.Presentation.Piece == "" {
+		t.Fatalf("curve slider missing movable curve piece: %+v", challenge.Presentation)
 	}
 	tok, ok := openBehaviorToken(normalizeBehaviorOptions(opts), challenge.Token)
 	if !ok {
 		t.Fatal("cannot open issued token")
 	}
+	if tok.Version != 3 || tok.Mode != "curve_slider" {
+		t.Fatalf("token not sealed as V3 curve slider: %+v", tok)
+	}
 	public, _ := json.Marshal(challenge.Presentation)
-	if strings.Contains(string(public), strconv.Itoa(tok.Point.X)) {
-		t.Fatalf("presentation exposes secret slider target %d", tok.Point.X)
+	var presentation map[string]any
+	if err := json.Unmarshal(public, &presentation); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"initial_offset", "max_offset"} {
+		if _, exposed := presentation[field]; exposed {
+			t.Fatalf("presentation exposes derivable slider target through %q: %s", field, public)
+		}
+	}
+
+	// The initial displacement is sealed with the challenge. The browser only
+	// receives a pre-shifted bitmap and the fixed relative movement contract.
+	expectedValue := 5000 - tok.InitialOffset*5000/visualCurveSliderMaxOffset
+	if absBehavior(tok.Point.X-expectedValue) > 1 {
+		t.Fatalf("sealed target %d does not match sealed initial offset (want ~%d)", tok.Point.X, expectedValue)
 	}
 
 	good := curveSliderResponse(challenge.Token, tok.Point)
@@ -73,45 +93,83 @@ func TestVisualCurveSliderKeepsTargetParameterSealedAndChecksDrag(t *testing.T) 
 	if VerifyBehaviorChallenge(opts, teleport).Valid {
 		t.Fatal("two-point synthetic drag accepted")
 	}
-	wrong := good
-	wrong.Point = &BehaviorPoint{X: clampVisualCoord(tok.Point.X + opts.Tolerance*3), Y: tok.Point.Y}
-	wrong.Track[len(wrong.Track)-1].X = wrong.Point.X
-	if VerifyBehaviorChallenge(opts, wrong).Valid {
-		t.Fatal("wrong curve parameter accepted")
-	}
-}
-
-func TestSliderCurvePublicFormulaContract(t *testing.T) {
-	tests := []struct {
-		version   int
-		parameter int
-		want      []BehaviorPoint
-	}{
-		{1, 1800, []BehaviorPoint{{900, 5532}, {2950, 5968}, {5000, 5838}, {7050, 5216}, {9100, 4468}}},
-		{1, 5000, []BehaviorPoint{{900, 6600}, {2950, 6131}, {5000, 5000}, {7050, 3869}, {9100, 3400}}},
-		{2, 5000, []BehaviorPoint{{900, 6152}, {2950, 5000}, {5000, 3848}, {7050, 5000}, {9100, 6152}}},
-		{3, 8200, []BehaviorPoint{{900, 5450}, {2950, 4586}, {5000, 4292}, {7050, 3147}, {9100, 4550}}},
-	}
-	for _, test := range tests {
-		t.Run(fmt.Sprintf("v%d-parameter-%d", test.version, test.parameter), func(t *testing.T) {
-			got := sliderCurve(test.parameter, test.version)
-			for index, want := range test.want {
-				gotIndex := index * 8
-				if got[gotIndex] != want {
-					t.Fatalf("sample %d mismatch: got %+v want %+v", gotIndex, got[gotIndex], want)
-				}
-			}
+	// Classic headless linear ramp: equal dx and equal dt every sample.
+	linear := good
+	linear.DurationMS = 500
+	linear.Track = nil
+	start := behaviorCoordinateMax / 2
+	for i := 0; i < 10; i++ {
+		kind := "move"
+		if i == 0 {
+			kind = "down"
+		} else if i == 9 {
+			kind = "up"
+		}
+		linear.Track = append(linear.Track, BehaviorTrackPoint{
+			X: start + (tok.Point.X-start)*i/9, Y: tok.Point.Y, T: i * 55, Type: kind,
 		})
 	}
+	if VerifyBehaviorChallenge(opts, linear).Valid {
+		t.Fatal("constant-step linear bot ramp accepted")
+	}
+	// Instant solve with high average velocity / too-short duration.
+	fast := good
+	fast.DurationMS = 120
+	mid := behaviorCoordinateMax / 2
+	fast.Track = []BehaviorTrackPoint{
+		{X: 5000, Y: 5000, T: 0, Type: "down"},
+		{X: mid + (tok.Point.X-mid)/3, Y: 5000, T: 30, Type: "move"},
+		{X: mid + 2*(tok.Point.X-mid)/3, Y: 5000, T: 70, Type: "move"},
+		{X: tok.Point.X, Y: 5000, T: 120, Type: "up"},
+	}
+	if VerifyBehaviorChallenge(opts, fast).Valid {
+		t.Fatal("sub-human duration drag accepted")
+	}
+	folded := good
+	folded.Track = []BehaviorTrackPoint{
+		{X: 5000, Y: 5000, T: 0, Type: "down"},
+		{X: clampVisualCoord(5000 - (tok.Point.X - 5000)), Y: 5000, T: 160, Type: "move"},
+		{X: tok.Point.X, Y: 5000, T: 500, Type: "up"},
+	}
+	if VerifyBehaviorChallenge(opts, folded).Valid {
+		t.Fatal("folded synthetic drag accepted")
+	}
+	wrong := good
+	wrongX := tok.Point.X + opts.Tolerance*3
+	if wrongX > behaviorCoordinateMax {
+		wrongX = tok.Point.X - opts.Tolerance*3
+	}
+	wrong.Point = &BehaviorPoint{X: clampVisualCoord(wrongX), Y: tok.Point.Y}
+	wrong.Track[len(wrong.Track)-1].X = wrong.Point.X
+	if absBehavior(wrong.Point.X-tok.Point.X) <= opts.Tolerance {
+		t.Fatalf("test fixture did not produce an out-of-tolerance offset: target=%d wrong=%d", tok.Point.X, wrong.Point.X)
+	}
+	if VerifyBehaviorChallenge(opts, wrong).Valid {
+		t.Fatal("wrong curve offset accepted")
+	}
 }
 
-func TestSliderCurveVersionsAreDistinctAtSameParameter(t *testing.T) {
-	curves := [][]BehaviorPoint{sliderCurve(5000, 1), sliderCurve(5000, 2), sliderCurve(5000, 3)}
-	for left := range curves {
-		for right := left + 1; right < len(curves); right++ {
-			if reflect.DeepEqual(curves[left], curves[right]) {
-				t.Fatalf("versions %d and %d produced the same curve", left+1, right+1)
-			}
+func TestVisualCurveSliderRejectsMalformedSealedGeometry(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	opts := normalizeBehaviorOptions(behaviorTestOptions(BehaviorCurveSlider, now))
+	challenge, err := IssueBehaviorChallenge(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, ok := openBehaviorToken(opts, challenge.Token)
+	if !ok {
+		t.Fatal("cannot open issued token")
+	}
+	for _, mutate := range []func(*behaviorToken){
+		func(value *behaviorToken) { value.InitialOffset = 0 },
+		func(value *behaviorToken) { value.InitialOffset = visualCurveSliderMaxOffset + 1 },
+		func(value *behaviorToken) { value.Point.X = clampVisualCoord(value.Point.X + 1000) },
+		func(value *behaviorToken) { value.Version = 2 },
+	} {
+		invalid := tok
+		mutate(&invalid)
+		if validBehaviorTokenShape(invalid) {
+			t.Fatalf("accepted malformed curve slider token: %+v", invalid)
 		}
 	}
 }
@@ -147,16 +205,33 @@ func curveDrawResponse(token string, curve []BehaviorPoint) BehaviorResponse {
 }
 
 func curveSliderResponse(token string, target BehaviorPoint) BehaviorResponse {
-	start := clampVisualCoord(target.X - 1800)
-	response := BehaviorResponse{Token: token, Point: &BehaviorPoint{X: target.X, Y: target.Y}, DurationMS: 500}
-	for i := 0; i < 6; i++ {
+	// Human-like fixture: irregular pacing + micro overshoot, not a constant-step ramp.
+	start := behaviorCoordinateMax / 2
+	delta := target.X - start
+	// Ease-out fractions with intentional jitter (must pass anti-bot variance checks).
+	fractions := []float64{0, 0.08, 0.18, 0.33, 0.48, 0.62, 0.74, 0.84, 0.93, 1.0}
+	times := []int{0, 45, 95, 160, 230, 310, 390, 470, 560, 650}
+	response := BehaviorResponse{Token: token, Point: &BehaviorPoint{X: target.X, Y: target.Y}, DurationMS: 650}
+	for i, frac := range fractions {
 		kind := "move"
 		if i == 0 {
 			kind = "down"
-		} else if i == 5 {
+		} else if i == len(fractions)-1 {
 			kind = "up"
 		}
-		response.Track = append(response.Track, BehaviorTrackPoint{X: start + (target.X-start)*i/5, Y: target.Y, T: i * 100, Type: kind})
+		x := start + int(float64(delta)*frac)
+		// Micro lateral noise on intermediate samples only.
+		if i > 0 && i < len(fractions)-1 {
+			if i%2 == 0 {
+				x += 18 + i*3
+			} else {
+				x -= 12 + i*2
+			}
+		}
+		if i == len(fractions)-1 {
+			x = target.X
+		}
+		response.Track = append(response.Track, BehaviorTrackPoint{X: clampVisualCoord(x), Y: target.Y, T: times[i], Type: kind})
 	}
 	return response
 }

@@ -4,8 +4,8 @@ package ai
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -45,17 +45,42 @@ func assertProtectedApprovalACL(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("resolve current Windows user: %v", err)
 	}
-	sddl := descriptor.String()
-	for _, trustee := range []string{currentUser.User.Sid.String(), "SY", "BA"} {
-		if !strings.Contains(sddl, trustee) {
-			t.Fatalf("approval file DACL does not contain trustee %q: %s", trustee, sddl)
-		}
-	}
 	dacl, defaulted, err := descriptor.DACL()
 	if err != nil {
 		t.Fatalf("read approval file DACL: %v", err)
 	}
 	if dacl == nil || defaulted || dacl.AceCount != 3 {
-		t.Fatalf("approval file DACL is broader than expected: defaulted=%v ace_count=%d sddl=%s", defaulted, dacl.AceCount, sddl)
+		t.Fatalf("approval file DACL is broader than expected: defaulted=%v ace_count=%d sddl=%s", defaulted, dacl.AceCount, descriptor.String())
 	}
+	localSystem, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		t.Fatalf("resolve LocalSystem SID: %v", err)
+	}
+	administrators, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		t.Fatalf("resolve Administrators SID: %v", err)
+	}
+	for name, trustee := range map[string]*windows.SID{
+		"current user":   currentUser.User.Sid,
+		"LocalSystem":    localSystem,
+		"Administrators": administrators,
+	} {
+		if !aclContainsSID(dacl, trustee) {
+			t.Fatalf("approval file DACL does not contain %s SID %q: %s", name, trustee.String(), descriptor.String())
+		}
+	}
+}
+
+func aclContainsSID(acl *windows.ACL, expected *windows.SID) bool {
+	for index := uint32(0); index < uint32(acl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(acl, index, &ace); err != nil || ace == nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			continue
+		}
+		actual := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if actual.Equals(expected) {
+			return true
+		}
+	}
+	return false
 }

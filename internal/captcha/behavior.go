@@ -109,29 +109,30 @@ type BehaviorOptions struct {
 	Rand                                   io.Reader
 }
 type behaviorToken struct {
-	Type         BehaviorType    `json:"type"`
-	Purpose      string          `json:"purpose"`
-	ClientKey    string          `json:"client_key"`
-	Path         string          `json:"path"`
-	Site         string          `json:"site"`
-	Expires      int64           `json:"expires"`
-	Tolerance    int             `json:"tolerance"`
-	MinMS        int             `json:"min_ms"`
-	MaxMS        int             `json:"max_ms"`
-	MaxPoints    int             `json:"max_points"`
-	Version      int             `json:"version,omitempty"`
-	Intensity    int             `json:"intensity,omitempty"`
-	Mode         string          `json:"mode"`
-	Point        BehaviorPoint   `json:"point,omitempty"`
-	Angle        int             `json:"angle,omitempty"`
-	InitialAngle int             `json:"initial_angle,omitempty"`
-	Curve        []BehaviorPoint `json:"curve,omitempty"`
-	Region       []int           `json:"region,omitempty"`
-	Targets      [][]int         `json:"targets,omitempty"`
-	Coverage     int             `json:"coverage,omitempty"`
-	POWSalt      string          `json:"pow_salt,omitempty"`
-	POWBits      int             `json:"pow_bits,omitempty"`
-	Nonce        string          `json:"nonce"`
+	Type          BehaviorType    `json:"type"`
+	Purpose       string          `json:"purpose"`
+	ClientKey     string          `json:"client_key"`
+	Path          string          `json:"path"`
+	Site          string          `json:"site"`
+	Expires       int64           `json:"expires"`
+	Tolerance     int             `json:"tolerance"`
+	MinMS         int             `json:"min_ms"`
+	MaxMS         int             `json:"max_ms"`
+	MaxPoints     int             `json:"max_points"`
+	Version       int             `json:"version,omitempty"`
+	Intensity     int             `json:"intensity,omitempty"`
+	Mode          string          `json:"mode"`
+	Point         BehaviorPoint   `json:"point,omitempty"`
+	Angle         int             `json:"angle,omitempty"`
+	InitialAngle  int             `json:"initial_angle,omitempty"`
+	InitialOffset int             `json:"initial_offset,omitempty"`
+	Curve         []BehaviorPoint `json:"curve,omitempty"`
+	Region        []int           `json:"region,omitempty"`
+	Targets       [][]int         `json:"targets,omitempty"`
+	Coverage      int             `json:"coverage,omitempty"`
+	POWSalt       string          `json:"pow_salt,omitempty"`
+	POWBits       int             `json:"pow_bits,omitempty"`
+	Nonce         string          `json:"nonce"`
 }
 
 func IssueBehaviorChallenge(opts BehaviorOptions) (BehaviorChallenge, error) {
@@ -484,6 +485,14 @@ func validBehaviorTokenShape(tok behaviorToken) bool {
 	}
 	for _, target := range tok.Targets {
 		if len(target) > behaviorMaxTargetCoordinates {
+			return false
+		}
+	}
+	if tok.Mode == "curve_slider" {
+		expectedTarget := clampVisualCoord(5000 - tok.InitialOffset*5000/visualCurveSliderMaxOffset)
+		if tok.Version != 3 || absBehavior(tok.InitialOffset) < 10 ||
+			absBehavior(tok.InitialOffset) > visualCurveSliderMaxOffset ||
+			absBehavior(tok.Point.X-expectedTarget) > 1 || tok.Point.Y != behaviorCoordinateMax/2 {
 			return false
 		}
 	}

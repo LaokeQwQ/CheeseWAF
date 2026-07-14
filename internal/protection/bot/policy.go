@@ -448,10 +448,10 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			return
 		}
 		http.SetCookie(w, &http.Cookie{
-			Name:     p.cookieName,
-			Value:    value,
-			Path:     "/",
-			MaxAge:   maxAge,
+			Name:   p.cookieName,
+			Value:  value,
+			Path:   "/",
+			MaxAge: maxAge,
 			// Match waiting-room / behavior cookies: hard-coded Secure:true breaks plain-HTTP data planes.
 			Secure:   cookieSecure(r),
 			HttpOnly: true,
@@ -1030,7 +1030,8 @@ func isBehaviorCAPTCHAType(value string) bool {
 func behaviorType(value string) captcha.BehaviorType {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
-	case "curve_slider_v2", "curve_slider_v3":
+	case "curve_slider", "curve_slider_v2", "curve_slider_v3":
+		// Legacy v1/v2 aliases collapse to the single V3 drag-to-align product.
 		return captcha.BehaviorCurveSlider
 	case "slider_v2":
 		return captcha.BehaviorShapeSlider

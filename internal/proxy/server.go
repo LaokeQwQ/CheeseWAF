@@ -717,6 +717,11 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 		DetectorID: result.DetectorID,
 		Message:    result.Message,
 		Payload:    result.Payload,
+		Metadata: map[string]any{
+			"confidence":          result.Confidence,
+			"detector_id":         result.DetectorID,
+			"detection_category":  result.Category,
+		},
 	})
 }
 
@@ -1304,8 +1309,20 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 			entry.DetectorID = result.DetectorID
 			entry.Message = result.Message
 			entry.Payload = result.Payload
-			if decision, ok := reqCtx.Metadata["waf_policy_decision"].(webAttackPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
-				entry.Action = "log"
+			// Align with existing Codex event-level fields: keep confidence and
+			// detector type queryable in log metadata without a schema migration.
+			if entry.Metadata == nil {
+				entry.Metadata = map[string]any{}
+			}
+			entry.Metadata["confidence"] = result.Confidence
+			entry.Metadata["detector_id"] = result.DetectorID
+			entry.Metadata["detection_category"] = result.Category
+			if decision, ok := reqCtx.Metadata["waf_policy_decision"].(webAttackPolicyDecision); ok {
+				entry.Metadata["result_confidence"] = decision.ResultConfidence
+				entry.Metadata["minimum_confidence"] = decision.MinimumConfidence
+				if decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
+					entry.Action = "log"
+				}
 			}
 			if decision, ok := reqCtx.Metadata["bot_cc_policy_decision"].(botCCPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
 				entry.Action = "log"

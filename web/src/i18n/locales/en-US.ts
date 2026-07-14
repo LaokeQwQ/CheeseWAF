@@ -197,8 +197,6 @@ const enUS = {
       pow: 'Background security check',
       curve_draw: 'Draw curve',
       curve_slider: 'Curve slider',
-      curve_slider_v2: 'Curve slider (stronger)',
-      curve_slider_v3: 'Curve slider (advanced)',
       shape_slider: 'Slider',
       slider_v2: 'Shape slider',
       rotate: 'Rotate',

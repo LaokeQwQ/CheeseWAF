@@ -1021,4 +1021,3 @@ func TestImageCAPTCHAFullCycleIssueAnswerConsume(t *testing.T) {
 		t.Fatalf("https issue should set Secure clearance cookie: %q", cookie)
 	}
 }
-

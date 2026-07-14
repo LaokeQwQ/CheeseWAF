@@ -113,6 +113,7 @@ class FixtureClient {
       loginPlan: (fields) => this.#call('login_plan', fields),
       loginDiagnose: (fields) => this.#call('login_diagnose', fields),
       wafPlan: (fields) => this.#call('waf_plan', fields),
+      wafDiagnose: (fields) => this.#call('waf_diagnose', fields),
       close: () => this.close(),
     };
   }
