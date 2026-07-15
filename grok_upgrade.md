@@ -65,6 +65,12 @@ GOCACHE=... go test ./internal/config ./internal/engine ./internal/engine/semant
 # 全部 ok（本轮）
 ```
 
+### 提交 / 推送
+
+- Commit: `e58e9da feat: commercial budget fail-mode and semantic allowlists`
+- Branch: `feature/security-captcha-ui-hardening-20260714` → GitHub origin 已推送
+- `implementation_plan.md` 本地已更新商业级对照（该文件在 `.gitignore` 中，不进仓；以本文件为可追踪变更记录）
+
 ### 明确未做（避免过度宣称）
 
 - Web UI 编辑 semantic_policy
