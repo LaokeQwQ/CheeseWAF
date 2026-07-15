@@ -82,7 +82,7 @@ var userEnsureAdminCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		opts := passwordOptions
+		opts := ensureAdminOptions
 		opts.Input = cmd.InOrStdin()
 		generated, err := ensureAdminUser(cmd.Context(), sqlitePath, args[0], opts)
 		if err != nil {
