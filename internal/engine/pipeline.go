@@ -105,6 +105,10 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 				firstDetected = &snapshot
 			}
 		}
+		// Budget must apply on the common single-analyzer path too (not only multi-fork).
+		if ctx.Err() != nil && parentCtx.Err() == nil {
+			return finalizeBudgetExhausted(reqCtx, firstDetected), nil
+		}
 	} else if len(semanticGroup) > 1 {
 		type jobOut struct {
 			index  int

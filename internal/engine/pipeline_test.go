@@ -153,6 +153,34 @@ func TestPipelineBudgetExhaustedPolicies(t *testing.T) {
 			t.Fatalf("expected real block to win, got %#v", got)
 		}
 	})
+
+	t.Run("single semantic detector closed challenges on budget", func(t *testing.T) {
+		// Production hot path: only priority>=290 detector (no pre-filter).
+		slowSemantic := &countingDetector{
+			id: "slow-semantic", priority: 290,
+			fn: func(ctx context.Context, reqCtx *RequestContext) (*DetectionResult, error) {
+				timer := time.NewTimer(150 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-timer.C:
+					return nil, nil
+				}
+			},
+		}
+		reqCtx := &RequestContext{Metadata: map[string]any{"budget_exhausted_policy": "closed"}}
+		got, err := NewPipeline(slowSemantic).Detect(context.Background(), reqCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reqCtx.Metadata["detection_budget_exhausted"] != true {
+			t.Fatalf("expected budget flag on single-analyzer path, got %#v", reqCtx.Metadata)
+		}
+		if got == nil || !got.Detected || got.Action != ActionChallenge || got.Category != "detection_budget" {
+			t.Fatalf("expected closed challenge on single semantic path, got %#v", got)
+		}
+	})
 }
 
 func TestPipelineSemanticGroupConcurrentMerge(t *testing.T) {

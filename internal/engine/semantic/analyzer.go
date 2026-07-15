@@ -1772,11 +1772,14 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	if rceReverseShellPrimitive.MatchString(text) {
 		reasons["semantics: shell reverse connection primitive"] = true
 	}
-	// 0day-oriented: loader/reflective execution primitives (no CVE IDs).
+	// Loader/reflective primitives: only count as RCE evidence when tied to an
+	// execution sink or another hard shell/runtime signal (avoid doc FPs like
+	// "set LD_PRELOAD=/path" in prose without a command parameter).
 	if rceLoaderPrimitive.MatchString(text) {
-		reasons["semantics: dynamic loader or reflective code loading primitive"] = true
-		if sink || strings.Contains(lower, "=") {
-			reasons["syntax: shell metacharacter plus executable command"] = true
+		if sink || rceShellControlEvidence(lower) || rceInterpreterInline.MatchString(text) ||
+			rcePowerShellSideFx.MatchString(text) || rceDownloadExecChain.MatchString(text) ||
+			rceReverseShellPrimitive.MatchString(text) {
+			reasons["semantics: dynamic loader or reflective code loading primitive"] = true
 		}
 	}
 	// Webshell body often lands as multipart content without a cmd= sink name.
