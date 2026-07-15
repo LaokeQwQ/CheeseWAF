@@ -46,6 +46,7 @@ func (h *Handler) Version(w http.ResponseWriter, _ *http.Request) {
 
 type systemPayload struct {
 	Server        *config.ServerConfig        `json:"server"`
+	TimeSync      *timeSyncPayload            `json:"time_sync"`
 	TLS           *config.TLSConfig           `json:"tls"`
 	Setup         *config.SetupConfig         `json:"setup"`
 	Storage       *config.StorageConfig       `json:"storage"`
@@ -61,6 +62,54 @@ type systemPayload struct {
 	Monitor       *config.MonitorConfig       `json:"monitor"`
 	APISec        *config.APISecConfig        `json:"apisec"`
 	BlockPage     *config.BlockPageConfig     `json:"block_page"`
+}
+
+// timeSyncPayload is a field-presence-aware patch so partial JSON updates cannot
+// silently zero enabled/sources/intervals.
+type timeSyncPayload struct {
+	Enabled            *bool          `json:"enabled"`
+	Sources            *[]string      `json:"sources"`
+	SelectionInterval  *time.Duration `json:"selection_interval"`
+	SyncInterval       *time.Duration `json:"sync_interval"`
+	Timeout            *time.Duration `json:"timeout"`
+	SamplesPerSource   *int           `json:"samples_per_source"`
+	MaxAcceptedOffset  *time.Duration `json:"max_accepted_offset"`
+	MaxRootDispersion  *time.Duration `json:"max_root_dispersion"`
+	ConsensusTolerance *time.Duration `json:"consensus_tolerance"`
+}
+
+func (p *timeSyncPayload) apply(base config.TimeSyncConfig) config.TimeSyncConfig {
+	if p == nil {
+		return base
+	}
+	if p.Enabled != nil {
+		base.Enabled = *p.Enabled
+	}
+	if p.Sources != nil {
+		base.Sources = append([]string(nil), (*p.Sources)...)
+	}
+	if p.SelectionInterval != nil {
+		base.SelectionInterval = *p.SelectionInterval
+	}
+	if p.SyncInterval != nil {
+		base.SyncInterval = *p.SyncInterval
+	}
+	if p.Timeout != nil {
+		base.Timeout = *p.Timeout
+	}
+	if p.SamplesPerSource != nil {
+		base.SamplesPerSource = *p.SamplesPerSource
+	}
+	if p.MaxAcceptedOffset != nil {
+		base.MaxAcceptedOffset = *p.MaxAcceptedOffset
+	}
+	if p.MaxRootDispersion != nil {
+		base.MaxRootDispersion = *p.MaxRootDispersion
+	}
+	if p.ConsensusTolerance != nil {
+		base.ConsensusTolerance = *p.ConsensusTolerance
+	}
+	return base
 }
 
 func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +165,9 @@ func applySystemPayload(next *config.Config, req systemPayload) error {
 	previous := *next
 	if req.Server != nil {
 		next.Server = *req.Server
+	}
+	if req.TimeSync != nil {
+		next.TimeSync = req.TimeSync.apply(previous.TimeSync)
 	}
 	if req.TLS != nil {
 		next.TLS = *req.TLS
@@ -187,6 +239,11 @@ func applySystemPayload(next *config.Config, req systemPayload) error {
 }
 
 func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config) error {
+	if req.TimeSync != nil && h.OnTimeSyncChanged != nil {
+		if err := h.OnTimeSyncChanged(candidate.TimeSync); err != nil {
+			return err
+		}
+	}
 	if (req.Server != nil || req.TLS != nil) && h.OnSitesChanged != nil {
 		if err := h.OnSitesChanged(candidate.Sites); err != nil {
 			return err

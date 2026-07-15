@@ -464,7 +464,7 @@ func (h *Handler) authorizeClusterHeartbeatCertificate(r *http.Request, svc *ide
 	if registration.Revoked {
 		return false, http.StatusForbidden, "cluster node is revoked"
 	}
-	now := time.Now().UTC()
+	now := h.nowUTC()
 	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
 		return false, http.StatusForbidden, "node client certificate is expired or not yet valid"
 	}
@@ -557,7 +557,7 @@ func (h *Handler) recordClusterJoinAudit(r *http.Request, req clusterJoinRequest
 		message = "join request processed"
 	}
 	_ = h.Auditor.Write(context.Background(), middleware.AuditEntry{
-		Timestamp: time.Now().UTC(),
+		Timestamp: h.nowUTC(),
 		Subject:   nodeID,
 		User:      "join-token",
 		Role:      strings.TrimSpace(req.Role),
@@ -1017,6 +1017,12 @@ func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*conf
 	return next, nil
 }
 
+type clusterIdentityClock func() time.Time
+
+func (clock clusterIdentityClock) Now() time.Time {
+	return clock()
+}
+
 func (h *Handler) clusterIdentityService() (*identity.MemoryIdentityService, error) {
 	h.clusterIdentityMu.Lock()
 	defer h.clusterIdentityMu.Unlock()
@@ -1031,7 +1037,7 @@ func (h *Handler) clusterIdentityService() (*identity.MemoryIdentityService, err
 	if h.Config != nil && strings.TrimSpace(h.Config.Setup.DataDir) != "" {
 		statePath = filepath.Join(h.Config.Setup.DataDir, "cluster", "identity.json")
 	}
-	svc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: clusterID, StatePath: statePath})
+	svc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: clusterID, StatePath: statePath, Clock: clusterIdentityClock(h.nowUTC)})
 	if err != nil {
 		return nil, err
 	}

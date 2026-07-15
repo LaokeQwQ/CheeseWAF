@@ -11,6 +11,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -25,19 +26,26 @@ type Options struct {
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error
+	OnTimeSyncChanged   func(config.TimeSyncConfig) error
 	ACMEIssuer          acme.Issuer
 	AuthState           *handler.AuthState
 	AssistantApprovals  *ai.ApprovalStore
 	CAPTCHAAssets       captchaassets.Store
+	Clock               timekeeper.Clock
+	TimeSync            handler.TimeSyncService
 }
 
-var newAuditor = middleware.NewAuditor
+var newAuditor = middleware.NewAuditorWithClock
 var newRouterAssistantApprovalStore = func() *ai.ApprovalStore { return nil }
 
 func NewRouter(opts Options) http.Handler {
 	r := chi.NewRouter()
-	tokens := middleware.NewTokenManager(opts.Secret, config.AdminSessionTTL)
-	auditor := newAuditor(opts.Config.APISec.Audit.Path)
+	clock := opts.Clock
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
+	tokens := middleware.NewTokenManagerWithClock(opts.Secret, config.AdminSessionTTL, clock)
+	auditor := newAuditor(opts.Config.APISec.Audit.Path, clock)
 	approvals := opts.AssistantApprovals
 	if approvals == nil {
 		approvals = newRouterAssistantApprovalStore()
@@ -59,12 +67,15 @@ func NewRouter(opts Options) http.Handler {
 		OnProtectionChanged: opts.OnProtectionChanged,
 		OnAPISecChanged:     opts.OnAPISecChanged,
 		OnBlockPageChanged:  opts.OnBlockPageChanged,
+		OnTimeSyncChanged:   opts.OnTimeSyncChanged,
 		CAPTCHAAssets:       opts.CAPTCHAAssets,
+		Clock:               clock,
+		TimeSync:            opts.TimeSync,
 	})
 	if opts.AuthState != nil {
 		handler.ApplyAuthState(h, opts.AuthState)
 	}
-	managementAuth := middleware.ManagementAPIOrSessionMiddleware(tokens, opts.Store, h.AuthenticateManagementAPIToken)
+	managementAuth := middleware.ManagementAPIOrSessionMiddlewareWithClock(tokens, opts.Store, h.AuthenticateManagementAPIToken, clock)
 	hub := opts.Hub
 	if hub == nil {
 		hub = realtime.NewHub()
@@ -88,7 +99,7 @@ func NewRouter(opts Options) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
-			r.Use(middleware.SessionMiddleware(opts.Store))
+			r.Use(middleware.SessionMiddlewareWithClock(opts.Store, clock))
 			r.Post("/auth/refresh", h.RefreshToken)
 			r.Post("/auth/logout", h.Logout)
 			r.Post("/ui/errors", h.ReportUIError)
@@ -113,6 +124,9 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:monitor")).Delete("/notifications", h.ClearNotifications)
 			r.With(require("read:system")).Get("/version", h.Version)
 			r.With(require("read:system")).Get("/system", h.System)
+			r.With(require("read:system")).Get("/system/time-sync", h.TimeSyncStatus)
+			r.With(require("write:system")).Post("/system/time-sync/reselect", h.ReselectTimeSync)
+			r.With(require("write:system")).Post("/system/time-sync/sync", h.SyncTimeNow)
 			r.With(require("read:system")).Get("/system/api-tokens", h.ListManagementAPITokens)
 			r.With(require("manage:api_tokens")).Post("/system/api-tokens", h.CreateManagementAPIToken)
 			r.With(require("manage:api_tokens")).Delete("/system/api-tokens/{id}", h.RevokeManagementAPIToken)

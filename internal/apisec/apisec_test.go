@@ -382,13 +382,23 @@ func authTestJWT(t *testing.T, claims map[string]any) string {
 	return base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + "."
 }
 
+func authTestClaims(claims map[string]any) map[string]any {
+	if claims == nil {
+		claims = map[string]any{}
+	}
+	if _, ok := claims["exp"]; !ok {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+	}
+	return claims
+}
+
 func authTestHMACJWT(t *testing.T, alg, kid, secret string, claims map[string]any) string {
 	t.Helper()
 	header := map[string]string{"alg": alg, "typ": "JWT"}
 	if kid != "" {
 		header["kid"] = kid
 	}
-	signingInput := authTestSigningInput(t, header, claims)
+	signingInput := authTestSigningInput(t, header, authTestClaims(claims))
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(signingInput))
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -396,7 +406,7 @@ func authTestHMACJWT(t *testing.T, alg, kid, secret string, claims map[string]an
 
 func authTestRSAJWT(t *testing.T, alg string, key *rsa.PrivateKey, claims map[string]any) string {
 	t.Helper()
-	signingInput := authTestSigningInput(t, map[string]string{"alg": alg, "typ": "JWT"}, claims)
+	signingInput := authTestSigningInput(t, map[string]string{"alg": alg, "typ": "JWT"}, authTestClaims(claims))
 	sum := sha256.Sum256([]byte(signingInput))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
 	if err != nil {

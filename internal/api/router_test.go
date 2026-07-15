@@ -38,6 +38,7 @@ func TestRouterRequiresBearerForManagementAPI(t *testing.T) {
 		path   string
 	}{
 		{name: "system", method: http.MethodGet, path: "/api/system"},
+		{name: "time synchronization", method: http.MethodGet, path: "/api/system/time-sync"},
 		{name: "realtime events", method: http.MethodGet, path: "/api/realtime/events"},
 		{name: "realtime websocket", method: http.MethodGet, path: "/api/realtime/ws"},
 		{name: "logs", method: http.MethodGet, path: "/api/logs"},
@@ -89,6 +90,10 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 	if read.Code != http.StatusOK {
 		t.Fatalf("readonly user should be allowed to read system status, got %d: %s", read.Code, read.Body.String())
 	}
+	timeStatus := perform(router, http.MethodGet, "/api/system/time-sync", readerToken, nil)
+	if timeStatus.Code != http.StatusOK {
+		t.Fatalf("readonly user should read time synchronization status, got %d: %s", timeStatus.Code, timeStatus.Body.String())
+	}
 
 	writeCases := []struct {
 		name   string
@@ -122,6 +127,8 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 		{name: "ai connection test", method: http.MethodPost, path: "/api/ai/test", body: []byte(`{"api_base":"https://api.example.test/v1","api_key":"key","model":"gpt-test"}`)},
 		{name: "storage cleanup", method: http.MethodPost, path: "/api/storage/cleanup", body: []byte(`{}`)},
 		{name: "system reclaim", method: http.MethodPost, path: "/api/system/reclaim", body: []byte(`{"target":"memory"}`)},
+		{name: "time source reselect", method: http.MethodPost, path: "/api/system/time-sync/reselect", body: []byte(`{}`)},
+		{name: "time synchronize now", method: http.MethodPost, path: "/api/system/time-sync/sync", body: []byte(`{}`)},
 		{name: "block page config", method: http.MethodPut, path: "/api/block-pages/config", body: []byte(`{"template_id":"minimal"}`)},
 		{name: "block page upload", method: http.MethodPost, path: "/api/block-pages/upload", body: []byte(`{}`)},
 		{name: "block page delete custom", method: http.MethodDelete, path: "/api/block-pages/custom", body: nil},

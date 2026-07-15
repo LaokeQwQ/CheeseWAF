@@ -37,6 +37,7 @@ const (
 	fixtureClientIP       = "203.0.113.41"
 	fixtureSite           = "captcha.integration"
 	fixtureUserAgentToken = "captcha-e2e"
+	fixtureAdminUserID    = "captcha-integration-user"
 )
 
 type fixture struct {
@@ -62,16 +63,17 @@ type wafChallenge struct {
 }
 
 type controlRequest struct {
-	ID        uint64                   `json:"id"`
-	Action    string                   `json:"action"`
-	Token     string                   `json:"token,omitempty"`
-	Cookie    string                   `json:"cookie,omitempty"`
-	UserAgent string                   `json:"user_agent,omitempty"`
-	Variant   string                   `json:"variant,omitempty"`
-	X         int                      `json:"x,omitempty"`
-	DragMS    int                      `json:"drag_ms,omitempty"`
-	Track     string                   `json:"track,omitempty"`
-	Response  captcha.BehaviorResponse `json:"response,omitempty"`
+	ID        uint64                    `json:"id"`
+	Action    string                    `json:"action"`
+	Token     string                    `json:"token,omitempty"`
+	Cookie    string                    `json:"cookie,omitempty"`
+	UserAgent string                    `json:"user_agent,omitempty"`
+	Variant   string                    `json:"variant,omitempty"`
+	X         int                       `json:"x,omitempty"`
+	DragMS    int                       `json:"drag_ms,omitempty"`
+	Track     string                    `json:"track,omitempty"`
+	Response  captcha.BehaviorResponse  `json:"response,omitempty"`
+	Challenge captcha.BehaviorChallenge `json:"challenge,omitempty"`
 }
 
 type controlReply struct {
@@ -88,6 +90,7 @@ type controlReply struct {
 	DurationMS int    `json:"duration_ms,omitempty"`
 	Generation uint64 `json:"generation,omitempty"`
 	Diagnosis  string `json:"diagnosis,omitempty"`
+	Plan       any    `json:"plan,omitempty"`
 }
 
 type behaviorPageState struct {
@@ -184,7 +187,7 @@ func newFixture() (*fixture, error) {
 		return fail(err)
 	}
 	if err := store.CreateUser(context.Background(), &storage.User{
-		ID: "captcha-integration-user", Username: username, PasswordHash: string(hash), Role: "admin",
+		ID: fixtureAdminUserID, Username: username, PasswordHash: string(hash), Role: "admin",
 	}); err != nil {
 		_ = store.Close()
 		return fail(err)
@@ -298,6 +301,12 @@ func (fx *fixture) handle(request controlRequest) (controlReply, bool) {
 		return controlReply{ID: request.ID, OK: true, X: plan.X, Y: plan.Y, DurationMS: plan.DurationMS, Generation: plan.Generation}, false
 	case "waf_diagnose":
 		reply.Diagnosis = fx.wafDiagnosis(request.UserAgent, request.Response)
+	case "lab_plan":
+		plan, err := fx.labPlan(request.Challenge, request.Variant)
+		if err != nil {
+			return controlReply{ID: request.ID, OK: false, Error: "lab_plan_unavailable"}, false
+		}
+		reply.Plan = plan
 	case "shutdown":
 		return reply, true
 	default:

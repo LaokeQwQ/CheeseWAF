@@ -30,6 +30,17 @@ func Default() Config {
 			IdleTimeout:  60 * time.Second,
 			HTTP3:        HTTP3Config{Enabled: false, ZeroRTT: false},
 		},
+		TimeSync: TimeSyncConfig{
+			Enabled:            true,
+			Sources:            append([]string(nil), defaultTimeSyncSources[:]...),
+			SelectionInterval:  24 * time.Hour,
+			SyncInterval:       30 * time.Minute,
+			Timeout:            2 * time.Second,
+			SamplesPerSource:   3,
+			MaxAcceptedOffset:  5 * time.Minute,
+			MaxRootDispersion:  2 * time.Second,
+			ConsensusTolerance: 250 * time.Millisecond,
+		},
 		TLS: TLSConfig{
 			MinVersion: "1.3",
 			HSTS:       true,
@@ -550,6 +561,30 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Server.IdleTimeout == 0 {
 		cfg.Server.IdleTimeout = def.Server.IdleTimeout
+	}
+	if cfg.TimeSync.Sources == nil {
+		cfg.TimeSync.Sources = append([]string(nil), def.TimeSync.Sources...)
+	}
+	if cfg.TimeSync.SelectionInterval == 0 {
+		cfg.TimeSync.SelectionInterval = def.TimeSync.SelectionInterval
+	}
+	if cfg.TimeSync.SyncInterval == 0 {
+		cfg.TimeSync.SyncInterval = def.TimeSync.SyncInterval
+	}
+	if cfg.TimeSync.Timeout == 0 {
+		cfg.TimeSync.Timeout = def.TimeSync.Timeout
+	}
+	if cfg.TimeSync.SamplesPerSource == 0 {
+		cfg.TimeSync.SamplesPerSource = def.TimeSync.SamplesPerSource
+	}
+	if cfg.TimeSync.MaxAcceptedOffset == 0 {
+		cfg.TimeSync.MaxAcceptedOffset = def.TimeSync.MaxAcceptedOffset
+	}
+	if cfg.TimeSync.MaxRootDispersion == 0 {
+		cfg.TimeSync.MaxRootDispersion = def.TimeSync.MaxRootDispersion
+	}
+	if cfg.TimeSync.ConsensusTolerance == 0 {
+		cfg.TimeSync.ConsensusTolerance = def.TimeSync.ConsensusTolerance
 	}
 	if cfg.Setup.DataDir == "" {
 		cfg.Setup.DataDir = def.Setup.DataDir

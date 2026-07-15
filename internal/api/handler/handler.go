@@ -33,6 +33,7 @@ import (
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -52,6 +53,7 @@ type Handler struct {
 	ClusterDeployAuth            *deploy.AuthorizationStore
 	ClusterHeartbeats            *cluster.HeartbeatRegistry
 	ACMEIssuer                   acme.Issuer
+	TimeSync                     TimeSyncService
 	LoginCAPTCHAState            *loginCAPTCHAState
 	CAPTCHAAssets                captchaassets.Store
 	CAPTCHAAssetReferences       *captchaassets.ReferenceManager
@@ -85,6 +87,7 @@ type Handler struct {
 	OnProtectionChanged          func(config.ProtectionConfig) error
 	OnAPISecChanged              func(config.APISecConfig) error
 	OnBlockPageChanged           func(config.BlockPageConfig) error
+	OnTimeSyncChanged            func(config.TimeSyncConfig) error
 }
 
 type captchaAssetRuntime struct {
@@ -192,11 +195,14 @@ type Options struct {
 	ClusterDeployAuth   *deploy.AuthorizationStore
 	ClusterHeartbeats   *cluster.HeartbeatRegistry
 	ACMEIssuer          acme.Issuer
+	TimeSync            TimeSyncService
 	OnSitesChanged      func([]config.SiteConfig) error
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error
+	OnTimeSyncChanged   func(config.TimeSyncConfig) error
 	CAPTCHAAssets       captchaassets.Store
+	Clock               timekeeper.Clock
 }
 
 var newPersistentApprovalStore = ai.NewPersistentApprovalStore
@@ -214,6 +220,11 @@ func New(opts Options) *Handler {
 	}
 	loginSecret := resolveLoginCAPTCHASecret(opts.Secret, opts.Config)
 	assetStore, assetRefs, assetErr := initializeCAPTCHAAssets(opts.Config, opts.Secret, opts.CAPTCHAAssets)
+	clock := opts.Clock
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
+	now := clock.Now
 	h := &Handler{
 		Config:                       opts.Config,
 		ConfigPath:                   opts.ConfigPath,
@@ -231,18 +242,21 @@ func New(opts Options) *Handler {
 		clusterDeployPending:         map[string]deploy.AuthorizationTarget{},
 		ClusterHeartbeats:            opts.ClusterHeartbeats,
 		ACMEIssuer:                   opts.ACMEIssuer,
+		TimeSync:                     opts.TimeSync,
 		LoginCAPTCHAState:            newLoginCAPTCHAState(),
 		CAPTCHAAssets:                assetStore,
 		CAPTCHAAssetReferences:       assetRefs,
 		CAPTCHAAssetInitError:        assetErr,
 		loginCAPTCHASecret:           loginSecret,
-		StartedAt:                    time.Now().UTC(),
+		now:                          now,
+		StartedAt:                    now().UTC(),
 		managementTokenFlushInterval: time.Minute,
 		diskUsageCache:               map[string]cachedDirSize{},
 		OnSitesChanged:               opts.OnSitesChanged,
 		OnProtectionChanged:          opts.OnProtectionChanged,
 		OnAPISecChanged:              opts.OnAPISecChanged,
 		OnBlockPageChanged:           opts.OnBlockPageChanged,
+		OnTimeSyncChanged:            opts.OnTimeSyncChanged,
 	}
 	if assetStore != nil && assetRefs != nil && opts.Config != nil {
 		h.captchaAssetRuntime.Store(&captchaAssetRuntime{store: assetStore, references: assetRefs, limits: opts.Config.CAPTCHAAssets.Limits, config: opts.Config.CAPTCHAAssets})
@@ -409,7 +423,7 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 	if mode == "slider" {
 		proofSlots++
 	}
-	now := time.Now().UTC()
+	now := h.nowUTC()
 	tracker := h.loginCAPTCHATracker()
 	reservation, reserved := tracker.reserveIssuance(owner, peer, proofSlots, now)
 	if !reserved {
@@ -463,7 +477,7 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 	if err := r.Context().Err(); err != nil {
 		return
 	}
-	now = time.Now().UTC()
+	now = h.nowUTC()
 	if !tracker.stageIssuance(reservation, proofKeys, now.Add(login.CAPTCHA.TTL), now) {
 		writeError(w, http.StatusServiceUnavailable, "CAPTCHA_CAPACITY_REACHED", "captcha service is temporarily busy")
 		return
@@ -507,7 +521,7 @@ func (h *Handler) VerifyLoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "CAPTCHA_RECEIPT_ERROR", err.Error())
 		return
 	}
-	if !h.loginCAPTCHATracker().storeReceiptForClient(owner, peer, receipt, expires, time.Now().UTC()) {
+	if !h.loginCAPTCHATracker().storeReceiptForClient(owner, peer, receipt, expires, h.nowUTC()) {
 		writeError(w, http.StatusServiceUnavailable, "CAPTCHA_CAPACITY_REACHED", "captcha service is temporarily busy")
 		return
 	}
@@ -525,7 +539,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	now := time.Now().UTC()
+	now := h.nowUTC()
 	rateLimitKeys := loginRateLimitKeys(r, req.Username)
 	if !tracker.loginAttemptAllowed(rateLimitKeys, now) {
 		writeError(w, http.StatusTooManyRequests, "LOGIN_RATE_LIMITED", "too many failed login attempts")
@@ -552,7 +566,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "TWO_FA_REQUIRED", "two-factor code required")
 			return
 		}
-		if !verifyTOTP(user.TwoFASecret, req.TOTPCode, time.Now().UTC()) {
+		if !verifyTOTP(user.TwoFASecret, req.TOTPCode, h.nowUTC()) {
 			tracker.recordLoginFailure(rateLimitKeys, now)
 			writeError(w, http.StatusUnauthorized, "INVALID_TWO_FA_CODE", "invalid two-factor code")
 			return
@@ -611,7 +625,7 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 		if strings.TrimSpace(payload.Slider.Track) == "" {
 			return false
 		}
-		now := time.Now().UTC()
+		now := h.nowUTC()
 		proofKey := loginCAPTCHAFingerprint("slider", clientKey, payload.Slider.Token)
 		tracker := h.loginCAPTCHATracker()
 		proofKeys := []string{proofKey}
@@ -622,7 +636,7 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 			return false
 		}
 		success := false
-		defer func() { tracker.finishProofs(proofKeys, success, time.Now().UTC()) }()
+		defer func() { tracker.finishProofs(proofKeys, success, h.nowUTC()) }()
 		if !captcha.VerifySlider(captcha.SliderOptions{
 			Secret:    secret,
 			Purpose:   "admin-login-slider",
@@ -652,7 +666,7 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 		success = true
 		return true
 	}
-	now := time.Now().UTC()
+	now := h.nowUTC()
 	proofKey := loginCAPTCHAFingerprint("pow", clientKey, payload.Signature, payload.Salt, payload.Challenge)
 	tracker := h.loginCAPTCHATracker()
 	proofKeys := []string{proofKey}
@@ -660,7 +674,7 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 		return false
 	}
 	success := false
-	defer func() { tracker.finishProofs(proofKeys, success, time.Now().UTC()) }()
+	defer func() { tracker.finishProofs(proofKeys, success, h.nowUTC()) }()
 	if !verifyLoginCAPTCHAPow(clientKey, secret, login.CAPTCHA, mode, payload) {
 		return false
 	}
@@ -705,7 +719,7 @@ func (h *Handler) consumeLoginCAPTCHAReceipt(r *http.Request, login config.Conso
 	if !captcha.VerifyReceipt(h.loginCAPTCHAReceiptOptions(clientKey, login.CAPTCHA.TTL, username), receipt, mode) {
 		return false
 	}
-	return h.loginCAPTCHATracker().consumeReceiptForClient(owner, peer, receipt, time.Now().UTC())
+	return h.loginCAPTCHATracker().consumeReceiptForClient(owner, peer, receipt, h.nowUTC())
 }
 
 func (h *Handler) loginCAPTCHAReceiptOptions(clientKey string, ttl time.Duration, username string) captcha.ReceiptOptions {
@@ -881,7 +895,7 @@ func (h *Handler) loginCaptchaQuotaIdentity(w http.ResponseWriter, r *http.Reque
 		Value:    value,
 		Path:     "/",
 		MaxAge:   int(loginCAPTCHAClientMaxAge / time.Second),
-		Expires:  time.Now().UTC().Add(loginCAPTCHAClientMaxAge),
+		Expires:  h.nowUTC().Add(loginCAPTCHAClientMaxAge),
 		HttpOnly: true,
 		Secure:   loginCaptchaCookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
@@ -1037,7 +1051,7 @@ func (h *Handler) pruneExpiredSessions(r *http.Request) {
 	if h == nil || h.Store == nil {
 		return
 	}
-	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	cutoff := h.nowUTC().Add(-24 * time.Hour)
 	_, _ = h.Store.PruneSessions(r.Context(), cutoff)
 }
 

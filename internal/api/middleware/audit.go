@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 type AuditEntry struct {
@@ -28,10 +30,15 @@ type AuditEntry struct {
 type Auditor struct {
 	path string
 	mu   sync.Mutex
+	now  func() time.Time
 }
 
 func NewAuditor(path string) *Auditor {
-	return &Auditor{path: path}
+	return NewAuditorWithClock(path, timekeeper.SystemClock{})
+}
+
+func NewAuditorWithClock(path string, clock timekeeper.Clock) *Auditor {
+	return &Auditor{path: path, now: utcNowFunc(clock)}
 }
 
 func (a *Auditor) Middleware(next http.Handler) http.Handler {
@@ -41,7 +48,7 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 		next.ServeHTTP(recorder, r)
 		claims, _ := r.Context().Value(UserContextKey).(*Claims)
 		entry := AuditEntry{
-			Timestamp: time.Now().UTC(),
+			Timestamp: a.nowUTC(),
 			Method:    r.Method,
 			Path:      r.URL.Path,
 			Status:    recorder.status,
@@ -55,6 +62,13 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 		}
 		_ = a.Write(r.Context(), entry)
 	})
+}
+
+func (a *Auditor) nowUTC() time.Time {
+	if a == nil || a.now == nil {
+		return timekeeper.SystemClock{}.Now().UTC()
+	}
+	return a.now()
 }
 
 func (a *Auditor) Write(ctx context.Context, entry AuditEntry) error {

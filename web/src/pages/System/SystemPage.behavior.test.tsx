@@ -1,13 +1,16 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SystemConfig } from '../../types/api';
+import type { SystemConfig, TimeSyncConfig } from '../../types/api';
 
 const apiMocks = vi.hoisted(() => ({
   createManagementAPIToken: vi.fn(),
   fetchManagementAPITokens: vi.fn(),
   fetchSystemConfig: vi.fn(),
+  fetchTimeSyncStatus: vi.fn(),
+  reselectTimeSync: vi.fn(),
   revokeManagementAPIToken: vi.fn(),
+  syncTimeNow: vi.fn(),
   testStorageBackend: vi.fn(),
   updateSystemConfig: vi.fn(),
 }));
@@ -55,10 +58,23 @@ import { APIRequestError } from '../../api/client';
 import SystemPage from './SystemPage';
 import { fallbackSystem, normalizeSystem } from './systemModel';
 
+const backendTimeSyncConfig: TimeSyncConfig = {
+  enabled: true,
+  sources: ['ntp-a.example.test', 'ntp-b.example.test', 'ntp-c.example.test'],
+  selection_interval: 24 * 60 * 60 * 1_000_000_000,
+  sync_interval: 30 * 60 * 1_000_000_000,
+  timeout: 2 * 1_000_000_000,
+  samples_per_source: 3,
+  max_accepted_offset: 5 * 60 * 1_000_000_000,
+  max_root_dispersion: 2 * 1_000_000_000,
+  consensus_tolerance: 250 * 1_000_000,
+};
+
 function systemWithListen(listen: string): SystemConfig {
   return normalizeSystem({
     ...fallbackSystem,
     server: { ...fallbackSystem.server, listen },
+    time_sync: backendTimeSyncConfig,
   });
 }
 
@@ -89,6 +105,41 @@ beforeEach(() => {
   vi.clearAllMocks();
   apiMocks.fetchManagementAPITokens.mockResolvedValue({ items: [] });
   apiMocks.fetchSystemConfig.mockResolvedValue(systemWithListen(':18080'));
+  apiMocks.fetchTimeSyncStatus.mockResolvedValue({
+    enabled: true,
+    state: 'synchronized',
+    primary_source: 'ntp-a.example.test',
+    backup_source: 'ntp-b.example.test',
+    active_source: 'ntp-a.example.test',
+    offset_ms: 125,
+    rtt_ms: 18,
+    stratum: 2,
+    last_success: '2026-07-15T10:00:00Z',
+    last_attempt: '2026-07-15T10:00:00Z',
+    consecutive_failures: 1,
+    total_failures: 4,
+    current_time: '2026-07-15T10:01:00Z',
+  });
+  apiMocks.reselectTimeSync.mockResolvedValue({
+    enabled: true,
+    state: 'synchronized',
+    active_source: 'ntp-b.example.test',
+    offset_ms: 20,
+    rtt_ms: 10,
+    consecutive_failures: 0,
+    total_failures: 4,
+    current_time: '2026-07-15T10:02:00Z',
+  });
+  apiMocks.syncTimeNow.mockResolvedValue({
+    enabled: true,
+    state: 'synchronized',
+    active_source: 'ntp-a.example.test',
+    offset_ms: 5,
+    rtt_ms: 12,
+    consecutive_failures: 0,
+    total_failures: 4,
+    current_time: '2026-07-15T10:02:00Z',
+  });
 });
 
 afterEach(() => {
@@ -130,6 +181,11 @@ describe('SystemPage persistence success', () => {
 
     await waitFor(() => expect(apiMocks.updateSystemConfig.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       server: expect.objectContaining({ listen: ':8080' }),
+      time_sync: expect.objectContaining({
+        enabled: true,
+        selection_interval: backendTimeSyncConfig.selection_interval,
+        sync_interval: backendTimeSyncConfig.sync_interval,
+      }),
     })));
     await waitFor(() => expect(apiMocks.fetchSystemConfig).toHaveBeenCalledTimes(2));
     await waitFor(() => expect((screen.getByDisplayValue(':8080') as HTMLInputElement).value).toBe(':8080'));
@@ -137,5 +193,25 @@ describe('SystemPage persistence success', () => {
     expect(client.getQueryData(['system'])).toEqual(persisted);
     expect(messageMocks.success).toHaveBeenCalledWith('system.saved');
     expect(messageMocks.error).not.toHaveBeenCalled();
+  });
+
+  it('shows calibrated runtime status and invokes both time synchronization operations', async () => {
+    renderSystem();
+
+    expect((await screen.findAllByText('ntp-a.example.test')).length).toBeGreaterThan(0);
+    expect(screen.getByText('+125 ms')).toBeTruthy();
+    expect(screen.getByText('18 ms')).toBeTruthy();
+
+    const reselect = screen.getByRole('button', { name: 'system.timeSyncReselect' });
+    const sync = screen.getByRole('button', { name: 'system.timeSyncNow' });
+    await waitFor(() => expect((sync as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.click(reselect);
+    await waitFor(() => expect(apiMocks.reselectTimeSync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncReselectSuccess'));
+
+    fireEvent.click(sync);
+    await waitFor(() => expect(apiMocks.syncTimeNow).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncNowSuccess'));
   });
 });

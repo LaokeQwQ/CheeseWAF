@@ -146,7 +146,7 @@ func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Reques
 		for {
 			select {
 			case <-ticker.C:
-				writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)})
+				writeEvent("heartbeat", map[string]any{"at": h.nowUTC().Format(time.RFC3339Nano)})
 			case <-heartbeatDone:
 				return
 			case <-ctx.Done():
@@ -184,7 +184,7 @@ func (h *Handler) continueAIApproval(ctx context.Context, id string, req aiAssis
 	record := func(event ai.AssistantTraceEvent) {
 		traceMu.Lock()
 		defer traceMu.Unlock()
-		event.At = time.Now().UTC().Format(time.RFC3339Nano)
+		event.At = h.nowUTC().Format(time.RFC3339Nano)
 		trace = append(trace, event)
 		if emit != nil {
 			emit(event)

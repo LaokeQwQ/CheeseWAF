@@ -21,6 +21,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ratelimit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 type Server struct {
@@ -46,9 +47,17 @@ type Server struct {
 	apiLimit   *apisec.RateLimiter
 	apiAuth    *apisec.Authenticator
 	certs      *SiteCertificateStore
+	clock      timekeeper.Clock
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
+	return NewServerWithClock(cfg, pipeline, sink, timekeeper.SystemClock{})
+}
+
+func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink, clock timekeeper.Clock) (*Server, error) {
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
 	blacklist, err := ip.NewBlacklist(cfg.Protection.IP.Blacklist)
 	if err != nil {
 		return nil, err
@@ -78,7 +87,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 	if err != nil {
 		return nil, err
 	}
-	apiAuth, err := apisec.NewAuthenticator(cfg.APISec)
+	apiAuth, err := apisec.NewAuthenticatorWithClock(cfg.APISec, clock)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +111,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		geoip:     geoip,
 		intel:     intel,
 		acl:       acl.NewPolicy(cfg.Protection.ACL),
-		bot:       bot.NewPolicy(cfg.Protection.Bot),
+		bot:       bot.NewPolicyWithClock(cfg.Protection.Bot, clock),
 		limiter:   ratelimit.New(cfg.Protection.RateLimit.Default, cfg.Protection.RateLimit.Enabled),
 		health:    health,
 		headers:   edge.NewHeaderModifier(cfg.Edge.Headers),
@@ -112,6 +121,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		apiLimit:  apiLimit,
 		apiAuth:   apiAuth,
 		certs:     certs,
+		clock:     clock,
 	}, nil
 }
 
@@ -162,6 +172,13 @@ func (s *Server) currentPipeline() *engine.Pipeline {
 	return s.pipeline
 }
 
+func (s *Server) wallNow() time.Time {
+	if s != nil && s.clock != nil {
+		return s.clock.Now()
+	}
+	return time.Now()
+}
+
 func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
 	if s == nil {
 		return nil
@@ -174,7 +191,7 @@ func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
 	if err != nil {
 		return err
 	}
-	apiAuth, err := apisec.NewAuthenticator(apiSec)
+	apiAuth, err := apisec.NewAuthenticatorWithClock(apiSec, s.clock)
 	if err != nil {
 		return err
 	}
@@ -224,7 +241,7 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	s.geoip = geoip
 	s.intel = intel
 	s.acl = acl.NewPolicy(protection.ACL)
-	s.bot = bot.NewPolicy(protection.Bot)
+	s.bot = bot.NewPolicyWithClock(protection.Bot, s.clock)
 	s.limiter = ratelimit.New(protection.RateLimit.Default, protection.RateLimit.Enabled)
 	s.apiLimit = apiLimit
 	return nil
@@ -698,7 +715,7 @@ func (s *Server) proxyError(w http.ResponseWriter, r *http.Request, site config.
 		AttackType: category,
 		ClientIP:   reqCtx.ClientIP,
 		Message:    message,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  s.wallNow().UTC(),
 	})
 	s.writeLog(r.Context(), reqCtx, "error", status, start, &storage.LogEntry{
 		Category:   category,
@@ -719,7 +736,7 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 		AttackType: result.Category,
 		ClientIP:   reqCtx.ClientIP,
 		Message:    result.Message,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  s.wallNow().UTC(),
 	})
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category:   result.Category,
@@ -728,9 +745,9 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 		Message:    result.Message,
 		Payload:    result.Payload,
 		Metadata: map[string]any{
-			"confidence":          result.Confidence,
-			"detector_id":         result.DetectorID,
-			"detection_category":  result.Category,
+			"confidence":         result.Confidence,
+			"detector_id":        result.DetectorID,
+			"detection_category": result.Category,
 		},
 	})
 }
@@ -741,7 +758,7 @@ func (s *Server) blockThreatIntel(w http.ResponseWriter, reqCtx *engine.RequestC
 		AttackType: "threat_intel",
 		ClientIP:   reqCtx.ClientIP,
 		Message:    decision.Message,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  s.wallNow().UTC(),
 	})
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category:   "threat_intel",
@@ -1252,7 +1269,7 @@ func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, cat
 		AttackType: category,
 		ClientIP:   reqCtx.ClientIP,
 		Message:    message,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  s.wallNow().UTC(),
 	})
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category: category,
@@ -1288,7 +1305,7 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 	}
 	entry := &storage.LogEntry{
 		ID:         reqCtx.TraceID,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  s.wallNow().UTC(),
 		TraceID:    reqCtx.TraceID,
 		SiteID:     reqCtx.SiteID,
 		ClientIP:   reqCtx.ClientIP,

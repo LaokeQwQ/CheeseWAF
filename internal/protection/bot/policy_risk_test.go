@@ -5,12 +5,18 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
+
+type botPolicyTestClock struct{ now time.Time }
+
+func (c botPolicyTestClock) Now() time.Time { return c.now }
 
 func TestPoWChallengeWorkTracksRiskBandAndRespectsMaximum(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{
@@ -43,6 +49,27 @@ func TestPoWChallengeWorkTracksRiskBandAndRespectsMaximum(t *testing.T) {
 	}
 	if highRisk != 2 {
 		t.Fatalf("PoW work exceeded or missed configured maximum: got=%d max=2", highRisk)
+	}
+}
+
+func TestPolicyUsesInjectedClockForBehaviorTTL(t *testing.T) {
+	now := time.Date(2026, time.July, 15, 11, 0, 0, 0, time.UTC)
+	policy := NewPolicyWithClock(config.BotProtectionConfig{
+		Enabled: true, CAPTCHA: true, CAPTCHAType: "shape_slider", CAPTCHAChallengeTTL: 90 * time.Second,
+		Secret: "test-secret", RiskLowThreshold: 35, RiskMediumThreshold: 55, RiskHighThreshold: 75, RiskBlockThreshold: 95, RiskConfidenceMin: 0.6,
+	}, botPolicyTestClock{now: now})
+	req := httptest.NewRequest(http.MethodGet, "https://example.test/protected", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	challenge, err := policy.issueBehaviorChallenge(policy.behaviorOptions(req, "203.0.113.10", "example.test", captcha.BehaviorShapeSlider, "/protected"))
+	if err != nil {
+		t.Fatalf("issue behavior challenge: %v", err)
+	}
+	expires, err := time.Parse(time.RFC3339, challenge.ExpiresAt)
+	if err != nil {
+		t.Fatalf("parse expiry: %v", err)
+	}
+	if want := now.Add(90 * time.Second); !expires.Equal(want) {
+		t.Fatalf("challenge expiry = %v, want %v", expires, want)
 	}
 }
 
@@ -141,6 +168,98 @@ func TestAdaptiveCAPTCHATypeHonorsConfigAndEscalatesOnlyOnHighRisk(t *testing.T)
 				t.Fatalf("expected %q, got %q", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestRandomBehaviorTypeStaysWithinConfiguredWhitelistAndDefersToEscalation(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled: true, CAPTCHA: true, CAPTCHAType: "random",
+		CAPTCHATypes: []string{"curve_slider", "shape_slider"}, CAPTCHAEscalationTypes: []string{"text_click"},
+		Secret: "test-secret", RiskLowThreshold: 35, RiskMediumThreshold: 55, RiskHighThreshold: 75, RiskBlockThreshold: 95, RiskConfidenceMin: 0.6,
+	})
+	allowed := map[captcha.BehaviorType]bool{captcha.BehaviorCurveSlider: true, captcha.BehaviorShapeSlider: true}
+	for range 64 {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		req.Header.Set("Accept", "text/html")
+		req.Header.Set("Accept-Language", "en")
+		if got := policy.behaviorTypeFor(req, "203.0.113.10", "example.test", 0); !allowed[got] {
+			t.Fatalf("random type escaped configured whitelist: %q", got)
+		}
+	}
+	highRisk := httptest.NewRequest(http.MethodGet, "/", nil)
+	highRisk.Header.Set("User-Agent", "sqlmap")
+	if got := policy.behaviorTypeFor(highRisk, "203.0.113.10", "example.test", 0); got != captcha.BehaviorTextClick {
+		t.Fatalf("high risk must keep escalation priority, got %q", got)
+	}
+}
+
+func TestRandomCAPTCHATypeHonorsClassicOnlyPools(t *testing.T) {
+	for _, kind := range []string{"image", "slider"} {
+		t.Run(kind, func(t *testing.T) {
+			policy := NewPolicy(config.BotProtectionConfig{
+				Enabled: true, CAPTCHA: true, CAPTCHAType: "random", CAPTCHATypes: []string{kind},
+				Secret: "test-secret", RiskLowThreshold: 35, RiskMediumThreshold: 55, RiskHighThreshold: 75, RiskBlockThreshold: 95, RiskConfidenceMin: 0.6,
+			})
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("User-Agent", "Mozilla/5.0")
+			req.Header.Set("Accept", "text/html")
+			req.Header.Set("Accept-Language", "en")
+			selection := policy.adaptiveCAPTCHASelection(req, "203.0.113.10", "example.test")
+			if selection.kind != kind {
+				t.Fatalf("selection kind = %q, want %q", selection.kind, kind)
+			}
+			if selection.behavior {
+				t.Fatalf("classic CAPTCHA %q must not enter the Behavior challenge path", kind)
+			}
+		})
+	}
+}
+
+func TestRandomCAPTCHATypeUsesBehaviorShellForConfiguredPOW(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled: true, CAPTCHA: true, CAPTCHAType: "random", CAPTCHATypes: []string{"pow"},
+		Secret: "test-secret", RiskLowThreshold: 35, RiskMediumThreshold: 55, RiskHighThreshold: 75, RiskBlockThreshold: 95, RiskConfidenceMin: 0.6,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Accept-Language", "en")
+	selection := policy.adaptiveCAPTCHASelection(req, "203.0.113.10", "example.test")
+	if selection.kind != "pow" || !selection.behavior {
+		t.Fatalf("random PoW selection must use shared Behavior shell, got %+v", selection)
+	}
+}
+
+func TestRandomCAPTCHAAnswerTypeUsesSubmittedClassicToken(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled: true, CAPTCHA: true, CAPTCHAType: "random", CAPTCHATypes: []string{"shape_slider"},
+		Secret: "test-secret", RiskLowThreshold: 35, RiskMediumThreshold: 55, RiskHighThreshold: 75, RiskBlockThreshold: 95, RiskConfidenceMin: 0.6,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("cw_image_token=opaque&cw_image_answer=ABC123"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if got := policy.challengeAnswerType(req); got != "image" {
+		t.Fatalf("answer type = %q, want image", got)
+	}
+}
+
+func TestRandomClassicFailureCanRotateIntoBehaviorChallenge(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled: true, CAPTCHA: true, CAPTCHAType: "random", CAPTCHATypes: []string{"shape_slider"},
+		Secret: "test-secret", RiskLowThreshold: 35, RiskMediumThreshold: 55, RiskHighThreshold: 75, RiskBlockThreshold: 95, RiskConfidenceMin: 0.6,
+	})
+	req := httptest.NewRequest(http.MethodPost, "https://example.test/protected", strings.NewReader("cw_image_token=invalid&cw_image_answer=ABC123"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Accept-Language", "en")
+	recorder := httptest.NewRecorder()
+	policy.ServeChallengeForSite(recorder, req, "203.0.113.10", "example.test")
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"type":"shape_slider"`) {
+		t.Fatalf("expected replacement Behavior challenge, body=%s", recorder.Body.String())
 	}
 }
 

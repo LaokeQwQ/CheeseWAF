@@ -1,3 +1,200 @@
+:global(.time-sync-fieldset) {
+  grid-column: 1 / -1 !important;
+  gap: 14px;
+}
+
+:global(.time-sync-header) {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+:global(.time-sync-header > div:first-child) {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+:global(.time-sync-actions) {
+  display: flex !important;
+  flex-direction: row;
+  align-items: center !important;
+  justify-content: flex-end;
+  gap: 8px !important;
+}
+
+:global(.time-sync-actions .arco-btn span) {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+:global(.time-sync-status-grid) {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border-block: 1px solid var(--border-subtle);
+}
+
+:global(.time-sync-status-item) {
+  min-width: 0;
+  padding: 11px 14px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+:global(.time-sync-status-item:nth-child(4n + 1)) {
+  border-left: 0;
+}
+
+:global(.time-sync-status-item dt) {
+  margin: 0 0 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+:global(.time-sync-status-item dd) {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+:global(.time-sync-status-item-active dd) {
+  color: var(--accent);
+}
+
+:global(.time-sync-query-error),
+:global(.time-sync-last-error) {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+
+:global(.time-sync-last-error) {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+:global(.time-sync-last-error strong) {
+  flex: 0 0 auto;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+:global(.time-sync-last-error span) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+:global(.time-sync-config-heading) {
+  display: grid;
+  gap: 3px;
+  padding-top: 2px;
+}
+
+:global(.time-sync-config-heading > span) {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+:global(.system-settings-panel .time-sync-config-grid) {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+}
+
+:global(.time-sync-config-grid label) {
+  min-width: 0;
+}
+
+:global(.time-sync-duration-input) {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(86px, 0.58fr);
+  gap: 8px;
+}
+
+:global(.time-sync-duration-input .arco-input-number),
+:global(.time-sync-duration-input .arco-select) {
+  width: 100%;
+  min-width: 0;
+}
+
+:global(.time-sync-sources-field) {
+  grid-column: 1 / -1;
+}
+
+:global(.time-sync-sources-field textarea) {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+@media (max-width: 1180px) {
+  :global(.time-sync-status-grid),
+  :global(.system-settings-panel .time-sync-config-grid) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :global(.time-sync-status-item:nth-child(4n + 1)) {
+    border-left: 1px solid var(--border-subtle);
+  }
+
+  :global(.time-sync-status-item:nth-child(2n + 1)) {
+    border-left: 0;
+  }
+}
+
+@media (max-width: 680px) {
+  :global(.time-sync-header) {
+    grid-template-columns: 1fr;
+  }
+
+  :global(.time-sync-actions) {
+    width: 100%;
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :global(.time-sync-actions .arco-btn) {
+    width: 100%;
+    justify-content: center;
+  }
+
+  :global(.system-settings-panel .time-sync-config-grid) {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 460px) {
+  :global(.time-sync-status-grid) {
+    grid-template-columns: 1fr;
+  }
+
+  :global(.time-sync-status-item),
+  :global(.time-sync-status-item:nth-child(2n + 1)),
+  :global(.time-sync-status-item:nth-child(4n + 1)) {
+    border-left: 0;
+  }
+
+  :global(.time-sync-query-error),
+  :global(.time-sync-last-error) {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 @media (max-width: 520px) {
   :global(.system-settings-panel .arco-tabs-header) {
     padding-inline: 8px;

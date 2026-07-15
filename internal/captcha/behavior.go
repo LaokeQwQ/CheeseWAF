@@ -114,6 +114,7 @@ type behaviorToken struct {
 	ClientKey     string          `json:"client_key"`
 	Path          string          `json:"path"`
 	Site          string          `json:"site"`
+	IssuedMS      int64           `json:"issued_ms,omitempty"`
 	Expires       int64           `json:"expires"`
 	Tolerance     int             `json:"tolerance"`
 	MinMS         int             `json:"min_ms"`
@@ -158,7 +159,8 @@ func IssueBehaviorChallenge(opts BehaviorOptions) (BehaviorChallenge, error) {
 	if err != nil {
 		return BehaviorChallenge{}, err
 	}
-	tok := behaviorToken{Type: kind, Purpose: opts.Purpose, ClientKey: opts.ClientKey, Path: opts.Path, Site: opts.Site, Expires: opts.Now().Add(opts.TTL).Unix(), Tolerance: opts.Tolerance, MinMS: int(opts.MinDuration / time.Millisecond), MaxMS: int(opts.MaxDuration / time.Millisecond), MaxPoints: opts.MaxTrackPoints, Version: opts.Version, Intensity: opts.Intensity, Nonce: nonce}
+	issuedAt := opts.Now()
+	tok := behaviorToken{Type: kind, Purpose: opts.Purpose, ClientKey: opts.ClientKey, Path: opts.Path, Site: opts.Site, IssuedMS: issuedAt.UnixMilli(), Expires: issuedAt.Add(opts.TTL).Unix(), Tolerance: opts.Tolerance, MinMS: int(opts.MinDuration / time.Millisecond), MaxMS: int(opts.MaxDuration / time.Millisecond), MaxPoints: opts.MaxTrackPoints, Version: opts.Version, Intensity: opts.Intensity, Nonce: nonce}
 	presentation := BehaviorPresentation{Kind: "image", Version: opts.Version, Intensity: opts.Intensity}
 	if err := populateBehavior(opts, &tok, &presentation); err != nil {
 		return BehaviorChallenge{}, err
@@ -201,7 +203,7 @@ func VerifyBehaviorChallenge(opts BehaviorOptions, response BehaviorResponse) Be
 		result.Reason = "type_mismatch"
 		return result
 	}
-	if !verifyBehaviorAnswer(tok, response) {
+	if !verifyBehaviorAnswer(opts, tok, response) {
 		result.Reason = "incorrect"
 		return result
 	}
@@ -271,7 +273,7 @@ func populateBehavior(opts BehaviorOptions, tok *behaviorToken, p *BehaviorPrese
 	return nil
 }
 
-func verifyBehaviorAnswer(tok behaviorToken, r BehaviorResponse) bool {
+func verifyBehaviorAnswer(opts BehaviorOptions, tok behaviorToken, r BehaviorResponse) bool {
 	switch tok.Mode {
 	case "pow":
 		return verifyBehaviorPOW(tok, r.Proof)
@@ -286,7 +288,7 @@ func verifyBehaviorAnswer(tok behaviorToken, r BehaviorResponse) bool {
 	case "curve":
 		return verifyVisualCurveDraw(tok, r.Track, r.DurationMS)
 	case "curve_slider":
-		return verifyVisualCurveSlider(tok, r)
+		return verifyVisualCurveSlider(opts.Now().UnixMilli(), tok, r)
 	case "scratch":
 		return verifyVisualScratch(tok, r.Track, r.DurationMS)
 	}
@@ -490,7 +492,7 @@ func validBehaviorTokenShape(tok behaviorToken) bool {
 	}
 	if tok.Mode == "curve_slider" {
 		expectedTarget := clampVisualCoord(5000 - tok.InitialOffset*5000/visualCurveSliderMaxOffset)
-		if tok.Version != 3 || absBehavior(tok.InitialOffset) < 10 ||
+		if tok.IssuedMS <= 0 || tok.Version != 3 || absBehavior(tok.InitialOffset) < 10 ||
 			absBehavior(tok.InitialOffset) > visualCurveSliderMaxOffset ||
 			absBehavior(tok.Point.X-expectedTarget) > 1 || tok.Point.Y != behaviorCoordinateMax/2 {
 			return false

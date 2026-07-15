@@ -4,6 +4,7 @@ import { startIntegrationFixture } from './fixture-client.mjs';
 import { runLoginFlow } from './login-flow.mjs';
 import { loadChromium, startWebRuntime } from './runtime.mjs';
 import { runWAFFlow } from './waf-flow.mjs';
+import { runCaptchaLabFlow } from './captcha-lab-flow.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const TIMEOUT_MS = 30_000;
@@ -45,16 +46,28 @@ try {
       userAgent: profile.userAgent,
       locale: 'en-US',
       colorScheme: 'light',
+      reducedMotion: 'no-preference',
     });
     const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUT_MS);
     let phase = 'login';
     try {
-      await runLoginFlow({
+      const login = await runLoginFlow({
         page, context, profile, fixture, webBaseURL: webRuntime.baseURL,
         userAgent: profile.userAgent, timeoutMs: TIMEOUT_MS,
       });
       console.log(`PASS ${profile.name}/login`);
+      if (!profile.mobile) {
+        phase = 'captcha-lab';
+        const lab = await runCaptchaLabFlow({
+          page,
+          fixture,
+          webBaseURL: webRuntime.baseURL,
+          bearerToken: login.bearerToken,
+          timeoutMs: TIMEOUT_MS,
+        });
+        console.log(`PASS ${profile.name}/captcha-lab/real-handler=${lab.scenarios}`);
+      }
       phase = 'waf';
       await runWAFFlow({ page, context, profile, fixture, userAgent: profile.userAgent, timeoutMs: TIMEOUT_MS });
       console.log(`PASS ${profile.name}/waf`);

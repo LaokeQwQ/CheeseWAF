@@ -47,7 +47,7 @@ func (h *Handler) MonitorSummary(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) APIEndpoints(w http.ResponseWriter, r *http.Request) {
 	logs := h.recentLogs(r, 1000)
 	writeData(w, map[string]any{
-		"endpoints": apisec.Discover(logs, h.Config.APISec.Discovery, time.Now().UTC()),
+		"endpoints": apisec.Discover(logs, h.Config.APISec.Discovery, h.nowUTC()),
 		"config":    h.Config.APISec,
 	})
 }

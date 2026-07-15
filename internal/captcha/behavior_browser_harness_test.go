@@ -303,7 +303,7 @@ func (state *browserHarnessState) verify(response BehaviorResponse) (int, Behavi
 		return 410, BehaviorResult{}, "CAPTCHA_ALREADY_USED"
 	}
 	fixture.used = true
-	result := VerifyBehaviorChallenge(fixture.opts, response)
+	result := VerifyBehaviorChallenge(harnessVerificationOptions(fixture.opts, response), response)
 	result.Reason = ""
 	return 200, result, ""
 }

@@ -2,6 +2,7 @@ import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
 import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterStatus, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { TimeSyncStatus } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -454,6 +455,18 @@ export function recoverUser2FA(id: string, password: string, confirmUsername: st
 
 export function fetchSystemConfig() {
   return unwrap<SystemConfig>(apiClient.get('/system'));
+}
+
+export function fetchTimeSyncStatus() {
+  return unwrap<TimeSyncStatus>(apiClient.get('/system/time-sync'));
+}
+
+export function reselectTimeSync() {
+  return unwrap<TimeSyncStatus>(apiClient.post('/system/time-sync/reselect', {}));
+}
+
+export function syncTimeNow() {
+  return unwrap<TimeSyncStatus>(apiClient.post('/system/time-sync/sync', {}));
 }
 
 export function fetchVersion() {

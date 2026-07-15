@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/acme"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
@@ -367,7 +366,7 @@ func (h *Handler) notifyACMEIssue(r *http.Request, site *storage.Site, result ac
 	}
 	startsAt := result.IssuedAt
 	if startsAt.IsZero() {
-		startsAt = time.Now().UTC()
+		startsAt = h.nowUTC()
 	}
 	alert := monitor.Alert{
 		RuleID:    "acme.issue",

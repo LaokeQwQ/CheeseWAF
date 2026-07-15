@@ -243,33 +243,48 @@ func renderVisualCurvePiece(opts BehaviorOptions, curve []BehaviorPoint, initial
 	}
 	const scale = 2
 	canvas := image.NewRGBA(image.Rect(0, 0, bitmapWidth*scale, bitmapHeight*scale))
+	fillVisualCurvePieceTexture(canvas, curve, initialOffset)
 	points := visualCurvePixels(curve, scale)
 	horizontalShift := float64(initialOffset) * bitmapWidth * scale / 100
 	for i := range points {
 		points[i].x += horizontalShift
 	}
-	// Opaque solid stroke on a fully transparent canvas so CSS translateX can slide it.
+	// The movable curve carries a subtle full-canvas texture. It keeps the visual
+	// task readable while preventing a transparent-PNG alpha bounding box from
+	// disclosing the horizontal displacement.
 	drawVisualCurveDiscSolidPolyline(canvas, points, 13*scale, color.RGBA{R: 255, G: 255, B: 255, A: 255})
 	drawVisualCurveDiscSolidPolyline(canvas, points, 6*scale, color.RGBA{R: 245, G: 158, B: 11, A: 255})
 	piece := downsampleVisualCurveAlpha(canvas, scale)
-	stabilizeVisualCurveAlphaSupport(piece)
 	engine := bitmapEngine(opts)
 	return imageengine.PNGDataURI(piece, engine.Limits)
 }
 
-func stabilizeVisualCurveAlphaSupport(piece *image.RGBA) {
-	if piece == nil || piece.Bounds().Dx() == 0 || piece.Bounds().Dy() == 0 {
+func fillVisualCurvePieceTexture(dst *image.RGBA, curve []BehaviorPoint, initialOffset int) {
+	if dst == nil {
 		return
 	}
-	// Visual answers are not cryptographic secrets. These imperceptible support
-	// pixels only prevent the PNG alpha bounding box from directly encoding the
-	// piece's initial displacement.
-	bounds := piece.Bounds()
-	support := color.RGBA{A: 1}
-	piece.SetRGBA(bounds.Min.X, bounds.Min.Y, support)
-	piece.SetRGBA(bounds.Max.X-1, bounds.Min.Y, support)
-	piece.SetRGBA(bounds.Min.X, bounds.Max.Y-1, support)
-	piece.SetRGBA(bounds.Max.X-1, bounds.Max.Y-1, support)
+	seed := uint32(0x9e3779b9 ^ uint32(initialOffset*7919))
+	for _, point := range curve {
+		seed ^= uint32(point.X*31 + point.Y*131)
+		seed = seed*1664525 + 1013904223
+	}
+	for y := dst.Bounds().Min.Y; y < dst.Bounds().Max.Y; y++ {
+		for x := dst.Bounds().Min.X; x < dst.Bounds().Max.X; x++ {
+			value := visualCurveTextureValue(seed, x, y)
+			alpha := uint8(28 + value%19)
+			// RGBA is premultiplied: preserve a restrained, blue-gray grain rather
+			// than a visible opaque panel over the guide image.
+			dst.SetRGBA(x, y, color.RGBA{R: alpha / 2, G: alpha / 2, B: alpha - alpha/5, A: alpha})
+		}
+	}
+}
+
+func visualCurveTextureValue(seed uint32, x, y int) uint32 {
+	value := seed ^ uint32(x*0x45d9f3b) ^ uint32(y*0x27d4eb2d)
+	value ^= value >> 16
+	value *= 0x7feb352d
+	value ^= value >> 15
+	return value
 }
 
 func visualCurvePixels(curve []BehaviorPoint, scale int) []visualCurvePixel {
@@ -432,7 +447,7 @@ func verifyVisualCurveDraw(tok behaviorToken, track []BehaviorTrackPoint, durati
 	return visualCurveCoverage(covered) >= .72 && lastIndex >= len(tok.Curve)-3
 }
 
-func verifyVisualCurveSlider(tok behaviorToken, response BehaviorResponse) bool {
+func verifyVisualCurveSlider(verifiedAtMS int64, tok behaviorToken, response BehaviorResponse) bool {
 	if response.Point == nil || !validBehaviorTrack(tok, response.Track, response.DurationMS) {
 		return false
 	}
@@ -446,7 +461,7 @@ func verifyVisualCurveSlider(tok behaviorToken, response BehaviorResponse) bool 
 		return false
 	}
 	first, last := response.Track[0], response.Track[len(response.Track)-1]
-	if last.T < tok.MinMS {
+	if tok.IssuedMS <= 0 || verifiedAtMS-tok.IssuedMS < int64(tok.MinMS) || first.T != 0 || last.T != response.DurationMS || last.T < tok.MinMS {
 		return false
 	}
 	if (first.Type != "" && first.Type != "down") || (last.Type != "" && last.Type != "up") {

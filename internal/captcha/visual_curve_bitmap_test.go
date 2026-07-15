@@ -125,9 +125,9 @@ func TestVisualCurveSliderPieceAlphaBoundsDoNotRevealInitialOffset(t *testing.T)
 			t.Fatal(err)
 		}
 		piece := decodeBehaviorPNG(t, pieceURI)
-		bounds, ok := visualCurveAlphaBounds(piece)
+		bounds, ok := visualCurveAlphaBoundsAtLeast(piece, 8)
 		if !ok || bounds != piece.Bounds() {
-			t.Fatalf("offset %d alpha bounds = %v, want constant full canvas %v", offset, bounds, piece.Bounds())
+			t.Fatalf("offset %d visible alpha bounds = %v, want constant full canvas %v", offset, bounds, piece.Bounds())
 		}
 		for _, point := range []image.Point{
 			piece.Bounds().Min,
@@ -136,21 +136,21 @@ func TestVisualCurveSliderPieceAlphaBoundsDoNotRevealInitialOffset(t *testing.T)
 			{X: piece.Bounds().Max.X - 1, Y: piece.Bounds().Max.Y - 1},
 		} {
 			_, _, _, alpha := piece.At(point.X, point.Y).RGBA()
-			if alpha != 0x0101 {
-				t.Fatalf("offset %d support alpha at %v = %#x, want imperceptible 1/255", offset, point, alpha)
+			if alpha < 0x0909 {
+				t.Fatalf("offset %d texture alpha at %v = %#x, want at least 9/255", offset, point, alpha)
 			}
 		}
 	}
 }
 
-func visualCurveAlphaBounds(source image.Image) (image.Rectangle, bool) {
+func visualCurveAlphaBoundsAtLeast(source image.Image, minimum uint32) (image.Rectangle, bool) {
 	bounds := source.Bounds()
 	alphaBounds := image.Rectangle{Min: bounds.Max, Max: bounds.Min}
 	visible := false
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
 			_, _, _, alpha := source.At(x, y).RGBA()
-			if alpha == 0 {
+			if alpha < minimum*0x101 {
 				continue
 			}
 			visible = true

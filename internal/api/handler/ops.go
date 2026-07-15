@@ -60,7 +60,7 @@ type flexibleDuration time.Duration
 
 func (h *Handler) ListTasks(w http.ResponseWriter, _ *http.Request) {
 	tasks := h.normalizedTaskConfigs()
-	writeData(w, scheduledTaskResponses(tasks))
+	writeData(w, scheduledTaskResponses(tasks, h.nowUTC()))
 }
 
 func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
@@ -75,8 +75,9 @@ func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
 	for _, item := range payload {
 		req = append(req, item.config())
 	}
+	now := h.nowUTC()
 	for index := range req {
-		normalizeScheduledTask(&req[index])
+		normalizeScheduledTask(&req[index], now)
 	}
 	if err := h.validateSchedulerTasks(req); err != nil {
 		writeError(w, http.StatusBadRequest, "SCHEDULER_TASK_INVALID", err.Error())
@@ -107,7 +108,7 @@ func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, code, err.Error())
 		return
 	}
-	writeData(w, scheduledTaskResponses(committed.Scheduler.Tasks))
+	writeData(w, scheduledTaskResponses(committed.Scheduler.Tasks, now))
 }
 
 func (h *Handler) validateSchedulerTasks(tasks []config.ScheduledTaskConfig) error {
@@ -250,7 +251,7 @@ func (h *Handler) StorageStats(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) CleanupStorage(w http.ResponseWriter, _ *http.Request) {
-	task := storageCleanupTask(h.Config)
+	task := storageCleanupTask(h.Config, h.nowUTC())
 	result, err := scheduler.CleanupOldFilesWithResult(scheduler.Task{
 		ID:     task.ID,
 		Name:   task.Name,
@@ -268,15 +269,15 @@ func (h *Handler) CleanupStorage(w http.ResponseWriter, _ *http.Request) {
 		"keep":      result.Keep,
 		"scanned":   result.Scanned,
 		"removed":   result.Removed,
-		"timestamp": time.Now().UTC(),
+		"timestamp": h.nowUTC(),
 	})
 }
 
-func storageCleanupTask(cfg *config.Config) config.ScheduledTaskConfig {
+func storageCleanupTask(cfg *config.Config, now time.Time) config.ScheduledTaskConfig {
 	if cfg != nil {
 		for _, task := range cfg.Scheduler.Tasks {
 			if task.Type == "cleanup" {
-				normalizeScheduledTask(&task)
+				normalizeScheduledTask(&task, now)
 				return task
 			}
 		}
@@ -302,7 +303,7 @@ func storageCleanupTask(cfg *config.Config) config.ScheduledTaskConfig {
 	}
 }
 
-func normalizeScheduledTask(task *config.ScheduledTaskConfig) {
+func normalizeScheduledTask(task *config.ScheduledTaskConfig, now time.Time) {
 	task.ID = strings.TrimSpace(task.ID)
 	task.Name = strings.TrimSpace(task.Name)
 	task.Type = strings.TrimSpace(task.Type)
@@ -361,7 +362,7 @@ func normalizeScheduledTask(task *config.ScheduledTaskConfig) {
 		}
 	}
 	if task.CreatedAt.IsZero() {
-		task.CreatedAt = time.Now().UTC()
+		task.CreatedAt = now.UTC()
 	}
 }
 
@@ -371,16 +372,17 @@ func (h *Handler) normalizedTaskConfigs() []config.ScheduledTaskConfig {
 	}
 	tasks := make([]config.ScheduledTaskConfig, len(h.Config.Scheduler.Tasks))
 	copy(tasks, h.Config.Scheduler.Tasks)
+	now := h.nowUTC()
 	for index := range tasks {
-		normalizeScheduledTask(&tasks[index])
+		normalizeScheduledTask(&tasks[index], now)
 	}
 	return tasks
 }
 
-func scheduledTaskResponses(tasks []config.ScheduledTaskConfig) []scheduledTaskResponse {
+func scheduledTaskResponses(tasks []config.ScheduledTaskConfig, now time.Time) []scheduledTaskResponse {
 	out := make([]scheduledTaskResponse, 0, len(tasks))
 	for _, task := range tasks {
-		normalizeScheduledTask(&task)
+		normalizeScheduledTask(&task, now)
 		out = append(out, scheduledTaskResponse{
 			ID:        task.ID,
 			Name:      task.Name,
@@ -458,7 +460,7 @@ func (h *Handler) ReclaimSystemResources(w http.ResponseWriter, r *http.Request)
 		"ok":        ok,
 		"target":    req.Target,
 		"actions":   actions,
-		"timestamp": time.Now().UTC(),
+		"timestamp": h.nowUTC(),
 	})
 }
 
@@ -561,7 +563,7 @@ func (h *Handler) PreviewBlockPageConfig(w http.ResponseWriter, r *http.Request)
 		AttackType: "preview",
 		ClientIP:   clientAddressForPreview(r.RemoteAddr),
 		Message:    "CheeseWAF rendered this response with the same runtime template engine used for blocked requests.",
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  h.nowUTC(),
 	})
 	writeData(w, map[string]any{
 		"html":     html,

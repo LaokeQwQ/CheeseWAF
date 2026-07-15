@@ -10,7 +10,10 @@ import {
   analyzeLogReferenceStream,
   handleUnauthorizedAuthFailure,
   fetchHealth,
+  fetchTimeSyncStatus,
   issueCaptchaLabChallenge,
+  reselectTimeSync,
+  syncTimeNow,
   verifyCaptchaLabChallenge,
   clearNotifications,
   fetchNotifications,
@@ -43,6 +46,32 @@ describe('CAPTCHA Lab API cancellation', () => {
     await verifyCaptchaLabChallenge(response, controller.signal);
 
     expect(post).toHaveBeenCalledWith('/captcha/lab/verify', response, { signal: controller.signal });
+  });
+});
+
+describe('time synchronization API', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('uses the status and operation endpoints', async () => {
+    const status = {
+      enabled: true,
+      state: 'synchronized',
+      offset_ms: 0,
+      rtt_ms: 12,
+      consecutive_failures: 0,
+      total_failures: 0,
+      current_time: '2026-07-15T10:00:00Z',
+    };
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { data: status } });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { data: status } });
+
+    await expect(fetchTimeSyncStatus()).resolves.toEqual(status);
+    await expect(reselectTimeSync()).resolves.toEqual(status);
+    await expect(syncTimeNow()).resolves.toEqual(status);
+
+    expect(get).toHaveBeenCalledWith('/system/time-sync');
+    expect(post).toHaveBeenNthCalledWith(1, '/system/time-sync/reselect', {});
+    expect(post).toHaveBeenNthCalledWith(2, '/system/time-sync/sync', {});
   });
 });
 

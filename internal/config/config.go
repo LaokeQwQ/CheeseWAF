@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Deployment    DeploymentConfig    `yaml:"deployment" json:"deployment"`
 	Server        ServerConfig        `yaml:"server" json:"server"`
+	TimeSync      TimeSyncConfig      `yaml:"time_sync" json:"time_sync"`
 	TLS           TLSConfig           `yaml:"tls" json:"tls"`
 	Setup         SetupConfig         `yaml:"setup" json:"setup"`
 	Cluster       ClusterConfig       `yaml:"cluster" json:"cluster"`
@@ -30,6 +31,44 @@ type Config struct {
 	Monitor       MonitorConfig       `yaml:"monitor" json:"monitor"`
 	APISec        APISecConfig        `yaml:"apisec" json:"apisec"`
 	BlockPage     BlockPageConfig     `yaml:"block_page" json:"block_page"`
+}
+
+// UnmarshalYAML distinguishes an omitted time_sync.enabled field from an
+// explicit false value while preserving defaults already present in cfg.
+func (cfg *Config) UnmarshalYAML(value *yaml.Node) error {
+	type plainConfig Config
+	decoded := plainConfig(*cfg)
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	*cfg = Config(decoded)
+
+	timeSyncNode := yamlMappingValue(value, "time_sync")
+	if timeSyncNode == nil || yamlMappingValue(timeSyncNode, "enabled") == nil {
+		cfg.TimeSync.Enabled = true
+	}
+	return nil
+}
+
+func yamlMappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	if node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for idx := 0; idx+1 < len(node.Content); idx += 2 {
+		if node.Content[idx].Value == key {
+			return node.Content[idx+1]
+		}
+	}
+	return nil
 }
 
 type CAPTCHAAssetsConfig struct {
@@ -127,6 +166,31 @@ type ServerConfig struct {
 	WriteTimeout time.Duration  `yaml:"write_timeout" json:"write_timeout"`
 	IdleTimeout  time.Duration  `yaml:"idle_timeout" json:"idle_timeout"`
 	HTTP3        HTTP3Config    `yaml:"http3" json:"http3"`
+}
+
+// defaultTimeSyncSources is a small multi-operator set. A large pool list
+// multiplies reselect traffic and is more likely to draw NTP RATE KoDs.
+var defaultTimeSyncSources = [...]string{
+	"time.cloudflare.com",
+	"time.google.com",
+	"time.aws.com",
+	"time.apple.com",
+	"ntp.aliyun.com",
+	"time1.cloud.tencent.com",
+	"ntp.ubuntu.com",
+	"pool.ntp.org",
+}
+
+type TimeSyncConfig struct {
+	Enabled            bool          `yaml:"enabled" json:"enabled"`
+	Sources            []string      `yaml:"sources" json:"sources"`
+	SelectionInterval  time.Duration `yaml:"selection_interval" json:"selection_interval"`
+	SyncInterval       time.Duration `yaml:"sync_interval" json:"sync_interval"`
+	Timeout            time.Duration `yaml:"timeout" json:"timeout"`
+	SamplesPerSource   int           `yaml:"samples_per_source" json:"samples_per_source"`
+	MaxAcceptedOffset  time.Duration `yaml:"max_accepted_offset" json:"max_accepted_offset"`
+	MaxRootDispersion  time.Duration `yaml:"max_root_dispersion" json:"max_root_dispersion"`
+	ConsensusTolerance time.Duration `yaml:"consensus_tolerance" json:"consensus_tolerance"`
 }
 
 type AdminTLSConfig struct {

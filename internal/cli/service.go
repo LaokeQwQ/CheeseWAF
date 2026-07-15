@@ -33,6 +33,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 var readAdminEntryNonce = rand.Read
@@ -43,6 +44,11 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	timeSync, err := timekeeper.NewService(timekeeperConfigFromConfig(cfg.TimeSync), timekeeper.Dependencies{})
+	if err != nil {
+		return fmt.Errorf("configure application clock: %w", err)
+	}
+	clock := timeSync.Clock()
 	if err := ensureAdminTLSCertificate(cfg); err != nil {
 		return err
 	}
@@ -82,7 +88,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	proxyServer, err := proxy.NewServer(cfg, pipeline, sink)
+	proxyServer, err := proxy.NewServerWithClock(cfg, pipeline, sink, clock)
 	if err != nil {
 		return err
 	}
@@ -120,8 +126,24 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	admin := &http.Server{
-		Addr:              cfg.Server.AdminListen,
-		Handler:           adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: reloadSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec, OnBlockPageChanged: proxyServer.UpdateBlockPage}), authSecret),
+		Addr: cfg.Server.AdminListen,
+		Handler: adminHandlerWithClock(cfg, api.NewRouter(api.Options{
+			Config:              cfg,
+			ConfigPath:          loadedConfigPath,
+			Store:               store,
+			Sink:                sink,
+			Hub:                 hub,
+			Secret:              authSecret,
+			Clock:               clock,
+			TimeSync:            timeSync,
+			OnSitesChanged:      reloadSites,
+			OnProtectionChanged: proxyServer.UpdateProtection,
+			OnAPISecChanged:     proxyServer.UpdateAPISec,
+			OnBlockPageChanged:  proxyServer.UpdateBlockPage,
+			OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+				return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
+			},
+		}), authSecret, clock),
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
@@ -138,6 +160,10 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := timeSync.Start(ctx); err != nil {
+		return fmt.Errorf("start application clock: %w", err)
+	}
+	defer timeSync.Stop()
 
 	fmt.Printf("CheeseWAF proxy listening on %s\n", cfg.Server.Listen)
 	if tlsServer != nil {
@@ -217,9 +243,16 @@ func validateStartupUsers(ctx context.Context, dataDir string, store storage.Use
 }
 
 func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string) http.Handler {
+	return adminHandlerWithClock(cfg, apiHandler, authSecret, timekeeper.SystemClock{})
+}
+
+func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock) http.Handler {
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
 	webDir := resolveWebDir()
 	if webDir == "" {
-		return adminSecurityHeaders(adminEntranceGate(cfg, authSecret, apiHandler))
+		return adminSecurityHeaders(adminEntranceGateWithClock(cfg, authSecret, apiHandler, clock))
 	}
 	spa := http.FileServer(http.Dir(webDir))
 	metricsPath := "/metrics"
@@ -229,7 +262,7 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowAdminEntrance(cfg, authSecret, metricsPath, metricsPublic, w, r) {
+		if !allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
 			return
 		}
 		if r.URL.Path == metricsPath && !metricsPublic {
@@ -274,6 +307,13 @@ func isAdminStaticAssetPath(path string) bool {
 }
 
 func adminEntranceGate(cfg *config.Config, authSecret string, next http.Handler) http.Handler {
+	return adminEntranceGateWithClock(cfg, authSecret, next, timekeeper.SystemClock{})
+}
+
+func adminEntranceGateWithClock(cfg *config.Config, authSecret string, next http.Handler, clock timekeeper.Clock) http.Handler {
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
 	metricsPath := "/metrics"
 	metricsPublic := false
 	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
@@ -281,7 +321,7 @@ func adminEntranceGate(cfg *config.Config, authSecret string, next http.Handler)
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowAdminEntrance(cfg, authSecret, metricsPath, metricsPublic, w, r) {
+		if !allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -305,6 +345,13 @@ func adminSecurityHeaders(next http.Handler) http.Handler {
 }
 
 func allowAdminEntrance(cfg *config.Config, authSecret, metricsPath string, metricsPublic bool, w http.ResponseWriter, r *http.Request) bool {
+	return allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, time.Now)
+}
+
+func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, metricsPublic bool, w http.ResponseWriter, r *http.Request, now func() time.Time) bool {
+	if now == nil {
+		now = time.Now
+	}
 	login := config.Default().Console.Login
 	if cfg != nil {
 		login = cfg.Console.Login
@@ -334,14 +381,14 @@ func allowAdminEntrance(cfg *config.Config, authSecret, metricsPath string, metr
 			writeAdminTeapot(w)
 			return false
 		}
-		if !issueAdminEntryCookie(w, r, entry.CookieName, secret) {
+		if !issueAdminEntryCookieAt(w, r, entry.CookieName, secret, now) {
 			writeAdminTeapot(w)
 			return false
 		}
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return false
 	}
-	if validAdminEntryCookie(r, entry.CookieName, secret, time.Now) {
+	if validAdminEntryCookie(r, entry.CookieName, secret, now) {
 		return true
 	}
 	writeAdminTeapot(w)
@@ -357,7 +404,14 @@ func cleanAdminEntryPath(path string) string {
 }
 
 func issueAdminEntryCookie(w http.ResponseWriter, r *http.Request, name, secret string) bool {
-	expires := time.Now().UTC().Add(config.AdminSessionTTL)
+	return issueAdminEntryCookieAt(w, r, name, secret, time.Now)
+}
+
+func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secret string, now func() time.Time) bool {
+	if now == nil {
+		now = time.Now
+	}
+	expires := now().UTC().Add(config.AdminSessionTTL)
 	nonceBytes := make([]byte, 16)
 	if _, err := readAdminEntryNonce(nonceBytes); err != nil {
 		return false

@@ -28,6 +28,7 @@ import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
 import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, ManagementAPIConfig, ManagementAPIToken, SystemConfig } from '../../types/api';
 import { durationMilliseconds, durationSeconds, fallbackSystem, millisecondsToDuration, normalizeSystem, secondsToDuration } from './systemModel';
+import TimeSyncPanel, { timeSyncQueryKey } from './TimeSyncPanel';
 import './SystemPage.module.css';
 
 export default function SystemPage() {
@@ -55,6 +56,7 @@ export default function SystemPage() {
     onSuccess: (saved) => {
       setSystem(normalizeSystem(saved));
       queryClient.invalidateQueries({ queryKey: ['system'] });
+      queryClient.invalidateQueries({ queryKey: timeSyncQueryKey });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
       ArcoMessage.success(t('system.saved'));
     },
@@ -109,6 +111,12 @@ export default function SystemPage() {
           ...(patch as Record<string, unknown>),
         } as SystemConfig['storage'][K],
       },
+    }));
+  };
+  const patchTimeSync = (patch: Partial<NonNullable<SystemConfig['time_sync']>>) => {
+    setSystem((current) => normalizeSystem({
+      ...current,
+      time_sync: current.time_sync ? { ...current.time_sync, ...patch } : undefined,
     }));
   };
   const apiAuth = useMemo(() => readAPIAuth(system), [system]);
@@ -225,7 +233,7 @@ export default function SystemPage() {
               <div className="system-section-title">
                 <h2>{t('system.interface')}</h2>
                 {systemQuery.isError && <Button onClick={() => systemQuery.refetch()} loading={systemQuery.isFetching}>{t('common.retry')}</Button>}
-                <Button onClick={() => saveMutation.mutate({ server: system.server, tls: system.tls, logging: system.logging })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
+                <Button onClick={() => saveMutation.mutate({ server: system.server, ...(system.time_sync ? { time_sync: system.time_sync } : {}), tls: system.tls, logging: system.logging })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups">
                 <section className="system-fieldset">
@@ -288,6 +296,7 @@ export default function SystemPage() {
                     <label><span>{t('system.logMaxBackups')}</span><InputNumber value={system.logging.output.file.max_backups} min={1} max={365} onChange={(max_backups) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, max_backups: Number(max_backups || 1) } } } })} /></label>
                   </div>
                 </section>
+                {system.time_sync && <TimeSyncPanel value={system.time_sync} onChange={patchTimeSync} />}
               </div>
             </div>
           </Tabs.TabPane>

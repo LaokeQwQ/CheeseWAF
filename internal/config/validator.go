@@ -565,6 +565,9 @@ func normalizeTimeSyncSource(raw string) (string, error) {
 	host := raw
 	port := 123
 	if ip := net.ParseIP(raw); ip != nil {
+		if !netguard.IsPublicIP(ip) {
+			return "", fmt.Errorf("must not be a private, loopback, link-local, or unspecified address")
+		}
 		return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
 	}
 	if strings.Contains(raw, ":") {
@@ -585,11 +588,17 @@ func normalizeTimeSyncSource(raw string) (string, error) {
 
 	canonicalHost := ""
 	if ip := net.ParseIP(host); ip != nil {
+		if !netguard.IsPublicIP(ip) {
+			return "", fmt.Errorf("must not be a private, loopback, link-local, or unspecified address")
+		}
 		canonicalHost = ip.String()
 	} else {
 		canonicalHost = strings.ToLower(strings.TrimSuffix(host, "."))
 		if !isValidTimeSyncHostname(canonicalHost) {
 			return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+		}
+		if canonicalHost == "localhost" || strings.HasSuffix(canonicalHost, ".localhost") || strings.HasSuffix(canonicalHost, ".local") {
+			return "", fmt.Errorf("must not be a private, loopback, link-local, or unspecified address")
 		}
 	}
 	return net.JoinHostPort(canonicalHost, strconv.Itoa(port)), nil

@@ -5,7 +5,10 @@ import { CurveSliderChallenge } from './CurveSliderChallenge';
 const image = 'data:image/png;base64,iVBORw0KGgo=';
 const piece = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('CurveSliderChallenge', () => {
   it('translates the solid curve piece and submits only on release', () => {
@@ -59,30 +62,51 @@ describe('CurveSliderChallenge', () => {
     }));
   });
 
-  it('records one keyboard transaction and honors the issued minimum duration', () => {
+  it('keeps keyboard adjustments open until Enter and honors the issued minimum duration', () => {
     const onSubmit = vi.fn();
     render(
       <CurveSliderChallenge
         imageSrc={image}
         pieceSrc={piece}
-        minDurationMs={450}
+        minDurationMs={10_000}
         alt="Align curve"
         onSubmit={onSubmit}
       />,
     );
     const slider = screen.getByRole('slider', { name: 'Align curve' });
-    fireEvent.keyDown(slider, { key: 'End' });
-    fireEvent.change(slider, { target: { value: '10000' } });
-    fireEvent.keyUp(slider, { key: 'End' });
+    fireEvent.keyDown(slider, { key: 'PageUp' });
+    fireEvent.keyUp(slider, { key: 'PageUp' });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect((slider as HTMLInputElement).value).toBe('6000');
+
+    fireEvent.keyDown(slider, { key: 'Enter' });
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      point: { x: 10000, y: 5000 },
-      duration_ms: 450,
-      track: [
-        expect.objectContaining({ x: 5000, type: 'down' }),
-        expect.objectContaining({ x: 10000, type: 'move' }),
-        expect.objectContaining({ x: 10000, type: 'up', t: 450 }),
-      ],
-    }));
+    const response = onSubmit.mock.calls[0][0];
+    expect(response).toMatchObject({
+      point: { x: 6000, y: 5000 },
+      duration_ms: 10_000,
+    });
+    expect(response.track).toEqual([
+      expect.objectContaining({ x: 5000, y: 5000, t: 0, type: 'down' }),
+      expect.objectContaining({ x: 5250, y: 5000, type: 'move' }),
+      expect.objectContaining({ x: 5500, y: 5000, type: 'move' }),
+      expect.objectContaining({ x: 5750, y: 5000, type: 'move' }),
+      expect.objectContaining({ x: 6000, y: 5000, type: 'move' }),
+      expect.objectContaining({ x: 6000, y: 5000, t: 10_000, type: 'up' }),
+    ]);
+  });
+
+  it('supports Space submission and exposes a focusable slider control', () => {
+    const onSubmit = vi.fn();
+    render(<CurveSliderChallenge imageSrc={image} pieceSrc={piece} alt="Align curve" onSubmit={onSubmit} />);
+    const slider = screen.getByRole('slider', { name: 'Align curve' });
+    slider.focus();
+    expect(document.activeElement).toBe(slider);
+
+    fireEvent.keyDown(slider, { key: 'ArrowRight' });
+    fireEvent.keyUp(slider, { key: 'ArrowRight' });
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.keyDown(slider, { key: ' ' });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 });

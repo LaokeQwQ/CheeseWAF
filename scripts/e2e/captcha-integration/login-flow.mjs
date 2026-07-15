@@ -26,6 +26,7 @@ export async function runLoginFlow({ page, context, profile, fixture, webBaseURL
   const storedToken = await page.evaluate(() => localStorage.getItem('cheesewaf-token'));
   assertCondition(typeof storedToken === 'string' && storedToken.length > 20, 'login did not persist an authenticated session');
   monitor.assertClean(`${profile.name}/login`);
+  return { bearerToken: storedToken };
 }
 
 async function runDesktopLogin({ page, context, fixture, userAgent, monitor, timeoutMs, firstIssue }) {

@@ -153,6 +153,23 @@ func TestBehaviorPageRestoreSliderSubmitsOffsetFromPresentation(t *testing.T) {
 	}
 }
 
+func TestBehaviorPageCurveSliderShowsPieceAndUsesRangeTrackProtocol(t *testing.T) {
+	presentation := captcha.BehaviorPresentation{Kind: string(captcha.BehaviorCurveSlider), Image: testPNGData, Piece: testPNGData, Track: map[string]int{"min_duration_ms": 180}}
+	page := renderBehaviorPage(t, BehaviorPageInput{Challenge: captcha.BehaviorChallenge{Type: captcha.BehaviorCurveSlider, Token: "opaque-token", Presentation: presentation}, ReturnURL: "/protected/resource", Method: "GET"})
+	if !strings.Contains(page, `#challenge-piece.curve-piece{inset:0;width:100%;height:100%`) {
+		t.Fatal("curve slider full-canvas piece style is missing")
+	}
+	script := scriptText(parseBehaviorPage(t, page))
+	for _, want := range []string{`piece.classList.remove("hidden");piece.classList.add("curve-piece")`, `slider.classList.remove("hidden");slider.max="10000";slider.value="5000"`, `response.point={x:value,y:5000}`, `response.track=[{x:5000,y:5000,t:0,type:"down"},{x:middle,y:5000,t:Math.round(duration/2),type:"move"},{x:value,y:5000,t:duration,type:"up"}]`, `piece.style.transform="translateX("+(((value-5000)/5000)*16)+"%)"`, `const minDuration=Math.max(0,Number((P.track||{}).min_duration_ms)||0)`, `const duration=Math.max(minDuration,Math.round(performance.now()-start))`, `if(!sliderStarted){return}`} {
+		if !strings.Contains(script, want) {
+			t.Errorf("curve slider contract missing %q", want)
+		}
+	}
+	if strings.Contains(script, `if(!sliderStarted){delete response.track;delete response.duration_ms;return}`) {
+		t.Fatal("curve slider must not drop a finished track on post-release input events")
+	}
+}
+
 func TestBehaviorPageTerminalResultsFreezeAndReloadWithGET(t *testing.T) {
 	script := behaviorPageScript(t, captcha.BehaviorRotate, captcha.BehaviorPresentation{Image: testPNGData})
 	for _, want := range []string{`let terminal=false`, `const freeze=()=>{terminal=true;available=false;active=false;verify.disabled=true;slider.disabled=true;overlay.style.pointerEvents="none";scratchCanvas.style.pointerEvents="none"}`, `const reloadChallenge=()=>setTimeout(()=>location.assign(S.returnURL||location.href),1000)`, `if(terminal||!available)return`, `if(!r.ok||!valid){freeze();status.className="status bad";status.textContent=body.expired?S.text.Expired:S.text.Failed;reloadChallenge();return}`, `freeze();status.className="status ok"`} {

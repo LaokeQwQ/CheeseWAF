@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 type Authenticator struct {
@@ -49,12 +50,19 @@ type AuthFinding struct {
 }
 
 func NewAuthenticator(cfg config.APISecConfig) (*Authenticator, error) {
+	return NewAuthenticatorWithClock(cfg, timekeeper.SystemClock{})
+}
+
+func NewAuthenticatorWithClock(cfg config.APISecConfig, clock timekeeper.Clock) (*Authenticator, error) {
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
 	auth := &Authenticator{
 		enabled:        cfg.Auth.Enabled,
 		issuers:        map[string]struct{}{},
 		audiences:      map[string]struct{}{},
 		requiredScopes: append([]string(nil), cfg.Auth.RequiredScopes...),
-		now:            time.Now,
+		now:            clock.Now,
 	}
 	if cfg.Auth.Enabled {
 		verifier, err := newJWTVerifier(cfg.Auth)
@@ -166,7 +174,11 @@ func (a *Authenticator) Evaluate(r *http.Request) *AuthFinding {
 		return &AuthFinding{Kind: "signature", Field: "authorization", Message: "API authorization token signature is invalid", Severity: "high", Payload: err.Error()}
 	}
 	claims := token.claims
-	if expires, ok := numericClaim(claims["exp"]); ok && expires > 0 && int64(expires) < a.now().Unix() {
+	expires, hasExp := numericClaim(claims["exp"])
+	if !hasExp || expires <= 0 {
+		return &AuthFinding{Kind: "invalid", Field: "exp", Message: "API authorization token is missing exp", Severity: "high"}
+	}
+	if int64(expires) <= a.now().Unix() {
 		return &AuthFinding{Kind: "invalid", Field: "exp", Message: "API authorization token is expired", Severity: "high"}
 	}
 	if len(requirement.issuers) > 0 {

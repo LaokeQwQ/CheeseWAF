@@ -116,7 +116,8 @@ func (h *Handler) SetupUser2FA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "TWO_FA_ERROR", err.Error())
 		return
 	}
-	h.twoFATracker().storePending(user.ID, secret, h.nowUTC().Add(twoFAPendingSecretTTL))
+	now := h.nowUTC()
+	h.twoFATracker().storePending(user.ID, secret, now.Add(twoFAPendingSecretTTL), now)
 	writeData(w, map[string]string{
 		"secret":      secret,
 		"otpauth_url": totpURL(user.Username, secret),
@@ -416,13 +417,13 @@ func countAdminUsers(users []storage.User) int {
 	return count
 }
 
-func (s *twoFAState) storePending(userID, secret string, expiresAt time.Time) {
+func (s *twoFAState) storePending(userID, secret string, expiresAt, now time.Time) {
 	if s == nil || userID == "" || secret == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pruneLocked(time.Now().UTC())
+	s.pruneLocked(now)
 	s.pending[userID] = twoFAPendingSecret{Secret: secret, ExpiresAt: expiresAt}
 }
 

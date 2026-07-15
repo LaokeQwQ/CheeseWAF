@@ -155,7 +155,17 @@ func consumeHarness(opts BehaviorOptions, response BehaviorResponse, used *bool)
 		return BehaviorResult{Reason: "already_used"}
 	}
 	*used = true
-	return VerifyBehaviorChallenge(opts, response)
+	return VerifyBehaviorChallenge(harnessVerificationOptions(opts, response), response)
+}
+
+func harnessVerificationOptions(opts BehaviorOptions, response BehaviorResponse) BehaviorOptions {
+	if opts.Now == nil || response.DurationMS <= 0 {
+		return opts
+	}
+	issuedAt := opts.Now()
+	verifiedAt := issuedAt.Add(time.Duration(response.DurationMS) * time.Millisecond)
+	opts.Now = func() time.Time { return verifiedAt }
+	return opts
 }
 
 func solveHarnessAnswer(token string, tok behaviorToken) BehaviorResponse {

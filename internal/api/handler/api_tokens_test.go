@@ -24,6 +24,8 @@ func TestManagementAPITokenCreateAndRevokePersistTransactionally(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 	h := New(Options{Config: &cfg, ConfigPath: configPath})
+	now := time.Date(2031, time.March, 4, 5, 6, 7, 0, time.UTC)
+	h.now = func() time.Time { return now }
 
 	createRecorder := httptest.NewRecorder()
 	createRequest := managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", `{"name":"deploy","scopes":["read:system"],"ttl":"1h"}`)
@@ -38,6 +40,9 @@ func TestManagementAPITokenCreateAndRevokePersistTransactionally(t *testing.T) {
 	if created.Name != "deploy" || created.Hash == "" || created.ExpiresAt.IsZero() {
 		t.Fatalf("unexpected created token: %+v", created)
 	}
+	if !created.CreatedAt.Equal(now) || !created.UpdatedAt.Equal(now) || !created.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("created token timestamps = created:%v updated:%v expires:%v, want %v/%v/%v", created.CreatedAt, created.UpdatedAt, created.ExpiresAt, now, now, now.Add(time.Hour))
+	}
 	persisted, err := config.Load(configPath)
 	if err != nil {
 		t.Fatalf("load persisted config: %v", err)
@@ -46,6 +51,7 @@ func TestManagementAPITokenCreateAndRevokePersistTransactionally(t *testing.T) {
 		t.Fatalf("created token was not persisted: %+v", persisted.APISec.ManagementAPI.Tokens)
 	}
 
+	now = now.Add(30 * time.Minute)
 	revokeRecorder := httptest.NewRecorder()
 	revokeRequest := managementAPITokenRequest(http.MethodDelete, "/api/system/api-tokens/"+created.ID, "")
 	revokeRequest = withManagementAPITokenID(revokeRequest, created.ID)
@@ -55,6 +61,9 @@ func TestManagementAPITokenCreateAndRevokePersistTransactionally(t *testing.T) {
 	}
 	if cfg.APISec.ManagementAPI.Tokens[0].Enabled || cfg.APISec.ManagementAPI.Tokens[0].RevokedAt.IsZero() {
 		t.Fatalf("live token was not revoked: %+v", cfg.APISec.ManagementAPI.Tokens[0])
+	}
+	if !cfg.APISec.ManagementAPI.Tokens[0].RevokedAt.Equal(now) || !cfg.APISec.ManagementAPI.Tokens[0].UpdatedAt.Equal(now) {
+		t.Fatalf("revoked token timestamps = revoked:%v updated:%v, want %v", cfg.APISec.ManagementAPI.Tokens[0].RevokedAt, cfg.APISec.ManagementAPI.Tokens[0].UpdatedAt, now)
 	}
 	persisted, err = config.Load(configPath)
 	if err != nil {

@@ -900,6 +900,35 @@ export type APISecSystemConfig = {
   [key: string]: unknown;
 };
 
+export type TimeSyncConfig = {
+  enabled: boolean;
+  sources: string[];
+  selection_interval: number | string;
+  sync_interval: number | string;
+  timeout: number | string;
+  samples_per_source: number;
+  max_accepted_offset: number | string;
+  max_root_dispersion: number | string;
+  consensus_tolerance: number | string;
+};
+
+export type TimeSyncStatus = {
+  enabled: boolean;
+  state: 'disabled' | 'local' | 'synchronizing' | 'synchronized' | string;
+  primary_source?: string;
+  backup_source?: string;
+  active_source?: string;
+  offset_ms: number;
+  rtt_ms: number;
+  stratum?: number;
+  last_success?: string;
+  last_attempt?: string;
+  consecutive_failures: number;
+  total_failures: number;
+  last_error?: string;
+  current_time: string;
+};
+
 export type SystemConfig = {
   console: {
     login: {
@@ -931,6 +960,7 @@ export type SystemConfig = {
       zero_rtt: boolean;
     };
   };
+  time_sync?: TimeSyncConfig;
   tls: {
     auto_cert: boolean;
     cert_file: string;

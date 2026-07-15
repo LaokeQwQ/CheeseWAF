@@ -10,11 +10,15 @@ import {
 } from '../captcha-lab/process-lifecycle.mjs';
 
 const PREFIX = 'CHEESEWAF_CAPTCHA_INTEGRATION ';
-const defaultProcessFactory = {
-  compile: (binary) => ({
+export function integrationFixtureBuildCommand(binary) {
+  return {
     command: 'go',
-    args: ['build', '-o', binary, './scripts/e2e/captcha-integration/fixture'],
-  }),
+    args: ['build', '-tags', 'captchae2e', '-o', binary, './scripts/e2e/captcha-integration/fixture'],
+  };
+}
+
+const defaultProcessFactory = {
+  compile: integrationFixtureBuildCommand,
   run: (binary) => ({ command: binary, args: [] }),
 };
 
@@ -114,6 +118,7 @@ class FixtureClient {
       loginDiagnose: (fields) => this.#call('login_diagnose', fields),
       wafPlan: (fields) => this.#call('waf_plan', fields),
       wafDiagnose: (fields) => this.#call('waf_diagnose', fields),
+      labPlan: async (fields) => validateLabPlan((await this.#call('lab_plan', fields)).plan),
       close: () => this.close(),
     };
   }
@@ -266,6 +271,21 @@ function validURL(value) {
 
 function safeCode(value) {
   return /^[a-z_]{1,48}$/i.test(String(value ?? '')) ? String(value) : 'protocol_error';
+}
+
+function validateLabPlan(plan) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan) || !plan.action || typeof plan.action !== 'object') {
+    throw new Error('CAPTCHA Lab fixture returned an invalid physical plan');
+  }
+  const { interaction, action } = plan;
+  if (interaction === 'range' && Number.isFinite(action.value)) return plan;
+  if (interaction === 'surface' && Array.isArray(action.path) && action.path.length > 0 && action.path.every(validPoint)) return plan;
+  if (interaction === 'click' && validPoint(action.at)) return plan;
+  throw new Error('CAPTCHA Lab fixture returned an invalid physical plan');
+}
+
+function validPoint(point) {
+  return point && typeof point === 'object' && Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
 function processCommand(processFactory, phase, binary) {

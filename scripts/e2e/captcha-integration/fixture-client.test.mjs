@@ -1,15 +1,61 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { startIntegrationFixture } from './fixture-client.mjs';
+import * as fixtureClient from './fixture-client.mjs';
+
+const { startIntegrationFixture } = fixtureClient;
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const processFixture = fileURLToPath(new URL('../captcha-lab/process-fixture.mjs', import.meta.url));
-const lifecycleTimeoutMs = 500;
+const controlFixture = fileURLToPath(new URL('./fixture-control-fixture.mjs', import.meta.url));
+const lifecycleTimeoutMs = 1_500;
+
+test('fixture compilation opts into the private captchae2e helper', () => {
+  assert.deepEqual(fixtureClient.integrationFixtureBuildCommand('fixture-bin'), {
+    command: 'go',
+    args: ['build', '-tags', 'captchae2e', '-o', 'fixture-bin', './scripts/e2e/captcha-integration/fixture'],
+  });
+});
+
+test('default captcha package build excludes the captchae2e helper', { timeout: 30_000 }, async () => {
+  const normal = await goList([]);
+  const tagged = await goList(['-tags', 'captchae2e']);
+  assert.equal(normal.GoFiles.includes('lab_plan_captchae2e.go'), false);
+  assert.equal(normal.IgnoredGoFiles.includes('lab_plan_captchae2e.go'), true);
+  assert.equal(tagged.GoFiles.includes('lab_plan_captchae2e.go'), true);
+});
+
+test('lab_plan stays on the fixture control channel and returns a physical operation', { timeout: 15_000 }, async () => {
+  let binary;
+  const fixture = await startIntegrationFixture({
+    projectRoot,
+    timeoutMs: lifecycleTimeoutMs,
+    processFactory: {
+      compile(output) {
+        binary = output;
+        return { command: process.execPath, args: [controlFixture, 'compile', output] };
+      },
+      run() {
+        assert.ok(binary);
+        return { command: process.execPath, args: [controlFixture, 'run'] };
+      },
+    },
+  });
+  try {
+    const plan = await fixture.labPlan({
+      challenge: { type: 'rotate', token: 'sealed-token', expires_at: '2030-01-01T00:00:00Z', presentation: {} },
+      variant: 'correct',
+    });
+    assert.deepEqual(plan, { interaction: 'range', action: { value: 4321 } });
+  } finally {
+    await fixture.close();
+  }
+});
 
 test('stuck compilation terminates its process tree before removing the binary directory', { timeout: 15_000 }, async (t) => {
   const lifecycle = await lifecycleFixture(t, { compileMode: 'compile-hang' });
@@ -205,4 +251,18 @@ async function exists(target) {
   } catch {
     return false;
   }
+}
+
+async function goList(args) {
+  const { stdout } = await execFilePromise('go', ['list', ...args, '-json', './internal/captcha'], { cwd: projectRoot });
+  return JSON.parse(stdout);
+}
+
+function execFilePromise(command, args, options) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, options, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve({ stdout, stderr });
+    });
+  });
 }

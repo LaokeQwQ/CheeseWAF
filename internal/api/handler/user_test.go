@@ -308,8 +308,8 @@ func TestRecoverUser2FAClearsStateAndRevokesTargetSessions(t *testing.T) {
 	if err := store.UpdateUser(context.Background(), target); err != nil {
 		t.Fatalf("enable target 2fa: %v", err)
 	}
-	handler.twoFATracker().storePending(target.ID, "PENDINGSECRET", time.Now().UTC().Add(time.Minute))
 	now := time.Now().UTC()
+	handler.twoFATracker().storePending(target.ID, "PENDINGSECRET", now.Add(time.Minute), now)
 	if err := store.CreateSession(context.Background(), &storage.Session{ID: "reader-session", UserID: target.ID, Username: target.Username, Role: target.Role, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatalf("create target session: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestEnableUser2FAInvalidCodesExhaustPendingSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate secret: %v", err)
 	}
-	handler.twoFATracker().storePending("reader-id", secret, now.Add(twoFAPendingSecretTTL))
+	handler.twoFATracker().storePending("reader-id", secret, now.Add(twoFAPendingSecretTTL), now)
 	for attempt := 0; attempt < twoFAPendingSecretMaxAttempts; attempt++ {
 		result := handler.twoFATracker().verifyAndConsumePending("reader-id", secret, "000000", now)
 		if result != twoFAPendingInvalidCode {
@@ -417,7 +417,7 @@ func TestHandlersCanShareTwoFAState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate secret: %v", err)
 	}
-	first.twoFATracker().storePending("reader-id", secret, now.Add(twoFAPendingSecretTTL))
+	first.twoFATracker().storePending("reader-id", secret, now.Add(twoFAPendingSecretTTL), now)
 	code, err := hotp(secret, now.Unix()/totpPeriod)
 	if err != nil {
 		t.Fatalf("hotp: %v", err)

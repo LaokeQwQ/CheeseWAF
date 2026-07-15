@@ -48,6 +48,8 @@ func TestVisualCurveDrawRequiresOrderedCoverageAndContinuity(t *testing.T) {
 func TestVisualCurveSliderKeepsTargetOffsetSealedAndChecksDrag(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	opts := behaviorTestOptions(BehaviorCurveSlider, now)
+	clock := now
+	opts.Now = func() time.Time { return clock }
 	opts.Version = 1 // callers may still pass old version numbers; product is always V3 align.
 	challenge, err := IssueBehaviorChallenge(opts)
 	if err != nil {
@@ -85,6 +87,10 @@ func TestVisualCurveSliderKeepsTargetOffsetSealedAndChecksDrag(t *testing.T) {
 	}
 
 	good := curveSliderResponse(challenge.Token, tok.Point)
+	if result := VerifyBehaviorChallenge(opts, good); result.Valid {
+		t.Fatalf("curve slider accepted before its signed minimum elapsed time: %+v", result)
+	}
+	clock = clock.Add(time.Duration(good.DurationMS) * time.Millisecond)
 	if result := VerifyBehaviorChallenge(opts, good); !result.Valid {
 		t.Fatalf("valid curve slider response rejected: %+v", result)
 	}

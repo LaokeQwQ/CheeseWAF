@@ -65,6 +65,122 @@ func TestUpdateSystemNotifiesAPISecReload(t *testing.T) {
 	}
 }
 
+func TestUpdateSystemAppliesAndPersistsTimeSync(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var applied []config.TimeSyncConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+			applied = append(applied, next)
+			return nil
+		},
+	})
+	next := cfg.TimeSync
+	next.SyncInterval = 45 * time.Minute
+	raw, _ := json.Marshal(map[string]any{"time_sync": next})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected update success, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(applied) != 1 || applied[0].SyncInterval != 45*time.Minute {
+		t.Fatalf("unexpected runtime apply calls: %+v", applied)
+	}
+	if cfg.TimeSync.SyncInterval != 45*time.Minute || !strings.Contains(recorder.Body.String(), `"time_sync"`) {
+		t.Fatalf("time sync config not returned or updated: %+v body=%s", cfg.TimeSync, recorder.Body.String())
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.TimeSync.SyncInterval != 45*time.Minute {
+		t.Fatalf("time sync config not persisted: %+v", loaded.TimeSync)
+	}
+}
+
+func TestUpdateSystemMergesPartialTimeSyncWithoutDisabling(t *testing.T) {
+	cfg := config.Default()
+	previous := cfg.TimeSync
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var applied []config.TimeSyncConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+			applied = append(applied, next)
+			return nil
+		},
+	})
+	raw, _ := json.Marshal(map[string]any{"time_sync": map[string]any{"sync_interval": int64(45 * time.Minute)}})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected partial update success, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !cfg.TimeSync.Enabled || cfg.TimeSync.SyncInterval != 45*time.Minute {
+		t.Fatalf("partial update corrupted time sync: %+v", cfg.TimeSync)
+	}
+	if len(cfg.TimeSync.Sources) != len(previous.Sources) || cfg.TimeSync.SelectionInterval != previous.SelectionInterval {
+		t.Fatalf("partial update dropped unrelated fields: %+v", cfg.TimeSync)
+	}
+	if len(applied) != 1 || !applied[0].Enabled || applied[0].SyncInterval != 45*time.Minute {
+		t.Fatalf("runtime apply missing merge: %+v", applied)
+	}
+}
+
+func TestUpdateSystemRollsBackTimeSyncWhenRuntimeRejectsCandidate(t *testing.T) {
+	cfg := config.Default()
+	previous := cfg.TimeSync
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var intervals []time.Duration
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+			intervals = append(intervals, next.SyncInterval)
+			if next.SyncInterval != previous.SyncInterval {
+				return errors.New("time synchronization runtime rejected candidate")
+			}
+			return nil
+		},
+	})
+	next := previous
+	next.SyncInterval = 45 * time.Minute
+	raw, _ := json.Marshal(map[string]any{"time_sync": next})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected runtime failure, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(intervals) != 2 || intervals[0] != next.SyncInterval || intervals[1] != previous.SyncInterval {
+		t.Fatalf("expected candidate then previous runtime apply, got %v", intervals)
+	}
+	if cfg.TimeSync.SyncInterval != previous.SyncInterval {
+		t.Fatalf("memory config changed after rejected runtime: %+v", cfg.TimeSync)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.TimeSync.SyncInterval != previous.SyncInterval {
+		t.Fatalf("disk config changed after rejected runtime: %+v", loaded.TimeSync)
+	}
+}
+
 func TestUpdateSystemRollsBackMemoryDiskAndRuntimeOnReloadFailure(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")

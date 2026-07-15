@@ -49,6 +49,7 @@ func systemConfigView(cfg *config.Config) map[string]any {
 	}
 	return map[string]any{
 		"server":        cfg.Server,
+		"time_sync":     cfg.TimeSync,
 		"tls":           cfg.TLS,
 		"storage":       storageConfigView(cfg.Storage),
 		"logging":       cfg.Logging,

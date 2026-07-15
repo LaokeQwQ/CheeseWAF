@@ -7,7 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { MoveRight } from 'lucide-react';
-import { clampCoordinate, trackPoint } from '../interaction';
+import { appendTrack, clampCoordinate, trackPoint } from '../interaction';
 import type { CaptchaResponse, CaptchaTrackPoint } from '../protocol';
 import styles from './CurveSliderChallenge.module.css';
 import { curveSliderOffsetPercent } from './curveSliderFormula';
@@ -24,10 +24,25 @@ export interface CurveSliderChallengeProps {
   onSubmit: (response: Omit<CaptchaResponse, 'token'>) => void | Promise<void>;
 }
 
+const ADJUSTMENT_KEYS = new Set([
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+]);
+const KEYBOARD_FINE_STEP = 100;
+const KEYBOARD_COARSE_STEP = 1_000;
+const KEYBOARD_TRAIL_STEP = 250;
+const MAX_TRACK_POINTS = 128;
+
 export function CurveSliderChallenge({
   imageSrc,
   pieceSrc,
-  minDurationMs = 0,
+  minDurationMs,
   disabled = false,
   className,
   alt = '',
@@ -61,11 +76,19 @@ export function CurveSliderChallenge({
     }
   };
 
-  const completeOperation = (finalValue: number) => {
-    const duration = Math.max(
-      minDurationMs,
-      Math.max(0, Math.round(performance.now() - startedAt.current)),
+  const elapsedMs = () => Math.max(0, Math.round(performance.now() - startedAt.current));
+  const completedDuration = () => Math.max(elapsedMs(), minDurationMs ?? 0);
+
+  const appendMove = (next: number) => {
+    valueTrack.current = appendTrack(
+      valueTrack.current,
+      trackPoint({ x: next, y: 5_000 }, elapsedMs(), 'move'),
+      MAX_TRACK_POINTS - 1,
     );
+  };
+
+  const completeOperation = (finalValue: number) => {
+    const duration = completedDuration();
     const operation = [
       ...valueTrack.current,
       trackPoint({ x: finalValue, y: 5_000 }, duration, 'up'),
@@ -90,7 +113,7 @@ export function CurveSliderChallenge({
     valueRef.current = next;
     setValue(next);
     if (activePointer.current !== null || keyboardActive.current) {
-      valueTrack.current.push(trackPoint({ x: next, y: 5_000 }, performance.now() - startedAt.current, 'move'));
+      appendMove(next);
     }
   };
 
@@ -111,35 +134,50 @@ export function CurveSliderChallenge({
     clearOperation(true);
   };
 
-  const adjustmentKeys = new Set([
-    'ArrowLeft',
-    'ArrowRight',
-    'ArrowUp',
-    'ArrowDown',
-    'Home',
-    'End',
-    'PageUp',
-    'PageDown',
-  ]);
-
-  const beginKeyboard = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (
-      disabled ||
-      !adjustmentKeys.has(event.key) ||
-      event.repeat ||
-      keyboardActive.current ||
-      activePointer.current !== null
-    ) return;
-    keyboardActive.current = true;
-    startOperation();
+  const nextKeyboardValue = (key: string) => {
+    switch (key) {
+      case 'ArrowLeft':
+      case 'ArrowDown':
+        return valueRef.current - KEYBOARD_FINE_STEP;
+      case 'ArrowRight':
+      case 'ArrowUp':
+        return valueRef.current + KEYBOARD_FINE_STEP;
+      case 'PageDown':
+        return valueRef.current - KEYBOARD_COARSE_STEP;
+      case 'PageUp':
+        return valueRef.current + KEYBOARD_COARSE_STEP;
+      case 'Home':
+        return 0;
+      case 'End':
+        return 10_000;
+      default:
+        return valueRef.current;
+    }
   };
 
-  const finishKeyboard = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (disabled || !adjustmentKeys.has(event.key) || !keyboardActive.current) return;
-    const finalValue = clampCoordinate(event.currentTarget.valueAsNumber);
-    valueRef.current = finalValue;
-    setValue(finalValue);
-    completeOperation(finalValue);
+  const adjustKeyboard = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (disabled || !ADJUSTMENT_KEYS.has(event.key) || activePointer.current !== null) return;
+    event.preventDefault();
+    const next = clampCoordinate(nextKeyboardValue(event.key));
+    if (next === valueRef.current) return;
+    if (!keyboardActive.current) {
+      keyboardActive.current = true;
+      startOperation();
+    }
+
+    const start = valueRef.current;
+    const steps = Math.max(2, Math.ceil(Math.abs(next - start) / KEYBOARD_TRAIL_STEP));
+    for (let step = 1; step <= steps; step += 1) {
+      appendMove(clampCoordinate(start + ((next - start) * step) / steps));
+    }
+    valueRef.current = next;
+    setValue(next);
+  };
+
+  const submitKeyboard = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (disabled || !keyboardActive.current || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    completeOperation(valueRef.current);
   };
 
   const pieceStyle = { '--captcha-offset': `${offset}%` } as CSSProperties;
@@ -181,8 +219,10 @@ export function CurveSliderChallenge({
           onPointerUp={finish}
           onPointerCancel={cancel}
           onLostPointerCapture={cancel}
-          onKeyDown={beginKeyboard}
-          onKeyUp={finishKeyboard}
+          onKeyDown={(event) => {
+            adjustKeyboard(event);
+            submitKeyboard(event);
+          }}
           onBlur={() => {
             if (keyboardActive.current) clearOperation(true);
           }}

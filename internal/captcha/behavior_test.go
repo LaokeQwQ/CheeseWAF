@@ -226,7 +226,11 @@ func TestBehaviorChallenge_AllTypes(t *testing.T) {
 			assertPresentationDoesNotExposeTokenAnswer(t, opts, challenge)
 
 			good := correctBehaviorResponse(t, opts, challenge.Token)
-			if result := VerifyBehaviorChallenge(opts, good); !result.Valid {
+			verifyOpts := opts
+			if challenge.Type == BehaviorCurveSlider {
+				verifyOpts.Now = func() time.Time { return now.Add(time.Duration(good.DurationMS) * time.Millisecond) }
+			}
+			if result := VerifyBehaviorChallenge(verifyOpts, good); !result.Valid {
 				t.Fatalf("correct response rejected: %+v", result)
 			}
 
@@ -236,7 +240,7 @@ func TestBehaviorChallenge_AllTypes(t *testing.T) {
 			wrong.Offset = 100
 			wrong.Track = []BehaviorTrackPoint{{X: 0, Y: 0, T: 0}, {X: 1, Y: 1, T: 500}}
 			wrong.Proof = "definitely-wrong"
-			if result := VerifyBehaviorChallenge(opts, wrong); result.Valid {
+			if result := VerifyBehaviorChallenge(verifyOpts, wrong); result.Valid {
 				t.Fatal("wrong response accepted")
 			}
 
@@ -249,11 +253,11 @@ func TestBehaviorChallenge_AllTypes(t *testing.T) {
 				raw[mid] = 'A'
 			}
 			tampered.Token = string(raw)
-			if result := VerifyBehaviorChallenge(opts, tampered); result.Valid {
+			if result := VerifyBehaviorChallenge(verifyOpts, tampered); result.Valid {
 				t.Fatal("tampered token accepted")
 			}
 
-			cross := opts
+			cross := verifyOpts
 			cross.ClientKey = "other-client"
 			if result := VerifyBehaviorChallenge(cross, good); result.Valid {
 				t.Fatal("cross-bound token accepted")
@@ -330,7 +334,12 @@ func TestBehaviorChallenge_ClickPromptsAndCandidates(t *testing.T) {
 		if !ok {
 			t.Fatal("cannot open click token")
 		}
-		if strings.Contains(string(public), strconv.Itoa(tok.Point.X)) || strings.Contains(string(public), strconv.Itoa(tok.Point.Y)) {
+		// Match whole JSON numbers only. Substring checks (e.g. 500 inside 2500
+		// or bitmap dimensions) are flaky false positives.
+		publicText := string(public)
+		xToken := strconv.Itoa(tok.Point.X)
+		yToken := strconv.Itoa(tok.Point.Y)
+		if containsJSONNumber(publicText, xToken) || containsJSONNumber(publicText, yToken) {
 			t.Fatalf("%s exposes answer coordinates", kind)
 		}
 	}
@@ -609,6 +618,31 @@ func assertPresentationDoesNotExposeTokenAnswer(t *testing.T, opts BehaviorOptio
 			t.Fatalf("presentation exposes exact point %s", exact)
 		}
 	}
+}
+
+func containsJSONNumber(text, number string) bool {
+	if number == "" || !strings.Contains(text, number) {
+		return false
+	}
+	for i := 0; i+len(number) <= len(text); i++ {
+		if text[i:i+len(number)] != number {
+			continue
+		}
+		if i > 0 {
+			prev := text[i-1]
+			if prev >= '0' && prev <= '9' {
+				continue
+			}
+		}
+		if i+len(number) < len(text) {
+			next := text[i+len(number)]
+			if next >= '0' && next <= '9' {
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func decodeBehaviorSVG(t *testing.T, uri string) string {

@@ -266,20 +266,21 @@ func (h *Handler) writeConfigVersion(raw []byte, candidate *config.Config) error
 	if h.ConfigPath == "" {
 		return nil
 	}
-	if err := writeConfigVersionFile(filepath.Join(filepath.Dir(h.ConfigPath), "versions"), raw); err == nil {
+	now := h.nowUTC()
+	if err := writeConfigVersionFile(filepath.Join(filepath.Dir(h.ConfigPath), "versions"), raw, now); err == nil {
 		return nil
 	}
 	if candidate != nil && candidate.Setup.RuntimeDir != "" {
-		return writeConfigVersionFile(filepath.Join(candidate.Setup.RuntimeDir, "versions"), raw)
+		return writeConfigVersionFile(filepath.Join(candidate.Setup.RuntimeDir, "versions"), raw, now)
 	}
 	return fmt.Errorf("no writable config version directory")
 }
 
-func writeConfigVersionFile(dir string, raw []byte) error {
+func writeConfigVersionFile(dir string, raw []byte, now time.Time) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	name := "cheesewaf-" + time.Now().UTC().Format("20060102T150405Z") + ".yaml"
+	name := "cheesewaf-" + now.UTC().Format("20060102T150405Z") + ".yaml"
 	return os.WriteFile(filepath.Join(dir, name), raw, 0o640)
 }
 

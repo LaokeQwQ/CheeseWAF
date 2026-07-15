@@ -24,6 +24,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 type Policy struct {
@@ -31,6 +32,7 @@ type Policy struct {
 	jsChallenge            bool
 	captcha                bool
 	captchaType            string
+	captchaTypes           []string
 	captchaMaxAttempts     int
 	imageCAPTCHALength     int
 	imageCAPTCHAWidth      int
@@ -71,7 +73,6 @@ type Policy struct {
 	mu                     sync.Mutex
 	active                 map[string]int64
 	attempts               map[string]captchaAttempt
-	behaviorTypes          []captcha.BehaviorType
 	escalationTypes        []captcha.BehaviorType
 	behaviorTTL            time.Duration
 	policyVersion          string
@@ -118,6 +119,10 @@ const (
 var generateBotPolicySecret = config.GenerateSecret
 
 func NewPolicy(cfg config.BotProtectionConfig) *Policy {
+	return NewPolicyWithClock(cfg, timekeeper.SystemClock{})
+}
+
+func NewPolicyWithClock(cfg config.BotProtectionConfig, clock timekeeper.Clock) *Policy {
 	if cfg.RiskLevel == 0 {
 		cfg.RiskLevel = 2
 	}
@@ -237,7 +242,10 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 	if len(cfg.SuspiciousUserAgents) == 0 {
 		cfg.SuspiciousUserAgents = []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"}
 	}
-	now := time.Now
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
+	now := clock.Now
 	levels := make([]int, 0, cfg.CAPTCHAMaxAttempts-1)
 	for i := 1; i < cfg.CAPTCHAMaxAttempts; i++ {
 		levels = append(levels, i)
@@ -268,6 +276,7 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 		jsChallenge:            cfg.JSChallenge,
 		captcha:                cfg.CAPTCHA,
 		captchaType:            cfg.CAPTCHAType,
+		captchaTypes:           configuredCAPTCHATypes(cfg.CAPTCHATypes),
 		captchaMaxAttempts:     cfg.CAPTCHAMaxAttempts,
 		imageCAPTCHALength:     cfg.ImageCAPTCHALength,
 		imageCAPTCHAWidth:      cfg.ImageCAPTCHAWidth,
@@ -308,7 +317,6 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 		now:                    now,
 		active:                 map[string]int64{},
 		attempts:               map[string]captchaAttempt{},
-		behaviorTypes:          behaviorTypes(cfg.CAPTCHATypes),
 		escalationTypes:        behaviorTypes(cfg.CAPTCHAEscalationTypes),
 		behaviorTTL:            cfg.CAPTCHAChallengeTTL,
 		policyVersion:          cfg.CAPTCHAPolicyVersion,
@@ -436,12 +444,14 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		p.serveImageAudioForSite(w, r, clientIP, site, token)
 		return
 	}
-	if p.usesBehaviorChallenge(r, clientIP, site) {
-		p.serveBehaviorChallenge(w, r, clientIP, site)
+	submittedType := submittedClassicCAPTCHAType(r)
+	selection := p.adaptiveCAPTCHASelection(r, clientIP, site)
+	if submittedType == "" && p.usesBehaviorChallenge(selection, clientIP, site) {
+		p.serveBehaviorChallenge(w, r, clientIP, site, selection.kind)
 		return
 	}
 	if p.validChallengeAnswerForSite(r, clientIP, site) {
-		p.recordChallengeMetric(ChallengeMetricSuccess, site, p.effectiveCAPTCHAType(r), clientIP)
+		p.recordChallengeMetric(ChallengeMetricSuccess, site, p.challengeAnswerType(r), clientIP)
 		value, maxAge, err := p.issueClearanceForSite(r, clientIP, site)
 		if err != nil {
 			http.Error(w, "bot clearance unavailable", http.StatusServiceUnavailable)
@@ -464,6 +474,10 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		http.Redirect(w, r, returnURL, status)
 		return
 	}
+	if submittedType != "" && p.usesBehaviorChallenge(selection, clientIP, site) {
+		p.serveBehaviorChallenge(w, r, clientIP, site, selection.kind)
+		return
+	}
 	nonce, err := randomToken(18)
 	if err != nil {
 		http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
@@ -483,11 +497,11 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			p.powManager.Revoke(*powChallenge)
 		}
 	}()
-	failedCaptcha := captchaFormValue(r, "cw_image_token") != "" || captchaFormValue(r, "cw_slider_token") != "" || captchaFormValue(r, "cw_altcha") != "" || captchaFormValue(r, "cw_pow") != ""
-	captchaType := p.adaptiveCAPTCHAType(r, clientIP, site)
+	failedCaptcha := submittedType != ""
+	captchaType := selection.kind
 	usePoW := (p.jsChallenge && !p.captcha) || (p.captcha && captchaType == "pow")
 	if failedCaptcha {
-		p.recordChallengeMetric(ChallengeMetricFailure, site, captchaType, clientIP)
+		p.recordChallengeMetric(ChallengeMetricFailure, site, submittedType, clientIP)
 	}
 	if usePoW {
 		if p.powManager == nil {
@@ -595,7 +609,7 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 	powDelivered = true
 }
 
-func (p *Policy) usesBehaviorChallenge(r *http.Request, clientIP, site string) bool {
+func (p *Policy) usesBehaviorChallenge(selection captchaSelection, clientIP, site string) bool {
 	if p == nil || !p.captcha {
 		return false
 	}
@@ -603,10 +617,10 @@ func (p *Policy) usesBehaviorChallenge(r *http.Request, clientIP, site string) b
 	if decision.Level > 0 && len(p.escalationTypes) > 0 {
 		return true
 	}
-	return isBehaviorCAPTCHAType(p.adaptiveCAPTCHAType(r, clientIP, site))
+	return selection.behavior
 }
 
-func (p *Policy) serveBehaviorChallenge(w http.ResponseWriter, r *http.Request, clientIP, site string) {
+func (p *Policy) serveBehaviorChallenge(w http.ResponseWriter, r *http.Request, clientIP, site, selectedType string) {
 	if p.behaviorPending == nil || p.failureTracker == nil || p.behaviorRenderer == nil || p.issueBehaviorChallenge == nil {
 		http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
 		return
@@ -647,7 +661,7 @@ func (p *Policy) serveBehaviorChallenge(w http.ResponseWriter, r *http.Request, 
 	}
 	returnURL := safeChallengeReturnURL(r)
 	challengeRequest := challengeRequestForReturnURL(r, returnURL)
-	kind := p.behaviorTypeFor(r, clientIP, site, decision.Level)
+	kind := p.behaviorTypeForSelection(selectedType, decision.Level)
 	challengePath := mustRequestPath(challengeRequest)
 	opts := p.behaviorOptions(challengeRequest, clientIP, site, kind, challengePath)
 	challenge, err := p.issueBehaviorChallenge(opts)
@@ -848,6 +862,11 @@ func (p *Policy) behaviorOptions(r *http.Request, clientIP, site string, kind ca
 }
 
 func (p *Policy) behaviorTypeFor(r *http.Request, clientIP, site string, level int) captcha.BehaviorType {
+	selection := p.adaptiveCAPTCHASelection(r, clientIP, site)
+	return p.behaviorTypeForSelection(selection.kind, level)
+}
+
+func (p *Policy) behaviorTypeForSelection(selectedType string, level int) captcha.BehaviorType {
 	if level > 0 && len(p.escalationTypes) > 0 {
 		index := level - 1
 		if index >= len(p.escalationTypes) {
@@ -855,11 +874,7 @@ func (p *Policy) behaviorTypeFor(r *http.Request, clientIP, site string, level i
 		}
 		return p.escalationTypes[index]
 	}
-	kind := behaviorType(p.adaptiveCAPTCHAType(r, clientIP, site))
-	if kind == captcha.BehaviorRandom && len(p.behaviorTypes) == 1 {
-		return p.behaviorTypes[0]
-	}
-	return kind
+	return behaviorType(selectedType)
 }
 
 type riskBand int
@@ -994,12 +1009,39 @@ func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 // It never downgrades to PoW based on spoofable client signals (UA, ECT, Save-Data).
 // High-risk clients may escalate to the strongest configured escalation type.
 // Mobile UX for classic slider remains via effectiveCAPTCHAType (captchaMobileType).
-func (p *Policy) adaptiveCAPTCHAType(r *http.Request, clientIP, site string) string {
+type captchaSelection struct {
+	kind     string
+	behavior bool
+}
+
+func (p *Policy) adaptiveCAPTCHASelection(r *http.Request, clientIP, site string) captchaSelection {
 	risk := p.assessRisk(r, clientIP, site)
 	if risk.band >= riskHigh && len(p.escalationTypes) > 0 {
-		return string(p.escalationTypes[len(p.escalationTypes)-1])
+		return captchaSelection{kind: string(p.escalationTypes[len(p.escalationTypes)-1]), behavior: true}
 	}
-	return p.effectiveCAPTCHAType(r)
+	kind := p.effectiveCAPTCHAType(r)
+	if kind == string(captcha.BehaviorRandom) {
+		kind = p.randomConfiguredCAPTCHAType()
+		// PoW selected from the random pool uses the shared Behavior shell;
+		// an explicitly configured PoW keeps the lightweight compute page.
+		return captchaSelection{kind: kind, behavior: kind != "image" && kind != "slider"}
+	}
+	return captchaSelection{kind: kind, behavior: isBehaviorCAPTCHAType(kind)}
+}
+
+func (p *Policy) adaptiveCAPTCHAType(r *http.Request, clientIP, site string) string {
+	return p.adaptiveCAPTCHASelection(r, clientIP, site).kind
+}
+
+func (p *Policy) randomConfiguredCAPTCHAType() string {
+	if len(p.captchaTypes) == 0 {
+		return "pow"
+	}
+	index, err := randomNumber(len(p.captchaTypes) - 1)
+	if err != nil {
+		return p.captchaTypes[0]
+	}
+	return p.captchaTypes[index]
 }
 
 func (p *Policy) failureKey(clientIP, site string) FailureKey {
@@ -1019,11 +1061,14 @@ func canonicalSite(host string) string {
 }
 
 func isBehaviorCAPTCHAType(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "pow", "image", "slider":
-		return false
-	default:
+	switch behaviorType(value) {
+	case captcha.BehaviorRandom, captcha.BehaviorCurveDraw, captcha.BehaviorCurveSlider,
+		captcha.BehaviorShapeSlider, captcha.BehaviorRotate, captcha.BehaviorRestoreSlider,
+		captcha.BehaviorAngle, captcha.BehaviorScratch, captcha.BehaviorTextClick,
+		captcha.BehaviorIconClick:
 		return true
+	default:
+		return false
 	}
 }
 
@@ -1041,11 +1086,33 @@ func behaviorType(value string) captcha.BehaviorType {
 
 func behaviorTypes(values []string) []captcha.BehaviorType {
 	out := make([]captcha.BehaviorType, 0, len(values))
-	for _, value := range values {
+	for _, value := range configuredCAPTCHATypes(values) {
 		kind := behaviorType(value)
-		if kind != "" && kind != captcha.BehaviorRandom && isBehaviorCAPTCHAType(string(kind)) || kind == captcha.BehaviorPOW {
+		if kind == captcha.BehaviorPOW || isBehaviorCAPTCHAType(string(kind)) {
 			out = append(out, kind)
 		}
+	}
+	return out
+}
+
+func configuredCAPTCHATypes(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := normalizeCAPTCHAType(raw)
+		kind := behaviorType(value)
+		switch {
+		case value == "pow" || value == "image" || value == "slider":
+		case kind != captcha.BehaviorRandom && isBehaviorCAPTCHAType(string(kind)):
+			value = string(kind)
+		default:
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }
@@ -1620,7 +1687,7 @@ func (p *Policy) validChallengeAnswerForSite(r *http.Request, clientIP, site str
 	if p == nil || r == nil || r.URL == nil || site == "" || !p.secretReady {
 		return false
 	}
-	captchaType := p.effectiveCAPTCHAType(r)
+	captchaType := p.challengeAnswerType(r)
 	if captchaType == "pow" && p.powAcceptLegacy && p.validAltchaQueryAnswerForSite(r, clientIP, site) {
 		return true
 	}
@@ -1646,6 +1713,32 @@ func (p *Policy) validChallengeAnswerForSite(r *http.Request, clientIP, site str
 	}
 	x := PoWContext{Site: site, Policy: "bot", PolicyVersion: p.policyVersion, Path: mustRequestPath(r), ClientKey: clientIP + "\n" + r.UserAgent(), PeerKey: site + "\x00" + clientIP}
 	return p.powManager.Verify(token, answer, x) == nil
+}
+
+func (p *Policy) challengeAnswerType(r *http.Request) string {
+	kind := p.effectiveCAPTCHAType(r)
+	if kind == string(captcha.BehaviorRandom) {
+		if submitted := submittedClassicCAPTCHAType(r); submitted != "" {
+			return submitted
+		}
+	}
+	return kind
+}
+
+func submittedClassicCAPTCHAType(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case captchaFormValue(r, "cw_image_token") != "":
+		return "image"
+	case captchaFormValue(r, "cw_slider_token") != "":
+		return "slider"
+	case captchaFormValue(r, "cw_pow_token") != "" || captchaFormValue(r, "cw_altcha") != "" || captchaFormValue(r, "cw_pow") != "":
+		return "pow"
+	default:
+		return ""
+	}
 }
 
 func (p *Policy) validImageQueryAnswer(r *http.Request, clientIP string) bool {
@@ -2155,8 +2248,11 @@ func randomToken(size int) (string, error) {
 }
 
 func randomNumber(max int) (int, error) {
-	if max <= 0 {
-		max = 1
+	if max < 0 {
+		return 0, fmt.Errorf("random number maximum must not be negative")
+	}
+	if max == 0 {
+		return 0, nil
 	}
 	value, err := rand.Int(rand.Reader, big.NewInt(int64(max+1)))
 	if err != nil {

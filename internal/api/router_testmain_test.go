@@ -9,6 +9,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 func TestMain(m *testing.M) {
@@ -19,9 +20,9 @@ func TestMain(m *testing.M) {
 	original := newAuditor
 	originalApprovals := newRouterAssistantApprovalStore
 	var sequence atomic.Uint64
-	newAuditor = func(string) *middleware.Auditor {
+	newAuditor = func(_ string, clock timekeeper.Clock) *middleware.Auditor {
 		name := fmt.Sprintf("audit-%d.log", sequence.Add(1))
-		return middleware.NewAuditor(filepath.Join(root, name))
+		return middleware.NewAuditorWithClock(filepath.Join(root, name), clock)
 	}
 	newRouterAssistantApprovalStore = ai.NewApprovalStore
 	code := m.Run()

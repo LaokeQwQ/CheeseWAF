@@ -131,7 +131,7 @@ func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusForbidden, "API_TOKEN_SCOPE_FORBIDDEN", err.Error())
 		return
 	}
-	now := time.Now().UTC()
+	now := h.nowUTC()
 	expiresAt, ok := parseManagementAPITokenExpiry(w, req, now)
 	if !ok {
 		return
@@ -186,7 +186,7 @@ func (h *Handler) RevokeManagementAPIToken(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", "token id is required")
 		return
 	}
-	now := time.Now().UTC()
+	now := h.nowUTC()
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
 		for idx := range candidate.APISec.ManagementAPI.Tokens {
 			if candidate.APISec.ManagementAPI.Tokens[idx].ID != id {

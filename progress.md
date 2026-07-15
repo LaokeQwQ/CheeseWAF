@@ -134,6 +134,14 @@ CheeseWAF 当前已经覆盖以下方向：
 
 这些验证结果用于说明当前工程状态。正式发布前仍需要按 release gate 重新执行完整验证，不能只复用历史结果。
 
+### 2026-07-15 进程时钟、系统对时与验证码加固
+
+- 新增进程内 NTP 对时服务（`internal/timekeeper`）：多源重选、共识阈值、纪律化时钟，并注入管理会话 JWT、Bot 策略、APISec JWT、登录验证码与代理运行时，避免仅依赖可能漂移的系统墙钟。
+- 系统设置增加时间同步面板与 API（状态 / 重选 / 立即同步）；配置支持启用开关、源列表与采样参数，默认源收敛为小集合多运营商公共 NTP。
+- 对时安全收口：拒绝私有 / 环回 / localhost 源；`SyncNow` 双源共识、单源大幅跳变拒绝；失败回落后时钟继续前进不冻结鉴权 TTL；仅改 interval 不擦除已选源；部分 JSON 更新按字段合并，避免静默关闭对时。
+- 曲线滑块验证码：全画布纹理防透明 PNG 边界泄漏；边页与管理端补齐 `min_duration_ms`、松手后不丢 track、中日文提示与对齐任务一致；IssuedMS 墙钟最短用时约束。
+- 本轮验证：`go test` 覆盖 `timekeeper` / `config` / `apisec` / `bot` / `api` / `handler` / `middleware` / `captcha` / `cli` / `proxy`，以及 Web `CurveSliderChallenge` / `systemModel` / `client` 单测。
+
 ### 2026-07-09 本地补充：IP 管理闭环与样式收口
 
 - IP 访问名单从桌面表格压缩布局改为自适应规则卡片网格，桌面与移动端均避免备注、站点、路径和 IP/CIDR 被挤成竖排。

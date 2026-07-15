@@ -71,6 +71,12 @@
   cursor: grabbing;
 }
 
+.range:focus-visible {
+  border-color: var(--color-primary-6, #165dff);
+  outline: 3px solid color-mix(in srgb, var(--color-primary-6, #165dff) 45%, transparent);
+  outline-offset: 2px;
+}
+
 .range:disabled {
   cursor: not-allowed;
   opacity: 0.55;

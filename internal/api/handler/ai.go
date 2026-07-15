@@ -402,7 +402,7 @@ func (h *Handler) AnalyzeLogStream(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				if writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)}) != nil {
+				if writeEvent("heartbeat", map[string]any{"at": h.nowUTC().Format(time.RFC3339Nano)}) != nil {
 					return
 				}
 			case <-heartbeatDone:
@@ -632,7 +632,7 @@ func (h *Handler) AnalyzeEventsStream(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				if writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)}) != nil {
+				if writeEvent("heartbeat", map[string]any{"at": h.nowUTC().Format(time.RFC3339Nano)}) != nil {
 					return
 				}
 			case <-heartbeatDone:
@@ -845,7 +845,7 @@ func (h *Handler) AIAssistantStream(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				if err := writeEvent("heartbeat", map[string]any{"at": time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+				if err := writeEvent("heartbeat", map[string]any{"at": h.nowUTC().Format(time.RFC3339Nano)}); err != nil {
 					return
 				}
 			case <-heartbeatDone:
@@ -895,7 +895,7 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	record := func(event ai.AssistantTraceEvent) {
 		traceMu.Lock()
 		defer traceMu.Unlock()
-		event.At = time.Now().UTC().Format(time.RFC3339Nano)
+		event.At = h.nowUTC().Format(time.RFC3339Nano)
 		trace = append(trace, event)
 		if emit != nil {
 			emit(event)

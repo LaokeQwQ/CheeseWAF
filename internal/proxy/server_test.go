@@ -1208,6 +1208,34 @@ func (noopSink) Query(context.Context, storage.LogFilter) ([]storage.LogEntry, i
 func (noopSink) Flush(context.Context) error { return nil }
 func (noopSink) Close() error                { return nil }
 
+type proxyTestClock struct{ now time.Time }
+
+func (c proxyTestClock) Now() time.Time { return c.now }
+
+func TestServerUsesInjectedClockForLogTimestamp(t *testing.T) {
+	cfg := config.Default()
+	sink := &captureSink{}
+	now := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	server, err := NewServerWithClock(&cfg, engine.NewPipeline(), sink, proxyTestClock{now: now})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	started := time.Now()
+	server.writeLog(context.Background(), &engine.RequestContext{
+		Request: req, TraceID: "clock-test", SiteID: "default", ClientIP: "203.0.113.10", Metadata: map[string]any{},
+	}, "pass", http.StatusOK, started, nil)
+	if len(sink.entries) != 1 {
+		t.Fatalf("log entries = %d, want 1", len(sink.entries))
+	}
+	if got := sink.entries[0].Timestamp; !got.Equal(now) {
+		t.Fatalf("log timestamp = %v, want %v", got, now)
+	}
+	if got := sink.entries[0].Latency; got < 0 || got > time.Second {
+		t.Fatalf("log latency = %v, want monotonic elapsed time under one second", got)
+	}
+}
+
 type captureSink struct {
 	entries []*storage.LogEntry
 }
@@ -1353,6 +1381,12 @@ func testJWT(t *testing.T, claims map[string]any) string {
 
 func testHMACJWT(t *testing.T, secret string, claims map[string]any) string {
 	t.Helper()
+	if claims == nil {
+		claims = map[string]any{}
+	}
+	if _, ok := claims["exp"]; !ok {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+	}
 	header, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
 	if err != nil {
 		t.Fatal(err)
