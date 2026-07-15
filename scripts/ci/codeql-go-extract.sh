@@ -16,6 +16,12 @@ if [[ "${OS:-}" == "Windows_NT" || "${uname_s}" == MINGW* || "${uname_s}" == MSY
   null_out="NUL"
 fi
 
+# Parallel package compiles (compile only; do not run tests).
+jobs="$(go_cmd env GOMAXPROCS 2>/dev/null || true)"
+if [[ -z "${jobs}" || "${jobs}" -lt 1 ]]; then
+  jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+fi
+
 echo "::group::go build (default tags)"
 go_cmd build ./...
 echo "::endgroup::"
@@ -23,23 +29,44 @@ echo "::endgroup::"
 compile_tests() {
   local tags="${1:-}"
   local -a list_args=(./...)
-  local -a test_args=(-c -o "${null_out}")
+  local -a test_base=(-c -o "${null_out}")
   if [[ -n "${tags}" ]]; then
     list_args=(-tags "${tags}" ./...)
-    test_args=(-tags "${tags}" -c -o "${null_out}")
+    test_base=(-tags "${tags}" -c -o "${null_out}")
   fi
 
-  local pkg
-  while IFS= read -r pkg; do
-    [[ -z "${pkg}" ]] && continue
-    # Packages without tests still compile cleanly with -c on modern Go.
-    if ! go_cmd test "${test_args[@]}" "${pkg}"; then
-      echo "::warning::go test -c failed for ${pkg} (tags=${tags:-default}); continuing"
+  local pkgs
+  mapfile -t pkgs < <(go_cmd list "${list_args[@]}")
+  if [[ "${#pkgs[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  # Prefer one-shot compile+noop-exec when available (fast path).
+  # Falls back to parallel per-package -c if the bulk path fails.
+  local -a bulk=(-count=1 -exec true)
+  if [[ -n "${tags}" ]]; then
+    bulk=(-tags "${tags}" -count=1 -exec true)
+  fi
+  if go_cmd test "${bulk[@]}" ./...; then
+    return 0
+  fi
+
+  echo "::warning::bulk go test -exec true failed (tags=${tags:-default}); falling back to parallel go test -c"
+
+  printf '%s\n' "${pkgs[@]}" | xargs -P "${jobs}" -n 1 -I{} bash -c '
+    set +e
+    pkg="$1"
+    shift
+    bash scripts/ci/go-env.sh go test "$@" "$pkg"
+    status=$?
+    if [[ $status -ne 0 ]]; then
+      echo "::warning::go test -c failed for ${pkg}; continuing"
     fi
-  done < <(go_cmd list "${list_args[@]}")
+    exit 0
+  ' _ {} "${test_base[@]}"
 }
 
-echo "::group::go test -c (default tags, extract _test.go)"
+echo "::group::go test (default tags, extract _test.go)"
 compile_tests ""
 echo "::endgroup::"
 
@@ -53,4 +80,4 @@ if go_cmd list -e -tags captchae2e ./internal/captcha ./scripts/e2e/captcha-inte
   echo "::endgroup::"
 fi
 
-echo "CodeQL Go extract build finished (GOOS=$(go_cmd env GOOS) GOARCH=$(go_cmd env GOARCH))"
+echo "CodeQL Go extract build finished (GOOS=$(go_cmd env GOOS) GOARCH=$(go_cmd env GOARCH) jobs=${jobs})"
