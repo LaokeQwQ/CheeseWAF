@@ -129,6 +129,11 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	if report.AnomalyScore > 0 {
 		reqCtx.Metadata["semantic_anomaly_score"] = report.AnomalyScore
 	}
+	// Signal incomplete analysis when the pipeline deadline cancelled mid-scan.
+	// Used by budget fail-mode so a clean finished pass is not challenged.
+	if ctx.Err() != nil {
+		reqCtx.Metadata["semantic_analysis_incomplete"] = true
+	}
 	if best == nil {
 		return nil, nil
 	}

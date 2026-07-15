@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sort"
 	"strings"
@@ -105,8 +106,10 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 				firstDetected = &snapshot
 			}
 		}
-		// Budget must apply on the common single-analyzer path too (not only multi-fork).
-		if ctx.Err() != nil && parentCtx.Err() == nil {
+		// Budget fail-mode only when analysis did not finish cleanly under the
+		// pipeline deadline. A clean pass that races the deadline must not be
+		// upgraded to closed/challenge.
+		if parentCtx.Err() == nil && budgetAnalysisIncomplete(ctx, reqCtx, err) {
 			return finalizeBudgetExhausted(reqCtx, firstDetected), nil
 		}
 	} else if len(semanticGroup) > 1 {
@@ -176,6 +179,23 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		return firstDetected, nil
 	}
 	return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
+}
+
+// budgetAnalysisIncomplete reports whether the pipeline deadline stopped
+// semantic work early (context error from detector or analyzer incomplete flag).
+func budgetAnalysisIncomplete(ctx context.Context, reqCtx *RequestContext, detectErr error) bool {
+	if ctx == nil || ctx.Err() == nil {
+		return false
+	}
+	if detectErr != nil && (errors.Is(detectErr, context.DeadlineExceeded) || errors.Is(detectErr, context.Canceled) || ctx.Err() != nil) {
+		return true
+	}
+	if reqCtx != nil && reqCtx.Metadata != nil {
+		if incomplete, _ := reqCtx.Metadata["semantic_analysis_incomplete"].(bool); incomplete {
+			return true
+		}
+	}
+	return false
 }
 
 // finalizeBudgetExhausted marks budget exhaustion, records metrics, and applies
@@ -281,7 +301,7 @@ func mergeRequestContext(parent, fork *RequestContext) {
 		}
 		// Semantic keys always take the forked (latest detector) value.
 		switch k {
-		case "semantic_analysis", "semantic_anomaly_score", "detection_budget_exhausted", "budget_exhausted_policy", "waf_policy_decision", "semantic_skipped":
+		case "semantic_analysis", "semantic_anomaly_score", "semantic_analysis_incomplete", "detection_budget_exhausted", "budget_exhausted_policy", "waf_policy_decision", "semantic_skipped":
 			parent.Metadata[k] = v
 		}
 	}

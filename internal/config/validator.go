@@ -205,8 +205,9 @@ func Validate(cfg *Config) error {
 			if rule == "*" || rule == "/*" {
 				return fmt.Errorf("site %q has overly broad waf.semantic_policy.path_allowlist entry %q (would skip all semantic analysis)", site.Name, rule)
 			}
-			if !strings.HasPrefix(rule, "/") && !strings.Contains(rule, "*") {
-				return fmt.Errorf("site %q path_allowlist entry %q should start with /", site.Name, rule)
+			// Paths always use absolute form; "static/*" would never match URL paths.
+			if !strings.HasPrefix(rule, "/") {
+				return fmt.Errorf("site %q path_allowlist entry %q must start with /", site.Name, rule)
 			}
 		}
 		for _, rule := range site.WAF.CustomRules {

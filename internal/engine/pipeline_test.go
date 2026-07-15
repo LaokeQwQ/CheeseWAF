@@ -181,6 +181,27 @@ func TestPipelineBudgetExhaustedPolicies(t *testing.T) {
 			t.Fatalf("expected closed challenge on single semantic path, got %#v", got)
 		}
 	})
+
+	t.Run("clean finish is not challenged when deadline races after success", func(t *testing.T) {
+		// Detector finishes successfully; incomplete flag unset → no budget challenge.
+		fast := &countingDetector{
+			id: "fast-semantic", priority: 290,
+			fn: func(ctx context.Context, reqCtx *RequestContext) (*DetectionResult, error) {
+				return &DetectionResult{Detected: false, Action: ActionPass}, nil
+			},
+		}
+		reqCtx := &RequestContext{Metadata: map[string]any{"budget_exhausted_policy": "closed"}}
+		got, err := NewPipeline(fast).Detect(context.Background(), reqCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reqCtx.Metadata["detection_budget_exhausted"] == true {
+			t.Fatalf("clean finish must not mark budget exhausted: %#v", reqCtx.Metadata)
+		}
+		if got != nil && got.Detected && got.Category == "detection_budget" {
+			t.Fatalf("clean finish must not become budget challenge, got %#v", got)
+		}
+	})
 }
 
 func TestPipelineSemanticGroupConcurrentMerge(t *testing.T) {
