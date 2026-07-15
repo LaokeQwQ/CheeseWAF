@@ -328,6 +328,8 @@ func looksCleanASCIIField(raw string) bool {
 	return true
 }
 
+
+
 func betterHit(candidate, current Hit) bool {
 	candidatePriority := categoryPriority(candidate)
 	currentPriority := categoryPriority(current)
@@ -1348,7 +1350,12 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 var rceShellMetacharCommand = regexp.MustCompile(`(?i)(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b`)
 
 func rceShellControlEvidence(lower string) bool {
-	if strings.Contains(lower, "$(") || strings.Contains(lower, "`") || strings.Contains(lower, "&&") || strings.Contains(lower, "||") {
+	if strings.Contains(lower, "$(") || strings.Contains(lower, "&&") || strings.Contains(lower, "||") {
+		return true
+	}
+	// Markdown fenced code uses ``` which must not count as shell backticks.
+	// Only leftover single-backtick command substitution is evidence.
+	if strings.Contains(strings.ReplaceAll(lower, "```", ""), "`") {
 		return true
 	}
 	return rceShellMetacharCommand.MatchString(lower)
@@ -1871,7 +1878,11 @@ func printableRatio(value string) float64 {
 
 func skipHeader(key string) bool {
 	switch strings.ToLower(key) {
-	case "accept", "accept-encoding", "accept-language", "connection", "content-length", "content-type", "host":
+	case "accept", "accept-encoding", "accept-language", "connection", "content-length",
+		"content-type", "host", "cache-control", "pragma", "upgrade-insecure-requests",
+		"sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user",
+		"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "dnt", "priority",
+		"if-none-match", "if-modified-since", "range", "te", "trailer", "transfer-encoding":
 		return true
 	default:
 		return false

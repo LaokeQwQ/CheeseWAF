@@ -367,3 +367,30 @@ go test ./internal/engine/semantic/ -bench=BenchmarkSemanticAnalyzer -benchmem -
 | BUG-075 | Lab harness 写错 localStorage 键导致主题/语言维度假绿 | **已收**：`prepareLab` 写 Zustand `cheesewaf-ui`；新增 `lab-page.test.mjs`；`package.json` e2e 门禁纳入该测试 |
 
 验证：`go test ./internal/captcha/ -count=1` PASS。
+
+---
+
+## 5. Windows GUI/NSIS + 语料再扩（2026-07-15）
+
+### 5.1 Windows 双发行线骨架
+
+| 组件 | 路径 | 说明 |
+|------|------|------|
+| GUI 入口 | `cmd/cheesewaf-gui` | 本地控制器，默认 `127.0.0.1:17943` |
+| 控制器核心 | `internal/winctl` | start/stop/status/autostart/open；loopback-only HTTP |
+| CLI 复用 | `cli.ConfigurePaths` / `InspectServiceStatus` / `StopRunningService` | 与 `cheesewaf stop/status` 同语义 |
+| NSIS | `deploy/windows/nsis/cheesewaf.nsi` | 安装/卸载/开始菜单/可选 sc 服务；无密钥 |
+| 文档 | `deploy/windows/README.md` | CLI zip 与 GUI 用法 |
+| Make | `build-windows-gui` / `package-windows-cli` | 交叉编译与 payload 暂存 |
+
+验证：`go test ./internal/winctl ./internal/cli`；`go build ./cmd/cheesewaf-gui`。
+
+### 5.2 语义语料 / 冷路径
+
+- benign **82**、handcrafted neighbors **30**（累计）
+- 跳过更多无害浏览器/协议头；markdown ` ``` ` 不再当 shell 反引号（FP 修复）
+- FP gate 仍 **0 FP**
+
+### 5.3 Forgejo
+
+本机无 `FORGEJO_TOKEN`；direct push 仍 403（pull mirror）。GitHub `origin` 正常 push。

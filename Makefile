@@ -49,6 +49,22 @@ else
 	@ln -sf $(BINARY_NAME) bin/$(CLI_NAME)
 endif
 
+## build-windows-gui: Build Windows local service controller (pure Go, no CGO)
+build-windows-gui:
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-gui-windows-amd64.exe ./cmd/cheesewaf-gui/
+	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-gui-windows-arm64.exe ./cmd/cheesewaf-gui/
+ifeq ($(OS),Windows_NT)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-gui.exe ./cmd/cheesewaf-gui/
+endif
+
+## package-windows-cli: Stage a zip/bin-style Windows CLI payload directory
+package-windows-cli: build build-windows-gui
+	@mkdir -p dist/windows-cli/configs dist/windows-cli/data dist/windows-cli/logs
+	@cp -f bin/$(BINARY_NAME).exe dist/windows-cli/ 2>/dev/null || cp -f bin/$(BINARY_NAME) dist/windows-cli/ || true
+	@cp -f bin/$(BINARY_NAME)-gui.exe dist/windows-cli/ 2>/dev/null || true
+	@cp -f configs/cheesewaf.yaml dist/windows-cli/configs/ 2>/dev/null || true
+	@echo "Staged dist/windows-cli — zip manually; do not embed secrets"
+
 ## build-linux: Cross-compile for Linux amd64
 build-linux:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/cheesewaf/

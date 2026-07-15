@@ -900,13 +900,59 @@ func removePID(runtimeDir string) {
 	_ = os.Remove(pidPath(runtimeDir))
 }
 
-type serviceStatusSnapshot struct {
+// ServiceStatusSnapshot is the CLI/GUI-visible process state for CheeseWAF.
+// GUI and TUI must use this rather than inventing a second status model.
+type ServiceStatusSnapshot struct {
 	RuntimeDir string
 	PIDPath    string
 	PID        int
 	HasPIDFile bool
 	Running    bool
 	Stale      bool
+}
+
+// serviceStatusSnapshot is the historical unexported alias used inside this package.
+type serviceStatusSnapshot = ServiceStatusSnapshot
+
+// ConfigurePaths sets the package-level config/data paths used by status/stop
+// helpers. Desktop controllers must call this before InspectServiceStatus.
+func ConfigurePaths(configFile, dataDirectory string) {
+	if configFile != "" {
+		configPath = configFile
+	}
+	if dataDirectory != "" {
+		dataDir = dataDirectory
+	}
+}
+
+// InspectServiceStatus returns whether CheeseWAF appears to be running based on
+// the configured runtime PID file. Safe for concurrent GUI polling.
+func InspectServiceStatus() (ServiceStatusSnapshot, error) {
+	return inspectServiceStatus()
+}
+
+// StopRunningService stops a live CheeseWAF process (or cleans a stale PID file).
+// It reuses the same semantics as `cheesewaf stop`.
+func StopRunningService() (ServiceStatusSnapshot, error) {
+	snapshot, err := inspectServiceStatus()
+	if err != nil {
+		return snapshot, err
+	}
+	if !snapshot.HasPIDFile {
+		return snapshot, nil
+	}
+	if snapshot.Stale {
+		removePID(snapshot.RuntimeDir)
+		snapshot.HasPIDFile = false
+		snapshot.Stale = false
+		snapshot.Running = false
+		snapshot.PID = 0
+		return snapshot, nil
+	}
+	if err := stopProcess(snapshot.PID); err != nil {
+		return snapshot, err
+	}
+	return snapshot, nil
 }
 
 func authSecretPath(baseDir string) string {
