@@ -41,17 +41,27 @@ compile_tests() {
     return 0
   fi
 
-  # Prefer one-shot compile+noop-exec when available (fast path).
+  # Prefer one-shot compile + noop exec (extracts tests without running them).
   # Falls back to parallel per-package -c if the bulk path fails.
-  local -a bulk=(-count=1 -exec true)
+  local exec_prog="true"
+  if ! command -v true >/dev/null 2>&1; then
+    # GitHub windows-latest bash may lack true(1); cmd no-op is enough for extract.
+    exec_prog="cmd"
+  fi
+  local -a bulk=(-count=1)
+  if [[ "${exec_prog}" == "true" ]]; then
+    bulk+=(-exec true)
+  else
+    bulk+=(-exec "cmd //c exit 0")
+  fi
   if [[ -n "${tags}" ]]; then
-    bulk=(-tags "${tags}" -count=1 -exec true)
+    bulk=(-tags "${tags}" "${bulk[@]}")
   fi
   if go_cmd test "${bulk[@]}" ./...; then
     return 0
   fi
 
-  echo "::warning::bulk go test -exec true failed (tags=${tags:-default}); falling back to parallel go test -c"
+  echo "::warning::bulk go test compile failed (tags=${tags:-default}); falling back to parallel go test -c"
 
   printf '%s\n' "${pkgs[@]}" | xargs -P "${jobs}" -n 1 -I{} bash -c '
     set +e
