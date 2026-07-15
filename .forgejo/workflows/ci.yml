@@ -131,6 +131,10 @@ jobs:
         working-directory: web
         shell: bash
         run: npm ci
+      - name: Run CAPTCHA contract tests
+        working-directory: web
+        shell: bash
+        run: npm run test:captcha-contract
       - name: Install pinned coverage provider
         working-directory: web
         shell: bash

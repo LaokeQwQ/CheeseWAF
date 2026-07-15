@@ -18,7 +18,7 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
 
 const config = await loadConfig();
 if (config.dryRun) {
-  console.log(JSON.stringify({ baseURL: config.baseURL, labPath: config.labPath, profiles: config.profiles.map((item) => item.name), themes: config.themes, locales: config.locales, scenarios: config.scenarios }, null, 2));
+  console.log(JSON.stringify({ baseURL: config.baseURL, labPath: config.labPath, profiles: config.profiles.map((item) => item.name), themes: config.themes, locales: config.locales, reducedMotions: config.reducedMotions, scenarios: config.scenarios }, null, 2));
   process.exit(0);
 }
 if (config.fixedHarness) {
@@ -32,8 +32,8 @@ let browser;
 let failures = 0;
 try {
   browser = await chromium.launch({ headless: config.headless });
-  for (const profile of config.profiles) for (const theme of config.themes) for (const locale of config.locales) {
-    const context = await browser.newContext({ ...profile, locale, colorScheme: theme });
+  for (const profile of config.profiles) for (const theme of config.themes) for (const locale of config.locales) for (const reducedMotion of config.reducedMotions) {
+    const context = await browser.newContext({ ...profile, locale, colorScheme: theme, reducedMotion });
     const page = await context.newPage();
     let fixture;
     try {
@@ -43,7 +43,7 @@ try {
       await prepareLab(page, config, { locale, theme });
       await api.nextIssue(0);
       for (const scenario of config.scenarios) {
-        const label = [profile.name, theme, locale, scenario.type].join('/');
+        const label = [profile.name, theme, locale, `motion=${reducedMotion}`, scenario.type].join('/');
         try {
           await runScenario({ page, api, fixture, config, scenario });
           console.log('PASS ' + label);
@@ -53,7 +53,7 @@ try {
           console.error(`FAIL ${label} stage=${failureStage(error)}`);
         }
       }
-      events.assertClean([profile.name, theme, locale].join('/'));
+      events.assertClean([profile.name, theme, locale, `motion=${reducedMotion}`].join('/'));
     } finally {
       await fixture?.detach().catch(() => {});
       await context.close();

@@ -99,10 +99,14 @@ func randomVisualCurve(opts BehaviorOptions) ([]BehaviorPoint, error) {
 // the align task is harder than a single cubic hump.
 func randomVisualCurveV3(opts BehaviorOptions) ([]BehaviorPoint, error) {
 	anchors := make([]BehaviorPoint, 6)
-	xs := []int{1800, 3000, 4200, 5800, 7000, 8200}
-	for i, x := range xs {
+	xRanges := [][2]int{{1600, 2000}, {2800, 3200}, {4000, 4400}, {5600, 6000}, {6800, 7200}, {8000, 8400}}
+	for i, limits := range xRanges {
+		x, err := behaviorRandomInt(opts.Rand, limits[0], limits[1])
+		if err != nil {
+			return nil, err
+		}
 		low, high := 1500, 8500
-		if i == 0 || i == len(xs)-1 {
+		if i == 0 || i == len(xRanges)-1 {
 			low, high = 2200, 7800
 		}
 		y, err := behaviorRandomInt(opts.Rand, low, high)
@@ -247,8 +251,25 @@ func renderVisualCurvePiece(opts BehaviorOptions, curve []BehaviorPoint, initial
 	// Opaque solid stroke on a fully transparent canvas so CSS translateX can slide it.
 	drawVisualCurveDiscSolidPolyline(canvas, points, 13*scale, color.RGBA{R: 255, G: 255, B: 255, A: 255})
 	drawVisualCurveDiscSolidPolyline(canvas, points, 6*scale, color.RGBA{R: 245, G: 158, B: 11, A: 255})
+	piece := downsampleVisualCurveAlpha(canvas, scale)
+	stabilizeVisualCurveAlphaSupport(piece)
 	engine := bitmapEngine(opts)
-	return imageengine.PNGDataURI(downsampleVisualCurveAlpha(canvas, scale), engine.Limits)
+	return imageengine.PNGDataURI(piece, engine.Limits)
+}
+
+func stabilizeVisualCurveAlphaSupport(piece *image.RGBA) {
+	if piece == nil || piece.Bounds().Dx() == 0 || piece.Bounds().Dy() == 0 {
+		return
+	}
+	// Visual answers are not cryptographic secrets. These imperceptible support
+	// pixels only prevent the PNG alpha bounding box from directly encoding the
+	// piece's initial displacement.
+	bounds := piece.Bounds()
+	support := color.RGBA{A: 1}
+	piece.SetRGBA(bounds.Min.X, bounds.Min.Y, support)
+	piece.SetRGBA(bounds.Max.X-1, bounds.Min.Y, support)
+	piece.SetRGBA(bounds.Min.X, bounds.Max.Y-1, support)
+	piece.SetRGBA(bounds.Max.X-1, bounds.Max.Y-1, support)
 }
 
 func visualCurvePixels(curve []BehaviorPoint, scale int) []visualCurvePixel {
@@ -425,6 +446,9 @@ func verifyVisualCurveSlider(tok behaviorToken, response BehaviorResponse) bool 
 		return false
 	}
 	first, last := response.Track[0], response.Track[len(response.Track)-1]
+	if last.T < tok.MinMS {
+		return false
+	}
 	if (first.Type != "" && first.Type != "down") || (last.Type != "" && last.Type != "up") {
 		return false
 	}

@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -b",
-    "e2e:captcha": "node --test --test-concurrency=1 ../scripts/e2e/captcha-lab/interactions/range.test.mjs ../scripts/e2e/captcha-lab/interactions/surface.test.mjs ../scripts/e2e/captcha-lab/interactions/click.test.mjs ../scripts/e2e/captcha-lab/lab-page.test.mjs ../scripts/e2e/captcha-lab/fixed-harness.test.mjs ../scripts/e2e/captcha-lab/private-harness.test.mjs ../scripts/e2e/captcha-integration/browser-monitor.test.mjs ../scripts/e2e/captcha-integration/runtime.test.mjs && node ../scripts/e2e/captcha-lab/run-local.mjs"
+    "test:captcha-contract": "node --test --test-concurrency=1 ../scripts/e2e/captcha-lab/lab-page.test.mjs ../scripts/e2e/captcha-integration/fixture-client.test.mjs",
+    "e2e:captcha": "npm run test:captcha-contract && node --test --test-concurrency=1 ../scripts/e2e/captcha-lab/interactions/range.test.mjs ../scripts/e2e/captcha-lab/interactions/surface.test.mjs ../scripts/e2e/captcha-lab/interactions/click.test.mjs ../scripts/e2e/captcha-lab/fixed-harness.test.mjs ../scripts/e2e/captcha-lab/private-harness.test.mjs ../scripts/e2e/captcha-integration/browser-monitor.test.mjs ../scripts/e2e/captcha-integration/runtime.test.mjs && node ../scripts/e2e/captcha-lab/run-local.mjs"
   },
   "dependencies": {
     "@arco-design/web-react": "^2.66.15",

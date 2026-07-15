@@ -55,6 +55,8 @@ function deferred<T>() {
 }
 
 let mobileMediaListener: (() => void) | undefined;
+let reducedMotionMediaListener: (() => void) | undefined;
+let reducedMotion = false;
 
 class LoadedImageMock {
   onload: (() => void) | null = null;
@@ -79,21 +81,31 @@ beforeEach(() => {
   api.login.mockReset();
   api.verifyLoginCaptcha.mockReset();
   let mobile = false;
+  reducedMotion = false;
   mobileMediaListener = undefined;
+  reducedMotionMediaListener = undefined;
   vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => {
     const mobileQuery = query.includes('max-width');
+    const reducedMotionQuery = query.includes('prefers-reduced-motion');
     return {
-      get matches() { return mobileQuery ? mobile : false; },
+      get matches() { return mobileQuery ? mobile : reducedMotionQuery ? reducedMotion : false; },
       media: query,
       onchange: null,
       addListener: vi.fn(),
       removeListener: vi.fn(),
       addEventListener: vi.fn((_name: string, listener: EventListenerOrEventListenerObject) => {
-        if (!mobileQuery) return;
-        mobileMediaListener = () => {
-          mobile = true;
-          typeof listener === 'function' ? listener(new Event('change')) : listener.handleEvent(new Event('change'));
-        };
+        if (mobileQuery) {
+          mobileMediaListener = () => {
+            mobile = true;
+            typeof listener === 'function' ? listener(new Event('change')) : listener.handleEvent(new Event('change'));
+          };
+        }
+        if (reducedMotionQuery) {
+          reducedMotionMediaListener = () => {
+            reducedMotion = true;
+            typeof listener === 'function' ? listener(new Event('change')) : listener.handleEvent(new Event('change'));
+          };
+        }
       }),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
@@ -126,6 +138,53 @@ async function verifyCaptcha(receipt = 'captcha-receipt') {
   await waitFor(() => expect(api.verifyLoginCaptcha).toHaveBeenCalledTimes(1));
   await screen.findByText('login.captchaWidgetVerified');
 }
+
+describe('Login background motion preference', () => {
+  const videoBackgroundOptions: LoginOptions = {
+    ...options,
+    captcha: { ...options.captcha, enabled: false },
+    background: { enabled: true, type: 'video', url: '/login-background.webm' },
+  };
+
+  it('keeps the configured background video playing by default', async () => {
+    api.fetchLoginOptions.mockResolvedValue(videoBackgroundOptions);
+    renderLogin();
+
+    await waitFor(() => expect(document.querySelector('.auth-background-media')).not.toBeNull());
+    const video = document.querySelector('.auth-background-media') as HTMLVideoElement;
+    expect(video.autoplay).toBe(true);
+    expect(video.loop).toBe(true);
+    expect(video.preload).toBe('auto');
+  });
+
+  it('renders the first video frame without autoplay when reduced motion is preferred', async () => {
+    reducedMotion = true;
+    api.fetchLoginOptions.mockResolvedValue(videoBackgroundOptions);
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    renderLogin();
+
+    await waitFor(() => expect(document.querySelector('.auth-background-media')).not.toBeNull());
+    const video = document.querySelector('.auth-background-media') as HTMLVideoElement;
+    expect(video.autoplay).toBe(false);
+    expect(video.loop).toBe(false);
+    expect(video.preload).toBe('metadata');
+    expect(pause).toHaveBeenCalled();
+  });
+
+  it('stops an already-rendered background video when the preference changes', async () => {
+    api.fetchLoginOptions.mockResolvedValue(videoBackgroundOptions);
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    renderLogin();
+    await waitFor(() => expect(reducedMotionMediaListener).toBeTypeOf('function'));
+
+    await act(async () => { reducedMotionMediaListener?.(); });
+
+    const video = document.querySelector('.auth-background-media') as HTMLVideoElement;
+    expect(video.autoplay).toBe(false);
+    expect(video.loop).toBe(false);
+    expect(pause).toHaveBeenCalled();
+  });
+});
 
 describe('Login slider keyboard controls', () => {
   async function openSlider() {

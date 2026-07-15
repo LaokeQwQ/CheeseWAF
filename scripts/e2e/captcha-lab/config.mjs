@@ -22,6 +22,7 @@ export async function loadConfig(argv = process.argv.slice(2), env = process.env
     timeoutMs: Number(fileConfig.timeoutMs ?? 20_000), replacementDelayMs: Number(fileConfig.replacementDelayMs ?? 1_000), replacementToleranceMs: Number(fileConfig.replacementToleranceMs ?? 650),
     profiles: fileConfig.profiles ?? [{ name: 'desktop', viewport: { width: 1440, height: 960 }, isMobile: false }, { name: 'mobile', viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }],
     themes: fileConfig.themes ?? ['light', 'dark'], locales: fileConfig.locales ?? ['zh-CN', 'en-US'],
+    reducedMotions: fileConfig.reducedMotions ?? ['no-preference', 'reduce'],
     scenarios: normalizeScenarios(cli.scenarios ?? fileConfig.scenarios ?? DEFAULT_SCENARIOS), dryRun: cli.dryRun === true,
     projectRoot,
     fixedHarness: fileConfig.fixedHarness ?? true,

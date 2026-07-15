@@ -129,6 +129,25 @@ func TestVisualCurveSliderKeepsTargetOffsetSealedAndChecksDrag(t *testing.T) {
 	if VerifyBehaviorChallenge(opts, fast).Valid {
 		t.Fatal("drag shorter than the configured minimum duration accepted")
 	}
+	for _, test := range []struct {
+		name  string
+		lastT int
+	}{
+		{name: "zero_tail_time", lastT: 0},
+		{name: "tail_before_minimum", lastT: tok.MinMS - 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			uncovered := good
+			uncovered.Track = append([]BehaviorTrackPoint(nil), good.Track...)
+			uncovered.DurationMS = tok.MinMS
+			for index := range uncovered.Track {
+				uncovered.Track[index].T = index * test.lastT / (len(uncovered.Track) - 1)
+			}
+			if VerifyBehaviorChallenge(opts, uncovered).Valid {
+				t.Fatalf("duration reached %dms but track ended at %dms", uncovered.DurationMS, test.lastT)
+			}
+		})
+	}
 	folded := good
 	folded.Track = []BehaviorTrackPoint{
 		{X: 5000, Y: 5000, T: 0, Type: "down"},
@@ -164,10 +183,15 @@ func TestVisualCurveSliderRejectsMalformedSealedGeometry(t *testing.T) {
 	if !ok {
 		t.Fatal("cannot open issued token")
 	}
+	tok.InitialOffset = -visualCurveSliderMaxOffset
+	tok.Point.X = behaviorCoordinateMax
+	if !validBehaviorTokenShape(tok) {
+		t.Fatalf("boundary fixture is not a valid curve slider token: %+v", tok)
+	}
 	for _, mutate := range []func(*behaviorToken){
 		func(value *behaviorToken) { value.InitialOffset = 0 },
 		func(value *behaviorToken) { value.InitialOffset = visualCurveSliderMaxOffset + 1 },
-		func(value *behaviorToken) { value.Point.X = clampVisualCoord(value.Point.X + 1000) },
+		func(value *behaviorToken) { value.Point.X = behaviorCoordinateMax - value.Point.X },
 		func(value *behaviorToken) { value.Version = 2 },
 	} {
 		invalid := tok

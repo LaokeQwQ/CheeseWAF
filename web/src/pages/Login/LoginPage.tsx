@@ -59,6 +59,7 @@ export default function LoginPage() {
   const captchaIssueControllerRef = useRef<AbortController | null>(null);
   const captchaVerifyControllerRef = useRef<AbortController | null>(null);
   const captchaPowControllerRef = useRef<AbortController | null>(null);
+  const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
   const token = localStorage.getItem('cheesewaf-token');
   const stateFrom = (location.state as { from?: string } | null)?.from;
   const queryFrom = new URLSearchParams(location.search).get('returnTo');
@@ -325,10 +326,22 @@ export default function LoginPage() {
   const backgroundURL = background?.enabled ? background.url.trim() : '';
   const backgroundKind = useMemo(() => resolveBackgroundKind(background?.type, backgroundURL), [background?.type, backgroundURL]);
   const prefersReducedMotion = usePrefersReducedMotion();
-  const showBackgroundVideo = Boolean(backgroundURL && backgroundKind === 'video' && !prefersReducedMotion);
-  const showBackgroundImage = Boolean(
-    backgroundURL && (backgroundKind === 'image' || (backgroundKind === 'video' && prefersReducedMotion)),
-  );
+  const showBackgroundVideo = Boolean(backgroundURL && backgroundKind === 'video');
+  const showBackgroundImage = Boolean(backgroundURL && backgroundKind === 'image');
+
+  useEffect(() => {
+    const video = backgroundVideoRef.current;
+    if (!video || !prefersReducedMotion) {
+      return undefined;
+    }
+    const showFirstFrame = () => {
+      video.pause();
+      video.currentTime = 0;
+    };
+    showFirstFrame();
+    video.addEventListener('loadedmetadata', showFirstFrame);
+    return () => video.removeEventListener('loadedmetadata', showFirstFrame);
+  }, [backgroundURL, prefersReducedMotion]);
 
   async function handleSubmit(values: { username?: string; password?: string; totpCode?: string }) {
     setLoading(true);
@@ -620,7 +633,16 @@ export default function LoginPage() {
   return (
     <main className={backgroundURL ? 'auth-screen auth-screen-media' : 'auth-screen'}>
       {showBackgroundVideo && (
-        <video className="auth-background-media" src={backgroundURL} autoPlay muted loop playsInline />
+        <video
+          ref={backgroundVideoRef}
+          className="auth-background-media"
+          src={backgroundURL}
+          autoPlay={!prefersReducedMotion}
+          muted
+          loop={!prefersReducedMotion}
+          playsInline
+          preload={prefersReducedMotion ? 'metadata' : 'auto'}
+        />
       )}
       {showBackgroundImage && (
         <div className="auth-background-media auth-background-image" style={{ backgroundImage: `url("${cssURL(backgroundURL)}")` }} />
