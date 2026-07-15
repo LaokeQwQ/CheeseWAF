@@ -586,3 +586,11 @@ M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ans
 - 仓库 Markdown 策略：仅保留根目录 README.md、README_CN.md、progress.md；其它 .md 不再入库，避免敏感规划与运维笔记外泄。
 - 说明：历史提交中的 Markdown 仍可能存在于 git history，如需彻底清除应另做 history rewrite（本轮仅从当前树取消跟踪）。
 
+
+## 2026-07-15 语义引擎：筛选 kimi_search 语料打磨
+
+- 参考本地 kimi_search.md 做漏报补强，**未盲信**其 label：将读取 shadow/元数据/回环 health 等错误标记为 benign 的样本明确剔除，不反向削弱检测。
+- 已补：multipart 文件名扫描、PowerShell WebClient/TCPClient、data:// 与 RFI include、docker.sock、Mongo $eval/mapReduce 字段、ObjectSpace/classLoader SSTI、guessCategories 对 RCE/LFI 开窗。
+- 刻意不补：纯 DNS rebind 无内网地址 SSRF、损坏的 UTF-16 转义样本（语料非真实字节）。
+- 回归：go test ./internal/engine/semantic；精选 kimi 子集 attack 检出约 94/96。
+

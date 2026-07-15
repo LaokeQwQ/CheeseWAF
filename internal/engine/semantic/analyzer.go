@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
@@ -833,12 +834,24 @@ func multipartInputs(body []byte, boundary string) []InputPoint {
 		if err != nil {
 			break
 		}
-		name := part.FormName()
+		formName := part.FormName()
+		fileName := part.FileName()
+		name := formName
 		if name == "" {
-			name = part.FileName()
+			name = fileName
 		}
 		if name == "" {
 			name = "part"
+		}
+		// Always inspect attacker-controlled upload filenames (SQLi second-order,
+		// webshell.php, null-byte suffix bypass). Content may be empty/binary.
+		if fileName != "" {
+			inputs = append(inputs, InputPoint{
+				Source: "body.multipart",
+				Name:   name + ".filename",
+				Raw:    fileName,
+				Layers: []string{"raw"},
+			})
 		}
 		buf := make([]byte, 64*1024)
 		n, _ := part.Read(buf)
@@ -856,6 +869,10 @@ type decodedVariant struct {
 }
 
 func decodeVariants(raw string) []decodedVariant {
+	// UTF-16 LE/BE BOM payloads (XXE evasion). Expand once into UTF-8 text.
+	if utf8FromUTF16, ok := decodeUTF16Payload(raw); ok && utf8FromUTF16 != raw {
+		raw = utf8FromUTF16
+	}
 	// Hot path: plain text without encode markers needs no expansion queue.
 	if !needsDeepDecode(raw) {
 		return []decodedVariant{{text: raw, layers: []string{"raw"}}}
@@ -888,6 +905,78 @@ func decodeVariants(raw string) []decodedVariant {
 		}
 	}
 	return out
+}
+
+// decodeUTF16Payload converts UTF-16 LE/BE text (with or without BOM) to UTF-8.
+// Used for XXE evasion that wraps entity markup in UTF-16.
+func decodeUTF16Payload(raw string) (string, bool) {
+	b := []byte(raw)
+	if len(b) < 4 {
+		return "", false
+	}
+	var u16 []uint16
+	switch {
+	case b[0] == 0xff && b[1] == 0xfe:
+		// UTF-16 LE BOM
+		data := b[2:]
+		if len(data)%2 != 0 {
+			data = data[:len(data)-1]
+		}
+		u16 = make([]uint16, 0, len(data)/2)
+		for i := 0; i+1 < len(data); i += 2 {
+			u16 = append(u16, uint16(data[i])|uint16(data[i+1])<<8)
+		}
+	case b[0] == 0xfe && b[1] == 0xff:
+		// UTF-16 BE BOM
+		data := b[2:]
+		if len(data)%2 != 0 {
+			data = data[:len(data)-1]
+		}
+		u16 = make([]uint16, 0, len(data)/2)
+		for i := 0; i+1 < len(data); i += 2 {
+			u16 = append(u16, uint16(data[i])<<8|uint16(data[i+1]))
+		}
+	default:
+		// Heuristic: many NULs in even/odd positions for short XML-looking bodies.
+		nulEven, nulOdd := 0, 0
+		limit := len(b)
+		if limit > 256 {
+			limit = 256
+		}
+		for i := 0; i < limit; i++ {
+			if b[i] == 0 {
+				if i%2 == 0 {
+					nulEven++
+				} else {
+					nulOdd++
+				}
+			}
+		}
+		if nulOdd < limit/6 && nulEven < limit/6 {
+			return "", false
+		}
+		data := b
+		if len(data)%2 != 0 {
+			data = data[:len(data)-1]
+		}
+		u16 = make([]uint16, 0, len(data)/2)
+		if nulOdd >= nulEven {
+			// LE-ish
+			for i := 0; i+1 < len(data); i += 2 {
+				u16 = append(u16, uint16(data[i])|uint16(data[i+1])<<8)
+			}
+		} else {
+			for i := 0; i+1 < len(data); i += 2 {
+				u16 = append(u16, uint16(data[i])<<8|uint16(data[i+1]))
+			}
+		}
+	}
+	runes := utf16.Decode(u16)
+	out := string(runes)
+	if !strings.Contains(strings.ToLower(out), "<!entity") && !strings.Contains(strings.ToLower(out), "<?xml") {
+		return "", false
+	}
+	return out, true
 }
 
 // needsDeepDecode is a pure byte scan: only expand decode layers when markers
@@ -1026,12 +1115,14 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintRCE != 0 {
-		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) {
+		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "downloadfile") || strings.Contains(text, "webclient") || strings.Contains(text, "tcpclient") || strings.Contains(text, "new-object") || strings.Contains(text, "<?php") || strings.Contains(text, "eval(") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) || rceNetWebClientSideFx.MatchString(text) || rcePowerShellSideFx.MatchString(text) {
 			scores["rce"] += 2
 		}
 	}
 	if hints&hintLFI != 0 {
-		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") {
+		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") ||
+			// RFI-shaped remote includes: http(s) value often only scores SSRF unless LFI is also opened.
+			((strings.Contains(text, "http://") || strings.Contains(text, "https://")) && (strings.Contains(text, ".php") || strings.Contains(text, "shell") || strings.Contains(text, "passwd") || strings.HasSuffix(text, "?"))) {
 			scores["lfi"] += 2
 		}
 	}
@@ -1043,6 +1134,11 @@ func guessCategories(raw string) []string {
 	if hints&hintSSRF != 0 {
 		if urlLikePattern.MatchString(text) || schemeRelativeURLPattern.MatchString(text) || strings.Contains(text, "169.254.169.254") || strings.Contains(text, "metadata.google.internal") || looksLikeSSRFTarget(text) {
 			scores["ssrf"] += 2
+			// Also open LFI analysis for remote-include shapes; field-name gates in
+			// analyzeLFI keep documentation/fetch-only traffic from blocking.
+			if scores["lfi"] == 0 {
+				scores["lfi"] += 1
+			}
 		}
 	}
 	if hints&hintNoSQL != 0 {
@@ -1119,6 +1215,9 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "wget") || strings.Contains(lower, "python") ||
 		strings.Contains(lower, "perl") || strings.Contains(lower, "/bin/") ||
 		strings.Contains(lower, "encodedcommand") || strings.Contains(lower, "downloadstring") ||
+		strings.Contains(lower, "downloadfile") || strings.Contains(lower, "webclient") ||
+		strings.Contains(lower, "tcpclient") || strings.Contains(lower, "invoke-expression") ||
+		strings.Contains(lower, "<?php") || strings.Contains(lower, "eval(") ||
 		strings.Contains(lower, "whoami") || strings.Contains(lower, "${ifs}") ||
 		strings.Contains(lower, "$ifs") || strings.Contains(lower, "/dev/tcp") ||
 		strings.Contains(lower, "/dev/udp") || strings.Contains(lower, "</dev/") ||
@@ -1130,10 +1229,12 @@ func scanAttackHints(raw string) int {
 	if strings.Contains(lower, "..") || strings.Contains(lower, "%2e") ||
 		strings.Contains(lower, "etc/") || strings.Contains(lower, "proc/") ||
 		strings.Contains(lower, ".env") || strings.Contains(lower, "php://") ||
-		strings.Contains(lower, "file://") || strings.Contains(lower, "wp-config") ||
+		strings.Contains(lower, "file://") || strings.Contains(lower, "data://") ||
+		strings.Contains(lower, "docker.sock") || strings.Contains(lower, "wp-config") ||
 		strings.Contains(lower, ".aws") || strings.Contains(lower, ".git") ||
 		strings.Contains(lower, ".ssh") || strings.Contains(lower, "boot.ini") ||
-		strings.Contains(lower, "win.ini") || strings.Contains(lower, "passwd") {
+		strings.Contains(lower, "win.ini") || strings.Contains(lower, "passwd") ||
+		strings.Contains(lower, "phar://") || strings.Contains(lower, "expect://") {
 		hints |= hintLFI
 	}
 	// XXE
@@ -1152,14 +1253,16 @@ func scanAttackHints(raw string) int {
 	}
 	// NoSQL — any $-operator token (including $elemMatch / $nin / …).
 	if strings.Contains(lower, "$") || strings.Contains(lower, "this.") ||
-		strings.Contains(lower, "function(") {
+		strings.Contains(lower, "function(") || strings.Contains(lower, "mapreduce") ||
+		strings.Contains(lower, `"map"`) || strings.Contains(lower, `"reduce"`) {
 		hints |= hintNoSQL
 	}
 	// SSTI
 	if strings.Contains(lower, "{{") || strings.Contains(lower, "{%") ||
 		strings.Contains(lower, "${") || strings.Contains(lower, "#{") ||
 		strings.Contains(lower, "<%") || strings.Contains(lower, "__class__") ||
-		strings.Contains(lower, "__globals__") || strings.Contains(lower, "popen") {
+		strings.Contains(lower, "__globals__") || strings.Contains(lower, "popen") ||
+		strings.Contains(lower, "objectspace") || strings.Contains(lower, "classloader") {
 		hints |= hintSSTI
 	}
 	return hints
@@ -1221,18 +1324,21 @@ var (
 	lfiEncodedTraversal = regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%25c0%25af|\.{4,}[/\\]+`)
 	lfiDotEnvTarget               = regexp.MustCompile(`(?i)(?:^|[/\\])\.env(?:$|[?#.]|%00|%23)`)
 	lfiSensitiveTarget            = regexp.MustCompile(`(?i)(?:^|[/\\])(?:etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|issue|motd|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|root/\.bash_history|home/[^/\\]+/\.ssh/(?:id_rsa|id_dsa|authorized_keys)|var/log/(?:syslog|auth\.log|nginx/access\.log|nginx/error\.log|apache2/access\.log|apache2/error\.log|httpd-access\.log)|winnt/system32/cmd\.exe|windows/(?:win\.ini|system32/drivers/etc/hosts)|boot\.ini|web-inf/web\.xml|meta-inf/manifest\.mf|\.htaccess|_config\.php|config\.php|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|wp-config\.php|dump\.sql|database\.sql|id_rsa)(?:$|[?#\x00.]|%00|%23)`)
-	nosqlOperatorToken            = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
-	nosqlJSBehavior               = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.)`)
+	nosqlOperatorToken            = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|eval|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
+	nosqlJSBehavior               = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.|emit\s*\()`)
+	nosqlMapReducePayload         = regexp.MustCompile(`(?i)(?:"map"\s*:\s*"(?:function\s*\(|function\s+[a-z])|"reduce"\s*:\s*"(?:function\s*\(|function\s+[a-z])|"mapreduce"\s*:)`)
 	nosqlWideRegex                = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
-	nosqlOperatorNames            = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
+	nosqlOperatorNames            = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$eval", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
 	sstiTemplateExpression        = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|%\{.*?\}|<%=?\s*.*?%>)`)
 	sstiArithmeticProbe           = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
-	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|#(?:context|_memberaccess|request|session)|@[a-z0-9_.]+@|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime)`)
+	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|#(?:context|_memberaccess|request|session)|@[a-z0-9_.]+@|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime|objectspace\.each_object|classloader\.loadclass|loadclass\s*\()`)
+	rceNetWebClientSideFx         = regexp.MustCompile(`(?i)(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|system\.net\.webclient|download(?:file|string)\s*\(|iwr\s+|invoke-webrequest\b)`)
+	rcePowerShellReverseShell     = regexp.MustCompile(`(?i)(?:tcpclient\s*\(|getstream\s*\(|net\.sockets\.tcpclient|while\s*\(\s*\$i\s*=\s*\$s\.read)`)
 	sqlBlockComment               = regexp.MustCompile(`(?is)/\*.*?\*/`)
 	sqlLineComment                = regexp.MustCompile(`(?m)--[^\r\n]*`)
 	rceShellControl               = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
 	rceWhitespaceEvasion          = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
-	rcePowerShellSideFx           = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b`)
+	rcePowerShellSideFx           = regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|downloadfile|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b)|(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|(?:download(?:file|string)|invoke-expression|iex)\s*\()`)
 	rceEncodedPowerShell          = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,160}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{12,}`)
 	rceInterpreterInline          = regexp.MustCompile(`(?i)(?:^|[=&\s;|])(?:bash|sh|zsh|dash|ksh)\s+-c\s+['"]?(?:id|whoami|cat|curl|wget|uname|nc|ncat|python3?|perl|php|ruby|node|powershell|pwsh)\b|(?:^|[=&\s;|])cmd(?:\.exe)?\s*/c\s+(?:whoami|id|dir|type|powershell|certutil|curl|wget|ping|nslookup)\b|(?:python3?|perl|php|ruby|node)\s+(?:-c|-e|-r)\b`)
 	rceDownloadExecChain          = regexp.MustCompile(`(?i)(?:curl|wget|fetch)\s+[^\r\n|;&]+(?:\||;|&&)\s*(?:sh|bash|zsh|dash|ksh|python3?|php|perl|ruby|node)\b`)
@@ -1355,14 +1461,24 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 	structuralOperator := nosqlOperatorInPath(name)
 	textOperator := nosqlOperatorToken.MatchString(lowerText)
-	if !structuralOperator && !textOperator {
+	mapReduce := nosqlMapReducePayload.MatchString(lowerText)
+	// JSON often splits map/reduce into separate fields; detect by field name + JS body.
+	fieldMapReduce := nosqlMapReduceField(name) && nosqlJSBehavior.MatchString(lowerText)
+	if !structuralOperator && !textOperator && !mapReduce && !fieldMapReduce {
 		return Hit{}, false
 	}
-	if !structuralOperator && nosqlDocumentationContext(name) {
-		return Hit{}, false
+	// Documentation field names normally skip NoSQL. Exception: raw request bodies
+	// that carry real operator tokens (e.g. broken/partial JSON with "$eval").
+	if !structuralOperator && !mapReduce && !fieldMapReduce && nosqlDocumentationContext(name) {
+		if !(candidate.input.Source == "body.raw" && textOperator) {
+			return Hit{}, false
+		}
 	}
-	if !structuralOperator && !nosqlSensitiveContext(name) && !nosqlLooksLikeStructuredPayload(lowerText) {
-		return Hit{}, false
+	if !structuralOperator && !mapReduce && !fieldMapReduce && !nosqlSensitiveContext(name) && !nosqlLooksLikeStructuredPayload(lowerText) {
+		// map/reduce field bodies are structured even without $-operators.
+		if !fieldMapReduce {
+			return Hit{}, false
+		}
 	}
 
 	combined := name + " " + lowerText
@@ -1373,6 +1489,10 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	if textOperator {
 		reasons["syntax: MongoDB query operator token"] = true
 	}
+	if mapReduce || fieldMapReduce {
+		reasons["syntax: MongoDB mapReduce JavaScript payload"] = true
+		reasons["semantics: mapReduce functions can evaluate attacker-controlled server-side JavaScript"] = true
+	}
 	if nosqlContainsOperator(combined, "$where") {
 		reasons["syntax: server-side JavaScript query operator"] = true
 		reasons["semantics: server-side query JavaScript can evaluate attacker-controlled predicates"] = true
@@ -1380,6 +1500,10 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	if nosqlContainsOperator(combined, "$function") {
 		reasons["syntax: server-side function query operator"] = true
 		reasons["semantics: server-side query function can evaluate attacker-controlled JavaScript"] = true
+	}
+	if nosqlContainsOperator(combined, "$eval") {
+		reasons["syntax: server-side JavaScript query operator"] = true
+		reasons["semantics: server-side query JavaScript can evaluate attacker-controlled predicates"] = true
 	}
 	if nosqlContainsOperator(combined, "$expr") {
 		reasons["syntax: aggregation expression query operator"] = true
@@ -1419,11 +1543,28 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 	severity := engine.SeverityHigh
 	confidence := 0.86 + confidenceBonus(reasons)
-	if nosqlContainsOperator(combined, "$where", "$function") {
+	if nosqlContainsOperator(combined, "$where", "$function", "$eval") || mapReduce || fieldMapReduce {
 		severity = engine.SeverityCritical
 		confidence += 0.02
 	}
 	return hit(candidate, "nosqli", severity, confidence, reasons), true
+}
+
+func nosqlMapReduceField(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(n, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
+	})
+	for _, part := range parts {
+		switch part {
+		case "map", "reduce", "finalize", "mapreduce":
+			return true
+		}
+	}
+	return false
 }
 
 func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
@@ -1443,7 +1584,8 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 	if strings.Contains(lowerText, "__globals__") || strings.Contains(lowerText, "__subclasses__") || strings.Contains(lowerText, "__mro__") {
 		reasons["semantics: template object graph traversal can escape sandboxed data access"] = true
 	}
-	if strings.Contains(lowerText, "java.lang.runtime") || strings.Contains(lowerText, "processbuilder") || strings.Contains(lowerText, "freemarker.template.utility.execute") {
+	if strings.Contains(lowerText, "java.lang.runtime") || strings.Contains(lowerText, "processbuilder") || strings.Contains(lowerText, "freemarker.template.utility.execute") ||
+		strings.Contains(lowerText, "classloader.loadclass") || strings.Contains(lowerText, "objectspace.each_object") {
 		reasons["semantics: template expression can reach host runtime command execution"] = true
 	}
 	if arithmeticProbe && sstiProbeContext(candidate.input.Name) {
@@ -1519,7 +1661,11 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	if sink {
 		reasons["context: command execution parameter"] = true
 	}
-	if rcePowerShellSideFx.MatchString(text) || rceEncodedPowerShell.MatchString(text) {
+	if rcePowerShellSideFx.MatchString(text) || rceEncodedPowerShell.MatchString(text) || rceNetWebClientSideFx.MatchString(text) {
+		reasons["semantics: PowerShell dynamic execution or encoded command"] = true
+	}
+	if rcePowerShellReverseShell.MatchString(text) {
+		reasons["semantics: shell reverse connection primitive"] = true
 		reasons["semantics: PowerShell dynamic execution or encoded command"] = true
 	}
 	if rceInterpreterInline.MatchString(text) {
@@ -1530,6 +1676,17 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	}
 	if rceReverseShellPrimitive.MatchString(text) {
 		reasons["semantics: shell reverse connection primitive"] = true
+	}
+	// Webshell body often lands as multipart content without a cmd= sink name.
+	if strings.Contains(lower, "<?php") && (strings.Contains(lower, "eval(") || strings.Contains(lower, "assert(") || strings.Contains(lower, "system(") || strings.Contains(lower, "passthru(") || strings.Contains(lower, "shell_exec(") || strings.Contains(lower, "phpinfo(")) {
+		reasons["syntax: PHP template execution delimiter"] = true
+		reasons["semantics: PHP runtime command or include execution"] = true
+	}
+	// Double-extension / null-byte upload names (shell.php%00.jpg, shell.php.jpg).
+	if strings.Contains(lower, ".php") && (strings.Contains(lower, "%00") || strings.Contains(lower, "\x00") || strings.Contains(lower, ".php.") || strings.HasSuffix(strings.TrimSpace(lower), ".php")) &&
+		(strings.Contains(candidate.input.Name, "filename") || strings.Contains(lower, "shell") || strings.Contains(lower, "cmd") || strings.Contains(lower, "eval")) {
+		reasons["semantics: PHP runtime command or include execution"] = true
+		reasons["syntax: null-byte path suffix bypass"] = true
 	}
 	if rceTemplateExecutionPrimitive.MatchString(text) {
 		reasons["semantics: template or language runtime command execution primitive"] = true
@@ -1659,6 +1816,20 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		reasons["syntax: traversal or wrapper path expression"] = true
 		reasons["semantics: stream wrapper local file access"] = true
 	}
+	// data:// wrappers used for inline PHP include/RFI-style LFI.
+	if strings.Contains(lower, "data://") && (strings.Contains(lower, "base64") || strings.Contains(lower, "php") || strings.Contains(lower, "text/plain")) {
+		reasons["syntax: traversal or wrapper path expression"] = true
+		reasons["semantics: stream wrapper local file access"] = true
+	}
+	if strings.Contains(lower, "docker.sock") || strings.Contains(lower, "/run/docker.sock") || strings.Contains(lower, "/var/run/docker.sock") {
+		reasons["semantics: sensitive local file target"] = true
+		reasons["syntax: traversal or wrapper path expression"] = true
+	}
+	// RFI: remote URL into file/include sinks (not plain SSRF fetch fields).
+	if lfiRemoteIncludeContext(candidate.input.Name, lower) {
+		reasons["syntax: traversal or wrapper path expression"] = true
+		reasons["semantics: remote file include target"] = true
+	}
 	// FP-first: bare filenames without traversal/wrapper/sensitive path must not block.
 	if len(reasons) == 0 {
 		return Hit{}, false
@@ -1672,12 +1843,39 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		reasons["syntax: null-byte path suffix bypass"] ||
 		reasons["semantics: sensitive local file target"] ||
 		reasons["semantics: stream wrapper local file access"] ||
+		reasons["semantics: remote file include target"] ||
 		reasons["semantics: application template reads a local file path"] ||
 		reasons["semantics: command reads a sensitive local file"]
 	if !hasPathSignal {
 		return Hit{}, false
 	}
 	return hit(candidate, "lfi", engine.SeverityHigh, 0.85+confidenceBonus(reasons), reasons), true
+}
+
+// lfiRemoteIncludeContext is true when a file/include-style parameter carries a remote URL.
+// Excludes documentation fields and pure fetch/url sinks (handled by SSRF).
+func lfiRemoteIncludeContext(name, lower string) bool {
+	if !(strings.Contains(lower, "http://") || strings.Contains(lower, "https://") || strings.Contains(lower, "ftp://")) {
+		return false
+	}
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	// Avoid turning every SSRF fetch param into LFI.
+	if strings.Contains(n, "url") || strings.Contains(n, "uri") || strings.Contains(n, "callback") || strings.Contains(n, "webhook") || strings.Contains(n, "endpoint") {
+		return false
+	}
+	parts := strings.FieldsFunc(n, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
+	})
+	for _, part := range parts {
+		switch part {
+		case "file", "filename", "path", "page", "include", "require", "template", "tpl", "doc", "document", "view", "lang", "locale":
+			return true
+		}
+	}
+	return false
 }
 
 func analyzeXXE(candidate semanticCandidate) (Hit, bool) {
