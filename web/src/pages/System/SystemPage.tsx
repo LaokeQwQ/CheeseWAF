@@ -27,8 +27,8 @@ import i18n from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
 import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, ManagementAPIConfig, ManagementAPIToken, SystemConfig } from '../../types/api';
-import { durationMilliseconds, durationSeconds, fallbackSystem, millisecondsToDuration, normalizeSystem, secondsToDuration } from './systemModel';
-import TimeSyncPanel, { timeSyncQueryKey } from './TimeSyncPanel';
+import { durationMilliseconds, durationSeconds, fallbackSystem, millisecondsToDuration, normalizeSystem, secondsToDuration, timeSyncQueryKey } from './systemModel';
+import TimeSyncPanel from './TimeSyncPanel';
 import './SystemPage.module.css';
 
 export default function SystemPage() {

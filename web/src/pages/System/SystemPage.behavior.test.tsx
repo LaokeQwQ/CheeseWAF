@@ -196,22 +196,32 @@ describe('SystemPage persistence success', () => {
   });
 
   it('shows calibrated runtime status and invokes both time synchronization operations', async () => {
-    renderSystem();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      renderSystem();
 
-    expect((await screen.findAllByText('ntp-a.example.test')).length).toBeGreaterThan(0);
-    expect(screen.getByText('+125 ms')).toBeTruthy();
-    expect(screen.getByText('18 ms')).toBeTruthy();
+      expect((await screen.findAllByText('ntp-a.example.test')).length).toBeGreaterThan(0);
+      expect(screen.getByText('+125 ms')).toBeTruthy();
+      expect(screen.getByText('18 ms')).toBeTruthy();
+      // Mock t() returns the key; production i18n interpolates consecutive/total.
+      expect(screen.getByText('system.timeSyncFailuresValue')).toBeTruthy();
+      expect(screen.getByLabelText('system.timeSyncRuntimeStatus')).toBeTruthy();
 
-    const reselect = screen.getByRole('button', { name: 'system.timeSyncReselect' });
-    const sync = screen.getByRole('button', { name: 'system.timeSyncNow' });
-    await waitFor(() => expect((sync as HTMLButtonElement).disabled).toBe(false));
+      const reselect = screen.getByRole('button', { name: 'system.timeSyncReselect' });
+      const sync = screen.getByRole('button', { name: 'system.timeSyncNow' });
+      await waitFor(() => expect((sync as HTMLButtonElement).disabled).toBe(false));
 
-    fireEvent.click(reselect);
-    await waitFor(() => expect(apiMocks.reselectTimeSync).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncReselectSuccess'));
+      fireEvent.click(reselect);
+      await waitFor(() => expect(apiMocks.reselectTimeSync).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncReselectSuccess'));
 
-    fireEvent.click(sync);
-    await waitFor(() => expect(apiMocks.syncTimeNow).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncNowSuccess'));
+      fireEvent.click(sync);
+      await waitFor(() => expect(apiMocks.syncTimeNow).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncNowSuccess'));
+
+      expect(consoleError.mock.calls.some((args) => String(args[0] ?? '').includes('`NaN` is an invalid value for the `height`'))).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

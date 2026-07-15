@@ -1,6 +1,7 @@
 import type { APISecAuthConfig, SystemConfig } from '../../types/api';
 
 export const second = 1_000_000_000;
+export const timeSyncQueryKey = ['system-time-sync'] as const;
 export type DurationUnit = 'ns' | 'us' | 'ms' | 's' | 'm' | 'h' | 'd';
 
 const fallbackAPIAuth: APISecAuthConfig = {
