@@ -21,6 +21,11 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 				NoSQL: true,
 				SSTI:  true,
 			},
+			SemanticPolicy: config.SemanticPolicyConfig{
+				BudgetExhaustedPolicy: "closed",
+				PathAllowlist:         []string{"/health", "/static/*"},
+				ParamAllowlist:        []string{"content"},
+			},
 		},
 	}
 	site := SiteFromConfig(original)
@@ -30,12 +35,24 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	if !site.Advanced.Protection.SemanticSSTI {
 		t.Fatalf("expected storage site to preserve SSTI semantic switch: %+v", site.Advanced.Protection)
 	}
+	if site.Advanced.SemanticPolicy.BudgetExhaustedPolicy != "closed" {
+		t.Fatalf("expected budget policy closed, got %+v", site.Advanced.SemanticPolicy)
+	}
+	if len(site.Advanced.SemanticPolicy.PathAllowlist) != 2 || site.Advanced.SemanticPolicy.ParamAllowlist[0] != "content" {
+		t.Fatalf("expected allowlists preserved: %+v", site.Advanced.SemanticPolicy)
+	}
 	converted := SiteToConfig(site)
 	if !converted.WAF.SemanticEngines.NoSQL {
 		t.Fatalf("expected config site to preserve NoSQL semantic switch: %+v", converted.WAF.SemanticEngines)
 	}
 	if !converted.WAF.SemanticEngines.SSTI {
 		t.Fatalf("expected config site to preserve SSTI semantic switch: %+v", converted.WAF.SemanticEngines)
+	}
+	if converted.WAF.SemanticPolicy.BudgetExhaustedPolicy != "closed" {
+		t.Fatalf("expected semantic policy round-trip: %+v", converted.WAF.SemanticPolicy)
+	}
+	if len(converted.WAF.SemanticPolicy.PathAllowlist) != 2 {
+		t.Fatalf("expected path allowlist round-trip: %+v", converted.WAF.SemanticPolicy)
 	}
 }
 

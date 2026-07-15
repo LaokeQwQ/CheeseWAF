@@ -1,6 +1,6 @@
 # CheeseWAF 项目阶段进度
 
-更新时间：2026-07-09
+更新时间：2026-07-15
 
 ## 项目定位
 
@@ -578,3 +578,11 @@ M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ans
 - `proxy.Server` 增加 pipeline 读写锁和快照读取，避免并发请求与热替换之间产生数据竞争。
 - 本轮验证通过：`go test ./internal/api/handler -count=1`、`go test ./internal/proxy -count=1`、`go test ./internal/cli -run "BuildPipeline|Service|Password|Username" -count=1`。
 - 仍未完成：策略决策 metadata 仍需要在日志详情 / AI 分析中更清晰展示；前端 `SiteProtectionConfig` 里的 `bot/ratelimit/acl/apisec` 布尔项与后端存储结构仍不一致，需要后续清理或补后端字段。
+
+## 2026-07-15 商业级运维语义与文档面收口
+
+- 检测预算失败模式已与 Web 攻击等级联动（open / observe / closed），站点可配置路径与参数放行列表。
+- 管理端站点详情可配置语义运维策略；事件详情展示预算耗尽、预算策略、语义跳过与异常分等运维信号。
+- 仓库 Markdown 策略：仅保留根目录 README.md、README_CN.md、progress.md；其它 .md 不再入库，避免敏感规划与运维笔记外泄。
+- 说明：历史提交中的 Markdown 仍可能存在于 git history，如需彻底清除应另做 history rewrite（本轮仅从当前树取消跟踪）。
+

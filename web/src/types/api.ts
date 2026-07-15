@@ -21,10 +21,19 @@ export type SiteAdvanced = {
   origin: SiteOriginConfig;
   health_check: SiteHealthCheckConfig;
   protection: SiteProtectionConfig;
+  semantic_policy: SiteSemanticPolicy;
   policy: ProtectionPolicyConfig;
   response: SiteResponseConfig;
   rewrite: SiteRewriteRule[];
   access_control: SiteAccessControl;
+};
+
+export type BudgetExhaustedPolicy = 'auto' | 'open' | 'observe' | 'closed' | '';
+
+export type SiteSemanticPolicy = {
+  budget_exhausted_policy: BudgetExhaustedPolicy | string;
+  path_allowlist: string[];
+  param_allowlist: string[];
 };
 
 export type ProtectionLevel = 'off' | 'low' | 'smart' | 'high' | 'strict' | '';

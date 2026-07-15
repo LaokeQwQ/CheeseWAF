@@ -50,15 +50,13 @@ configs/*.yaml
 !configs/cheesewaf.yaml
 configs/versions/
 
-# Private planning/task files
-task.md
-fix_task.md
-implementation_plan.md
-deepseek_work.md
-engine_upgrade.md
-claude_fix.md
-deepseek_advice.md
-security_best_practices_report.md
+# Markdown policy (all branches): only public surface docs may be tracked.
+# Allowed: README.md, README_CN.md, progress.md (repo root only).
+# Everything else (plans, audits, upgrades, agent notes, docs/**, etc.) stays local.
+*.md
+!/README.md
+!/README_CN.md
+!/progress.md
 *.private.md
 *.local.md
 

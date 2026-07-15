@@ -188,14 +188,22 @@ type Site struct {
 }
 
 type SiteAdvanced struct {
-	Certificate   CertificateConfig     `json:"certificate"`
-	Origin        OriginConfig          `json:"origin"`
-	HealthCheck   SiteHealthCheckConfig `json:"health_check"`
-	Protection    SiteProtectionConfig  `json:"protection"`
-	Policy        SiteProtectionPolicy  `json:"policy"`
-	Response      SiteResponseConfig    `json:"response"`
-	Rewrite       []SiteRewriteRule     `json:"rewrite"`
-	AccessControl SiteAccessControl     `json:"access_control"`
+	Certificate    CertificateConfig     `json:"certificate"`
+	Origin         OriginConfig          `json:"origin"`
+	HealthCheck    SiteHealthCheckConfig `json:"health_check"`
+	Protection     SiteProtectionConfig  `json:"protection"`
+	SemanticPolicy SiteSemanticPolicy    `json:"semantic_policy"`
+	Policy         SiteProtectionPolicy  `json:"policy"`
+	Response       SiteResponseConfig    `json:"response"`
+	Rewrite        []SiteRewriteRule     `json:"rewrite"`
+	AccessControl  SiteAccessControl     `json:"access_control"`
+}
+
+// SiteSemanticPolicy is commercial ops config for the staged analyzer.
+type SiteSemanticPolicy struct {
+	BudgetExhaustedPolicy string   `json:"budget_exhausted_policy"`
+	PathAllowlist         []string `json:"path_allowlist"`
+	ParamAllowlist        []string `json:"param_allowlist"`
 }
 
 type CertificateConfig struct {

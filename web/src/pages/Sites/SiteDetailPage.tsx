@@ -433,6 +433,46 @@ export default function SiteDetailPage() {
 
             <section className="site-form-section">
               <header className="site-form-section-header">
+                <strong>{t('sites.semanticPolicy')}</strong>
+                <span>{t('sites.semanticPolicyHint')}</span>
+              </header>
+              <div className="site-detail-grid">
+                <label>
+                  <span>{t('sites.budgetExhaustedPolicy')}</span>
+                  <Select
+                    value={site.advanced.semantic_policy?.budget_exhausted_policy || 'auto'}
+                    onChange={(value) => updateAdvanced('semantic_policy', { budget_exhausted_policy: String(value || 'auto') })}
+                  >
+                    <Select.Option value="auto">{t('sites.budgetPolicyAuto')}</Select.Option>
+                    <Select.Option value="open">{t('sites.budgetPolicyOpen')}</Select.Option>
+                    <Select.Option value="observe">{t('sites.budgetPolicyObserve')}</Select.Option>
+                    <Select.Option value="closed">{t('sites.budgetPolicyClosed')}</Select.Option>
+                  </Select>
+                  <em>{t('sites.budgetExhaustedPolicyHint')}</em>
+                </label>
+                <label className="wide-field">
+                  <span>{t('sites.pathAllowlist')}</span>
+                  <Input
+                    value={asCSV(site.advanced.semantic_policy?.path_allowlist || [])}
+                    placeholder="/health, /static/*, /metrics"
+                    onChange={(value) => updateAdvanced('semantic_policy', { path_allowlist: splitList(value) })}
+                  />
+                  <em>{t('sites.pathAllowlistHint')}</em>
+                </label>
+                <label className="wide-field">
+                  <span>{t('sites.paramAllowlist')}</span>
+                  <Input
+                    value={asCSV(site.advanced.semantic_policy?.param_allowlist || [])}
+                    placeholder="content, body, description"
+                    onChange={(value) => updateAdvanced('semantic_policy', { param_allowlist: splitList(value) })}
+                  />
+                  <em>{t('sites.paramAllowlistHint')}</em>
+                </label>
+              </div>
+            </section>
+
+            <section className="site-form-section">
+              <header className="site-form-section-header">
                 <strong>{t('sites.responseAndAccess')}</strong>
                 <span>{t('sites.responseAndAccessHint')}</span>
               </header>

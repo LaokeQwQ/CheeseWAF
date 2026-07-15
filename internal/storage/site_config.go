@@ -65,6 +65,11 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				SemanticNoSQL: site.WAF.SemanticEngines.NoSQL,
 				SemanticSSTI:  site.WAF.SemanticEngines.SSTI,
 			},
+			SemanticPolicy: SiteSemanticPolicy{
+				BudgetExhaustedPolicy: site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
+				PathAllowlist:         cloneStrings(site.WAF.SemanticPolicy.PathAllowlist),
+				ParamAllowlist:        cloneStrings(site.WAF.SemanticPolicy.ParamAllowlist),
+			},
 			Policy: SiteProtectionPolicy{
 				WebAttack:   site.WAF.ProtectionPolicy.WebAttack,
 				APISecurity: site.WAF.ProtectionPolicy.APISecurity,
@@ -150,6 +155,11 @@ func SiteToConfig(site Site) config.SiteConfig {
 				SSRF:  site.Advanced.Protection.SemanticSSRF,
 				NoSQL: site.Advanced.Protection.SemanticNoSQL,
 				SSTI:  site.Advanced.Protection.SemanticSSTI,
+			},
+			SemanticPolicy: config.SemanticPolicyConfig{
+				BudgetExhaustedPolicy: site.Advanced.SemanticPolicy.BudgetExhaustedPolicy,
+				PathAllowlist:         cloneStrings(site.Advanced.SemanticPolicy.PathAllowlist),
+				ParamAllowlist:        cloneStrings(site.Advanced.SemanticPolicy.ParamAllowlist),
 			},
 			ProtectionPolicy: config.ProtectionPolicyConfig{
 				WebAttack:   site.Advanced.Policy.WebAttack,

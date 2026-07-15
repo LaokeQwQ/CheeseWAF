@@ -190,6 +190,9 @@ func Validate(cfg *Config) error {
 		if err := validateProtectionPolicy("site "+site.Name+" waf.protection_policy", site.WAF.ProtectionPolicy, true); err != nil {
 			return err
 		}
+		if !IsBudgetExhaustedPolicy(site.WAF.SemanticPolicy.BudgetExhaustedPolicy) {
+			return fmt.Errorf("site %q has invalid waf.semantic_policy.budget_exhausted_policy %q", site.Name, site.WAF.SemanticPolicy.BudgetExhaustedPolicy)
+		}
 		for _, rule := range site.WAF.CustomRules {
 			if strings.TrimSpace(rule.Pattern) == "" {
 				return fmt.Errorf("site %q has custom rule %q with empty pattern", site.Name, rule.Name)
