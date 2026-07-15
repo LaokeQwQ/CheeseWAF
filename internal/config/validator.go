@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
+	}
+	if err := validateTimeSync(cfg.TimeSync); err != nil {
+		return err
 	}
 	if err := validateCluster(cfg); err != nil {
 		return err
@@ -192,6 +196,18 @@ func Validate(cfg *Config) error {
 		}
 		if !IsBudgetExhaustedPolicy(site.WAF.SemanticPolicy.BudgetExhaustedPolicy) {
 			return fmt.Errorf("site %q has invalid waf.semantic_policy.budget_exhausted_policy %q", site.Name, site.WAF.SemanticPolicy.BudgetExhaustedPolicy)
+		}
+		for _, rule := range site.WAF.SemanticPolicy.PathAllowlist {
+			rule = strings.TrimSpace(rule)
+			if rule == "" {
+				continue
+			}
+			if rule == "*" || rule == "/*" {
+				return fmt.Errorf("site %q has overly broad waf.semantic_policy.path_allowlist entry %q (would skip all semantic analysis)", site.Name, rule)
+			}
+			if !strings.HasPrefix(rule, "/") && !strings.Contains(rule, "*") {
+				return fmt.Errorf("site %q path_allowlist entry %q should start with /", site.Name, rule)
+			}
 		}
 		for _, rule := range site.WAF.CustomRules {
 			if strings.TrimSpace(rule.Pattern) == "" {
@@ -468,6 +484,133 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	return nil
+}
+
+const (
+	minTimeSyncSources           = 3
+	maxTimeSyncSources           = 64
+	minTimeSyncSelectionInterval = time.Minute
+	maxTimeSyncSelectionInterval = 7 * 24 * time.Hour
+	minTimeSyncInterval          = time.Minute
+	maxTimeSyncInterval          = 24 * time.Hour
+	minTimeSyncTimeout           = 100 * time.Millisecond
+	maxTimeSyncTimeout           = 30 * time.Second
+	minTimeSyncSamples           = 1
+	maxTimeSyncSamples           = 16
+	maxTimeSyncAcceptedOffset    = 10 * time.Minute
+	maxTimeSyncRootDispersion    = time.Minute
+	maxTimeSyncConsensus         = 10 * time.Second
+)
+
+func validateTimeSync(cfg TimeSyncConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if len(cfg.Sources) < minTimeSyncSources || len(cfg.Sources) > maxTimeSyncSources {
+		return fmt.Errorf("time_sync.sources must contain between 3 and 64 entries")
+	}
+	seen := make(map[string]int, len(cfg.Sources))
+	for idx, source := range cfg.Sources {
+		key, err := normalizeTimeSyncSource(source)
+		if err != nil {
+			return fmt.Errorf("time_sync.sources[%d] is invalid: %w", idx, err)
+		}
+		if first, exists := seen[key]; exists {
+			return fmt.Errorf("time_sync.sources[%d] duplicates source at index %d", idx, first)
+		}
+		seen[key] = idx
+	}
+	if cfg.SelectionInterval < minTimeSyncSelectionInterval || cfg.SelectionInterval > maxTimeSyncSelectionInterval {
+		return fmt.Errorf("time_sync.selection_interval must be between 1m and 168h")
+	}
+	if cfg.SyncInterval < minTimeSyncInterval || cfg.SyncInterval > maxTimeSyncInterval {
+		return fmt.Errorf("time_sync.sync_interval must be between 1m and 24h")
+	}
+	if cfg.SyncInterval > cfg.SelectionInterval {
+		return fmt.Errorf("time_sync.sync_interval must not exceed time_sync.selection_interval")
+	}
+	if cfg.Timeout < minTimeSyncTimeout || cfg.Timeout > maxTimeSyncTimeout {
+		return fmt.Errorf("time_sync.timeout must be between 100ms and 30s")
+	}
+	if cfg.SamplesPerSource < minTimeSyncSamples || cfg.SamplesPerSource > maxTimeSyncSamples {
+		return fmt.Errorf("time_sync.samples_per_source must be between 1 and 16")
+	}
+	if cfg.MaxAcceptedOffset <= 0 || cfg.MaxAcceptedOffset > maxTimeSyncAcceptedOffset {
+		return fmt.Errorf("time_sync.max_accepted_offset must be positive and at most 10m")
+	}
+	if cfg.MaxRootDispersion <= 0 || cfg.MaxRootDispersion > maxTimeSyncRootDispersion {
+		return fmt.Errorf("time_sync.max_root_dispersion must be positive and at most 1m")
+	}
+	if cfg.ConsensusTolerance <= 0 || cfg.ConsensusTolerance > maxTimeSyncConsensus {
+		return fmt.Errorf("time_sync.consensus_tolerance must be positive and at most 10s")
+	}
+	if cfg.ConsensusTolerance > cfg.MaxAcceptedOffset {
+		return fmt.Errorf("time_sync.consensus_tolerance must not exceed time_sync.max_accepted_offset")
+	}
+	return nil
+}
+
+func normalizeTimeSyncSource(raw string) (string, error) {
+	if strings.TrimSpace(raw) != raw {
+		return "", fmt.Errorf("must not contain surrounding whitespace")
+	}
+	if raw == "" {
+		return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+	}
+	if strings.Contains(raw, "://") {
+		return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+	}
+
+	host := raw
+	port := 123
+	if ip := net.ParseIP(raw); ip != nil {
+		return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
+	}
+	if strings.Contains(raw, ":") {
+		var portText string
+		var err error
+		host, portText, err = net.SplitHostPort(raw)
+		if err != nil {
+			return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+		}
+		port, err = strconv.Atoi(portText)
+		if err != nil {
+			return "", fmt.Errorf("port must be a number between 1 and 65535")
+		}
+		if port < 1 || port > 65535 {
+			return "", fmt.Errorf("port must be between 1 and 65535")
+		}
+	}
+
+	canonicalHost := ""
+	if ip := net.ParseIP(host); ip != nil {
+		canonicalHost = ip.String()
+	} else {
+		canonicalHost = strings.ToLower(strings.TrimSuffix(host, "."))
+		if !isValidTimeSyncHostname(canonicalHost) {
+			return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+		}
+	}
+	return net.JoinHostPort(canonicalHost, strconv.Itoa(port)), nil
+}
+
+func isValidTimeSyncHostname(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for idx := range label {
+			char := label[idx]
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func validateCAPTCHAAssets(cfg CAPTCHAAssetsConfig) error {

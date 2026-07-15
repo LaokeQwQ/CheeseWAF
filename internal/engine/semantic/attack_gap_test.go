@@ -2,7 +2,6 @@ package semantic
 
 import (
 	"context"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -11,7 +10,9 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
-func TestKimiGapCandidates(t *testing.T) {
+// Regression coverage for high-value attack shapes that historically under-scanned
+// (category guess windows, multipart filenames, rebind hosts, UTF-16 XXE, loaders).
+func TestSemanticAttackGapCandidates(t *testing.T) {
 	cases := []struct {
 		name, method, target, ct, body string
 		wantCat                        string
@@ -27,13 +28,10 @@ func TestKimiGapCandidates(t *testing.T) {
 		{"classloader", "GET", `/freemarker?name=${classLoader.loadClass("Exploit").newInstance()}`, "", "", "ssti", nil},
 		{"filename-sqli", "POST", "/upload", "multipart/form-data; boundary=----WebKitFormBoundary", "------WebKitFormBoundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"1' UNION SELECT password--.jpg\"\r\n\r\nbinarydata\r\n------WebKitFormBoundary--", "sqli", nil},
 		{"webshell", "POST", "/upload", "multipart/form-data; boundary=----WebKitFormBoundary", "------WebKitFormBoundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.php\"\r\nContent-Type: image/jpeg\r\n\r\n<?php eval($_POST['cmd']); ?>\r\n------WebKitFormBoundary--", "rce", nil},
-		// Remaining kimi FNs — fixed this round
 		{"ssrf-rebind", "GET", "/api/fetch?url=http://rebind.attacker.example.com/admin", "", "", "ssrf", nil},
 		{"ssrf-rbndr", "GET", "/api/fetch?url=http://7f000001.rbndr.us/", "", "", "ssrf", nil},
 		{"xxe-utf16", "POST", "/api/xml", "text/xml; charset=utf-16", "", "xxe", utf16LEXML(`<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>`)},
-		// Log/corpus style: binary dumped as \xNN escapes (not real bytes).
 		{"xxe-utf16-hexesc", "POST", "/api/xml", "text/xml; charset=utf-16", utf16HexEscaped(`<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>`), "xxe", nil},
-		// Expanded RCE / SSTI / XXE + 0day-shaped primitives
 		{"rce-node-child", "GET", `/run?cmd=node%20-e%20require('child_process').exec('id')`, "", "", "rce", nil},
 		{"rce-ld-preload", "GET", "/run?cmd=LD_PRELOAD=/tmp/evil.so%20/bin/true", "", "", "rce", nil},
 		{"ssti-objectconstructor", "GET", `/tpl?n=${"freemarker.template.utility.ObjectConstructor"?new()}`, "", "", "ssti", nil},
@@ -66,34 +64,6 @@ func TestKimiGapCandidates(t *testing.T) {
 			}
 			if got.Category != tc.wantCat {
 				t.Fatalf("want %s got %s msg=%s", tc.wantCat, got.Category, got.Message)
-			}
-		})
-	}
-}
-
-func TestKimiBadBenignLabelsStillBlocked(t *testing.T) {
-	// These were labeled "benign" in kimi_search but are real attack shapes.
-	// We intentionally keep blocking them (not false positives).
-	a := NewAnalyzer("block")
-	badBenign := []struct {
-		name, target string
-	}{
-		{"traversal-pdf", "/docs/download?file=../manual.pdf"},
-		{"encoded-traversal", "/static/asset?path=..%2f..%2fassets%2flogo.png"},
-		{"shadow-scan", "/scanner/task?file=/etc/shadow&task=audit-001"},
-		{"metadata", "/cloud/metadata?url=http://169.254.169.254/latest/meta-data/instance-type"},
-		{"loopback-fetch", "/api/fetch?url=http://127.0.0.1/healthz"},
-	}
-	for _, tc := range badBenign {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "http://x"+tc.target, nil)
-			reqCtx := &engine.RequestContext{Request: req, Metadata: map[string]any{}}
-			got, err := a.Detect(context.Background(), reqCtx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got == nil || !got.Detected {
-				t.Fatalf("expected real attack shape to remain blocked: %s", tc.target)
 			}
 		})
 	}

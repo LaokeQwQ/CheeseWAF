@@ -510,15 +510,24 @@ func normalizeParamAllowlist(params []string) map[string]struct{} {
 }
 
 // pathAllowlisted reports whether request path matches any allowlist rule.
-// Rules: exact match, or prefix when rule ends with "*".
+// Rules: exact match, directory prefix, or trailing-* prefix (prefix must be non-empty).
+// Bare "*" / empty rules never match (would disable semantic scanning site-wide).
 func pathAllowlisted(path string, rules []string) bool {
 	if path == "" || len(rules) == 0 {
 		return false
 	}
 	for _, rule := range rules {
+		rule = strings.TrimSpace(rule)
+		if rule == "" || rule == "*" {
+			continue
+		}
 		if strings.HasSuffix(rule, "*") {
 			prefix := strings.TrimSuffix(rule, "*")
-			if prefix == "" || strings.HasPrefix(path, prefix) {
+			// Reject "*", "/*", and empty prefixes — those would skip all paths.
+			if prefix == "" || prefix == "/" {
+				continue
+			}
+			if strings.HasPrefix(path, prefix) {
 				return true
 			}
 			continue
@@ -553,13 +562,24 @@ func (a *Analyzer) filterAllowlistedCandidates(candidates []semanticCandidate) [
 	return kept
 }
 
-// paramAllowlisted skips query/form/json/cookie parameter names only.
+// paramAllowlisted skips query/form/json/cookie/multipart parameter names only.
 func paramAllowlisted(source, name string, allow map[string]struct{}) bool {
 	if len(allow) == 0 || name == "" {
 		return false
 	}
-	switch strings.ToLower(source) {
-	case "query", "form", "json", "cookie", "multipart":
+	src := strings.ToLower(source)
+	// Accept both short sources and body.* sources used by extractCandidates.
+	switch src {
+	case "query", "form", "json", "cookie", "multipart",
+		"body.form", "body.json", "body.multipart":
+		// filename fields are stored as "field.filename" — allowlist the base param.
+		base := strings.ToLower(name)
+		if i := strings.Index(base, ".filename"); i > 0 {
+			base = base[:i]
+		}
+		if _, ok := allow[base]; ok {
+			return true
+		}
 		_, ok := allow[strings.ToLower(name)]
 		return ok
 	default:

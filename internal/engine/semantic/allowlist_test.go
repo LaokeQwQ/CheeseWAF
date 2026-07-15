@@ -79,4 +79,8 @@ func TestPathAllowlistedRules(t *testing.T) {
 	if pathAllowlisted("/api/users", rules) {
 		t.Fatal("should not match unrelated path")
 	}
+	// Production guard: never treat bare wildcards as full-site skip.
+	if pathAllowlisted("/anything", []string{"*", "/*", ""}) {
+		t.Fatal("bare wildcard must not allowlist all paths")
+	}
 }
