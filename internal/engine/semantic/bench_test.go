@@ -71,6 +71,36 @@ func BenchmarkSemanticAnalyzer(b *testing.B) {
 	}
 }
 
+func BenchmarkSemanticAnalyzerCleanGET(b *testing.B) {
+	processCandidateCache.resetForTest()
+	analyzer := NewAnalyzer("block")
+	req := httptest.NewRequest("GET", "/api/users?sort=name&dir=asc&page=2", nil)
+	reqCtx, _ := engine.NewRequestContext(req, "default")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		reqCtx.Metadata = map[string]any{}
+		if _, err := analyzer.Detect(context.Background(), reqCtx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSemanticAnalyzerHealthProbe(b *testing.B) {
+	processCandidateCache.resetForTest()
+	analyzer := NewAnalyzer("block")
+	req := httptest.NewRequest("GET", "/health", nil)
+	reqCtx, _ := engine.NewRequestContext(req, "default")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		reqCtx.Metadata = map[string]any{}
+		if _, err := analyzer.Detect(context.Background(), reqCtx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkSemanticAnalyzerMultiFieldParallel(b *testing.B) {
 	analyzer := NewAnalyzer("block")
 	// Enough independent fields to engage the candidate worker pool.

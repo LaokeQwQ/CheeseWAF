@@ -8,18 +8,20 @@ import (
 
 const (
 	// defaultCacheShards must be a power of two for mask indexing.
-	defaultCacheShards = 32
-	defaultCacheSize   = 8192
-	defaultCacheTTL    = 2 * time.Minute
+	defaultCacheShards = 64
+	defaultCacheSize   = 16384
+	defaultCacheTTL    = 3 * time.Minute
 )
 
-// candidateCache is a pure-Go sharded TTL + approximate-LRU cache for per-field
-// analysis results. It is FP-safe when keyed by analyzer mode, enabled
-// categories fingerprint, and the exact candidate text: the same inputs always
-// yield the same hits under the same policy.
+// candidateCache is a pure-Go sharded TTL cache for per-field analysis results.
+// It is FP-safe when keyed by analyzer mode, enabled categories fingerprint,
+// and the exact candidate text: the same inputs always yield the same hits
+// under the same policy.
 //
-// Sharding reduces mutex contention on multi-core proxy workloads while keeping
-// the implementation 100% stdlib Go (no CGO, no third-party cache deps).
+// Eviction is approximate (delete a batch of map keys when full) rather than
+// true LRU: under proxy load the O(n) order-list scans cost more than the
+// rare extra cold recompute. Sharding still cuts multi-core mutex contention.
+// 100% stdlib Go (no CGO, no third-party cache deps).
 type candidateCache struct {
 	shards  []cacheShard
 	mask    uint64
@@ -32,7 +34,6 @@ type candidateCache struct {
 type cacheShard struct {
 	mu    sync.Mutex
 	items map[uint64]cacheEntry
-	order []uint64
 }
 
 type cacheEntry struct {
@@ -148,20 +149,9 @@ func (c *candidateCache) get(key uint64) ([]Hit, bool) {
 	}
 	if now > entry.expires {
 		delete(s.items, key)
-		// Lazy drop from order ring (rebuilt on eviction if needed).
 		s.mu.Unlock()
 		c.misses.Add(1)
 		return nil, false
-	}
-	// Approximate LRU: only touch every ~8th hit to cut O(n) order scans.
-	if (c.hits.Load()+1)&7 == 0 {
-		for i, k := range s.order {
-			if k == key {
-				s.order = append(s.order[:i], s.order[i+1:]...)
-				break
-			}
-		}
-		s.order = append(s.order, key)
 	}
 	// Safe without clone: callers only range Hits and copy Hit values by value.
 	// put() always stores a private clone, so cache never shares caller slices.
@@ -179,38 +169,24 @@ func (c *candidateCache) put(key uint64, hits []Hit) {
 	stored := cloneHits(hits)
 	s := c.shard(key)
 	s.mu.Lock()
-	if _, exists := s.items[key]; exists {
-		for i, k := range s.order {
-			if k == key {
-				s.order = append(s.order[:i], s.order[i+1:]...)
-				break
+	if len(s.items) >= c.maxSize {
+		if _, exists := s.items[key]; !exists {
+			// Approximate eviction: drop ~12.5% of entries (map iteration order).
+			evict := len(s.items) / 8
+			if evict < 1 {
+				evict = 1
+			}
+			n := 0
+			for k := range s.items {
+				delete(s.items, k)
+				n++
+				if n >= evict {
+					break
+				}
 			}
 		}
-	} else if len(s.items) >= c.maxSize {
-		// Evict oldest ~12.5% or at least one entry.
-		evict := len(s.order) / 8
-		if evict < 1 {
-			evict = 1
-		}
-		if evict > len(s.order) {
-			evict = len(s.order)
-		}
-		// Compact order: drop keys already deleted by TTL.
-		kept := s.order[:0]
-		for i := 0; i < len(s.order); i++ {
-			old := s.order[i]
-			if i < evict {
-				delete(s.items, old)
-				continue
-			}
-			if _, ok := s.items[old]; ok {
-				kept = append(kept, old)
-			}
-		}
-		s.order = kept
 	}
 	s.items[key] = cacheEntry{hits: stored, expires: expires}
-	s.order = append(s.order, key)
 	s.mu.Unlock()
 }
 
@@ -229,11 +205,15 @@ func (c *candidateCache) resetForTest() {
 		s := &c.shards[i]
 		s.mu.Lock()
 		s.items = make(map[uint64]cacheEntry, c.maxSize)
-		s.order = nil
 		s.mu.Unlock()
 	}
 	c.hits.Store(0)
 	c.misses.Store(0)
+}
+
+// ResetProcessCacheForTest clears the shared candidate cache (tests only).
+func ResetProcessCacheForTest() {
+	processCandidateCache.resetForTest()
 }
 
 func cloneHits(in []Hit) []Hit {

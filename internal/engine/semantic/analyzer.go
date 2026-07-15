@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -190,13 +191,18 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 	if workers < 1 {
 		workers = 1
 	}
-	jobs := make(chan int, len(candidates))
+	// Atomic work-stealing index avoids per-request channel alloc/scheduling.
+	var next atomic.Int64
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := range jobs {
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(candidates) {
+					return
+				}
 				if ctx.Err() != nil {
 					outs[i] = fieldOut{input: candidates[i].input}
 					continue
@@ -206,10 +212,6 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 			}
 		}()
 	}
-	for i := range candidates {
-		jobs <- i
-	}
-	close(jobs)
 	wg.Wait()
 
 	var best *Hit
@@ -264,20 +266,18 @@ func anomalyContribution(h Hit) (string, int) {
 }
 
 func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
-	// Fast empty-guess short circuit before cache: pure clean traffic often has no categories.
-	// Still cache empty results so repeated identical fields stay cheap.
+	// Ultra-cheap prefilter before any hash/lock: ordinary ids/slugs/versions.
+	// Not cached — hashing + shard lock costs more than the byte scan itself.
+	if looksCleanASCIIField(candidate.text) {
+		return nil
+	}
+
 	key := candidateCacheKey(a.mode, a.catFP, candidate.text)
 	if cached, ok := processCandidateCache.get(key); ok {
 		ProcessMetrics().RecordCache(true)
 		return cached
 	}
 	ProcessMetrics().RecordCache(false)
-
-	// Cheap prefilter: very short plain tokens rarely need full detector suite.
-	if looksCleanASCIIField(candidate.text) {
-		processCandidateCache.put(key, nil)
-		return nil
-	}
 
 	guesses := guessCategories(candidate.text)
 	if len(guesses) == 0 {
@@ -308,6 +308,10 @@ func looksCleanASCIIField(raw string) bool {
 	if strings.Contains(raw, " ") || strings.Contains(raw, "\t") {
 		return false
 	}
+	// Sensitive basenames look "clean" but must reach LFI detectors (wp-config.php, .env).
+	if looksSensitiveFilename(raw) {
+		return false
+	}
 	for i := 0; i < len(raw); i++ {
 		c := raw[i]
 		switch {
@@ -326,6 +330,25 @@ func looksCleanASCIIField(raw string) bool {
 		}
 	}
 	return true
+}
+
+func looksSensitiveFilename(raw string) bool {
+	lower := strings.ToLower(raw)
+	if strings.Contains(lower, "wp-config") || strings.Contains(lower, "id_rsa") ||
+		strings.Contains(lower, "passwd") || strings.Contains(lower, "shadow") ||
+		strings.Contains(lower, "credentials") || strings.Contains(lower, ".aws") ||
+		strings.Contains(lower, ".git") || strings.Contains(lower, ".ssh") ||
+		strings.Contains(lower, ".env") || strings.Contains(lower, "htaccess") ||
+		strings.Contains(lower, "web.xml") || strings.Contains(lower, "dump.sql") ||
+		strings.Contains(lower, "database.sql") {
+		return true
+	}
+	for _, suf := range []string{".php", ".asp", ".aspx", ".jsp", ".cgi", ".ini", ".conf", ".cfg", ".yml", ".yaml", ".sql", ".pem", ".key", ".env"} {
+		if strings.HasSuffix(lower, suf) {
+			return true
+		}
+	}
+	return false
 }
 
 
@@ -430,20 +453,35 @@ func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 	if reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
-	var inputs []InputPoint
 	r := reqCtx.Request
-	inputs = append(inputs, InputPoint{Source: "uri", Name: "path_query", Raw: clipRaw(r.URL.RequestURI()), Layers: []string{"raw"}})
-	queryValues := r.URL.Query()
-	// Go's url.ParseQuery rejects/empties some attack payloads containing ';' in the
-	// query string. Fall back to lenient parsing so execution sinks still see cmd=.
-	if len(queryValues) == 0 && r.URL.RawQuery != "" {
-		queryValues = lenientQueryValues(r.URL.RawQuery)
+	// Fast-path health/static probes: no query, no body, benign path → zero work.
+	if isBenignProbePath(r.URL.Path) && r.URL.RawQuery == "" &&
+		(r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		len(reqCtx.DecodedBody) == 0 {
+		return nil
 	}
+
+	inputs := make([]InputPoint, 0, 16)
+	// Path only for ordinary traffic — avoid re-scanning the full RequestURI
+	// (which previously doubled work with per-param query extraction).
+	pathRaw := r.URL.EscapedPath()
+	if pathRaw == "" {
+		pathRaw = r.URL.Path
+	}
+	if pathRaw != "" && pathRaw != "/" {
+		inputs = append(inputs, InputPoint{Source: "uri", Name: "path", Raw: clipRaw(pathRaw), Layers: []string{"raw"}})
+	}
+	queryValues := mergeQueryValues(r.URL.RawQuery, r.URL.Query())
 	for key, values := range queryValues {
 		inputs = append(inputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(key), Layers: []string{"raw"}})
 		for _, value := range values {
 			inputs = append(inputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(value), Layers: []string{"raw"}})
 		}
+	}
+	// Suspicious raw query (shell glue) — keep a single fused candidate so
+	// payloads that standard ParseQuery splits still get analyzed.
+	if raw := r.URL.RawQuery; raw != "" && suspiciousRawQuery(raw) {
+		inputs = append(inputs, InputPoint{Source: "uri", Name: "raw_query", Raw: clipRaw(raw), Layers: []string{"raw"}})
 	}
 	for key, values := range r.Header {
 		if skipHeader(key) {
@@ -458,8 +496,8 @@ func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 	}
 	inputs = append(inputs, bodyInputs(r, reqCtx.DecodedBody)...)
 
-	var candidates []semanticCandidate
-	seen := map[string]struct{}{}
+	candidates := make([]semanticCandidate, 0, len(inputs)+4)
+	seen := make(map[string]struct{}, len(inputs)*2)
 	for _, input := range inputs {
 		if len(candidates) >= maxCandidates {
 			break
@@ -485,11 +523,67 @@ func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 	return candidates
 }
 
+// isBenignProbePath matches common health/static endpoints that should never
+// pay for full semantic extraction when they have no query/body.
+func isBenignProbePath(path string) bool {
+	switch path {
+	case "/health", "/healthz", "/ready", "/readyz", "/live", "/livez",
+		"/metrics", "/favicon.ico", "/robots.txt", "/":
+		return true
+	default:
+		return false
+	}
+}
+
 func clipRaw(raw string) string {
 	if len(raw) <= maxInputRawBytes {
 		return raw
 	}
 	return raw[:maxInputRawBytes]
+}
+
+// mergeQueryValues combines standard and lenient query parsing so attack
+// payloads with ';' / '&&' are not truncated while normal traffic stays cheap.
+func mergeQueryValues(rawQuery string, parsed url.Values) url.Values {
+	if rawQuery == "" {
+		return parsed
+	}
+	needsLenient := len(parsed) == 0 ||
+		strings.Contains(rawQuery, ";") ||
+		strings.Contains(rawQuery, "&&") ||
+		strings.Contains(rawQuery, "||") ||
+		strings.Contains(rawQuery, "`") ||
+		strings.Contains(rawQuery, "|")
+	if !needsLenient {
+		return parsed
+	}
+	lenient := lenientQueryValues(rawQuery)
+	if len(parsed) == 0 {
+		return lenient
+	}
+	// Prefer the longer value for each key (lenient usually preserves the payload).
+	for k, vs := range lenient {
+		if cur, ok := parsed[k]; !ok || valuesTotalLen(vs) > valuesTotalLen(cur) {
+			parsed[k] = vs
+		}
+	}
+	return parsed
+}
+
+func valuesTotalLen(vs []string) int {
+	n := 0
+	for _, v := range vs {
+		n += len(v)
+	}
+	return n
+}
+
+func suspiciousRawQuery(raw string) bool {
+	return strings.Contains(raw, ";") || strings.Contains(raw, "&&") ||
+		strings.Contains(raw, "||") || strings.Contains(raw, "`") ||
+		strings.Contains(raw, "%3B") || strings.Contains(raw, "%26%26") ||
+		strings.Contains(raw, "%7C") || strings.Contains(raw, "$(") ||
+		strings.Contains(raw, "%24(")
 }
 
 // lenientQueryValues parses query strings that net/url.ParseQuery refuses
@@ -784,9 +878,30 @@ func guessCategories(raw string) []string {
 	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"}
 	scores := map[string]int{}
 	if hints&hintSQL != 0 {
-		sqlCompact := compactSQL(text)
-		if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "or'") || strings.Contains(text, "or\"") || strings.Contains(text, "sleep(") || strings.Contains(text, "benchmark(") || strings.Contains(text, "pg_sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(text, "procedure analyse") || strings.Contains(text, "dbms_lock.sleep") || strings.Contains(text, "sp_oacreate") || strings.Contains(text, "openrowset") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) || sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) || sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) || sqlMetadataObject.MatchString(text) || sqlSubquery.MatchString(text) || sqlCaseWhen.MatchString(text) || sqlFileData.MatchString(text) || sqlTimeFunction.MatchString(text) || sqlDangerousFunc.MatchString(text) {
+		// Cheap substring gates before expensive compactSQL / multi-regex suite.
+		cheapSQL := strings.Contains(text, "select") || strings.Contains(text, "union") ||
+			strings.Contains(text, " or ") || strings.Contains(text, "or'") || strings.Contains(text, "or\"") ||
+			strings.Contains(text, "sleep(") || strings.Contains(text, "benchmark(") ||
+			strings.Contains(text, "pg_sleep(") || strings.Contains(text, "waitfor") ||
+			strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") ||
+			strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") ||
+			strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") ||
+			strings.Contains(text, "procedure analyse") || strings.Contains(text, "dbms_lock.sleep") ||
+			strings.Contains(text, "sp_oacreate") || strings.Contains(text, "openrowset") ||
+			strings.Contains(text, "0x") || strings.Contains(text, "/*") || strings.Contains(text, "--")
+		if cheapSQL {
 			scores["sqli"] += 2
+		} else {
+			sqlCompact := compactSQL(text)
+			if strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") ||
+				sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) ||
+				sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) ||
+				sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) ||
+				sqlMetadataObject.MatchString(text) || sqlSubquery.MatchString(text) ||
+				sqlCaseWhen.MatchString(text) || sqlFileData.MatchString(text) ||
+				sqlTimeFunction.MatchString(text) || sqlDangerousFunc.MatchString(text) {
+				scores["sqli"] += 2
+			}
 		}
 	}
 	if hints&hintXSS != 0 {
@@ -1379,7 +1494,7 @@ func rceHardSignal(reasons map[string]bool) bool {
 
 func rceExecutionSink(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
-	if normalized == "" || normalized == "path_query" || normalized == "body" {
+	if normalized == "" || normalized == "path_query" || normalized == "path" || normalized == "raw_query" || normalized == "body" {
 		return false
 	}
 	parts := strings.FieldsFunc(normalized, func(r rune) bool {
@@ -1584,7 +1699,7 @@ func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
 
 func ssrfFetchSink(candidate semanticCandidate) bool {
 	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
-	if name == "" || name == "path_query" || name == "body" || name == "text" || name == "content" || name == "message" || name == "description" {
+	if name == "" || name == "path_query" || name == "path" || name == "raw_query" || name == "body" || name == "text" || name == "content" || name == "message" || name == "description" {
 		return false
 	}
 	if candidate.input.Source == "header" {

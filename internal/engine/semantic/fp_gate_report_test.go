@@ -16,6 +16,7 @@ import (
 
 func TestFPGateReport(t *testing.T) {
 	semantic.ProcessMetrics().ResetForTest()
+	semantic.ResetProcessCacheForTest()
 	var benignTotal, benignFP, attackTotal, attackMiss, attackHit int
 	a := semantic.NewAnalyzer("block")
 	files := []string{

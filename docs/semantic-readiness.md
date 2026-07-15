@@ -17,7 +17,8 @@ Implementation notes:
 
 - Analyzer block mode uses `blockableHit`: multi-signal evidence (syntax + semantics) or high-precision compositions (UNION / tautology / time-delay side effects, etc.).
 - Default pipeline mounts **one** staged Analyzer per site (no double-run of standalone SQL/XSS/RCE detectors alongside Analyzer).
-- **Multi-threaded pipeline**: pre-filters stay sequential; the semantic detector group runs concurrently with forked `RequestContext` (shared request, isolated metadata) and deterministic merge by priority. Inside Analyzer, multi-field requests use a bounded worker pool over independent candidates; the pure-Go sharded candidate cache is shared and race-safe.
+- **Multi-threaded pipeline**: pre-filters stay sequential; the semantic detector group runs concurrently with forked `RequestContext` (shared request, isolated metadata) and deterministic merge by priority. Inside Analyzer, multi-field requests use a bounded worker pool (atomic work index) over independent candidates; the pure-Go sharded TTL candidate cache (64 shards, approximate batch eviction) is shared and race-safe.
+- **Hot-path extraction**: ordinary requests scan path + query params separately (no full `RequestURI` double-scan). Malformed/suspicious raw queries (`;`, `&&`, backticks, …) still get a fused `raw_query` candidate and lenient query merge so shell-glue payloads are not truncated. Benign probe paths (`/health`, `/readyz`, `/metrics`, …) with no query/body skip extraction entirely.
 - Per-event fields already present (Codex): `detector_id`, `confidence`, request `latency`, policy `result_confidence` / `minimum_confidence`.
 - Process metrics (added): `cheesewaf_semantic_*` Prometheus counters for analyzed/hit/block/budget/avg latency, cache hits/misses, and per-category hits.
 - Observability-only `semantic_anomaly_score` accumulates weak/strong signals; it never blocks by itself.

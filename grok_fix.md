@@ -394,3 +394,33 @@ go test ./internal/engine/semantic/ -bench=BenchmarkSemanticAnalyzer -benchmem -
 ### 5.3 Forgejo
 
 本机无 `FORGEJO_TOKEN`；direct push 仍 403（pull mirror）。GitHub `origin` 正常 push。
+
+---
+
+## 6. 语义引擎热路径再打磨（2026-07-15 续）
+
+### 6.1 改动要点
+
+| 项 | 内容 |
+|----|------|
+| 提取 | 去掉常态 `path_query` 双扫；可疑 raw query（`;`/`&&`/…）才附加 `raw_query` |
+| Query | `mergeQueryValues`：标准 + lenient 合并，避免 `;`/`&&` 截断 |
+| Clean 短路 | 标识符先扫再 hash；敏感文件名（`wp-config.php` 等）不短路 |
+| 探测路径 | `/health` `/readyz` `/metrics` 等无 query/body 时零候选 |
+| Cache | 64 shard / 16K / 3min；去掉 O(n) order 链表，改近似批量驱逐 |
+| 并行 | 字段 worker 用 atomic 索引，去掉 per-request channel |
+| normalize | 已是小写 ASCII 时零分配 |
+| SQL guess | 先 cheap substring，再 compactSQL/regex |
+
+### 6.2 基准对比（本机，约）
+
+| Bench | 优化前 | 优化后 |
+|-------|--------|--------|
+| 攻击 SQLi 暖路径 | ~33µs · 84 alloc · 6.7KB | **~13µs · 38 alloc · 2.9KB** |
+| Health 探测 | — | **~0.35–0.66µs · 3 alloc** |
+| Readiness 暖路径 | ~18–24µs | **~13–17µs · 46 alloc** |
+
+### 6.3 正确性
+
+- 全量 `go test ./internal/engine/semantic` PASS
+- FP gate 0 误报；`;`/`&&` 类 RCE/shellshock 样本与 `wp-config.php` LFI 不漏

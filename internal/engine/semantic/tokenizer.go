@@ -13,6 +13,9 @@ import (
 // Pure printable ASCII without escapes uses a cheap lowercase path.
 func normalize(raw string) string {
 	if isSimpleASCII(raw) {
+		if isAlreadyLowerASCII(raw) {
+			return raw // zero-alloc hot path for already-lower payloads
+		}
 		return strings.ToLower(raw)
 	}
 	// NFKC normalizes Unicode confusables: fullwidth → ASCII, superscript → plain, etc.
@@ -33,6 +36,16 @@ func isSimpleASCII(raw string) bool {
 			return false
 		}
 		if c == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlreadyLowerASCII(raw string) bool {
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c >= 'A' && c <= 'Z' {
 			return false
 		}
 	}
