@@ -71,22 +71,63 @@ func ssrfDangerousTarget(payload string) (string, string, bool) {
 		if err != nil || parsed.Hostname() == "" {
 			continue
 		}
-		if isInternalHost(parsed.Hostname()) {
+		host := parsed.Hostname()
+		if isInternalHost(host) {
 			return rawURL, "SSRF target points to local or private network", true
+		}
+		// DNS rebinding helpers / explicit rebind labels on a fetch sink.
+		// FP-first: only hostname-shape evidence, never block arbitrary public domains.
+		if isDNSRebindHost(host) {
+			return rawURL, "SSRF target uses DNS-rebind helper host or rebind label", true
 		}
 	}
 	for _, host := range ssrfHostCandidates(payload) {
 		if isInternalHost(host) {
 			return host, "SSRF target host points to local or private network", true
 		}
+		if isDNSRebindHost(host) {
+			return host, "SSRF target host uses DNS-rebind helper or rebind label", true
+		}
 	}
 	return "", "", false
 }
 
+// isDNSRebindHost matches known rebind services and explicit "rebind" DNS labels.
+// Does NOT match ordinary public sites; requires multi-label host with rebind marker.
+func isDNSRebindHost(host string) bool {
+	host = strings.TrimSuffix(strings.Trim(strings.ToLower(host), "[]"), ".")
+	if host == "" || !strings.Contains(host, ".") {
+		return false
+	}
+	for _, suf := range []string{
+		".rbndr.us", ".1u.ms", ".rebind.network", ".localtest.me",
+		".vcap.me", ".lacolhost.com", ".localho.st",
+	} {
+		if strings.HasSuffix(host, suf) {
+			return true
+		}
+	}
+	// Labels used by rebind tooling (rebind.attacker.example.com, dnsrebind.x.y).
+	for _, label := range strings.Split(host, ".") {
+		switch label {
+		case "rebind", "dnsrebind", "rbndr", "dns-rebind":
+			return true
+		}
+	}
+	return false
+}
+
 func looksLikeSSRFTarget(payload string) bool {
 	for _, host := range ssrfHostCandidates(payload) {
-		if isInternalHost(host) {
+		if isInternalHost(host) || isDNSRebindHost(host) {
 			return true
+		}
+	}
+	for _, rawURL := range ssrfURLCandidates(payload) {
+		if parsed, err := url.Parse(rawURL); err == nil {
+			if h := parsed.Hostname(); isInternalHost(h) || isDNSRebindHost(h) {
+				return true
+			}
 		}
 	}
 	return false

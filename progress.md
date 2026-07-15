@@ -594,3 +594,12 @@ M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ans
 - 刻意不补：纯 DNS rebind 无内网地址 SSRF、损坏的 UTF-16 转义样本（语料非真实字节）。
 - 回归：go test ./internal/engine/semantic；精选 kimi 子集 attack 检出约 94/96。
 
+
+## 2026-07-15 语义引擎：kimi 漏报补全 + RCE/SSTI/XXE 扩展 + IO 基准
+
+- 原 94/96 攻击漏报：DNS rebind（已补 rebind 标签与 rbndr/localtest 等助手域，仅 fetch sink）；真 UTF-16 XXE（BOM + charset=utf-16 + \xNN 转义）已补。
+- 剩余 kimi-0438 样本体为**损坏的混排转义**（非整洁 UTF-16），不是引擎能力缺口；自建真 UTF-16 回归已通过。
+- 原 13 个 “benign 被拦”：shadow/元数据/路径穿越等为 **kimi 错误标签**，保持拦截并加回归，不当作误报去放宽。
+- 扩展：node child_process、LD_PRELOAD、FreeMarker ObjectConstructor、XInclude、参数实体 OOB XXE；0day 向动态加载/反射原语（无 CVE 号）。
+- IO 向基准（本机）：FullPipeline ~520µs/op；PipelineWithRules ~226µs；PipelineConcurrent ~143µs；Analyzer ~28µs；HealthProbe ~1.2µs。
+

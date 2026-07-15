@@ -398,7 +398,8 @@ func categoryPriority(hit Hit) int {
 	context := strings.ToLower(hit.Syntax + " " + hit.Semantics)
 	switch hit.Category {
 	case "xxe":
-		if strings.Contains(payload, "<!doctype") || strings.Contains(payload, "<!entity") {
+		if strings.Contains(payload, "<!doctype") || strings.Contains(payload, "<!entity") ||
+			strings.Contains(payload, "xinclude") || strings.Contains(payload, "xi:include") {
 			return 95
 		}
 		return 70
@@ -741,6 +742,15 @@ func bodyInputs(r *http.Request, body []byte) []InputPoint {
 	if len(body) == 0 {
 		return nil
 	}
+	// charset=utf-16 bodies are often delivered as raw LE/BE bytes; convert before analysis.
+	if ct := strings.ToLower(r.Header.Get("Content-Type")); strings.Contains(ct, "utf-16") {
+		if decoded, ok := decodeUTF16Payload(string(body)); ok {
+			body = []byte(decoded)
+		}
+	} else if decoded, ok := decodeUTF16Payload(string(body)); ok {
+		// BOM-present bodies even without charset declaration (XXE evasion).
+		body = []byte(decoded)
+	}
 	var inputs []InputPoint
 	contentType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	switch contentType {
@@ -910,7 +920,16 @@ func decodeVariants(raw string) []decodedVariant {
 // decodeUTF16Payload converts UTF-16 LE/BE text (with or without BOM) to UTF-8.
 // Used for XXE evasion that wraps entity markup in UTF-16.
 func decodeUTF16Payload(raw string) (string, bool) {
-	b := []byte(raw)
+	// Some corpora / logs store binary as Go/C hex escapes: \xff\xfe<\x00?...
+	if unescaped, ok := unescapeHexByteString(raw); ok {
+		if out, ok2 := decodeUTF16FromBytes([]byte(unescaped)); ok2 {
+			return out, true
+		}
+	}
+	return decodeUTF16FromBytes([]byte(raw))
+}
+
+func decodeUTF16FromBytes(b []byte) (string, bool) {
 	if len(b) < 4 {
 		return "", false
 	}
@@ -979,6 +998,51 @@ func decodeUTF16Payload(raw string) (string, bool) {
 	return out, true
 }
 
+// unescapeHexByteString expands \xNN sequences when the payload looks like a
+// hex-escaped binary dump (common in corpus exports and some logging layers).
+func unescapeHexByteString(raw string) (string, bool) {
+	if !strings.Contains(raw, `\x`) && !strings.Contains(raw, `\X`) {
+		return "", false
+	}
+	// Require enough escapes to resemble UTF-16 (many \x00).
+	if strings.Count(strings.ToLower(raw), `\x00`) < 3 && !strings.Contains(strings.ToLower(raw), `\xff\xfe`) && !strings.Contains(strings.ToLower(raw), `\xfe\xff`) {
+		return "", false
+	}
+	var b strings.Builder
+	b.Grow(len(raw) / 2)
+	for i := 0; i < len(raw); {
+		if i+3 < len(raw) && raw[i] == '\\' && (raw[i+1] == 'x' || raw[i+1] == 'X') {
+			h1, ok1 := fromHex(raw[i+2])
+			h2, ok2 := fromHex(raw[i+3])
+			if ok1 && ok2 {
+				b.WriteByte(h1<<4 | h2)
+				i += 4
+				continue
+			}
+		}
+		b.WriteByte(raw[i])
+		i++
+	}
+	out := b.String()
+	if out == raw {
+		return "", false
+	}
+	return out, true
+}
+
+func fromHex(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
 // needsDeepDecode is a pure byte scan: only expand decode layers when markers
 // suggest URL/HTML/Base64/Unicode/comment obfuscation may be present.
 func needsDeepDecode(raw string) bool {
@@ -987,6 +1051,10 @@ func needsDeepDecode(raw string) bool {
 	}
 	// Long alphanumeric-only blobs may be base64 shells.
 	if len(raw) >= 24 && isMostlyBase64Alphabet(raw) {
+		return true
+	}
+	// Hex-escaped UTF-16 dumps need expansion.
+	if strings.Contains(raw, `\x`) || strings.Contains(raw, `\X`) {
 		return true
 	}
 	for i := 0; i < len(raw); i++ {
@@ -1115,7 +1183,7 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintRCE != 0 {
-		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "downloadfile") || strings.Contains(text, "webclient") || strings.Contains(text, "tcpclient") || strings.Contains(text, "new-object") || strings.Contains(text, "<?php") || strings.Contains(text, "eval(") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) || rceNetWebClientSideFx.MatchString(text) || rcePowerShellSideFx.MatchString(text) {
+		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "downloadfile") || strings.Contains(text, "webclient") || strings.Contains(text, "tcpclient") || strings.Contains(text, "new-object") || strings.Contains(text, "<?php") || strings.Contains(text, "eval(") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || strings.Contains(text, "ld_preload") || strings.Contains(text, "child_process") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) || rceNetWebClientSideFx.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceLoaderPrimitive.MatchString(text) {
 			scores["rce"] += 2
 		}
 	}
@@ -1127,7 +1195,7 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintXXE != 0 {
-		if strings.Contains(text, "<!doctype") || strings.Contains(text, "<!entity") {
+		if strings.Contains(text, "<!doctype") || strings.Contains(text, "<!entity") || strings.Contains(text, "xinclude") || strings.Contains(text, "xi:include") {
 			scores["xxe"] += 2
 		}
 	}
@@ -1222,7 +1290,9 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "$ifs") || strings.Contains(lower, "/dev/tcp") ||
 		strings.Contains(lower, "/dev/udp") || strings.Contains(lower, "</dev/") ||
 		strings.Contains(lower, "ncat") || strings.Contains(lower, "netcat") ||
-		strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}") {
+		strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}") ||
+		strings.Contains(lower, "ld_preload") || strings.Contains(lower, "child_process") ||
+		strings.Contains(lower, "defineclass") || strings.Contains(lower, "assembly.load") {
 		hints |= hintRCE
 	}
 	// LFI
@@ -1239,7 +1309,8 @@ func scanAttackHints(raw string) int {
 	}
 	// XXE
 	if strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<!entity") ||
-		strings.Contains(lower, "system \"") || strings.Contains(lower, "system '") {
+		strings.Contains(lower, "system \"") || strings.Contains(lower, "system '") ||
+		strings.Contains(lower, "xinclude") || strings.Contains(lower, "xi:include") {
 		hints |= hintXXE
 	}
 	// SSRF
@@ -1248,7 +1319,9 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "metadata") || strings.Contains(lower, "127.0.0.1") ||
 		strings.Contains(lower, "localhost") || strings.Contains(lower, "[::1]") ||
 		strings.Contains(lower, "gopher://") || strings.Contains(lower, "dict://") ||
-		strings.Contains(lower, "nip.io") || strings.Contains(lower, "sslip.io") {
+		strings.Contains(lower, "nip.io") || strings.Contains(lower, "sslip.io") ||
+		strings.Contains(lower, "rebind") || strings.Contains(lower, "rbndr") ||
+		strings.Contains(lower, "localtest.me") {
 		hints |= hintSSRF
 	}
 	// NoSQL — any $-operator token (including $elemMatch / $nin / …).
@@ -1331,7 +1404,7 @@ var (
 	nosqlOperatorNames            = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$eval", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
 	sstiTemplateExpression        = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|%\{.*?\}|<%=?\s*.*?%>)`)
 	sstiArithmeticProbe           = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
-	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|#(?:context|_memberaccess|request|session)|@[a-z0-9_.]+@|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.execute|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime|objectspace\.each_object|classloader\.loadclass|loadclass\s*\()`)
+	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|#(?:context|_memberaccess|request|session)|@[a-z0-9_.]+@|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.(?:execute|objectconstructor)|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime|objectspace\.each_object|classloader\.loadclass|loadclass\s*\(|request\.getclass|application\.getclass|session\.getclass|#set\s*\(\s*\$|\{php\}|smarty\.version|mako\.runtime|velocity\.context|pebble\.extension)`)
 	rceNetWebClientSideFx         = regexp.MustCompile(`(?i)(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|system\.net\.webclient|download(?:file|string)\s*\(|iwr\s+|invoke-webrequest\b)`)
 	rcePowerShellReverseShell     = regexp.MustCompile(`(?i)(?:tcpclient\s*\(|getstream\s*\(|net\.sockets\.tcpclient|while\s*\(\s*\$i\s*=\s*\$s\.read)`)
 	sqlBlockComment               = regexp.MustCompile(`(?is)/\*.*?\*/`)
@@ -1340,10 +1413,12 @@ var (
 	rceWhitespaceEvasion          = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
 	rcePowerShellSideFx           = regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|downloadfile|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b)|(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|(?:download(?:file|string)|invoke-expression|iex)\s*\()`)
 	rceEncodedPowerShell          = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,160}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{12,}`)
-	rceInterpreterInline          = regexp.MustCompile(`(?i)(?:^|[=&\s;|])(?:bash|sh|zsh|dash|ksh)\s+-c\s+['"]?(?:id|whoami|cat|curl|wget|uname|nc|ncat|python3?|perl|php|ruby|node|powershell|pwsh)\b|(?:^|[=&\s;|])cmd(?:\.exe)?\s*/c\s+(?:whoami|id|dir|type|powershell|certutil|curl|wget|ping|nslookup)\b|(?:python3?|perl|php|ruby|node)\s+(?:-c|-e|-r)\b`)
-	rceDownloadExecChain          = regexp.MustCompile(`(?i)(?:curl|wget|fetch)\s+[^\r\n|;&]+(?:\||;|&&)\s*(?:sh|bash|zsh|dash|ksh|python3?|php|perl|ruby|node)\b`)
-	rceReverseShellPrimitive      = regexp.MustCompile(`(?i)(?:/dev/tcp/|/dev/udp/|nc\s+-e|ncat\s+-e|bash\s+-i|sh\s*<\s*/dev/tcp)`)
+	rceInterpreterInline          = regexp.MustCompile(`(?i)(?:^|[=&\s;|])(?:bash|sh|zsh|dash|ksh)\s+-c\s+['"]?(?:id|whoami|cat|curl|wget|uname|nc|ncat|python3?|perl|php|ruby|node|powershell|pwsh)\b|(?:^|[=&\s;|])cmd(?:\.exe)?\s*/c\s+(?:whoami|id|dir|type|powershell|certutil|curl|wget|ping|nslookup)\b|(?:python3?|perl|php|ruby|node|lua)\s+(?:-c|-e|-r)\b`)
+	rceDownloadExecChain          = regexp.MustCompile(`(?i)(?:curl|wget|fetch|busybox\s+wget)\s+[^\r\n|;&]+(?:\||;|&&)\s*(?:sh|bash|zsh|dash|ksh|python3?|php|perl|ruby|node)\b`)
+	rceReverseShellPrimitive      = regexp.MustCompile(`(?i)(?:/dev/tcp/|/dev/udp/|nc\s+-e|ncat\s+-e|bash\s+-i|sh\s*<\s*/dev/tcp|socket\.socket\s*\(|child_process|require\s*\(\s*['"]child_process['"]\s*\))`)
 	rceTemplateExecutionPrimitive = regexp.MustCompile(`(?i)(?:registerundefinedfiltercallback\s*\(\s*['"]exec|filter\s*\(\s*['"]system|system\s*\(|exec\s*\(|popen\s*\(|passthru\s*\(|shell_exec\s*\()`)
+	// Generic “unknown exploit” shapes: loader hooks / polyglot runtime without CVE names.
+	rceLoaderPrimitive            = regexp.MustCompile(`(?i)(?:ld_preload\s*=|dyld_insert_libraries\s*=|process\.dlopen\s*\(|ctypes\.cdll|java\.lang\.classloader|defineclass\s*\(|unsafe\.defineanonymousclass|reflection\.emit|assembly\.load\s*\()`)
 	lfiFileReadSink               = regexp.MustCompile(`(?i)(?:file\.read\s*\(|get_user_file\s*\(|readfile\s*\(|file_get_contents\s*\(|open\s*\()[^)]*(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
 	lfiCommandReadSink            = regexp.MustCompile(`(?i)\b(?:cat|type|more|less|head|tail)\s+(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
 )
@@ -1677,6 +1752,13 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	if rceReverseShellPrimitive.MatchString(text) {
 		reasons["semantics: shell reverse connection primitive"] = true
 	}
+	// 0day-oriented: loader/reflective execution primitives (no CVE IDs).
+	if rceLoaderPrimitive.MatchString(text) {
+		reasons["semantics: dynamic loader or reflective code loading primitive"] = true
+		if sink || strings.Contains(lower, "=") {
+			reasons["syntax: shell metacharacter plus executable command"] = true
+		}
+	}
 	// Webshell body often lands as multipart content without a cmd= sink name.
 	if strings.Contains(lower, "<?php") && (strings.Contains(lower, "eval(") || strings.Contains(lower, "assert(") || strings.Contains(lower, "system(") || strings.Contains(lower, "passthru(") || strings.Contains(lower, "shell_exec(") || strings.Contains(lower, "phpinfo(")) {
 		reasons["syntax: PHP template execution delimiter"] = true
@@ -1762,7 +1844,8 @@ func rceHardSignal(reasons map[string]bool) bool {
 		reasons["semantics: PHP runtime command or include execution"] ||
 		reasons["semantics: language runtime command or include execution"] ||
 		reasons["semantics: PHP template runtime execution"] ||
-		reasons["syntax: PHP template execution delimiter"]
+		reasons["syntax: PHP template execution delimiter"] ||
+		reasons["semantics: dynamic loader or reflective code loading primitive"]
 }
 
 func rceExecutionSink(name string) bool {
@@ -1888,11 +1971,16 @@ func analyzeXXE(candidate semanticCandidate) (Hit, bool) {
 	syntax := strings.Contains(lower, "<!doctype") && strings.Contains(lower, "<!entity")
 	external := strings.Contains(lower, "system") || strings.Contains(lower, "public")
 	target := xxeDangerousTarget(lower)
+	xinclude := strings.Contains(lower, "xinclude") || strings.Contains(lower, "xi:include")
 	if syntax {
 		reasons["syntax: XML DTD with entity declaration"] = true
 	}
 	if strings.Contains(lower, "<!entity %") {
 		reasons["syntax: XML parameter entity declaration"] = true
+	}
+	if xinclude {
+		reasons["syntax: XML XInclude expansion"] = true
+		reasons["semantics: external entity resolution"] = true
 	}
 	if external {
 		reasons["semantics: external entity resolution"] = true
@@ -1900,14 +1988,26 @@ func analyzeXXE(candidate semanticCandidate) (Hit, bool) {
 	if target {
 		reasons["semantics: file or network disclosure target"] = true
 	}
-	if !syntax || !external || !target {
-		return Hit{}, false
+	// Classic XXE: DTD+entity+external+target. XInclude can stand with target.
+	if syntax && external && target {
+		return hit(candidate, "xxe", engine.SeverityHigh, 0.84+confidenceBonus(reasons), reasons), true
 	}
-	return hit(candidate, "xxe", engine.SeverityHigh, 0.84+confidenceBonus(reasons), reasons), true
+	if xinclude && target {
+		return hit(candidate, "xxe", engine.SeverityHigh, 0.83+confidenceBonus(reasons), reasons), true
+	}
+	return Hit{}, false
 }
 
 func xxePayloadContext(candidate semanticCandidate, lower string) bool {
-	if !strings.Contains(lower, "<!entity") || !xxeLooksLikeXMLPayload(lower) {
+	hasEntity := strings.Contains(lower, "<!entity")
+	hasXInclude := strings.Contains(lower, "xinclude") || strings.Contains(lower, "xi:include")
+	if !hasEntity && !hasXInclude {
+		return false
+	}
+	if hasEntity && !xxeLooksLikeXMLPayload(lower) {
+		return false
+	}
+	if hasXInclude && !strings.Contains(lower, "<") {
 		return false
 	}
 	source := candidate.input.Source
@@ -1972,10 +2072,15 @@ func xxeDocumentationField(name string) bool {
 }
 
 func xxeDangerousTarget(lower string) bool {
-	for _, marker := range []string{"file://", "http://", "https://", "ftp://", "php://", "expect://", "gopher://", "dict://", "169.254.169.254", "metadata.google.internal"} {
+	for _, marker := range []string{"file://", "http://", "https://", "ftp://", "php://", "expect://", "gopher://", "dict://", "jar://", "netdoc:", "169.254.169.254", "metadata.google.internal"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
+	}
+	// XInclude / parameter-entity OOB shapes without classic SYSTEM string in same fragment.
+	if strings.Contains(lower, "xinclude") || strings.Contains(lower, "xi:include") ||
+		(strings.Contains(lower, "<!entity %") && (strings.Contains(lower, "http://") || strings.Contains(lower, "https://") || strings.Contains(lower, "file:"))) {
+		return true
 	}
 	return lfiSensitiveTarget.MatchString(lower)
 }
@@ -1991,13 +2096,18 @@ func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
 	}
 	semantics := "semantics: target resolves to loopback, private, link-local, or metadata network"
 	confidence := 0.86
-	if strings.Contains(strings.ToLower(reason), "file scheme") {
+	reasonLower := strings.ToLower(reason)
+	if strings.Contains(reasonLower, "file scheme") {
 		semantics = "semantics: local file URL scheme would make the server access host files"
 		confidence = 0.88
 	}
-	if strings.Contains(strings.ToLower(reason), "target host") {
+	if strings.Contains(reasonLower, "target host") {
 		semantics = "semantics: fetch sink received a bare host that resolves to loopback, private, link-local, or metadata network"
 		confidence = 0.84
+	}
+	if strings.Contains(reasonLower, "rebind") {
+		semantics = "semantics: fetch sink points at DNS-rebind helper host used to pivot to internal networks"
+		confidence = 0.87
 	}
 	return Hit{
 		Category:   "ssrf",
