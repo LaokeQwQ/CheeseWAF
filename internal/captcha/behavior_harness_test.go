@@ -207,8 +207,8 @@ func harnessTrack(points []BehaviorPoint, duration int) []BehaviorTrackPoint {
 	return track
 }
 
-// harnessCurveSliderTrack builds a dense, jittered drag that satisfies anti-bot
-// variance checks while still landing on the sealed target.
+// harnessCurveSliderTrack builds a dense drag track that lands on the sealed
+// target with enough intermediate samples for geometric verification.
 func harnessCurveSliderTrack(target BehaviorPoint, duration int) []BehaviorTrackPoint {
 	if duration < 650 {
 		duration = 650

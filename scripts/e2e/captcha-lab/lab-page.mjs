@@ -2,8 +2,10 @@ export async function prepareLab(page, config, { locale, theme }) {
   await page.addInitScript(({ token, locale, theme }) => {
     localStorage.setItem('cheesewaf-token', token);
     localStorage.setItem('i18nextLng', locale);
-    localStorage.setItem('cheesewaf-language', locale);
-    localStorage.setItem('cheesewaf-theme', theme);
+    localStorage.setItem('cheesewaf-ui', JSON.stringify({
+      state: { language: locale, sidebarCollapsed: false, theme },
+      version: 0,
+    }));
   }, { token: config.token, locale, theme });
   await page.goto(new URL(config.labPath, config.baseURL).toString(), { waitUntil: 'domcontentloaded' });
   await page.locator('#captcha-lab-title').waitFor();

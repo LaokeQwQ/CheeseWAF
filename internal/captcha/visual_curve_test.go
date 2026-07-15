@@ -88,42 +88,46 @@ func TestVisualCurveSliderKeepsTargetOffsetSealedAndChecksDrag(t *testing.T) {
 	if result := VerifyBehaviorChallenge(opts, good); !result.Valid {
 		t.Fatalf("valid curve slider response rejected: %+v", result)
 	}
+	quantizedX := tok.Point.X + 24
+	if quantizedX > behaviorCoordinateMax {
+		quantizedX = tok.Point.X - 24
+	}
+	quantized := BehaviorResponse{
+		Token:      challenge.Token,
+		Point:      &BehaviorPoint{X: quantizedX, Y: 5000},
+		DurationMS: 330,
+	}
+	for index := 0; index < 14; index++ {
+		kind := "move"
+		if index == 0 {
+			kind = "down"
+		} else if index == 13 {
+			kind = "up"
+		}
+		quantized.Track = append(quantized.Track, BehaviorTrackPoint{
+			X:    5000 + (quantizedX-5000)*index/13,
+			Y:    5000,
+			T:    index * quantized.DurationMS / 13,
+			Type: kind,
+		})
+	}
+	if result := VerifyBehaviorChallenge(opts, quantized); !result.Valid {
+		t.Fatalf("physically quantized curve slider response rejected: %+v", result)
+	}
 	teleport := good
 	teleport.Track = []BehaviorTrackPoint{{X: tok.Point.X - 700, Y: tok.Point.Y, T: 0}, {X: tok.Point.X, Y: tok.Point.Y, T: 500}}
 	if VerifyBehaviorChallenge(opts, teleport).Valid {
 		t.Fatal("two-point synthetic drag accepted")
 	}
-	// Classic headless linear ramp: equal dx and equal dt every sample.
-	linear := good
-	linear.DurationMS = 500
-	linear.Track = nil
-	start := behaviorCoordinateMax / 2
-	for i := 0; i < 10; i++ {
-		kind := "move"
-		if i == 0 {
-			kind = "down"
-		} else if i == 9 {
-			kind = "up"
-		}
-		linear.Track = append(linear.Track, BehaviorTrackPoint{
-			X: start + (tok.Point.X-start)*i/9, Y: tok.Point.Y, T: i * 55, Type: kind,
-		})
-	}
-	if VerifyBehaviorChallenge(opts, linear).Valid {
-		t.Fatal("constant-step linear bot ramp accepted")
-	}
-	// Instant solve with high average velocity / too-short duration.
+	// The server-configured minimum duration remains authoritative.
 	fast := good
-	fast.DurationMS = 120
-	mid := behaviorCoordinateMax / 2
-	fast.Track = []BehaviorTrackPoint{
-		{X: 5000, Y: 5000, T: 0, Type: "down"},
-		{X: mid + (tok.Point.X-mid)/3, Y: 5000, T: 30, Type: "move"},
-		{X: mid + 2*(tok.Point.X-mid)/3, Y: 5000, T: 70, Type: "move"},
-		{X: tok.Point.X, Y: 5000, T: 120, Type: "up"},
+	fast.Track = append([]BehaviorTrackPoint(nil), good.Track...)
+	fast.DurationMS = int(opts.MinDuration/time.Millisecond) - 1
+	for index := range fast.Track {
+		fast.Track[index].T = index * fast.DurationMS / (len(fast.Track) - 1)
 	}
 	if VerifyBehaviorChallenge(opts, fast).Valid {
-		t.Fatal("sub-human duration drag accepted")
+		t.Fatal("drag shorter than the configured minimum duration accepted")
 	}
 	folded := good
 	folded.Track = []BehaviorTrackPoint{
@@ -205,10 +209,11 @@ func curveDrawResponse(token string, curve []BehaviorPoint) BehaviorResponse {
 }
 
 func curveSliderResponse(token string, target BehaviorPoint) BehaviorResponse {
-	// Human-like fixture: irregular pacing + micro overshoot, not a constant-step ramp.
+	// Dense drag fixture: enough intermediate samples for direction/path checks.
+	// Do not require statistical step/time variance — real Chromium tracks are often
+	// near-uniform at 16–17ms sample intervals (BUG-074).
 	start := behaviorCoordinateMax / 2
 	delta := target.X - start
-	// Ease-out fractions with intentional jitter (must pass anti-bot variance checks).
 	fractions := []float64{0, 0.08, 0.18, 0.33, 0.48, 0.62, 0.74, 0.84, 0.93, 1.0}
 	times := []int{0, 45, 95, 160, 230, 310, 390, 470, 560, 650}
 	response := BehaviorResponse{Token: token, Point: &BehaviorPoint{X: target.X, Y: target.Y}, DurationMS: 650}

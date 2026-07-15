@@ -356,3 +356,14 @@ go test ./internal/engine/semantic/ -bench=BenchmarkSemanticAnalyzer -benchmem -
 | `BenchmarkAnalyzerReadinessCorpus` | ~8.3µs · 50 allocs |
 | `BenchmarkSemanticAnalyzerParallelRequests` | ~5.0µs/op（并行请求） |
 | `BenchmarkSemanticAnalyzerMultiFieldParallel` | ~25µs · 多字段 worker pool |
+
+---
+
+## 4. CAPTCHA BUG-074/075 收口（2026-07-15）
+
+| ID | 问题 | 处理 |
+|----|------|------|
+| BUG-074 | 曲线滑块轨迹「步长/时间方差」硬门槛误伤 Chromium 真实采样；公开偏移字段可算答案 | **已收**：去掉统计方差/过高平均速度硬拒绝；保留中点起终、方向、回折、路径效率、配置 `MinDuration`、≥3 点；目标仍只在 AEAD token；`min_points=3` 与桌面量化 ±24 物理轨迹验收 |
+| BUG-075 | Lab harness 写错 localStorage 键导致主题/语言维度假绿 | **已收**：`prepareLab` 写 Zustand `cheesewaf-ui`；新增 `lab-page.test.mjs`；`package.json` e2e 门禁纳入该测试 |
+
+验证：`go test ./internal/captcha/ -count=1` PASS。

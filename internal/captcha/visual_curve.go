@@ -72,6 +72,7 @@ func populateVisualCurveSlider(opts BehaviorOptions, tok *behaviorToken, p *Beha
 	}
 	p.Width, p.Height = bitmapWidth, bitmapHeight
 	p.Track = trackPresentation(tok)
+	p.Track["min_points"] = 3
 	return nil
 }
 
@@ -414,12 +415,7 @@ func verifyVisualCurveSlider(tok behaviorToken, response BehaviorResponse) bool 
 	if response.Point == nil || !validBehaviorTrack(tok, response.Track, response.DurationMS) {
 		return false
 	}
-	// Curve alignment is a deliberate visual task: refuse sub-human instant solves.
-	if response.DurationMS < maxBehavior(tok.MinMS, 280) {
-		return false
-	}
-	// Dense enough samples that pure 2–3 point scripted ramps cannot pass.
-	if len(response.Track) < 8 {
+	if len(response.Track) < 3 {
 		return false
 	}
 	tolerance := maxBehavior(tok.Tolerance, 180)
@@ -442,14 +438,6 @@ func verifyVisualCurveSlider(tok behaviorToken, response BehaviorResponse) bool 
 	if netMovement < 650 {
 		return false
 	}
-	// Physics: average horizontal speed must stay within human drag bounds.
-	// 10000 coordinate units ≈ full rail; refuse multi-rail teleport scripts.
-	if response.DurationMS > 0 {
-		avgVelocity := float64(netMovement) / float64(response.DurationMS)
-		if avgVelocity > 28 { // ~full rail in <360ms
-			return false
-		}
-	}
 	distinct := 1
 	totalMovement := 0
 	reverseMovement := 0
@@ -457,9 +445,6 @@ func verifyVisualCurveSlider(tok behaviorToken, response BehaviorResponse) bool 
 	if tok.Point.X < behaviorCoordinateMax/2 {
 		direction = -1
 	}
-	var stepSizes []int
-	var stepTimes []int
-	identicalSteps := 0
 	for i := 1; i < len(response.Track); i++ {
 		current, previous := response.Track[i], response.Track[i-1]
 		if absBehavior(current.Y-behaviorCoordinateMax/2) > tolerance {
@@ -469,14 +454,6 @@ func verifyVisualCurveSlider(tok behaviorToken, response BehaviorResponse) bool 
 			return false
 		}
 		delta := current.X - previous.X
-		dt := current.T - previous.T
-		// Single-frame teleports are a classic headless-browser signature.
-		if absBehavior(delta) > 2200 {
-			return false
-		}
-		if dt > 0 && float64(absBehavior(delta))/float64(dt) > 45 {
-			return false
-		}
 		totalMovement += absBehavior(delta)
 		if delta*direction < 0 {
 			reverseMovement += absBehavior(delta)
@@ -484,80 +461,12 @@ func verifyVisualCurveSlider(tok behaviorToken, response BehaviorResponse) bool 
 		if absBehavior(delta) >= 25 || absBehavior(current.Y-previous.Y) >= 25 {
 			distinct++
 		}
-		if absBehavior(delta) > 0 {
-			stepSizes = append(stepSizes, absBehavior(delta))
-			stepTimes = append(stepTimes, maxBehavior(dt, 1))
-		}
-		if i > 1 {
-			prevDelta := response.Track[i-1].X - response.Track[i-2].X
-			prevDt := response.Track[i-1].T - response.Track[i-2].T
-			if delta == prevDelta && dt == prevDt && delta != 0 {
-				identicalSteps++
-			}
-		}
 	}
 	if reverseMovement > maxBehavior(tolerance*2, totalMovement/3) ||
 		totalMovement > netMovement*2+maxBehavior(500, tolerance*2) {
 		return false
 	}
-	if distinct < 5 {
-		return false
-	}
-	// Perfect constant-step ramps (classic bot) have near-zero step variance.
-	if !sliderTrackHasHumanVariance(stepSizes, stepTimes, identicalSteps) {
-		return false
-	}
-	return true
-}
-
-// sliderTrackHasHumanVariance rejects perfectly linear scripted ramps while
-// accepting ordinary pointer tracks that include micro-jitter and pacing changes.
-func sliderTrackHasHumanVariance(stepSizes, stepTimes []int, identicalSteps int) bool {
-	if len(stepSizes) < 4 {
-		return false
-	}
-	// Too many consecutive identical (dx,dt) pairs ≈ programmatic generator.
-	if identicalSteps >= len(stepSizes)-1 {
-		return false
-	}
-	minStep, maxStep := stepSizes[0], stepSizes[0]
-	minT, maxT := stepTimes[0], stepTimes[0]
-	sum := 0
-	for i, s := range stepSizes {
-		if s < minStep {
-			minStep = s
-		}
-		if s > maxStep {
-			maxStep = s
-		}
-		sum += s
-		if stepTimes[i] < minT {
-			minT = stepTimes[i]
-		}
-		if stepTimes[i] > maxT {
-			maxT = stepTimes[i]
-		}
-	}
-	// Require either spatial or temporal variation (humans rarely keep both fixed).
-	spatialSpread := maxStep - minStep
-	temporalSpread := maxT - minT
-	if spatialSpread < 15 && temporalSpread < 8 {
-		return false
-	}
-	// Reject near-uniform step sizes relative to mean (robot linear interp).
-	mean := float64(sum) / float64(len(stepSizes))
-	if mean > 0 {
-		var variance float64
-		for _, s := range stepSizes {
-			d := float64(s) - mean
-			variance += d * d
-		}
-		variance /= float64(len(stepSizes))
-		if variance < 40 && temporalSpread < 12 {
-			return false
-		}
-	}
-	return true
+	return distinct >= 3
 }
 
 func nearestVisualCurvePoint(curve []BehaviorPoint, point BehaviorPoint) (int, float64) {
