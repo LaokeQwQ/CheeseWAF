@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -54,12 +55,6 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 
 	var firstDetected *DetectionResult
 
-	// Concurrent detection: run detectors in parallel using bounded workers.
-	// Detectors with priority < 300 run first (IP/ACL/bot), then semantic.
-	// Within the semantic group (priority >= 290), run concurrently.
-	// For simplicity, we detect sequentially for priority-ordered blocking,
-	// but semantic detectors can run concurrently within their group.
-
 	preFilters := make([]Detector, 0, len(detectors))
 	semanticGroup := make([]Detector, 0, len(detectors))
 	for _, d := range detectors {
@@ -70,11 +65,11 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		}
 	}
 
-	// Phase 1: Run pre-filters sequentially (IP/ACL/Bot/RateLimit - fast, blocking)
+	// Phase 1: pre-filters sequential (IP/ACL/Bot/RateLimit — fast, order-sensitive).
 	for _, detector := range preFilters {
 		result, err := Guard(func() (*DetectionResult, error) { return detector.Detect(ctx, reqCtx) })
 		if err != nil {
-			continue // Skip failed detectors rather than failing the entire request
+			continue
 		}
 		if result == nil {
 			continue
@@ -89,13 +84,77 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		}
 	}
 
-	// Detectors may enrich request metadata. Serial execution keeps those writes
-	// deterministic, honors cancellation, and avoids shared-map races.
-	for _, detector := range semanticGroup {
-		if err := ctx.Err(); err != nil {
-			if parentErr := parentCtx.Err(); parentErr != nil {
-				return nil, parentErr
+	if err := ctx.Err(); err != nil {
+		if parentErr := parentCtx.Err(); parentErr != nil {
+			return nil, parentErr
+		}
+		if reqCtx.Metadata == nil {
+			reqCtx.Metadata = map[string]any{}
+		}
+		reqCtx.Metadata["detection_budget_exhausted"] = true
+		if OnDetectionBudgetExhausted != nil {
+			OnDetectionBudgetExhausted()
+		}
+		if firstDetected != nil {
+			return firstDetected, nil
+		}
+		return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
+	}
+
+	// Phase 2: multi-threaded semantic group. Each detector gets a forked
+	// RequestContext so Metadata/Results writes never race. Merges are
+	// deterministic by original detector order (priority sort already applied).
+	if len(semanticGroup) == 1 {
+		// Hot path: single Analyzer — no fork overhead.
+		result, err := Guard(func() (*DetectionResult, error) { return semanticGroup[0].Detect(ctx, reqCtx) })
+		if err == nil && result != nil {
+			reqCtx.Results = append(reqCtx.Results, *result)
+			if result.Detected && (firstDetected == nil || betterDetectionResult(result, firstDetected)) {
+				snapshot := *result
+				firstDetected = &snapshot
 			}
+		}
+	} else if len(semanticGroup) > 1 {
+		type jobOut struct {
+			index  int
+			result *DetectionResult
+			fork   *RequestContext
+			err    error
+		}
+		outs := make([]jobOut, len(semanticGroup))
+		workers := len(semanticGroup)
+		if max := runtime.GOMAXPROCS(0); workers > max {
+			workers = max
+		}
+		if workers < 1 {
+			workers = 1
+		}
+		jobs := make(chan int, len(semanticGroup))
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range jobs {
+					if ctx.Err() != nil {
+						outs[i] = jobOut{index: i, err: ctx.Err()}
+						continue
+					}
+					fork := forkRequestContext(reqCtx)
+					res, err := Guard(func() (*DetectionResult, error) {
+						return semanticGroup[i].Detect(ctx, fork)
+					})
+					outs[i] = jobOut{index: i, result: res, fork: fork, err: err}
+				}
+			}()
+		}
+		for i := range semanticGroup {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
+
+		if ctx.Err() != nil && parentCtx.Err() == nil {
 			if reqCtx.Metadata == nil {
 				reqCtx.Metadata = map[string]any{}
 			}
@@ -103,19 +162,23 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 			if OnDetectionBudgetExhausted != nil {
 				OnDetectionBudgetExhausted()
 			}
-			break
 		}
-		result, err := Guard(func() (*DetectionResult, error) { return detector.Detect(ctx, reqCtx) })
-		if err != nil {
-			continue
-		}
-		if result == nil {
-			continue
-		}
-		reqCtx.Results = append(reqCtx.Results, *result)
-		if result.Detected && (firstDetected == nil || betterDetectionResult(result, firstDetected)) {
-			snapshot := *result
-			firstDetected = &snapshot
+
+		// Merge in priority order for stable Results / Metadata.
+		for i := range outs {
+			out := outs[i]
+			if out.err != nil || out.fork == nil {
+				continue
+			}
+			mergeRequestContext(reqCtx, out.fork)
+			if out.result == nil {
+				continue
+			}
+			reqCtx.Results = append(reqCtx.Results, *out.result)
+			if out.result.Detected && (firstDetected == nil || betterDetectionResult(out.result, firstDetected)) {
+				snapshot := *out.result
+				firstDetected = &snapshot
+			}
 		}
 	}
 
@@ -123,6 +186,51 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		return firstDetected, nil
 	}
 	return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
+}
+
+// forkRequestContext creates an isolated context for concurrent detectors.
+// The underlying *http.Request is shared read-only; Metadata is a shallow copy.
+func forkRequestContext(src *RequestContext) *RequestContext {
+	if src == nil {
+		return nil
+	}
+	dst := &RequestContext{
+		Request:     src.Request,
+		ClientIP:    src.ClientIP,
+		TraceID:     src.TraceID,
+		SiteID:      src.SiteID,
+		DecodedURI:  src.DecodedURI,
+		DecodedBody: src.DecodedBody,
+	}
+	if len(src.Metadata) > 0 {
+		dst.Metadata = make(map[string]any, len(src.Metadata)+4)
+		for k, v := range src.Metadata {
+			dst.Metadata[k] = v
+		}
+	}
+	return dst
+}
+
+// mergeRequestContext copies forked Metadata keys into parent (fork wins on conflict).
+func mergeRequestContext(parent, fork *RequestContext) {
+	if parent == nil || fork == nil || len(fork.Metadata) == 0 {
+		return
+	}
+	if parent.Metadata == nil {
+		parent.Metadata = make(map[string]any, len(fork.Metadata))
+	}
+	for k, v := range fork.Metadata {
+		// Do not clobber parent keys already written by pre-filters unless fork added them.
+		if _, exists := parent.Metadata[k]; !exists {
+			parent.Metadata[k] = v
+			continue
+		}
+		// Semantic keys always take the forked (latest detector) value.
+		switch k {
+		case "semantic_analysis", "semantic_anomaly_score", "detection_budget_exhausted", "waf_policy_decision":
+			parent.Metadata[k] = v
+		}
+	}
 }
 
 func betterDetectionResult(next, current *DetectionResult) bool {

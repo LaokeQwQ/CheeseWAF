@@ -71,6 +71,54 @@ func BenchmarkSemanticAnalyzer(b *testing.B) {
 	}
 }
 
+func BenchmarkSemanticAnalyzerMultiFieldParallel(b *testing.B) {
+	analyzer := NewAnalyzer("block")
+	// Enough independent fields to engage the candidate worker pool.
+	body := `{"a":"hello","b":"world","c":"order-status","d":"select-theme","e":"1 union select password from users","f":"normal","g":"ok","h":"uuid-550e"}`
+	req := httptest.NewRequest("POST", "/api/batch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		reqCtx.Metadata = map[string]any{}
+		if _, err := analyzer.Detect(context.Background(), reqCtx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSemanticAnalyzerParallelRequests(b *testing.B) {
+	analyzer := NewAnalyzer("block")
+	payloads := []string{
+		"/search?q=select+a+theme",
+		"/search?q=1+union+select+1,2--",
+		"/download?file=report.pdf",
+		"/run?cmd=cmd+/c+whoami",
+		"/api/users?sort=name&dir=asc",
+	}
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			req := httptest.NewRequest("GET", payloads[i%len(payloads)], nil)
+			i++
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			if _, err := analyzer.Detect(context.Background(), reqCtx); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
+}
+
 func BenchmarkPipelineWithRules(b *testing.B) {
 	re := regexp.MustCompile(`(?i)(?:union\s+select|or\s+1=1)`)
 	rules := []enginerules.Rule{{

@@ -317,3 +317,42 @@ go test ./internal/engine/semantic/ -bench=BenchmarkSemanticAnalyzer -benchmem -
 | 提交 | `579464d0abadfbbb92aec46a4c68bddebf30030e` |
 | GitHub `origin` | **已 push** `ffc5350..579464d` |
 | Forgejo | **只读 pull mirror**：direct push 403；本机无 `FORGEJO_TOKEN`，未触发 mirror-sync API。待环境有 token 后 `POST /api/v1/repos/Laoke/CheeseWAF/mirror-sync` 对齐，或等定时 pull |
+
+---
+
+## 3. 多线程语义管线 + 性能/语料续作（2026-07-15）
+
+### 3.1 并发管线（恢复真实多线程）
+
+| 层 | 行为 |
+|----|------|
+| Pipeline 预过滤 | 仍串行（IP/ACL/Bot 顺序敏感） |
+| Pipeline 语义组 | **多 detector 并行**：fork `RequestContext`（共享 `*http.Request`，私有 Metadata），按优先级顺序归并 Results/Metadata |
+| Analyzer 字段 | **≥3 候选字段** 时 worker pool（上限 `min(8, GOMAXPROCS)`）并行 `analyzeCandidate`；共享分片 Cache 线程安全 |
+| 单 Analyzer 热路径 | 不 fork，避免无收益的调度开销 |
+
+证据：`TestPipelineSemanticGroupConcurrentMerge`（`-race` 通过）、`TestAnalyzerParallelCandidatesStillDetect`。
+
+### 3.2 检测效果修补
+
+- 猜类别 over-scan：非 clean 字段在无线索时全量扫，避免漏扫 `$elemMatch` / `'OR` 等
+- 布尔盲注：`IF((SELECT…WHERE` / `XOR(…SELECT` 在 comment-bridge 前探针
+- RCE：`/dev/tcp`、`$SHELL -c`（CRS shell-env）
+- 仍 **FP-first**：`blockableHit` 唯一阻断门闩；anomaly_score 仅观测
+
+### 3.3 语料
+
+| 文件 | 行数 |
+|------|------|
+| `benign_production_shapes.jsonl` | **72** |
+| `handcrafted_attack_neighbors.jsonl` | **24** |
+| FP gate | **0 FP**，攻击 **17043** 级全检（本轮 gate 通过） |
+
+### 3.4 基准（本机 Ryzen，暖缓存/并行）
+
+| Bench | 约 |
+|-------|-----|
+| `BenchmarkSemanticAnalyzer` | ~27µs · 84 allocs（攻击字段冷路径量级） |
+| `BenchmarkAnalyzerReadinessCorpus` | ~8.3µs · 50 allocs |
+| `BenchmarkSemanticAnalyzerParallelRequests` | ~5.0µs/op（并行请求） |
+| `BenchmarkSemanticAnalyzerMultiFieldParallel` | ~25µs · 多字段 worker pool |

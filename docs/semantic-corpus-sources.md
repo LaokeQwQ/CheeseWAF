@@ -35,8 +35,8 @@ Primary files under `internal/engine/semantic/testdata/`:
 | File | Purpose |
 | --- | --- |
 | `curated_external_shapes.jsonl` | Large mixed attack/benign corpus (bulk + curated families) |
-| `benign_production_shapes.jsonl` | **FP-focused** production-like benign traffic (search, CMS, docs, CN text, probe UA, OData/GraphQL/OAuth/JWT/webhook shapes) |
-| `handcrafted_attack_neighbors.jsonl` | High-precision attacks paired with the production benign neighbors |
+| `benign_production_shapes.jsonl` | **FP-focused** production-like benign traffic (~70+ curated: search, CMS, docs, CN text, OData/GraphQL/OAuth/JWT/webhook/PromQL/mail-OR shapes) |
+| `handcrafted_attack_neighbors.jsonl` | High-precision attacks (~20+) paired with the production benign neighbors |
 
 `curated_external_shapes.jsonl` contains reviewed samples inspired by public
 dataset families. It currently focuses on:

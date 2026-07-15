@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -35,8 +37,10 @@ type InputPoint struct {
 }
 
 type AnalysisReport struct {
-	Inputs []InputPoint `json:"inputs"`
-	Hits   []Hit        `json:"hits"`
+	Inputs       []InputPoint `json:"inputs"`
+	Hits         []Hit        `json:"hits"`
+	AnomalyScore int          `json:"anomaly_score,omitempty"`
+	AnomalyNotes []string     `json:"anomaly_notes,omitempty"`
 }
 
 type Hit struct {
@@ -90,29 +94,14 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	}()
 
 	candidates := extractCandidates(reqCtx)
-	report := AnalysisReport{}
-	best := (*Hit)(nil)
-	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		report.Inputs = append(report.Inputs, candidate.input)
-		for _, next := range a.analyzeCandidate(candidate) {
-			// FP-first: weak single-signal hits never become block decisions.
-			if a.mode == "block" && !blockableHit(next) {
-				continue
-			}
-			report.Hits = append(report.Hits, next)
-			if best == nil || betterHit(next, *best) {
-				next := next
-				best = &next
-			}
-		}
-	}
+	report, best := a.analyzeAllCandidates(ctx, candidates)
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
 	}
 	reqCtx.Metadata["semantic_analysis"] = report
+	if report.AnomalyScore > 0 {
+		reqCtx.Metadata["semantic_anomaly_score"] = report.AnomalyScore
+	}
 	if best == nil {
 		return nil, nil
 	}
@@ -136,6 +125,142 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		Confidence: best.Confidence,
 		Payload:    best.Payload,
 	}, nil
+}
+
+// analyzeAllCandidates runs field analysis. Multi-field requests use a bounded
+// worker pool so multi-core CPUs scan independent parameters concurrently while
+// preserving FP-first merge rules and stable Input ordering.
+func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semanticCandidate) (AnalysisReport, *Hit) {
+	report := AnalysisReport{Inputs: make([]InputPoint, 0, len(candidates))}
+	if len(candidates) == 0 {
+		return report, nil
+	}
+
+	type fieldOut struct {
+		input InputPoint
+		hits  []Hit
+	}
+
+	// Sequential for tiny requests (lower scheduling overhead).
+	if len(candidates) < 3 {
+		var best *Hit
+		anomalyScore := 0
+		var anomalyNotes []string
+		for _, candidate := range candidates {
+			if err := ctx.Err(); err != nil {
+				break
+			}
+			report.Inputs = append(report.Inputs, candidate.input)
+			hits := a.analyzeCandidate(candidate)
+			for _, next := range hits {
+				if note, pts := anomalyContribution(next); pts > 0 {
+					anomalyScore += pts
+					if len(anomalyNotes) < 8 {
+						anomalyNotes = append(anomalyNotes, note)
+					}
+				}
+				if a.mode == "block" && !blockableHit(next) {
+					continue
+				}
+				report.Hits = append(report.Hits, next)
+				if best == nil || betterHit(next, *best) {
+					next := next
+					best = &next
+				}
+			}
+			if a.mode == "block" && best != nil && best.Severity >= engine.SeverityCritical && best.Confidence >= 0.92 {
+				break
+			}
+		}
+		if anomalyScore > 0 {
+			report.AnomalyScore = anomalyScore
+			report.AnomalyNotes = anomalyNotes
+		}
+		return report, best
+	}
+
+	outs := make([]fieldOut, len(candidates))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > 8 {
+		workers = 8
+	}
+	if workers > len(candidates) {
+		workers = len(candidates)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan int, len(candidates))
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if ctx.Err() != nil {
+					outs[i] = fieldOut{input: candidates[i].input}
+					continue
+				}
+				hits := a.analyzeCandidate(candidates[i])
+				outs[i] = fieldOut{input: candidates[i].input, hits: hits}
+			}
+		}()
+	}
+	for i := range candidates {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	var best *Hit
+	anomalyScore := 0
+	var anomalyNotes []string
+	for i := range outs {
+		report.Inputs = append(report.Inputs, outs[i].input)
+		for _, next := range outs[i].hits {
+			if note, pts := anomalyContribution(next); pts > 0 {
+				anomalyScore += pts
+				if len(anomalyNotes) < 8 {
+					anomalyNotes = append(anomalyNotes, note)
+				}
+			}
+			if a.mode == "block" && !blockableHit(next) {
+				continue
+			}
+			report.Hits = append(report.Hits, next)
+			if best == nil || betterHit(next, *best) {
+				next := next
+				best = &next
+			}
+		}
+	}
+	if anomalyScore > 0 {
+		report.AnomalyScore = anomalyScore
+		report.AnomalyNotes = anomalyNotes
+	}
+	return report, best
+}
+
+// anomalyContribution scores weak/strong signals for CRS-like anomaly observability.
+// It NEVER decides block/pass by itself — blockableHit remains the only gate.
+func anomalyContribution(h Hit) (string, int) {
+	if h.Category == "" {
+		return "", 0
+	}
+	pts := 2
+	if h.Severity >= engine.SeverityCritical {
+		pts = 5
+	} else if h.Severity >= engine.SeverityHigh {
+		pts = 3
+	}
+	if h.Confidence >= 0.9 {
+		pts++
+	}
+	note := h.Category
+	if h.Name != "" {
+		note = h.Category + ":" + h.Name
+	}
+	return note, pts
 }
 
 func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
@@ -519,6 +644,10 @@ type decodedVariant struct {
 }
 
 func decodeVariants(raw string) []decodedVariant {
+	// Hot path: plain text without encode markers needs no expansion queue.
+	if !needsDeepDecode(raw) {
+		return []decodedVariant{{text: raw, layers: []string{"raw"}}}
+	}
 	queue := []decodedVariant{{text: raw, layers: []string{"raw"}}}
 	var out []decodedVariant
 	seen := map[string]struct{}{}
@@ -547,6 +676,46 @@ func decodeVariants(raw string) []decodedVariant {
 		}
 	}
 	return out
+}
+
+// needsDeepDecode is a pure byte scan: only expand decode layers when markers
+// suggest URL/HTML/Base64/Unicode/comment obfuscation may be present.
+func needsDeepDecode(raw string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	// Long alphanumeric-only blobs may be base64 shells.
+	if len(raw) >= 24 && isMostlyBase64Alphabet(raw) {
+		return true
+	}
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '%', '&', '+', '\\', '=', '<', '>', ';', '#':
+			return true
+		case '/':
+			// php://, data:, file:// often appear with colon nearby.
+			if i+1 < len(raw) && (raw[i+1] == '/' || (i > 0 && raw[i-1] == ':')) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isMostlyBase64Alphabet(raw string) bool {
+	ok := 0
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '+', c == '/', c == '=', c == '-', c == '_':
+			ok++
+		case c == ' ' || c == '\n' || c == '\r' || c == '\t':
+			// allow sparse whitespace
+		default:
+			return false
+		}
+	}
+	return ok*10 >= len(raw)*9
 }
 
 func appendLayers(base []string, extra ...string) []string {
@@ -600,33 +769,58 @@ func executableSQLText(raw string) string {
 }
 
 func guessCategories(raw string) []string {
+	// Fast negative path only for clean identifiers. Dirty/unknown shapes over-scan
+	// rather than risk missing attacks (FP-first applies later in blockableHit).
+	if looksCleanASCIIField(raw) {
+		return nil
+	}
+	hints := scanAttackHints(raw)
+	if hints == 0 {
+		hints = hintSQL | hintXSS | hintRCE | hintLFI | hintXXE | hintSSRF | hintNoSQL | hintSSTI
+	}
 	text := normalize(raw)
 	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"}
 	scores := map[string]int{}
-	sqlCompact := compactSQL(text)
-	if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "or'") || strings.Contains(text, "or\"") || strings.Contains(text, "sleep(") || strings.Contains(text, "benchmark(") || strings.Contains(text, "pg_sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(text, "procedure analyse") || strings.Contains(text, "dbms_lock.sleep") || strings.Contains(text, "sp_oacreate") || strings.Contains(text, "openrowset") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) || sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) || sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) || sqlMetadataObject.MatchString(text) || sqlSubquery.MatchString(text) || sqlCaseWhen.MatchString(text) || sqlFileData.MatchString(text) || sqlTimeFunction.MatchString(text) || sqlDangerousFunc.MatchString(text) {
-		scores["sqli"] += 2
+	if hints&hintSQL != 0 {
+		sqlCompact := compactSQL(text)
+		if strings.Contains(text, "select") || strings.Contains(text, "union") || strings.Contains(text, " or ") || strings.Contains(text, "or'") || strings.Contains(text, "or\"") || strings.Contains(text, "sleep(") || strings.Contains(text, "benchmark(") || strings.Contains(text, "pg_sleep(") || strings.Contains(text, "waitfor") || strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") || strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") || strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") || strings.Contains(text, "procedure analyse") || strings.Contains(text, "dbms_lock.sleep") || strings.Contains(text, "sp_oacreate") || strings.Contains(text, "openrowset") || strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") || sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) || sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) || sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) || sqlMetadataObject.MatchString(text) || sqlSubquery.MatchString(text) || sqlCaseWhen.MatchString(text) || sqlFileData.MatchString(text) || sqlTimeFunction.MatchString(text) || sqlDangerousFunc.MatchString(text) {
+			scores["sqli"] += 2
+		}
 	}
-	if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") || strings.Contains(text, "<meta") || strings.Contains(text, "expression(") {
-		scores["xss"] += 2
+	if hints&hintXSS != 0 {
+		if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") || strings.Contains(text, "<meta") || strings.Contains(text, "expression(") {
+			scores["xss"] += 2
+		}
 	}
-	if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) {
-		scores["rce"] += 2
+	if hints&hintRCE != 0 {
+		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) {
+			scores["rce"] += 2
+		}
 	}
-	if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") {
-		scores["lfi"] += 2
+	if hints&hintLFI != 0 {
+		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") {
+			scores["lfi"] += 2
+		}
 	}
-	if strings.Contains(text, "<!doctype") || strings.Contains(text, "<!entity") {
-		scores["xxe"] += 2
+	if hints&hintXXE != 0 {
+		if strings.Contains(text, "<!doctype") || strings.Contains(text, "<!entity") {
+			scores["xxe"] += 2
+		}
 	}
-	if urlLikePattern.MatchString(text) || schemeRelativeURLPattern.MatchString(text) || strings.Contains(text, "169.254.169.254") || strings.Contains(text, "metadata.google.internal") || looksLikeSSRFTarget(text) {
-		scores["ssrf"] += 2
+	if hints&hintSSRF != 0 {
+		if urlLikePattern.MatchString(text) || schemeRelativeURLPattern.MatchString(text) || strings.Contains(text, "169.254.169.254") || strings.Contains(text, "metadata.google.internal") || looksLikeSSRFTarget(text) {
+			scores["ssrf"] += 2
+		}
 	}
-	if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "$function") || strings.Contains(text, "this.") || strings.Contains(text, "function(") {
-		scores["nosqli"] += 2
+	if hints&hintNoSQL != 0 {
+		if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "$function") || strings.Contains(text, "this.") || strings.Contains(text, "function(") {
+			scores["nosqli"] += 2
+		}
 	}
-	if sstiTemplateExpression.MatchString(text) {
-		scores["ssti"] += 2
+	if hints&hintSSTI != 0 {
+		if sstiTemplateExpression.MatchString(text) {
+			scores["ssti"] += 2
+		}
 	}
 	var guesses []string
 	for _, category := range ordered {
@@ -635,6 +829,107 @@ func guessCategories(raw string) []string {
 		}
 	}
 	return guesses
+}
+
+const (
+	hintSQL   = 1 << iota
+	hintXSS
+	hintRCE
+	hintLFI
+	hintXXE
+	hintSSRF
+	hintNoSQL
+	hintSSTI
+)
+
+// scanAttackHints does a single ASCII-oriented pass to decide which detector
+// families deserve full analysis. Prefer false-positive on the hint (over-scan)
+// rather than under-scan that would miss attacks.
+func scanAttackHints(raw string) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	lower := strings.ToLower(raw)
+	var hints int
+	// SQL stems (include quote/OR glue without requiring spaces: 'OR' '')
+	if strings.Contains(lower, "select") || strings.Contains(lower, "union") ||
+		strings.Contains(lower, "sleep") || strings.Contains(lower, "benchmark") ||
+		strings.Contains(lower, "waitfor") || strings.Contains(lower, "xp_cmd") ||
+		strings.Contains(lower, "information_schema") || strings.Contains(lower, "drop") ||
+		strings.Contains(lower, "delete") || strings.Contains(lower, " or ") ||
+		strings.Contains(lower, "and ") || strings.Contains(lower, "'or") ||
+		strings.Contains(lower, "\"or") || strings.Contains(lower, "or'") ||
+		strings.Contains(lower, "or\"") || strings.Contains(lower, "0x") ||
+		strings.Contains(lower, "/*") || strings.Contains(lower, "--") ||
+		strings.Contains(lower, "having") || strings.Contains(lower, "order by") ||
+		strings.Contains(lower, "group by") || strings.Contains(lower, "outfile") ||
+		strings.Contains(lower, "load_file") || strings.Contains(lower, "openrowset") ||
+		strings.Contains(lower, "dbms_") || strings.Contains(lower, "extractvalue") ||
+		strings.Contains(lower, "updatexml") || strings.Contains(lower, "='") ||
+		strings.Contains(lower, "=\"") {
+		hints |= hintSQL
+	}
+	// XSS
+	if strings.Contains(lower, "<") || strings.Contains(lower, "javascript:") ||
+		strings.Contains(lower, "onerror") || strings.Contains(lower, "onload") ||
+		strings.Contains(lower, "onclick") || strings.Contains(lower, "srcdoc") ||
+		strings.Contains(lower, "expression(") || strings.Contains(lower, "svg") ||
+		strings.Contains(lower, "script") {
+		hints |= hintXSS
+	}
+	// RCE
+	if strings.Contains(lower, ";") || strings.Contains(lower, "&&") ||
+		strings.Contains(lower, "|") || strings.Contains(lower, "$(") ||
+		strings.Contains(lower, "`") || strings.Contains(lower, "powershell") ||
+		strings.Contains(lower, "pwsh") || strings.Contains(lower, "cmd") ||
+		strings.Contains(lower, "bash") || strings.Contains(lower, "curl") ||
+		strings.Contains(lower, "wget") || strings.Contains(lower, "python") ||
+		strings.Contains(lower, "perl") || strings.Contains(lower, "/bin/") ||
+		strings.Contains(lower, "encodedcommand") || strings.Contains(lower, "downloadstring") ||
+		strings.Contains(lower, "whoami") || strings.Contains(lower, "${ifs}") ||
+		strings.Contains(lower, "$ifs") || strings.Contains(lower, "/dev/tcp") ||
+		strings.Contains(lower, "/dev/udp") || strings.Contains(lower, "</dev/") ||
+		strings.Contains(lower, "ncat") || strings.Contains(lower, "netcat") ||
+		strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}") {
+		hints |= hintRCE
+	}
+	// LFI
+	if strings.Contains(lower, "..") || strings.Contains(lower, "%2e") ||
+		strings.Contains(lower, "etc/") || strings.Contains(lower, "proc/") ||
+		strings.Contains(lower, ".env") || strings.Contains(lower, "php://") ||
+		strings.Contains(lower, "file://") || strings.Contains(lower, "wp-config") ||
+		strings.Contains(lower, ".aws") || strings.Contains(lower, ".git") ||
+		strings.Contains(lower, ".ssh") || strings.Contains(lower, "boot.ini") ||
+		strings.Contains(lower, "win.ini") || strings.Contains(lower, "passwd") {
+		hints |= hintLFI
+	}
+	// XXE
+	if strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<!entity") ||
+		strings.Contains(lower, "system \"") || strings.Contains(lower, "system '") {
+		hints |= hintXXE
+	}
+	// SSRF
+	if strings.Contains(lower, "http://") || strings.Contains(lower, "https://") ||
+		strings.Contains(lower, "://") || strings.Contains(lower, "169.254.") ||
+		strings.Contains(lower, "metadata") || strings.Contains(lower, "127.0.0.1") ||
+		strings.Contains(lower, "localhost") || strings.Contains(lower, "[::1]") ||
+		strings.Contains(lower, "gopher://") || strings.Contains(lower, "dict://") ||
+		strings.Contains(lower, "nip.io") || strings.Contains(lower, "sslip.io") {
+		hints |= hintSSRF
+	}
+	// NoSQL — any $-operator token (including $elemMatch / $nin / …).
+	if strings.Contains(lower, "$") || strings.Contains(lower, "this.") ||
+		strings.Contains(lower, "function(") {
+		hints |= hintNoSQL
+	}
+	// SSTI
+	if strings.Contains(lower, "{{") || strings.Contains(lower, "{%") ||
+		strings.Contains(lower, "${") || strings.Contains(lower, "#{") ||
+		strings.Contains(lower, "<%") || strings.Contains(lower, "__class__") ||
+		strings.Contains(lower, "__globals__") || strings.Contains(lower, "popen") {
+		hints |= hintSSTI
+	}
+	return hints
 }
 
 func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hit, bool) {
@@ -682,6 +977,10 @@ var (
 	sqlFileData                   = regexp.MustCompile(`(?i)\b(?:load\s+data\s+infile|load_file\s*\(|into\s+outfile|copy\s+\S+\s+to(?:\s+program|\s+['\"/]|\s+[a-z0-9_./\\-]+))\b`)
 	sqlMySQLVersionComment        = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
 	sqlKeywordBridgeComment       = regexp.MustCompile(`(?i)\b([a-z]{2,8})/\*.*?\*/([a-z]{2,8})\b`)
+	// Boolean-blind shapes that omit FROM (XOR/IF/SELECT WHERE probes).
+	sqlIfSelectProbe              = regexp.MustCompile(`(?i)\bif\s*\(\s*\(?\s*select\b`)
+	sqlXorSelectProbe             = regexp.MustCompile(`(?i)\bxor\s*\([\s\S]{0,200}\bselect\b`)
+	sqlSelectWhere                = regexp.MustCompile(`(?is)\bselect\b.{0,120}\bwhere\b`)
 	xssEventPattern               = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
 	unicodeEscapePattern          = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
 	// Encoded traversal only — bare %2f/%5c (normal URL path encoding) must NOT match.
@@ -711,6 +1010,9 @@ var (
 )
 
 func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
+	// Probe surfaces before comment-bridging so SELECT/**/WHERE and IF((SELECT
+	// shapes stay visible; full analysis still uses bridged executable text.
+	normalized := normalize(candidate.text)
 	text := executableSQLText(candidate.text)
 	words := tokens(text)
 	reasons := map[string]bool{}
@@ -741,6 +1043,16 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 	if sqlSelectFrom.MatchString(text) {
 		reasons["syntax: SELECT FROM query grammar"] = true
+	}
+	if sqlIfSelectProbe.MatchString(normalized) || sqlIfSelectProbe.MatchString(text) ||
+		sqlXorSelectProbe.MatchString(normalized) || sqlXorSelectProbe.MatchString(text) {
+		reasons["syntax: IF/XOR SELECT boolean-blind probe"] = true
+		reasons["semantics: boolean database value inference"] = true
+	}
+	if (sqlSelectWhere.MatchString(normalized) || sqlSelectWhere.MatchString(text)) &&
+		(sqlComment.MatchString(normalized) || strings.Contains(normalized, "/**/") ||
+			sqlIfSelectProbe.MatchString(normalized) || sqlXorSelectProbe.MatchString(normalized)) {
+		reasons["syntax: SELECT WHERE boolean probe"] = true
 	}
 	if sqlSubquery.MatchString(text) {
 		reasons["syntax: parenthesized SELECT subquery"] = true
@@ -1017,6 +1329,11 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	}
 	if strings.Contains(lower, "/usr/bin/") || strings.Contains(lower, "/bin/") || strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}") {
 		reasons["semantics: fully qualified executable or shell interpreter"] = true
+	}
+	// $SHELL -c / ${SHELL} -c is a classic env-based interpreter invocation (CRS-style).
+	if (strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}")) &&
+		(strings.Contains(lower, " -c ") || strings.Contains(lower, " -c\"") || strings.Contains(lower, " -c'")) {
+		reasons["semantics: interpreter inline command execution"] = true
 	}
 	if len(reasons) < 2 {
 		return Hit{}, false
@@ -1392,6 +1709,8 @@ func blockableHit(h Hit) bool {
 			strings.Contains(h.Syntax, "ORDER/GROUP") ||
 			strings.Contains(h.Syntax, "HAVING") ||
 			strings.Contains(h.Syntax, "SQL function comparison") ||
+			strings.Contains(h.Syntax, "boolean-blind") ||
+			strings.Contains(h.Syntax, "SELECT WHERE") ||
 			strings.Contains(h.Syntax, ",")
 	case "lfi":
 		return (syntaxOK && semanticsOK) ||
@@ -1427,7 +1746,9 @@ func sqlReasonsBlockable(reasons map[string]bool) bool {
 			strings.Contains(reason, "ORDER/GROUP") ||
 			strings.Contains(reason, "HAVING") ||
 			strings.Contains(reason, "regex or LIKE") ||
-			strings.Contains(reason, "SQL function comparison") {
+			strings.Contains(reason, "SQL function comparison") ||
+			strings.Contains(reason, "boolean-blind") ||
+			strings.Contains(reason, "SELECT WHERE") {
 			return true
 		}
 	}

@@ -3,6 +3,7 @@ package semantic
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,23 @@ func TestCandidateCacheHitAndTTL(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	if _, ok := c.get(key); ok {
 		t.Fatal("expected TTL expiry miss")
+	}
+}
+
+func TestAnalyzerParallelCandidatesStillDetect(t *testing.T) {
+	processCandidateCache.resetForTest()
+	a := NewAnalyzer("block")
+	// Multiple fields so worker pool engages; one is classic SQLi.
+	body := `{"q1":"hello","q2":"world","q3":"theme","q4":"1 union select password from users--","q5":"ok","q6":"fine"}`
+	req, _ := http.NewRequest(http.MethodPost, "/api/search", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Detect(context.Background(), reqCtx)
+	if err != nil || res == nil || !res.Detected || res.Category != "sqli" {
+		t.Fatalf("expected parallel multi-field sqli detection, got %+v err=%v", res, err)
 	}
 }
 
