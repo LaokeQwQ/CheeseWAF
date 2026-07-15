@@ -136,9 +136,12 @@ CheeseWAF 当前已经覆盖以下方向：
 
 ### 2026-07-15 CodeQL Go 覆盖率提升（目标接近 100%）
 
-- 原因：default setup 在 `ubuntu-latest` + `autobuild` 下只提取 `go build` 会编进的文件，约 `197/285`；缺口主要是 `*_test.go` 与 Windows / 非 Linux 平台源。
-- 处理：新增 advanced CodeQL 工作流（`.github/workflows/codeql.yml`），在 Linux 与 Windows 上用 `build-mode: manual` 跑 `scripts/ci/codeql-go-extract.sh`：`go build ./...` + 每包 `go test -c`，并额外提取 `captchae2e` 标签包。
-- 预期：单次 Linux 调用覆盖生产代码 + 测试；Windows 调用补齐 `*_windows.go`；status 页按多次调用汇总后整体覆盖率接近 100%（互斥平台文件无法在同一 GOOS 同时提取）。
+- 原因：default setup 在 `ubuntu-latest` + `autobuild` 下只提取 `go build` 会编进的文件，约 `197/285`；缺口主要是 `*_test.go` 与 Windows / 非 Linux 平台源。另：CodeQL Go 默认 `extract_tests=false`，即使编译了测试也不会入库。
+- 处理：关闭 repo default setup，改 advanced 工作流（`.github/workflows/codeql.yml`）：
+  - Linux + Windows 双矩阵，`build-mode: manual` + `scripts/ci/codeql-go-extract.sh`（`go build ./...` 与 `go test -exec true ./...` 编译测试、可选 `captchae2e` 标签）
+  - `CODEQL_EXTRACTOR_GO_OPTION_EXTRACT_TESTS=true`
+  - 同工作流保留 JS/TS 与 Actions 分析
+- 说明：PR 上为加速不会打印 “X/Y files scanned”；合并到 `dev`/`canary`/`master` 后 status 页会汇总多 OS 覆盖。互斥 `//go:build` 文件需 Linux+Windows 两次调用合起来才接近 100%。
 
 ### 2026-07-15 进程时钟、系统对时与验证码加固
 
