@@ -655,9 +655,11 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			semanticCategories = append(semanticCategories, "ssti")
 		}
 		if len(semanticCategories) > 0 {
+			analyzer := semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)
+			analyzer.SetAllowlists(site.WAF.SemanticPolicy.PathAllowlist, site.WAF.SemanticPolicy.ParamAllowlist)
 			detectors = append(detectors, siteScopedDetector{
 				siteID:   site.ID,
-				detector: semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...),
+				detector: analyzer,
 			})
 		}
 	}

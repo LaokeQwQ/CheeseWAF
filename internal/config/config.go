@@ -261,6 +261,7 @@ type WAFConfig struct {
 	Enabled          bool                     `yaml:"enabled" json:"enabled"`
 	Mode             string                   `yaml:"mode" json:"mode"`
 	SemanticEngines  SemanticEngineSwitches   `yaml:"semantic_engines" json:"semantic_engines"`
+	SemanticPolicy   SemanticPolicyConfig     `yaml:"semantic_policy" json:"semantic_policy"`
 	ProtectionPolicy ProtectionPolicyConfig   `yaml:"protection_policy" json:"protection_policy"`
 	CustomRules      []CustomRuleConfig       `yaml:"custom_rules" json:"custom_rules"`
 	Performance      PerformanceTuningConfig  `yaml:"performance" json:"performance"`
@@ -268,6 +269,15 @@ type WAFConfig struct {
 	Rewrite          []RewriteRuleConfig      `yaml:"rewrite" json:"rewrite"`
 	HealthCheck      HealthCheckConfig        `yaml:"health_check" json:"health_check"`
 	AccessControl    SiteAccessControlConfig  `yaml:"access_control" json:"access_control"`
+}
+
+// SemanticPolicyConfig holds commercial operational knobs for the staged analyzer.
+// BudgetExhaustedPolicy defaults to "auto" (follow web_attack protection level).
+type SemanticPolicyConfig struct {
+	// BudgetExhaustedPolicy: auto|open|observe|closed. Empty/auto derives from web_attack.
+	BudgetExhaustedPolicy string   `yaml:"budget_exhausted_policy" json:"budget_exhausted_policy"`
+	PathAllowlist         []string `yaml:"path_allowlist" json:"path_allowlist"`
+	ParamAllowlist        []string `yaml:"param_allowlist" json:"param_allowlist"`
 }
 
 type SemanticEngineSwitches struct {

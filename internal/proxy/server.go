@@ -413,6 +413,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	pipeline := s.currentPipeline()
 	if site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff && pipeline != nil {
+		// Commercial fail-mode: detection budget policy tracks web_attack unless overridden.
+		if reqCtx.Metadata == nil {
+			reqCtx.Metadata = map[string]any{}
+		}
+		budgetPolicy := config.ResolveBudgetExhaustedPolicy(
+			site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
+			policy.WebAttack,
+		)
+		reqCtx.Metadata["budget_exhausted_policy"] = budgetPolicy
+
 		result, err := pipeline.Detect(r.Context(), reqCtx)
 		if err != nil {
 			s.proxyError(w, r, site, reqCtx, "proxy_error", "waf pipeline error", http.StatusInternalServerError, start, err)
@@ -788,6 +798,25 @@ func evaluateWebAttackPolicyWithEvidence(level string, result *engine.DetectionR
 	decision.DetectorAction = result.Action.String()
 	decision.DetectorCategory = result.Category
 	decision.DetectorID = result.DetectorID
+	// Operational fail-mode from pipeline budget policy is not a "weak signal".
+	// Honor detector action without severity/confidence gates (open/observe/closed).
+	if result.Category == "detection_budget" {
+		switch result.Action {
+		case engine.ActionChallenge:
+			decision.Action = engine.ActionChallenge.String()
+			decision.Reason = "detection budget exhausted policy (closed)"
+		case engine.ActionBlock:
+			decision.Action = engine.ActionBlock.String()
+			decision.Reason = "detection budget exhausted policy (closed-block)"
+		case engine.ActionLog:
+			decision.Action = engine.ActionLog.String()
+			decision.Reason = "detection budget exhausted policy (observe)"
+		default:
+			decision.Action = engine.ActionLog.String()
+			decision.Reason = "detection budget exhausted policy (open/pass)"
+		}
+		return decision
+	}
 	evidence := aggregateWebAttackEvidence(result, results)
 	decision.RiskScore = evidence.Score
 	decision.EvidenceCount = evidence.Count

@@ -28,6 +28,12 @@ type Analyzer struct {
 	enabled map[string]bool
 	// catFP is a precomputed fingerprint of enabled categories for cache keys.
 	catFP uint64
+	// pathAllowlist skips full semantic analysis for matching request paths
+	// (exact or trailing-* prefix). Commercial FP ops control surface.
+	pathAllowlist []string
+	// paramAllowlist skips query/form/json/cookie fields by parameter name
+	// (case-insensitive). Does not skip path/uri or headers.
+	paramAllowlist map[string]struct{}
 }
 
 type InputPoint struct {
@@ -80,6 +86,16 @@ func NewAnalyzer(mode string, categories ...string) *Analyzer {
 	return &Analyzer{mode: mode, enabled: enabled, catFP: enabledCategoryFingerprint(enabled)}
 }
 
+// SetAllowlists configures commercial path/param skip lists. Safe to call once
+// after NewAnalyzer during pipeline build. Empty lists are no-ops.
+func (a *Analyzer) SetAllowlists(paths, params []string) {
+	if a == nil {
+		return
+	}
+	a.pathAllowlist = normalizePathAllowlist(paths)
+	a.paramAllowlist = normalizeParamAllowlist(params)
+}
+
 func (a *Analyzer) ID() string    { return "semantic.analyzer" }
 func (a *Analyzer) Name() string  { return "Staged Semantic Analyzer" }
 func (a *Analyzer) Priority() int { return 290 }
@@ -94,7 +110,16 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		ProcessMetrics().RecordAnalysis(time.Since(start), outcome, category)
 	}()
 
-	candidates := extractCandidates(reqCtx)
+	if pathAllowlisted(reqCtx.Request.URL.Path, a.pathAllowlist) {
+		if reqCtx.Metadata == nil {
+			reqCtx.Metadata = map[string]any{}
+		}
+		reqCtx.Metadata["semantic_skipped"] = "path_allowlist"
+		ProcessMetrics().RecordAllowlistSkip("path")
+		return nil, nil
+	}
+
+	candidates := a.filterAllowlistedCandidates(extractCandidates(reqCtx))
 	report, best := a.analyzeAllCandidates(ctx, candidates)
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
@@ -448,6 +473,97 @@ const (
 	maxJSONNodes       = 200
 	maxJSONDepth       = 8
 )
+
+func normalizePathAllowlist(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func normalizeParamAllowlist(params []string) map[string]struct{} {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(params))
+	for _, p := range params {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		out[p] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// pathAllowlisted reports whether request path matches any allowlist rule.
+// Rules: exact match, or prefix when rule ends with "*".
+func pathAllowlisted(path string, rules []string) bool {
+	if path == "" || len(rules) == 0 {
+		return false
+	}
+	for _, rule := range rules {
+		if strings.HasSuffix(rule, "*") {
+			prefix := strings.TrimSuffix(rule, "*")
+			if prefix == "" || strings.HasPrefix(path, prefix) {
+				return true
+			}
+			continue
+		}
+		if path == rule {
+			return true
+		}
+		// Directory prefix: "/admin" matches "/admin" and "/admin/..."
+		if strings.HasPrefix(path, rule) && (len(path) == len(rule) || path[len(rule)] == '/') {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Analyzer) filterAllowlistedCandidates(candidates []semanticCandidate) []semanticCandidate {
+	if a == nil || len(a.paramAllowlist) == 0 || len(candidates) == 0 {
+		return candidates
+	}
+	kept := make([]semanticCandidate, 0, len(candidates))
+	skipped := 0
+	for _, c := range candidates {
+		if paramAllowlisted(c.input.Source, c.input.Name, a.paramAllowlist) {
+			skipped++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if skipped > 0 {
+		ProcessMetrics().RecordAllowlistSkip("param")
+	}
+	return kept
+}
+
+// paramAllowlisted skips query/form/json/cookie parameter names only.
+func paramAllowlisted(source, name string, allow map[string]struct{}) bool {
+	if len(allow) == 0 || name == "" {
+		return false
+	}
+	switch strings.ToLower(source) {
+	case "query", "form", "json", "cookie", "multipart":
+		_, ok := allow[strings.ToLower(name)]
+		return ok
+	default:
+		return false
+	}
+}
 
 func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 	if reqCtx == nil || reqCtx.Request == nil {

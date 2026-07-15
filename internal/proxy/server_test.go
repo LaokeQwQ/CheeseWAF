@@ -415,6 +415,25 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 		}
 	})
 
+	t.Run("detection budget closed challenge bypasses severity gate", func(t *testing.T) {
+		budget := &engine.DetectionResult{
+			Detected:   true,
+			DetectorID: "pipeline.budget",
+			Category:   "detection_budget",
+			Severity:   engine.SeverityMedium,
+			Action:     engine.ActionChallenge,
+			Confidence: 0.55,
+			Message:    "detection budget exhausted",
+		}
+		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, budget, nil)
+		if decision.Action != engine.ActionChallenge.String() {
+			t.Fatalf("budget closed must honor challenge without severity gate, got %#v", decision)
+		}
+		if decision.Reason == "" || decision.DetectorCategory != "detection_budget" {
+			t.Fatalf("unexpected budget decision: %#v", decision)
+		}
+	})
+
 	t.Run("detector challenge action is preserved when threshold matches", func(t *testing.T) {
 		challenge := *result
 		challenge.Action = engine.ActionChallenge

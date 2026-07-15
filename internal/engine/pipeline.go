@@ -4,6 +4,7 @@ import (
 	"context"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -88,17 +89,7 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		if parentErr := parentCtx.Err(); parentErr != nil {
 			return nil, parentErr
 		}
-		if reqCtx.Metadata == nil {
-			reqCtx.Metadata = map[string]any{}
-		}
-		reqCtx.Metadata["detection_budget_exhausted"] = true
-		if OnDetectionBudgetExhausted != nil {
-			OnDetectionBudgetExhausted()
-		}
-		if firstDetected != nil {
-			return firstDetected, nil
-		}
-		return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
+		return finalizeBudgetExhausted(reqCtx, firstDetected), nil
 	}
 
 	// Phase 2: multi-threaded semantic group. Each detector gets a forked
@@ -154,15 +145,7 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		close(jobs)
 		wg.Wait()
 
-		if ctx.Err() != nil && parentCtx.Err() == nil {
-			if reqCtx.Metadata == nil {
-				reqCtx.Metadata = map[string]any{}
-			}
-			reqCtx.Metadata["detection_budget_exhausted"] = true
-			if OnDetectionBudgetExhausted != nil {
-				OnDetectionBudgetExhausted()
-			}
-		}
+		budgetHit := ctx.Err() != nil && parentCtx.Err() == nil
 
 		// Merge in priority order for stable Results / Metadata.
 		for i := range outs {
@@ -180,12 +163,79 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 				firstDetected = &snapshot
 			}
 		}
+		if budgetHit {
+			return finalizeBudgetExhausted(reqCtx, firstDetected), nil
+		}
 	}
 
 	if firstDetected != nil {
 		return firstDetected, nil
 	}
 	return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
+}
+
+// finalizeBudgetExhausted marks budget exhaustion, records metrics, and applies
+// the commercial fail-mode policy from metadata["budget_exhausted_policy"]:
+// open | observe | closed (default observe when unset — matches smart web_attack).
+func finalizeBudgetExhausted(reqCtx *RequestContext, firstDetected *DetectionResult) *DetectionResult {
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = map[string]any{}
+	}
+	reqCtx.Metadata["detection_budget_exhausted"] = true
+	if OnDetectionBudgetExhausted != nil {
+		OnDetectionBudgetExhausted()
+	}
+
+	policy, _ := reqCtx.Metadata["budget_exhausted_policy"].(string)
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "open", "observe", "closed":
+		// keep as-is
+	default:
+		policy = "observe"
+	}
+	reqCtx.Metadata["budget_exhausted_policy"] = policy
+
+	// Real block/challenge always wins over budget fail-mode.
+	if firstDetected != nil && firstDetected.Detected &&
+		(firstDetected.Action == ActionBlock || firstDetected.Action == ActionChallenge) {
+		return firstDetected
+	}
+
+	switch policy {
+	case "closed":
+		// Incomplete analysis under closed policy → challenge (not silent hard-block).
+		res := DetectionResult{
+			Detected:   true,
+			DetectorID: "pipeline.budget",
+			Category:   "detection_budget",
+			Severity:   SeverityMedium,
+			Action:     ActionChallenge,
+			Message:    "detection budget exhausted; challenge preferred for incomplete analysis",
+			Confidence: 0.55,
+		}
+		reqCtx.Results = append(reqCtx.Results, res)
+		return &res
+	case "observe":
+		if firstDetected != nil && firstDetected.Detected {
+			return firstDetected
+		}
+		res := DetectionResult{
+			Detected:   true,
+			DetectorID: "pipeline.budget",
+			Category:   "detection_budget",
+			Severity:   SeverityInfo,
+			Action:     ActionLog,
+			Message:    "detection budget exhausted; observe only",
+			Confidence: 0.4,
+		}
+		reqCtx.Results = append(reqCtx.Results, res)
+		return &res
+	default: // open
+		if firstDetected != nil {
+			return firstDetected
+		}
+		return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}
+	}
 }
 
 // forkRequestContext creates an isolated context for concurrent detectors.
@@ -227,7 +277,7 @@ func mergeRequestContext(parent, fork *RequestContext) {
 		}
 		// Semantic keys always take the forked (latest detector) value.
 		switch k {
-		case "semantic_analysis", "semantic_anomaly_score", "detection_budget_exhausted", "waf_policy_decision":
+		case "semantic_analysis", "semantic_anomaly_score", "detection_budget_exhausted", "budget_exhausted_policy", "waf_policy_decision", "semantic_skipped":
 			parent.Metadata[k] = v
 		}
 	}

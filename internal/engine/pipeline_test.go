@@ -82,6 +82,79 @@ func (d staticPipelineDetector) Detect(context.Context, *RequestContext) (*Detec
 	return d.result, nil
 }
 
+func TestPipelineBudgetExhaustedPolicies(t *testing.T) {
+	slow := &countingDetector{
+		id: "slow-pre", priority: 10,
+		fn: func(ctx context.Context, reqCtx *RequestContext) (*DetectionResult, error) {
+			// Exceed the 100ms pipeline budget.
+			timer := time.NewTimer(150 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-timer.C:
+				return nil, nil
+			}
+		},
+	}
+
+	t.Run("open passes", func(t *testing.T) {
+		reqCtx := &RequestContext{Metadata: map[string]any{"budget_exhausted_policy": "open"}}
+		got, err := NewPipeline(slow).Detect(context.Background(), reqCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reqCtx.Metadata["detection_budget_exhausted"] != true {
+			t.Fatalf("expected budget exhausted flag, got %#v", reqCtx.Metadata)
+		}
+		if got != nil && got.Detected {
+			t.Fatalf("open policy must not detect, got %#v", got)
+		}
+	})
+
+	t.Run("observe logs", func(t *testing.T) {
+		reqCtx := &RequestContext{Metadata: map[string]any{"budget_exhausted_policy": "observe"}}
+		got, err := NewPipeline(slow).Detect(context.Background(), reqCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || !got.Detected || got.Action != ActionLog || got.Category != "detection_budget" {
+			t.Fatalf("expected observe log result, got %#v", got)
+		}
+	})
+
+	t.Run("closed challenges", func(t *testing.T) {
+		reqCtx := &RequestContext{Metadata: map[string]any{"budget_exhausted_policy": "closed"}}
+		got, err := NewPipeline(slow).Detect(context.Background(), reqCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || !got.Detected || got.Action != ActionChallenge || got.Category != "detection_budget" {
+			t.Fatalf("expected closed challenge result, got %#v", got)
+		}
+	})
+
+	t.Run("block wins over closed budget", func(t *testing.T) {
+		blocker := staticPipelineDetector{
+			id: "block-early", priority: 5,
+			result: &DetectionResult{
+				Detected: true, DetectorID: "block-early", Category: "sqli",
+				Severity: SeverityHigh, Action: ActionBlock, Confidence: 0.95,
+			},
+		}
+		// Put a slow detector after the block so budget would fire if we continued;
+		// block returns immediately from pre-filter phase before budget.
+		reqCtx := &RequestContext{Metadata: map[string]any{"budget_exhausted_policy": "closed"}}
+		got, err := NewPipeline(blocker, slow).Detect(context.Background(), reqCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || got.Action != ActionBlock || got.DetectorID != "block-early" {
+			t.Fatalf("expected real block to win, got %#v", got)
+		}
+	})
+}
+
 func TestPipelineSemanticGroupConcurrentMerge(t *testing.T) {
 	var started atomic.Int32
 	slow := &countingDetector{

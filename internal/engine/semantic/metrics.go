@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,21 +38,26 @@ type Metrics struct {
 
 	cacheHits   atomic.Uint64
 	cacheMisses atomic.Uint64
+
+	allowlistPathSkips  atomic.Uint64
+	allowlistParamSkips atomic.Uint64
 }
 
 // Snapshot is a point-in-time metrics view for tests, admin APIs, or Prometheus.
 type Snapshot struct {
-	Analyzed        uint64            `json:"analyzed"`
-	Passed          uint64            `json:"passed"`
-	Hit             uint64            `json:"hit"`
-	Blocked         uint64            `json:"blocked"`
-	BudgetExhausted uint64            `json:"budget_exhausted"`
-	AvgLatencyNs    uint64            `json:"avg_latency_ns"`
-	LatencyBuckets  map[string]uint64 `json:"latency_buckets"`
-	HitByCategory   map[string]uint64 `json:"hit_by_category"`
-	BlockByCategory map[string]uint64 `json:"block_by_category"`
-	CacheHits       uint64            `json:"cache_hits"`
-	CacheMisses     uint64            `json:"cache_misses"`
+	Analyzed            uint64            `json:"analyzed"`
+	Passed              uint64            `json:"passed"`
+	Hit                 uint64            `json:"hit"`
+	Blocked             uint64            `json:"blocked"`
+	BudgetExhausted     uint64            `json:"budget_exhausted"`
+	AvgLatencyNs        uint64            `json:"avg_latency_ns"`
+	LatencyBuckets      map[string]uint64 `json:"latency_buckets"`
+	HitByCategory       map[string]uint64 `json:"hit_by_category"`
+	BlockByCategory     map[string]uint64 `json:"block_by_category"`
+	CacheHits           uint64            `json:"cache_hits"`
+	CacheMisses         uint64            `json:"cache_misses"`
+	AllowlistPathSkips  uint64            `json:"allowlist_path_skips"`
+	AllowlistParamSkips uint64            `json:"allowlist_param_skips"`
 }
 
 func NewMetrics() *Metrics {
@@ -121,6 +127,20 @@ func (m *Metrics) RecordCache(hit bool) {
 	}
 }
 
+// RecordAllowlistSkip records a commercial path/param allowlist skip.
+// kind is "path" or "param".
+func (m *Metrics) RecordAllowlistSkip(kind string) {
+	if m == nil {
+		return
+	}
+	switch strings.ToLower(kind) {
+	case "path":
+		m.allowlistPathSkips.Add(1)
+	case "param":
+		m.allowlistParamSkips.Add(1)
+	}
+}
+
 func (m *Metrics) incCategory(category string, blocked bool) {
 	category = normalizeCategoryKey(category)
 	if category == "" {
@@ -167,21 +187,23 @@ func (m *Metrics) Snapshot() Snapshot {
 		}
 	}
 	s := Snapshot{
-		Analyzed:        m.analyzed.Load(),
-		Passed:          m.passed.Load(),
-		Hit:             m.hit.Load(),
-		Blocked:         m.blocked.Load(),
-		BudgetExhausted: m.budgetExhausted.Load(),
+		Analyzed:            m.analyzed.Load(),
+		Passed:              m.passed.Load(),
+		Hit:                 m.hit.Load(),
+		Blocked:             m.blocked.Load(),
+		BudgetExhausted:     m.budgetExhausted.Load(),
 		LatencyBuckets: map[string]uint64{
 			"under_50us":  m.latUnder50us.Load(),
 			"under_200us": m.latUnder200us.Load(),
 			"under_1ms":   m.latUnder1ms.Load(),
 			"over_1ms":    m.latOver1ms.Load(),
 		},
-		HitByCategory:   map[string]uint64{},
-		BlockByCategory: map[string]uint64{},
-		CacheHits:       m.cacheHits.Load(),
-		CacheMisses:     m.cacheMisses.Load(),
+		HitByCategory:       map[string]uint64{},
+		BlockByCategory:     map[string]uint64{},
+		CacheHits:           m.cacheHits.Load(),
+		CacheMisses:         m.cacheMisses.Load(),
+		AllowlistPathSkips:  m.allowlistPathSkips.Load(),
+		AllowlistParamSkips: m.allowlistParamSkips.Load(),
 	}
 	if n := m.latencyCount.Load(); n > 0 {
 		s.AvgLatencyNs = m.latencySumNs.Load() / n

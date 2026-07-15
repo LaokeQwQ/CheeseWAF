@@ -103,6 +103,8 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 	}
 	writeMetric(&buf, "cheesewaf_semantic_cache_hits_total", "Semantic candidate cache hits.", float64(sem.CacheHits), nil)
 	writeMetric(&buf, "cheesewaf_semantic_cache_misses_total", "Semantic candidate cache misses.", float64(sem.CacheMisses), nil)
+	writeMetric(&buf, "cheesewaf_semantic_allowlist_path_skips_total", "Semantic path allowlist skip events.", float64(sem.AllowlistPathSkips), nil)
+	writeMetric(&buf, "cheesewaf_semantic_allowlist_param_skips_total", "Semantic param allowlist skip events.", float64(sem.AllowlistParamSkips), nil)
 	return buf.Bytes()
 }
 

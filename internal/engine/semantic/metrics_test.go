@@ -12,10 +12,16 @@ func TestMetricsRecordAndSnapshot(t *testing.T) {
 	m.RecordAnalysis(100*time.Microsecond, OutcomeBlock, "sqli")
 	m.RecordAnalysis(2*time.Millisecond, OutcomeHit, "xss")
 	m.RecordBudgetExhausted()
+	m.RecordAllowlistSkip("path")
+	m.RecordAllowlistSkip("param")
+	m.RecordAllowlistSkip("param")
 
 	s := m.Snapshot()
 	if s.Analyzed != 3 || s.Passed != 1 || s.Hit != 2 || s.Blocked != 1 || s.BudgetExhausted != 1 {
 		t.Fatalf("unexpected totals: %+v", s)
+	}
+	if s.AllowlistPathSkips != 1 || s.AllowlistParamSkips != 2 {
+		t.Fatalf("unexpected allowlist skips: path=%d param=%d", s.AllowlistPathSkips, s.AllowlistParamSkips)
 	}
 	if s.HitByCategory["sqli"] != 1 || s.BlockByCategory["sqli"] != 1 {
 		t.Fatalf("category counters: hit=%v block=%v", s.HitByCategory, s.BlockByCategory)
