@@ -121,7 +121,7 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	}
 
 	candidates := a.filterAllowlistedCandidates(extractCandidates(reqCtx))
-	report, best := a.analyzeAllCandidates(ctx, candidates)
+	report, best, incomplete := a.analyzeAllCandidates(ctx, candidates)
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
 	}
@@ -129,9 +129,9 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	if report.AnomalyScore > 0 {
 		reqCtx.Metadata["semantic_anomaly_score"] = report.AnomalyScore
 	}
-	// Signal incomplete analysis when the pipeline deadline cancelled mid-scan.
-	// Used by budget fail-mode so a clean finished pass is not challenged.
-	if ctx.Err() != nil {
+	// Only when scanning was cut short by deadline — not a finished pass that
+	// merely races the timer after returning.
+	if incomplete {
 		reqCtx.Metadata["semantic_analysis_incomplete"] = true
 	}
 	if best == nil {
@@ -162,10 +162,11 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 // analyzeAllCandidates runs field analysis. Multi-field requests use a bounded
 // worker pool so multi-core CPUs scan independent parameters concurrently while
 // preserving FP-first merge rules and stable Input ordering.
-func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semanticCandidate) (AnalysisReport, *Hit) {
+// incomplete is true only when the context cancelled mid-scan (fields skipped).
+func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semanticCandidate) (AnalysisReport, *Hit, bool) {
 	report := AnalysisReport{Inputs: make([]InputPoint, 0, len(candidates))}
 	if len(candidates) == 0 {
-		return report, nil
+		return report, nil, false
 	}
 
 	type fieldOut struct {
@@ -178,8 +179,10 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 		var best *Hit
 		anomalyScore := 0
 		var anomalyNotes []string
+		incomplete := false
 		for _, candidate := range candidates {
 			if err := ctx.Err(); err != nil {
+				incomplete = true
 				break
 			}
 			report.Inputs = append(report.Inputs, candidate.input)
@@ -208,7 +211,7 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 			report.AnomalyScore = anomalyScore
 			report.AnomalyNotes = anomalyNotes
 		}
-		return report, best
+		return report, best, incomplete
 	}
 
 	outs := make([]fieldOut, len(candidates))
@@ -224,6 +227,7 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 	}
 	// Atomic work-stealing index avoids per-request channel alloc/scheduling.
 	var next atomic.Int64
+	var skipped atomic.Bool
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
@@ -236,6 +240,7 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 				}
 				if ctx.Err() != nil {
 					outs[i] = fieldOut{input: candidates[i].input}
+					skipped.Store(true)
 					continue
 				}
 				hits := a.analyzeCandidate(candidates[i])
@@ -271,7 +276,7 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 		report.AnomalyScore = anomalyScore
 		report.AnomalyNotes = anomalyNotes
 	}
-	return report, best
+	return report, best, skipped.Load()
 }
 
 // anomalyContribution scores weak/strong signals for CRS-like anomaly observability.

@@ -152,12 +152,20 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		close(jobs)
 		wg.Wait()
 
-		budgetHit := ctx.Err() != nil && parentCtx.Err() == nil
-
 		// Merge in priority order for stable Results / Metadata.
+		var detectErr error
 		for i := range outs {
 			out := outs[i]
-			if out.err != nil || out.fork == nil {
+			if out.err != nil {
+				// Prefer context errors for budget incompleteness.
+				if detectErr == nil || errors.Is(out.err, context.DeadlineExceeded) || errors.Is(out.err, context.Canceled) {
+					detectErr = out.err
+				}
+				if out.fork == nil {
+					continue
+				}
+			}
+			if out.fork == nil {
 				continue
 			}
 			mergeRequestContext(reqCtx, out.fork)
@@ -170,7 +178,7 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 				firstDetected = &snapshot
 			}
 		}
-		if budgetHit {
+		if parentCtx.Err() == nil && budgetAnalysisIncomplete(ctx, reqCtx, detectErr) {
 			return finalizeBudgetExhausted(reqCtx, firstDetected), nil
 		}
 	}
