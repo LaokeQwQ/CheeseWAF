@@ -134,6 +134,12 @@ CheeseWAF 当前已经覆盖以下方向：
 
 这些验证结果用于说明当前工程状态。正式发布前仍需要按 release gate 重新执行完整验证，不能只复用历史结果。
 
+### 2026-07-15 CodeQL Go 覆盖率提升（目标接近 100%）
+
+- 原因：default setup 在 `ubuntu-latest` + `autobuild` 下只提取 `go build` 会编进的文件，约 `197/285`；缺口主要是 `*_test.go` 与 Windows / 非 Linux 平台源。
+- 处理：新增 advanced CodeQL 工作流（`.github/workflows/codeql.yml`），在 Linux 与 Windows 上用 `build-mode: manual` 跑 `scripts/ci/codeql-go-extract.sh`：`go build ./...` + 每包 `go test -c`，并额外提取 `captchae2e` 标签包。
+- 预期：单次 Linux 调用覆盖生产代码 + 测试；Windows 调用补齐 `*_windows.go`；status 页按多次调用汇总后整体覆盖率接近 100%（互斥平台文件无法在同一 GOOS 同时提取）。
+
 ### 2026-07-15 进程时钟、系统对时与验证码加固
 
 - 新增进程内 NTP 对时服务（`internal/timekeeper`）：多源重选、共识阈值、纪律化时钟，并注入管理会话 JWT、Bot 策略、APISec JWT、登录验证码与代理运行时，避免仅依赖可能漂移的系统墙钟。
