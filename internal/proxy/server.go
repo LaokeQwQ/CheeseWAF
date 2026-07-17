@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -425,10 +426,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
-		// Apply already confines Path. CodeQL barrier: len>1 && leading '/' && second not '/'|'\\'.
+		// Apply already confines Path. CodeQL: Hostname empty + isLocalURL barrier.
 		loc := fsguard.SanitizeLocalRedirect(r.URL.RequestURI())
-		if len(loc) > 1 && loc[0] == '/' && loc[1] != '/' && loc[1] != '\\' {
-			http.Redirect(w, r, loc, code)
+		loc = strings.ReplaceAll(loc, "\\", "/")
+		if target, err := url.Parse(loc); err == nil && target.Hostname() == "" && fsguard.IsLocalURL(loc) {
+			http.Redirect(w, r, target.String(), code)
 		} else {
 			http.Redirect(w, r, "/", code)
 		}
