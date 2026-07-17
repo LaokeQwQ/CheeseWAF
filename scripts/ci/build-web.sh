@@ -22,7 +22,9 @@ cp -R "${repo_root}/web/scripts" "${work_web}/scripts"
 cp -R "${repo_root}/web/src" "${work_web}/src"
 
 pushd "$work_web" >/dev/null
-npm ci --no-audit --no-fund
+# agent-eyes postinstall runs `pnpm build` and fails without a monorepo layout;
+# the published package ships usable dist, so skip lifecycle scripts on CI install.
+npm ci --no-audit --no-fund --ignore-scripts
 npm run build
 popd >/dev/null
 

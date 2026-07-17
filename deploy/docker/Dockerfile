@@ -23,7 +23,8 @@ RUN CGO_ENABLED=0 go build -trimpath \
 FROM ${NODE_IMAGE} AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# Skip lifecycle scripts: @agent-eyes postinstall needs pnpm and is dev-only for source maps.
+RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY web/index.html web/tsconfig.json web/tsconfig.app.json web/tsconfig.node.json web/vite.config.ts web/vite.proxy.ts ./
 COPY web/public ./public
 COPY web/scripts ./scripts
