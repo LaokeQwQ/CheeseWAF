@@ -127,3 +127,16 @@ func TestIsLocalRedirect(t *testing.T) {
 		}
 	}
 }
+
+func TestIsLocalURL(t *testing.T) {
+	for _, good := range []string{"/", "/ok", "/ok?x=1", "/a/b"} {
+		if !IsLocalURL(good) {
+			t.Fatalf("IsLocalURL(%q) want true", good)
+		}
+	}
+	for _, bad := range []string{"", "ok", "//evil.test", "/\\evil", "https://evil.test/", "http://evil.test/x", "//"} {
+		if IsLocalURL(bad) {
+			t.Fatalf("IsLocalURL(%q) want false", bad)
+		}
+	}
+}

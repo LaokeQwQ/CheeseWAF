@@ -5,6 +5,7 @@ package fsguard
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,6 +188,43 @@ func SafePathComponent(name string) error {
 // go/unvalidated-url-redirection and go/bad-redirect-check.
 func IsLocalRedirect(s string) bool {
 	return len(s) > 0 && s[0] == '/' && (len(s) == 1 || (s[1] != '/' && s[1] != '\\'))
+}
+
+// IsLocalURL reports whether raw is a same-origin relative URL safe for
+// http.Redirect. The function name matches CodeQL's RedirectCheckBarrier
+// (isLocalURL / isValidRedirect), which treats a true result as a barrier.
+// Implementation follows CodeQL's documented fix: replace '\', parse, require
+// empty Hostname (relative URL).
+func IsLocalURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	// Browsers treat '\' as '/'; normalize before parse (CodeQL recommendation).
+	raw = strings.ReplaceAll(raw, "\\", "/")
+	if strings.HasPrefix(raw, "//") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	// Empty hostname means relative / same-origin path (not //host or scheme://host).
+	if u.Hostname() != "" || u.Scheme != "" || u.Opaque != "" || u.User != nil {
+		return false
+	}
+	path := u.EscapedPath()
+	if path == "" {
+		if u.RawQuery == "" && u.Fragment == "" {
+			return false
+		}
+		path = "/"
+	}
+	// Second-character rule: not scheme-relative after leading slash.
+	if !IsLocalRedirect(path) {
+		return false
+	}
+	return true
 }
 
 // SanitizeLocalRedirect returns a same-origin relative path (leading '/',
