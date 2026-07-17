@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 )
 
 type RewriteRule struct {
@@ -49,7 +51,17 @@ func (r *Rewriter) Apply(req *http.Request) (redirect bool, code int) {
 			continue
 		}
 		next := rule.Pattern.ReplaceAllString(original, rule.Replacement)
-		req.URL.Path = next
+		// Rewrite/redirect targets must stay same-origin relative paths (no open redirects).
+		safe := fsguard.SafeRelativeRedirect(next)
+		pathPart := safe
+		if q := strings.IndexByte(safe, '?'); q >= 0 {
+			pathPart = safe[:q]
+			// Only adopt query from replacement when the rule itself introduced one.
+			if strings.Contains(next, "?") {
+				req.URL.RawQuery = safe[q+1:]
+			}
+		}
+		req.URL.Path = pathPart
 		req.URL.RawPath = ""
 		if rule.RedirectCode >= 300 && rule.RedirectCode < 400 {
 			return true, rule.RedirectCode

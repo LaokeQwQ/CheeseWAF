@@ -15,6 +15,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 type contextKey string
@@ -27,6 +28,7 @@ type TokenManager struct {
 	secret []byte
 	ttl    time.Duration
 	ready  bool
+	now    func() time.Time
 }
 
 var readTokenManagerSecret = rand.Read
@@ -42,6 +44,10 @@ type Claims struct {
 }
 
 func NewTokenManager(secret string, ttl time.Duration) *TokenManager {
+	return NewTokenManagerWithClock(secret, ttl, timekeeper.SystemClock{})
+}
+
+func NewTokenManagerWithClock(secret string, ttl time.Duration, clock timekeeper.Clock) *TokenManager {
 	ready := true
 	if secret == "" {
 		buf := make([]byte, 32)
@@ -54,7 +60,7 @@ func NewTokenManager(secret string, ttl time.Duration) *TokenManager {
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
-	return &TokenManager{secret: []byte(secret), ttl: ttl, ready: ready && secret != ""}
+	return &TokenManager{secret: []byte(secret), ttl: ttl, ready: ready && secret != "", now: utcNowFunc(clock)}
 }
 
 func (m *TokenManager) Sign(subject, username, role string) (string, error) {
@@ -67,7 +73,7 @@ func (m *TokenManager) SignWithClaims(subject, username, role string) (string, *
 		return "", nil, fmt.Errorf("token manager signing secret is unavailable")
 	}
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
-	now := time.Now().UTC()
+	now := m.nowUTC()
 	tokenID, err := randomTokenID()
 	if err != nil {
 		return "", nil, err
@@ -106,7 +112,7 @@ func (m *TokenManager) Verify(token string) (*Claims, error) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, err
 	}
-	if time.Now().UTC().Unix() > claims.Expires {
+	if m.nowUTC().Unix() >= claims.Expires {
 		return nil, fmt.Errorf("token expired")
 	}
 	return &claims, nil
@@ -129,10 +135,14 @@ func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-type ManagementAPITokenConfigSource func() config.ManagementAPIConfig
-type ManagementAPITokenUseRecorder func(id string, at time.Time)
+type ManagementAPITokenAuthenticator func(raw string, at time.Time) (*Claims, func(), bool)
 
-func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionValidator, source ManagementAPITokenConfigSource, recordUse ManagementAPITokenUseRecorder) func(http.Handler) http.Handler {
+func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionValidator, authenticate ManagementAPITokenAuthenticator) func(http.Handler) http.Handler {
+	return ManagementAPIOrSessionMiddlewareWithClock(manager, validator, authenticate, timekeeper.SystemClock{})
+}
+
+func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator SessionValidator, authenticate ManagementAPITokenAuthenticator, clock timekeeper.Clock) func(http.Handler) http.Handler {
+	now := utcNowFunc(clock)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := bearerToken(r)
@@ -141,13 +151,17 @@ func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionVa
 				return
 			}
 			if strings.HasPrefix(token, ManagementAPITokenPrefix) {
-				claims, ok := verifyManagementAPIToken(token, source)
+				if authenticate == nil {
+					writeUnauthorized(w)
+					return
+				}
+				claims, release, ok := authenticate(token, now())
 				if !ok {
 					writeUnauthorized(w)
 					return
 				}
-				if recordUse != nil {
-					recordUse(claims.ID, time.Now().UTC())
+				if release != nil {
+					defer release()
 				}
 				ctx := context.WithValue(r.Context(), UserContextKey, claims)
 				next.ServeHTTP(w, r.WithContext(ctx))
@@ -163,7 +177,7 @@ func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionVa
 				writeUnauthorized(w)
 				return
 			}
-			active, err := validator.IsSessionActive(r.Context(), claims.ID, claims.Subject, time.Now().UTC())
+			active, err := validator.IsSessionActive(r.Context(), claims.ID, claims.Subject, now())
 			if err != nil || !active {
 				writeUnauthorized(w)
 				return
@@ -179,15 +193,11 @@ func HashManagementAPIToken(raw string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-func verifyManagementAPIToken(raw string, source ManagementAPITokenConfigSource) (*Claims, bool) {
-	if source == nil {
-		return nil, false
-	}
-	cfg := source()
+func VerifyManagementAPIToken(raw string, cfg config.ManagementAPIConfig, now time.Time) (*Claims, bool) {
 	if !cfg.Enabled || strings.TrimSpace(raw) == "" {
 		return nil, false
 	}
-	now := time.Now().UTC()
+	now = now.UTC()
 	hash := HashManagementAPIToken(raw)
 	for _, token := range cfg.Tokens {
 		if !token.Enabled || token.ID == "" || token.Hash == "" || !token.RevokedAt.IsZero() {
@@ -229,6 +239,11 @@ type SessionValidator interface {
 }
 
 func SessionMiddleware(validator SessionValidator) func(http.Handler) http.Handler {
+	return SessionMiddlewareWithClock(validator, timekeeper.SystemClock{})
+}
+
+func SessionMiddlewareWithClock(validator SessionValidator, clock timekeeper.Clock) func(http.Handler) http.Handler {
+	now := utcNowFunc(clock)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if validator == nil {
@@ -240,13 +255,29 @@ func SessionMiddleware(validator SessionValidator) func(http.Handler) http.Handl
 				writeUnauthorized(w)
 				return
 			}
-			active, err := validator.IsSessionActive(r.Context(), claims.ID, claims.Subject, time.Now().UTC())
+			active, err := validator.IsSessionActive(r.Context(), claims.ID, claims.Subject, now())
 			if err != nil || !active {
 				writeUnauthorized(w)
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+func (m *TokenManager) nowUTC() time.Time {
+	if m == nil || m.now == nil {
+		return timekeeper.SystemClock{}.Now().UTC()
+	}
+	return m.now()
+}
+
+func utcNowFunc(clock timekeeper.Clock) func() time.Time {
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
+	return func() time.Time {
+		return clock.Now().UTC()
 	}
 }
 

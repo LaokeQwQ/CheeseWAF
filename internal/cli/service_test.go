@@ -13,7 +13,142 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
+	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
+
+func TestEnsureAdminTLSCertificateGeneratesOnce(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Server.AdminListen = "0.0.0.0:9443"
+	cfg.Server.AdminTLS.Enabled = true
+	cfg.Server.AdminTLS.SelfSigned = true
+	cfg.Server.AdminTLS.CertFile = filepath.Join(root, "certs", "admin.crt")
+	cfg.Server.AdminTLS.KeyFile = filepath.Join(root, "certs", "admin.key")
+
+	if err := ensureAdminTLSCertificate(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	certBefore, err := os.ReadFile(cfg.Server.AdminTLS.CertFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBefore, err := os.ReadFile(cfg.Server.AdminTLS.KeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certBefore) == 0 || len(keyBefore) == 0 {
+		t.Fatal("generated admin TLS material is empty")
+	}
+	if err = ensureAdminTLSCertificate(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	certAfter, _ := os.ReadFile(cfg.Server.AdminTLS.CertFile)
+	keyAfter, _ := os.ReadFile(cfg.Server.AdminTLS.KeyFile)
+	if !bytes.Equal(certBefore, certAfter) || !bytes.Equal(keyBefore, keyAfter) {
+		t.Fatal("existing admin TLS material was unexpectedly rotated")
+	}
+}
+
+func TestRepairRuntimeConfigPersistsSecretWhenConfigIsReadOnly(t *testing.T) {
+	root := t.TempDir()
+	configTarget := filepath.Join(root, "config-target")
+	if err := os.Mkdir(configTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Setup.RuntimeDir = filepath.Join(root, "run")
+	cfg.Protection.Bot.Secret = config.BotSecretPlaceholder
+	if err := repairRuntimeConfig(configTarget, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	firstSecret := cfg.Protection.Bot.Secret
+	if config.IsWeakBotSecret(firstSecret) {
+		t.Fatal("runtime fallback retained a weak Bot challenge secret")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Setup.RuntimeDir, "bot_secret")); err != nil {
+		t.Fatalf("runtime secret was not persisted: %v", err)
+	}
+
+	reloaded := config.Default()
+	reloaded.Setup.RuntimeDir = cfg.Setup.RuntimeDir
+	reloaded.Protection.Bot.Secret = config.BotSecretPlaceholder
+	if err := repairRuntimeConfig(configTarget, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Protection.Bot.Secret != firstSecret {
+		t.Fatal("runtime fallback secret was not stable across reload")
+	}
+}
+
+func TestResolveWebDirFindsReleaseAssetsBesideExecutable(t *testing.T) {
+	originalExecutablePath := executablePath
+	originalWebDir := os.Getenv("CHEESEWAF_WEB_DIR")
+	t.Cleanup(func() {
+		executablePath = originalExecutablePath
+		_ = os.Setenv("CHEESEWAF_WEB_DIR", originalWebDir)
+	})
+	_ = os.Unsetenv("CHEESEWAF_WEB_DIR")
+	root := t.TempDir()
+	webDir := filepath.Join(root, "web", "dist")
+	if err := os.MkdirAll(webDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return filepath.Join(root, "cheesewaf"), nil }
+	if got := resolveWebDir(); got != webDir {
+		t.Fatalf("resolveWebDir() = %q, want %q", got, webDir)
+	}
+}
+
+func TestValidateStartupUsersRejectsCompletedSetupWithoutAdministrator(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := storage.OpenSQLite(filepath.Join(dataDir, "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.MarkComplete(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartupUsers(ctx, dataDir, store); err == nil || !strings.Contains(err.Error(), "no administrator") {
+		t.Fatalf("expected missing administrator error, got %v", err)
+	}
+	if err := store.CreateUser(ctx, &storage.User{Username: "reader", PasswordHash: "hash", Role: "readonly"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartupUsers(ctx, dataDir, store); err == nil {
+		t.Fatal("expected readonly-only store to remain invalid")
+	}
+	if err := store.CreateUser(ctx, &storage.User{Username: "Cheese", PasswordHash: "hash", Role: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartupUsers(ctx, dataDir, store); err != nil {
+		t.Fatalf("expected administrator to satisfy integrity check: %v", err)
+	}
+}
+
+func TestValidateStartupUsersAllowsIncompleteFirstRun(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := storage.OpenSQLite(filepath.Join(dataDir, "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartupUsers(ctx, dataDir, store); err != nil {
+		t.Fatalf("first-run setup should remain available: %v", err)
+	}
+}
 
 func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 	webDir := t.TempDir()
@@ -203,6 +338,160 @@ func TestAdminHandlerSecurityEntryFailsClosedWhenNonceUnavailable(t *testing.T) 
 	}
 }
 
+func TestAdminHandlerSecurityEntryAPIForbiddenJSON(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	cfg := config.Default()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	cfg.Console.Login.SecurityEntry.CookieName = "cw_entry_test"
+	cfg.Monitor.Prometheus.Enabled = true
+	cfg.Monitor.Prometheus.Path = "/metrics"
+	cfg.Monitor.Prometheus.Public = false
+
+	var apiHits int
+	handler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiHits++
+		_, _ = w.Write([]byte("api:" + r.URL.Path))
+	}), "security-entry-secret")
+
+	const wantBody = `{"error":{"code":"FORBIDDEN","message":"admin entry required"}}`
+	assertAPIForbidden := func(t *testing.T, path string) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("%s: expected 403, got %d: %s", path, rr.Code, rr.Body.String())
+		}
+		if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Fatalf("%s: expected JSON content-type, got %q", path, ct)
+		}
+		if rr.Body.String() != wantBody {
+			t.Fatalf("%s: body = %q, want %q", path, rr.Body.String(), wantBody)
+		}
+		if strings.Contains(rr.Body.String(), "teapot") || strings.Contains(rr.Body.String(), "cheesewaf-login") {
+			t.Fatalf("%s: API denial must not return HTML/SPA, got %q", path, rr.Body.String())
+		}
+	}
+
+	assertAPIForbidden(t, "/api/v1/status")
+	assertAPIForbidden(t, "/api/auth/login")
+	assertAPIForbidden(t, "/metrics") // private metrics require entry cookie
+	if apiHits != 0 {
+		t.Fatalf("API handler must not run without entry cookie, hits=%d", apiHits)
+	}
+
+	// Console paths still get teapot HTML, never JSON.
+	console := httptest.NewRecorder()
+	handler.ServeHTTP(console, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if console.Code != http.StatusTeapot || !strings.Contains(console.Body.String(), "418 I'm a teapot") {
+		t.Fatalf("expected console teapot HTML, got %d: %s", console.Code, console.Body.String())
+	}
+
+	// Health and public metrics stay open without the entry cookie.
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if health.Code != http.StatusOK || health.Body.String() != "api:/health" {
+		t.Fatalf("expected open /health, got %d: %s", health.Code, health.Body.String())
+	}
+
+	cfg.Monitor.Prometheus.Public = true
+	publicHandler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("api:" + r.URL.Path))
+	}), "security-entry-secret")
+	publicMetrics := httptest.NewRecorder()
+	publicHandler.ServeHTTP(publicMetrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if publicMetrics.Code != http.StatusOK || publicMetrics.Body.String() != "api:/metrics" {
+		t.Fatalf("expected open public /metrics, got %d: %s", publicMetrics.Code, publicMetrics.Body.String())
+	}
+
+	// Correct entry path remains entry (cookie + redirect), never API JSON.
+	entry := httptest.NewRecorder()
+	handler.ServeHTTP(entry, httptest.NewRequest(http.MethodGet, "/secure-admin", nil))
+	if entry.Code != http.StatusFound {
+		t.Fatalf("expected entry redirect, got %d: %s", entry.Code, entry.Body.String())
+	}
+	if loc := entry.Header().Get("Location"); loc != "/login" {
+		t.Fatalf("entry Location = %q, want /login", loc)
+	}
+	cookies := entry.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "cw_entry_test" {
+		t.Fatalf("expected entry cookie, got %+v", cookies)
+	}
+
+	// With a valid entry cookie, API routes through to the handler.
+	apiReq := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	apiReq.AddCookie(cookies[0])
+	allowed := httptest.NewRecorder()
+	handler.ServeHTTP(allowed, apiReq)
+	if allowed.Code != http.StatusOK || allowed.Body.String() != "api:/api/v1/status" {
+		t.Fatalf("expected API with entry cookie, got %d: %s", allowed.Code, allowed.Body.String())
+	}
+
+	// Entry path configured under /api/* must still mint cookie + redirect, not JSON 403.
+	cfg.Console.Login.SecurityEntry.Path = "/api/hidden-entry"
+	apiEntryHandler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("api:" + r.URL.Path))
+	}), "security-entry-secret")
+	apiEntry := httptest.NewRecorder()
+	apiEntryHandler.ServeHTTP(apiEntry, httptest.NewRequest(http.MethodGet, "/api/hidden-entry", nil))
+	if apiEntry.Code != http.StatusFound {
+		t.Fatalf("entry under /api must redirect, got %d: %s", apiEntry.Code, apiEntry.Body.String())
+	}
+	if apiEntry.Header().Get("Location") != "/login" {
+		t.Fatalf("entry under /api Location = %q, want /login", apiEntry.Header().Get("Location"))
+	}
+	if strings.Contains(apiEntry.Body.String(), "admin entry required") {
+		t.Fatalf("entry path must never be treated as API denial: %s", apiEntry.Body.String())
+	}
+
+	// Non-GET on entry path is teapot, not API JSON.
+	badMethod := httptest.NewRecorder()
+	apiEntryHandler.ServeHTTP(badMethod, httptest.NewRequest(http.MethodPost, "/api/hidden-entry", nil))
+	if badMethod.Code != http.StatusTeapot {
+		t.Fatalf("expected non-GET entry to teapot, got %d: %s", badMethod.Code, badMethod.Body.String())
+	}
+}
+
+func TestAdminHandlerSecurityEntryAPIForbiddenWhenSecretMissing(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	cfg := config.Default()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	cfg.Protection.Bot.Secret = "" // no fallback binding secret
+	// Empty auth secret + weak/empty bot secret → fail closed.
+	handler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("API handler must not run when entry secret is missing")
+	}), "")
+
+	api := httptest.NewRecorder()
+	handler.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+	if api.Code != http.StatusForbidden {
+		t.Fatalf("expected JSON 403 without secret, got %d: %s", api.Code, api.Body.String())
+	}
+	if !strings.Contains(api.Body.String(), `"code":"FORBIDDEN"`) || !strings.Contains(api.Body.String(), "admin entry required") {
+		t.Fatalf("unexpected API body: %s", api.Body.String())
+	}
+	if ct := api.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("expected JSON content-type, got %q", ct)
+	}
+
+	ui := httptest.NewRecorder()
+	handler.ServeHTTP(ui, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if ui.Code != http.StatusTeapot {
+		t.Fatalf("expected console teapot without secret, got %d: %s", ui.Code, ui.Body.String())
+	}
+}
+
 func TestAdminHandlerCachesAndCompressesStaticAssets(t *testing.T) {
 	webDir := t.TempDir()
 	assets := filepath.Join(webDir, "assets")
@@ -272,6 +561,49 @@ func assertAdminSecurityHeaders(t *testing.T, rr *httptest.ResponseRecorder, wan
 	}
 	if !wantHSTS && hsts != "" {
 		t.Fatalf("did not expect HSTS on HTTP admin response, got %q", hsts)
+	}
+}
+
+func TestBuildPipelineUsesSingleSemanticAnalyzerPath(t *testing.T) {
+	cfg := &config.Config{
+		Sites: []config.SiteConfig{
+			{
+				ID:      "default",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+					SemanticEngines: config.SemanticEngineSwitches{
+						SQL:  true,
+						XSS:  true,
+						RCE:  true,
+						LFI:  true,
+						XXE:  true,
+						SSRF: true,
+					},
+				},
+			},
+		},
+	}
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SQLi should be detected by Analyzer, not a standalone detector id.
+	req, _ := http.NewRequest(http.MethodGet, "/search?q=1%20union%20select%20password%20from%20users", nil)
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pipeline.Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "sqli" {
+		t.Fatalf("expected analyzer sqli detection, got %+v", result)
+	}
+	if !strings.HasPrefix(result.DetectorID, "semantic.analyzer") {
+		t.Fatalf("expected single analyzer detector id, got %q", result.DetectorID)
 	}
 }
 

@@ -3,10 +3,99 @@ package deploy
 import (
 	"context"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestTaskManagerRejectsConcurrentTaskForSameTarget(t *testing.T) {
+	block := make(chan struct{})
+	runner := &blockingTaskRunner{block: block}
+	manager := NewTaskManager(TaskManagerOptions{Runner: runner})
+	first, err := manager.Start(context.Background(), SSHDeploymentRequest{Host: "node-a", User: "root", Password: "secret", HostKeySHA256: "SHA256:abc", Action: "check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Start(context.Background(), SSHDeploymentRequest{Host: "NODE-A", User: "root", Password: "secret", HostKeySHA256: "SHA256:abc", Action: "check"}); err == nil {
+		t.Fatal("expected same-target task conflict")
+	}
+	close(block)
+	waitTaskStatus(t, manager, first.ID, TaskStatusSucceeded)
+}
+
+func TestTaskManagerRejectsSameTargetWithDifferentSSHUser(t *testing.T) {
+	block := make(chan struct{})
+	manager := NewTaskManager(TaskManagerOptions{Runner: &blockingTaskRunner{block: block}})
+	first, err := manager.Start(context.Background(), SSHDeploymentRequest{Host: "node-a", User: "root", Password: "secret", HostKeySHA256: "SHA256:abc", Action: "check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Start(context.Background(), SSHDeploymentRequest{Host: "node-a", User: "admin", Password: "secret", HostKeySHA256: "SHA256:abc", Action: "check"}); err == nil {
+		t.Fatal("expected same-node task conflict across SSH users")
+	}
+	close(block)
+	waitTaskStatus(t, manager, first.ID, TaskStatusSucceeded)
+}
+
+func TestTaskManagerCapacityCheckIsAtomic(t *testing.T) {
+	block := make(chan struct{})
+	manager := NewTaskManager(TaskManagerOptions{Runner: &blockingTaskRunner{block: block}, MaxTasks: 1})
+	first, err := manager.Start(context.Background(), SSHDeploymentRequest{Host: "node-a", User: "root", Password: "secret", HostKeySHA256: "SHA256:abc", Action: "check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Start(context.Background(), SSHDeploymentRequest{Host: "node-b", User: "root", Password: "secret", HostKeySHA256: "SHA256:def", Action: "check"}); err == nil {
+		t.Fatal("expected task capacity conflict")
+	}
+	close(block)
+	waitTaskStatus(t, manager, first.ID, TaskStatusSucceeded)
+}
+
+func TestTaskManagerListPageIsSummaryAndTTLBounded(t *testing.T) {
+	now := time.Now().UTC()
+	manager := NewTaskManager(TaskManagerOptions{Runner: &stubTaskRunner{checkResult: CheckResult{OK: true, Message: "token=secret"}}, Now: func() time.Time { return now }, TTL: time.Minute, MaxTasks: 2})
+	task, err := manager.Start(context.Background(), SSHDeploymentRequest{Host: "node-a", User: "root", Password: "secret", HostKeySHA256: "SHA256:abc", Action: "check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTaskStatus(t, manager, task.ID, TaskStatusSucceeded)
+	items, total := manager.ListPage(0, 1)
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("page total=%d len=%d", total, len(items))
+	}
+	if strings.Contains(fmt.Sprintf("%+v", items[0]), "secret") {
+		t.Fatal("summary leaked secret")
+	}
+	now = now.Add(2 * time.Minute)
+	items, total = manager.ListPage(0, 10)
+	if total != 0 || len(items) != 0 {
+		t.Fatal("expired task was not collected")
+	}
+}
+
+func TestTaskManagerGetCollectsExpiredTask(t *testing.T) {
+	now := time.Now().UTC()
+	manager := NewTaskManager(TaskManagerOptions{Runner: &stubTaskRunner{checkResult: CheckResult{OK: true}}, Now: func() time.Time { return now }, TTL: time.Minute})
+	task, err := manager.Start(context.Background(), SSHDeploymentRequest{Host: "node-a", User: "root", Password: "secret", HostKeySHA256: "SHA256:abc", Action: "check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTaskStatus(t, manager, task.ID, TaskStatusSucceeded)
+	now = now.Add(2 * time.Minute)
+	if _, ok := manager.Get(task.ID); ok {
+		t.Fatal("expired task remained available through detail lookup")
+	}
+}
+
+func TestRandomTaskIDUsesUUIDShape(t *testing.T) {
+	id := randomTaskID()
+	if !regexp.MustCompile(`^deploy-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`).MatchString(id) {
+		t.Fatalf("unexpected id %q", id)
+	}
+}
 
 func TestTaskManagerStoresRedactedDeploymentResult(t *testing.T) {
 	secret := "task-secret"
@@ -279,6 +368,35 @@ type stubTaskRunner struct {
 	checkErr     error
 	deployResult DeployResult
 	deployErr    error
+}
+
+type blockingTaskRunner struct {
+	block   <-chan struct{}
+	once    sync.Once
+	started chan struct{}
+}
+
+func (r *blockingTaskRunner) Check(ctx context.Context, req SSHDeploymentRequest) (CheckResult, error) {
+	r.once.Do(func() {
+		if r.started != nil {
+			close(r.started)
+		}
+	})
+	select {
+	case <-ctx.Done():
+		return CheckResult{}, ctx.Err()
+	case <-r.block:
+		return CheckResult{OK: true, Host: req.Host}, nil
+	}
+}
+
+func (r *blockingTaskRunner) Deploy(ctx context.Context, req SSHDeploymentRequest) (DeployResult, error) {
+	select {
+	case <-ctx.Done():
+		return DeployResult{}, ctx.Err()
+	case <-r.block:
+		return DeployResult{OK: true, Host: req.Host}, nil
+	}
 }
 
 func (r *stubTaskRunner) Check(context.Context, SSHDeploymentRequest) (CheckResult, error) {

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Activity, Cpu, HardDrive, Maximize2, MemoryStick, Recycle, RotateCcw, ShieldCheck, Zap } from 'lucide-react';
+import { Activity, ChevronRight, Cpu, HardDrive, Maximize2, MemoryStick, Recycle, RotateCcw, Server, ShieldCheck, Zap } from 'lucide-react';
 import { fetchLogs, fetchMonitorSummary, fetchSites, reclaimSystemResources } from '../../api/client';
 import type { LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
@@ -14,6 +14,13 @@ const totalsRefreshMs = 10_000;
 const refreshOptions = [1000, 3000, 5000, 10000];
 const customStatsRangeValue = -1;
 const dateTimePickerFormat = 'YYYY-MM-DD HH:mm';
+/** Wheel-zoom floor: never show a thinner slice than this fraction of the period. */
+const CHART_MIN_WINDOW_RATIO = 0.25;
+/**
+ * Minimum horizontal scale per bucket (px). Time labels like "08:42" need ~40px+;
+ * below this they ellipsis into "0....".
+ */
+const CHART_MIN_BAR_WIDTH_PX = 48;
 const statsRangeOptions = [
   { value: 30, labelKey: 'dashboard.last30m' },
   { value: 60, labelKey: 'dashboard.last60m' },
@@ -35,20 +42,29 @@ export default function DashboardPage() {
   const [statsRange, setStatsRange] = useState(60);
   const [refreshMs, setRefreshMs] = useState(3000);
   const [customRange, setCustomRange] = useState<[string, string]>(() => defaultCustomRange());
+  /** 1 = full period; lower = wheel-zoom into the latest segment. */
   const [chartWindowRatio, setChartWindowRatio] = useState(1);
-  const [hoveredTrafficIndex, setHoveredTrafficIndex] = useState<number | null>(null);
   const totalsChartRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const el = totalsChartRef.current;
-    if (!el) return;
-    function onWheel(e: globalThis.WheelEvent) {
-      e.preventDefault();
-      setChartWindowRatio((value) => Math.max(0.2, Math.min(1, Number((value + (e.deltaY > 0 ? 0.1 : -0.1)).toFixed(2)))));
+    if (!el) {
+      return undefined;
+    }
+    function onWheel(event: globalThis.WheelEvent) {
+      // Keep vertical wheel as chart zoom (original behavior); horizontal trackpad pan still scrolls.
+      if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) {
+        return;
+      }
+      event.preventDefault();
+      setChartWindowRatio((value) =>
+        Math.max(CHART_MIN_WINDOW_RATIO, Math.min(1, Number((value + (event.deltaY > 0 ? 0.1 : -0.1)).toFixed(2)))),
+      );
     }
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
+
   const { data: monitor, isLoading: loadingMonitor, isFetching: fetchingMonitor, refetch: refetchMonitor } = useQuery({
     queryKey: ['monitor-summary'],
     queryFn: fetchMonitorSummary,
@@ -101,6 +117,7 @@ export default function DashboardPage() {
   const traffic = useMemo(() => buildTraffic(entries, statsWindow.start, statsWindow.end), [entries, statsWindow.end, statsWindow.start]);
   const visibleTraffic = useMemo(() => sliceVisibleTraffic(traffic, chartWindowRatio), [chartWindowRatio, traffic]);
   const securityEntries = useMemo(() => entries.filter(isSecurityEvent), [entries]);
+  const visibleSecurityEntries = useMemo(() => securityEntries.slice(0, 6), [securityEntries]);
   const liveSeries = useMemo(() => buildRealtimeSeries(liveEntries, realtimeWindowSeconds), [liveEntries]);
   const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
   const averageLatency = useMemo(() => averageRequestLatency(entries), [entries]);
@@ -128,6 +145,8 @@ export default function DashboardPage() {
   const maxTraffic = Math.max(...visibleTraffic.map((point) => point.count), 1);
   const yMax = niceAxisMax(maxTraffic);
   const yMid = formatNumber(Math.round(yMax / 2));
+  // Enforce min scale so 24h/7d axis labels (e.g. 08:42) stay readable and scroll instead of crushing.
+  const chartMinWidthPx = Math.max(visibleTraffic.length * CHART_MIN_BAR_WIDTH_PX, 0);
   const monitorState = snapshot
     ? { color: 'green', label: t('common.online') }
     : { color: loadingMonitor ? 'blue' : 'orange', label: loadingMonitor ? t('common.loading') : t('shell.connectionReconnecting') };
@@ -239,40 +258,44 @@ export default function DashboardPage() {
               </div>
             </div>
             <Spin loading={loading}>
-              <div
-                ref={totalsChartRef}
-                className="traffic-chart"
-                aria-label={t('dashboard.totals')}
-              >
+              <div ref={totalsChartRef} className="traffic-chart" aria-label={t('dashboard.totals')}>
                 <div className="chart-y-axis" aria-hidden="true">
                   <span>{yMax}</span>
                   <span>{yMid}</span>
                   <span>0</span>
                 </div>
-                <div className="chart-plot" style={{ '--bar-count': visibleTraffic.length } as CSSProperties}>
-                  {visibleTraffic.map((point, index) => (
-                    <span
-                      key={`${point.label}-${index}`}
-                      className="chart-bar"
-                      style={{ height: `${Math.max((point.count / yMax) * 100, point.count > 0 ? 5 : 2)}%` }}
-                      onMouseEnter={() => setHoveredTrafficIndex(index)}
-                      onMouseLeave={() => setHoveredTrafficIndex(null)}
-                      aria-hidden="true"
-                    >
-                      <i />
-                      {hoveredTrafficIndex === index && (
-                        <span className="chart-hover-label">
-                          <strong>{formatNumber(point.count)}</strong>
-                          <span>{t('dashboard.trafficRequests')} | {point.label}</span>
+                <div className="chart-scroll" tabIndex={0} aria-label={t('dashboard.chartScrollAria')}>
+                  <div
+                    className="chart-scroll-body"
+                    style={{
+                      '--bar-count': Math.max(visibleTraffic.length, 1),
+                      minWidth: chartMinWidthPx > 0 ? `${chartMinWidthPx}px` : undefined,
+                    } as CSSProperties}
+                  >
+                    <div className="chart-plot">
+                      {visibleTraffic.map((point, index) => (
+                        <span
+                          key={`${point.label}-${index}`}
+                          className="chart-bar"
+                          style={{ height: `${Math.max((point.count / yMax) * 100, point.count > 0 ? 5 : 2)}%` }}
+                          title={`${formatNumber(point.count)} · ${point.label}`}
+                          aria-hidden="true"
+                        >
+                          <i />
                         </span>
-                      )}
-                    </span>
-                  ))}
-                </div>
-                <div className="chart-x-axis" aria-hidden="true">
-                  <span>{visibleTraffic[0]?.label ?? '-'}</span>
-                  <span>{visibleTraffic[Math.floor(visibleTraffic.length / 2)]?.label ?? '-'}</span>
-                  <span>{visibleTraffic[visibleTraffic.length - 1]?.label ?? '-'}</span>
+                      ))}
+                    </div>
+                    <div className="chart-x-axis chart-x-axis-scroll" aria-hidden="true">
+                      {visibleTraffic.map((point, index) => {
+                        const show = shouldShowChartTick(index, visibleTraffic.length);
+                        return (
+                          <span key={`tick-${point.label}-${index}`} className={show ? 'chart-x-tick' : 'chart-x-tick chart-x-tick-hidden'}>
+                            {show ? point.label : ''}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
             </Spin>
@@ -283,47 +306,60 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          <section className="panel panel-wide">
-            <div className="panel-heading">
+          <section className="panel panel-wide dashboard-events-panel">
+            <div className="panel-heading dashboard-events-heading">
               <h2>{t('dashboard.events')}</h2>
+              <Link
+                className="dashboard-events-more"
+                to="/logs"
+                aria-label={t('dashboard.eventsOpenLogs')}
+                title={t('dashboard.eventsOpenLogs')}
+              >
+                <ChevronRight size={16} strokeWidth={2.25} aria-hidden="true" />
+              </Link>
             </div>
-            <div className="event-list event-list-table" role="table" aria-label={t('dashboard.events')}>
-              <div className="event-row event-row-head" role="row">
-                <span>{t('dashboard.eventTime')}</span>
-                <span>{t('dashboard.eventId')}</span>
-                <span>{t('dashboard.sourceIp')}</span>
-                <span>{t('dashboard.ipLocation')}</span>
-                <span>{t('dashboard.attackType')}</span>
-                <span>{t('dashboard.action')}</span>
-              </div>
-              {securityEntries.length === 0 && <div className="empty-state">{t('dashboard.noSecurityEvents')}</div>}
-              {securityEntries.slice(0, 6).map((event) => (
-                <div className="event-row" key={event.id || event.trace_id || `${event.client_ip}-${event.timestamp}`}>
-                  <span className="event-time" data-label={t('dashboard.eventTime')} title={event.timestamp}>{formatEventTime(event.timestamp)}</span>
-                  <Link
-                    className="event-trace-link"
-                    data-label={t('dashboard.eventId')}
-                    to={`/logs/${encodeURIComponent(event.trace_id || event.id || '-')}`}
-                    title={event.trace_id || event.id || '-'}
-                  >
-                    <code className="event-trace">{event.trace_id || event.id || '-'}</code>
-                  </Link>
-                  <span className="event-source" data-label={t('dashboard.sourceIp')} title={event.client_ip || '-'}>
-                    {event.client_ip || '-'}
-                  </span>
-                  <span className="event-country" data-label={t('dashboard.ipLocation')} title={eventLocationLabel(event, t)}>
-                    {eventLocationLabel(event, t)}
-                  </span>
-                  <span className="event-status-group" data-label={t('dashboard.attackType')}>
-                    <Tag color={event.category ? 'orange' : event.action === 'pass' || !event.action ? 'green' : 'blue'}>{eventCategoryLabel(event, t)}</Tag>
-                  </span>
-                  <span className="event-status-group" data-label={t('dashboard.action')}>
-                    <Tag color={event.action === 'block' ? 'red' : 'blue'}>
-                      {displayAction(event.action, t)}
-                    </Tag>
-                  </span>
+            <div className="event-list-scroll" tabIndex={0} aria-label={t('dashboard.eventScrollAria')}>
+              <div className="event-list event-list-table" role="table" aria-label={t('dashboard.events')}>
+                <div className="event-row event-row-head" role="row">
+                  <span className="event-col-time">{t('dashboard.eventTime')}</span>
+                  <span className="event-col-id">{t('dashboard.eventId')}</span>
+                  <span className="event-col-ip">{t('dashboard.sourceIp')}</span>
+                  <span className="event-col-geo">{t('dashboard.ipLocation')}</span>
+                  <span className="event-col-type">{t('dashboard.attackType')}</span>
+                  <span className="event-col-action">{t('dashboard.action')}</span>
                 </div>
-              ))}
+                {visibleSecurityEntries.length === 0 && <div className="empty-state">{t('dashboard.noSecurityEvents')}</div>}
+                {visibleSecurityEntries.map((event) => {
+                  const eventKey = event.id || event.trace_id || `${event.client_ip}-${event.timestamp}`;
+                  return (
+                    <div className="event-row" key={eventKey} role="row">
+                      <span className="event-time event-col-time" data-label={t('dashboard.eventTime')} title={event.timestamp}>{formatEventTime(event.timestamp)}</span>
+                      <Link
+                        className="event-trace-link event-col-id"
+                        data-label={t('dashboard.eventId')}
+                        to={`/logs/${encodeURIComponent(event.trace_id || event.id || '-')}`}
+                        title={event.trace_id || event.id || '-'}
+                      >
+                        <code className="event-trace">{event.trace_id || event.id || '-'}</code>
+                      </Link>
+                      <span className="event-source event-col-ip" data-label={t('dashboard.sourceIp')} title={event.client_ip || '-'}>
+                        {event.client_ip || '-'}
+                      </span>
+                      <span className="event-country event-col-geo" data-label={t('dashboard.ipLocation')} title={eventLocationLabel(event, t)}>
+                        {eventLocationLabel(event, t)}
+                      </span>
+                      <span className="event-status-group event-col-type" data-label={t('dashboard.attackType')}>
+                        <Tag color={event.category ? 'orange' : event.action === 'pass' || !event.action ? 'green' : 'blue'}>{eventCategoryLabel(event, t)}</Tag>
+                      </span>
+                      <span className="event-status-group event-col-action" data-label={t('dashboard.action')}>
+                        <Tag color={event.action === 'block' ? 'red' : 'blue'}>
+                          {displayAction(event.action, t)}
+                        </Tag>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </section>
         </div>
@@ -407,26 +443,26 @@ export default function DashboardPage() {
                 <strong>{formatPercent(host?.disk_percent ?? 0)}</strong>
                 <small>{formatCapacity(host?.disk_used ?? 0, host?.disk_total ?? 0, t)}</small>
               </div>
+              <div className="resource-row" aria-label={t('dashboard.processRuntime')}>
+                <Server size={18} />
+                <span>{t('dashboard.runtimeServiceProcesses')}</span>
+                <span className="resource-row-track" aria-hidden="true" />
+                <strong>{formatNumber(snapshot?.process_count ?? (snapshot ? 1 : 0))}</strong>
+              </div>
+              <div className="resource-row">
+                <Zap size={18} />
+                <span>{t('dashboard.runtimeServiceMemory')}</span>
+                <span className="resource-row-track" aria-hidden="true" />
+                <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
+              </div>
             </div>
-            <div className="resource-runtime-block" aria-label={t('dashboard.processRuntime')}>
-              <div className="resource-runtime-grid">
-                <div className="resource-runtime-item">
-                  <span>{t('dashboard.runtimeServiceProcesses')}</span>
-                  <strong>{formatNumber(snapshot?.process_count ?? (snapshot ? 1 : 0))}</strong>
-                </div>
-                <div className="resource-runtime-item">
-                  <span>{t('dashboard.runtimeServiceMemory')}</span>
-                  <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
-                </div>
-              </div>
-              <div className="resource-runtime-actions">
-                <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('memory')}>
-                  {t('dashboard.reclaimMemory')}
-                </Button>
-                <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('swap')}>
-                  {t('dashboard.reclaimSwap')}
-                </Button>
-              </div>
+            <div className="resource-actions">
+              <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('memory')}>
+                {t('dashboard.reclaimMemory')}
+              </Button>
+              <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('swap')}>
+                {t('dashboard.reclaimSwap')}
+              </Button>
             </div>
           </section>
 
@@ -521,6 +557,17 @@ function sliceVisibleTraffic(points: Array<{ count: number; label: string }>, ra
   }
   const size = Math.max(2, Math.ceil(points.length * ratio));
   return points.slice(Math.max(0, points.length - size));
+}
+
+function shouldShowChartTick(index: number, total: number) {
+  if (total <= 8) {
+    return true;
+  }
+  if (index === 0 || index === total - 1) {
+    return true;
+  }
+  const step = Math.max(1, Math.ceil(total / 8));
+  return index % step === 0;
 }
 
 function niceAxisMax(value: number) {
