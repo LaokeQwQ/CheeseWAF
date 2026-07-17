@@ -378,10 +378,13 @@ func TestCAPTCHAAttemptCapacityFailsClosedAndRecordsNewFailure(t *testing.T) {
 	})
 	request := httptest.NewRequest(http.MethodGet, "https://example.test/protected", nil)
 	request.Header.Set("User-Agent", "browser-a")
+	// Keep all seeded entries far in the future so slow Windows CI fill loops
+	// do not let purgeCAPTCHAAttemptsLocked drop capacity before the assertion.
 	now := policy.now().Unix()
+	far := now + int64((24 * time.Hour).Seconds())
 	policy.mu.Lock()
 	for i := 0; i < maxCAPTCHAAttemptEntries; i++ {
-		policy.attempts[fmt.Sprintf("filled-%d", i)] = captchaAttempt{expires: now + int64(i+1)}
+		policy.attempts[fmt.Sprintf("filled-%d", i)] = captchaAttempt{expires: far + int64(i)}
 	}
 	policy.mu.Unlock()
 
