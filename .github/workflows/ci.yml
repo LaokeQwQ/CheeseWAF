@@ -145,7 +145,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         working-directory: web
-        run: npm ci
+        # @agent-eyes postinstall runs `pnpm build`; published dist is usable without it.
+        run: npm ci --ignore-scripts
       - name: Run CAPTCHA contract tests
         working-directory: web
         run: npm run test:captcha-contract
@@ -194,7 +195,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         working-directory: web
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Audit web dependencies
         working-directory: web
         run: npm audit --audit-level=high

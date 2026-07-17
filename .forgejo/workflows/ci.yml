@@ -130,7 +130,7 @@ jobs:
       - name: Install dependencies
         working-directory: web
         shell: bash
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Run CAPTCHA contract tests
         working-directory: web
         shell: bash
@@ -181,7 +181,7 @@ jobs:
       - name: Install dependencies
         working-directory: web
         shell: bash
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Audit web dependencies
         working-directory: web
         shell: bash
