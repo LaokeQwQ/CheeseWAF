@@ -521,19 +521,31 @@ function SliderBody({
   const width = challenge.presentation.width ?? 320;
   const height = challenge.presentation.height ?? 180;
   const pieceSize = challenge.presentation.piece_size ?? 64;
-  const pieceY =
+  const startY =
     challenge.presentation.piece_y ?? Math.round((height - pieceSize) / 2);
+  // Absolute track angle is sealed under 45°; user still drags the range right.
+  const trackAngleDeg = Math.max(
+    -44,
+    Math.min(44, Number(challenge.presentation.track_angle ?? 0) || 0),
+  );
+  const travel = Math.max(1, width - pieceSize);
+  const pieceX = (value / 10000) * travel;
+  const pieceY =
+    startY + pieceX * Math.tan((trackAngleDeg * Math.PI) / 180);
   const pieceStyle = {
-    left: `${value / 100}%`,
+    left: `${(pieceX / width) * 100}%`,
     top: `${(pieceY / height) * 100}%`,
     width: `${(pieceSize / width) * 100}%`,
     height: `${(pieceSize / height) * 100}%`,
-    transform: `translateX(-${value / 100}%)`,
   };
-  const pointFor = (v: number) => ({
-    x: v,
-    y: Math.round(((pieceY + pieceSize / 2) / height) * 10000),
-  });
+  const pointFor = (v: number) => {
+    const xPx = (v / 10000) * travel;
+    const yPx = startY + xPx * Math.tan((trackAngleDeg * Math.PI) / 180);
+    return {
+      x: v,
+      y: Math.round(((yPx + pieceSize / 2) / height) * 10000),
+    };
+  };
   const change = (v: number) => {
     setStatus("interacting");
     setValue(v);

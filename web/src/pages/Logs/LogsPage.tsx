@@ -1,4 +1,4 @@
-import { Button, Input, Select, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, Select, Tag } from '@arco-design/web-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -92,7 +92,7 @@ export default function LogsPage() {
           {isLoading && Array.from({ length: 4 }).map((_, index) => (
             <div className="security-event-row security-event-skeleton" key={index} />
           ))}
-          {!isLoading && pageItems.length === 0 && <div className="empty-state">{t('common.noData')}</div>}
+          {!isLoading && pageItems.length === 0 && <Empty description={t('common.noData')} />}
           {!isLoading && pageItems.map((entry) => (
             <article className="security-event-row" key={entry.id || entry.trace_id}>
               <div className="security-event-cell security-event-trace" data-label={t('logs.trace')}>

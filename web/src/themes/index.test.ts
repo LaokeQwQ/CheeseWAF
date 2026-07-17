@@ -11,6 +11,9 @@ describe('theme bootstrap', () => {
   it('reads a valid persisted theme before React mounts', () => {
     localStorage.setItem('cheesewaf-ui', JSON.stringify({ state: { theme: 'blackGold' } }));
     expect(readInitialTheme()).toBe('blackGold');
+
+    localStorage.setItem('cheesewaf-ui', JSON.stringify({ state: { theme: 'mikuGreen' } }));
+    expect(readInitialTheme()).toBe('mikuGreen');
   });
 
   it('falls back safely when persisted preferences are invalid', () => {
@@ -27,6 +30,11 @@ describe('theme bootstrap', () => {
     applyTheme('blueWhite');
     expect(document.documentElement.dataset.theme).toBe('blue-white');
     expect(document.body.hasAttribute('arco-theme')).toBe(false);
+
+    applyTheme('pinkWhite');
+    expect(document.documentElement.dataset.theme).toBe('pink-white');
+    expect(document.documentElement.style.colorScheme).toBe('light');
+    expect(document.body.hasAttribute('arco-theme')).toBe(false);
   });
 
   it('loads every theme stylesheet before it is activated', async () => {
@@ -34,5 +42,7 @@ describe('theme bootstrap', () => {
     await expect(loadThemeStyles('dark')).resolves.toBeUndefined();
     await expect(loadThemeStyles('blackGold')).resolves.toBeUndefined();
     await expect(loadThemeStyles('blueWhite')).resolves.toBeUndefined();
+    await expect(loadThemeStyles('pinkWhite')).resolves.toBeUndefined();
+    await expect(loadThemeStyles('mikuGreen')).resolves.toBeUndefined();
   });
 });

@@ -148,15 +148,15 @@ func (c *Controller) Restart() error {
 // Paths returns important filesystem locations for the UI.
 func (c *Controller) Paths() map[string]string {
 	return map[string]string{
-		"binary":      c.opts.Binary,
-		"config":      c.opts.ConfigPath,
-		"data_dir":    c.opts.DataDir,
-		"admin_url":   c.opts.AdminURL,
-		"config_dir":  filepath.Dir(c.opts.ConfigPath),
-		"controller":  c.opts.Listen,
-		"autostart":   strconv.FormatBool(IsAutostartEnabled()),
-		"goos":        runtime.GOOS,
-		"goarch":      runtime.GOARCH,
+		"binary":     c.opts.Binary,
+		"config":     c.opts.ConfigPath,
+		"data_dir":   c.opts.DataDir,
+		"admin_url":  c.opts.AdminURL,
+		"config_dir": filepath.Dir(c.opts.ConfigPath),
+		"controller": c.opts.Listen,
+		"autostart":  strconv.FormatBool(IsAutostartEnabled()),
+		"goos":       runtime.GOOS,
+		"goarch":     runtime.GOARCH,
 	}
 }
 
@@ -202,4 +202,3 @@ func (c *Controller) View() (Snapshot, error) {
 		Time:   time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
-

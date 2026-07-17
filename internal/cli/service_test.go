@@ -338,6 +338,160 @@ func TestAdminHandlerSecurityEntryFailsClosedWhenNonceUnavailable(t *testing.T) 
 	}
 }
 
+func TestAdminHandlerSecurityEntryAPIForbiddenJSON(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	cfg := config.Default()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	cfg.Console.Login.SecurityEntry.CookieName = "cw_entry_test"
+	cfg.Monitor.Prometheus.Enabled = true
+	cfg.Monitor.Prometheus.Path = "/metrics"
+	cfg.Monitor.Prometheus.Public = false
+
+	var apiHits int
+	handler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiHits++
+		_, _ = w.Write([]byte("api:" + r.URL.Path))
+	}), "security-entry-secret")
+
+	const wantBody = `{"error":{"code":"FORBIDDEN","message":"admin entry required"}}`
+	assertAPIForbidden := func(t *testing.T, path string) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("%s: expected 403, got %d: %s", path, rr.Code, rr.Body.String())
+		}
+		if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Fatalf("%s: expected JSON content-type, got %q", path, ct)
+		}
+		if rr.Body.String() != wantBody {
+			t.Fatalf("%s: body = %q, want %q", path, rr.Body.String(), wantBody)
+		}
+		if strings.Contains(rr.Body.String(), "teapot") || strings.Contains(rr.Body.String(), "cheesewaf-login") {
+			t.Fatalf("%s: API denial must not return HTML/SPA, got %q", path, rr.Body.String())
+		}
+	}
+
+	assertAPIForbidden(t, "/api/v1/status")
+	assertAPIForbidden(t, "/api/auth/login")
+	assertAPIForbidden(t, "/metrics") // private metrics require entry cookie
+	if apiHits != 0 {
+		t.Fatalf("API handler must not run without entry cookie, hits=%d", apiHits)
+	}
+
+	// Console paths still get teapot HTML, never JSON.
+	console := httptest.NewRecorder()
+	handler.ServeHTTP(console, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if console.Code != http.StatusTeapot || !strings.Contains(console.Body.String(), "418 I'm a teapot") {
+		t.Fatalf("expected console teapot HTML, got %d: %s", console.Code, console.Body.String())
+	}
+
+	// Health and public metrics stay open without the entry cookie.
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if health.Code != http.StatusOK || health.Body.String() != "api:/health" {
+		t.Fatalf("expected open /health, got %d: %s", health.Code, health.Body.String())
+	}
+
+	cfg.Monitor.Prometheus.Public = true
+	publicHandler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("api:" + r.URL.Path))
+	}), "security-entry-secret")
+	publicMetrics := httptest.NewRecorder()
+	publicHandler.ServeHTTP(publicMetrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if publicMetrics.Code != http.StatusOK || publicMetrics.Body.String() != "api:/metrics" {
+		t.Fatalf("expected open public /metrics, got %d: %s", publicMetrics.Code, publicMetrics.Body.String())
+	}
+
+	// Correct entry path remains entry (cookie + redirect), never API JSON.
+	entry := httptest.NewRecorder()
+	handler.ServeHTTP(entry, httptest.NewRequest(http.MethodGet, "/secure-admin", nil))
+	if entry.Code != http.StatusFound {
+		t.Fatalf("expected entry redirect, got %d: %s", entry.Code, entry.Body.String())
+	}
+	if loc := entry.Header().Get("Location"); loc != "/login" {
+		t.Fatalf("entry Location = %q, want /login", loc)
+	}
+	cookies := entry.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "cw_entry_test" {
+		t.Fatalf("expected entry cookie, got %+v", cookies)
+	}
+
+	// With a valid entry cookie, API routes through to the handler.
+	apiReq := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	apiReq.AddCookie(cookies[0])
+	allowed := httptest.NewRecorder()
+	handler.ServeHTTP(allowed, apiReq)
+	if allowed.Code != http.StatusOK || allowed.Body.String() != "api:/api/v1/status" {
+		t.Fatalf("expected API with entry cookie, got %d: %s", allowed.Code, allowed.Body.String())
+	}
+
+	// Entry path configured under /api/* must still mint cookie + redirect, not JSON 403.
+	cfg.Console.Login.SecurityEntry.Path = "/api/hidden-entry"
+	apiEntryHandler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("api:" + r.URL.Path))
+	}), "security-entry-secret")
+	apiEntry := httptest.NewRecorder()
+	apiEntryHandler.ServeHTTP(apiEntry, httptest.NewRequest(http.MethodGet, "/api/hidden-entry", nil))
+	if apiEntry.Code != http.StatusFound {
+		t.Fatalf("entry under /api must redirect, got %d: %s", apiEntry.Code, apiEntry.Body.String())
+	}
+	if apiEntry.Header().Get("Location") != "/login" {
+		t.Fatalf("entry under /api Location = %q, want /login", apiEntry.Header().Get("Location"))
+	}
+	if strings.Contains(apiEntry.Body.String(), "admin entry required") {
+		t.Fatalf("entry path must never be treated as API denial: %s", apiEntry.Body.String())
+	}
+
+	// Non-GET on entry path is teapot, not API JSON.
+	badMethod := httptest.NewRecorder()
+	apiEntryHandler.ServeHTTP(badMethod, httptest.NewRequest(http.MethodPost, "/api/hidden-entry", nil))
+	if badMethod.Code != http.StatusTeapot {
+		t.Fatalf("expected non-GET entry to teapot, got %d: %s", badMethod.Code, badMethod.Body.String())
+	}
+}
+
+func TestAdminHandlerSecurityEntryAPIForbiddenWhenSecretMissing(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	cfg := config.Default()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	cfg.Protection.Bot.Secret = "" // no fallback binding secret
+	// Empty auth secret + weak/empty bot secret → fail closed.
+	handler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("API handler must not run when entry secret is missing")
+	}), "")
+
+	api := httptest.NewRecorder()
+	handler.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+	if api.Code != http.StatusForbidden {
+		t.Fatalf("expected JSON 403 without secret, got %d: %s", api.Code, api.Body.String())
+	}
+	if !strings.Contains(api.Body.String(), `"code":"FORBIDDEN"`) || !strings.Contains(api.Body.String(), "admin entry required") {
+		t.Fatalf("unexpected API body: %s", api.Body.String())
+	}
+	if ct := api.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("expected JSON content-type, got %q", ct)
+	}
+
+	ui := httptest.NewRecorder()
+	handler.ServeHTTP(ui, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if ui.Code != http.StatusTeapot {
+		t.Fatalf("expected console teapot without secret, got %d: %s", ui.Code, ui.Body.String())
+	}
+}
+
 func TestAdminHandlerCachesAndCompressesStaticAssets(t *testing.T) {
 	webDir := t.TempDir()
 	assets := filepath.Join(webDir, "assets")

@@ -217,7 +217,14 @@ export default function UsersPage() {
           <Table
             rowKey="id"
             loading={usersLoading}
-            pagination={{ pageSize: 8, sizeCanChange: true }}
+            pagination={{
+              pageSize: 8,
+              sizeCanChange: true,
+              sizeOptions: [8, 10, 20, 50],
+              showTotal: true,
+              bufferSize: 1,
+              hideOnSinglePage: false,
+            }}
             className="users-table"
             data={filteredUsers}
             columns={[
@@ -296,7 +303,14 @@ export default function UsersPage() {
           <Table
             rowKey={(entry) => entry.auditKey}
             loading={auditLoading}
-            pagination={{ pageSize: 10, sizeCanChange: true }}
+            pagination={{
+              pageSize: 10,
+              sizeCanChange: true,
+              sizeOptions: [10, 20, 50],
+              showTotal: true,
+              bufferSize: 1,
+              hideOnSinglePage: false,
+            }}
             data={displayedAudit}
             columns={[
               { title: t('logs.time'), dataIndex: 'timestamp', width: 190, render: (value: string) => <span className="nowrap-cell" title={value}>{formatDate(value)}</span> },
@@ -304,7 +318,7 @@ export default function UsersPage() {
               { title: t('users.method'), dataIndex: 'method', width: 96, render: (value: string) => <Tag>{value}</Tag> },
               { title: t('logs.path'), dataIndex: 'path', render: (value: string) => <code className="table-code" title={value}>{value}</code> },
               { title: t('common.status'), dataIndex: 'status', width: 110, render: (value: number) => <Tag color={value >= 400 ? 'red' : 'green'}>{value}</Tag> },
-              { title: 'IP', dataIndex: 'remote_ip', width: 160, render: (value: string) => <span className="nowrap-cell">{value || '-'}</span> },
+              { title: 'IP', dataIndex: 'remote_ip', width: 160, render: (value: string) => <span className="nowrap-cell">{stripIpPort(value) || '-'}</span> },
             ]}
           />
         </div>
@@ -555,10 +569,25 @@ function AuditEntryCard({
         <div><dt>{t('logs.time')}</dt><dd>{formatDate(entry.timestamp)}</dd></div>
         <div><dt>{t('users.method')}</dt><dd>{entry.method || '-'}</dd></div>
         <div><dt>{t('logs.path')}</dt><dd><code className="table-code" title={entry.path}>{entry.path}</code></dd></div>
-        <div><dt>IP</dt><dd>{entry.remote_ip || '-'}</dd></div>
+        <div><dt>IP</dt><dd>{stripIpPort(entry.remote_ip) || '-'}</dd></div>
       </dl>
     </article>
   );
+}
+
+// Audit remote addresses arrive as host:port (Go http.Request.RemoteAddr); display the IP only.
+function stripIpPort(value: string): string {
+  if (!value) {
+    return value;
+  }
+  const bracketedV6 = /^\[([^\]]+)\]:\d+$/.exec(value);
+  if (bracketedV6) {
+    return bracketedV6[1];
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(value)) {
+    return value.slice(0, value.lastIndexOf(':'));
+  }
+  return value;
 }
 
 function roleLabel(role: string, t: (key: string, options?: Record<string, unknown>) => string) {

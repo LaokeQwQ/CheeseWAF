@@ -269,7 +269,7 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
-		if isAdminAPIPath(r.URL.Path, metricsPath, metricsPublic) {
+		if isAdminAPIPath(r.URL.Path, metricsPath) {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
@@ -366,16 +366,25 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 	if entry.CookieName == "" {
 		entry.CookieName = config.Default().Console.Login.SecurityEntry.CookieName
 	}
+	// Health / public metrics stay available for probes without the entry cookie.
 	if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/health/") || (metricsPublic && r.URL.Path == metricsPath) {
 		return true
 	}
 	entryPath := cleanAdminEntryPath(entry.Path)
 	requestPath := cleanAdminEntryPath(r.URL.Path)
+	apiPath := isAdminAPIPath(r.URL.Path, metricsPath)
 	secret := adminEntrySecret(authSecret, cfg)
 	if secret == "" {
-		writeAdminTeapot(w)
+		// Fail closed: never leak the console or API without a binding secret.
+		if apiPath {
+			writeAdminAPIForbidden(w)
+		} else {
+			writeAdminTeapot(w)
+		}
 		return false
 	}
+	// Entry path is the only way to mint the console gate cookie.
+	// Never treat /api/* as an "entry" and never serve SPA/HTML for API denials.
 	if requestPath == entryPath {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			writeAdminTeapot(w)
@@ -391,8 +400,21 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 	if validAdminEntryCookie(r, entry.CookieName, secret, now) {
 		return true
 	}
+	if apiPath {
+		// API is API: JSON 403, never HTML entry / SPA.
+		writeAdminAPIForbidden(w)
+		return false
+	}
+	// Console UI without a valid entry cookie.
 	writeAdminTeapot(w)
 	return false
+}
+
+func writeAdminAPIForbidden(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"admin entry required"}}`))
 }
 
 func cleanAdminEntryPath(path string) string {
@@ -568,14 +590,17 @@ func adminContentSecurityPolicy() string {
 	}, "; ")
 }
 
-func isAdminAPIPath(path, metricsPath string, metricsPublic bool) bool {
+// isAdminAPIPath reports machine-readable admin endpoints that must never receive
+// SPA/login HTML. Public metrics stay open at the entrance gate; private metrics
+// require a valid entry cookie and deny with JSON 403 via writeAdminAPIForbidden.
+func isAdminAPIPath(path, metricsPath string) bool {
 	if path == "/api" || strings.HasPrefix(path, "/api/") {
 		return true
 	}
 	if path == "/health" || strings.HasPrefix(path, "/health/") {
 		return true
 	}
-	if metricsPublic && path == metricsPath {
+	if metricsPath != "" && path == metricsPath {
 		return true
 	}
 	return false

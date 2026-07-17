@@ -217,21 +217,23 @@ export default function SitesPage() {
             loading={isLoading}
             data={rows}
             className="sites-table"
+            scroll={{ x: 920 }}
+            noDataElement={<Empty description={t('common.noData')} />}
             columns={[
               {
                 title: t('sites.name'),
                 dataIndex: 'name',
-                width: 220,
+                ellipsis: true,
                 render: (name: string, record: Site) => (
                   <button className="table-link site-table-link" title={name} type="button" onClick={() => navigate(`/sites/${record.id}`)}>
-                    <Server size={17} />
+                    <Server size={16} />
                     <span>{name}</span>
                   </button>
                 ),
               },
               {
                 title: t('sites.domain'),
-                width: 220,
+                ellipsis: true,
                 render: (_: unknown, record: Site) => {
                   const value = record.domains?.join(', ') || '-';
                   return <span className="site-table-text" title={value}>{value}</span>;
@@ -239,7 +241,7 @@ export default function SitesPage() {
               },
               {
                 title: t('sites.upstream'),
-                width: 260,
+                ellipsis: true,
                 render: (_: unknown, record: Site) => {
                   const value = record.upstreams?.join(', ') || '-';
                   return <span className="site-table-text" title={value}>{value}</span>;
@@ -248,28 +250,31 @@ export default function SitesPage() {
               {
                 title: t('sites.listen'),
                 dataIndex: 'listen_port',
-                width: 82,
+                width: 88,
                 render: (port: number) => <code>:{port || 80}</code>,
               },
               {
                 title: t('sites.mode'),
                 dataIndex: 'waf_mode',
-                width: 96,
+                width: 100,
                 render: (mode: string) => <Tag color={mode === 'block' ? 'green' : mode === 'monitor' ? 'orange' : 'gray'}>{renderMode(mode)}</Tag>,
               },
               {
                 title: t('sites.status'),
                 dataIndex: 'enabled',
-                width: 92,
+                width: 96,
                 render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'gray'}>{enabled ? t('common.online') : t('sites.disabled')}</Tag>,
               },
               {
-                title: '',
-                width: 88,
+                title: t('common.actions'),
+                width: 104,
+                fixed: 'right' as const,
                 render: (_: unknown, record: Site) => (
-                  <Button size="small" onClick={() => navigate(`/sites/${record.id}`)}>
-                    {t('sites.manage')}
-                  </Button>
+                  <div className="site-table-actions">
+                    <Button size="small" onClick={() => navigate(`/sites/${record.id}`)}>
+                      {t('sites.manage')}
+                    </Button>
+                  </div>
                 ),
               },
             ]}

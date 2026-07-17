@@ -228,6 +228,10 @@ type ConsoleLoginConfig struct {
 	CAPTCHA       LoginCAPTCHAConfig       `yaml:"captcha" json:"captcha"`
 	SecurityEntry LoginSecurityEntryConfig `yaml:"security_entry" json:"security_entry"`
 	Background    LoginBackgroundConfig    `yaml:"background" json:"background"`
+	// Copyright is plain text shown on the login footer (no HTML).
+	Copyright string `yaml:"copyright" json:"copyright"`
+	// ShowProductVersion controls the "CheeseWAF vX.Y" line under copyright.
+	ShowProductVersion *bool `yaml:"show_product_version" json:"show_product_version"`
 }
 
 type LoginCAPTCHAConfig struct {

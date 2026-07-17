@@ -58,25 +58,28 @@ type BehaviorTrackPoint struct {
 	Type string `json:"type,omitempty"`
 }
 type BehaviorPresentation struct {
-	Kind          string         `json:"kind"`
-	Image         string         `json:"image,omitempty"`
-	Piece         string         `json:"piece,omitempty"`
-	Prompt        string         `json:"prompt,omitempty"`
-	Version       int            `json:"version,omitempty"`
-	Intensity     int            `json:"intensity,omitempty"`
-	Track         map[string]int `json:"track,omitempty"`
-	Width         int            `json:"width,omitempty"`
-	Height        int            `json:"height,omitempty"`
-	PieceSize     int            `json:"piece_size,omitempty"`
-	PieceY        int            `json:"piece_y,omitempty"`
-	InitialAngle  int            `json:"initial_angle,omitempty"`
-	MovingPart    string         `json:"moving_part,omitempty"`
-	MaxOffset     int            `json:"max_offset,omitempty"`
-	InitialOffset int            `json:"initial_offset,omitempty"`
-	Shape         string         `json:"shape,omitempty"`
-	POWAlgorithm  string         `json:"pow_algorithm,omitempty"`
-	POWDifficulty int            `json:"pow_difficulty,omitempty"`
-	POWSalt       string         `json:"pow_salt,omitempty"`
+	Kind         string         `json:"kind"`
+	Image        string         `json:"image,omitempty"`
+	Piece        string         `json:"piece,omitempty"`
+	Prompt       string         `json:"prompt,omitempty"`
+	Version      int            `json:"version,omitempty"`
+	Intensity    int            `json:"intensity,omitempty"`
+	Track        map[string]int `json:"track,omitempty"`
+	Width        int            `json:"width,omitempty"`
+	Height       int            `json:"height,omitempty"`
+	PieceSize    int            `json:"piece_size,omitempty"`
+	PieceY       int            `json:"piece_y,omitempty"`
+	InitialAngle int            `json:"initial_angle,omitempty"`
+	// TrackAngle is the sealed-path tilt for shape_slider (degrees from horizontal).
+	// Absolute value is always < 45 so the piece still mostly moves right as the user drags.
+	TrackAngle    int    `json:"track_angle,omitempty"`
+	MovingPart    string `json:"moving_part,omitempty"`
+	MaxOffset     int    `json:"max_offset,omitempty"`
+	InitialOffset int    `json:"initial_offset,omitempty"`
+	Shape         string `json:"shape,omitempty"`
+	POWAlgorithm  string `json:"pow_algorithm,omitempty"`
+	POWDifficulty int    `json:"pow_difficulty,omitempty"`
+	POWSalt       string `json:"pow_salt,omitempty"`
 }
 type BehaviorChallenge struct {
 	Type         BehaviorType         `json:"type"`
@@ -126,6 +129,7 @@ type behaviorToken struct {
 	Point         BehaviorPoint   `json:"point,omitempty"`
 	Angle         int             `json:"angle,omitempty"`
 	InitialAngle  int             `json:"initial_angle,omitempty"`
+	TrackAngle    int             `json:"track_angle,omitempty"`
 	InitialOffset int             `json:"initial_offset,omitempty"`
 	Curve         []BehaviorPoint `json:"curve,omitempty"`
 	Region        []int           `json:"region,omitempty"`
@@ -167,6 +171,9 @@ func IssueBehaviorChallenge(opts BehaviorOptions) (BehaviorChallenge, error) {
 	}
 	if tok.Mode == "angle" {
 		tok.InitialAngle = presentation.InitialAngle
+	}
+	if tok.Mode == "slider" {
+		tok.TrackAngle = presentation.TrackAngle
 	}
 	token, err := sealBehaviorToken(opts, tok)
 	if err != nil {
@@ -282,7 +289,7 @@ func verifyBehaviorAnswer(opts BehaviorOptions, tok behaviorToken, r BehaviorRes
 	case "point":
 		return r.Point != nil && behaviorDistance(*r.Point, tok.Point) <= float64(tok.Tolerance)
 	case "slider":
-		return r.Point != nil && behaviorDistance(*r.Point, tok.Point) <= float64(tok.Tolerance) && verifyBehaviorTrack(tok, r.Track, r.DurationMS, r.Point)
+		return r.Point != nil && behaviorDistance(*r.Point, tok.Point) <= float64(tok.Tolerance) && verifyBehaviorTrack(tok, r.Track, r.DurationMS, r.Point) && verifySliderTrackAngle(tok, r.Track)
 	case "restore_offset":
 		return math.Abs(r.Offset-float64(tok.Point.X)/100) <= math.Max(0.8, float64(tok.Tolerance)/200) && validBehaviorTrack(tok, r.Track, r.DurationMS)
 	case "curve":
@@ -327,6 +334,35 @@ func verifyBehaviorTrack(tok behaviorToken, track []BehaviorTrackPoint, duration
 	}
 	first, last := track[0], track[len(track)-1]
 	return behaviorDistance(BehaviorPoint{X: last.X, Y: last.Y}, *end) <= float64(tok.Tolerance) && behaviorDistance(BehaviorPoint{X: first.X, Y: first.Y}, BehaviorPoint{X: last.X, Y: last.Y}) >= 500
+}
+
+// expectedSliderTrackY returns the piece-center Y (0..10000) for a range value x,
+// given the sealed target and track tilt. Geometry matches populateBitmapShapeSlider
+// and the admin/bot clients: x_px = (x/10000)*travel, y_px = startY + x_px*tan(θ).
+func expectedSliderTrackY(tok behaviorToken, x int) int {
+	tan := math.Tan(float64(tok.TrackAngle) * math.Pi / 180)
+	travel := float64(bitmapWidth - bitmapPieceSize)
+	height := float64(bitmapHeight)
+	return int(math.Round(float64(tok.Point.Y) + float64(x-tok.Point.X)*travel*tan/height))
+}
+
+// verifySliderTrackAngle ensures track samples follow the sealed tilt (|θ| < 45°).
+func verifySliderTrackAngle(tok behaviorToken, track []BehaviorTrackPoint) bool {
+	if len(track) < 2 {
+		return false
+	}
+	if math.Abs(float64(tok.TrackAngle)) > 44.5 {
+		return false
+	}
+	// Human jitter band; scales with tolerance (default ~300).
+	band := maxBehavior(tok.Tolerance*2, 220)
+	for _, sample := range track {
+		expected := expectedSliderTrackY(tok, sample.X)
+		if absBehavior(sample.Y-expected) > band {
+			return false
+		}
+	}
+	return true
 }
 func verifyCurve(tok behaviorToken, track []BehaviorTrackPoint, duration int) bool {
 	if !validBehaviorTrack(tok, track, duration) || len(track) < len(tok.Curve) {

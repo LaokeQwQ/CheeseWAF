@@ -386,6 +386,73 @@ func TestUpdateSystemPersistsConsoleSecurityEntry(t *testing.T) {
 	}
 }
 
+func TestUpdateSystemPersistsConsoleLoginBranding(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	showVersion := false
+	nextConsole := cfg.Console
+	nextConsole.Login.Copyright = "Copyright © Acme Security Ops"
+	nextConsole.Login.ShowProductVersion = &showVersion
+	raw, _ := json.Marshal(map[string]any{"console": nextConsole})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw))
+	handler.UpdateSystem(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected system update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Console.Login.Copyright != "Copyright © Acme Security Ops" {
+		t.Fatalf("copyright was not updated in memory: %q", cfg.Console.Login.Copyright)
+	}
+	if cfg.Console.Login.ShowProductVersion == nil || *cfg.Console.Login.ShowProductVersion {
+		t.Fatalf("show_product_version was not updated in memory: %+v", cfg.Console.Login.ShowProductVersion)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if loaded.Console.Login.Copyright != "Copyright © Acme Security Ops" {
+		t.Fatalf("copyright was not persisted: %q", loaded.Console.Login.Copyright)
+	}
+	if loaded.Console.Login.ShowProductVersion == nil || *loaded.Console.Login.ShowProductVersion {
+		t.Fatalf("show_product_version was not persisted: %+v", loaded.Console.Login.ShowProductVersion)
+	}
+
+	// LoginOptions must reflect persisted branding for the unauthenticated login page.
+	optionsRec := httptest.NewRecorder()
+	handler.LoginOptions(optionsRec, httptest.NewRequest(http.MethodGet, "/api/auth/login-options", nil))
+	if optionsRec.Code != http.StatusOK {
+		t.Fatalf("login options code=%d body=%s", optionsRec.Code, optionsRec.Body.String())
+	}
+	var payload struct {
+		Data struct {
+			Branding struct {
+				Copyright      string `json:"copyright"`
+				ShowVersion    bool   `json:"show_version"`
+				ProductVersion string `json:"product_version"`
+			} `json:"branding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(optionsRec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode login options: %v", err)
+	}
+	if payload.Data.Branding.Copyright != "Copyright © Acme Security Ops" {
+		t.Fatalf("login options copyright = %q", payload.Data.Branding.Copyright)
+	}
+	if payload.Data.Branding.ShowVersion {
+		t.Fatal("login options show_version should be false when disabled")
+	}
+	if strings.TrimSpace(payload.Data.Branding.ProductVersion) == "" {
+		t.Fatal("login options product_version should still be present for clients that re-enable the line")
+	}
+}
+
 func TestSystemRedactsSensitiveConfigValues(t *testing.T) {
 	cfg := config.Default()
 	cfg.Storage.ClickHouse.Password = "clickhouse-secret"

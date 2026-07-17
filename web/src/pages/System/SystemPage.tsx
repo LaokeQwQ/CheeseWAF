@@ -276,14 +276,15 @@ export default function SystemPage() {
                     <strong>TLS</strong>
                     <span>{t('system.tlsHint')}</span>
                   </header>
-                  <div className="site-detail-grid">
+                  <div className="site-detail-grid system-tls-grid">
                     <label className="switch-line"><span>{t('system.adminTls')}</span><Switch checked={system.server.admin_tls.enabled} onChange={(enabled) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, enabled } } })} /></label>
-                    <label><span>{t('system.adminTlsCert')}</span><Input value={system.server.admin_tls.cert_file} onChange={(cert_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, cert_file } } })} /></label>
-                    <label><span>{t('system.adminTlsKey')}</span><Input value={system.server.admin_tls.key_file} onChange={(key_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, key_file } } })} /></label>
                     <label className="switch-line"><span>{t('system.autoCert')}</span><Switch checked={system.tls.auto_cert} onChange={(auto_cert) => patchSystem({ tls: { ...system.tls, auto_cert } })} /></label>
                     <label className="switch-line"><span>HSTS</span><Switch checked={system.tls.hsts} onChange={(hsts) => patchSystem({ tls: { ...system.tls, hsts } })} /></label>
-                    <label><span>{t('sites.certFile')}</span><Input value={system.tls.cert_file} onChange={(cert_file) => patchSystem({ tls: { ...system.tls, cert_file } })} /></label>
-                    <label><span>{t('sites.keyFile')}</span><Input value={system.tls.key_file} onChange={(key_file) => patchSystem({ tls: { ...system.tls, key_file } })} /></label>
+                    {/* Path fields span full card width so long cert paths are not clipped in half-columns. */}
+                    <label className="wide-field system-path-field"><span>{t('system.adminTlsCert')}</span><Input value={system.server.admin_tls.cert_file} onChange={(cert_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, cert_file } } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('system.adminTlsKey')}</span><Input value={system.server.admin_tls.key_file} onChange={(key_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, key_file } } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('sites.certFile')}</span><Input value={system.tls.cert_file} onChange={(cert_file) => patchSystem({ tls: { ...system.tls, cert_file } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('sites.keyFile')}</span><Input value={system.tls.key_file} onChange={(key_file) => patchSystem({ tls: { ...system.tls, key_file } })} /></label>
                   </div>
                 </section>
                 <section className="system-fieldset">
@@ -453,6 +454,30 @@ export default function SystemPage() {
                         value={system.console.login.background.url}
                         placeholder="https://example.com/admin-bg.webp"
                         onChange={(url) => patchConsoleLogin({ background: { ...system.console.login.background, url } })}
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.loginBranding')}</strong>
+                    <span>{t('system.loginBrandingHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label className="wide-field">
+                      <span>{t('system.loginCopyright')}</span>
+                      <Input
+                        value={system.console.login.copyright ?? ''}
+                        placeholder="Copyright © CheeseWAF. All rights reserved."
+                        onChange={(copyright) => patchConsoleLogin({ copyright })}
+                      />
+                    </label>
+                    <label className="switch-line">
+                      <span>{t('system.loginShowProductVersion')}</span>
+                      <Switch
+                        checked={system.console.login.show_product_version !== false}
+                        onChange={(show_product_version) => patchConsoleLogin({ show_product_version })}
                       />
                     </label>
                   </div>

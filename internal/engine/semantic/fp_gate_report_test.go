@@ -1,4 +1,4 @@
-﻿package semantic_test
+package semantic_test
 
 import (
 	"context"

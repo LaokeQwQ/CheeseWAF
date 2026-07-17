@@ -1,13 +1,19 @@
-import { themeAttribute, themeMeta, type ThemeName } from './tokens';
+import { themeAttribute, themeMeta, themeOptions, type ThemeName } from './tokens';
 
 const themeStyleLoaders: Record<ThemeName, () => Promise<unknown>> = {
   light: () => import('./light.css'),
   dark: () => import('./dark.css'),
   blackGold: () => import('./black-gold.css'),
   blueWhite: () => import('./blue-white.css'),
+  pinkWhite: () => import('./pink-white.css'),
+  mikuGreen: () => import('./miku-green.css'),
 };
 
 const loadedThemes = new Set<ThemeName>();
+
+function isThemeName(value: unknown): value is ThemeName {
+  return themeOptions.some((option) => option.value === value);
+}
 
 export function readInitialTheme(): ThemeName {
   try {
@@ -15,7 +21,7 @@ export function readInitialTheme(): ThemeName {
       state?: { theme?: unknown };
     };
     const theme = persisted.state?.theme;
-    if (theme === 'light' || theme === 'dark' || theme === 'blackGold' || theme === 'blueWhite') {
+    if (isThemeName(theme)) {
       return theme;
     }
   } catch {

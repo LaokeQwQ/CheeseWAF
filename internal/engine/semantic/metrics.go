@@ -187,11 +187,11 @@ func (m *Metrics) Snapshot() Snapshot {
 		}
 	}
 	s := Snapshot{
-		Analyzed:            m.analyzed.Load(),
-		Passed:              m.passed.Load(),
-		Hit:                 m.hit.Load(),
-		Blocked:             m.blocked.Load(),
-		BudgetExhausted:     m.budgetExhausted.Load(),
+		Analyzed:        m.analyzed.Load(),
+		Passed:          m.passed.Load(),
+		Hit:             m.hit.Load(),
+		Blocked:         m.blocked.Load(),
+		BudgetExhausted: m.budgetExhausted.Load(),
 		LatencyBuckets: map[string]uint64{
 			"under_50us":  m.latUnder50us.Load(),
 			"under_200us": m.latUnder200us.Load(),

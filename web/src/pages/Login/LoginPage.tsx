@@ -1,12 +1,14 @@
-import { Button, Form, Input, Message as ArcoMessage, Modal } from '@arco-design/web-react';
+import { Button, Form, Input, Message as ArcoMessage, Modal, Select } from '@arco-design/web-react';
 import '../../styles/arco-components';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LockKeyhole, MoveRight, RefreshCcw, ShieldCheck, UserRound, X } from 'lucide-react';
+import { Languages, LockKeyhole, MoveRight, RefreshCcw, ShieldCheck, SunMoon, UserRound, X } from 'lucide-react';
 import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login, sanitizeInternalReturnPath, verifyLoginCaptcha } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
+import { useAppStore, type Language } from '../../stores';
+import { themeOptions, type ThemeName } from '../../themes/tokens';
 import type {
   LoginCAPTCHAChallenge,
   LoginCAPTCHAPayload,
@@ -14,6 +16,16 @@ import type {
   LoginOptions,
   LoginSliderCAPTCHAChallenge,
 } from '../../types/api';
+
+const ALLOWED_LANGUAGES: readonly Language[] = ['zh-CN', 'en-US'];
+
+function isThemeName(value: unknown): value is ThemeName {
+  return themeOptions.some((option) => option.value === value);
+}
+
+function isLanguage(value: unknown): value is Language {
+  return typeof value === 'string' && (ALLOWED_LANGUAGES as readonly string[]).includes(value);
+}
 
 type CAPTCHAState = 'loading' | 'ready' | 'solving' | 'checking' | 'verified' | 'invalid' | 'disabled' | 'error';
 type LoginCAPTCHAMode = 'slider' | 'pow';
@@ -25,6 +37,10 @@ export default function LoginPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+  const theme = useAppStore((state) => state.theme);
+  const language = useAppStore((state) => state.language);
+  const setTheme = useAppStore((state) => state.setTheme);
+  const setLanguage = useAppStore((state) => state.setLanguage);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -323,11 +339,16 @@ export default function LoginPage() {
   }, [activeCaptchaMode, captchaState, options, powPayload, sliderDone]);
 
   const background = options?.background;
-  const backgroundURL = background?.enabled ? background.url.trim() : '';
-  const backgroundKind = useMemo(() => resolveBackgroundKind(background?.type, backgroundURL), [background?.type, backgroundURL]);
+  const rawBackgroundURL = background?.enabled ? background.url.trim() : '';
+  const safeBackgroundURL = useMemo(() => cssURL(rawBackgroundURL), [rawBackgroundURL]);
+  const backgroundKind = useMemo(() => resolveBackgroundKind(background?.type, safeBackgroundURL), [background?.type, safeBackgroundURL]);
   const prefersReducedMotion = usePrefersReducedMotion();
-  const showBackgroundVideo = Boolean(backgroundURL && backgroundKind === 'video');
-  const showBackgroundImage = Boolean(backgroundURL && backgroundKind === 'image');
+  const showBackgroundVideo = Boolean(safeBackgroundURL && backgroundKind === 'video');
+  const showBackgroundImage = Boolean(safeBackgroundURL && backgroundKind === 'image');
+  const branding = options?.branding;
+  const copyrightText = String(branding?.copyright ?? '').trim();
+  const showProductVersion = branding?.show_version !== false && Boolean(branding?.product_version);
+  const productVersion = String(branding?.product_version ?? '').trim();
 
   useEffect(() => {
     const video = backgroundVideoRef.current;
@@ -341,7 +362,19 @@ export default function LoginPage() {
     showFirstFrame();
     video.addEventListener('loadedmetadata', showFirstFrame);
     return () => video.removeEventListener('loadedmetadata', showFirstFrame);
-  }, [backgroundURL, prefersReducedMotion]);
+  }, [safeBackgroundURL, prefersReducedMotion]);
+
+  function handleThemeChange(value: string) {
+    if (isThemeName(value)) {
+      setTheme(value);
+    }
+  }
+
+  function handleLanguageChange(value: string) {
+    if (isLanguage(value)) {
+      setLanguage(value);
+    }
+  }
 
   async function handleSubmit(values: { username?: string; password?: string; totpCode?: string }) {
     setLoading(true);
@@ -631,12 +664,37 @@ export default function LoginPage() {
     || captchaState === 'verified';
 
   return (
-    <main className={backgroundURL ? 'auth-screen auth-screen-media' : 'auth-screen'}>
+    <main className={safeBackgroundURL ? 'auth-screen auth-screen-media' : 'auth-screen'}>
+      <div className="auth-toolbar" role="toolbar" aria-label={t('system.theme')}>
+        <Select
+          aria-label={t('system.theme')}
+          className="auth-toolbar-select"
+          value={isThemeName(theme) ? theme : 'light'}
+          prefix={<SunMoon size={15} />}
+          onChange={handleThemeChange}
+        >
+          {themeOptions.map((option) => (
+            <Select.Option key={option.value} value={option.value}>
+              {t(option.labelKey)}
+            </Select.Option>
+          ))}
+        </Select>
+        <Select
+          aria-label={t('system.language')}
+          className="auth-toolbar-select"
+          value={isLanguage(language) ? language : 'zh-CN'}
+          prefix={<Languages size={15} />}
+          onChange={handleLanguageChange}
+        >
+          <Select.Option value="zh-CN">中文</Select.Option>
+          <Select.Option value="en-US">English</Select.Option>
+        </Select>
+      </div>
       {showBackgroundVideo && (
         <video
           ref={backgroundVideoRef}
           className="auth-background-media"
-          src={backgroundURL}
+          src={safeBackgroundURL}
           autoPlay={!prefersReducedMotion}
           muted
           loop={!prefersReducedMotion}
@@ -645,7 +703,7 @@ export default function LoginPage() {
         />
       )}
       {showBackgroundImage && (
-        <div className="auth-background-media auth-background-image" style={{ backgroundImage: `url("${cssURL(backgroundURL)}")` }} />
+        <div className="auth-background-media auth-background-image" style={{ backgroundImage: `url("${safeBackgroundURL}")` }} />
       )}
       {(showBackgroundVideo || showBackgroundImage) && <div className="auth-background-shade" />}
       <div className="auth-stack">
@@ -695,6 +753,14 @@ export default function LoginPage() {
             {error && <p className="form-error" role="alert">{error}</p>}
             {success && <p className="form-success" role="status">{success}</p>}
           </Form>
+          {(copyrightText || showProductVersion) && (
+            <footer className="auth-footer">
+              {copyrightText ? <p className="auth-footer-copyright">{copyrightText}</p> : null}
+              {showProductVersion ? (
+                <p className="auth-footer-version">{t('login.productVersion', { version: productVersion })}</p>
+              ) : null}
+            </footer>
+          )}
         </section>
         <div className="auth-load-time">
           {loadMs == null ? t('login.loading') : t('login.loadTime', { ms: loadMs })}
@@ -1133,6 +1199,11 @@ function normalizeLoginOptions(value: LoginOptions | null | undefined): LoginOpt
       enabled: value?.background?.enabled ?? false,
       type: value?.background?.type || 'auto',
       url: value?.background?.url || '',
+    },
+    branding: {
+      copyright: String(value?.branding?.copyright ?? '').trim(),
+      show_version: value?.branding?.show_version !== false,
+      product_version: String(value?.branding?.product_version ?? '').trim(),
     },
   };
 }

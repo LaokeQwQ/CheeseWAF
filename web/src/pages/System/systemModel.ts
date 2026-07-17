@@ -41,6 +41,8 @@ export const fallbackSystem: SystemConfig = {
       },
       security_entry: { enabled: false, path: '/__cheesewaf-entry', cookie_name: 'cheesewaf_admin_entry' },
       background: { enabled: false, type: 'auto', url: '' },
+      copyright: 'Copyright © CheeseWAF. All rights reserved.',
+      show_product_version: true,
     },
     map: {
       china_boundary: {

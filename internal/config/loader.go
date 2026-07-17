@@ -93,6 +93,8 @@ func Default() Config {
 					Enabled: false,
 					Type:    "auto",
 				},
+				Copyright:          "Copyright © CheeseWAF. All rights reserved.",
+				ShowProductVersion: boolPtr(true),
 			},
 			Map: ConsoleMapConfig{
 				ChinaBoundary: MapBoundaryConfig{
@@ -661,6 +663,12 @@ func applyDefaults(cfg *Config) {
 	if cfg.Console.Login.Background.Type == "" {
 		cfg.Console.Login.Background.Type = def.Console.Login.Background.Type
 	}
+	if cfg.Console.Login.Copyright == "" {
+		cfg.Console.Login.Copyright = def.Console.Login.Copyright
+	}
+	if cfg.Console.Login.ShowProductVersion == nil {
+		cfg.Console.Login.ShowProductVersion = boolPtr(true)
+	}
 	if cfg.Storage.SQLite.Path == "" {
 		cfg.Storage.SQLite.Path = filepath.Join(cfg.Setup.DataDir, "cheesewaf.db")
 	}
@@ -1025,4 +1033,8 @@ func applyAIModelDefaults(model *AIModelConfig, fallback AIModelConfig) {
 		model.Model = fallback.Model
 	}
 	model.AllowPrivateAPIBase = model.AllowPrivateAPIBase || fallback.AllowPrivateAPIBase
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

@@ -237,7 +237,8 @@ select {
   gap: 18px;
   padding-right: 2px;
   overflow-y: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 30%, transparent) transparent;
 }
 .nav-group {
   display: flex;
@@ -295,13 +296,7 @@ select {
   max-height: none;
   opacity: 1;
 }
-.nav-list:hover {
-  scrollbar-width: thin;
-}
 .nav-list::-webkit-scrollbar {
-  width: 0;
-}
-.nav-list:hover::-webkit-scrollbar {
   width: 6px;
 }
 .app-shell-collapsed .nav-list,
@@ -317,6 +312,22 @@ select {
 .nav-list::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--text-muted) 30%, transparent);
   border-radius: 999px;
+}
+@media (max-height: 840px) {
+  .app-sidebar {
+    gap: 12px;
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+  .nav-list {
+    gap: 10px;
+  }
+  .nav-item {
+    height: 38px;
+  }
+  .nav-group-heading {
+    margin-top: 8px;
+  }
 }
 .nav-item {
   width: 100%;
@@ -568,6 +579,14 @@ select {
   width: 100%;
   max-width: 360px;
   min-width: 180px;
+}
+.topbar-search .arco-input-inner-wrapper {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--border) 88%, var(--text-muted));
+}
+.topbar-search .arco-input-inner-wrapper:hover {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
 }
 .topbar-search-panel {
   position: absolute;
@@ -1336,8 +1355,8 @@ select {
   min-height: 4px;
   display: block;
   border-radius: 7px 7px 2px 2px;
-  background: linear-gradient(180deg, var(--accent), var(--accent-info));
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent-info) 18%, transparent);
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .chart-bar i {
   position: absolute;
@@ -1534,11 +1553,11 @@ select {
     auto;
 }
 .realtime-line-area {
-  fill: color-mix(in srgb, var(--accent-info) 18%, transparent);
+  fill: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .realtime-line-path {
   fill: none;
-  stroke: var(--accent-info);
+  stroke: var(--accent);
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2.2;
@@ -1710,16 +1729,36 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.event-list {
+  min-width: 0;
+  width: 100%;
+}
+.event-list-table {
+  min-width: 0;
+  width: 100%;
+  overflow-x: auto;
+}
+/* minmax(0, fr) so tracks can shrink; fixed minmax(96px, …) was forcing header/body cells to overflow. */
 .event-list-table .event-row {
   grid-template-columns:
-    minmax(96px, 0.78fr)
-    minmax(110px, 1fr)
-    minmax(98px, 0.78fr)
-    minmax(72px, 0.64fr)
-    minmax(92px, 0.78fr)
-    minmax(68px, 0.6fr);
+    minmax(0, 0.9fr)
+    minmax(0, 1.15fr)
+    minmax(0, 0.9fr)
+    minmax(0, 0.8fr)
+    minmax(0, 0.85fr)
+    minmax(0, 0.7fr);
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+.event-list-table .event-row > span,
+.event-list-table .event-row > a,
+.event-list-table .event-row > .event-status-group {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .event-list-table .event-row-head {
   min-height: 30px;
@@ -1729,6 +1768,16 @@ select {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0;
+}
+.event-list-table .event-row-head > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event-list-table .event-row-head > span:last-child {
+  text-align: end;
 }
 .event-list-table .event-row-head:hover {
   background: transparent;
@@ -1763,6 +1812,10 @@ select {
     align-items: flex-start;
     gap: 3px;
     min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
   }
   .event-list-table .event-row > [data-label]::before {
     content: attr(data-label);
@@ -3027,12 +3080,20 @@ code {
   flex: 0 0 150px;
 }
 .users-table-wrap {
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 .users-table-wrap .arco-table-container,
-.users-table-wrap .arco-table-content,
-.users-table-wrap .arco-table-body {
+.users-table-wrap .arco-table-content {
   overflow: visible !important;
+}
+.users-table-wrap .arco-table-body {
+  overflow-x: auto;
+  overflow-y: visible !important;
+}
+.users-page .arco-table-pagination {
+  overflow: visible;
+  z-index: 5;
 }
 .user-identity-cell {
   min-width: 0;
@@ -4381,6 +4442,51 @@ code {
       transparent 38%
     ),
     var(--app-bg);
+}
+.auth-toolbar {
+  position: absolute;
+  z-index: 2;
+  top: clamp(12px, 2.5vh, 24px);
+  right: clamp(12px, 2.5vw, 24px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.auth-toolbar-select {
+  min-width: 132px;
+}
+.auth-toolbar .arco-select-view {
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border-color: var(--border);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 8%, transparent);
+  backdrop-filter: blur(12px);
+}
+.auth-footer {
+  width: 100%;
+  margin-top: 18px;
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.auth-footer-copyright,
+.auth-footer-version {
+  margin: 0;
+  width: 100%;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.auth-footer-version {
+  opacity: 0.88;
+  font-variant-numeric: tabular-nums;
 }
 .auth-screen-media {
   background: var(--auth-media-bg);
@@ -6112,15 +6218,9 @@ code {
     width: 100%;
     flex: 1 1 auto;
     min-width: 0;
-    padding-right: 0;
+    padding-right: 2px;
     overflow-x: hidden;
     overflow-y: auto;
-    scrollbar-width: none;
-  }
-  .nav-list::-webkit-scrollbar,
-  .nav-list:hover::-webkit-scrollbar {
-    width: 0;
-    height: 0;
   }
   .nav-item {
     justify-content: flex-start;
@@ -8826,6 +8926,9 @@ code {
   .page-header .table-identity {
     flex-direction: column;
     align-items: stretch;
+  }
+  .page-header .arco-tag {
+    align-self: flex-start;
   }
   .page-header .table-identity,
   .resource-actions {

@@ -1,0 +1,316 @@
+/**
+ * Console layout hardening (compact): empty/spacing, icon align, sites table,
+ * users pageSize dropdown clipping. Loaded from MainLayout (not login CSS budget).
+ */
+
+.page-surface .arco-btn,
+.page-surface .arco-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  vertical-align: middle;
+}
+
+.page-surface .arco-btn > span,
+.page-surface .arco-button > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  line-height: 1.15;
+}
+
+.page-surface .arco-btn .arco-btn-icon,
+.page-surface .arco-button .arco-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.page-surface .arco-btn .arco-icon,
+.page-surface .arco-btn svg,
+.page-surface .arco-button svg,
+.page-surface .panel-heading h2 svg,
+.page-surface .table-link svg,
+.page-surface .site-table-link svg,
+.page-surface .arco-input-prefix svg,
+.page-surface .arco-input-group-prefix svg {
+  display: block;
+  flex: 0 0 auto;
+  vertical-align: middle;
+}
+
+.page-surface .panel-heading h2,
+.page-surface .table-link,
+.page-surface .site-table-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.2;
+}
+
+/* Shared empty / no-data shells for IP, system, ops, SSL, edge, updates panels */
+.page-surface .empty-state,
+.page-surface .arco-empty,
+.page-surface .cluster-mobile-empty,
+.ip-manage-page .empty-state,
+.ops-task-panel .arco-empty,
+.system-page .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 112px;
+  width: 100%;
+  margin: 4px 0;
+  padding: 20px 14px;
+  box-sizing: border-box;
+  text-align: center;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface-soft) 88%, var(--surface));
+  border: 1px dashed color-mix(in srgb, var(--border) 82%, var(--text-muted) 12%);
+  border-radius: 10px;
+}
+
+/* Icon + label empty rows (e.g. SSL ACME) stay on one centered line when short */
+.page-surface .empty-state:has(> svg):not(:has(> div)):not(:has(> p)) {
+  flex-direction: row;
+  flex-wrap: wrap;
+  min-height: 72px;
+  padding: 16px 14px;
+}
+
+.page-surface .arco-empty .arco-empty-wrapper,
+.page-surface .arco-empty .arco-empty-description {
+  margin: 0;
+}
+
+.page-surface .system-fieldset,
+.page-surface .system-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.page-surface .system-section-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.page-surface .system-section-title > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.page-surface .arco-table-th,
+.page-surface .arco-table-th .arco-table-th-item-title {
+  white-space: nowrap;
+}
+
+.page-surface .arco-table-pagination {
+  overflow: visible;
+}
+
+/* Users pageSize select: prevent clip + widen trigger */
+.users-page .table-panel,
+.users-page .users-directory-panel,
+.users-page .users-audit-panel {
+  overflow: visible;
+}
+
+.users-page .desktop-table-wrap,
+.users-page .users-table-wrap,
+.users-page .table-scroll.users-audit-table {
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+.users-page .arco-table-pagination,
+.users-page .arco-pagination {
+  position: relative;
+  z-index: 5;
+  overflow: visible;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.users-page .arco-pagination-list,
+.users-page .arco-pagination-option {
+  overflow: visible;
+}
+
+.users-page .arco-pagination .arco-select,
+.users-page .arco-table-pagination .arco-select {
+  min-width: 124px;
+  flex: 0 0 auto;
+}
+
+.users-page .arco-pagination .arco-select-view,
+.users-page .arco-table-pagination .arco-select-view {
+  min-width: 124px;
+  width: auto;
+  max-width: none;
+  overflow: visible;
+  padding-inline: 10px 28px;
+}
+
+.users-page .arco-pagination .arco-select-view-value,
+.users-page .arco-table-pagination .arco-select-view-value {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+/* Trigger is in-page; option list is usually portaled to body */
+.users-page .arco-select-popup,
+.arco-trigger-popup .arco-select-popup,
+body > .arco-select-popup {
+  min-width: 132px !important;
+  z-index: 40;
+}
+
+/* Sites table: full width, no header wrap, tight action column, no right dead space */
+.sites-list-panel {
+  overflow: visible;
+}
+
+.sites-desktop-table {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.sites-desktop-table .arco-table,
+.sites-desktop-table .arco-table-container,
+.sites-desktop-table .arco-table-content-inner,
+.sites-desktop-table .arco-table-content-scroll {
+  width: 100%;
+}
+
+.sites-table table,
+.sites-table .arco-table-element {
+  width: 100% !important;
+  min-width: 920px;
+  table-layout: fixed;
+}
+
+.sites-table .arco-table-th {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.sites-table .arco-table-th .arco-table-th-item {
+  white-space: nowrap;
+}
+
+.sites-table .arco-table-td {
+  vertical-align: middle;
+}
+
+.sites-table .site-table-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  gap: 6px;
+}
+
+/* Action column sits flush right; flexible middle columns absorb extra width */
+.sites-table colgroup col:last-child,
+.sites-table .arco-table-th:last-child,
+.sites-table .arco-table-td:last-child {
+  width: 104px !important;
+  min-width: 104px;
+  max-width: 120px;
+  text-align: right;
+  padding-right: 12px;
+}
+
+.sites-table .arco-table-th:last-child .arco-table-th-item {
+  justify-content: flex-end;
+}
+
+/* Avoid fixed-right sticky gutter looking like empty dead space on wide screens */
+.sites-table .arco-table-col-fixed-right::before,
+.sites-table .arco-table-col-fixed-right-first::after {
+  box-shadow: none;
+}
+
+.ip-manage-page {
+  gap: 18px;
+}
+
+.page-surface .acme-provider-list {
+  display: grid;
+  gap: 12px;
+}
+
+.page-surface .acme-provider-card {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 70%, var(--surface-soft));
+}
+
+/* System TLS / path fields: prevent long paths from overflowing narrow 1/3 cards */
+.page-surface .system-fieldset,
+.page-surface .system-fieldset .site-detail-grid,
+.page-surface .system-fieldset .system-runtime-grid,
+.page-surface .system-fieldset .system-tls-grid {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.page-surface .system-fieldset .site-detail-grid label,
+.page-surface .system-fieldset .system-runtime-grid label,
+.page-surface .system-fieldset .system-tls-grid label {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.page-surface .system-fieldset .arco-input-inner-wrapper,
+.page-surface .system-fieldset .arco-select-view,
+.page-surface .system-fieldset .arco-input-number,
+.page-surface .system-fieldset .arco-textarea-wrapper,
+.page-surface .system-fieldset label > .arco-input {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.page-surface .system-fieldset .arco-input-inner-wrapper .arco-input,
+.page-surface .system-fieldset label > .arco-input {
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.page-surface .system-fieldset .wide-field,
+.page-surface .system-fieldset .system-path-field {
+  grid-column: 1 / -1;
+}
+
+.page-surface .system-tls-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* When TLS card is very narrow, stack switches + paths single column */
+@media (max-width: 1280px) {
+  .page-surface .system-settings-panel .system-tls-grid {
+    grid-template-columns: 1fr;
+  }
+}

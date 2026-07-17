@@ -116,15 +116,15 @@ func TestLoadTimeSyncPreservesExplicitDisableAndBackfillsOmittedFields(t *testin
 
 func TestTimeSyncConfigRoundTrip(t *testing.T) {
 	want := TimeSyncConfig{
-		Enabled:              true,
-		Sources:              []string{"ntp1.example.com", "192.0.2.10:123", "[2001:db8::10]:123"},
-		SelectionInterval:    36 * time.Hour,
-		SyncInterval:         45 * time.Minute,
-		Timeout:              1500 * time.Millisecond,
-		SamplesPerSource:     5,
-		MaxAcceptedOffset:    4 * time.Second,
-		MaxRootDispersion:    1500 * time.Millisecond,
-		ConsensusTolerance:   200 * time.Millisecond,
+		Enabled:            true,
+		Sources:            []string{"ntp1.example.com", "192.0.2.10:123", "[2001:db8::10]:123"},
+		SelectionInterval:  36 * time.Hour,
+		SyncInterval:       45 * time.Minute,
+		Timeout:            1500 * time.Millisecond,
+		SamplesPerSource:   5,
+		MaxAcceptedOffset:  4 * time.Second,
+		MaxRootDispersion:  1500 * time.Millisecond,
+		ConsensusTolerance: 200 * time.Millisecond,
 	}
 
 	t.Run("yaml", func(t *testing.T) {
@@ -260,8 +260,12 @@ func TestValidateTimeSyncRejectsInvalidConfig(t *testing.T) {
 		{"private source", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "10.0.0.1" }, "must not be a private, loopback, link-local, or unspecified address"},
 		{"loopback source", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "127.0.0.1:123" }, "must not be a private, loopback, link-local, or unspecified address"},
 		{"localhost source", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "localhost" }, "must not be a private, loopback, link-local, or unspecified address"},
-		{"duplicate source", func(cfg *TimeSyncConfig) { cfg.Sources = []string{"NTP.EXAMPLE.COM", "ntp.example.com.", "other.example.com"} }, "duplicates source"},
-		{"duplicate default port", func(cfg *TimeSyncConfig) { cfg.Sources = []string{"ntp.example.com", "ntp.example.com:123", "other.example.com"} }, "duplicates source"},
+		{"duplicate source", func(cfg *TimeSyncConfig) {
+			cfg.Sources = []string{"NTP.EXAMPLE.COM", "ntp.example.com.", "other.example.com"}
+		}, "duplicates source"},
+		{"duplicate default port", func(cfg *TimeSyncConfig) {
+			cfg.Sources = []string{"ntp.example.com", "ntp.example.com:123", "other.example.com"}
+		}, "duplicates source"},
 		{"selection interval too short", func(cfg *TimeSyncConfig) { cfg.SelectionInterval = time.Minute - time.Nanosecond }, "time_sync.selection_interval must be between 1m and 168h"},
 		{"selection interval too long", func(cfg *TimeSyncConfig) { cfg.SelectionInterval = 7*24*time.Hour + time.Nanosecond }, "time_sync.selection_interval must be between 1m and 168h"},
 		{"sync interval too short", func(cfg *TimeSyncConfig) { cfg.SyncInterval = time.Minute - time.Nanosecond }, "time_sync.sync_interval must be between 1m and 24h"},

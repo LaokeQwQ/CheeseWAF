@@ -387,8 +387,6 @@ func looksSensitiveFilename(raw string) bool {
 	return false
 }
 
-
-
 func betterHit(candidate, current Hit) bool {
 	candidatePriority := categoryPriority(candidate)
 	currentPriority := categoryPriority(current)
@@ -479,11 +477,11 @@ func categoryPriority(hit Hit) int {
 }
 
 const (
-	maxInputRawBytes   = 16 << 10 // 16 KiB per field
-	maxCandidates      = 64
-	maxDecodeVariants  = 8
-	maxJSONNodes       = 200
-	maxJSONDepth       = 8
+	maxInputRawBytes  = 16 << 10 // 16 KiB per field
+	maxCandidates     = 64
+	maxDecodeVariants = 8
+	maxJSONNodes      = 200
+	maxJSONDepth      = 8
 )
 
 func normalizePathAllowlist(paths []string) []string {
@@ -1259,7 +1257,7 @@ func guessCategories(raw string) []string {
 }
 
 const (
-	hintSQL   = 1 << iota
+	hintSQL = 1 << iota
 	hintXSS
 	hintRCE
 	hintLFI
@@ -1395,36 +1393,36 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 }
 
 var (
-	sqlBooleanTautology           = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
-	sqlEmptyStringTautology       = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*(?:''|""|'[^']*'|"[^"]*"|['"])\s*=\s*(?:''|""|'[^']*'|"[^"]*"|['"])`)
-	sqlQuotedOrPredicate          = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']*'|"[^"]*"|[^\s]{1,64})`)
-	sqlTimeFunction               = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
-	sqlDialectTimeFunction        = regexp.MustCompile(`(?i)\bdbms_(?:lock|session)\.sleep\s*\(`)
-	sqlComment                    = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
-	sqlDangerousFunc              = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|sp_oa(?:create|method)|openrowset|opendatasource|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
-	sqlErrorFunction              = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name|utl_http\.request)\s*\(`)
-	sqlStringFunction             = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
-	sqlComparison                 = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
-	sqlOrderByInference           = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
-	sqlHavingInference            = regexp.MustCompile(`(?i)\bhaving\s+(?:\d+|'[^']*'|"[^"]*")\s*=\s*(?:\d+|'[^']*'|"[^"]*")\s*(?:--|#|/\*)`)
-	sqlRegexProbe                 = regexp.MustCompile(`(?i)\b(?:rlike|regexp|like)\s+(?:binary\s+)?(?:0x[0-9a-f]+|'[^']*'|"[^"]*")`)
-	sqlProcedureAnalyse           = regexp.MustCompile(`(?i)\bprocedure\s+analyse\s*\(`)
-	sqlMetadataObject             = regexp.MustCompile(`(?i)\b(?:information_schema|pg_catalog|pg_shadow|pg_group|sysibm|syscat|sysobjects|syscolumns|sysusers|master\.\.|sys\.|sqlite_master|mysql\.user|@@(?:version|datadir|hostname|basedir)|current\s+user|session_user|system_user)\b`)
-	sqlSubquery                   = regexp.MustCompile(`(?is)\(\s*select\b.+?\bfrom\b.+?\)`)
-	sqlCaseWhen                   = regexp.MustCompile(`(?is)\bcase\s+when\b.+?\bthen\b.+?\belse\b.+?\bend\b`)
-	sqlSelectFrom                 = regexp.MustCompile(`(?is)\bselect\b.{0,240}\bfrom\b`)
-	sqlFileData                   = regexp.MustCompile(`(?i)\b(?:load\s+data\s+infile|load_file\s*\(|into\s+outfile|copy\s+\S+\s+to(?:\s+program|\s+['\"/]|\s+[a-z0-9_./\\-]+))\b`)
-	sqlMySQLVersionComment        = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
-	sqlKeywordBridgeComment       = regexp.MustCompile(`(?i)\b([a-z]{2,8})/\*.*?\*/([a-z]{2,8})\b`)
+	sqlBooleanTautology     = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
+	sqlEmptyStringTautology = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*(?:''|""|'[^']*'|"[^"]*"|['"])\s*=\s*(?:''|""|'[^']*'|"[^"]*"|['"])`)
+	sqlQuotedOrPredicate    = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']*'|"[^"]*"|[^\s]{1,64})`)
+	sqlTimeFunction         = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
+	sqlDialectTimeFunction  = regexp.MustCompile(`(?i)\bdbms_(?:lock|session)\.sleep\s*\(`)
+	sqlComment              = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
+	sqlDangerousFunc        = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|sp_oa(?:create|method)|openrowset|opendatasource|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
+	sqlErrorFunction        = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name|utl_http\.request)\s*\(`)
+	sqlStringFunction       = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
+	sqlComparison           = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
+	sqlOrderByInference     = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
+	sqlHavingInference      = regexp.MustCompile(`(?i)\bhaving\s+(?:\d+|'[^']*'|"[^"]*")\s*=\s*(?:\d+|'[^']*'|"[^"]*")\s*(?:--|#|/\*)`)
+	sqlRegexProbe           = regexp.MustCompile(`(?i)\b(?:rlike|regexp|like)\s+(?:binary\s+)?(?:0x[0-9a-f]+|'[^']*'|"[^"]*")`)
+	sqlProcedureAnalyse     = regexp.MustCompile(`(?i)\bprocedure\s+analyse\s*\(`)
+	sqlMetadataObject       = regexp.MustCompile(`(?i)\b(?:information_schema|pg_catalog|pg_shadow|pg_group|sysibm|syscat|sysobjects|syscolumns|sysusers|master\.\.|sys\.|sqlite_master|mysql\.user|@@(?:version|datadir|hostname|basedir)|current\s+user|session_user|system_user)\b`)
+	sqlSubquery             = regexp.MustCompile(`(?is)\(\s*select\b.+?\bfrom\b.+?\)`)
+	sqlCaseWhen             = regexp.MustCompile(`(?is)\bcase\s+when\b.+?\bthen\b.+?\belse\b.+?\bend\b`)
+	sqlSelectFrom           = regexp.MustCompile(`(?is)\bselect\b.{0,240}\bfrom\b`)
+	sqlFileData             = regexp.MustCompile(`(?i)\b(?:load\s+data\s+infile|load_file\s*\(|into\s+outfile|copy\s+\S+\s+to(?:\s+program|\s+['\"/]|\s+[a-z0-9_./\\-]+))\b`)
+	sqlMySQLVersionComment  = regexp.MustCompile(`(?is)/\*!\d{0,6}\s*(.*?)\*/`)
+	sqlKeywordBridgeComment = regexp.MustCompile(`(?i)\b([a-z]{2,8})/\*.*?\*/([a-z]{2,8})\b`)
 	// Boolean-blind shapes that omit FROM (XOR/IF/SELECT WHERE probes).
-	sqlIfSelectProbe              = regexp.MustCompile(`(?i)\bif\s*\(\s*\(?\s*select\b`)
-	sqlXorSelectProbe             = regexp.MustCompile(`(?i)\bxor\s*\([\s\S]{0,200}\bselect\b`)
-	sqlSelectWhere                = regexp.MustCompile(`(?is)\bselect\b.{0,120}\bwhere\b`)
-	xssEventPattern               = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
-	unicodeEscapePattern          = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
+	sqlIfSelectProbe     = regexp.MustCompile(`(?i)\bif\s*\(\s*\(?\s*select\b`)
+	sqlXorSelectProbe    = regexp.MustCompile(`(?i)\bxor\s*\([\s\S]{0,200}\bselect\b`)
+	sqlSelectWhere       = regexp.MustCompile(`(?is)\bselect\b.{0,120}\bwhere\b`)
+	xssEventPattern      = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
+	unicodeEscapePattern = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
 	// Encoded traversal only — bare %2f/%5c (normal URL path encoding) must NOT match.
 	// Matches: %2e%2e%2f, ..%2f, %2e%2e/, double-encoded dots, overlong dots, %c0%af abuse.
-	lfiEncodedTraversal = regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%25c0%25af|\.{4,}[/\\]+`)
+	lfiEncodedTraversal           = regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%25c0%25af|\.{4,}[/\\]+`)
 	lfiDotEnvTarget               = regexp.MustCompile(`(?i)(?:^|[/\\])\.env(?:$|[?#.]|%00|%23)`)
 	lfiSensitiveTarget            = regexp.MustCompile(`(?i)(?:^|[/\\])(?:etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|issue|motd|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|root/\.bash_history|home/[^/\\]+/\.ssh/(?:id_rsa|id_dsa|authorized_keys)|var/log/(?:syslog|auth\.log|nginx/access\.log|nginx/error\.log|apache2/access\.log|apache2/error\.log|httpd-access\.log)|winnt/system32/cmd\.exe|windows/(?:win\.ini|system32/drivers/etc/hosts)|boot\.ini|web-inf/web\.xml|meta-inf/manifest\.mf|\.htaccess|_config\.php|config\.php|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|wp-config\.php|dump\.sql|database\.sql|id_rsa)(?:$|[?#\x00.]|%00|%23)`)
 	nosqlOperatorToken            = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|eval|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
@@ -1448,9 +1446,9 @@ var (
 	rceReverseShellPrimitive      = regexp.MustCompile(`(?i)(?:/dev/tcp/|/dev/udp/|nc\s+-e|ncat\s+-e|bash\s+-i|sh\s*<\s*/dev/tcp|socket\.socket\s*\(|child_process|require\s*\(\s*['"]child_process['"]\s*\))`)
 	rceTemplateExecutionPrimitive = regexp.MustCompile(`(?i)(?:registerundefinedfiltercallback\s*\(\s*['"]exec|filter\s*\(\s*['"]system|system\s*\(|exec\s*\(|popen\s*\(|passthru\s*\(|shell_exec\s*\()`)
 	// Generic “unknown exploit” shapes: loader hooks / polyglot runtime without CVE names.
-	rceLoaderPrimitive            = regexp.MustCompile(`(?i)(?:ld_preload\s*=|dyld_insert_libraries\s*=|process\.dlopen\s*\(|ctypes\.cdll|java\.lang\.classloader|defineclass\s*\(|unsafe\.defineanonymousclass|reflection\.emit|assembly\.load\s*\()`)
-	lfiFileReadSink               = regexp.MustCompile(`(?i)(?:file\.read\s*\(|get_user_file\s*\(|readfile\s*\(|file_get_contents\s*\(|open\s*\()[^)]*(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
-	lfiCommandReadSink            = regexp.MustCompile(`(?i)\b(?:cat|type|more|less|head|tail)\s+(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
+	rceLoaderPrimitive = regexp.MustCompile(`(?i)(?:ld_preload\s*=|dyld_insert_libraries\s*=|process\.dlopen\s*\(|ctypes\.cdll|java\.lang\.classloader|defineclass\s*\(|unsafe\.defineanonymousclass|reflection\.emit|assembly\.load\s*\()`)
+	lfiFileReadSink    = regexp.MustCompile(`(?i)(?:file\.read\s*\(|get_user_file\s*\(|readfile\s*\(|file_get_contents\s*\(|open\s*\()[^)]*(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
+	lfiCommandReadSink = regexp.MustCompile(`(?i)\b(?:cat|type|more|less|head|tail)\s+(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
 )
 
 func analyzeSQL(candidate semanticCandidate) (Hit, bool) {

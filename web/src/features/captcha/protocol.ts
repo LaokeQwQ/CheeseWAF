@@ -46,6 +46,8 @@ export interface CaptchaPresentation {
   height?: number;
   piece_size?: number;
   piece_y?: number;
+  /** Degrees from horizontal for shape_slider piece motion; |angle| < 45. */
+  track_angle?: number;
   initial_angle?: number;
   moving_part?: "top" | "bottom";
   max_offset?: number;

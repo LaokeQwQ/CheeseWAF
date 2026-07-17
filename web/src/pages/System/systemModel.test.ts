@@ -7,6 +7,42 @@ import {
   normalizeSystem,
 } from './systemModel';
 
+describe('system login branding model', () => {
+  it('round-trips copyright and show_product_version through normalizeSystem', () => {
+    const normalized = normalizeSystem({
+      ...fallbackSystem,
+      console: {
+        ...fallbackSystem.console,
+        login: {
+          ...fallbackSystem.console.login,
+          copyright: 'Copyright © Custom Ops',
+          show_product_version: false,
+        },
+      },
+    });
+
+    expect(normalized.console.login.copyright).toBe('Copyright © Custom Ops');
+    expect(normalized.console.login.show_product_version).toBe(false);
+  });
+
+  it('falls back to default branding when login branding fields are omitted', () => {
+    const normalized = normalizeSystem({
+      ...fallbackSystem,
+      console: {
+        ...fallbackSystem.console,
+        login: {
+          captcha: fallbackSystem.console.login.captcha,
+          security_entry: fallbackSystem.console.login.security_entry,
+          background: fallbackSystem.console.login.background,
+        } as typeof fallbackSystem.console.login,
+      },
+    });
+
+    expect(normalized.console.login.copyright).toBe(fallbackSystem.console.login.copyright);
+    expect(normalized.console.login.show_product_version).toBe(true);
+  });
+});
+
 describe('system time synchronization model', () => {
   it('does not invent time synchronization settings for legacy system responses', () => {
     const normalized = normalizeSystem({

@@ -1,5 +1,5 @@
 .sites-list-panel {
-  overflow: hidden;
+  overflow: visible;
 }
 
 .sites-query-error {
@@ -9,14 +9,42 @@
 .sites-desktop-table {
   min-width: 0;
   max-width: 100%;
+  width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
 }
 
-.sites-table table {
+.sites-table table,
+.sites-table .arco-table-element {
   width: 100%;
-  min-width: 1058px;
+  min-width: 920px;
   table-layout: fixed;
+}
+
+.sites-table .arco-table-th {
+  white-space: nowrap;
+}
+
+.sites-table .arco-table-th .arco-table-th-item-title {
+  white-space: nowrap;
+}
+
+.sites-table .site-table-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.sites-table .arco-table-th:last-child,
+.sites-table .arco-table-td:last-child {
+  width: 104px;
+  max-width: 120px;
+  text-align: right;
+}
+
+.sites-list-panel .arco-empty {
+  margin: 8px 0 4px;
 }
 
 .site-wizard-modal.arco-modal,

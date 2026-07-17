@@ -404,9 +404,17 @@ func browserHarnessResponse(fixture *browserHarnessFixture, interaction string, 
 			presentation := fixture.challenge.Presentation
 			response.Offset = float64(presentation.InitialOffset) + float64(value-5000)*float64(presentation.MaxOffset)/5000
 		case "slider":
-			presentation := fixture.challenge.Presentation
-			y = (presentation.PieceY + presentation.PieceSize/2) * behaviorCoordinateMax / maxBehavior(1, presentation.Height)
+			// Match client geometry: piece starts at piece_y and follows track_angle.
+			y = expectedSliderTrackY(fixture.opened, value)
 			response.Point = &BehaviorPoint{X: value, Y: y}
+			// Ensure intermediate track samples also follow the sealed tilt.
+			mid := (start + value) / 2
+			response.Track = harnessTrack([]BehaviorPoint{
+				{X: start, Y: expectedSliderTrackY(fixture.opened, start)},
+				{X: mid, Y: expectedSliderTrackY(fixture.opened, mid)},
+				{X: value, Y: y},
+			}, duration)
+			return response
 		case "curve_slider":
 			start = behaviorCoordinateMax / 2
 			response.Point = &BehaviorPoint{X: value, Y: y}

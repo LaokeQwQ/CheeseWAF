@@ -26,6 +26,10 @@ var sliderShapeKinds = []imageengine.ShapeKind{
 	imageengine.ShapeShield,
 }
 
+// shapeSliderMaxTrackAngleDeg caps absolute tilt below 45° so the piece still
+// mostly travels right while the user drags a horizontal range control.
+const shapeSliderMaxTrackAngleDeg = 40
+
 func populateBitmapShapeSlider(opts BehaviorOptions, tok *behaviorToken, p *BehaviorPresentation) error {
 	engine := bitmapEngine(opts)
 	background, err := renderBitmapBackground(engine, bitmapWidth, bitmapHeight)
@@ -40,14 +44,94 @@ func populateBitmapShapeSlider(opts BehaviorOptions, tok *behaviorToken, p *Beha
 	if err != nil {
 		return err
 	}
-	targetX, err := behaviorRandomInt(opts.Rand, bitmapPieceSize+28, bitmapWidth-bitmapPieceSize-12)
+	// Optional small mask spin keeps irregular cutouts less template-like without
+	// changing the horizontal drag UX.
+	spinDeg, err := behaviorRandomInt(opts.Rand, -12, 12)
 	if err != nil {
 		return err
 	}
-	targetY, err := behaviorRandomInt(opts.Rand, 18, bitmapHeight-bitmapPieceSize-18)
-	if err != nil {
-		return err
+	if spinDeg != 0 {
+		rotated, rotErr := imageengine.RotateScale(mask.Alpha, float64(spinDeg), 1, engine.Limits)
+		if rotErr == nil && rotated != nil {
+			// Rebuild a square alpha mask centered on the rotated silhouette.
+			size := bitmapPieceSize
+			spun := image.NewAlpha(image.Rect(0, 0, size, size))
+			at := image.Pt((size-rotated.Bounds().Dx())/2, (size-rotated.Bounds().Dy())/2)
+			for y := 0; y < rotated.Bounds().Dy(); y++ {
+				for x := 0; x < rotated.Bounds().Dx(); x++ {
+					dx, dy := at.X+x, at.Y+y
+					if dx < 0 || dy < 0 || dx >= size || dy >= size {
+						continue
+					}
+					_, _, _, a := rotated.At(rotated.Bounds().Min.X+x, rotated.Bounds().Min.Y+y).RGBA()
+					if a > 0 {
+						spun.SetAlpha(dx, dy, color.Alpha{A: uint8(a >> 8)})
+					}
+				}
+			}
+			mask = &imageengine.ShapeMask{Kind: mask.Kind, Alpha: spun, Padding: mask.Padding}
+		}
 	}
+
+	travel := bitmapWidth - bitmapPieceSize
+	const margin = 12
+	var targetX, targetY, startY, trackAngle int
+	placed := false
+	for attempt := 0; attempt < 32; attempt++ {
+		tx, err := behaviorRandomInt(opts.Rand, bitmapPieceSize+28, bitmapWidth-bitmapPieceSize-12)
+		if err != nil {
+			return err
+		}
+		ty, err := behaviorRandomInt(opts.Rand, 18, bitmapHeight-bitmapPieceSize-18)
+		if err != nil {
+			return err
+		}
+		// Prefer non-zero tilt; keep a small fraction pure-horizontal for variety.
+		angleMode, err := behaviorRandomInt(opts.Rand, 0, 9)
+		if err != nil {
+			return err
+		}
+		angle := 0
+		if angleMode > 1 {
+			magnitude, err := behaviorRandomInt(opts.Rand, 8, shapeSliderMaxTrackAngleDeg)
+			if err != nil {
+				return err
+			}
+			sign, err := behaviorRandomInt(opts.Rand, 0, 1)
+			if err != nil {
+				return err
+			}
+			angle = magnitude
+			if sign == 0 {
+				angle = -magnitude
+			}
+		}
+		tan := math.Tan(float64(angle) * math.Pi / 180)
+		sy := int(math.Round(float64(ty) - float64(tx)*tan))
+		// Entire path from x=0..targetX (and a little beyond for overshoot) must stay in-bounds.
+		endY := int(math.Round(float64(sy) + float64(travel)*tan))
+		minY := minBehavior(sy, minBehavior(ty, endY))
+		maxY := maxBehavior(sy, maxBehavior(ty, endY))
+		if minY < margin || maxY > bitmapHeight-bitmapPieceSize-margin {
+			continue
+		}
+		targetX, targetY, startY, trackAngle = tx, ty, sy, angle
+		placed = true
+		break
+	}
+	if !placed {
+		// Safe horizontal fallback when random tilt cannot fit.
+		tx, err := behaviorRandomInt(opts.Rand, bitmapPieceSize+28, bitmapWidth-bitmapPieceSize-12)
+		if err != nil {
+			return err
+		}
+		ty, err := behaviorRandomInt(opts.Rand, 18, bitmapHeight-bitmapPieceSize-18)
+		if err != nil {
+			return err
+		}
+		targetX, targetY, startY, trackAngle = tx, ty, ty, 0
+	}
+
 	piece, err := imageengine.ExtractPiece(background, image.Pt(targetX, targetY), mask)
 	if err != nil {
 		return err
@@ -65,6 +149,10 @@ func populateBitmapShapeSlider(opts BehaviorOptions, tok *behaviorToken, p *Beha
 	if err := pieceCanvas.DrawLayer(piece, image.Point{}, 255); err != nil {
 		return err
 	}
+	// Soft edge polish: light noise on the plate only (piece stays clean for matching).
+	if err := imageengine.AddNoise(background, engine.Random, imageengine.NoiseOptions{Dots: 90, Lines: 2, MaxAlpha: 22}); err != nil {
+		return err
+	}
 	imageURI, err := imageengine.PNGDataURI(background, engine.Limits)
 	if err != nil {
 		return err
@@ -73,13 +161,15 @@ func populateBitmapShapeSlider(opts BehaviorOptions, tok *behaviorToken, p *Beha
 	if err != nil {
 		return err
 	}
-	travel := bitmapWidth - bitmapPieceSize
 	tok.Mode = "slider"
+	tok.TrackAngle = trackAngle
 	tok.Point = BehaviorPoint{X: targetX * behaviorCoordinateMax / travel, Y: (targetY + bitmapPieceSize/2) * behaviorCoordinateMax / bitmapHeight}
 	p.Kind = string(BehaviorShapeSlider)
 	p.Image, p.Piece = imageURI, pieceURI
 	p.Prompt = "Drag the shape into the matching cutout"
-	p.Width, p.Height, p.PieceSize, p.PieceY = bitmapWidth, bitmapHeight, bitmapPieceSize, targetY
+	// piece_y is the START top (value=0); clients apply track_angle while sliding right.
+	p.Width, p.Height, p.PieceSize, p.PieceY = bitmapWidth, bitmapHeight, bitmapPieceSize, startY
+	p.TrackAngle = trackAngle
 	p.Shape = string(sliderShapeKinds[shapeIndex])
 	p.Track = trackPresentation(tok)
 	return nil

@@ -34,6 +34,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -372,6 +373,10 @@ func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) LoginOptions(w http.ResponseWriter, _ *http.Request) {
 	login := h.loginConfig()
+	showVersion := true
+	if login.ShowProductVersion != nil {
+		showVersion = *login.ShowProductVersion
+	}
 	writeData(w, map[string]any{
 		"captcha": map[string]any{
 			"enabled":    login.CAPTCHA.Enabled,
@@ -389,6 +394,11 @@ func (h *Handler) LoginOptions(w http.ResponseWriter, _ *http.Request) {
 			},
 		},
 		"background": login.Background,
+		"branding": map[string]any{
+			"copyright":       login.Copyright,
+			"show_version":    showVersion,
+			"product_version": version.Current().Version,
+		},
 	})
 }
 
@@ -774,6 +784,12 @@ func (h *Handler) loginConfig() config.ConsoleLoginConfig {
 	}
 	if login.Background.Type == "" {
 		login.Background.Type = "auto"
+	}
+	if login.Copyright == "" {
+		login.Copyright = def.Copyright
+	}
+	if login.ShowProductVersion == nil {
+		login.ShowProductVersion = def.ShowProductVersion
 	}
 	return login
 }

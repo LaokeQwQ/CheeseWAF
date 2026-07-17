@@ -146,6 +146,53 @@ func TestBehaviorChallenge_ShapeSliderUsesMatchingPNGPieceAndRandomShapeMetadata
 	if challenge.Presentation.Shape == "" || challenge.Presentation.PieceY < 0 || challenge.Presentation.PieceY+challenge.Presentation.PieceSize > challenge.Presentation.Height {
 		t.Fatalf("invalid shape display metadata: %+v", challenge.Presentation)
 	}
+	if absBehavior(challenge.Presentation.TrackAngle) > shapeSliderMaxTrackAngleDeg {
+		t.Fatalf("track angle %d exceeds max %d", challenge.Presentation.TrackAngle, shapeSliderMaxTrackAngleDeg)
+	}
+}
+
+func TestBehaviorChallenge_ShapeSliderTrackAngleStaysUnder45AndVerifiesTiltedPath(t *testing.T) {
+	now := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
+	seenTilt := false
+	for i := 0; i < 48; i++ {
+		opts := behaviorTestOptions(BehaviorShapeSlider, now.Add(time.Duration(i)*time.Second))
+		challenge, err := IssueBehaviorChallenge(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		angle := challenge.Presentation.TrackAngle
+		if absBehavior(angle) >= 45 {
+			t.Fatalf("absolute track angle must be < 45, got %d", angle)
+		}
+		if angle != 0 {
+			seenTilt = true
+		}
+		tok, ok := openBehaviorToken(normalizeBehaviorOptions(opts), challenge.Token)
+		if !ok {
+			t.Fatal("cannot open token")
+		}
+		if tok.TrackAngle != angle {
+			t.Fatalf("sealed track angle %d != presentation %d", tok.TrackAngle, angle)
+		}
+		good := correctBehaviorResponse(t, opts, challenge.Token)
+		if !VerifyBehaviorChallenge(opts, good).Valid {
+			t.Fatalf("tilted shape_slider rejected correct response (angle=%d)", angle)
+		}
+		// Pure-horizontal track must fail when the challenge is tilted.
+		if angle != 0 {
+			flat := good
+			flat.Track = []BehaviorTrackPoint{
+				{X: 500, Y: tok.Point.Y, T: 0, Type: "down"},
+				{X: tok.Point.X, Y: tok.Point.Y, T: 500, Type: "up"},
+			}
+			if VerifyBehaviorChallenge(opts, flat).Valid {
+				t.Fatalf("horizontal track accepted on tilted challenge (angle=%d)", angle)
+			}
+		}
+	}
+	if !seenTilt {
+		t.Fatal("expected at least one non-zero track angle across samples")
+	}
 }
 
 func TestBehaviorChallenge_RestorePublishesBoundedOffsetWithoutPublishingAnswer(t *testing.T) {
@@ -560,7 +607,13 @@ func correctBehaviorResponse(t *testing.T, opts BehaviorOptions, token string) B
 		response.Point = &BehaviorPoint{X: tok.Point.X, Y: tok.Point.Y}
 	case "slider":
 		response.Point = &BehaviorPoint{X: tok.Point.X, Y: tok.Point.Y}
-		response.Track = []BehaviorTrackPoint{{X: 500, Y: tok.Point.Y, T: 0, Type: "down"}, {X: tok.Point.X, Y: tok.Point.Y, T: 500, Type: "up"}}
+		startX := maxBehavior(0, tok.Point.X/5)
+		midX := (startX + tok.Point.X) / 2
+		response.Track = []BehaviorTrackPoint{
+			{X: startX, Y: expectedSliderTrackY(tok, startX), T: 0, Type: "down"},
+			{X: midX, Y: expectedSliderTrackY(tok, midX), T: 250, Type: "move"},
+			{X: tok.Point.X, Y: tok.Point.Y, T: 500, Type: "up"},
+		}
 	case "restore_offset":
 		response.Offset = float64(tok.Point.X) / 100
 		response.Track = []BehaviorTrackPoint{{X: 5000, Y: 5000, T: 0, Type: "down"}, {X: 5000, Y: 5000, T: 500, Type: "up"}}

@@ -90,3 +90,8 @@ artifacts/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Agent Eyes local inspector state
+.code-inspector/
+web/.code-inspector/
+

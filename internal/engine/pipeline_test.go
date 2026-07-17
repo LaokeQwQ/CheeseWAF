@@ -271,9 +271,9 @@ type countingDetector struct {
 	fn       func(context.Context, *RequestContext) (*DetectionResult, error)
 }
 
-func (d *countingDetector) ID() string       { return d.id }
-func (d *countingDetector) Name() string     { return d.id }
-func (d *countingDetector) Priority() int    { return d.priority }
+func (d *countingDetector) ID() string    { return d.id }
+func (d *countingDetector) Name() string  { return d.id }
+func (d *countingDetector) Priority() int { return d.priority }
 func (d *countingDetector) Detect(ctx context.Context, reqCtx *RequestContext) (*DetectionResult, error) {
 	return d.fn(ctx, reqCtx)
 }

@@ -756,6 +756,12 @@ export type LoginBackgroundConfig = {
   url: string;
 };
 
+export type LoginBranding = {
+  copyright: string;
+  show_version: boolean;
+  product_version: string;
+};
+
 export type LoginCAPTCHAPayload = {
   mode?: 'slider' | 'pow' | string;
   receipt?: string;
@@ -815,6 +821,7 @@ export type LoginOptions = {
     };
   };
   background: LoginBackgroundConfig;
+  branding?: LoginBranding;
 };
 
 export type LoginCAPTCHAResponse = {
@@ -935,6 +942,8 @@ export type SystemConfig = {
       captcha: LoginCAPTCHAConfig;
       security_entry: LoginSecurityEntryConfig;
       background: LoginBackgroundConfig;
+      copyright: string;
+      show_product_version?: boolean;
     };
     map: {
       china_boundary: MapBoundaryConfig;

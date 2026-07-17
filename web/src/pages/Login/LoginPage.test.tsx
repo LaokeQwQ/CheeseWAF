@@ -37,6 +37,11 @@ const options: LoginOptions = {
     slider: { width: 320, height: 150, piece_size: 42, tolerance: 6, min_drag_ms: 100, pow_enabled: false },
   },
   background: { enabled: false, type: 'auto', url: '' },
+  branding: {
+    copyright: 'Copyright © CheeseWAF. All rights reserved.',
+    show_version: true,
+    product_version: '0.1.0-dev',
+  },
 };
 
 function captcha(token: string, image = `data:image/png;base64,${token}`): LoginCAPTCHAResponse {
@@ -138,6 +143,51 @@ async function verifyCaptcha(receipt = 'captcha-receipt') {
   await waitFor(() => expect(api.verifyLoginCaptcha).toHaveBeenCalledTimes(1));
   await screen.findByText('login.captchaWidgetVerified');
 }
+
+describe('Login branding footer', () => {
+  it('renders bottom-centered copyright and product version as plain text', async () => {
+    api.fetchLoginOptions.mockResolvedValue({
+      ...options,
+      captcha: { ...options.captcha, enabled: false },
+      branding: {
+        copyright: 'Copyright <b>Injected</b> © Acme',
+        show_version: true,
+        product_version: '1.2.3',
+      },
+    });
+    renderLogin();
+
+    const copyright = await screen.findByText('Copyright <b>Injected</b> © Acme');
+    expect(copyright.tagName).toBe('P');
+    expect(copyright.className).toContain('auth-footer-copyright');
+    expect(copyright.querySelector('b')).toBeNull();
+    expect(copyright.innerHTML).toBe('Copyright &lt;b&gt;Injected&lt;/b&gt; © Acme');
+
+    const version = await screen.findByText('login.productVersion:{"version":"1.2.3"}');
+    expect(version.className).toContain('auth-footer-version');
+
+    const footer = document.querySelector('.auth-footer');
+    expect(footer).not.toBeNull();
+    expect(footer?.contains(copyright)).toBe(true);
+    expect(footer?.contains(version)).toBe(true);
+  });
+
+  it('hides the product version line when show_version is false', async () => {
+    api.fetchLoginOptions.mockResolvedValue({
+      ...options,
+      captcha: { ...options.captcha, enabled: false },
+      branding: {
+        copyright: 'Ops Console Only',
+        show_version: false,
+        product_version: '9.9.9',
+      },
+    });
+    renderLogin();
+
+    expect(await screen.findByText('Ops Console Only')).toBeTruthy();
+    expect(screen.queryByText(/login\.productVersion/)).toBeNull();
+  });
+});
 
 describe('Login background motion preference', () => {
   const videoBackgroundOptions: LoginOptions = {
