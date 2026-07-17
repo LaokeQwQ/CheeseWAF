@@ -424,7 +424,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
-		http.Redirect(w, r, r.URL.String(), code)
+		// Location must remain a same-origin relative path (Apply already sanitizes Path).
+		loc := r.URL.RequestURI()
+		if loc == "" || loc[0] != '/' || (len(loc) >= 2 && loc[1] == '/') {
+			loc = "/"
+		}
+		http.Redirect(w, r, loc, code)
 		s.writeLog(r.Context(), reqCtx, "redirect", code, start, nil)
 		return
 	}

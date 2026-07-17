@@ -24,6 +24,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
@@ -458,12 +459,11 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			return
 		}
 		http.SetCookie(w, &http.Cookie{
-			Name:   p.cookieName,
-			Value:  value,
-			Path:   "/",
-			MaxAge: maxAge,
-			// Match waiting-room / behavior cookies: hard-coded Secure:true breaks plain-HTTP data planes.
-			Secure:   cookieSecure(r),
+			Name:     p.cookieName,
+			Value:    value,
+			Path:     "/",
+			MaxAge:   maxAge,
+			Secure:   true,
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -471,7 +471,7 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		if r.Method == http.MethodPost {
 			status = http.StatusSeeOther
 		}
-		http.Redirect(w, r, returnURL, status)
+		http.Redirect(w, r, safeRelativeRedirect(returnURL), status)
 		return
 	}
 	if submittedType != "" && p.usesBehaviorChallenge(selection, clientIP, site) {
@@ -802,7 +802,7 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	p.behaviorPending.Finalize(jti)
 	p.failureTracker.Reset(key)
 	p.recordChallengeMetric(ChallengeMetricSuccess, site, string(pending.kind), clientIP)
-	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `{"data":{"valid":true,"clearance":true}}`)
 }
@@ -822,7 +822,8 @@ func (p *Policy) behaviorOwner(r *http.Request, site string, issue, secure bool)
 		return "", nil, err
 	}
 	expires := p.now().Add(p.ttl)
-	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
+	_ = secure // callers still pass TLS intent for logging; cookies always set Secure.
+	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
 }
 func (p *Policy) signBehaviorOwner(owner, site string, expires time.Time) string {
 	payload := owner + "." + strconv.FormatInt(expires.Unix(), 10)
@@ -1143,7 +1144,7 @@ func (p *Policy) serveWaitingRoom(w http.ResponseWriter, r *http.Request, client
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
-			Secure:   cookieSecure(r),
+			Secure:   true,
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -2334,32 +2335,27 @@ func safeChallengeReturnURL(r *http.Request) string {
 	if cleaned == "" {
 		return "/"
 	}
-	parsed, err := url.Parse(cleaned)
-	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.User != nil || parsed.Opaque != "" {
-		return "/"
-	}
-	path := strings.ReplaceAll(parsed.Path, "\\", "/")
-	if path == "" {
-		path = "/"
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	if strings.HasPrefix(path, "//") {
-		return "/"
-	}
-	parsed.Path = path
-	parsed.RawPath = ""
-	return parsed.RequestURI()
+	return safeRelativeRedirect(cleaned)
+}
+
+func safeRelativeRedirect(raw string) string {
+	return fsguard.SafeRelativeRedirect(raw)
 }
 
 func challengeRequestForReturnURL(r *http.Request, returnURL string) *http.Request {
 	if r == nil || r.URL == nil {
 		return r
 	}
-	parsed, err := url.Parse(returnURL)
-	if err != nil || parsed.Path == "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
-		parsed = &url.URL{Path: "/"}
+	safe := safeRelativeRedirect(returnURL)
+	pathPart := safe
+	rawQuery := ""
+	if q := strings.IndexByte(safe, '?'); q >= 0 {
+		pathPart = safe[:q]
+		rawQuery = safe[q+1:]
+	}
+	if pathPart == "" || pathPart[0] != '/' || (len(pathPart) >= 2 && pathPart[1] == '/') {
+		pathPart = "/"
+		rawQuery = ""
 	}
 	clone := r.Clone(r.Context())
 	next := *r.URL
@@ -2367,9 +2363,9 @@ func challengeRequestForReturnURL(r *http.Request, returnURL string) *http.Reque
 	next.Host = ""
 	next.User = nil
 	next.Opaque = ""
-	next.Path = parsed.Path
+	next.Path = pathPart
 	next.RawPath = ""
-	next.RawQuery = parsed.RawQuery
+	next.RawQuery = rawQuery
 	next.Fragment = ""
 	clone.URL = &next
 	return clone

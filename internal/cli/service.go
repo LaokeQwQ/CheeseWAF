@@ -447,7 +447,8 @@ func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secre
 		Expires:  expires,
 		MaxAge:   int(config.AdminSessionTTL / time.Second),
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		// Admin entry cookies are always Secure; serve the console over HTTPS.
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 	return true

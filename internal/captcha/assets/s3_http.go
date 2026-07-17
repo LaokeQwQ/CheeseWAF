@@ -55,7 +55,11 @@ func NewHTTPObjectClient(cfg S3Config, credentialFile string) (*HTTPObjectClient
 	if cfg.UseTLS && u.Scheme != "https" {
 		return nil, fmt.Errorf("S3 TLS is required by configuration")
 	}
-	raw, err := os.ReadFile(strings.TrimSpace(credentialFile))
+	credPath, err := safeConfigPath(credentialFile)
+	if err != nil {
+		return nil, fmt.Errorf("S3 credential file path: %w", err)
+	}
+	raw, err := os.ReadFile(credPath)
 	if err != nil {
 		return nil, fmt.Errorf("read S3 credential file: %w", err)
 	}

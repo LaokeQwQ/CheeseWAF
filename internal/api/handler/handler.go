@@ -30,6 +30,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -278,12 +279,17 @@ func initializeCAPTCHAAssets(cfg *config.Config, secret string, injected captcha
 		return nil, refs, fmt.Errorf("captcha asset configuration is unavailable")
 	}
 	limits := captchaassets.Limits{MaxImageBytes: cfg.CAPTCHAAssets.Limits.MaxImageBytes, MaxFontBytes: cfg.CAPTCHAAssets.Limits.MaxFontBytes, MaxPixels: cfg.CAPTCHAAssets.Limits.MaxPixels}
+	dataRoot := strings.TrimSpace(cfg.Setup.DataDir)
 	if strings.EqualFold(cfg.CAPTCHAAssets.Backend, "local") {
-		store, err := captchaassets.NewLocalStore(cfg.CAPTCHAAssets.Local.Path, limits)
+		store, err := captchaassets.NewLocalStore(cfg.CAPTCHAAssets.Local.Path, limits, dataRoot)
 		return store, refs, err
 	}
 	if strings.EqualFold(cfg.CAPTCHAAssets.Backend, "s3") {
-		metadataKey, err := os.ReadFile(strings.TrimSpace(cfg.CAPTCHAAssets.S3.MetadataKeyFile))
+		keyPath, err := resolveOperatorFilePath(cfg.CAPTCHAAssets.S3.MetadataKeyFile, dataRoot)
+		if err != nil {
+			return nil, refs, fmt.Errorf("S3 metadata integrity key path: %w", err)
+		}
+		metadataKey, err := os.ReadFile(keyPath)
 		if err != nil {
 			return nil, refs, fmt.Errorf("read S3 metadata integrity key: %w", err)
 		}
@@ -291,8 +297,12 @@ func initializeCAPTCHAAssets(cfg *config.Config, secret string, injected captcha
 		if len(metadataKey) < 32 || len(metadataKey) > 4096 {
 			return nil, refs, fmt.Errorf("S3 metadata integrity key must contain between 32 and 4096 bytes")
 		}
+		credPath, err := resolveOperatorFilePath(cfg.CAPTCHAAssets.S3.CredentialFile, dataRoot)
+		if err != nil {
+			return nil, refs, fmt.Errorf("S3 credential file path: %w", err)
+		}
 		s3cfg := captchaassets.S3Config{Endpoint: cfg.CAPTCHAAssets.S3.Endpoint, Region: cfg.CAPTCHAAssets.S3.Region, Bucket: cfg.CAPTCHAAssets.S3.Bucket, Prefix: cfg.CAPTCHAAssets.S3.Prefix, PathStyle: cfg.CAPTCHAAssets.S3.PathStyle, UseTLS: cfg.CAPTCHAAssets.S3.UseTLS, AllowPrivateEndpoint: cfg.CAPTCHAAssets.S3.AllowPrivateEndpoint, RequestTimeout: cfg.CAPTCHAAssets.S3.RequestTimeout, MetadataKey: metadataKey}
-		client, err := captchaassets.NewHTTPObjectClient(s3cfg, cfg.CAPTCHAAssets.S3.CredentialFile)
+		client, err := captchaassets.NewHTTPObjectClient(s3cfg, credPath)
 		if err != nil {
 			return nil, refs, err
 		}
@@ -303,6 +313,22 @@ func initializeCAPTCHAAssets(cfg *config.Config, secret string, injected captcha
 }
 
 var initializeCAPTCHAAssetStore = initializeCAPTCHAAssets
+
+// resolveOperatorFilePath prefers paths under dataRoot when set, otherwise requires
+// a cleaned absolute path. Prevents request-adjacent traversal while still allowing
+// operators to place keys outside the data dir via absolute paths.
+func resolveOperatorFilePath(path, dataRoot string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if dataRoot != "" {
+		if p, err := fsguard.SafeConfigPathUnderRoot(path, dataRoot); err == nil {
+			return p, nil
+		}
+	}
+	return fsguard.SafeConfigPath(path)
+}
 
 func defaultApprovalStorePath(cfg *config.Config) string {
 	runtimeDir := ""
@@ -906,6 +932,8 @@ func (h *Handler) loginCaptchaQuotaIdentity(w http.ResponseWriter, r *http.Reque
 	if value == "" {
 		return "", peer, false
 	}
+	// Secure is always true: login CAPTCHA client cookies are admin-console only
+	// and must not be sent on cleartext HTTP.
 	http.SetCookie(w, &http.Cookie{
 		Name:     loginCAPTCHAClientCookie,
 		Value:    value,
@@ -913,23 +941,10 @@ func (h *Handler) loginCaptchaQuotaIdentity(w http.ResponseWriter, r *http.Reque
 		MaxAge:   int(loginCAPTCHAClientMaxAge / time.Second),
 		Expires:  h.nowUTC().Add(loginCAPTCHAClientMaxAge),
 		HttpOnly: true,
-		Secure:   loginCaptchaCookieSecure(r),
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	})
 	return "client:" + loginCAPTCHAFingerprint(rawID), peer, true
-}
-
-// loginCaptchaCookieSecure sets Secure when the request is HTTPS or terminated TLS
-// is indicated via X-Forwarded-Proto (admin console behind a reverse proxy).
-func loginCaptchaCookieSecure(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	if r.TLS != nil {
-		return true
-	}
-	proto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
-	return strings.EqualFold(proto, "https")
 }
 
 func (h *Handler) loginCaptchaExistingQuotaIdentity(r *http.Request) (string, string, bool) {

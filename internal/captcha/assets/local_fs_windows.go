@@ -26,11 +26,15 @@ type localAssetFS struct {
 }
 
 func openLocalAssetFS(path string) (*localAssetFS, error) {
-	h, err := openWindowsDirectoryTree(path)
+	clean, err := safeConfigPath(path)
 	if err != nil {
 		return nil, err
 	}
-	return &localAssetFS{root: path, rootHandle: h}, nil
+	h, err := openWindowsDirectoryTree(clean)
+	if err != nil {
+		return nil, err
+	}
+	return &localAssetFS{root: clean, rootHandle: h}, nil
 }
 
 func (f *localAssetFS) Close() error {

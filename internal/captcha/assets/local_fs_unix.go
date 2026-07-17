@@ -22,23 +22,27 @@ type localAssetFS struct {
 }
 
 func openLocalAssetFS(path string) (*localAssetFS, error) {
-	fd, err := openSecureRoot(path)
+	clean, err := safeConfigPath(path)
 	if err != nil {
-		return nil, rejectLinkError(path, err)
+		return nil, err
+	}
+	fd, err := openSecureRoot(clean)
+	if err != nil {
+		return nil, rejectLinkError(clean, err)
 	}
 	if err = unix.Fchmod(fd, 0o700); err != nil {
 		unix.Close(fd)
 		return nil, err
 	}
-	return &localAssetFS{root: os.NewFile(uintptr(fd), path)}, nil
+	return &localAssetFS{root: os.NewFile(uintptr(fd), clean)}, nil
 }
 
 func openSecureRoot(path string) (int, error) {
-	abs, err := filepath.Abs(path)
+	clean, err := safeConfigPath(path)
 	if err != nil {
 		return -1, err
 	}
-	clean := normalizeSecureRootPath(filepath.Clean(abs))
+	clean = normalizeSecureRootPath(clean)
 	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, err
@@ -48,6 +52,10 @@ func openSecureRoot(path string) (int, error) {
 		return fd, nil
 	}
 	for _, name := range strings.Split(relative, string(filepath.Separator)) {
+		if err := safePathComponent(name); err != nil {
+			unix.Close(fd)
+			return -1, err
+		}
 		next, openErr := openSecureRootAt(fd, name)
 		if errors.Is(openErr, unix.ENOENT) {
 			mkdirErr := unix.Mkdirat(fd, name, 0o700)
@@ -96,6 +104,9 @@ func (f *localAssetFS) rootFD() (int, error) {
 }
 func (f *localAssetFS) kindFD(kind Kind, create bool) (int, error) {
 	name := string(kind)
+	if err := safePathComponent(name); err != nil {
+		return -1, err
+	}
 	rootfd, err := f.rootFD()
 	if err != nil {
 		return -1, err
@@ -127,6 +138,9 @@ func (f *localAssetFS) ensureKind(kind Kind) error {
 }
 
 func (f *localAssetFS) open(kind Kind, name string) (*os.File, error) {
+	if err := safePathComponent(name); err != nil {
+		return nil, err
+	}
 	dirfd, err := f.kindFD(kind, false)
 	if err != nil {
 		return nil, err
@@ -157,6 +171,9 @@ func (f *localAssetFS) readFile(kind Kind, name string, limit int64) ([]byte, er
 }
 
 func (f *localAssetFS) readDir(kind Kind) ([]os.DirEntry, error) {
+	if err := safePathComponent(string(kind)); err != nil {
+		return nil, err
+	}
 	fd, err := f.kindFD(kind, false)
 	if err != nil {
 		return nil, err
@@ -167,6 +184,9 @@ func (f *localAssetFS) readDir(kind Kind) ([]os.DirEntry, error) {
 }
 
 func (f *localAssetFS) atomicWrite(kind Kind, name string, data []byte, mode os.FileMode) (retErr error) {
+	if err := safePathComponent(name); err != nil {
+		return err
+	}
 	dirfd, err := f.kindFD(kind, false)
 	if err != nil {
 		return err

@@ -407,7 +407,13 @@ func (r *SSHRunner) runRemoteCommandWithInput(ctx context.Context, req SSHDeploy
 		case <-done:
 		}
 	}()
-	err = session.Run(command)
+	// Only fixed / builder-validated shell scripts may execute remotely.
+	trusted, err := trustedRemoteShell(command)
+	if err != nil {
+		close(done)
+		return "", false, err
+	}
+	err = session.Run(trusted)
 	close(done)
 	if cmdCtx.Err() == context.DeadlineExceeded {
 		err = fmt.Errorf("ssh deployment timed out after %s", r.timeout)
@@ -734,14 +740,18 @@ func openInstallBinary() (installBinarySource, error) {
 }
 
 func installCommand(size int64, checksum string, taskID ...string) string {
-	sizeValue := strconv.FormatInt(size, 10)
-	checksum = strings.ToLower(strings.TrimSpace(checksum))
-	if checksum == "" {
-		checksum = strings.Repeat("0", 64)
+	// taskID is intentionally not interpolated into the remote shell. Backup
+	// names use a prefix of the local binary checksum (hex-only) so no
+	// operator-supplied token reaches session.Run.
+	_ = taskID
+	if size < 0 {
+		size = 0
 	}
-	backupID := "manual"
-	if len(taskID) > 0 && safeTaskID(strings.TrimSpace(taskID[0])) {
-		backupID = strings.TrimSpace(taskID[0])
+	sizeValue := strconv.FormatInt(size, 10)
+	checksum = sanitizeInstallChecksum(checksum)
+	backupID := checksum
+	if len(backupID) > 16 {
+		backupID = backupID[:16]
 	}
 	return strings.Join([]string{
 		"set -eu",
@@ -768,15 +778,114 @@ func installCommand(size int64, checksum string, taskID ...string) string {
 }
 
 func safeTaskID(value string) bool {
+	return sanitizeTaskIDToken(value) != ""
+}
+
+// sanitizeTaskIDToken rebuilds an alphanumeric/dash token so shell interpolation
+// cannot carry untrusted characters into remote install scripts.
+func sanitizeTaskIDToken(value string) string {
+	value = strings.TrimSpace(value)
 	if len(value) < 8 || len(value) > 80 {
-		return false
+		return ""
 	}
+	var b strings.Builder
+	b.Grow(len(value))
 	for _, ch := range value {
-		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '-' {
-			return false
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' {
+			b.WriteRune(ch)
+			continue
+		}
+		return ""
+	}
+	return b.String()
+}
+
+func sanitizeInstallChecksum(checksum string) string {
+	checksum = strings.ToLower(strings.TrimSpace(checksum))
+	if len(checksum) != 64 {
+		return strings.Repeat("0", 64)
+	}
+	var b strings.Builder
+	b.Grow(64)
+	for _, ch := range checksum {
+		if (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') {
+			b.WriteRune(ch)
+			continue
+		}
+		return strings.Repeat("0", 64)
+	}
+	return b.String()
+}
+
+// trustedRemoteShell only accepts allowlisted fixed commands or exact install
+// scripts regenerated from a parsed size+checksum. Free-form operator shell is rejected.
+func trustedRemoteShell(command string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", fmt.Errorf("remote command is required")
+	}
+	// Deploy scripts are small; reject oversized payloads early (DoS / memory).
+	if len(command) > 16<<10 {
+		return "", fmt.Errorf("remote command too large")
+	}
+	// Return canonical constants so session.Run does not keep a free-form string.
+	switch command {
+	case remoteCheckCommand():
+		return remoteCheckCommand(), nil
+	case rollbackInstallCommand():
+		return rollbackInstallCommand(), nil
+	case "systemctl restart cheesewaf":
+		return "systemctl restart cheesewaf", nil
+	case "systemctl start cheesewaf":
+		return "systemctl start cheesewaf", nil
+	}
+	size, checksum, ok := parseInstallScriptParams(command)
+	if !ok {
+		return "", fmt.Errorf("refusing untrusted remote shell command")
+	}
+	// Rebuild from sanitized numeric size + hex checksum only.
+	return installCommand(size, checksum), nil
+}
+
+// parseInstallScriptParams extracts size and sha256 from an install script produced
+// by installCommand. Any deviation fails closed.
+func parseInstallScriptParams(command string) (int64, string, bool) {
+	const sizeMarker = `if [ "$actual_size" != "`
+	const shaMarker = `if [ "$actual_sha" != "`
+	sizeIdx := strings.Index(command, sizeMarker)
+	shaIdx := strings.Index(command, shaMarker)
+	if sizeIdx < 0 || shaIdx < 0 {
+		return 0, "", false
+	}
+	sizeRest := command[sizeIdx+len(sizeMarker):]
+	sizeEnd := strings.Index(sizeRest, `"`)
+	if sizeEnd <= 0 {
+		return 0, "", false
+	}
+	sizeValue := sizeRest[:sizeEnd]
+	for _, ch := range sizeValue {
+		if ch < '0' || ch > '9' {
+			return 0, "", false
 		}
 	}
-	return true
+	size, err := strconv.ParseInt(sizeValue, 10, 64)
+	if err != nil || size < 0 {
+		return 0, "", false
+	}
+	shaRest := command[shaIdx+len(shaMarker):]
+	shaEnd := strings.Index(shaRest, `"`)
+	if shaEnd != 64 {
+		return 0, "", false
+	}
+	checksum := sanitizeInstallChecksum(shaRest[:shaEnd])
+	if checksum != shaRest[:shaEnd] {
+		return 0, "", false
+	}
+	// Exact match against regenerated script (no extra metacharacters).
+	if installCommand(size, checksum) != command {
+		return 0, "", false
+	}
+	return size, checksum, true
 }
 
 func rollbackInstallCommand() string {
