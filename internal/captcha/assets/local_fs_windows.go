@@ -102,7 +102,8 @@ func (f *localAssetFS) open(kind Kind, name string) (*os.File, error) {
 		windows.CloseHandle(h)
 		return nil, err
 	}
-	return os.NewFile(uintptr(h), path), nil
+	// Constant label: handle opened under confined root; avoid user path in NewFile.
+	return os.NewFile(uintptr(h), "captcha-asset-file"), nil
 }
 func (f *localAssetFS) readFile(kind Kind, name string, limit int64) ([]byte, error) {
 	r, err := f.open(kind, name)
@@ -148,7 +149,7 @@ func (f *localAssetFS) atomicWrite(kind Kind, name string, data []byte, mode os.
 		return err
 	}
 	renamed := false
-	tmp := os.NewFile(uintptr(h), tmpName)
+	tmp := os.NewFile(uintptr(h), "captcha-asset-tmp")
 	closed := false
 	defer func() {
 		if !renamed {
