@@ -88,6 +88,23 @@ func (h *Handler) Protection(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, protectionConfigView(h.Config.Protection))
 }
 
+func (h *Handler) commitProtectionMutation(w http.ResponseWriter, mutate func(*config.ProtectionConfig) error) (*config.Config, bool) {
+	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
+		return mutate(&candidate.Protection)
+	}, func(candidate *config.Config) error {
+		return h.notifyProtectionConfigChanged(candidate.Protection)
+	})
+	if err == nil {
+		return committed, true
+	}
+	code := "CONFIG_SAVE_ERROR"
+	if strings.HasPrefix(err.Error(), "apply runtime config:") {
+		code = "PROTECTION_RELOAD_ERROR"
+	}
+	writeError(w, http.StatusInternalServerError, code, err.Error())
+	return nil, false
+}
+
 func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request) {
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
@@ -96,17 +113,15 @@ func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request)
 	if !decode(w, r, &req) {
 		return
 	}
-	current := h.Config.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
-	h.Config.Protection.Policy = req.WithDefaults(current)
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		current := next.Policy.WithDefaults(config.DefaultProtectionPolicy())
+		next.Policy = req.WithDefaults(current)
+		return nil
+	})
+	if !ok {
 		return
 	}
-	if err := h.notifyProtectionChanged(); err != nil {
-		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-		return
-	}
-	writeData(w, h.Config.Protection.Policy)
+	writeData(w, committed.Protection.Policy)
 }
 
 func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
@@ -117,17 +132,15 @@ func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	req.Providers = preserveThreatIntelProviderSecrets(h.Config.Protection.IP.Providers, req.Providers)
-	h.Config.Protection.IP = req
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		req.Providers = preserveThreatIntelProviderSecrets(next.IP.Providers, req.Providers)
+		next.IP = req
+		return nil
+	})
+	if !ok {
 		return
 	}
-	if err := h.notifyProtectionChanged(); err != nil {
-		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-		return
-	}
-	writeData(w, protectionConfigView(h.Config.Protection).IP)
+	writeData(w, protectionConfigView(committed.Protection).IP)
 }
 
 func (h *Handler) UpdateIPAccessRules(w http.ResponseWriter, r *http.Request) {
@@ -138,16 +151,14 @@ func (h *Handler) UpdateIPAccessRules(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	h.Config.Protection.IP.AccessRules = req
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		next.IP.AccessRules = req
+		return nil
+	})
+	if !ok {
 		return
 	}
-	if err := h.notifyProtectionChanged(); err != nil {
-		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-		return
-	}
-	writeData(w, h.Config.Protection.IP.AccessRules)
+	writeData(w, committed.Protection.IP.AccessRules)
 }
 
 func (h *Handler) UpdateIPReputationOverrides(w http.ResponseWriter, r *http.Request) {
@@ -161,12 +172,14 @@ func (h *Handler) UpdateIPReputationOverrides(w http.ResponseWriter, r *http.Req
 	if req == nil {
 		req = map[string]int{}
 	}
-	h.Config.Protection.IP.ReputationOverrides = req
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		next.IP.ReputationOverrides = req
+		return nil
+	})
+	if !ok {
 		return
 	}
-	writeData(w, h.Config.Protection.IP.ReputationOverrides)
+	writeData(w, committed.Protection.IP.ReputationOverrides)
 }
 
 func (h *Handler) UpdateIPTags(w http.ResponseWriter, r *http.Request) {
@@ -177,16 +190,18 @@ func (h *Handler) UpdateIPTags(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	tagger := ipprotect.NewTagger(h.Config.Protection.IP.Tags)
-	for ip, tags := range req {
-		tagger.Set(ip, tags)
-	}
-	h.Config.Protection.IP.Tags = tagger.Snapshot()
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		tagger := ipprotect.NewTagger(next.IP.Tags)
+		for ip, tags := range req {
+			tagger.Set(ip, tags)
+		}
+		next.IP.Tags = tagger.Snapshot()
+		return nil
+	})
+	if !ok {
 		return
 	}
-	writeData(w, h.Config.Protection.IP.Tags)
+	writeData(w, committed.Protection.IP.Tags)
 }
 
 func (h *Handler) UpdateThreatIntelProviders(w http.ResponseWriter, r *http.Request) {
@@ -197,13 +212,14 @@ func (h *Handler) UpdateThreatIntelProviders(w http.ResponseWriter, r *http.Requ
 	if !decode(w, r, &req) {
 		return
 	}
-	req = preserveThreatIntelProviderSecrets(h.Config.Protection.IP.Providers, req)
-	h.Config.Protection.IP.Providers = req
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		next.IP.Providers = preserveThreatIntelProviderSecrets(next.IP.Providers, req)
+		return nil
+	})
+	if !ok {
 		return
 	}
-	writeData(w, protectionConfigView(h.Config.Protection).IP.Providers)
+	writeData(w, protectionConfigView(committed.Protection).IP.Providers)
 }
 
 func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
@@ -232,16 +248,14 @@ func (h *Handler) ImportThreatIntel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "THREAT_INTEL_IMPORT_ERROR", err.Error())
 		return
 	}
-	h.Config.Protection.IP.ThreatIntel = ipprotect.MergeThreatIntel(h.Config.Protection.IP.ThreatIntel, imported)
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		next.IP.ThreatIntel = ipprotect.MergeThreatIntel(next.IP.ThreatIntel, imported)
+		return nil
+	})
+	if !ok {
 		return
 	}
-	if err := h.notifyProtectionChanged(); err != nil {
-		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-		return
-	}
-	writeData(w, map[string]any{"imported": len(imported), "total": len(h.Config.Protection.IP.ThreatIntel)})
+	writeData(w, map[string]any{"imported": len(imported), "total": len(committed.Protection.IP.ThreatIntel)})
 }
 
 func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
@@ -254,6 +268,7 @@ func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
 	}
 	providers := selectedProviders(h.Config.Protection.IP.Providers, req.ProviderID)
 	var total int
+	var merged []config.ThreatIntelConfig
 	results := make([]map[string]any, 0, len(providers))
 	for _, provider := range providers {
 		imported, err := fetchProvider(r.Context(), provider)
@@ -264,23 +279,24 @@ func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
 			results = append(results, result)
 			continue
 		}
-		h.Config.Protection.IP.ThreatIntel = ipprotect.MergeThreatIntel(h.Config.Protection.IP.ThreatIntel, imported)
 		total += len(imported)
+		merged = append(merged, imported...)
 		result["ok"] = true
 		result["imported"] = len(imported)
 		results = append(results, result)
 	}
+	finalTotal := len(h.Config.Protection.IP.ThreatIntel)
 	if total > 0 {
-		if err := h.persistConfig(); err != nil {
-			writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+			next.IP.ThreatIntel = ipprotect.MergeThreatIntel(next.IP.ThreatIntel, merged)
+			return nil
+		})
+		if !ok {
 			return
 		}
-		if err := h.notifyProtectionChanged(); err != nil {
-			writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-			return
-		}
+		finalTotal = len(committed.Protection.IP.ThreatIntel)
 	}
-	writeData(w, map[string]any{"imported": total, "results": results, "total": len(h.Config.Protection.IP.ThreatIntel)})
+	writeData(w, map[string]any{"imported": total, "results": results, "total": finalTotal})
 }
 
 func (h *Handler) TestThreatIntelProvider(w http.ResponseWriter, r *http.Request) {
@@ -324,13 +340,11 @@ func (h *Handler) LookupThreatIntel(w http.ResponseWriter, r *http.Request) {
 		imported = append(imported, items...)
 	}
 	if len(imported) > 0 {
-		h.Config.Protection.IP.ThreatIntel = ipprotect.MergeThreatIntel(h.Config.Protection.IP.ThreatIntel, imported)
-		if err := h.persistConfig(); err != nil {
-			writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
-			return
-		}
-		if err := h.notifyProtectionChanged(); err != nil {
-			writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
+		_, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+			next.IP.ThreatIntel = ipprotect.MergeThreatIntel(next.IP.ThreatIntel, imported)
+			return nil
+		})
+		if !ok {
 			return
 		}
 	}
@@ -370,16 +384,14 @@ func (h *Handler) UpdateACLRules(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	h.Config.Protection.ACL = req
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		next.ACL = req
+		return nil
+	})
+	if !ok {
 		return
 	}
-	if err := h.notifyProtectionChanged(); err != nil {
-		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-		return
-	}
-	writeData(w, h.Config.Protection.ACL)
+	writeData(w, committed.Protection.ACL)
 }
 
 func (h *Handler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
@@ -390,16 +402,14 @@ func (h *Handler) UpdateRateLimit(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	h.Config.Protection.RateLimit = req
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		next.RateLimit = req
+		return nil
+	})
+	if !ok {
 		return
 	}
-	if err := h.notifyProtectionChanged(); err != nil {
-		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-		return
-	}
-	writeData(w, h.Config.Protection.RateLimit)
+	writeData(w, committed.Protection.RateLimit)
 }
 
 func (h *Handler) UpdateBotProtection(w http.ResponseWriter, r *http.Request) {
@@ -410,19 +420,17 @@ func (h *Handler) UpdateBotProtection(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if req.Secret == "" {
-		req.Secret = h.Config.Protection.Bot.Secret
-	}
-	h.Config.Protection.Bot = req
-	if err := h.persistConfig(); err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		if req.Secret == "" {
+			req.Secret = next.Bot.Secret
+		}
+		next.Bot = req
+		return nil
+	})
+	if !ok {
 		return
 	}
-	if err := h.notifyProtectionChanged(); err != nil {
-		writeError(w, http.StatusInternalServerError, "PROTECTION_RELOAD_ERROR", err.Error())
-		return
-	}
-	writeData(w, protectionConfigView(h.Config.Protection).Bot)
+	writeData(w, protectionConfigView(committed.Protection).Bot)
 }
 
 func selectedProviders(providers []config.ThreatIntelProviderConfig, id string) []config.ThreatIntelProviderConfig {

@@ -5,6 +5,7 @@ const categoryKeys: Record<string, string> = {
   bot: 'securityCategories.bot',
   challenge: 'securityActions.challenge',
   custom_rule: 'securityCategories.customRule',
+  detection_budget: 'securityCategories.detectionBudget',
   geoip: 'securityCategories.geoip',
   lfi: 'securityCategories.lfi',
   nosqli: 'securityCategories.nosqli',

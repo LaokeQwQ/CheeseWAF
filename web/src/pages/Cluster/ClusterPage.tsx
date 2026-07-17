@@ -3,7 +3,7 @@ import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconf
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask } from '../../api/client';
+import { createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask } from '../../api/client';
 import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration } from '../../types/api';
 
 type ClusterDeployForm = {
@@ -39,7 +39,7 @@ type ClusterCertificateForm = {
 
 type DeployMethod = 'ansible' | 'ssh';
 type DeployAuthMethod = 'agent' | 'password' | 'private_key';
-type DeployHostKeyMode = 'known_hosts' | 'fingerprint';
+type DeployHostKeyMode = 'fingerprint';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -53,7 +53,7 @@ export default function ClusterPage() {
   const [deployMethod, setDeployMethod] = useState<DeployMethod>('ansible');
   const [deployWizardStep, setDeployWizardStep] = useState(0);
   const [deployAuthMethod, setDeployAuthMethod] = useState<DeployAuthMethod>('agent');
-  const [deployHostKeyMode, setDeployHostKeyMode] = useState<DeployHostKeyMode>('known_hosts');
+  const [deployHostKeyMode, setDeployHostKeyMode] = useState<DeployHostKeyMode>('fingerprint');
   const [ansibleNodes, setAnsibleNodes] = useState<ClusterAnsibleHost[]>([
     { name: 'waf-a', address: '', role: 'waf', ssh_port: 22 },
   ]);
@@ -236,11 +236,11 @@ export default function ClusterPage() {
       payload.private_key = privateKey;
     }
     const hostKeySHA256 = String(values.hostKeySHA256 || '').trim();
-    if (deployHostKeyMode === 'fingerprint' && !hostKeySHA256) {
+    if (!hostKeySHA256) {
       ArcoMessage.warning(t('cluster.deployHostKeyRequired'));
       return;
     }
-    if (deployHostKeyMode === 'fingerprint' && hostKeySHA256) {
+    if (hostKeySHA256) {
       payload.host_key_sha256 = hostKeySHA256;
     }
     if (mode === 'check') {
@@ -251,6 +251,12 @@ export default function ClusterPage() {
         ArcoMessage.warning(t('cluster.deployWizardPrecheckRequired'));
         return;
       }
+      const checkedTask = await fetchClusterDeploymentTask(activeDeployTask.id);
+      if (checkedTask.action !== 'check' || checkedTask.status !== 'succeeded' || !checkedTask.authorization?.handle) {
+        ArcoMessage.warning(t('cluster.deployWizardPrecheckRequired'));
+        return;
+      }
+      payload.authorization = checkedTask.authorization.handle;
       setDeployWizardStep(3);
       deployTaskMutation.mutate(payload);
     }
@@ -277,7 +283,7 @@ export default function ClusterPage() {
     setDeployWizardStep(0);
     setDeployMethod('ansible');
     setDeployAuthMethod('agent');
-    setDeployHostKeyMode('known_hosts');
+    setDeployHostKeyMode('fingerprint');
     setActiveDeployTaskId(null);
     setSubmittedDeployTask(null);
     setAnsiblePackage(null);
@@ -836,7 +842,7 @@ export default function ClusterPage() {
                     rules={[{ required: true, message: t('cluster.deployHostRequired') }]}
                     extra={t('cluster.deployWizardHostHint')}
                   >
-                    <Input placeholder="192.168.6.249" allowClear onFocus={() => setDeployWizardStep(1)} />
+                    <Input placeholder="192.0.2.10" allowClear onFocus={() => setDeployWizardStep(1)} />
                   </Form.Item>
                   <Form.Item
                     label={t('cluster.deployUser')}
@@ -888,15 +894,9 @@ export default function ClusterPage() {
                     <strong>{t('cluster.deployWizardHostKeyTitle')}</strong>
                     <span>{t('cluster.deployWizardHostKeyHint')}</span>
                   </div>
-                  <Radio.Group type="button" value={deployHostKeyMode} onChange={(value) => setDeployHostKeyMode(value as DeployHostKeyMode)}>
-                    <Radio value="known_hosts">{t('cluster.deployWizardHostKeyKnownHosts')}</Radio>
-                    <Radio value="fingerprint">{t('cluster.deployWizardHostKeyFingerprint')}</Radio>
-                  </Radio.Group>
-                  {deployHostKeyMode === 'fingerprint' && (
-                    <Form.Item label={t('cluster.deployHostKey')} field="hostKeySHA256" extra={t('cluster.deployHostKeyHint')}>
+                  <Form.Item label={t('cluster.deployHostKey')} field="hostKeySHA256" extra={t('cluster.deployHostKeyHint')}>
                       <Input placeholder="SHA256:..." allowClear />
-                    </Form.Item>
-                  )}
+                  </Form.Item>
                 </div>
 
                 <div className="cluster-deploy-actions">

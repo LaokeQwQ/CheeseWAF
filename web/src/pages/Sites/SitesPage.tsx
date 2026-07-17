@@ -1,5 +1,6 @@
 import {
   Button,
+  Empty,
   Input,
   InputNumber,
   Message as ArcoMessage,
@@ -19,6 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import { createSite, fetchSites } from '../../api/client';
 import type { Site } from '../../types/api';
 import { defaultSiteAdvanced, splitList } from './siteModel';
+import './SitesPage.css';
 
 type WizardDraft = {
   name: string;
@@ -32,6 +34,8 @@ type WizardDraft = {
   enableSSL: boolean;
   certFile: string;
   keyFile: string;
+  certPEM: string;
+  keyPEM: string;
   certificateMode: string;
   forceHTTPS: boolean;
   hsts: boolean;
@@ -61,6 +65,8 @@ const initialDraft: WizardDraft = {
   enableSSL: false,
   certFile: '',
   keyFile: '',
+  certPEM: '',
+  keyPEM: '',
   certificateMode: 'file',
   forceHTTPS: false,
   hsts: true,
@@ -85,7 +91,7 @@ export default function SitesPage() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<WizardDraft>(initialDraft);
-  const { data } = useQuery({
+  const { data, error, isError, isLoading, refetch } = useQuery({
     queryKey: ['sites'],
     queryFn: fetchSites,
     retry: false,
@@ -103,13 +109,29 @@ export default function SitesPage() {
     onError: (error) => ArcoMessage.error(error.message),
   });
   const rows = data ?? [];
-  const canCreate = useMemo(
+  const basicStepValid = useMemo(
     () => Boolean(draft.name.trim() && splitList(draft.domains).length && splitList(draft.upstreams).length),
     [draft],
   );
+  const tlsStepValid = useMemo(() => {
+    if (!draft.enableSSL || draft.certificateMode === 'acme') {
+      return true;
+    }
+    if (draft.certificateMode === 'inline') {
+      return Boolean(draft.certPEM.trim() && draft.keyPEM.trim());
+    }
+    return Boolean(draft.certFile.trim() && draft.keyFile.trim());
+  }, [draft]);
+  const canCreate = basicStepValid && tlsStepValid;
+  const canAdvance = step === 0 ? basicStepValid : step === 1 ? tlsStepValid : true;
 
   const updateDraft = <K extends keyof WizardDraft>(key: K, value: WizardDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
+  };
+  const closeWizard = () => {
+    setOpen(false);
+    setStep(0);
+    setDraft(initialDraft);
   };
   const renderMode = (mode: string) => {
     if (mode === 'block') {
@@ -123,25 +145,32 @@ export default function SitesPage() {
     }
     return mode || '-';
   };
-  const createPayload = (): Partial<Site> => ({
+  const createPayload = (): Partial<Site> => {
+    const isAcme = draft.certificateMode === 'acme';
+    const enableSSL = isAcme ? true : draft.enableSSL;
+    return {
     name: draft.name.trim(),
     domains: splitList(draft.domains),
     upstreams: splitList(draft.upstreams),
     listen_port: draft.listenPort,
     loadbalance: draft.loadbalance,
-    enable_ssl: draft.enableSSL,
-    cert_file: draft.certFile.trim(),
-    key_file: draft.keyFile.trim(),
+    enable_ssl: enableSSL,
+    cert_file: enableSSL && draft.certificateMode === 'file' ? draft.certFile.trim() : '',
+    key_file: enableSSL && draft.certificateMode === 'file' ? draft.keyFile.trim() : '',
     waf_enabled: draft.wafEnabled,
     waf_mode: draft.wafMode,
     enabled: draft.enabled,
     advanced: {
       ...defaultSiteAdvanced,
+      access_log_enabled: true,
       certificate: {
         ...defaultSiteAdvanced.certificate,
         mode: draft.certificateMode,
-        force_https: draft.forceHTTPS,
-        hsts: draft.hsts,
+        cert_pem: enableSSL && draft.certificateMode === 'inline' ? draft.certPEM.trim() : '',
+        key_pem: enableSSL && draft.certificateMode === 'inline' ? draft.keyPEM.trim() : '',
+        auto_renew: isAcme ? true : defaultSiteAdvanced.certificate.auto_renew,
+        force_https: isAcme ? true : draft.forceHTTPS,
+        hsts: isAcme ? true : draft.hsts,
         min_tls_version: draft.minTLSVersion,
       },
       origin: {
@@ -165,7 +194,8 @@ export default function SitesPage() {
         apisec: draft.apisec,
       },
     },
-  });
+  };
+  };
 
   return (
     <section className="page-surface">
@@ -179,70 +209,123 @@ export default function SitesPage() {
         </Button>
       </header>
 
-      <section className="table-panel">
-        <Table
-          rowKey="id"
-          pagination={false}
-          loading={!data}
-          data={rows}
-          columns={[
-            {
-              title: t('sites.name'),
-              dataIndex: 'name',
-              render: (name: string, record: Site) => (
-                <button className="table-link" type="button" onClick={() => navigate(`/sites/${record.id}`)}>
-                  <Server size={17} />
-                  <span>{name}</span>
-                </button>
-              ),
-            },
-            {
-              title: t('sites.domain'),
-              render: (_: unknown, record: Site) => record.domains?.join(', ') || '-',
-            },
-            {
-              title: t('sites.upstream'),
-              render: (_: unknown, record: Site) => record.upstreams?.join(', ') || '-',
-            },
-            {
-              title: t('sites.listen'),
-              dataIndex: 'listen_port',
-              render: (port: number) => <code>:{port || 80}</code>,
-            },
-            {
-              title: t('sites.mode'),
-              dataIndex: 'waf_mode',
-              render: (mode: string) => <Tag color={mode === 'block' ? 'green' : mode === 'monitor' ? 'orange' : 'gray'}>{renderMode(mode)}</Tag>,
-            },
-            {
-              title: t('sites.status'),
-              dataIndex: 'enabled',
-              render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'gray'}>{enabled ? t('common.online') : t('sites.disabled')}</Tag>,
-            },
-            {
-              title: '',
-              render: (_: unknown, record: Site) => (
-                <Button size="small" onClick={() => navigate(`/sites/${record.id}`)}>
-                  {t('sites.manage')}
-                </Button>
-              ),
-            },
-          ]}
-        />
+      <section className="table-panel sites-list-panel">
+        {isError && (
+          <div className="inline-error sites-query-error" role="alert">
+            <span>{queryErrorMessage(error, t('common.noData'))}</span>
+            <Button size="small" onClick={() => refetch()}>{t('common.retry')}</Button>
+          </div>
+        )}
+        <div className="sites-desktop-table">
+          <Table
+            rowKey="id"
+            pagination={false}
+            loading={isLoading}
+            data={rows}
+            className="sites-table"
+            scroll={{ x: 760 }}
+            noDataElement={<Empty description={t('common.noData')} />}
+            columns={[
+              {
+                title: t('sites.name'),
+                dataIndex: 'name',
+                ellipsis: true,
+                render: (name: string, record: Site) => (
+                  <button className="table-link site-table-link" title={name} type="button" onClick={() => navigate(`/sites/${record.id}`)}>
+                    <Server size={16} />
+                    <span>{name}</span>
+                  </button>
+                ),
+              },
+              {
+                title: t('sites.domain'),
+                ellipsis: true,
+                render: (_: unknown, record: Site) => {
+                  const value = record.domains?.join(', ') || '-';
+                  return <span className="site-table-text" title={value}>{value}</span>;
+                },
+              },
+              {
+                title: t('sites.upstream'),
+                ellipsis: true,
+                render: (_: unknown, record: Site) => {
+                  const value = record.upstreams?.join(', ') || '-';
+                  return <span className="site-table-text" title={value}>{value}</span>;
+                },
+              },
+              {
+                title: t('sites.listen'),
+                dataIndex: 'listen_port',
+                width: 88,
+                render: (port: number) => <code>:{port || 80}</code>,
+              },
+              {
+                title: t('sites.mode'),
+                dataIndex: 'waf_mode',
+                width: 100,
+                render: (mode: string) => <Tag color={mode === 'block' ? 'green' : mode === 'monitor' ? 'orange' : 'gray'}>{renderMode(mode)}</Tag>,
+              },
+              {
+                title: t('sites.status'),
+                dataIndex: 'enabled',
+                width: 96,
+                render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'gray'}>{enabled ? t('common.online') : t('sites.disabled')}</Tag>,
+              },
+              {
+                title: t('common.actions'),
+                width: 104,
+                fixed: 'right' as const,
+                render: (_: unknown, record: Site) => (
+                  <div className="site-table-actions">
+                    <Button size="small" onClick={() => navigate(`/sites/${record.id}`)}>
+                      {t('sites.manage')}
+                    </Button>
+                  </div>
+                ),
+              },
+            ]}
+          />
+        </div>
+        <div className="sites-mobile-list">
+          {isLoading ? <div className="skeleton-list" /> : rows.length ? rows.map((site) => {
+            const domains = site.domains?.join(', ') || '-';
+            const upstreams = site.upstreams?.join(', ') || '-';
+            return (
+              <article className="mobile-data-card sites-mobile-card" key={site.id}>
+                <header>
+                  <button className="sites-mobile-title" title={site.name} type="button" onClick={() => navigate(`/sites/${site.id}`)}>
+                    <Server size={17} />
+                    <strong>{site.name}</strong>
+                  </button>
+                  <Tag color={site.enabled ? 'green' : 'gray'}>{site.enabled ? t('common.online') : t('sites.disabled')}</Tag>
+                </header>
+                <dl>
+                  <div><dt>{t('sites.domain')}</dt><dd title={domains}>{domains}</dd></div>
+                  <div><dt>{t('sites.upstream')}</dt><dd title={upstreams}>{upstreams}</dd></div>
+                  <div><dt>{t('sites.listen')}</dt><dd><code>:{site.listen_port || 80}</code></dd></div>
+                  <div><dt>{t('sites.mode')}</dt><dd>{renderMode(site.waf_mode)}</dd></div>
+                </dl>
+                <footer>
+                  <Button type="primary" onClick={() => navigate(`/sites/${site.id}`)}>{t('sites.manage')}</Button>
+                </footer>
+              </article>
+            );
+          }) : !isError ? <Empty description={t('common.noData')} /> : null}
+        </div>
       </section>
 
       <Modal
         className="site-wizard-modal"
         title={t('sites.create')}
         visible={open}
-        onCancel={() => setOpen(false)}
+        onCancel={closeWizard}
         footer={(
           <div className="modal-actions">
             <Button disabled={step === 0} onClick={() => setStep((value) => Math.max(0, value - 1))}>
               {t('common.back')}
             </Button>
             {step < 3 ? (
-              <Button type="primary" disabled={step === 0 && !canCreate} onClick={() => setStep((value) => Math.min(3, value + 1))}>
+              <Button type="primary" disabled={!canAdvance} onClick={() => setStep((value) => Math.min(3, value + 1))}>
                 {t('common.next')}
               </Button>
             ) : (
@@ -253,7 +336,7 @@ export default function SitesPage() {
           </div>
         )}
       >
-        <Steps current={step} size="small" className="setup-steps">
+        <Steps current={step + 1} size="small" className="setup-steps">
           <Steps.Step title={t('sites.stepBasic')} icon={<Network size={16} />} />
           <Steps.Step title={t('sites.stepTls')} icon={<LockKeyhole size={16} />} />
           <Steps.Step title={t('sites.stepProtection')} icon={<ShieldCheck size={16} />} />
@@ -316,8 +399,18 @@ export default function SitesPage() {
                 <Select.Option value="acme">{t('sites.certAcme')}</Select.Option>
               </Select>
             </label>
-            <label><span>{t('sites.certFile')}</span><Input value={draft.certFile} placeholder="/etc/cheesewaf/certs/site.crt" onChange={(value) => updateDraft('certFile', value)} /></label>
-            <label><span>{t('sites.keyFile')}</span><Input value={draft.keyFile} placeholder="/etc/cheesewaf/certs/site.key" onChange={(value) => updateDraft('keyFile', value)} /></label>
+            {draft.enableSSL && draft.certificateMode === 'file' && (
+              <>
+                <label><span>{t('sites.certFile')}</span><Input value={draft.certFile} placeholder="/etc/cheesewaf/certs/site.crt" onChange={(value) => updateDraft('certFile', value)} /></label>
+                <label><span>{t('sites.keyFile')}</span><Input value={draft.keyFile} placeholder="/etc/cheesewaf/certs/site.key" onChange={(value) => updateDraft('keyFile', value)} /></label>
+              </>
+            )}
+            {draft.enableSSL && draft.certificateMode === 'inline' && (
+              <>
+                <label className="wide-field"><span>{t('sites.certPem')}</span><Input.TextArea value={draft.certPEM} autoSize={{ minRows: 4, maxRows: 8 }} onChange={(value) => updateDraft('certPEM', value)} /></label>
+                <label className="wide-field"><span>{t('sites.keyPem')}</span><Input.TextArea value={draft.keyPEM} autoSize={{ minRows: 4, maxRows: 8 }} onChange={(value) => updateDraft('keyPEM', value)} /></label>
+              </>
+            )}
             <label className="switch-line"><span>{t('sites.forceHttps')}</span><Switch checked={draft.forceHTTPS} onChange={(value) => updateDraft('forceHTTPS', value)} /></label>
             <label className="switch-line"><span>{t('sites.hsts')}</span><Switch checked={draft.hsts} onChange={(value) => updateDraft('hsts', value)} /></label>
             <label>
@@ -371,4 +464,8 @@ export default function SitesPage() {
       </Modal>
     </section>
   );
+}
+
+function queryErrorMessage(error: unknown, fallbackMessage: string) {
+  return error instanceof Error && error.message.trim() ? error.message : fallbackMessage;
 }

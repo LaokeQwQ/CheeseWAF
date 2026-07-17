@@ -1,4 +1,5 @@
 import { Button, Form, Input, Select, Steps } from '@arco-design/web-react';
+import '../../styles/arco-components';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LockKeyhole, Network, UserRound } from 'lucide-react';

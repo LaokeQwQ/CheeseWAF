@@ -267,7 +267,8 @@ func TestClusterDeployTaskRunCreatesTrackableTaskAndRedactsSecrets(t *testing.T)
 			NewID:  func() string { return "deploy-task-1" },
 		}),
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(`{"host":"node-a.example.com","user":"root","password":"`+secret+`","action":"install"}`))
+	auth, _ := h.clusterDeployAuthorizationStore().Issue("test", deploy.AuthorizationTarget{Host: "node-a.example.com", User: "root", Port: 22})
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(`{"host":"node-a.example.com","user":"root","password":"`+secret+`","action":"install","authorization":"`+auth.Handle+`"}`))
 	rec := httptest.NewRecorder()
 	h.ClusterStartDeployTask(rec, req)
 	if rec.Code != http.StatusOK {
@@ -312,7 +313,8 @@ func TestClusterDeployTaskFailureDoesNotLeakPrivateKey(t *testing.T) {
 			NewID:  func() string { return "deploy-task-2" },
 		}),
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(`{"host":"node-b.example.com","user":"root","private_key":`+strconv.Quote(privateKey)+`,"action":"restart-service"}`))
+	auth, _ := h.clusterDeployAuthorizationStore().Issue("test", deploy.AuthorizationTarget{Host: "node-b.example.com", User: "root", Port: 22})
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(`{"host":"node-b.example.com","user":"root","private_key":`+strconv.Quote(privateKey)+`,"action":"restart-service","authorization":"`+auth.Handle+`"}`))
 	rec := httptest.NewRecorder()
 	h.ClusterStartDeployTask(rec, req)
 	if rec.Code != http.StatusOK {
@@ -327,6 +329,50 @@ func TestClusterDeployTaskFailureDoesNotLeakPrivateKey(t *testing.T) {
 	}
 }
 
+func TestClusterFailedCheckTaskNeverReturnsAuthorization(t *testing.T) {
+	runner := &fakeClusterDeployRunner{checkErr: errors.New("check failed")}
+	h := New(Options{Config: ptrClusterConfig(config.Default()), ClusterDeployTasks: deploy.NewTaskManager(deploy.TaskManagerOptions{Runner: runner, NewID: func() string { return "failed-check" }})})
+	rec := httptest.NewRecorder()
+	h.ClusterStartDeployTask(rec, httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(`{"host":"node.example.com","user":"root","action":"check"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	_ = waitClusterDeployTask(t, h, "failed-check", deploy.TaskStatusFailed)
+	getRec := httptest.NewRecorder()
+	h.ClusterGetDeployTask(getRec, withURLParam(httptest.NewRequest(http.MethodGet, "/api/cluster/deploy/tasks/failed-check", nil), "id", "failed-check"))
+	if strings.Contains(getRec.Body.String(), "authorization") {
+		t.Fatalf("failed check returned authorization: %s", getRec.Body.String())
+	}
+}
+
+func TestClusterDeployAuthorizationRejectsChangedTargetAndReplay(t *testing.T) {
+	runner := &fakeClusterDeployRunner{deployResult: deploy.DeployResult{OK: true}}
+	h := New(Options{Config: ptrClusterConfig(config.Default()), ClusterDeployTasks: deploy.NewTaskManager(deploy.TaskManagerOptions{Runner: runner})})
+	auth, _ := h.clusterDeployAuthorizationStore().Issue("test", deploy.AuthorizationTarget{Host: "node.example.com", User: "root", Port: 22, HostKeySHA256: "SHA256:abc"})
+	for _, body := range []string{
+		`{"host":"other.example.com","user":"root","port":22,"host_key_sha256":"SHA256:abc","action":"install","authorization":"` + auth.Handle + `"}`,
+		`{"host":"node.example.com","user":"root","port":22,"host_key_sha256":"SHA256:abc","action":"install","authorization":"` + auth.Handle + `"}`,
+		`{"host":"node.example.com","user":"root","port":22,"host_key_sha256":"SHA256:abc","action":"install","authorization":"` + auth.Handle + `"}`,
+	} {
+		rec := httptest.NewRecorder()
+		h.ClusterStartDeployTask(rec, httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(body)))
+		if body == (`{"host":"node.example.com","user":"root","port":22,"host_key_sha256":"SHA256:abc","action":"install","authorization":"`+auth.Handle+`"}`) && rec.Code == http.StatusOK {
+			continue
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestClusterDeployRunRequiresAuthorization(t *testing.T) {
+	h := New(Options{Config: ptrClusterConfig(config.Default())})
+	rec := httptest.NewRecorder()
+	h.ClusterDeployRun(rec, httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/run", strings.NewReader(`{"host":"node.example.com","user":"root","action":"install"}`)))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
 func TestClusterAuditCombinesHTTPAuditAndDeployTaskEvents(t *testing.T) {
 	auditor := middleware.NewAuditor(filepath.Join(t.TempDir(), "audit.jsonl"))
 	httpAt := time.Unix(2000, 0).UTC()

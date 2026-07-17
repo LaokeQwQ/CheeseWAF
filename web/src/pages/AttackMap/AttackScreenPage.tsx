@@ -10,6 +10,7 @@ import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry, displaySeverity } from '../../utils/display';
 import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './attackMapData';
 import '../../styles/attack-map.css';
+import '../../styles/arco-components';
 
 const GlobeMap = lazy(() => import('./GlobeMap'));
 
@@ -171,7 +172,7 @@ export default function AttackScreenPage() {
             <Suspense fallback={<div className="page-spinner" aria-label={t('attackMap.loading')} aria-busy="true" />}>
               <GlobeMap
                 regions={globeRegions}
-                zoom={0.68}
+                zoom={1}
                 countryLevels={countryLevels}
                 worldFeatures={worldFeatures}
                 target={protectedTarget}

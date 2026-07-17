@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +21,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ratelimit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 type Server struct {
@@ -46,9 +47,17 @@ type Server struct {
 	apiLimit   *apisec.RateLimiter
 	apiAuth    *apisec.Authenticator
 	certs      *SiteCertificateStore
+	clock      timekeeper.Clock
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
+	return NewServerWithClock(cfg, pipeline, sink, timekeeper.SystemClock{})
+}
+
+func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink, clock timekeeper.Clock) (*Server, error) {
+	if clock == nil {
+		clock = timekeeper.SystemClock{}
+	}
 	blacklist, err := ip.NewBlacklist(cfg.Protection.IP.Blacklist)
 	if err != nil {
 		return nil, err
@@ -78,7 +87,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 	if err != nil {
 		return nil, err
 	}
-	apiAuth, err := apisec.NewAuthenticator(cfg.APISec)
+	apiAuth, err := apisec.NewAuthenticatorWithClock(cfg.APISec, clock)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +111,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		geoip:     geoip,
 		intel:     intel,
 		acl:       acl.NewPolicy(cfg.Protection.ACL),
-		bot:       bot.NewPolicy(cfg.Protection.Bot),
+		bot:       bot.NewPolicyWithClock(cfg.Protection.Bot, clock),
 		limiter:   ratelimit.New(cfg.Protection.RateLimit.Default, cfg.Protection.RateLimit.Enabled),
 		health:    health,
 		headers:   edge.NewHeaderModifier(cfg.Edge.Headers),
@@ -112,6 +121,7 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 		apiLimit:  apiLimit,
 		apiAuth:   apiAuth,
 		certs:     certs,
+		clock:     clock,
 	}, nil
 }
 
@@ -162,6 +172,13 @@ func (s *Server) currentPipeline() *engine.Pipeline {
 	return s.pipeline
 }
 
+func (s *Server) wallNow() time.Time {
+	if s != nil && s.clock != nil {
+		return s.clock.Now()
+	}
+	return time.Now()
+}
+
 func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
 	if s == nil {
 		return nil
@@ -174,7 +191,7 @@ func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
 	if err != nil {
 		return err
 	}
-	apiAuth, err := apisec.NewAuthenticator(apiSec)
+	apiAuth, err := apisec.NewAuthenticatorWithClock(apiSec, s.clock)
 	if err != nil {
 		return err
 	}
@@ -224,7 +241,7 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	s.geoip = geoip
 	s.intel = intel
 	s.acl = acl.NewPolicy(protection.ACL)
-	s.bot = bot.NewPolicy(protection.Bot)
+	s.bot = bot.NewPolicyWithClock(protection.Bot, s.clock)
 	s.limiter = ratelimit.New(protection.RateLimit.Default, protection.RateLimit.Enabled)
 	s.apiLimit = apiLimit
 	return nil
@@ -249,7 +266,31 @@ func (s *Server) HTTPServer() *http.Server {
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	site := s.lb.SiteForHost(r.Host)
+	// Never fall back to another tenant: unmatched Host gets 421 before bot/WAF.
+	if site.ID == "" {
+		http.Error(w, "Misdirected Request: no site matches this host", http.StatusMisdirectedRequest)
+		return
+	}
 	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
+
+	// Clean path for bot/IP/path policy only. Keep r.URL.Path unchanged so
+	// open-redirect guards (e.g. scheme-relative "//host") still see the raw path.
+	requestPath, pathOK := engine.NormalizeRequestPath(r.URL.Path)
+	if !pathOK {
+		s.block(w, &engine.RequestContext{
+			Request:  r,
+			ClientIP: engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs),
+			TraceID:  blockpage.NewTraceID(),
+			SiteID:   site.ID,
+			Metadata: map[string]any{"invalid_path": r.URL.Path},
+		}, "invalid_path", "invalid request path", http.StatusBadRequest, start)
+		return
+	}
+
+	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
+		s.handleBotBehaviorVerify(w, r, site)
+		return
+	}
 
 	// Protocol enforcement: HTTP smuggling, chunked encoding abuse, header injection
 	if violation := engine.DetectProtocolViolations(r); violation != nil {
@@ -263,12 +304,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reqCtx, err := engine.NewRequestContextWithTrustedProxies(r, site.ID, site.WAF.AccessControl.TrustedCIDRs)
+	maxRequestBody := site.WAF.Performance.MaxBodyBytes
+	if maxRequestBody <= 0 {
+		maxRequestBody = 8 << 20
+	}
+	reqCtx, err := engine.NewRequestContextWithLimits(r, site.ID, site.WAF.AccessControl.TrustedCIDRs, maxRequestBody)
 	if err != nil {
+		if errors.Is(err, engine.ErrRequestBodyTooLarge) {
+			s.proxyError(w, r, site, nil, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
+			return
+		}
 		s.proxyError(w, r, site, nil, "proxy_error", "failed to read request", http.StatusBadRequest, start, err)
 		return
 	}
-	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, r.URL.Path)
+	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, requestPath)
 	if accessDecision.Matched {
 		reqCtx.Metadata["ip_access_decision"] = accessDecision
 	}
@@ -304,7 +353,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if policy.BotCC != config.ProtectionLevelOff {
-		if result := s.bot.Evaluate(r, reqCtx.ClientIP); result != nil && result.Detected && !ipAllowed {
+		if result := s.bot.EvaluateForSite(r, reqCtx.ClientIP, site.ID); result != nil && result.Detected && !ipAllowed {
 			decision := evaluateBotCCPolicy(policy.BotCC, result)
 			reqCtx.Metadata["bot_cc_policy_decision"] = decision
 			reqCtx.Metadata["detection"] = result
@@ -381,6 +430,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	pipeline := s.currentPipeline()
 	if site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff && pipeline != nil {
+		// Commercial fail-mode: detection budget policy tracks web_attack unless overridden.
+		if reqCtx.Metadata == nil {
+			reqCtx.Metadata = map[string]any{}
+		}
+		budgetPolicy := config.ResolveBudgetExhaustedPolicy(
+			site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
+			policy.WebAttack,
+		)
+		reqCtx.Metadata["budget_exhausted_policy"] = budgetPolicy
+
 		result, err := pipeline.Detect(r.Context(), reqCtx)
 		if err != nil {
 			s.proxyError(w, r, site, reqCtx, "proxy_error", "waf pipeline error", http.StatusInternalServerError, start, err)
@@ -462,7 +521,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
 		return
 	}
-	capture := edge.NewLimitedCaptureWriter(edgeCaptureLimit(site, s.cache, cacheCandidate, compressCandidate))
+	capture := edge.NewAdaptiveCaptureWriter(w, edgeCaptureLimit(site, s.cache, cacheCandidate, compressCandidate))
 	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
 	var proxyErr error
 	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
@@ -488,7 +547,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	rp.ServeHTTP(capture, r)
 	if capture.TooLarge() {
-		s.streamWithoutEdgeCapture(w, r, site, reqCtx, target, start)
+		if proxyErr != nil || capture.Err() != nil {
+			err := proxyErr
+			if err == nil {
+				err = capture.Err()
+			}
+			s.writeLog(r.Context(), reqCtx, "proxy_error", capture.Response().Status, start, &storage.LogEntry{
+				Category: "proxy_error",
+				Severity: engine.SeverityHigh.String(),
+				Message:  err.Error(),
+			})
+			return
+		}
+		s.writeLog(r.Context(), reqCtx, "pass", capture.Response().Status, start, nil)
 		return
 	}
 	if proxyErr != nil {
@@ -503,6 +574,60 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.compress.Apply(r, &captured)
 	edge.WriteCaptured(w, captured)
 	s.writeLog(r.Context(), reqCtx, "pass", captured.Status, start, nil)
+}
+
+const botBehaviorVerifyPath = "/.well-known/cheesewaf/challenge/v1/verify"
+
+func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request, site config.SiteConfig) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const maxBody = int64(64 << 10)
+	if r.ContentLength > maxBody {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	clientIP := engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
+}
+
+func requestIsHTTPS(r *http.Request, trustedCIDRs []string) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if !remoteIPInCIDRs(r.RemoteAddr, trustedCIDRs) {
+		return false
+	}
+	proto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	return strings.EqualFold(proto, "https")
+}
+
+func remoteIPInCIDRs(remoteAddr string, cidrs []string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	addr := net.ParseIP(host)
+	if addr == nil {
+		return false
+	}
+	for _, raw := range cidrs {
+		if candidate := net.ParseIP(strings.TrimSpace(raw)); candidate != nil && candidate.Equal(addr) {
+			return true
+		}
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err == nil && network.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func edgeCaptureLimit(site config.SiteConfig, cache *edge.Cache, cacheCandidate bool, compressCandidate bool) int64 {
@@ -527,39 +652,6 @@ func retrySafeRequest(r *http.Request) bool {
 		return false
 	}
 	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.ContentLength <= 0
-}
-
-func (s *Server) streamWithoutEdgeCapture(w http.ResponseWriter, r *http.Request, site config.SiteConfig, reqCtx *engine.RequestContext, target *url.URL, start time.Time) {
-	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
-	var proxyErr error
-	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
-		proxyErr = err
-	}
-	if site.WAF.Response.Enabled {
-		inspector, err := response.New(site.WAF.Response)
-		if err != nil {
-			s.proxyError(w, r, site, reqCtx, "proxy_error", "response inspector configuration error", http.StatusInternalServerError, start, err)
-			return
-		}
-		rp.ModifyResponse = func(resp *http.Response) error {
-			finding, err := inspector.InspectHTTP(resp)
-			if err != nil {
-				return err
-			}
-			if finding != nil {
-				resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
-				reqCtx.Metadata["response_finding"] = finding
-			}
-			return nil
-		}
-	}
-	recorder := &proxyStatusRecorder{ResponseWriter: w, status: http.StatusOK}
-	rp.ServeHTTP(recorder, r)
-	if proxyErr != nil {
-		s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
-		return
-	}
-	s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
 }
 
 type proxyStatusRecorder struct {
@@ -617,14 +709,7 @@ func (s *Server) proxyError(w http.ResponseWriter, r *http.Request, site config.
 	if cause != nil {
 		reqCtx.Metadata["proxy_error_detail"] = cause.Error()
 	}
-	s.renderer.RenderRequest(w, r, status, blockpage.Data{
-		EventID:    reqCtx.TraceID,
-		TraceID:    reqCtx.TraceID,
-		AttackType: category,
-		ClientIP:   reqCtx.ClientIP,
-		Message:    message,
-		Timestamp:  time.Now().UTC(),
-	})
+	s.renderer.RenderRequest(w, r, status, s.blockPageData(reqCtx, category, message))
 	s.writeLog(r.Context(), reqCtx, "error", status, start, &storage.LogEntry{
 		Category:   category,
 		Severity:   "medium",
@@ -639,30 +724,23 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 		return
 	}
 	reqCtx.Metadata["detection"] = result
-	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
-		TraceID:    reqCtx.TraceID,
-		AttackType: result.Category,
-		ClientIP:   reqCtx.ClientIP,
-		Message:    result.Message,
-		Timestamp:  time.Now().UTC(),
-	})
+	s.renderer.RenderRequest(w, reqCtx.Request, status, s.blockPageData(reqCtx, result.Category, result.Message))
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category:   result.Category,
 		Severity:   result.Severity.String(),
 		DetectorID: result.DetectorID,
 		Message:    result.Message,
 		Payload:    result.Payload,
+		Metadata: map[string]any{
+			"confidence":         result.Confidence,
+			"detector_id":        result.DetectorID,
+			"detection_category": result.Category,
+		},
 	})
 }
 
 func (s *Server) blockThreatIntel(w http.ResponseWriter, reqCtx *engine.RequestContext, decision ip.ThreatDecision, status int, start time.Time) {
-	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
-		TraceID:    reqCtx.TraceID,
-		AttackType: "threat_intel",
-		ClientIP:   reqCtx.ClientIP,
-		Message:    decision.Message,
-		Timestamp:  time.Now().UTC(),
-	})
+	s.renderer.RenderRequest(w, reqCtx.Request, status, s.blockPageData(reqCtx, "threat_intel", decision.Message))
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category:   "threat_intel",
 		Severity:   decision.Severity,
@@ -718,6 +796,25 @@ func evaluateWebAttackPolicyWithEvidence(level string, result *engine.DetectionR
 	decision.DetectorAction = result.Action.String()
 	decision.DetectorCategory = result.Category
 	decision.DetectorID = result.DetectorID
+	// Operational fail-mode from pipeline budget policy is not a "weak signal".
+	// Honor detector action without severity/confidence gates (open/observe/closed).
+	if result.Category == "detection_budget" {
+		switch result.Action {
+		case engine.ActionChallenge:
+			decision.Action = engine.ActionChallenge.String()
+			decision.Reason = "detection budget exhausted policy (closed)"
+		case engine.ActionBlock:
+			decision.Action = engine.ActionBlock.String()
+			decision.Reason = "detection budget exhausted policy (closed-block)"
+		case engine.ActionLog:
+			decision.Action = engine.ActionLog.String()
+			decision.Reason = "detection budget exhausted policy (observe)"
+		default:
+			decision.Action = engine.ActionLog.String()
+			decision.Reason = "detection budget exhausted policy (open/pass)"
+		}
+		return decision
+	}
 	evidence := aggregateWebAttackEvidence(result, results)
 	decision.RiskScore = evidence.Score
 	decision.EvidenceCount = evidence.Count
@@ -1148,24 +1245,46 @@ func parseSeverity(value string) engine.Severity {
 }
 
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
-	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
-		TraceID:    reqCtx.TraceID,
-		AttackType: category,
-		ClientIP:   reqCtx.ClientIP,
-		Message:    message,
-		Timestamp:  time.Now().UTC(),
-	})
+	s.renderer.RenderRequest(w, reqCtx.Request, status, s.blockPageData(reqCtx, category, message))
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category: category,
 		Message:  message,
 	})
 }
 
+func (s *Server) blockPageData(reqCtx *engine.RequestContext, attackType, message string) blockpage.Data {
+	data := blockpage.Data{
+		Timestamp: s.wallNow().UTC(),
+		Message:   message,
+	}
+	if reqCtx != nil {
+		data.EventID = reqCtx.TraceID
+		data.TraceID = reqCtx.TraceID
+		data.ClientIP = reqCtx.ClientIP
+		data.SiteID = reqCtx.SiteID
+	}
+	data.AttackType = attackType
+	if s != nil && s.config != nil && data.SiteID != "" {
+		for i := range s.config.Sites {
+			site := s.config.Sites[i]
+			if site.ID != data.SiteID {
+				continue
+			}
+			data.SiteName = strings.TrimSpace(site.Name)
+			if data.SiteName == "" {
+				data.SiteName = site.ID
+			}
+			break
+		}
+	}
+	return data
+}
+
 func (s *Server) challenge(w http.ResponseWriter, r *http.Request, reqCtx *engine.RequestContext, category, message string, start time.Time) {
 	if category == "" {
 		category = "bot"
 	}
-	s.bot.ServeChallenge(w, r, reqCtx.ClientIP)
+	s.bot.ServeChallengeForSite(w, r, reqCtx.ClientIP, reqCtx.SiteID)
 	s.writeLog(r.Context(), reqCtx, "challenge", http.StatusForbidden, start, &storage.LogEntry{
 		Category: category,
 		Message:  message,
@@ -1173,7 +1292,7 @@ func (s *Server) challenge(w http.ResponseWriter, r *http.Request, reqCtx *engin
 }
 
 func (s *Server) challengeThreatIntel(w http.ResponseWriter, r *http.Request, reqCtx *engine.RequestContext, decision ip.ThreatDecision, start time.Time) {
-	s.bot.ServeChallenge(w, r, reqCtx.ClientIP)
+	s.bot.ServeChallengeForSite(w, r, reqCtx.ClientIP, reqCtx.SiteID)
 	s.writeLog(r.Context(), reqCtx, "challenge", http.StatusForbidden, start, &storage.LogEntry{
 		Category:   "threat_intel",
 		Severity:   decision.Severity,
@@ -1189,7 +1308,7 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 	}
 	entry := &storage.LogEntry{
 		ID:         reqCtx.TraceID,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  s.wallNow().UTC(),
 		TraceID:    reqCtx.TraceID,
 		SiteID:     reqCtx.SiteID,
 		ClientIP:   reqCtx.ClientIP,
@@ -1239,8 +1358,20 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 			entry.DetectorID = result.DetectorID
 			entry.Message = result.Message
 			entry.Payload = result.Payload
-			if decision, ok := reqCtx.Metadata["waf_policy_decision"].(webAttackPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
-				entry.Action = "log"
+			// Align with existing Codex event-level fields: keep confidence and
+			// detector type queryable in log metadata without a schema migration.
+			if entry.Metadata == nil {
+				entry.Metadata = map[string]any{}
+			}
+			entry.Metadata["confidence"] = result.Confidence
+			entry.Metadata["detector_id"] = result.DetectorID
+			entry.Metadata["detection_category"] = result.Category
+			if decision, ok := reqCtx.Metadata["waf_policy_decision"].(webAttackPolicyDecision); ok {
+				entry.Metadata["result_confidence"] = decision.ResultConfidence
+				entry.Metadata["minimum_confidence"] = decision.MinimumConfidence
+				if decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
+					entry.Action = "log"
+				}
 			}
 			if decision, ok := reqCtx.Metadata["bot_cc_policy_decision"].(botCCPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
 				entry.Action = "log"
@@ -1256,7 +1387,41 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		entry.DetectorID = "response.inspector"
 		entry.Action = "log"
 	}
+	if isPlainAccessLog(entry) && !s.siteAccessLogEnabled(reqCtx.SiteID) {
+		return
+	}
 	_ = s.logSink.Write(ctx, entry)
+}
+
+// isPlainAccessLog is true for normal traffic without security signal.
+// Security/block/challenge/monitor and detection-bearing "log" entries always persist.
+func isPlainAccessLog(entry *storage.LogEntry) bool {
+	if entry == nil {
+		return false
+	}
+	action := strings.ToLower(strings.TrimSpace(entry.Action))
+	switch action {
+	case "pass", "cache_hit", "redirect":
+		// keep writing if this pass still carries detection/threat signals
+		return entry.Category == "" && entry.DetectorID == "" && entry.Severity == "" && entry.Message == ""
+	default:
+		return false
+	}
+}
+
+func (s *Server) siteAccessLogEnabled(siteID string) bool {
+	if s == nil || s.config == nil {
+		return true
+	}
+	siteID = strings.TrimSpace(siteID)
+	for i := range s.config.Sites {
+		site := s.config.Sites[i]
+		if site.ID == siteID || (siteID == "" && i == 0) {
+			return site.WAF.AccessLogOn()
+		}
+	}
+	// Unknown site id: default on so we do not silently drop security-adjacent traffic logs.
+	return true
 }
 
 func ListenAndServe(ctx context.Context, srv *http.Server) error {

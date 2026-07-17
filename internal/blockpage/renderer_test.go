@@ -52,7 +52,12 @@ func TestDefaultTemplateIncludesTroubleshootingFields(t *testing.T) {
 		Timestamp:  time.Unix(0, 0).UTC(),
 	})
 	body := recorder.Body.String()
-	for _, want := range []string{"CheeseWAF", "Security response", "Access was blocked", "When contacting support", "Event / Trace ID", "cw-visible", "sqli", "198.51.100.9", "403 Forbidden", "Blocked"} {
+	for _, want := range []string{
+		"CheeseWAF", "Security response", "Access was blocked", "When contacting support",
+		"Event / Trace ID", "cw-visible", "sqli", "198.51.100.9", "403 Forbidden", "Blocked",
+		"Your IP", "Performance &amp; security by", "© CheeseCloud Technology",
+		"https://github.com/LaokeQwQ/CheeseWAF", "cw-ft-shield",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("default template missing %q in %s", want, body)
 		}
