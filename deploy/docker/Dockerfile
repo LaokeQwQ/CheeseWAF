@@ -29,6 +29,7 @@ COPY web/index.html web/tsconfig.json web/tsconfig.app.json web/tsconfig.node.js
 COPY web/public ./public
 COPY web/scripts ./scripts
 COPY web/src ./src
+COPY web/types ./types
 RUN npm run build
 
 FROM ${RUNTIME_IMAGE}
