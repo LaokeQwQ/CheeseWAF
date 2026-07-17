@@ -425,9 +425,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
-		// Apply already confines Path; re-apply CodeQL second-char barrier at the sink.
+		// Apply already confines Path. CodeQL barrier: len>1 && leading '/' && second not '/'|'\\'.
 		loc := fsguard.SanitizeLocalRedirect(r.URL.RequestURI())
-		if len(loc) > 0 && loc[0] == '/' && (len(loc) == 1 || (loc[1] != '/' && loc[1] != '\\')) {
+		if len(loc) > 1 && loc[0] == '/' && loc[1] != '/' && loc[1] != '\\' {
 			http.Redirect(w, r, loc, code)
 		} else {
 			http.Redirect(w, r, "/", code)
