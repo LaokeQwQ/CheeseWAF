@@ -326,8 +326,8 @@ type UpstreamConfig struct {
 }
 
 type WAFConfig struct {
-	Enabled          bool                     `yaml:"enabled" json:"enabled"`
-	Mode             string                   `yaml:"mode" json:"mode"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Mode    string `yaml:"mode" json:"mode"`
 	// AccessLogEnabled controls whether normal pass/cache/redirect traffic is written.
 	// Security events (block/challenge/log with detections) are always recorded.
 	// Nil means default on (preserve historical full-access logging).

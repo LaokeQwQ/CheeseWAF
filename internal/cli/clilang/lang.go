@@ -17,9 +17,9 @@ const (
 )
 
 var (
-	mu       sync.RWMutex
-	current  = "en"
-	dataDir  string
+	mu      sync.RWMutex
+	current = "en"
+	dataDir string
 )
 
 // Supported returns available CLI locales.

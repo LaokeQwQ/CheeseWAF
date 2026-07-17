@@ -108,8 +108,8 @@ func resolvePackOutput(outputPath, outputDir, name string) (string, error) {
 }
 
 type packFile struct {
-	src   string
-	name  string // path inside zip
+	src  string
+	name string // path inside zip
 }
 
 func collectPackFiles(cfg *config.Config, runtimeDataDir, cfgPath string) []packFile {
