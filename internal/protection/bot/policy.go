@@ -471,8 +471,18 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		if r.Method == http.MethodPost {
 			status = http.StatusSeeOther
 		}
-		// SanitizeLocalRedirect applies CodeQL's second-character redirect rule.
-		http.Redirect(w, r, fsguard.SanitizeLocalRedirect(returnURL), status)
+		// Same-origin only: sanitize then apply CodeQL's second-character barrier
+		// (go/unvalidated-url-redirection / go/bad-redirect-check) at the sink.
+		loc := fsguard.SanitizeLocalRedirect(returnURL)
+		if !fsguard.IsLocalRedirect(loc) {
+			loc = "/"
+		}
+		// Inline second-char form (recognized even when the helper is not modeled).
+		if len(loc) > 0 && loc[0] == '/' && (len(loc) == 1 || (loc[1] != '/' && loc[1] != '\\')) {
+			http.Redirect(w, r, loc, status)
+			return
+		}
+		http.Redirect(w, r, "/", status)
 		return
 	}
 	if submittedType != "" && p.usesBehaviorChallenge(selection, clientIP, site) {
@@ -2340,7 +2350,12 @@ func safeChallengeReturnURL(r *http.Request) string {
 }
 
 func safeRelativeRedirect(raw string) string {
-	return fsguard.SanitizeLocalRedirect(raw)
+	s := fsguard.SanitizeLocalRedirect(raw)
+	// Mirror the second-character barrier CodeQL expects at redirect sinks.
+	if len(s) > 0 && s[0] == '/' && (len(s) == 1 || (s[1] != '/' && s[1] != '\\')) {
+		return s
+	}
+	return "/"
 }
 
 func challengeRequestForReturnURL(r *http.Request, returnURL string) *http.Request {
@@ -2354,7 +2369,8 @@ func challengeRequestForReturnURL(r *http.Request, returnURL string) *http.Reque
 		pathPart = safe[:q]
 		rawQuery = safe[q+1:]
 	}
-	if pathPart == "" || pathPart[0] != '/' || (len(pathPart) >= 2 && pathPart[1] == '/') {
+	// Full second-character check (not only leading slash / //).
+	if pathPart == "" || pathPart[0] != '/' || (len(pathPart) > 1 && (pathPart[1] == '/' || pathPart[1] == '\\')) {
 		pathPart = "/"
 		rawQuery = ""
 	}

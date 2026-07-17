@@ -105,11 +105,25 @@ func TestSanitizeLocalRedirect(t *testing.T) {
 	// CodeQL second-character property on all non-root returns.
 	for in := range cases {
 		got := SanitizeLocalRedirect(in)
+		if !IsLocalRedirect(got) {
+			t.Fatalf("SanitizeLocalRedirect(%q)=%q fails IsLocalRedirect", in, got)
+		}
 		if got == "/" {
 			continue
 		}
 		if len(got) < 2 || got[0] != '/' || got[1] == '/' || got[1] == '\\' {
 			t.Fatalf("SanitizeLocalRedirect(%q)=%q fails second-char rule", in, got)
+		}
+	}
+}
+
+func TestIsLocalRedirect(t *testing.T) {
+	if !IsLocalRedirect("/") || !IsLocalRedirect("/ok") || !IsLocalRedirect("/ok?x=1") {
+		t.Fatal("expected safe locals")
+	}
+	for _, bad := range []string{"", "ok", "//evil", "/\\evil", "https://x/"} {
+		if IsLocalRedirect(bad) {
+			t.Fatalf("IsLocalRedirect(%q) should be false", bad)
 		}
 	}
 }

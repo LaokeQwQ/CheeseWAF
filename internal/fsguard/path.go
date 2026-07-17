@@ -182,8 +182,15 @@ func SafePathComponent(name string) error {
 	return nil
 }
 
-// SanitizeLocalRedirect is shaped for CodeQL go/bad-redirect-check:
-// require leading '/', and second rune must not be '/' or '\\'.
+// IsLocalRedirect reports whether s is a same-origin relative redirect target.
+// This is the exact second-character barrier shape CodeQL documents for
+// go/unvalidated-url-redirection and go/bad-redirect-check.
+func IsLocalRedirect(s string) bool {
+	return len(s) > 0 && s[0] == '/' && (len(s) == 1 || (s[1] != '/' && s[1] != '\\'))
+}
+
+// SanitizeLocalRedirect returns a same-origin relative path (leading '/',
+// second byte neither '/' nor '\\'). Unsafe input collapses to "/".
 func SanitizeLocalRedirect(redir string) string {
 	redir = strings.TrimSpace(redir)
 	if redir == "" {
@@ -227,22 +234,23 @@ func SanitizeLocalRedirect(redir string) string {
 		return "/"
 	}
 	pathPart = collapseLocalPath(pathPart)
-	// CodeQL-recognized guard (must appear on the value returned to Redirect).
-	if len(pathPart) > 1 && pathPart[0] == '/' && pathPart[1] != '/' && pathPart[1] != '\\' {
-		if query != "" {
-			for _, r := range query {
-				if r < 0x20 || r == 0x7f {
-					return "/"
-				}
-			}
-			return pathPart + "?" + query
-		}
-		return pathPart
-	}
-	if pathPart == "/" {
+	// CodeQL-recognized second-character guard on the returned value.
+	if !IsLocalRedirect(pathPart) {
 		return "/"
 	}
-	return "/"
+	if query != "" {
+		for _, r := range query {
+			if r < 0x20 || r == 0x7f {
+				return "/"
+			}
+		}
+		out := pathPart + "?" + query
+		if IsLocalRedirect(out) {
+			return out
+		}
+		return "/"
+	}
+	return pathPart
 }
 
 // SafeRelativeRedirect is an alias of SanitizeLocalRedirect.
