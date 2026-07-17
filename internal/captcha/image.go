@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -57,8 +58,17 @@ type imageTokenPayload struct {
 	Nonce     string `json:"nonce"`
 }
 
+const (
+	imageMaxTokenEncodedBytes = 4096
+	imageMaxTokenDecodedBytes = 3072
+	imageMaxAnswerBytes       = 64
+)
+
 func NewImageChallenge(opts ImageOptions) (ImageChallenge, error) {
 	opts = normalizeImageOptions(opts)
+	if strings.TrimSpace(opts.Secret) == "" {
+		return ImageChallenge{}, fmt.Errorf("captcha image secret is required")
+	}
 	answer, err := randomDigitCode(opts.Length)
 	if err != nil {
 		return ImageChallenge{}, err
@@ -98,6 +108,12 @@ func NewImageChallenge(opts ImageOptions) (ImageChallenge, error) {
 
 func RenderImageAudio(opts ImageOptions, token string) ([]byte, bool, error) {
 	opts = normalizeImageOptions(opts)
+	if strings.TrimSpace(opts.Secret) == "" {
+		return nil, false, nil
+	}
+	if len(token) == 0 || len(token) > imageMaxTokenEncodedBytes {
+		return nil, false, nil
+	}
 	payload, ok := openImageToken(opts, token)
 	if !ok {
 		return nil, false, nil
@@ -120,7 +136,10 @@ func RenderImageAudio(opts ImageOptions, token string) ([]byte, bool, error) {
 
 func VerifyImage(opts ImageOptions, payload ImagePayload) bool {
 	opts = normalizeImageOptions(opts)
-	if strings.TrimSpace(payload.Token) == "" {
+	if strings.TrimSpace(opts.Secret) == "" {
+		return false
+	}
+	if len(payload.Token) > imageMaxTokenEncodedBytes || len(payload.Answer) > imageMaxAnswerBytes || strings.TrimSpace(payload.Token) == "" {
 		return false
 	}
 	token, ok := openImageToken(opts, payload.Token)
@@ -198,8 +217,11 @@ func sealImageToken(opts ImageOptions, payload imageTokenPayload) (string, error
 }
 
 func openImageToken(opts ImageOptions, raw string) (imageTokenPayload, bool) {
+	if len(raw) == 0 || len(raw) > imageMaxTokenEncodedBytes || base64.RawURLEncoding.DecodedLen(len(raw)) > imageMaxTokenDecodedBytes {
+		return imageTokenPayload{}, false
+	}
 	data, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
+	if err != nil || len(data) > imageMaxTokenDecodedBytes {
 		return imageTokenPayload{}, false
 	}
 	block, err := aes.NewCipher(imageKey(opts.Secret))
@@ -223,7 +245,9 @@ func openImageToken(opts ImageOptions, raw string) (imageTokenPayload, bool) {
 
 func imageKey(secret string) []byte {
 	if secret == "" {
-		secret = "cheesewaf-image-captcha"
+		// Never fall back to a hard-coded secret — callers must supply one.
+		sum := sha256.Sum256([]byte("cheesewaf-image-v1\ninvalid-empty-secret"))
+		return sum[:]
 	}
 	sum := sha256.Sum256([]byte("cheesewaf-image-v1\n" + secret))
 	return sum[:]
@@ -237,13 +261,24 @@ func randomDigitCode(length int) (string, error) {
 	var b strings.Builder
 	b.Grow(length)
 	for i := 0; i < length; i++ {
-		n, err := randomNumber(8)
+		// Full digit alphabet 0-9 (not 1-9 only) raises brute-force cost.
+		// randomNumber(n) returns 0..n inclusive, so n=9 yields 0..9.
+		n, err := randomNumber(9)
 		if err != nil {
 			return "", err
 		}
-		b.WriteByte(byte('1' + n))
+		b.WriteByte(byte('0' + n))
 	}
 	return b.String(), nil
+}
+
+// ImageTokenAnswer decodes a sealed image challenge token for tests and diagnostics.
+func ImageTokenAnswer(opts ImageOptions, token string) (string, bool) {
+	payload, ok := openImageToken(opts, token)
+	if !ok {
+		return "", false
+	}
+	return payload.Answer, true
 }
 
 func normalizeImageAnswer(answer string) string {

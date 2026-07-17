@@ -72,17 +72,22 @@ type Task struct {
 }
 
 type TaskManagerOptions struct {
-	Runner TaskRunner
-	NewID  func() string
-	Now    func() time.Time
+	Runner   TaskRunner
+	NewID    func() string
+	Now      func() time.Time
+	TTL      time.Duration
+	MaxTasks int
 }
 
 type TaskManager struct {
-	mu     sync.Mutex
-	runner TaskRunner
-	newID  func() string
-	now    func() time.Time
-	tasks  map[string]*taskRecord
+	mu            sync.Mutex
+	runner        TaskRunner
+	newID         func() string
+	now           func() time.Time
+	tasks         map[string]*taskRecord
+	activeTargets map[string]string
+	ttl           time.Duration
+	maxTasks      int
 }
 
 type taskRecord struct {
@@ -103,7 +108,15 @@ func NewTaskManager(opts TaskManagerOptions) *TaskManager {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &TaskManager{runner: runner, newID: newID, now: now, tasks: map[string]*taskRecord{}}
+	ttl := opts.TTL
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	maxTasks := opts.MaxTasks
+	if maxTasks <= 0 {
+		maxTasks = 1000
+	}
+	return &TaskManager{runner: runner, newID: newID, now: now, tasks: map[string]*taskRecord{}, activeTargets: map[string]string{}, ttl: ttl, maxTasks: maxTasks}
 }
 
 func (m *TaskManager) Start(ctx context.Context, req SSHDeploymentRequest) (Task, error) {
@@ -118,6 +131,18 @@ func (m *TaskManager) Start(ctx context.Context, req SSHDeploymentRequest) (Task
 		return Task{}, err
 	}
 	started := m.now()
+	m.mu.Lock()
+	m.cleanupLocked(started)
+	target := deploymentTargetKey(req)
+	if existing := m.activeTargets[target]; existing != "" {
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("another deployment task is already active for this target")
+	}
+	if len(m.tasks) >= m.maxTasks {
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("cluster deploy task capacity reached")
+	}
+	m.mu.Unlock()
 	task := Task{
 		ID:        m.nextID(),
 		Action:    req.Action,
@@ -129,9 +154,20 @@ func (m *TaskManager) Start(ctx context.Context, req SSHDeploymentRequest) (Task
 		StartedAt: started,
 		UpdatedAt: started,
 	}
+	req.TaskID = task.ID
 	appendTaskEvent(&task, TaskEventQueued, task.Status, task.Stage, "Task queued", started, req)
 	m.mu.Lock()
+	m.cleanupLocked(m.now())
+	if existing := m.activeTargets[target]; existing != "" {
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("another deployment task is already active for this target")
+	}
+	if len(m.tasks) >= m.maxTasks {
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("cluster deploy task capacity reached")
+	}
 	m.tasks[task.ID] = &taskRecord{task: task, req: req}
+	m.activeTargets[target] = task.ID
 	m.mu.Unlock()
 	go m.run(ctx, task.ID)
 	return task, nil
@@ -143,6 +179,7 @@ func (m *TaskManager) Get(id string) (Task, bool) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.cleanupLocked(m.now())
 	record, ok := m.tasks[strings.TrimSpace(id)]
 	if !ok || record == nil {
 		return Task{}, false
@@ -172,7 +209,57 @@ func (m *TaskManager) List(limit int) []Task {
 	return append([]Task(nil), items[:limit]...)
 }
 
+type TaskSummary struct {
+	ID         string     `json:"id"`
+	Action     string     `json:"action"`
+	Host       string     `json:"host"`
+	Port       int        `json:"port"`
+	Status     string     `json:"status"`
+	Stage      string     `json:"stage"`
+	Message    string     `json:"message,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+func (m *TaskManager) ListPage(offset, limit int) ([]TaskSummary, int) {
+	if m == nil {
+		return nil, 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(m.now())
+	items := make([]TaskSummary, 0, len(m.tasks))
+	for _, record := range m.tasks {
+		if record == nil {
+			continue
+		}
+		task := sanitizeTask(record.task, record.req)
+		items = append(items, TaskSummary{ID: task.ID, Action: task.Action, Host: task.Host, Port: task.Port, Status: task.Status, Stage: task.Stage, Message: task.Message, StartedAt: task.StartedAt, UpdatedAt: task.UpdatedAt, FinishedAt: task.FinishedAt})
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].StartedAt.After(items[j].StartedAt) })
+	total := len(items)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return append([]TaskSummary(nil), items[offset:end]...), total
+}
+
 func (m *TaskManager) run(ctx context.Context, id string) {
+	defer m.releaseTarget(id)
 	record := m.transition(id, TaskStatusRunning, TaskEventValidating, func(task *Task) {})
 	if record == nil {
 		return
@@ -197,6 +284,32 @@ func (m *TaskManager) run(ctx context.Context, id string) {
 	}
 	compensationResult, compensationErr, hasCompensation := m.compensateDeployFailure(ctx, id, record.req, err)
 	m.finishDeployFailure(id, record.req, result, err, compensationResult, compensationErr, hasCompensation)
+}
+
+func deploymentTargetKey(req SSHDeploymentRequest) string {
+	return strings.ToLower(strings.TrimSpace(req.Host)) + ":" + fmt.Sprint(normalizedSSHPort(req.Port))
+}
+
+func (m *TaskManager) releaseTarget(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for target, owner := range m.activeTargets {
+		if owner == id {
+			delete(m.activeTargets, target)
+		}
+	}
+}
+
+func (m *TaskManager) cleanupLocked(now time.Time) {
+	for id, record := range m.tasks {
+		if record == nil {
+			delete(m.tasks, id)
+			continue
+		}
+		if record.task.FinishedAt != nil && now.Sub(*record.task.FinishedAt) >= m.ttl {
+			delete(m.tasks, id)
+		}
+	}
 }
 
 func (m *TaskManager) transition(id, status, stage string, mutate func(*Task)) *taskRecord {
@@ -538,9 +651,10 @@ func validateTaskSSHRequest(req SSHDeploymentRequest) error {
 }
 
 func randomTaskID() string {
-	var raw [8]byte
+	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return fmt.Sprintf("deploy-%d", time.Now().UTC().UnixNano())
+		panic("crypto/rand unavailable for deployment task id")
 	}
-	return "deploy-" + hex.EncodeToString(raw[:])
+	hexID := hex.EncodeToString(raw[:])
+	return "deploy-" + hexID[0:8] + "-" + hexID[8:12] + "-" + hexID[12:16] + "-" + hexID[16:20] + "-" + hexID[20:]
 }

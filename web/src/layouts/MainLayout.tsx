@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Input, Menu, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Dropdown, Input, Menu, Message as ArcoMessage, Modal, Pagination, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
+import '../styles/arco-components';
+import '../styles/console-layout-hardening.css';
 import {
   BrainCircuit,
+  Bot,
   FileCode2,
   Bell,
   Clock3,
@@ -33,14 +36,14 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import i18n from '../i18n';
-import { fetchAuditEntries, fetchHealth, fetchLogs, fetchMonitorSummary, fetchUsers, fetchVersion, logout } from '../api/client';
+import { clearNotifications, fetchAuditEntries, fetchHealth, fetchLogs, fetchNotifications, fetchUsers, fetchVersion, logout, markAllNotificationsRead as markAllNotificationsReadAPI, sanitizeInternalReturnPath, updateNotification } from '../api/client';
 import AIAssistantEntry from '../components/AIAssistant/AIAssistantEntry';
 import BrandLogo from '../components/BrandLogo';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
-import { useQuery } from '@tanstack/react-query';
-import type { Alert, AuditEntry, LogEntry, User } from '../types/api';
-import { displayAction, displayCategory } from '../utils/display';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { AuditEntry, LogEntry, Notification, NotificationFilter, User } from '../types/api';
+import { displayAction } from '../utils/display';
 import { preloadRoute } from '../routes/preload';
 
 type NavItem = { key: string; labelKey: string; icon: LucideIcon };
@@ -64,6 +67,7 @@ const navGroups: NavGroup[] = [
       { key: '/logs', labelKey: 'nav.logs', icon: ListFilter },
       { key: '/ip', labelKey: 'nav.ip', icon: Shield },
       { key: '/protection', labelKey: 'nav.protection', icon: ShieldAlert },
+      { key: '/bot-challenge', labelKey: 'nav.botChallenge', icon: Bot },
       { key: '/apisec', labelKey: 'nav.apisec', icon: Radar },
       { key: '/ai', labelKey: 'nav.ai', icon: BrainCircuit },
     ],
@@ -83,8 +87,6 @@ const navGroups: NavGroup[] = [
 ];
 
 const allNavItems = navGroups.flatMap((group) => group.items);
-const notificationStateStorageKey = 'cheesewaf-notification-state';
-
 export default function MainLayout() {
   const { t } = useTranslation();
   const location = useLocation();
@@ -95,7 +97,7 @@ export default function MainLayout() {
   const setTheme = useAppStore((state) => state.setTheme);
   const setLanguage = useAppStore((state) => state.setLanguage);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
-  const { data: monitor } = useQuery({ queryKey: ['monitor-summary'], queryFn: fetchMonitorSummary, refetchInterval: 15_000, retry: false, staleTime: 10_000 });
+  const queryClient = useQueryClient();
   const { data: version } = useQuery({ queryKey: ['version'], queryFn: fetchVersion, staleTime: 5 * 60_000, retry: false });
   const { data: recentLogs } = useQuery({ queryKey: ['recent-security-logs', 12], queryFn: () => fetchLogs({ limit: 12 }), refetchInterval: 30_000, staleTime: 20_000, retry: false });
   const { data: auditEntries } = useQuery({ queryKey: ['shell-audit'], queryFn: fetchAuditEntries, staleTime: 30_000, refetchInterval: 60_000, retry: false });
@@ -107,11 +109,13 @@ export default function MainLayout() {
   const healthQuery = useQuery({
     queryKey: ['shell-health'],
     queryFn: fetchHealth,
-    refetchInterval: healthFailures >= 5 ? false : healthFailures > 0 ? 10_000 : 1_000,
+    // Healthy consoles do not need 1s polling — keep light contact and back off on failures.
+    refetchInterval: healthFailures >= 5 ? false : healthFailures > 0 ? 10_000 : 15_000,
     retry: false,
   });
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [notificationState, setNotificationState] = useState<NotificationState>(() => loadNotificationState());
+  const [notificationFilter, setNotificationFilter] = useState<NotificationFilter>('all');
+  const [notificationPage, setNotificationPage] = useState(1);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const notificationShellRef = useRef<HTMLDivElement | null>(null);
@@ -121,10 +125,6 @@ export default function MainLayout() {
     sidebarCollapsed ? 'app-shell app-shell-collapsed' : 'app-shell',
     mobileNavOpen ? 'app-mobile-nav-open' : '',
   ].filter(Boolean).join(' ');
-
-  useEffect(() => {
-    i18n.changeLanguage(language);
-  }, [language]);
 
   useEffect(() => {
     setNotificationsOpen(false);
@@ -159,13 +159,18 @@ export default function MainLayout() {
     if (!mobileNavOpen) {
       return undefined;
     }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setMobileNavOpen(false);
       }
     };
     window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
   }, [mobileNavOpen]);
 
   useEffect(() => {
@@ -178,22 +183,24 @@ export default function MainLayout() {
     }
   }, [healthQuery.isError, healthQuery.isSuccess, healthQuery.dataUpdatedAt, healthQuery.errorUpdatedAt]);
 
+  const healthRefetch = healthQuery.refetch;
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (healthFailures >= 5 || heartbeatRefetching.current) {
         return;
       }
-      if (Date.now() - lastHeartbeatAt <= 3_000) {
+      // Stale heartbeat only after well beyond the healthy poll interval.
+      if (Date.now() - lastHeartbeatAt <= 20_000) {
         return;
       }
       setHealthFailures((value) => Math.max(1, Math.min(5, value + 1)));
       heartbeatRefetching.current = true;
-      void healthQuery.refetch().finally(() => {
+      void healthRefetch().finally(() => {
         heartbeatRefetching.current = false;
       });
-    }, 1_000);
+    }, 5_000);
     return () => window.clearInterval(timer);
-  }, [healthFailures, healthQuery, lastHeartbeatAt]);
+  }, [healthFailures, healthRefetch, lastHeartbeatAt]);
 
   const currentKey = allNavItems.find((item) => (
     item.key === '/'
@@ -204,40 +211,43 @@ export default function MainLayout() {
   const showGlobalAssistant = !location.pathname.startsWith('/ai');
   const recentLogItems = useMemo(() => safeArray<LogEntry>(recentLogs?.items), [recentLogs?.items]);
   const auditItems = useMemo(() => safeArray<AuditEntry>(auditEntries), [auditEntries]);
-  const alertItems = useMemo(() => safeArray<Alert>(monitor?.alerts), [monitor?.alerts]);
   const userItems = useMemo(() => safeArray<User>(users), [users]);
-  const notificationItems = useMemo(
-    () => buildNotifications(recentLogItems, auditItems, alertItems, t),
-    [alertItems, auditItems, recentLogItems, t],
-  );
-  const visibleNotificationItems = useMemo(
-    () => notificationItems
-      .filter((item) => !notificationState.cleared[item.id])
-      .map((item) => ({
-        ...item,
-        pinned: Boolean(notificationState.pinned[item.id]),
-        read: Boolean(notificationState.read[item.id]),
-      }))
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned)),
-    [notificationItems, notificationState.cleared, notificationState.pinned, notificationState.read],
-  );
-  const [notificationFilter, setNotificationFilter] = useState<NotificationFilter>('all');
-  const filteredNotificationItems = useMemo(
-    () => visibleNotificationItems.filter((item) => {
-      if (notificationFilter === 'unread') {
-        return !item.read;
-      }
-      if (notificationFilter === 'read') {
-        return item.read;
-      }
-      if (notificationFilter === 'pinned') {
-        return item.pinned;
-      }
-      return true;
-    }),
-    [notificationFilter, visibleNotificationItems],
-  );
-  const unreadNotifications = visibleNotificationItems.filter((item) => !item.read).length;
+  const notificationLimit = 8;
+  const notificationQuery = useQuery({
+    queryKey: ['notifications', notificationFilter, notificationPage],
+    queryFn: () => fetchNotifications({ page: notificationPage, limit: notificationLimit, filter: notificationFilter }),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+    retry: false,
+    placeholderData: (previous) => previous,
+  });
+  const notificationItems = safeArray<Notification>(notificationQuery.data?.items);
+  const unreadNotifications = notificationQuery.data?.unread ?? 0;
+  const refreshNotifications = () => queryClient.invalidateQueries({ queryKey: ['notifications'] });
+  const notificationMutation = useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: { read?: boolean; pinned?: boolean } }) => updateNotification(id, patch),
+    onSuccess: () => {
+      setNotificationPage(1);
+      void refreshNotifications();
+    },
+    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+  });
+  const markAllReadMutation = useMutation({
+    mutationFn: markAllNotificationsReadAPI,
+    onSuccess: () => {
+      setNotificationPage(1);
+      void refreshNotifications();
+    },
+    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+  });
+  const clearNotificationsMutation = useMutation({
+    mutationFn: clearNotifications,
+    onSuccess: () => {
+      setNotificationPage(1);
+      void refreshNotifications();
+    },
+    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+  });
   const searchResults = useMemo(
     () => buildSearchResults(searchValue, recentLogItems, auditItems, userItems, t),
     [auditItems, recentLogItems, searchValue, t, userItems],
@@ -248,63 +258,29 @@ export default function MainLayout() {
     void healthQuery.refetch();
   }
 
-  function updateNotifications(updater: (state: NotificationState) => NotificationState) {
-    setNotificationState((current) => {
-      const next = updater(current);
-      saveNotificationState(next);
-      return next;
-    });
-  }
-
   function markNotificationRead(id: string) {
-    updateNotifications((current) => ({
-      ...current,
-      read: { ...current.read, [id]: true },
-    }));
+    notificationMutation.mutate({ id, patch: { read: true } });
   }
 
-  function toggleNotificationRead(id: string) {
-    updateNotifications((current) => {
-      const read = { ...current.read };
-      if (read[id]) {
-        delete read[id];
-      } else {
-        read[id] = true;
-      }
-      return { ...current, read };
-    });
+  function toggleNotificationRead(item: Notification) {
+    notificationMutation.mutate({ id: item.id, patch: { read: !item.read } });
   }
 
   function markAllNotificationsRead() {
-    updateNotifications((current) => ({
-      ...current,
-      read: visibleNotificationItems.reduce((acc, item) => ({ ...acc, [item.id]: true }), { ...current.read }),
-    }));
+    markAllReadMutation.mutate();
   }
 
   function clearAllNotifications() {
-    updateNotifications((current) => ({
-      ...current,
-      cleared: visibleNotificationItems.reduce((acc, item) => ({ ...acc, [item.id]: true }), { ...current.cleared }),
-      read: visibleNotificationItems.reduce((acc, item) => ({ ...acc, [item.id]: true }), { ...current.read }),
-      pinned: visibleNotificationItems.reduce((acc, item) => {
-        const next = { ...acc };
-        delete next[item.id];
-        return next;
-      }, { ...current.pinned }),
-    }));
+    Modal.confirm({
+      title: t('shell.clearNotificationsConfirmTitle'),
+      content: t('shell.clearNotificationsConfirmContent'),
+      okButtonProps: { status: 'danger' },
+      onOk: () => clearNotificationsMutation.mutateAsync(),
+    });
   }
 
-  function toggleNotificationPin(id: string) {
-    updateNotifications((current) => {
-      const pinned = { ...current.pinned };
-      if (pinned[id]) {
-        delete pinned[id];
-      } else {
-        pinned[id] = true;
-      }
-      return { ...current, pinned };
-    });
+  function toggleNotificationPin(item: Notification) {
+    notificationMutation.mutate({ id: item.id, patch: { pinned: !item.pinned } });
   }
 
   async function handleLogout() {
@@ -314,6 +290,7 @@ export default function MainLayout() {
       // Local logout must still work if the session is already expired or the API is unreachable.
     } finally {
       localStorage.removeItem('cheesewaf-token');
+      queryClient.clear();
       navigate('/login', { replace: true });
     }
   }
@@ -322,7 +299,7 @@ export default function MainLayout() {
     <div className={shellClassName}>
       <aside className="app-sidebar">
         <div className="brand-row">
-          <button className="brand-mark" type="button" onClick={() => navigate('/')}>
+          <button className="brand-mark" type="button" aria-label={t('common.home')} onClick={() => navigate('/')}>
             <BrandLogo />
           </button>
           <div className="brand-copy">
@@ -409,7 +386,7 @@ export default function MainLayout() {
                 }}
               />
             </Tooltip>
-            <button className="topbar-mobile-brand" type="button" onClick={() => navigate('/')}>
+            <button className="topbar-mobile-brand" type="button" aria-label={t('common.home')} onClick={() => navigate('/')}>
               <BrandLogo />
             </button>
             <Input
@@ -440,7 +417,7 @@ export default function MainLayout() {
                   <div className="topbar-search-empty">{t('shell.searchEmpty')}</div>
                 ) : searchResults.map((item) => (
                   <button
-                    key={`${item.to}-${item.title}-${item.subtitle}`}
+                    key={item.key}
                     type="button"
                     className="topbar-search-result"
                     onMouseDown={(event) => event.preventDefault()}
@@ -479,18 +456,31 @@ export default function MainLayout() {
                 </span>
                 {notificationsOpen && (
                   <NotificationPanel
-                    items={filteredNotificationItems}
-                    total={visibleNotificationItems.length}
+                    items={notificationItems}
+                    total={notificationQuery.data?.total ?? 0}
+                    filteredTotal={notificationQuery.data?.filtered_total ?? 0}
                     unread={unreadNotifications}
+                    page={notificationPage}
+                    pageSize={notificationLimit}
                     filter={notificationFilter}
-                    onFilterChange={setNotificationFilter}
+                    loading={notificationQuery.isLoading}
+                    error={notificationQuery.isError}
+                    busy={notificationMutation.isPending || markAllReadMutation.isPending || clearNotificationsMutation.isPending}
+                    onRetry={() => void notificationQuery.refetch()}
+                    onPageChange={setNotificationPage}
+                    onFilterChange={(filter) => {
+                      setNotificationFilter(filter);
+                      setNotificationPage(1);
+                    }}
                     onMarkAllRead={markAllNotificationsRead}
                     onClearAll={clearAllNotifications}
                     onToggleRead={toggleNotificationRead}
                     onTogglePin={toggleNotificationPin}
                     onOpen={(item) => {
-                      markNotificationRead(item.id);
-                      navigate(item.to);
+                      if (!item.read) {
+                        markNotificationRead(item.id);
+                      }
+                      navigate(sanitizeInternalReturnPath(item.target || '/'));
                       setNotificationsOpen(false);
                     }}
                   />
@@ -558,11 +548,19 @@ export default function MainLayout() {
   );
 }
 
-function NotificationPanel({
+export function NotificationPanel({
   items,
   total,
+  filteredTotal,
   unread,
+  page,
+  pageSize,
   filter,
+  loading,
+  error,
+  busy,
+  onRetry,
+  onPageChange,
   onFilterChange,
   onOpen,
   onMarkAllRead,
@@ -570,16 +568,24 @@ function NotificationPanel({
   onToggleRead,
   onTogglePin,
 }: {
-  items: NotificationItemView[];
+  items: Notification[];
   total: number;
+  filteredTotal: number;
   unread: number;
+  page: number;
+  pageSize: number;
   filter: NotificationFilter;
+  loading: boolean;
+  error: boolean;
+  busy: boolean;
+  onRetry: () => void;
+  onPageChange: (page: number) => void;
   onFilterChange: (filter: NotificationFilter) => void;
-  onOpen: (item: NotificationItemView) => void;
+  onOpen: (item: Notification) => void;
   onMarkAllRead: () => void;
   onClearAll: () => void;
-  onToggleRead: (id: string) => void;
-  onTogglePin: (id: string) => void;
+  onToggleRead: (item: Notification) => void;
+  onTogglePin: (item: Notification) => void;
 }) {
   const { t } = useTranslation();
   const filterOptions: Array<{ key: NotificationFilter; label: string }> = [
@@ -588,6 +594,7 @@ function NotificationPanel({
     { key: 'read', label: t('shell.notificationFilterRead') },
     { key: 'pinned', label: t('shell.notificationFilterPinned') },
   ];
+  const keyedItems = withStableNotificationKeys(items);
   return (
     <section
       id="cheesewaf-notification-panel"
@@ -619,17 +626,21 @@ function NotificationPanel({
       )}
       {total > 0 && (
         <div className="notification-actions">
-          <Button size="mini" disabled={unread === 0} onClick={onMarkAllRead}>{t('shell.markAllRead')}</Button>
-          <Button size="mini" status="warning" disabled={total === 0} onClick={onClearAll}>{t('shell.clearAllNotifications')}</Button>
+          <Button size="mini" loading={busy} disabled={unread === 0 || busy} onClick={onMarkAllRead}>{t('shell.markAllRead')}</Button>
+          <Button size="mini" status="warning" loading={busy} disabled={total === 0 || busy} onClick={onClearAll}>{t('shell.clearAllNotifications')}</Button>
         </div>
       )}
       <div className="notification-list">
-        {items.length === 0 ? (
+        {error ? (
+          <div className="notification-empty"><span>{t('shell.notificationLoadFailed')}</span><Button size="mini" onClick={onRetry}>{t('common.retry')}</Button></div>
+        ) : loading && items.length === 0 ? (
+          <div className="notification-empty">{t('common.loading')}</div>
+        ) : items.length === 0 ? (
           <div className="notification-empty">{total ? t('shell.noFilteredNotifications') : t('shell.noNotifications')}</div>
-        ) : items.map((item) => (
+        ) : keyedItems.map(({ item, notificationKey }) => (
           <article
-            key={item.id}
-            className={`notification-item notification-item-${item.severity}${item.read ? ' notification-item-read' : ''}${item.pinned ? ' notification-item-pinned' : ''}`}
+            key={notificationKey}
+            className={`notification-item notification-item-${item.type}${item.read ? ' notification-item-read' : ''}${item.pinned ? ' notification-item-pinned' : ''}`}
           >
             <button type="button" className="notification-open" onClick={() => onOpen(item)}>
               <span className="notification-item-title">
@@ -637,8 +648,8 @@ function NotificationPanel({
                 {item.title}
                 {item.pinned && <Tag size="small" color="arcoblue">{t('shell.pinnedNotification')}</Tag>}
               </span>
-              <strong>{item.description}</strong>
-              <em><Clock3 size={12} /> {item.time}</em>
+              <strong>{item.message}</strong>
+              <em><Clock3 size={12} /> {formatRelativeTime(item.created_at)}</em>
             </button>
             <div className="notification-item-actions">
               <button
@@ -646,7 +657,8 @@ function NotificationPanel({
                 className="notification-read-toggle"
                 aria-label={item.read ? t('shell.markUnread') : t('shell.markRead')}
                 title={item.read ? t('shell.markUnread') : t('shell.markRead')}
-                onClick={() => onToggleRead(item.id)}
+                disabled={busy}
+                onClick={() => onToggleRead(item)}
               >
                 {item.read ? t('shell.readState') : t('shell.unreadState')}
               </button>
@@ -655,7 +667,8 @@ function NotificationPanel({
                 className="notification-pin"
                 aria-label={item.pinned ? t('shell.unpinNotification') : t('shell.pinNotification')}
                 title={item.pinned ? t('shell.unpinNotification') : t('shell.pinNotification')}
-                onClick={() => onTogglePin(item.id)}
+                disabled={busy}
+                onClick={() => onTogglePin(item)}
               >
                 {item.pinned ? <PinOff size={13} /> : <Pin size={13} />}
               </button>
@@ -663,79 +676,34 @@ function NotificationPanel({
           </article>
         ))}
       </div>
+      {filteredTotal > pageSize && (
+        <Pagination simple size="mini" current={page} pageSize={pageSize} total={filteredTotal} onChange={onPageChange} />
+      )}
     </section>
   );
 }
 
-type NotificationItem = {
-  id: string;
-  title: string;
-  description: string;
-  time: string;
-  severity: 'critical' | 'warning' | 'info';
-  to: string;
-};
+type KeyedNotification = { item: Notification; notificationKey: string };
 
-type NotificationItemView = NotificationItem & {
-  pinned: boolean;
-  read: boolean;
-};
-
-type NotificationFilter = 'all' | 'unread' | 'read' | 'pinned';
-
-type NotificationState = {
-  read: Record<string, boolean>;
-  cleared: Record<string, boolean>;
-  pinned: Record<string, boolean>;
-};
+export function withStableNotificationKeys(items: readonly Notification[]): KeyedNotification[] {
+  const occurrences = new globalThis.Map<string, number>();
+  return items.map((item) => {
+    const fingerprint = JSON.stringify([item.id, item.type, item.title, item.message, item.target, item.read, item.pinned, item.created_at, item.updated_at]);
+    const occurrence = (occurrences.get(fingerprint) ?? 0) + 1;
+    occurrences.set(fingerprint, occurrence);
+    return { item, notificationKey: `${fingerprint}#${occurrence}` };
+  });
+}
 
 type SearchResult = {
+  key: string;
   type: string;
   title: string;
   subtitle: string;
   to: string;
 };
 
-function buildNotifications(logs: LogEntry[], audits: AuditEntry[], alerts: Alert[], t: (key: string, options?: Record<string, unknown>) => string): NotificationItem[] {
-  const items: NotificationItem[] = [];
-  for (const alert of alerts.slice(0, 4)) {
-    items.push({
-      id: `alert-${alert.rule_id}-${alert.starts_at}`,
-      title: t('shell.alertNotice'),
-      description: alert.message || alert.name,
-      time: formatRelativeTime(alert.starts_at),
-      severity: alert.severity === 'critical' || alert.severity === 'high' ? 'critical' : 'warning',
-      to: '/monitor',
-    });
-  }
-  for (const log of logs.filter((item) => item.action !== 'pass').slice(0, 6)) {
-    const ref = log.trace_id || log.id;
-    if (!ref) {
-      continue;
-    }
-    items.push({
-      id: `log-${ref}`,
-      title: displayAction(log.action, t),
-      description: `${log.client_ip || '-'} · ${displayCategory(log.category || 'unknown', t)} · ${log.uri || '/'}`,
-      time: formatRelativeTime(log.timestamp),
-      severity: log.action === 'block' ? 'critical' : 'warning',
-      to: `/logs/${encodeURIComponent(ref)}`,
-    });
-  }
-  for (const audit of audits.filter((item) => item.status >= 400).slice(-4).reverse()) {
-    items.push({
-      id: `audit-${audit.timestamp}-${audit.path}`,
-      title: t('shell.auditNotice'),
-      description: `${audit.user || '-'} · ${audit.method} ${audit.path} · ${audit.status}`,
-      time: formatRelativeTime(audit.timestamp),
-      severity: 'warning',
-      to: '/users',
-    });
-  }
-  return items.slice(0, 8);
-}
-
-function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[], users: User[], t: (key: string, options?: Record<string, unknown>) => string): SearchResult[] {
+export function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[], users: User[], t: (key: string, options?: Record<string, unknown>) => string): SearchResult[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {
     return [];
@@ -744,13 +712,14 @@ function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[
   for (const item of allNavItems) {
     const label = t(item.labelKey);
     if (matchesSearch(needle, label, item.key)) {
-      results.push({ type: t('shell.searchSection'), title: label, subtitle: item.key, to: item.key });
+      results.push({ key: `nav:${item.key}`, type: t('shell.searchSection'), title: label, subtitle: item.key, to: item.key });
     }
   }
   for (const log of logs) {
     const ref = log.trace_id || log.id;
     if (ref && matchesSearch(needle, ref, log.client_ip, log.uri, log.category, log.action)) {
       results.push({
+        key: `log:${log.id || ref}`,
         type: t('shell.searchEvent'),
         title: ref,
         subtitle: `${log.client_ip || '-'} · ${displayAction(log.action, t)} · ${log.uri || '/'}`,
@@ -761,6 +730,7 @@ function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[
   for (const user of users) {
     if (matchesSearch(needle, user.username, user.role)) {
       results.push({
+        key: `user:${user.id || user.username}`,
         type: t('shell.searchUser'),
         title: user.username,
         subtitle: user.role,
@@ -771,6 +741,7 @@ function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[
   for (const audit of audits.slice(-40).reverse()) {
     if (matchesSearch(needle, audit.user, audit.path, audit.method, String(audit.status))) {
       results.push({
+        key: `audit:${audit.timestamp}:${audit.user}:${audit.method}:${audit.path}:${audit.status}:${audit.remote_ip}:${audit.latency_ms}`,
         type: t('shell.searchAudit'),
         title: audit.user || audit.path,
         subtitle: `${audit.method} ${audit.path} · ${audit.status}`,
@@ -778,7 +749,12 @@ function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[
       });
     }
   }
-  return results.slice(0, 8);
+  const occurrences = new globalThis.Map<string, number>();
+  return results.slice(0, 8).map((result) => {
+    const occurrence = occurrences.get(result.key) ?? 0;
+    occurrences.set(result.key, occurrence + 1);
+    return occurrence === 0 ? result : { ...result, key: `${result.key}:duplicate:${occurrence}` };
+  });
 }
 
 function matchesSearch(needle: string, ...values: Array<string | undefined>) {
@@ -787,32 +763,6 @@ function matchesSearch(needle: string, ...values: Array<string | undefined>) {
 
 function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : [];
-}
-
-function loadNotificationState(): NotificationState {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(notificationStateStorageKey) || '{}') as Partial<NotificationState>;
-    return {
-      read: parsed.read && typeof parsed.read === 'object' ? parsed.read : {},
-      cleared: parsed.cleared && typeof parsed.cleared === 'object' ? parsed.cleared : {},
-      pinned: parsed.pinned && typeof parsed.pinned === 'object' ? parsed.pinned : {},
-    };
-  } catch {
-    return { read: {}, cleared: {}, pinned: {} };
-  }
-}
-
-function saveNotificationState(state: NotificationState) {
-  const limitEntries = (values: Record<string, boolean>) => Object.fromEntries(Object.entries(values).slice(-300));
-  try {
-    localStorage.setItem(notificationStateStorageKey, JSON.stringify({
-      read: limitEntries(state.read),
-      cleared: limitEntries(state.cleared),
-      pinned: limitEntries(state.pinned),
-    }));
-  } catch {
-    // Notification read state is a UI convenience; storage failures must not break the console.
-  }
 }
 
 function formatRelativeTime(value: string) {
@@ -897,7 +847,7 @@ function fallbackText(t: (key: string, options?: Record<string, unknown>) => str
 
 function currentAccount() {
   const token = localStorage.getItem('cheesewaf-token') ?? '';
-  const fallback = { username: 'admin', role: 'admin' };
+  const fallback = { username: '', role: '' };
   const payload = token.split('.')[1];
   if (!payload) {
     return fallback;

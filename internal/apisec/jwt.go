@@ -144,7 +144,7 @@ func (v *jwtVerifier) snapshotKeys() []jwtKey {
 
 func (v *jwtVerifier) Verify(token parsedJWT) error {
 	if !v.configured() {
-		return nil
+		return fmt.Errorf("JWT verifier is not configured")
 	}
 	if token.alg == "" || strings.EqualFold(token.alg, "none") {
 		return fmt.Errorf("unsigned JWT is not allowed")

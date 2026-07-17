@@ -18,6 +18,11 @@ import (
 
 const AlgorithmSHA256 = "SHA-256"
 
+const (
+	altchaMaxFieldBytes   = 4096
+	altchaMaxPayloadBytes = 8192
+)
+
 type Challenge struct {
 	Algorithm string `json:"algorithm"`
 	Challenge string `json:"challenge"`
@@ -47,6 +52,9 @@ type Options struct {
 
 func NewChallenge(opts Options) (Challenge, error) {
 	opts = normalizeOptions(opts)
+	if strings.TrimSpace(opts.Secret) == "" {
+		return Challenge{}, fmt.Errorf("captcha secret is required")
+	}
 	number, err := randomNumber(opts.MaxNumber)
 	if err != nil {
 		return Challenge{}, err
@@ -70,6 +78,12 @@ func NewChallenge(opts Options) (Challenge, error) {
 
 func Verify(opts Options, payload Payload) bool {
 	opts = normalizeOptions(opts)
+	if strings.TrimSpace(opts.Secret) == "" {
+		return false
+	}
+	if len(payload.Algorithm) > 32 || len(payload.Challenge) > altchaMaxFieldBytes || len(payload.Salt) > altchaMaxFieldBytes || len(payload.Signature) > altchaMaxFieldBytes {
+		return false
+	}
 	if !strings.EqualFold(payload.Algorithm, AlgorithmSHA256) || payload.Challenge == "" || payload.Salt == "" || payload.Signature == "" {
 		return false
 	}
@@ -89,6 +103,9 @@ func Verify(opts Options, payload Payload) bool {
 
 func ParsePayload(raw string) (Payload, bool) {
 	raw = strings.TrimSpace(raw)
+	if len(raw) == 0 || len(raw) > altchaMaxPayloadBytes {
+		return Payload{}, false
+	}
 	raw = strings.TrimPrefix(raw, "challenge=")
 	raw = strings.Trim(raw, `"`)
 	if raw == "" {
@@ -98,6 +115,9 @@ func ParsePayload(raw string) (Payload, bool) {
 	if strings.HasPrefix(raw, "{") {
 		data = []byte(raw)
 	} else {
+		if base64.RawStdEncoding.DecodedLen(len(raw)) > altchaMaxPayloadBytes {
+			return Payload{}, false
+		}
 		for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
 			decoded, err := encoding.DecodeString(raw)
 			if err == nil {
@@ -106,7 +126,7 @@ func ParsePayload(raw string) (Payload, bool) {
 			}
 		}
 	}
-	if len(data) == 0 {
+	if len(data) == 0 || len(data) > altchaMaxPayloadBytes {
 		return Payload{}, false
 	}
 	var payload Payload

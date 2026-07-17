@@ -51,19 +51,13 @@ echo "Packaging CheeseWAF ${version} (${channel}) from ${commit}"
 rm -rf "$release_dir" "$work_dir"
 mkdir -p "$release_dir" "$work_dir"
 
-pushd web >/dev/null
-npm ci
-npm run build
-popd >/dev/null
+metadata_dir="${work_dir}/release-metadata"
+bash scripts/ci/generate-release-metadata.sh \
+  "$metadata_dir" "$version" "$channel" "$ref_name" "$commit" "$build_time"
 
-targets=(
-  "linux/amd64"
-  "linux/arm64"
-  "darwin/amd64"
-  "darwin/arm64"
-  "windows/amd64"
-  "windows/arm64"
-)
+bash scripts/ci/build-web.sh
+
+read -r -a targets <<<"${CHEESEWAF_TARGETS:-linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64}"
 
 for target in "${targets[@]}"; do
   goos="${target%/*}"
@@ -81,42 +75,21 @@ for target in "${targets[@]}"; do
   GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "${package_root}/cheesewaf${ext}" ./cmd/cheesewaf/
   if [[ "$goos" != "windows" ]]; then
     chmod +x "${package_root}/cheesewaf${ext}"
-    cp "${package_root}/cheesewaf${ext}" "${package_root}/waf-cli"
+    cp scripts/ci/waf-cli "${package_root}/waf-cli"
     chmod +x "${package_root}/waf-cli"
   else
-    cp "${package_root}/cheesewaf${ext}" "${package_root}/waf-cli${ext}"
+    cp scripts/ci/waf-cli.cmd "${package_root}/waf-cli.cmd"
   fi
 
-  cp -R web/dist "${package_root}/web"
+  mkdir -p "${package_root}/web"
+  cp -R web/dist "${package_root}/web/dist"
+  cp -R configs "${package_root}/configs"
   for doc in README.md README_CN.md LICENSE; do
     if [[ -f "$doc" ]]; then
       cp "$doc" "$package_root/"
     fi
   done
-
-  cat > "${package_root}/VERSION" <<EOF
-version=${version}
-channel=${channel}
-branch=${ref_name}
-commit=${commit}
-build_time=${build_time}
-target=${goos}/${goarch}
-EOF
-
-  cat > "${package_root}/release.json" <<EOF
-{
-  "name": "CheeseWAF",
-  "version": "${version}",
-  "channel": "${channel}",
-  "branch": "${ref_name}",
-  "commit": "${commit}",
-  "build_time": "${build_time}",
-  "target": {
-    "goos": "${goos}",
-    "goarch": "${goarch}"
-  }
-}
-EOF
+  cp "${metadata_dir}/VERSION" "${metadata_dir}/release.json" "$package_root/"
 
   tar -C "$work_dir" -czf "${release_dir}/${package_name}.tar.gz" "$package_name"
 done

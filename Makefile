@@ -49,6 +49,33 @@ else
 	@ln -sf $(BINARY_NAME) bin/$(CLI_NAME)
 endif
 
+## build-windows-gui: Build Windows local service controller (pure Go, no CGO)
+build-windows-gui:
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-gui-windows-amd64.exe ./cmd/cheesewaf-gui/
+	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-gui-windows-arm64.exe ./cmd/cheesewaf-gui/
+ifeq ($(OS),Windows_NT)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-gui.exe ./cmd/cheesewaf-gui/
+endif
+
+## package-windows-cli: Stage a zip/bin-style Windows CLI payload directory
+package-windows-cli: build build-windows-gui
+	@mkdir -p dist/windows-cli/configs dist/windows-cli/data dist/windows-cli/logs
+	@cp -f bin/$(BINARY_NAME).exe dist/windows-cli/ 2>/dev/null || cp -f bin/$(BINARY_NAME) dist/windows-cli/ || true
+	@cp -f bin/$(BINARY_NAME)-gui.exe dist/windows-cli/cheesewaf-gui.exe 2>/dev/null || \
+		cp -f bin/$(BINARY_NAME)-gui-windows-amd64.exe dist/windows-cli/cheesewaf-gui.exe 2>/dev/null || true
+	@cp -f bin/$(BINARY_NAME).exe dist/windows-cli/waf-cli.exe 2>/dev/null || true
+	@cp -f configs/cheesewaf.yaml dist/windows-cli/configs/ 2>/dev/null || true
+	@echo "Staged dist/windows-cli — zip manually; do not embed secrets"
+
+## package-windows-nsis-payload: Stage SOURCE_DIR for makensis (no secrets)
+package-windows-nsis-payload: package-windows-cli
+	@mkdir -p dist/windows-payload/configs
+	@cp -f dist/windows-cli/cheesewaf.exe dist/windows-payload/ 2>/dev/null || true
+	@cp -f dist/windows-cli/cheesewaf-gui.exe dist/windows-payload/ 2>/dev/null || true
+	@cp -f dist/windows-cli/waf-cli.exe dist/windows-payload/ 2>/dev/null || true
+	@cp -f dist/windows-cli/configs/cheesewaf.yaml dist/windows-payload/configs/ 2>/dev/null || true
+	@echo "Staged dist/windows-payload for: makensis /DVERSION=... /DSOURCE_DIR=dist/windows-payload deploy/windows/nsis/cheesewaf.nsi"
+
 ## build-linux: Cross-compile for Linux amd64
 build-linux:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/cheesewaf/

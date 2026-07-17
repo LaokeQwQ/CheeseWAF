@@ -20,7 +20,7 @@ func TestCleanupOldFilesKeepsShortDirectory(t *testing.T) {
 		}
 	}
 
-	if err := CleanupOldFiles(context.Background(), Task{Target: dir, Keep: 7}); err != nil {
+	if err := CleanupOldFiles(context.Background(), Task{Target: dir, Keep: 7, ManagedRoots: []string{dir}}); err != nil {
 		t.Fatalf("CleanupOldFiles() error = %v", err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -48,7 +48,7 @@ func TestCleanupOldFilesKeepsNewestFiles(t *testing.T) {
 		}
 	}
 
-	if err := CleanupOldFiles(context.Background(), Task{Target: dir, Keep: 2}); err != nil {
+	if err := CleanupOldFiles(context.Background(), Task{Target: dir, Keep: 2, ManagedRoots: []string{dir}}); err != nil {
 		t.Fatalf("CleanupOldFiles() error = %v", err)
 	}
 	for i := 0; i < 3; i++ {
@@ -60,5 +60,60 @@ func TestCleanupOldFilesKeepsNewestFiles(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("access-%d.log", i))); err != nil {
 			t.Fatalf("new file access-%d.log should remain: %v", i, err)
 		}
+	}
+}
+
+func TestCleanupOldFilesLeavesUnmanagedFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"notes.txt", "database.sqlite", "access-1.log", "access-2.log"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := CleanupOldFilesWithResult(Task{Type: "cleanup", Target: dir, Keep: 1, ManagedRoots: []string{dir}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"notes.txt", "database.sqlite"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("unmanaged file %s was removed: %v", name, err)
+		}
+	}
+}
+
+func TestCleanupOldFilesRejectsTargetOutsideManagedRoots(t *testing.T) {
+	managed := t.TempDir()
+	outside := t.TempDir()
+	path := filepath.Join(outside, "access-old.log")
+	if err := os.WriteFile(path, []byte("log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := CleanupOldFilesWithResult(Task{Type: "cleanup", Target: outside, Keep: 1, ManagedRoots: []string{managed}})
+	if err == nil {
+		t.Fatal("expected cleanup outside managed roots to fail")
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("cleanup touched file outside managed roots: %v", statErr)
+	}
+}
+
+func TestCleanupOldFilesRejectsSymlinkEscape(t *testing.T) {
+	managed := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(managed, "escaped")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	path := filepath.Join(outside, "access-old.log")
+	if err := os.WriteFile(path, []byte("log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := CleanupOldFilesWithResult(Task{Type: "cleanup", Target: link, Keep: 1, ManagedRoots: []string{managed}})
+	if err == nil {
+		t.Fatal("expected symlink escape to fail")
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("cleanup touched file through symlink escape: %v", statErr)
 	}
 }

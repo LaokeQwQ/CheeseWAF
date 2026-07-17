@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Select, Space, Spin, Switch, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, InputNumber, Message as ArcoMessage, Select, Space, Spin, Switch, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -20,6 +20,7 @@ const analysisRanges = [
   { value: '7d', labelKey: 'ai.range7d', seconds: 7 * 24 * 60 * 60 },
 ];
 const AI_EVENT_PAGE_SIZE = 8;
+export const SELF_LEARNING_MAX_EVENTS_RANGE = { min: 1, max: 10_000 };
 
 const fallback: AIConfig = {
   enabled: false,
@@ -69,7 +70,7 @@ export default function AIPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
-  const singleAnalysisAbortRef = useRef<AbortController | null>(null);
+  const singleAnalysisAbortRef = useRef<{ key: string; controller: AbortController } | null>(null);
   const [selectedId, setSelectedId] = useState('');
   const [analysisRange, setAnalysisRange] = useState('24h');
   const [eventPage, setEventPage] = useState(1);
@@ -84,7 +85,8 @@ export default function AIPage() {
   const [reasoningModels, setReasoningModels] = useState<AIModelInfo[]>([]);
   const [selfLearningReport, setSelfLearningReport] = useState<AISelfLearningReport | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const { data } = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
+  const configQuery = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
+  const { data } = configQuery;
   const { data: logs, isLoading } = useQuery({
     queryKey: ['ai-events', analysisRange],
     queryFn: () => fetchLogs(buildAnalysisWindowQuery(analysisRange, 80)),
@@ -158,7 +160,7 @@ export default function AIPage() {
   }, [eventPage, eventPageCount]);
 
   useEffect(() => () => {
-    singleAnalysisAbortRef.current?.abort();
+    singleAnalysisAbortRef.current?.controller.abort();
   }, []);
 
   const updateMutation = useMutation({
@@ -197,13 +199,10 @@ export default function AIPage() {
     onError: (error) => ArcoMessage.error(error.message),
   });
   const eventAnalysisMutation = useMutation({
-    mutationFn: async (entry: LogEntry) => {
+    mutationFn: async ({ entry, controller }: { entry: LogEntry; controller: AbortController }) => {
       const key = eventKey(entry);
-      singleAnalysisAbortRef.current?.abort();
-      const controller = new AbortController();
-      singleAnalysisAbortRef.current = controller;
       setLiveAnalysis({ key, trace: [], reasoning: '', content: '' });
-      return analyzeLogReferenceStream(entry.trace_id || entry.id, i18n.language, (trace) => {
+      const analysis = await analyzeLogReferenceStream(entry.trace_id || entry.id, i18n.language, (trace) => {
         setLiveAnalysis((current) => {
           if (!current || current.key !== key) {
             return current;
@@ -216,12 +215,11 @@ export default function AIPage() {
           };
         });
       }, controller.signal);
+      return { analysis, controller, key };
     },
-    onSuccess: (analysis, entry) => {
-      const key = eventKey(entry);
+    onSuccess: ({ analysis, key }) => {
       setAnalyses((current) => ({ ...current, [key]: analysis, [analysis.log_id]: analysis }));
       setLiveAnalysis((current) => (current?.key === key ? null : current));
-      singleAnalysisAbortRef.current = null;
     },
     onError: (error) => {
       if (error instanceof APIRequestError && error.code === 'AI_ANALYSIS_CANCELLED') {
@@ -229,19 +227,21 @@ export default function AIPage() {
       }
       ArcoMessage.error(error.message);
     },
-    onSettled: (_data, _error, entry) => {
-      if (!entry) {
+    onSettled: (_data, _error, variables) => {
+      if (!variables) {
         return;
       }
-      const key = eventKey(entry);
+      const key = eventKey(variables.entry);
       setLiveAnalysis((current) => (current?.key === key ? null : current));
-      singleAnalysisAbortRef.current = null;
+      if (singleAnalysisAbortRef.current?.controller === variables.controller) {
+        singleAnalysisAbortRef.current = null;
+      }
     },
   });
   const batchAnalysisMutation = useMutation({
     mutationFn: () => analyzeEventsStream(
       { ...buildAnalysisWindowQuery(analysisRange, 200), language: i18n.language },
-      (item) => setAnalyses((current) => ({ ...current, [item.log_id]: item })),
+      undefined,
     ),
     onSuccess: (result) => {
       setAnalyses((current) => {
@@ -255,7 +255,14 @@ export default function AIPage() {
     },
     onError: (error) => ArcoMessage.error(error.message),
   });
-  const analyzingEventKey = eventAnalysisMutation.variables ? eventKey(eventAnalysisMutation.variables) : '';
+  const analyzingEventKey = eventAnalysisMutation.variables ? eventKey(eventAnalysisMutation.variables.entry) : '';
+
+  function startEventAnalysis(entry: LogEntry) {
+    singleAnalysisAbortRef.current?.controller.abort();
+    const controller = new AbortController();
+    singleAnalysisAbortRef.current = { key: eventKey(entry), controller };
+    eventAnalysisMutation.mutate({ entry, controller });
+  }
 
   return (
     <section className="page-surface ai-page">
@@ -310,50 +317,15 @@ export default function AIPage() {
               allowPrivateAPIBase: config.allow_private_api_base,
             }}
             onSubmit={(values) => {
+              if (!configQuery.isSuccess) {
+                return;
+              }
               const allValues = { ...values, ...form.getFieldsValue() };
-              updateMutation.mutate({
-                enabled: allValues.enabled,
-                provider: allValues.assistantProvider || allValues.provider || 'openai',
-                api_base: allValues.assistantAPIBase || allValues.apiBase,
-                api_key: allValues.assistantAPIKey || allValues.apiKey,
-                api_key_set: config.api_key_set,
-                model: allValues.assistantModel || allValues.model,
-                async: allValues.async,
-                allow_private_api_base: allValues.assistantAllowPrivateAPIBase ?? allValues.allowPrivateAPIBase,
-                assistant: {
-                  provider: allValues.assistantProvider || 'openai',
-                  api_base: allValues.assistantAPIBase,
-                  api_key: allValues.assistantAPIKey,
-                  api_key_set: assistantConfig.api_key_set,
-                  model: allValues.assistantModel,
-                  allow_private_api_base: allValues.assistantAllowPrivateAPIBase,
-                },
-                reasoning: {
-                  provider: allValues.reasoningProvider || 'openai',
-                  api_base: allValues.reasoningAPIBase,
-                  api_key: allValues.reasoningAPIKey,
-                  api_key_set: reasoningConfig.api_key_set,
-                  model: allValues.reasoningModel,
-                  allow_private_api_base: allValues.reasoningAllowPrivateAPIBase,
-                },
-                self_learning: {
-                  enabled: allValues.selfLearningEnabled,
-                  auto_apply: allValues.selfLearningAutoApply,
-                  dry_run: allValues.selfLearningDryRun,
-                  interval: durationInputToNanoseconds(allValues.selfLearningInterval),
-                  at: allValues.selfLearningAt,
-                  min_confidence: Number(allValues.selfLearningMinConfidence),
-                  min_events: Number(allValues.selfLearningMinEvents),
-                  max_events: Number(allValues.selfLearningMaxEvents),
-                  max_rules_per_run: Number(allValues.selfLearningMaxRulesPerRun),
-                  action: allValues.selfLearningAction || 'block',
-                },
-                knowledge: {
-                  enabled: allValues.knowledgeEnabled,
-                  builtin: allValues.knowledgeBuiltin,
-                  max_snippets: Number(allValues.knowledgeMaxSnippets || 5),
-                },
-              });
+              try {
+                updateMutation.mutate(buildAIConfigPayload(allValues, config, assistantConfig, reasoningConfig));
+              } catch (error) {
+                ArcoMessage.error(error instanceof Error ? error.message : t('ai.invalidConfig'));
+              }
             }}
           >
             <div className="ai-config-main">
@@ -408,6 +380,22 @@ export default function AIPage() {
                       <Form.Item label={t('ai.selfLearningAt')} field="selfLearningAt"><Input placeholder="03:30" /></Form.Item>
                       <Form.Item label={t('ai.selfLearningConfidence')} field="selfLearningMinConfidence"><Input type="number" min={0.9} max={1} step={0.001} /></Form.Item>
                       <Form.Item label={t('ai.selfLearningMinEvents')} field="selfLearningMinEvents"><Input type="number" min={2} /></Form.Item>
+                      <Form.Item
+                        label={i18n.language.startsWith('zh') ? '最多分析事件' : 'Max Events'}
+                        field="selfLearningMaxEvents"
+                        rules={[{
+                          validator: (value, callback) => {
+                            const numeric = Number(value);
+                            if (!Number.isInteger(numeric) || numeric < SELF_LEARNING_MAX_EVENTS_RANGE.min || numeric > SELF_LEARNING_MAX_EVENTS_RANGE.max) {
+                              callback(`self_learning.max_events must be ${SELF_LEARNING_MAX_EVENTS_RANGE.min}-${SELF_LEARNING_MAX_EVENTS_RANGE.max}`);
+                              return;
+                            }
+                            callback();
+                          },
+                        }]}
+                      >
+                        <InputNumber min={SELF_LEARNING_MAX_EVENTS_RANGE.min} max={SELF_LEARNING_MAX_EVENTS_RANGE.max} step={1} precision={0} />
+                      </Form.Item>
                       <Form.Item label={t('ai.selfLearningMaxRules')} field="selfLearningMaxRulesPerRun"><Input type="number" min={1} max={20} /></Form.Item>
                       <Form.Item label={t('ai.selfLearningAction')} field="selfLearningAction">
                         <Select>
@@ -447,7 +435,10 @@ export default function AIPage() {
                 </div>
               </div>
               <div className="ai-config-actions-row">
-                <Button className="ai-config-save" type="primary" htmlType="submit" loading={updateMutation.isPending}>{t('common.save')}</Button>
+              {configQuery.isError && (
+                <Button onClick={() => configQuery.refetch()} loading={configQuery.isFetching}>{t('common.retry')}</Button>
+              )}
+              <Button className="ai-config-save" type="primary" htmlType="submit" loading={updateMutation.isPending} disabled={!configQuery.isSuccess}>{t('common.save')}</Button>
               </div>
             </div>
           </Form>
@@ -529,7 +520,7 @@ export default function AIPage() {
                         loading={eventAnalysisMutation.isPending && analyzingEventKey === key}
                         onClick={() => {
                           setSelectedId(key);
-                          eventAnalysisMutation.mutate(record);
+                          startEventAnalysis(record);
                         }}
                       >
                         {analyses[key] ? t('ai.reanalyze') : t('ai.run')}
@@ -584,7 +575,7 @@ export default function AIPage() {
                   className="ai-event-summary-action"
                   type="primary"
                   loading={eventAnalysisMutation.isPending && analyzingEventKey === eventKey(selected)}
-                  onClick={() => eventAnalysisMutation.mutate(selected)}
+                  onClick={() => startEventAnalysis(selected)}
                 >
                   {selectedAnalysis ? t('ai.reanalyze') : t('ai.run')}
                 </Button>
@@ -830,6 +821,65 @@ function modelOptions(models: AIModelInfo[], currentModel: string) {
     out.unshift({ id: current });
   }
   return out;
+}
+
+export function buildAIConfigPayload(
+  values: Record<string, any>,
+  config: AIConfig,
+  assistantConfig: AIModelConfig,
+  reasoningConfig: AIModelConfig,
+): AIConfig {
+  return {
+    enabled: values.enabled,
+    provider: values.assistantProvider || values.provider || 'openai',
+    api_base: values.assistantAPIBase || values.apiBase,
+    api_key: values.assistantAPIKey || values.apiKey,
+    api_key_set: config.api_key_set,
+    model: values.assistantModel || values.model,
+    async: values.async,
+    allow_private_api_base: values.assistantAllowPrivateAPIBase ?? values.allowPrivateAPIBase,
+    assistant: {
+      provider: values.assistantProvider || 'openai',
+      api_base: values.assistantAPIBase,
+      api_key: values.assistantAPIKey,
+      api_key_set: assistantConfig.api_key_set,
+      model: values.assistantModel,
+      allow_private_api_base: values.assistantAllowPrivateAPIBase,
+    },
+    reasoning: {
+      provider: values.reasoningProvider || 'openai',
+      api_base: values.reasoningAPIBase,
+      api_key: values.reasoningAPIKey,
+      api_key_set: reasoningConfig.api_key_set,
+      model: values.reasoningModel,
+      allow_private_api_base: values.reasoningAllowPrivateAPIBase,
+    },
+    self_learning: {
+      enabled: values.selfLearningEnabled,
+      auto_apply: values.selfLearningAutoApply,
+      dry_run: values.selfLearningDryRun,
+      interval: durationInputToNanoseconds(values.selfLearningInterval),
+      at: values.selfLearningAt,
+      min_confidence: Number(values.selfLearningMinConfidence),
+      min_events: Number(values.selfLearningMinEvents),
+      max_events: validateSelfLearningMaxEvents(values.selfLearningMaxEvents),
+      max_rules_per_run: Number(values.selfLearningMaxRulesPerRun),
+      action: values.selfLearningAction || 'block',
+    },
+    knowledge: {
+      enabled: values.knowledgeEnabled,
+      builtin: values.knowledgeBuiltin,
+      max_snippets: Number(values.knowledgeMaxSnippets || 5),
+    },
+  };
+}
+
+export function validateSelfLearningMaxEvents(value: unknown) {
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < SELF_LEARNING_MAX_EVENTS_RANGE.min || numeric > SELF_LEARNING_MAX_EVENTS_RANGE.max) {
+    throw new Error(`self_learning.max_events must be ${SELF_LEARNING_MAX_EVENTS_RANGE.min}-${SELF_LEARNING_MAX_EVENTS_RANGE.max}`);
+  }
+  return numeric;
 }
 
 function buildAIModelRequest(values: Record<string, any>, target: 'assistant' | 'reasoning') {

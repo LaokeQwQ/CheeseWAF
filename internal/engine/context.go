@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -11,17 +12,23 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 )
 
-const requestContextBodyPreviewLimit = 8 << 20
+const defaultRequestBodyLimit = 8 << 20
+
+var ErrRequestBodyTooLarge = errors.New("request body exceeds configured limit")
 
 func NewRequestContext(r *http.Request, siteID string) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIP(r))
+	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit)
 }
 
 func NewRequestContextWithTrustedProxies(r *http.Request, siteID string, trustedCIDRs []string) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs))
+	return NewRequestContextWithLimits(r, siteID, trustedCIDRs, defaultRequestBodyLimit)
 }
 
-func newRequestContext(r *http.Request, siteID, clientIP string) (*RequestContext, error) {
+func NewRequestContextWithLimits(r *http.Request, siteID string, trustedCIDRs []string, maxBodyBytes int64) (*RequestContext, error) {
+	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes)
+}
+
+func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes int64) (*RequestContext, error) {
 	reqCtx := &RequestContext{
 		Request:  r,
 		ClientIP: clientIP,
@@ -31,18 +38,25 @@ func newRequestContext(r *http.Request, siteID, clientIP string) (*RequestContex
 	}
 	reqCtx.DecodedURI = r.URL.RequestURI()
 	if r.Body != nil {
+		if maxBodyBytes <= 0 {
+			maxBodyBytes = defaultRequestBodyLimit
+		}
+		if r.ContentLength > maxBodyBytes {
+			return nil, ErrRequestBodyTooLarge
+		}
 		originalBody := r.Body
-		body, err := io.ReadAll(io.LimitReader(originalBody, requestContextBodyPreviewLimit+1))
+		body, err := io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
 		if err != nil {
 			return nil, err
 		}
-		if len(body) > requestContextBodyPreviewLimit {
-			reqCtx.DecodedBody = body[:requestContextBodyPreviewLimit]
-			reqCtx.Metadata["body_preview_truncated"] = true
-		} else {
-			reqCtx.DecodedBody = body
+		if int64(len(body)) > maxBodyBytes {
+			_ = originalBody.Close()
+			return nil, ErrRequestBodyTooLarge
 		}
-		r.Body = replayRequestBody(body, originalBody)
+		reqCtx.DecodedBody = body
+		_ = originalBody.Close()
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
 	}
 	return reqCtx, nil
 }
@@ -75,6 +89,12 @@ func ClientIPWithTrustedProxies(r *http.Request, trustedCIDRs []string) string {
 	if !isTrustedProxy(remote, trustedCIDRs) {
 		return remote
 	}
+	if ip := forwardedForIP(r.Header.Get("X-Forwarded-For"), trustedCIDRs); ip != "" {
+		return ip
+	}
+	if ip := forwardedForIP(strings.Join(forwardedHeaderValues(r.Header.Get("Forwarded")), ","), trustedCIDRs); ip != "" {
+		return ip
+	}
 	for _, header := range []string{
 		"CF-Connecting-IP",
 		"True-Client-IP",
@@ -95,12 +115,6 @@ func ClientIPWithTrustedProxies(r *http.Request, trustedCIDRs []string) string {
 		if ip := firstHeaderIP(r.Header.Get(header)); ip != "" {
 			return ip
 		}
-	}
-	if ip := forwardedForIP(r.Header.Get("X-Forwarded-For"), trustedCIDRs); ip != "" {
-		return ip
-	}
-	if ip := forwardedForIP(strings.Join(forwardedHeaderValues(r.Header.Get("Forwarded")), ","), trustedCIDRs); ip != "" {
-		return ip
 	}
 	return remote
 }

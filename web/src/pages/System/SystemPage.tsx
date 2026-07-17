@@ -27,19 +27,24 @@ import i18n from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
 import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, ManagementAPIConfig, ManagementAPIToken, SystemConfig } from '../../types/api';
-import { durationMilliseconds, durationSeconds, fallbackSystem, millisecondsToDuration, normalizeSystem, secondsToDuration } from './systemModel';
+import { durationMilliseconds, durationSeconds, fallbackSystem, millisecondsToDuration, normalizeSystem, secondsToDuration, timeSyncQueryKey } from './systemModel';
+import TimeSyncPanel from './TimeSyncPanel';
+import './SystemPage.module.css';
 
 export default function SystemPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const theme = useAppStore((state) => state.theme);
   const language = useAppStore((state) => state.language);
+  const aiAssistantFabVisible = useAppStore((state) => state.aiAssistantFabVisible);
   const setTheme = useAppStore((state) => state.setTheme);
+  const setAiAssistantFabVisible = useAppStore((state) => state.setAiAssistantFabVisible);
   const setLanguage = useAppStore((state) => state.setLanguage);
   const [system, setSystem] = useState<SystemConfig>(fallbackSystem);
   const [apiTokenDraft, setAPITokenDraft] = useState({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
   const [latestAPIToken, setLatestAPIToken] = useState('');
-  const { data } = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
+  const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
+  const { data } = systemQuery;
   const apiTokensQuery = useQuery({ queryKey: ['management-api-tokens'], queryFn: fetchManagementAPITokens, retry: false });
 
   useEffect(() => {
@@ -53,6 +58,7 @@ export default function SystemPage() {
     onSuccess: (saved) => {
       setSystem(normalizeSystem(saved));
       queryClient.invalidateQueries({ queryKey: ['system'] });
+      queryClient.invalidateQueries({ queryKey: timeSyncQueryKey });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
       ArcoMessage.success(t('system.saved'));
     },
@@ -107,6 +113,12 @@ export default function SystemPage() {
           ...(patch as Record<string, unknown>),
         } as SystemConfig['storage'][K],
       },
+    }));
+  };
+  const patchTimeSync = (patch: Partial<NonNullable<SystemConfig['time_sync']>>) => {
+    setSystem((current) => normalizeSystem({
+      ...current,
+      time_sync: current.time_sync ? { ...current.time_sync, ...patch } : undefined,
     }));
   };
   const apiAuth = useMemo(() => readAPIAuth(system), [system]);
@@ -222,7 +234,8 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.interface')}</h2>
-                <Button onClick={() => saveMutation.mutate({ server: system.server, tls: system.tls, logging: system.logging })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+                {systemQuery.isError && <Button onClick={() => systemQuery.refetch()} loading={systemQuery.isFetching}>{t('common.retry')}</Button>}
+                <Button onClick={() => saveMutation.mutate({ server: system.server, ...(system.time_sync ? { time_sync: system.time_sync } : {}), tls: system.tls, logging: system.logging })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups">
                 <section className="system-fieldset">
@@ -251,6 +264,10 @@ export default function SystemPage() {
                         <Select.Option value="en-US">English</Select.Option>
                       </Select>
                     </label>
+                    <label className="switch-line">
+                      <span>{t('system.showAiAssistantFab')}</span>
+                      <Switch checked={aiAssistantFabVisible} onChange={setAiAssistantFabVisible} />
+                    </label>
                     <label><span>HTTP</span><Input value={system.server.listen} onChange={(listen) => patchSystem({ server: { ...system.server, listen } })} /></label>
                     <label><span>HTTPS</span><Input value={system.server.listen_tls} onChange={(listen_tls) => patchSystem({ server: { ...system.server, listen_tls } })} /></label>
                     <label><span>HTTP/3 UDP</span><Input value={system.server.listen_http3} onChange={(listen_http3) => patchSystem({ server: { ...system.server, listen_http3 } })} /></label>
@@ -265,14 +282,15 @@ export default function SystemPage() {
                     <strong>TLS</strong>
                     <span>{t('system.tlsHint')}</span>
                   </header>
-                  <div className="site-detail-grid">
+                  <div className="site-detail-grid system-tls-grid">
                     <label className="switch-line"><span>{t('system.adminTls')}</span><Switch checked={system.server.admin_tls.enabled} onChange={(enabled) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, enabled } } })} /></label>
-                    <label><span>{t('system.adminTlsCert')}</span><Input value={system.server.admin_tls.cert_file} onChange={(cert_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, cert_file } } })} /></label>
-                    <label><span>{t('system.adminTlsKey')}</span><Input value={system.server.admin_tls.key_file} onChange={(key_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, key_file } } })} /></label>
                     <label className="switch-line"><span>{t('system.autoCert')}</span><Switch checked={system.tls.auto_cert} onChange={(auto_cert) => patchSystem({ tls: { ...system.tls, auto_cert } })} /></label>
                     <label className="switch-line"><span>HSTS</span><Switch checked={system.tls.hsts} onChange={(hsts) => patchSystem({ tls: { ...system.tls, hsts } })} /></label>
-                    <label><span>{t('sites.certFile')}</span><Input value={system.tls.cert_file} onChange={(cert_file) => patchSystem({ tls: { ...system.tls, cert_file } })} /></label>
-                    <label><span>{t('sites.keyFile')}</span><Input value={system.tls.key_file} onChange={(key_file) => patchSystem({ tls: { ...system.tls, key_file } })} /></label>
+                    {/* Path fields span full card width so long cert paths are not clipped in half-columns. */}
+                    <label className="wide-field system-path-field"><span>{t('system.adminTlsCert')}</span><Input value={system.server.admin_tls.cert_file} onChange={(cert_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, cert_file } } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('system.adminTlsKey')}</span><Input value={system.server.admin_tls.key_file} onChange={(key_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, key_file } } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('sites.certFile')}</span><Input value={system.tls.cert_file} onChange={(cert_file) => patchSystem({ tls: { ...system.tls, cert_file } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('sites.keyFile')}</span><Input value={system.tls.key_file} onChange={(key_file) => patchSystem({ tls: { ...system.tls, key_file } })} /></label>
                   </div>
                 </section>
                 <section className="system-fieldset">
@@ -285,6 +303,7 @@ export default function SystemPage() {
                     <label><span>{t('system.logMaxBackups')}</span><InputNumber value={system.logging.output.file.max_backups} min={1} max={365} onChange={(max_backups) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, max_backups: Number(max_backups || 1) } } } })} /></label>
                   </div>
                 </section>
+                {system.time_sync && <TimeSyncPanel value={system.time_sync} onChange={patchTimeSync} />}
               </div>
             </div>
           </Tabs.TabPane>
@@ -293,7 +312,7 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.consoleLogin')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+                <Button type="primary" onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups console-settings-grid">
                 <section className="system-fieldset">
@@ -446,6 +465,30 @@ export default function SystemPage() {
                   </div>
                 </section>
 
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.loginBranding')}</strong>
+                    <span>{t('system.loginBrandingHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label className="wide-field">
+                      <span>{t('system.loginCopyright')}</span>
+                      <Input
+                        value={system.console.login.copyright ?? ''}
+                        placeholder="Copyright © CheeseWAF. All rights reserved."
+                        onChange={(copyright) => patchConsoleLogin({ copyright })}
+                      />
+                    </label>
+                    <label className="switch-line">
+                      <span>{t('system.loginShowProductVersion')}</span>
+                      <Switch
+                        checked={system.console.login.show_product_version !== false}
+                        onChange={(show_product_version) => patchConsoleLogin({ show_product_version })}
+                      />
+                    </label>
+                  </div>
+                </section>
+
                 <section className="system-fieldset console-map-fieldset">
                   <header>
                     <strong><MapPinned size={15} /> {t('system.mapData')}</strong>
@@ -525,7 +568,7 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.storage')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ storage: system.storage })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+                <Button type="primary" onClick={() => saveMutation.mutate({ storage: system.storage })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="storage-grid">
                 <StoragePanel title="SQLite" enabled action={() => storageTestMutation.mutate('sqlite')} loading={storageTestMutation.isPending}>
@@ -572,7 +615,7 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2><KeyRound size={16} /> {t('system.jwtAuth')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ apisec: system.apisec })} loading={saveMutation.isPending}>{t('common.save')}</Button>
+                <Button type="primary" onClick={() => saveMutation.mutate({ apisec: system.apisec })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups">
                 <section className="system-fieldset">

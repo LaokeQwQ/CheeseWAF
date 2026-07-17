@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -28,6 +29,17 @@ func Default() Config {
 			WriteTimeout: 30 * time.Second,
 			IdleTimeout:  60 * time.Second,
 			HTTP3:        HTTP3Config{Enabled: false, ZeroRTT: false},
+		},
+		TimeSync: TimeSyncConfig{
+			Enabled:            true,
+			Sources:            append([]string(nil), defaultTimeSyncSources[:]...),
+			SelectionInterval:  24 * time.Hour,
+			SyncInterval:       30 * time.Minute,
+			Timeout:            2 * time.Second,
+			SamplesPerSource:   3,
+			MaxAcceptedOffset:  5 * time.Minute,
+			MaxRootDispersion:  2 * time.Second,
+			ConsensusTolerance: 250 * time.Millisecond,
 		},
 		TLS: TLSConfig{
 			MinVersion: "1.3",
@@ -81,6 +93,8 @@ func Default() Config {
 					Enabled: false,
 					Type:    "auto",
 				},
+				Copyright:          "Copyright © CheeseWAF. All rights reserved.",
+				ShowProductVersion: boolPtr(true),
 			},
 			Map: ConsoleMapConfig{
 				ChinaBoundary: MapBoundaryConfig{
@@ -91,6 +105,11 @@ func Default() Config {
 					Attribution: "",
 				},
 			},
+		},
+		CAPTCHAAssets: CAPTCHAAssetsConfig{
+			Backend: "local", Local: CAPTCHAAssetLocal{Path: "./data/captcha-assets"},
+			S3:     CAPTCHAAssetS3{Region: "us-east-1", UseTLS: true, RequestTimeout: 15 * time.Second},
+			Limits: CAPTCHAAssetLimits{MaxImageBytes: 8 << 20, MaxFontBytes: 16 << 20, MaxPixels: 16_000_000},
 		},
 		Sites: []SiteConfig{
 			{
@@ -159,9 +178,22 @@ func Default() Config {
 			},
 			Bot: BotProtectionConfig{
 				Enabled:                    false,
+				RiskLevel:                  2,
+				RiskLowThreshold:           35,
+				RiskMediumThreshold:        55,
+				RiskHighThreshold:          75,
+				RiskBlockThreshold:         95,
+				RiskConfidenceMin:          0.6,
 				JSChallenge:                true,
 				CAPTCHA:                    false,
 				CAPTCHAType:                "pow",
+				CAPTCHATypes:               []string{"pow", "shape_slider", "rotate", "text_click"},
+				CAPTCHAChallengeTTL:        2 * time.Minute,
+				CAPTCHAFailureWindow:       10 * time.Minute,
+				CAPTCHABlockDuration:       15 * time.Minute,
+				CAPTCHAEscalationTypes:     []string{"pow", "shape_slider", "text_click"},
+				CAPTCHABindingMode:         "ip_prefix_ua",
+				CAPTCHAPolicyVersion:       "1",
 				CAPTCHAMaxAttempts:         5,
 				ImageCAPTCHALength:         6,
 				ImageCAPTCHAWidth:          220,
@@ -177,6 +209,13 @@ func Default() Config {
 				ChallengeDifficulty:        4,
 				AltchaMaxNumber:            75000,
 				AltchaHeaderName:           "X-CheeseWAF-Altcha",
+				ClearanceHeaderEnabled:     false,
+				ClearanceHeaderName:        "X-CheeseWAF-Clearance",
+				ClearanceMethodScope:       false,
+				ClearanceStateCapacity:     20000,
+				PoWMaxDifficulty:           6,
+				PoWAcceptLegacy:            false,
+				ClearanceAcceptLegacy:      false,
 				WaitingRoom:                false,
 				WaitingRoomMaxActive:       1000,
 				WaitingRoomTTL:             5 * time.Minute,
@@ -184,8 +223,10 @@ func Default() Config {
 				CookieName:                 "cheesewaf_js_clearance",
 				Secret:                     "",
 				PathPrefixes:               []string{"/"},
-				ExemptPathPrefixes:         []string{"/health", "/api/"},
-				SuspiciousUserAgents:       []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
+				// Only health checks by default. Management API is on the admin
+				// port and must not be blanket-exempted on the data plane via /api/.
+				ExemptPathPrefixes:   []string{"/health"},
+				SuspiciousUserAgents: []string{"curl", "python-requests", "sqlmap", "nikto", "nuclei", "masscan", "zgrab", "httpclient"},
 			},
 			ACL: ACLProtectionConfig{Enabled: true},
 		},
@@ -367,6 +408,24 @@ func Save(path string, cfg *Config) error {
 	return writeFileAtomic(path, contents, 0o640)
 }
 
+// Clone returns a deep copy of cfg using the same serialization contract used
+// for persisted configuration. This keeps candidate mutations isolated from
+// the live config's maps and slices.
+func Clone(cfg *Config) (*Config, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	contents, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal config clone: %w", err)
+	}
+	var cloned Config
+	if err := yaml.Unmarshal(contents, &cloned); err != nil {
+		return nil, fmt.Errorf("unmarshal config clone: %w", err)
+	}
+	return &cloned, nil
+}
+
 func writeFileAtomic(path string, contents []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
@@ -505,11 +564,56 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.IdleTimeout == 0 {
 		cfg.Server.IdleTimeout = def.Server.IdleTimeout
 	}
+	if cfg.TimeSync.Sources == nil {
+		cfg.TimeSync.Sources = append([]string(nil), def.TimeSync.Sources...)
+	}
+	if cfg.TimeSync.SelectionInterval == 0 {
+		cfg.TimeSync.SelectionInterval = def.TimeSync.SelectionInterval
+	}
+	if cfg.TimeSync.SyncInterval == 0 {
+		cfg.TimeSync.SyncInterval = def.TimeSync.SyncInterval
+	}
+	if cfg.TimeSync.Timeout == 0 {
+		cfg.TimeSync.Timeout = def.TimeSync.Timeout
+	}
+	if cfg.TimeSync.SamplesPerSource == 0 {
+		cfg.TimeSync.SamplesPerSource = def.TimeSync.SamplesPerSource
+	}
+	if cfg.TimeSync.MaxAcceptedOffset == 0 {
+		cfg.TimeSync.MaxAcceptedOffset = def.TimeSync.MaxAcceptedOffset
+	}
+	if cfg.TimeSync.MaxRootDispersion == 0 {
+		cfg.TimeSync.MaxRootDispersion = def.TimeSync.MaxRootDispersion
+	}
+	if cfg.TimeSync.ConsensusTolerance == 0 {
+		cfg.TimeSync.ConsensusTolerance = def.TimeSync.ConsensusTolerance
+	}
 	if cfg.Setup.DataDir == "" {
 		cfg.Setup.DataDir = def.Setup.DataDir
 	}
 	if cfg.Setup.RuntimeDir == "" {
 		cfg.Setup.RuntimeDir = filepath.Join(cfg.Setup.DataDir, "run")
+	}
+	if cfg.CAPTCHAAssets.Backend == "" {
+		cfg.CAPTCHAAssets.Backend = def.CAPTCHAAssets.Backend
+	}
+	if cfg.CAPTCHAAssets.Local.Path == "" {
+		cfg.CAPTCHAAssets.Local.Path = filepath.Join(cfg.Setup.DataDir, "captcha-assets")
+	}
+	if cfg.CAPTCHAAssets.S3.Region == "" {
+		cfg.CAPTCHAAssets.S3.Region = def.CAPTCHAAssets.S3.Region
+	}
+	if cfg.CAPTCHAAssets.S3.RequestTimeout == 0 {
+		cfg.CAPTCHAAssets.S3.RequestTimeout = def.CAPTCHAAssets.S3.RequestTimeout
+	}
+	if cfg.CAPTCHAAssets.Limits.MaxImageBytes == 0 {
+		cfg.CAPTCHAAssets.Limits.MaxImageBytes = def.CAPTCHAAssets.Limits.MaxImageBytes
+	}
+	if cfg.CAPTCHAAssets.Limits.MaxFontBytes == 0 {
+		cfg.CAPTCHAAssets.Limits.MaxFontBytes = def.CAPTCHAAssets.Limits.MaxFontBytes
+	}
+	if cfg.CAPTCHAAssets.Limits.MaxPixels == 0 {
+		cfg.CAPTCHAAssets.Limits.MaxPixels = def.CAPTCHAAssets.Limits.MaxPixels
 	}
 	if cfg.Cluster.HAMode == "" {
 		cfg.Cluster.HAMode = def.Cluster.HAMode
@@ -558,6 +662,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Console.Login.Background.Type == "" {
 		cfg.Console.Login.Background.Type = def.Console.Login.Background.Type
+	}
+	if cfg.Console.Login.Copyright == "" {
+		cfg.Console.Login.Copyright = def.Console.Login.Copyright
+	}
+	if cfg.Console.Login.ShowProductVersion == nil {
+		cfg.Console.Login.ShowProductVersion = boolPtr(true)
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		cfg.Storage.SQLite.Path = filepath.Join(cfg.Setup.DataDir, "cheesewaf.db")
@@ -699,6 +809,24 @@ func applyDefaults(cfg *Config) {
 	if cfg.Protection.Bot.ChallengeTTL == 0 {
 		cfg.Protection.Bot.ChallengeTTL = def.Protection.Bot.ChallengeTTL
 	}
+	if cfg.Protection.Bot.RiskLevel == 0 {
+		cfg.Protection.Bot.RiskLevel = def.Protection.Bot.RiskLevel
+	}
+	if cfg.Protection.Bot.RiskLowThreshold == 0 {
+		cfg.Protection.Bot.RiskLowThreshold = def.Protection.Bot.RiskLowThreshold
+	}
+	if cfg.Protection.Bot.RiskMediumThreshold == 0 {
+		cfg.Protection.Bot.RiskMediumThreshold = def.Protection.Bot.RiskMediumThreshold
+	}
+	if cfg.Protection.Bot.RiskHighThreshold == 0 {
+		cfg.Protection.Bot.RiskHighThreshold = def.Protection.Bot.RiskHighThreshold
+	}
+	if cfg.Protection.Bot.RiskBlockThreshold == 0 {
+		cfg.Protection.Bot.RiskBlockThreshold = def.Protection.Bot.RiskBlockThreshold
+	}
+	if cfg.Protection.Bot.RiskConfidenceMin == 0 {
+		cfg.Protection.Bot.RiskConfidenceMin = def.Protection.Bot.RiskConfidenceMin
+	}
 	if cfg.Protection.Bot.ChallengeDifficulty == 0 {
 		cfg.Protection.Bot.ChallengeDifficulty = def.Protection.Bot.ChallengeDifficulty
 	}
@@ -708,8 +836,34 @@ func applyDefaults(cfg *Config) {
 	if cfg.Protection.Bot.AltchaHeaderName == "" {
 		cfg.Protection.Bot.AltchaHeaderName = def.Protection.Bot.AltchaHeaderName
 	}
+	if isDeprecatedBehaviorCAPTCHAType(cfg.Protection.Bot.CAPTCHAType) {
+		cfg.Protection.Bot.CAPTCHAType = def.Protection.Bot.CAPTCHAType
+	}
 	if cfg.Protection.Bot.CAPTCHAType == "" {
 		cfg.Protection.Bot.CAPTCHAType = def.Protection.Bot.CAPTCHAType
+	}
+	cfg.Protection.Bot.CAPTCHATypes = migrateBehaviorCAPTCHATypeList(cfg.Protection.Bot.CAPTCHATypes)
+	if len(cfg.Protection.Bot.CAPTCHATypes) == 0 {
+		cfg.Protection.Bot.CAPTCHATypes = append([]string(nil), def.Protection.Bot.CAPTCHATypes...)
+	}
+	if cfg.Protection.Bot.CAPTCHAChallengeTTL == 0 {
+		cfg.Protection.Bot.CAPTCHAChallengeTTL = def.Protection.Bot.CAPTCHAChallengeTTL
+	}
+	if cfg.Protection.Bot.CAPTCHAFailureWindow == 0 {
+		cfg.Protection.Bot.CAPTCHAFailureWindow = def.Protection.Bot.CAPTCHAFailureWindow
+	}
+	if cfg.Protection.Bot.CAPTCHABlockDuration == 0 {
+		cfg.Protection.Bot.CAPTCHABlockDuration = def.Protection.Bot.CAPTCHABlockDuration
+	}
+	cfg.Protection.Bot.CAPTCHAEscalationTypes = migrateBehaviorCAPTCHATypeList(cfg.Protection.Bot.CAPTCHAEscalationTypes)
+	if len(cfg.Protection.Bot.CAPTCHAEscalationTypes) == 0 {
+		cfg.Protection.Bot.CAPTCHAEscalationTypes = append([]string(nil), def.Protection.Bot.CAPTCHAEscalationTypes...)
+	}
+	if cfg.Protection.Bot.CAPTCHABindingMode == "" {
+		cfg.Protection.Bot.CAPTCHABindingMode = def.Protection.Bot.CAPTCHABindingMode
+	}
+	if cfg.Protection.Bot.CAPTCHAPolicyVersion == "" {
+		cfg.Protection.Bot.CAPTCHAPolicyVersion = def.Protection.Bot.CAPTCHAPolicyVersion
 	}
 	if cfg.Protection.Bot.CAPTCHAMaxAttempts == 0 {
 		cfg.Protection.Bot.CAPTCHAMaxAttempts = def.Protection.Bot.CAPTCHAMaxAttempts
@@ -833,6 +987,32 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
+func isDeprecatedBehaviorCAPTCHAType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "sequence_click", "scramble_jigsaw":
+		return true
+	default:
+		return false
+	}
+}
+
+func migrateBehaviorCAPTCHATypeList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" || isDeprecatedBehaviorCAPTCHAType(value) {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func applyAIModelDefaults(model *AIModelConfig, fallback AIModelConfig) {
 	if model == nil {
 		return
@@ -853,4 +1033,8 @@ func applyAIModelDefaults(model *AIModelConfig, fallback AIModelConfig) {
 		model.Model = fallback.Model
 	}
 	model.AllowPrivateAPIBase = model.AllowPrivateAPIBase || fallback.AllowPrivateAPIBase
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

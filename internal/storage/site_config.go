@@ -65,6 +65,11 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				SemanticNoSQL: site.WAF.SemanticEngines.NoSQL,
 				SemanticSSTI:  site.WAF.SemanticEngines.SSTI,
 			},
+			SemanticPolicy: SiteSemanticPolicy{
+				BudgetExhaustedPolicy: site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
+				PathAllowlist:         cloneStrings(site.WAF.SemanticPolicy.PathAllowlist),
+				ParamAllowlist:        cloneStrings(site.WAF.SemanticPolicy.ParamAllowlist),
+			},
 			Policy: SiteProtectionPolicy{
 				WebAttack:   site.WAF.ProtectionPolicy.WebAttack,
 				APISecurity: site.WAF.ProtectionPolicy.APISecurity,
@@ -90,6 +95,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				DynamicGuard: site.WAF.AccessControl.DynamicGuard,
 				TrustedCIDRs: cloneStrings(site.WAF.AccessControl.TrustedCIDRs),
 			},
+			AccessLogEnabled: cloneBoolPtr(site.WAF.AccessLogEnabled),
 		},
 	}
 }
@@ -104,43 +110,44 @@ func SiteToConfig(site Site) config.SiteConfig {
 		mode = "block"
 	}
 	timeout := parseDuration(site.Advanced.Origin.ProxyTimeout, 30*time.Second)
-		return config.SiteConfig{
-			ID:          site.ID,
-			Name:        site.Name,
-			Domains:     site.Domains,
-			Upstreams:   upstreams,
-			ListenPort:  site.ListenPort,
-			LoadBalance: site.LoadBalance,
-			Enabled:     site.Enabled,
-			EnableSSL:   site.EnableSSL,
-			CertFile:    site.CertFile,
-			KeyFile:     site.KeyFile,
-			Certificate: config.SiteCertificateConfig{
-				Mode:          site.Advanced.Certificate.Mode,
-				CertPEM:       site.Advanced.Certificate.CertPEM,
-				KeyPEM:        site.Advanced.Certificate.KeyPEM,
-				AutoRenew:     site.Advanced.Certificate.AutoRenew,
-				ForceHTTPS:    site.Advanced.Certificate.ForceHTTPS,
-				HSTS:          site.Advanced.Certificate.HSTS,
-				MinTLSVersion: site.Advanced.Certificate.MinTLSVersion,
-				ACME: config.SiteACMEConfig{
-					ProviderID:    site.Advanced.Certificate.ACME.ProviderID,
-					DNSAPI:        site.Advanced.Certificate.ACME.DNSAPI,
-					AccountEmail:  site.Advanced.Certificate.ACME.AccountEmail,
-					Server:        site.Advanced.Certificate.ACME.Server,
-					KeyType:       site.Advanced.Certificate.ACME.KeyType,
-					ACMESHPath:    site.Advanced.Certificate.ACME.ACMESHPath,
-					Home:          site.Advanced.Certificate.ACME.Home,
-					CertDir:       site.Advanced.Certificate.ACME.CertDir,
-					ReloadCommand: site.Advanced.Certificate.ACME.ReloadCommand,
-					Domains:       cloneStrings(site.Advanced.Certificate.ACME.Domains),
-					Env:           cloneStringMap(site.Advanced.Certificate.ACME.Env),
-					Notify:        site.Advanced.Certificate.ACME.Notify,
-				},
+	return config.SiteConfig{
+		ID:          site.ID,
+		Name:        site.Name,
+		Domains:     site.Domains,
+		Upstreams:   upstreams,
+		ListenPort:  site.ListenPort,
+		LoadBalance: site.LoadBalance,
+		Enabled:     site.Enabled,
+		EnableSSL:   site.EnableSSL,
+		CertFile:    site.CertFile,
+		KeyFile:     site.KeyFile,
+		Certificate: config.SiteCertificateConfig{
+			Mode:          site.Advanced.Certificate.Mode,
+			CertPEM:       site.Advanced.Certificate.CertPEM,
+			KeyPEM:        site.Advanced.Certificate.KeyPEM,
+			AutoRenew:     site.Advanced.Certificate.AutoRenew,
+			ForceHTTPS:    site.Advanced.Certificate.ForceHTTPS,
+			HSTS:          site.Advanced.Certificate.HSTS,
+			MinTLSVersion: site.Advanced.Certificate.MinTLSVersion,
+			ACME: config.SiteACMEConfig{
+				ProviderID:    site.Advanced.Certificate.ACME.ProviderID,
+				DNSAPI:        site.Advanced.Certificate.ACME.DNSAPI,
+				AccountEmail:  site.Advanced.Certificate.ACME.AccountEmail,
+				Server:        site.Advanced.Certificate.ACME.Server,
+				KeyType:       site.Advanced.Certificate.ACME.KeyType,
+				ACMESHPath:    site.Advanced.Certificate.ACME.ACMESHPath,
+				Home:          site.Advanced.Certificate.ACME.Home,
+				CertDir:       site.Advanced.Certificate.ACME.CertDir,
+				ReloadCommand: site.Advanced.Certificate.ACME.ReloadCommand,
+				Domains:       cloneStrings(site.Advanced.Certificate.ACME.Domains),
+				Env:           cloneStringMap(site.Advanced.Certificate.ACME.Env),
+				Notify:        site.Advanced.Certificate.ACME.Notify,
 			},
-			WAF: config.WAFConfig{
-			Enabled: site.WAFEnabled,
-			Mode:    mode,
+		},
+		WAF: config.WAFConfig{
+			Enabled:          site.WAFEnabled,
+			Mode:             mode,
+			AccessLogEnabled: cloneBoolPtr(site.Advanced.AccessLogEnabled),
 			SemanticEngines: config.SemanticEngineSwitches{
 				SQL:   site.Advanced.Protection.SemanticSQL,
 				XSS:   site.Advanced.Protection.SemanticXSS,
@@ -150,6 +157,11 @@ func SiteToConfig(site Site) config.SiteConfig {
 				SSRF:  site.Advanced.Protection.SemanticSSRF,
 				NoSQL: site.Advanced.Protection.SemanticNoSQL,
 				SSTI:  site.Advanced.Protection.SemanticSSTI,
+			},
+			SemanticPolicy: config.SemanticPolicyConfig{
+				BudgetExhaustedPolicy: site.Advanced.SemanticPolicy.BudgetExhaustedPolicy,
+				PathAllowlist:         cloneStrings(site.Advanced.SemanticPolicy.PathAllowlist),
+				ParamAllowlist:        cloneStrings(site.Advanced.SemanticPolicy.ParamAllowlist),
 			},
 			ProtectionPolicy: config.ProtectionPolicyConfig{
 				WebAttack:   site.Advanced.Policy.WebAttack,
@@ -237,4 +249,12 @@ func parseDuration(value string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }
