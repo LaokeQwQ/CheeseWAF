@@ -79,6 +79,7 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     dynamic_guard: true,
     trusted_cidrs: [],
   },
+  access_log_enabled: true,
 };
 
 export const defaultSite: Site = {
@@ -138,6 +139,7 @@ export function normalizeSite(input?: Partial<Site>): Site {
         ...advanced.access_control,
         trusted_cidrs: asArray(advanced.access_control?.trusted_cidrs),
       },
+      access_log_enabled: advanced.access_log_enabled ?? defaultSiteAdvanced.access_log_enabled ?? true,
     },
   };
 }

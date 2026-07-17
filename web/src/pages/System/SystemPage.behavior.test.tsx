@@ -42,7 +42,9 @@ vi.mock('../../stores', () => ({
     language: 'zh-CN',
     setLanguage: vi.fn(),
     setTheme: vi.fn(),
+    setAiAssistantFabVisible: vi.fn(),
     theme: 'light',
+    aiAssistantFabVisible: true,
   }),
 }));
 

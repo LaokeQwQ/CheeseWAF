@@ -188,15 +188,18 @@ type Site struct {
 }
 
 type SiteAdvanced struct {
-	Certificate    CertificateConfig     `json:"certificate"`
-	Origin         OriginConfig          `json:"origin"`
-	HealthCheck    SiteHealthCheckConfig `json:"health_check"`
-	Protection     SiteProtectionConfig  `json:"protection"`
-	SemanticPolicy SiteSemanticPolicy    `json:"semantic_policy"`
-	Policy         SiteProtectionPolicy  `json:"policy"`
-	Response       SiteResponseConfig    `json:"response"`
-	Rewrite        []SiteRewriteRule     `json:"rewrite"`
-	AccessControl  SiteAccessControl     `json:"access_control"`
+	Certificate      CertificateConfig     `json:"certificate"`
+	Origin           OriginConfig          `json:"origin"`
+	HealthCheck      SiteHealthCheckConfig `json:"health_check"`
+	Protection       SiteProtectionConfig  `json:"protection"`
+	SemanticPolicy   SiteSemanticPolicy    `json:"semantic_policy"`
+	Policy           SiteProtectionPolicy  `json:"policy"`
+	Response         SiteResponseConfig    `json:"response"`
+	Rewrite          []SiteRewriteRule     `json:"rewrite"`
+	AccessControl    SiteAccessControl     `json:"access_control"`
+	// AccessLogEnabled records normal pass/cache/redirect traffic. Security events always log.
+	// Omitted/nil defaults to true for backward compatibility.
+	AccessLogEnabled *bool `json:"access_log_enabled,omitempty"`
 }
 
 // SiteSemanticPolicy is commercial ops config for the staged analyzer.

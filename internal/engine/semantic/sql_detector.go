@@ -35,7 +35,7 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// libinjection-style deep tokenization first (fast, high precision)
+		// Deep tokenization first (fast, high precision; libinjection-compatible)
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate); detected {
 			return &engine.DetectionResult{
 				Detected:   true,

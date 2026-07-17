@@ -324,10 +324,18 @@ export default function SiteDetailPage() {
                   <Select.Option value="acme">{t('sites.certAcme')}</Select.Option>
                 </Select>
               </label>
-              <label><span>{t('sites.certFile')}</span><Input value={site.cert_file ?? ''} onChange={(value) => updateField('cert_file', value)} /></label>
-              <label><span>{t('sites.keyFile')}</span><Input value={site.key_file ?? ''} onChange={(value) => updateField('key_file', value)} /></label>
-              <label className="wide-field"><span>{t('sites.certPem')}</span><Input.TextArea value={site.advanced.certificate.cert_pem ?? ''} autoSize={{ minRows: 4, maxRows: 8 }} onChange={(value) => updateAdvanced('certificate', { cert_pem: value })} /></label>
-              <label className="wide-field"><span>{t('sites.keyPem')}</span><Input.TextArea value={site.advanced.certificate.key_pem ?? ''} autoSize={{ minRows: 4, maxRows: 8 }} onChange={(value) => updateAdvanced('certificate', { key_pem: value })} /></label>
+              {site.enable_ssl && site.advanced.certificate.mode === 'file' && (
+                <>
+                  <label className="wide-field system-path-field"><span>{t('sites.certFile')}</span><Input value={site.cert_file ?? ''} onChange={(value) => updateField('cert_file', value)} /></label>
+                  <label className="wide-field system-path-field"><span>{t('sites.keyFile')}</span><Input value={site.key_file ?? ''} onChange={(value) => updateField('key_file', value)} /></label>
+                </>
+              )}
+              {site.enable_ssl && site.advanced.certificate.mode === 'inline' && (
+                <>
+                  <label className="wide-field"><span>{t('sites.certPem')}</span><Input.TextArea value={site.advanced.certificate.cert_pem ?? ''} autoSize={{ minRows: 4, maxRows: 8 }} onChange={(value) => updateAdvanced('certificate', { cert_pem: value })} /></label>
+                  <label className="wide-field"><span>{t('sites.keyPem')}</span><Input.TextArea value={site.advanced.certificate.key_pem ?? ''} autoSize={{ minRows: 4, maxRows: 8 }} placeholder={site.advanced.certificate.cert_pem ? t('sites.keyPemUnchangedHint') : undefined} onChange={(value) => updateAdvanced('certificate', { key_pem: value })} /></label>
+                </>
+              )}
               <label className="switch-line"><span>{t('sites.autoRenew')}</span><Switch checked={site.advanced.certificate.auto_renew} onChange={(value) => updateAdvanced('certificate', { auto_renew: value })} /></label>
               <label className="switch-line"><span>{t('sites.forceHttps')}</span><Switch checked={site.advanced.certificate.force_https} onChange={(value) => updateAdvanced('certificate', { force_https: value })} /></label>
               <label className="switch-line"><span>{t('sites.hsts')}</span><Switch checked={site.advanced.certificate.hsts} onChange={(value) => updateAdvanced('certificate', { hsts: value })} /></label>
@@ -338,6 +346,18 @@ export default function SiteDetailPage() {
                   <Select.Option value="1.3">TLS 1.3</Select.Option>
                 </Select>
               </label>
+              {(site.advanced.certificate.acme.last_status || site.advanced.certificate.acme.expires_at) && (
+                <div className="wide-field site-acme-status">
+                  {site.advanced.certificate.acme.last_status && (
+                    <Tag color={site.advanced.certificate.acme.last_status === 'succeeded' ? 'green' : 'orange'}>
+                      {t('sites.acmeLastStatus')}: {site.advanced.certificate.acme.last_status}
+                    </Tag>
+                  )}
+                  {site.advanced.certificate.acme.expires_at && (
+                    <Tag>{t('sites.acmeExpires')}: {new Date(site.advanced.certificate.acme.expires_at).toLocaleString()}</Tag>
+                  )}
+                </div>
+              )}
             </div>
             <ACMEWizard
               site={site}
@@ -368,6 +388,16 @@ export default function SiteDetailPage() {
               </header>
               <div className="site-detail-grid">
               <label className="switch-line"><span>{t('sites.wafEnabled')}</span><Switch checked={site.waf_enabled} onChange={(value) => updateField('waf_enabled', value)} /></label>
+              <label className="switch-line">
+                <span>{t('sites.accessLogEnabled')}</span>
+                <Switch
+                  checked={site.advanced.access_log_enabled !== false}
+                  onChange={(value) => setSite((current) => (current
+                    ? { ...current, advanced: { ...current.advanced, access_log_enabled: value } }
+                    : current))}
+                />
+              </label>
+              <em className="site-field-hint site-field-hint-wide">{t('sites.accessLogEnabledHint')}</em>
               <label>
                 <span>{t('sites.wafMode')}</span>
                 <Select value={site.waf_mode} onChange={(value) => updateField('waf_mode', value as string)}>

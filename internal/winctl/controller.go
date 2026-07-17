@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cli"
+	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 )
 
 // Options configures the local controller.
@@ -80,6 +81,16 @@ func New(opts Options) (*Controller, error) {
 	}
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return nil, fmt.Errorf("controller listen address must be loopback, got %q", opts.Listen)
+	}
+	// Absolute paths so Start Menu / service launches do not depend on CWD.
+	if abs, err := filepath.Abs(opts.ConfigPath); err == nil {
+		opts.ConfigPath = abs
+	}
+	if abs, err := filepath.Abs(opts.DataDir); err == nil {
+		opts.DataDir = abs
+	}
+	if abs, err := filepath.Abs(opts.Binary); err == nil {
+		opts.Binary = abs
 	}
 	// Align CLI status/stop helpers with the same config/data dirs the GUI uses.
 	cli.ConfigurePaths(opts.ConfigPath, opts.DataDir)
@@ -147,6 +158,7 @@ func (c *Controller) Restart() error {
 
 // Paths returns important filesystem locations for the UI.
 func (c *Controller) Paths() map[string]string {
+	info := version.Current()
 	return map[string]string{
 		"binary":     c.opts.Binary,
 		"config":     c.opts.ConfigPath,
@@ -157,6 +169,10 @@ func (c *Controller) Paths() map[string]string {
 		"autostart":  strconv.FormatBool(IsAutostartEnabled()),
 		"goos":       runtime.GOOS,
 		"goarch":     runtime.GOARCH,
+		"version":    info.Version,
+		"channel":    info.Channel,
+		"edition":    info.Edition,
+		"platform":   info.Platform,
 	}
 }
 

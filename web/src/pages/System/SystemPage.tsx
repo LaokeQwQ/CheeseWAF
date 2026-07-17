@@ -36,7 +36,9 @@ export default function SystemPage() {
   const queryClient = useQueryClient();
   const theme = useAppStore((state) => state.theme);
   const language = useAppStore((state) => state.language);
+  const aiAssistantFabVisible = useAppStore((state) => state.aiAssistantFabVisible);
   const setTheme = useAppStore((state) => state.setTheme);
+  const setAiAssistantFabVisible = useAppStore((state) => state.setAiAssistantFabVisible);
   const setLanguage = useAppStore((state) => state.setLanguage);
   const [system, setSystem] = useState<SystemConfig>(fallbackSystem);
   const [apiTokenDraft, setAPITokenDraft] = useState({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
@@ -261,6 +263,10 @@ export default function SystemPage() {
                         <Select.Option value="zh-CN">中文</Select.Option>
                         <Select.Option value="en-US">English</Select.Option>
                       </Select>
+                    </label>
+                    <label className="switch-line">
+                      <span>{t('system.showAiAssistantFab')}</span>
+                      <Switch checked={aiAssistantFabVisible} onChange={setAiAssistantFabVisible} />
                     </label>
                     <label><span>HTTP</span><Input value={system.server.listen} onChange={(listen) => patchSystem({ server: { ...system.server, listen } })} /></label>
                     <label><span>HTTPS</span><Input value={system.server.listen_tls} onChange={(listen_tls) => patchSystem({ server: { ...system.server, listen_tls } })} /></label>

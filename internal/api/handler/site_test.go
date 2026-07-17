@@ -425,6 +425,51 @@ func TestUpdateSiteNormalizesDefaultsBeforePersisting(t *testing.T) {
 	}
 }
 
+func TestUpdateSitePreservesRedactedKeyAndACMEEnv(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	site.Advanced.Certificate.Mode = "inline"
+	site.Advanced.Certificate.CertPEM = "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----"
+	site.Advanced.Certificate.KeyPEM = "-----BEGIN PRIVATE KEY-----\nsite-key-secret\n-----END PRIVATE KEY-----"
+	site.Advanced.Certificate.ACME = storage.SiteACMEConfig{
+		ProviderID: "cf",
+		DNSAPI:     "dns_cf",
+		Env:        map[string]string{"CF_TOKEN": "site-acme-secret"},
+		Domains:    []string{"example.test"},
+	}
+	if err := store.UpdateSite(context.Background(), &site); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	// Client re-sends redacted view (empty key + empty env values).
+	payload := site
+	payload.Name = "preserved-name"
+	payload.Advanced.Certificate.KeyPEM = ""
+	payload.Advanced.Certificate.ACME.Env = map[string]string{"CF_TOKEN": ""}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	router := chi.NewRouter()
+	router.Put("/sites/{id}", handler.UpdateSite)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/sites/"+site.ID, bytes.NewReader(raw)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update site code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, err := store.GetSite(context.Background(), site.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("get site: %v", err)
+	}
+	if stored.Name != "preserved-name" {
+		t.Fatalf("name not updated: %q", stored.Name)
+	}
+	if stored.Advanced.Certificate.KeyPEM != site.Advanced.Certificate.KeyPEM {
+		t.Fatalf("key pem wiped: %q", stored.Advanced.Certificate.KeyPEM)
+	}
+	if stored.Advanced.Certificate.ACME.Env["CF_TOKEN"] != "site-acme-secret" {
+		t.Fatalf("acme env wiped: %+v", stored.Advanced.Certificate.ACME.Env)
+	}
+}
+
 func TestSiteResponsesRedactInlinePrivateKeyAndACMEEnv(t *testing.T) {
 	handler, store, site := newSiteTestHandler(t)
 	site.Advanced.Certificate.Mode = "inline"

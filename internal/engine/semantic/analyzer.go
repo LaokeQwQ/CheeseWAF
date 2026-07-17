@@ -1833,7 +1833,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	if strings.Contains(lower, "/usr/bin/") || strings.Contains(lower, "/bin/") || strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}") {
 		reasons["semantics: fully qualified executable or shell interpreter"] = true
 	}
-	// $SHELL -c / ${SHELL} -c is a classic env-based interpreter invocation (CRS-style).
+	// $SHELL -c / ${SHELL} -c is a classic env-based interpreter invocation (CRS-compatible).
 	if (strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}")) &&
 		(strings.Contains(lower, " -c ") || strings.Contains(lower, " -c\"") || strings.Contains(lower, " -c'")) {
 		reasons["semantics: interpreter inline command execution"] = true
@@ -1930,7 +1930,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		reasons["syntax: traversal or wrapper path expression"] = true
 		reasons["semantics: stream wrapper local file access"] = true
 	}
-	// data:// wrappers used for inline PHP include/RFI-style LFI.
+	// data:// wrappers used for inline PHP include / remote-file LFI.
 	if strings.Contains(lower, "data://") && (strings.Contains(lower, "base64") || strings.Contains(lower, "php") || strings.Contains(lower, "text/plain")) {
 		reasons["syntax: traversal or wrapper path expression"] = true
 		reasons["semantics: stream wrapper local file access"] = true
@@ -1966,7 +1966,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	return hit(candidate, "lfi", engine.SeverityHigh, 0.85+confidenceBonus(reasons), reasons), true
 }
 
-// lfiRemoteIncludeContext is true when a file/include-style parameter carries a remote URL.
+// lfiRemoteIncludeContext is true when a file or include parameter carries a remote URL.
 // Excludes documentation fields and pure fetch/url sinks (handled by SSRF).
 func lfiRemoteIncludeContext(name, lower string) bool {
 	if !(strings.Contains(lower, "http://") || strings.Contains(lower, "https://") || strings.Contains(lower, "ftp://")) {

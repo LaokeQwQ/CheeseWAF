@@ -601,7 +601,7 @@ func dialStorageEndpoint(ctx context.Context, address, purpose string, allowPriv
 	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
-		// Allow host-only redis-style addresses by defaulting to 6379? No — require host:port.
+		// Host-only Redis addresses (no port) are rejected; require host:port.
 		return fmt.Errorf("%s must be host:port: %w", purpose, err)
 	}
 	host = strings.Trim(host, "[]")

@@ -3,9 +3,11 @@ import { Button, Input, Message, Switch, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, ChevronDown, ChevronUp, Send, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { APIRequestError, approveAIApproval, askAIAssistantStream, continueAIApprovalStream, fetchAIApprovals, fetchAITools, fetchLogs, fetchMonitorSummary, rejectAIApproval } from '../../api/client';
+import { APIRequestError, approveAIApproval, askAIAssistantStream, continueAIApprovalStream, fetchAIApprovals, fetchAITools, rejectAIApproval } from '../../api/client';
 import type { AIApprovalRequest, AIAssistantReply, AIAssistantTraceEvent, AIToolExecution } from '../../types/api';
+import { useAppStore } from '../../stores';
 import SafeMarkdown, { safeAssistantDisplayText } from '../SafeMarkdown';
+import AIAssistantFab from './AIAssistantFab';
 import './AIAssistant.css';
 
 type AssistantMessage = {
@@ -48,6 +50,7 @@ type AIAssistantProps = {
 
 export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
   const { t, i18n } = useTranslation();
+  const fabVisible = useAppStore((state) => state.aiAssistantFabVisible);
   const [open, setOpen] = useState(initialOpen);
   const [renderPanel, setRenderPanel] = useState(initialOpen);
   const [draft, setDraft] = useState('');
@@ -68,25 +71,27 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
   const forceScrollRef = useRef(false);
   const assistantActive = open || renderPanel;
   const { data: tools } = useQuery({ queryKey: ['assistant-tools'], queryFn: fetchAITools, enabled: assistantActive, retry: false });
-  const { data: recoverableApprovals } = useQuery({
+  const hasActiveApprovals = useMemo(
+    () => thread.some((message) => message.tools?.some((tool) => {
+      const status = tool.approval?.status;
+      return status === 'pending' || status === 'approved' || status === 'executing';
+    })),
+    [thread],
+  );
+  const { data: recoverableApprovals, refetch: refetchApprovals } = useQuery({
     queryKey: ['assistant-approvals'],
     queryFn: () => fetchAIApprovals(),
     enabled: assistantActive,
     retry: false,
-    refetchInterval: assistantActive ? 5_000 : false,
+    // Poll only while an approval is in-flight; otherwise refresh on open only.
+    refetchInterval: assistantActive && hasActiveApprovals ? 5_000 : false,
   });
-  const { data: monitor } = useQuery({ queryKey: ['assistant-monitor'], queryFn: fetchMonitorSummary, enabled: assistantActive, refetchInterval: assistantActive ? 10_000 : false, retry: false });
-  const { data: logs } = useQuery({ queryKey: ['assistant-logs'], queryFn: () => fetchLogs({ limit: 5 }), enabled: assistantActive, refetchInterval: assistantActive ? 10_000 : false, retry: false });
-  const liveContext = useMemo(() => {
-    const snapshot = monitor?.snapshot;
-    const events = (logs?.items ?? []).filter((entry) => entry.category || ['block', 'challenge', 'log'].includes(entry.action));
-    return {
-      requests: snapshot?.requests ?? 0,
-      blocked: snapshot?.blocked ?? 0,
-      latest: events[0],
-      events: events.length,
-    };
-  }, [logs?.items, monitor?.snapshot]);
+  const liveContext = useMemo(() => ({
+    requests: 0,
+    blocked: 0,
+    latest: undefined as undefined,
+    events: 0,
+  }), []);
 
   const recordPendingTrace = (event: AIAssistantTraceEvent) => {
     if (isProviderFirstTraceEvent(event.type) && pendingRef.current && !pendingRef.current.providerStartedAt) {
@@ -208,6 +213,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
       Message.success(t('assistant.toolExecuted'));
       appendAssistantReply(reply, { approvalID: execution.approval?.id });
       setContinuingApprovalID(null);
+      void refetchApprovals();
     },
     onError: (error, { execution }) => {
       const reconciled = error instanceof APIRequestError ? error.approval : undefined;
@@ -224,10 +230,15 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
         }
         clearPendingState();
       } else {
+        // Roll back optimistic "executing" so Continue/Reject stay usable.
+        if (execution.approval?.id) {
+          setThread((current) => markApprovalStatus(current, execution.approval?.id, 'approved'));
+        }
         Message.warning(error.message);
         appendAssistantError(error);
       }
       setContinuingApprovalID(null);
+      void refetchApprovals();
     },
   });
   const approveToolMutation = useMutation({
@@ -240,8 +251,12 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
     onSuccess: (approval) => {
       Message.success(t('assistant.approvalReady'));
       setThread((current) => markApprovalStatus(current, approval.id, approval.status));
+      void refetchApprovals();
     },
-    onError: (error) => Message.error(error.message),
+    onError: (error) => {
+      const forbidden = error instanceof APIRequestError && (error.status === 403 || error.code === 'AI_APPROVAL_FORBIDDEN');
+      Message.error(forbidden ? t('assistant.needsAnotherApprover') : error.message);
+    },
   });
   const rejectToolMutation = useMutation({
     mutationFn: async (execution: AIToolExecution) => {
@@ -262,6 +277,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
           createdAt: new Date().toISOString(),
         },
       ]);
+      void refetchApprovals();
     },
     onError: (error) => Message.error(error.message),
   });
@@ -281,6 +297,8 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
 
   function closeAssistant() {
     clearCloseTimer();
+    // Cancel in-flight streams when the panel closes to free the server and UI.
+    abortRef.current?.abort();
     setOpen(false);
     const closeDelay = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160;
     closeTimerRef.current = window.setTimeout(() => {
@@ -449,23 +467,21 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
     )));
   }
 
+  if (!fabVisible) {
+    return null;
+  }
+
   return (
-    <>
-      <Button
-        aria-label={t('assistant.title')}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        aria-controls={renderPanel ? 'cheesewaf-ai-assistant-panel' : undefined}
-        className={[
-          'ai-fab',
-          renderPanel ? 'ai-fab-open' : '',
-          assistantBusy ? 'ai-fab-working' : '',
-        ].filter(Boolean).join(' ')}
-        type="primary"
-        shape="circle"
-        icon={<Bot size={36} strokeWidth={1.8} />}
-        onClick={toggleAssistant}
-      />
+    <AIAssistantFab
+      label={t('assistant.title')}
+      expanded={open}
+      controls={renderPanel ? 'cheesewaf-ai-assistant-panel' : undefined}
+      className={[
+        renderPanel ? 'ai-fab-open' : '',
+        assistantBusy ? 'ai-fab-working' : '',
+      ].filter(Boolean).join(' ')}
+      onActivate={toggleAssistant}
+    >
       {renderPanel && (
         <section
           id="cheesewaf-ai-assistant-panel"
@@ -669,6 +685,9 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                                 <div className="assistant-approval-head">
                                   <strong>{tool.approval.status === 'approved' ? t('assistant.approvalReady') : t('assistant.approvalRequired')}</strong>
                                   <span>{tool.approval.status === 'approved' ? t('assistant.approvalReadyHint', { tool: toolName }) : t('assistant.approvalTool', { tool: toolName })}</span>
+                                  {tool.approval.status === 'pending' && (
+                                    <small className="assistant-approval-dual-hint">{t('assistant.needsAnotherApprover')}</small>
+                                  )}
                                 </div>
                                 <div className="assistant-approval-actions">
                                   <Button
@@ -725,7 +744,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
           </div>
         </section>
       )}
-    </>
+    </AIAssistantFab>
   );
 }
 

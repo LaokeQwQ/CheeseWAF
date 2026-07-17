@@ -26,6 +26,8 @@ export type SiteAdvanced = {
   response: SiteResponseConfig;
   rewrite: SiteRewriteRule[];
   access_control: SiteAccessControl;
+  /** When true (default), write normal pass/cache/redirect access logs. Security events always log. */
+  access_log_enabled?: boolean;
 };
 
 export type BudgetExhaustedPolicy = 'auto' | 'open' | 'observe' | 'closed' | '';

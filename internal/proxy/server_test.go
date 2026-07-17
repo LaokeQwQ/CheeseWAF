@@ -1236,6 +1236,36 @@ func TestServerUsesInjectedClockForLogTimestamp(t *testing.T) {
 	}
 }
 
+func TestWriteLogSkipsPlainAccessWhenSiteDisabled(t *testing.T) {
+	cfg := config.Default()
+	if len(cfg.Sites) == 0 {
+		t.Fatal("default config needs a site")
+	}
+	off := false
+	cfg.Sites[0].WAF.AccessLogEnabled = &off
+	sink := &captureSink{}
+	server, err := NewServerWithClock(&cfg, engine.NewPipeline(), sink, proxyTestClock{now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/health", nil)
+	started := time.Now()
+	ctx := &engine.RequestContext{
+		Request: req, TraceID: "access-off", SiteID: cfg.Sites[0].ID, ClientIP: "203.0.113.20", Metadata: map[string]any{},
+	}
+	server.writeLog(context.Background(), ctx, "pass", http.StatusOK, started, nil)
+	if len(sink.entries) != 0 {
+		t.Fatalf("expected plain access log dropped, got %d", len(sink.entries))
+	}
+	// Security blocks still write.
+	server.writeLog(context.Background(), ctx, "block", http.StatusForbidden, started, &storage.LogEntry{
+		Category: "sqli", Severity: "high", DetectorID: "sql", Message: "blocked",
+	})
+	if len(sink.entries) != 1 || sink.entries[0].Action != "block" {
+		t.Fatalf("expected block log kept, got %+v", sink.entries)
+	}
+}
+
 type captureSink struct {
 	entries []*storage.LogEntry
 }

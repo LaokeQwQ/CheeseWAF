@@ -81,7 +81,7 @@ func (d *XSSDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// libinjection-style tokenization (fast, pure Go)
+		// Deep tokenization first (fast, pure Go; libinjection-compatible)
 		if engine.XSSLibinjectionFingerprint(candidate) {
 			return &engine.DetectionResult{
 				Detected: true, DetectorID: d.ID(), Category: "xss", Severity: engine.SeverityHigh, Action: actionForMode(d.mode),

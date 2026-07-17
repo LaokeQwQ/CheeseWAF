@@ -365,7 +365,7 @@ func validateReloadCommand(value string) error {
 		return fmt.Errorf("reload_command must not contain shell metacharacters")
 	}
 	// Prefer absolute commands; relative names are easy to hijack via PATH.
-	// Accept Unix-style absolute paths even when the control plane runs on Windows
+	// Accept Unix absolute paths even when the control plane runs on Windows
 	// (acme.sh / reload usually executes on a Linux host).
 	fields := strings.Fields(value)
 	if len(fields) == 0 {

@@ -95,6 +95,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				DynamicGuard: site.WAF.AccessControl.DynamicGuard,
 				TrustedCIDRs: cloneStrings(site.WAF.AccessControl.TrustedCIDRs),
 			},
+			AccessLogEnabled: cloneBoolPtr(site.WAF.AccessLogEnabled),
 		},
 	}
 }
@@ -144,8 +145,9 @@ func SiteToConfig(site Site) config.SiteConfig {
 			},
 		},
 		WAF: config.WAFConfig{
-			Enabled: site.WAFEnabled,
-			Mode:    mode,
+			Enabled:          site.WAFEnabled,
+			Mode:             mode,
+			AccessLogEnabled: cloneBoolPtr(site.Advanced.AccessLogEnabled),
 			SemanticEngines: config.SemanticEngineSwitches{
 				SQL:   site.Advanced.Protection.SemanticSQL,
 				XSS:   site.Advanced.Protection.SemanticXSS,
@@ -247,4 +249,12 @@ func parseDuration(value string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }

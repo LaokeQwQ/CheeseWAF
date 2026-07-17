@@ -54,6 +54,45 @@ func TestLocalOnlyHandlerAllowsLoopback(t *testing.T) {
 	}
 }
 
+func TestLocalOnlyRejectsNonLoopbackOriginOnPOST(t *testing.T) {
+	h := withLocalOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/start", nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestLocalOnlyAllowsLoopbackOriginOnPOST(t *testing.T) {
+	h := withLocalOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/start", nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+	req.Header.Set("Origin", "http://127.0.0.1:17943")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+}
+
+func TestPathsIncludeVersion(t *testing.T) {
+	c, err := New(Options{Binary: "cheesewaf", ConfigPath: "c.yaml", DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := c.Paths()
+	if paths["version"] == "" {
+		t.Fatalf("missing version in paths: %+v", paths)
+	}
+}
+
 func TestStatusHandlerJSON(t *testing.T) {
 	c, err := New(Options{Binary: "cheesewaf", ConfigPath: "c.yaml", DataDir: t.TempDir(), Listen: "127.0.0.1:17944"})
 	if err != nil {

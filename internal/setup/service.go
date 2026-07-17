@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
@@ -69,6 +70,8 @@ func MarkComplete(dataDir string) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
+	// Seed CLI language preference from the host locale once at install time.
+	_ = clilang.SaveInstallDefault(dataDir, "")
 	return nil
 }
 

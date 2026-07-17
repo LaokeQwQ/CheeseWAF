@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -61,12 +63,39 @@ func withLocalOnly(next http.Handler) http.Handler {
 			http.Error(w, "loopback only", http.StatusForbidden)
 			return
 		}
+		// Mutating endpoints: reject non-loopback browser origins (CSRF-ish).
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" && !isLoopbackHTTPOrigin(origin) {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
+		}
 		// No secrets in controller UI; still avoid being embedded.
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isLoopbackHTTPOrigin(origin string) bool {
+	// http://127.0.0.1:17943 or http://localhost:17943
+	origin = strings.TrimSpace(origin)
+	if origin == "null" {
+		// Some browsers send Origin: null for sandboxed contexts — reject mutations.
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c *Controller) handleUI(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +178,8 @@ const controlHTML = `<!doctype html>
 :root{--bg:#0f1419;--card:#1a2332;--text:#e7ecf3;--muted:#8b9bb4;--ok:#3dd68c;--bad:#f07178;--btn:#2b6cb0;--border:#2a3548}
 *{box-sizing:border-box}body{margin:0;font-family:Segoe UI,system-ui,sans-serif;background:var(--bg);color:var(--text)}
 main{max-width:720px;margin:32px auto;padding:0 16px}
-h1{font-size:1.35rem;margin:0 0 8px}p{color:var(--muted);margin:0 0 20px;line-height:1.5}
+h1{font-size:1.35rem;margin:0 0 4px}p{color:var(--muted);margin:0 0 16px;line-height:1.5}
+.meta{color:var(--muted);font-size:.9rem;margin-bottom:18px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:14px}
 .row{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
 button{appearance:none;border:0;border-radius:8px;padding:10px 14px;background:var(--btn);color:#fff;font-weight:600;cursor:pointer}
@@ -161,12 +191,14 @@ code,pre{font-family:ui-monospace,Consolas,monospace;font-size:.85rem;color:#cbd
 pre{white-space:pre-wrap;word-break:break-all;margin:8px 0 0}
 .err{color:var(--bad);min-height:1.2em;margin-top:10px}
 label{display:flex;align-items:center;gap:8px;color:var(--muted)}
+.hint{font-size:.85rem;color:var(--muted);margin-top:10px;line-height:1.45}
 </style>
 </head>
 <body>
 <main>
   <h1>CheeseWAF 本地服务控制器</h1>
-  <p>仅绑定本机回环。启动/停止复用 CLI 语义，不是第二套管理后台。复杂配置请打开 Web 控制台或编辑 YAML。</p>
+  <div class="meta" id="version">版本检查中…</div>
+  <p>仅绑定本机回环（loopback）。启动/停止复用 CLI 语义，不是第二套管理后台。复杂配置请打开 Web 控制台或编辑 YAML。</p>
   <div class="card">
     <div>状态：<span id="status" class="badge off">检查中…</span> <span id="pid"></span></div>
     <div class="row">
@@ -177,10 +209,11 @@ label{display:flex;align-items:center;gap:8px;color:var(--muted)}
       <button id="btn-config" class="secondary">打开配置目录</button>
     </div>
     <label style="margin-top:14px"><input type="checkbox" id="autostart"/> 开机自启本控制器</label>
+    <p class="hint">若已通过 NSIS 注册 Windows 服务，也可在「服务」中管理 CheeseWAF；本控制器默认以 CLI 进程方式启停。</p>
     <div class="err" id="err"></div>
   </div>
   <div class="card">
-    <div>路径与监听</div>
+    <div>路径 / 版本 / 监听</div>
     <pre id="paths">—</pre>
   </div>
 </main>
@@ -188,7 +221,7 @@ label{display:flex;align-items:center;gap:8px;color:var(--muted)}
 const $ = (id) => document.getElementById(id);
 const err = (m) => { $('err').textContent = m || ''; };
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
   const body = await res.json().catch(() => ({}));
   if (!res.ok || body.ok === false) throw new Error(body.error || res.statusText);
   return body;
@@ -196,14 +229,17 @@ async function api(path, opts) {
 function paint(data) {
   if (!data) return;
   const st = data.status || {};
+  const paths = data.paths || {};
   const on = !!st.Running;
   const badge = $('status');
   badge.textContent = on ? '运行中' : (st.Stale ? 'PID 陈旧' : '已停止');
   badge.className = 'badge ' + (on ? 'on' : 'off');
   $('pid').textContent = st.PID ? ('pid=' + st.PID) : '';
-  $('paths').textContent = JSON.stringify(data.paths || {}, null, 2);
-  if (data.paths && data.paths.autostart != null) {
-    $('autostart').checked = data.paths.autostart === 'true';
+  const ver = [paths.version, paths.channel, paths.edition].filter(Boolean).join(' · ');
+  $('version').textContent = ver ? ('CheeseWAF ' + ver + (paths.platform ? ' (' + paths.platform + ')' : '')) : 'CheeseWAF';
+  $('paths').textContent = JSON.stringify(paths, null, 2);
+  if (paths.autostart != null) {
+    $('autostart').checked = paths.autostart === 'true';
   }
 }
 async function refresh() {

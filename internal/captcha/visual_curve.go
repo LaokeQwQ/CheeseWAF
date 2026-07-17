@@ -29,7 +29,7 @@ func populateVisualCurveDraw(opts BehaviorOptions, tok *behaviorToken, p *Behavi
 	return nil
 }
 
-// populateVisualCurveSlider issues the V3-style drag-to-align challenge only:
+// populateVisualCurveSlider issues the V3 drag-to-align challenge only:
 // a fixed dashed guide on the background and a solid curve piece that the user
 // translates with a horizontal slider until the two coincide.
 func populateVisualCurveSlider(opts BehaviorOptions, tok *behaviorToken, p *BehaviorPresentation) error {

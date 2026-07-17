@@ -88,6 +88,8 @@ func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "site not found")
 		return
 	}
+	// GET redacts KeyPEM and ACME env values; empty client fields mean "keep existing".
+	preserveSiteSecrets(existing, &site)
 	if err := h.validateCandidateSites(r, func(sites []storage.Site) []storage.Site {
 		for index := range sites {
 			if sites[index].ID == site.ID {

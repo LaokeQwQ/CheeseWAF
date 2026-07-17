@@ -17,7 +17,7 @@
 .sites-table table,
 .sites-table .arco-table-element {
   width: 100%;
-  min-width: 920px;
+  min-width: 760px;
   table-layout: fixed;
 }
 

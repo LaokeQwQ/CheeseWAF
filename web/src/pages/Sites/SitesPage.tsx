@@ -145,27 +145,32 @@ export default function SitesPage() {
     }
     return mode || '-';
   };
-  const createPayload = (): Partial<Site> => ({
+  const createPayload = (): Partial<Site> => {
+    const isAcme = draft.certificateMode === 'acme';
+    const enableSSL = isAcme ? true : draft.enableSSL;
+    return {
     name: draft.name.trim(),
     domains: splitList(draft.domains),
     upstreams: splitList(draft.upstreams),
     listen_port: draft.listenPort,
     loadbalance: draft.loadbalance,
-    enable_ssl: draft.enableSSL,
-    cert_file: draft.enableSSL && draft.certificateMode === 'file' ? draft.certFile.trim() : '',
-    key_file: draft.enableSSL && draft.certificateMode === 'file' ? draft.keyFile.trim() : '',
+    enable_ssl: enableSSL,
+    cert_file: enableSSL && draft.certificateMode === 'file' ? draft.certFile.trim() : '',
+    key_file: enableSSL && draft.certificateMode === 'file' ? draft.keyFile.trim() : '',
     waf_enabled: draft.wafEnabled,
     waf_mode: draft.wafMode,
     enabled: draft.enabled,
     advanced: {
       ...defaultSiteAdvanced,
+      access_log_enabled: true,
       certificate: {
         ...defaultSiteAdvanced.certificate,
         mode: draft.certificateMode,
-        cert_pem: draft.enableSSL && draft.certificateMode === 'inline' ? draft.certPEM.trim() : '',
-        key_pem: draft.enableSSL && draft.certificateMode === 'inline' ? draft.keyPEM.trim() : '',
-        force_https: draft.forceHTTPS,
-        hsts: draft.hsts,
+        cert_pem: enableSSL && draft.certificateMode === 'inline' ? draft.certPEM.trim() : '',
+        key_pem: enableSSL && draft.certificateMode === 'inline' ? draft.keyPEM.trim() : '',
+        auto_renew: isAcme ? true : defaultSiteAdvanced.certificate.auto_renew,
+        force_https: isAcme ? true : draft.forceHTTPS,
+        hsts: isAcme ? true : draft.hsts,
         min_tls_version: draft.minTLSVersion,
       },
       origin: {
@@ -189,7 +194,8 @@ export default function SitesPage() {
         apisec: draft.apisec,
       },
     },
-  });
+  };
+  };
 
   return (
     <section className="page-surface">
@@ -217,7 +223,7 @@ export default function SitesPage() {
             loading={isLoading}
             data={rows}
             className="sites-table"
-            scroll={{ x: 920 }}
+            scroll={{ x: 760 }}
             noDataElement={<Empty description={t('common.noData')} />}
             columns={[
               {

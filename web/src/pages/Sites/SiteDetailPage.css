@@ -2,6 +2,26 @@
   margin: 0;
 }
 
+.site-field-hint {
+  display: block;
+  margin: -4px 0 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  font-style: normal;
+}
+
+.site-field-hint-wide {
+  grid-column: 1 / -1;
+}
+
+.site-acme-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .site-detail-page .page-header > .site-title-stack {
   display: flex;
   align-items: flex-start;

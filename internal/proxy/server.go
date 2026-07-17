@@ -709,14 +709,7 @@ func (s *Server) proxyError(w http.ResponseWriter, r *http.Request, site config.
 	if cause != nil {
 		reqCtx.Metadata["proxy_error_detail"] = cause.Error()
 	}
-	s.renderer.RenderRequest(w, r, status, blockpage.Data{
-		EventID:    reqCtx.TraceID,
-		TraceID:    reqCtx.TraceID,
-		AttackType: category,
-		ClientIP:   reqCtx.ClientIP,
-		Message:    message,
-		Timestamp:  s.wallNow().UTC(),
-	})
+	s.renderer.RenderRequest(w, r, status, s.blockPageData(reqCtx, category, message))
 	s.writeLog(r.Context(), reqCtx, "error", status, start, &storage.LogEntry{
 		Category:   category,
 		Severity:   "medium",
@@ -731,13 +724,7 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 		return
 	}
 	reqCtx.Metadata["detection"] = result
-	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
-		TraceID:    reqCtx.TraceID,
-		AttackType: result.Category,
-		ClientIP:   reqCtx.ClientIP,
-		Message:    result.Message,
-		Timestamp:  s.wallNow().UTC(),
-	})
+	s.renderer.RenderRequest(w, reqCtx.Request, status, s.blockPageData(reqCtx, result.Category, result.Message))
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category:   result.Category,
 		Severity:   result.Severity.String(),
@@ -753,13 +740,7 @@ func (s *Server) blockDetection(w http.ResponseWriter, reqCtx *engine.RequestCon
 }
 
 func (s *Server) blockThreatIntel(w http.ResponseWriter, reqCtx *engine.RequestContext, decision ip.ThreatDecision, status int, start time.Time) {
-	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
-		TraceID:    reqCtx.TraceID,
-		AttackType: "threat_intel",
-		ClientIP:   reqCtx.ClientIP,
-		Message:    decision.Message,
-		Timestamp:  s.wallNow().UTC(),
-	})
+	s.renderer.RenderRequest(w, reqCtx.Request, status, s.blockPageData(reqCtx, "threat_intel", decision.Message))
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category:   "threat_intel",
 		Severity:   decision.Severity,
@@ -1264,17 +1245,39 @@ func parseSeverity(value string) engine.Severity {
 }
 
 func (s *Server) block(w http.ResponseWriter, reqCtx *engine.RequestContext, category, message string, status int, start time.Time) {
-	s.renderer.RenderRequest(w, reqCtx.Request, status, blockpage.Data{
-		TraceID:    reqCtx.TraceID,
-		AttackType: category,
-		ClientIP:   reqCtx.ClientIP,
-		Message:    message,
-		Timestamp:  s.wallNow().UTC(),
-	})
+	s.renderer.RenderRequest(w, reqCtx.Request, status, s.blockPageData(reqCtx, category, message))
 	s.writeLog(reqCtx.Request.Context(), reqCtx, "block", status, start, &storage.LogEntry{
 		Category: category,
 		Message:  message,
 	})
+}
+
+func (s *Server) blockPageData(reqCtx *engine.RequestContext, attackType, message string) blockpage.Data {
+	data := blockpage.Data{
+		Timestamp: s.wallNow().UTC(),
+		Message:   message,
+	}
+	if reqCtx != nil {
+		data.EventID = reqCtx.TraceID
+		data.TraceID = reqCtx.TraceID
+		data.ClientIP = reqCtx.ClientIP
+		data.SiteID = reqCtx.SiteID
+	}
+	data.AttackType = attackType
+	if s != nil && s.config != nil && data.SiteID != "" {
+		for i := range s.config.Sites {
+			site := s.config.Sites[i]
+			if site.ID != data.SiteID {
+				continue
+			}
+			data.SiteName = strings.TrimSpace(site.Name)
+			if data.SiteName == "" {
+				data.SiteName = site.ID
+			}
+			break
+		}
+	}
+	return data
 }
 
 func (s *Server) challenge(w http.ResponseWriter, r *http.Request, reqCtx *engine.RequestContext, category, message string, start time.Time) {
@@ -1384,7 +1387,41 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		entry.DetectorID = "response.inspector"
 		entry.Action = "log"
 	}
+	if isPlainAccessLog(entry) && !s.siteAccessLogEnabled(reqCtx.SiteID) {
+		return
+	}
 	_ = s.logSink.Write(ctx, entry)
+}
+
+// isPlainAccessLog is true for normal traffic without security signal.
+// Security/block/challenge/monitor and detection-bearing "log" entries always persist.
+func isPlainAccessLog(entry *storage.LogEntry) bool {
+	if entry == nil {
+		return false
+	}
+	action := strings.ToLower(strings.TrimSpace(entry.Action))
+	switch action {
+	case "pass", "cache_hit", "redirect":
+		// keep writing if this pass still carries detection/threat signals
+		return entry.Category == "" && entry.DetectorID == "" && entry.Severity == "" && entry.Message == ""
+	default:
+		return false
+	}
+}
+
+func (s *Server) siteAccessLogEnabled(siteID string) bool {
+	if s == nil || s.config == nil {
+		return true
+	}
+	siteID = strings.TrimSpace(siteID)
+	for i := range s.config.Sites {
+		site := s.config.Sites[i]
+		if site.ID == siteID || (siteID == "" && i == 0) {
+			return site.WAF.AccessLogOn()
+		}
+	}
+	// Unknown site id: default on so we do not silently drop security-adjacent traffic logs.
+	return true
 }
 
 func ListenAndServe(ctx context.Context, srv *http.Server) error {

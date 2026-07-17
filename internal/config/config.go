@@ -328,6 +328,10 @@ type UpstreamConfig struct {
 type WAFConfig struct {
 	Enabled          bool                     `yaml:"enabled" json:"enabled"`
 	Mode             string                   `yaml:"mode" json:"mode"`
+	// AccessLogEnabled controls whether normal pass/cache/redirect traffic is written.
+	// Security events (block/challenge/log with detections) are always recorded.
+	// Nil means default on (preserve historical full-access logging).
+	AccessLogEnabled *bool                    `yaml:"access_log_enabled,omitempty" json:"access_log_enabled,omitempty"`
 	SemanticEngines  SemanticEngineSwitches   `yaml:"semantic_engines" json:"semantic_engines"`
 	SemanticPolicy   SemanticPolicyConfig     `yaml:"semantic_policy" json:"semantic_policy"`
 	ProtectionPolicy ProtectionPolicyConfig   `yaml:"protection_policy" json:"protection_policy"`
@@ -337,6 +341,14 @@ type WAFConfig struct {
 	Rewrite          []RewriteRuleConfig      `yaml:"rewrite" json:"rewrite"`
 	HealthCheck      HealthCheckConfig        `yaml:"health_check" json:"health_check"`
 	AccessControl    SiteAccessControlConfig  `yaml:"access_control" json:"access_control"`
+}
+
+// AccessLogOn reports whether plain access logs should be written for this site.
+func (w WAFConfig) AccessLogOn() bool {
+	if w.AccessLogEnabled == nil {
+		return true
+	}
+	return *w.AccessLogEnabled
 }
 
 // SemanticPolicyConfig holds commercial operational knobs for the staged analyzer.
