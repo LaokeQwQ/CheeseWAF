@@ -1,12 +1,15 @@
+# CheeseWAF GoReleaser Configuration
+# ====================================
+# Builds both cheesewaf (WAF server) and waf-cli (management tool)
+# from the same binary using BusyBox pattern.
+
 version: 2
 
 project_name: cheesewaf
 
 before:
   hooks:
-    - go mod download
-    - bash scripts/ci/build-web.sh
-    - bash scripts/ci/generate-release-metadata.sh tmp/goreleaser-metadata {{ .Version }} release goreleaser {{ .Commit }} {{ .Date }}
+    - go mod tidy
 
 builds:
   - id: cheesewaf
@@ -23,41 +26,48 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Version={{.Version}}
-      - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Commit={{.Commit}}
-      - -X github.com/LaokeQwQ/CheeseWAF/internal/version.BuildTime={{.Date}}
-      - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Channel=release
+      - -X 'github.com/LaokeQwQ/CheeseWAF/internal/cli.appVersion={{.Version}}'
+      - -X 'github.com/LaokeQwQ/CheeseWAF/internal/cli.buildTime={{.Date}}'
+    flags:
+      - -trimpath
+
+  - id: waf-cli
+    main: ./cmd/cheesewaf/
+    binary: waf-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X 'github.com/LaokeQwQ/CheeseWAF/internal/cli.appVersion={{.Version}}'
+      - -X 'github.com/LaokeQwQ/CheeseWAF/internal/cli.buildTime={{.Date}}'
     flags:
       - -trimpath
 
 archives:
   - id: cheesewaf-archive
-    ids:
+    builds:
       - cheesewaf
-    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
-    formats:
-      - tar.gz
+      - waf-cli
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
     files:
-      - src: scripts/ci/waf-cli
-        dst: waf-cli
-        info:
-          mode: 0755
-      - src: scripts/ci/waf-cli.cmd
-        dst: waf-cli.cmd
-      - src: tmp/goreleaser-metadata/VERSION
-        dst: VERSION
-      - src: tmp/goreleaser-metadata/release.json
-        dst: release.json
-      - web/dist/index.html
-      - web/dist/*.png
-      - web/dist/**/*
       - configs/*
+      - deploy/**/*
+      - docs/**/*
       - README.md
-      - README_CN.md
       - LICENSE
 
 checksum:
-  name_template: SHA256SUMS
+  name_template: "checksums.txt"
 
 changelog:
   sort: asc

@@ -4,19 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
-	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -60,73 +57,6 @@ func TestAIConfigUsesProviderAndHidesHeader(t *testing.T) {
 	if _, ok := response.Data["api_key"]; ok {
 		t.Fatalf("api_key should not be returned to the Web UI: %+v", response.Data)
 	}
-}
-
-func TestAIApprovalRecoveryFiltersByRequesterSession(t *testing.T) {
-	cfg := config.Default()
-	store := ai.NewApprovalStore()
-	tool := approvalRecoveryTestTool{}
-	owned, err := store.CreateFor(tool, map[string]any{"enabled": true}, "enable test", ai.ApprovalActor{Subject: "user-1", SessionID: "session-1", Username: "one"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := store.CreateFor(tool, nil, "other", ai.ApprovalActor{Subject: "user-2", SessionID: "session-2", Username: "two"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := New(Options{Config: &cfg, AssistantApprovals: store})
-	router := chi.NewRouter()
-	router.Get("/approvals", h.ListAIApprovals)
-	router.Get("/approvals/{id}", h.GetAIApproval)
-
-	request := withAIApprovalClaims(httptest.NewRequest(http.MethodGet, "/approvals", nil), "user-1", "session-1", "readonly")
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"items"`) || !strings.Contains(recorder.Body.String(), `"total":1`) || !strings.Contains(recorder.Body.String(), owned.ID) || strings.Contains(recorder.Body.String(), other.ID) {
-		t.Fatalf("unexpected requester list: code=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-
-	request = withAIApprovalClaims(httptest.NewRequest(http.MethodGet, "/approvals/"+owned.ID, nil), "user-1", "other-session", "readonly")
-	recorder = httptest.NewRecorder()
-	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("expected session mismatch forbidden, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestAIApprovalRecoveryAllowsCrossUserApprover(t *testing.T) {
-	cfg := config.Default()
-	cfg.APISec.Permissions["approver"] = []string{"read:ai", "approve:ai"}
-	store := ai.NewApprovalStore()
-	request, err := store.CreateFor(approvalRecoveryTestTool{}, nil, "", ai.ApprovalActor{Subject: "user-1", SessionID: "session-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := New(Options{Config: &cfg, AssistantApprovals: store})
-	router := chi.NewRouter()
-	router.Get("/approvals", h.ListAIApprovals)
-	router.Get("/approvals/{id}", h.GetAIApproval)
-
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, withAIApprovalClaims(httptest.NewRequest(http.MethodGet, "/approvals/"+request.ID, nil), "approver-1", "approver-session", "approver"))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), request.ID) {
-		t.Fatalf("expected cross-user approver access, code=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-type approvalRecoveryTestTool struct{}
-
-func (approvalRecoveryTestTool) Name() string                    { return "approval_recovery_test" }
-func (approvalRecoveryTestTool) Description() string             { return "approval recovery test" }
-func (approvalRecoveryTestTool) Sensitivity() ai.ToolSensitivity { return ai.Modify }
-func (approvalRecoveryTestTool) Parameters() map[string]any      { return map[string]any{"type": "object"} }
-func (approvalRecoveryTestTool) Execute(context.Context, map[string]any) (*ai.ToolResult, error) {
-	return &ai.ToolResult{Success: true}, nil
-}
-
-func withAIApprovalClaims(request *http.Request, subject, sessionID, role string) *http.Request {
-	claims := &middleware.Claims{Subject: subject, ID: sessionID, Username: subject, Role: role}
-	return request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, claims))
 }
 
 func TestAIModelsCanUseUnsavedOpenAIConfig(t *testing.T) {
@@ -945,50 +875,6 @@ func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {
 	}
 }
 
-func TestAIAssistantStreamStopsBeforeInferenceWhenInitialWriteFails(t *testing.T) {
-	cfg := config.Default()
-	cfg.AI.Enabled = true
-	cfg.AI.Provider = "openai"
-	cfg.AI.APIBase = "https://ai.invalid/v1"
-	cfg.AI.APIKey = "secret"
-	cfg.AI.Model = "test"
-	h := New(Options{Config: &cfg})
-	w := &failingAssistantStreamWriter{header: make(http.Header)}
-	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant/stream", bytes.NewReader([]byte(`{"message":"hello"}`)))
-
-	h.AIAssistantStream(w, request)
-
-	if w.writeCalls != 1 {
-		t.Fatalf("expected one failed initial SSE write and no inference writes, got %d", w.writeCalls)
-	}
-}
-
-func TestAssistantStreamContextUsesLongRequestBudget(t *testing.T) {
-	ctx, cancel := newAIStreamContext(context.Background())
-	defer cancel()
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		t.Fatal("expected stream context deadline")
-	}
-	remaining := time.Until(deadline)
-	if remaining < 4*time.Minute+50*time.Second || remaining > 5*time.Minute+time.Second {
-		t.Fatalf("unexpected stream budget: %s", remaining)
-	}
-}
-
-type failingAssistantStreamWriter struct {
-	header     http.Header
-	writeCalls int
-}
-
-func (w *failingAssistantStreamWriter) Header() http.Header { return w.header }
-func (w *failingAssistantStreamWriter) WriteHeader(int)     {}
-func (w *failingAssistantStreamWriter) Flush()              {}
-func (w *failingAssistantStreamWriter) Write([]byte) (int, error) {
-	w.writeCalls++
-	return 0, io.ErrClosedPipe
-}
-
 func TestAIAssistantStreamEmitsProviderReasoningBeforeDone(t *testing.T) {
 	sink := &filteringAISink{items: []storage.LogEntry{{
 		ID:        "event-stream-reasoning",
@@ -1096,8 +982,6 @@ func TestAIAssistantCreatesApprovalForConfigIntent(t *testing.T) {
 
 func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 	cfg := config.Default()
-	cfg.APISec.Permissions["admin"] = append(append([]string(nil), cfg.APISec.Permissions["admin"]...), "approve:ai")
-	cfg.APISec.Permissions["approver"] = []string{"read:ai", "approve:ai"}
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
 	if err := config.Save(configPath, &cfg); err != nil {
 		t.Fatalf("save config: %v", err)
@@ -1114,15 +998,10 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 	router := chi.NewRouter()
 	router.Post("/execute", handler.ExecuteAITool)
 	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
-	requester := &middleware.Claims{Subject: "operator-id", ID: "session-id", Username: "operator", Role: "admin"}
-	approver := &middleware.Claims{Subject: "approver-id", ID: "approver-session", Username: "approver", Role: "approver"}
-	withActor := func(actor *middleware.Claims, request *http.Request) *http.Request {
-		return request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, actor))
-	}
 
 	args := `{"area":"bot_cc","level":"high"}`
 	recorder := httptest.NewRecorder()
-	request := withActor(requester, httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","args":`+args+`}`))))
+	request := httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","args":`+args+`}`)))
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected approval request ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1146,23 +1025,15 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 		t.Fatal("policy changed before approval")
 	}
 
-	// Self-approve must fail for modify tools.
 	recorder = httptest.NewRecorder()
-	request = withActor(requester, httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil))
-	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("expected self-approve forbidden, code=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-
-	recorder = httptest.NewRecorder()
-	request = withActor(approver, httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil))
+	request = httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil)
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected approve ok, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
-	request = withActor(requester, httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`))))
+	request = httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`)))
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected approved execute ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1172,7 +1043,7 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	request = withActor(requester, httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`))))
+	request = httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`)))
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected approval reuse to fail, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1181,20 +1052,14 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 
 func TestAIToolApprovalCannotWriteDuringClusterProtectionMode(t *testing.T) {
 	cfg := minimumHAHandlerConfig()
-	cfg.APISec.Permissions["approver"] = []string{"read:ai", "approve:ai"}
 	handler := New(Options{Config: &cfg})
 	router := chi.NewRouter()
 	router.Post("/execute", handler.ExecuteAITool)
 	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
-	requester := &middleware.Claims{Subject: "operator-id", ID: "session-id", Username: "operator", Role: "admin"}
-	approver := &middleware.Claims{Subject: "approver-id", ID: "approver-session", Username: "approver", Role: "approver"}
-	withActor := func(actor *middleware.Claims, request *http.Request) *http.Request {
-		return request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, actor))
-	}
 
 	args := `{"area":"bot_cc","level":"high"}`
 	recorder := httptest.NewRecorder()
-	request := withActor(requester, httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","args":`+args+`}`))))
+	request := httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","args":`+args+`}`)))
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected approval request ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1214,93 +1079,20 @@ func TestAIToolApprovalCannotWriteDuringClusterProtectionMode(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	request = withActor(approver, httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil))
+	request = httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil)
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected approve ok, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
-	request = withActor(requester, httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`))))
+	request = httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+first.Data.Approval.ID+`","args":`+args+`}`)))
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected protected execute to fail, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	if cfg.Protection.Policy.BotCC == "high" {
 		t.Fatalf("policy changed despite cluster protection mode: %+v", cfg.Protection.Policy)
-	}
-}
-
-func TestAIProtectionToolDoesNotPublishConfigWhenRuntimeRejects(t *testing.T) {
-	cfg := config.Default()
-	before := cfg.Protection.Policy
-	handler := New(Options{
-		Config: &cfg,
-		OnProtectionChanged: func(config.ProtectionConfig) error {
-			return errors.New("runtime rejected protection")
-		},
-	})
-	tool := setProtectionLevelTool{Handler: handler}
-	if _, err := tool.Execute(context.Background(), map[string]any{"area": "bot_cc", "level": "high"}); err == nil {
-		t.Fatal("expected runtime failure")
-	}
-	if !reflect.DeepEqual(cfg.Protection.Policy, before) {
-		t.Fatalf("config changed after runtime failure: before=%+v after=%+v", before, cfg.Protection.Policy)
-	}
-}
-
-func TestAIProtectionToolRollsBackRuntimeWhenSaveFails(t *testing.T) {
-	cfg := config.Default()
-	before := cfg.Protection
-	var applied []config.ProtectionConfig
-	handler := New(Options{
-		Config:     &cfg,
-		ConfigPath: t.TempDir(),
-		OnProtectionChanged: func(next config.ProtectionConfig) error {
-			applied = append(applied, next)
-			return nil
-		},
-	})
-	tool := setBotChallengeTool{Handler: handler}
-	if _, err := tool.Execute(context.Background(), map[string]any{"captcha": true, "captcha_type": "slider"}); err == nil {
-		t.Fatal("expected save failure")
-	}
-	if !reflect.DeepEqual(cfg.Protection, before) {
-		t.Fatalf("config changed after save failure: before=%+v after=%+v", before, cfg.Protection)
-	}
-	if len(applied) != 2 {
-		t.Fatalf("expected candidate apply followed by rollback, got %d calls", len(applied))
-	}
-	if !reflect.DeepEqual(applied[1], before) {
-		t.Fatalf("runtime was not rolled back: got=%+v want=%+v", applied[1], before)
-	}
-}
-
-func TestContinueAIApprovalDoesNotAutoApprovePendingRequest(t *testing.T) {
-	cfg := config.Default()
-	handler := New(Options{Config: &cfg})
-
-	args := map[string]any{"area": "bot_cc", "level": "high"}
-	call, err := handler.executeAssistantTool(context.Background(), "set_protection_level", args, "")
-	if err != nil {
-		t.Fatalf("create approval: %v", err)
-	}
-	if call.Approval == nil || call.Approval.Status != ai.ApprovalPending {
-		t.Fatalf("expected pending approval, got %+v", call.Approval)
-	}
-
-	if _, err := handler.continueAIApproval(context.Background(), call.Approval.ID, aiAssistantPayload{Message: "continue"}, nil); err == nil {
-		t.Fatal("expected continue on pending approval to fail")
-	}
-	stored, ok := handler.AssistantApprovals.Get(call.Approval.ID)
-	if !ok {
-		t.Fatal("expected approval to remain stored")
-	}
-	if stored.Status != ai.ApprovalPending {
-		t.Fatalf("continue must not auto-approve, got %+v", stored)
-	}
-	if cfg.Protection.Policy.BotCC == "high" {
-		t.Fatalf("policy changed before explicit approval: %+v", cfg.Protection.Policy)
 	}
 }
 

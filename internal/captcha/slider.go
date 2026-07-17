@@ -17,8 +17,6 @@ import (
 	mrand "math/rand"
 	"strings"
 	"time"
-
-	"github.com/LaokeQwQ/CheeseWAF/internal/captcha/imageengine"
 )
 
 type SliderChallenge struct {
@@ -71,29 +69,15 @@ type sliderTokenPayload struct {
 	Nonce     string `json:"nonce"`
 }
 
-const sliderCaptchaImageScale = 2
-
 const (
-	sliderMaxTokenEncodedBytes = 4096
-	sliderMaxTokenDecodedBytes = 3072
-	sliderMaxTrackBytes        = 4096
+	sliderPuzzleStrokeRadius = 4
+	sliderPuzzleAASamples    = 4
+	sliderCaptchaImageScale  = 2
+	sliderPuzzleShapeVariants = 5
 )
-
-var sliderShapePool = [...]imageengine.ShapeKind{
-	imageengine.ShapePuzzle,
-	imageengine.ShapeCircle,
-	imageengine.ShapeTriangle,
-	imageengine.ShapeSquare,
-	imageengine.ShapeDiamond,
-	imageengine.ShapeTrapezoid,
-	imageengine.ShapeShield,
-}
 
 func NewSliderChallenge(opts SliderOptions) (SliderChallenge, error) {
 	opts = normalizeSliderOptions(opts)
-	if strings.TrimSpace(opts.Secret) == "" {
-		return SliderChallenge{}, fmt.Errorf("captcha slider secret is required")
-	}
 	minX := opts.PieceSize + 18
 	maxX := opts.Width - opts.PieceSize - 18
 	targetX, err := randomInt(minX, maxX)
@@ -149,10 +133,7 @@ func NewSliderChallenge(opts SliderOptions) (SliderChallenge, error) {
 
 func VerifySlider(opts SliderOptions, payload SliderPayload) bool {
 	opts = normalizeSliderOptions(opts)
-	if strings.TrimSpace(opts.Secret) == "" {
-		return false
-	}
-	if len(payload.Token) > sliderMaxTokenEncodedBytes || len(payload.Track) > sliderMaxTrackBytes || strings.TrimSpace(payload.Token) == "" || payload.X < 0 {
+	if strings.TrimSpace(payload.Token) == "" || payload.X < 0 {
 		return false
 	}
 	token, ok := openSliderToken(opts, payload.Token)
@@ -236,11 +217,8 @@ func sealSliderToken(opts SliderOptions, payload sliderTokenPayload) (string, er
 }
 
 func openSliderToken(opts SliderOptions, raw string) (sliderTokenPayload, bool) {
-	if len(raw) == 0 || len(raw) > sliderMaxTokenEncodedBytes || base64.RawURLEncoding.DecodedLen(len(raw)) > sliderMaxTokenDecodedBytes {
-		return sliderTokenPayload{}, false
-	}
 	data, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil || len(data) > sliderMaxTokenDecodedBytes {
+	if err != nil {
 		return sliderTokenPayload{}, false
 	}
 	block, err := aes.NewCipher(sliderKey(opts.Secret))
@@ -266,9 +244,7 @@ func openSliderToken(opts SliderOptions, raw string) (sliderTokenPayload, bool) 
 
 func sliderKey(secret string) []byte {
 	if secret == "" {
-		// Never fall back to a hard-coded secret — callers must supply one.
-		sum := sha256.Sum256([]byte("cheesewaf-slider-v1\ninvalid-empty-secret"))
-		return sum[:]
+		secret = "cheesewaf-slider-captcha"
 	}
 	sum := sha256.Sum256([]byte("cheesewaf-slider-v1\n" + secret))
 	return sum[:]
@@ -295,7 +271,7 @@ func renderSliderAssets(width, height, pieceSize, targetX, targetY int, nonce st
 	rng := mrand.New(mrand.NewSource(seed))
 	base := image.NewRGBA(image.Rect(0, 0, physicalWidth, physicalHeight))
 	theme := rng.Intn(4)
-	shape := sliderShapePool[rng.Intn(len(sliderShapePool))]
+	shapeVariant := rng.Intn(sliderPuzzleShapeVariants)
 	renderSliderBackground(base, rng, theme)
 	for i := 0; i < 10+rng.Intn(10); i++ {
 		x0 := rng.Intn(physicalWidth)
@@ -310,34 +286,14 @@ func renderSliderAssets(width, height, pieceSize, targetX, targetY int, nonce st
 	for i := 0; i < 8+rng.Intn(8); i++ {
 		drawRect(base, rng.Intn(physicalWidth), rng.Intn(physicalHeight), scale*(18+rng.Intn(42)), scale*(6+rng.Intn(18)), color.RGBA{255, 255, 255, uint8(10 + rng.Intn(20))})
 	}
-	return renderSliderShapeAssets(base, physicalPieceSize, physicalTargetX, physicalTargetY, shape)
-}
-
-func renderSliderShapeAssets(base *image.RGBA, pieceSize, targetX, targetY int, shape imageengine.ShapeKind) (string, string, error) {
-	padding := maxInt(6, pieceSize/9)
-	mask, err := imageengine.NewShapeMask(shape, pieceSize, padding, imageengine.Limits{})
-	if err != nil {
-		return "", "", err
-	}
-	piece, err := imageengine.ExtractPiece(base, image.Pt(targetX, targetY), mask)
-	if err != nil {
-		return "", "", err
-	}
-	strokeWidth := minInt(padding, maxInt(3, pieceSize/21))
-	if err := imageengine.DrawSlot(piece, image.Point{}, mask, color.Transparent, color.RGBA{R: 255, G: 255, B: 255, A: 245}, strokeWidth); err != nil {
-		return "", "", err
-	}
 	img := cloneRGBA(base)
-	if err := imageengine.DrawSlot(img, image.Pt(targetX, targetY), mask,
-		color.RGBA{R: 8, G: 18, B: 31, A: 142},
-		color.RGBA{R: 255, G: 255, B: 255, A: 238}, strokeWidth); err != nil {
-		return "", "", err
-	}
-	imageURL, err := imageengine.PNGDataURI(img, imageengine.Limits{})
+	piece := renderPuzzlePieceVariant(base, physicalTargetX, physicalTargetY, physicalPieceSize, shapeVariant)
+	drawPuzzleSlotVariant(img, physicalTargetX, physicalTargetY, physicalPieceSize, shapeVariant)
+	imageURL, err := encodePNGDataURL(img)
 	if err != nil {
 		return "", "", err
 	}
-	pieceURL, err := imageengine.PNGDataURI(piece, imageengine.Limits{})
+	pieceURL, err := encodePNGDataURL(piece)
 	if err != nil {
 		return "", "", err
 	}
@@ -391,9 +347,8 @@ func renderSliderBackground(img *image.RGBA, rng *mrand.Rand, theme int) {
 
 func verifySliderTrack(raw string, finalX, dragMS int) bool {
 	raw = strings.TrimSpace(raw)
-	// Empty track is never a successful human interaction signal.
 	if raw == "" {
-		return false
+		return true
 	}
 	if len(raw) > 4096 {
 		return false
@@ -455,6 +410,210 @@ type sliderTrackPoint struct {
 	Type string `json:"type"`
 }
 
+func drawPuzzleSlot(img *image.RGBA, x, y, size int) {
+	drawPuzzleSlotVariant(img, x, y, size, 0)
+}
+
+func drawPuzzleSlotVariant(img *image.RGBA, x, y, size, variant int) {
+	shadow := color.RGBA{0, 0, 0, 150}
+	edge := color.RGBA{255, 255, 255, 242}
+	rim := color.RGBA{6, 18, 32, 158}
+	outer := color.RGBA{0, 0, 0, 106}
+	outerLight := color.RGBA{255, 255, 255, 128}
+	radius := sliderPuzzleStrokeRadius
+	for py := -radius; py < size+radius; py++ {
+		for px := -radius; px < size+radius; px++ {
+			gx := x + px
+			gy := y + py
+			if !inside(img, gx, gy) {
+				continue
+			}
+			coverage := puzzleCoverageVariant(px, py, size, variant)
+			if coverage <= 0 {
+				near := puzzleNearCoverageVariant(px, py, size, radius, variant)
+				if near <= 0 {
+					continue
+				}
+				over(img, gx+1, gy+1, withAlpha(outer, uint8(62+near*84)))
+				if px < size/2 || py < size/2 {
+					over(img, gx, gy, withAlpha(outerLight, uint8(42+near*82)))
+				}
+				continue
+			}
+			if coverage < 0.98 || puzzleEdgeDepth(px, py, size, 1) > 0 {
+				over(img, gx+1, gy+1, withAlpha(rim, uint8(82+coverage*78)))
+				over(img, gx, gy, withAlpha(edge, uint8(102+coverage*140)))
+				continue
+			}
+				over(img, gx, gy, shadow)
+		}
+	}
+}
+
+func puzzleMask(x, y, size int) bool {
+	return puzzleMaskVariant(x, y, size, 0)
+}
+
+func puzzleMaskVariant(x, y, size, variant int) bool {
+	return puzzleShapeContainsVariant(float64(x)+0.5, float64(y)+0.5, size, variant)
+}
+
+func puzzleShapeContains(fx, fy float64, size int) bool {
+	return puzzleShapeContainsVariant(fx, fy, size, 0)
+}
+
+func puzzleShapeContainsVariant(fx, fy float64, size int, variant int) bool {
+	if fx < 0 || fy < 0 || fx >= float64(size) || fy >= float64(size) {
+		return false
+	}
+	r := float64(size) * 0.17
+	left := float64(size) * 0.18
+	right := float64(size) * 0.82
+	top := float64(size) * 0.20
+	bottom := float64(size) * 0.86
+	inBody := fx >= left && fx <= right && fy >= top && fy <= bottom
+	topMode, rightMode, bottomMode, leftMode := puzzleShapeModes(variant)
+	if sideCut(topMode, fx, fy, float64(size)*0.50, top, r) ||
+		sideCut(rightMode, fx, fy, right, float64(size)*0.58, r) ||
+		sideCut(bottomMode, fx, fy, float64(size)*0.50, bottom, r) ||
+		sideCut(leftMode, fx, fy, left, float64(size)*0.58, r) {
+		return false
+	}
+	return inBody ||
+		sideKnob(topMode, fx, fy, float64(size)*0.50, top, r) ||
+		sideKnob(rightMode, fx, fy, right, float64(size)*0.58, r) ||
+		sideKnob(bottomMode, fx, fy, float64(size)*0.50, bottom, r) ||
+		sideKnob(leftMode, fx, fy, left, float64(size)*0.58, r)
+}
+
+func puzzleShapeModes(variant int) (top, right, bottom, left int) {
+	switch ((variant % sliderPuzzleShapeVariants) + sliderPuzzleShapeVariants) % sliderPuzzleShapeVariants {
+	case 1:
+		return -1, 1, 1, 0
+	case 2:
+		return 1, -1, 1, -1
+	case 3:
+		return 0, -1, 1, 1
+	case 4:
+		return -1, 0, 1, 1
+	default:
+		return 1, 1, 0, -1
+	}
+}
+
+func sideCut(mode int, fx, fy, cx, cy, r float64) bool {
+	return mode < 0 && dist(fx, fy, cx, cy) <= r*r
+}
+
+func sideKnob(mode int, fx, fy, cx, cy, r float64) bool {
+	return mode > 0 && dist(fx, fy, cx, cy) <= r*r
+}
+
+func puzzleCoverage(x, y, size int) float64 {
+	return puzzleCoverageVariant(x, y, size, 0)
+}
+
+func puzzleCoverageVariant(x, y, size, variant int) float64 {
+	if x < -sliderPuzzleStrokeRadius || y < -sliderPuzzleStrokeRadius || x >= size+sliderPuzzleStrokeRadius || y >= size+sliderPuzzleStrokeRadius {
+		return 0
+	}
+	insideCount := 0
+	total := sliderPuzzleAASamples * sliderPuzzleAASamples
+	for sy := 0; sy < sliderPuzzleAASamples; sy++ {
+		for sx := 0; sx < sliderPuzzleAASamples; sx++ {
+			fx := float64(x) + (float64(sx)+0.5)/float64(sliderPuzzleAASamples)
+			fy := float64(y) + (float64(sy)+0.5)/float64(sliderPuzzleAASamples)
+			if puzzleShapeContainsVariant(fx, fy, size, variant) {
+				insideCount++
+			}
+		}
+	}
+	return float64(insideCount) / float64(total)
+}
+
+func puzzleNearCoverage(x, y, size, radius int) float64 {
+	return puzzleNearCoverageVariant(x, y, size, radius, 0)
+}
+
+func puzzleNearCoverageVariant(x, y, size, radius, variant int) float64 {
+	maxCoverage := 0.0
+	for dy := -radius; dy <= radius; dy++ {
+		for dx := -radius; dx <= radius; dx++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			coverage := puzzleCoverageVariant(x+dx, y+dy, size, variant)
+			if coverage > maxCoverage {
+				maxCoverage = coverage
+			}
+		}
+	}
+	if maxCoverage <= 0 {
+		return 0
+	}
+	distance := radius + 1
+	for dist := 1; dist <= radius; dist++ {
+		if puzzleCoverageVariant(x-dist, y, size, variant) > 0 ||
+			puzzleCoverageVariant(x+dist, y, size, variant) > 0 ||
+			puzzleCoverageVariant(x, y-dist, size, variant) > 0 ||
+			puzzleCoverageVariant(x, y+dist, size, variant) > 0 {
+			distance = dist
+			break
+		}
+	}
+	return maxCoverage * (1 - float64(distance-1)/float64(radius+1))
+}
+
+func puzzleEdgeDepth(x, y, size, radius int) int {
+	return puzzleEdgeDepthVariant(x, y, size, radius, 0)
+}
+
+func puzzleEdgeDepthVariant(x, y, size, radius, variant int) int {
+	if !puzzleMaskVariant(x, y, size, variant) {
+		return 0
+	}
+	for dist := 1; dist <= radius; dist++ {
+		if !puzzleMaskVariant(x-dist, y, size, variant) ||
+			!puzzleMaskVariant(x+dist, y, size, variant) ||
+			!puzzleMaskVariant(x, y-dist, size, variant) ||
+			!puzzleMaskVariant(x, y+dist, size, variant) ||
+			!puzzleMaskVariant(x-dist, y-dist, size, variant) ||
+			!puzzleMaskVariant(x+dist, y-dist, size, variant) ||
+			!puzzleMaskVariant(x-dist, y+dist, size, variant) ||
+			!puzzleMaskVariant(x+dist, y+dist, size, variant) {
+			return dist
+		}
+	}
+	return 0
+}
+
+func puzzleNearMask(x, y, size, radius int) bool {
+	return puzzleNearDepthVariant(x, y, size, radius, 0) > 0
+}
+
+func puzzleNearDepth(x, y, size, radius int) int {
+	return puzzleNearDepthVariant(x, y, size, radius, 0)
+}
+
+func puzzleNearDepthVariant(x, y, size, radius, variant int) int {
+	if puzzleMaskVariant(x, y, size, variant) {
+		return 0
+	}
+	for dist := 1; dist <= radius; dist++ {
+		if puzzleMaskVariant(x-dist, y, size, variant) ||
+			puzzleMaskVariant(x+dist, y, size, variant) ||
+			puzzleMaskVariant(x, y-dist, size, variant) ||
+			puzzleMaskVariant(x, y+dist, size, variant) ||
+			puzzleMaskVariant(x-dist, y-dist, size, variant) ||
+			puzzleMaskVariant(x+dist, y-dist, size, variant) ||
+			puzzleMaskVariant(x-dist, y+dist, size, variant) ||
+			puzzleMaskVariant(x+dist, y+dist, size, variant) {
+			return dist
+		}
+	}
+	return 0
+}
+
 func cloneRGBA(src *image.RGBA) *image.RGBA {
 	bounds := src.Bounds()
 	dst := image.NewRGBA(bounds)
@@ -464,6 +623,58 @@ func cloneRGBA(src *image.RGBA) *image.RGBA {
 		}
 	}
 	return dst
+}
+
+func renderPuzzlePiece(base *image.RGBA, x, y, size int) *image.NRGBA {
+	return renderPuzzlePieceVariant(base, x, y, size, 0)
+}
+
+func renderPuzzlePieceVariant(base *image.RGBA, x, y, size, variant int) *image.NRGBA {
+	piece := image.NewNRGBA(image.Rect(0, 0, size, size))
+	for py := 0; py < size; py++ {
+		for px := 0; px < size; px++ {
+			coverage := puzzleCoverageVariant(px, py, size, variant)
+			gx := x + px
+			gy := y + py
+			if coverage <= 0 || !inside(base, gx, gy) {
+				continue
+			}
+			c := base.RGBAAt(gx, gy)
+			piece.SetNRGBA(px, py, color.NRGBA{R: c.R, G: c.G, B: c.B, A: uint8(coverage * 255)})
+		}
+	}
+	for py := 0; py < size; py++ {
+		for px := 0; px < size; px++ {
+			if puzzleCoverageVariant(px, py, size, variant) > 0 {
+				continue
+			}
+			near := puzzleNearCoverageVariant(px, py, size, sliderPuzzleStrokeRadius, variant)
+			if near <= 0 {
+				continue
+			}
+			if px < size/2 || py < size/2 {
+				piece.SetNRGBA(px, py, color.NRGBA{R: 255, G: 255, B: 255, A: uint8(near * 210)})
+				continue
+			}
+			piece.SetNRGBA(px, py, color.NRGBA{R: 8, G: 22, B: 38, A: uint8(near * 226)})
+		}
+	}
+	for py := 0; py < size; py++ {
+		for px := 0; px < size; px++ {
+			coverage := puzzleCoverageVariant(px, py, size, variant)
+			if coverage <= 0 {
+				continue
+			}
+			if coverage < 0.98 || puzzleEdgeDepthVariant(px, py, size, 1, variant) > 0 {
+				if px < size/2 || py < size/2 {
+					overNRGBA(piece, px, py, color.NRGBA{R: 255, G: 255, B: 255, A: uint8(166 + coverage*80)})
+				} else {
+					overNRGBA(piece, px, py, color.NRGBA{R: 5, G: 18, B: 32, A: uint8(116 + coverage*92)})
+				}
+			}
+		}
+	}
+	return piece
 }
 
 func drawLine(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
@@ -546,6 +757,29 @@ func over(img *image.RGBA, x, y int, fg color.RGBA) {
 	})
 }
 
+func withAlpha(c color.RGBA, alpha uint8) color.RGBA {
+	c.A = alpha
+	return c
+}
+
+func overNRGBA(img *image.NRGBA, x, y int, fg color.NRGBA) {
+	bounds := img.Bounds()
+	if x < bounds.Min.X || x >= bounds.Max.X || y < bounds.Min.Y || y >= bounds.Max.Y {
+		return
+	}
+	bg := img.NRGBAAt(x, y)
+	if bg.A == 0 {
+		return
+	}
+	alpha := float64(fg.A) / 255
+	img.SetNRGBA(x, y, color.NRGBA{
+		R: uint8(float64(fg.R)*alpha + float64(bg.R)*(1-alpha)),
+		G: uint8(float64(fg.G)*alpha + float64(bg.G)*(1-alpha)),
+		B: uint8(float64(fg.B)*alpha + float64(bg.B)*(1-alpha)),
+		A: bg.A,
+	})
+}
+
 func encodePNGDataURL(img image.Image) (string, error) {
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -557,6 +791,12 @@ func encodePNGDataURL(img image.Image) (string, error) {
 func inside(img *image.RGBA, x, y int) bool {
 	bounds := img.Bounds()
 	return x >= bounds.Min.X && x < bounds.Max.X && y >= bounds.Min.Y && y < bounds.Max.Y
+}
+
+func dist(x0, y0, x1, y1 float64) float64 {
+	dx := x0 - x1
+	dy := y0 - y1
+	return dx*dx + dy*dy
 }
 
 func hmacHash(key, value string) []byte {
@@ -583,7 +823,7 @@ func abs(value int) int {
 	return value
 }
 
-func minInt(a, b int) int {
+func minUint8(a, b uint8) uint8 {
 	if a < b {
 		return a
 	}

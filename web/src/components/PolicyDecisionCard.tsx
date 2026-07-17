@@ -137,15 +137,6 @@ function policyReasonLabel(decision: WAFPolicyDecision, t: (key: string, options
   if (reason === 'aggregate risk score meets policy threshold') {
     return t('logs.policyReasonAggregateThreshold');
   }
-  if (reason.includes('detection budget exhausted policy (closed')) {
-    return t('logs.policyReasonBudgetClosed');
-  }
-  if (reason.includes('detection budget exhausted policy (observe')) {
-    return t('logs.policyReasonBudgetObserve');
-  }
-  if (reason.includes('detection budget exhausted policy (open')) {
-    return t('logs.policyReasonBudgetOpen');
-  }
   if (reason.startsWith('detector requested ')) {
     return t('logs.policyReasonDetectorRequested', {
       action: displayAction(reason.replace('detector requested ', ''), t),

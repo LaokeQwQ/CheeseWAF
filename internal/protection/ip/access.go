@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	AccessActionAllow   = "allow"
-	AccessActionBlock   = "block"
+	AccessActionAllow = "allow"
+	AccessActionBlock = "block"
 	AccessActionMonitor = "monitor"
 )
 

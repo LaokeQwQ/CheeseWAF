@@ -1,8 +1,5 @@
-import axios, { type AxiosResponse } from 'axios';
-import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
-import { queryClient } from '../queryClient';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterStatus, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
-import type { TimeSyncStatus } from '../types/api';
+﻿import axios, { type AxiosResponse } from 'axios';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterDeploymentCheckResult, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterStatus, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -16,12 +13,9 @@ const AI_REQUEST_TIMEOUT_MS = 300_000;
 const tokenStorageKey = 'cheesewaf-token';
 const tokenRefreshWindowSeconds = 10 * 60;
 let refreshPromise: Promise<string> | null = null;
-let authRedirectScheduled = false;
-let authRedirectLocationForTest: AuthRedirectLocation | null = null;
 
 type AuthResponse = { token: string; user: { username: string; role: string } };
 type TokenClaims = { exp?: number };
-type AuthRedirectLocation = Pick<Location, 'pathname' | 'assign'> & Partial<Pick<Location, 'search' | 'hash'>>;
 
 apiClient.interceptors.request.use(async (config) => {
   const token = localStorage.getItem(tokenStorageKey);
@@ -36,47 +30,15 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (axios.isAxiosError(error) && error.response?.status === 401) {
-      handleUnauthorizedAuthFailure();
+      localStorage.removeItem(tokenStorageKey);
+      const path = window.location.pathname;
+      if (path !== '/login' && path !== '/setup') {
+        window.location.assign('/login');
+      }
     }
     return Promise.reject(error);
   },
 );
-
-export function handleUnauthorizedAuthFailure(locationRef: AuthRedirectLocation = authRedirectLocationForTest ?? window.location) {
-  localStorage.removeItem(tokenStorageKey);
-  queryClient.clear();
-  const path = locationRef.pathname;
-  if (path === '/login' || path === '/setup' || authRedirectScheduled) {
-    return;
-  }
-  authRedirectScheduled = true;
-  const returnTo = sanitizeInternalReturnPath(`${path}${locationRef.search || ''}${locationRef.hash || ''}`);
-  locationRef.assign(`/login?returnTo=${encodeURIComponent(returnTo)}`);
-}
-
-export function sanitizeInternalReturnPath(value: string | null | undefined) {
-  if (!value || !value.startsWith('/') || value.startsWith('//')) {
-    return '/';
-  }
-  try {
-    const parsed = new URL(value, 'https://cheesewaf.invalid');
-    if (parsed.origin !== 'https://cheesewaf.invalid' || parsed.pathname === '/login' || parsed.pathname === '/setup') {
-      return '/';
-    }
-    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
-  } catch {
-    return '/';
-  }
-}
-
-export function setAuthRedirectLocationForTest(locationRef: AuthRedirectLocation | null) {
-  authRedirectLocationForTest = locationRef;
-}
-
-export function resetAuthRedirectStateForTest() {
-  authRedirectScheduled = false;
-  authRedirectLocationForTest = null;
-}
 
 async function refreshTokenIfNeeded(token: string, requestURL: string) {
   if (requestURL.includes('/auth/login') || requestURL.includes('/auth/refresh') || requestURL.includes('/auth/logout') || requestURL.includes('/setup')) {
@@ -118,10 +80,7 @@ async function refreshTokenIfNeeded(token: string, requestURL: string) {
   }
   try {
     return await refreshPromise;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 401) {
-      handleUnauthorizedAuthFailure();
-    }
+  } catch {
     return token;
   }
 }
@@ -156,7 +115,6 @@ export class APIRequestError extends Error {
   traceID?: string;
   rawMessage: string;
   data?: unknown;
-  approval?: AIApprovalRequest;
 
   constructor(message: string, code?: string, status?: number, traceID?: string, data?: unknown) {
     super(traceID ? `${message} · Event / Trace ID: ${traceID}` : message);
@@ -166,13 +124,10 @@ export class APIRequestError extends Error {
     this.status = status;
     this.traceID = traceID;
     this.data = data;
-    if (code === 'AI_APPROVAL_CONTINUE_STATUS_RECONCILED') {
-      this.approval = data as AIApprovalRequest;
-    }
   }
 }
 
-export async function unwrapAPIResponse<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<T> {
+async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<T> {
   try {
     const response = await promise;
     if (response.data.error) {
@@ -212,8 +167,6 @@ export async function unwrapAPIResponse<T>(promise: Promise<AxiosResponse<Envelo
   }
 }
 
-const unwrap = unwrapAPIResponse;
-
 function errorLookupID(error?: Envelope<unknown>['error'], response?: AxiosResponse<unknown>) {
   return error?.event_id ?? error?.trace_id ?? responseLookupID(response);
 }
@@ -238,26 +191,12 @@ export function fetchLoginOptions() {
   return unwrap<LoginOptions>(apiClient.get('/auth/login-options'));
 }
 
-export function issueCaptchaLabChallenge(type: CaptchaType, signal?: AbortSignal) {
-  const request = signal
-    ? apiClient.post('/captcha/lab/challenges', { type }, { signal })
-    : apiClient.post('/captcha/lab/challenges', { type });
-  return unwrap<CaptchaChallenge>(request);
+export function fetchLoginCaptcha(mode?: 'slider' | 'pow') {
+  return unwrap<LoginCAPTCHAResponse>(apiClient.post('/auth/captcha', mode ? { mode } : {}));
 }
 
-export function verifyCaptchaLabChallenge(response: CaptchaResponse, signal?: AbortSignal) {
-  const request = signal
-    ? apiClient.post('/captcha/lab/verify', response, { signal })
-    : apiClient.post('/captcha/lab/verify', response);
-  return unwrap<CaptchaVerifyResult>(request);
-}
-
-export function fetchLoginCaptcha(mode?: 'slider' | 'pow', signal?: AbortSignal) {
-  return unwrap<LoginCAPTCHAResponse>(apiClient.post('/auth/captcha', mode ? { mode } : {}, { signal }));
-}
-
-export function verifyLoginCaptcha(captcha: LoginCAPTCHAPayload, signal?: AbortSignal) {
-  return unwrap<{ valid: boolean; receipt: string }>(apiClient.post('/auth/captcha/verify', captcha, { signal }));
+export function verifyLoginCaptcha(captcha: LoginCAPTCHAPayload) {
+  return unwrap<{ valid: boolean; receipt: string }>(apiClient.post('/auth/captcha/verify', captcha));
 }
 
 export function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {
@@ -314,13 +253,9 @@ export function fetchStats() {
   return unwrap<Record<string, unknown>>(apiClient.get('/stats'));
 }
 
-export async function fetchHealth(): Promise<HealthStatus> {
+export async function fetchHealth() {
   const response = await axios.get<{ data?: HealthStatus }>('/health', { timeout: 2500 });
-  const health = response.data?.data;
-  if (!health || typeof health.status !== 'string' || !Number.isFinite(health.uptime_seconds)) {
-    throw new APIRequestError('Health endpoint returned an invalid response.', 'HEALTH_RESPONSE_INVALID', response.status);
-  }
-  return health;
+  return response.data.data as HealthStatus;
 }
 
 export function fetchLogs(params: LogQuery = {}) {
@@ -374,7 +309,7 @@ export function generateClusterAnsiblePackage(payload: ClusterAnsiblePlan) {
 }
 
 export function checkClusterDeployment(payload: ClusterDeploymentRequest) {
-  return unwrap<ClusterDeploymentCheckResponse>(apiClient.post('/cluster/deploy/check', payload, { timeout: 60_000 }));
+  return unwrap<ClusterDeploymentCheckResult>(apiClient.post('/cluster/deploy/check', payload, { timeout: 60_000 }));
 }
 
 export function runClusterDeployment(payload: ClusterDeploymentRequest) {
@@ -409,22 +344,6 @@ export function fetchAuditEntries() {
   return unwrap<AuditEntry[]>(apiClient.get('/audit'));
 }
 
-export function fetchNotifications(params: { page?: number; limit?: number; filter?: NotificationFilter } = {}) {
-  return unwrap<NotificationList>(apiClient.get('/notifications', { params }));
-}
-
-export function updateNotification(id: string, patch: { read?: boolean; pinned?: boolean }) {
-  return unwrap<Notification>(apiClient.patch(`/notifications/${encodeURIComponent(id)}`, patch));
-}
-
-export function markAllNotificationsRead() {
-  return unwrap<{ updated: number }>(apiClient.post('/notifications/read-all', {}));
-}
-
-export function clearNotifications() {
-  return unwrap<{ deleted: number }>(apiClient.delete('/notifications'));
-}
-
 export function fetchUsers() {
   return unwrap<User[]>(apiClient.get('/users'));
 }
@@ -445,28 +364,12 @@ export function enableUser2FA(id: string, secret: string, code: string) {
   return unwrap<User>(apiClient.post(`/users/${id}/2fa/enable`, { secret, code }));
 }
 
-export function disableUser2FA(id: string, password: string, code: string) {
-	return unwrap<User>(apiClient.post(`/users/${id}/2fa/disable`, { password, code }));
-}
-
-export function recoverUser2FA(id: string, password: string, confirmUsername: string) {
-	return unwrap<User>(apiClient.post(`/users/${id}/2fa/recover`, { password, confirm_username: confirmUsername }));
+export function disableUser2FA(id: string) {
+  return unwrap<User>(apiClient.post(`/users/${id}/2fa/disable`));
 }
 
 export function fetchSystemConfig() {
   return unwrap<SystemConfig>(apiClient.get('/system'));
-}
-
-export function fetchTimeSyncStatus() {
-  return unwrap<TimeSyncStatus>(apiClient.get('/system/time-sync'));
-}
-
-export function reselectTimeSync() {
-  return unwrap<TimeSyncStatus>(apiClient.post('/system/time-sync/reselect', {}));
-}
-
-export function syncTimeNow() {
-  return unwrap<TimeSyncStatus>(apiClient.post('/system/time-sync/sync', {}));
 }
 
 export function fetchVersion() {
@@ -827,11 +730,14 @@ export async function analyzeLogReferenceStream(
   onTrace?: (event: AIAssistantTraceEvent) => void,
   signal?: AbortSignal,
 ) {
-  const response = await authenticatedFetch('/api/ai/analyze/stream', '/ai/analyze/stream', {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/analyze/stream') : '';
+  const response = await fetch('/api/ai/analyze/stream', {
     method: 'POST',
     signal,
     headers: {
       'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
     },
     body: JSON.stringify({ reference, language }),
   });
@@ -917,11 +823,14 @@ export async function analyzeEventsStream(
   onTrace?: (event: AIAssistantTraceEvent) => void,
   signal?: AbortSignal,
 ) {
-  const response = await authenticatedFetch('/api/ai/events/analyze/stream', '/ai/events/analyze/stream', {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/events/analyze/stream') : '';
+  const response = await fetch('/api/ai/events/analyze/stream', {
     method: 'POST',
     signal,
     headers: {
       'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
     },
     body: JSON.stringify(payload),
   });
@@ -945,7 +854,6 @@ export async function analyzeEventsStream(
   const decoder = new TextDecoder();
   let buffer = '';
   let finalResult: AIEventsAnalysisResponse | null = null;
-  const pendingItems: AttackAnalysis[] = [];
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -963,7 +871,7 @@ export async function analyzeEventsStream(
         if (event.event === 'trace') {
           onTrace?.(event.data as AIAssistantTraceEvent);
         } else if (event.event === 'item') {
-          pendingItems.push(event.data as AttackAnalysis);
+          onItem?.(event.data as AttackAnalysis);
         } else if (event.event === 'done') {
           finalResult = event.data as AIEventsAnalysisResponse;
         } else if (event.event === 'error') {
@@ -1001,9 +909,6 @@ export async function analyzeEventsStream(
       traceID,
     );
   }
-  for (const item of pendingItems) {
-    onItem?.(item);
-  }
   return finalResult;
 }
 
@@ -1019,11 +924,14 @@ export async function askAIAssistantStream(
   onTrace?: (event: AIAssistantTraceEvent) => void,
   signal?: AbortSignal,
 ) {
-  const response = await authenticatedFetch('/api/ai/assistant/stream', '/ai/assistant/stream', {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/assistant/stream') : '';
+  const response = await fetch('/api/ai/assistant/stream', {
     method: 'POST',
     signal,
     headers: {
       'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
     },
     body: JSON.stringify({ message, limit, language, deep_think: deepThink }),
   });
@@ -1071,7 +979,6 @@ export async function askAIAssistantStream(
         }
       }
     }
-    buffer += decoder.decode();
     if (buffer.trim()) {
       const event = parseSSEBlock(buffer);
       if (event?.event === 'done') {
@@ -1113,11 +1020,14 @@ export async function continueAIApprovalStream(
   onTrace?: (event: AIAssistantTraceEvent) => void,
   signal?: AbortSignal,
 ) {
-  const response = await authenticatedFetch(`/api/ai/tools/approvals/${encodeURIComponent(approvalID)}/continue/stream`, '/ai/tools/approvals/continue/stream', {
+  const token = localStorage.getItem(tokenStorageKey);
+  const activeToken = token ? await refreshTokenIfNeeded(token, '/ai/tools/approvals/continue/stream') : '';
+  const response = await fetch(`/api/ai/tools/approvals/${encodeURIComponent(approvalID)}/continue/stream`, {
     method: 'POST',
     signal,
     headers: {
       'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
     },
     body: JSON.stringify({ message, limit, language, deep_think: deepThink }),
   });
@@ -1165,7 +1075,6 @@ export async function continueAIApprovalStream(
         }
       }
     }
-    buffer += decoder.decode();
     if (buffer.trim()) {
       const event = parseSSEBlock(buffer);
       if (event?.event === 'done') {
@@ -1179,10 +1088,21 @@ export async function continueAIApprovalStream(
     if ((error as DOMException)?.name === 'AbortError') {
       throw new APIRequestError('AI approval continuation was cancelled.', 'AI_APPROVAL_CONTINUE_CANCELLED', response.status, traceID);
     }
-    throw await reconcileApprovalStreamFailure(approvalID, response, traceID, error);
+    throw new APIRequestError(
+      streamInterruptedMessage('AI approval continuation stream was interrupted before completion', error),
+      'AI_APPROVAL_CONTINUE_STREAM_INTERRUPTED',
+      response.status,
+      traceID,
+      error,
+    );
   }
   if (!finalReply) {
-    throw await reconcileApprovalStreamFailure(approvalID, response, traceID, 'missing final done event');
+    throw new APIRequestError(
+      streamInterruptedMessage('AI approval continuation stream ended without a final answer', 'missing final done event'),
+      'AI_APPROVAL_CONTINUE_STREAM_INCOMPLETE',
+      response.status,
+      traceID,
+    );
   }
   return finalReply;
 }
@@ -1203,32 +1123,8 @@ export function approveAIApproval(id: string) {
   return unwrap<AIApprovalRequest>(apiClient.post(`/ai/tools/approvals/${encodeURIComponent(id)}/approve`, {}));
 }
 
-export function fetchAIApprovals(params?: { status?: string }) {
-  return unwrap<AIApprovalList | AIApprovalRequest[]>(apiClient.get('/ai/tools/approvals', { params })).then((data) => (
-    Array.isArray(data) ? { items: data, total: data.length } : data
-  ));
-}
-
-export function fetchAIApproval(id: string) {
-  return unwrap<AIApprovalRequest>(apiClient.get(`/ai/tools/approvals/${encodeURIComponent(id)}`));
-}
-
 export function rejectAIApproval(id: string) {
   return unwrap<AIApprovalRequest>(apiClient.post(`/ai/tools/approvals/${encodeURIComponent(id)}/reject`, {}));
-}
-
-async function authenticatedFetch(input: RequestInfo | URL, requestURL: string, init: RequestInit = {}) {
-  const token = localStorage.getItem(tokenStorageKey);
-  const activeToken = token ? await refreshTokenIfNeeded(token, requestURL) : '';
-  const headers = new Headers(init.headers);
-  if (activeToken) {
-    headers.set('Authorization', `Bearer ${activeToken}`);
-  }
-  const response = await fetch(input, { ...init, headers });
-  if (response.status === 401) {
-    handleUnauthorizedAuthFailure();
-  }
-  return response;
 }
 
 function parseSSEBlock(block: string) {
@@ -1246,30 +1142,6 @@ function parseSSEBlock(block: string) {
     return null;
   }
   return { event, data: JSON.parse(data.join('\n')) as unknown };
-}
-
-async function reconcileApprovalStreamFailure(approvalID: string, response: Response, traceID: string | undefined, cause: unknown) {
-  try {
-    const approval = await fetchAIApproval(approvalID);
-    return new APIRequestError(
-      streamInterruptedMessage(`AI approval continuation stream ended while the server reports ${approval.status}`, cause),
-      'AI_APPROVAL_CONTINUE_STATUS_RECONCILED',
-      response.status,
-      traceID,
-      approval,
-    );
-  } catch (lookupError) {
-    if (lookupError instanceof APIRequestError && lookupError.code === 'AI_APPROVAL_CONTINUE_STATUS_RECONCILED') {
-      return lookupError;
-    }
-    return new APIRequestError(
-      streamInterruptedMessage('AI approval continuation status could not be confirmed', cause),
-      'AI_APPROVAL_CONTINUE_STATUS_UNKNOWN',
-      response.status,
-      traceID,
-      lookupError,
-    );
-  }
 }
 
 async function readableFetchError(response: Response): Promise<{ message: string; traceID?: string }> {

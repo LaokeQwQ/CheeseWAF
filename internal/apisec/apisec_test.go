@@ -108,14 +108,11 @@ func TestRemoteJWKSSourceCloseAfterStartStopsWorker(t *testing.T) {
 }
 
 func TestAuthenticatorEvaluatesAPIAuthClaims(t *testing.T) {
-	const secret = "test-auth-secret"
 	auth, err := NewAuthenticator(config.APISecConfig{
 		Auth: config.APIAuthConfig{
-			Enabled:         true,
-			JWTAlgorithms:   []string{"HS256"},
-			JWTSharedSecret: secret,
-			JWTIssuers:      []string{"issuer-a"},
-			RequiredScopes:  []string{"orders:read"},
+			Enabled:        true,
+			JWTIssuers:     []string{"issuer-a"},
+			RequiredScopes: []string{"orders:read"},
 		},
 		Validation: config.APIValidationConfig{
 			Schemas: []config.APIEndpointSchemaConfig{{
@@ -133,20 +130,20 @@ func TestAuthenticatorEvaluatesAPIAuthClaims(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
-	req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "", secret, map[string]any{"iss": "issuer-a", "scope": "orders:read billing:read"}))
+	req.Header.Set("Authorization", "Bearer "+authTestJWT(t, map[string]any{"iss": "issuer-a", "scope": "orders:read billing:read"}))
 	if finding := auth.Evaluate(req); finding != nil {
 		t.Fatalf("expected valid auth claims to pass, got %+v", finding)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
-	req.Header.Set("Authorization", "bearer "+authTestHMACJWT(t, "HS256", "", secret, map[string]any{"iss": "issuer-b", "scope": "orders:read"}))
+	req.Header.Set("Authorization", "bearer "+authTestJWT(t, map[string]any{"iss": "issuer-b", "scope": "orders:read"}))
 	issuer := auth.Evaluate(req)
 	if issuer == nil || issuer.Kind != "issuer" || issuer.Payload != "issuer-b" {
 		t.Fatalf("expected issuer finding, got %+v", issuer)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
-	req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "", secret, map[string]any{"iss": "issuer-a", "scope": []string{"orders:write"}}))
+	req.Header.Set("Authorization", "Bearer "+authTestJWT(t, map[string]any{"iss": "issuer-a", "scope": []string{"orders:write"}}))
 	scope := auth.Evaluate(req)
 	if scope == nil || scope.Kind != "scope" || scope.Payload != "orders:read" {
 		t.Fatalf("expected missing scope finding, got %+v", scope)
@@ -312,15 +309,12 @@ func TestAuthenticatorVerifiesJWTSignatures(t *testing.T) {
 }
 
 func TestAuthenticatorEvaluatesAudienceAndEndpointPolicies(t *testing.T) {
-	const secret = "test-auth-secret"
 	auth, err := NewAuthenticator(config.APISecConfig{
 		Auth: config.APIAuthConfig{
-			Enabled:         true,
-			JWTAlgorithms:   []string{"HS256"},
-			JWTSharedSecret: secret,
-			JWTIssuers:      []string{"issuer-a"},
-			JWTAudiences:    []string{"orders-api"},
-			RequiredScopes:  []string{"orders:read"},
+			Enabled:        true,
+			JWTIssuers:     []string{"issuer-a"},
+			JWTAudiences:   []string{"orders-api"},
+			RequiredScopes: []string{"orders:read"},
 			EndpointPolicies: []config.APIAuthEndpointPolicyConfig{{
 				ID:             "admin-write",
 				Method:         http.MethodPost,
@@ -337,33 +331,33 @@ func TestAuthenticatorEvaluatesAudienceAndEndpointPolicies(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/orders", nil)
-	req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "", secret, map[string]any{"iss": "issuer-a", "aud": "orders-api", "scope": "orders:read"}))
+	req.Header.Set("Authorization", "Bearer "+authTestJWT(t, map[string]any{"iss": "issuer-a", "aud": "orders-api", "scope": "orders:read"}))
 	if finding := auth.Evaluate(req); finding != nil {
 		t.Fatalf("expected global audience auth to pass, got %+v", finding)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/orders", nil)
-	req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "", secret, map[string]any{"iss": "issuer-a", "aud": "other-api", "scope": "orders:read"}))
+	req.Header.Set("Authorization", "Bearer "+authTestJWT(t, map[string]any{"iss": "issuer-a", "aud": "other-api", "scope": "orders:read"}))
 	audience := auth.Evaluate(req)
 	if audience == nil || audience.Kind != "audience" || audience.Field != "aud" {
 		t.Fatalf("expected audience finding, got %+v", audience)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/admin", nil)
-	req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "", secret, map[string]any{"iss": "issuer-admin", "aud": []string{"admin-api"}, "scope": "admin:write"}))
+	req.Header.Set("Authorization", "Bearer "+authTestJWT(t, map[string]any{"iss": "issuer-admin", "aud": []string{"admin-api"}, "scope": "admin:write"}))
 	if finding := auth.Evaluate(req); finding != nil {
 		t.Fatalf("expected endpoint policy auth to pass, got %+v", finding)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/admin", nil)
-	req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "", secret, map[string]any{"iss": "issuer-a", "aud": "orders-api", "scope": "orders:read"}))
+	req.Header.Set("Authorization", "Bearer "+authTestJWT(t, map[string]any{"iss": "issuer-a", "aud": "orders-api", "scope": "orders:read"}))
 	issuer := auth.Evaluate(req)
 	if issuer == nil || issuer.Kind != "issuer" || issuer.Payload != "issuer-a" {
 		t.Fatalf("expected endpoint policy issuer finding, got %+v", issuer)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/admin", nil)
-	req.Header.Set("Authorization", "Bearer "+authTestHMACJWT(t, "HS256", "", secret, map[string]any{"iss": "issuer-admin", "aud": "admin-api", "scope": "admin:write"}))
+	req.Header.Set("Authorization", "Bearer "+authTestJWT(t, map[string]any{"iss": "issuer-admin", "aud": "admin-api", "scope": "admin:write"}))
 	if finding := auth.Evaluate(req); finding != nil {
 		t.Fatalf("expected method-mismatched endpoint policy to bypass ordinary path, got %+v", finding)
 	}
@@ -382,23 +376,13 @@ func authTestJWT(t *testing.T, claims map[string]any) string {
 	return base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + "."
 }
 
-func authTestClaims(claims map[string]any) map[string]any {
-	if claims == nil {
-		claims = map[string]any{}
-	}
-	if _, ok := claims["exp"]; !ok {
-		claims["exp"] = time.Now().Add(time.Hour).Unix()
-	}
-	return claims
-}
-
 func authTestHMACJWT(t *testing.T, alg, kid, secret string, claims map[string]any) string {
 	t.Helper()
 	header := map[string]string{"alg": alg, "typ": "JWT"}
 	if kid != "" {
 		header["kid"] = kid
 	}
-	signingInput := authTestSigningInput(t, header, authTestClaims(claims))
+	signingInput := authTestSigningInput(t, header, claims)
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(signingInput))
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -406,7 +390,7 @@ func authTestHMACJWT(t *testing.T, alg, kid, secret string, claims map[string]an
 
 func authTestRSAJWT(t *testing.T, alg string, key *rsa.PrivateKey, claims map[string]any) string {
 	t.Helper()
-	signingInput := authTestSigningInput(t, map[string]string{"alg": alg, "typ": "JWT"}, authTestClaims(claims))
+	signingInput := authTestSigningInput(t, map[string]string{"alg": alg, "typ": "JWT"}, claims)
 	sum := sha256.Sum256([]byte(signingInput))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
 	if err != nil {

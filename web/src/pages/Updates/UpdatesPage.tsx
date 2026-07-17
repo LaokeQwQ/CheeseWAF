@@ -9,10 +9,6 @@ import { fallbackSystem, normalizeSystem, second, secondsToDuration, durationSec
 
 type Feed = SystemConfig['vulnerability']['feeds'][number];
 const OFFICIAL_OTA_SERVER = 'https://ota.waf.laoker.cc/';
-const FORGEJO_OTA_SERVER = 'https://git.laoker.cc/Laoke/CheeseWAF/releases';
-const GITHUB_OTA_SERVER = 'https://github.com/LaokeQwQ/CheeseWAF/releases';
-export const CUSTOM_OTA_SERVER_OPTION = '__custom__';
-const OTA_SERVER_OPTIONS = [OFFICIAL_OTA_SERVER, FORGEJO_OTA_SERVER, GITHUB_OTA_SERVER];
 const FEED_PAGE_SIZE = 4;
 
 export default function UpdatesPage() {
@@ -21,17 +17,11 @@ export default function UpdatesPage() {
   const [system, setSystem] = useState<SystemConfig>(fallbackSystem);
   const [feedPage, setFeedPage] = useState(1);
   const [keySyncing, setKeySyncing] = useState(false);
-  const [otaServerSelection, setOtaServerSelection] = useState(OFFICIAL_OTA_SERVER);
-  const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
-  const { data } = systemQuery;
+  const { data } = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
   const enabledFeeds = useMemo(() => system.vulnerability.feeds.filter((feed) => feed.enabled).length, [system.vulnerability.feeds]);
   const feedPageCount = Math.max(1, Math.ceil(system.vulnerability.feeds.length / FEED_PAGE_SIZE));
   const visibleFeeds = system.vulnerability.feeds.slice((feedPage - 1) * FEED_PAGE_SIZE, feedPage * FEED_PAGE_SIZE);
-  const configuredUpdateServer = system.update.ota.server;
   const updateServer = system.update.ota.server || OFFICIAL_OTA_SERVER;
-  const updateServerSelectValue = otaServerSelection === CUSTOM_OTA_SERVER_OPTION ? CUSTOM_OTA_SERVER_OPTION : resolveOTAServerSelectValue(updateServer);
-  const showCustomUpdateServer = updateServerSelectValue === CUSTOM_OTA_SERVER_OPTION;
-  const customUpdateServerValue = showCustomUpdateServer && !OTA_SERVER_OPTIONS.includes(configuredUpdateServer) ? configuredUpdateServer : '';
 
   useEffect(() => {
     if (data) {
@@ -39,7 +29,6 @@ export default function UpdatesPage() {
       if (!normalized.update.ota.server) {
         normalized.update.ota.server = OFFICIAL_OTA_SERVER;
       }
-      setOtaServerSelection(resolveOTAServerSelectValue(normalized.update.ota.server));
       setSystem(normalized);
     }
   }, [data]);
@@ -60,26 +49,10 @@ export default function UpdatesPage() {
 
   const patchSystem = (patch: Partial<SystemConfig>) => setSystem((current) => normalizeSystem({ ...current, ...patch }));
 
-  function saveUpdatesConfig() {
-    if (!systemQuery.isSuccess) {
-      return;
-    }
-    try {
-      saveMutation.mutate(buildUpdatesSavePayload(system, otaServerSelection));
-    } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : t('updates.publicKeySyncFailed'));
-    }
-  }
-
   async function syncOfficialPublicKey() {
-    const validatedServer = validateOTAServer(system.update.ota.server, otaServerSelection);
-    if (!validatedServer) {
-      ArcoMessage.error(t('updates.invalidCustomServer'));
-      return;
-    }
     setKeySyncing(true);
     try {
-      const base = validatedServer.endsWith('/') ? validatedServer : `${validatedServer}/`;
+      const base = updateServer.endsWith('/') ? updateServer : `${updateServer}/`;
       const response = await fetch(new URL('public-key.pem', base).toString(), { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
@@ -88,7 +61,7 @@ export default function UpdatesPage() {
       if (!publicKey.includes('BEGIN PUBLIC KEY')) {
         throw new Error(t('updates.publicKeyInvalid'));
       }
-      patchSystem({ update: { ota: { ...system.update.ota, server: validatedServer, public_key: publicKey } } });
+      patchSystem({ update: { ota: { ...system.update.ota, server: updateServer, public_key: publicKey } } });
       ArcoMessage.success(t('updates.publicKeySynced'));
     } catch (error) {
       ArcoMessage.error(error instanceof Error ? error.message : t('updates.publicKeySyncFailed'));
@@ -104,8 +77,7 @@ export default function UpdatesPage() {
           <h1>{t('updates.title')}</h1>
           <p>{t('updates.subtitle')}</p>
         </div>
-        {systemQuery.isError && <Button onClick={() => systemQuery.refetch()} loading={systemQuery.isFetching}>{t('common.retry')}</Button>}
-        <Button type="primary" icon={<CloudDownload size={16} />} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess} onClick={saveUpdatesConfig}>
+        <Button type="primary" icon={<CloudDownload size={16} />} loading={saveMutation.isPending} onClick={() => saveMutation.mutate({ update: system.update, vulnerability: system.vulnerability })}>
           {t('common.save')}
         </Button>
       </header>
@@ -137,26 +109,15 @@ export default function UpdatesPage() {
           <div className="updates-runtime-form">
             <label className="switch-line updates-main-switch"><span>{t('updates.enableAutoUpdate')}</span><Switch checked={system.update.ota.enabled} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
             <label className="wide-field"><span>{t('system.updateServer')}</span>
-              <Select
-                value={updateServerSelectValue}
-                onChange={(server) => {
-                  const selected = String(server);
-                  setOtaServerSelection(selected);
-                  if (selected !== CUSTOM_OTA_SERVER_OPTION) {
-                    patchSystem({ update: { ota: { ...system.update.ota, server: selected } } });
-                  } else if (OTA_SERVER_OPTIONS.includes(system.update.ota.server)) {
-                    patchSystem({ update: { ota: { ...system.update.ota, server: '' } } });
-                  }
-                }}
-              >
+              <Select value={updateServer || OFFICIAL_OTA_SERVER} onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server: String(server) } } })}>
                 <Select.Option value={OFFICIAL_OTA_SERVER}>{t('updates.officialServer')} ({OFFICIAL_OTA_SERVER})</Select.Option>
-                <Select.Option value={FORGEJO_OTA_SERVER}>{t('updates.forgejoServer')}</Select.Option>
-                <Select.Option value={GITHUB_OTA_SERVER}>{t('updates.githubServer')}</Select.Option>
-                <Select.Option value={CUSTOM_OTA_SERVER_OPTION}>{t('updates.customServer')}</Select.Option>
+                <Select.Option value="https://git.laoker.cc/Laoke/CheeseWAF/releases">{t('updates.forgejoServer')}</Select.Option>
+                <Select.Option value="https://github.com/LaokeQwQ/CheeseWAF/releases">{t('updates.githubServer')}</Select.Option>
+                <Select.Option value="__custom__">{t('updates.customServer')}</Select.Option>
               </Select>
             </label>
-            {showCustomUpdateServer && (
-              <label className="wide-field"><span>{t('updates.customURL')}</span><Input value={customUpdateServerValue} placeholder="https://" onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
+            {updateServer !== OFFICIAL_OTA_SERVER && updateServer !== 'https://git.laoker.cc/Laoke/CheeseWAF/releases' && updateServer !== 'https://github.com/LaokeQwQ/CheeseWAF/releases' && (
+              <label className="wide-field"><span>{t('updates.customURL')}</span><Input value={updateServer} placeholder="https://" onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
             )}
             <label>
               <span>{t('system.channel')}</span>
@@ -289,45 +250,6 @@ function removeVulnerabilityFeed(id: string, setSystem: React.Dispatch<React.Set
       feeds: current.vulnerability.feeds.filter((feed) => feed.id !== id),
     },
   }));
-}
-
-export function resolveOTAServerSelectValue(server: string) {
-  return OTA_SERVER_OPTIONS.includes(server) ? server : CUSTOM_OTA_SERVER_OPTION;
-}
-
-export function validateOTAServer(server: string, selection = resolveOTAServerSelectValue(server)) {
-  if (selection !== CUSTOM_OTA_SERVER_OPTION && OTA_SERVER_OPTIONS.includes(selection)) {
-    return selection;
-  }
-  if (server === CUSTOM_OTA_SERVER_OPTION) {
-    return null;
-  }
-  try {
-    const url = new URL(server);
-    if (url.protocol !== 'https:' || !url.hostname) {
-      return null;
-    }
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-export function buildUpdatesSavePayload(system: SystemConfig, selection = resolveOTAServerSelectValue(system.update.ota.server)): Pick<SystemConfig, 'update' | 'vulnerability'> {
-  const validatedServer = validateOTAServer(system.update.ota.server, selection);
-  if (!validatedServer) {
-    throw new Error('Custom OTA source must be a valid HTTPS URL.');
-  }
-  return {
-    update: {
-      ...system.update,
-      ota: {
-        ...system.update.ota,
-        server: validatedServer,
-      },
-    },
-    vulnerability: system.vulnerability,
-  };
 }
 
 function publicKeySummary(value: string, t: (key: string, options?: Record<string, unknown>) => string) {

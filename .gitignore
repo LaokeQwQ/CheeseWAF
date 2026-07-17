@@ -11,10 +11,6 @@
 *.so
 *.dylib
 *.test
-*.app
-*.msi
-*-setup.exe
-CheeseWAF-*-setup.exe
 
 # Coverage, profiles, and temporary test artifacts
 *.out
@@ -25,11 +21,6 @@ security-gate*.json
 zap-baseline*.html
 zap-baseline*.json
 sqlmap-output/
-playwright-report/
-test-results/
-blob-report/
-.playwright/
-**/playwright/.cache/
 
 # Local runtime state and secrets
 .env
@@ -38,7 +29,6 @@ blob-report/
 /data/
 /logs/
 /run/
-**/data/run/
 /tmp/
 /.tmp/
 /temp/
@@ -50,14 +40,8 @@ blob-report/
 *.p12
 *.pfx
 *.db
-*.db-shm
-*.db-wal
 *.sqlite
 *.sqlite3
-auth.key
-**/auth.key
-cli.lang
-**/cli.lang
 
 # Local configuration. Commit *.example.yaml templates instead.
 configs/*.yaml
@@ -65,41 +49,15 @@ configs/*.yaml
 !configs/cheesewaf.yaml
 configs/versions/
 
-# Operator dumps / support bundles / accidental credential files
-cheesewaf-logs-*.zip
-*-support-bundle.zip
-support-bundle*.zip
-*.cookies
-*cookie*.txt
-*-token.txt
-*credential*
-*credentials*
-!scripts/**/*credential*
-forgejo-credential*
-*.session
-*.secret
-
-# Packed web/backend artifacts that must not ship from a dirty tree
-*.tgz
-*.tar
-*.tar.gz
-!docs/**/*.tar.gz
-web-dist*.zip
-web-dist*.tgz
-web-dist*.tar.gz
-cheesewaf-web-*.tar.gz
-cheesewaf-web-*.tgz
-cheesewaf-web-*.zip
-cheesewaf-deploy-*.tar.gz
-cheesewaf-*-deploy.tar.gz
-
-# Markdown policy (all branches): only public surface docs may be tracked.
-# Allowed: README.md, README_CN.md, progress.md (repo root only).
-# Everything else (plans, audits, upgrades, agent notes, docs/**, etc.) stays local.
-*.md
-!/README.md
-!/README_CN.md
-!/progress.md
+# Private planning/task files
+task.md
+fix_task.md
+implementation_plan.md
+deepseek_work.md
+engine_upgrade.md
+claude_fix.md
+deepseek_advice.md
+security_best_practices_report.md
 *.private.md
 *.local.md
 
@@ -112,9 +70,6 @@ web/.vite/
 web/coverage/
 web/tmp/
 web/*.log
-web/.env
-web/.env.*
-!web/.env.example
 
 # Go workspace and dependency cache
 go.work
@@ -122,7 +77,6 @@ go.work.sum
 vendor/
 .cache/
 .gocache/
-.gomodcache/
 
 # Editors and local agent state
 .idea/
@@ -130,22 +84,7 @@ vendor/
 .claude/
 .codex/
 .codegraph/
-.tmp-playwriter/
-.tmp-ui-runtime/
-artifacts/
-.grok/
-.agents/
 
 # OS metadata
 .DS_Store
 Thumbs.db
-Desktop.ini
-ehthumbs.db
-
-# Agent Eyes local inspector state
-.code-inspector/
-web/.code-inspector/
-.code-inspector/**
-
-# Local one-off notes
-ui_fixing.md

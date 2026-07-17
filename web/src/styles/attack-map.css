@@ -234,70 +234,6 @@
   max-width: 100%;
   min-height: clamp(500px, 50vw, 690px);
   overflow: hidden;
-}
-
-.attack-map-page .map-canvas.map-engine-osm {
-  /* MapLibre owns pan/zoom; disable old CSS transform stage. */
-  touch-action: none;
-}
-
-.attack-map-page .osm-attack-map {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 30% 20%, color-mix(in srgb, var(--accent-info) 12%, transparent), transparent 42%),
-    linear-gradient(180deg, #e8eef5 0%, #d9e4f0 100%);
-}
-
-.attack-map-page .osm-attack-map .maplibregl-map {
-  width: 100%;
-  height: 100%;
-  font-family: inherit;
-}
-
-.attack-map-page .osm-attack-map .maplibregl-ctrl-top-right {
-  top: 10px;
-  right: 10px;
-}
-
-.attack-map-page .osm-attack-map .maplibregl-ctrl-group {
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-color) 28%, transparent);
-  overflow: hidden;
-}
-
-.attack-map-page .osm-attack-popup .maplibregl-popup-content {
-  padding: 8px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.35;
-  max-width: 260px;
-  color: var(--text, #0f172a);
-  background: color-mix(in srgb, var(--surface, #fff) 94%, transparent);
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
-}
-
-.attack-map-page .map-basemap-credit {
-  position: absolute;
-  z-index: 4;
-  right: 12px;
-  bottom: 10px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  color: color-mix(in srgb, var(--text-muted, #64748b) 92%, #fff);
-  background: color-mix(in srgb, var(--surface, #fff) 78%, transparent);
-  backdrop-filter: blur(8px);
-  pointer-events: none;
-}
-
-.attack-map-page .map-canvas {
   border: 1px solid color-mix(in srgb, var(--accent-info) 16%, var(--border));
   border-radius: 12px;
   background:
@@ -866,10 +802,9 @@
 }
 
 .attack-map-page .map-empty {
-  left: 18px;
-  top: auto;
-  bottom: 18px;
-  transform: none;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .attack-map-page .map-marker {
@@ -1615,13 +1550,7 @@
 }
 
 .attack-screen-globe .globe-stage {
-  /* Attack screen is outside .attack-map-page, so absolute fill must be set here. */
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-  min-height: 0;
+  inset: 2% 8% 5%;
 }
 
 .attack-screen-overlay {
@@ -1900,18 +1829,17 @@
 
 .attack-screen-light .attack-screen-globe::before {
   position: absolute;
-  /* Keep decoration rings around the centered globe, not shrunken upward. */
-  inset: 4% 6%;
+  inset: 7% 10%;
   content: "";
   pointer-events: none;
   background:
     radial-gradient(
       circle at center,
-      transparent 0 42%,
-      color-mix(in srgb, var(--accent-info) 16%, transparent) 42.2% 42.7%,
-      transparent 43% 60%,
-      color-mix(in srgb, var(--accent-info) 10%, transparent) 60.2% 60.7%,
-      transparent 61%
+      transparent 0 38%,
+      color-mix(in srgb, var(--accent-info) 16%, transparent) 38.2% 38.7%,
+      transparent 39% 56%,
+      color-mix(in srgb, var(--accent-info) 10%, transparent) 56.2% 56.7%,
+      transparent 57%
     ),
     linear-gradient(
       90deg,

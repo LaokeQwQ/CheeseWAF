@@ -3,17 +3,13 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
-
-var ErrUnknownTaskType = errors.New("unknown scheduler task type")
 
 type TaskFunc func(context.Context, Task) error
 
@@ -35,8 +31,6 @@ type Task struct {
 	CreatedAt    time.Time     `json:"created_at"`
 	Run          TaskFunc      `json:"-"`
 	InitialDelay time.Duration `json:"-"`
-	ManagedRoots []string      `json:"-"`
-	Runtime      Runtime       `json:"-"`
 }
 
 type HistoryEntry struct {
@@ -65,23 +59,21 @@ func FromConfigWithRuntime(cfg config.SchedulerConfig, dataDir, configPath, logP
 	tasks := make([]Task, 0, len(cfg.Tasks))
 	for _, item := range cfg.Tasks {
 		task := Task{
-			ID:           item.ID,
-			Name:         item.Name,
-			Type:         item.Type,
-			Schedule:     item.Schedule,
-			Every:        item.Every,
-			Frequency:    item.Frequency,
-			At:           item.At,
-			Target:       item.Target,
-			Channel:      item.Channel,
-			Recipient:    item.Recipient,
-			Period:       item.Period,
-			Format:       item.Format,
-			Keep:         item.Keep,
-			Enabled:      item.Enabled,
-			CreatedAt:    item.CreatedAt,
-			ManagedRoots: managedRoots(dataDir, configPath, logPath),
-			Runtime:      runtime,
+			ID:        item.ID,
+			Name:      item.Name,
+			Type:      item.Type,
+			Schedule:  item.Schedule,
+			Every:     item.Every,
+			Frequency: item.Frequency,
+			At:        item.At,
+			Target:    item.Target,
+			Channel:   item.Channel,
+			Recipient: item.Recipient,
+			Period:    item.Period,
+			Format:    item.Format,
+			Keep:      item.Keep,
+			Enabled:   item.Enabled,
+			CreatedAt: item.CreatedAt,
 		}
 		if task.ID == "" {
 			task.ID = task.Type + "-" + task.Target
@@ -106,35 +98,14 @@ func FromConfigWithRuntime(cfg config.SchedulerConfig, dataDir, configPath, logP
 		case "ai_self_learning", "self_learning_rules":
 			task.Run = AISelfLearning(runtime)
 		default:
-			task.Run = UnsupportedTask
+			task.Run = Noop
 		}
 		tasks = append(tasks, task)
 	}
 	return tasks
 }
 
-func managedRoots(dataDir, _ string, logPath string) []string {
-	roots := []string{dataDir}
-	if logPath != "" {
-		roots = append(roots, filepath.Dir(logPath))
-	}
-	return roots
-}
-
 func Noop(context.Context, Task) error { return nil }
-
-func UnsupportedTask(_ context.Context, task Task) error {
-	return fmt.Errorf("%w: %s", ErrUnknownTaskType, task.Type)
-}
-
-func SupportedTaskType(taskType string) bool {
-	switch taskType {
-	case "backup", "cleanup", "security_report", "ai_self_learning", "self_learning_rules":
-		return true
-	default:
-		return false
-	}
-}
 
 func applyScheduleDefaults(task *Task) {
 	if task.Frequency == "" && task.Schedule != "" {

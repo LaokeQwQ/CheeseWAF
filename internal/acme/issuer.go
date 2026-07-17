@@ -31,18 +31,6 @@ var (
 		regexp.MustCompile(`(?i)([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASS|API[_-]?KEY|ACCESS[_-]?KEY)[A-Z0-9_]*\s*=\s*)[^\s'"]+`),
 		regexp.MustCompile(`(?i)((?:authorization|x-api-key|api-key)\s*[:=]\s*(?:bearer\s+)?)\S+`),
 	}
-	// Process-control / loader variables must never be accepted from caller-supplied DNS env.
-	blockedDNSEnvKeys = map[string]struct{}{
-		"PATH": {}, "PATHEXT": {}, "ComSpec": {}, "COMSPEC": {},
-		"LD_PRELOAD": {}, "LD_LIBRARY_PATH": {}, "LD_AUDIT": {}, "LD_DEBUG": {},
-		"DYLD_INSERT_LIBRARIES": {}, "DYLD_LIBRARY_PATH": {}, "DYLD_FRAMEWORK_PATH": {},
-		"PYTHONPATH": {}, "PERL5LIB": {}, "RUBYLIB": {}, "NODE_OPTIONS": {},
-		"BASH_ENV": {}, "ENV": {}, "IFS": {}, "CDPATH": {},
-		"SSLKEYLOGFILE": {}, "OPENSSL_CONF": {}, "SSL_CERT_FILE": {}, "SSL_CERT_DIR": {},
-		"GCONV_PATH": {}, "TERM": {}, "HOME": {}, "USERPROFILE": {}, "SystemRoot": {}, "SYSTEMROOT": {},
-		"WINDIR": {}, "TMP": {}, "TEMP": {}, "TMPDIR": {},
-	}
-	reloadCmdShellMeta = regexp.MustCompile(`[;&|<>$` + "`" + `\\!\n\r*?]`)
 )
 
 type CommandRunner interface {
@@ -53,44 +41,12 @@ type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, env []string, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	// Merge host env first, then caller env — but strip any process-control keys
-	// from the caller-supplied list so PATH/LD_PRELOAD cannot hijack acme.sh.
-	cmd.Env = mergeChildEnv(os.Environ(), env)
+	cmd.Env = append(os.Environ(), env...)
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
 	cmd.Stderr = &combined
 	err := cmd.Run()
 	return combined.String(), err
-}
-
-func mergeChildEnv(base, extra []string) []string {
-	out := append([]string(nil), base...)
-	for _, item := range extra {
-		key, _, ok := strings.Cut(item, "=")
-		if !ok {
-			continue
-		}
-		if isBlockedDNSEnvKey(key) {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-func isBlockedDNSEnvKey(key string) bool {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return true
-	}
-	if _, blocked := blockedDNSEnvKeys[key]; blocked {
-		return true
-	}
-	upper := strings.ToUpper(key)
-	if strings.HasPrefix(upper, "LD_") || strings.HasPrefix(upper, "DYLD_") {
-		return true
-	}
-	return false
 }
 
 type IssuerOptions struct {
@@ -343,37 +299,6 @@ func validateIssueRequest(req IssueRequest) error {
 		if !envKeyPattern.MatchString(key) {
 			return fmt.Errorf("invalid DNS env var %q", key)
 		}
-		if isBlockedDNSEnvKey(key) {
-			return fmt.Errorf("DNS env var %q is not allowed", key)
-		}
-	}
-	if err := validateReloadCommand(req.ReloadCmd); err != nil {
-		return err
-	}
-	return nil
-}
-
-func validateReloadCommand(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	if strings.ContainsAny(value, "\x00\r\n") {
-		return fmt.Errorf("reload_command must not contain control characters")
-	}
-	if reloadCmdShellMeta.MatchString(value) {
-		return fmt.Errorf("reload_command must not contain shell metacharacters")
-	}
-	// Prefer absolute commands; relative names are easy to hijack via PATH.
-	// Accept Unix absolute paths even when the control plane runs on Windows
-	// (acme.sh / reload usually executes on a Linux host).
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return fmt.Errorf("reload_command is empty")
-	}
-	exe := fields[0]
-	if !filepath.IsAbs(exe) && !strings.HasPrefix(exe, "/") {
-		return fmt.Errorf("reload_command executable must be an absolute path")
 	}
 	return nil
 }
@@ -398,9 +323,6 @@ func validateACMEServer(value string) error {
 func envList(values map[string]string) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
-		if isBlockedDNSEnvKey(key) || !envKeyPattern.MatchString(key) {
-			continue
-		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)

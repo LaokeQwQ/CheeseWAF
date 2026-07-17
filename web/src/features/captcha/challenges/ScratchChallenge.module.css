@@ -1,5 +1,0 @@
-.surface { position: relative; width: 100%; overflow: hidden; border: 1px solid var(--color-border-2, #cbd3dc); border-radius: 6px; background: var(--color-fill-1, #eef1f4); cursor: crosshair; touch-action: none; user-select: none; }
-.surface:focus-visible { outline: 3px solid var(--color-primary-6, #1769aa); outline-offset: 2px; }
-.image, .mask { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.image { object-fit: fill; pointer-events: none; }
-.mask { pointer-events: none; }

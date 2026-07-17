@@ -10,14 +10,7 @@ import (
 // normalize applies NFKC normalization (compatibility decomposition + composition)
 // to defeat homoglyph/confusable attacks (Cyrillic а → Latin a, etc.),
 // then lowercases and strips control characters.
-// Pure printable ASCII without escapes uses a cheap lowercase path.
 func normalize(raw string) string {
-	if isSimpleASCII(raw) {
-		if isAlreadyLowerASCII(raw) {
-			return raw // zero-alloc hot path for already-lower payloads
-		}
-		return strings.ToLower(raw)
-	}
 	// NFKC normalizes Unicode confusables: fullwidth → ASCII, superscript → plain, etc.
 	normalized := norm.NFKC.String(raw)
 	normalized = strings.ToLower(normalized)
@@ -27,29 +20,6 @@ func normalize(raw string) string {
 		}
 		return r
 	}, normalized)
-}
-
-func isSimpleASCII(raw string) bool {
-	for i := 0; i < len(raw); i++ {
-		c := raw[i]
-		if c >= 0x80 || c < 0x20 && c != '\t' && c != '\n' && c != '\r' {
-			return false
-		}
-		if c == '\\' {
-			return false
-		}
-	}
-	return true
-}
-
-func isAlreadyLowerASCII(raw string) bool {
-	for i := 0; i < len(raw); i++ {
-		c := raw[i]
-		if c >= 'A' && c <= 'Z' {
-			return false
-		}
-	}
-	return true
 }
 
 func tokens(raw string) []string {

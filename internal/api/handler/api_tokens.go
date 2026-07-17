@@ -3,7 +3,6 @@ package handler
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -14,11 +13,6 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-)
-
-var (
-	errManagementAPITokenConfigInvalid = errors.New("management api token config is invalid")
-	errManagementAPITokenNotFound      = errors.New("management api token not found")
 )
 
 type managementAPITokenPayload struct {
@@ -45,64 +39,8 @@ type managementAPITokenView struct {
 }
 
 func (h *Handler) ListManagementAPITokens(w http.ResponseWriter, _ *http.Request) {
-	h.configMutationMu.RLock()
-	defer h.configMutationMu.RUnlock()
 	items := managementAPITokenViews(h.Config.APISec.ManagementAPI.Tokens)
 	writeData(w, map[string]any{"enabled": h.Config.APISec.ManagementAPI.Enabled, "items": items, "total": len(items)})
-}
-
-func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*middleware.Claims, func(), bool) {
-	if h == nil || h.Config == nil {
-		return nil, nil, false
-	}
-	h.configMutationMu.Lock()
-	claims, ok := middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
-	if !ok {
-		h.configMutationMu.Unlock()
-		return nil, nil, false
-	}
-	for idx := range h.Config.APISec.ManagementAPI.Tokens {
-		token := &h.Config.APISec.ManagementAPI.Tokens[idx]
-		if token.ID != claims.ID {
-			continue
-		}
-		interval := h.managementTokenFlushInterval
-		if interval <= 0 {
-			interval = time.Minute
-		}
-		if !token.LastUsedAt.IsZero() && at.Sub(token.LastUsedAt) < interval {
-			h.configMutationMu.Unlock()
-			h.configMutationMu.RLock()
-			claims, ok = middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
-			if !ok {
-				h.configMutationMu.RUnlock()
-				return nil, nil, false
-			}
-			return claims, h.configMutationMu.RUnlock, true
-		}
-		previous := token.LastUsedAt
-		token.LastUsedAt = at.UTC()
-		if err := h.persistManagementAPITokenUseLocked(); err != nil {
-			token.LastUsedAt = previous
-		}
-		h.configMutationMu.Unlock()
-		h.configMutationMu.RLock()
-		claims, ok = middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
-		if !ok {
-			h.configMutationMu.RUnlock()
-			return nil, nil, false
-		}
-		return claims, h.configMutationMu.RUnlock, true
-	}
-	h.configMutationMu.Unlock()
-	return nil, nil, false
-}
-
-func (h *Handler) persistManagementAPITokenUseLocked() error {
-	if h == nil || h.Config == nil || h.ConfigPath == "" {
-		return nil
-	}
-	return config.Save(h.ConfigPath, h.Config)
 }
 
 func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Request) {
@@ -127,11 +65,7 @@ func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", "at least one scope is required")
 		return
 	}
-	if err := h.validateManagementAPITokenScopes(r, scopes); err != nil {
-		writeError(w, http.StatusForbidden, "API_TOKEN_SCOPE_FORBIDDEN", err.Error())
-		return
-	}
-	now := h.nowUTC()
+	now := time.Now().UTC()
 	expiresAt, ok := parseManagementAPITokenExpiry(w, req, now)
 	if !ok {
 		return
@@ -158,23 +92,18 @@ func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Reques
 		ExpiresAt: expiresAt,
 	}
 
-	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
-		candidate.APISec.ManagementAPI.Tokens = append(candidate.APISec.ManagementAPI.Tokens, item)
-		if err := config.Validate(candidate); err != nil {
-			return fmt.Errorf("%w: %v", errManagementAPITokenConfigInvalid, err)
-		}
-		return nil
-	}, nil)
-	if err != nil {
-		if errors.Is(err, errManagementAPITokenConfigInvalid) {
-			writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", err.Error())
-			return
-		}
+	next := *h.Config
+	next.APISec.ManagementAPI.Tokens = append(append([]config.ManagementAPITokenConfig(nil), h.Config.APISec.ManagementAPI.Tokens...), item)
+	if err := config.Validate(&next); err != nil {
+		writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", err.Error())
+		return
+	}
+	h.Config.APISec.ManagementAPI = next.APISec.ManagementAPI
+	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 		return
 	}
-	created := committed.APISec.ManagementAPI.Tokens[len(committed.APISec.ManagementAPI.Tokens)-1]
-	writeData(w, map[string]any{"token": raw, "item": managementAPITokenViewFromConfig(created)})
+	writeData(w, map[string]any{"token": raw, "item": managementAPITokenViewFromConfig(item)})
 }
 
 func (h *Handler) RevokeManagementAPIToken(w http.ResponseWriter, r *http.Request) {
@@ -186,42 +115,34 @@ func (h *Handler) RevokeManagementAPIToken(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", "token id is required")
 		return
 	}
-	now := h.nowUTC()
-	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
-		for idx := range candidate.APISec.ManagementAPI.Tokens {
-			if candidate.APISec.ManagementAPI.Tokens[idx].ID != id {
-				continue
-			}
-			candidate.APISec.ManagementAPI.Tokens[idx].Enabled = false
-			candidate.APISec.ManagementAPI.Tokens[idx].RevokedAt = now
-			candidate.APISec.ManagementAPI.Tokens[idx].UpdatedAt = now
-			if err := config.Validate(candidate); err != nil {
-				return fmt.Errorf("%w: %v", errManagementAPITokenConfigInvalid, err)
-			}
-			return nil
+	now := time.Now().UTC()
+	next := *h.Config
+	next.APISec.ManagementAPI.Tokens = append([]config.ManagementAPITokenConfig(nil), h.Config.APISec.ManagementAPI.Tokens...)
+	var revoked *config.ManagementAPITokenConfig
+	for idx := range next.APISec.ManagementAPI.Tokens {
+		if next.APISec.ManagementAPI.Tokens[idx].ID != id {
+			continue
 		}
-		return errManagementAPITokenNotFound
-	}, nil)
-	if err != nil {
-		if errors.Is(err, errManagementAPITokenNotFound) {
-			writeError(w, http.StatusNotFound, "API_TOKEN_NOT_FOUND", "api token not found")
-			return
-		}
-		if errors.Is(err, errManagementAPITokenConfigInvalid) {
-			writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", err.Error())
-			return
-		}
+		next.APISec.ManagementAPI.Tokens[idx].Enabled = false
+		next.APISec.ManagementAPI.Tokens[idx].RevokedAt = now
+		next.APISec.ManagementAPI.Tokens[idx].UpdatedAt = now
+		revoked = &next.APISec.ManagementAPI.Tokens[idx]
+		break
+	}
+	if revoked == nil {
+		writeError(w, http.StatusNotFound, "API_TOKEN_NOT_FOUND", "api token not found")
+		return
+	}
+	if err := config.Validate(&next); err != nil {
+		writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", err.Error())
+		return
+	}
+	h.Config.APISec.ManagementAPI = next.APISec.ManagementAPI
+	if err := h.persistConfig(); err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 		return
 	}
-	var revoked config.ManagementAPITokenConfig
-	for _, token := range committed.APISec.ManagementAPI.Tokens {
-		if token.ID == id {
-			revoked = token
-			break
-		}
-	}
-	writeData(w, map[string]any{"revoked": true, "item": managementAPITokenViewFromConfig(revoked)})
+	writeData(w, map[string]any{"revoked": true, "item": managementAPITokenViewFromConfig(*revoked)})
 }
 
 func parseManagementAPITokenExpiry(w http.ResponseWriter, req managementAPITokenPayload, now time.Time) (time.Time, bool) {
@@ -264,61 +185,6 @@ func normalizeScopes(scopes []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func (h *Handler) validateManagementAPITokenScopes(r *http.Request, scopes []string) error {
-	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
-	if claims == nil {
-		return fmt.Errorf("caller is not authenticated")
-	}
-	permissions := config.Default().APISec.Permissions
-	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
-		permissions = h.Config.APISec.Permissions
-	}
-	for _, scope := range scopes {
-		if strings.TrimSpace(scope) == "*" {
-			if claims.Role == "admin" {
-				continue
-			}
-			return fmt.Errorf("wildcard * scope can only be granted by an admin")
-		}
-		if !callerHasPermission(claims, permissions, scope) {
-			return fmt.Errorf("scope %q exceeds caller permissions", scope)
-		}
-	}
-	return nil
-}
-
-func callerHasPermission(claims *middleware.Claims, permissions map[string][]string, required string) bool {
-	if claims == nil {
-		return false
-	}
-	if claims.Role == "admin" {
-		return true
-	}
-	for _, scope := range claims.Scopes {
-		if permissionMatches(scope, required) {
-			return true
-		}
-	}
-	for _, permission := range permissions[claims.Role] {
-		if permissionMatches(permission, required) {
-			return true
-		}
-	}
-	return false
-}
-
-func permissionMatches(permission, required string) bool {
-	permission = strings.TrimSpace(permission)
-	required = strings.TrimSpace(required)
-	if permission == "*" || permission == required {
-		return true
-	}
-	if strings.HasSuffix(permission, "*") {
-		return strings.HasPrefix(required, strings.TrimSuffix(permission, "*"))
-	}
-	return false
 }
 
 func newManagementAPITokenSecret() (string, error) {

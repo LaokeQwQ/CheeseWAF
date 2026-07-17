@@ -1,11 +1,10 @@
-import { Button, Empty, Form, Input, InputNumber, Message as ArcoMessage, Modal, Progress, Select, Switch, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Progress, Select, Switch, Table, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Archive, Database, Edit3, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { cleanupStorage, exportBackup, fetchStorageStats, fetchTasks, updateTasks } from '../../api/client';
 import type { ScheduledTask } from '../../types/api';
-import './OperationsPage.css';
 
 type DurationUnit = 'm' | 'h' | 'd';
 
@@ -21,10 +20,8 @@ const taskFrequencyOptions = ['interval', 'daily', 'weekly', 'monthly'];
 export default function OperationsPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const tasksQuery = useQuery({ queryKey: ['tasks'], queryFn: fetchTasks, retry: false });
-  const storageQuery = useQuery({ queryKey: ['storage'], queryFn: fetchStorageStats, retry: false });
-  const tasks = tasksQuery.data ?? [];
-  const storage = storageQuery.data;
+  const { data: tasks = [] } = useQuery({ queryKey: ['tasks'], queryFn: fetchTasks, retry: false });
+  const { data: storage } = useQuery({ queryKey: ['storage'], queryFn: fetchStorageStats, retry: false });
   const cleanup = useMutation({
     mutationFn: cleanupStorage,
     onSuccess: async (result) => {
@@ -33,14 +30,7 @@ export default function OperationsPage() {
     },
     onError: (error) => ArcoMessage.error(error.message),
   });
-  const backup = useMutation({
-    mutationFn: exportBackup,
-    onSuccess: (result) => {
-      const destination = typeof result.path === 'string' ? `: ${result.path}` : '';
-      ArcoMessage.success(`${t('ops.backup')}${destination}`);
-    },
-    onError: (error) => ArcoMessage.error(error.message),
-  });
+  const backup = useMutation({ mutationFn: exportBackup });
   const tasksMutation = useMutation({
     mutationFn: updateTasks,
     onSuccess: async () => {
@@ -54,14 +44,14 @@ export default function OperationsPage() {
   const total = Math.max(dataSize + logSize, 1);
   const reportTask = tasks.find((task) => task.type === 'security_report') ?? defaultReportTask;
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
-  const persistTasks = (next: ScheduledTask[], onSuccess?: () => void) => tasksMutation.mutate(next, { onSuccess });
+  const persistTasks = (next: ScheduledTask[]) => tasksMutation.mutate(next);
   const patchTask = (id: string, patch: Partial<ScheduledTask>) => {
     persistTasks(tasks.map((task) => (task.id === id ? { ...task, ...patch } : task)));
   };
-  const saveTask = (task: ScheduledTask, patch: Partial<ScheduledTask>, onSuccess?: () => void) => {
+  const saveTask = (task: ScheduledTask, patch: Partial<ScheduledTask>) => {
     const nextTask = { ...task, ...patch };
     const exists = tasks.some((item) => item.id === task.id);
-    persistTasks(exists ? tasks.map((item) => (item.id === task.id ? nextTask : item)) : [...tasks, nextTask], onSuccess);
+    persistTasks(exists ? tasks.map((item) => (item.id === task.id ? nextTask : item)) : [...tasks, nextTask]);
   };
   const removeTask = (id: string) => {
     Modal.confirm({
@@ -89,133 +79,114 @@ export default function OperationsPage() {
       <div className="ops-grid">
         <section className="panel storage-ops-panel">
           <div className="panel-heading"><h2><Database size={16} /> {t('ops.storage')}</h2></div>
-          {storageQuery.isLoading ? <div className="skeleton-list" /> : storageQuery.isError ? (
-            <QueryError error={storageQuery.error} onRetry={() => storageQuery.refetch()} retryLabel={t('common.retry')} fallbackMessage={t('common.noData')} />
-          ) : (
-            <>
-              <div className="resource-stack">
-                <div><Database size={18} /><span>{t('ops.dataDir')}</span><Progress percent={Math.round((dataSize / total) * 100)} /><code className="resource-value">{formatBytes(dataSize)}</code></div>
-                <div><Archive size={18} /><span>{t('ops.logsDir')}</span><Progress percent={Math.round((logSize / total) * 100)} /><code className="resource-value">{formatBytes(logSize)}</code></div>
-              </div>
-              <div className="panel-actions">
-                <Button icon={<RotateCcw size={16} />} onClick={() => cleanup.mutate()} loading={cleanup.isPending}>{t('ops.cleanup')}</Button>
-              </div>
-            </>
-          )}
+          <div className="resource-stack">
+            <div><Database size={18} /><span>{t('ops.dataDir')}</span><Progress percent={Math.round((dataSize / total) * 100)} status={dataSize / total > 0.9 ? 'error' : 'normal'} /><code className="resource-value">{formatBytes(dataSize)}</code></div>
+            <div><Archive size={18} /><span>{t('ops.logsDir')}</span><Progress percent={Math.round((logSize / total) * 100)} status={logSize / total > 0.9 ? 'error' : 'normal'} /><code className="resource-value">{formatBytes(logSize)}</code></div>
+          </div>
+          <div className="panel-actions">
+            <Button icon={<RotateCcw size={16} />} onClick={() => cleanup.mutate()} loading={cleanup.isPending}>{t('ops.cleanup')}</Button>
+          </div>
         </section>
         <section className="panel ops-report-panel">
           <div className="panel-heading"><h2>{t('ops.report')}</h2></div>
-          {tasksQuery.isLoading ? <div className="skeleton-list" /> : tasksQuery.isError ? (
-            <QueryError error={tasksQuery.error} onRetry={() => tasksQuery.refetch()} retryLabel={t('common.retry')} fallbackMessage={t('common.noData')} />
-          ) : (
-            <Form
-              key={reportTask.id}
-              className="ops-report-form"
-              layout="vertical"
-              initialValues={{
-                enabled: reportTask.enabled,
-                frequency: reportTask.frequency ?? 'daily',
-                at: reportTask.at ?? '08:00',
-                channel: reportTask.channel ?? 'file',
-                recipient: reportTask.recipient ?? './data/reports',
-                period: reportTask.period ?? 'daily',
-              }}
-              onSubmit={(values) => tasksMutation.mutate(upsertReportTask(tasks, { ...reportTask, ...values }))}
-            >
-              <Form.Item label={t('ops.report')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-              <Form.Item label={t('ops.every')} field="frequency">
-                <Select>
-                  <Select.Option value="daily">{t('ops.daily')}</Select.Option>
-                  <Select.Option value="weekly">{t('ops.weekly')}</Select.Option>
-                  <Select.Option value="monthly">{t('ops.monthly')}</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item label={t('ops.at')} field="at" rules={timeRules}><Input placeholder="08:00" /></Form.Item>
-              <Form.Item label={t('ops.channel')} field="channel">
-                <Select>
-                  <Select.Option value="file">{t('ops.file')}</Select.Option>
-                  <Select.Option value="webhook">Webhook</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item className="ops-report-recipient" label={t('ops.recipient')} field="recipient"><Input /></Form.Item>
-              <Form.Item className="ops-report-actions">
-                <Button type="primary" htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
-              </Form.Item>
-            </Form>
-          )}
+          <Form
+            className="ops-report-form"
+            layout="vertical"
+            initialValues={{
+              enabled: reportTask.enabled,
+              frequency: reportTask.frequency ?? 'daily',
+              at: reportTask.at ?? '08:00',
+              channel: reportTask.channel ?? 'file',
+              recipient: reportTask.recipient ?? './data/reports',
+              period: reportTask.period ?? 'daily',
+            }}
+            onSubmit={(values) => tasksMutation.mutate(upsertReportTask(tasks, { ...reportTask, ...values }))}
+          >
+            <Form.Item label={t('ops.report')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
+            <Form.Item label={t('ops.every')} field="frequency">
+              <Select>
+                <Select.Option value="daily">{t('ops.daily')}</Select.Option>
+                <Select.Option value="weekly">{t('ops.weekly')}</Select.Option>
+                <Select.Option value="monthly">{t('ops.monthly')}</Select.Option>
+              </Select>
+            </Form.Item>
+            <Form.Item label={t('ops.at')} field="at"><Input placeholder="08:00" /></Form.Item>
+            <Form.Item label={t('ops.channel')} field="channel">
+              <Select>
+                <Select.Option value="file">{t('ops.file')}</Select.Option>
+                <Select.Option value="webhook">Webhook</Select.Option>
+              </Select>
+            </Form.Item>
+            <Form.Item className="ops-report-recipient" label={t('ops.recipient')} field="recipient"><Input /></Form.Item>
+            <Form.Item className="ops-report-actions">
+              <Button type="primary" htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
+            </Form.Item>
+          </Form>
         </section>
       </div>
 
       <section className="table-panel ops-task-panel">
         <div className="panel-heading">
           <h2>{t('ops.taskList')}</h2>
-          <Button icon={<Plus size={15} />} disabled={tasksQuery.isLoading || tasksQuery.isError || tasksMutation.isPending} onClick={() => setEditingTask(newScheduledTask())}>{t('common.add')}</Button>
+          <Button icon={<Plus size={15} />} onClick={() => setEditingTask(newScheduledTask())}>{t('common.add')}</Button>
         </div>
-        {tasksQuery.isLoading ? <div className="skeleton-list" /> : tasksQuery.isError ? (
-          <QueryError error={tasksQuery.error} onRetry={() => tasksQuery.refetch()} retryLabel={t('common.retry')} fallbackMessage={t('common.noData')} />
-        ) : tasks.length === 0 ? <Empty description={t('common.noData')} /> : (
-          <>
-            <div className="desktop-table-wrap">
-              <Table
-                rowKey="id"
-                pagination={false}
-                className="ops-task-table"
-                data={tasks}
-                columns={[
-                  { title: t('ops.task'), dataIndex: 'name', width: 220, render: (name: string) => <span className="ops-task-name" title={name}>{name}</span> },
-                  { title: t('ops.type'), dataIndex: 'type', width: 126, render: (type: string) => <span className="status-group"><Tag>{taskTypeLabel(type, t)}</Tag></span> },
-                  { title: t('ops.every'), dataIndex: 'every', width: 136, render: (_: unknown, record: ScheduledTask) => <span className="ops-task-schedule">{formatTaskSchedule(record, t)}</span> },
-                  { title: t('ops.target'), dataIndex: 'target', width: 260, render: (target: string) => <code className="table-code ops-task-target" title={target || '-'}>{target || '-'}</code> },
-                  {
-                    title: t('rules.enabled'),
-                    dataIndex: 'enabled',
-                    width: 78,
-                    render: (enabled: boolean, record: ScheduledTask) => (
-                      <Switch
-                        size="small"
-                        checked={enabled}
-                        loading={tasksMutation.isPending}
-                        onChange={(next) => patchTask(record.id, { enabled: next })}
-                      />
-                    ),
-                  },
-                  {
-                    title: t('common.actions'),
-                    dataIndex: 'actions',
-                    width: 166,
-                    render: (_: unknown, record: ScheduledTask) => (
-                      <span className="table-action-group ops-task-actions">
-                        <Button size="mini" icon={<Edit3 size={13} />} onClick={() => setEditingTask(record)}>{t('common.edit')}</Button>
-                        <Button
-                          size="mini"
-                          status="danger"
-                          icon={<Trash2 size={13} />}
-                          disabled={tasksMutation.isPending}
-                          onClick={() => removeTask(record.id)}
-                        >
-                          {t('common.delete')}
-                        </Button>
-                      </span>
-                    ),
-                  },
-                ]}
-              />
-            </div>
-            <div className="mobile-card-list ops-task-cards">
-              {tasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  busy={tasksMutation.isPending}
-                  onToggle={(enabled) => patchTask(task.id, { enabled })}
-                  onEdit={() => setEditingTask(task)}
-                  onDelete={() => removeTask(task.id)}
-                  t={t}
-                />
-              ))}
-            </div>
-          </>
-        )}
+        <div className="desktop-table-wrap">
+          <Table
+            rowKey="id"
+            pagination={false}
+            className="ops-task-table"
+            data={tasks}
+            columns={[
+              { title: t('ops.task'), dataIndex: 'name' },
+              { title: t('ops.type'), dataIndex: 'type', render: (type: string) => <span className="status-group"><Tag>{taskTypeLabel(type, t)}</Tag></span> },
+              { title: t('ops.every'), dataIndex: 'every', render: (_: unknown, record: ScheduledTask) => formatTaskSchedule(record, t) },
+              { title: t('ops.target'), dataIndex: 'target', render: (target: string) => <code className="table-code" title={target || '-'}>{target || '-'}</code> },
+              {
+                title: t('rules.enabled'),
+                dataIndex: 'enabled',
+                render: (enabled: boolean, record: ScheduledTask) => (
+                  <Switch
+                    size="small"
+                    checked={enabled}
+                    loading={tasksMutation.isPending}
+                    onChange={(next) => patchTask(record.id, { enabled: next })}
+                  />
+                ),
+              },
+              {
+                title: t('common.actions'),
+                dataIndex: 'actions',
+                render: (_: unknown, record: ScheduledTask) => (
+                  <span className="table-action-group ops-task-actions">
+                    <Button size="mini" icon={<Edit3 size={13} />} onClick={() => setEditingTask(record)}>{t('common.edit')}</Button>
+                    <Button
+                      size="mini"
+                      status="danger"
+                      icon={<Trash2 size={13} />}
+                      disabled={tasksMutation.isPending}
+                      onClick={() => removeTask(record.id)}
+                    >
+                      {t('common.delete')}
+                    </Button>
+                  </span>
+                ),
+              },
+            ]}
+          />
+        </div>
+        <div className="mobile-card-list ops-task-cards">
+          {tasks.map((task) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              busy={tasksMutation.isPending}
+              onToggle={(enabled) => patchTask(task.id, { enabled })}
+              onEdit={() => setEditingTask(task)}
+              onDelete={() => removeTask(task.id)}
+              t={t}
+            />
+          ))}
+        </div>
       </section>
       <Modal
         title={t('ops.editTask')}
@@ -231,7 +202,8 @@ export default function OperationsPage() {
             layout="vertical"
             initialValues={taskToFormValues(editingTask)}
             onSubmit={(values: TaskFormValues) => {
-              saveTask(editingTask, normalizeTaskFormValues(editingTask, values), () => setEditingTask(null));
+              saveTask(editingTask, normalizeTaskFormValues(editingTask, values));
+              setEditingTask(null);
             }}
           >
             <div className="ops-task-form-grid">
@@ -248,7 +220,7 @@ export default function OperationsPage() {
                   {taskFrequencyOptions.map((frequency) => <Select.Option key={frequency} value={frequency}>{frequencyLabel(frequency, t)}</Select.Option>)}
                 </Select>
               </Form.Item>
-              <Form.Item label={t('ops.at')} field="at" rules={timeRules}><Input placeholder="08:00" /></Form.Item>
+              <Form.Item label={t('ops.at')} field="at"><Input placeholder="08:00" /></Form.Item>
               <Form.Item label={t('ops.everyValue')} field="everyValue">
                 <InputNumber min={1} max={31 * 24 * 60} />
               </Form.Item>
@@ -295,11 +267,6 @@ const defaultReportTask: ScheduledTask = {
   keep: 7,
   enabled: false,
 };
-
-const timeRules = [
-  { required: true },
-  { match: /^(?:[01]\d|2[0-3]):[0-5]\d$/, message: 'HH:mm' },
-];
 
 function upsertReportTask(tasks: ScheduledTask[], next: ScheduledTask) {
   const normalized = {
@@ -468,26 +435,6 @@ function durationUnitLabel(unit: DurationUnit, t: (key: string, options?: Record
   }
 }
 
-function QueryError({
-  error,
-  fallbackMessage,
-  onRetry,
-  retryLabel,
-}: {
-  error: unknown;
-  fallbackMessage: string;
-  onRetry: () => void;
-  retryLabel: string;
-}) {
-  const message = error instanceof Error && error.message.trim() ? error.message : fallbackMessage;
-  return (
-    <div className="inline-error ops-query-error" role="alert">
-      <span>{message}</span>
-      <Button size="small" onClick={onRetry}>{retryLabel}</Button>
-    </div>
-  );
-}
-
 function TaskCard({
   task,
   busy,
@@ -506,7 +453,7 @@ function TaskCard({
   return (
     <article className="mobile-data-card">
       <header>
-        <strong className="ops-task-card-title" title={task.name}>{task.name}</strong>
+        <strong>{task.name}</strong>
         <Tag>{taskTypeLabel(task.type, t)}</Tag>
       </header>
       <dl>

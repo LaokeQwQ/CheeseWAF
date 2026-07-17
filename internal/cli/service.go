@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,23 +32,13 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
-	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 var readAdminEntryNonce = rand.Read
-var executablePath = os.Executable
 
 func runServe(ctx context.Context) error {
 	cfg, loadedConfigPath, err := loadConfig()
 	if err != nil {
-		return err
-	}
-	timeSync, err := timekeeper.NewService(timekeeperConfigFromConfig(cfg.TimeSync), timekeeper.Dependencies{})
-	if err != nil {
-		return fmt.Errorf("configure application clock: %w", err)
-	}
-	clock := timeSync.Clock()
-	if err := ensureAdminTLSCertificate(cfg); err != nil {
 		return err
 	}
 	if cfg.Setup.DataDir == "" {
@@ -71,9 +60,6 @@ func runServe(ctx context.Context) error {
 	if err := store.Migrate(ctx); err != nil {
 		return err
 	}
-	if err := validateStartupUsers(ctx, cfg.Setup.DataDir, store); err != nil {
-		return err
-	}
 	if err := seedSites(ctx, store, cfg); err != nil {
 		return err
 	}
@@ -88,7 +74,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	proxyServer, err := proxy.NewServerWithClock(cfg, pipeline, sink, clock)
+	proxyServer, err := proxy.NewServer(cfg, pipeline, sink)
 	if err != nil {
 		return err
 	}
@@ -104,7 +90,7 @@ func runServe(ctx context.Context) error {
 		return nil
 	}
 	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
-	startRemoteWrite(ctx, cfg, store, sink, time.Now())
+	startRemoteWrite(ctx, cfg, sink, time.Now())
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
 		schedulerAIClient = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
@@ -126,24 +112,8 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	admin := &http.Server{
-		Addr: cfg.Server.AdminListen,
-		Handler: adminHandlerWithClock(cfg, api.NewRouter(api.Options{
-			Config:              cfg,
-			ConfigPath:          loadedConfigPath,
-			Store:               store,
-			Sink:                sink,
-			Hub:                 hub,
-			Secret:              authSecret,
-			Clock:               clock,
-			TimeSync:            timeSync,
-			OnSitesChanged:      reloadSites,
-			OnProtectionChanged: proxyServer.UpdateProtection,
-			OnAPISecChanged:     proxyServer.UpdateAPISec,
-			OnBlockPageChanged:  proxyServer.UpdateBlockPage,
-			OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
-				return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
-			},
-		}), authSecret, clock),
+		Addr:              cfg.Server.AdminListen,
+		Handler:           adminHandler(cfg, api.NewRouter(api.Options{Config: cfg, ConfigPath: loadedConfigPath, Store: store, Sink: sink, Hub: hub, Secret: authSecret, OnSitesChanged: reloadSites, OnProtectionChanged: proxyServer.UpdateProtection, OnAPISecChanged: proxyServer.UpdateAPISec, OnBlockPageChanged: proxyServer.UpdateBlockPage}), authSecret),
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
@@ -160,10 +130,6 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := timeSync.Start(ctx); err != nil {
-		return fmt.Errorf("start application clock: %w", err)
-	}
-	defer timeSync.Stop()
 
 	fmt.Printf("CheeseWAF proxy listening on %s\n", cfg.Server.Listen)
 	if tlsServer != nil {
@@ -226,33 +192,10 @@ func runServe(ctx context.Context) error {
 	return nil
 }
 
-func validateStartupUsers(ctx context.Context, dataDir string, store storage.UserStore) error {
-	users, err := store.ListUsers(ctx)
-	if err != nil {
-		return fmt.Errorf(`startup user integrity check: %w`, err)
-	}
-	if setup.NeedsSetup(dataDir) {
-		return nil
-	}
-	for _, user := range users {
-		if strings.EqualFold(strings.TrimSpace(user.Role), `admin`) {
-			return nil
-		}
-	}
-	return fmt.Errorf(`startup user integrity check failed: setup is complete but no administrator exists; run waf-cli user ensure-admin USERNAME --password-stdin before starting the service`)
-}
-
 func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string) http.Handler {
-	return adminHandlerWithClock(cfg, apiHandler, authSecret, timekeeper.SystemClock{})
-}
-
-func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock) http.Handler {
-	if clock == nil {
-		clock = timekeeper.SystemClock{}
-	}
 	webDir := resolveWebDir()
 	if webDir == "" {
-		return adminSecurityHeaders(adminEntranceGateWithClock(cfg, authSecret, apiHandler, clock))
+		return adminSecurityHeaders(adminEntranceGate(cfg, authSecret, apiHandler))
 	}
 	spa := http.FileServer(http.Dir(webDir))
 	metricsPath := "/metrics"
@@ -262,14 +205,14 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
+		if !allowAdminEntrance(cfg, authSecret, metricsPath, metricsPublic, w, r) {
 			return
 		}
 		if r.URL.Path == metricsPath && !metricsPublic {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
-		if isAdminAPIPath(r.URL.Path, metricsPath) {
+		if isAdminAPIPath(r.URL.Path, metricsPath, metricsPublic) {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
@@ -307,13 +250,6 @@ func isAdminStaticAssetPath(path string) bool {
 }
 
 func adminEntranceGate(cfg *config.Config, authSecret string, next http.Handler) http.Handler {
-	return adminEntranceGateWithClock(cfg, authSecret, next, timekeeper.SystemClock{})
-}
-
-func adminEntranceGateWithClock(cfg *config.Config, authSecret string, next http.Handler, clock timekeeper.Clock) http.Handler {
-	if clock == nil {
-		clock = timekeeper.SystemClock{}
-	}
 	metricsPath := "/metrics"
 	metricsPublic := false
 	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
@@ -321,7 +257,7 @@ func adminEntranceGateWithClock(cfg *config.Config, authSecret string, next http
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
+		if !allowAdminEntrance(cfg, authSecret, metricsPath, metricsPublic, w, r) {
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -345,13 +281,6 @@ func adminSecurityHeaders(next http.Handler) http.Handler {
 }
 
 func allowAdminEntrance(cfg *config.Config, authSecret, metricsPath string, metricsPublic bool, w http.ResponseWriter, r *http.Request) bool {
-	return allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, time.Now)
-}
-
-func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, metricsPublic bool, w http.ResponseWriter, r *http.Request, now func() time.Time) bool {
-	if now == nil {
-		now = time.Now
-	}
 	login := config.Default().Console.Login
 	if cfg != nil {
 		login = cfg.Console.Login
@@ -366,55 +295,33 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 	if entry.CookieName == "" {
 		entry.CookieName = config.Default().Console.Login.SecurityEntry.CookieName
 	}
-	// Health / public metrics stay available for probes without the entry cookie.
-	if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/health/") || (metricsPublic && r.URL.Path == metricsPath) {
+	if r.URL.Path == "/health" || (metricsPublic && r.URL.Path == metricsPath) {
 		return true
 	}
 	entryPath := cleanAdminEntryPath(entry.Path)
 	requestPath := cleanAdminEntryPath(r.URL.Path)
-	apiPath := isAdminAPIPath(r.URL.Path, metricsPath)
 	secret := adminEntrySecret(authSecret, cfg)
 	if secret == "" {
-		// Fail closed: never leak the console or API without a binding secret.
-		if apiPath {
-			writeAdminAPIForbidden(w)
-		} else {
-			writeAdminTeapot(w)
-		}
+		writeAdminTeapot(w)
 		return false
 	}
-	// Entry path is the only way to mint the console gate cookie.
-	// Never treat /api/* as an "entry" and never serve SPA/HTML for API denials.
 	if requestPath == entryPath {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			writeAdminTeapot(w)
 			return false
 		}
-		if !issueAdminEntryCookieAt(w, r, entry.CookieName, secret, now) {
+		if !issueAdminEntryCookie(w, r, entry.CookieName, secret) {
 			writeAdminTeapot(w)
 			return false
 		}
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return false
 	}
-	if validAdminEntryCookie(r, entry.CookieName, secret, now) {
+	if validAdminEntryCookie(r, entry.CookieName, secret, time.Now) {
 		return true
 	}
-	if apiPath {
-		// API is API: JSON 403, never HTML entry / SPA.
-		writeAdminAPIForbidden(w)
-		return false
-	}
-	// Console UI without a valid entry cookie.
 	writeAdminTeapot(w)
 	return false
-}
-
-func writeAdminAPIForbidden(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusForbidden)
-	_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"admin entry required"}}`))
 }
 
 func cleanAdminEntryPath(path string) string {
@@ -426,14 +333,7 @@ func cleanAdminEntryPath(path string) string {
 }
 
 func issueAdminEntryCookie(w http.ResponseWriter, r *http.Request, name, secret string) bool {
-	return issueAdminEntryCookieAt(w, r, name, secret, time.Now)
-}
-
-func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secret string, now func() time.Time) bool {
-	if now == nil {
-		now = time.Now
-	}
-	expires := now().UTC().Add(config.AdminSessionTTL)
+	expires := time.Now().UTC().Add(config.AdminSessionTTL)
 	nonceBytes := make([]byte, 16)
 	if _, err := readAdminEntryNonce(nonceBytes); err != nil {
 		return false
@@ -560,7 +460,7 @@ func adminShouldGzip(r *http.Request, metricsPath string) bool {
 	if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		return false
 	}
-	if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/health/") || r.URL.Path == metricsPath || strings.HasPrefix(r.URL.Path, "/api/") {
+	if r.URL.Path == "/health" || r.URL.Path == metricsPath || strings.HasPrefix(r.URL.Path, "/api/") {
 		return false
 	}
 	ext := strings.ToLower(filepath.Ext(r.URL.Path))
@@ -590,17 +490,14 @@ func adminContentSecurityPolicy() string {
 	}, "; ")
 }
 
-// isAdminAPIPath reports machine-readable admin endpoints that must never receive
-// SPA/login HTML. Public metrics stay open at the entrance gate; private metrics
-// require a valid entry cookie and deny with JSON 403 via writeAdminAPIForbidden.
-func isAdminAPIPath(path, metricsPath string) bool {
+func isAdminAPIPath(path, metricsPath string, metricsPublic bool) bool {
 	if path == "/api" || strings.HasPrefix(path, "/api/") {
 		return true
 	}
-	if path == "/health" || strings.HasPrefix(path, "/health/") {
+	if path == "/health" {
 		return true
 	}
-	if metricsPath != "" && path == metricsPath {
+	if metricsPublic && path == metricsPath {
 		return true
 	}
 	return false
@@ -609,19 +506,10 @@ func isAdminAPIPath(path, metricsPath string) bool {
 func resolveWebDir() string {
 	candidates := []string{
 		os.Getenv("CHEESEWAF_WEB_DIR"),
-	}
-	if executable, err := executablePath(); err == nil && strings.TrimSpace(executable) != "" {
-		executableDir := filepath.Dir(executable)
-		candidates = append(candidates,
-			filepath.Join(executableDir, "web", "dist"),
-			filepath.Join(executableDir, "web"),
-		)
-	}
-	candidates = append(candidates,
 		"/usr/share/cheesewaf/web",
 		filepath.Join("web", "dist"),
 		filepath.Join(".", "web", "dist"),
-	)
+	}
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
@@ -634,7 +522,7 @@ func resolveWebDir() string {
 	return ""
 }
 
-func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time) {
+func startRemoteWrite(ctx context.Context, cfg *config.Config, sink storage.LogSink, startedAt time.Time) {
 	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
 		return
 	}
@@ -659,9 +547,7 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 					"logs": serviceDirSize(filepath.Dir(cfg.Logging.Output.File.Path)),
 				})
 				_ = writer.Push(ctx, snapshot)
-				alerts := alerter.Evaluate(snapshot)
-				_ = monitornotify.PersistAlerts(ctx, store, alerts)
-				_ = notifiers.Notify(ctx, alerts)
+				_ = notifiers.Notify(ctx, alerter.Evaluate(snapshot))
 			}
 		}
 	}()
@@ -687,10 +573,6 @@ func serviceDirSize(root string) int64 {
 }
 
 func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
-	// Wire budget metrics once; safe to re-assign.
-	engine.OnDetectionBudgetExhausted = func() {
-		semantic.ProcessMetrics().RecordBudgetExhausted()
-	}
 	var detectors []engine.Detector
 	if len(cfg.Sites) == 0 {
 		return engine.NewPipeline(), nil
@@ -705,27 +587,31 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: enginerules.New(compiled)})
 		}
 		switches := site.WAF.SemanticEngines
-		// Single decision path: staged Analyzer covers all enabled categories.
-		// Standalone SQL/XSS/RCE/LFI/XXE/SSRF detectors are intentionally not
-		// mounted here to avoid double-scan cost and divergent FP behavior.
 		var semanticCategories []string
+		var siteDetectors []engine.Detector
 		if switches.SQL {
 			semanticCategories = append(semanticCategories, "sqli")
+			siteDetectors = append(siteDetectors, semantic.NewSQLDetector(site.WAF.Mode))
 		}
 		if switches.XSS {
 			semanticCategories = append(semanticCategories, "xss")
+			siteDetectors = append(siteDetectors, semantic.NewXSSDetector(site.WAF.Mode))
 		}
 		if switches.RCE {
 			semanticCategories = append(semanticCategories, "rce")
+			siteDetectors = append(siteDetectors, semantic.NewRCEDetector(site.WAF.Mode))
 		}
 		if switches.LFI {
 			semanticCategories = append(semanticCategories, "lfi")
+			siteDetectors = append(siteDetectors, semantic.NewLFIDetector(site.WAF.Mode))
 		}
 		if switches.XXE {
 			semanticCategories = append(semanticCategories, "xxe")
+			siteDetectors = append(siteDetectors, semantic.NewXXEDetector(site.WAF.Mode))
 		}
 		if switches.SSRF {
 			semanticCategories = append(semanticCategories, "ssrf")
+			siteDetectors = append(siteDetectors, semantic.NewSSRFDetector(site.WAF.Mode))
 		}
 		if switches.NoSQL {
 			semanticCategories = append(semanticCategories, "nosqli")
@@ -734,12 +620,10 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			semanticCategories = append(semanticCategories, "ssti")
 		}
 		if len(semanticCategories) > 0 {
-			analyzer := semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)
-			analyzer.SetAllowlists(site.WAF.SemanticPolicy.PathAllowlist, site.WAF.SemanticPolicy.ParamAllowlist)
-			detectors = append(detectors, siteScopedDetector{
-				siteID:   site.ID,
-				detector: analyzer,
-			})
+			siteDetectors = append([]engine.Detector{semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)}, siteDetectors...)
+		}
+		for _, detector := range siteDetectors {
+			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: detector})
 		}
 	}
 	return engine.NewPipeline(detectors...), nil
@@ -814,71 +698,7 @@ func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
 	}, "https", nil
 }
 
-func ensureAdminTLSCertificate(cfg *config.Config) error {
-	if cfg == nil || !cfg.Server.AdminTLS.Enabled || !cfg.Server.AdminTLS.SelfSigned {
-		return nil
-	}
-	certExists, err := regularFileExists(cfg.Server.AdminTLS.CertFile)
-	if err != nil {
-		return fmt.Errorf("inspect admin TLS certificate: %w", err)
-	}
-	keyExists, err := regularFileExists(cfg.Server.AdminTLS.KeyFile)
-	if err != nil {
-		return fmt.Errorf("inspect admin TLS private key: %w", err)
-	}
-	if certExists && keyExists {
-		return nil
-	}
-
-	hosts := append([]string(nil), setup.DefaultCertificateHosts...)
-	if host, _, splitErr := net.SplitHostPort(cfg.Server.AdminListen); splitErr == nil {
-		host = strings.TrimSpace(strings.Trim(host, "[]"))
-		if ip := net.ParseIP(host); ip == nil || !ip.IsUnspecified() {
-			if host != "" {
-				hosts = append(hosts, host)
-			}
-		}
-	}
-	if hostname, hostnameErr := os.Hostname(); hostnameErr == nil && strings.TrimSpace(hostname) != "" {
-		hosts = append(hosts, hostname)
-	}
-	if err := setup.GenerateSelfSignedCertificate(
-		cfg.Server.AdminTLS.CertFile,
-		cfg.Server.AdminTLS.KeyFile,
-		hosts,
-		825*24*time.Hour,
-	); err != nil {
-		return fmt.Errorf("generate self-signed admin TLS certificate: %w", err)
-	}
-	return nil
-}
-
-func regularFileExists(path string) (bool, error) {
-	info, err := os.Lstat(strings.TrimSpace(path))
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return false, fmt.Errorf("%s is not a regular file", path)
-	}
-	return true, nil
-}
-
 func repairRuntimeConfig(path string, cfg *config.Config) error {
-	if cfg == nil || !config.IsWeakBotSecret(cfg.Protection.Bot.Secret) {
-		return nil
-	}
-	runtimeSecretPath := filepath.Join(cfg.Setup.RuntimeDir, "bot_secret")
-	if secret, err := readRuntimeBotSecret(runtimeSecretPath); err == nil {
-		cfg.Protection.Bot.Secret = secret
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("load runtime Bot challenge secret: %w", err)
-	}
-
 	changed, err := config.EnsureRuntimeSecrets(cfg)
 	if err != nil {
 		return err
@@ -886,58 +706,10 @@ func repairRuntimeConfig(path string, cfg *config.Config) error {
 	if !changed || path == "" {
 		return nil
 	}
-	if err := config.Save(path, cfg); err == nil {
-		fmt.Printf("CheeseWAF rotated weak Bot challenge secret and saved %s\n", path)
-		return nil
-	} else if persistErr := writeRuntimeBotSecret(runtimeSecretPath, cfg.Protection.Bot.Secret); persistErr != nil {
-		return errors.Join(fmt.Errorf("save runtime config repair: %w", err), fmt.Errorf("persist runtime Bot challenge secret: %w", persistErr))
+	if err := config.Save(path, cfg); err != nil {
+		return fmt.Errorf("save runtime config repair: %w", err)
 	}
-	fmt.Printf("CheeseWAF rotated weak Bot challenge secret and stored it in the runtime directory\n")
-	return nil
-}
-
-func readRuntimeBotSecret(path string) (string, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", fmt.Errorf("runtime Bot challenge secret is not a regular file")
-	}
-	if info.Size() < 32 || info.Size() > 256 {
-		return "", fmt.Errorf("runtime Bot challenge secret has invalid size")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	secret := strings.TrimSpace(string(raw))
-	if len(secret) < 32 || len(secret) > 256 || config.IsWeakBotSecret(secret) {
-		return "", fmt.Errorf("runtime Bot challenge secret is invalid")
-	}
-	return secret, nil
-}
-
-func writeRuntimeBotSecret(path, secret string) error {
-	if len(strings.TrimSpace(secret)) < 32 || len(secret) > 256 || config.IsWeakBotSecret(secret) {
-		return fmt.Errorf("runtime Bot challenge secret is invalid")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	_, writeErr := file.WriteString(secret + "\n")
-	if writeErr == nil {
-		writeErr = file.Sync()
-	}
-	closeErr := file.Close()
-	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(path)
-		return errors.Join(writeErr, closeErr)
-	}
+	fmt.Printf("CheeseWAF rotated weak Bot challenge secret and saved %s\n", path)
 	return nil
 }
 
@@ -981,59 +753,13 @@ func removePID(runtimeDir string) {
 	_ = os.Remove(pidPath(runtimeDir))
 }
 
-// ServiceStatusSnapshot is the CLI/GUI-visible process state for CheeseWAF.
-// GUI and TUI must use this rather than inventing a second status model.
-type ServiceStatusSnapshot struct {
+type serviceStatusSnapshot struct {
 	RuntimeDir string
 	PIDPath    string
 	PID        int
 	HasPIDFile bool
 	Running    bool
 	Stale      bool
-}
-
-// serviceStatusSnapshot is the historical unexported alias used inside this package.
-type serviceStatusSnapshot = ServiceStatusSnapshot
-
-// ConfigurePaths sets the package-level config/data paths used by status/stop
-// helpers. Desktop controllers must call this before InspectServiceStatus.
-func ConfigurePaths(configFile, dataDirectory string) {
-	if configFile != "" {
-		configPath = configFile
-	}
-	if dataDirectory != "" {
-		dataDir = dataDirectory
-	}
-}
-
-// InspectServiceStatus returns whether CheeseWAF appears to be running based on
-// the configured runtime PID file. Safe for concurrent GUI polling.
-func InspectServiceStatus() (ServiceStatusSnapshot, error) {
-	return inspectServiceStatus()
-}
-
-// StopRunningService stops a live CheeseWAF process (or cleans a stale PID file).
-// It reuses the same semantics as `cheesewaf stop`.
-func StopRunningService() (ServiceStatusSnapshot, error) {
-	snapshot, err := inspectServiceStatus()
-	if err != nil {
-		return snapshot, err
-	}
-	if !snapshot.HasPIDFile {
-		return snapshot, nil
-	}
-	if snapshot.Stale {
-		removePID(snapshot.RuntimeDir)
-		snapshot.HasPIDFile = false
-		snapshot.Stale = false
-		snapshot.Running = false
-		snapshot.PID = 0
-		return snapshot, nil
-	}
-	if err := stopProcess(snapshot.PID); err != nil {
-		return snapshot, err
-	}
-	return snapshot, nil
 }
 
 func authSecretPath(baseDir string) string {

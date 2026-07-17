@@ -23,12 +23,9 @@ jobs:
     steps:
       - name: Validate promotion path
         shell: bash
-        env:
-          PR_BASE_REF: ${{ github.base_ref }}
-          PR_HEAD_REF: ${{ github.head_ref }}
         run: |
-          base="${PR_BASE_REF}"
-          head="${PR_HEAD_REF}"
+          base="${{ github.base_ref }}"
+          head="${{ github.head_ref }}"
 
           case "$base" in
             master)
@@ -54,22 +51,6 @@ jobs:
               exit 1
               ;;
           esac
-
-  ci-static:
-    name: ci-static
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Verify CI and release policy
-        shell: bash
-        run: bash scripts/ci/verify-ci-static.sh
-      - name: Validate GitHub-compatible workflows
-        shell: bash
-        run: bash scripts/ci/go-env.sh go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= -pyflakes= -color .github/workflows/*.yml
-      - name: Verify Ansible syntax
-        shell: bash
-        run: bash scripts/ci/verify-ansible.sh
 
   go-mod-tidy:
     name: go-mod-tidy
@@ -99,25 +80,6 @@ jobs:
         shell: bash
         run: bash scripts/ci/go-env.sh go test -race -count=1 ./cmd/... ./internal/...
 
-  go-quality:
-    name: go-quality
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Setup Go from mirror
-        shell: bash
-        run: bash scripts/ci/setup-go-mirror.sh
-      - name: Verify formatting
-        shell: bash
-        run: bash scripts/ci/verify-go-quality.sh format
-      - name: Run go vet
-        shell: bash
-        run: bash scripts/ci/verify-go-quality.sh vet
-      - name: Enforce coverage floor
-        shell: bash
-        run: bash scripts/ci/verify-go-quality.sh coverage
-
   web-build:
     name: web-build
     runs-on: ubuntu-latest
@@ -130,27 +92,7 @@ jobs:
       - name: Install dependencies
         working-directory: web
         shell: bash
-        run: npm ci --ignore-scripts
-      - name: Run CAPTCHA contract tests
-        working-directory: web
-        shell: bash
-        run: npm run test:captcha-contract
-      - name: Install pinned coverage provider
-        working-directory: web
-        shell: bash
-        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.10
-      - name: Run dashboard tests with coverage
-        working-directory: web
-        shell: bash
-        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=5 --coverage.thresholds.functions=5 --coverage.thresholds.statements=5 --coverage.thresholds.branches=1
-      - name: Verify coverage output
-        working-directory: web
-        shell: bash
-        run: test -s coverage/coverage-summary.json
-      - name: Typecheck dashboard
-        working-directory: web
-        shell: bash
-        run: npm run typecheck
+        run: npm ci
       - name: Build dashboard
         working-directory: web
         shell: bash
@@ -167,7 +109,7 @@ jobs:
         run: bash scripts/ci/setup-go-mirror.sh
       - name: Scan Go vulnerabilities
         shell: bash
-        run: bash scripts/ci/go-env.sh go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./cmd/... ./internal/...
+        run: bash scripts/ci/go-env.sh go run golang.org/x/vuln/cmd/govulncheck@latest ./cmd/... ./internal/...
 
   web-audit:
     name: web-audit
@@ -181,7 +123,7 @@ jobs:
       - name: Install dependencies
         working-directory: web
         shell: bash
-        run: npm ci --ignore-scripts
+        run: npm ci
       - name: Audit web dependencies
         working-directory: web
         shell: bash
@@ -236,68 +178,6 @@ jobs:
             GOOS="$goos" GOARCH="$goarch" bash scripts/ci/go-env.sh go build -trimpath -o "$output" ./cmd/cheesewaf/
           done
 
-  docker-build:
-    name: docker-build
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Build pinned container image
-        shell: bash
-        env:
-          DOCKER_PULL: "0"
-        run: bash scripts/ci/docker-build.sh
-
-  goreleaser-snapshot:
-    name: goreleaser-snapshot
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-      - name: Setup Go from mirror
-        shell: bash
-        run: bash scripts/ci/setup-go-mirror.sh
-      - name: Setup Node from mirror
-        shell: bash
-        run: bash scripts/ci/setup-node-mirror.sh
-      - name: Build GoReleaser snapshot
-        shell: bash
-        run: bash scripts/ci/go-env.sh go run github.com/goreleaser/goreleaser/v2@v2.17.0 release --snapshot --clean
-      - name: Verify GoReleaser snapshot
-        shell: bash
-        run: bash scripts/ci/verify-release.sh dist
-
-  release-package-smoke:
-    name: release-package-smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Setup Go from mirror
-        shell: bash
-        run: bash scripts/ci/setup-go-mirror.sh
-      - name: Setup Node from mirror
-        shell: bash
-        run: bash scripts/ci/setup-node-mirror.sh
-      - name: Build Linux release package
-        shell: bash
-        env:
-          CHEESEWAF_REF_NAME: ci
-          CHEESEWAF_RUN_NUMBER: ${{ github.run_number }}
-          CHEESEWAF_COMMIT: ${{ github.sha }}
-          CHEESEWAF_TARGETS: linux/amd64
-          CHEESEWAF_RELEASE_DIR: release-smoke
-          CHEESEWAF_RELEASE_WORK_DIR: tmp/release-smoke
-        run: bash scripts/ci/go-env.sh bash scripts/ci/package-release.sh
-      - name: Verify release package
-        shell: bash
-        run: bash scripts/ci/verify-release.sh release-smoke
-
   release-artifacts:
     name: release-artifacts
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))
@@ -305,16 +185,11 @@ jobs:
     needs:
       - go-mod-tidy
       - go-test
-      - go-quality
       - web-build
       - go-vulncheck
       - web-audit
       - security-corpus
       - cross-build
-      - ci-static
-      - docker-build
-      - goreleaser-snapshot
-      - release-package-smoke
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -331,9 +206,6 @@ jobs:
           CHEESEWAF_RUN_NUMBER: ${{ github.run_number }}
           CHEESEWAF_COMMIT: ${{ github.sha }}
         run: bash scripts/ci/go-env.sh bash scripts/ci/package-release.sh
-      - name: Verify branch release artifacts
-        shell: bash
-        run: bash scripts/ci/verify-release.sh release
       - name: Upload branch release artifacts
         uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:

@@ -93,7 +93,6 @@ export default function LogDetailPage() {
               </section>
 
               <PolicyDecisionCard metadata={event.metadata} />
-              <OpsSignalsCard metadata={event.metadata} t={t} />
 
               <section className="panel">
                 <div className="panel-heading">
@@ -153,43 +152,6 @@ function DetailKV({ label, value }: { label: string; value: ReactNode }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
-  );
-}
-
-function OpsSignalsCard({
-  metadata,
-  t,
-}: {
-  metadata?: Record<string, unknown>;
-  t: (key: string, options?: Record<string, unknown>) => string;
-}) {
-  if (!metadata) {
-    return null;
-  }
-  const budgetExhausted = metadata.detection_budget_exhausted === true || metadata.detection_budget_exhausted === 'true';
-  const budgetPolicy = typeof metadata.budget_exhausted_policy === 'string' ? metadata.budget_exhausted_policy : '';
-  const semanticSkipped = typeof metadata.semantic_skipped === 'string' ? metadata.semantic_skipped : '';
-  const anomaly = metadata.semantic_anomaly_score;
-  const anomalyText = typeof anomaly === 'number' && Number.isFinite(anomaly)
-    ? String(anomaly)
-    : typeof anomaly === 'string' && anomaly.trim()
-      ? anomaly
-      : '';
-  if (!budgetExhausted && !budgetPolicy && !semanticSkipped && !anomalyText) {
-    return null;
-  }
-  return (
-    <section className="panel">
-      <div className="panel-heading">
-        <h2>{t('logs.opsSignals')}</h2>
-      </div>
-      <div className="detail-kv-grid">
-        {budgetExhausted ? <DetailKV label={t('logs.budgetExhausted')} value="true" /> : null}
-        {budgetPolicy ? <DetailKV label={t('logs.budgetPolicy')} value={budgetPolicy} /> : null}
-        {semanticSkipped ? <DetailKV label={t('logs.semanticSkipped')} value={semanticSkipped} /> : null}
-        {anomalyText ? <DetailKV label={t('logs.anomalyScore')} value={anomalyText} /> : null}
-      </div>
-    </section>
   );
 }
 

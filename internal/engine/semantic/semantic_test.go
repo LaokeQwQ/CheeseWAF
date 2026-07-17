@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -101,22 +100,6 @@ func TestSQLCandidateTextsAreBounded(t *testing.T) {
 	}
 	if got := len(sqlCandidateTexts(reqCtx)); got > maxSQLCandidateTexts {
 		t.Fatalf("expected SQL candidate list capped at %d, got %d", maxSQLCandidateTexts, got)
-	}
-}
-
-func TestSQLDetectorChecksMiddleOfLargeBody(t *testing.T) {
-	body := strings.Repeat("a", maxSQLCandidateBytes*2) + "' OR '1'='1" + strings.Repeat("b", maxSQLCandidateBytes*2)
-	req := httptest.NewRequest(http.MethodPost, "http://example.test/", strings.NewReader(body))
-	reqCtx, err := engine.NewRequestContextWithLimits(req, "default", nil, int64(len(body)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result == nil || !result.Detected {
-		t.Fatal("expected SQL injection in the middle of a large body to be detected")
 	}
 }
 

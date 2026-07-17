@@ -395,12 +395,10 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       const width = Math.max(320, rect.width);
       const height = Math.max(320, rect.height);
       const narrow = width < 560;
-      const tallScreen = height >= 520 && height / Math.max(width, 1) > 0.72;
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
-      // Keep the globe centered in tall attack-screen layouts (was drifting high).
-      camera.position.y = tallScreen ? 0 : (narrow ? 0.04 : 0.06);
-      cameraDistanceBase = tallScreen ? 3.05 : (narrow ? 3.75 : 3.35);
+      camera.position.y = narrow ? 0.04 : 0.08;
+      cameraDistanceBase = narrow ? 3.75 : 3.45;
       updateCameraDistance();
       runtime.render();
     };

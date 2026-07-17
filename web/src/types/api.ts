@@ -21,21 +21,10 @@ export type SiteAdvanced = {
   origin: SiteOriginConfig;
   health_check: SiteHealthCheckConfig;
   protection: SiteProtectionConfig;
-  semantic_policy: SiteSemanticPolicy;
   policy: ProtectionPolicyConfig;
   response: SiteResponseConfig;
   rewrite: SiteRewriteRule[];
   access_control: SiteAccessControl;
-  /** When true (default), write normal pass/cache/redirect access logs. Security events always log. */
-  access_log_enabled?: boolean;
-};
-
-export type BudgetExhaustedPolicy = 'auto' | 'open' | 'observe' | 'closed' | '';
-
-export type SiteSemanticPolicy = {
-  budget_exhausted_policy: BudgetExhaustedPolicy | string;
-  path_allowlist: string[];
-  param_allowlist: string[];
 };
 
 export type ProtectionLevel = 'off' | 'low' | 'smart' | 'high' | 'strict' | '';
@@ -213,19 +202,6 @@ export type ACLRule = {
   enabled: boolean;
 };
 
-export type ProtectionCaptchaType =
-  | 'random'
-  | 'pow'
-  | 'curve_draw'
-  | 'curve_slider'
-  | 'shape_slider'
-  | 'rotate'
-  | 'restore_slider'
-  | 'angle'
-  | 'scratch'
-  | 'text_click'
-  | 'icon_click';
-
 export type ProtectionConfig = {
   policy: ProtectionPolicyConfig;
   ip: {
@@ -256,14 +232,7 @@ export type ProtectionConfig = {
     enabled: boolean;
     js_challenge: boolean;
     captcha: boolean;
-    captcha_type: ProtectionCaptchaType | string;
-    captcha_types: ProtectionCaptchaType[];
-    captcha_challenge_ttl: number | string;
-    captcha_failure_window: number | string;
-    captcha_block_duration: number | string;
-    captcha_escalation_types: ProtectionCaptchaType[];
-    captcha_binding_mode: 'strict_ip_ua' | 'ip_prefix_ua' | string;
-    captcha_policy_version: string;
+    captcha_type: 'pow' | 'image' | 'slider' | string;
     captcha_max_attempts: number;
     image_captcha_length: number;
     image_captcha_width: number;
@@ -514,7 +483,7 @@ export type AIAssistantTraceEvent = {
 
 export type AIToolSensitivity = 'read_only' | 'modify' | 'destructive' | string;
 
-export type AIApprovalStatus = 'pending' | 'approved' | 'executing' | 'rejected' | 'executed' | 'failed' | string;
+export type AIApprovalStatus = 'pending' | 'approved' | 'executing' | 'rejected' | 'executed' | string;
 
 export type AIToolResult = {
   success: boolean;
@@ -530,25 +499,8 @@ export type AIApprovalRequest = {
   sensitivity: number | string;
   diff?: string;
   status: AIApprovalStatus;
-  requester_subject?: string;
-  requester_session_id?: string;
-  requester_username?: string;
-  approved_by_subject?: string;
-  approved_by_session_id?: string;
-  approved_by_username?: string;
-  rejected_by_subject?: string;
-  rejected_by_session_id?: string;
-  rejected_by_username?: string;
   created_at: string;
-  expires_at: string;
   decided_at?: string;
-  consumed_at?: string;
-  error?: string;
-};
-
-export type AIApprovalList = {
-  items: AIApprovalRequest[];
-  total: number;
 };
 
 export type AIToolExecution = {
@@ -604,36 +556,6 @@ export type LogQuery = {
 export type LogResponse = {
   items: LogEntry[];
   total: number;
-};
-
-export type BotChallengeOutcome = 'issued' | 'passed' | 'failed' | 'blocked';
-export type BotChallengeEvent = { id: string; traceId: string; timestamp: string; clientIp: string; siteId: string; country: string; challengeType?: string; outcome: BotChallengeOutcome; reason: string };
-export type BotChallengeTypeEffect = { type: string; issued: number; passed?: number; failed?: number; passRate?: number };
-export type BotChallengeTrendPoint = { timestamp: string; challenged: number; blocked: number; passed: number; failed: number };
-export type BotChallengeOverview = { periodStart: string; periodEnd: string; challengedClients: number; blockedClients: number; captchaBlocked: number; passRate?: number; totalChallenges: number; trend: BotChallengeTrendPoint[]; typeEffects: BotChallengeTypeEffect[]; events: BotChallengeEvent[] };
-export type BotChallengeMetricTotals = { challenged_people: number; challenges: number; blocked_people: number; blocks: number; captcha_blocks: number; successes: number; failures: number; pass_rate: number };
-export type BotChallengeMetricPoint = { time: string; type: string; issued: number; successes: number; failures: number; blocks: number };
-export type BotChallengeMetrics = { range: string; bucket: string; site_id?: string; start: string; end: string; totals: BotChallengeMetricTotals; trend: BotChallengeMetricPoint[] };
-
-export type CAPTCHAAssetKind = 'background' | 'font' | 'icon' | 'logo';
-export type CAPTCHAAsset = { id: string; kind: CAPTCHAAssetKind; name: string; content_type: string; size: number; sha256: string; created_at: string };
-export type CAPTCHAAssetLimits = { max_image_bytes: number; max_font_bytes: number; max_pixels: number };
-export type CAPTCHAAssetConfig = {
-  backend: 'local' | 's3';
-  local: { path: string };
-  s3: { endpoint: string; bucket: string; region: string; path_style: boolean; prefix: string; use_tls: boolean; allow_private_endpoint: boolean; request_timeout: number; credential_configured: boolean; metadata_key_configured: boolean };
-  limits: CAPTCHAAssetLimits;
-};
-export type CAPTCHAAssetConfigUpdate = Omit<CAPTCHAAssetConfig, 's3'> & {
-  s3: Omit<CAPTCHAAssetConfig['s3'], 'credential_configured' | 'metadata_key_configured'> & { credential_file: string; metadata_key_file: string };
-};
-
-export type CaptchaShellConfig = {
-  logoUrl: string;
-  logoAlt: string;
-  showRefresh: boolean;
-  showClose: boolean;
-  failureRefreshDelayMs: number;
 };
 
 export type IPReputationEntry = {
@@ -758,16 +680,9 @@ export type LoginBackgroundConfig = {
   url: string;
 };
 
-export type LoginBranding = {
-  copyright: string;
-  show_version: boolean;
-  product_version: string;
-};
-
 export type LoginCAPTCHAPayload = {
   mode?: 'slider' | 'pow' | string;
   receipt?: string;
-  username?: string;
   algorithm?: string;
   challenge?: string;
   number?: number;
@@ -823,7 +738,6 @@ export type LoginOptions = {
     };
   };
   background: LoginBackgroundConfig;
-  branding?: LoginBranding;
 };
 
 export type LoginCAPTCHAResponse = {
@@ -909,43 +823,12 @@ export type APISecSystemConfig = {
   [key: string]: unknown;
 };
 
-export type TimeSyncConfig = {
-  enabled: boolean;
-  sources: string[];
-  selection_interval: number | string;
-  sync_interval: number | string;
-  timeout: number | string;
-  samples_per_source: number;
-  max_accepted_offset: number | string;
-  max_root_dispersion: number | string;
-  consensus_tolerance: number | string;
-};
-
-export type TimeSyncStatus = {
-  enabled: boolean;
-  state: 'disabled' | 'local' | 'synchronizing' | 'synchronized' | string;
-  primary_source?: string;
-  backup_source?: string;
-  active_source?: string;
-  offset_ms: number;
-  rtt_ms: number;
-  stratum?: number;
-  last_success?: string;
-  last_attempt?: string;
-  consecutive_failures: number;
-  total_failures: number;
-  last_error?: string;
-  current_time: string;
-};
-
 export type SystemConfig = {
   console: {
     login: {
       captcha: LoginCAPTCHAConfig;
       security_entry: LoginSecurityEntryConfig;
       background: LoginBackgroundConfig;
-      copyright: string;
-      show_product_version?: boolean;
     };
     map: {
       china_boundary: MapBoundaryConfig;
@@ -971,7 +854,6 @@ export type SystemConfig = {
       zero_rtt: boolean;
     };
   };
-  time_sync?: TimeSyncConfig;
   tls: {
     auto_cert: boolean;
     cert_file: string;
@@ -1241,7 +1123,6 @@ export type ClusterDeploymentRequest = {
   password?: string;
   private_key?: string;
   host_key_sha256?: string;
-  authorization?: string;
   action?: 'check' | 'install' | 'rollback-install' | 'restart-service' | string;
 };
 
@@ -1263,11 +1144,6 @@ export type ClusterAnsiblePackage = {
   files: Record<string, string>;
 };
 
-export type ClusterDeploymentAuthorization = {
-  handle: string;
-  expires_at: string;
-};
-
 export type ClusterDeploymentCheckResult = {
   ok: boolean;
   host: string;
@@ -1276,11 +1152,6 @@ export type ClusterDeploymentCheckResult = {
   command: string[];
   message?: string;
   checked_at: string;
-};
-
-export type ClusterDeploymentCheckResponse = {
-  result: ClusterDeploymentCheckResult;
-  authorization: ClusterDeploymentAuthorization;
 };
 
 export type ClusterDeploymentRunResult = {
@@ -1332,7 +1203,6 @@ export type ClusterDeploymentTask = {
   updated_at: string;
   finished_at?: string;
   check_result?: ClusterDeploymentCheckResult;
-  authorization?: ClusterDeploymentAuthorization;
   deploy_result?: ClusterDeploymentRunResult;
   compensation_result?: ClusterDeploymentCompensationResult;
   events?: ClusterDeploymentTaskEvent[];
@@ -1409,29 +1279,4 @@ export type AuditEntry = {
   status: number;
   remote_ip: string;
   latency_ms: number;
-};
-
-export type NotificationSeverity = 'critical' | 'warning' | 'info';
-
-export type Notification = {
-  id: string;
-  type: NotificationSeverity;
-  title: string;
-  message: string;
-  target?: string;
-  read: boolean;
-  pinned: boolean;
-  created_at: string;
-  updated_at: string;
-};
-
-export type NotificationFilter = 'all' | 'unread' | 'read' | 'pinned';
-
-export type NotificationList = {
-  items: Notification[];
-  total: number;
-  filtered_total: number;
-  page: number;
-  limit: number;
-  unread: number;
 };

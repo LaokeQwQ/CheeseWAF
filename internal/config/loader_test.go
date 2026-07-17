@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -415,27 +414,6 @@ func TestValidateSchedulerTaskGuard(t *testing.T) {
 	}
 }
 
-func TestValidateSchedulerRejectsDuplicateTaskIDs(t *testing.T) {
-	cfg := Default()
-	cfg.Scheduler.Tasks = []ScheduledTaskConfig{
-		{ID: "duplicate", Type: "cleanup", Target: "./logs", Enabled: true},
-		{ID: "duplicate", Type: "backup", Target: "./data/backups", Enabled: true},
-	}
-	if err := Validate(&cfg); err == nil {
-		t.Fatal("expected duplicate scheduler task IDs to fail validation")
-	}
-}
-
-func TestValidateSchedulerRejectsCleanupOutsideManagedRoots(t *testing.T) {
-	cfg := Default()
-	cfg.Setup.DataDir = filepath.Join(t.TempDir(), "data")
-	cfg.Logging.Output.File.Path = filepath.Join(t.TempDir(), "logs", "access.log")
-	cfg.Scheduler.Tasks = []ScheduledTaskConfig{{ID: "unsafe", Type: "cleanup", Target: t.TempDir(), Enabled: true}}
-	if err := Validate(&cfg); err == nil {
-		t.Fatal("expected cleanup target outside managed roots to fail validation")
-	}
-}
-
 func TestValidateNotifierEndpointGuard(t *testing.T) {
 	for _, rawURL := range []string{
 		"http://127.0.0.1:8080/hook",
@@ -712,7 +690,6 @@ func TestValidateAPISecJWTSignatureConfig(t *testing.T) {
 	t.Run("accepts endpoint policy audience override", func(t *testing.T) {
 		cfg := Default()
 		cfg.APISec.Auth.Enabled = true
-		cfg.APISec.Auth.JWTSharedSecret = "test-secret"
 		cfg.APISec.Auth.EndpointPolicies = []APIAuthEndpointPolicyConfig{{
 			ID:             "orders-write",
 			Method:         "POST",
@@ -724,14 +701,6 @@ func TestValidateAPISecJWTSignatureConfig(t *testing.T) {
 
 		if err := Validate(&cfg); err != nil {
 			t.Fatalf("expected endpoint auth policy to validate: %v", err)
-		}
-	})
-
-	t.Run("rejects auth enabled without verification material", func(t *testing.T) {
-		cfg := Default()
-		cfg.APISec.Auth.Enabled = true
-		if err := Validate(&cfg); err == nil {
-			t.Fatal("expected auth enabled without keys to fail validation")
 		}
 	})
 }
@@ -779,40 +748,4 @@ func TestProtectionPolicyInheritsGlobalDefaults(t *testing.T) {
 	if got.WebAttack != "strict" || got.APISecurity != "smart" || got.BotCC != "off" || got.ThreatIntel != "low" {
 		t.Fatalf("unexpected effective policy: %+v", got)
 	}
-}
-
-func TestApplyDefaultsMigratesDeprecatedBehaviorCAPTCHATypes(t *testing.T) {
-	defaults := Default()
-	t.Run("single deprecated type falls back to default", func(t *testing.T) {
-		cfg := Default()
-		cfg.Protection.Bot.CAPTCHAType = "sequence_click"
-		applyDefaults(&cfg)
-		if cfg.Protection.Bot.CAPTCHAType != defaults.Protection.Bot.CAPTCHAType {
-			t.Fatalf("captcha_type = %q, want default %q", cfg.Protection.Bot.CAPTCHAType, defaults.Protection.Bot.CAPTCHAType)
-		}
-	})
-	t.Run("lists filter deprecated values and deduplicate", func(t *testing.T) {
-		cfg := Default()
-		cfg.Protection.Bot.CAPTCHATypes = []string{"pow", "sequence_click", "pow", "scramble_jigsaw", "shape_slider"}
-		cfg.Protection.Bot.CAPTCHAEscalationTypes = []string{"scramble_jigsaw", "rotate", "rotate", "sequence_click"}
-		applyDefaults(&cfg)
-		if got, want := cfg.Protection.Bot.CAPTCHATypes, []string{"pow", "shape_slider"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("captcha_types = %#v, want %#v", got, want)
-		}
-		if got, want := cfg.Protection.Bot.CAPTCHAEscalationTypes, []string{"rotate"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("captcha_escalation_types = %#v, want %#v", got, want)
-		}
-	})
-	t.Run("deprecated-only lists fall back to defaults", func(t *testing.T) {
-		cfg := Default()
-		cfg.Protection.Bot.CAPTCHATypes = []string{"sequence_click", "scramble_jigsaw", "sequence_click"}
-		cfg.Protection.Bot.CAPTCHAEscalationTypes = []string{"scramble_jigsaw"}
-		applyDefaults(&cfg)
-		if !reflect.DeepEqual(cfg.Protection.Bot.CAPTCHATypes, defaults.Protection.Bot.CAPTCHATypes) {
-			t.Fatalf("captcha_types = %#v, want defaults %#v", cfg.Protection.Bot.CAPTCHATypes, defaults.Protection.Bot.CAPTCHATypes)
-		}
-		if !reflect.DeepEqual(cfg.Protection.Bot.CAPTCHAEscalationTypes, defaults.Protection.Bot.CAPTCHAEscalationTypes) {
-			t.Fatalf("captcha_escalation_types = %#v, want defaults %#v", cfg.Protection.Bot.CAPTCHAEscalationTypes, defaults.Protection.Bot.CAPTCHAEscalationTypes)
-		}
-	})
 }

@@ -9,9 +9,7 @@ const APISecurityPage = lazy(preloadAPISecurityPage);
 const AttackMapPage = lazy(preloadAttackMapPage);
 const AttackScreenPage = lazy(preloadAttackScreenPage);
 const BlockPagesPage = lazy(() => import('../pages/BlockPages/BlockPagesPage'));
-const BotChallengePage = lazy(() => import('../pages/BotChallenge/BotChallengePage'));
 const BlockPagePreviewWindow = lazy(() => import('../pages/BlockPages/BlockPagesPage').then((module) => ({ default: module.BlockPagePreviewWindow })));
-const CaptchaLabPage = lazy(() => import('../pages/CaptchaLab/CaptchaLabPage'));
 const ClusterPage = lazy(() => import('../pages/Cluster/ClusterPage'));
 const DashboardPage = lazy(() => import('../pages/Dashboard/DashboardPage'));
 const EdgePage = lazy(() => import('../pages/Edge/EdgePage'));
@@ -75,7 +73,6 @@ export default function AppRoutes() {
         <Route path="/setup" element={<LazyPage><SetupPage /></LazyPage>} />
         <Route path="/attack-map/screen" element={<ProtectedStandalone><LazyPage><AttackScreenPage /></LazyPage></ProtectedStandalone>} />
         <Route path="/block-pages/preview" element={<ProtectedStandalone><LazyPage><BlockPagePreviewWindow /></LazyPage></ProtectedStandalone>} />
-        <Route path="/captcha-lab" element={<ProtectedStandalone><LazyPage><CaptchaLabPage /></LazyPage></ProtectedStandalone>} />
         <Route element={<ProtectedLayout />}>
           <Route index element={<Page><LazyPage><DashboardPage /></LazyPage></Page>} />
           <Route path="sites" element={<Page><LazyPage><SitesPage /></LazyPage></Page>} />
@@ -86,7 +83,6 @@ export default function AppRoutes() {
           <Route path="logs/:traceId" element={<Page><LazyPage><LogDetailPage /></LazyPage></Page>} />
           <Route path="ip" element={<Page><LazyPage><IPManagePage /></LazyPage></Page>} />
           <Route path="protection" element={<Page><LazyPage><ProtectionPage /></LazyPage></Page>} />
-          <Route path="bot-challenge" element={<Page><LazyPage><BotChallengePage /></LazyPage></Page>} />
           <Route path="edge" element={<Page><LazyPage><EdgePage /></LazyPage></Page>} />
           <Route path="ai" element={<Page><LazyPage><AIPage /></LazyPage></Page>} />
           <Route path="monitor" element={<Page><LazyPage><MonitorPage /></LazyPage></Page>} />

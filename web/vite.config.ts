@@ -1,53 +1,25 @@
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
-import { codeInspectorPlugin } from '@agent-eyes/agent-eyes';
 import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BACKEND_PROXY_PATTERN } from './vite.proxy';
 
 const sourcemap = process.env.VITE_SOURCEMAP === 'true';
 const projectRoot = fileURLToPath(new URL('.', import.meta.url));
-const enableAgentEyes = process.env.NODE_ENV !== 'production' && process.env.CHEESEWAF_AGENT_EYES !== '0';
 
 export default defineConfig({
-  plugins: [
-    // code-inspector must register before @vitejs/plugin-react
-    ...(enableAgentEyes
-      ? [
-          codeInspectorPlugin({
-            bundler: 'vite',
-            showSwitch: true,
-            agent: {
-              acp: { command: 'codex-acp' },
-            },
-          }),
-        ]
-      : []),
-    react(),
-    chinaMapStaticAssets(),
-  ],
+  plugins: [react(), chinaMapStaticAssets()],
   server: {
     host: '127.0.0.1',
     port: 5173,
     strictPort: false,
-    proxy: {
-      [BACKEND_PROXY_PATTERN]: {
-        target: process.env.VITE_DEV_API_TARGET || 'http://127.0.0.1:9443',
-        changeOrigin: true,
-      },
-    },
   },
   build: {
     outDir: 'dist',
     sourcemap,
     chunkSizeWarningLimit: 500,
-    modulePreload: {
-      resolveDependencies: (_filename, dependencies, context) =>
-        context.hostType === 'html' ? dependencies.filter(isCriticalEntryPreload) : dependencies,
-    },
     rolldownOptions: {
       output: {
         manualChunks(id) {
@@ -73,9 +45,6 @@ export default defineConfig({
           if (modulePath.includes('/three/src/')) {
             return 'vendor-three-core';
           }
-          if (modulePath.includes('/maplibre-gl/') || modulePath.includes('/@maplibre/') || modulePath.includes('/@mapbox/')) {
-            return 'vendor-maplibre';
-          }
           if (modulePath.includes('/d3-geo/') || modulePath.includes('/topojson-client/') || modulePath.includes('/world-atlas/')) {
             return 'vendor-visualization';
           }
@@ -94,10 +63,6 @@ export default defineConfig({
     },
   },
 });
-
-function isCriticalEntryPreload(dependency: string) {
-  return dependency.includes('rolldown-runtime') || dependency.includes('vendor-react');
-}
 
 function arcoChunk(modulePath: string) {
   const lowerPath = modulePath.toLowerCase();

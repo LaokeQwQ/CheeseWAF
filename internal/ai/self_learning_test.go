@@ -2,8 +2,6 @@ package ai
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -74,51 +72,6 @@ func TestSelfLearningAutoApplyCreatesOnlySafeHighConfidenceRules(t *testing.T) {
 	}
 	if rule.Action != "block" || !rule.Enabled || rule.Priority != 180 {
 		t.Fatalf("unexpected applied rule: %+v", rule)
-	}
-}
-
-func TestSelfLearningCanWriteRulesBlockedForcesDryRun(t *testing.T) {
-	now := time.Date(2026, 6, 18, 3, 30, 0, 0, time.UTC)
-	sink := &selfLearningSink{items: repeatedSelfLearningEvents(now, 6)}
-	rules := &selfLearningRuleStore{}
-
-	report, err := RunSelfLearning(context.Background(), SelfLearningOptions{
-		Config: config.AISelfLearningConfig{
-			AutoApply:      true,
-			DryRun:         false,
-			Interval:       24 * time.Hour,
-			MinConfidence:  0.95,
-			MinEvents:      5,
-			MaxEvents:      100,
-			MaxRulesPerRun: 3,
-			Action:         "block",
-		},
-		Sink:  sink,
-		Rules: rules,
-		Now:   func() time.Time { return now },
-		CanWriteRules: func() error {
-			return errors.New("configuration writes are frozen: test freeze")
-		},
-	})
-	if err != nil {
-		t.Fatalf("run self learning: %v", err)
-	}
-	if !report.DryRun || report.AutoApply {
-		t.Fatalf("expected forced dry-run when CanWriteRules fails, report=%+v", report)
-	}
-	if len(report.Applied) != 0 || len(rules.created) != 0 {
-		t.Fatalf("freeze must not create rules, applied=%+v created=%+v", report.Applied, rules.created)
-	}
-	if len(report.Candidates) == 0 {
-		t.Fatal("expected candidates even when writes are blocked")
-	}
-	if len(report.Skipped) == 0 {
-		t.Fatal("expected skipped entries explaining write block")
-	}
-	for _, skip := range report.Skipped {
-		if !strings.Contains(skip.Reason, "rule writes blocked") || !strings.Contains(skip.Reason, "frozen") {
-			t.Fatalf("unexpected skip reason: %q", skip.Reason)
-		}
 	}
 }
 

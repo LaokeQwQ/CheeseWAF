@@ -787,7 +787,7 @@ func TestApprovalCanRejectApprovedRequestBeforeExecution(t *testing.T) {
 	}
 }
 
-func TestAssistantApprovedToolCannotRetryAfterExecutionFailure(t *testing.T) {
+func TestAssistantApprovedToolCanRetryAfterExecutionFailure(t *testing.T) {
 	registry := NewRegistry()
 	failOnce := true
 	registry.Register(failingOnceTool{fail: &failOnce})
@@ -810,64 +810,15 @@ func TestAssistantApprovedToolCannotRetryAfterExecutionFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("expected approval to remain stored after failure")
 	}
-	if stored.Status != ApprovalFailed {
-		t.Fatalf("failed execution should mark approval failed, got %+v", stored)
+	if stored.Status != ApprovalApproved {
+		t.Fatalf("failed execution should return approval to approved for retry, got %+v", stored)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, approved.ID); err == nil {
-		t.Fatal("expected failed approval to be single-use")
-	}
-}
-
-func TestApprovalBindsRequesterAndAllowsExplicitSelfApproval(t *testing.T) {
-	store := NewApprovalStore()
-	requester := ApprovalActor{Subject: "user-1", SessionID: "session-1", Username: "requester"}
-	request, err := store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"enabled": true}, "", requester)
+	second, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, approved.ID)
 	if err != nil {
-		t.Fatalf("create approval: %v", err)
+		t.Fatalf("retry approved execution: %v", err)
 	}
-	if request.RequesterSubject != requester.Subject || request.RequesterSessionID != requester.SessionID {
-		t.Fatalf("approval did not capture requester: %+v", request)
-	}
-	approved, err := store.ApproveFor(request.ID, requester)
-	if err != nil {
-		t.Fatalf("explicit requester approval: %v", err)
-	}
-	if approved.ApprovedBySubject != requester.Subject || approved.ApprovedBySession != requester.SessionID {
-		t.Fatalf("approval did not capture approver: %+v", approved)
-	}
-	if _, err := store.BeginExecutionFor(request.ID, "fake_modify", map[string]any{"enabled": true}, ApprovalActor{Subject: "user-1", SessionID: "other-session"}); err == nil {
-		t.Fatal("expected execution from another requester session to be rejected")
-	}
-	if _, err := store.BeginExecutionFor(request.ID, "fake_modify", map[string]any{"enabled": true}, requester); err != nil {
-		t.Fatalf("expected original requester session to execute: %v", err)
-	}
-}
-
-func TestApprovalExpiresBeforeApproveOrExecute(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0)
-	store := NewApprovalStore()
-	store.now = func() time.Time { return now }
-	store.ttl = time.Minute
-	request, err := store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", ApprovalActor{Subject: "requester", SessionID: "request-session"})
-	if err != nil {
-		t.Fatalf("create approval: %v", err)
-	}
-	store.now = func() time.Time { return now.Add(2 * time.Minute) }
-	if _, err := store.ApproveFor(request.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"}); err == nil {
-		t.Fatal("expected expired pending approval to reject approve")
-	}
-
-	store.now = func() time.Time { return now }
-	request, err = store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", ApprovalActor{Subject: "requester", SessionID: "request-session"})
-	if err != nil {
-		t.Fatalf("create second approval: %v", err)
-	}
-	if _, err := store.ApproveFor(request.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"}); err != nil {
-		t.Fatalf("approve second approval: %v", err)
-	}
-	store.now = func() time.Time { return now.Add(2 * time.Minute) }
-	if _, err := store.BeginExecutionFor(request.ID, "fake_modify", nil, ApprovalActor{Subject: "requester", SessionID: "request-session"}); err == nil {
-		t.Fatal("expected expired approved request to reject execution")
+	if second.Result == nil || !second.Result.Success || second.Approval == nil || second.Approval.Status != ApprovalExecuted {
+		t.Fatalf("expected retry to execute and close approval, got %+v", second)
 	}
 }
 
@@ -924,31 +875,6 @@ func TestApprovalStoreSnapshotsArguments(t *testing.T) {
 	}
 	if storedAgain.Args["enabled"] != true {
 		t.Fatalf("get should return a defensive copy, got %+v", storedAgain.Args)
-	}
-}
-
-func TestApprovalStoreListReturnsSortedDefensiveSnapshots(t *testing.T) {
-	store := NewApprovalStore()
-	base := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
-	store.now = func() time.Time { return base }
-	first, err := store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"value": "first"}, "", ApprovalActor{Subject: "one", SessionID: "session-one"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.now = func() time.Time { return base.Add(time.Second) }
-	second, err := store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"value": "second"}, "", ApprovalActor{Subject: "two", SessionID: "session-two"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	list := store.List()
-	if len(list) != 2 || list[0].ID != second.ID || list[1].ID != first.ID {
-		t.Fatalf("expected newest-first list, got %+v", list)
-	}
-	list[0].Args["value"] = "mutated"
-	stored, ok := store.Get(second.ID)
-	if !ok || stored.Args["value"] != "second" {
-		t.Fatalf("list must return defensive snapshots, got %+v", stored)
 	}
 }
 

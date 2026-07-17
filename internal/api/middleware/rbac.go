@@ -8,10 +8,6 @@ import (
 type PermissionMap map[string][]string
 
 func RBAC(permissions PermissionMap, required string) func(http.Handler) http.Handler {
-	return RBACAny(permissions, required)
-}
-
-func RBACAny(permissions PermissionMap, required ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims, _ := r.Context().Value(UserContextKey).(*Claims)
@@ -19,11 +15,9 @@ func RBACAny(permissions PermissionMap, required ...string) func(http.Handler) h
 				writeUnauthorized(w)
 				return
 			}
-			for _, permission := range required {
-				if allowed(claims, permissions, permission) {
-					next.ServeHTTP(w, r)
-					return
-				}
+			if allowed(claims, permissions, required) {
+				next.ServeHTTP(w, r)
+				return
 			}
 			writeAPIError(w, http.StatusForbidden, "FORBIDDEN", "permission denied")
 		})
