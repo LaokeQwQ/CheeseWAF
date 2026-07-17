@@ -471,11 +471,12 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		if r.Method == http.MethodPost {
 			status = http.StatusSeeOther
 		}
-		// Same-origin only. Barrier shape matches CodeQL go-queries regression tests:
-		// len>1 && [0]=='/' && [1]!='/' && [1]!='\\' (go/unvalidated-url-redirection).
+		// Same-origin only. Sanitize, then CodeQL-documented relative check
+		// (Hostname empty) via isLocalURL barrier (RedirectCheckBarrier name).
 		loc := fsguard.SanitizeLocalRedirect(returnURL)
-		if len(loc) > 1 && loc[0] == '/' && loc[1] != '/' && loc[1] != '\\' {
-			http.Redirect(w, r, loc, status)
+		loc = strings.ReplaceAll(loc, "\\", "/")
+		if target, err := url.Parse(loc); err == nil && target.Hostname() == "" && fsguard.IsLocalURL(loc) {
+			http.Redirect(w, r, target.String(), status)
 			return
 		}
 		http.Redirect(w, r, "/", status)
@@ -2347,12 +2348,8 @@ func safeChallengeReturnURL(r *http.Request) string {
 
 func safeRelativeRedirect(raw string) string {
 	s := fsguard.SanitizeLocalRedirect(raw)
-	// Mirror CodeQL go/bad-redirect-check complete form (len>1 second-char).
-	if len(s) > 1 && s[0] == '/' && s[1] != '/' && s[1] != '\\' {
+	if fsguard.IsLocalURL(s) {
 		return s
-	}
-	if s == "/" {
-		return "/"
 	}
 	return "/"
 }
