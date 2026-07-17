@@ -13,12 +13,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
@@ -47,6 +48,28 @@ type HTTPObjectClient struct {
 }
 
 func NewHTTPObjectClient(cfg S3Config, credentialFile string) (*HTTPObjectClient, error) {
+	// Confine to the credential file's parent directory + basename (single path component).
+	// Never pass the full operator path string to os.ReadFile (CodeQL go/path-injection).
+	clean := filepath.Clean(strings.TrimSpace(credentialFile))
+	dir := filepath.Dir(clean)
+	base := filepath.Base(clean)
+	raw, err := fsguard.ReadFileUnderRoot(dir, base, 64<<10)
+	if err != nil {
+		return nil, fmt.Errorf("read S3 credential file: %w", err)
+	}
+	return newHTTPObjectClientFromCredentialJSON(cfg, raw)
+}
+
+// NewHTTPObjectClientUnderRoot reads credentials relative to dataRoot via OpenRoot.
+func NewHTTPObjectClientUnderRoot(cfg S3Config, dataRoot, credentialFile string) (*HTTPObjectClient, error) {
+	raw, err := fsguard.ReadFileUnderRoot(dataRoot, credentialFile, 64<<10)
+	if err != nil {
+		return nil, fmt.Errorf("read S3 credential file: %w", err)
+	}
+	return newHTTPObjectClientFromCredentialJSON(cfg, raw)
+}
+
+func newHTTPObjectClientFromCredentialJSON(cfg S3Config, raw []byte) (*HTTPObjectClient, error) {
 	policy := netguard.URLPolicy{Purpose: "CAPTCHA S3 endpoint", HostPurpose: "CAPTCHA S3 endpoint", AllowedSchemes: []string{"http", "https"}, AllowPrivate: cfg.AllowPrivateEndpoint}
 	u, err := netguard.ValidateURL(cfg.Endpoint, policy)
 	if err != nil {
@@ -54,10 +77,6 @@ func NewHTTPObjectClient(cfg S3Config, credentialFile string) (*HTTPObjectClient
 	}
 	if cfg.UseTLS && u.Scheme != "https" {
 		return nil, fmt.Errorf("S3 TLS is required by configuration")
-	}
-	raw, err := os.ReadFile(strings.TrimSpace(credentialFile))
-	if err != nil {
-		return nil, fmt.Errorf("read S3 credential file: %w", err)
 	}
 	if len(raw) > 64<<10 {
 		return nil, fmt.Errorf("S3 credential file is too large")

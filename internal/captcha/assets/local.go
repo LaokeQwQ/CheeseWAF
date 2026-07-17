@@ -23,14 +23,24 @@ type LocalStore struct {
 	fs     *localAssetFS
 }
 
-func NewLocalStore(root string, limits Limits) (*LocalStore, error) {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return nil, fmt.Errorf("captcha asset root is required")
+// NewLocalStore opens a local captcha asset root. When allowedRoot is non-empty,
+// paths under that root are preferred; absolute operator paths outside the root
+// are still accepted after SafeConfigPath validation (no request-controlled input).
+func NewLocalStore(root string, limits Limits, allowedRoot ...string) (*LocalStore, error) {
+	var (
+		abs string
+		err error
+	)
+	if len(allowedRoot) > 0 && strings.TrimSpace(allowedRoot[0]) != "" {
+		abs, err = safeConfigPathUnderRoot(root, allowedRoot[0])
+		if err != nil {
+			abs, err = safeConfigPath(root)
+		}
+	} else {
+		abs, err = safeConfigPath(root)
 	}
-	abs, err := filepath.Abs(root)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("captcha asset root: %w", err)
 	}
 	fs, err := openLocalAssetFS(abs)
 	if err != nil {
