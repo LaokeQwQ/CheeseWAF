@@ -160,7 +160,9 @@ func (f *localAssetFS) open(kind Kind, name string) (*os.File, error) {
 		}
 		return nil, fmt.Errorf("captcha asset %q is not a regular file", name)
 	}
-	return os.NewFile(uintptr(fd), name), nil
+	// Constant label only: openat already confined the FD; never pass user name
+	// into os.NewFile (CodeQL go/path-injection treats the name as a path).
+	return os.NewFile(uintptr(fd), "captcha-asset-file"), nil
 }
 
 func (f *localAssetFS) readFile(kind Kind, name string, limit int64) ([]byte, error) {
@@ -180,7 +182,8 @@ func (f *localAssetFS) readDir(kind Kind) ([]os.DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := os.NewFile(uintptr(fd), string(kind))
+	// Constant label: FD opened via openat under root with validated kind name.
+	d := os.NewFile(uintptr(fd), "captcha-asset-kind")
 	defer d.Close()
 	return d.ReadDir(-1)
 }
@@ -203,7 +206,7 @@ func (f *localAssetFS) atomicWrite(kind Kind, name string, data []byte, mode os.
 	if err != nil {
 		return rejectLinkError(tmp, err)
 	}
-	file := os.NewFile(uintptr(fd), tmp)
+	file := os.NewFile(uintptr(fd), "captcha-asset-tmp")
 	closed := false
 	defer func() {
 		if !closed {
