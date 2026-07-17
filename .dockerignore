@@ -27,6 +27,8 @@
 !web/scripts/**
 !web/src/
 !web/src/**
+!web/types/
+!web/types/**
 
 !deploy/
 !deploy/docker/
