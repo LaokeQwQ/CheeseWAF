@@ -141,6 +141,19 @@ func (s *SQLiteStore) UpdateSite(ctx context.Context, site *Site) error {
 	return err
 }
 
+// RestoreSite replaces a site without advancing UpdatedAt. It is used only
+// when a higher-level configuration mutation must compensate a failed commit.
+func (s *SQLiteStore) RestoreSite(ctx context.Context, site *Site) error {
+	if site == nil {
+		return fmt.Errorf("site is nil")
+	}
+	domains, upstreams := encodeStrings(site.Domains), encodeStrings(site.Upstreams)
+	advanced := encodeJSON(site.Advanced)
+	_, err := s.db.ExecContext(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,advanced=?,enabled=?,created_at=?,updated_at=? WHERE id=?`,
+		site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, advanced, boolInt(site.Enabled), formatTime(site.CreatedAt), formatTime(site.UpdatedAt), site.ID)
+	return err
+}
+
 func (s *SQLiteStore) DeleteSite(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sites WHERE id=?`, id)
 	return err
@@ -221,6 +234,11 @@ func (s *SQLiteStore) UpdateUser(ctx context.Context, user *User) error {
 	user.UpdatedAt = time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET username=?,password_hash=?,role=?,two_fa_enabled=?,two_fa_secret=?,updated_at=? WHERE id=?`,
 		user.Username, user.PasswordHash, user.Role, boolInt(user.TwoFAEnabled), user.TwoFASecret, formatTime(user.UpdatedAt), user.ID)
+	return err
+}
+
+func (s *SQLiteStore) DeleteUser(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)
 	return err
 }
 

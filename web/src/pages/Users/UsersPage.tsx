@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Modal, Select, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, Message as ArcoMessage, Modal, Pagination, Select, Table, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode';
 import { Search, ShieldCheck, UserCog, UserPlus, UsersRound } from 'lucide-react';
-import { createUser, disableUser2FA, enableUser2FA, fetchAuditEntries, fetchUsers, setupUser2FA, updateUser } from '../../api/client';
+import { createUser, disableUser2FA, enableUser2FA, fetchAuditEntries, fetchUsers, recoverUser2FA, setupUser2FA, updateUser } from '../../api/client';
 import type { AuditEntry, TOTPSetup, User } from '../../types/api';
 
 type UserDraft = {
@@ -20,19 +20,66 @@ type TwoFAState = {
   code: string;
 };
 
+type TwoFADisableDraft = {
+  password: string;
+  code: string;
+};
+
+type TwoFARecoveryDraft = {
+  password: string;
+  confirmUsername: string;
+};
+
+type KeyedAuditEntry = AuditEntry & { auditKey: string };
+
 const roleOptions = ['admin', 'operator', 'readonly'];
+const userPageSize = 8;
+const auditPageSize = 10;
+
+export function pageItems<T>(items: readonly T[], page: number, pageSize: number) {
+  const safePage = Math.max(1, page);
+  return items.slice((safePage - 1) * pageSize, safePage * pageSize);
+}
+
+export function withStableAuditKeys(entries: readonly AuditEntry[]): KeyedAuditEntry[] {
+  const occurrences = new Map<string, number>();
+  return entries.map((entry) => {
+    const fingerprint = JSON.stringify([
+      entry.timestamp,
+      entry.user,
+      entry.role,
+      entry.method,
+      entry.path,
+      entry.status,
+      entry.remote_ip,
+      entry.latency_ms,
+    ]);
+    const occurrence = (occurrences.get(fingerprint) ?? 0) + 1;
+    occurrences.set(fingerprint, occurrence);
+    return { ...entry, auditKey: `${fingerprint}#${occurrence}` };
+  });
+}
 
 export default function UsersPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [createForm] = Form.useForm();
+  const [disableForm] = Form.useForm();
+  const [recoveryForm] = Form.useForm();
+  const account = currentAccount();
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [createOpen, setCreateOpen] = useState(false);
   const [editUser, setEditUser] = useState<User | null>(null);
+  const [disableUser, setDisableUser] = useState<User | null>(null);
+  const [recoveryUser, setRecoveryUser] = useState<User | null>(null);
   const [twoFA, setTwoFA] = useState<TwoFAState>({ code: '' });
+  const [mobileUserPage, setMobileUserPage] = useState(1);
+  const [mobileAuditPage, setMobileAuditPage] = useState(1);
   const { data: users, isLoading: usersLoading } = useQuery({ queryKey: ['users'], queryFn: fetchUsers, retry: false });
   const { data: audit, isLoading: auditLoading } = useQuery({ queryKey: ['audit'], queryFn: fetchAuditEntries, retry: false });
+  const displayedAudit = useMemo(() => withStableAuditKeys(audit ?? []).reverse(), [audit]);
+  const mobileAuditItems = useMemo(() => pageItems(displayedAudit, mobileAuditPage, auditPageSize), [displayedAudit, mobileAuditPage]);
 
   const filteredUsers = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -42,6 +89,7 @@ export default function UsersPage() {
       return matchesRole && matchesText;
     });
   }, [roleFilter, search, users]);
+  const mobileUserItems = useMemo(() => pageItems(filteredUsers, mobileUserPage, userPageSize), [filteredUsers, mobileUserPage]);
 
   const summary = useMemo(() => {
     const all = users ?? [];
@@ -77,10 +125,10 @@ export default function UsersPage() {
   });
 
   const twoFASetupMutation = useMutation({
-    mutationFn: setupUser2FA,
-    onSuccess: async (setup) => {
+    mutationFn: ({ userId }: { userId: string }) => setupUser2FA(userId),
+    onSuccess: async (setup, variables) => {
       const qr = await QRCode.toDataURL(setup.otpauth_url, { margin: 1, width: 180 });
-      setTwoFA((current) => ({ ...current, setup, qr, code: '' }));
+      setTwoFA((current) => current.user?.id === variables.userId ? { ...current, setup, qr, code: '' } : current);
     },
     onError: (error) => ArcoMessage.error(error.message),
   });
@@ -97,9 +145,23 @@ export default function UsersPage() {
   });
 
   const twoFADisableMutation = useMutation({
-    mutationFn: (user: User) => disableUser2FA(user.id),
+    mutationFn: ({ user, values }: { user: User; values: TwoFADisableDraft }) => disableUser2FA(user.id, values.password, values.code),
     onSuccess: async () => {
       ArcoMessage.success(t('users.twoFADisabled'));
+      setDisableUser(null);
+      disableForm.resetFields();
+      await queryClient.invalidateQueries({ queryKey: ['users'] });
+      await queryClient.invalidateQueries({ queryKey: ['shell-users'] });
+    },
+    onError: (error) => ArcoMessage.error(error.message),
+  });
+
+  const twoFARecoveryMutation = useMutation({
+    mutationFn: ({ user, values }: { user: User; values: TwoFARecoveryDraft }) => recoverUser2FA(user.id, values.password, values.confirmUsername),
+    onSuccess: async () => {
+      ArcoMessage.success(t('users.twoFARecovered'));
+      setRecoveryUser(null);
+      recoveryForm.resetFields();
       await queryClient.invalidateQueries({ queryKey: ['users'] });
       await queryClient.invalidateQueries({ queryKey: ['shell-users'] });
     },
@@ -108,18 +170,17 @@ export default function UsersPage() {
 
   function open2FASetup(user: User) {
     setTwoFA({ user, code: '' });
-    twoFASetupMutation.mutate(user.id);
+    twoFASetupMutation.mutate({ userId: user.id });
   }
 
-  function confirmDisable2FA(user: User) {
-    Modal.confirm({
-      title: t('users.disable2FAConfirmTitle'),
-      content: t('users.disable2FAConfirm', { username: user.username }),
-      okText: t('users.disable2FA'),
-      cancelText: t('common.cancel'),
-      okButtonProps: { status: 'danger' },
-      onOk: () => twoFADisableMutation.mutate(user),
-    });
+  function openDisable2FA(user: User) {
+    disableForm.resetFields();
+    setDisableUser(user);
+  }
+
+  function openRecovery2FA(user: User) {
+    recoveryForm.resetFields();
+    setRecoveryUser(user);
   }
 
   return (
@@ -156,7 +217,14 @@ export default function UsersPage() {
           <Table
             rowKey="id"
             loading={usersLoading}
-            pagination={{ pageSize: 8, sizeCanChange: true }}
+            pagination={{
+              pageSize: 8,
+              sizeCanChange: true,
+              sizeOptions: [8, 10, 20, 50],
+              showTotal: true,
+              bufferSize: 1,
+              hideOnSinglePage: false,
+            }}
             className="users-table"
             data={filteredUsers}
             columns={[
@@ -188,15 +256,19 @@ export default function UsersPage() {
                 render: (_: unknown, record: User) => (
                   <div className="table-action-group">
                     <Button size="small" onClick={() => setEditUser(record)}>{t('common.edit')}</Button>
-                    {record.two_fa_enabled ? (
-                      <Button size="small" status="warning" loading={twoFADisableMutation.isPending} onClick={() => confirmDisable2FA(record)}>
+                    {record.two_fa_enabled && record.id === account.subject ? (
+                      <Button size="small" status="warning" loading={twoFADisableMutation.isPending} onClick={() => openDisable2FA(record)}>
                         {t('users.disable2FA')}
                       </Button>
-                    ) : (
+                    ) : record.two_fa_enabled && account.role === 'admin' && record.id !== account.subject ? (
+                      <Button size="small" status="warning" loading={twoFARecoveryMutation.isPending} onClick={() => openRecovery2FA(record)}>
+                        {t('users.recover2FA')}
+                      </Button>
+                    ) : !record.two_fa_enabled && record.id === account.subject ? (
                       <Button size="small" icon={<ShieldCheck size={14} />} loading={twoFASetupMutation.isPending && twoFA.user?.id === record.id} onClick={() => open2FASetup(record)}>
                         {t('users.setup2FA')}
                       </Button>
-                    )}
+                    ) : null}
                   </div>
                 ),
               },
@@ -204,16 +276,21 @@ export default function UsersPage() {
           />
         </div>
         <div className="mobile-card-list users-mobile-list">
-          {filteredUsers.map((user) => (
+          {usersLoading ? <div className={'empty-state'}>{t('common.loading')}</div> : filteredUsers.length === 0 ? <div className={'empty-state'}>{t('common.noData')}</div> : mobileUserItems.map((user) => (
             <UserCard
               key={user.id}
               user={user}
               t={t}
               onEdit={() => setEditUser(user)}
               onSetup2FA={() => open2FASetup(user)}
-              onDisable2FA={() => confirmDisable2FA(user)}
+              canSetup2FA={!user.two_fa_enabled && user.id === account.subject}
+              canDisable2FA={user.two_fa_enabled && user.id === account.subject}
+              canRecover2FA={user.two_fa_enabled && account.role === 'admin' && user.id !== account.subject}
+              onDisable2FA={() => openDisable2FA(user)}
+              onRecover2FA={() => openRecovery2FA(user)}
             />
           ))}
+          {filteredUsers.length > userPageSize && <Pagination simple current={mobileUserPage} pageSize={userPageSize} total={filteredUsers.length} onChange={setMobileUserPage} />}
         </div>
       </section>
 
@@ -224,24 +301,32 @@ export default function UsersPage() {
         </div>
         <div className="table-scroll users-audit-table">
           <Table
-            rowKey={(entry) => `${entry.timestamp}-${entry.method}-${entry.path}`}
+            rowKey={(entry) => entry.auditKey}
             loading={auditLoading}
-            pagination={{ pageSize: 10, sizeCanChange: true }}
-            data={(audit ?? []).slice().reverse()}
+            pagination={{
+              pageSize: 10,
+              sizeCanChange: true,
+              sizeOptions: [10, 20, 50],
+              showTotal: true,
+              bufferSize: 1,
+              hideOnSinglePage: false,
+            }}
+            data={displayedAudit}
             columns={[
               { title: t('logs.time'), dataIndex: 'timestamp', width: 190, render: (value: string) => <span className="nowrap-cell" title={value}>{formatDate(value)}</span> },
               { title: t('users.user'), dataIndex: 'user', width: 140, render: (value: string) => <span className="nowrap-cell" title={value}>{value || '-'}</span> },
               { title: t('users.method'), dataIndex: 'method', width: 96, render: (value: string) => <Tag>{value}</Tag> },
               { title: t('logs.path'), dataIndex: 'path', render: (value: string) => <code className="table-code" title={value}>{value}</code> },
               { title: t('common.status'), dataIndex: 'status', width: 110, render: (value: number) => <Tag color={value >= 400 ? 'red' : 'green'}>{value}</Tag> },
-              { title: 'IP', dataIndex: 'remote_ip', width: 160, render: (value: string) => <span className="nowrap-cell">{value || '-'}</span> },
+              { title: 'IP', dataIndex: 'remote_ip', width: 160, render: (value: string) => <span className="nowrap-cell">{stripIpPort(value) || '-'}</span> },
             ]}
           />
         </div>
         <div className="mobile-card-list users-audit-cards">
-          {(audit ?? []).slice().reverse().map((entry) => (
-            <AuditEntryCard key={`${entry.timestamp}-${entry.path}`} entry={entry} t={t} />
+          {auditLoading ? <div className={'empty-state'}>{t('common.loading')}</div> : displayedAudit.length === 0 ? <div className={'empty-state'}>{t('common.noData')}</div> : mobileAuditItems.map((entry) => (
+            <AuditEntryCard key={entry.auditKey} entry={entry} t={t} />
           ))}
+          {displayedAudit.length > auditPageSize && <Pagination simple current={mobileAuditPage} pageSize={auditPageSize} total={displayedAudit.length} onChange={setMobileAuditPage} />}
         </div>
       </section>
 
@@ -331,6 +416,55 @@ export default function UsersPage() {
           </div>
         )}
       </Modal>
+
+      <Modal
+        title={disableUser ? t('users.disable2FAFor', { username: disableUser.username }) : t('users.disable2FA')}
+        visible={Boolean(disableUser)}
+        onCancel={() => setDisableUser(null)}
+        footer={null}
+        className="users-modal"
+      >
+        {disableUser && (
+          <Form
+            form={disableForm}
+            layout="vertical"
+            onSubmit={(values: TwoFADisableDraft) => twoFADisableMutation.mutate({ user: disableUser, values })}
+          >
+            <Form.Item label={t('users.currentPassword')} field="password" rules={[{ required: true, message: t('users.currentPasswordRequired') }]}>
+              <Input.Password autoComplete="current-password" />
+            </Form.Item>
+            <Form.Item label={t('users.twoFACode')} field="code" rules={[{ required: true, message: t('users.twoFACodeRequired') }]}>
+              <Input maxLength={6} inputMode="numeric" />
+            </Form.Item>
+            <Button type="primary" status="danger" htmlType="submit" loading={twoFADisableMutation.isPending} long>{t('users.disable2FA')}</Button>
+          </Form>
+        )}
+      </Modal>
+
+      <Modal
+        title={recoveryUser ? t('users.recover2FAFor', { username: recoveryUser.username }) : t('users.recover2FA')}
+        visible={Boolean(recoveryUser)}
+        onCancel={() => setRecoveryUser(null)}
+        footer={null}
+        className="users-modal"
+      >
+        {recoveryUser && (
+          <Form
+            form={recoveryForm}
+            layout="vertical"
+            onSubmit={(values: TwoFARecoveryDraft) => twoFARecoveryMutation.mutate({ user: recoveryUser, values })}
+          >
+            <p>{t('users.recover2FAHint', { username: recoveryUser.username })}</p>
+            <Form.Item label={t('users.currentPassword')} field="password" rules={[{ required: true, message: t('users.currentPasswordRequired') }]}>
+              <Input.Password autoComplete="current-password" />
+            </Form.Item>
+            <Form.Item label={t('users.confirmTargetUsername')} field="confirmUsername" rules={[{ required: true, message: t('users.confirmTargetUsernameRequired') }]}>
+              <Input placeholder={recoveryUser.username} autoComplete="off" />
+            </Form.Item>
+            <Button type="primary" status="danger" htmlType="submit" loading={twoFARecoveryMutation.isPending} long>{t('users.recover2FA')}</Button>
+          </Form>
+        )}
+      </Modal>
     </section>
   );
 }
@@ -383,12 +517,20 @@ function UserCard({
   onEdit,
   onSetup2FA,
   onDisable2FA,
+  onRecover2FA,
+  canSetup2FA,
+  canDisable2FA,
+  canRecover2FA,
 }: {
   user: User;
   t: (key: string, options?: Record<string, unknown>) => string;
   onEdit: () => void;
   onSetup2FA: () => void;
   onDisable2FA: () => void;
+  onRecover2FA: () => void;
+  canSetup2FA: boolean;
+  canDisable2FA: boolean;
+  canRecover2FA: boolean;
 }) {
   return (
     <article className="mobile-data-card user-mobile-card">
@@ -402,7 +544,9 @@ function UserCard({
       </dl>
       <div className="mobile-card-actions">
         <Button onClick={onEdit}>{t('common.edit')}</Button>
-        {user.two_fa_enabled ? <Button status="warning" onClick={onDisable2FA}>{t('users.disable2FA')}</Button> : <Button onClick={onSetup2FA}>{t('users.setup2FA')}</Button>}
+        {canDisable2FA && <Button status="warning" onClick={onDisable2FA}>{t('users.disable2FA')}</Button>}
+        {canRecover2FA && <Button status="warning" onClick={onRecover2FA}>{t('users.recover2FA')}</Button>}
+        {canSetup2FA && <Button onClick={onSetup2FA}>{t('users.setup2FA')}</Button>}
       </div>
     </article>
   );
@@ -425,10 +569,25 @@ function AuditEntryCard({
         <div><dt>{t('logs.time')}</dt><dd>{formatDate(entry.timestamp)}</dd></div>
         <div><dt>{t('users.method')}</dt><dd>{entry.method || '-'}</dd></div>
         <div><dt>{t('logs.path')}</dt><dd><code className="table-code" title={entry.path}>{entry.path}</code></dd></div>
-        <div><dt>IP</dt><dd>{entry.remote_ip || '-'}</dd></div>
+        <div><dt>IP</dt><dd>{stripIpPort(entry.remote_ip) || '-'}</dd></div>
       </dl>
     </article>
   );
+}
+
+// Audit remote addresses arrive as host:port (Go http.Request.RemoteAddr); display the IP only.
+function stripIpPort(value: string): string {
+  if (!value) {
+    return value;
+  }
+  const bracketedV6 = /^\[([^\]]+)\]:\d+$/.exec(value);
+  if (bracketedV6) {
+    return bracketedV6[1];
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(value)) {
+    return value.slice(0, value.lastIndexOf(':'));
+  }
+  return value;
 }
 
 function roleLabel(role: string, t: (key: string, options?: Record<string, unknown>) => string) {
@@ -453,4 +612,19 @@ function formatDate(value?: string) {
     return value;
   }
   return date.toLocaleString();
+}
+
+function currentAccount() {
+  const fallback = { subject: '', username: '', role: '' };
+  const payload = (localStorage.getItem('cheesewaf-token') ?? '').split('.')[1];
+  if (!payload) {
+    return fallback;
+  }
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))) as { sub?: string; username?: string; role?: string };
+    return { subject: decoded.sub ?? '', username: decoded.username ?? '', role: decoded.role ?? '' };
+  } catch {
+    return fallback;
+  }
 }

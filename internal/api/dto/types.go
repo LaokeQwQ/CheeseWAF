@@ -27,6 +27,7 @@ type CAPTCHAChallengeRequest struct {
 type CAPTCHAPayload struct {
 	Mode      string                `json:"mode,omitempty"`
 	Receipt   string                `json:"receipt,omitempty"`
+	Username  string                `json:"username,omitempty"`
 	Algorithm string                `json:"algorithm"`
 	Challenge string                `json:"challenge"`
 	Number    int                   `json:"number"`

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +65,295 @@ func TestUpdateSystemNotifiesAPISecReload(t *testing.T) {
 	}
 }
 
+func TestUpdateSystemAppliesAndPersistsTimeSync(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var applied []config.TimeSyncConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+			applied = append(applied, next)
+			return nil
+		},
+	})
+	next := cfg.TimeSync
+	next.SyncInterval = 45 * time.Minute
+	raw, _ := json.Marshal(map[string]any{"time_sync": next})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected update success, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(applied) != 1 || applied[0].SyncInterval != 45*time.Minute {
+		t.Fatalf("unexpected runtime apply calls: %+v", applied)
+	}
+	if cfg.TimeSync.SyncInterval != 45*time.Minute || !strings.Contains(recorder.Body.String(), `"time_sync"`) {
+		t.Fatalf("time sync config not returned or updated: %+v body=%s", cfg.TimeSync, recorder.Body.String())
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.TimeSync.SyncInterval != 45*time.Minute {
+		t.Fatalf("time sync config not persisted: %+v", loaded.TimeSync)
+	}
+}
+
+func TestUpdateSystemMergesPartialTimeSyncWithoutDisabling(t *testing.T) {
+	cfg := config.Default()
+	previous := cfg.TimeSync
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var applied []config.TimeSyncConfig
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+			applied = append(applied, next)
+			return nil
+		},
+	})
+	raw, _ := json.Marshal(map[string]any{"time_sync": map[string]any{"sync_interval": int64(45 * time.Minute)}})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected partial update success, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !cfg.TimeSync.Enabled || cfg.TimeSync.SyncInterval != 45*time.Minute {
+		t.Fatalf("partial update corrupted time sync: %+v", cfg.TimeSync)
+	}
+	if len(cfg.TimeSync.Sources) != len(previous.Sources) || cfg.TimeSync.SelectionInterval != previous.SelectionInterval {
+		t.Fatalf("partial update dropped unrelated fields: %+v", cfg.TimeSync)
+	}
+	if len(applied) != 1 || !applied[0].Enabled || applied[0].SyncInterval != 45*time.Minute {
+		t.Fatalf("runtime apply missing merge: %+v", applied)
+	}
+}
+
+func TestUpdateSystemRollsBackTimeSyncWhenRuntimeRejectsCandidate(t *testing.T) {
+	cfg := config.Default()
+	previous := cfg.TimeSync
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var intervals []time.Duration
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+			intervals = append(intervals, next.SyncInterval)
+			if next.SyncInterval != previous.SyncInterval {
+				return errors.New("time synchronization runtime rejected candidate")
+			}
+			return nil
+		},
+	})
+	next := previous
+	next.SyncInterval = 45 * time.Minute
+	raw, _ := json.Marshal(map[string]any{"time_sync": next})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected runtime failure, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(intervals) != 2 || intervals[0] != next.SyncInterval || intervals[1] != previous.SyncInterval {
+		t.Fatalf("expected candidate then previous runtime apply, got %v", intervals)
+	}
+	if cfg.TimeSync.SyncInterval != previous.SyncInterval {
+		t.Fatalf("memory config changed after rejected runtime: %+v", cfg.TimeSync)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.TimeSync.SyncInterval != previous.SyncInterval {
+		t.Fatalf("disk config changed after rejected runtime: %+v", loaded.TimeSync)
+	}
+}
+
+func TestUpdateSystemRollsBackMemoryDiskAndRuntimeOnReloadFailure(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	previous := cfg.APISec
+	var applied []bool
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnAPISecChanged: func(next config.APISecConfig) error {
+			applied = append(applied, next.Enabled)
+			if next.Enabled != previous.Enabled {
+				return errors.New("reload failed")
+			}
+			return nil
+		},
+	})
+	next := previous
+	next.Enabled = !previous.Enabled
+	raw, _ := json.Marshal(map[string]any{"apisec": next})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw))
+	handler.UpdateSystem(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected reload failure, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.APISec.Enabled != previous.Enabled {
+		t.Fatalf("memory config was not rolled back: %+v", cfg.APISec)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.APISec.Enabled != previous.Enabled {
+		t.Fatalf("disk config changed after failed reload: %+v", loaded.APISec)
+	}
+	if len(applied) != 2 || applied[0] != next.Enabled || applied[1] != previous.Enabled {
+		t.Fatalf("expected candidate apply followed by old runtime restore, got %v", applied)
+	}
+}
+
+func TestUpdateSystemFreezesWritesWhenRuntimeRollbackFails(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnAPISecChanged: func(config.APISecConfig) error {
+			return errors.New("runtime unavailable")
+		},
+	})
+	next := cfg.APISec
+	next.Enabled = !next.Enabled
+	raw, _ := json.Marshal(map[string]any{"apisec": next})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusInternalServerError || !handler.configWriteFrozen {
+		t.Fatalf("expected failed rollback to freeze writes, code=%d body=%s frozen=%v", recorder.Code, recorder.Body.String(), handler.configWriteFrozen)
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader([]byte(`{"logging":{"level":"debug"}}`))))
+	if recorder.Code != http.StatusLocked || !strings.Contains(recorder.Body.String(), "CONFIG_WRITES_FROZEN") {
+		t.Fatalf("expected subsequent write rejection, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUpdateSystemDoesNotReloadSitesForUnrelatedConfig(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var siteReloads int
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnSitesChanged: func([]config.SiteConfig) error {
+			siteReloads++
+			return nil
+		},
+	})
+	nextLogging := cfg.Logging
+	nextLogging.Level = "debug"
+	raw, _ := json.Marshal(map[string]any{"logging": nextLogging})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected update success, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if siteReloads != 0 {
+		t.Fatalf("unrelated logging update reloaded sites %d times", siteReloads)
+	}
+}
+
+func TestPersistConfigRestoresPreviousFileWhenVersionWriteFails(t *testing.T) {
+	cfg := config.Default()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "versions"), []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatalf("block primary versions directory: %v", err)
+	}
+	runtimeBlocker := filepath.Join(dir, "runtime-file")
+	if err := os.WriteFile(runtimeBlocker, []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatalf("block fallback runtime directory: %v", err)
+	}
+	cfg.Setup.RuntimeDir = runtimeBlocker
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	_, err := handler.commitConfigMutation(func(candidate *config.Config) error {
+		candidate.Logging.Level = "debug"
+		return nil
+	}, nil)
+	if err == nil {
+		t.Fatal("expected version write failure")
+	}
+	loaded, loadErr := config.Load(configPath)
+	if loadErr != nil {
+		t.Fatalf("load restored config: %v", loadErr)
+	}
+	if loaded.Logging.Level == "debug" {
+		t.Fatalf("new config remained after version failure: %+v", loaded.Logging)
+	}
+}
+
+func TestConfigMutationsMergeConcurrentIndependentUpdates(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		<-start
+		_, err := handler.commitConfigMutation(func(candidate *config.Config) error {
+			candidate.Logging.Level = "debug"
+			return nil
+		}, nil)
+		errs <- err
+	}()
+	go func() {
+		<-start
+		_, err := handler.commitConfigMutation(func(candidate *config.Config) error {
+			candidate.AI.Model = "transaction-test-model"
+			return nil
+		}, nil)
+		errs <- err
+	}()
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent mutation failed: %v", err)
+		}
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.Logging.Level != "debug" || loaded.AI.Model != "transaction-test-model" {
+		t.Fatalf("independent update was lost: logging=%q model=%q", loaded.Logging.Level, loaded.AI.Model)
+	}
+}
+
 func TestUpdateSystemPersistsConsoleSecurityEntry(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
@@ -93,6 +383,73 @@ func TestUpdateSystemPersistsConsoleSecurityEntry(t *testing.T) {
 	}
 	if !loaded.Console.Login.SecurityEntry.Enabled || loaded.Console.Login.SecurityEntry.Path != "/ops-door" || loaded.Console.Login.SecurityEntry.CookieName != "cw_ops_entry" {
 		t.Fatalf("security entry was not persisted: %+v", loaded.Console.Login.SecurityEntry)
+	}
+}
+
+func TestUpdateSystemPersistsConsoleLoginBranding(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	showVersion := false
+	nextConsole := cfg.Console
+	nextConsole.Login.Copyright = "Copyright © Acme Security Ops"
+	nextConsole.Login.ShowProductVersion = &showVersion
+	raw, _ := json.Marshal(map[string]any{"console": nextConsole})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw))
+	handler.UpdateSystem(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected system update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Console.Login.Copyright != "Copyright © Acme Security Ops" {
+		t.Fatalf("copyright was not updated in memory: %q", cfg.Console.Login.Copyright)
+	}
+	if cfg.Console.Login.ShowProductVersion == nil || *cfg.Console.Login.ShowProductVersion {
+		t.Fatalf("show_product_version was not updated in memory: %+v", cfg.Console.Login.ShowProductVersion)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if loaded.Console.Login.Copyright != "Copyright © Acme Security Ops" {
+		t.Fatalf("copyright was not persisted: %q", loaded.Console.Login.Copyright)
+	}
+	if loaded.Console.Login.ShowProductVersion == nil || *loaded.Console.Login.ShowProductVersion {
+		t.Fatalf("show_product_version was not persisted: %+v", loaded.Console.Login.ShowProductVersion)
+	}
+
+	// LoginOptions must reflect persisted branding for the unauthenticated login page.
+	optionsRec := httptest.NewRecorder()
+	handler.LoginOptions(optionsRec, httptest.NewRequest(http.MethodGet, "/api/auth/login-options", nil))
+	if optionsRec.Code != http.StatusOK {
+		t.Fatalf("login options code=%d body=%s", optionsRec.Code, optionsRec.Body.String())
+	}
+	var payload struct {
+		Data struct {
+			Branding struct {
+				Copyright      string `json:"copyright"`
+				ShowVersion    bool   `json:"show_version"`
+				ProductVersion string `json:"product_version"`
+			} `json:"branding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(optionsRec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode login options: %v", err)
+	}
+	if payload.Data.Branding.Copyright != "Copyright © Acme Security Ops" {
+		t.Fatalf("login options copyright = %q", payload.Data.Branding.Copyright)
+	}
+	if payload.Data.Branding.ShowVersion {
+		t.Fatal("login options show_version should be false when disabled")
+	}
+	if strings.TrimSpace(payload.Data.Branding.ProductVersion) == "" {
+		t.Fatal("login options product_version should still be present for clients that re-enable the line")
 	}
 }
 

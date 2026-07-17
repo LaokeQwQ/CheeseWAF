@@ -62,6 +62,28 @@ func TestSSHRunnerBuildsSafeArgumentVector(t *testing.T) {
 	}
 }
 
+func TestSSHRunnerRejectsUnknownHostKeyByDefault(t *testing.T) {
+	runner := NewSSHRunner(SSHRunnerOptions{})
+	if _, err := runner.hostKeyCallback(SSHDeploymentRequest{}); err == nil || !strings.Contains(err.Error(), "fingerprint confirmation is required") {
+		t.Fatalf("expected unknown host key to fail closed, got %v", err)
+	}
+}
+
+func TestInstallBackupUsesChecksumPrefixNotTaskID(t *testing.T) {
+	sum := strings.Repeat("a", 64)
+	command := installCommand(3, sum, "deploy-12345678-1234-1234-1234-123456789abc")
+	// Backup names use a hex prefix of the local binary checksum only — never operator task IDs.
+	if !strings.Contains(command, ".bak."+sum[:16]) {
+		t.Fatalf("backup must use checksum prefix: %s", command)
+	}
+	if strings.Contains(command, "deploy-12345678") {
+		t.Fatal("install backup must not embed operator task IDs into the remote shell")
+	}
+	if strings.Contains(command, "date -u +%Y%m%d%H%M%S") {
+		t.Fatal("install backup must not use a timestamp-only name")
+	}
+}
+
 func TestSSHRunnerPasswordAuthExecutesFixedCheck(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "ok\n"})
 	rec := NewMemoryAuditRecorder()

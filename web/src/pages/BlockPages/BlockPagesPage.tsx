@@ -14,6 +14,7 @@ import {
 } from '../../api/client';
 import type { BlockPageConfig } from '../../types/api';
 import '../../styles/block-pages.css';
+import '../../styles/arco-components';
 
 const blockPreviewStoragePrefix = 'cheesewaf-block-page-preview-html';
 
@@ -137,20 +138,31 @@ export default function BlockPagesPage() {
       ArcoMessage.warning(t('blockPages.noPreviewContent'));
       return;
     }
-    const blob = new Blob([safePreviewHTML], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const previewWindow = window.open('about:blank', '_blank');
-    if (!previewWindow) {
-      URL.revokeObjectURL(url);
+    // Never open executable same-origin blob URLs. Hand HTML to the in-app
+    // preview route, which renders inside a sandboxed iframe (no scripts, no same-origin).
+    const token = `${blockPreviewStoragePrefix}:${crypto.randomUUID()}`;
+    try {
+      localStorage.setItem(token, JSON.stringify({ html: safePreviewHTML, created_at: Date.now() }));
+    } catch {
       ArcoMessage.error(t('blockPages.previewOpenFailed'));
       return;
     }
-    previewWindow.opener = null;
-    previewWindow.location.href = url;
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    const previewURL = `/block-pages/preview?token=${encodeURIComponent(token)}`;
+    const previewWindow = window.open(previewURL, '_blank', 'noopener,noreferrer');
+    if (!previewWindow) {
+      try {
+        localStorage.removeItem(token);
+      } catch {
+        // ignore storage cleanup failures
+      }
+      ArcoMessage.error(t('blockPages.previewOpenFailed'));
+    }
   }
 
   function saveCustom() {
+    if (!configQuery.isSuccess) {
+      return;
+    }
     if (!customHTML.trim()) {
       ArcoMessage.warning(t('blockPages.emptyCustom'));
       return;
@@ -175,13 +187,13 @@ export default function BlockPagesPage() {
           <p>{t('blockPages.subtitle')}</p>
         </div>
         <div className="block-page-header-actions">
-          <Tag className="status-pill" icon={<CheckCircle2 size={14} />}>{sourceLabel}</Tag>
+          {configQuery.isSuccess && <Tag className="status-pill" icon={<CheckCircle2 size={14} />}>{sourceLabel}</Tag>}
           {isError && <Button onClick={() => { templatesQuery.refetch(); configQuery.refetch(); }}>{t('common.retry')}</Button>}
         </div>
       </header>
 
       {isError && (
-        <div className="inline-error">
+        <div className="inline-error" role="alert">
           <span>{t('blockPages.loadFailed')}</span>
           {error instanceof APIRequestError && error.traceID && <code>{error.traceID}</code>}
           <Button size="small" onClick={() => { templatesQuery.refetch(); configQuery.refetch(); }}>{t('common.retry')}</Button>
@@ -217,7 +229,7 @@ export default function BlockPagesPage() {
           ) : <Empty description={t('blockPages.noTemplates')} />}
           <div className="block-template-actions">
             <Button disabled={!templateHTML} onClick={() => setCustomHTML(templateHTML)}>{t('blockPages.useAsBase')}</Button>
-            <Button type="primary" loading={saveBuiltInMutation.isPending} disabled={!template} onClick={() => saveBuiltInMutation.mutate()}>{t('blockPages.useBuiltIn')}</Button>
+            <Button type="primary" loading={saveBuiltInMutation.isPending} disabled={!template || !configQuery.isSuccess} onClick={() => saveBuiltInMutation.mutate()}>{t('blockPages.useBuiltIn')}</Button>
           </div>
         </section>
 
@@ -230,9 +242,9 @@ export default function BlockPagesPage() {
             <div className="block-editor-actions">
               <input ref={fileInputRef} type="file" accept=".html,.htm,text/html" hidden onChange={onUploadChange} />
               <Tag>{t('blockPages.sizeLabel', { size: formatBytes(customBytes) })}</Tag>
-              <Button icon={<FileUp size={14} />} loading={uploadMutation.isPending} onClick={() => fileInputRef.current?.click()}>{t('blockPages.uploadHtml')}</Button>
-              <Button icon={<RotateCcw size={14} />} loading={restoreMutation.isPending} disabled={!activeConfig?.custom_enabled && !customHTML} onClick={() => restoreMutation.mutate()}>{t('blockPages.restoreBuiltIn')}</Button>
-              <Button icon={<Save size={14} />} type="primary" loading={saveCustomMutation.isPending} onClick={saveCustom}>{t('blockPages.saveCustom')}</Button>
+              <Button icon={<FileUp size={14} />} loading={uploadMutation.isPending} disabled={!configQuery.isSuccess} onClick={() => fileInputRef.current?.click()}>{t('blockPages.uploadHtml')}</Button>
+              <Button icon={<RotateCcw size={14} />} loading={restoreMutation.isPending} disabled={!configQuery.isSuccess || (!activeConfig?.custom_enabled && !customHTML)} onClick={() => restoreMutation.mutate()}>{t('blockPages.restoreBuiltIn')}</Button>
+              <Button icon={<Save size={14} />} type="primary" loading={saveCustomMutation.isPending} disabled={!configQuery.isSuccess} onClick={saveCustom}>{t('blockPages.saveCustom')}</Button>
             </div>
           </div>
           <Input.TextArea
@@ -258,13 +270,13 @@ export default function BlockPagesPage() {
             </div>
           </div>
           {previewQuery.error instanceof APIRequestError && (
-            <div className="inline-error block-preview-error">
+            <div className="inline-error block-preview-error" role="alert">
               <span>{previewQuery.error.rawMessage}</span>
               {previewQuery.error.traceID && <code>{previewQuery.error.traceID}</code>}
             </div>
           )}
           <div className="block-preview-frame">
-            {previewQuery.isFetching && !safePreviewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="allow-same-origin" referrerPolicy="no-referrer" srcDoc={safePreviewHTML} />}
+            {previewQuery.isFetching && !safePreviewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="" referrerPolicy="no-referrer" srcDoc={safePreviewHTML} />}
           </div>
         </section>
       </div>
@@ -309,7 +321,7 @@ export function BlockPagePreviewWindow() {
 
   return (
     <main className="block-preview-standalone">
-      <iframe title={t('blockPages.preview')} sandbox="allow-same-origin" referrerPolicy="no-referrer" srcDoc={safeHTML} />
+      <iframe title={t('blockPages.preview')} sandbox="" referrerPolicy="no-referrer" srcDoc={safeHTML} />
     </main>
   );
 }
@@ -337,7 +349,7 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
-function sanitizeBlockPreviewHTML(value: string) {
+export function sanitizeBlockPreviewHTML(value: string) {
   const html = value.trim();
   if (!html) {
     return '';
@@ -346,7 +358,7 @@ function sanitizeBlockPreviewHTML(value: string) {
     return '';
   }
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script, iframe, object, embed, link[rel="import"], meta[http-equiv="refresh"]').forEach((node) => node.remove());
+  doc.querySelectorAll('script, iframe, object, embed, base, link[rel="import"], meta[http-equiv="refresh"]').forEach((node) => node.remove());
   doc.querySelectorAll('*').forEach((element) => {
     Array.from(element.attributes).forEach((attribute) => {
       const name = attribute.name.toLowerCase();
@@ -354,7 +366,8 @@ function sanitizeBlockPreviewHTML(value: string) {
         element.removeAttribute(attribute.name);
         return;
       }
-      if (name === 'srcset') {
+      // Drop navigation/form targets that can escape the sandbox intent.
+      if (name === 'srcset' || name === 'action' || name === 'formaction' || name === 'form' || name === 'xlink:href') {
         element.removeAttribute(attribute.name);
         return;
       }
@@ -367,7 +380,7 @@ function sanitizeBlockPreviewHTML(value: string) {
 }
 
 function isDangerousPreviewURLAttribute(name: string, rawValue: string) {
-  if (!['href', 'src', 'xlink:href', 'formaction'].includes(name.toLowerCase())) {
+  if (!['href', 'src', 'poster', 'cite', 'data', 'background'].includes(name.toLowerCase())) {
     return false;
   }
   const normalized = compactURLScheme(rawValue).toLowerCase();
