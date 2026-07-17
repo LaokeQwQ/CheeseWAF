@@ -20,6 +20,9 @@ cp \
 cp -R "${repo_root}/web/public" "${work_web}/public"
 cp -R "${repo_root}/web/scripts" "${work_web}/scripts"
 cp -R "${repo_root}/web/src" "${work_web}/src"
+if [[ -d "${repo_root}/web/types" ]]; then
+  cp -R "${repo_root}/web/types" "${work_web}/types"
+fi
 
 pushd "$work_web" >/dev/null
 # agent-eyes postinstall runs `pnpm build` and fails without a monorepo layout;
