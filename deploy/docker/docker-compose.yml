@@ -5,15 +5,21 @@ services:
       dockerfile: deploy/docker/Dockerfile
     image: cheesewaf:dev
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
     ports:
       - "8080:8080"
       - "9443:9443"
     volumes:
       - cheesewaf-data:/var/lib/cheesewaf
       - cheesewaf-logs:/var/log/cheesewaf
-      - ../../configs/cheesewaf.yaml:/etc/cheesewaf/cheesewaf.yaml:ro
     healthcheck:
-      test: ["CMD", "/usr/local/bin/cheesewaf", "status"]
+      test: ["CMD", "/usr/local/bin/cheesewaf-entrypoint", "healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

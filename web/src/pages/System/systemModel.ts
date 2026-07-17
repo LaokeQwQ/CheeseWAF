@@ -1,6 +1,8 @@
 import type { APISecAuthConfig, SystemConfig } from '../../types/api';
 
 export const second = 1_000_000_000;
+export const timeSyncQueryKey = ['system-time-sync'] as const;
+export type DurationUnit = 'ns' | 'us' | 'ms' | 's' | 'm' | 'h' | 'd';
 
 const fallbackAPIAuth: APISecAuthConfig = {
   enabled: false,
@@ -39,6 +41,8 @@ export const fallbackSystem: SystemConfig = {
       },
       security_entry: { enabled: false, path: '/__cheesewaf-entry', cookie_name: 'cheesewaf_admin_entry' },
       background: { enabled: false, type: 'auto', url: '' },
+      copyright: 'Copyright © CheeseWAF. All rights reserved.',
+      show_product_version: true,
     },
     map: {
       china_boundary: {
@@ -145,6 +149,10 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
       admin_tls: { ...fallbackSystem.server.admin_tls, ...next.server?.admin_tls },
       http3: { ...fallbackSystem.server.http3, ...next.server?.http3 },
     },
+    time_sync: next.time_sync ? {
+      ...next.time_sync,
+      sources: Array.isArray(next.time_sync.sources) ? [...next.time_sync.sources] : [],
+    } : undefined,
     tls: { ...fallbackSystem.tls, ...next.tls },
     storage: {
       sqlite: { ...fallbackSystem.storage.sqlite, ...next.storage?.sqlite },
@@ -233,4 +241,64 @@ export function secondsToDuration(value: number | string | null | undefined) {
 
 export function millisecondsToDuration(value: number | string | null | undefined) {
   return Math.max(1, Number(value || 1)) * 1_000_000;
+}
+
+export function durationToNanoseconds(value: number | string | undefined): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  const raw = String(value ?? '').trim().toLowerCase();
+  const match = raw.match(/^(\d+(?:\.\d+)?)(ns|us|ms|s|m|h|d)$/);
+  if (match) {
+    const amount = Number(match[1]);
+    return amount > 0 ? amount * durationUnitToNanoseconds(match[2] as DurationUnit) : 0;
+  }
+  if (raw && Number.isFinite(Number(raw)) && Number(raw) > 0) {
+    return Number(raw);
+  }
+  return 0;
+}
+
+export function durationToUnitParts(
+  value: number | string | undefined,
+  units: readonly DurationUnit[],
+): { amount: number; unit: DurationUnit } {
+  if (typeof value === 'string') {
+    const match = value.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)(ns|us|ms|s|m|h|d)$/);
+    const explicitUnit = match?.[2] as DurationUnit | undefined;
+    if (match && explicitUnit && units.includes(explicitUnit)) {
+      return { amount: Number(match[1]), unit: explicitUnit };
+    }
+  }
+  const nanoseconds = durationToNanoseconds(value);
+  const firstUnit = units[0] ?? 's';
+  if (nanoseconds <= 0) {
+    return { amount: 0, unit: firstUnit };
+  }
+  for (const unit of [...units].reverse()) {
+    const divisor = durationUnitToNanoseconds(unit);
+    if (nanoseconds >= divisor && nanoseconds % divisor === 0) {
+      return { amount: nanoseconds / divisor, unit };
+    }
+  }
+  return { amount: nanoseconds / durationUnitToNanoseconds(firstUnit), unit: firstUnit };
+}
+
+export function durationUnitToNanoseconds(unit: DurationUnit) {
+  switch (unit) {
+    case 'ns':
+      return 1;
+    case 'us':
+      return 1_000;
+    case 'ms':
+      return 1_000_000;
+    case 'd':
+      return 24 * 60 * 60 * second;
+    case 'h':
+      return 60 * 60 * second;
+    case 'm':
+      return 60 * second;
+    default:
+      return second;
+  }
 }

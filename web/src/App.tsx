@@ -1,25 +1,14 @@
 import { useEffect, useMemo } from 'react';
 import { BrowserRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import ConfigProvider from '@arco-design/web-react/es/ConfigProvider';
 import enUS from '@arco-design/web-react/es/locale/en-US';
 import zhCN from '@arco-design/web-react/es/locale/zh-CN';
 import AppRoutes from './routes';
-import { applyTheme } from './themes';
+import i18n from './i18n';
+import { applyTheme, loadThemeStyles } from './themes';
 import { useAppStore } from './stores';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      refetchOnWindowFocus: false,
-      refetchIntervalInBackground: false,
-      staleTime: 30_000,
-      gcTime: 10 * 60_000,
-      placeholderData: (previousData: unknown) => previousData,
-    },
-  },
-});
+import { queryClient } from './queryClient';
 
 export default function App() {
   const theme = useAppStore((state) => state.theme);
@@ -27,11 +16,13 @@ export default function App() {
 
   useEffect(() => {
     applyTheme(theme);
+    void loadThemeStyles(theme);
   }, [theme]);
 
-  useEffect(() => {
-    document.documentElement.lang = language === 'zh-CN' ? 'zh-CN' : 'en';
-  }, [language]);
+	useEffect(() => {
+		void i18n.changeLanguage(language);
+		document.documentElement.lang = language === 'zh-CN' ? 'zh-CN' : 'en';
+	}, [language]);
 
   const locale = useMemo(() => (language === 'zh-CN' ? zhCN : enUS), [language]);
 

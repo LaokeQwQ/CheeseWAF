@@ -62,6 +62,23 @@ func TestSSHRunnerBuildsSafeArgumentVector(t *testing.T) {
 	}
 }
 
+func TestSSHRunnerRejectsUnknownHostKeyByDefault(t *testing.T) {
+	runner := NewSSHRunner(SSHRunnerOptions{})
+	if _, err := runner.hostKeyCallback(SSHDeploymentRequest{}); err == nil || !strings.Contains(err.Error(), "fingerprint confirmation is required") {
+		t.Fatalf("expected unknown host key to fail closed, got %v", err)
+	}
+}
+
+func TestInstallBackupUsesTaskUUID(t *testing.T) {
+	command := installCommand(3, strings.Repeat("a", 64), "deploy-12345678-1234-1234-1234-123456789abc")
+	if !strings.Contains(command, ".bak.deploy-12345678-1234-1234-1234-123456789abc") {
+		t.Fatalf("backup is not task-owned: %s", command)
+	}
+	if strings.Contains(command, "date -u +%Y%m%d%H%M%S") {
+		t.Fatal("install backup must not use a timestamp-only name")
+	}
+}
+
 func TestSSHRunnerPasswordAuthExecutesFixedCheck(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "ok\n"})
 	rec := NewMemoryAuditRecorder()

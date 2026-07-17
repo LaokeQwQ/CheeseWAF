@@ -172,12 +172,18 @@ export function createChinaAdministrativeMap(
   const provinceLayers = countryBoundary.features
     .map((feature, index) => toLayer(feature, index, provinceIntensity, 'builtin-province', path, assets.adminIndex))
     .filter((item): item is ChinaBoundaryLayer => item !== null);
-  const cityLayers = (builtinBoundary?.features ?? [])
+  // Offline pack tags levels explicitly: province parents hold city (or municipality
+  // district) polygons; city parents hold district/county polygons.
+  const offlineFeatures = builtinBoundary?.features ?? [];
+  const cityLayers = offlineFeatures
     .filter((featureItem) => readFeatureLevel(featureItem) === 'city')
     .map((feature, index) => toLayer(feature, index, cityIntensity, 'builtin-city', path, assets.adminIndex))
     .filter((item): item is ChinaBoundaryLayer => item !== null);
-  const districtLayers = (builtinBoundary?.features ?? [])
-    .filter((featureItem) => readFeatureLevel(featureItem) !== 'city')
+  const districtLayers = offlineFeatures
+    .filter((featureItem) => {
+      const level = readFeatureLevel(featureItem);
+      return level === 'district' || level === 'county';
+    })
     .map((feature, index) => toLayer(feature, index, districtIntensity, 'builtin-district', path, assets.adminIndex))
     .filter((item): item is ChinaBoundaryLayer => item !== null);
   const customLayers = customBoundary?.features
@@ -277,9 +283,146 @@ export function boundaryAdcodesFromRegions(regions: AttackRegion[], adminIndex?:
 }
 
 export async function loadBuiltinChinaBoundary(adcodes: string[]): Promise<GeoFeatureCollection | null> {
-  const collections = await Promise.all(adcodes.map((adcode) => loadBuiltinFeatureCollection(adcode)));
-  const features = collections.flatMap((collection) => collection?.features ?? []);
+  const collections = await mapPool(adcodes, 10, (adcode) => loadBuiltinFeatureCollectionCached(adcode));
+  const features = dedupeFeaturesByAdcode(collections.flatMap((collection) => collection?.features ?? []));
   return features.length > 0 ? { type: 'FeatureCollection', features } : null;
+}
+
+/**
+ * Offline China admin boundaries from local `china-map-echarts` (no network).
+ * - `xx0000.json` (province parent) → city polygons (or districts for 直辖市)
+ * - `xxYY00.json` (city parent) → district / county polygons
+ *
+ * Progressive load (avoids blocking china mode on ~300 city-parent files / ~26MB):
+ * 1. Province parents always (city outlines)
+ * 2. preferAdcodes city/district parents first (attack-relevant 区县)
+ * 3. Remaining city parents in background when includeDistricts
+ * `onPartial` receives cumulative FeatureCollections after each phase.
+ */
+export async function loadOfflineChinaBoundaryTree(options: {
+  includeDistricts?: boolean;
+  preferAdcodes?: string[];
+  onPartial?: (collection: GeoFeatureCollection) => void;
+} = {}): Promise<GeoFeatureCollection> {
+  const manifest = await loadBuiltinAdcodeManifest();
+  const codes = Array.from(manifest).filter((code) => /^\d{6}$/.test(code));
+  const codeSet = new Set(codes);
+  const provinceParents = codes.filter((code) => code.endsWith('0000') && code !== '100000');
+  const cityParents = codes.filter((code) => code.endsWith('00') && !code.endsWith('0000'));
+  const cityParentSet = new Set(cityParents);
+
+  const prefer = new Set<string>();
+  for (const raw of options.preferAdcodes ?? []) {
+    const code = String(raw);
+    if (!/^\d{6}$/.test(code)) {
+      continue;
+    }
+    if (directAdminProvincePrefixes.has(code.slice(0, 2))) {
+      prefer.add(provinceCode(code));
+    }
+    const city = cityCode(code);
+    if (city) {
+      prefer.add(city);
+    }
+    if (!code.endsWith('00')) {
+      prefer.add(code);
+    }
+  }
+
+  const collected: WorldFeature[] = [];
+  const loadedParents = new Set<string>();
+
+  const emit = (): GeoFeatureCollection => {
+    const features = dedupeFeaturesByAdcode(collected).map(ensureFeatureAdminLevel);
+    const collection: GeoFeatureCollection = { type: 'FeatureCollection', features };
+    options.onPartial?.(collection);
+    return collection;
+  };
+
+  const loadParents = async (adcodes: string[], concurrency: number) => {
+    const pending = adcodes.filter((code) => codeSet.has(code) && !loadedParents.has(code));
+    if (pending.length === 0) {
+      return;
+    }
+    for (const code of pending) {
+      loadedParents.add(code);
+    }
+    const collections = await mapPool(pending, concurrency, (adcode) => loadBuiltinFeatureCollectionCached(adcode));
+    for (const collection of collections) {
+      if (collection?.features?.length) {
+        collected.push(...collection.features);
+      }
+    }
+  };
+
+  // Phase 1: province parents → city (or 直辖市 district) polygons
+  await loadParents(provinceParents, 12);
+  let result = emit();
+
+  // Prefer city/district parents related to log aggregates (paint attacked 区县 first)
+  const preferParents = Array.from(prefer).filter(
+    (code) => cityParentSet.has(code) || provinceParents.includes(code) || codeSet.has(code),
+  );
+  // Phase 2: attack-relevant city/district parents first (prefer already filtered)
+  if (preferParents.length > 0) {
+    await loadParents(preferParents, 10);
+    result = emit();
+  }
+
+  // Phase 3: remaining city parents → full district capability (lower concurrency)
+  if (options.includeDistricts) {
+    const remainingCityParents = cityParents.filter((code) => !loadedParents.has(code));
+    if (remainingCityParents.length > 0) {
+      await loadParents(remainingCityParents, 6);
+      result = emit();
+    }
+  }
+
+  return result;
+}
+
+const offlineFeatureCache = new Map<string, Promise<GeoFeatureCollection | null>>();
+
+function loadBuiltinFeatureCollectionCached(adcode: string) {
+  let pending = offlineFeatureCache.get(adcode);
+  if (!pending) {
+    pending = loadBuiltinFeatureCollection(adcode);
+    offlineFeatureCache.set(adcode, pending);
+  }
+  return pending;
+}
+
+async function mapPool<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  if (items.length === 0) {
+    return [];
+  }
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  async function run() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: limit }, () => run()));
+  return results;
+}
+
+function dedupeFeaturesByAdcode(features: WorldFeature[]): WorldFeature[] {
+  const seen = new Set<string>();
+  const out: WorldFeature[] = [];
+  for (const feature of features) {
+    const props = feature.properties ?? {};
+    const key = String(props.adcode ?? props.id ?? feature.id ?? '').trim() || `idx-${out.length}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(feature);
+  }
+  return out;
 }
 
 export function chinaBoundarySourceLabel(source: ChinaAdministrativeMap['sourceSummary'], t: (key: string) => string) {
@@ -516,7 +659,41 @@ function cityCode(code: string) {
 }
 
 function readFeatureLevel(feature: WorldFeature) {
-  return String(feature.properties?.level ?? '').toLowerCase();
+  return inferAdminLevel(feature);
+}
+
+/** Ensure paint/style `level` is present (province | city | district | county). */
+function ensureFeatureAdminLevel(feature: WorldFeature): WorldFeature {
+  const properties = feature.properties ?? {};
+  const level = inferAdminLevel(feature);
+  if (String(properties.level ?? '') === level) {
+    return feature;
+  }
+  return {
+    ...feature,
+    properties: {
+      ...properties,
+      level,
+    },
+  };
+}
+
+function inferAdminLevel(feature: WorldFeature): string {
+  const existing = String(feature.properties?.level ?? '').toLowerCase();
+  if (existing === 'province' || existing === 'city' || existing === 'district' || existing === 'county') {
+    return existing;
+  }
+  const code = String(feature.properties?.adcode ?? feature.properties?.id ?? feature.id ?? '').trim();
+  if (/^\d{6}$/.test(code)) {
+    if (code.endsWith('0000')) {
+      return 'province';
+    }
+    if (code.endsWith('00')) {
+      return 'city';
+    }
+    return 'district';
+  }
+  return 'province';
 }
 
 function threatLevelFromRegion(region: AttackRegion, attacks: number, maxAttacks: number): ThreatLevel {

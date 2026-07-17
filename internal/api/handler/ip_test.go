@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,51 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
+
+func TestUpdateIPAccessRulesRuntimeFailureDoesNotCommitConfig(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	original := cfg.Protection.IP.AccessRules
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnProtectionChanged: func(next config.ProtectionConfig) error {
+			if len(next.IP.AccessRules) > 0 {
+				return errors.New("runtime rejected rules")
+			}
+			return nil
+		},
+	})
+	raw, _ := json.Marshal([]config.IPAccessRuleConfig{{
+		ID:      "blocked-update",
+		Name:    "Blocked update",
+		Action:  "block",
+		Scope:   "global",
+		Entries: []string{"203.0.113.20"},
+		Enabled: true,
+	}})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/ip/access-rules", bytes.NewReader(raw))
+	handler.UpdateIPAccessRules(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "PROTECTION_RELOAD_ERROR") {
+		t.Fatalf("expected runtime error, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(cfg.Protection.IP.AccessRules) != len(original) {
+		t.Fatalf("runtime failure changed in-memory rules: %+v", cfg.Protection.IP.AccessRules)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.Protection.IP.AccessRules) != len(original) {
+		t.Fatalf("runtime failure changed persisted rules: %+v", loaded.Protection.IP.AccessRules)
+	}
+}
 
 func TestProtectionAndIPRulesRedactSecrets(t *testing.T) {
 	cfg := config.Default()

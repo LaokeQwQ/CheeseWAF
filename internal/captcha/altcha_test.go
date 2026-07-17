@@ -1,9 +1,19 @@
 package captcha
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestAltchaRejectsOversizedInputs(t *testing.T) {
+	if _, ok := ParsePayload(strings.Repeat("x", altchaMaxPayloadBytes+1)); ok {
+		t.Fatal("oversized encoded payload parsed")
+	}
+	if Verify(Options{Secret: "secret"}, Payload{Algorithm: AlgorithmSHA256, Challenge: strings.Repeat("x", altchaMaxFieldBytes+1), Salt: "nonce:1", Signature: "sig"}) {
+		t.Fatal("oversized proof verified")
+	}
+}
 
 func TestChallengeVerifiesSolvedPayload(t *testing.T) {
 	now := time.Date(2026, 6, 9, 9, 0, 0, 0, time.UTC)
