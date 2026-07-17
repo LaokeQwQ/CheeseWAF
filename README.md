@@ -23,7 +23,7 @@ The repository currently includes:
 - Block/error pages are runtime-configurable instead of preview-only. The proxy renders a formal infrastructure-style built-in HTML template by default, with an inline CheeseWAF logo, client/WAF/origin status flow, operator guidance, and a visible Event / Trace ID. Built-in public pages negotiate the first-render language from `Accept-Language` and currently ship English, Simplified Chinese, Traditional Chinese, and Japanese copy; unsupported preferred languages fall through to the next supported language instead of forcing English. The response also emits `Content-Language`, `Vary`, and `Accept-CH: Sec-CH-Time-Zone`, and a tiny inline script rechecks `navigator.languages` and the browser time zone so the visible time is localized to the visitor where the browser exposes it. Public pages keep detector internals in logs and show localized visitor-safe guidance instead of leaking backend English rule messages. Every block or proxy error response exposes the same lookup ID in the page body, `X-CheeseWAF-Trace-ID`, `X-CheeseWAF-Event-ID`, `Cache-Control: no-store`, and the WAF log entry. The Web console can enable built-in templates, upload/admin-edit custom Go `html/template` HTML, validate it server-side, persist it to YAML, hot-reload the proxy renderer without a restart, and call the same runtime renderer for a sandboxed preview before saving; if custom HTML omits the Event / Trace ID, CheeseWAF injects a visible fallback badge. Management API and authenticated frontend runtime errors now return both `trace_id` and `event_id` plus matching response headers, so the ID shown in the console can be used directly against backend logs.
 - Scheduled security reports can generate daily or weekly Markdown/JSON summaries from real WAF logs and deliver them to a local report directory or webhook. Reports include the time window, total and security-event counts, block/challenge/log-only totals, unique source IPs, action/severity/category/site/country breakdowns, top security source IPs, attacked URIs, detectors, and recent high-risk events while excluding ordinary pass traffic from risk rankings.
 - Frontend build output uses stable Vite/Rolldown vendor chunks for React, Arco, Three.js, visualization, runtime, and UI utility dependencies. Production source maps are disabled unless `VITE_SOURCEMAP=true` is set, keeping the released Web console payload small, while the large Three.js dependency stays isolated to the attack-map path.
-- The latest admin UI quality pass hardens Rules, IP Control, Protection Policy, Operations, Updates & Vulnerability Feeds, Block Pages, Dashboard, attack logs, AI Operations, Attack Map/Attack Screen, and System Settings against failed API calls, cramped search inputs, overflowing tags, blank controlled selects, action-button squeeze, false online states, mixed settings layouts, and table word-break regressions. The console now favors explicit loading/error/empty states, scoped action footers, responsive token/chip groups, responsive attack/AI event lists that exclude ordinary pass traffic from attack logs, grouped settings sections, mobile IP profile cards with real allow/block/reputation actions, mobile-safe AI entry handling, clickable health reconnect status, separated notification/account menus, and browser-verified layouts instead of placeholder or decorative-only UI. The local visual regression matrix currently exercises 108 route/viewport combinations across desktop, laptop, tablet, and mobile before UI changes are considered ready for deployment.
+- The admin console hardens Rules, IP Control, Protection Policy, Operations, Updates & Vulnerability Feeds, Block Pages, Dashboard, attack logs, AI Operations, Attack Map/Attack Screen, and System Settings against failed API calls, cramped search inputs, overflowing tags, blank controlled selects, action-button squeeze, false online states, mixed settings layouts, and table word-break regressions. It uses explicit loading/error/empty states, scoped action footers, responsive token/chip groups, responsive attack/AI event lists that exclude ordinary pass traffic from attack logs, grouped settings sections, mobile IP profile cards with allow/block/reputation actions, mobile-safe AI entry handling, clickable health reconnect status, separated notification/account menus, and browser-verified layouts. UI changes are gated by desktop, laptop, tablet, and mobile visual regression checks.
 - GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
 - Threat-intel indicators now carry action and confidence, are scored across severity/confidence/source count, normalize upstream confidence values whether providers return `0-1` ratios or `0-100` percentages, and are enforced in the proxy hot path according to the global/site `threat_intel` level. Console imports, provider sync, lookups, and protection setting updates trigger runtime policy refresh without requiring a service restart. Clean or empty provider lookups are not imported, and JSON keys that look like IPs/CIDRs are accepted only when their value carries an explicit threat signal. The importer recognizes common AbuseIPDB, AlienVault OTX, ThreatBook, MISP Attribute, and STIX IPv4/IPv6 shapes while preserving plain CIDR/CSV/manual imports.
 - IP access control now supports global, site-level, and directory/path-level allow/block rules in addition to the legacy global whitelist/blacklist. Allow rules keep the existing allowlist bypass semantics for IP-based protections, block rules stop requests before upstream proxying, and IP profiles can apply manual 0-100 reputation overrides. Site access control can define trusted proxy/CDN CIDRs; only trusted remote proxies are allowed to supply real-client headers such as `CF-Connecting-IP`, `True-Client-IP`, `Fastly-Client-IP`, `Fly-Client-IP`, `DO-Connecting-IP`, `Ali-CDN-Real-IP`, `CDN-Src-IP`, `X-CDN-Src-IP`, `X-Azure-ClientIP`, `X-Vercel-Forwarded-For`, `X-Original-Forwarded-For`, `X-Real-IP`, `X-Forwarded-For`, and RFC `Forwarded`.
@@ -82,25 +82,6 @@ the built Web console, README files, `LICENSE`, `VERSION`, `release.json`, and a
 top-level `SHA256SUMS` file. The shared packaging script lives at
 `scripts/ci/package-release.sh` so GitHub and Forgejo build the same payloads.
 
-## Stage Snapshot
-
-As of 2026-06-09, the latest release-flow batch has completed the protected
-upward promotion flow on GitHub: PR #55 merged
-`feature/server-side-event-ai-analysis -> dev`, PR #56 promoted
-`dev -> canary`, and PR #57 promoted `canary -> master`. Forgejo at
-`git.laoker.cc/Laoke/CheeseWAF` is the intended primary forge/build target;
-GitHub currently remains the source repository for the pull mirror and the
-secondary CI check. GitHub Actions run `27217637012` passed the master push gate
-for `29f27264`, including release artifacts; the follow-up docs-only promotion
-also passed through PR #58/#59/#60 and master push run `27220251726`. A Forgejo
-mirror-sync was triggered after the GitHub merges and the mirror refs matched
-the current branch heads (`dev=230b3db`, `canary=a99dee0`, `master=2c5acd6`).
-The latest Forgejo Actions runs for those refs were still running or waiting
-during this snapshot, so the current green build evidence is GitHub-side until
-Forgejo finishes that queue. The Forgejo workflow is present under
-`.forgejo/workflows/ci.yml` and uses `scripts/ci/setup-go-mirror.sh` plus
-`scripts/ci/setup-node-mirror.sh` for self-hosted runner-friendly toolchain setup.
-
 The current hardening pass covers curated public-corpus-inspired semantic
 fixtures, real dashboard counters, live-vs-total posture separation, scoped
 Dashboard chart sizing, real host CPU/load/memory/swap/disk resource metrics,
@@ -112,14 +93,11 @@ health/reconnect states, less abstract
 signing/audience/remote-JWKS/endpoint-policy controls, route-scoped management
 API RBAC, richer scheduled security reports, GitHub branch-channel artifacts for
 `dev`, `canary`, and `stable`, and server-side single-event AI analysis lookup.
-The promoted `master` snapshot `29f27264` has been deployed to the remote
-acceptance host as `0.1.0-beta.147+29f27264b95c` and smoke tested: admin
-health/index return 200, the proxy home route returns 200, a SQLi probe is
-blocked with 403, the deployed HTTP corpus replays 40/40 cases with 30/30
-attacks blocked and 10/10 benign cases not blocked, and HTTPS admin responses
-include frame, nosniff, referrer, permissions, and HSTS safety headers. The next
-release step is to repair Forgejo mirror freshness and add repeatable external
-dynamic scanner evidence before tagging V0.1 beta.
+Release candidates are accepted only after branch artifacts pass checksum,
+archive-layout, startup, static-asset MIME, proxy, security-header, corpus, and
+deployment verification. The repeatable checks live under `scripts/ci/` and
+`docs/security-validation.md`; repository documentation does not treat a past
+deployment snapshot as the current release state.
 
 ## Pre-Release Gaps
 

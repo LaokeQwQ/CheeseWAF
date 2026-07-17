@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+func TestImageRejectsOversizedTokenAndAnswer(t *testing.T) {
+	opts := ImageOptions{Secret: "image-test-secret", ClientKey: "client"}
+	if VerifyImage(opts, ImagePayload{Token: strings.Repeat("x", imageMaxTokenEncodedBytes+1), Answer: "1234"}) {
+		t.Fatal("oversized image token verified")
+	}
+	if VerifyImage(opts, ImagePayload{Token: "token", Answer: strings.Repeat("1", imageMaxAnswerBytes+1)}) {
+		t.Fatal("oversized image answer verified")
+	}
+	if data, ok, err := RenderImageAudio(opts, strings.Repeat("x", imageMaxTokenEncodedBytes+1)); err != nil || ok || data != nil {
+		t.Fatalf("oversized audio token result = %v, %v, %v", len(data), ok, err)
+	}
+}
+
 func TestImageChallengeVerifiesAnswerAndRendersAudio(t *testing.T) {
 	now := time.Date(2026, 6, 10, 11, 0, 0, 0, time.UTC)
 	opts := ImageOptions{

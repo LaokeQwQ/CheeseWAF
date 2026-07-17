@@ -20,6 +20,45 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
+func TestServerRejectsKnownLengthBodyBeforeUpstream(t *testing.T) {
+	assertOversizedRequestRejected(t, false)
+}
+
+func TestServerRejectsChunkedBodyBeforeUpstream(t *testing.T) {
+	assertOversizedRequestRejected(t, true)
+}
+
+func assertOversizedRequestRejected(t *testing.T, chunked bool) {
+	t.Helper()
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Sites[0].WAF.Performance.MaxBodyBytes = 8
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/upload", strings.NewReader("123456789"))
+	if chunked {
+		req.ContentLength = -1
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("oversized request reached upstream %d times", upstreamHits)
+	}
+}
+
 func TestServerPassesAndBlocks(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -121,8 +160,8 @@ func TestServerStreamsLargeCompressibleResponseWhenCaptureLimitExceeded(t *testi
 	if recorder.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("large fallback response should skip in-memory compression, got %q", recorder.Header().Get("Content-Encoding"))
 	}
-	if upstreamHits != 2 {
-		t.Fatalf("expected capture attempt plus streaming fallback, got %d upstream hits", upstreamHits)
+	if upstreamHits != 1 {
+		t.Fatalf("expected a single upstream request when capture spills to streaming, got %d upstream hits", upstreamHits)
 	}
 }
 
@@ -376,6 +415,25 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 		}
 	})
 
+	t.Run("detection budget closed challenge bypasses severity gate", func(t *testing.T) {
+		budget := &engine.DetectionResult{
+			Detected:   true,
+			DetectorID: "pipeline.budget",
+			Category:   "detection_budget",
+			Severity:   engine.SeverityMedium,
+			Action:     engine.ActionChallenge,
+			Confidence: 0.55,
+			Message:    "detection budget exhausted",
+		}
+		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, budget, nil)
+		if decision.Action != engine.ActionChallenge.String() {
+			t.Fatalf("budget closed must honor challenge without severity gate, got %#v", decision)
+		}
+		if decision.Reason == "" || decision.DetectorCategory != "detection_budget" {
+			t.Fatalf("unexpected budget decision: %#v", decision)
+		}
+	})
+
 	t.Run("detector challenge action is preserved when threshold matches", func(t *testing.T) {
 		challenge := *result
 		challenge.Action = engine.ActionChallenge
@@ -622,6 +680,57 @@ func TestServerScopedIPAccessRuleBlocksBeforeUpstream(t *testing.T) {
 	}
 	if len(sink.entries) != 1 || sink.entries[0].Category != "ip_access" || sink.entries[0].Action != "block" {
 		t.Fatalf("unexpected access rule log: %#v", sink.entries)
+	}
+}
+
+func TestServerNormalizesPathBeforeBotPolicy(t *testing.T) {
+	// /api/../admin must not inherit /api/ exemption after path.Clean → /admin.
+	server, sink, cleanup := newBotCCTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+		cfg.Protection.Bot.Enabled = true
+		cfg.Protection.Bot.JSChallenge = true
+		cfg.Protection.Bot.PathPrefixes = []string{"/"}
+		cfg.Protection.Bot.ExemptPathPrefixes = []string{"/api/", "/health"}
+		cfg.Protection.RateLimit.Enabled = false
+	})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/api/../admin", nil)
+	req.Header.Set("User-Agent", "sqlmap")
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("dotdot path under exempt prefix must not pass unchallenged; logs=%#v", sink.entries)
+	}
+	// Health prefix must not match /healthxyz (segment boundary).
+	req = httptest.NewRequest(http.MethodGet, "http://localhost/healthxyz", nil)
+	req.Header.Set("User-Agent", "sqlmap")
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("/healthxyz must not be treated as exempt /health; code=%d logs=%#v", recorder.Code, sink.entries)
+	}
+}
+
+func TestServerRejectsPathWithNUL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/ok", nil)
+	req.URL.Path = "/foo\x00bar"
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for NUL path, code=%d", recorder.Code)
 	}
 }
 
@@ -884,6 +993,8 @@ func TestServerAPISecurityPolicyLevels(t *testing.T) {
 			cfg.APISec.Auth.Enabled = true
 			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
 			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+			cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+			cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
 		})
 		defer cleanup()
 
@@ -901,6 +1012,8 @@ func TestServerAPISecurityPolicyLevels(t *testing.T) {
 		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelLow, func(cfg *config.Config) {
 			cfg.APISec.Auth.Enabled = true
 			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+			cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+			cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
 		})
 		defer cleanup()
 
@@ -919,11 +1032,13 @@ func TestServerAPISecurityPolicyLevels(t *testing.T) {
 			cfg.APISec.Auth.Enabled = true
 			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
 			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+			cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+			cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
 		})
 		defer cleanup()
 
 		req := httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil)
-		req.Header.Set("Authorization", "Bearer "+testJWT(t, map[string]any{"iss": "issuer-a", "scope": []string{"orders:read"}}))
+		req.Header.Set("Authorization", "Bearer "+testHMACJWT(t, "proxy-secret", map[string]any{"iss": "issuer-a", "scope": []string{"orders:read"}}))
 		recorder := httptest.NewRecorder()
 		server.Handler().ServeHTTP(recorder, req)
 		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
@@ -1006,11 +1121,13 @@ func TestServerAPISecurityPolicyLevels(t *testing.T) {
 			cfg.APISec.Auth.Enabled = true
 			cfg.APISec.Auth.JWTIssuers = []string{"issuer-a"}
 			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+			cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+			cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
 		})
 		defer cleanup()
 
 		req := httptest.NewRequest(http.MethodGet, "http://localhost/api/orders", nil)
-		req.Header.Set("Authorization", "Bearer "+testJWT(t, map[string]any{"iss": "issuer-a", "scope": []string{"orders:write"}}))
+		req.Header.Set("Authorization", "Bearer "+testHMACJWT(t, "proxy-secret", map[string]any{"iss": "issuer-a", "scope": []string{"orders:write"}}))
 		recorder := httptest.NewRecorder()
 		server.Handler().ServeHTTP(recorder, req)
 		if recorder.Code != http.StatusForbidden {
@@ -1025,6 +1142,8 @@ func TestServerAPISecurityPolicyLevels(t *testing.T) {
 		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
 			cfg.APISec.Auth.Enabled = true
 			cfg.APISec.Auth.RequiredScopes = []string{"orders:read"}
+			cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+			cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
 		})
 		defer cleanup()
 
@@ -1088,6 +1207,64 @@ func (noopSink) Query(context.Context, storage.LogFilter) ([]storage.LogEntry, i
 }
 func (noopSink) Flush(context.Context) error { return nil }
 func (noopSink) Close() error                { return nil }
+
+type proxyTestClock struct{ now time.Time }
+
+func (c proxyTestClock) Now() time.Time { return c.now }
+
+func TestServerUsesInjectedClockForLogTimestamp(t *testing.T) {
+	cfg := config.Default()
+	sink := &captureSink{}
+	now := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	server, err := NewServerWithClock(&cfg, engine.NewPipeline(), sink, proxyTestClock{now: now})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	started := time.Now()
+	server.writeLog(context.Background(), &engine.RequestContext{
+		Request: req, TraceID: "clock-test", SiteID: "default", ClientIP: "203.0.113.10", Metadata: map[string]any{},
+	}, "pass", http.StatusOK, started, nil)
+	if len(sink.entries) != 1 {
+		t.Fatalf("log entries = %d, want 1", len(sink.entries))
+	}
+	if got := sink.entries[0].Timestamp; !got.Equal(now) {
+		t.Fatalf("log timestamp = %v, want %v", got, now)
+	}
+	if got := sink.entries[0].Latency; got < 0 || got > time.Second {
+		t.Fatalf("log latency = %v, want monotonic elapsed time under one second", got)
+	}
+}
+
+func TestWriteLogSkipsPlainAccessWhenSiteDisabled(t *testing.T) {
+	cfg := config.Default()
+	if len(cfg.Sites) == 0 {
+		t.Fatal("default config needs a site")
+	}
+	off := false
+	cfg.Sites[0].WAF.AccessLogEnabled = &off
+	sink := &captureSink{}
+	server, err := NewServerWithClock(&cfg, engine.NewPipeline(), sink, proxyTestClock{now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/health", nil)
+	started := time.Now()
+	ctx := &engine.RequestContext{
+		Request: req, TraceID: "access-off", SiteID: cfg.Sites[0].ID, ClientIP: "203.0.113.20", Metadata: map[string]any{},
+	}
+	server.writeLog(context.Background(), ctx, "pass", http.StatusOK, started, nil)
+	if len(sink.entries) != 0 {
+		t.Fatalf("expected plain access log dropped, got %d", len(sink.entries))
+	}
+	// Security blocks still write.
+	server.writeLog(context.Background(), ctx, "block", http.StatusForbidden, started, &storage.LogEntry{
+		Category: "sqli", Severity: "high", DetectorID: "sql", Message: "blocked",
+	})
+	if len(sink.entries) != 1 || sink.entries[0].Action != "block" {
+		t.Fatalf("expected block log kept, got %+v", sink.entries)
+	}
+}
 
 type captureSink struct {
 	entries []*storage.LogEntry
@@ -1234,6 +1411,12 @@ func testJWT(t *testing.T, claims map[string]any) string {
 
 func testHMACJWT(t *testing.T, secret string, claims map[string]any) string {
 	t.Helper()
+	if claims == nil {
+		claims = map[string]any{}
+	}
+	if _, ok := claims["exp"]; !ok {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+	}
 	header, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
 	if err != nil {
 		t.Fatal(err)
@@ -1246,4 +1429,72 @@ func testHMACJWT(t *testing.T, secret string, claims map[string]any) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(signingInput))
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func TestBotBehaviorVerifyEndpointBypassesWAFAndUpstream(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { upstreamHits++; w.WriteHeader(http.StatusNoContent) }))
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.Bot.Secret = strings.Repeat("s", 48)
+	cfg.Protection.IP.Whitelist, cfg.Protection.IP.Blacklist = nil, nil
+	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewSQLDetector("block")), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+		req := httptest.NewRequest(method, "http://localhost"+botBehaviorVerifyPath+"?q=%27%20OR%201%3D1", nil)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != http.MethodPost {
+			t.Fatalf("method %s status=%d allow=%q", method, rec.Code, rec.Header().Get("Allow"))
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://localhost"+botBehaviorVerifyPath, strings.NewReader(`{"token":"unknown"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown token status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("verify endpoint reached upstream %d times", upstreamHits)
+	}
+}
+
+func TestBotBehaviorVerifyEndpointRejectsBodiesOver64KiB(t *testing.T) {
+	cfg := config.Default()
+	cfg.Protection.Bot.Secret = strings.Repeat("s", 48)
+	cfg.Protection.IP.Whitelist, cfg.Protection.IP.Blacklist = nil, nil
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, chunked := range []bool{false, true} {
+		req := httptest.NewRequest(http.MethodPost, "http://localhost"+botBehaviorVerifyPath, strings.NewReader(`{"token":"`+strings.Repeat("x", 64<<10)+`"}`))
+		if chunked {
+			req.ContentLength = -1
+		}
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("chunked=%v status=%d", chunked, rec.Code)
+		}
+	}
+}
+
+func TestRequestIsHTTPSTrustsForwardedProtoOnlyFromTrustedProxy(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/", nil)
+	req.RemoteAddr = "192.0.2.10:1234"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	if requestIsHTTPS(req, nil) {
+		t.Fatal("untrusted forwarded proto was accepted")
+	}
+	if !requestIsHTTPS(req, []string{"192.0.2.0/24"}) {
+		t.Fatal("trusted forwarded proto was rejected")
+	}
+	req.Header.Set("X-Forwarded-Proto", "http")
+	if requestIsHTTPS(req, []string{"192.0.2.0/24"}) {
+		t.Fatal("forwarded http was treated as secure")
+	}
 }

@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +53,9 @@ func Validate(cfg *Config) error {
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
 	}
+	if err := validateTimeSync(cfg.TimeSync); err != nil {
+		return err
+	}
 	if err := validateCluster(cfg); err != nil {
 		return err
 	}
@@ -77,6 +82,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	if err := validateConsoleMap(cfg.Console.Map); err != nil {
+		return err
+	}
+	if err := validateCAPTCHAAssets(cfg.CAPTCHAAssets); err != nil {
 		return err
 	}
 	if err := validateBlockPage(cfg.BlockPage); err != nil {
@@ -186,6 +194,22 @@ func Validate(cfg *Config) error {
 		if err := validateProtectionPolicy("site "+site.Name+" waf.protection_policy", site.WAF.ProtectionPolicy, true); err != nil {
 			return err
 		}
+		if !IsBudgetExhaustedPolicy(site.WAF.SemanticPolicy.BudgetExhaustedPolicy) {
+			return fmt.Errorf("site %q has invalid waf.semantic_policy.budget_exhausted_policy %q", site.Name, site.WAF.SemanticPolicy.BudgetExhaustedPolicy)
+		}
+		for _, rule := range site.WAF.SemanticPolicy.PathAllowlist {
+			rule = strings.TrimSpace(rule)
+			if rule == "" {
+				continue
+			}
+			if rule == "*" || rule == "/*" {
+				return fmt.Errorf("site %q has overly broad waf.semantic_policy.path_allowlist entry %q (would skip all semantic analysis)", site.Name, rule)
+			}
+			// Paths always use absolute form; "static/*" would never match URL paths.
+			if !strings.HasPrefix(rule, "/") {
+				return fmt.Errorf("site %q path_allowlist entry %q must start with /", site.Name, rule)
+			}
+		}
 		for _, rule := range site.WAF.CustomRules {
 			if strings.TrimSpace(rule.Pattern) == "" {
 				return fmt.Errorf("site %q has custom rule %q with empty pattern", site.Name, rule.Name)
@@ -272,6 +296,15 @@ func Validate(cfg *Config) error {
 		}
 		if cfg.Protection.Bot.ChallengeDifficulty < 1 || cfg.Protection.Bot.ChallengeDifficulty > 6 {
 			return fmt.Errorf("bot.challenge_difficulty must be between 1 and 6")
+		}
+		if cfg.Protection.Bot.ClearanceStateCapacity < 1 || cfg.Protection.Bot.ClearanceStateCapacity > 1000000 {
+			return fmt.Errorf("bot.clearance_state_capacity must be between 1 and 1000000")
+		}
+		if cfg.Protection.Bot.ClearanceHeaderEnabled && strings.TrimSpace(cfg.Protection.Bot.ClearanceHeaderName) == "" {
+			return fmt.Errorf("bot.clearance_header_name is required when clearance header is enabled")
+		}
+		if cfg.Protection.Bot.PoWMaxDifficulty < cfg.Protection.Bot.ChallengeDifficulty || cfg.Protection.Bot.PoWMaxDifficulty > 8 {
+			return fmt.Errorf("bot.pow_max_difficulty must be between challenge_difficulty and 8")
 		}
 		if cfg.Protection.Bot.CAPTCHA {
 			if cfg.Protection.Bot.AltchaMaxNumber < 1000 || cfg.Protection.Bot.AltchaMaxNumber > 50000000 {
@@ -368,9 +401,21 @@ func Validate(cfg *Config) error {
 			}
 		}
 	}
+	seenTaskIDs := make(map[string]struct{}, len(cfg.Scheduler.Tasks))
 	for _, task := range cfg.Scheduler.Tasks {
 		if err := validateScheduledTask(task); err != nil {
 			return err
+		}
+		normalized := normalizeScheduledTaskForValidation(task)
+		id := strings.ToLower(strings.TrimSpace(normalized.ID))
+		if _, exists := seenTaskIDs[id]; exists {
+			return fmt.Errorf("scheduled task id %q is duplicated", normalized.ID)
+		}
+		seenTaskIDs[id] = struct{}{}
+		if strings.EqualFold(strings.TrimSpace(normalized.Type), "cleanup") {
+			if err := validateManagedSchedulerPath(normalized.Target, cfg.Setup.DataDir, filepath.Dir(cfg.Logging.Output.File.Path)); err != nil {
+				return fmt.Errorf("scheduled task %q target is invalid: %w", normalized.ID, err)
+			}
 		}
 	}
 	for _, schema := range cfg.APISec.Validation.Schemas {
@@ -413,8 +458,9 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("api auth jwks_refresh_interval must be at least 1m")
 			}
 		}
-		if len(cfg.APISec.Auth.JWTAlgorithms) > 0 && strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSURL) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSCacheFile) == "" {
-			return fmt.Errorf("api auth jwt_algorithms requires jwt_shared_secret, jwt_public_key_file, jwt_public_key_pem, jwks_file, jwks_json, jwks_url, or jwks_cache_file")
+		// Fail closed: auth enabled without verification material is an auth bypass.
+		if strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSURL) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSCacheFile) == "" {
+			return fmt.Errorf("api auth enabled requires jwt_shared_secret, jwt_public_key_file, jwt_public_key_pem, jwks_file, jwks_json, jwks_url, or jwks_cache_file")
 		}
 		for _, policy := range cfg.APISec.Auth.EndpointPolicies {
 			if !policy.Enabled {
@@ -439,6 +485,219 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	return nil
+}
+
+const (
+	minTimeSyncSources           = 3
+	maxTimeSyncSources           = 64
+	minTimeSyncSelectionInterval = time.Minute
+	maxTimeSyncSelectionInterval = 7 * 24 * time.Hour
+	minTimeSyncInterval          = time.Minute
+	maxTimeSyncInterval          = 24 * time.Hour
+	minTimeSyncTimeout           = 100 * time.Millisecond
+	maxTimeSyncTimeout           = 30 * time.Second
+	minTimeSyncSamples           = 1
+	maxTimeSyncSamples           = 16
+	maxTimeSyncAcceptedOffset    = 10 * time.Minute
+	maxTimeSyncRootDispersion    = time.Minute
+	maxTimeSyncConsensus         = 10 * time.Second
+)
+
+func validateTimeSync(cfg TimeSyncConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if len(cfg.Sources) < minTimeSyncSources || len(cfg.Sources) > maxTimeSyncSources {
+		return fmt.Errorf("time_sync.sources must contain between 3 and 64 entries")
+	}
+	seen := make(map[string]int, len(cfg.Sources))
+	for idx, source := range cfg.Sources {
+		key, err := normalizeTimeSyncSource(source)
+		if err != nil {
+			return fmt.Errorf("time_sync.sources[%d] is invalid: %w", idx, err)
+		}
+		if first, exists := seen[key]; exists {
+			return fmt.Errorf("time_sync.sources[%d] duplicates source at index %d", idx, first)
+		}
+		seen[key] = idx
+	}
+	if cfg.SelectionInterval < minTimeSyncSelectionInterval || cfg.SelectionInterval > maxTimeSyncSelectionInterval {
+		return fmt.Errorf("time_sync.selection_interval must be between 1m and 168h")
+	}
+	if cfg.SyncInterval < minTimeSyncInterval || cfg.SyncInterval > maxTimeSyncInterval {
+		return fmt.Errorf("time_sync.sync_interval must be between 1m and 24h")
+	}
+	if cfg.SyncInterval > cfg.SelectionInterval {
+		return fmt.Errorf("time_sync.sync_interval must not exceed time_sync.selection_interval")
+	}
+	if cfg.Timeout < minTimeSyncTimeout || cfg.Timeout > maxTimeSyncTimeout {
+		return fmt.Errorf("time_sync.timeout must be between 100ms and 30s")
+	}
+	if cfg.SamplesPerSource < minTimeSyncSamples || cfg.SamplesPerSource > maxTimeSyncSamples {
+		return fmt.Errorf("time_sync.samples_per_source must be between 1 and 16")
+	}
+	if cfg.MaxAcceptedOffset <= 0 || cfg.MaxAcceptedOffset > maxTimeSyncAcceptedOffset {
+		return fmt.Errorf("time_sync.max_accepted_offset must be positive and at most 10m")
+	}
+	if cfg.MaxRootDispersion <= 0 || cfg.MaxRootDispersion > maxTimeSyncRootDispersion {
+		return fmt.Errorf("time_sync.max_root_dispersion must be positive and at most 1m")
+	}
+	if cfg.ConsensusTolerance <= 0 || cfg.ConsensusTolerance > maxTimeSyncConsensus {
+		return fmt.Errorf("time_sync.consensus_tolerance must be positive and at most 10s")
+	}
+	if cfg.ConsensusTolerance > cfg.MaxAcceptedOffset {
+		return fmt.Errorf("time_sync.consensus_tolerance must not exceed time_sync.max_accepted_offset")
+	}
+	return nil
+}
+
+func normalizeTimeSyncSource(raw string) (string, error) {
+	if strings.TrimSpace(raw) != raw {
+		return "", fmt.Errorf("must not contain surrounding whitespace")
+	}
+	if raw == "" {
+		return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+	}
+	if strings.Contains(raw, "://") {
+		return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+	}
+
+	host := raw
+	port := 123
+	if ip := net.ParseIP(raw); ip != nil {
+		if !netguard.IsPublicIP(ip) {
+			return "", fmt.Errorf("must not be a private, loopback, link-local, or unspecified address")
+		}
+		return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
+	}
+	if strings.Contains(raw, ":") {
+		var portText string
+		var err error
+		host, portText, err = net.SplitHostPort(raw)
+		if err != nil {
+			return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+		}
+		port, err = strconv.Atoi(portText)
+		if err != nil {
+			return "", fmt.Errorf("port must be a number between 1 and 65535")
+		}
+		if port < 1 || port > 65535 {
+			return "", fmt.Errorf("port must be between 1 and 65535")
+		}
+	}
+
+	canonicalHost := ""
+	if ip := net.ParseIP(host); ip != nil {
+		if !netguard.IsPublicIP(ip) {
+			return "", fmt.Errorf("must not be a private, loopback, link-local, or unspecified address")
+		}
+		canonicalHost = ip.String()
+	} else {
+		canonicalHost = strings.ToLower(strings.TrimSuffix(host, "."))
+		if !isValidTimeSyncHostname(canonicalHost) {
+			return "", fmt.Errorf("must be a hostname or IP address, optionally with a port")
+		}
+		if canonicalHost == "localhost" || strings.HasSuffix(canonicalHost, ".localhost") || strings.HasSuffix(canonicalHost, ".local") {
+			return "", fmt.Errorf("must not be a private, loopback, link-local, or unspecified address")
+		}
+	}
+	return net.JoinHostPort(canonicalHost, strconv.Itoa(port)), nil
+}
+
+func isValidTimeSyncHostname(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for idx := range label {
+			char := label[idx]
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func validateCAPTCHAAssets(cfg CAPTCHAAssetsConfig) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.Backend)) {
+	case "local", "s3":
+	default:
+		return fmt.Errorf("captcha_assets.backend must be local or s3")
+	}
+	if cfg.Limits.MaxImageBytes < 64<<10 || cfg.Limits.MaxImageBytes > 64<<20 {
+		return fmt.Errorf("captcha_assets.limits.max_image_bytes must be between 64KiB and 64MiB")
+	}
+	if cfg.Limits.MaxFontBytes < 64<<10 || cfg.Limits.MaxFontBytes > 64<<20 {
+		return fmt.Errorf("captcha_assets.limits.max_font_bytes must be between 64KiB and 64MiB")
+	}
+	if cfg.Limits.MaxPixels < 1_000_000 || cfg.Limits.MaxPixels > 64_000_000 {
+		return fmt.Errorf("captcha_assets.limits.max_pixels must be between 1000000 and 64000000")
+	}
+	if strings.EqualFold(cfg.Backend, "local") && strings.TrimSpace(cfg.Local.Path) == "" {
+		return fmt.Errorf("captcha_assets.local.path is required")
+	}
+	if strings.EqualFold(cfg.Backend, "s3") {
+		if strings.TrimSpace(cfg.S3.Endpoint) == "" || strings.TrimSpace(cfg.S3.Bucket) == "" || strings.TrimSpace(cfg.S3.Region) == "" || strings.TrimSpace(cfg.S3.CredentialFile) == "" || strings.TrimSpace(cfg.S3.MetadataKeyFile) == "" {
+			return fmt.Errorf("captcha_assets.s3 endpoint, bucket, region, credential_file and metadata_key_file are required")
+		}
+		if cfg.S3.RequestTimeout < time.Second || cfg.S3.RequestTimeout > time.Minute {
+			return fmt.Errorf("captcha_assets.s3.request_timeout must be between 1s and 1m")
+		}
+		if _, err := netguard.ValidateURL(cfg.S3.Endpoint, netguard.URLPolicy{Purpose: "CAPTCHA S3 endpoint", HostPurpose: "CAPTCHA S3 endpoint", AllowedSchemes: []string{"http", "https"}, AllowPrivate: cfg.S3.AllowPrivateEndpoint}); err != nil {
+			return fmt.Errorf("captcha_assets.s3.endpoint is invalid: %w", err)
+		}
+		if cfg.S3.UseTLS && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.S3.Endpoint)), "https://") {
+			return fmt.Errorf("captcha_assets.s3.endpoint must use https when use_tls is enabled")
+		}
+	}
+	return nil
+}
+
+func validateManagedSchedulerPath(target string, roots ...string) error {
+	cleanTarget := filepath.Clean(strings.TrimSpace(target))
+	if !filepath.IsAbs(cleanTarget) {
+		matchedRoot := false
+		for _, root := range roots {
+			cleanRoot := filepath.Clean(strings.TrimSpace(root))
+			if cleanRoot != "." && cleanRoot != "" && strings.EqualFold(cleanTarget, filepath.Base(cleanRoot)) {
+				cleanTarget = cleanRoot
+				matchedRoot = true
+				break
+			}
+		}
+		if !matchedRoot {
+			for _, root := range roots {
+				cleanRoot := filepath.Clean(strings.TrimSpace(root))
+				if cleanRoot != "." && cleanRoot != "" {
+					cleanTarget = filepath.Join(cleanRoot, cleanTarget)
+					break
+				}
+			}
+		}
+	}
+	targetAbs, err := filepath.Abs(cleanTarget)
+	if err != nil {
+		return err
+	}
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		rootAbs, err := filepath.Abs(filepath.Clean(root))
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(rootAbs, targetAbs)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("must be inside the configured data or log directory")
 }
 
 func validateManagementAPI(api ManagementAPIConfig) error {
@@ -493,9 +752,9 @@ func validatePermissionExpression(scope string) error {
 	}
 	parts := strings.Split(scope, ":")
 	switch parts[0] {
-	case "read", "write":
+	case "read", "write", "approve":
 	default:
-		return fmt.Errorf("scope action must be read or write")
+		return fmt.Errorf("scope action must be read, write, or approve")
 	}
 	resource := parts[1]
 	if resource == "" {
@@ -913,15 +1172,49 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 }
 
 func validateBotProtection(bot BotProtectionConfig) error {
-	switch strings.ToLower(strings.TrimSpace(bot.CAPTCHAType)) {
-	case "", "pow", "image", "graphic", "slider", "puzzle":
-	default:
-		return fmt.Errorf("protection.bot.captcha_type must be pow, image, or slider")
+	if bot.RiskLevel < 1 || bot.RiskLevel > 5 {
+		return fmt.Errorf("protection.bot.risk_level must be between 1 and 5")
+	}
+	if bot.RiskLowThreshold < 1 || bot.RiskBlockThreshold > 100 || !(bot.RiskLowThreshold < bot.RiskMediumThreshold && bot.RiskMediumThreshold < bot.RiskHighThreshold && bot.RiskHighThreshold < bot.RiskBlockThreshold) {
+		return fmt.Errorf("protection.bot risk thresholds must be ordered values between 1 and 100")
+	}
+	if bot.RiskConfidenceMin < 0.5 || bot.RiskConfidenceMin > 1 {
+		return fmt.Errorf("protection.bot.risk_confidence_min must be between 0.5 and 1")
+	}
+	if err := validateBehaviorCAPTCHAType("protection.bot.captcha_type", bot.CAPTCHAType, true); err != nil {
+		return err
+	}
+	for idx, kind := range bot.CAPTCHATypes {
+		if err := validateBehaviorCAPTCHAType(fmt.Sprintf("protection.bot.captcha_types[%d]", idx), kind, false); err != nil {
+			return err
+		}
+	}
+	for idx, kind := range bot.CAPTCHAEscalationTypes {
+		if err := validateBehaviorCAPTCHAType(fmt.Sprintf("protection.bot.captcha_escalation_types[%d]", idx), kind, false); err != nil {
+			return err
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(bot.CAPTCHAMobileType)) {
 	case "", "off", "none", "inherit", "same", "pow", "image", "graphic":
 	default:
 		return fmt.Errorf("protection.bot.captcha_mobile_type must be pow, image, or empty")
+	}
+	if bot.CAPTCHAChallengeTTL < 10*time.Second || bot.CAPTCHAChallengeTTL > 10*time.Minute {
+		return fmt.Errorf("protection.bot.captcha_challenge_ttl must be between 10s and 10m")
+	}
+	if bot.CAPTCHAFailureWindow < time.Minute || bot.CAPTCHAFailureWindow > 24*time.Hour {
+		return fmt.Errorf("protection.bot.captcha_failure_window must be between 1m and 24h")
+	}
+	if bot.CAPTCHABlockDuration < time.Minute || bot.CAPTCHABlockDuration > 24*time.Hour {
+		return fmt.Errorf("protection.bot.captcha_block_duration must be between 1m and 24h")
+	}
+	switch strings.ToLower(strings.TrimSpace(bot.CAPTCHABindingMode)) {
+	case "strict_ip_ua", "ip_prefix_ua":
+	default:
+		return fmt.Errorf("protection.bot.captcha_binding_mode must be strict_ip_ua or ip_prefix_ua")
+	}
+	if strings.TrimSpace(bot.CAPTCHAPolicyVersion) == "" || len(bot.CAPTCHAPolicyVersion) > 64 {
+		return fmt.Errorf("protection.bot.captcha_policy_version must be between 1 and 64 characters")
 	}
 	if bot.CAPTCHAMaxAttempts < 1 || bot.CAPTCHAMaxAttempts > 20 {
 		return fmt.Errorf("protection.bot.captcha_max_attempts must be between 1 and 20")
@@ -970,6 +1263,25 @@ func validateBotProtection(bot BotProtectionConfig) error {
 	}
 	if bot.ChallengeTTL < 30*time.Second || bot.ChallengeTTL > 24*time.Hour {
 		return fmt.Errorf("protection.bot.challenge_ttl must be between 30s and 24h")
+	}
+	return nil
+}
+
+func validateBehaviorCAPTCHAType(field, value string, allowAliases bool) error {
+	kind := strings.ToLower(strings.TrimSpace(value))
+	valid := map[string]struct{}{
+		"pow": {}, "image": {}, "curve_draw": {}, "curve_slider": {}, "curve_slider_v2": {}, "curve_slider_v3": {},
+		"shape_slider": {}, "slider_v2": {}, "rotate": {}, "restore_slider": {}, "angle": {}, "scratch": {},
+		"text_click": {}, "icon_click": {}, "random": {},
+	}
+	if allowAliases {
+		valid[""] = struct{}{}
+		valid["graphic"] = struct{}{}
+		valid["slider"] = struct{}{}
+		valid["puzzle"] = struct{}{}
+	}
+	if _, ok := valid[kind]; !ok {
+		return fmt.Errorf("%s contains unsupported CAPTCHA type %q", field, value)
 	}
 	return nil
 }
@@ -1331,6 +1643,20 @@ func validateACMEReloadCommand(value string) error {
 	}
 	if strings.ContainsAny(value, "\x00\r\n") {
 		return fmt.Errorf("must not contain control characters")
+	}
+	// Reject shell metacharacters and require an absolute executable path.
+	// acme.sh executes --reloadcmd through a shell, so free-form strings are RCE.
+	if strings.ContainsAny(value, ";|&<>$`\\!*?\n\r") {
+		return fmt.Errorf("must not contain shell metacharacters")
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return fmt.Errorf("must not be empty")
+	}
+	exe := fields[0]
+	// Accept Unix absolute paths even when validating on Windows.
+	if !filepath.IsAbs(exe) && !strings.HasPrefix(exe, "/") {
+		return fmt.Errorf("executable must be an absolute path")
 	}
 	return nil
 }

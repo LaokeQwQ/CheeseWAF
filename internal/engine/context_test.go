@@ -2,32 +2,42 @@ package engine
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 )
 
-func TestNewRequestContextPreservesLargeBodyForUpstream(t *testing.T) {
-	body := strings.Repeat("a", requestContextBodyPreviewLimit) + "tail"
+func TestNewRequestContextRejectsBodyOverHardLimit(t *testing.T) {
+	body := strings.Repeat("a", defaultRequestBodyLimit) + "tail"
 	req, _ := http.NewRequest(http.MethodPost, "http://example.test/upload", io.NopCloser(bytes.NewBufferString(body)))
 
-	ctx, err := NewRequestContext(req, "site-a")
+	if _, err := NewRequestContext(req, "site-a"); !errors.Is(err, ErrRequestBodyTooLarge) {
+		t.Fatalf("expected ErrRequestBodyTooLarge, got %v", err)
+	}
+}
+
+func TestNewRequestContextWithLimitsRejectsChunkedBodyOverHardLimit(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "http://example.test/upload", io.NopCloser(strings.NewReader("123456789")))
+	req.ContentLength = -1
+	if _, err := NewRequestContextWithLimits(req, "site-a", nil, 8); !errors.Is(err, ErrRequestBodyTooLarge) {
+		t.Fatalf("expected chunked body to exceed hard limit, got %v", err)
+	}
+}
+
+func TestNewRequestContextWithLimitsReplaysFullyInspectedBody(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("12345678"))
+	ctx, err := NewRequestContextWithLimits(req, "site-a", nil, 8)
 	if err != nil {
-		t.Fatalf("new request context: %v", err)
+		t.Fatal(err)
 	}
-	if len(ctx.DecodedBody) != requestContextBodyPreviewLimit {
-		t.Fatalf("expected decoded preview to be capped at %d bytes, got %d", requestContextBodyPreviewLimit, len(ctx.DecodedBody))
-	}
-	if got, ok := ctx.Metadata["body_preview_truncated"].(bool); !ok || !got {
-		t.Fatalf("expected body_preview_truncated metadata, got %+v", ctx.Metadata)
+	if got := string(ctx.DecodedBody); got != "12345678" {
+		t.Fatalf("decoded body = %q", got)
 	}
 	replayed, err := io.ReadAll(req.Body)
-	if err != nil {
-		t.Fatalf("read replayed body: %v", err)
-	}
-	if string(replayed) != body {
-		t.Fatalf("request body was not preserved for upstream, got len=%d want=%d", len(replayed), len(body))
+	if err != nil || string(replayed) != "12345678" {
+		t.Fatalf("replayed body = %q, err=%v", replayed, err)
 	}
 }
 
@@ -95,6 +105,17 @@ func TestClientIPWithTrustedProxiesUsesForwardedForChain(t *testing.T) {
 
 	if got := ClientIPWithTrustedProxies(req, []string{"198.51.100.0/24", "10.0.0.0/8"}); got != "203.0.113.10" {
 		t.Fatalf("expected first untrusted forwarded IP, got %q", got)
+	}
+}
+
+func TestClientIPWithTrustedProxiesPrefersValidatedChainOverSpoofableVendorHeader(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	req.RemoteAddr = "198.51.100.20:1234"
+	req.Header.Set("CF-Connecting-IP", "192.0.2.99")
+	req.Header.Set("X-Forwarded-For", "203.0.113.10, 198.51.100.20")
+
+	if got := ClientIPWithTrustedProxies(req, []string{"198.51.100.0/24"}); got != "203.0.113.10" {
+		t.Fatalf("expected validated forwarding chain, got %q", got)
 	}
 }
 

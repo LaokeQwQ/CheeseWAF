@@ -34,6 +34,10 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 		return nil, fmt.Errorf("tool %q not found", name)
 	}
 	if tool.Sensitivity() != ReadOnly {
+		if a.approvals == nil || !a.approvals.CanPersistModifications() {
+			return nil, fmt.Errorf("approval persistence is unavailable; modification tools are disabled")
+		}
+		actor := ApprovalActorFromContext(ctx)
 		if approvalID == "" {
 			diff := ""
 			if previewer, ok := tool.(ToolPreviewer); ok {
@@ -43,13 +47,13 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 					return nil, err
 				}
 			}
-			request, err := a.approvals.Create(tool, args, diff)
+			request, err := a.approvals.CreateFor(tool, args, diff, actor)
 			if err != nil {
 				return nil, err
 			}
 			return &ToolExecution{Approval: &request}, nil
 		}
-		if _, err := a.approvals.BeginExecution(approvalID, name, args); err != nil {
+		if _, err := a.approvals.BeginExecutionFor(approvalID, name, args, actor); err != nil {
 			return nil, fmt.Errorf("tool %q requires approved request", name)
 		}
 	}
@@ -75,6 +79,14 @@ func (a *Assistant) Approve(id string) (ApprovalRequest, error) {
 	return a.approvals.Approve(id)
 }
 
+func (a *Assistant) ApproveFor(id string, actor ApprovalActor) (ApprovalRequest, error) {
+	return a.approvals.ApproveFor(id, actor)
+}
+
 func (a *Assistant) Reject(id string) (ApprovalRequest, error) {
 	return a.approvals.Reject(id)
+}
+
+func (a *Assistant) RejectFor(id string, actor ApprovalActor) (ApprovalRequest, error) {
+	return a.approvals.RejectFor(id, actor)
 }
