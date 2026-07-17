@@ -1,4 +1,4 @@
-import { Button, Empty, Input, Select, Tag } from '@arco-design/web-react';
+import { Button, Input, Select, Tag } from '@arco-design/web-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -9,24 +9,22 @@ import type { LogEntry } from '../../types/api';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
 
 const PAGE_SIZE = 8;
-type LogViewMode = 'security' | 'access' | 'all';
 
 export default function LogsPage() {
   const { t } = useTranslation();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<string>();
   const [action, setAction] = useState<string>();
-  const [viewMode, setViewMode] = useState<LogViewMode>('security');
   const [page, setPage] = useState(1);
   const { data, isLoading } = useQuery({
-    queryKey: ['logs', category, action, viewMode],
+    queryKey: ['logs', category, action],
     queryFn: () => fetchLogs({ limit: 500, category, action }),
     refetchInterval: 8_000,
     retry: false,
   });
   const logs = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    const entries = (data?.items ?? []).filter((entry) => matchViewMode(entry, viewMode));
+    const entries = (data?.items ?? []).filter(isSecurityEvent);
     if (!needle) {
       return entries;
     }
@@ -40,26 +38,15 @@ export default function LogsPage() {
       entry.country,
       formatLogLocation(entry, t),
     ].some((value) => value?.toLowerCase().includes(needle)));
-  }, [data?.items, search, t, viewMode]);
+  }, [data?.items, search, t]);
   const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE));
   const pageItems = logs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const pageStart = logs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const pageEnd = Math.min(page * PAGE_SIZE, logs.length);
-  const title = viewMode === 'access' ? t('logs.accessTitle') : t('logs.title');
-  const subtitle = viewMode === 'access'
-    ? t('logs.accessSubtitle')
-    : viewMode === 'all'
-      ? t('logs.allSubtitle')
-      : t('logs.subtitle');
-  const actionOptions = viewMode === 'security'
-    ? ['block', 'challenge', 'log', 'monitor']
-    : viewMode === 'access'
-      ? ['pass', 'cache_hit', 'redirect']
-      : ['pass', 'block', 'challenge', 'log', 'monitor', 'cache_hit', 'redirect'];
 
   useEffect(() => {
     setPage(1);
-  }, [search, category, action, viewMode]);
+  }, [search, category, action]);
 
   useEffect(() => {
     if (page > totalPages) {
@@ -71,36 +58,20 @@ export default function LogsPage() {
     <section className="page-surface">
       <header className="page-header">
         <div>
-          <h1>{title}</h1>
-          <p>{subtitle}</p>
+          <h1>{t('logs.title')}</h1>
+          <p>{t('logs.subtitle')}</p>
         </div>
       </header>
 
       <div className="toolbar-row">
-        <Select
-          value={viewMode}
-          placeholder={t('logs.viewMode')}
-          onChange={(value) => {
-            setViewMode(value as LogViewMode);
-            setAction(undefined);
-            setCategory(undefined);
-          }}
-          style={{ minWidth: 140 }}
-        >
-          <Select.Option value="security">{t('logs.viewSecurity')}</Select.Option>
-          <Select.Option value="access">{t('logs.viewAccess')}</Select.Option>
-          <Select.Option value="all">{t('logs.viewAll')}</Select.Option>
-        </Select>
         <Input value={search} onChange={setSearch} prefix={<Search size={16} />} placeholder={t('common.search')} allowClear />
-        {viewMode !== 'access' && (
-          <Select value={category} placeholder={t('logs.category')} allowClear onChange={(value) => setCategory(value as string | undefined)}>
-            {['sqli', 'xss', 'rce', 'lfi', 'ssrf', 'nosqli', 'ssti', 'xxe', 'bot', 'threat_intel'].map((item) => (
-              <Select.Option key={item} value={item}>{displayCategory(item, t)}</Select.Option>
-            ))}
-          </Select>
-        )}
+        <Select value={category} placeholder={t('logs.category')} allowClear onChange={(value) => setCategory(value as string | undefined)}>
+          {['sqli', 'xss', 'rce', 'lfi', 'ssrf', 'nosqli', 'ssti', 'xxe', 'bot', 'threat_intel'].map((item) => (
+            <Select.Option key={item} value={item}>{displayCategory(item, t)}</Select.Option>
+          ))}
+        </Select>
         <Select value={action} placeholder={t('logs.action')} allowClear onChange={(value) => setAction(value as string | undefined)}>
-          {actionOptions.map((item) => (
+          {['block', 'challenge', 'log', 'monitor'].map((item) => (
             <Select.Option key={item} value={item}>{displayAction(item, t)}</Select.Option>
           ))}
         </Select>
@@ -121,7 +92,7 @@ export default function LogsPage() {
           {isLoading && Array.from({ length: 4 }).map((_, index) => (
             <div className="security-event-row security-event-skeleton" key={index} />
           ))}
-          {!isLoading && pageItems.length === 0 && <Empty description={t('common.noData')} />}
+          {!isLoading && pageItems.length === 0 && <div className="empty-state">{t('common.noData')}</div>}
           {!isLoading && pageItems.map((entry) => (
             <article className="security-event-row" key={entry.id || entry.trace_id}>
               <div className="security-event-cell security-event-trace" data-label={t('logs.trace')}>
@@ -131,10 +102,10 @@ export default function LogsPage() {
                 <span title={entry.client_ip || '-'}>{entry.client_ip || '-'}</span>
               </div>
               <div className="security-event-cell" data-label={t('logs.category')}>
-                <Tag color={entry.category ? 'orange' : 'green'}>{displayCategory(entry.category || entry.action || 'pass', t)}</Tag>
+                <Tag color={entry.category ? 'orange' : 'green'}>{displayCategory(entry.category || 'pass', t)}</Tag>
               </div>
               <div className="security-event-cell" data-label={t('logs.action')}>
-                <Tag color={actionTagColor(entry.action)}>{displayAction(entry.action, t)}</Tag>
+                <Tag color={entry.action === 'block' ? 'red' : 'blue'}>{displayAction(entry.action, t)}</Tag>
               </div>
               <div className="security-event-cell security-event-uri" data-label={t('logs.path')}>
                 <code title={entry.uri || '-'}>{entry.uri || '-'}</code>
@@ -200,37 +171,4 @@ function isSecurityEvent(entry: LogEntry) {
       || status === 403
       || status === 429,
   );
-}
-
-function isAccessLog(entry: LogEntry) {
-  if (isSecurityEvent(entry)) {
-    return false;
-  }
-  const action = String(entry.action ?? '').toLowerCase();
-  return action === 'pass' || action === 'cache_hit' || action === 'redirect' || action === '';
-}
-
-function matchViewMode(entry: LogEntry, mode: LogViewMode) {
-  if (mode === 'all') {
-    return true;
-  }
-  if (mode === 'access') {
-    return isAccessLog(entry);
-  }
-  return isSecurityEvent(entry);
-}
-
-function actionTagColor(action: string) {
-  switch (String(action ?? '').toLowerCase()) {
-    case 'block':
-      return 'red';
-    case 'challenge':
-      return 'orangered';
-    case 'pass':
-    case 'cache_hit':
-    case 'redirect':
-      return 'green';
-    default:
-      return 'blue';
-  }
 }

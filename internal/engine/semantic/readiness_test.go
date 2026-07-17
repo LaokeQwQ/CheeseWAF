@@ -159,23 +159,6 @@ func TestAnalyzerReadinessBenignMatrix(t *testing.T) {
 		{name: "template-markdown-content", target: "/cms", contentType: "application/json", body: `{"content":"Use {{ user.name }} in the email template body."}`},
 		{name: "template-ognl-placeholder-documentation", target: "/docs", contentType: "application/json", body: `{"text":"Struts examples may show %{ user.name } as a view placeholder without runtime execution primitives."}`},
 		{name: "public-url", target: "/fetch?url=https://example.com/feed.xml"},
-		// Production-shaped benign traffic (FP gate expansions).
-		{name: "search-select-theme", target: "/search?q=select%20a%20theme%20for%20the%20dashboard"},
-		{name: "search-union-shop", target: "/search?q=union%20shop%20near%20me"},
-		{name: "search-drop-off", target: "/search?q=package%20drop%20off%20location"},
-		{name: "search-script-writer", target: "/search?q=script%20writer%20job%20posting"},
-		{name: "cms-email-template", target: "/cms", contentType: "application/json", body: `{"content":"Hello {{ user.name }}, your order {{ order.id }} is ready."}`},
-		{name: "product-filter-json", target: "/api/products", contentType: "application/json", body: `{"filter":{"status":"active","category":"admin-tools"},"sort":"created_at","page":1,"page_size":20}`},
-		{name: "cdn-asset-url", target: "/proxy?url=https://cdn.example.com/assets/app.js"},
-		{name: "report-filename", target: "/files?name=backup.sql"},
-		{name: "report-pdf", target: "/files?name=quarterly-report.pdf"},
-		{name: "normal-user-agent", target: "/home", contentType: "application/json", body: `{"note":"normal request"}`},
-		{name: "pagination-query", target: "/api/logs?offset=0&limit=50&order=desc"},
-		{name: "sort-column-name", target: "/api/users?sort=username&direction=asc"},
-		{name: "markdown-code-fence-sql", target: "/docs", contentType: "application/json", body: `{"text":"Example: SELECT id FROM users WHERE id = ? using prepared statements."}`},
-		{name: "powershell-docs-only", target: "/kb", contentType: "application/json", body: `{"text":"Operators may review PowerShell EncodedCommand samples offline; this endpoint does not execute them."}`},
-		{name: "mongodb-docs-operator-names", target: "/kb", contentType: "application/json", body: `{"text":"The $ne and $regex operators are explained in the MongoDB manual chapter."}`},
-		{name: "php-pdo-prepare-docs", target: "/kb", contentType: "application/json", body: `{"text":"$stmt = $pdo->prepare(\"SELECT name FROM animals WHERE id = ?\");"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

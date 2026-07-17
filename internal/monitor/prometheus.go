@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -84,27 +83,6 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 	for _, name := range sortedStringKeys(snapshot.DiskUsage) {
 		writeMetric(&buf, "cheesewaf_disk_usage_bytes", "Disk usage by area.", float64(snapshot.DiskUsage[name]), map[string]string{"area": name})
 	}
-	// Semantic analyzer process counters (complements per-event detector_id/confidence in logs).
-	sem := semantic.ProcessMetrics().Snapshot()
-	writeMetric(&buf, "cheesewaf_semantic_analyzed_total", "Semantic analyzer requests analyzed.", float64(sem.Analyzed), nil)
-	writeMetric(&buf, "cheesewaf_semantic_passed_total", "Semantic analyzer clean passes.", float64(sem.Passed), nil)
-	writeMetric(&buf, "cheesewaf_semantic_hit_total", "Semantic analyzer detections (any action).", float64(sem.Hit), nil)
-	writeMetric(&buf, "cheesewaf_semantic_blocked_total", "Semantic analyzer block-mode detections.", float64(sem.Blocked), nil)
-	writeMetric(&buf, "cheesewaf_semantic_budget_exhausted_total", "Detection budget exhausted events.", float64(sem.BudgetExhausted), nil)
-	writeMetric(&buf, "cheesewaf_semantic_avg_latency_ns", "Average semantic analyzer latency in nanoseconds.", float64(sem.AvgLatencyNs), nil)
-	for _, bucket := range sortedStringKeys(sem.LatencyBuckets) {
-		writeMetric(&buf, "cheesewaf_semantic_latency_bucket_total", "Semantic latency histogram buckets.", float64(sem.LatencyBuckets[bucket]), map[string]string{"bucket": bucket})
-	}
-	for _, category := range sortedStringKeys(sem.HitByCategory) {
-		writeMetric(&buf, "cheesewaf_semantic_hit_by_category_total", "Semantic hits by category.", float64(sem.HitByCategory[category]), map[string]string{"category": category})
-	}
-	for _, category := range sortedStringKeys(sem.BlockByCategory) {
-		writeMetric(&buf, "cheesewaf_semantic_block_by_category_total", "Semantic blocks by category.", float64(sem.BlockByCategory[category]), map[string]string{"category": category})
-	}
-	writeMetric(&buf, "cheesewaf_semantic_cache_hits_total", "Semantic candidate cache hits.", float64(sem.CacheHits), nil)
-	writeMetric(&buf, "cheesewaf_semantic_cache_misses_total", "Semantic candidate cache misses.", float64(sem.CacheMisses), nil)
-	writeMetric(&buf, "cheesewaf_semantic_allowlist_path_skips_total", "Semantic path allowlist skip events.", float64(sem.AllowlistPathSkips), nil)
-	writeMetric(&buf, "cheesewaf_semantic_allowlist_param_skips_total", "Semantic param allowlist skip events.", float64(sem.AllowlistParamSkips), nil)
 	return buf.Bytes()
 }
 

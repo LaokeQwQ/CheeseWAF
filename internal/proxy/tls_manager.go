@@ -32,9 +32,9 @@ func HasCertificate(cfg config.TLSConfig) bool {
 }
 
 type SiteCertificateStore struct {
-	mu          sync.RWMutex
+	mu      sync.RWMutex
 	defaultCert *tls.Certificate
-	byDomain    map[string]*tls.Certificate
+	byDomain map[string]*tls.Certificate
 }
 
 func NewSiteCertificateStore(cfg *config.Config) (*SiteCertificateStore, error) {
@@ -48,7 +48,7 @@ func NewSiteCertificateStore(cfg *config.Config) (*SiteCertificateStore, error) 
 func (s *SiteCertificateStore) Update(cfg *config.Config) error {
 	next := map[string]*tls.Certificate{}
 	var defaultCert *tls.Certificate
-	if requiresDefaultTLSCertificate(cfg) && HasCertificate(cfg.TLS) {
+	if cfg != nil && HasCertificate(cfg.TLS) {
 		cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 		if err != nil {
 			return fmt.Errorf("load default tls certificate: %w", err)
@@ -89,16 +89,6 @@ func (s *SiteCertificateStore) Update(cfg *config.Config) error {
 	s.byDomain = next
 	s.mu.Unlock()
 	return nil
-}
-
-func requiresDefaultTLSCertificate(cfg *config.Config) bool {
-	if cfg == nil {
-		return false
-	}
-	if strings.TrimSpace(cfg.Server.ListenTLS) != "" {
-		return true
-	}
-	return cfg.Server.HTTP3.Enabled && strings.TrimSpace(cfg.Server.ListenHTTP3) != ""
 }
 
 func (s *SiteCertificateStore) TLSConfig(cfg config.TLSConfig) *tls.Config {

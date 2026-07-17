@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Checkbox, Empty, Form, Input, InputNumber, Select, Switch, Table } from '@arco-design/web-react';
+import { Button, Checkbox, Form, Input, InputNumber, Select, Switch, Table } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Gauge, ListPlus, PackageCheck, Plus, Trash2 } from 'lucide-react';
@@ -211,7 +211,6 @@ export default function EdgePage() {
           rowKey="id"
           pagination={false}
           data={edge.headers.rules}
-          noDataElement={<Empty description={t('common.noData')} />}
           columns={[
             { title: t('rules.name'), dataIndex: 'name', render: (_: string, record: HeaderRule, index: number) => <Input value={record.name} onChange={(value) => updateHeader(index, { name: value })} /> },
             {

@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
@@ -40,7 +41,7 @@ func (h *Handler) ReportUIError(w http.ResponseWriter, r *http.Request) {
 	if h.Sink != nil {
 		if err := h.Sink.Write(r.Context(), &storage.LogEntry{
 			ID:         traceID,
-			Timestamp:  h.nowUTC(),
+			Timestamp:  time.Now().UTC(),
 			TraceID:    traceID,
 			SiteID:     "admin-console",
 			ClientIP:   remoteAddrHost(r),

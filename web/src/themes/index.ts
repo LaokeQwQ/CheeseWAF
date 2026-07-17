@@ -1,42 +1,4 @@
-import { themeAttribute, themeMeta, themeOptions, type ThemeName } from './tokens';
-
-const themeStyleLoaders: Record<ThemeName, () => Promise<unknown>> = {
-  light: () => import('./light.css'),
-  dark: () => import('./dark.css'),
-  blackGold: () => import('./black-gold.css'),
-  blueWhite: () => import('./blue-white.css'),
-  pinkWhite: () => import('./pink-white.css'),
-  mikuGreen: () => import('./miku-green.css'),
-};
-
-const loadedThemes = new Set<ThemeName>();
-
-function isThemeName(value: unknown): value is ThemeName {
-  return themeOptions.some((option) => option.value === value);
-}
-
-export function readInitialTheme(): ThemeName {
-  try {
-    const persisted = JSON.parse(localStorage.getItem('cheesewaf-ui') ?? '{}') as {
-      state?: { theme?: unknown };
-    };
-    const theme = persisted.state?.theme;
-    if (isThemeName(theme)) {
-      return theme;
-    }
-  } catch {
-    // Invalid local preferences must not prevent the login screen from loading.
-  }
-  return 'light';
-}
-
-export async function loadThemeStyles(theme: ThemeName) {
-  if (loadedThemes.has(theme)) {
-    return;
-  }
-  await themeStyleLoaders[theme]();
-  loadedThemes.add(theme);
-}
+import { themeAttribute, themeMeta, type ThemeName } from './tokens';
 
 export function applyTheme(theme: ThemeName) {
   const root = document.documentElement;

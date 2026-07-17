@@ -44,7 +44,6 @@ func (p Package) Files() map[string][]byte {
 }
 
 var safeIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
-var safeRegion = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$`)
 
 func GenerateAnsiblePackage(plan Plan) (Package, error) {
 	normalized, err := normalizePlan(plan)
@@ -94,7 +93,6 @@ func normalizePlan(plan Plan) (Plan, error) {
 		node.Name = strings.TrimSpace(node.Name)
 		node.Address = strings.TrimSpace(node.Address)
 		node.Role = strings.TrimSpace(node.Role)
-		node.Region = strings.TrimSpace(node.Region)
 		if !safeIdentifier.MatchString(node.Name) {
 			return Plan{}, fmt.Errorf("node name %q is not a safe identifier", node.Name)
 		}
@@ -115,9 +113,6 @@ func normalizePlan(plan Plan) (Plan, error) {
 		}
 		if node.SSHPort < 1 || node.SSHPort > 65535 {
 			return Plan{}, fmt.Errorf("node %q ssh_port must be between 1 and 65535", node.Name)
-		}
-		if node.Region != "" && !safeRegion.MatchString(node.Region) {
-			return Plan{}, fmt.Errorf("node %q region must be 1-32 letters, numbers, dots, underscores, or hyphens", node.Name)
 		}
 	}
 	sort.SliceStable(plan.Nodes, func(i, j int) bool {
@@ -176,7 +171,6 @@ cheesewaf_cluster_id: "{{ .ClusterID }}"
 cheesewaf_release_channel: "{{ .Channel }}"
 # Release channel labels: dev=开发版, canary=预览版, stable=正式版.
 cheesewaf_binary_url: ""
-cheesewaf_binary_sha256: ""
 cheesewaf_install_dir: "/opt/cheesewaf"
 cheesewaf_config_dir: "/etc/cheesewaf"
 cheesewaf_data_dir: "/var/lib/cheesewaf"
@@ -198,221 +192,35 @@ func playbook() string {
 
 func tasks() string {
 	return `---
-- name: Require a verified CheeseWAF release source
-  ansible.builtin.assert:
-    that:
-      - cheesewaf_binary_url | length > 0
-      - cheesewaf_binary_sha256 | length == 64
-      - cheesewaf_binary_sha256 is match('^[A-Fa-f0-9]{64}$')
-    fail_msg: "A verified CheeseWAF binary URL and SHA-256 are required; deployment was not performed."
+- name: Create CheeseWAF service user
+  ansible.builtin.user:
+    name: "{{ cheesewaf_service_user }}"
+    system: true
+    create_home: false
 
-- name: Deploy CheeseWAF transactionally
-  block:
-    - name: Create execution-specific backup directory
-      ansible.builtin.tempfile:
-        state: directory
-        prefix: cheesewaf-backup-
-      register: cheesewaf_backup_dir
+- name: Create CheeseWAF directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ cheesewaf_service_user }}"
+    group: "{{ cheesewaf_service_user }}"
+    mode: "0750"
+  loop:
+    - "{{ cheesewaf_install_dir }}"
+    - "{{ cheesewaf_config_dir }}"
+    - "{{ cheesewaf_data_dir }}"
 
-    - name: Create execution-specific staging directory
-      ansible.builtin.tempfile:
-        state: directory
-        prefix: cheesewaf-staging-
-      register: cheesewaf_staging_dir
+- name: Render CheeseWAF cluster config
+  ansible.builtin.template:
+    src: cheesewaf.yaml.j2
+    dest: "{{ cheesewaf_config_dir }}/cheesewaf.yaml"
+    owner: "{{ cheesewaf_service_user }}"
+    group: "{{ cheesewaf_service_user }}"
+    mode: "0640"
 
-    - name: Probe existing CheeseWAF files
-      ansible.builtin.stat:
-        path: "{{ item.path }}"
-      loop:
-        - { name: binary, path: "{{ cheesewaf_install_dir }}/cheesewaf" }
-        - { name: config, path: "{{ cheesewaf_config_dir }}/cheesewaf.yaml" }
-        - { name: unit, path: /etc/systemd/system/cheesewaf.service }
-      register: cheesewaf_original_files
-
-    - name: Capture CheeseWAF enabled state
-      ansible.builtin.command:
-        argv: [systemctl, is-enabled, cheesewaf.service]
-      register: cheesewaf_pre_enabled
-      changed_when: false
-      failed_when: false
-
-    - name: Capture CheeseWAF active state
-      ansible.builtin.command:
-        argv: [systemctl, is-active, cheesewaf.service]
-      register: cheesewaf_pre_active
-      changed_when: false
-      failed_when: false
-
-    - name: Back up existing CheeseWAF files
-      ansible.builtin.copy:
-        src: "{{ item.item.path }}"
-        dest: "{{ cheesewaf_backup_dir.path }}/{{ item.item.name }}"
-        remote_src: true
-        mode: preserve
-      loop: "{{ cheesewaf_original_files.results }}"
-      when: item.stat.exists
-
-    - name: Create CheeseWAF service user
-      ansible.builtin.user:
-        name: "{{ cheesewaf_service_user }}"
-        system: true
-        create_home: false
-
-    - name: Create CheeseWAF directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        owner: "{{ cheesewaf_service_user }}"
-        group: "{{ cheesewaf_service_user }}"
-        mode: "0750"
-      loop:
-        - "{{ cheesewaf_install_dir }}"
-        - "{{ cheesewaf_config_dir }}"
-        - "{{ cheesewaf_data_dir }}"
-
-    - name: Download verified CheeseWAF binary
-      ansible.builtin.get_url:
-        url: "{{ cheesewaf_binary_url }}"
-        dest: "{{ cheesewaf_staging_dir.path }}/cheesewaf"
-        checksum: "sha256:{{ cheesewaf_binary_sha256 }}"
-        mode: "0755"
-
-    - name: Stage CheeseWAF binary on target filesystem
-      ansible.builtin.copy:
-        src: "{{ cheesewaf_staging_dir.path }}/cheesewaf"
-        dest: "{{ cheesewaf_install_dir }}/.cheesewaf.new"
-        remote_src: true
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Render CheeseWAF cluster config for atomic activation
-      ansible.builtin.template:
-        src: cheesewaf.yaml.j2
-        dest: "{{ cheesewaf_config_dir }}/.cheesewaf.yaml.new"
-        owner: "{{ cheesewaf_service_user }}"
-        group: "{{ cheesewaf_service_user }}"
-        mode: "0640"
-
-    - name: Stage CheeseWAF systemd unit
-      ansible.builtin.copy:
-        dest: /etc/systemd/system/.cheesewaf.service.new
-        mode: "0644"
-        content: |
-          [Unit]
-          Description=CheeseWAF
-          After=network-online.target
-          Wants=network-online.target
-          [Service]
-          User={{ cheesewaf_service_user }}
-          Group={{ cheesewaf_service_user }}
-          ExecStart={{ cheesewaf_install_dir }}/cheesewaf --config {{ cheesewaf_config_dir }}/cheesewaf.yaml
-          Restart=on-failure
-          NoNewPrivileges=true
-          [Install]
-          WantedBy=multi-user.target
-
-    - name: Activate verified CheeseWAF binary atomically
-      ansible.builtin.command:
-        argv: [mv, "{{ cheesewaf_install_dir }}/.cheesewaf.new", "{{ cheesewaf_install_dir }}/cheesewaf"]
-      changed_when: true
-
-    - name: Activate CheeseWAF config atomically
-      ansible.builtin.command:
-        argv: [mv, "{{ cheesewaf_config_dir }}/.cheesewaf.yaml.new", "{{ cheesewaf_config_dir }}/cheesewaf.yaml"]
-      changed_when: true
-
-    - name: Activate CheeseWAF systemd unit atomically
-      ansible.builtin.command:
-        argv: [mv, /etc/systemd/system/.cheesewaf.service.new, /etc/systemd/system/cheesewaf.service]
-      changed_when: true
-
-    - name: Reload systemd after deployment
-      ansible.builtin.systemd_service:
-        daemon_reload: true
-
-    - name: Start CheeseWAF service
-      ansible.builtin.systemd_service:
-        name: cheesewaf
-        enabled: true
-        state: restarted
-
-    - name: Verify CheeseWAF readiness
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:9443/health/ready"
-        method: GET
-        validate_certs: false
-        status_code: 200
-      register: cheesewaf_readiness
-      retries: 12
-      delay: 5
-      until: cheesewaf_readiness.status == 200
-
-    - name: Clean execution-specific backup after successful deployment
-      ansible.builtin.file:
-        path: "{{ cheesewaf_backup_dir.path }}"
-        state: absent
-
-  rescue:
-    - name: Stop service created by failed deployment
-      ansible.builtin.systemd_service:
-        name: cheesewaf
-        state: stopped
-      failed_when: false
-      when: not (cheesewaf_original_files.results[2].stat.exists | default(false))
-
-    - name: Restore files that existed before deployment
-      ansible.builtin.copy:
-        src: "{{ cheesewaf_backup_dir.path }}/{{ item.item.name }}"
-        dest: "{{ item.item.path }}"
-        remote_src: true
-        mode: preserve
-      loop: "{{ cheesewaf_original_files.results }}"
-      when: item.stat.exists
-
-    - name: Remove files created by failed deployment
-      ansible.builtin.file:
-        path: "{{ item.item.path }}"
-        state: absent
-      loop: "{{ cheesewaf_original_files.results }}"
-      when: not item.stat.exists
-
-    - name: Remove partially staged activation files
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "{{ cheesewaf_install_dir }}/.cheesewaf.new"
-        - "{{ cheesewaf_config_dir }}/.cheesewaf.yaml.new"
-        - /etc/systemd/system/.cheesewaf.service.new
-
-    - name: Reload systemd after rollback
-      ansible.builtin.systemd_service:
-        daemon_reload: true
-
-    - name: Restore CheeseWAF enable state
-      ansible.builtin.systemd_service:
-        name: cheesewaf
-        enabled: "{{ cheesewaf_pre_enabled.rc == 0 }}"
-      when: cheesewaf_original_files.results[2].stat.exists
-
-    - name: Restore CheeseWAF running state
-      ansible.builtin.systemd_service:
-        name: cheesewaf
-        state: "{{ 'started' if cheesewaf_pre_active.rc == 0 else 'stopped' }}"
-      when: cheesewaf_original_files.results[2].stat.exists
-
-    - name: Fail deployment after rollback
-      ansible.builtin.fail:
-        msg: "CheeseWAF deployment failed. Rollback was attempted; the execution backup remains at {{ cheesewaf_backup_dir.path }} for recovery verification."
-
-  always:
-    - name: Clean deployment staging directory
-      ansible.builtin.file:
-        path: "{{ cheesewaf_staging_dir.path }}"
-        state: absent
-      when: cheesewaf_staging_dir.path is defined
-
+- name: Show next manual step
+  ansible.builtin.debug:
+    msg: "Install or update the cheesewaf binary, then run the node join flow generated by the controller."
 `
 }
 

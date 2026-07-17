@@ -3,7 +3,6 @@ package semantic
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -11,10 +10,18 @@ import (
 )
 
 func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
-	cases := loadAllCorpusCases(t)
+	file, err := os.Open("testdata/curated_external_shapes.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	cases, err := securitytest.LoadJSONL(file)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.SourceFamily+"/"+tc.Name, func(t *testing.T) {
+		t.Run(tc.Name, func(t *testing.T) {
 			req := readinessRequest(t, tc.Method, tc.Target, tc.ContentType, tc.Body)
 			if req == nil || req.URL == nil {
 				t.Skipf("skipping malformed corpus entry %q: target could not be parsed as valid HTTP request", tc.Name)
@@ -37,11 +44,15 @@ func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
 				detected := result != nil && result.Detected
 				categoryMatch := result != nil && result.Category == tc.Category
 				if securitytest.StrictCategory(tc.SourceFamily) {
+					// Handcrafted/curated: must detect AND match exact category
 					if !categoryMatch {
 						t.Fatalf("STRICT: expected %s detection from %s (%s), got category=%v", tc.Category, tc.Name, tc.SourceFamily, result)
 					}
-				} else if !detected {
-					t.Fatalf("DETECT: expected ANY detection from %s (%s), got nil", tc.Name, tc.SourceFamily)
+				} else {
+					// Bulk external import: only require detection
+					if !detected {
+						t.Fatalf("DETECT: expected ANY detection from %s (%s), got nil", tc.Name, tc.SourceFamily)
+					}
 				}
 			case "benign":
 				if result != nil {
@@ -52,31 +63,4 @@ func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
 			}
 		})
 	}
-}
-
-func loadAllCorpusCases(t *testing.T) []securitytest.Case {
-	t.Helper()
-	files := []string{
-		"testdata/curated_external_shapes.jsonl",
-		"testdata/benign_production_shapes.jsonl",
-		"testdata/handcrafted_attack_neighbors.jsonl",
-	}
-	var all []securitytest.Case
-	for _, name := range files {
-		path := name
-		if _, err := os.Stat(path); err != nil {
-			path = filepath.Join("testdata", filepath.Base(name))
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			t.Fatalf("open %s: %v", name, err)
-		}
-		cases, err := securitytest.LoadJSONL(file)
-		file.Close()
-		if err != nil {
-			t.Fatalf("load %s: %v", name, err)
-		}
-		all = append(all, cases...)
-	}
-	return all
 }

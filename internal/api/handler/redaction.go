@@ -2,7 +2,6 @@ package handler
 
 import (
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -50,7 +49,6 @@ func systemConfigView(cfg *config.Config) map[string]any {
 	}
 	return map[string]any{
 		"server":        cfg.Server,
-		"time_sync":     cfg.TimeSync,
 		"tls":           cfg.TLS,
 		"storage":       storageConfigView(cfg.Storage),
 		"logging":       cfg.Logging,
@@ -150,20 +148,6 @@ func siteView(site storage.Site) storage.Site {
 	out.Advanced.Certificate.KeyPEM = ""
 	out.Advanced.Certificate.ACME.Env = redactStringMap(out.Advanced.Certificate.ACME.Env)
 	return out
-}
-
-// preserveSiteSecrets restores redacted secrets when the client omits them on update.
-func preserveSiteSecrets(existing *storage.Site, next *storage.Site) {
-	if existing == nil || next == nil {
-		return
-	}
-	if strings.TrimSpace(next.Advanced.Certificate.KeyPEM) == "" {
-		next.Advanced.Certificate.KeyPEM = existing.Advanced.Certificate.KeyPEM
-	}
-	next.Advanced.Certificate.ACME.Env = preserveStringMapSecrets(
-		existing.Advanced.Certificate.ACME.Env,
-		next.Advanced.Certificate.ACME.Env,
-	)
 }
 
 func siteACMEConfigView(in storage.SiteACMEConfig) siteACMEView {

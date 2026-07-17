@@ -56,11 +56,6 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     acl: true,
     apisec: true,
   },
-  semantic_policy: {
-    budget_exhausted_policy: 'auto',
-    path_allowlist: [],
-    param_allowlist: [],
-  },
   policy: {
     web_attack: '',
     api_security: '',
@@ -79,7 +74,6 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     dynamic_guard: true,
     trusted_cidrs: [],
   },
-  access_log_enabled: true,
 };
 
 export const defaultSite: Site = {
@@ -121,12 +115,6 @@ export function normalizeSite(input?: Partial<Site>): Site {
       origin: { ...defaultSiteAdvanced.origin, ...advanced.origin },
       health_check: { ...defaultSiteAdvanced.health_check, ...advanced.health_check },
       protection: { ...defaultSiteAdvanced.protection, ...advanced.protection },
-      semantic_policy: {
-        ...defaultSiteAdvanced.semantic_policy,
-        ...advanced.semantic_policy,
-        path_allowlist: asArray(advanced.semantic_policy?.path_allowlist),
-        param_allowlist: asArray(advanced.semantic_policy?.param_allowlist),
-      },
       policy: { ...defaultSiteAdvanced.policy, ...advanced.policy },
       response: {
         ...defaultSiteAdvanced.response,
@@ -139,7 +127,6 @@ export function normalizeSite(input?: Partial<Site>): Site {
         ...advanced.access_control,
         trusted_cidrs: asArray(advanced.access_control?.trusted_cidrs),
       },
-      access_log_enabled: advanced.access_log_enabled ?? defaultSiteAdvanced.access_log_enabled ?? true,
     },
   };
 }

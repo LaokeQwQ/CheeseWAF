@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -37,19 +36,14 @@ func (m *Manager) Notify(ctx context.Context, alerts []monitor.Alert) error {
 	if m == nil || len(alerts) == 0 {
 		return nil
 	}
-	var deliveryErrors []error
 	for _, alert := range alerts {
 		for _, notifier := range m.notifiers {
 			if err := notifier.Notify(ctx, alert); err != nil {
-				deliveryErrors = append(deliveryErrors, err)
+				return err
 			}
 		}
 	}
-	return errors.Join(deliveryErrors...)
-}
-
-func errorsJoin(values []error) error {
-	return errors.Join(values...)
+	return nil
 }
 
 type Webhook struct {

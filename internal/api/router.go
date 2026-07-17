@@ -2,16 +2,15 @@ package api
 
 import (
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/acme"
-	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
-	captchaassets "github.com/LaokeQwQ/CheeseWAF/internal/captcha/assets"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
-	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -26,30 +25,13 @@ type Options struct {
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error
-	OnTimeSyncChanged   func(config.TimeSyncConfig) error
 	ACMEIssuer          acme.Issuer
-	AuthState           *handler.AuthState
-	AssistantApprovals  *ai.ApprovalStore
-	CAPTCHAAssets       captchaassets.Store
-	Clock               timekeeper.Clock
-	TimeSync            handler.TimeSyncService
 }
-
-var newAuditor = middleware.NewAuditorWithClock
-var newRouterAssistantApprovalStore = func() *ai.ApprovalStore { return nil }
 
 func NewRouter(opts Options) http.Handler {
 	r := chi.NewRouter()
-	clock := opts.Clock
-	if clock == nil {
-		clock = timekeeper.SystemClock{}
-	}
-	tokens := middleware.NewTokenManagerWithClock(opts.Secret, config.AdminSessionTTL, clock)
-	auditor := newAuditor(opts.Config.APISec.Audit.Path, clock)
-	approvals := opts.AssistantApprovals
-	if approvals == nil {
-		approvals = newRouterAssistantApprovalStore()
-	}
+	tokens := middleware.NewTokenManager(opts.Secret, config.AdminSessionTTL)
+	auditor := middleware.NewAuditor(opts.Config.APISec.Audit.Path)
 	require := func(permission string) func(http.Handler) http.Handler {
 		return middleware.RBAC(opts.Config.APISec.Permissions, permission)
 	}
@@ -61,21 +43,31 @@ func NewRouter(opts Options) http.Handler {
 		Tokens:              tokens,
 		Secret:              opts.Secret,
 		Auditor:             auditor,
-		AssistantApprovals:  approvals,
 		ACMEIssuer:          opts.ACMEIssuer,
 		OnSitesChanged:      opts.OnSitesChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
 		OnAPISecChanged:     opts.OnAPISecChanged,
 		OnBlockPageChanged:  opts.OnBlockPageChanged,
-		OnTimeSyncChanged:   opts.OnTimeSyncChanged,
-		CAPTCHAAssets:       opts.CAPTCHAAssets,
-		Clock:               clock,
-		TimeSync:            opts.TimeSync,
 	})
-	if opts.AuthState != nil {
-		handler.ApplyAuthState(h, opts.AuthState)
-	}
-	managementAuth := middleware.ManagementAPIOrSessionMiddlewareWithClock(tokens, opts.Store, h.AuthenticateManagementAPIToken, clock)
+	var managementAPIUseMu sync.Mutex
+	managementAuth := middleware.ManagementAPIOrSessionMiddleware(tokens, opts.Store, func() config.ManagementAPIConfig {
+		if opts.Config == nil {
+			return config.ManagementAPIConfig{}
+		}
+		return opts.Config.APISec.ManagementAPI
+	}, func(id string, at time.Time) {
+		if opts.Config == nil || id == "" {
+			return
+		}
+		managementAPIUseMu.Lock()
+		defer managementAPIUseMu.Unlock()
+		for idx := range opts.Config.APISec.ManagementAPI.Tokens {
+			if opts.Config.APISec.ManagementAPI.Tokens[idx].ID == id {
+				opts.Config.APISec.ManagementAPI.Tokens[idx].LastUsedAt = at
+				return
+			}
+		}
+	})
 	hub := opts.Hub
 	if hub == nil {
 		hub = realtime.NewHub()
@@ -99,7 +91,7 @@ func NewRouter(opts Options) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
-			r.Use(middleware.SessionMiddlewareWithClock(opts.Store, clock))
+			r.Use(middleware.SessionMiddleware(opts.Store))
 			r.Post("/auth/refresh", h.RefreshToken)
 			r.Post("/auth/logout", h.Logout)
 			r.Post("/ui/errors", h.ReportUIError)
@@ -118,23 +110,17 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:apisec")).Get("/apisec/endpoints", h.APIEndpoints)
 			r.With(require("read:apisec")).Post("/apisec/validate", h.ValidateAPIRequest)
 			r.With(require("read:audit")).Get("/audit", h.AuditEntries)
-			r.With(require("read:monitor")).Get("/notifications", h.ListNotifications)
-			r.With(require("read:monitor")).Patch("/notifications/{id}", h.UpdateNotification)
-			r.With(require("read:monitor")).Post("/notifications/read-all", h.MarkAllNotificationsRead)
-			r.With(require("read:monitor")).Delete("/notifications", h.ClearNotifications)
 			r.With(require("read:system")).Get("/version", h.Version)
 			r.With(require("read:system")).Get("/system", h.System)
-			r.With(require("read:system")).Get("/system/time-sync", h.TimeSyncStatus)
-			r.With(require("write:system")).Post("/system/time-sync/reselect", h.ReselectTimeSync)
-			r.With(require("write:system")).Post("/system/time-sync/sync", h.SyncTimeNow)
 			r.With(require("read:system")).Get("/system/api-tokens", h.ListManagementAPITokens)
-			r.With(require("manage:api_tokens")).Post("/system/api-tokens", h.CreateManagementAPIToken)
-			r.With(require("manage:api_tokens")).Delete("/system/api-tokens/{id}", h.RevokeManagementAPIToken)
+			r.With(require("write:system")).Post("/system/api-tokens", h.CreateManagementAPIToken)
+			r.With(require("write:system")).Delete("/system/api-tokens/{id}", h.RevokeManagementAPIToken)
 			r.With(require("read:cluster")).Get("/cluster/status", h.ClusterStatus)
 			r.With(require("read:cluster")).Get("/cluster/audit", h.ClusterAudit)
 			r.With(require("read:cluster")).Get("/cluster/nodes", h.ClusterListNodes)
 			r.With(require("write:cluster")).Post("/cluster/deploy/ansible", h.ClusterAnsiblePackage)
 			r.With(require("write:cluster")).Post("/cluster/deploy/check", h.ClusterDeployCheck)
+			r.With(require("write:cluster")).Post("/cluster/deploy/run", h.ClusterDeployRun)
 			r.With(require("read:cluster")).Get("/cluster/deploy/tasks", h.ClusterListDeployTasks)
 			r.With(require("read:cluster")).Get("/cluster/deploy/tasks/{id}", h.ClusterGetDeployTask)
 			r.With(require("write:cluster")).Post("/cluster/deploy/tasks", h.ClusterStartDeployTask)
@@ -150,12 +136,9 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:users")).Get("/users", h.ListUsers)
 			r.With(require("write:users")).Post("/users", h.CreateUser)
 			r.With(require("write:users")).Put("/users/{id}", h.UpdateUser)
-			r.Post("/users/{id}/2fa/setup", h.SetupUser2FA)
-			r.Post("/users/{id}/2fa/enable", h.EnableUser2FA)
-			r.Post("/users/{id}/2fa/disable", h.DisableUser2FA)
-			r.With(require("write:config")).Post("/captcha/lab/challenges", h.IssueCaptchaLabChallenge)
-			r.With(require("write:config")).Post("/captcha/lab/verify", h.VerifyCaptchaLabChallenge)
-			r.Post("/users/{id}/2fa/recover", h.RecoverUser2FA)
+			r.With(require("write:users")).Post("/users/{id}/2fa/setup", h.SetupUser2FA)
+			r.With(require("write:users")).Post("/users/{id}/2fa/enable", h.EnableUser2FA)
+			r.With(require("write:users")).Post("/users/{id}/2fa/disable", h.DisableUser2FA)
 			r.With(require("read:logs")).Get("/logs", h.ListLogs)
 			r.With(require("read:protection")).Get("/ip", h.ListIPRules)
 			r.With(require("write:protection")).Put("/ip/access-rules", h.UpdateIPAccessRules)
@@ -168,15 +151,6 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("write:threat_intel")).Post("/ip/threat-intel/test", h.TestThreatIntelProvider)
 			r.With(require("read:threat_intel")).Post("/ip/threat-intel/lookup", h.LookupThreatIntel)
 			r.With(require("read:protection")).Get("/protection", h.Protection)
-			r.With(require("read:protection")).Get("/protection/bot/metrics", h.BotChallengeMetrics)
-			r.With(require("read:protection")).Get("/captcha/assets", h.ListCAPTCHAAssets)
-			r.With(require("write:protection")).Post("/captcha/assets", h.UploadCAPTCHAAsset)
-			r.With(require("write:protection")).Delete("/captcha/assets/{id}", h.DeleteCAPTCHAAsset)
-			r.With(require("read:protection")).Post("/captcha/assets/{id}/preview", h.IssueCAPTCHAAssetPreview)
-			r.With(require("read:protection")).Get("/captcha/assets/preview/{reference}", h.PreviewCAPTCHAAsset)
-			r.With(require("read:protection")).Get("/captcha/assets/config", h.GetCAPTCHAAssetConfig)
-			r.With(require("write:protection")).Put("/captcha/assets/config", h.UpdateCAPTCHAAssetConfig)
-			r.With(require("write:protection")).Post("/captcha/assets/config/test", h.TestCAPTCHAAssetConfig)
 			r.With(require("write:protection")).Put("/protection/policy", h.UpdateProtectionPolicy)
 			r.With(require("write:protection")).Put("/protection/ip", h.UpdateIPRules)
 			r.With(require("write:protection")).Put("/protection/acl", h.UpdateACLRules)
@@ -212,11 +186,9 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:ai")).Post("/ai/assistant/stream", h.AIAssistantStream)
 			r.With(require("read:ai")).Get("/ai/tools", h.AITools)
 			r.With(require("write:ai")).Post("/ai/tools/execute", h.ExecuteAITool)
-			r.With(middleware.RBACAny(opts.Config.APISec.Permissions, "read:ai", "write:ai", "approve:ai")).Get("/ai/tools/approvals", h.ListAIApprovals)
-			r.With(middleware.RBACAny(opts.Config.APISec.Permissions, "read:ai", "write:ai", "approve:ai")).Get("/ai/tools/approvals/{id}", h.GetAIApproval)
-			r.With(middleware.RBACAny(opts.Config.APISec.Permissions, "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/approve", h.ApproveAIApproval)
+			r.With(require("write:ai")).Post("/ai/tools/approvals/{id}/approve", h.ApproveAIApproval)
 			r.With(require("write:ai")).Post("/ai/tools/approvals/{id}/continue/stream", h.ContinueAIApprovalStream)
-			r.With(middleware.RBACAny(opts.Config.APISec.Permissions, "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/reject", h.RejectAIApproval)
+			r.With(require("write:ai")).Post("/ai/tools/approvals/{id}/reject", h.RejectAIApproval)
 			r.With(require("read:storage")).Get("/storage", h.StorageStats)
 			r.With(require("write:storage")).Post("/storage/cleanup", h.CleanupStorage)
 			r.With(require("write:system")).Post("/system/reclaim", h.ReclaimSystemResources)

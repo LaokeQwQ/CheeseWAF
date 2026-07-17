@@ -5,14 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
-)
-
-const (
-	receiptMaxEncodedBytes = 4096
-	receiptMaxPayloadBytes = 3072
 )
 
 type ReceiptOptions struct {
@@ -20,7 +14,6 @@ type ReceiptOptions struct {
 	Purpose   string
 	ClientKey string
 	Path      string
-	Subject   string
 	TTL       time.Duration
 	Now       func() time.Time
 }
@@ -29,17 +22,13 @@ type receiptPayload struct {
 	Purpose   string `json:"purpose"`
 	ClientKey string `json:"client_key"`
 	Path      string `json:"path"`
-	Subject   string `json:"subject,omitempty"`
 	Mode      string `json:"mode"`
-	ExpiresMS int64  `json:"expires_ms"`
+	Expires   int64  `json:"expires"`
 	Nonce     string `json:"nonce"`
 }
 
 func NewReceipt(opts ReceiptOptions, mode string) (string, time.Time, error) {
 	opts = normalizeReceiptOptions(opts)
-	if strings.TrimSpace(opts.Secret) == "" {
-		return "", time.Time{}, fmt.Errorf("captcha receipt secret is required")
-	}
 	expires := opts.now().Add(opts.TTL).UTC()
 	nonce, err := randomToken(16)
 	if err != nil {
@@ -49,9 +38,8 @@ func NewReceipt(opts ReceiptOptions, mode string) (string, time.Time, error) {
 		Purpose:   opts.Purpose,
 		ClientKey: opts.ClientKey,
 		Path:      opts.Path,
-		Subject:   normalizeReceiptSubject(opts.Subject),
 		Mode:      normalizeReceiptMode(mode),
-		ExpiresMS: expires.UnixMilli(),
+		Expires:   expires.Unix(),
 		Nonce:     nonce,
 	}
 	rawPayload, err := json.Marshal(payload)
@@ -65,18 +53,8 @@ func NewReceipt(opts ReceiptOptions, mode string) (string, time.Time, error) {
 
 func VerifyReceipt(opts ReceiptOptions, receipt string, mode string) bool {
 	opts = normalizeReceiptOptions(opts)
-	if strings.TrimSpace(opts.Secret) == "" {
-		return false
-	}
-	receipt = strings.TrimSpace(receipt)
-	if len(receipt) == 0 || len(receipt) > receiptMaxEncodedBytes {
-		return false
-	}
-	encoded, signature, ok := strings.Cut(receipt, ".")
+	encoded, signature, ok := strings.Cut(strings.TrimSpace(receipt), ".")
 	if !ok || encoded == "" || signature == "" {
-		return false
-	}
-	if base64.RawURLEncoding.DecodedLen(len(encoded)) > receiptMaxPayloadBytes {
 		return false
 	}
 	want := signReceipt(opts, encoded)
@@ -84,20 +62,20 @@ func VerifyReceipt(opts ReceiptOptions, receipt string, mode string) bool {
 		return false
 	}
 	rawPayload, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(rawPayload) > receiptMaxPayloadBytes {
+	if err != nil {
 		return false
 	}
 	var payload receiptPayload
 	if err := json.Unmarshal(rawPayload, &payload); err != nil {
 		return false
 	}
-	if payload.Purpose != opts.Purpose || payload.ClientKey != opts.ClientKey || payload.Path != opts.Path || payload.Subject != normalizeReceiptSubject(opts.Subject) {
+	if payload.Purpose != opts.Purpose || payload.ClientKey != opts.ClientKey || payload.Path != opts.Path {
 		return false
 	}
 	if payload.Mode != normalizeReceiptMode(mode) {
 		return false
 	}
-	return payload.ExpiresMS > opts.now().UTC().UnixMilli()
+	return payload.Expires > opts.now().UTC().Unix()
 }
 
 func normalizeReceiptOptions(opts ReceiptOptions) ReceiptOptions {
@@ -128,13 +106,9 @@ func normalizeReceiptMode(mode string) string {
 	return mode
 }
 
-func normalizeReceiptSubject(subject string) string {
-	return strings.ToLower(strings.TrimSpace(subject))
-}
-
 func signReceipt(opts ReceiptOptions, encodedPayload string) string {
 	mac := hmac.New(sha256.New, []byte(opts.Secret))
-	for _, item := range []string{opts.Purpose, opts.ClientKey, opts.Path, normalizeReceiptSubject(opts.Subject), encodedPayload} {
+	for _, item := range []string{opts.Purpose, opts.ClientKey, opts.Path, encodedPayload} {
 		_, _ = mac.Write([]byte(item))
 		_, _ = mac.Write([]byte{'\n'})
 	}

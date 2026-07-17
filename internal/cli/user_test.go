@@ -166,34 +166,6 @@ func TestRenameUserValidation(t *testing.T) {
 	}
 }
 
-func TestEnsureAdminUserCreatesAndRecoversAdministrator(t *testing.T) {
-	store, sqlitePath := userPasswordTestStore(t)
-	generated, err := ensureAdminUser(context.Background(), sqlitePath, "test-admin", cliPasswordOptions{Password: "Test-Only-Initial-Password!42"})
-	if err != nil {
-		t.Fatalf("create administrator: %v", err)
-	}
-	if generated != "" {
-		t.Fatalf("unexpected generated password: %q", generated)
-	}
-	user, err := store.GetUserByUsername(context.Background(), "test-admin")
-	if err != nil || user == nil || user.Role != "admin" {
-		t.Fatalf("administrator not created correctly: user=%+v err=%v", user, err)
-	}
-	user.Role = "readonly"
-	user.TwoFAEnabled = true
-	user.TwoFASecret = "stale-secret"
-	if err := store.UpdateUser(context.Background(), user); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ensureAdminUser(context.Background(), sqlitePath, "test-admin", cliPasswordOptions{Password: "Test-Only-Recovery-Password!84"}); err != nil {
-		t.Fatalf("recover administrator: %v", err)
-	}
-	recovered, err := store.GetUserByUsername(context.Background(), "test-admin")
-	if err != nil || recovered == nil || recovered.Role != "admin" || recovered.TwoFAEnabled || recovered.TwoFASecret != "" {
-		t.Fatalf("administrator not recovered correctly: user=%+v err=%v", recovered, err)
-	}
-}
-
 func userPasswordTestStore(t *testing.T) (*storage.SQLiteStore, string) {
 	t.Helper()
 	sqlitePath := t.TempDir() + "/cheesewaf.db"

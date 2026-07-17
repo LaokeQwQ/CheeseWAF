@@ -35,18 +35,9 @@ func (lb *LoadBalancer) UpdateSites(sites []config.SiteConfig, health *HealthReg
 	lb.mu.Unlock()
 }
 
-// SiteForHost returns the enabled site whose Domains contain host (port stripped).
-// When no site matches, it returns an empty SiteConfig (ID == "") so callers can
-// reject the request instead of falling back to another tenant's site.
 func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
 	host = strings.Split(strings.ToLower(host), ":")[0]
-	if lb == nil {
-		return config.SiteConfig{}
-	}
-	lb.mu.Lock()
-	sites := lb.sites
-	lb.mu.Unlock()
-	for _, site := range sites {
+	for _, site := range lb.sites {
 		if !site.Enabled {
 			continue
 		}
@@ -54,6 +45,11 @@ func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
 			if strings.EqualFold(host, domain) {
 				return site
 			}
+		}
+	}
+	for _, site := range lb.sites {
+		if site.Enabled {
+			return site
 		}
 	}
 	return config.SiteConfig{}

@@ -1,3 +1,0 @@
-import { createHash } from 'node:crypto';
-export async function solvePow(salt, difficulty) { for (let nonce = 0; nonce < Number.MAX_SAFE_INTEGER; nonce += 1) { const proof = nonce.toString(36); if (leadingZeroBits(createHash('sha256').update(`${salt}:${proof}`).digest()) >= difficulty) return proof; if (nonce % 4096 === 4095) await new Promise((resolve) => setImmediate(resolve)); } throw new Error('PoW search exhausted'); }
-function leadingZeroBits(bytes) { let bits = 0; for (const byte of bytes) { if (byte === 0) { bits += 8; continue; } for (let mask = 0x80; (byte & mask) === 0; mask >>= 1) bits += 1; break; } return bits; }

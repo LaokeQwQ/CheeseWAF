@@ -1,6 +1,6 @@
 # CheeseWAF 项目阶段进度
 
-更新时间：2026-07-15
+更新时间：2026-07-09
 
 ## 项目定位
 
@@ -133,23 +133,6 @@ CheeseWAF 当前已经覆盖以下方向：
 - AI 流式对话首包、reasoning delta、content delta 和工具调用 delta
 
 这些验证结果用于说明当前工程状态。正式发布前仍需要按 release gate 重新执行完整验证，不能只复用历史结果。
-
-### 2026-07-15 CodeQL Go 覆盖率提升（目标接近 100%）
-
-- 原因：default setup 在 `ubuntu-latest` + `autobuild` 下只提取 `go build` 会编进的文件，约 `197/285`；缺口主要是 `*_test.go` 与 Windows / 非 Linux 平台源。另：CodeQL Go 默认 `extract_tests=false`，即使编译了测试也不会入库。
-- 处理：关闭 repo default setup，改 advanced 工作流（`.github/workflows/codeql.yml`）：
-  - Linux + Windows 双矩阵，`build-mode: manual` + `scripts/ci/codeql-go-extract.sh`（`go build ./...` 与 `go test -exec true ./...` 编译测试、可选 `captchae2e` 标签）
-  - `CODEQL_EXTRACTOR_GO_OPTION_EXTRACT_TESTS=true`
-  - 同工作流保留 JS/TS 与 Actions 分析
-- 说明：PR 上为加速不会打印 “X/Y files scanned”；合并到 `dev`/`canary`/`master` 后 status 页会汇总多 OS 覆盖。互斥 `//go:build` 文件需 Linux+Windows 两次调用合起来才接近 100%。
-
-### 2026-07-15 进程时钟、系统对时与验证码加固
-
-- 新增进程内 NTP 对时服务（`internal/timekeeper`）：多源重选、共识阈值、纪律化时钟，并注入管理会话 JWT、Bot 策略、APISec JWT、登录验证码与代理运行时，避免仅依赖可能漂移的系统墙钟。
-- 系统设置增加时间同步面板与 API（状态 / 重选 / 立即同步）；配置支持启用开关、源列表与采样参数，默认源收敛为小集合多运营商公共 NTP。
-- 对时安全收口：拒绝私有 / 环回 / localhost 源；`SyncNow` 双源共识、单源大幅跳变拒绝；失败回落后时钟继续前进不冻结鉴权 TTL；仅改 interval 不擦除已选源；部分 JSON 更新按字段合并，避免静默关闭对时。
-- 曲线滑块验证码：全画布纹理防透明 PNG 边界泄漏；边页与管理端补齐 `min_duration_ms`、松手后不丢 track、中日文提示与对齐任务一致；IssuedMS 墙钟最短用时约束。
-- 本轮验证：`go test` 覆盖 `timekeeper` / `config` / `apisec` / `bot` / `api` / `handler` / `middleware` / `captcha` / `cli` / `proxy`，以及 Web `CurveSliderChallenge` / `systemModel` / `client` 单测。
 
 ### 2026-07-09 本地补充：IP 管理闭环与样式收口
 
@@ -595,28 +578,3 @@ M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ans
 - `proxy.Server` 增加 pipeline 读写锁和快照读取，避免并发请求与热替换之间产生数据竞争。
 - 本轮验证通过：`go test ./internal/api/handler -count=1`、`go test ./internal/proxy -count=1`、`go test ./internal/cli -run "BuildPipeline|Service|Password|Username" -count=1`。
 - 仍未完成：策略决策 metadata 仍需要在日志详情 / AI 分析中更清晰展示；前端 `SiteProtectionConfig` 里的 `bot/ratelimit/acl/apisec` 布尔项与后端存储结构仍不一致，需要后续清理或补后端字段。
-
-## 2026-07-15 商业级运维语义与文档面收口
-
-- 检测预算失败模式已与 Web 攻击等级联动（open / observe / closed），站点可配置路径与参数放行列表。
-- 管理端站点详情可配置语义运维策略；事件详情展示预算耗尽、预算策略、语义跳过与异常分等运维信号。
-- 仓库 Markdown 策略：仅保留根目录 README.md、README_CN.md、progress.md；其它 .md 不再入库，避免敏感规划与运维笔记外泄。
-- 说明：历史提交中的 Markdown 仍可能存在于 git history，如需彻底清除应另做 history rewrite（本轮仅从当前树取消跟踪）。
-
-
-## 2026-07-15 语义引擎：筛选外部语料打磨
-
-- 参考本地 外部语料参考 做漏报补强，**未盲信**其 label：将读取 shadow/元数据/回环 health 等错误标记为 benign 的样本明确剔除，不反向削弱检测。
-- 已补：multipart 文件名扫描、PowerShell WebClient/TCPClient、data:// 与 RFI include、docker.sock、Mongo $eval/mapReduce 字段、ObjectSpace/classLoader SSTI、guessCategories 对 RCE/LFI 开窗。
-- 刻意不补：纯 DNS rebind 无内网地址 SSRF、损坏的 UTF-16 转义样本（语料非真实字节）。
-- 回归：go test ./internal/engine/semantic；精选 筛选子集 attack 检出约 94/96。
-
-
-## 2026-07-15 语义引擎：语料漏报补全 + RCE/SSTI/XXE 扩展 + IO 基准
-
-- 原 94/96 攻击漏报：DNS rebind（已补 rebind 标签与 rbndr/localtest 等助手域，仅 fetch sink）；真 UTF-16 XXE（BOM + charset=utf-16 + \xNN 转义）已补。
-- 剩余 损坏 UTF-16 样本 样本体为**损坏的混排转义**（非整洁 UTF-16），不是引擎能力缺口；自建真 UTF-16 回归已通过。
-- 原 13 个 “benign 被拦”：shadow/元数据/路径穿越等为 **外部语料错误标签**，保持拦截并加回归，不当作误报去放宽。
-- 扩展：node child_process、LD_PRELOAD、FreeMarker ObjectConstructor、XInclude、参数实体 OOB XXE；0day 向动态加载/反射原语（无 CVE 号）。
-- IO 向基准（本机）：FullPipeline ~520µs/op；PipelineWithRules ~226µs；PipelineConcurrent ~143µs；Analyzer ~28µs；HealthProbe ~1.2µs。
-

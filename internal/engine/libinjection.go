@@ -1,4 +1,4 @@
-// Package engine provides deep tokenization for SQL and XSS detection (libinjection-compatible).
+// Package engine provides libinjection-style deep tokenization for SQL and XSS detection.
 // Pure Go reimplementation — no CGO dependency. Based on libinjection's token fingerprint approach.
 package engine
 
@@ -216,7 +216,7 @@ func fingerprint(tokens string) string {
 	return fp.String()
 }
 
-// === XSS tokenizer (libinjection-compatible) ===
+// === XSS libinjection-style tokenizer ===
 
 const (
 	tkXSSNone     = 0

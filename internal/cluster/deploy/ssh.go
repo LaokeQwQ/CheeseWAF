@@ -31,7 +31,6 @@ type SSHDeploymentRequest struct {
 	identityFile   string
 	SaveCredential bool   `json:"save_credential"`
 	Action         string `json:"action,omitempty"`
-	TaskID         string `json:"-"`
 }
 
 type CheckResult struct {
@@ -421,7 +420,7 @@ func (r *SSHRunner) runRemoteInstall(ctx context.Context, req SSHDeploymentReque
 		return "", false, err
 	}
 	defer source.file.Close()
-	return r.runRemoteCommandWithInput(ctx, req, installCommand(source.size, source.sha256, req.TaskID), source.file)
+	return r.runRemoteCommandWithInput(ctx, req, installCommand(source.size, source.sha256), source.file)
 }
 
 func (r *SSHRunner) connect(ctx context.Context, req SSHDeploymentRequest) (*ssh.Client, error) {
@@ -519,16 +518,16 @@ func sshAgentSigners() ([]ssh.Signer, error) {
 
 func (r *SSHRunner) hostKeyCallback(req SSHDeploymentRequest) (ssh.HostKeyCallback, error) {
 	expected := normalizeHostKeyFingerprint(req.HostKeySHA256)
-	if expected == "" {
-		return nil, fmt.Errorf("ssh host key fingerprint confirmation is required")
+	if expected != "" {
+		return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			actual := normalizeHostKeyFingerprint(ssh.FingerprintSHA256(key))
+			if actual != expected {
+				return fmt.Errorf("ssh host key fingerprint mismatch")
+			}
+			return nil
+		}, nil
 	}
-	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-		actual := normalizeHostKeyFingerprint(ssh.FingerprintSHA256(key))
-		if actual != expected {
-			return fmt.Errorf("ssh host key fingerprint mismatch")
-		}
-		return nil
-	}, nil
+	return r.acceptNewKnownHostsCallback()
 }
 
 func (r *SSHRunner) acceptNewKnownHostsCallback() (ssh.HostKeyCallback, error) {
@@ -733,15 +732,11 @@ func openInstallBinary() (installBinarySource, error) {
 	}, nil
 }
 
-func installCommand(size int64, checksum string, taskID ...string) string {
+func installCommand(size int64, checksum string) string {
 	sizeValue := strconv.FormatInt(size, 10)
 	checksum = strings.ToLower(strings.TrimSpace(checksum))
 	if checksum == "" {
 		checksum = strings.Repeat("0", 64)
-	}
-	backupID := "manual"
-	if len(taskID) > 0 && safeTaskID(strings.TrimSpace(taskID[0])) {
-		backupID = strings.TrimSpace(taskID[0])
 	}
 	return strings.Join([]string{
 		"set -eu",
@@ -757,7 +752,7 @@ func installCommand(size int64, checksum string, taskID ...string) string {
 		"if [ \"$actual_sha\" != \"" + checksum + "\" ]; then echo uploaded checksum mismatch >&2; exit 1; fi",
 		"chmod 0755 \"$tmp\"",
 		"\"$tmp\" --version",
-		"if [ -f \"$target\" ]; then backup=\"${target}.bak." + backupID + "\"; test ! -e \"$backup\"; cp -p \"$target\" \"$backup\"; fi",
+		"if [ -f \"$target\" ]; then backup=\"${target}.bak.$(date -u +%Y%m%d%H%M%S)\"; cp -p \"$target\" \"$backup\"; fi",
 		"install -m 0755 \"$tmp\" \"$target\"",
 		"\"$target\" --version",
 		"rm -f \"$tmp\"",
@@ -765,18 +760,6 @@ func installCommand(size int64, checksum string, taskID ...string) string {
 		"echo CheeseWAF installed to \"$target\"",
 		"if [ -n \"$backup\" ]; then echo Previous binary backup: \"$backup\"; fi",
 	}, "; ")
-}
-
-func safeTaskID(value string) bool {
-	if len(value) < 8 || len(value) > 80 {
-		return false
-	}
-	for _, ch := range value {
-		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '-' {
-			return false
-		}
-	}
-	return true
 }
 
 func rollbackInstallCommand() string {

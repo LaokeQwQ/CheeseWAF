@@ -32,11 +32,8 @@ func (d *SSRFDetector) ID() string    { return "semantic.ssrf" }
 func (d *SSRFDetector) Name() string  { return "SSRF Semantic Detector" }
 func (d *SSRFDetector) Priority() int { return 350 }
 
-func (d *SSRFDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+func (d *SSRFDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
 	for _, candidate := range extractCandidates(reqCtx) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
 		if !ssrfFetchSink(candidate) {
 			continue
 		}
@@ -71,63 +68,22 @@ func ssrfDangerousTarget(payload string) (string, string, bool) {
 		if err != nil || parsed.Hostname() == "" {
 			continue
 		}
-		host := parsed.Hostname()
-		if isInternalHost(host) {
+		if isInternalHost(parsed.Hostname()) {
 			return rawURL, "SSRF target points to local or private network", true
-		}
-		// DNS rebinding helpers / explicit rebind labels on a fetch sink.
-		// FP-first: only hostname-shape evidence, never block arbitrary public domains.
-		if isDNSRebindHost(host) {
-			return rawURL, "SSRF target uses DNS-rebind helper host or rebind label", true
 		}
 	}
 	for _, host := range ssrfHostCandidates(payload) {
 		if isInternalHost(host) {
 			return host, "SSRF target host points to local or private network", true
 		}
-		if isDNSRebindHost(host) {
-			return host, "SSRF target host uses DNS-rebind helper or rebind label", true
-		}
 	}
 	return "", "", false
 }
 
-// isDNSRebindHost matches known rebind services and explicit "rebind" DNS labels.
-// Does NOT match ordinary public sites; requires multi-label host with rebind marker.
-func isDNSRebindHost(host string) bool {
-	host = strings.TrimSuffix(strings.Trim(strings.ToLower(host), "[]"), ".")
-	if host == "" || !strings.Contains(host, ".") {
-		return false
-	}
-	for _, suf := range []string{
-		".rbndr.us", ".1u.ms", ".rebind.network", ".localtest.me",
-		".vcap.me", ".lacolhost.com", ".localho.st",
-	} {
-		if strings.HasSuffix(host, suf) {
-			return true
-		}
-	}
-	// Labels used by rebind tooling (rebind.attacker.example.com, dnsrebind.x.y).
-	for _, label := range strings.Split(host, ".") {
-		switch label {
-		case "rebind", "dnsrebind", "rbndr", "dns-rebind":
-			return true
-		}
-	}
-	return false
-}
-
 func looksLikeSSRFTarget(payload string) bool {
 	for _, host := range ssrfHostCandidates(payload) {
-		if isInternalHost(host) || isDNSRebindHost(host) {
+		if isInternalHost(host) {
 			return true
-		}
-	}
-	for _, rawURL := range ssrfURLCandidates(payload) {
-		if parsed, err := url.Parse(rawURL); err == nil {
-			if h := parsed.Hostname(); isInternalHost(h) || isDNSRebindHost(h) {
-				return true
-			}
 		}
 	}
 	return false

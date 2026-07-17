@@ -21,10 +21,6 @@ type SelfLearningOptions struct {
 	Rules    storage.RuleStore
 	Language string
 	Now      func() time.Time
-	// CanWriteRules is checked before auto-applying rules. When it returns an
-	// error (cluster freeze, local config freeze, etc.), the run is forced to
-	// dry-run only so operators still get candidate reports without writes.
-	CanWriteRules func() error
 }
 
 type SelfLearningReport struct {
@@ -90,40 +86,22 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 	}
 	groups := groupSelfLearningEvents(entries)
 	candidates := deterministicSelfLearningCandidates(groups, cfg)
-	reviewOK := opts.Client == nil
 	if opts.Client != nil && len(candidates) > 0 {
 		if reviewed, err := reviewSelfLearningCandidates(ctx, opts.Client, opts.Language, candidates); err == nil {
 			candidates = mergeReviewedSelfLearningCandidates(candidates, reviewed)
-			reviewOK = true
-		} else {
-			// Fail closed: never auto-apply unreviewed candidates when LLM review is configured.
-			reviewOK = false
-		}
-	} else if opts.Client != nil {
-		reviewOK = true
-	}
-	autoApply := cfg.AutoApply && !cfg.DryRun && reviewOK
-	var writeBlocked string
-	if autoApply && opts.CanWriteRules != nil {
-		if err := opts.CanWriteRules(); err != nil {
-			autoApply = false
-			writeBlocked = strings.TrimSpace(err.Error())
-			if writeBlocked == "" {
-				writeBlocked = "rule writes are not allowed"
-			}
 		}
 	}
 	report := &SelfLearningReport{
 		StartedAt:   started,
-		DryRun:      !autoApply,
-		AutoApply:   autoApply,
+		DryRun:      cfg.DryRun || !cfg.AutoApply,
+		AutoApply:   cfg.AutoApply,
 		WindowStart: windowStart,
 		WindowEnd:   started,
 		Scanned:     len(entries),
 		Groups:      len(groups),
 		Candidates:  candidates,
 	}
-	if opts.Rules != nil && autoApply {
+	if opts.Rules != nil && cfg.AutoApply && !cfg.DryRun {
 		existing, _ := opts.Rules.ListRules(ctx, "")
 		seen := existingRulePatterns(existing)
 		for _, candidate := range candidates {
@@ -156,13 +134,6 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 		}
 	} else {
 		for _, candidate := range candidates {
-			if writeBlocked != "" {
-				report.Skipped = append(report.Skipped, SelfLearningSkip{
-					Candidate: candidate,
-					Reason:    "rule writes blocked: " + writeBlocked,
-				})
-				continue
-			}
 			if reason := validateSelfLearningCandidate(candidate, cfg, nil); reason != "" {
 				report.Skipped = append(report.Skipped, SelfLearningSkip{Candidate: candidate, Reason: reason})
 			}

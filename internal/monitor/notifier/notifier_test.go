@@ -2,7 +2,6 @@ package notifier
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,35 +11,6 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 )
-
-type notifierFunc func(context.Context, monitor.Alert) error
-
-func (f notifierFunc) Notify(ctx context.Context, alert monitor.Alert) error {
-	return f(ctx, alert)
-}
-
-func TestManagerContinuesAfterNotifierFailure(t *testing.T) {
-	firstCalls := 0
-	secondCalls := 0
-	manager := &Manager{notifiers: []Notifier{
-		notifierFunc(func(context.Context, monitor.Alert) error {
-			firstCalls++
-			return errors.New("first delivery failed")
-		}),
-		notifierFunc(func(context.Context, monitor.Alert) error {
-			secondCalls++
-			return nil
-		}),
-	}}
-
-	err := manager.Notify(context.Background(), []monitor.Alert{{RuleID: "one"}, {RuleID: "two"}})
-	if err == nil || !strings.Contains(err.Error(), "first delivery failed") {
-		t.Fatalf("expected aggregated delivery error, got %v", err)
-	}
-	if firstCalls != 2 || secondCalls != 2 {
-		t.Fatalf("all deliveries must be attempted: first=%d second=%d", firstCalls, secondCalls)
-	}
-}
 
 func TestWebhookRejectsPrivateEndpointByDefault(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

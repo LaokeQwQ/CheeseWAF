@@ -2,17 +2,14 @@ package setup
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
@@ -40,8 +37,6 @@ type CompleteOptions struct {
 	Paths              DefaultPaths
 	Config             *config.Config
 	Store              storage.Store
-	markComplete       func(string) error
-	persistUser        func(context.Context, storage.Store, *storage.User, bool) error
 }
 
 type CompleteResult struct {
@@ -62,17 +57,7 @@ func MarkComplete(dataDir string) error {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
-	tmpPath := lockPath + ".partial"
-	if err := os.WriteFile(tmpPath, []byte("setup completed\n"), 0o640); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, lockPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	// Seed CLI language preference from the host locale once at install time.
-	_ = clilang.SaveInstallDefault(dataDir, "")
-	return nil
+	return os.WriteFile(lockPath, []byte("setup completed\n"), 0o644)
 }
 
 func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPayload) (*CompleteResult, error) {
@@ -102,7 +87,7 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 	if err != nil {
 		return nil, err
 	}
-	if len(users) > 1 || (len(users) == 1 && !strings.EqualFold(users[0].Username, payload.Username)) {
+	if len(users) > 0 {
 		return nil, ErrSetupAlreadyComplete
 	}
 
@@ -110,25 +95,6 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 	if err != nil {
 		return nil, err
 	}
-	fileState, err := snapshotSetupFiles(paths)
-	if err != nil {
-		return nil, err
-	}
-	previousConfig, err := cloneSetupConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	committed := false
-	var previousUser *storage.User
-	if len(users) == 1 {
-		copy := users[0]
-		previousUser = &copy
-	}
-	defer func() {
-		if !committed {
-			*cfg = *previousConfig
-		}
-	}()
 	if err := applySetupConfig(cfg, paths, payload); err != nil {
 		return nil, err
 	}
@@ -148,142 +114,13 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 		PasswordHash: string(hash),
 		Role:         "admin",
 	}
-	persistUser := opts.persistUser
-	if persistUser == nil {
-		persistUser = func(ctx context.Context, store storage.Store, user *storage.User, update bool) error {
-			if update {
-				return store.UpdateUser(ctx, user)
-			}
-			return store.CreateUser(ctx, user)
-		}
+	if err := store.CreateUser(ctx, user); err != nil {
+		return nil, err
 	}
-	if len(users) == 1 {
-		user.ID = users[0].ID
-		if err := persistUser(ctx, store, user, true); err != nil {
-			return nil, rollbackSetup(ctx, store, cfg, previousConfig, previousUser, nil, fileState, err)
-		}
-	} else if err := persistUser(ctx, store, user, false); err != nil {
-		return nil, rollbackSetup(ctx, store, cfg, previousConfig, nil, nil, fileState, err)
+	if err := MarkComplete(paths.DataDir); err != nil {
+		return nil, err
 	}
-	markComplete := opts.markComplete
-	if markComplete == nil {
-		markComplete = MarkComplete
-	}
-	if err := markComplete(paths.DataDir); err != nil {
-		return nil, rollbackSetup(ctx, store, cfg, previousConfig, previousUser, user, fileState, err)
-	}
-	committed = true
 	return &CompleteResult{User: user, Config: cfg, Paths: paths}, nil
-}
-
-type setupFileSnapshot struct {
-	path   string
-	exists bool
-	data   []byte
-	mode   fs.FileMode
-}
-
-func snapshotSetupFiles(paths DefaultPaths) ([]setupFileSnapshot, error) {
-	files := []string{
-		paths.ConfigFile,
-		paths.CertFile,
-		paths.KeyFile,
-		paths.CAFile,
-		paths.CAKeyFile,
-		filepath.Join(paths.DataDir, SetupLockFile),
-		filepath.Join(paths.DataDir, SetupLockFile) + ".partial",
-	}
-	snapshots := make([]setupFileSnapshot, 0, len(files))
-	seen := make(map[string]struct{}, len(files))
-	for _, path := range files {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			continue
-		}
-		clean := filepath.Clean(path)
-		if _, ok := seen[clean]; ok {
-			continue
-		}
-		seen[clean] = struct{}{}
-		info, err := os.Stat(clean)
-		if errors.Is(err, os.ErrNotExist) {
-			snapshots = append(snapshots, setupFileSnapshot{path: clean})
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("snapshot setup file %s: %w", clean, err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("snapshot setup file %s: not a regular file", clean)
-		}
-		data, err := os.ReadFile(clean)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot setup file %s: %w", clean, err)
-		}
-		snapshots = append(snapshots, setupFileSnapshot{path: clean, exists: true, data: data, mode: info.Mode().Perm()})
-	}
-	return snapshots, nil
-}
-
-func restoreSetupFiles(snapshots []setupFileSnapshot) error {
-	var restoreErr error
-	for index := len(snapshots) - 1; index >= 0; index-- {
-		snapshot := snapshots[index]
-		if !snapshot.exists {
-			if err := os.Remove(snapshot.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				restoreErr = errors.Join(restoreErr, fmt.Errorf("remove setup file %s: %w", snapshot.path, err))
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(snapshot.path), 0o750); err != nil {
-			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore setup directory %s: %w", filepath.Dir(snapshot.path), err))
-			continue
-		}
-		tmp := snapshot.path + ".rollback"
-		if err := os.WriteFile(tmp, snapshot.data, snapshot.mode); err != nil {
-			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore setup file %s: %w", snapshot.path, err))
-			continue
-		}
-		if err := os.Rename(tmp, snapshot.path); err != nil {
-			_ = os.Remove(tmp)
-			restoreErr = errors.Join(restoreErr, fmt.Errorf("commit restored setup file %s: %w", snapshot.path, err))
-		}
-	}
-	return restoreErr
-}
-
-func rollbackSetup(ctx context.Context, store storage.Store, cfg, previousConfig *config.Config, previousUser, persistedUser *storage.User, files []setupFileSnapshot, cause error) error {
-	*cfg = *previousConfig
-	var rollbackErr error
-	if previousUser != nil {
-		copy := *previousUser
-		if err := store.UpdateUser(ctx, &copy); err != nil {
-			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore administrator: %w", err))
-		}
-	} else if persistedUser != nil && persistedUser.ID != "" {
-		if err := store.DeleteUser(ctx, persistedUser.ID); err != nil {
-			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove newly created administrator: %w", err))
-		}
-	}
-	if err := restoreSetupFiles(files); err != nil {
-		rollbackErr = errors.Join(rollbackErr, err)
-	}
-	if rollbackErr != nil {
-		return errors.Join(cause, fmt.Errorf("setup rollback failed: %w", rollbackErr))
-	}
-	return cause
-}
-
-func cloneSetupConfig(cfg *config.Config) (*config.Config, error) {
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-	var cloned config.Config
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		return nil, err
-	}
-	return &cloned, nil
 }
 
 func SetupErrorStatus(err error) int {

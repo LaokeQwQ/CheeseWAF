@@ -52,7 +52,7 @@ func TestIssuerRunsACMESHPipeline(t *testing.T) {
 		ACMESHPath:   "/usr/local/bin/acme.sh",
 		Home:         t.TempDir(),
 		CertDir:      t.TempDir(),
-		ReloadCmd:    "/usr/bin/systemctl reload cheesewaf",
+		ReloadCmd:    "systemctl reload cheesewaf",
 		AutoRenew:    true,
 		Notify:       true,
 	})
@@ -74,7 +74,7 @@ func TestIssuerRunsACMESHPipeline(t *testing.T) {
 		ACMESHPath:   "/usr/local/bin/acme.sh",
 		Home:         t.TempDir(),
 		CertDir:      t.TempDir(),
-		ReloadCmd:    "/usr/bin/systemctl reload cheesewaf",
+		ReloadCmd:    "systemctl reload cheesewaf",
 		AutoRenew:    true,
 		Notify:       true,
 	})
@@ -86,7 +86,7 @@ func TestIssuerRunsACMESHPipeline(t *testing.T) {
 	}
 	assertArgs(t, runner.commands[0].args, "--register-account", "-m", "ops@example.com", "--server", "zerossl")
 	assertArgs(t, runner.commands[1].args, "--issue", "--dns", "dns_cf", "--server", "zerossl", "--keylength", "ec-384", "-d", "example.com", "-d", "www.example.com")
-	assertArgs(t, runner.commands[2].args, "--install-cert", "-d", "example.com", "--key-file", result.KeyFile, "--fullchain-file", result.Fullchain, "--reloadcmd", "/usr/bin/systemctl reload cheesewaf")
+	assertArgs(t, runner.commands[2].args, "--install-cert", "-d", "example.com", "--key-file", result.KeyFile, "--fullchain-file", result.Fullchain, "--reloadcmd", "systemctl reload cheesewaf")
 	if !containsString(runner.commands[1].env, "CF_TOKEN=secret-token") {
 		t.Fatalf("dns env was not passed to acme.sh: %+v", runner.commands[1].env)
 	}

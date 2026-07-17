@@ -60,24 +60,8 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS notifications (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'info',
-  title TEXT NOT NULL,
-  message TEXT NOT NULL DEFAULT '',
-  target TEXT NOT NULL DEFAULT '',
-  is_read INTEGER NOT NULL DEFAULT 0,
-  is_pinned INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
 CREATE INDEX IF NOT EXISTS idx_rules_site_id ON rules(site_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_user_id ON admin_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_notifications_user_order ON notifications(user_id, is_pinned DESC, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);
 `

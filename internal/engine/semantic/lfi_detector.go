@@ -12,8 +12,7 @@ import (
 var lfiPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:\.\.[/\\])+`),
 	regexp.MustCompile(`(?i)(?:\.\.\.\.[/\\]{2,})+`),
-	// Encoded traversal only — bare %2f/%5c are normal URL encoding and must not match.
-	regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%25c0%25af|%00`),
+	regexp.MustCompile(`(?i)(?:%25)*%2e(?:%25)*%2e|(?:%25)*%2f|(?:%25)*%5c|%c0%af|%25c0%25af|%00`),
 	regexp.MustCompile(`(?i)(?:/etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|/proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|boot\.ini|win\.ini|windows[/\\]win\.ini|winnt[/\\]system32[/\\]cmd\.exe)`),
 	regexp.MustCompile(`(?i)(?:php|zip|data|file)://`),
 	regexp.MustCompile(`(?i)(?:WEB-INF/web\.xml|META-INF/MANIFEST\.MF)`),
