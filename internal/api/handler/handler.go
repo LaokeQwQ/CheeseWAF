@@ -12,7 +12,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -285,11 +284,10 @@ func initializeCAPTCHAAssets(cfg *config.Config, secret string, injected captcha
 		return store, refs, err
 	}
 	if strings.EqualFold(cfg.CAPTCHAAssets.Backend, "s3") {
-		keyPath, err := resolveOperatorFilePath(cfg.CAPTCHAAssets.S3.MetadataKeyFile, dataRoot)
-		if err != nil {
-			return nil, refs, fmt.Errorf("S3 metadata integrity key path: %w", err)
+		if dataRoot == "" {
+			return nil, refs, fmt.Errorf("setup.data_dir is required for S3 captcha asset secrets")
 		}
-		metadataKey, err := os.ReadFile(keyPath)
+		metadataKey, err := fsguard.ReadFileUnderRoot(dataRoot, cfg.CAPTCHAAssets.S3.MetadataKeyFile, 4096)
 		if err != nil {
 			return nil, refs, fmt.Errorf("read S3 metadata integrity key: %w", err)
 		}
@@ -297,12 +295,8 @@ func initializeCAPTCHAAssets(cfg *config.Config, secret string, injected captcha
 		if len(metadataKey) < 32 || len(metadataKey) > 4096 {
 			return nil, refs, fmt.Errorf("S3 metadata integrity key must contain between 32 and 4096 bytes")
 		}
-		credPath, err := resolveOperatorFilePath(cfg.CAPTCHAAssets.S3.CredentialFile, dataRoot)
-		if err != nil {
-			return nil, refs, fmt.Errorf("S3 credential file path: %w", err)
-		}
 		s3cfg := captchaassets.S3Config{Endpoint: cfg.CAPTCHAAssets.S3.Endpoint, Region: cfg.CAPTCHAAssets.S3.Region, Bucket: cfg.CAPTCHAAssets.S3.Bucket, Prefix: cfg.CAPTCHAAssets.S3.Prefix, PathStyle: cfg.CAPTCHAAssets.S3.PathStyle, UseTLS: cfg.CAPTCHAAssets.S3.UseTLS, AllowPrivateEndpoint: cfg.CAPTCHAAssets.S3.AllowPrivateEndpoint, RequestTimeout: cfg.CAPTCHAAssets.S3.RequestTimeout, MetadataKey: metadataKey}
-		client, err := captchaassets.NewHTTPObjectClient(s3cfg, credPath)
+		client, err := captchaassets.NewHTTPObjectClientUnderRoot(s3cfg, dataRoot, cfg.CAPTCHAAssets.S3.CredentialFile)
 		if err != nil {
 			return nil, refs, err
 		}
@@ -313,22 +307,6 @@ func initializeCAPTCHAAssets(cfg *config.Config, secret string, injected captcha
 }
 
 var initializeCAPTCHAAssetStore = initializeCAPTCHAAssets
-
-// resolveOperatorFilePath prefers paths under dataRoot when set, otherwise requires
-// a cleaned absolute path. Prevents request-adjacent traversal while still allowing
-// operators to place keys outside the data dir via absolute paths.
-func resolveOperatorFilePath(path, dataRoot string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", fmt.Errorf("path is required")
-	}
-	if dataRoot != "" {
-		if p, err := fsguard.SafeConfigPathUnderRoot(path, dataRoot); err == nil {
-			return p, nil
-		}
-	}
-	return fsguard.SafeConfigPath(path)
-}
 
 func defaultApprovalStorePath(cfg *config.Config) string {
 	runtimeDir := ""

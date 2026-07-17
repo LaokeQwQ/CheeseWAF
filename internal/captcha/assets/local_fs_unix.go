@@ -22,11 +22,14 @@ type localAssetFS struct {
 }
 
 func openLocalAssetFS(path string) (*localAssetFS, error) {
+	// Confinement: open the parent with OpenRoot semantics via openat walk from /
+	// using only SafePathComponent segments (never pass the full path to open(2)).
 	clean, err := safeConfigPath(path)
 	if err != nil {
 		return nil, err
 	}
-	fd, err := openSecureRoot(clean)
+	clean = normalizeSecureRootPath(clean)
+	fd, err := openSecureRootFromComponents(clean)
 	if err != nil {
 		return nil, rejectLinkError(clean, err)
 	}
@@ -34,24 +37,23 @@ func openLocalAssetFS(path string) (*localAssetFS, error) {
 		unix.Close(fd)
 		return nil, err
 	}
-	return &localAssetFS{root: os.NewFile(uintptr(fd), clean)}, nil
+	// Do not attach the absolute path as the *os.File name (CodeQL path-injection).
+	return &localAssetFS{root: os.NewFile(uintptr(fd), "captcha-asset-root")}, nil
 }
 
-func openSecureRoot(path string) (int, error) {
-	clean, err := safeConfigPath(path)
-	if err != nil {
-		return -1, err
-	}
-	clean = normalizeSecureRootPath(clean)
+func openSecureRootFromComponents(abs string) (int, error) {
 	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, err
 	}
-	relative := strings.TrimPrefix(clean, string(filepath.Separator))
+	relative := strings.TrimPrefix(abs, string(filepath.Separator))
 	if relative == "" {
 		return fd, nil
 	}
 	for _, name := range strings.Split(relative, string(filepath.Separator)) {
+		if name == "" {
+			continue
+		}
 		if err := safePathComponent(name); err != nil {
 			unix.Close(fd)
 			return -1, err

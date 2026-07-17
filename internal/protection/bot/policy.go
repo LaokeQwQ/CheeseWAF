@@ -471,7 +471,8 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		if r.Method == http.MethodPost {
 			status = http.StatusSeeOther
 		}
-		http.Redirect(w, r, safeRelativeRedirect(returnURL), status)
+		// SanitizeLocalRedirect applies CodeQL's second-character redirect rule.
+		http.Redirect(w, r, fsguard.SanitizeLocalRedirect(returnURL), status)
 		return
 	}
 	if submittedType != "" && p.usesBehaviorChallenge(selection, clientIP, site) {
@@ -2339,7 +2340,7 @@ func safeChallengeReturnURL(r *http.Request) string {
 }
 
 func safeRelativeRedirect(raw string) string {
-	return fsguard.SafeRelativeRedirect(raw)
+	return fsguard.SanitizeLocalRedirect(raw)
 }
 
 func challengeRequestForReturnURL(r *http.Request, returnURL string) *http.Request {
