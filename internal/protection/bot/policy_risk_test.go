@@ -291,26 +291,26 @@ func TestAllowedUserAgentUsesTokenMatchNotSubstring(t *testing.T) {
 	}
 }
 
-func TestBehaviorOwnerCookieHonorsSecureFlag(t *testing.T) {
+func TestBehaviorOwnerCookieAlwaysSecureHttpOnly(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{
 		Enabled: true, CAPTCHA: true, CAPTCHAType: "shape_slider", Secret: "test-secret", CookieName: "cw_clearance",
 	})
-	plain := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
-	_, cookie, err := policy.behaviorOwner(plain, "example.test", true, cookieSecure(plain))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cookie.Secure {
-		t.Fatal("plain HTTP without proxy headers must not force Secure owner cookie")
-	}
-	proxied := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
-	proxied.Header.Set("X-Forwarded-Proto", "https")
-	_, cookie, err = policy.behaviorOwner(proxied, "example.test", true, cookieSecure(proxied))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cookie.Secure || !cookie.HttpOnly {
-		t.Fatalf("expected Secure HttpOnly owner cookie behind HTTPS proxy, got %#v", cookie)
+	// Clearance cookies are always Secure+HttpOnly (TLS is required for browser storage).
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "http://example.test/", nil),
+		func() *http.Request {
+			r := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+			r.Header.Set("X-Forwarded-Proto", "https")
+			return r
+		}(),
+	} {
+		_, cookie, err := policy.behaviorOwner(req, "example.test", true, cookieSecure(req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cookie.Secure || !cookie.HttpOnly {
+			t.Fatalf("expected Secure HttpOnly owner cookie, got %#v", cookie)
+		}
 	}
 }
 

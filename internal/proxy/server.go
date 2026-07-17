@@ -16,6 +16,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/edge"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/response"
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/acl"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/bot"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
@@ -424,7 +425,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
-		http.Redirect(w, r, r.URL.String(), code)
+		// Apply already confines Path. CodeQL barrier: len>1 && leading '/' && second not '/'|'\\'.
+		loc := fsguard.SanitizeLocalRedirect(r.URL.RequestURI())
+		if len(loc) > 1 && loc[0] == '/' && loc[1] != '/' && loc[1] != '\\' {
+			http.Redirect(w, r, loc, code)
+		} else {
+			http.Redirect(w, r, "/", code)
+		}
 		s.writeLog(r.Context(), reqCtx, "redirect", code, start, nil)
 		return
 	}

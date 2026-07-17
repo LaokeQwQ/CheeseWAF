@@ -69,10 +69,15 @@ func TestSSHRunnerRejectsUnknownHostKeyByDefault(t *testing.T) {
 	}
 }
 
-func TestInstallBackupUsesTaskUUID(t *testing.T) {
-	command := installCommand(3, strings.Repeat("a", 64), "deploy-12345678-1234-1234-1234-123456789abc")
-	if !strings.Contains(command, ".bak.deploy-12345678-1234-1234-1234-123456789abc") {
-		t.Fatalf("backup is not task-owned: %s", command)
+func TestInstallBackupUsesChecksumPrefixNotTaskID(t *testing.T) {
+	sum := strings.Repeat("a", 64)
+	command := installCommand(3, sum, "deploy-12345678-1234-1234-1234-123456789abc")
+	// Backup names use a hex prefix of the local binary checksum only — never operator task IDs.
+	if !strings.Contains(command, ".bak."+sum[:16]) {
+		t.Fatalf("backup must use checksum prefix: %s", command)
+	}
+	if strings.Contains(command, "deploy-12345678") {
+		t.Fatal("install backup must not embed operator task IDs into the remote shell")
 	}
 	if strings.Contains(command, "date -u +%Y%m%d%H%M%S") {
 		t.Fatal("install backup must not use a timestamp-only name")
