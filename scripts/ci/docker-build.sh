@@ -49,21 +49,40 @@ host_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 
   exit 1
 }
 
+# Match Dockerfile CHEESEWAF_UID/GID (10001). Empty root-owned tmpfs made
+# entrypoint "mkdir .../config: Permission denied", container exited, and
+# HostPort was empty (surfaced as a misleading port-mapping error).
+cheesewaf_uid=10001
+cheesewaf_gid=10001
+
 docker run --detach \
   --name "$container_name" \
   --read-only \
   --cap-drop ALL \
   --security-opt no-new-privileges \
-  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \
-  --tmpfs /var/lib/cheesewaf:rw,nosuid,nodev,size=64m \
-  --tmpfs /var/log/cheesewaf:rw,noexec,nosuid,nodev,size=32m \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
+  --tmpfs "/var/lib/cheesewaf:rw,nosuid,nodev,size=64m,uid=${cheesewaf_uid},gid=${cheesewaf_gid},mode=0755" \
+  --tmpfs "/var/log/cheesewaf:rw,noexec,nosuid,nodev,size=32m,uid=${cheesewaf_uid},gid=${cheesewaf_gid},mode=0755" \
   --publish "127.0.0.1:${host_port}:9443/tcp" \
   "$image_tag" >/dev/null
 
+# Give the entrypoint a moment; fail fast if it dies on startup (permissions etc.).
+sleep 1
+if ! docker inspect --format '{{.State.Running}}' "$container_name" | grep -qx true; then
+  docker logs "$container_name" >&2 || true
+  echo "::error::container exited immediately during smoke start" >&2
+  exit 1
+fi
+
 mapped_port="$(docker inspect --format '{{with index .NetworkSettings.Ports "9443/tcp"}}{{(index . 0).HostPort}}{{end}}' "$container_name")"
+[[ -n "$mapped_port" ]] || {
+  docker logs "$container_name" >&2 || true
+  echo "::error::container did not publish admin port 9443/tcp (empty HostPort)" >&2
+  exit 1
+}
 [[ "$mapped_port" == "$host_port" ]] || {
   docker logs "$container_name" >&2 || true
-  echo "::error::container admin port mapping does not match the reserved loopback port" >&2
+  echo "::error::container admin port mapping does not match the reserved loopback port (want ${host_port}, got ${mapped_port})" >&2
   exit 1
 }
 
