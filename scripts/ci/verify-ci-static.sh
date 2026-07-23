@@ -99,6 +99,10 @@ grep -Fq -- '--read-only' scripts/ci/docker-build.sh ||
   fail "container smoke must use a read-only root filesystem"
 grep -Fq -- '--cap-drop ALL' scripts/ci/docker-build.sh ||
   fail "container smoke must drop Linux capabilities"
+grep -Fq 'uid=${cheesewaf_uid},gid=${cheesewaf_gid}' scripts/ci/docker-build.sh ||
+  fail "container smoke tmpfs must be owned by the non-root runtime UID/GID"
+grep -Fq 'CHEESEWAF_UID=10001' deploy/docker/Dockerfile ||
+  fail "runtime image must pin CHEESEWAF_UID=10001 for tmpfs ownership"
 grep -Fq 'JavaScript asset returned unexpected MIME type' scripts/ci/docker-build.sh ||
   fail "container smoke must verify static asset MIME"
 
