@@ -33,8 +33,18 @@ COPY web/types ./types
 RUN npm run build
 
 FROM ${RUNTIME_IMAGE}
-RUN useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf \
-  && mkdir -p /var/lib/cheesewaf /var/log/cheesewaf /usr/share/cheesewaf/config /usr/share/cheesewaf/web \
+# Pin UID/GID so CI tmpfs mounts and compose can match the non-root runtime user.
+ARG CHEESEWAF_UID=10001
+ARG CHEESEWAF_GID=10001
+RUN groupadd --system --gid "${CHEESEWAF_GID}" cheesewaf \
+  && useradd --system --uid "${CHEESEWAF_UID}" --gid cheesewaf --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf \
+  && mkdir -p \
+    /var/lib/cheesewaf/config \
+    /var/lib/cheesewaf/run \
+    /var/lib/cheesewaf/certs \
+    /var/log/cheesewaf \
+    /usr/share/cheesewaf/config \
+    /usr/share/cheesewaf/web \
   && chown -R cheesewaf:cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 COPY --from=backend /out/cheesewaf /usr/local/bin/cheesewaf
 COPY --from=web /src/web/dist/ /usr/share/cheesewaf/web/

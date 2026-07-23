@@ -5,11 +5,10 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Eye, Search } from 'lucide-react';
 import { fetchLogs } from '../../api/client';
-import type { LogEntry } from '../../types/api';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
+import { filterLogs, paginate, type LogViewMode } from './logsLogic';
 
 const PAGE_SIZE = 8;
-type LogViewMode = 'security' | 'access' | 'all';
 
 export default function LogsPage() {
   const { t } = useTranslation();
@@ -24,27 +23,11 @@ export default function LogsPage() {
     refetchInterval: 8_000,
     retry: false,
   });
-  const logs = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    const entries = (data?.items ?? []).filter((entry) => matchViewMode(entry, viewMode));
-    if (!needle) {
-      return entries;
-    }
-    return entries.filter((entry) => [
-      entry.trace_id,
-      entry.client_ip,
-      entry.uri,
-      entry.category,
-      entry.action,
-      entry.message,
-      entry.country,
-      formatLogLocation(entry, t),
-    ].some((value) => value?.toLowerCase().includes(needle)));
-  }, [data?.items, search, t, viewMode]);
-  const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE));
-  const pageItems = logs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const pageStart = logs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-  const pageEnd = Math.min(page * PAGE_SIZE, logs.length);
+  const logs = useMemo(
+    () => filterLogs(data?.items, { search, viewMode, formatLocation: (entry) => formatLogLocation(entry, t) }),
+    [data?.items, search, t, viewMode],
+  );
+  const { totalPages, pageItems, pageStart, pageEnd } = paginate(logs, page, PAGE_SIZE);
   const title = viewMode === 'access' ? t('logs.accessTitle') : t('logs.title');
   const subtitle = viewMode === 'access'
     ? t('logs.accessSubtitle')
@@ -184,40 +167,6 @@ function formatTime(value: string) {
     return value || '-';
   }
   return date.toLocaleString();
-}
-
-function isSecurityEvent(entry: LogEntry) {
-  const action = String(entry.action ?? '').toLowerCase();
-  const status = Number(entry.status_code ?? 0);
-  return Boolean(
-    entry.category
-      || entry.detector_id
-      || entry.severity
-      || action === 'block'
-      || action === 'challenge'
-      || action === 'log'
-      || action === 'monitor'
-      || status === 403
-      || status === 429,
-  );
-}
-
-function isAccessLog(entry: LogEntry) {
-  if (isSecurityEvent(entry)) {
-    return false;
-  }
-  const action = String(entry.action ?? '').toLowerCase();
-  return action === 'pass' || action === 'cache_hit' || action === 'redirect' || action === '';
-}
-
-function matchViewMode(entry: LogEntry, mode: LogViewMode) {
-  if (mode === 'all') {
-    return true;
-  }
-  if (mode === 'access') {
-    return isAccessLog(entry);
-  }
-  return isSecurityEvent(entry);
 }
 
 function actionTagColor(action: string) {
