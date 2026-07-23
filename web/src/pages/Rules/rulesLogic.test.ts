@@ -16,8 +16,8 @@ describe('rulesLogic', () => {
     expect(templates.length).toBeGreaterThanOrEqual(10);
     const sqli = templates.find((item) => item.key === 'sql-union');
     expect(sqli?.pattern).toMatch(/union/i);
-    expect(testPattern(sqli!.pattern, "1' UNION SELECT 1 FROM users").matched).toBe(true);
-    expect(testPattern(sqli!.pattern, '/health').matched).toBe(false);
+    expect(testPattern(sqli!.pattern, "1' UNION SELECT 1 FROM users")).toEqual({ ok: true, matched: true });
+    expect(testPattern(sqli!.pattern, '/health')).toEqual({ ok: true, matched: false });
   });
 
   it('compiles inline case-insensitive flags', () => {
