@@ -11,11 +11,11 @@ import (
 
 func TestExecutableNameBusyBox(t *testing.T) {
 	cases := map[string]string{
-		"cheesewaf":                       "cheesewaf",
-		"cheesewaf.exe":                   "cheesewaf",
+		"cheesewaf":                        "cheesewaf",
+		"cheesewaf.exe":                    "cheesewaf",
 		`C:\Program Files\bin\waf-cli.exe`: "waf-cli",
-		"/usr/local/bin/waf-cli":          "waf-cli",
-		"./cheesewaf":                     "cheesewaf",
+		"/usr/local/bin/waf-cli":           "waf-cli",
+		"./cheesewaf":                      "cheesewaf",
 	}
 	for in, want := range cases {
 		if got := executableName(in); got != want {
