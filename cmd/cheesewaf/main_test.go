@@ -11,11 +11,15 @@ import (
 
 func TestExecutableNameBusyBox(t *testing.T) {
 	cases := map[string]string{
-		"cheesewaf":                        "cheesewaf",
-		"cheesewaf.exe":                    "cheesewaf",
-		`C:\Program Files\bin\waf-cli.exe`: "waf-cli",
-		"/usr/local/bin/waf-cli":           "waf-cli",
-		"./cheesewaf":                      "cheesewaf",
+		"cheesewaf":              "cheesewaf",
+		"cheesewaf.exe":          "cheesewaf",
+		"/usr/local/bin/waf-cli": "waf-cli",
+		"./cheesewaf":            "cheesewaf",
+	}
+	// filepath.Base is OS-specific: only assert Windows-separator paths on Windows.
+	if runtime.GOOS == "windows" {
+		cases[`C:\Program Files\bin\waf-cli.exe`] = "waf-cli"
+		cases[`C:\tools\cheesewaf.exe`] = "cheesewaf"
 	}
 	for in, want := range cases {
 		if got := executableName(in); got != want {
