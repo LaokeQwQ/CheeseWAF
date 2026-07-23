@@ -4,13 +4,17 @@ package cli
 
 import (
 	"errors"
+	"math"
 	"os"
 
 	"golang.org/x/sys/windows"
 )
 
 func processRunning(pid int) (bool, error) {
-	if pid <= 0 {
+	// Windows OpenProcess takes a DWORD (uint32). Reject non-positive and
+	// values that would truncate on the architecture-dependent int → uint32 cast
+	// (CodeQL go/incorrect-integer-conversion; source is often strconv.Atoi on pid files).
+	if pid <= 0 || pid > math.MaxUint32 {
 		return false, nil
 	}
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
