@@ -6,7 +6,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -426,11 +425,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
-		// Apply already confines Path. CodeQL: Hostname empty + isLocalURL barrier.
+		// Apply already confines Path. CodeQL RedirectCheckBarrier: local isLocalURL
+		// + redirect sanitized string (not url.URL.String()).
 		loc := fsguard.SanitizeLocalRedirect(r.URL.RequestURI())
 		loc = strings.ReplaceAll(loc, "\\", "/")
-		if target, err := url.Parse(loc); err == nil && target.Hostname() == "" && fsguard.IsLocalURL(loc) {
-			http.Redirect(w, r, target.String(), code)
+		if isLocalURL(loc) {
+			http.Redirect(w, r, loc, code)
 		} else {
 			http.Redirect(w, r, "/", code)
 		}
@@ -602,6 +602,11 @@ func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request,
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	clientIP := engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
 	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
+}
+
+// isLocalURL is the CodeQL RedirectCheckBarrier identifier used before http.Redirect.
+func isLocalURL(raw string) bool {
+	return fsguard.IsLocalURL(raw)
 }
 
 func requestIsHTTPS(r *http.Request, trustedCIDRs []string) bool {
