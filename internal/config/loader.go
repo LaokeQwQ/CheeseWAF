@@ -192,7 +192,10 @@ func Default() Config {
 				CAPTCHAFailureWindow:       10 * time.Minute,
 				CAPTCHABlockDuration:       15 * time.Minute,
 				CAPTCHAEscalationTypes:     []string{"pow", "shape_slider", "text_click"},
-				CAPTCHABindingMode:         "ip_prefix_ua",
+				// Prefer strict IP+UA binding by default so clearance cookies cannot
+				// be shared across a /24 (campus/VPC NAT). Operators may still set
+				// captcha_binding_mode: ip_prefix_ua when needed.
+				CAPTCHABindingMode:         "strict_ip_ua",
 				CAPTCHAPolicyVersion:       "1",
 				CAPTCHAMaxAttempts:         5,
 				ImageCAPTCHALength:         6,

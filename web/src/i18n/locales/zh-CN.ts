@@ -1910,6 +1910,7 @@ const zhCN = {
     account: '管理员账号',
     network: '监听与证书',
     complete: '确认',
+    failed: '初始化失败，请检查表单后重试。',
     username: '用户名',
     password: '密码',
     adminListen: '管理端监听',

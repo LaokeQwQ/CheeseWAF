@@ -1910,6 +1910,7 @@ const enUS = {
     account: 'Admin Account',
     network: 'Listener & Certificate',
     complete: 'Confirm',
+    failed: 'Setup failed. Check the form and try again.',
     username: 'Username',
     password: 'Password',
     adminListen: 'Admin Listener',

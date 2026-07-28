@@ -288,11 +288,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
-		s.handleBotBehaviorVerify(w, r, site)
-		return
-	}
-
 	// Protocol enforcement: HTTP smuggling, chunked encoding abuse, header injection
 	if violation := engine.DetectProtocolViolations(r); violation != nil {
 		s.block(w, &engine.RequestContext{
@@ -308,6 +303,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	maxRequestBody := site.WAF.Performance.MaxBodyBytes
 	if maxRequestBody <= 0 {
 		maxRequestBody = 8 << 20
+	}
+	// Behavior verify still needs a small body; enforce a tight cap before shared body read.
+	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
+		const maxVerifyBody = int64(64 << 10)
+		if r.ContentLength > maxVerifyBody {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if maxRequestBody > maxVerifyBody {
+			maxRequestBody = maxVerifyBody
+		}
 	}
 	reqCtx, err := engine.NewRequestContextWithLimits(r, site.ID, site.WAF.AccessControl.TrustedCIDRs, maxRequestBody)
 	if err != nil {
@@ -333,6 +339,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.geoip.Blocked(reqCtx.ClientIP) && !ipAllowed {
 		s.block(w, reqCtx, "geoip", "GeoIP country is blocked", http.StatusForbidden, start)
+		return
+	}
+	// Behavior verify runs after host/path/protocol/IP/geoip gates so blocked clients
+	// cannot burn challenge capacity. Keep before global rate-limit so solvers can finish.
+	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
+		s.handleBotBehaviorVerify(w, r, site, reqCtx)
 		return
 	}
 	if policy.ThreatIntel != config.ProtectionLevelOff && !ipAllowed {
@@ -587,20 +599,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 const botBehaviorVerifyPath = "/.well-known/cheesewaf/challenge/v1/verify"
 
-func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request, site config.SiteConfig) {
+func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request, site config.SiteConfig, reqCtx *engine.RequestContext) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	const maxBody = int64(64 << 10)
-	if r.ContentLength > maxBody {
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		return
+	clientIP := ""
+	if reqCtx != nil {
+		clientIP = reqCtx.ClientIP
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-	clientIP := engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+	if clientIP == "" {
+		clientIP = engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+	}
+	// Body was already size-capped and rewound by NewRequestContextWithLimits.
 	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
 }
 
