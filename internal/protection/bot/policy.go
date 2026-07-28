@@ -460,12 +460,14 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			http.Error(w, "bot clearance unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		// Secure must be a constant true for CodeQL go/cookie-secure-not-set.
+		// Challenge cookies require HTTPS (or TLS-terminated reverse proxy).
 		http.SetCookie(w, &http.Cookie{
 			Name:     p.cookieName,
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
-			Secure:   cookieSecure(r),
+			Secure:   true,
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -813,10 +815,9 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	p.behaviorPending.Finalize(jti)
 	p.failureTracker.Reset(key)
 	p.recordChallengeMetric(ChallengeMetricSuccess, site, string(pending.kind), clientIP)
-	// Prefer explicit secure from verify path (proxy already applied TrustedCIDRs);
-	// fall back to cookieSecure so TLS-termination edge cases stay consistent.
-	cookieIsSecure := secure || cookieSecure(r)
-	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: cookieIsSecure, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	// CodeQL go/cookie-secure-not-set requires Secure: true (constant). TLS-terminate in front of WAF.
+	_ = secure
+	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `{"data":{"valid":true,"clearance":true}}`)
 }
@@ -836,11 +837,8 @@ func (p *Policy) behaviorOwner(r *http.Request, site string, issue, secure bool)
 		return "", nil, err
 	}
 	expires := p.now().Add(p.ttl)
-	// Use caller TLS intent when provided; otherwise derive from request context.
-	if !secure {
-		secure = cookieSecure(r)
-	}
-	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
+	_ = secure // retained for call-site TLS intent; Secure is always true (CodeQL + production default).
+	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
 }
 func (p *Policy) signBehaviorOwner(owner, site string, expires time.Time) string {
 	payload := owner + "." + strconv.FormatInt(expires.Unix(), 10)
@@ -1230,13 +1228,12 @@ func (p *Policy) serveWaitingRoom(w http.ResponseWriter, r *http.Request, client
 	}
 	if admitted && value != "" {
 		// Set waiting-room ticket server-side (Secure/HttpOnly) — do not rely on document.cookie.
-		// Secure follows TLS / trusted X-Forwarded-Proto so HTTP-only labs still work.
 		http.SetCookie(w, &http.Cookie{
 			Name:     p.waitingCookieName,
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
-			Secure:   cookieSecure(r),
+			Secure:   true,
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})

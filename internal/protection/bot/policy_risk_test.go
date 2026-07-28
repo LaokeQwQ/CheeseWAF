@@ -293,46 +293,48 @@ func TestAllowedUserAgentUsesTokenMatchNotSubstring(t *testing.T) {
 	}
 }
 
-func TestBehaviorOwnerCookieSecureFollowsTLSAndTrustedXFP(t *testing.T) {
+func TestBehaviorOwnerCookieAlwaysSecureHttpOnly(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{
 		Enabled: true, CAPTCHA: true, CAPTCHAType: "shape_slider", Secret: "test-secret", CookieName: "cw_clearance",
 	})
-
-	// Plain HTTP without TLS: Secure must be false so lab/dev browsers keep the cookie
-	// (hardcoded Secure=true caused infinite re-challenge and operators disabling bot).
-	httpReq := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
-	httpReq.RemoteAddr = "203.0.113.50:443"
-	_, httpCookie, err := policy.behaviorOwner(httpReq, "example.test", true, cookieSecure(httpReq))
-	if err != nil {
-		t.Fatal(err)
+	// CodeQL go/cookie-secure-not-set requires Secure:true constant on Set-Cookie.
+	// Production WAF challenges assume HTTPS or TLS-terminated reverse proxy.
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "http://example.test/", nil),
+		func() *http.Request {
+			r := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+			return r
+		}(),
+	} {
+		_, cookie, err := policy.behaviorOwner(req, "example.test", true, cookieSecure(req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cookie.Secure || !cookie.HttpOnly {
+			t.Fatalf("expected Secure HttpOnly owner cookie, got %#v", cookie)
+		}
 	}
-	if httpCookie.Secure || !httpCookie.HttpOnly {
-		t.Fatalf("plain HTTP: want Secure=false HttpOnly=true, got %#v", httpCookie)
-	}
+}
 
-	// Spoofed X-Forwarded-Proto without trusted peer must not set Secure.
+func TestCookieSecureTrustedXFPOnly(t *testing.T) {
+	// cookieSecure is still used for requestIsHTTPS-aligned decisions outside Set-Cookie.
+	plain := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	plain.RemoteAddr = "203.0.113.50:443"
+	if cookieSecure(plain) {
+		t.Fatal("plain HTTP must not report secure")
+	}
 	spoof := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
 	spoof.RemoteAddr = "203.0.113.50:443"
 	spoof.Header.Set("X-Forwarded-Proto", "https")
-	_, spoofCookie, err := policy.behaviorOwner(spoof, "example.test", true, cookieSecure(spoof))
-	if err != nil {
-		t.Fatal(err)
+	if cookieSecure(spoof) {
+		t.Fatal("untrusted XFP must not report secure")
 	}
-	if spoofCookie.Secure {
-		t.Fatalf("untrusted XFP must not force Secure=true: %#v", spoofCookie)
-	}
-
-	// Trusted reverse proxy peer + XFP=https => Secure.
 	trusted := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
 	trusted.RemoteAddr = "10.0.0.2:443"
 	trusted.Header.Set("X-Forwarded-Proto", "https")
 	trusted = trusted.WithContext(ContextWithTrustedCIDRs(trusted.Context(), []string{"10.0.0.0/8"}))
-	_, trustedCookie, err := policy.behaviorOwner(trusted, "example.test", true, cookieSecure(trusted))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !trustedCookie.Secure || !trustedCookie.HttpOnly {
-		t.Fatalf("trusted XFP: want Secure HttpOnly, got %#v", trustedCookie)
+	if !cookieSecure(trusted) {
+		t.Fatal("trusted proxy + XFP=https must report secure")
 	}
 }
 
