@@ -198,7 +198,10 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Audit web dependencies
         working-directory: web
-        run: npm audit --audit-level=high
+        # Gate with documented allowlist (see web/scripts/npm-audit-gate.mjs).
+        # Do not use bare `npm audit --audit-level=high` until React 19 + RR 8.3
+        # lands; that upgrade is blocked on Arco React 19 support.
+        run: node scripts/npm-audit-gate.mjs
 
   security-corpus:
     name: security-corpus
