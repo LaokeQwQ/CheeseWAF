@@ -272,6 +272,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Misdirected Request: no site matches this host", http.StatusMisdirectedRequest)
 		return
 	}
+	// Attach trusted proxy CIDRs early so bot clearance cookies and X-Forwarded-Proto
+	// decisions stay consistent for the whole request (no per-call re-resolution).
+	r = r.WithContext(bot.ContextWithTrustedCIDRs(r.Context(), site.WAF.AccessControl.TrustedCIDRs))
 	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
 
 	// Clean path for bot/IP/path policy only. Keep r.URL.Path unchanged so
@@ -1333,6 +1336,7 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 	if s.logSink == nil || reqCtx == nil || reqCtx.Request == nil {
 		return
 	}
+	s.attachBotRiskMetadata(reqCtx, action)
 	entry := &storage.LogEntry{
 		ID:         reqCtx.TraceID,
 		Timestamp:  s.wallNow().UTC(),
@@ -1418,6 +1422,30 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		return
 	}
 	_ = s.logSink.Write(ctx, entry)
+}
+
+// attachBotRiskMetadata writes L1 risk_score/risk_band on every bot-enabled request
+// and L2 risk_flags on challenge/block (always) or pass/log (0.1% sample).
+// Cheap string scoring only — no I/O, no shared locks beyond FailureTracker read paths.
+func (s *Server) attachBotRiskMetadata(reqCtx *engine.RequestContext, action string) {
+	if s == nil || s.bot == nil || !s.bot.Enabled() || reqCtx == nil || reqCtx.Request == nil {
+		return
+	}
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = map[string]any{}
+	}
+	// Idempotent: first writeLog wins (avoid double assessRisk on multi-write paths).
+	if _, ok := reqCtx.Metadata["risk_score"]; ok {
+		return
+	}
+	snap := s.bot.SnapshotRisk(reqCtx.Request, reqCtx.ClientIP, reqCtx.SiteID)
+	reqCtx.Metadata["risk_score"] = snap.Score
+	reqCtx.Metadata["risk_band"] = snap.Band
+	reqCtx.Metadata["risk_confidence"] = snap.Confidence
+	sampleKey := reqCtx.TraceID + "\x00" + reqCtx.ClientIP + "\x00" + action
+	if bot.ShouldAttachRiskFlags(action, sampleKey, bot.DefaultPassRiskFlagSampleRate) && len(snap.Flags) > 0 {
+		reqCtx.Metadata["risk_flags"] = snap.Flags
+	}
 }
 
 // isPlainAccessLog is true for normal traffic without security signal.

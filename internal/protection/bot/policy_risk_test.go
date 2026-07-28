@@ -14,6 +14,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
+// context helpers used by cookie Secure tests live in the same package.
+
 type botPolicyTestClock struct{ now time.Time }
 
 func (c botPolicyTestClock) Now() time.Time { return c.now }
@@ -291,26 +293,83 @@ func TestAllowedUserAgentUsesTokenMatchNotSubstring(t *testing.T) {
 	}
 }
 
-func TestBehaviorOwnerCookieAlwaysSecureHttpOnly(t *testing.T) {
+func TestBehaviorOwnerCookieSecureFollowsTLSAndTrustedXFP(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{
 		Enabled: true, CAPTCHA: true, CAPTCHAType: "shape_slider", Secret: "test-secret", CookieName: "cw_clearance",
 	})
-	// Clearance cookies are always Secure+HttpOnly (TLS is required for browser storage).
-	for _, req := range []*http.Request{
-		httptest.NewRequest(http.MethodGet, "http://example.test/", nil),
-		func() *http.Request {
-			r := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
-			r.Header.Set("X-Forwarded-Proto", "https")
-			return r
-		}(),
-	} {
-		_, cookie, err := policy.behaviorOwner(req, "example.test", true, cookieSecure(req))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !cookie.Secure || !cookie.HttpOnly {
-			t.Fatalf("expected Secure HttpOnly owner cookie, got %#v", cookie)
-		}
+
+	// Plain HTTP without TLS: Secure must be false so lab/dev browsers keep the cookie
+	// (hardcoded Secure=true caused infinite re-challenge and operators disabling bot).
+	httpReq := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	httpReq.RemoteAddr = "203.0.113.50:443"
+	_, httpCookie, err := policy.behaviorOwner(httpReq, "example.test", true, cookieSecure(httpReq))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpCookie.Secure || !httpCookie.HttpOnly {
+		t.Fatalf("plain HTTP: want Secure=false HttpOnly=true, got %#v", httpCookie)
+	}
+
+	// Spoofed X-Forwarded-Proto without trusted peer must not set Secure.
+	spoof := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	spoof.RemoteAddr = "203.0.113.50:443"
+	spoof.Header.Set("X-Forwarded-Proto", "https")
+	_, spoofCookie, err := policy.behaviorOwner(spoof, "example.test", true, cookieSecure(spoof))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spoofCookie.Secure {
+		t.Fatalf("untrusted XFP must not force Secure=true: %#v", spoofCookie)
+	}
+
+	// Trusted reverse proxy peer + XFP=https => Secure.
+	trusted := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	trusted.RemoteAddr = "10.0.0.2:443"
+	trusted.Header.Set("X-Forwarded-Proto", "https")
+	trusted = trusted.WithContext(ContextWithTrustedCIDRs(trusted.Context(), []string{"10.0.0.0/8"}))
+	_, trustedCookie, err := policy.behaviorOwner(trusted, "example.test", true, cookieSecure(trusted))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trustedCookie.Secure || !trustedCookie.HttpOnly {
+		t.Fatalf("trusted XFP: want Secure HttpOnly, got %#v", trustedCookie)
+	}
+}
+
+func TestSnapshotRiskIncludesL1AndFlags(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled: true, CAPTCHA: true, CAPTCHAType: "pow", Secret: "test-secret",
+		RiskLowThreshold: 35, RiskMediumThreshold: 55, RiskHighThreshold: 75, RiskBlockThreshold: 95,
+		RiskConfidenceMin: 0.6,
+	})
+	req := httptest.NewRequest(http.MethodGet, "https://example.test/login", nil)
+	req.Header.Set("User-Agent", "sqlmap/1.0")
+	snap := policy.SnapshotRisk(req, "203.0.113.10", "example.test")
+	if snap.Score < 50 {
+		t.Fatalf("expected elevated score, got %d", snap.Score)
+	}
+	if snap.Band == "" || snap.Band == "trusted" {
+		t.Fatalf("expected non-trusted band, got %q", snap.Band)
+	}
+	joined := strings.Join(snap.Flags, ",")
+	if !strings.Contains(joined, "scanner_ua") && !strings.Contains(joined, "sensitive_path") {
+		t.Fatalf("expected scanner/path flags, got %v", snap.Flags)
+	}
+}
+
+func TestShouldAttachRiskFlagsSampleRates(t *testing.T) {
+	if !ShouldAttachRiskFlags("challenge", "any", DefaultPassRiskFlagSampleRate) {
+		t.Fatal("challenge must always attach flags")
+	}
+	if !ShouldAttachRiskFlags("block", "any", DefaultPassRiskFlagSampleRate) {
+		t.Fatal("block must always attach flags")
+	}
+	// Deterministic sample: same key always same decision; rate 0 never, rate 1 always.
+	if ShouldAttachRiskFlags("pass", "stable-key", 0) {
+		t.Fatal("pass with rate 0 must not attach")
+	}
+	if !ShouldAttachRiskFlags("pass", "stable-key", 1) {
+		t.Fatal("pass with rate 1 must attach")
 	}
 }
 

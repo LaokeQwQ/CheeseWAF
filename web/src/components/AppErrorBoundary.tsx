@@ -129,6 +129,9 @@ function newUITraceID() {
 
 function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
   const token = localStorage.getItem("cheesewaf-token");
+  // Gate on session presence so anonymous clients cannot flood the sink.
+  // Authorization still needs a real JWT until C1 HttpOnly cookie migration;
+  // never put the token into the JSON body or console output (operator/support logs).
   if (!token) {
     return;
   }
@@ -149,6 +152,7 @@ function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
   void fetch("/api/ui/errors", {
     method: "POST",
     keepalive: true,
+    credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
