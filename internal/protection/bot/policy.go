@@ -2,10 +2,12 @@
 package bot
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -458,6 +460,8 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			http.Error(w, "bot clearance unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		// Secure must be a constant true for CodeQL go/cookie-secure-not-set.
+		// Challenge cookies require HTTPS (or TLS-terminated reverse proxy).
 		http.SetCookie(w, &http.Cookie{
 			Name:     p.cookieName,
 			Value:    value,
@@ -811,6 +815,8 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	p.behaviorPending.Finalize(jti)
 	p.failureTracker.Reset(key)
 	p.recordChallengeMetric(ChallengeMetricSuccess, site, string(pending.kind), clientIP)
+	// CodeQL go/cookie-secure-not-set requires Secure: true (constant). TLS-terminate in front of WAF.
+	_ = secure
 	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `{"data":{"valid":true,"clearance":true}}`)
@@ -831,7 +837,7 @@ func (p *Policy) behaviorOwner(r *http.Request, site string, issue, secure bool)
 		return "", nil, err
 	}
 	expires := p.now().Add(p.ttl)
-	_ = secure // callers still pass TLS intent for logging; cookies always set Secure.
+	_ = secure // retained for call-site TLS intent; Secure is always true (CodeQL + production default).
 	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
 }
 func (p *Policy) signBehaviorOwner(owner, site string, expires time.Time) string {
@@ -905,7 +911,20 @@ type botRisk struct {
 	score      int
 	confidence float64
 	band       riskBand
+	flags      []string
 }
+
+// RiskSnapshot is the operator-facing risk summary attached to access logs.
+// L1 fields (Score/Band) are cheap fixed-size; Flags are L2 detail.
+type RiskSnapshot struct {
+	Score      int
+	Confidence float64
+	Band       string
+	Flags      []string
+}
+
+// DefaultPassRiskFlagSampleRate is 0.1% of pass logs that also include L2 flags.
+const DefaultPassRiskFlagSampleRate = 0.001
 
 const lowRiskClearanceTTL = 5 * time.Minute
 
@@ -920,19 +939,70 @@ func powRiskLevel(band riskBand) int {
 	}
 }
 
+// Enabled reports whether bot protection is active (for proxy log enrichment).
+func (p *Policy) Enabled() bool {
+	return p != nil && p.enabled
+}
+
+// SnapshotRisk returns a stable risk summary for logging without mutating state.
+func (p *Policy) SnapshotRisk(r *http.Request, clientIP, site string) RiskSnapshot {
+	if p == nil || r == nil {
+		return RiskSnapshot{Band: riskTrusted.String()}
+	}
+	risk := p.assessRisk(r, clientIP, site)
+	return RiskSnapshot{
+		Score:      risk.score,
+		Confidence: risk.confidence,
+		Band:       risk.band.String(),
+		Flags:      append([]string(nil), risk.flags...),
+	}
+}
+
+// ShouldAttachRiskFlags decides L2 flag emission: always on challenge/block, sampled on pass.
+func ShouldAttachRiskFlags(action string, sampleKey string, passSampleRate float64) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "challenge", "block":
+		return true
+	case "pass", "log":
+		if passSampleRate <= 0 {
+			return false
+		}
+		if passSampleRate >= 1 {
+			return true
+		}
+		return sampleUnitInterval(sampleKey) < passSampleRate
+	default:
+		// treat unknown actions like pass (cheap default)
+		if passSampleRate <= 0 {
+			return false
+		}
+		return sampleUnitInterval(sampleKey) < passSampleRate
+	}
+}
+
+func sampleUnitInterval(key string) float64 {
+	sum := sha256.Sum256([]byte(key))
+	// Use 53 bits for a stable [0,1) float without extra deps.
+	n := binary.BigEndian.Uint64(sum[:8]) >> 11
+	return float64(n) / (1 << 53)
+}
+
 func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 	score, evidence := 0, 0
 	strongSuspicion := false
+	flags := make([]string, 0, 8)
 	ua := strings.ToLower(strings.TrimSpace(r.UserAgent()))
 	if ua == "" {
 		score += 35
 		evidence++
+		flags = append(flags, "empty_ua")
 	}
 	for _, marker := range p.suspiciousUserAgents {
 		if marker != "" && strings.Contains(ua, marker) {
 			score += 40
 			evidence++
 			strongSuspicion = true
+			flags = append(flags, "suspicious_ua")
 			break
 		}
 	}
@@ -941,22 +1011,26 @@ func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 			score += 35
 			evidence++
 			strongSuspicion = true
+			flags = append(flags, "scanner_ua")
 			break
 		}
 	}
 	if r.Header.Get("Accept") == "" && r.Header.Get("Accept-Language") == "" {
 		score += 20
 		evidence++
+		flags = append(flags, "no_accept")
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 		score += 10
 		evidence++
+		flags = append(flags, "non_safe_method")
 	}
 	path := strings.ToLower(mustRequestPath(r))
 	for _, prefix := range []string{"/login", "/signin", "/admin", "/wp-login", "/xmlrpc", "/.env"} {
 		if engine.PathMatchesPrefix(path, prefix) {
 			score += 15
 			evidence++
+			flags = append(flags, "sensitive_path")
 			break
 		}
 	}
@@ -965,24 +1039,30 @@ func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 		score += failure.Failures * 15
 		if failure.Failures > 0 {
 			evidence++
+			flags = append(flags, "prior_failures")
 		}
 		if failure.Blocked {
 			score = 100
+			flags = append(flags, "failure_blocked")
 		}
 	}
 	if ip := net.ParseIP(strings.TrimSpace(clientIP)); ip == nil {
 		score += 10
 		evidence++
+		flags = append(flags, "invalid_ip")
 	} else if (ip.IsLoopback() || ip.IsPrivate()) && !strongSuspicion {
 		score -= 30
 		evidence++
+		flags = append(flags, "private_ip_discount")
 	}
 	if isMobileClient(r) {
 		score -= 5
+		flags = append(flags, "mobile_discount")
 	}
 	if weakNetworkClient(r) {
 		score -= 8
 		evidence++
+		flags = append(flags, "weak_network_discount")
 	}
 	if score < 0 {
 		score = 0
@@ -1012,7 +1092,7 @@ func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 	if confidence > 0.95 {
 		confidence = 0.95
 	}
-	return botRisk{score: score, confidence: confidence, band: band}
+	return botRisk{score: score, confidence: confidence, band: band, flags: flags}
 }
 
 // adaptiveCAPTCHAType selects the challenge type from risk and configuration.
@@ -2173,8 +2253,32 @@ func isLocalURL(raw string) bool {
 	return fsguard.IsLocalURL(raw)
 }
 
+type trustedCIDRsContextKey struct{}
+
+// ContextWithTrustedCIDRs stores site trusted proxy CIDRs for Secure-cookie decisions.
+func ContextWithTrustedCIDRs(ctx context.Context, cidrs []string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(cidrs) == 0 {
+		return ctx
+	}
+	copied := append([]string(nil), cidrs...)
+	return context.WithValue(ctx, trustedCIDRsContextKey{}, copied)
+}
+
+// TrustedCIDRsFromContext returns trusted proxy CIDRs previously attached to ctx.
+func TrustedCIDRsFromContext(ctx context.Context) []string {
+	if ctx == nil {
+		return nil
+	}
+	cidrs, _ := ctx.Value(trustedCIDRsContextKey{}).([]string)
+	return cidrs
+}
+
 // cookieSecure reports whether cookies for this request should carry the Secure flag.
-// Trusts direct TLS or X-Forwarded-Proto: https (false-positive Secure is safer than missing Secure).
+// Direct TLS always counts. X-Forwarded-Proto=https is trusted only when the peer
+// address is covered by TrustedCIDRs from request context (same rule as proxy requestIsHTTPS).
 func cookieSecure(r *http.Request) bool {
 	if r == nil {
 		return false
@@ -2182,8 +2286,37 @@ func cookieSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
+	cidrs := TrustedCIDRsFromContext(r.Context())
+	if len(cidrs) == 0 || !remoteAddrInCIDRs(r.RemoteAddr, cidrs) {
+		return false
+	}
 	proto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
 	return strings.EqualFold(proto, "https")
+}
+
+func remoteAddrInCIDRs(remoteAddr string, cidrs []string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	addr := net.ParseIP(host)
+	if addr == nil {
+		return false
+	}
+	for _, raw := range cidrs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if candidate := net.ParseIP(raw); candidate != nil && candidate.Equal(addr) {
+			return true
+		}
+		_, network, err := net.ParseCIDR(raw)
+		if err == nil && network.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func setChallengeDocumentSecurityHeaders(w http.ResponseWriter, nonce string) {
