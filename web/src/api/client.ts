@@ -254,7 +254,8 @@ export async function unwrapAPIResponse<T>(promise: Promise<AxiosResponse<Envelo
   }
 }
 
-const unwrap = unwrapAPIResponse;
+/** @deprecated Prefer unwrapAPIResponse; kept for call sites during migration. */
+export const unwrap = unwrapAPIResponse;
 
 function errorLookupID(error?: Envelope<unknown>['error'], response?: AxiosResponse<unknown>) {
   return error?.event_id ?? error?.trace_id ?? responseLookupID(response);

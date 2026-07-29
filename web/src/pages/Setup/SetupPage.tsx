@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, Cpu, LockKeyhole, Network, UserRound } from 'lucide-react';
-import { apiClient, setupAdmin, unwrap } from '../../api/client';
+import { apiClient, setupAdmin, unwrapAPIResponse } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import { passwordPolicyErrorKey } from '../../utils/passwordPolicy';
 
@@ -36,7 +36,7 @@ export default function SetupPage() {
     let cancelled = false;
     (async () => {
       try {
-        const data = await unwrap<{ probe: ProbeResult }>(apiClient.post('/setup/probe', {}));
+        const data = await unwrapAPIResponse<{ probe: ProbeResult }>(apiClient.post('/setup/probe', {}));
         if (!cancelled) {
           setProbe(data.probe);
           if (data.probe?.profile && data.probe.profile !== 'custom') {
@@ -58,7 +58,7 @@ export default function SetupPage() {
 
   async function persistDraft(patch: Record<string, unknown>) {
     try {
-      await unwrap(apiClient.patch('/setup/draft', patch));
+      await unwrapAPIResponse(apiClient.patch('/setup/draft', patch));
     } catch {
       /* draft optional when probe failed */
     }
