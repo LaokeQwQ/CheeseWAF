@@ -1,10 +1,11 @@
 import { Button, Radio, Table, Tag } from '@arco-design/web-react';
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { fetchChinaMapBoundaryByCode, fetchLogs } from '../../api/client';
+import QueryErrorState from '../../components/QueryErrorState';
 import { preloadAttackScreenPage, preloadGlobeMap } from '../../routes/preload';
 import type { LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry, displayGeoPlace, displaySeverity, isSameGeoCountry } from '../../utils/display';
@@ -42,7 +43,13 @@ export default function AttackMapPage() {
   const [selectedRegionKey, setSelectedRegionKey] = useState<string | null>(null);
   const osmMapRef = useRef<OsmAttackMapHandle | null>(null);
   const preferAdcodesRef = useRef<string[]>([]);
-  const { data, isLoading } = useQuery({ queryKey: ['attack-map-logs'], queryFn: () => fetchLogs({ limit: 1000 }), refetchInterval: 5_000, retry: false });
+  const lastFlyKeyRef = useRef<string | null>(null);
+  const { data, isLoading, isError, isFetching, refetch } = useQuery({
+    queryKey: ['attack-map-logs'],
+    queryFn: () => fetchLogs({ limit: 1000 }),
+    refetchInterval: 5_000,
+    retry: false,
+  });
   const regions = useMemo(() => aggregateRegions(data?.items ?? []), [data?.items]);
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
   const chinaRegions = useMemo(() => mappedRegions.filter(isChinaRegion), [mappedRegions]);
@@ -119,7 +126,12 @@ export default function AttackMapPage() {
   const mapTotal = mode === 'china' ? chinaTotal : total;
   const mapMappedTotal = mode === 'china' ? chinaTotal : mappedTotal;
   const visibleMapRegions = mode === 'china' ? chinaRegions : mappedRegions;
-  const mapCanvasRef = useRef<HTMLElement | null>(null);
+  const selectedRegionLat = selectedRegionKey
+    ? visibleMapRegions.find((item) => item.key === selectedRegionKey)?.lat
+    : undefined;
+  const selectedRegionLon = selectedRegionKey
+    ? visibleMapRegions.find((item) => item.key === selectedRegionKey)?.lon
+    : undefined;
   const chinaBoundaryUnavailable = mode === 'china' && (
     isChinaModuleError
     || isChinaAssetsError
@@ -171,15 +183,30 @@ export default function AttackMapPage() {
     resetView(nextMode);
   }
 
+  // Keep mode in sync with browser back/forward on ?mode=.
+  useEffect(() => {
+    const nextMode = parseMapMode(searchParams.get('mode'));
+    setMode((current) => (current === nextMode ? current : nextMode));
+  }, [searchParams]);
+
+  // Fly only when selection (or its coordinates) change — not on every logs refetch array rebuild.
   useEffect(() => {
     if (!selectedRegionKey || (mode !== '2d' && mode !== 'china')) {
+      if (!selectedRegionKey) {
+        lastFlyKeyRef.current = null;
+      }
+      return;
+    }
+    const flyToken = `${mode}:${selectedRegionKey}:${selectedRegionLat ?? ''}:${selectedRegionLon ?? ''}`;
+    if (lastFlyKeyRef.current === flyToken) {
       return;
     }
     const region = visibleMapRegions.find((item) => item.key === selectedRegionKey);
     if (region) {
       osmMapRef.current?.flyToRegion(region);
+      lastFlyKeyRef.current = flyToken;
     }
-  }, [selectedRegionKey, mode, visibleMapRegions]);
+  }, [selectedRegionKey, mode, selectedRegionLat, selectedRegionLon, visibleMapRegions]);
 
   return (
     <section className="page-surface attack-map-page">
@@ -190,10 +217,14 @@ export default function AttackMapPage() {
         </div>
       </header>
 
+      {isError && !data && (
+        <QueryErrorState onRetry={() => void refetch()} retrying={isFetching} />
+      )}
+
       <section className="map-workbench">
         <div className="map-workbench-header">
           <div className="map-legend">
-            <strong>{mapTotal}</strong>
+            <strong>{isError && !data ? '—' : mapTotal}</strong>
             <span>{t('attackMap.attacks')}</span>
             <small>{mode === 'china' ? t('attackMap.chinaRegionMapped', { count: mapMappedTotal }) : t('attackMap.mapped', { count: mapMappedTotal })}</small>
             {mode === 'china' && total > chinaTotal && <small>{t('attackMap.otherRegions', { count: total - chinaTotal })}</small>}
@@ -288,7 +319,6 @@ export default function AttackMapPage() {
         </div>
 
         <section
-          ref={mapCanvasRef}
           className={`map-canvas map-mode-${mode} map-engine-osm ${mode === '3d' && zoom > 1.01 ? 'map-can-pan' : ''}`}
         >
           {mode === '3d' ? (
@@ -317,7 +347,11 @@ export default function AttackMapPage() {
           )}
           {(regions.length === 0 || (mode === 'china' && chinaRegions.length === 0)) && (
             <div className="map-empty" role="status" aria-live="polite">
-              {isLoading ? t('attackMap.loading') : (mode === 'china' ? t('attackMap.chinaRegionEmpty') : `${t('attackMap.attacks')}: 0`)}
+              {isLoading
+                ? t('attackMap.loading')
+                : isError
+                  ? t('common.loadFailed')
+                  : (mode === 'china' ? t('attackMap.chinaRegionEmpty') : `${t('attackMap.attacks')}: 0`)}
             </div>
           )}
           {chinaBoundaryUnavailable && (
@@ -327,10 +361,10 @@ export default function AttackMapPage() {
           )}
           <div className="map-basemap-credit" aria-hidden="true">
             {mode === '3d'
-              ? 'Three.js globe'
+              ? t('attackMap.basemapCredit3d', { defaultValue: 'Three.js globe' })
               : mode === 'china'
-                ? 'Offline · world-atlas + china-map-echarts (区县) · MapLibre'
-                : 'Offline · world-atlas · MapLibre'}
+                ? t('attackMap.basemapCreditChina', { defaultValue: 'Offline · world-atlas + china-map-echarts · MapLibre' })
+                : t('attackMap.basemapCreditWorld', { defaultValue: 'Offline · world-atlas · MapLibre' })}
           </div>
         </section>
       </section>
@@ -348,7 +382,14 @@ export default function AttackMapPage() {
             data={visibleMapRegions}
             rowClassName={(record) => (record.key === selectedRegionKey ? 'attack-region-row-selected' : '')}
             onRow={(record) => ({
+              tabIndex: 0,
               onClick: () => setSelectedRegionKey(record.key),
+              onKeyDown: (event: KeyboardEvent) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  setSelectedRegionKey(record.key);
+                }
+              },
             })}
             expandedRowRender={(record) => <RegionEventDetails region={record as AttackRegion} />}
             columns={[
@@ -448,8 +489,8 @@ function RegionEventDetails({ region }: { region: AttackRegion }) {
         <span>{t('attackMap.regionPrecisionHint')}</span>
       </div>
       <div className="attack-region-event-list">
-        {region.events.map((event) => (
-          <div key={event.trace_id || event.id} className="attack-region-event">
+        {region.events.map((event, index) => (
+          <div key={event.trace_id || event.id || `row-${index}`} className="attack-region-event">
             <code>{event.trace_id || event.id || '-'}</code>
             <span>{formatShortTime(event.timestamp)}</span>
             <span>{event.client_ip || '-'}</span>
@@ -476,7 +517,7 @@ function WorldMapSVG({ countryLevels, ariaLabel }: { countryLevels: Map<string, 
   );
 }
 
-function renderGlobeFallback(regions: AttackRegion[], countryLevels: Map<string, ThreatLevel>, ariaLabel = 'Attack source map') {
+function renderGlobeFallback(regions: AttackRegion[], countryLevels: Map<string, ThreatLevel>, ariaLabel: string) {
   return (
     <div className="globe-stage globe-stage-fallback">
       <div className="flat-map-stage globe-fallback-flat" style={{ '--map-zoom': 1, '--map-pan-x': '0px', '--map-pan-y': '0px' } as CSSProperties}>

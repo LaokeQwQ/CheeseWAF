@@ -2,23 +2,26 @@ import { Button, Empty, Input, Select, Tag } from '@arco-design/web-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Eye, Search } from 'lucide-react';
 import { fetchLogs } from '../../api/client';
+import QueryErrorState from '../../components/QueryErrorState';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
 import { filterLogs, paginate, type LogViewMode } from './logsLogic';
 
 const PAGE_SIZE = 8;
 
 export default function LogsPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n?.resolvedLanguage;
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<string>();
   const [action, setAction] = useState<string>();
   const [viewMode, setViewMode] = useState<LogViewMode>('security');
   const [page, setPage] = useState(1);
-  const { data, isLoading } = useQuery({
-    queryKey: ['logs', category, action, viewMode],
+  const { data, isLoading, isError, isFetching, refetch } = useQuery({
+    queryKey: ['logs', category, action],
     queryFn: () => fetchLogs({ limit: 500, category, action }),
     refetchInterval: 8_000,
     retry: false,
@@ -104,8 +107,11 @@ export default function LogsPage() {
           {isLoading && Array.from({ length: 4 }).map((_, index) => (
             <div className="security-event-row security-event-skeleton" key={index} />
           ))}
-          {!isLoading && pageItems.length === 0 && <Empty description={t('common.noData')} />}
-          {!isLoading && pageItems.map((entry) => (
+          {!isLoading && isError && (
+            <QueryErrorState onRetry={() => void refetch()} retrying={isFetching} />
+          )}
+          {!isLoading && !isError && pageItems.length === 0 && <Empty description={t('common.noData')} />}
+          {!isLoading && !isError && pageItems.map((entry) => (
             <article className="security-event-row" key={entry.id || entry.trace_id}>
               <div className="security-event-cell security-event-trace" data-label={t('logs.trace')}>
                 <code title={entry.trace_id || entry.id}>{entry.trace_id || entry.id || '-'}</code>
@@ -126,17 +132,21 @@ export default function LogsPage() {
                 <span title={formatLogLocation(entry, t)}>{formatLogLocation(entry, t)}</span>
               </div>
               <div className="security-event-cell" data-label={t('logs.time')}>
-                <time dateTime={entry.timestamp}>{formatTime(entry.timestamp)}</time>
+                <time dateTime={entry.timestamp}>{formatTime(entry.timestamp, locale)}</time>
               </div>
               <div className="security-event-cell security-event-actions" data-label={t('logs.detail')}>
-                <Link to={`/logs/${encodeURIComponent(entry.trace_id || entry.id)}`} className="table-action-link">
-                  <Button size="small" icon={<Eye size={14} />}>{t('logs.viewDetail')}</Button>
-                </Link>
+                <Button
+                  size="small"
+                  icon={<Eye size={14} />}
+                  onClick={() => navigate(`/logs/${encodeURIComponent(entry.trace_id || entry.id)}`)}
+                >
+                  {t('logs.viewDetail')}
+                </Button>
               </div>
             </article>
           ))}
         </div>
-        {!isLoading && logs.length > PAGE_SIZE && (
+        {!isLoading && !isError && logs.length > PAGE_SIZE && (
           <footer className="security-events-pagination">
             <span>{pageStart}-{pageEnd} / {logs.length}</span>
             <div>
@@ -161,12 +171,12 @@ export default function LogsPage() {
   );
 }
 
-function formatTime(value: string) {
+function formatTime(value: string, locale?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value || '-';
   }
-  return date.toLocaleString();
+  return date.toLocaleString(locale);
 }
 
 function actionTagColor(action: string) {

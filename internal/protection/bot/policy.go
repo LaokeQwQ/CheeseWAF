@@ -480,11 +480,12 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		// url.URL.String(), which re-taints the sink for go/unvalidated-url-redirection).
 		loc := fsguard.SanitizeLocalRedirect(returnURL)
 		loc = strings.ReplaceAll(loc, "\\", "/")
+		safeLoc := "/"
 		if isLocalURL(loc) {
-			http.Redirect(w, r, loc, status)
-			return
+			// isLocalURL is the CodeQL RedirectCheckBarrier predicate.
+			safeLoc = loc
 		}
-		http.Redirect(w, r, "/", status)
+		http.Redirect(w, r, safeLoc, status)
 		return
 	}
 	if submittedType != "" && p.usesBehaviorChallenge(selection, clientIP, site) {

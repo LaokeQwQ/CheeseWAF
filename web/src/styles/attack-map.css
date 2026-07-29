@@ -351,10 +351,17 @@
   opacity: 0.22;
 }
 
-.attack-map-page .map-controls .arco-btn {
+.attack-map-page .map-controls .arco-btn.arco-btn-icon-only,
+.attack-map-page .map-controls .arco-btn-icon-only {
   width: 34px;
   height: 34px;
   padding: 0;
+}
+
+.attack-map-page .map-controls .arco-btn:not(.arco-btn-icon-only) {
+  width: auto;
+  min-height: 34px;
+  padding: 0 12px;
 }
 
 .attack-map-page .map-can-pan {

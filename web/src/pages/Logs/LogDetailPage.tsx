@@ -13,6 +13,7 @@ import { displayAction, displayCategory, displaySeverity, formatLogLocation } fr
 
 export default function LogDetailPage() {
   const { t, i18n } = useTranslation();
+  const locale = i18n?.resolvedLanguage;
   const navigate = useNavigate();
   const { traceId = '' } = useParams();
   const reference = decodeURIComponent(traceId);
@@ -34,7 +35,7 @@ export default function LogDetailPage() {
       setAnalysisTrace([]);
       setStreamReasoning('');
       setStreamContent('');
-      return analyzeLogReferenceStream(entry.trace_id || entry.id || reference, i18n.language, (trace) => {
+      return analyzeLogReferenceStream(entry.trace_id || entry.id || reference, i18n?.language, (trace) => {
         setAnalysisTrace((items) => [...items.slice(-40), trace]);
         if (trace.type === 'reasoning_delta') {
           setStreamReasoning((value) => appendStreamText(value, trace.message));
@@ -51,6 +52,17 @@ export default function LogDetailPage() {
   useEffect(() => () => {
     abortRef.current?.abort();
   }, []);
+
+  const resetAnalysis = analysisMutation.reset;
+  // Reset AI analysis state when navigating between log events (component reuse).
+  useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    resetAnalysis();
+    setAnalysisTrace([]);
+    setStreamReasoning('');
+    setStreamContent('');
+  }, [reference, resetAnalysis]);
 
   return (
     <section className="page-surface log-detail-page">
@@ -80,7 +92,7 @@ export default function LogDetailPage() {
                 </div>
                 <div className="detail-kv-grid">
                   <DetailKV label={t('logs.trace')} value={event.trace_id || event.id || '-'} />
-                  <DetailKV label={t('logs.time')} value={formatTime(event.timestamp)} />
+                  <DetailKV label={t('logs.time')} value={formatTime(event.timestamp, locale)} />
                   <DetailKV label={t('logs.source')} value={event.client_ip || '-'} />
                   <DetailKV label={t('dashboard.ipLocation')} value={formatLogLocation(event, t)} />
                   <DetailKV label={t('logs.method')} value={event.method || '-'} />
@@ -184,7 +196,7 @@ function OpsSignalsCard({
         <h2>{t('logs.opsSignals')}</h2>
       </div>
       <div className="detail-kv-grid">
-        {budgetExhausted ? <DetailKV label={t('logs.budgetExhausted')} value="true" /> : null}
+        {budgetExhausted ? <DetailKV label={t('logs.budgetExhausted')} value={t('common.enabled')} /> : null}
         {budgetPolicy ? <DetailKV label={t('logs.budgetPolicy')} value={budgetPolicy} /> : null}
         {semanticSkipped ? <DetailKV label={t('logs.semanticSkipped')} value={semanticSkipped} /> : null}
         {anomalyText ? <DetailKV label={t('logs.anomalyScore')} value={anomalyText} /> : null}
@@ -231,8 +243,8 @@ function AnalysisLiveTrace({
       )}
       {visibleTrace.length > 0 && (
         <ul>
-          {visibleTrace.map((item) => (
-            <li key={item}>
+          {visibleTrace.map((item, index) => (
+            <li key={`${index}-${hashKey(item)}`}>
               <span>{item}</span>
             </li>
           ))}
@@ -289,11 +301,15 @@ function AnalysisResult({ analysis }: { analysis?: AttackAnalysis }) {
       <AIReasoningSummary analysis={analysis} />
       <div>
         <strong>{t('ai.evidence')}</strong>
-        {(analysis.evidence ?? []).length > 0 ? analysis.evidence.map((item) => <span key={item}>{item}</span>) : <span>-</span>}
+        {(analysis.evidence ?? []).length > 0
+          ? analysis.evidence.map((item, index) => <span key={`${index}-${hashKey(item)}`}>{item}</span>)
+          : <span>-</span>}
       </div>
       <div>
         <strong>{t('ai.actions')}</strong>
-        {(analysis.recommended_actions ?? []).length > 0 ? analysis.recommended_actions.map((item) => <span key={item}>{item}</span>) : <span>-</span>}
+        {(analysis.recommended_actions ?? []).length > 0
+          ? analysis.recommended_actions.map((item, index) => <span key={`${index}-${hashKey(item)}`}>{item}</span>)
+          : <span>-</span>}
       </div>
     </div>
   );
@@ -322,12 +338,20 @@ function formatMetadata(metadata?: Record<string, unknown>) {
   return JSON.stringify(metadata, null, 2);
 }
 
-function formatTime(value: string) {
+function formatTime(value: string, locale?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value || '-';
   }
-  return date.toLocaleString();
+  return date.toLocaleString(locale);
+}
+
+function hashKey(value: string) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function formatLatency(nanoseconds: number) {

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passpolicy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/spf13/cobra"
@@ -125,8 +126,8 @@ func ensureAdminUser(ctx context.Context, sqlitePath, username string, opts cliP
 	if err != nil {
 		return "", err
 	}
-	if len(password) < 10 {
-		return "", errors.New("password must contain at least 10 characters")
+	if err := passpolicy.Validate(password, username); err != nil {
+		return "", err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -174,8 +175,8 @@ func changeUserPassword(ctx context.Context, sqlitePath, username string, opts c
 	if err != nil {
 		return "", err
 	}
-	if len(password) < 10 {
-		return "", errors.New("password must contain at least 10 characters")
+	if err := passpolicy.Validate(password, username); err != nil {
+		return "", err
 	}
 
 	store, err := storage.OpenSQLite(sqlitePath)
@@ -308,20 +309,9 @@ func generateTemporaryPassword(length int) (string, error) {
 }
 
 func passwordHasClasses(password string) bool {
-	var lower, upper, digit, special bool
-	for _, char := range password {
-		switch {
-		case char >= 'a' && char <= 'z':
-			lower = true
-		case char >= 'A' && char <= 'Z':
-			upper = true
-		case char >= '0' && char <= '9':
-			digit = true
-		default:
-			special = true
-		}
-	}
-	return lower && upper && digit && special
+	// Generator target: all four classes when possible; policy requires ≥3.
+	return passpolicy.Classify(password).Count() >= passpolicy.MinClasses &&
+		passpolicy.Validate(password, "") == nil
 }
 
 func cliSQLitePath() (string, error) {

@@ -2,7 +2,7 @@ import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Select
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, Clock3, ExternalLink, Globe2, Image as ImageIcon, KeyRound, List, Pencil, Plus, Puzzle, Route, ShieldAlert, TimerReset, Trash2 } from 'lucide-react';
+import { Bot, ExternalLink, Globe2, Pencil, Plus, ShieldAlert, TimerReset, Trash2 } from 'lucide-react';
 import { fetchProtection, updateACLProtection, updateBotProtection, updateIPProtection, updateProtectionPolicy, updateRateLimit } from '../../api/client';
 import type { ACLRule, ProtectionCaptchaType, ProtectionConfig } from '../../types/api';
 import { displayAction } from '../../utils/display';
@@ -68,13 +68,13 @@ const fallback: ProtectionConfig = {
 type DurationUnit = 'ms' | 's' | 'm' | 'h' | 'd';
 
 const geoRegionGroups = [
-  { label: 'Asia', codes: ['CN', 'HK', 'MO', 'TW', 'JP', 'KR', 'SG', 'IN', 'VN', 'TH', 'MY', 'ID', 'PH', 'PK', 'KZ'] },
-  { label: 'Europe', codes: ['GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'SE', 'CH', 'PL', 'RO', 'CZ', 'AT', 'HU', 'FI', 'DK', 'NO', 'IE', 'GR', 'PT', 'BE', 'SK', 'SI'] },
-  { label: 'North America', codes: ['US', 'CA', 'MX'] },
-  { label: 'South America', codes: ['BR', 'AR', 'CL', 'CO', 'PE', 'VE'] },
-  { label: 'Africa', codes: ['ZA', 'EG', 'NG', 'KE', 'MA'] },
-  { label: 'Oceania', codes: ['AU', 'NZ'] },
-  { label: 'Middle East', codes: ['AE', 'SA', 'IL', 'IR', 'TR'] },
+  { labelKey: 'geo.continents.asia', codes: ['CN', 'HK', 'MO', 'TW', 'JP', 'KR', 'SG', 'IN', 'VN', 'TH', 'MY', 'ID', 'PH', 'PK', 'KZ'] },
+  { labelKey: 'geo.continents.europe', codes: ['GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'SE', 'CH', 'PL', 'RO', 'CZ', 'AT', 'HU', 'FI', 'DK', 'NO', 'IE', 'GR', 'PT', 'BE', 'SK', 'SI'] },
+  { labelKey: 'geo.continents.northAmerica', codes: ['US', 'CA', 'MX'] },
+  { labelKey: 'geo.continents.southAmerica', codes: ['BR', 'AR', 'CL', 'CO', 'PE', 'VE'] },
+  { labelKey: 'geo.continents.africa', codes: ['ZA', 'EG', 'NG', 'KE', 'MA'] },
+  { labelKey: 'geo.continents.oceania', codes: ['AU', 'NZ'] },
+  { labelKey: 'geo.continents.middleEast', codes: ['AE', 'SA', 'IL', 'IR', 'TR'], fallback: 'Middle East' },
 ] as const;
 
 export default function ProtectionPage() {
@@ -127,7 +127,26 @@ export default function ProtectionPage() {
   });
   const [aclDraft, setAclDraft] = useState<ACLRule | null>(null);
   const [aclEditing, setAclEditing] = useState(false);
-  const [aclChanged, setAclChanged] = useState(false);
+  const [aclUnsaved, setAclUnsaved] = useState(false);
+  const aclBusyId = aclMutation.isPending
+    ? (Array.isArray(aclMutation.variables?.rules)
+      ? (() => {
+          const nextRules = aclMutation.variables!.rules;
+          const prevRules = protection.acl.rules;
+          if (nextRules.length !== prevRules.length) {
+            const deleted = prevRules.find((rule) => !nextRules.some((item) => item.id === rule.id));
+            if (deleted) return deleted.id;
+            const added = nextRules.find((rule) => !prevRules.some((item) => item.id === rule.id));
+            if (added) return added.id;
+          }
+          const changed = nextRules.find((rule) => {
+            const prev = prevRules.find((item) => item.id === rule.id);
+            return prev && (prev.enabled !== rule.enabled || prev.name !== rule.name || prev.action !== rule.action || prev.path_prefix !== rule.path_prefix || prev.method !== rule.method);
+          });
+          return changed?.id ?? nextRules[0]?.id ?? null;
+        })()
+      : null)
+    : null;
 
   function startNewACL() {
     const id = typeof crypto.randomUUID === 'function'
@@ -135,22 +154,29 @@ export default function ProtectionPage() {
       : `acl-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     setAclDraft({ id, name: '', method: '', path_prefix: '', header: '', header_value: '', action: 'block', severity: 'medium', enabled: true });
     setAclEditing(true);
+    setAclUnsaved(true);
   }
   function editACL(rule: ACLRule) {
     setAclDraft({ ...rule });
     setAclEditing(true);
+    setAclUnsaved(false);
   }
   function saveACLDraft() {
     if (!aclDraft) return;
+    const name = aclDraft.name.trim();
+    if (!name) {
+      ArcoMessage.warning(t('rules.nameHint', { defaultValue: t('rules.namePlaceholder') }));
+      return;
+    }
+    const nextDraft = { ...aclDraft, name };
     const rules = [...protection.acl.rules];
-    const idx = rules.findIndex((r) => r.id === aclDraft.id);
-    if (idx >= 0) rules[idx] = aclDraft;
-    else rules.push(aclDraft);
+    const idx = rules.findIndex((r) => r.id === nextDraft.id);
+    if (idx >= 0) rules[idx] = nextDraft;
+    else rules.push(nextDraft);
     aclMutation.mutate({ ...protection.acl, rules }, {
       onSuccess: () => {
         setAclDraft(null);
         setAclEditing(false);
-        setAclChanged(false);
         setAclUnsaved(false);
       },
     });
@@ -169,11 +195,14 @@ export default function ProtectionPage() {
       onOk: () => {
         const rules = protection.acl.rules.filter((r) => r.id !== id);
         aclMutation.mutate({ ...protection.acl, rules });
-        setAclUnsaved(false);
+        if (aclDraft?.id === id) {
+          setAclDraft(null);
+          setAclEditing(false);
+          setAclUnsaved(false);
+        }
       },
     });
   }
-  const [aclUnsaved, setAclUnsaved] = useState(false);
 
   if (isLoading) {
     return (
@@ -250,7 +279,7 @@ export default function ProtectionPage() {
             <Button size="small" icon={<ExternalLink size={14} />} onClick={() => window.open('/captcha-lab', '_blank', 'noopener,noreferrer')}>{t('protection.openCaptchaLab')}</Button>
           </div>
           <Form
-            key={`bot-${protection.bot.enabled}-${protection.bot.cookie_name}`}
+            key={`bot-${protection.bot.enabled}-${protection.bot.cookie_name}-${protection.bot.captcha_type}-${protection.bot.captcha}-${protection.bot.js_challenge}-${protection.bot.challenge_difficulty}-${protection.bot.waiting_room}-${protection.bot.captcha_policy_version}-${protection.bot.captcha_max_attempts}`}
             layout="vertical"
             initialValues={{
               enabled: protection.bot.enabled,
@@ -438,7 +467,7 @@ export default function ProtectionPage() {
         <section className="panel">
           <div className="panel-heading"><h2><Globe2 size={16} /> {t('protection.geoip')}</h2></div>
           <Form
-            key={`geoip-${protection.ip.geoip.enabled}`}
+            key={`geoip-${protection.ip.geoip.enabled}-${protection.ip.geoip.database}-${protection.ip.geoip.precision_database}-${(protection.ip.geoip.blocked_countries ?? []).join(',')}`}
             layout="vertical"
             initialValues={{
               enabled: protection.ip.geoip.enabled,
@@ -473,7 +502,7 @@ export default function ProtectionPage() {
         <section className="panel">
           <div className="panel-heading"><h2><TimerReset size={16} /> {t('protection.ratelimit')}</h2></div>
           <Form
-            key={`ratelimit-${protection.ratelimit.enabled}-${protection.ratelimit.default.requests}`}
+            key={`ratelimit-${protection.ratelimit.enabled}-${protection.ratelimit.default.requests}-${protection.ratelimit.default.burst}`}
             layout="vertical"
             initialValues={{ enabled: protection.ratelimit.enabled, requests: protection.ratelimit.default.requests, burst: protection.ratelimit.default.burst }}
             onSubmit={(values) => rateMutation.mutate({ enabled: values.enabled, default: { ...protection.ratelimit.default, requests: values.requests, burst: values.burst } })}
@@ -537,8 +566,8 @@ export default function ProtectionPage() {
               </label>
             </div>
             <div className="acl-editor-actions">
-              <Button onClick={() => { setAclDraft(null); setAclEditing(false); setAclUnsaved(false); }}>{t('common.cancel')}</Button>
-              <Button type="primary" disabled={!aclUnsaved} loading={aclMutation.isPending} onClick={saveACLDraft}>{t('common.save')}</Button>
+              <Button disabled={aclMutation.isPending} onClick={() => { setAclDraft(null); setAclEditing(false); setAclUnsaved(false); }}>{t('common.cancel')}</Button>
+              <Button type="primary" disabled={!aclUnsaved || !aclDraft.name.trim()} loading={aclMutation.isPending && aclBusyId === aclDraft.id} onClick={saveACLDraft}>{t('common.save')}</Button>
             </div>
           </div>
         )}
@@ -567,7 +596,7 @@ export default function ProtectionPage() {
                 dataIndex: 'enabled',
                 width: 78,
                 render: (_: boolean, record: ACLRule) => (
-                  <Switch checked={record.enabled} loading={aclMutation.isPending} size="small" onChange={(enabled) => toggleACL(record.id, enabled)} />
+                  <Switch checked={record.enabled} loading={aclBusyId === record.id} size="small" onChange={(enabled) => toggleACL(record.id, enabled)} />
                 ),
               },
               {
@@ -577,7 +606,7 @@ export default function ProtectionPage() {
                 render: (_: unknown, record: ACLRule) => (
                   <span className="action-group">
                     <Button size="small" icon={<Pencil size={14} />} onClick={() => editACL(record)}>{t('common.edit')}</Button>
-                    <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => deleteACL(record.id)}>{t('common.delete')}</Button>
+                    <Button size="small" status="danger" icon={<Trash2 size={14} />} loading={aclBusyId === record.id} onClick={() => deleteACL(record.id)}>{t('common.delete')}</Button>
                   </span>
                 ),
               },
@@ -585,18 +614,60 @@ export default function ProtectionPage() {
           />
         )}
         <div className="protection-acl-cards">
+          {aclEditing && aclDraft && (
+            <article className="protection-acl-card protection-acl-card-editing">
+              <header>
+                <strong>{aclDraft.name || t('rules.namePlaceholder')}</strong>
+                <Switch checked={aclDraft.enabled} size="small" onChange={(enabled) => { setAclDraft((d) => d ? { ...d, enabled } : d); setAclUnsaved(true); }} />
+              </header>
+              <label>
+                <span>{t('rules.name')}</span>
+                <Input value={aclDraft.name} placeholder={t('rules.namePlaceholder')} onChange={(name) => { setAclDraft((d) => d ? { ...d, name } : d); setAclUnsaved(true); }} />
+              </label>
+              <label>
+                <span>{t('rules.method')}</span>
+                <Select value={aclDraft.method || '*'} onChange={(method) => { setAclDraft((d) => d ? { ...d, method: String(method) } : d); setAclUnsaved(true); }}>
+                  <Select.Option value="*">*</Select.Option>
+                  <Select.Option value="GET">GET</Select.Option>
+                  <Select.Option value="POST">POST</Select.Option>
+                  <Select.Option value="PUT">PUT</Select.Option>
+                  <Select.Option value="DELETE">DELETE</Select.Option>
+                  <Select.Option value="PATCH">PATCH</Select.Option>
+                  <Select.Option value="HEAD">HEAD</Select.Option>
+                  <Select.Option value="OPTIONS">OPTIONS</Select.Option>
+                </Select>
+              </label>
+              <label>
+                <span>{t('rules.path')}</span>
+                <Input value={aclDraft.path_prefix || ''} placeholder="/admin" onChange={(path_prefix) => { setAclDraft((d) => d ? { ...d, path_prefix } : d); setAclUnsaved(true); }} />
+              </label>
+              <label>
+                <span>{t('logs.action')}</span>
+                <Select value={aclDraft.action} onChange={(action) => { setAclDraft((d) => d ? { ...d, action: String(action) } : d); setAclUnsaved(true); }}>
+                  <Select.Option value="block">{displayAction('block', t)}</Select.Option>
+                  <Select.Option value="challenge">{displayAction('challenge', t)}</Select.Option>
+                  <Select.Option value="log">{displayAction('log', t)}</Select.Option>
+                  <Select.Option value="pass">{displayAction('pass', t)}</Select.Option>
+                </Select>
+              </label>
+              <footer>
+                <Button size="small" disabled={aclMutation.isPending} onClick={() => { setAclDraft(null); setAclEditing(false); setAclUnsaved(false); }}>{t('common.cancel')}</Button>
+                <Button size="small" type="primary" disabled={!aclUnsaved || !aclDraft.name.trim()} loading={aclMutation.isPending && aclBusyId === aclDraft.id} onClick={saveACLDraft}>{t('common.save')}</Button>
+              </footer>
+            </article>
+          )}
           {protection.acl.rules.map((rule) => (
             <article className="protection-acl-card" key={rule.id}>
               <header>
                 <strong title={rule.name}>{rule.name}</strong>
-                <Switch checked={rule.enabled} loading={aclMutation.isPending} size="small" onChange={(enabled) => toggleACL(rule.id, enabled)} />
+                <Switch checked={rule.enabled} loading={aclBusyId === rule.id} size="small" onChange={(enabled) => toggleACL(rule.id, enabled)} />
               </header>
               <div><span>{t('rules.method')}</span><strong>{rule.method || '*'}</strong></div>
               <div><span>{t('rules.path')}</span><code>{rule.path_prefix || '*'}</code></div>
               <div><span>{t('logs.action')}</span><Tag color={rule.action === 'block' ? 'red' : rule.action === 'challenge' ? 'orange' : 'blue'}>{displayAction(rule.action, t)}</Tag></div>
               <footer>
                 <Button size="small" onClick={() => editACL(rule)}>{t('common.edit')}</Button>
-                <Button size="small" status="danger" onClick={() => deleteACL(rule.id)}>{t('common.delete')}</Button>
+                <Button size="small" status="danger" loading={aclBusyId === rule.id} onClick={() => deleteACL(rule.id)}>{t('common.delete')}</Button>
               </footer>
             </article>
           ))}
@@ -631,7 +702,7 @@ function GeoRegionSelector({ value, onChange }: { value?: string[]; onChange?: (
       onChange={(next) => onChange?.((Array.isArray(next) ? next : []).map((item) => String(item).toUpperCase()))}
     >
       {geoRegionGroups.map((group) => (
-        <Select.OptGroup key={group.label} label={group.label}>
+        <Select.OptGroup key={group.labelKey} label={t(group.labelKey, { defaultValue: 'fallback' in group ? group.fallback : group.labelKey })}>
           {group.codes.map((code) => (
             <Select.Option key={code} value={code}>
               {t(`geo.countries.${code}`, { defaultValue: code })} ({code})
@@ -704,14 +775,28 @@ function ProtectionLevelSelect({ value, onChange, disabled }: { value?: string; 
     { value: 'high', label: t('sites.levelHigh') },
     { value: 'strict', label: t('sites.levelStrict') },
   ];
+  const currentIndex = Math.max(0, options.findIndex((option) => option.value === current));
   return (
-    <div className="protection-level-picker" role="radiogroup" aria-label={t('protection.policy')}>
-      {options.map((option) => (
+    <div
+      className="protection-level-picker"
+      role="radiogroup"
+      aria-label={t('protection.policy')}
+      onKeyDown={(event) => {
+        if (disabled) return;
+        const delta = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+        if (!delta) return;
+        event.preventDefault();
+        const next = options[(currentIndex + delta + options.length) % options.length];
+        onChange?.(next.value);
+      }}
+    >
+      {options.map((option, index) => (
         <button
           key={option.value}
           type="button"
           role="radio"
           disabled={disabled}
+          tabIndex={disabled ? -1 : current === option.value || (currentIndex < 0 && index === 0) ? 0 : -1}
           aria-checked={current === option.value}
           className={current === option.value ? `protection-level-option protection-level-option-${option.value} protection-level-option-active` : 'protection-level-option'}
           onClick={() => onChange?.(option.value)}

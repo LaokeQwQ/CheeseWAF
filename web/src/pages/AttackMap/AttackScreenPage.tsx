@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { Activity, ArrowLeft, Gauge, Globe2, ListFilter, RefreshCcw, Shield } from 'lucide-react';
 import { fetchLogs, fetchMonitorSummary } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
+import QueryErrorState from '../../components/QueryErrorState';
 import { useAppStore } from '../../stores';
 import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry, displaySeverity } from '../../utils/display';
@@ -29,7 +30,7 @@ export default function AttackScreenPage() {
   const timelinePointerActive = useRef(false);
   const timelinePaused = timelineInteracting || timelinePercent < 100;
   const refetchInterval = timelinePaused ? false : screenRefreshMs;
-  const { data: logs, isFetching, refetch } = useQuery({
+  const { data: logs, isFetching, isError: logsError, refetch } = useQuery({
     queryKey: ['attack-screen-logs'],
     queryFn: () => fetchLogs({ limit: 1000 }),
     refetchInterval,
@@ -37,7 +38,7 @@ export default function AttackScreenPage() {
     retry: false,
     placeholderData: (previous) => previous,
   });
-  const { data: monitor } = useQuery({
+  const { data: monitor, isError: monitorError, isFetching: monitorFetching, refetch: refetchMonitor } = useQuery({
     queryKey: ['attack-screen-monitor'],
     queryFn: fetchMonitorSummary,
     refetchInterval,
@@ -47,6 +48,7 @@ export default function AttackScreenPage() {
   });
   const entries = logs?.items ?? [];
   const initialLoading = !logs && isFetching;
+  const loadFailed = logsError && !logs;
   const attackEntries = useMemo(() => entries.filter(isAttackEntry), [entries]);
   const visibleAttackEntries = useMemo(() => filterEntriesByTimeline(attackEntries, timelinePercent), [attackEntries, timelinePercent]);
   const regions = useMemo(() => aggregateRegions(visibleAttackEntries), [visibleAttackEntries]);
@@ -142,18 +144,45 @@ export default function AttackScreenPage() {
         <header className="attack-screen-topbar">
           <span className="attack-screen-live"><i /> {timelinePaused ? t('attackMap.historyView') : t('attackMap.live')}</span>
           <LiveClock />
-          <span>{monitor?.alerts?.length ? displaySeverity(monitor.alerts[0]?.severity, t) : t('common.healthy')}</span>
-          <button type="button" onClick={() => refetch()} disabled={isFetching}>
+          <span>
+            {monitorError && !monitor
+              ? t('common.loadFailed')
+              : monitor?.alerts?.length
+                ? displaySeverity(monitor.alerts[0]?.severity, t)
+                : t('common.healthy')}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              void refetch();
+              void refetchMonitor();
+            }}
+            disabled={isFetching || monitorFetching}
+          >
             <RefreshCcw size={15} />
             <span>{t('attackMap.refresh')}</span>
           </button>
         </header>
 
+        {loadFailed && (
+          <QueryErrorState
+            onRetry={() => {
+              void refetch();
+              void refetchMonitor();
+            }}
+            retrying={isFetching}
+          />
+        )}
+
         <div className="attack-screen-grid">
           <div className="attack-screen-left attack-screen-overlay attack-screen-overlay-left">
             <section className="attack-screen-panel">
               <h2>{t('dashboard.threatMix')}</h2>
-              {initialLoading ? <PanelLoading label={t('common.loading')} /> : (
+              {loadFailed ? (
+                <div className="attack-screen-empty">{t('common.loadFailed')}</div>
+              ) : initialLoading ? (
+                <PanelLoading label={t('common.loading')} />
+              ) : (
                 <div className="attack-screen-stats">
                   <Metric label={t('attackMap.attacks')} value={totalAttacks} />
                   <Metric label={t('attackMap.perMinute')} value={perMinute} />
@@ -164,7 +193,13 @@ export default function AttackScreenPage() {
             </section>
             <section className="attack-screen-panel">
               <h2>{t('attackMap.attackTypes')}</h2>
-              {initialLoading ? <PanelLoading label={t('common.loading')} /> : <BarList items={attackTypes} emptyLabel={t('common.noData')} />}
+              {loadFailed ? (
+                <div className="attack-screen-empty">{t('common.loadFailed')}</div>
+              ) : initialLoading ? (
+                <PanelLoading label={t('common.loading')} />
+              ) : (
+                <BarList items={attackTypes} emptyLabel={t('common.noData')} />
+              )}
             </section>
           </div>
 
@@ -185,13 +220,25 @@ export default function AttackScreenPage() {
           <div className="attack-screen-right attack-screen-overlay attack-screen-overlay-right">
             <section className="attack-screen-panel">
               <h2>{t('attackMap.sourceCountries')}</h2>
-              {initialLoading ? <PanelLoading label={t('common.loading')} /> : <CountryList regions={sourceCountries} t={t} emptyLabel={t('common.noData')} />}
+              {loadFailed ? (
+                <div className="attack-screen-empty">{t('common.loadFailed')}</div>
+              ) : initialLoading ? (
+                <PanelLoading label={t('common.loading')} />
+              ) : (
+                <CountryList regions={sourceCountries} t={t} emptyLabel={t('common.noData')} />
+              )}
             </section>
             <section className="attack-screen-panel attack-screen-level">
               <h2>{t('attackMap.threatLevel')}</h2>
-              <strong className={`attack-screen-level-${level}`}>{t(`attackMap.risk.${level}`)}</strong>
-              <span>{t('attackMap.currentLevel')}</span>
-              <div className="attack-screen-level-meter"><i style={{ width: `${levelPercent(level)}%` }} /></div>
+              {loadFailed ? (
+                <div className="attack-screen-empty">{t('common.loadFailed')}</div>
+              ) : (
+                <>
+                  <strong className={`attack-screen-level-${level}`}>{t(`attackMap.risk.${level}`)}</strong>
+                  <span>{t('attackMap.currentLevel')}</span>
+                  <div className="attack-screen-level-meter"><i style={{ width: `${levelPercent(level)}%` }} /></div>
+                </>
+              )}
             </section>
             <section className="attack-screen-panel">
               <h2>{t('attackMap.timeline')}</h2>

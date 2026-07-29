@@ -52,16 +52,38 @@ export default function OperationsPage() {
   const dataSize = storage?.data ?? 0;
   const logSize = storage?.logs ?? 0;
   const total = Math.max(dataSize + logSize, 1);
-  const reportTask = tasks.find((task) => task.type === 'security_report') ?? defaultReportTask;
+  const dataShare = Math.round((dataSize / total) * 100);
+  const logShare = Math.round((logSize / total) * 100);
+  const reportTask = tasks.find((task) => task.type === 'security_report') ?? defaultReportTask(t);
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
+  const busyTaskId = tasksMutation.isPending
+    ? (() => {
+        const next = tasksMutation.variables ?? [];
+        if (!Array.isArray(next)) return null;
+        if (next.length !== tasks.length) {
+          const deleted = tasks.find((task) => !next.some((item) => item.id === task.id));
+          if (deleted) return deleted.id;
+          const added = next.find((task) => !tasks.some((item) => item.id === task.id));
+          if (added) return added.id;
+        }
+        const changed = next.find((task) => {
+          const prev = tasks.find((item) => item.id === task.id);
+          return prev && JSON.stringify(prev) !== JSON.stringify(task);
+        });
+        return changed?.id ?? null;
+      })()
+    : null;
   const persistTasks = (next: ScheduledTask[], onSuccess?: () => void) => tasksMutation.mutate(next, { onSuccess });
-  const patchTask = (id: string, patch: Partial<ScheduledTask>) => {
-    persistTasks(tasks.map((task) => (task.id === id ? { ...task, ...patch } : task)));
+  const patchTask = async (id: string, patch: Partial<ScheduledTask>) => {
+    const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
+    const next = latest.map((task) => (task.id === id ? { ...task, ...patch } : task));
+    persistTasks(next);
   };
   const saveTask = (task: ScheduledTask, patch: Partial<ScheduledTask>, onSuccess?: () => void) => {
+    const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
     const nextTask = { ...task, ...patch };
-    const exists = tasks.some((item) => item.id === task.id);
-    persistTasks(exists ? tasks.map((item) => (item.id === task.id ? nextTask : item)) : [...tasks, nextTask], onSuccess);
+    const exists = latest.some((item) => item.id === task.id);
+    persistTasks(exists ? latest.map((item) => (item.id === task.id ? nextTask : item)) : [...latest, nextTask], onSuccess);
   };
   const removeTask = (id: string) => {
     Modal.confirm({
@@ -70,7 +92,10 @@ export default function OperationsPage() {
       okText: t('common.delete'),
       cancelText: t('common.cancel'),
       okButtonProps: { status: 'danger' },
-      onOk: () => persistTasks(tasks.filter((task) => task.id !== id)),
+      onOk: () => {
+        const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
+        persistTasks(latest.filter((task) => task.id !== id));
+      },
     });
   };
 
@@ -94,8 +119,16 @@ export default function OperationsPage() {
           ) : (
             <>
               <div className="resource-stack">
-                <div><Database size={18} /><span>{t('ops.dataDir')}</span><Progress percent={Math.round((dataSize / total) * 100)} /><code className="resource-value">{formatBytes(dataSize)}</code></div>
-                <div><Archive size={18} /><span>{t('ops.logsDir')}</span><Progress percent={Math.round((logSize / total) * 100)} /><code className="resource-value">{formatBytes(logSize)}</code></div>
+                <div title={t('ops.shareHint', { defaultValue: 'Share of measured data + logs size (not disk capacity)' })}>
+                  <Database size={18} /><span>{t('ops.dataDir')}</span>
+                  <Progress percent={dataShare} formatText={() => `${dataShare}%`} />
+                  <code className="resource-value">{formatBytes(dataSize)}</code>
+                </div>
+                <div title={t('ops.shareHint', { defaultValue: 'Share of measured data + logs size (not disk capacity)' })}>
+                  <Archive size={18} /><span>{t('ops.logsDir')}</span>
+                  <Progress percent={logShare} formatText={() => `${logShare}%`} />
+                  <code className="resource-value">{formatBytes(logSize)}</code>
+                </div>
               </div>
               <div className="panel-actions">
                 <Button icon={<RotateCcw size={16} />} onClick={() => cleanup.mutate()} loading={cleanup.isPending}>{t('ops.cleanup')}</Button>
@@ -109,7 +142,7 @@ export default function OperationsPage() {
             <QueryError error={tasksQuery.error} onRetry={() => tasksQuery.refetch()} retryLabel={t('common.retry')} fallbackMessage={t('common.noData')} />
           ) : (
             <Form
-              key={reportTask.id}
+              key={`${reportTask.id}-${reportTask.enabled}-${reportTask.frequency}-${reportTask.at}-${reportTask.channel}-${reportTask.recipient}`}
               className="ops-report-form"
               layout="vertical"
               initialValues={{
@@ -120,7 +153,10 @@ export default function OperationsPage() {
                 recipient: reportTask.recipient ?? './data/reports',
                 period: reportTask.period ?? 'daily',
               }}
-              onSubmit={(values) => tasksMutation.mutate(upsertReportTask(tasks, { ...reportTask, ...values }))}
+              onSubmit={(values) => {
+                const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
+                tasksMutation.mutate(upsertReportTask(latest, { ...reportTask, ...values }, t));
+              }}
             >
               <Form.Item label={t('ops.report')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
               <Form.Item label={t('ops.every')} field="frequency">
@@ -149,7 +185,7 @@ export default function OperationsPage() {
       <section className="table-panel ops-task-panel">
         <div className="panel-heading">
           <h2>{t('ops.taskList')}</h2>
-          <Button icon={<Plus size={15} />} disabled={tasksQuery.isLoading || tasksQuery.isError || tasksMutation.isPending} onClick={() => setEditingTask(newScheduledTask())}>{t('common.add')}</Button>
+          <Button icon={<Plus size={15} />} disabled={tasksQuery.isLoading || tasksQuery.isError || tasksMutation.isPending} onClick={() => setEditingTask(newScheduledTask(t))}>{t('common.add')}</Button>
         </div>
         {tasksQuery.isLoading ? <div className="skeleton-list" /> : tasksQuery.isError ? (
           <QueryError error={tasksQuery.error} onRetry={() => tasksQuery.refetch()} retryLabel={t('common.retry')} fallbackMessage={t('common.noData')} />
@@ -174,8 +210,8 @@ export default function OperationsPage() {
                       <Switch
                         size="small"
                         checked={enabled}
-                        loading={tasksMutation.isPending}
-                        onChange={(next) => patchTask(record.id, { enabled: next })}
+                        loading={busyTaskId === record.id}
+                        onChange={(next) => void patchTask(record.id, { enabled: next })}
                       />
                     ),
                   },
@@ -191,6 +227,7 @@ export default function OperationsPage() {
                           status="danger"
                           icon={<Trash2 size={13} />}
                           disabled={tasksMutation.isPending}
+                          loading={busyTaskId === record.id}
                           onClick={() => removeTask(record.id)}
                         >
                           {t('common.delete')}
@@ -206,8 +243,8 @@ export default function OperationsPage() {
                 <TaskCard
                   key={task.id}
                   task={task}
-                  busy={tasksMutation.isPending}
-                  onToggle={(enabled) => patchTask(task.id, { enabled })}
+                  busy={busyTaskId === task.id}
+                  onToggle={(enabled) => void patchTask(task.id, { enabled })}
                   onEdit={() => setEditingTask(task)}
                   onDelete={() => removeTask(task.id)}
                   t={t}
@@ -226,7 +263,7 @@ export default function OperationsPage() {
       >
         {editingTask && (
           <Form
-            key={editingTask.id}
+            key={`${editingTask.id}-${editingTask.enabled}-${editingTask.every}-${editingTask.frequency}`}
             className="ops-task-form"
             layout="vertical"
             initialValues={taskToFormValues(editingTask)}
@@ -269,7 +306,7 @@ export default function OperationsPage() {
             </div>
             <Form.Item label={t('rules.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
             <div className="form-action-row">
-              <Button onClick={() => setEditingTask(null)}>{t('common.close')}</Button>
+              <Button onClick={() => setEditingTask(null)} disabled={tasksMutation.isPending}>{t('common.close')}</Button>
               <Button type="primary" htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
             </div>
           </Form>
@@ -279,35 +316,40 @@ export default function OperationsPage() {
   );
 }
 
-const defaultReportTask: ScheduledTask = {
-  id: 'security-daily-report',
-  name: 'Security daily report',
-  type: 'security_report',
-  schedule: '',
-  every: '24h',
-  frequency: 'daily',
-  at: '08:00',
-  target: '',
-  channel: 'file',
-  recipient: './data/reports',
-  period: 'daily',
-  format: 'markdown',
-  keep: 7,
-  enabled: false,
-};
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function defaultReportTask(t: Translate): ScheduledTask {
+  return {
+    id: 'security-daily-report',
+    name: t('ops.defaultDailyReport', { defaultValue: 'Security daily report' }),
+    type: 'security_report',
+    schedule: '',
+    every: '24h',
+    frequency: 'daily',
+    at: '08:00',
+    target: '',
+    channel: 'file',
+    recipient: './data/reports',
+    period: 'daily',
+    format: 'markdown',
+    keep: 7,
+    enabled: false,
+  };
+}
 
 const timeRules = [
   { required: true },
   { match: /^(?:[01]\d|2[0-3]):[0-5]\d$/, message: 'HH:mm' },
 ];
 
-function upsertReportTask(tasks: ScheduledTask[], next: ScheduledTask) {
+function upsertReportTask(tasks: ScheduledTask[], next: ScheduledTask, t: Translate) {
+  const base = defaultReportTask(t);
   const normalized = {
-    ...defaultReportTask,
+    ...base,
     ...next,
     period: next.period ?? next.frequency ?? 'daily',
     format: next.format ?? 'markdown',
-    name: next.name || 'Security report',
+    name: next.name || t('ops.defaultSecurityReport', { defaultValue: 'Security report' }),
     frequency: next.frequency || 'daily',
     schedule: next.frequency || 'daily',
   };
@@ -321,7 +363,8 @@ function upsertReportTask(tasks: ScheduledTask[], next: ScheduledTask) {
 function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 function taskTypeLabel(type: string, t: (key: string, options?: Record<string, unknown>) => string) {
@@ -436,11 +479,11 @@ function durationToString(value: number | undefined, unit: DurationUnit | undefi
   }
 }
 
-function newScheduledTask(): ScheduledTask {
+function newScheduledTask(t: Translate): ScheduledTask {
   const stamp = Date.now();
   return {
     id: `cleanup-${stamp}`,
-    name: 'Log cleanup',
+    name: t('ops.defaultLogCleanup', { defaultValue: 'Log cleanup' }),
     type: 'cleanup',
     schedule: 'interval',
     every: '24h',

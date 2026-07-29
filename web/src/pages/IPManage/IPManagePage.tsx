@@ -1,4 +1,4 @@
-import { type KeyboardEvent, useEffect, useMemo, useState } from 'react';
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Input, InputNumber, Message as ArcoMessage, Modal, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -80,6 +80,12 @@ export default function IPManagePage() {
   const [importStatus, setImportStatus] = useState<IntelOperationStatus | null>(null);
   const [syncStatus, setSyncStatus] = useState<IntelOperationStatus | null>(null);
   const [lookupStatus, setLookupStatus] = useState<IntelOperationStatus | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<'csv' | 'stix' | null>(null);
+  const [entriesPage, setEntriesPage] = useState(1);
+  const tagsDirtyRef = useRef(false);
+  const accessRulesDirtyRef = useRef(false);
+  const reputationDirtyRef = useRef(false);
+  const providersDirtyRef = useRef(false);
   const { data, isLoading } = useQuery({ queryKey: ['ip-rules'], queryFn: fetchIPRules, retry: false });
   const { data: sites = [] } = useQuery({ queryKey: ['sites-lite'], queryFn: fetchSites, retry: false });
   const entries = data?.entries ?? [];
@@ -92,30 +98,51 @@ export default function IPManagePage() {
   }, [data?.tags, draftTags]);
 
   useEffect(() => {
-    if (data?.tags) {
-      setDraftTags(data.tags);
+    if (!data?.tags || tagsDirtyRef.current) {
+      return;
     }
-    if (data?.access_rules) {
-      setAccessRules(data.access_rules);
+    setDraftTags(data.tags);
+  }, [data?.tags]);
+
+  useEffect(() => {
+    if (!data?.access_rules || accessRulesDirtyRef.current) {
+      return;
     }
-    if (data?.reputation_overrides) {
-      setReputationOverrides(data.reputation_overrides);
+    setAccessRules(data.access_rules);
+  }, [data?.access_rules]);
+
+  useEffect(() => {
+    if (!data?.reputation_overrides || reputationDirtyRef.current) {
+      return;
     }
-    if (data?.providers) {
-      setProviders(data.providers);
-      if (!lookupDraft.providerId && data.providers.length > 0) {
-        setLookupDraft((current) => ({ ...current, providerId: data.providers[0].id }));
-      }
+    setReputationOverrides(data.reputation_overrides);
+  }, [data?.reputation_overrides]);
+
+  useEffect(() => {
+    if (!data?.providers || providersDirtyRef.current) {
+      return;
     }
-  }, [data?.access_rules, data?.providers, data?.reputation_overrides, data?.tags, lookupDraft.providerId]);
+    setProviders(data.providers);
+  }, [data?.providers]);
+
+  useEffect(() => {
+    if (lookupDraft.providerId || !data?.providers?.length) {
+      return;
+    }
+    setLookupDraft((current) => (current.providerId ? current : { ...current, providerId: data.providers[0].id }));
+  }, [data?.providers, lookupDraft.providerId]);
 
   const tagMutation = useMutation({
     mutationFn: updateIPTags,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ip-rules'] }),
+    onSuccess: () => {
+      tagsDirtyRef.current = false;
+      queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
+    },
   });
   const accessRulesMutation = useMutation({
     mutationFn: updateIPAccessRules,
     onSuccess: (saved) => {
+      accessRulesDirtyRef.current = false;
       setAccessRules(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
       ArcoMessage.success(t('ip.accessRulesSaved'));
@@ -125,6 +152,7 @@ export default function IPManagePage() {
   const reputationMutation = useMutation({
     mutationFn: updateIPReputationOverrides,
     onSuccess: (saved) => {
+      reputationDirtyRef.current = false;
       setReputationOverrides(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
       ArcoMessage.success(t('ip.reputationSaved'));
@@ -134,6 +162,7 @@ export default function IPManagePage() {
   const providersMutation = useMutation({
     mutationFn: updateThreatIntelProviders,
     onSuccess: (saved) => {
+      providersDirtyRef.current = false;
       setProviders(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
       ArcoMessage.success(t('ip.providersSaved'));
@@ -243,14 +272,31 @@ export default function IPManagePage() {
       || intelFor(entry).some((intel) => `${intel.source} ${intel.severity} ${intel.labels.join(' ')}`.toLowerCase().includes(needle))
     ));
   }, [draftTags, entries, search]);
+  const entriesPageSize = 10;
+  const entriesPageCount = Math.max(1, Math.ceil(filtered.length / entriesPageSize));
+  const pagedEntries = useMemo(() => {
+    const start = (entriesPage - 1) * entriesPageSize;
+    return filtered.slice(start, start + entriesPageSize);
+  }, [entriesPage, entriesPageSize, filtered]);
+
+  useEffect(() => {
+    setEntriesPage(1);
+  }, [search]);
+
+  useEffect(() => {
+    setEntriesPage((current) => Math.min(current, entriesPageCount));
+  }, [entriesPageCount]);
 
   const updateProvider = (index: number, patch: Partial<ThreatIntelProvider>) => {
+    providersDirtyRef.current = true;
     setProviders((current) => current.map((provider, providerIndex) => (providerIndex === index ? { ...provider, ...patch } : provider)));
   };
   const removeProvider = (id: string) => {
+    providersDirtyRef.current = true;
     setProviders((current) => current.filter((provider) => provider.id !== id));
   };
   const addProvider = () => {
+    providersDirtyRef.current = true;
     const template = providerTemplates[0];
     setProviders((current) => [
       ...current,
@@ -277,6 +323,7 @@ export default function IPManagePage() {
       updateProvider(index, { type });
       return;
     }
+    providersDirtyRef.current = true;
     setProviders((current) => current.map((provider, providerIndex) => {
       if (providerIndex !== index) {
         return provider;
@@ -291,8 +338,9 @@ export default function IPManagePage() {
       };
     }));
   };
+  const defaultAccessRuleName = t('ip.defaultAccessRuleName', { defaultValue: 'IP access rule' });
   const saveAccessRules = (nextRules = accessRules) => {
-    accessRulesMutation.mutate(nextRules.map(normalizeAccessRuleForSave).filter((rule) => rule.entries.length > 0));
+    accessRulesMutation.mutate(nextRules.map((rule) => normalizeAccessRuleForSave(rule, defaultAccessRuleName)).filter((rule) => rule.entries.length > 0));
   };
   const addAccessRule = () => {
     const entries = accessDraft.entries.length > 0 ? accessDraft.entries : splitList(accessDraft.entries.join(','));
@@ -318,14 +366,15 @@ export default function IPManagePage() {
       id: accessDraft.id || `ip-rule-${Date.now()}`,
       name: accessDraft.name || entries[0],
       entries,
-    });
+    }, defaultAccessRuleName);
     const nextRules = [...accessRules, nextRule];
+    accessRulesDirtyRef.current = true;
     setAccessRules(nextRules);
     setAccessDraft(defaultAccessDraft);
     saveAccessRules(nextRules);
   };
   const saveEditedAccessRule = (index: number) => {
-    const nextRules = accessRules.map((rule, ruleIndex) => (ruleIndex === index ? normalizeAccessRuleForSave(rule) : rule));
+    const nextRules = accessRules.map((rule, ruleIndex) => (ruleIndex === index ? normalizeAccessRuleForSave(rule, defaultAccessRuleName) : rule));
     const current = nextRules[index];
     if (!current || current.entries.length === 0) {
       ArcoMessage.warning(t('ip.entriesRequired'));
@@ -344,6 +393,7 @@ export default function IPManagePage() {
       ArcoMessage.warning(t('ip.pathRequired'));
       return;
     }
+    accessRulesDirtyRef.current = true;
     setAccessRules(nextRules);
     saveAccessRules(nextRules);
   };
@@ -356,12 +406,14 @@ export default function IPManagePage() {
       okButtonProps: { status: 'danger' },
       onOk: () => {
         const nextRules = accessRules.filter((rule) => rule.id !== id);
+        accessRulesDirtyRef.current = true;
         setAccessRules(nextRules);
         saveAccessRules(nextRules);
       },
     });
   };
   const updateAccessRule = (index: number, patch: Partial<IPAccessRule>) => {
+    accessRulesDirtyRef.current = true;
     setAccessRules((current) => current.map((rule, ruleIndex) => (ruleIndex === index ? { ...rule, ...patch } : rule)));
   };
   const applyIPDisposition = (ip: string, action: 'allow' | 'block' | 'monitor') => {
@@ -384,16 +436,38 @@ export default function IPManagePage() {
           enabled: true,
         },
       ];
+    accessRulesDirtyRef.current = true;
     setAccessRules(nextRules);
     saveAccessRules(nextRules);
   };
   const saveReputationOverride = (ip: string, score: number) => {
+    reputationDirtyRef.current = true;
     reputationMutation.mutate({ ...reputationOverrides, [ip]: Math.max(0, Math.min(100, Math.round(score))) });
   };
   const resetReputationOverride = (ip: string) => {
+    reputationDirtyRef.current = true;
     const next = { ...reputationOverrides };
     delete next[ip];
     reputationMutation.mutate(next);
+  };
+  const saveIntelFile = async (format: 'csv' | 'stix') => {
+    if (exportingFormat) {
+      return;
+    }
+    setExportingFormat(format);
+    try {
+      const blob = await exportThreatIntel(format);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `cheesewaf-threat-intel.${format === 'stix' ? 'json' : 'csv'}`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed'));
+    } finally {
+      setExportingFormat(null);
+    }
   };
   const validateImportDraft = () => {
     if (!importDraft.contents.trim()) {
@@ -436,8 +510,8 @@ export default function IPManagePage() {
           <span className="table-identity ip-header-actions">
             {(activeTab === 'providers' || activeTab === 'import') && hasThreatIntel && (
               <>
-                <Button icon={<FileDown size={16} />} onClick={() => saveIntelFile('csv')}>{t('ip.exportCsv')}</Button>
-                <Button icon={<FileDown size={16} />} onClick={() => saveIntelFile('stix')}>{t('ip.exportStix')}</Button>
+                <Button icon={<FileDown size={16} />} loading={exportingFormat === 'csv'} disabled={Boolean(exportingFormat)} onClick={() => { void saveIntelFile('csv'); }}>{t('ip.exportCsv')}</Button>
+                <Button icon={<FileDown size={16} />} loading={exportingFormat === 'stix'} disabled={Boolean(exportingFormat)} onClick={() => { void saveIntelFile('stix'); }}>{t('ip.exportStix')}</Button>
               </>
             )}
             {activeTab === 'entries' && tagsChanged && (
@@ -511,7 +585,10 @@ export default function IPManagePage() {
                     render: (_: string[], record: IPReputationEntry) => (
                       <EditableTagInput
                         tags={tagsFor(record, draftTags)}
-                        onChange={(tags) => setDraftTags((current) => ({ ...current, [record.ip]: tags }))}
+                        onChange={(tags) => {
+                          tagsDirtyRef.current = true;
+                          setDraftTags((current) => ({ ...current, [record.ip]: tags }));
+                        }}
                       />
                     ),
                   },
@@ -563,14 +640,17 @@ export default function IPManagePage() {
             <div className="ip-entry-card-list">
               {isLoading && <div className="empty-state">{t('common.loading')}</div>}
               {!isLoading && filtered.length === 0 && <div className="empty-state">{t('common.noData')}</div>}
-              {!isLoading && filtered.map((entry) => (
+              {!isLoading && pagedEntries.map((entry) => (
                 <IPEntryMobileCard
                   key={entry.ip}
                   entry={entry}
                   tags={tagsFor(entry, draftTags)}
                   savingAccess={accessRulesMutation.isPending}
                   savingReputation={reputationMutation.isPending}
-                  onTagsChange={(tags) => setDraftTags((current) => ({ ...current, [entry.ip]: tags }))}
+                  onTagsChange={(tags) => {
+                    tagsDirtyRef.current = true;
+                    setDraftTags((current) => ({ ...current, [entry.ip]: tags }));
+                  }}
                   onAllow={() => applyIPDisposition(entry.ip, 'allow')}
                   onBlock={() => applyIPDisposition(entry.ip, 'block')}
                   onMonitor={() => applyIPDisposition(entry.ip, 'monitor')}
@@ -579,6 +659,15 @@ export default function IPManagePage() {
                   t={t}
                 />
               ))}
+              {!isLoading && filtered.length > entriesPageSize && (
+                <div className="feed-pagination">
+                  <span>{t('updates.feedPage', { page: entriesPage, total: entriesPageCount, defaultValue: `Page ${entriesPage} / ${entriesPageCount}` })}</span>
+                  <Space>
+                    <Button disabled={entriesPage <= 1} onClick={() => setEntriesPage((current) => Math.max(1, current - 1))}>{t('common.back')}</Button>
+                    <Button disabled={entriesPage >= entriesPageCount} onClick={() => setEntriesPage((current) => Math.min(entriesPageCount, current + 1))}>{t('common.next')}</Button>
+                  </Space>
+                </div>
+              )}
             </div>
           </Tabs.TabPane>
 
@@ -657,7 +746,7 @@ export default function IPManagePage() {
                     rowKey="id"
                     pagination={false}
                     data={accessRules}
-                    scroll={{ x: 1320 }}
+                    scroll={{ x: 1360 }}
                     columns={[
                       {
                         title: t('rules.name'),
@@ -1217,15 +1306,7 @@ function IPEntryMobileCard({
   );
 }
 
-async function saveIntelFile(format: 'csv' | 'stix') {
-  const blob = await exportThreatIntel(format);
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `cheesewaf-threat-intel.${format === 'stix' ? 'json' : 'csv'}`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+
 
 function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
   const { t } = useTranslation();
@@ -1261,7 +1342,7 @@ function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags:
             </div>
           )}
         >
-          <Button className="ip-tag-edit-btn" size="mini" icon={<Pencil size={12} />} />
+          <Button className="ip-tag-edit-btn" size="mini" icon={<Pencil size={12} />} aria-label={t('common.edit')} />
         </Popover>
       </div>
     </div>
@@ -1692,13 +1773,13 @@ function intelColor(severity: string) {
   }
 }
 
-function normalizeAccessRuleForSave(rule: IPAccessRule): IPAccessRule {
+function normalizeAccessRuleForSave(rule: IPAccessRule, fallbackName = 'IP access rule'): IPAccessRule {
   const scope = rule.scope === 'directory' ? 'path' : rule.scope || 'global';
   const pathPrefix = scope === 'path' ? normalizePathPrefix(rule.path_prefix) : '';
   return {
     ...rule,
     id: rule.id || `ip-rule-${Date.now()}`,
-    name: rule.name || rule.id || 'IP access rule',
+    name: rule.name || rule.id || fallbackName,
     description: rule.description || '',
     action: rule.action === 'block' ? 'block' : rule.action === 'monitor' ? 'monitor' : 'allow',
     scope,
