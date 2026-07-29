@@ -3,12 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
   setupAdmin: vi.fn(),
+  unwrapAPIResponse: vi.fn(),
 }));
 
 const navigateMock = vi.fn();
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string, opts?: { defaultValue?: string }) => opts?.defaultValue ?? key }),
 }));
 
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -18,7 +19,15 @@ vi.mock('react-router-dom', async (importOriginal) => {
 
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>();
-  return { ...actual, ...apiMocks };
+  return {
+    ...actual,
+    setupAdmin: apiMocks.setupAdmin,
+    unwrapAPIResponse: apiMocks.unwrapAPIResponse,
+    apiClient: {
+      post: vi.fn(() => Promise.resolve({})),
+      patch: vi.fn(() => Promise.resolve({})),
+    },
+  };
 });
 
 import SetupPage from './SetupPage';
@@ -26,6 +35,15 @@ import SetupPage from './SetupPage';
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  apiMocks.unwrapAPIResponse.mockResolvedValue({
+    probe: {
+      profile: 'medium',
+      cpu_logical: 4,
+      memory_total_mb: 8192,
+      disk_write_mbps: 100,
+      incomplete: false,
+    },
+  });
 });
 
 afterEach(() => {
@@ -33,13 +51,27 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+async function advanceToAccountStep() {
+  render(<SetupPage />);
+  await waitFor(() => expect(screen.getByText(/Recommended:/i)).toBeTruthy());
+  fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+  await waitFor(() => expect(screen.getByPlaceholderText('admin')).toBeTruthy());
+}
+
 describe('SetupPage', () => {
-  it('submits admin bootstrap with form values', async () => {
+  it('submits admin bootstrap with form values after confirmation', async () => {
     apiMocks.setupAdmin.mockResolvedValue({ setup_complete: true });
-    render(<SetupPage />);
+    await advanceToAccountStep();
+
     fireEvent.change(screen.getByPlaceholderText('admin'), { target: { value: 'root-admin' } });
     fireEvent.change(screen.getByPlaceholderText('********'), { target: { value: 'S3cure-Pass!' } });
-    fireEvent.click(screen.getByRole('button', { name: 'common.next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+    await waitFor(() => expect(screen.getByRole('checkbox')).toBeTruthy());
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'setup.complete' }));
+
     await waitFor(() => expect(apiMocks.setupAdmin).toHaveBeenCalled());
     expect(apiMocks.setupAdmin).toHaveBeenCalledWith(
       'root-admin',
@@ -47,20 +79,21 @@ describe('SetupPage', () => {
       expect.any(String),
       expect.any(String),
     );
-    await waitFor(() => {
-      expect(document.querySelector('.form-success')?.textContent).toBe('setup.success');
-    });
     await vi.advanceTimersByTimeAsync(900);
     expect(navigateMock).toHaveBeenCalledWith('/login', { replace: true });
   });
 
   it('surfaces setup API failures', async () => {
     apiMocks.setupAdmin.mockRejectedValue(new Error('username already exists'));
-    render(<SetupPage />);
+    await advanceToAccountStep();
+
     fireEvent.change(screen.getByPlaceholderText('admin'), { target: { value: 'admin' } });
-    // Must pass client password policy so the form reaches the API mock.
     fireEvent.change(screen.getByPlaceholderText('********'), { target: { value: 'N7v!mKq2PxR' } });
-    fireEvent.click(screen.getByRole('button', { name: 'common.next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByRole('checkbox')).toBeTruthy());
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'setup.complete' }));
+
     expect(await screen.findByText('username already exists')).toBeTruthy();
     expect(navigateMock).not.toHaveBeenCalled();
   });

@@ -197,13 +197,18 @@ export default function SetupPage() {
                 },
               ]}
             >
-              <Input.Password autoComplete="new-password" />
+              <Input.Password autoComplete="new-password" placeholder="********" />
             </Form.Item>
-            <Form.Item label={t('setup.adminListen')} field="adminListen" rules={[{ required: true }]}>
+            <Form.Item label={`${t('setup.network')} / ${t('setup.adminListen')}`} field="adminListen" rules={[{ required: true }]}>
               <Input placeholder="127.0.0.1:9443" />
             </Form.Item>
-            <Form.Item label={t('setup.adminStrategy')} field="adminStrategy">
-              <Select options={[{ value: 'local', label: 'local' }, { value: 'lan', label: 'lan' }]} />
+            <Form.Item label={t('setup.adminStrategy', { defaultValue: 'Admin strategy' })} field="adminStrategy">
+              <Select
+                options={[
+                  { value: 'local', label: t('setup.strategyLocal') },
+                  { value: 'public_tls', label: t('setup.strategyPublicTLS') },
+                ]}
+              />
             </Form.Item>
             <div className="setup-actions" style={{ display: 'flex', gap: 8 }}>
               <Button onClick={() => setStep(1)}>{t('common.back', { defaultValue: 'Back' })}</Button>
