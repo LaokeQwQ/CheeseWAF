@@ -17,48 +17,84 @@ const defaultRequestBodyLimit = 8 << 20
 var ErrRequestBodyTooLarge = errors.New("request body exceeds configured limit")
 
 func NewRequestContext(r *http.Request, siteID string) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit)
+	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit, true)
 }
 
 func NewRequestContextWithTrustedProxies(r *http.Request, siteID string, trustedCIDRs []string) (*RequestContext, error) {
 	return NewRequestContextWithLimits(r, siteID, trustedCIDRs, defaultRequestBodyLimit)
 }
 
+// NewRequestContextWithLimits builds a context and eagerly reads the body.
 func NewRequestContextWithLimits(r *http.Request, siteID string, trustedCIDRs []string, maxBodyBytes int64) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes)
+	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, true)
 }
 
-func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes int64) (*RequestContext, error) {
-	reqCtx := &RequestContext{
-		Request:  r,
-		ClientIP: clientIP,
-		TraceID:  blockpage.NewTraceID(),
-		SiteID:   siteID,
-		Metadata: map[string]any{},
+// NewRequestContextDeferredBody skips body I/O until EnsureBody (hot-path lazy-once).
+func NewRequestContextDeferredBody(r *http.Request, siteID string, trustedCIDRs []string, maxBodyBytes int64) (*RequestContext, error) {
+	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, false)
+}
+
+func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes int64, readBody bool) (*RequestContext, error) {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultRequestBodyLimit
 	}
-	reqCtx.DecodedURI = r.URL.RequestURI()
-	if r.Body != nil {
-		if maxBodyBytes <= 0 {
-			maxBodyBytes = defaultRequestBodyLimit
-		}
+	reqCtx := &RequestContext{
+		Request:      r,
+		ClientIP:     clientIP,
+		TraceID:      blockpage.NewTraceID(),
+		SiteID:       siteID,
+		Metadata:     map[string]any{},
+		maxBodyBytes: maxBodyBytes,
+	}
+	if r != nil && r.URL != nil {
+		reqCtx.DecodedURI = r.URL.RequestURI()
 		if r.ContentLength > maxBodyBytes {
 			return nil, ErrRequestBodyTooLarge
 		}
-		originalBody := r.Body
-		body, err := io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
-		if err != nil {
+	}
+	if readBody {
+		if err := reqCtx.EnsureBody(); err != nil {
 			return nil, err
 		}
-		if int64(len(body)) > maxBodyBytes {
-			_ = originalBody.Close()
-			return nil, ErrRequestBodyTooLarge
-		}
-		reqCtx.DecodedBody = body
-		_ = originalBody.Close()
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
 	}
 	return reqCtx, nil
+}
+
+// EnsureBody reads and rewinds the request body at most once.
+func (c *RequestContext) EnsureBody() error {
+	if c == nil {
+		return errors.New("nil request context")
+	}
+	if c.bodyLoaded {
+		return nil
+	}
+	if c.Request == nil || c.Request.Body == nil {
+		c.bodyLoaded = true
+		c.DecodedBody = nil
+		return nil
+	}
+	maxBodyBytes := c.maxBodyBytes
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultRequestBodyLimit
+	}
+	if c.Request.ContentLength > maxBodyBytes {
+		return ErrRequestBodyTooLarge
+	}
+	originalBody := c.Request.Body
+	body, err := io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(body)) > maxBodyBytes {
+		_ = originalBody.Close()
+		return ErrRequestBodyTooLarge
+	}
+	c.DecodedBody = body
+	_ = originalBody.Close()
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	c.Request.ContentLength = int64(len(body))
+	c.bodyLoaded = true
+	return nil
 }
 
 type replayBody struct {

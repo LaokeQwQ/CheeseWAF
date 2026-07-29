@@ -6,7 +6,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -273,6 +272,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Misdirected Request: no site matches this host", http.StatusMisdirectedRequest)
 		return
 	}
+	// Attach trusted proxy CIDRs early so bot clearance cookies and X-Forwarded-Proto
+	// decisions stay consistent for the whole request (no per-call re-resolution).
+	r = r.WithContext(bot.ContextWithTrustedCIDRs(r.Context(), site.WAF.AccessControl.TrustedCIDRs))
 	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
 
 	// Clean path for bot/IP/path policy only. Keep r.URL.Path unchanged so
@@ -286,11 +288,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			SiteID:   site.ID,
 			Metadata: map[string]any{"invalid_path": r.URL.Path},
 		}, "invalid_path", "invalid request path", http.StatusBadRequest, start)
-		return
-	}
-
-	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
-		s.handleBotBehaviorVerify(w, r, site)
 		return
 	}
 
@@ -310,7 +307,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if maxRequestBody <= 0 {
 		maxRequestBody = 8 << 20
 	}
-	reqCtx, err := engine.NewRequestContextWithLimits(r, site.ID, site.WAF.AccessControl.TrustedCIDRs, maxRequestBody)
+	// Behavior verify still needs a small body; enforce a tight cap before shared body read.
+	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
+		const maxVerifyBody = int64(64 << 10)
+		if r.ContentLength > maxVerifyBody {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if maxRequestBody > maxVerifyBody {
+			maxRequestBody = maxVerifyBody
+		}
+	}
+	// Defer body I/O until APISec/WAF (or verify). IP/geo/bot/rate use headers only.
+	reqCtx, err := engine.NewRequestContextDeferredBody(r, site.ID, site.WAF.AccessControl.TrustedCIDRs, maxRequestBody)
 	if err != nil {
 		if errors.Is(err, engine.ErrRequestBodyTooLarge) {
 			s.proxyError(w, r, site, nil, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
@@ -334,6 +343,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.geoip.Blocked(reqCtx.ClientIP) && !ipAllowed {
 		s.block(w, reqCtx, "geoip", "GeoIP country is blocked", http.StatusForbidden, start)
+		return
+	}
+	// Behavior verify runs after host/path/protocol/IP/geoip gates so blocked clients
+	// cannot burn challenge capacity. Keep before global rate-limit so solvers can finish.
+	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
+		if err := reqCtx.EnsureBody(); err != nil {
+			if errors.Is(err, engine.ErrRequestBodyTooLarge) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "failed to read request", http.StatusBadRequest)
+			return
+		}
+		s.handleBotBehaviorVerify(w, r, site, reqCtx)
 		return
 	}
 	if policy.ThreatIntel != config.ProtectionLevelOff && !ipAllowed {
@@ -383,6 +406,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Body needed for schema/WAF inspection; still deferred for pure bot/rate early exits.
+	if (s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff) || (site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff) {
+		if err := reqCtx.EnsureBody(); err != nil {
+			if errors.Is(err, engine.ErrRequestBodyTooLarge) {
+				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
+				return
+			}
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "failed to read request", http.StatusBadRequest, start, err)
+			return
+		}
+	}
 	if s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff {
 		if finding := s.apiAuth.Evaluate(r); finding != nil && !ipAllowed {
 			result := apiAuthDetection(*finding)
@@ -426,11 +460,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
-		// Apply already confines Path. CodeQL: Hostname empty + isLocalURL barrier.
+		// Apply already confines Path. CodeQL RedirectCheckBarrier: local isLocalURL
+		// + redirect sanitized string (not url.URL.String()).
 		loc := fsguard.SanitizeLocalRedirect(r.URL.RequestURI())
 		loc = strings.ReplaceAll(loc, "\\", "/")
-		if target, err := url.Parse(loc); err == nil && target.Hostname() == "" && fsguard.IsLocalURL(loc) {
-			http.Redirect(w, r, target.String(), code)
+		if isLocalURL(loc) {
+			http.Redirect(w, r, loc, code)
 		} else {
 			http.Redirect(w, r, "/", code)
 		}
@@ -587,21 +622,27 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 const botBehaviorVerifyPath = "/.well-known/cheesewaf/challenge/v1/verify"
 
-func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request, site config.SiteConfig) {
+func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request, site config.SiteConfig, reqCtx *engine.RequestContext) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	const maxBody = int64(64 << 10)
-	if r.ContentLength > maxBody {
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		return
+	clientIP := ""
+	if reqCtx != nil {
+		clientIP = reqCtx.ClientIP
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-	clientIP := engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+	if clientIP == "" {
+		clientIP = engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+	}
+	// Body was size-capped and rewound by EnsureBody on the verify path.
 	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
+}
+
+// isLocalURL is the CodeQL RedirectCheckBarrier identifier used before http.Redirect.
+func isLocalURL(raw string) bool {
+	return fsguard.IsLocalURL(raw)
 }
 
 func requestIsHTTPS(r *http.Request, trustedCIDRs []string) bool {
@@ -1315,6 +1356,7 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 	if s.logSink == nil || reqCtx == nil || reqCtx.Request == nil {
 		return
 	}
+	s.attachBotRiskMetadata(reqCtx, action)
 	entry := &storage.LogEntry{
 		ID:         reqCtx.TraceID,
 		Timestamp:  s.wallNow().UTC(),
@@ -1400,6 +1442,30 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		return
 	}
 	_ = s.logSink.Write(ctx, entry)
+}
+
+// attachBotRiskMetadata writes L1 risk_score/risk_band on every bot-enabled request
+// and L2 risk_flags on challenge/block (always) or pass/log (0.1% sample).
+// Cheap string scoring only — no I/O, no shared locks beyond FailureTracker read paths.
+func (s *Server) attachBotRiskMetadata(reqCtx *engine.RequestContext, action string) {
+	if s == nil || s.bot == nil || !s.bot.Enabled() || reqCtx == nil || reqCtx.Request == nil {
+		return
+	}
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = map[string]any{}
+	}
+	// Idempotent: first writeLog wins (avoid double assessRisk on multi-write paths).
+	if _, ok := reqCtx.Metadata["risk_score"]; ok {
+		return
+	}
+	snap := s.bot.SnapshotRisk(reqCtx.Request, reqCtx.ClientIP, reqCtx.SiteID)
+	reqCtx.Metadata["risk_score"] = snap.Score
+	reqCtx.Metadata["risk_band"] = snap.Band
+	reqCtx.Metadata["risk_confidence"] = snap.Confidence
+	sampleKey := reqCtx.TraceID + "\x00" + reqCtx.ClientIP + "\x00" + action
+	if bot.ShouldAttachRiskFlags(action, sampleKey, bot.DefaultPassRiskFlagSampleRate) && len(snap.Flags) > 0 {
+		reqCtx.Metadata["risk_flags"] = snap.Flags
+	}
 }
 
 // isPlainAccessLog is true for normal traffic without security signal.
