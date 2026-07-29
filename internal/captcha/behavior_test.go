@@ -673,29 +673,53 @@ func assertPresentationDoesNotExposeTokenAnswer(t *testing.T, opts BehaviorOptio
 	}
 }
 
+// containsJSONNumber reports whether number appears as a JSON numeric token
+// outside of string values. Substring scans over base64 image payloads are
+// false positives (digits flanked by letters match "whole number" naively).
 func containsJSONNumber(text, number string) bool {
-	if number == "" || !strings.Contains(text, number) {
+	if number == "" {
 		return false
 	}
-	for i := 0; i+len(number) <= len(text); i++ {
-		if text[i:i+len(number)] != number {
+	inString := false
+	escaped := false
+	for i := 0; i < len(text); {
+		ch := text[i]
+		if inString {
+			if escaped {
+				escaped = false
+				i++
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				i++
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			i++
 			continue
 		}
-		if i > 0 {
-			prev := text[i-1]
-			if prev >= '0' && prev <= '9' {
-				continue
+		if ch == '"' {
+			inString = true
+			i++
+			continue
+		}
+		if i+len(number) <= len(text) && text[i:i+len(number)] == number {
+			prevOK := i == 0 || !isJSONNumberAdjacent(text[i-1])
+			nextOK := i+len(number) == len(text) || !isJSONNumberAdjacent(text[i+len(number)])
+			if prevOK && nextOK {
+				return true
 			}
 		}
-		if i+len(number) < len(text) {
-			next := text[i+len(number)]
-			if next >= '0' && next <= '9' {
-				continue
-			}
-		}
-		return true
+		i++
 	}
 	return false
+}
+
+func isJSONNumberAdjacent(b byte) bool {
+	return (b >= '0' && b <= '9') || b == '.' || b == '+' || b == '-' || b == 'e' || b == 'E'
 }
 
 func decodeBehaviorSVG(t *testing.T, uri string) string {

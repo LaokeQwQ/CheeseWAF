@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Plus, ShieldCheck, Wand2 } from 'lucide-react';
 import { createRule, fetchRules } from '../../api/client';
 import { ruleTemplates, testPattern, validateRuleDraft } from './rulesLogic';
+import './RulesPage.css';
 
 export default function RulesPage() {
   const { t } = useTranslation();
@@ -12,11 +13,15 @@ export default function RulesPage() {
   const [open, setOpen] = useState(false);
   const [patternDraft, setPatternDraft] = useState('');
   const [testInput, setTestInput] = useState('');
+  const [form] = Form.useForm();
   const { data, isError, isLoading, refetch } = useQuery({ queryKey: ['rules'], queryFn: () => fetchRules(), retry: false });
   const mutation = useMutation({
     mutationFn: createRule,
     onSuccess: () => {
       setOpen(false);
+      form.resetFields();
+      setPatternDraft('');
+      setTestInput('');
       queryClient.invalidateQueries({ queryKey: ['rules'] });
     },
     onError: (error) => ArcoMessage.error(error.message),
@@ -31,6 +36,17 @@ export default function RulesPage() {
   };
   const templates = ruleTemplates(t);
   const testResult = testPattern(patternDraft, testInput);
+  const applyPattern = (pattern: string) => {
+    setPatternDraft(pattern);
+    form.setFieldValue('pattern', pattern);
+  };
+  const closeModal = () => {
+    if (mutation.isPending) return;
+    setOpen(false);
+    form.resetFields();
+    setPatternDraft('');
+    setTestInput('');
+  };
   const handleRuleSubmit = (values: Record<string, any>) => {
     const pattern = String(values.pattern || patternDraft || '').trim();
     const priority = Number(values.priority ?? 100);
@@ -60,6 +76,7 @@ export default function RulesPage() {
           <p>{t('rules.subtitle')}</p>
         </div>
         <Button type="primary" icon={<Plus size={16} />} onClick={() => {
+          form.resetFields();
           setPatternDraft('');
           setTestInput('');
           setOpen(true);
@@ -98,21 +115,43 @@ export default function RulesPage() {
               dataIndex: 'severity',
               render: (severity: string) => (
                 <span className="status-group">
-                  <Tag color={severity === 'critical' ? 'red' : severity === 'high' ? 'orange' : 'blue'}>{severityLabel(severity)}</Tag>
+                  <Tag color={severity === 'critical' ? 'red' : severity === 'high' ? 'orange' : severity === 'medium' ? 'gold' : 'blue'}>{severityLabel(severity)}</Tag>
                 </span>
               ),
             },
             { title: t('rules.priority'), dataIndex: 'priority' },
-            { title: t('rules.enabled'), dataIndex: 'enabled', render: (enabled: boolean) => <Switch checked={enabled} size="small" /> },
+            {
+              title: t('rules.enabled'),
+              dataIndex: 'enabled',
+              render: (enabled: boolean) => (
+                <Switch
+                  checked={enabled}
+                  size="small"
+                  disabled
+                  aria-label={enabled ? t('common.enabled') : t('common.disabled')}
+                />
+              ),
+            },
           ]}
         />
       </section>
 
-      <Modal className="rule-editor-modal" title={t('rules.create')} visible={open} onCancel={() => setOpen(false)} footer={null}>
+      <Modal
+        className="rule-editor-modal"
+        title={t('rules.create')}
+        visible={open}
+        onCancel={closeModal}
+        footer={null}
+        unmountOnExit
+        maskClosable={!mutation.isPending}
+        escToExit={!mutation.isPending}
+      >
         <Form
+          form={form}
           layout="vertical"
           className="rule-editor-form"
           onSubmit={handleRuleSubmit}
+          initialValues={{ location: 'uri', action: 'block', severity: 'medium', priority: 100, pattern: '' }}
         >
           <div className="rule-editor-grid">
             <section className="rule-editor-section">
@@ -125,10 +164,9 @@ export default function RulesPage() {
               <h2>{t('rules.matchCondition')}</h2>
               <Form.Item label={t('rules.pattern')} field="pattern" required extra={t('rules.patternHint')}>
                 <Input.TextArea
-                  value={patternDraft}
                   autoSize={{ minRows: 4, maxRows: 8 }}
                   placeholder={t('rules.patternPlaceholder')}
-                  onChange={setPatternDraft}
+                  onChange={(value) => setPatternDraft(String(value ?? ''))}
                 />
               </Form.Item>
               <div className="rule-template-panel">
@@ -141,7 +179,7 @@ export default function RulesPage() {
                     <button
                       type="button"
                       key={template.key}
-                      onClick={() => setPatternDraft(template.pattern)}
+                      onClick={() => applyPattern(template.pattern)}
                       title={template.description}
                     >
                       {template.label}
@@ -161,7 +199,7 @@ export default function RulesPage() {
             <section className="rule-editor-section">
               <h2>{t('rules.actionAndPriority')}</h2>
               <Form.Item label={t('rules.location')} field="location" extra={t('rules.locationHint')}>
-                <Select defaultValue="uri">
+                <Select>
                   <Select.Option value="uri">{t('rules.locationURI')}</Select.Option>
                   <Select.Option value="header">{t('rules.locationHeader')}</Select.Option>
                   <Select.Option value="query">{t('rules.locationQuery')}</Select.Option>
@@ -170,25 +208,25 @@ export default function RulesPage() {
                 </Select>
               </Form.Item>
               <Form.Item label={t('logs.action')} field="action" extra={t('rules.actionHint')}>
-                <Select defaultValue="block">
+                <Select>
                   <Select.Option value="block">{t('common.block')}</Select.Option>
                   <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
                   <Select.Option value="log">{t('logs.log')}</Select.Option>
                 </Select>
               </Form.Item>
               <Form.Item label={t('rules.severity')} field="severity" extra={t('rules.severityHint')}>
-                <Select defaultValue="medium">
+                <Select>
                   <Select.Option value="low">{t('rules.low')}</Select.Option>
                   <Select.Option value="medium">{t('rules.medium')}</Select.Option>
                   <Select.Option value="high">{t('rules.high')}</Select.Option>
                   <Select.Option value="critical">{t('rules.critical')}</Select.Option>
                 </Select>
               </Form.Item>
-              <Form.Item label={`${t('rules.priority')} (${t('rules.priorityHint')})`} field="priority" extra={t('rules.priorityHelp')}><InputNumber defaultValue={100} min={1} max={999} /></Form.Item>
+              <Form.Item label={`${t('rules.priority')} (${t('rules.priorityHint')})`} field="priority" extra={t('rules.priorityHelp')}><InputNumber min={1} max={999} /></Form.Item>
             </section>
           </div>
           <div className="form-action-row">
-            <Button onClick={() => setOpen(false)}>{t('common.cancel')}</Button>
+            <Button onClick={closeModal} disabled={mutation.isPending}>{t('common.cancel')}</Button>
             <Button type="primary" htmlType="submit" loading={mutation.isPending}>{t('common.save')}</Button>
           </div>
         </Form>
@@ -196,4 +234,3 @@ export default function RulesPage() {
     </section>
   );
 }
-

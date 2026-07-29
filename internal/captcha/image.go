@@ -303,25 +303,69 @@ func renderImageCaptcha(width, height int, answer, nonce string) (string, error)
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			t := float64(x+y) / float64(width+height)
-			img.SetRGBA(x, y, blend(bgA, bgB, t, rng.Intn(8)-4))
+			// Per-pixel grain makes simple template OCR less reliable.
+			img.SetRGBA(x, y, blend(bgA, bgB, t, rng.Intn(18)-9))
 		}
 	}
-	for i := 0; i < 22; i++ {
+	// Dense background interference before and after digits.
+	for i := 0; i < 48; i++ {
 		drawLine(img, rng.Intn(width), rng.Intn(height), rng.Intn(width), rng.Intn(height), color.RGBA{
-			R: uint8(72 + rng.Intn(84)), G: uint8(102 + rng.Intn(84)), B: uint8(112 + rng.Intn(72)), A: uint8(34 + rng.Intn(52)),
+			R: uint8(72 + rng.Intn(84)), G: uint8(102 + rng.Intn(84)), B: uint8(112 + rng.Intn(72)), A: uint8(40 + rng.Intn(70)),
 		})
 	}
-	for i := 0; i < 90; i++ {
-		drawCircle(img, rng.Intn(width), rng.Intn(height), 1+rng.Intn(2), color.RGBA{R: 45, G: 86, B: 100, A: uint8(30 + rng.Intn(54))})
+	for i := 0; i < 180; i++ {
+		drawCircle(img, rng.Intn(width), rng.Intn(height), 1+rng.Intn(3), color.RGBA{R: 45, G: 86, B: 100, A: uint8(28 + rng.Intn(70))})
 	}
 	slot := float64(width-28) / float64(len(answer))
 	for i, r := range answer {
-		x := 14 + int(float64(i)*slot) + rng.Intn(5)
-		y := height/2 - 18 + rng.Intn(8) - 4
+		x := 14 + int(float64(i)*slot) + rng.Intn(7) - 2
+		y := height/2 - 18 + rng.Intn(12) - 6
 		scale := 3 + rng.Intn(2)
-		drawDigit(img, int(r-'0'), x, y, scale, color.RGBA{R: uint8(23 + rng.Intn(42)), G: uint8(54 + rng.Intn(42)), B: uint8(74 + rng.Intn(42)), A: 230})
+		// Slight hue variance + jittered thick strokes break pure 7-segment templates.
+		c := color.RGBA{R: uint8(18 + rng.Intn(48)), G: uint8(48 + rng.Intn(48)), B: uint8(68 + rng.Intn(48)), A: 235}
+		drawDigitNoisy(img, int(r-'0'), x, y, scale, c, rng)
+	}
+	// Overlay arcs/lines after glyphs so segment detectors see occlusion.
+	for i := 0; i < 18; i++ {
+		drawLine(img, rng.Intn(width), rng.Intn(height), rng.Intn(width), rng.Intn(height), color.RGBA{
+			R: uint8(90 + rng.Intn(80)), G: uint8(110 + rng.Intn(70)), B: uint8(120 + rng.Intn(60)), A: uint8(50 + rng.Intn(60)),
+		})
+	}
+	for i := 0; i < 120; i++ {
+		over(img, rng.Intn(width), rng.Intn(height), color.RGBA{R: uint8(rng.Intn(40)), G: uint8(rng.Intn(40)), B: uint8(rng.Intn(40)), A: uint8(40 + rng.Intn(80))})
 	}
 	return encodePNGDataURL(img)
+}
+
+// drawDigitNoisy draws a 7-segment-like digit with irregular thickness and speckles.
+func drawDigitNoisy(img *image.RGBA, digit, x, y, scale int, c color.RGBA, rng *mrand.Rand) {
+	if rng == nil {
+		drawDigit(img, digit, x, y, scale, c)
+		return
+	}
+	// Small random offset / thickness variation per segment reduces fixed-template OCR.
+	jitter := func(v int) int { return v + rng.Intn(3) - 1 }
+	drawDigit(img, digit, jitter(x), jitter(y), scale, c)
+	// Speckle inside glyph bounding box.
+	w := 8 * scale
+	h := 14 * scale
+	clampU8 := func(v int) uint8 {
+		if v < 0 {
+			return 0
+		}
+		if v > 255 {
+			return 255
+		}
+		return uint8(v)
+	}
+	for i := 0; i < 18; i++ {
+		over(img, x+rng.Intn(maxInt(1, w)), y+rng.Intn(maxInt(1, h)), color.RGBA{
+			R: clampU8(int(c.R) + rng.Intn(40) - 20),
+			G: clampU8(int(c.G) + rng.Intn(40) - 20),
+			B: clampU8(int(c.B) + rng.Intn(40) - 20),
+			A: clampU8(80 + rng.Intn(100)),
+		})
+	}
 }
 
 func drawDigit(img *image.RGBA, digit, x, y, scale int, c color.RGBA) {

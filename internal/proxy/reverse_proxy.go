@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +21,22 @@ var sharedTransports = struct {
 	order []time.Duration
 }{items: make(map[time.Duration]*http.Transport)}
 
+// Client-forged forwarding identity headers are stripped before rebuild.
+var stripClientForwardHeaders = []string{
+	"Forwarded",
+	"X-Forwarded-For",
+	"X-Forwarded-Host",
+	"X-Forwarded-Proto",
+	"X-Forwarded-Port",
+	"X-Forwarded-Scheme",
+	"X-Real-IP",
+	"X-Client-IP",
+	"X-Original-Forwarded-For",
+	"CF-Connecting-IP",
+	"True-Client-IP",
+	"Fastly-Client-IP",
+}
+
 func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	if timeout <= 0 {
@@ -28,13 +46,40 @@ func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReversePr
 	originalDirector := proxy.Director
 	proxy.Director = func(r *http.Request) {
 		originalHost := r.Host
+		clientAddr := r.RemoteAddr
+		for _, h := range stripClientForwardHeaders {
+			r.Header.Del(h)
+		}
 		originalDirector(r)
 		r.Host = target.Host
 		if originalHost != "" {
 			r.Header.Set("X-Forwarded-Host", originalHost)
 		}
+		if ip := peerIP(clientAddr); ip != "" {
+			r.Header.Set("X-Forwarded-For", ip)
+			r.Header.Set("X-Real-IP", ip)
+		}
+		if r.TLS != nil {
+			r.Header.Set("X-Forwarded-Proto", "https")
+		} else {
+			r.Header.Set("X-Forwarded-Proto", "http")
+		}
 	}
 	return proxy
+}
+
+func peerIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.String()
+	}
+	return host
 }
 
 func transportForTimeout(timeout time.Duration) *http.Transport {

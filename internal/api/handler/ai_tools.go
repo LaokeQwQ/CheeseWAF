@@ -578,7 +578,13 @@ func (h *Handler) commitProtectionConfig(next config.ProtectionConfig) error {
 	}
 	_, err := h.commitConfigMutation(
 		func(candidate *config.Config) error {
-			candidate.Protection = next
+			// Deep-copy via config clone so caller-owned nested slices/maps
+			// cannot alias into the candidate or the rollback snapshot.
+			wrap, cloneErr := config.Clone(&config.Config{Protection: next})
+			if cloneErr != nil {
+				return cloneErr
+			}
+			candidate.Protection = wrap.Protection
 			return nil
 		},
 		func(candidate *config.Config) error {

@@ -25,7 +25,7 @@ func TestCreateUserRejectsPermissionExpressionRole(t *testing.T) {
 	for _, role := range []string{"*", "read:*", "write:system", "read:logs write:system"} {
 		t.Run(role, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"next","password":"correct-horse-battery","role":"`+role+`"}`)))
+			request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"next","password":"Correct-Horse-9x!","role":"`+role+`"}`)))
 			handler.CreateUser(recorder, request)
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("expected invalid role to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
@@ -64,7 +64,7 @@ func TestCreateUserAllowsConfiguredCustomRole(t *testing.T) {
 	handler.Config.APISec.Permissions["operator"] = []string{"read:logs", "write:rules"}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"operator","password":"correct-horse-battery","role":"operator"}`)))
+	request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"operator","password":"Correct-Horse-9x!","role":"operator"}`)))
 	request = withUserClaims(request, "admin-id", "admin", "admin")
 	handler.CreateUser(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -83,7 +83,7 @@ func TestCreateUserRejectsAdminRoleWithoutAdminCaller(t *testing.T) {
 	handler, _ := newUserTestHandler(t)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"next-admin","password":"correct-horse-battery","role":"admin"}`)))
+	request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"next-admin","password":"Correct-Horse-9x!","role":"admin"}`)))
 	handler.CreateUser(recorder, request)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected non-admin admin grant to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
@@ -145,7 +145,7 @@ func TestWriteUsersRoleCannotModifyAdminAccount(t *testing.T) {
 	claims := &middleware.Claims{Subject: "operator-id", Username: "operator", Role: "operator"}
 
 	update := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPut, "/users/admin-id", bytes.NewReader([]byte(`{"password":"changed-password"}`)))
+	request := httptest.NewRequest(http.MethodPut, "/users/admin-id", bytes.NewReader([]byte(`{"password":"N7v!mKq2PxR"}`)))
 	request = request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, claims))
 	router.ServeHTTP(update, request)
 	if update.Code != http.StatusForbidden {
@@ -483,7 +483,7 @@ func TestCreateUserRejectsTrailingJSONDocument(t *testing.T) {
 	handler, store := newUserTestHandler(t)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"operator","password":"correct-horse-battery","role":"operator"}{}`)))
+	request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte(`{"username":"operator","password":"Correct-Horse-9x!","role":"operator"}{}`)))
 	handler.CreateUser(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected trailing JSON to be rejected, got %d: %s", recorder.Code, recorder.Body.String())

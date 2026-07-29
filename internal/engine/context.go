@@ -2,6 +2,8 @@ package engine
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"errors"
 	"io"
 	"net"
@@ -14,51 +16,137 @@ import (
 
 const defaultRequestBodyLimit = 8 << 20
 
+// Cap inflate relative to compressed size to reduce zip-bomb risk.
+const maxDecompressionRatio = 20
+
 var ErrRequestBodyTooLarge = errors.New("request body exceeds configured limit")
 
 func NewRequestContext(r *http.Request, siteID string) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit)
+	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit, true)
 }
 
 func NewRequestContextWithTrustedProxies(r *http.Request, siteID string, trustedCIDRs []string) (*RequestContext, error) {
 	return NewRequestContextWithLimits(r, siteID, trustedCIDRs, defaultRequestBodyLimit)
 }
 
+// NewRequestContextWithLimits builds a context and eagerly reads the body.
 func NewRequestContextWithLimits(r *http.Request, siteID string, trustedCIDRs []string, maxBodyBytes int64) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes)
+	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, true)
 }
 
-func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes int64) (*RequestContext, error) {
-	reqCtx := &RequestContext{
-		Request:  r,
-		ClientIP: clientIP,
-		TraceID:  blockpage.NewTraceID(),
-		SiteID:   siteID,
-		Metadata: map[string]any{},
+// NewRequestContextDeferredBody skips body I/O until EnsureBody (hot-path lazy-once).
+func NewRequestContextDeferredBody(r *http.Request, siteID string, trustedCIDRs []string, maxBodyBytes int64) (*RequestContext, error) {
+	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, false)
+}
+
+func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes int64, readBody bool) (*RequestContext, error) {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultRequestBodyLimit
 	}
-	reqCtx.DecodedURI = r.URL.RequestURI()
-	if r.Body != nil {
-		if maxBodyBytes <= 0 {
-			maxBodyBytes = defaultRequestBodyLimit
-		}
+	reqCtx := &RequestContext{
+		Request:      r,
+		ClientIP:     clientIP,
+		TraceID:      blockpage.NewTraceID(),
+		SiteID:       siteID,
+		Metadata:     map[string]any{},
+		maxBodyBytes: maxBodyBytes,
+	}
+	if r != nil && r.URL != nil {
+		reqCtx.DecodedURI = r.URL.RequestURI()
 		if r.ContentLength > maxBodyBytes {
 			return nil, ErrRequestBodyTooLarge
 		}
-		originalBody := r.Body
-		body, err := io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
+	}
+	if readBody {
+		if err := reqCtx.EnsureBody(); err != nil {
+			return nil, err
+		}
+	}
+	return reqCtx, nil
+}
+
+// EnsureBody reads and rewinds the request body at most once.
+// When Content-Encoding is gzip/deflate, DecodedBody is the decompressed
+// payload used by WAF detectors (with decompression limits). Request.Body is
+// rewound with the original transfer encoding for the upstream.
+func (c *RequestContext) EnsureBody() error {
+	if c == nil {
+		return errors.New("nil request context")
+	}
+	if c.bodyLoaded {
+		return nil
+	}
+	if c.Request == nil || c.Request.Body == nil {
+		c.bodyLoaded = true
+		c.DecodedBody = nil
+		return nil
+	}
+	maxBodyBytes := c.maxBodyBytes
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultRequestBodyLimit
+	}
+	if c.Request.ContentLength > maxBodyBytes {
+		return ErrRequestBodyTooLarge
+	}
+	originalBody := c.Request.Body
+	raw, err := io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(raw)) > maxBodyBytes {
+		_ = originalBody.Close()
+		return ErrRequestBodyTooLarge
+	}
+	_ = originalBody.Close()
+
+	decoded := raw
+	encoding := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Encoding")))
+	if encoding != "" && encoding != "identity" {
+		plain, derr := decodeHTTPContentEncoding(raw, encoding, maxBodyBytes)
+		if derr != nil {
+			return derr
+		}
+		decoded = plain
+	}
+	c.DecodedBody = decoded
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	c.Request.ContentLength = int64(len(raw))
+	c.bodyLoaded = true
+	return nil
+}
+
+func decodeHTTPContentEncoding(raw []byte, encoding string, maxPlain int64) ([]byte, error) {
+	if strings.Contains(encoding, ",") {
+		return nil, errors.New("unsupported multi-layer content-encoding")
+	}
+	var reader io.Reader
+	switch encoding {
+	case "gzip", "x-gzip":
+		gr, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
-		if int64(len(body)) > maxBodyBytes {
-			_ = originalBody.Close()
-			return nil, ErrRequestBodyTooLarge
-		}
-		reqCtx.DecodedBody = body
-		_ = originalBody.Close()
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
+		defer gr.Close()
+		reader = gr
+	case "deflate":
+		reader = flate.NewReader(bytes.NewReader(raw))
+	case "br", "zstd":
+		return nil, errors.New("unsupported content-encoding for inspection: " + encoding)
+	default:
+		return nil, errors.New("unsupported content-encoding for inspection: " + encoding)
 	}
-	return reqCtx, nil
+	limit := maxPlain
+	if ratioCap := int64(len(raw)) * maxDecompressionRatio; ratioCap > 0 && ratioCap < limit {
+		limit = ratioCap
+	}
+	plain, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(plain)) > limit {
+		return nil, ErrRequestBodyTooLarge
+	}
+	return plain, nil
 }
 
 type replayBody struct {

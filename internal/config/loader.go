@@ -177,22 +177,25 @@ func Default() Config {
 				Default: RateLimitProfile{Requests: 100, Window: time.Minute, Burst: 20},
 			},
 			Bot: BotProtectionConfig{
-				Enabled:                    false,
-				RiskLevel:                  2,
-				RiskLowThreshold:           35,
-				RiskMediumThreshold:        55,
-				RiskHighThreshold:          75,
-				RiskBlockThreshold:         95,
-				RiskConfidenceMin:          0.6,
-				JSChallenge:                true,
-				CAPTCHA:                    false,
-				CAPTCHAType:                "pow",
-				CAPTCHATypes:               []string{"pow", "shape_slider", "rotate", "text_click"},
-				CAPTCHAChallengeTTL:        2 * time.Minute,
-				CAPTCHAFailureWindow:       10 * time.Minute,
-				CAPTCHABlockDuration:       15 * time.Minute,
-				CAPTCHAEscalationTypes:     []string{"pow", "shape_slider", "text_click"},
-				CAPTCHABindingMode:         "ip_prefix_ua",
+				Enabled:                false,
+				RiskLevel:              2,
+				RiskLowThreshold:       35,
+				RiskMediumThreshold:    55,
+				RiskHighThreshold:      75,
+				RiskBlockThreshold:     95,
+				RiskConfidenceMin:      0.6,
+				JSChallenge:            true,
+				CAPTCHA:                false,
+				CAPTCHAType:            "pow",
+				CAPTCHATypes:           []string{"pow", "shape_slider", "rotate", "text_click"},
+				CAPTCHAChallengeTTL:    2 * time.Minute,
+				CAPTCHAFailureWindow:   10 * time.Minute,
+				CAPTCHABlockDuration:   15 * time.Minute,
+				CAPTCHAEscalationTypes: []string{"pow", "shape_slider", "text_click"},
+				// Prefer strict IP+UA binding by default so clearance cookies cannot
+				// be shared across a /24 (campus/VPC NAT). Operators may still set
+				// captcha_binding_mode: ip_prefix_ua when needed.
+				CAPTCHABindingMode:         "strict_ip_ua",
 				CAPTCHAPolicyVersion:       "1",
 				CAPTCHAMaxAttempts:         5,
 				ImageCAPTCHALength:         6,
@@ -474,8 +477,14 @@ func writeFileAtomic(path string, contents []byte, perm os.FileMode) error {
 		return fmt.Errorf("replace config: %w", err)
 	}
 	cleanup = false
+	// Keep a durable last-good backup for crash recovery instead of deleting
+	// the previous file immediately after rename.
 	if backupName != "" {
-		_ = os.Remove(backupName)
+		stableBackup := filepath.Join(dir, "."+filepath.Base(path)+".last-good")
+		_ = os.Remove(stableBackup)
+		if err := os.Rename(backupName, stableBackup); err != nil {
+			_ = os.Remove(backupName)
+		}
 	}
 	if dirHandle, err := os.Open(dir); err == nil {
 		_ = dirHandle.Sync()

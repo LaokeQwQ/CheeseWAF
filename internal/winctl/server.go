@@ -27,7 +27,7 @@ func (c *Controller) ListenAndServe(ctx context.Context) error {
 		return err
 	}
 	c.server = &http.Server{
-		Handler:           withLocalOnly(mux),
+		Handler:           withLocalOnly(c, mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -52,7 +52,7 @@ func (c *Controller) ListenAndServe(ctx context.Context) error {
 	}
 }
 
-func withLocalOnly(next http.Handler) http.Handler {
+func withLocalOnly(c *Controller, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
@@ -63,14 +63,21 @@ func withLocalOnly(next http.Handler) http.Handler {
 			http.Error(w, "loopback only", http.StatusForbidden)
 			return
 		}
-		// Mutating endpoints: reject non-loopback browser origins (CSRF-ish).
+		// Mutating endpoints require loopback origin and control token.
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
 			if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" && !isLoopbackHTTPOrigin(origin) {
 				http.Error(w, "origin not allowed", http.StatusForbidden)
 				return
 			}
+			token := strings.TrimSpace(r.Header.Get("X-CheeseWAF-Control-Token"))
+			if token == "" {
+				token = strings.TrimSpace(r.URL.Query().Get("token"))
+			}
+			if c == nil || c.controlToken == "" || token == "" || token != c.controlToken {
+				http.Error(w, "control token required", http.StatusUnauthorized)
+				return
+			}
 		}
-		// No secrets in controller UI; still avoid being embedded.
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -104,7 +111,9 @@ func (c *Controller) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(controlHTML))
+	// Embed the per-process control token so same-origin UI mutations can authenticate.
+	html := strings.ReplaceAll(controlHTML, "__CONTROL_TOKEN__", c.controlToken)
+	_, _ = w.Write([]byte(html))
 }
 
 func (c *Controller) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -219,9 +228,12 @@ label{display:flex;align-items:center;gap:8px;color:var(--muted)}
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
+const CONTROL_TOKEN = "__CONTROL_TOKEN__";
 const err = (m) => { $('err').textContent = m || ''; };
 async function api(path, opts) {
-  const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+  opts = Object.assign({ credentials: 'same-origin' }, opts || {});
+  opts.headers = Object.assign({ 'X-CheeseWAF-Control-Token': CONTROL_TOKEN }, opts.headers || {});
+  const res = await fetch(path, opts);
   const body = await res.json().catch(() => ({}));
   if (!res.ok || body.ok === false) throw new Error(body.error || res.statusText);
   return body;

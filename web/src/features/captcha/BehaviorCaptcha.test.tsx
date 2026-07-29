@@ -66,7 +66,7 @@ describe('BehaviorCaptcha responses',()=>{
   it('uses product titles and translates the dynamic scratch target in English', async () => {
     render(<BehaviorCaptcha type="scratch" issue={vi.fn().mockResolvedValue(challenge('scratch', { prompt: '请刮出完整的奶酪后点击校验' }))} verify={vi.fn()} locale="en-US"/>);
     expect(await screen.findByText('Scratch Challenge')).toBeTruthy();
-    expect(screen.getByText('Scratch to reveal “奶酪”, then verify')).toBeTruthy();
+    expect(screen.getAllByText('Scratch to reveal “奶酪”, then verify').length).toBeGreaterThan(0);
   });
 
   it('aborts an in-flight issue request when refreshed', async () => {

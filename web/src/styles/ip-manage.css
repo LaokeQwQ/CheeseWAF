@@ -388,7 +388,7 @@
   min-height: 36px;
   background: var(--surface);
   border-color: color-mix(in srgb, var(--border) 86%, var(--text-muted));
-  box-shadow: 0 1px 0 color-mix(in srgb, white 48%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--highlight-color) 48%, transparent);
 }
 
 .ip-manage-page .provider-card .arco-input-inner-wrapper:hover,

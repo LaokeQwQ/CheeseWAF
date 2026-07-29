@@ -259,7 +259,7 @@ function DurationUnitInput({
   };
   return (
     <div className="duration-unit-input time-sync-duration-input">
-      <InputNumber value={parts.amount} onChange={(amount) => emit(amount)} />
+      <InputNumber min={1} value={parts.amount} onChange={(amount) => emit(amount)} />
       <Select value={parts.unit} onChange={(unit) => emit(parts.amount, String(unit) as DurationUnit)}>
         {units.map((unit) => <Select.Option key={unit} value={unit}>{durationUnitLabel(unit, t)}</Select.Option>)}
       </Select>
