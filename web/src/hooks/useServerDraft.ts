@@ -21,9 +21,9 @@ export function useServerDraft<T>(server: T | undefined | null) {
     }
   }, [server]);
 
-  const setDraft = useCallback((next: T | ((prev: T | undefined) => T)) => {
+  const setDraft = useCallback((next: T | undefined | ((prev: T | undefined) => T | undefined)) => {
     dirtyRef.current = true;
-    setDraftState((prev) => (typeof next === 'function' ? (next as (p: T | undefined) => T)(prev) : next));
+    setDraftState((prev) => (typeof next === 'function' ? (next as (p: T | undefined) => T | undefined)(prev) : next));
   }, []);
 
   const markClean = useCallback((next?: T) => {

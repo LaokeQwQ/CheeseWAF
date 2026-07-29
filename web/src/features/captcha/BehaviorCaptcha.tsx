@@ -277,6 +277,7 @@ function ChallengeBody(props: BodyProps) {
       <SafeImage
         src={challenge.presentation.image}
         alt={localizedPrompt(challenge, locale)}
+        missingLabel="Invalid or missing image data"
       />
     );
   if (challenge.type === "text_click" || challenge.type === "icon_click") {

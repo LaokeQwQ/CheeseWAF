@@ -48,7 +48,7 @@ describe('SetupPage', () => {
       expect.any(String),
     );
     await waitFor(() => {
-      expect(document.querySelector('.form-success')?.textContent).toBe('setup.complete');
+      expect(document.querySelector('.form-success')?.textContent).toBe('setup.success');
     });
     await vi.advanceTimersByTimeAsync(900);
     expect(navigateMock).toHaveBeenCalledWith('/login', { replace: true });
@@ -58,7 +58,8 @@ describe('SetupPage', () => {
     apiMocks.setupAdmin.mockRejectedValue(new Error('username already exists'));
     render(<SetupPage />);
     fireEvent.change(screen.getByPlaceholderText('admin'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByPlaceholderText('********'), { target: { value: 'x' } });
+    // Must pass client password policy so the form reaches the API mock.
+    fireEvent.change(screen.getByPlaceholderText('********'), { target: { value: 'N7v!mKq2PxR' } });
     fireEvent.click(screen.getByRole('button', { name: 'common.next' }));
     expect(await screen.findByText('username already exists')).toBeTruthy();
     expect(navigateMock).not.toHaveBeenCalled();

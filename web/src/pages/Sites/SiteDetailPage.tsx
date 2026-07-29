@@ -138,7 +138,7 @@ export default function SiteDetailPage() {
   }
 
   const updateField = <K extends keyof Site>(key: K, value: Site[K]) => {
-    setSite((current) => (current ? { ...current, [key]: value } : current as Site));
+    setSite((current) => (current ? { ...current, [key]: value } : current));
   };
   const updateAdvanced = <K extends keyof SiteAdvanced>(section: K, patch: Partial<SiteAdvanced[K]>) => {
     setSite((current) => (current
@@ -152,7 +152,7 @@ export default function SiteDetailPage() {
           } as SiteAdvanced[K],
         },
       }
-      : current as Site));
+      : current));
   };
   const updateCertificate = (patch: Partial<SiteAdvanced['certificate']>) => updateAdvanced('certificate', patch);
   const updateACME = (patch: Partial<SiteAdvanced['certificate']['acme']>) => {
@@ -170,7 +170,7 @@ export default function SiteDetailPage() {
           },
         },
       }
-      : current as Site));
+      : current));
   };
   const syncEnvRows = (rows: EnvRow[]) => {
     envDirtyRef.current = true;
@@ -180,7 +180,7 @@ export default function SiteDetailPage() {
   const updateRewrite = (index: number, patch: Partial<SiteRewriteRule>) => {
     setSite((current) => {
       if (!current) {
-        return current as Site;
+        return current;
       }
       return {
         ...current,
@@ -194,7 +194,7 @@ export default function SiteDetailPage() {
   const addRewrite = () => {
     setSite((current) => {
       if (!current) {
-        return current as Site;
+        return current;
       }
       return {
         ...current,
@@ -211,7 +211,7 @@ export default function SiteDetailPage() {
   const removeRewrite = (idToRemove: string) => {
     setSite((current) => (current
       ? { ...current, advanced: { ...current.advanced, rewrite: current.advanced.rewrite.filter((rule) => rule.id !== idToRemove) } }
-      : current as Site));
+      : current));
   };
   const submitACME = () => {
     if (!site) {
@@ -402,7 +402,7 @@ export default function SiteDetailPage() {
                   checked={site.advanced.access_log_enabled !== false}
                   onChange={(value) => setSite((current) => (current
                     ? { ...current, advanced: { ...current.advanced, access_log_enabled: value } }
-                    : current as Site))}
+                    : current))}
                 />
               </label>
               <em className="site-field-hint site-field-hint-wide">{t('sites.accessLogEnabledHint')}</em>

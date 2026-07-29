@@ -669,7 +669,7 @@ export function NotificationPanel({
   onToggleRead: (item: Notification) => void;
   onTogglePin: (item: Notification) => void;
 }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const filterOptions: Array<{ key: NotificationFilter; label: string }> = [
     { key: 'all', label: t('shell.notificationFilterAll') },
     { key: 'unread', label: t('shell.notificationFilterUnread') },
@@ -733,7 +733,7 @@ export function NotificationPanel({
                 {item.pinned && <Tag size="small" color="arcoblue">{t('shell.pinnedNotification')}</Tag>}
               </span>
               <strong>{item.message}</strong>
-              <em><Clock3 size={12} /> {formatRelativeTime(item.created_at, i18n.resolvedLanguage)}</em>
+              <em><Clock3 size={12} /> {formatRelativeTime(item.created_at, i18n.resolvedLanguage || undefined)}</em>
             </button>
             <div className="notification-item-actions">
               <button
