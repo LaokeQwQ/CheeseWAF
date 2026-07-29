@@ -75,6 +75,7 @@ type ApprovalActor struct {
 	Subject   string
 	SessionID string
 	Username  string
+	Role      string
 }
 
 type approvalActorContextKey struct{}

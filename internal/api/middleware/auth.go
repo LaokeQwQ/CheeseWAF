@@ -120,8 +120,14 @@ func (m *TokenManager) Verify(token string) (*Claims, error) {
 
 func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := bearerToken(r)
+		// Prefer HttpOnly session cookie; fall back to Authorization Bearer.
+		token := SessionToken(r)
 		if token == "" {
+			writeUnauthorized(w)
+			return
+		}
+		if strings.HasPrefix(token, ManagementAPITokenPrefix) {
+			// Management API tokens are not browser session JWTs.
 			writeUnauthorized(w)
 			return
 		}
@@ -145,17 +151,13 @@ func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator 
 	now := utcNowFunc(clock)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token := bearerToken(r)
-			if token == "" {
-				writeUnauthorized(w)
-				return
-			}
-			if strings.HasPrefix(token, ManagementAPITokenPrefix) {
+			// Management API tokens only via Authorization Bearer (never from cookie).
+			if raw := bearerToken(r); strings.HasPrefix(raw, ManagementAPITokenPrefix) {
 				if authenticate == nil {
 					writeUnauthorized(w)
 					return
 				}
-				claims, release, ok := authenticate(token, now())
+				claims, release, ok := authenticate(raw, now())
 				if !ok {
 					writeUnauthorized(w)
 					return
@@ -168,6 +170,11 @@ func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator 
 				return
 			}
 
+			token := SessionToken(r)
+			if token == "" {
+				writeUnauthorized(w)
+				return
+			}
 			if manager == nil || validator == nil {
 				writeUnauthorized(w)
 				return

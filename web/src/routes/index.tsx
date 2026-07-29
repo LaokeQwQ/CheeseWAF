@@ -1,6 +1,7 @@
-import { lazy, Suspense, type ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { bootstrapSessionFromLegacyToken, fetchSession, isAuthenticatedFlag } from '../api/client';
 import { AppErrorBoundary } from '../components/AppErrorBoundary';
 import { preloadAIPage, preloadAPISecurityPage, preloadAttackMapPage, preloadAttackScreenPage } from './preload';
 
@@ -49,10 +50,54 @@ function LazyPage({ children }: { children: ReactNode }) {
   return <Suspense fallback={<RouteLoadingFallback />}>{children}</Suspense>;
 }
 
+function useSessionGate() {
+  const [ready, setReady] = useState(false);
+  const [authed, setAuthed] = useState(isAuthenticatedFlag());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (isAuthenticatedFlag()) {
+        try {
+          await fetchSession();
+          if (!cancelled) {
+            setAuthed(true);
+            setReady(true);
+          }
+          return;
+        } catch {
+          /* try bootstrap */
+        }
+      }
+      const bootstrapped = await bootstrapSessionFromLegacyToken();
+      if (cancelled) {
+        return;
+      }
+      if (bootstrapped) {
+        setAuthed(true);
+      } else {
+        try {
+          await fetchSession();
+          if (!cancelled) setAuthed(true);
+        } catch {
+          if (!cancelled) setAuthed(false);
+        }
+      }
+      if (!cancelled) setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return { ready, authed };
+}
+
 function ProtectedLayout() {
   const location = useLocation();
-  const token = localStorage.getItem('cheesewaf-token');
-  if (!token) {
+  const { ready, authed } = useSessionGate();
+  if (!ready) {
+    return <RouteLoadingFallback />;
+  }
+  if (!authed) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
   return (
@@ -64,8 +109,11 @@ function ProtectedLayout() {
 
 function ProtectedStandalone({ children }: { children: ReactNode }) {
   const location = useLocation();
-  const token = localStorage.getItem('cheesewaf-token');
-  if (!token) {
+  const { ready, authed } = useSessionGate();
+  if (!ready) {
+    return <RouteLoadingFallback />;
+  }
+  if (!authed) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
   return <>{children}</>;
