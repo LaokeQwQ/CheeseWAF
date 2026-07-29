@@ -318,7 +318,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			maxRequestBody = maxVerifyBody
 		}
 	}
-	reqCtx, err := engine.NewRequestContextWithLimits(r, site.ID, site.WAF.AccessControl.TrustedCIDRs, maxRequestBody)
+	// Defer body I/O until APISec/WAF (or verify). IP/geo/bot/rate use headers only.
+	reqCtx, err := engine.NewRequestContextDeferredBody(r, site.ID, site.WAF.AccessControl.TrustedCIDRs, maxRequestBody)
 	if err != nil {
 		if errors.Is(err, engine.ErrRequestBodyTooLarge) {
 			s.proxyError(w, r, site, nil, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
@@ -347,6 +348,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// Behavior verify runs after host/path/protocol/IP/geoip gates so blocked clients
 	// cannot burn challenge capacity. Keep before global rate-limit so solvers can finish.
 	if requestPath == botBehaviorVerifyPath || r.URL.Path == botBehaviorVerifyPath {
+		if err := reqCtx.EnsureBody(); err != nil {
+			if errors.Is(err, engine.ErrRequestBodyTooLarge) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "failed to read request", http.StatusBadRequest)
+			return
+		}
 		s.handleBotBehaviorVerify(w, r, site, reqCtx)
 		return
 	}
@@ -394,6 +403,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		case engine.ActionChallenge.String():
 			s.challenge(w, r, reqCtx, result.Category, result.Message, start)
+			return
+		}
+	}
+	// Body needed for schema/WAF inspection; still deferred for pure bot/rate early exits.
+	if (s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff) || (site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff) {
+		if err := reqCtx.EnsureBody(); err != nil {
+			if errors.Is(err, engine.ErrRequestBodyTooLarge) {
+				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
+				return
+			}
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "failed to read request", http.StatusBadRequest, start, err)
 			return
 		}
 	}
@@ -616,7 +636,7 @@ func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request,
 	if clientIP == "" {
 		clientIP = engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
 	}
-	// Body was already size-capped and rewound by NewRequestContextWithLimits.
+	// Body was size-capped and rewound by EnsureBody on the verify path.
 	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
 }
 
