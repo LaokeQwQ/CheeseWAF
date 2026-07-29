@@ -48,7 +48,8 @@ func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 		Value:    draft.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
+		// Secure must be a constant true for CodeQL go/cookie-secure-not-set.
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(setup.DefaultDraftTTL.Seconds()),
 	})

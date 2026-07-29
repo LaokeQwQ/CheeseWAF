@@ -98,6 +98,8 @@ func NewCSRFToken() (string, error) {
 }
 
 // WriteSessionCookies sets HttpOnly session JWT + non-HttpOnly CSRF cookies.
+// Secure is always true (CodeQL go/cookie-secure-not-set): admin console is
+// expected behind HTTPS or TLS-terminated reverse proxy.
 func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csrf string, maxAge time.Duration) {
 	if w == nil {
 		return
@@ -105,14 +107,13 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 	if maxAge <= 0 {
 		maxAge = SessionCookieMaxAge
 	}
-	secure := requestLooksHTTPS(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    sessionJWT,
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
 		HttpOnly: true,
-		Secure:   secure,
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -121,7 +122,7 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
 		HttpOnly: false, // JS must read for double-submit header
-		Secure:   secure,
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	})
 }
@@ -131,7 +132,6 @@ func ClearSessionCookies(w http.ResponseWriter, r *http.Request) {
 	if w == nil {
 		return
 	}
-	secure := requestLooksHTTPS(r)
 	for _, name := range []string{SessionCookieName, CSRFCookieName} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
@@ -139,23 +139,10 @@ func ClearSessionCookies(w http.ResponseWriter, r *http.Request) {
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: name == SessionCookieName,
-			Secure:   secure,
+			Secure:   true,
 			SameSite: http.SameSiteStrictMode,
 		})
 	}
-}
-
-func requestLooksHTTPS(r *http.Request) bool {
-	if r == nil {
-		return true // fail closed: mark Secure when unknown
-	}
-	if r.TLS != nil {
-		return true
-	}
-	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		return true
-	}
-	return false
 }
 
 // RequiresCSRF reports whether the method mutates state and needs CSRF for cookie sessions.
