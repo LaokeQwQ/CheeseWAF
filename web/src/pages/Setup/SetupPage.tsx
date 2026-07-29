@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { LockKeyhole, Network, UserRound } from 'lucide-react';
 import { setupAdmin } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
+import { passwordPolicyErrorKey } from '../../utils/passwordPolicy';
 
 export default function SetupPage() {
   const { t } = useTranslation();
@@ -21,11 +22,11 @@ export default function SetupPage() {
     try {
       await setupAdmin(values.username ?? '', values.password ?? '', values.adminListen ?? '127.0.0.1:9443', values.adminStrategy ?? 'local');
       setDone(true);
-      setMessage(t('setup.complete'));
-      ArcoMessage.success(t('setup.complete'));
+      setMessage(t('setup.success'));
+      ArcoMessage.success(t('setup.success'));
       window.setTimeout(() => navigate('/login', { replace: true }), 800);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : t('setup.failed', { defaultValue: 'Setup failed' }));
+      setMessage(err instanceof Error ? err.message : t('setup.failed'));
     } finally {
       setLoading(false);
     }
@@ -49,10 +50,37 @@ export default function SetupPage() {
         </Steps>
 
         <Form layout="vertical" className="auth-form" onSubmit={handleSubmit} disabled={done}>
-          <Form.Item label={t('setup.username')} field="username">
+          <Form.Item
+            label={t('setup.username')}
+            field="username"
+            rules={[{ required: true, message: t('setup.usernameRequired') }]}
+          >
             <Input placeholder="admin" autoComplete="username" />
           </Form.Item>
-          <Form.Item label={t('setup.password')} field="password">
+          <Form.Item
+            label={t('setup.password')}
+            field="password"
+            extra={t('users.passwordHint')}
+            rules={[
+              { required: true, message: t('setup.passwordRequired') },
+              {
+                validator: (value, callback) => {
+                  const password = value == null ? '' : String(value);
+                  if (!password) {
+                    callback();
+                    return;
+                  }
+                  // username field may lag; policy still rejects weak patterns server-side
+                  const key = passwordPolicyErrorKey(password, '');
+                  if (key) {
+                    callback(t(`passwordPolicy.${key}`));
+                    return;
+                  }
+                  callback();
+                },
+              },
+            ]}
+          >
             <Input.Password placeholder="********" autoComplete="new-password" />
           </Form.Item>
           <Form.Item label={t('setup.adminListen')} field="adminListen">

@@ -9,6 +9,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passpolicy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -77,6 +78,10 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Username == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "username and password are required")
+		return
+	}
+	if err := passpolicy.Validate(req.Password, req.Username); err != nil {
+		writeError(w, http.StatusBadRequest, "PASSWORD_POLICY", err.Error())
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -324,6 +329,10 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		user.Role = req.Role
 	}
 	if req.Password != "" {
+		if err := passpolicy.Validate(req.Password, user.Username); err != nil {
+			writeError(w, http.StatusBadRequest, "PASSWORD_POLICY", err.Error())
+			return
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "PASSWORD_ERROR", err.Error())

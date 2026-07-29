@@ -23,7 +23,7 @@ func TestChangeUserPasswordUpdatesHashAndDisables2FA(t *testing.T) {
 	}
 
 	if _, err := changeUserPassword(context.Background(), sqlitePath, "admin", cliPasswordOptions{
-		Password: "new-password-123!",
+		Password: "N7v!mKq2PxR",
 	}); err != nil {
 		t.Fatalf("changeUserPassword() error = %v", err)
 	}
@@ -32,7 +32,7 @@ func TestChangeUserPasswordUpdatesHashAndDisables2FA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
-	if bcrypt.CompareHashAndPassword([]byte(updated.PasswordHash), []byte("new-password-123!")) != nil {
+	if bcrypt.CompareHashAndPassword([]byte(updated.PasswordHash), []byte("N7v!mKq2PxR")) != nil {
 		t.Fatal("updated password hash does not match new password")
 	}
 	if updated.TwoFAEnabled || updated.TwoFASecret != "" {
@@ -48,7 +48,7 @@ func TestChangeUserPasswordFromStdin(t *testing.T) {
 
 	if _, err := changeUserPassword(context.Background(), sqlitePath, "admin", cliPasswordOptions{
 		PasswordStdin: true,
-		Input:         bytes.NewBufferString("stdin-password-123!\n"),
+		Input:         bytes.NewBufferString("Std1n!Kq9mX\n"),
 	}); err != nil {
 		t.Fatalf("changeUserPassword() error = %v", err)
 	}
@@ -57,7 +57,7 @@ func TestChangeUserPasswordFromStdin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
-	if bcrypt.CompareHashAndPassword([]byte(updated.PasswordHash), []byte("stdin-password-123!")) != nil {
+	if bcrypt.CompareHashAndPassword([]byte(updated.PasswordHash), []byte("Std1n!Kq9mX")) != nil {
 		t.Fatal("updated password hash does not match stdin password")
 	}
 }

@@ -13,7 +13,7 @@ import {
 } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Database, Image, KeyRound, MapPinned, Plus, ServerCog, ShieldAlert, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   createManagementAPIToken,
@@ -23,6 +23,8 @@ import {
   testStorageBackend,
   updateSystemConfig,
 } from '../../api/client';
+import QueryErrorState from '../../components/QueryErrorState';
+import { useServerDraft } from '../../hooks/useServerDraft';
 import i18n from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
@@ -40,23 +42,19 @@ export default function SystemPage() {
   const setTheme = useAppStore((state) => state.setTheme);
   const setAiAssistantFabVisible = useAppStore((state) => state.setAiAssistantFabVisible);
   const setLanguage = useAppStore((state) => state.setLanguage);
-  const [system, setSystem] = useState<SystemConfig>(fallbackSystem);
   const [apiTokenDraft, setAPITokenDraft] = useState({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
   const [latestAPIToken, setLatestAPIToken] = useState('');
   const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
   const { data } = systemQuery;
   const apiTokensQuery = useQuery({ queryKey: ['management-api-tokens'], queryFn: fetchManagementAPITokens, retry: false });
-
-  useEffect(() => {
-    if (data) {
-      setSystem(normalizeSystem(data));
-    }
-  }, [data]);
+  const serverSystem = useMemo(() => (data ? normalizeSystem(data) : undefined), [data]);
+  const { draft, setDraft, markClean } = useServerDraft(serverSystem);
+  const system = draft ?? fallbackSystem;
 
   const saveMutation = useMutation({
     mutationFn: updateSystemConfig,
     onSuccess: (saved) => {
-      setSystem(normalizeSystem(saved));
+      markClean(normalizeSystem(saved));
       queryClient.invalidateQueries({ queryKey: ['system'] });
       queryClient.invalidateQueries({ queryKey: timeSyncQueryKey });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
@@ -70,30 +68,37 @@ export default function SystemPage() {
     onError: (error) => ArcoMessage.error(error.message),
   });
 
-  const patchSystem = (patch: Partial<SystemConfig>) => setSystem((current) => normalizeSystem({ ...current, ...patch }));
+  const baseSystem = (current: SystemConfig | undefined) => current ?? fallbackSystem;
+  const patchSystem = (patch: Partial<SystemConfig>) => setDraft((current) => normalizeSystem({ ...baseSystem(current), ...patch }));
   const patchConsoleLogin = (patch: Partial<SystemConfig['console']['login']>) => {
-    setSystem((current) => normalizeSystem({
-      ...current,
-      console: {
-        ...current.console,
-        login: {
-          ...current.console.login,
-          ...patch,
+    setDraft((current) => {
+      const next = baseSystem(current);
+      return normalizeSystem({
+        ...next,
+        console: {
+          ...next.console,
+          login: {
+            ...next.console.login,
+            ...patch,
+          },
         },
-      },
-    }));
+      });
+    });
   };
   const patchConsoleMap = (patch: Partial<SystemConfig['console']['map']>) => {
-    setSystem((current) => normalizeSystem({
-      ...current,
-      console: {
-        ...current.console,
-        map: {
-          ...current.console.map,
-          ...patch,
+    setDraft((current) => {
+      const next = baseSystem(current);
+      return normalizeSystem({
+        ...next,
+        console: {
+          ...next.console,
+          map: {
+            ...next.console.map,
+            ...patch,
+          },
         },
-      },
-    }));
+      });
+    });
   };
   const patchChinaBoundary = (patch: Partial<SystemConfig['console']['map']['china_boundary']>) => {
     patchConsoleMap({
@@ -104,48 +109,59 @@ export default function SystemPage() {
     });
   };
   const patchStorage = <K extends keyof SystemConfig['storage']>(key: K, patch: Partial<SystemConfig['storage'][K]>) => {
-    setSystem((current) => ({
-      ...current,
-      storage: {
-        ...current.storage,
-        [key]: {
-          ...(current.storage[key] as Record<string, unknown>),
-          ...(patch as Record<string, unknown>),
-        } as SystemConfig['storage'][K],
-      },
-    }));
+    setDraft((current) => {
+      const next = baseSystem(current);
+      return {
+        ...next,
+        storage: {
+          ...next.storage,
+          [key]: {
+            ...(next.storage[key] as Record<string, unknown>),
+            ...(patch as Record<string, unknown>),
+          } as SystemConfig['storage'][K],
+        },
+      };
+    });
   };
   const patchTimeSync = (patch: Partial<NonNullable<SystemConfig['time_sync']>>) => {
-    setSystem((current) => normalizeSystem({
-      ...current,
-      time_sync: current.time_sync ? { ...current.time_sync, ...patch } : undefined,
-    }));
+    setDraft((current) => {
+      const next = baseSystem(current);
+      return normalizeSystem({
+        ...next,
+        time_sync: next.time_sync ? { ...next.time_sync, ...patch } : undefined,
+      });
+    });
   };
   const apiAuth = useMemo(() => readAPIAuth(system), [system]);
   const managementAPI = useMemo(() => readManagementAPI(system), [system]);
-  const apiTokens = apiTokensQuery.data?.items ?? managementAPI.tokens ?? [];
+  const apiTokens = apiTokensQuery.data?.items ?? (apiTokensQuery.isError ? [] : (managementAPI.tokens ?? []));
   const patchAPISec = (patch: Partial<SystemConfig['apisec']>) => {
-    setSystem((current) => normalizeSystem({ ...current, apisec: { ...current.apisec, ...patch } }));
+    setDraft((current) => {
+      const next = baseSystem(current);
+      return normalizeSystem({ ...next, apisec: { ...next.apisec, ...patch } });
+    });
   };
   const patchAPIAuth = (patch: Partial<APISecAuthConfig>) => {
-    setSystem((current) => {
-      const auth = readAPIAuth(current);
+    setDraft((current) => {
+      const next = baseSystem(current);
+      const auth = readAPIAuth(next);
       return normalizeSystem({
-        ...current,
+        ...next,
         apisec: {
-          ...current.apisec,
+          ...next.apisec,
           auth: { ...auth, ...patch },
         },
       });
     });
   };
   const patchManagementAPI = (patch: Partial<ManagementAPIConfig>) => {
-    setSystem((current) => {
-      const management = readManagementAPI(current);
+    setDraft((current) => {
+      const next = baseSystem(current);
+      const management = readManagementAPI(next);
       return normalizeSystem({
-        ...current,
+        ...next,
         apisec: {
-          ...current.apisec,
+          ...next.apisec,
           management_api: { ...management, ...patch },
         },
       });
@@ -228,14 +244,21 @@ export default function SystemPage() {
         </div>
       </header>
 
+      {systemQuery.isError && (
+        <QueryErrorState
+          message={systemQuery.error instanceof Error ? systemQuery.error.message : undefined}
+          onRetry={() => { void systemQuery.refetch(); }}
+          retrying={systemQuery.isFetching}
+        />
+      )}
+
       <section className="panel system-settings-panel">
         <Tabs className="system-tabs" defaultActiveTab="runtime">
           <Tabs.TabPane key="runtime" title={<span className="tab-title"><ServerCog size={15} />{t('system.runtime')}</span>}>
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.interface')}</h2>
-                {systemQuery.isError && <Button onClick={() => systemQuery.refetch()} loading={systemQuery.isFetching}>{t('common.retry')}</Button>}
-                <Button onClick={() => saveMutation.mutate({ server: system.server, ...(system.time_sync ? { time_sync: system.time_sync } : {}), tls: system.tls, logging: system.logging })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
+                <Button type="primary" onClick={() => saveMutation.mutate({ server: system.server, ...(system.time_sync ? { time_sync: system.time_sync } : {}), tls: system.tls, logging: system.logging })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups">
                 <section className="system-fieldset">
@@ -707,6 +730,13 @@ export default function SystemPage() {
                         }}>{t('system.clearAPIToken')}</Button>
                       </div>
                     </div>
+                  )}
+                  {apiTokensQuery.isError && (
+                    <QueryErrorState
+                      message={apiTokensQuery.error instanceof Error ? apiTokensQuery.error.message : undefined}
+                      onRetry={() => { void apiTokensQuery.refetch(); }}
+                      retrying={apiTokensQuery.isFetching}
+                    />
                   )}
                   <Table
                     rowKey="id"

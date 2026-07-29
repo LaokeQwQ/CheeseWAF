@@ -13,7 +13,8 @@
   --z-modal-backdrop: 99;
   --z-captcha-modal: 102;
   --z-captcha-modal-backdrop: 101;
-  --z-notification: 90;
+  /* Above captcha modal (101/102) so validation toasts remain visible */
+  --z-notification: 105;
   --text-strong: var(--text);
   --text-subtle: var(--text-muted);
   --text-primary: var(--text);
@@ -92,6 +93,7 @@ body::-webkit-scrollbar,
 .arco-modal-content::-webkit-scrollbar,
 .arco-select-popup-inner::-webkit-scrollbar,
 .arco-trigger-popup::-webkit-scrollbar,
+.ip-manage-page::-webkit-scrollbar,
 .assistant-thread::-webkit-scrollbar {
   width: var(--scrollbar-size-block);
   height: var(--scrollbar-size);
@@ -114,6 +116,7 @@ body::-webkit-scrollbar-track,
 .arco-modal-content::-webkit-scrollbar-track,
 .arco-select-popup-inner::-webkit-scrollbar-track,
 .arco-trigger-popup::-webkit-scrollbar-track,
+.ip-manage-page::-webkit-scrollbar-track,
 .assistant-thread::-webkit-scrollbar-track {
   background: var(--scrollbar-track);
   border-radius: var(--scrollbar-radius);
@@ -136,6 +139,7 @@ body::-webkit-scrollbar-thumb,
 .arco-modal-content::-webkit-scrollbar-thumb,
 .arco-select-popup-inner::-webkit-scrollbar-thumb,
 .arco-trigger-popup::-webkit-scrollbar-thumb,
+.ip-manage-page::-webkit-scrollbar-thumb,
 .assistant-thread::-webkit-scrollbar-thumb {
   background:
     linear-gradient(
@@ -166,6 +170,7 @@ body::-webkit-scrollbar-thumb:hover,
 .arco-modal-content::-webkit-scrollbar-thumb:hover,
 .arco-select-popup-inner::-webkit-scrollbar-thumb:hover,
 .arco-trigger-popup::-webkit-scrollbar-thumb:hover,
+.ip-manage-page::-webkit-scrollbar-thumb:hover,
 .assistant-thread::-webkit-scrollbar-thumb:hover {
   background:
     linear-gradient(
@@ -193,6 +198,7 @@ body::-webkit-scrollbar-thumb:active,
 .arco-modal-content::-webkit-scrollbar-thumb:active,
 .arco-select-popup-inner::-webkit-scrollbar-thumb:active,
 .arco-trigger-popup::-webkit-scrollbar-thumb:active,
+.ip-manage-page::-webkit-scrollbar-thumb:active,
 .assistant-thread::-webkit-scrollbar-thumb:active {
   background: var(--scrollbar-thumb-active);
   background-clip: padding-box;
@@ -682,7 +688,7 @@ select {
 .topbar {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-dropdown);
   display: grid;
   grid-template-columns: minmax(220px, 420px) minmax(0, 1fr);
   align-items: center;
@@ -790,7 +796,7 @@ select {
   position: absolute;
   top: calc(100% + 10px);
   left: 46px;
-  z-index: 40;
+  z-index: var(--z-sticky);
   width: min(420px, calc(100vw - 48px));
   display: grid;
   gap: 6px;
@@ -2565,9 +2571,8 @@ code {
   background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
-.ai-event-card .arco-btn-primary,
-.event-detail-side .arco-btn-primary {
-  color: #fff;
+.ai-event-card .arco-btn-primary {
+  color: var(--accent-contrast, #fff);
 }
 .api-findings {
   margin-top: 14px;
@@ -4961,7 +4966,7 @@ code {
   color: var(--accent-danger);
 }
 .auth-captcha-modal {
-  width: min(94vw, 372px) !important;
+  width: min(94vw, 368px) !important;
   z-index: var(--z-captcha-modal);
 }
 .arco-modal.auth-captcha-modal.zoomModal-appear,
@@ -5374,7 +5379,7 @@ code {
   padding: 0;
   border: 1px solid color-mix(in srgb, #ffffff 24%, var(--accent));
   border-radius: 10px;
-  color: #ffffff;
+  color: var(--accent-contrast, #ffffff);
   background: var(--accent);
   box-shadow:
     0 9px 18px color-mix(in srgb, var(--accent) 23%, transparent),
@@ -5561,9 +5566,6 @@ code {
   cursor: wait;
   opacity: 0.62;
 } /* Login CAPTCHA layout. */
-.auth-captcha-modal {
-  width: min(94vw, 368px) !important;
-}
 .auth-captcha-widget {
   justify-items: center;
   gap: 10px !important;
@@ -6085,13 +6087,13 @@ code {
 .assistant-user {
   justify-self: end;
   max-width: 82%;
-  color: #ffffff;
+  color: var(--accent-contrast, #ffffff);
   background: linear-gradient(
     135deg,
     var(--accent),
-    color-mix(in srgb, var(--accent) 82%, #0b534b 18%)
+    color-mix(in srgb, var(--accent) 86%, var(--accent-strong) 14%)
   );
-  border-color: color-mix(in srgb, var(--accent) 72%, #ffffff 18%);
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--surface) 18%);
   box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .assistant-assistant {
@@ -6699,13 +6701,16 @@ code {
     border: 0;
     background: color-mix(in srgb, var(--app-bg) 42%, transparent);
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
     backdrop-filter: blur(2px);
-    transition: opacity 160ms ease;
+    transition: opacity 160ms ease, visibility 0ms linear 160ms;
   }
   .app-mobile-nav-open .mobile-nav-backdrop {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
+    transition: opacity 160ms ease, visibility 0ms linear 0ms;
   }
   .app-sidebar .brand-copy,
   .app-sidebar .sidebar-status {
@@ -9514,7 +9519,7 @@ code {
   display: grid;
   place-items: center;
   border-radius: 999px;
-  color: #ffffff;
+  color: var(--accent-contrast, #ffffff);
   background: var(--accent);
   box-shadow: 0 9px 18px color-mix(in srgb, var(--accent) 22%, transparent);
   font-size: 22px;
@@ -10179,4 +10184,27 @@ code {
   .topbar-search-result span {
     grid-row: auto;
   }
+}
+
+/* Shared query failure panel */
+.query-error-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent-danger, #f53f3f) 35%, var(--border-color, var(--border)));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-danger, #f53f3f) 8%, var(--surface));
+}
+.query-error-state__body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.query-error-state__body span {
+  color: var(--text-muted, var(--text-secondary));
+  font-size: 13px;
+  line-height: 1.45;
 }
