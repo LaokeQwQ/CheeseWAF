@@ -683,15 +683,18 @@ function formatDate(value?: string, locale?: string) {
 
 function currentAccount() {
   const fallback = { subject: '', username: '', role: '' };
-  const payload = (localStorage.getItem('cheesewaf-token') ?? '').split('.')[1];
-  if (!payload) {
-    return fallback;
-  }
   try {
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const decoded = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))) as { sub?: string; username?: string; role?: string };
-    return { subject: decoded.sub ?? '', username: decoded.username ?? '', role: decoded.role ?? '' };
+    const cached = sessionStorage.getItem('cheesewaf-account');
+    if (cached) {
+      const parsed = JSON.parse(cached) as { subject?: string; username?: string; role?: string };
+      return {
+        subject: parsed.subject ?? '',
+        username: parsed.username ?? '',
+        role: parsed.role ?? '',
+      };
+    }
   } catch {
-    return fallback;
+    /* fall through */
   }
+  return fallback;
 }

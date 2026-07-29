@@ -124,8 +124,9 @@ describe('authenticated fetch 401 handling', () => {
     localStorage.clear();
   });
 
-  it('clears the token, React Query cache, and schedules only one login redirect', () => {
+  it('clears legacy token, React Query cache, and schedules only one login redirect', () => {
     localStorage.setItem('cheesewaf-token', 'token');
+    sessionStorage.setItem('cheesewaf-authed', '1');
     queryClient.setQueryData(['sites'], [{ id: 'site-1' }]);
     expect(queryClient.getQueryData(['sites'])).toEqual([{ id: 'site-1' }]);
 
@@ -133,6 +134,7 @@ describe('authenticated fetch 401 handling', () => {
     handleUnauthorizedAuthFailure({ pathname: '/updates', assign });
 
     expect(localStorage.getItem('cheesewaf-token')).toBeNull();
+    expect(sessionStorage.getItem('cheesewaf-authed')).toBeNull();
     expect(queryClient.getQueryData(['sites'])).toBeUndefined();
     expect(assign).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledWith('/login?returnTo=%2Fai%3Ftab%3Dmodels%23reasoning');

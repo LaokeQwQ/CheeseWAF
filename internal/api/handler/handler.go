@@ -595,8 +595,15 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
+	csrf, err := middleware.NewCSRFToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
+		return
+	}
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
 	tracker.clearLoginFailures(rateLimitKeys, now)
-	writeData(w, map[string]any{"token": token, "user": user})
+	// token is still returned for non-browser clients; browser uses HttpOnly cookie and must not persist JWT.
+	writeData(w, map[string]any{"token": token, "csrf": csrf, "user": user, "session_cookie": true})
 }
 
 func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayload) bool {
@@ -1032,7 +1039,13 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
-	writeData(w, map[string]any{"token": token, "user": user})
+	csrf, err := middleware.NewCSRFToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
+		return
+	}
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
+	writeData(w, map[string]any{"token": token, "csrf": csrf, "user": user, "session_cookie": true})
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -1045,7 +1058,58 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
+	middleware.ClearSessionCookies(w, r)
 	writeData(w, map[string]any{"revoked": true})
+}
+
+// SessionInfo returns the current browser session (cookie or bearer) for SPA auth gates.
+func (h *Handler) SessionInfo(w http.ResponseWriter, r *http.Request) {
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	user, err := h.Store.GetUserByUsername(r.Context(), claims.Username)
+	if err != nil || user == nil || user.ID != claims.Subject {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	csrf := middleware.CSRFTokenFromCookie(r)
+	writeData(w, map[string]any{
+		"user":           user,
+		"csrf":           csrf,
+		"session_cookie": middleware.SessionFromCookie(r),
+	})
+}
+
+// BootstrapSession migrates a valid Authorization Bearer JWT into HttpOnly cookies and rotates jti.
+func (h *Handler) BootstrapSession(w http.ResponseWriter, r *http.Request) {
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	user, err := h.Store.GetUserByUsername(r.Context(), claims.Username)
+	if err != nil || user == nil || user.ID != claims.Subject {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	token, nextClaims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", err.Error())
+		return
+	}
+	if err := h.Store.RotateSession(r.Context(), claims.ID, user.ID, sessionFromClaims(nextClaims)); err != nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
+		return
+	}
+	csrf, err := middleware.NewCSRFToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
+		return
+	}
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
+	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true, "bootstrapped": true})
 }
 
 func (h *Handler) revokeUserSessions(w http.ResponseWriter, r *http.Request, userID string, exceptID string) bool {

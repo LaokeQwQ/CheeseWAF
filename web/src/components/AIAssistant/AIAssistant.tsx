@@ -632,6 +632,13 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                             </div>
                           </div>
                           {description && <p>{description}</p>}
+                          {/* R3: approval diffs expand by default so operators see the change without an extra click. */}
+                          {tool.approval?.diff && (
+                            <div className="assistant-tool-section assistant-tool-section-diff assistant-tool-diff-default-open">
+                              <small>{t('assistant.diffPreview')}</small>
+                              <pre>{tool.approval.diff}</pre>
+                            </div>
+                          )}
                           {tool.result && (
                             <div className={tool.result.success ? 'assistant-tool-result' : 'assistant-tool-result assistant-tool-result-error'}>
                               <span>{tool.result.success ? t('assistant.toolResult') : t('assistant.toolFailed')}</span>

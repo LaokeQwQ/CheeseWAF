@@ -33,6 +33,11 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 	if !ok {
 		return nil, fmt.Errorf("tool %q not found", name)
 	}
+	// R3: role-based tool whitelist (does not weaken dual-control approvals).
+	actor := ApprovalActorFromContext(ctx)
+	if err := GuardToolAccess(actor.Role, tool, DefaultRoleToolPolicy()); err != nil {
+		return nil, err
+	}
 	if tool.Sensitivity() != ReadOnly {
 		if a.approvals == nil || !a.approvals.CanPersistModifications() {
 			return nil, fmt.Errorf("approval persistence is unavailable; modification tools are disabled")
