@@ -258,7 +258,6 @@ protection:
       - "/"
     exempt_path_prefixes:
       - "/health"
-      - "/api/"
     allowed_user_agents: []
     suspicious_user_agents:
       - "curl"

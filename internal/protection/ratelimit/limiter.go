@@ -47,7 +47,8 @@ func New(profile config.RateLimitProfile, enabled bool) *Limiter {
 	if profile.Window <= 0 {
 		profile.Window = time.Minute
 	}
-	if profile.Burst <= 0 {
+	// Only default burst when omitted (negative). Explicit 0 stays 0.
+	if profile.Burst < 0 {
 		profile.Burst = profile.Requests
 	}
 	shards := make([]limiterShard, defaultShards)
@@ -161,14 +162,15 @@ func (l *Limiter) perShardCap() int {
 }
 
 func (l *Limiter) expireLocked(sh *limiterShard, now time.Time) {
+	// Bound scan work under the shard lock, including live keys.
 	budget := evictionBudget
 	for key, b := range sh.keys {
 		if budget <= 0 {
 			break
 		}
+		budget--
 		if now.Sub(b.windowStart) >= l.window {
 			delete(sh.keys, key)
-			budget--
 		}
 	}
 }
