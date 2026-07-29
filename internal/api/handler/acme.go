@@ -42,6 +42,10 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
 	}
+	if h.Config != nil && !h.Config.ACME.Enabled {
+		writeError(w, http.StatusServiceUnavailable, "ACME_DISABLED", "acme automation is disabled")
+		return
+	}
 	issuer := h.ensureACMEIssuer()
 	if issuer == nil {
 		writeError(w, http.StatusServiceUnavailable, "ACME_DISABLED", "acme issuer is not configured")

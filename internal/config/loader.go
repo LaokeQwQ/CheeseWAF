@@ -477,8 +477,14 @@ func writeFileAtomic(path string, contents []byte, perm os.FileMode) error {
 		return fmt.Errorf("replace config: %w", err)
 	}
 	cleanup = false
+	// Keep a durable last-good backup for crash recovery instead of deleting
+	// the previous file immediately after rename.
 	if backupName != "" {
-		_ = os.Remove(backupName)
+		stableBackup := filepath.Join(dir, "."+filepath.Base(path)+".last-good")
+		_ = os.Remove(stableBackup)
+		if err := os.Rename(backupName, stableBackup); err != nil {
+			_ = os.Remove(backupName)
+		}
 	}
 	if dirHandle, err := os.Open(dir); err == nil {
 		_ = dirHandle.Sync()

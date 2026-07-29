@@ -99,7 +99,9 @@ func runServe(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		proxyServer.UpdateSites(sites)
+		if err := proxyServer.UpdateSites(sites); err != nil {
+			return err
+		}
 		proxyServer.UpdatePipeline(nextPipeline)
 		return nil
 	}

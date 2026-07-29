@@ -2,6 +2,8 @@ package engine
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"errors"
 	"io"
 	"net"
@@ -13,6 +15,9 @@ import (
 )
 
 const defaultRequestBodyLimit = 8 << 20
+
+// Cap inflate relative to compressed size to reduce zip-bomb risk.
+const maxDecompressionRatio = 20
 
 var ErrRequestBodyTooLarge = errors.New("request body exceeds configured limit")
 
@@ -61,6 +66,9 @@ func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes in
 }
 
 // EnsureBody reads and rewinds the request body at most once.
+// When Content-Encoding is gzip/deflate, DecodedBody is the decompressed
+// payload used by WAF detectors (with decompression limits). Request.Body is
+// rewound with the original transfer encoding for the upstream.
 func (c *RequestContext) EnsureBody() error {
 	if c == nil {
 		return errors.New("nil request context")
@@ -81,20 +89,64 @@ func (c *RequestContext) EnsureBody() error {
 		return ErrRequestBodyTooLarge
 	}
 	originalBody := c.Request.Body
-	body, err := io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
 	if err != nil {
 		return err
 	}
-	if int64(len(body)) > maxBodyBytes {
+	if int64(len(raw)) > maxBodyBytes {
 		_ = originalBody.Close()
 		return ErrRequestBodyTooLarge
 	}
-	c.DecodedBody = body
 	_ = originalBody.Close()
-	c.Request.Body = io.NopCloser(bytes.NewReader(body))
-	c.Request.ContentLength = int64(len(body))
+
+	decoded := raw
+	encoding := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Encoding")))
+	if encoding != "" && encoding != "identity" {
+		plain, derr := decodeHTTPContentEncoding(raw, encoding, maxBodyBytes)
+		if derr != nil {
+			return derr
+		}
+		decoded = plain
+	}
+	c.DecodedBody = decoded
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	c.Request.ContentLength = int64(len(raw))
 	c.bodyLoaded = true
 	return nil
+}
+
+func decodeHTTPContentEncoding(raw []byte, encoding string, maxPlain int64) ([]byte, error) {
+	if strings.Contains(encoding, ",") {
+		return nil, errors.New("unsupported multi-layer content-encoding")
+	}
+	var reader io.Reader
+	switch encoding {
+	case "gzip", "x-gzip":
+		gr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return nil, err
+		}
+		defer gr.Close()
+		reader = gr
+	case "deflate":
+		reader = flate.NewReader(bytes.NewReader(raw))
+	case "br", "zstd":
+		return nil, errors.New("unsupported content-encoding for inspection: " + encoding)
+	default:
+		return nil, errors.New("unsupported content-encoding for inspection: " + encoding)
+	}
+	limit := maxPlain
+	if ratioCap := int64(len(raw)) * maxDecompressionRatio; ratioCap > 0 && ratioCap < limit {
+		limit = ratioCap
+	}
+	plain, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(plain)) > limit {
+		return nil, ErrRequestBodyTooLarge
+	}
+	return plain, nil
 }
 
 type replayBody struct {
