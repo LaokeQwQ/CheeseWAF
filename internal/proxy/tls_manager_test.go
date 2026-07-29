@@ -1,11 +1,54 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"strings"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
+
+func TestParseMinTLSVersion(t *testing.T) {
+	if got := parseMinTLSVersion("1.3", tls.VersionTLS12); got != tls.VersionTLS13 {
+		t.Fatalf("1.3 => %#x", got)
+	}
+	if got := parseMinTLSVersion("1.2", tls.VersionTLS13); got != tls.VersionTLS12 {
+		t.Fatalf("1.2 => %#x", got)
+	}
+	if got := parseMinTLSVersion("", tls.VersionTLS13); got != tls.VersionTLS13 {
+		t.Fatalf("fallback => %#x", got)
+	}
+}
+
+func TestSiteCertificateStoreAppliesSiteMinTLS(t *testing.T) {
+	store := &SiteCertificateStore{
+		minTLSByDomain: map[string]uint16{
+			"strict.example.test": tls.VersionTLS13,
+			"legacy.example.test": tls.VersionTLS12,
+		},
+		defaultMinTLS: tls.VersionTLS12,
+	}
+	if got := store.minTLSForSNI("strict.example.test"); got != tls.VersionTLS13 {
+		t.Fatalf("strict min = %#x", got)
+	}
+	if got := store.minTLSForSNI("legacy.example.test"); got != tls.VersionTLS12 {
+		t.Fatalf("legacy min = %#x", got)
+	}
+	if got := store.minTLSForSNI("other.example.test"); got != tls.VersionTLS12 {
+		t.Fatalf("fallback min = %#x", got)
+	}
+	cfg := store.TLSConfig(config.TLSConfig{MinVersion: "1.2"})
+	if cfg.GetConfigForClient == nil {
+		t.Fatal("expected GetConfigForClient")
+	}
+	clientCfg, err := cfg.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "strict.example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clientCfg.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("client min = %#x, want TLS1.3", clientCfg.MinVersion)
+	}
+}
 
 func TestSiteCertificateStoreDoesNotLoadUnusedDefaultCertificate(t *testing.T) {
 	cfg := &config.Config{

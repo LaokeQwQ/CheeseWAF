@@ -46,7 +46,7 @@ func TestSetupAPIUsesSharedCompletionPath(t *testing.T) {
 		Store:      store,
 	})
 
-	body := `{"username":"admin","password":"correct-horse-battery","admin_listen":"0.0.0.0:9443","admin_strategy":"public_tls"}`
+	body := `{"username":"admin","password":"Correct-Horse-9x!","admin_listen":"0.0.0.0:9443","admin_strategy":"public_tls"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()

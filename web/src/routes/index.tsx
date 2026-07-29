@@ -1,4 +1,5 @@
 import { lazy, Suspense, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppErrorBoundary } from '../components/AppErrorBoundary';
 import { preloadAIPage, preloadAPISecurityPage, preloadAttackMapPage, preloadAttackScreenPage } from './preload';
@@ -39,8 +40,13 @@ function Page({ children }: { children: ReactNode }) {
   );
 }
 
+function RouteLoadingFallback() {
+  const { t } = useTranslation();
+  return <div className="page-spinner" aria-label={t('common.loading')} aria-busy="true" />;
+}
+
 function LazyPage({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<div className="page-spinner" aria-label="Loading" aria-busy="true" />}>{children}</Suspense>;
+  return <Suspense fallback={<RouteLoadingFallback />}>{children}</Suspense>;
 }
 
 function ProtectedLayout() {
@@ -50,7 +56,7 @@ function ProtectedLayout() {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
   return (
-    <Suspense fallback={<div className="page-spinner" aria-label="Loading" aria-busy="true" />}>
+    <Suspense fallback={<RouteLoadingFallback />}>
       <MainLayout />
     </Suspense>
   );

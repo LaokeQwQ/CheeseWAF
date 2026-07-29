@@ -5,9 +5,16 @@ const apiMocks = vi.hoisted(() => ({
   setupAdmin: vi.fn(),
 }));
 
+const navigateMock = vi.fn();
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>();
+  return { ...actual, useNavigate: () => navigateMock };
+});
 
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>();
@@ -18,10 +25,12 @@ import SetupPage from './SetupPage';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers({ shouldAdvanceTime: true });
 });
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 describe('SetupPage', () => {
@@ -39,16 +48,20 @@ describe('SetupPage', () => {
       expect.any(String),
     );
     await waitFor(() => {
-      expect(document.querySelector('.form-error')?.textContent).toBe('setup.complete');
+      expect(document.querySelector('.form-success')?.textContent).toBe('setup.success');
     });
+    await vi.advanceTimersByTimeAsync(900);
+    expect(navigateMock).toHaveBeenCalledWith('/login', { replace: true });
   });
 
   it('surfaces setup API failures', async () => {
     apiMocks.setupAdmin.mockRejectedValue(new Error('username already exists'));
     render(<SetupPage />);
     fireEvent.change(screen.getByPlaceholderText('admin'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByPlaceholderText('********'), { target: { value: 'x' } });
+    // Must pass client password policy so the form reaches the API mock.
+    fireEvent.change(screen.getByPlaceholderText('********'), { target: { value: 'N7v!mKq2PxR' } });
     fireEvent.click(screen.getByRole('button', { name: 'common.next' }));
     expect(await screen.findByText('username already exists')).toBeTruthy();
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 });

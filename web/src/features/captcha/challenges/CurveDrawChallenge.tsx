@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { appendTrack, normalizePoint, trackPoint } from '../interaction';
 import type { CaptchaResponse, CaptchaTrackPoint } from '../protocol';
 import styles from './CurveDrawChallenge.module.css';
@@ -8,17 +8,29 @@ export interface CurveDrawChallengeProps {
   disabled?: boolean;
   className?: string;
   alt?: string;
+  label?: string;
   onInteractionStart?: () => void;
   onSubmit: (response: Omit<CaptchaResponse, 'token'>) => void | Promise<void>;
 }
 
 type DisplayPoint = { x: number; y: number };
 
-export function CurveDrawChallenge({ imageSrc, disabled = false, className, alt = '', onInteractionStart, onSubmit }: CurveDrawChallengeProps) {
+export function CurveDrawChallenge({
+  imageSrc,
+  disabled = false,
+  className,
+  alt = '',
+  label,
+  onInteractionStart,
+  onSubmit,
+}: CurveDrawChallengeProps) {
   const [displayPoints, setDisplayPoints] = useState<DisplayPoint[]>([]);
   const activePointer = useRef<number | null>(null);
   const startedAt = useRef(0);
   const track = useRef<CaptchaTrackPoint[]>([]);
+  const keyboardActive = useRef(false);
+  const keyboardPoint = useRef({ x: 5000, y: 5000 });
+  const surfaceLabel = label || alt || 'curve draw challenge';
 
   const capture = useCallback((event: ReactPointerEvent<HTMLDivElement>, type: 'down' | 'move' | 'up') => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -62,6 +74,56 @@ export function CurveDrawChallenge({ imageSrc, disabled = false, className, alt 
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   };
 
+  const keyboardTrackPoint = (type: 'down' | 'move' | 'up') => {
+    const elapsed = Math.max(0, performance.now() - startedAt.current);
+    track.current = appendTrack(track.current, trackPoint(keyboardPoint.current, elapsed, type), 256);
+    setDisplayPoints((current) => [...current, { x: keyboardPoint.current.x / 100, y: keyboardPoint.current.y / 100 }].slice(-256));
+    return track.current;
+  };
+
+  const keyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    if (event.key === ' ' && !keyboardActive.current) {
+      event.preventDefault();
+      keyboardActive.current = true;
+      startedAt.current = performance.now();
+      track.current = [];
+      setDisplayPoints([]);
+      keyboardTrackPoint('down');
+      onInteractionStart?.();
+      return;
+    }
+    if (event.key === 'Escape') {
+      keyboardActive.current = false;
+      track.current = [];
+      setDisplayPoints([]);
+      return;
+    }
+    if (!keyboardActive.current) return;
+    const movement: Record<string, { x: number; y: number }> = {
+      ArrowLeft: { x: -300, y: 0 },
+      ArrowRight: { x: 300, y: 0 },
+      ArrowUp: { x: 0, y: -300 },
+      ArrowDown: { x: 0, y: 300 },
+    };
+    if (movement[event.key]) {
+      event.preventDefault();
+      keyboardPoint.current = {
+        x: Math.max(0, Math.min(10000, keyboardPoint.current.x + movement[event.key].x)),
+        y: Math.max(0, Math.min(10000, keyboardPoint.current.y + movement[event.key].y)),
+      };
+      keyboardTrackPoint('move');
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      keyboardActive.current = false;
+      const next = keyboardTrackPoint('up');
+      if (next.length >= 2) {
+        void onSubmit({ track: next, duration_ms: Math.round(performance.now() - startedAt.current) });
+      }
+    }
+  };
+
   const polyline = displayPoints.map((point) => `${point.x},${point.y}`).join(' ');
 
   return (
@@ -72,7 +134,10 @@ export function CurveDrawChallenge({ imageSrc, disabled = false, className, alt 
       onPointerMove={handlePointerMove}
       onPointerUp={finish}
       onPointerCancel={cancel}
+      onKeyDown={keyDown}
       role="application"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={surfaceLabel}
       aria-disabled={disabled}
     >
       <img className={styles.image} src={imageSrc} alt={alt} draggable={false} />

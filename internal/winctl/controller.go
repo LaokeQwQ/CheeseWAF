@@ -5,6 +5,8 @@
 package winctl
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -40,6 +42,8 @@ type Controller struct {
 	mu     sync.Mutex
 	cmd    *exec.Cmd
 	server *http.Server
+	// controlToken authenticates mutating local control requests.
+	controlToken string
 }
 
 // New builds a controller with safe defaults.
@@ -75,6 +79,10 @@ func New(opts Options) (*Controller, error) {
 	if opts.Listen == "" {
 		opts.Listen = "127.0.0.1:17943"
 	}
+	tokenBytes := make([]byte, 24)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("generate control token: %w", err)
+	}
 	host, _, err := net.SplitHostPort(opts.Listen)
 	if err != nil {
 		return nil, fmt.Errorf("invalid listen address: %w", err)
@@ -94,7 +102,15 @@ func New(opts Options) (*Controller, error) {
 	}
 	// Align CLI status/stop helpers with the same config/data dirs the GUI uses.
 	cli.ConfigurePaths(opts.ConfigPath, opts.DataDir)
-	return &Controller{opts: opts}, nil
+	return &Controller{opts: opts, controlToken: hex.EncodeToString(tokenBytes)}, nil
+}
+
+// ControlToken returns the random token required for mutating control calls.
+func (c *Controller) ControlToken() string {
+	if c == nil {
+		return ""
+	}
+	return c.controlToken
 }
 
 // Status returns process status using the shared CLI inspector.

@@ -277,12 +277,14 @@ func forkRequestContext(src *RequestContext) *RequestContext {
 		return nil
 	}
 	dst := &RequestContext{
-		Request:     src.Request,
-		ClientIP:    src.ClientIP,
-		TraceID:     src.TraceID,
-		SiteID:      src.SiteID,
-		DecodedURI:  src.DecodedURI,
-		DecodedBody: src.DecodedBody,
+		Request:      src.Request,
+		ClientIP:     src.ClientIP,
+		TraceID:      src.TraceID,
+		SiteID:       src.SiteID,
+		DecodedURI:   src.DecodedURI,
+		DecodedBody:  src.DecodedBody,
+		maxBodyBytes: src.maxBodyBytes,
+		bodyLoaded:   src.bodyLoaded,
 	}
 	if len(src.Metadata) > 0 {
 		dst.Metadata = make(map[string]any, len(src.Metadata)+4)

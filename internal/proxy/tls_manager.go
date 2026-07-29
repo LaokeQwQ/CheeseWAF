@@ -10,12 +10,9 @@ import (
 )
 
 func TLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
-	minVersion := uint16(tls.VersionTLS13)
-	if cfg.MinVersion == "1.2" {
-		minVersion = tls.VersionTLS12
-	}
 	tlsConfig := &tls.Config{
-		MinVersion: minVersion,
+		// Global listener default remains TLS 1.3 unless explicitly set to 1.2.
+		MinVersion: parseMinTLSVersion(cfg.MinVersion, tls.VersionTLS13),
 	}
 	if HasCertificate(cfg) {
 		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
@@ -35,10 +32,16 @@ type SiteCertificateStore struct {
 	mu          sync.RWMutex
 	defaultCert *tls.Certificate
 	byDomain    map[string]*tls.Certificate
+	// minTLSByDomain applies per-site min_tls_version during handshake.
+	minTLSByDomain map[string]uint16
+	defaultMinTLS  uint16
 }
 
 func NewSiteCertificateStore(cfg *config.Config) (*SiteCertificateStore, error) {
-	store := &SiteCertificateStore{byDomain: map[string]*tls.Certificate{}}
+	store := &SiteCertificateStore{
+		byDomain:       map[string]*tls.Certificate{},
+		minTLSByDomain: map[string]uint16{},
+	}
 	if err := store.Update(cfg); err != nil {
 		return nil, err
 	}
@@ -47,7 +50,12 @@ func NewSiteCertificateStore(cfg *config.Config) (*SiteCertificateStore, error) 
 
 func (s *SiteCertificateStore) Update(cfg *config.Config) error {
 	next := map[string]*tls.Certificate{}
+	nextMin := map[string]uint16{}
 	var defaultCert *tls.Certificate
+	var defaultMin uint16 = tls.VersionTLS13
+	if cfg != nil {
+		defaultMin = parseMinTLSVersion(cfg.TLS.MinVersion, tls.VersionTLS13)
+	}
 	if requiresDefaultTLSCertificate(cfg) && HasCertificate(cfg.TLS) {
 		cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 		if err != nil {
@@ -67,6 +75,8 @@ func (s *SiteCertificateStore) Update(cfg *config.Config) error {
 			if cert == nil {
 				continue
 			}
+			// Site certificate default floor is TLS 1.2 when unset.
+			siteMin := parseMinTLSVersion(site.Certificate.MinTLSVersion, tls.VersionTLS12)
 			for _, domain := range site.Domains {
 				normalized := normalizeSNI(domain)
 				if normalized == "" {
@@ -74,8 +84,11 @@ func (s *SiteCertificateStore) Update(cfg *config.Config) error {
 				}
 				copyCert := *cert
 				next[normalized] = &copyCert
+				nextMin[normalized] = siteMin
 				if strings.HasPrefix(normalized, "*.") {
-					next[strings.TrimPrefix(normalized, "*.")] = &copyCert
+					apex := strings.TrimPrefix(normalized, "*.")
+					next[apex] = &copyCert
+					nextMin[apex] = siteMin
 				}
 			}
 			if defaultCert == nil {
@@ -87,6 +100,8 @@ func (s *SiteCertificateStore) Update(cfg *config.Config) error {
 	s.mu.Lock()
 	s.defaultCert = defaultCert
 	s.byDomain = next
+	s.minTLSByDomain = nextMin
+	s.defaultMinTLS = defaultMin
 	s.mu.Unlock()
 	return nil
 }
@@ -102,14 +117,64 @@ func requiresDefaultTLSCertificate(cfg *config.Config) bool {
 }
 
 func (s *SiteCertificateStore) TLSConfig(cfg config.TLSConfig) *tls.Config {
-	minVersion := uint16(tls.VersionTLS13)
-	if cfg.MinVersion == "1.2" {
-		minVersion = tls.VersionTLS12
-	}
+	listenerMin := parseMinTLSVersion(cfg.MinVersion, tls.VersionTLS13)
 	return &tls.Config{
-		MinVersion:     minVersion,
+		MinVersion:     listenerMin,
 		GetCertificate: s.GetCertificate,
+		// Per-site min_tls_version is applied at handshake time via SNI.
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			siteMin := s.minTLSForSNI("")
+			if hello != nil {
+				siteMin = s.minTLSForSNI(hello.ServerName)
+			}
+			if siteMin == 0 {
+				siteMin = listenerMin
+			}
+			return &tls.Config{
+				MinVersion:     siteMin,
+				GetCertificate: s.GetCertificate,
+			}, nil
+		},
 	}
+}
+
+func parseMinTLSVersion(raw string, fallback uint16) uint16 {
+	switch strings.TrimSpace(raw) {
+	case "1.3", "TLS1.3", "tls1.3":
+		return tls.VersionTLS13
+	case "1.2", "TLS1.2", "tls1.2":
+		return tls.VersionTLS12
+	case "":
+		if fallback != 0 {
+			return fallback
+		}
+		return tls.VersionTLS12
+	default:
+		if fallback != 0 {
+			return fallback
+		}
+		return tls.VersionTLS12
+	}
+}
+
+func (s *SiteCertificateStore) minTLSForSNI(serverName string) uint16 {
+	if s == nil {
+		return 0
+	}
+	name := normalizeSNI(serverName)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if name != "" {
+		if v, ok := s.minTLSByDomain[name]; ok && v != 0 {
+			return v
+		}
+		for domain, v := range s.minTLSByDomain {
+			if strings.HasPrefix(domain, "*.") && strings.HasSuffix(name, strings.TrimPrefix(domain, "*")) && v != 0 {
+				return v
+			}
+		}
+	}
+	return s.defaultMinTLS
 }
 
 func (s *SiteCertificateStore) HasCertificate() bool {

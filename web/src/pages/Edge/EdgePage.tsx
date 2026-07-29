@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Button, Checkbox, Empty, Form, Input, InputNumber, Select, Switch, Table } from '@arco-design/web-react';
+import { Button, Checkbox, Empty, Form, Input, InputNumber, Message as ArcoMessage, Select, Switch, Table } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Gauge, ListPlus, PackageCheck, Plus, Trash2 } from 'lucide-react';
 import { fetchEdgePolicy, updateEdgePolicy } from '../../api/client';
+import QueryErrorState from '../../components/QueryErrorState';
+import { useServerDraft } from '../../hooks/useServerDraft';
 import type { EdgeConfig } from '../../types/api';
 
 type HeaderRule = EdgeConfig['headers']['rules'][number];
@@ -23,59 +25,137 @@ const fallback: EdgeConfig = {
 export default function EdgePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { data } = useQuery({ queryKey: ['edge'], queryFn: fetchEdgePolicy, retry: false });
-  const [draft, setDraft] = useState<EdgeConfig>(fallback);
-  useEffect(() => {
-    if (data) {
-      setDraft(data);
-    }
-  }, [data]);
-  const edge = draft;
+  const edgeQuery = useQuery({ queryKey: ['edge'], queryFn: fetchEdgePolicy, retry: false });
+  const { data, isError, isFetching, isSuccess, isLoading, error, refetch } = edgeQuery;
+  const { draft, setDraft, markClean } = useServerDraft(data);
+  const edge = draft ?? fallback;
   const mutation = useMutation({
     mutationFn: updateEdgePolicy,
     onSuccess: (saved) => {
-      setDraft(saved);
+      markClean(saved);
       queryClient.invalidateQueries({ queryKey: ['edge'] });
+      ArcoMessage.success(t('common.saved'));
     },
+    onError: (mutationError) => ArcoMessage.error(mutationError.message),
   });
   const updateHeader = (index: number, patch: Partial<HeaderRule>) => {
-    setDraft((current) => ({
-      ...current,
-      headers: {
-        ...current.headers,
-        rules: current.headers.rules.map((rule, ruleIndex) => (ruleIndex === index ? { ...rule, ...patch } : rule)),
-      },
-    }));
+    setDraft((current) => {
+      const base = current ?? fallback;
+      return {
+        ...base,
+        headers: {
+          ...base.headers,
+          rules: base.headers.rules.map((rule, ruleIndex) => (ruleIndex === index ? { ...rule, ...patch } : rule)),
+        },
+      };
+    });
   };
   const addHeader = () => {
-    setDraft((current) => ({
-      ...current,
-      headers: {
-        ...current.headers,
-        rules: [
-          ...current.headers.rules,
-          {
-            id: `header-${Date.now()}`,
-            name: '',
-            operation: 'set',
-            header: '',
-            value: '',
-            path_prefix: '',
-            enabled: true,
-          },
-        ],
-      },
-    }));
+    setDraft((current) => {
+      const base = current ?? fallback;
+      return {
+        ...base,
+        headers: {
+          ...base.headers,
+          rules: [
+            ...base.headers.rules,
+            {
+              id: `header-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              name: '',
+              operation: 'set',
+              header: '',
+              value: '',
+              path_prefix: '',
+              enabled: true,
+            },
+          ],
+        },
+      };
+    });
   };
   const removeHeader = (id: string) => {
-    setDraft((current) => ({
-      ...current,
-      headers: {
-        ...current.headers,
-        rules: current.headers.rules.filter((rule) => rule.id !== id),
-      },
-    }));
+    setDraft((current) => {
+      const base = current ?? fallback;
+      return {
+        ...base,
+        headers: {
+          ...base.headers,
+          rules: base.headers.rules.filter((rule) => rule.id !== id),
+        },
+      };
+    });
   };
+  const syncCacheFromForm = (values: Record<string, unknown>) => {
+    setDraft((current) => {
+      const base = current ?? fallback;
+      return {
+        ...base,
+        cache: {
+          ...base.cache,
+          enabled: Boolean(values.enabled),
+          mode: String(values.mode ?? base.cache.mode),
+          ttl: Number(values.ttl || 0),
+          path_prefixes: split(values.paths),
+          status_codes: parseStatusCodeChoices(values.statusCodes),
+          max_body_bytes: Number(values.maxBody || 0),
+        },
+      };
+    });
+  };
+  const syncCompressionFromForm = (values: Record<string, unknown>) => {
+    setDraft((current) => {
+      const base = current ?? fallback;
+      return {
+        ...base,
+        compression: {
+          ...base.compression,
+          enabled: Boolean(values.enabled),
+          algorithms: Array.isArray(values.algorithms) ? values.algorithms.map(String) : [],
+          level: Number(values.level || 5),
+          min_bytes: Number(values.minBytes || 0),
+          content_types: split(values.types),
+        },
+      };
+    });
+  };
+  const saveDraft = () => {
+    if (!isSuccess && !draft) {
+      return;
+    }
+    mutation.mutate(edge);
+  };
+
+  if (isLoading && !draft) {
+    return (
+      <section className="page-surface">
+        <header className="page-header">
+          <div>
+            <h1>{t('edge.title')}</h1>
+            <p>{t('edge.subtitle')}</p>
+          </div>
+        </header>
+        <div className="empty-state" role="status">{t('common.loading')}</div>
+      </section>
+    );
+  }
+
+  if (isError && !draft) {
+    return (
+      <section className="page-surface">
+        <header className="page-header">
+          <div>
+            <h1>{t('edge.title')}</h1>
+            <p>{t('edge.subtitle')}</p>
+          </div>
+        </header>
+        <QueryErrorState
+          message={error instanceof Error ? error.message : undefined}
+          onRetry={() => { void refetch(); }}
+          retrying={isFetching}
+        />
+      </section>
+    );
+  }
 
   return (
     <section className="page-surface">
@@ -84,16 +164,24 @@ export default function EdgePage() {
           <h1>{t('edge.title')}</h1>
           <p>{t('edge.subtitle')}</p>
         </div>
-        <Button type="primary" onClick={() => mutation.mutate(edge)} loading={mutation.isPending}>
+        <Button type="primary" onClick={saveDraft} loading={mutation.isPending} disabled={!isSuccess && !draft}>
           {t('common.save')}
         </Button>
       </header>
+
+      {isError && (
+        <QueryErrorState
+          message={error instanceof Error ? error.message : undefined}
+          onRetry={() => { void refetch(); }}
+          retrying={isFetching}
+        />
+      )}
 
       <div className="edge-settings-grid">
         <section className="panel">
           <div className="panel-heading"><h2><PackageCheck size={16} /> {t('edge.cache')}</h2></div>
           <Form
-            key={`cache-${edge.cache.enabled}-${edge.cache.mode}-${edge.cache.ttl}`}
+            key={data ? `cache-${data.cache.enabled}-${data.cache.mode}-${data.cache.ttl}-${data.cache.max_body_bytes}` : 'cache-pending'}
             layout="vertical"
             initialValues={{
               enabled: edge.cache.enabled,
@@ -103,18 +191,19 @@ export default function EdgePage() {
               statusCodes: statusCodesToChoices(edge.cache.status_codes),
               maxBody: edge.cache.max_body_bytes || 2 * 1024 * 1024,
             }}
+            onValuesChange={(_, values) => syncCacheFromForm(values)}
             onSubmit={(values) => {
-              const next = {
-              ...edge,
-              cache: {
-                ...edge.cache,
-                enabled: values.enabled,
-                mode: values.mode,
-                ttl: Number(values.ttl || 0),
-                path_prefixes: split(values.paths),
-                status_codes: parseStatusCodeChoices(values.statusCodes),
-                max_body_bytes: Number(values.maxBody || 0),
-              },
+              const next: EdgeConfig = {
+                ...edge,
+                cache: {
+                  ...edge.cache,
+                  enabled: values.enabled,
+                  mode: values.mode,
+                  ttl: Number(values.ttl || 0),
+                  path_prefixes: split(values.paths),
+                  status_codes: parseStatusCodeChoices(values.statusCodes),
+                  max_body_bytes: Number(values.maxBody || 0),
+                },
               };
               setDraft(next);
               mutation.mutate(next);
@@ -147,7 +236,7 @@ export default function EdgePage() {
         <section className="panel">
           <div className="panel-heading"><h2><Gauge size={16} /> {t('edge.compression')}</h2></div>
           <Form
-            key={`compression-${edge.compression.enabled}-${edge.compression.level}-${edge.compression.min_bytes}`}
+            key={data ? `compression-${data.compression.enabled}-${data.compression.level}-${data.compression.min_bytes}` : 'compression-pending'}
             layout="vertical"
             initialValues={{
               enabled: edge.compression.enabled,
@@ -156,17 +245,18 @@ export default function EdgePage() {
               minBytes: edge.compression.min_bytes || 1024,
               types: edge.compression.content_types.join(','),
             }}
+            onValuesChange={(_, values) => syncCompressionFromForm(values)}
             onSubmit={(values) => {
-              const next = {
-              ...edge,
-              compression: {
-                ...edge.compression,
-                enabled: values.enabled,
-                algorithms: Array.isArray(values.algorithms) ? values.algorithms : [],
-                level: Number(values.level || 5),
-                min_bytes: Number(values.minBytes || 0),
-                content_types: split(values.types),
-              },
+              const next: EdgeConfig = {
+                ...edge,
+                compression: {
+                  ...edge.compression,
+                  enabled: values.enabled,
+                  algorithms: Array.isArray(values.algorithms) ? values.algorithms : [],
+                  level: Number(values.level || 5),
+                  min_bytes: Number(values.minBytes || 0),
+                  content_types: split(values.types),
+                },
               };
               setDraft(next);
               mutation.mutate(next);
@@ -204,7 +294,7 @@ export default function EdgePage() {
           <h2><ListPlus size={16} /> {t('edge.headers')}</h2>
           <div className="table-identity">
             <Button icon={<Plus size={14} />} onClick={addHeader}>{t('common.add')}</Button>
-            <Button type="primary" onClick={() => mutation.mutate(edge)} loading={mutation.isPending}>{t('common.save')}</Button>
+            <Button type="primary" onClick={saveDraft} loading={mutation.isPending}>{t('common.save')}</Button>
           </div>
         </div>
         <Table
@@ -229,7 +319,7 @@ export default function EdgePage() {
             { title: t('edge.value'), dataIndex: 'value', render: (_: string, record: HeaderRule, index: number) => <Input value={record.value} disabled={record.operation === 'delete'} onChange={(value) => updateHeader(index, { value })} /> },
             { title: t('edge.paths'), dataIndex: 'path_prefix', render: (_: string, record: HeaderRule, index: number) => <Input value={record.path_prefix} placeholder="/api/" onChange={(value) => updateHeader(index, { path_prefix: value })} /> },
             { title: t('rules.enabled'), dataIndex: 'enabled', render: (_: boolean, record: HeaderRule, index: number) => <Switch checked={record.enabled} size="small" onChange={(enabled) => updateHeader(index, { enabled })} /> },
-            { title: '', dataIndex: 'action', render: (_: unknown, record: HeaderRule) => <Button status="danger" icon={<Trash2 size={14} />} onClick={() => removeHeader(record.id)} /> },
+            { title: '', dataIndex: 'action', render: (_: unknown, record: HeaderRule) => <Button status="danger" icon={<Trash2 size={14} />} aria-label={t('common.delete')} onClick={() => removeHeader(record.id)} /> },
           ]}
         />
       </section>

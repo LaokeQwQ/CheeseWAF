@@ -282,8 +282,19 @@ func writeConfigVersionFile(dir string, raw []byte, now time.Time) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	name := "cheesewaf-" + now.UTC().Format("20060102T150405Z") + ".yaml"
-	return os.WriteFile(filepath.Join(dir, name), raw, 0o640)
+	// Include nanoseconds so same-second commits cannot overwrite history.
+	name := "cheesewaf-" + now.UTC().Format("20060102T150405.000000000Z") + ".yaml"
+	path := filepath.Join(dir, name)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(raw)
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	return cerr
 }
 
 func writeConfigBytesAtomic(path string, raw []byte) error {
@@ -311,6 +322,12 @@ func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyR
 	if ok, reason := h.clusterConfigWritable("zh-CN"); !ok {
 		return nil, fmt.Errorf("cluster protection mode: %s", reason)
 	}
+	// Keep an independent previous snapshot for rollback; do not rely on h.Config
+	// after applyRuntime may have mutated shared nested pointers.
+	previous, err := config.Clone(h.Config)
+	if err != nil {
+		return nil, err
+	}
 	candidate, err := config.Clone(h.Config)
 	if err != nil {
 		return nil, err
@@ -326,7 +343,7 @@ func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyR
 	}
 	if applyRuntime != nil {
 		if err := applyRuntime(candidate); err != nil {
-			if rollbackErr := applyRuntime(h.Config); rollbackErr != nil {
+			if rollbackErr := applyRuntime(previous); rollbackErr != nil {
 				h.freezeConfigWritesLocked(fmt.Sprintf("runtime apply failed: %v; runtime rollback failed: %v", err, rollbackErr))
 				return nil, fmt.Errorf("apply runtime config: %w; rollback runtime config: %v", err, rollbackErr)
 			}
@@ -335,7 +352,7 @@ func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyR
 	}
 	if err := h.persistConfigCandidateLocked(candidate); err != nil {
 		if applyRuntime != nil {
-			if rollbackErr := applyRuntime(h.Config); rollbackErr != nil {
+			if rollbackErr := applyRuntime(previous); rollbackErr != nil {
 				h.freezeConfigWritesLocked(fmt.Sprintf("config save failed: %v; runtime rollback failed: %v", err, rollbackErr))
 				return nil, fmt.Errorf("save config: %w; rollback runtime config: %v", err, rollbackErr)
 			}

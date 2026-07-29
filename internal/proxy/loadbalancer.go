@@ -9,14 +9,17 @@ import (
 )
 
 type LoadBalancer struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	next   map[string]int
 	sites  []config.SiteConfig
+	byHost map[string]config.SiteConfig
 	health *HealthRegistry
 }
 
 func NewLoadBalancer(sites []config.SiteConfig) *LoadBalancer {
-	return &LoadBalancer{next: map[string]int{}, sites: sites}
+	lb := &LoadBalancer{next: map[string]int{}, sites: sites}
+	lb.rebuildHostIndexLocked()
+	return lb
 }
 
 func (lb *LoadBalancer) WithHealth(health *HealthRegistry) *LoadBalancer {
@@ -32,6 +35,7 @@ func (lb *LoadBalancer) UpdateSites(sites []config.SiteConfig, health *HealthReg
 	lb.sites = append([]config.SiteConfig(nil), sites...)
 	lb.health = health
 	lb.next = map[string]int{}
+	lb.rebuildHostIndexLocked()
 	lb.mu.Unlock()
 }
 
@@ -43,20 +47,33 @@ func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
 	if lb == nil {
 		return config.SiteConfig{}
 	}
-	lb.mu.Lock()
-	sites := lb.sites
-	lb.mu.Unlock()
-	for _, site := range sites {
+	lb.mu.RLock()
+	site, ok := lb.byHost[host]
+	lb.mu.RUnlock()
+	if ok {
+		return site
+	}
+	return config.SiteConfig{}
+}
+
+func (lb *LoadBalancer) rebuildHostIndexLocked() {
+	index := make(map[string]config.SiteConfig, len(lb.sites)*2)
+	for _, site := range lb.sites {
 		if !site.Enabled {
 			continue
 		}
 		for _, domain := range site.Domains {
-			if strings.EqualFold(host, domain) {
-				return site
+			key := strings.ToLower(strings.TrimSpace(domain))
+			if key == "" {
+				continue
+			}
+			// First enabled site wins for a domain (stable with previous linear scan).
+			if _, exists := index[key]; !exists {
+				index[key] = site
 			}
 		}
 	}
-	return config.SiteConfig{}
+	lb.byHost = index
 }
 
 func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL, error) {

@@ -26,17 +26,42 @@ export default function BlockPagesPage() {
   const configQuery = useQuery({ queryKey: ['block-page-config'], queryFn: fetchBlockPageConfig, retry: false });
   const data = Array.isArray(templatesQuery.data) ? templatesQuery.data : [];
   const activeConfig = isBlockPageConfig(configQuery.data) ? configQuery.data : undefined;
-  const [selected, setSelected] = useState('minimal');
-  const [customHTML, setCustomHTML] = useState('');
+  const [selected, setSelectedState] = useState('minimal');
+  const [customHTML, setCustomHTMLState] = useState('');
   const [previewDraft, setPreviewDraft] = useState('');
+  const formDirtyRef = useRef(false);
+  const formHydratedRef = useRef(false);
 
   useEffect(() => {
     if (!activeConfig) {
       return;
     }
-    setSelected(activeConfig.template_id || 'minimal');
-    setCustomHTML(activeConfig.custom_html ?? '');
+    if (!formHydratedRef.current || !formDirtyRef.current) {
+      setSelectedState(activeConfig.template_id || 'minimal');
+      setCustomHTMLState(activeConfig.custom_html ?? '');
+      formHydratedRef.current = true;
+      formDirtyRef.current = false;
+    }
   }, [activeConfig]);
+
+  const setSelected = (value: string) => {
+    formDirtyRef.current = true;
+    setSelectedState(value);
+  };
+  const setCustomHTML = (value: string) => {
+    formDirtyRef.current = true;
+    setCustomHTMLState(value);
+  };
+  const markFormClean = (next?: { selected?: string; customHTML?: string }) => {
+    formDirtyRef.current = false;
+    formHydratedRef.current = true;
+    if (next?.selected !== undefined) {
+      setSelectedState(next.selected);
+    }
+    if (next?.customHTML !== undefined) {
+      setCustomHTMLState(next.customHTML);
+    }
+  };
 
   const template = useMemo(() => data.find((item) => item.id === selected) ?? data[0], [data, selected]);
   const templateHTML = template?.html ?? '';
@@ -71,7 +96,11 @@ export default function BlockPagesPage() {
 
   const saveBuiltInMutation = useMutation({
     mutationFn: () => updateBlockPageConfig({ template_id: selected, custom_enabled: false, custom_html: activeConfig?.custom_html ?? customHTML }),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
+      markFormClean({
+        selected: saved?.template_id || selected,
+        customHTML: saved?.custom_html ?? customHTML,
+      });
       ArcoMessage.success(t('blockPages.saved'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
@@ -80,7 +109,11 @@ export default function BlockPagesPage() {
 
   const saveCustomMutation = useMutation({
     mutationFn: () => updateBlockPageConfig({ template_id: selected, custom_enabled: true, custom_html: customHTML }),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
+      markFormClean({
+        selected: saved?.template_id || selected,
+        customHTML: saved?.custom_html ?? customHTML,
+      });
       ArcoMessage.success(t('blockPages.customSaved'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
@@ -90,7 +123,7 @@ export default function BlockPagesPage() {
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadBlockPageHTML(file, selected),
     onSuccess: async (result) => {
-      setCustomHTML(result.config.custom_html);
+      markFormClean({ customHTML: result.config.custom_html, selected: result.config.template_id || selected });
       ArcoMessage.success(t('blockPages.uploaded', { name: result.filename }));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
@@ -99,7 +132,11 @@ export default function BlockPagesPage() {
 
   const restoreMutation = useMutation({
     mutationFn: deleteCustomBlockPage,
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
+      markFormClean({
+        selected: saved?.template_id || selected,
+        customHTML: saved?.custom_html ?? '',
+      });
       ArcoMessage.success(t('blockPages.restored'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },

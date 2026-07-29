@@ -58,6 +58,10 @@ type RequestContext struct {
 	DecodedBody []byte            // 解码后的请求体 / Decoded request body
 	Results     []DetectionResult // 检测结果集合 / Detection results
 	Metadata    map[string]any    // 扩展元数据 / Extension metadata
+
+	// Lazy body fields (hot path): body is not read until EnsureBody.
+	maxBodyBytes int64
+	bodyLoaded   bool
 }
 
 // Detector is the core interface for all WAF detection modules.

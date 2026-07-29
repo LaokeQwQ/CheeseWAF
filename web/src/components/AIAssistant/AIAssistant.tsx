@@ -614,7 +614,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                       const status = approvalStatus ? approvalStatusDisplayName(t, approvalStatus) : undefined;
                       const description = toolDescription(t, tool);
                       return (
-                        <div className="assistant-tool-card" key={`${tool.name}-${tool.approval?.id ?? tool.result?.output ?? tool.error ?? 'tool'}`}>
+                        <div className="assistant-tool-card" key={`${tool.name}-${tool.approval?.id ?? tool.result?.success ?? tool.error?.slice?.(0, 32) ?? 'tool'}`}>
                           <div className="assistant-tool-card-head">
                             <div className="assistant-tool-title">
                               <strong>{toolName}</strong>
@@ -694,8 +694,16 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                                     size="small"
                                     type="primary"
                                     className="assistant-approval-approve"
-                                    loading={tool.approval.status === 'pending' ? approveToolMutation.isPending : continuingApprovalID === tool.approval.id && continueApprovalMutation.isPending}
-                                    disabled={assistantBusy || rejectToolMutation.isPending || approveToolMutation.isPending}
+                                    loading={
+                                      tool.approval.status === 'pending'
+                                        ? approveToolMutation.isPending && approveToolMutation.variables?.approval?.id === tool.approval.id
+                                        : continuingApprovalID === tool.approval.id && continueApprovalMutation.isPending
+                                    }
+                                    disabled={
+                                      assistantBusy
+                                      || (rejectToolMutation.isPending && rejectToolMutation.variables?.approval?.id === tool.approval.id)
+                                      || (approveToolMutation.isPending && approveToolMutation.variables?.approval?.id === tool.approval.id)
+                                    }
                                     onClick={() => tool.approval?.status === 'pending' ? approveToolMutation.mutate(tool) : continueApproval(tool, message.prompt)}
                                   >
                                     {tool.approval.status === 'approved' ? t('assistant.continueApproved') : t('assistant.approve')}
@@ -704,8 +712,12 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                                     size="small"
                                     status="warning"
                                     className="assistant-approval-reject"
-                                    disabled={assistantBusy || rejectToolMutation.isPending || approveToolMutation.isPending}
-                                    loading={rejectToolMutation.isPending}
+                                    disabled={
+                                      assistantBusy
+                                      || (rejectToolMutation.isPending && rejectToolMutation.variables?.approval?.id === tool.approval.id)
+                                      || (approveToolMutation.isPending && approveToolMutation.variables?.approval?.id === tool.approval.id)
+                                    }
+                                    loading={rejectToolMutation.isPending && rejectToolMutation.variables?.approval?.id === tool.approval.id}
                                     onClick={() => rejectToolMutation.mutate(tool)}
                                   >
                                     {t('assistant.reject')}
@@ -826,8 +838,8 @@ export function mergeRecoveredApprovals(
     {
       id: 'recovered-approvals',
       role: 'tool' as const,
-      text: t('assistant.recoveredApprovals', { defaultValue: 'Recovered approvals' }),
-      status: t('assistant.approvalRecovered', { defaultValue: 'Recovered' }),
+      text: t('assistant.recoveredApprovals', { count: missing.length }),
+      status: t('assistant.approvalRecovered'),
       createdAt: missing[0]?.created_at,
       tools: missing.map((approval) => {
         const definition = definitions.find((item) => item.name === approval.tool_name);
