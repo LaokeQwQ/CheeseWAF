@@ -91,6 +91,8 @@ type Policy struct {
 	behaviorPending        *behaviorPendingStore
 	issueBehaviorChallenge func(captcha.BehaviorOptions) (captcha.BehaviorChallenge, error)
 	metrics                *ChallengeMetrics
+	// challengeWorkers bounds concurrent challenge generation; full pool → 503.
+	challengeWorkers *ChallengeWorkerPool
 }
 
 type behaviorPending struct {
@@ -339,6 +341,8 @@ func NewPolicyWithClock(cfg config.BotProtectionConfig, clock timekeeper.Clock) 
 		behaviorPending:        newBehaviorPendingStore(10000, 8, now),
 		issueBehaviorChallenge: captcha.IssueBehaviorChallenge,
 		metrics:                ProcessChallengeMetrics(),
+		// Bound generation concurrency to store concurrent capacity (default 256 under rate window).
+		challengeWorkers: NewChallengeWorkerPool(powStore.concurrentCap),
 	}
 }
 
@@ -493,6 +497,13 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		p.serveBehaviorChallenge(w, r, clientIP, site, selection.kind)
 		return
 	}
+	// Bound concurrent generation so overload fails closed with 503.
+	releaseWorker, ok := p.tryAcquireChallengeWorker()
+	if !ok {
+		http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer releaseWorker()
 	nonce, err := randomToken(18)
 	if err != nil {
 		http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
@@ -635,11 +646,30 @@ func (p *Policy) usesBehaviorChallenge(selection captchaSelection, clientIP, sit
 	return selection.behavior
 }
 
+func (p *Policy) tryAcquireChallengeWorker() (release func(), ok bool) {
+	if p == nil || p.challengeWorkers == nil {
+		return func() {}, true
+	}
+	// Synchronous slot hold for the duration of challenge generation.
+	select {
+	case p.challengeWorkers.sem <- struct{}{}:
+		return func() { <-p.challengeWorkers.sem }, true
+	default:
+		return func() {}, false
+	}
+}
+
 func (p *Policy) serveBehaviorChallenge(w http.ResponseWriter, r *http.Request, clientIP, site, selectedType string) {
 	if p.behaviorPending == nil || p.failureTracker == nil || p.behaviorRenderer == nil || p.issueBehaviorChallenge == nil {
 		http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	releaseWorker, ok := p.tryAcquireChallengeWorker()
+	if !ok {
+		http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer releaseWorker()
 	decision := p.failureTracker.Check(p.failureKey(clientIP, site))
 	if decision.Blocked {
 		p.recordChallengeMetric(ChallengeMetricCAPTCHABlocked, site, "behavior", clientIP)

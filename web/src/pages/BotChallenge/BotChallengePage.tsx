@@ -162,18 +162,36 @@ function eventErrorMessage(error: unknown, t: TFunction) { return error instance
 function isHTTPStatus(error: unknown, status: number) { return error instanceof APIRequestError && error.status === status; }
 type EventPermission = 'allowed' | 'denied' | 'unknown';
 function readLogsPermission(): EventPermission {
+  try {
+    const cached = sessionStorage.getItem('cheesewaf-account');
+    if (cached) {
+      const account = JSON.parse(cached) as { role?: string };
+      if (account.role === 'admin' || account.role === 'readonly') return 'allowed';
+    }
+  } catch {
+    /* fall through */
+  }
+  // Legacy/local test path: decode scopes from residual localStorage JWT if present.
   const token = localStorage.getItem('cheesewaf-token') ?? '';
   const payload = token.split('.')[1];
   if (!payload) return 'unknown';
   try {
     const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const claims = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))) as { role?: string; scope?: string | string[]; scopes?: string | string[] };
+    const claims = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))) as {
+      role?: string;
+      scope?: string | string[];
+      scopes?: string | string[];
+    };
     if (claims.role === 'admin') return 'allowed';
     const rawScopes = claims.scope ?? claims.scopes;
     const scopes = (Array.isArray(rawScopes) ? rawScopes : typeof rawScopes === 'string' ? rawScopes.split(/\s+/) : []).filter(Boolean);
     const explicitPermissions = scopes.filter((scope) => scope === '*' || scope.includes(':'));
     if (explicitPermissions.length === 0) return 'unknown';
-    return explicitPermissions.some((scope) => scope === 'read:logs' || scope === '*' || (scope.endsWith('*') && 'read:logs'.startsWith(scope.slice(0, -1)))) ? 'allowed' : 'denied';
+    return explicitPermissions.some((scope) =>
+      scope === 'read:logs'
+      || scope === '*'
+      || (scope.endsWith('*') && 'read:logs'.startsWith(scope.slice(0, -1))),
+    ) ? 'allowed' : 'denied';
   } catch {
     return 'unknown';
   }

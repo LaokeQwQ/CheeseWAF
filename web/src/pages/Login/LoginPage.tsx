@@ -79,7 +79,8 @@ export default function LoginPage() {
   const captchaVerifyControllerRef = useRef<AbortController | null>(null);
   const captchaPowControllerRef = useRef<AbortController | null>(null);
   const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
-  const token = localStorage.getItem('cheesewaf-token');
+  // C1: session is cookie-based; do not gate on localStorage JWT.
+  const token = null as string | null;
   const stateFrom = (location.state as { from?: string } | null)?.from;
   const queryFrom = new URLSearchParams(location.search).get('returnTo');
   const from = sanitizeInternalReturnPath(queryFrom ?? stateFrom);
@@ -417,8 +418,7 @@ export default function LoginPage() {
       if (captcha) {
         captcha.username = submittedUsername;
       }
-      const result = await login(submittedUsername, values.password ?? '', values.totpCode, captcha);
-      localStorage.setItem('cheesewaf-token', result.token);
+      await login(submittedUsername, values.password ?? '', values.totpCode, captcha);
       const message = t('login.success');
       setSuccess(message);
       ArcoMessage.success(message);

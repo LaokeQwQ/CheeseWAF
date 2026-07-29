@@ -326,7 +326,6 @@ export default function MainLayout() {
     } catch {
       // Local logout must still work if the session is already expired or the API is unreachable.
     } finally {
-      localStorage.removeItem('cheesewaf-token');
       queryClient.clear();
       navigate('/login', { replace: true });
     }
@@ -930,8 +929,22 @@ function fallbackText(t: (key: string, options?: Record<string, unknown>) => str
 }
 
 function currentAccount() {
-  const token = localStorage.getItem('cheesewaf-token') ?? '';
+  // C1: JWT is HttpOnly; username/role come from session API / cached profile when available.
   const fallback = { username: '', role: '' };
+  try {
+    const cached = sessionStorage.getItem('cheesewaf-account');
+    if (cached) {
+      const parsed = JSON.parse(cached) as { username?: string; role?: string };
+      return {
+        username: parsed.username || fallback.username,
+        role: parsed.role || fallback.role,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  // Legacy localStorage JWT fallback during migration window only.
+  const token = localStorage.getItem('cheesewaf-token') ?? '';
   const payload = token.split('.')[1];
   if (!payload) {
     return fallback;

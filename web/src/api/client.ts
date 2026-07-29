@@ -7,27 +7,90 @@ import type { TimeSyncStatus } from '../types/api';
 export const apiClient = axios.create({
   baseURL: '/api',
   timeout: 10_000,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
 const AI_REQUEST_TIMEOUT_MS = 300_000;
+/** @deprecated localStorage JWT removed in C1; kept only to clear legacy keys on logout. */
 const tokenStorageKey = 'cheesewaf-token';
-const tokenRefreshWindowSeconds = 10 * 60;
-let refreshPromise: Promise<string> | null = null;
+const authFlagKey = 'cheesewaf-authed';
+const csrfCookieName = 'cheesewaf_csrf';
+const csrfHeaderName = 'X-CSRF-Token';
+let refreshPromise: Promise<void> | null = null;
 let authRedirectScheduled = false;
 let authRedirectLocationForTest: AuthRedirectLocation | null = null;
+let cachedCSRF = '';
 
-type AuthResponse = { token: string; user: { username: string; role: string } };
-type TokenClaims = { exp?: number };
+type AuthResponse = {
+  token?: string;
+  csrf?: string;
+  session_cookie?: boolean;
+  user: { username: string; role: string };
+};
 type AuthRedirectLocation = Pick<Location, 'pathname' | 'assign'> & Partial<Pick<Location, 'search' | 'hash'>>;
 
+function readCSRFCookie(): string {
+  if (typeof document === 'undefined') {
+    return cachedCSRF;
+  }
+  const parts = document.cookie.split(';');
+  for (const part of parts) {
+    const [name, ...rest] = part.trim().split('=');
+    if (name === csrfCookieName) {
+      return decodeURIComponent(rest.join('=') || '');
+    }
+  }
+  return cachedCSRF;
+}
+
+export function getCSRFToken(): string {
+  const fromCookie = readCSRFCookie();
+  if (fromCookie) {
+    cachedCSRF = fromCookie;
+  }
+  return cachedCSRF;
+}
+
+export function setCSRFToken(token: string) {
+  cachedCSRF = token || '';
+}
+
+export function markAuthenticated(yes: boolean) {
+  if (yes) {
+    sessionStorage.setItem(authFlagKey, '1');
+  } else {
+    sessionStorage.removeItem(authFlagKey);
+  }
+}
+
+export function isAuthenticatedFlag(): boolean {
+  return sessionStorage.getItem(authFlagKey) === '1' || !!readCSRFCookie();
+}
+
+function clearLegacyTokenStorage() {
+  try {
+    localStorage.removeItem(tokenStorageKey);
+  } catch {
+    /* ignore */
+  }
+}
+
 apiClient.interceptors.request.use(async (config) => {
-  const token = localStorage.getItem(tokenStorageKey);
-  if (token) {
-    const activeToken = await refreshTokenIfNeeded(token, String(config.url ?? ''));
-    config.headers.Authorization = `Bearer ${activeToken}`;
+  const url = String(config.url ?? '');
+  const method = String(config.method ?? 'get').toLowerCase();
+  // Cookie session: credentials already include HttpOnly JWT. Attach CSRF on mutations.
+  if (['post', 'put', 'patch', 'delete'].includes(method) && !url.includes('/auth/login') && !url.includes('/setup') && !url.includes('/auth/captcha')) {
+    const csrf = getCSRFToken();
+    if (csrf) {
+      config.headers[csrfHeaderName] = csrf;
+    }
+  }
+  // Soft refresh via cookie when SPA is authed (no JWT in localStorage).
+  if (isAuthenticatedFlag() && !url.includes('/auth/login') && !url.includes('/auth/refresh') && !url.includes('/auth/logout') && !url.includes('/setup') && !url.includes('/auth/session')) {
+    await refreshSessionIfNeeded();
   }
   return config;
 });
@@ -43,7 +106,9 @@ apiClient.interceptors.response.use(
 );
 
 export function handleUnauthorizedAuthFailure(locationRef: AuthRedirectLocation = authRedirectLocationForTest ?? window.location) {
-  localStorage.removeItem(tokenStorageKey);
+  clearLegacyTokenStorage();
+  markAuthenticated(false);
+  setCSRFToken('');
   queryClient.clear();
   const path = locationRef.pathname;
   if (path === '/login' || path === '/setup' || authRedirectScheduled) {
@@ -78,66 +143,43 @@ export function resetAuthRedirectStateForTest() {
   authRedirectLocationForTest = null;
 }
 
-async function refreshTokenIfNeeded(token: string, requestURL: string) {
-  if (requestURL.includes('/auth/login') || requestURL.includes('/auth/refresh') || requestURL.includes('/auth/logout') || requestURL.includes('/setup')) {
-    return token;
+async function refreshSessionIfNeeded() {
+  // Cookie sessions are refreshed on demand via /auth/refresh (HttpOnly cookie).
+  // Avoid hammering: only one in-flight refresh.
+  if (refreshPromise) {
+    try {
+      await refreshPromise;
+    } catch {
+      /* handled by caller path */
+    }
+    return;
   }
-  const claims = parseTokenClaims(token);
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  if (!claims?.exp || claims.exp <= nowSeconds || claims.exp - nowSeconds > tokenRefreshWindowSeconds) {
-    return token;
-  }
+}
+
+export async function refreshSession() {
   if (!refreshPromise) {
-    refreshPromise = axios
-      .post<Envelope<AuthResponse>>(
-        '/api/auth/refresh',
-        {},
-        {
-          timeout: 10_000,
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      )
+    refreshPromise = apiClient
+      .post<Envelope<AuthResponse>>('/auth/refresh', {})
       .then((response) => {
-        if (response.data.error || !response.data.data?.token) {
+        if (response.data.error || !response.data.data) {
           throw new APIRequestError(
-            response.data.error?.message ?? 'Unable to refresh token',
+            response.data.error?.message ?? 'Unable to refresh session',
             response.data.error?.code,
             response.status,
             errorLookupID(response.data.error, response),
           );
         }
-        localStorage.setItem(tokenStorageKey, response.data.data.token);
-        return response.data.data.token;
+        if (response.data.data.csrf) {
+          setCSRFToken(response.data.data.csrf);
+        }
+        markAuthenticated(true);
+        clearLegacyTokenStorage();
       })
       .finally(() => {
         refreshPromise = null;
       });
   }
-  try {
-    return await refreshPromise;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 401) {
-      handleUnauthorizedAuthFailure();
-    }
-    return token;
-  }
-}
-
-function parseTokenClaims(token: string): TokenClaims | null {
-  const payload = token.split('.')[1];
-  if (!payload) {
-    return null;
-  }
-  try {
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-    return JSON.parse(atob(padded)) as TokenClaims;
-  } catch {
-    return null;
-  }
+  await refreshPromise;
 }
 
 type Envelope<T> = {
@@ -212,7 +254,8 @@ export async function unwrapAPIResponse<T>(promise: Promise<AxiosResponse<Envelo
   }
 }
 
-const unwrap = unwrapAPIResponse;
+/** @deprecated Prefer unwrapAPIResponse; kept for call sites during migration. */
+export const unwrap = unwrapAPIResponse;
 
 function errorLookupID(error?: Envelope<unknown>['error'], response?: AxiosResponse<unknown>) {
   return error?.event_id ?? error?.trace_id ?? responseLookupID(response);
@@ -260,14 +303,76 @@ export function verifyLoginCaptcha(captcha: LoginCAPTCHAPayload, signal?: AbortS
   return unwrap<{ valid: boolean; receipt: string }>(apiClient.post('/auth/captcha/verify', captcha, { signal }));
 }
 
-export function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {
-  return unwrap<AuthResponse>(
+export async function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {
+  const result = await unwrap<AuthResponse>(
     apiClient.post('/auth/login', { username, password, totp_code: totpCode, captcha }),
   );
+  if (result.csrf) {
+    setCSRFToken(result.csrf);
+  }
+  markAuthenticated(true);
+  clearLegacyTokenStorage();
+  try {
+    if (result.user) {
+      sessionStorage.setItem('cheesewaf-account', JSON.stringify({ username: result.user.username, role: result.user.role }));
+    }
+  } catch {
+    /* ignore */
+  }
+  return result;
 }
 
-export function logout() {
-  return unwrap<{ revoked: boolean }>(apiClient.post('/auth/logout', {}));
+export async function logout() {
+  try {
+    return await unwrap<{ revoked: boolean }>(apiClient.post('/auth/logout', {}));
+  } finally {
+    markAuthenticated(false);
+    setCSRFToken('');
+    clearLegacyTokenStorage();
+    try {
+      sessionStorage.removeItem('cheesewaf-account');
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export async function fetchSession() {
+  const result = await unwrap<AuthResponse & { session_cookie?: boolean }>(apiClient.get('/auth/session'));
+  if (result.csrf) {
+    setCSRFToken(result.csrf);
+  }
+  markAuthenticated(true);
+  clearLegacyTokenStorage();
+  return result;
+}
+
+/** One-shot migration: legacy Bearer in localStorage → HttpOnly cookie session. */
+export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
+  const legacy = localStorage.getItem(tokenStorageKey);
+  if (!legacy) {
+    return false;
+  }
+  try {
+    const response = await apiClient.post<Envelope<AuthResponse>>(
+      '/auth/session/bootstrap',
+      {},
+      { headers: { Authorization: `Bearer ${legacy}` } },
+    );
+    if (response.data.error || !response.data.data) {
+      clearLegacyTokenStorage();
+      return false;
+    }
+    if (response.data.data.csrf) {
+      setCSRFToken(response.data.data.csrf);
+    }
+    markAuthenticated(true);
+    clearLegacyTokenStorage();
+    return true;
+  } catch {
+    clearLegacyTokenStorage();
+    return false;
+  }
 }
 
 export function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
@@ -1218,13 +1323,15 @@ export function rejectAIApproval(id: string) {
 }
 
 async function authenticatedFetch(input: RequestInfo | URL, requestURL: string, init: RequestInit = {}) {
-  const token = localStorage.getItem(tokenStorageKey);
-  const activeToken = token ? await refreshTokenIfNeeded(token, requestURL) : '';
   const headers = new Headers(init.headers);
-  if (activeToken) {
-    headers.set('Authorization', `Bearer ${activeToken}`);
+  const method = String(init.method ?? 'GET').toUpperCase();
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    const csrf = getCSRFToken();
+    if (csrf) {
+      headers.set(csrfHeaderName, csrf);
+    }
   }
-  const response = await fetch(input, { ...init, headers });
+  const response = await fetch(input, { ...init, headers, credentials: 'same-origin' });
   if (response.status === 401) {
     handleUnauthorizedAuthFailure();
   }
