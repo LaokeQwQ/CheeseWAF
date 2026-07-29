@@ -94,12 +94,18 @@ func NewRouter(opts Options) http.Handler {
 		r.Post("/auth/captcha/verify", h.VerifyLoginCAPTCHA)
 		r.Post("/auth/login", h.Login)
 		r.Post("/setup", h.Setup)
+		r.Post("/setup/probe", h.SetupProbe)
+		r.Get("/setup/draft", h.SetupDraftGet)
+		r.Patch("/setup/draft", h.SetupDraftPatch)
 		r.Post("/cluster/join", h.ClusterJoin)
 		r.Post("/cluster/nodes/{id}/heartbeat", h.ClusterNodeHeartbeat)
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
 			r.Use(middleware.SessionMiddlewareWithClock(opts.Store, clock))
+			r.Use(middleware.CSRFMiddleware)
+			r.Get("/auth/session", h.SessionInfo)
+			r.Post("/auth/session/bootstrap", h.BootstrapSession)
 			r.Post("/auth/refresh", h.RefreshToken)
 			r.Post("/auth/logout", h.Logout)
 			r.Post("/ui/errors", h.ReportUIError)
@@ -107,6 +113,7 @@ func NewRouter(opts Options) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(managementAuth)
+			r.Use(middleware.CSRFMiddleware)
 			if opts.Config.APISec.Audit.Enabled {
 				r.Use(auditor.Middleware)
 			}

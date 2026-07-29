@@ -313,7 +313,7 @@ func (h *Handler) aiApprovalContextFromContext(ctx context.Context) context.Cont
 	if claims == nil {
 		return ctx
 	}
-	return ai.ContextWithApprovalActor(ctx, ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username})
+	return ai.ContextWithApprovalActor(ctx, ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username, Role: claims.Role})
 }
 
 func (h *Handler) aiApprovalActor(r *http.Request) ai.ApprovalActor {
@@ -324,7 +324,7 @@ func (h *Handler) aiApprovalActor(r *http.Request) ai.ApprovalActor {
 	if claims == nil {
 		return ai.ApprovalActor{}
 	}
-	return ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username}
+	return ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username, Role: claims.Role}
 }
 
 func aiToolView(tool ai.Tool) map[string]any {

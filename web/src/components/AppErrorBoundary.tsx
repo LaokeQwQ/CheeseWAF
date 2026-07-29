@@ -128,13 +128,13 @@ function newUITraceID() {
 }
 
 function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
-  const token = localStorage.getItem("cheesewaf-token");
-  // Gate on session presence so anonymous clients cannot flood the sink.
-  // Authorization still needs a real JWT until C1 HttpOnly cookie migration;
-  // never put the token into the JSON body or console output (operator/support logs).
-  if (!token) {
+  // Gate on cookie CSRF presence (session cookie is HttpOnly). Never put secrets in body.
+  const hasSession = document.cookie.includes("cheesewaf_csrf=") || sessionStorage.getItem("cheesewaf-authed") === "1";
+  if (!hasSession) {
     return;
   }
+  const csrfMatch = document.cookie.match(/(?:^|;\s*)cheesewaf_csrf=([^;]+)/);
+  const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : "";
   const payload = {
     trace_id: traceID || newUITraceID(),
     name: error.name,
@@ -155,7 +155,7 @@ function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
     credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+      ...(csrf ? { "X-CSRF-Token": csrf } : {}),
     },
     body: JSON.stringify(payload),
   }).catch((reportError) => {
