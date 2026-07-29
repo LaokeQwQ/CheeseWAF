@@ -119,12 +119,12 @@ export default function OperationsPage() {
           ) : (
             <>
               <div className="resource-stack">
-                <div title={t('ops.shareHint', { defaultValue: 'Share of measured data + logs size (not disk capacity)' })}>
+                <div title={t('ops.shareHint')}>
                   <Database size={18} /><span>{t('ops.dataDir')}</span>
                   <Progress percent={dataShare} formatText={() => `${dataShare}%`} />
                   <code className="resource-value">{formatBytes(dataSize)}</code>
                 </div>
-                <div title={t('ops.shareHint', { defaultValue: 'Share of measured data + logs size (not disk capacity)' })}>
+                <div title={t('ops.shareHint')}>
                   <Archive size={18} /><span>{t('ops.logsDir')}</span>
                   <Progress percent={logShare} formatText={() => `${logShare}%`} />
                   <code className="resource-value">{formatBytes(logSize)}</code>
@@ -321,7 +321,7 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 function defaultReportTask(t: Translate): ScheduledTask {
   return {
     id: 'security-daily-report',
-    name: t('ops.defaultDailyReport', { defaultValue: 'Security daily report' }),
+    name: t('ops.defaultDailyReport'),
     type: 'security_report',
     schedule: '',
     every: '24h',
@@ -349,7 +349,7 @@ function upsertReportTask(tasks: ScheduledTask[], next: ScheduledTask, t: Transl
     ...next,
     period: next.period ?? next.frequency ?? 'daily',
     format: next.format ?? 'markdown',
-    name: next.name || t('ops.defaultSecurityReport', { defaultValue: 'Security report' }),
+    name: next.name || t('ops.defaultSecurityReport'),
     frequency: next.frequency || 'daily',
     schedule: next.frequency || 'daily',
   };
@@ -483,7 +483,7 @@ function newScheduledTask(t: Translate): ScheduledTask {
   const stamp = Date.now();
   return {
     id: `cleanup-${stamp}`,
-    name: t('ops.defaultLogCleanup', { defaultValue: 'Log cleanup' }),
+    name: t('ops.defaultLogCleanup'),
     type: 'cleanup',
     schedule: 'interval',
     every: '24h',

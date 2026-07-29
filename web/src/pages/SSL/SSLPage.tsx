@@ -258,7 +258,7 @@ function ACMEEnvEditor({
       if (normalized) {
         const duplicate = nextRows.some((row) => row.id !== id && row.key === normalized);
         if (duplicate) {
-          ArcoMessage.warning(t('system.acmeEnvKeyDuplicate', { defaultValue: 'Environment variable key already exists' }));
+          ArcoMessage.warning(t('system.acmeEnvKeyDuplicate'));
           return;
         }
       }

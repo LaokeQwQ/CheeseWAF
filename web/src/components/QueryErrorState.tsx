@@ -15,7 +15,7 @@ export default function QueryErrorState({ title, message, onRetry, retrying, cla
   return (
     <div className={className ? `query-error-state ${className}` : 'query-error-state'} role="alert">
       <div className="query-error-state__body">
-        <strong>{title ?? t('common.loadFailed', { defaultValue: 'Failed to load' })}</strong>
+        <strong>{title ?? t('common.loadFailed')}</strong>
         {message ? <span>{message}</span> : null}
       </div>
       {onRetry ? (

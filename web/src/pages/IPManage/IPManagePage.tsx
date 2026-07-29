@@ -338,7 +338,7 @@ export default function IPManagePage() {
       };
     }));
   };
-  const defaultAccessRuleName = t('ip.defaultAccessRuleName', { defaultValue: 'IP access rule' });
+  const defaultAccessRuleName = t('ip.defaultAccessRuleName');
   const saveAccessRules = (nextRules = accessRules) => {
     accessRulesMutation.mutate(nextRules.map((rule) => normalizeAccessRuleForSave(rule, defaultAccessRuleName)).filter((rule) => rule.entries.length > 0));
   };

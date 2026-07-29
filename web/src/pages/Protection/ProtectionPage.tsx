@@ -74,7 +74,7 @@ const geoRegionGroups = [
   { labelKey: 'geo.continents.southAmerica', codes: ['BR', 'AR', 'CL', 'CO', 'PE', 'VE'] },
   { labelKey: 'geo.continents.africa', codes: ['ZA', 'EG', 'NG', 'KE', 'MA'] },
   { labelKey: 'geo.continents.oceania', codes: ['AU', 'NZ'] },
-  { labelKey: 'geo.continents.middleEast', codes: ['AE', 'SA', 'IL', 'IR', 'TR'], fallback: 'Middle East' },
+  { labelKey: 'geo.continents.middleEast', codes: ['AE', 'SA', 'IL', 'IR', 'TR'] },
 ] as const;
 
 export default function ProtectionPage() {
@@ -702,7 +702,7 @@ function GeoRegionSelector({ value, onChange }: { value?: string[]; onChange?: (
       onChange={(next) => onChange?.((Array.isArray(next) ? next : []).map((item) => String(item).toUpperCase()))}
     >
       {geoRegionGroups.map((group) => (
-        <Select.OptGroup key={group.labelKey} label={t(group.labelKey, { defaultValue: 'fallback' in group ? group.fallback : group.labelKey })}>
+        <Select.OptGroup key={group.labelKey} label={t(group.labelKey)}>
           {group.codes.map((code) => (
             <Select.Option key={code} value={code}>
               {t(`geo.countries.${code}`, { defaultValue: code })} ({code})

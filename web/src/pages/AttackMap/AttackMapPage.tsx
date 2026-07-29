@@ -361,10 +361,10 @@ export default function AttackMapPage() {
           )}
           <div className="map-basemap-credit" aria-hidden="true">
             {mode === '3d'
-              ? t('attackMap.basemapCredit3d', { defaultValue: 'Three.js globe' })
+              ? t('attackMap.basemapCredit3d')
               : mode === 'china'
-                ? t('attackMap.basemapCreditChina', { defaultValue: 'Offline · world-atlas + china-map-echarts · MapLibre' })
-                : t('attackMap.basemapCreditWorld', { defaultValue: 'Offline · world-atlas · MapLibre' })}
+                ? t('attackMap.basemapCreditChina')
+                : t('attackMap.basemapCreditWorld')}
           </div>
         </section>
       </section>
