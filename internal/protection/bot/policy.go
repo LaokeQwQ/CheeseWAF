@@ -475,17 +475,18 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		if r.Method == http.MethodPost {
 			status = http.StatusSeeOther
 		}
-		// Same-origin only. CodeQL RedirectCheckBarrier requires a local
-		// predicate named isLocalURL; redirect the sanitized string (not
-		// url.URL.String(), which re-taints the sink for go/unvalidated-url-redirection).
+		// Same-origin only. CodeQL go/unvalidated-url-redirection:
+		// 1) SanitizeLocalRedirect collapses open redirects to "/".
+		// 2) isLocalURL is the RedirectCheckBarrier predicate (exact name).
+		// 3) Redirect the string checked by isLocalURL — never url.URL.String(),
+		//    which re-taints the sink (see CodeQL alert #47 on master).
 		loc := fsguard.SanitizeLocalRedirect(returnURL)
 		loc = strings.ReplaceAll(loc, "\\", "/")
-		safeLoc := "/"
 		if isLocalURL(loc) {
-			// isLocalURL is the CodeQL RedirectCheckBarrier predicate.
-			safeLoc = loc
+			http.Redirect(w, r, loc, status)
+			return
 		}
-		http.Redirect(w, r, safeLoc, status)
+		http.Redirect(w, r, "/", status)
 		return
 	}
 	if submittedType != "" && p.usesBehaviorChallenge(selection, clientIP, site) {
