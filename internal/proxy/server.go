@@ -480,8 +480,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
-		// Apply already confines Path. CodeQL RedirectCheckBarrier: local isLocalURL
-		// + redirect sanitized string (not url.URL.String()).
+		// Same-origin relative redirect only; redirect the validated string, not a re-serialized URL.
 		loc := fsguard.SanitizeLocalRedirect(r.URL.RequestURI())
 		loc = strings.ReplaceAll(loc, "\\", "/")
 		if isLocalURL(loc) {
@@ -660,7 +659,7 @@ func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request,
 	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
 }
 
-// isLocalURL is the CodeQL RedirectCheckBarrier identifier used before http.Redirect.
+// isLocalURL reports whether raw is a same-origin relative URL safe for redirects.
 func isLocalURL(raw string) bool {
 	return fsguard.IsLocalURL(raw)
 }

@@ -14,7 +14,7 @@ export const apiClient = axios.create({
 });
 
 const AI_REQUEST_TIMEOUT_MS = 300_000;
-/** @deprecated localStorage JWT removed in C1; kept only to clear legacy keys on logout. */
+/** Legacy key cleared on logout; sessions use HttpOnly cookies, not localStorage. */
 const tokenStorageKey = 'cheesewaf-token';
 const authFlagKey = 'cheesewaf-authed';
 const csrfCookieName = 'cheesewaf_csrf';

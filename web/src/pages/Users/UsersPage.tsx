@@ -437,10 +437,7 @@ export default function UsersPage() {
             <div className="users-twofa-body">
               {twoFA.qr && <img src={twoFA.qr} alt={t('users.twoFAQRCode')} />}
               <div className="users-twofa-steps">
-                <div>
-                  <span>{t('users.twoFASecret')}</span>
-                  <code>{twoFA.setup.secret}</code>
-                </div>
+                <TwoFASecretReveal secret={twoFA.setup.secret} label={t('users.twoFASecret')} revealLabel={t('users.showSecret', { defaultValue: 'Show secret key' })} />
                 <Input
                   value={twoFA.code}
                   placeholder={t('users.twoFACodePlaceholder')}
@@ -697,4 +694,23 @@ function currentAccount() {
     /* fall through */
   }
   return fallback;
+}
+
+function TwoFASecretReveal({ secret, label, revealLabel }: { secret: string; label: string; revealLabel: string }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!visible) return;
+    const timer = window.setTimeout(() => setVisible(false), 30_000);
+    return () => window.clearTimeout(timer);
+  }, [visible]);
+  return (
+    <div className="users-twofa-secret">
+      <span>{label}</span>
+      {!visible ? (
+        <Button type="outline" size="mini" onClick={() => setVisible(true)}>{revealLabel}</Button>
+      ) : (
+        <code className="users-twofa-secret-value" style={{ userSelect: 'none' }}>{secret}</code>
+      )}
+    </div>
+  );
 }

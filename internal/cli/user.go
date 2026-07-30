@@ -40,17 +40,23 @@ var userPasswordCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		opts := ensureAdminOptions
+		opts := passwordOptions
 		opts.Input = cmd.InOrStdin()
+		if opts.Reset2FA {
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: --reset-2fa will disable two-factor authentication for this user.")
+		}
 		generated, err := changeUserPassword(cmd.Context(), sqlitePath, args[0], opts)
 		if err != nil {
 			return err
 		}
 		if generated != "" {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Generated password for %s: %s\n", args[0], generated)
-			return nil
+		} else {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Password updated for %s\n", args[0])
 		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Password updated for %s\n", args[0])
+		if opts.Reset2FA {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Two-factor authentication disabled for %s\n", args[0])
+		}
 		return nil
 	},
 }
@@ -102,6 +108,7 @@ type cliPasswordOptions struct {
 	Password      string
 	PasswordStdin bool
 	Generate      bool
+	Reset2FA      bool
 	Input         io.Reader
 }
 
@@ -109,11 +116,13 @@ func init() {
 	userPasswordCmd.Flags().StringVar(&passwordOptions.Password, "password", "", "New password (prefer --password-stdin for scripts)")
 	userPasswordCmd.Flags().BoolVar(&passwordOptions.PasswordStdin, "password-stdin", false, "Read the new password from stdin")
 	userPasswordCmd.Flags().BoolVar(&passwordOptions.Generate, "generate", false, "Generate and print a strong temporary password")
+	userPasswordCmd.Flags().BoolVar(&passwordOptions.Reset2FA, "reset-2fa", false, "Also disable two-factor authentication for the user")
 	userCmd.AddCommand(userPasswordCmd)
 	userCmd.AddCommand(userRenameCmd)
 	userEnsureAdminCmd.Flags().StringVar(&ensureAdminOptions.Password, "password", "", "Password (prefer --password-stdin for scripts)")
 	userEnsureAdminCmd.Flags().BoolVar(&ensureAdminOptions.PasswordStdin, "password-stdin", false, "Read the password from stdin")
 	userEnsureAdminCmd.Flags().BoolVar(&ensureAdminOptions.Generate, "generate", false, "Generate and print a strong temporary password")
+	userEnsureAdminCmd.Flags().BoolVar(&ensureAdminOptions.Reset2FA, "reset-2fa", false, "Disable two-factor authentication when updating an existing admin")
 	userCmd.AddCommand(userEnsureAdminCmd)
 }
 
@@ -148,7 +157,13 @@ func ensureAdminUser(ctx context.Context, sqlitePath, username string, opts cliP
 	if user == nil {
 		user = &storage.User{Username: username}
 	}
-	user.PasswordHash, user.Role, user.TwoFAEnabled, user.TwoFASecret = string(hash), "admin", false, ""
+	user.PasswordHash = string(hash)
+	user.Role = "admin"
+	// Preserve existing 2FA unless explicitly requested to clear it.
+	if user.ID == "" || opts.Reset2FA {
+		user.TwoFAEnabled = false
+		user.TwoFASecret = ""
+	}
 	if user.ID == "" {
 		err = store.CreateUser(ctx, user)
 	} else {
@@ -199,8 +214,11 @@ func changeUserPassword(ctx context.Context, sqlitePath, username string, opts c
 		return "", err
 	}
 	user.PasswordHash = string(hash)
-	user.TwoFAEnabled = false
-	user.TwoFASecret = ""
+	// Keep 2FA enabled on password reset unless the operator passes --reset-2fa.
+	if opts.Reset2FA {
+		user.TwoFAEnabled = false
+		user.TwoFASecret = ""
+	}
 	if err := store.UpdateUser(ctx, user); err != nil {
 		return "", err
 	}

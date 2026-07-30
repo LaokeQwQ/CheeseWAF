@@ -1,18 +1,24 @@
 package engine
 
 import (
+	"net/url"
 	"path"
 	"strings"
 )
 
 // NormalizeRequestPath cleans a URL path for security policy matching.
-// It uses path.Clean, ensures a leading "/", and rejects empty paths,
-// NUL bytes, and any residual ".." segments after cleaning.
+// It repeatedly URL-decodes (up to a safe cap), then path.Clean, ensures a
+// leading "/", and rejects empty paths, NUL bytes, residual encodings, and
+// residual ".." segments after cleaning.
 func NormalizeRequestPath(raw string) (string, bool) {
 	if raw == "" || strings.ContainsRune(raw, 0) {
 		return "", false
 	}
-	cleaned := path.Clean(raw)
+	decoded, ok := fullyDecodePath(raw, 5)
+	if !ok {
+		return "", false
+	}
+	cleaned := path.Clean(decoded)
 	if cleaned == "" || cleaned == "." {
 		return "", false
 	}
@@ -26,7 +32,38 @@ func NormalizeRequestPath(raw string) (string, bool) {
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.Contains(cleaned, "/../") || strings.HasSuffix(cleaned, "/..") {
 		return "", false
 	}
+	// Residual percent-encoding after full decode is treated as hostile.
+	if strings.Contains(cleaned, "%") {
+		return "", false
+	}
 	return cleaned, true
+}
+
+// fullyDecodePath repeatedly PathUnescapes until stable or maxRounds.
+// Returns false if decoding fails or still looks encoded after maxRounds.
+func fullyDecodePath(raw string, maxRounds int) (string, bool) {
+	if maxRounds < 1 {
+		maxRounds = 1
+	}
+	cur := raw
+	for i := 0; i < maxRounds; i++ {
+		next, err := url.PathUnescape(cur)
+		if err != nil {
+			return "", false
+		}
+		if next == cur {
+			return cur, true
+		}
+		if strings.ContainsRune(next, 0) {
+			return "", false
+		}
+		cur = next
+	}
+	// Still changing after max rounds, or residual %XX patterns.
+	if strings.Contains(cur, "%") {
+		return "", false
+	}
+	return cur, true
 }
 
 // PathMatchesPrefix reports whether requestPath equals prefix or is a child
