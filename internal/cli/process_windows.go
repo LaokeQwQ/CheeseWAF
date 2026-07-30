@@ -11,9 +11,8 @@ import (
 )
 
 func processRunning(pid int) (bool, error) {
-	// Windows OpenProcess takes a DWORD (uint32). Reject non-positive and
-	// values that would truncate on the architecture-dependent int → uint32 cast
-	// (CodeQL go/incorrect-integer-conversion; source is often strconv.Atoi on pid files).
+	// Windows OpenProcess takes a DWORD (uint32). Reject non-positive values and
+	// anything that would truncate on the architecture-dependent int → uint32 cast.
 	if pid <= 0 || pid > math.MaxUint32 {
 		return false, nil
 	}

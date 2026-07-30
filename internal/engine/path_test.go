@@ -19,6 +19,12 @@ func TestNormalizeRequestPath(t *testing.T) {
 		{"", "", false},
 		{"/foo\x00bar", "", false},
 		{".", "", false},
+		// Multi-pass decode + Clean collapses encoded traversal to the real path.
+		{"/..%252fetc%252fpasswd", "/etc/passwd", true},
+		{"/%2e%2e/%2e%2e/etc/passwd", "/etc/passwd", true},
+		{"/api%2Fusers", "/api/users", true},
+		// Invalid percent sequences fail closed.
+		{"/%zz", "", false},
 	}
 	for _, tc := range cases {
 		got, ok := NormalizeRequestPath(tc.in)

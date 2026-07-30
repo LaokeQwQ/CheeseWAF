@@ -98,8 +98,7 @@ func NewCSRFToken() (string, error) {
 }
 
 // WriteSessionCookies sets HttpOnly session JWT + non-HttpOnly CSRF cookies.
-// Secure is always true (CodeQL go/cookie-secure-not-set): admin console is
-// expected behind HTTPS or TLS-terminated reverse proxy.
+// Secure is always true; serve the admin console over HTTPS or a TLS-terminated proxy.
 func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csrf string, maxAge time.Duration) {
 	if w == nil {
 		return

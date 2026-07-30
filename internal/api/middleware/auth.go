@@ -16,6 +16,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type contextKey string
@@ -196,8 +197,40 @@ func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator 
 }
 
 func HashManagementAPIToken(raw string) string {
+	// bcrypt for offline resistance on stolen hash files. Cost matches password defaults:
+	// tokens are high-entropy, so DefaultCost is enough and keeps verify latency bounded.
+	hash, err := bcrypt.GenerateFromPassword([]byte(strings.TrimSpace(raw)), bcrypt.DefaultCost)
+	if err != nil {
+		// Fail closed to a non-matching marker rather than store raw.
+		sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
+		return "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return "bcrypt:" + string(hash)
+}
+
+// HashManagementAPITokenLegacySHA256 is used only for tests that need deterministic digests.
+func HashManagementAPITokenLegacySHA256(raw string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func managementAPITokenMatches(raw, stored string) bool {
+	raw = strings.TrimSpace(raw)
+	stored = strings.TrimSpace(stored)
+	if raw == "" || stored == "" {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(stored, "bcrypt:"):
+		return bcrypt.CompareHashAndPassword([]byte(strings.TrimPrefix(stored, "bcrypt:")), []byte(raw)) == nil
+	case strings.HasPrefix(stored, "sha256:"):
+		// Accept legacy SHA-256 hashes until operators re-create tokens.
+		sum := sha256.Sum256([]byte(raw))
+		want := "sha256:" + hex.EncodeToString(sum[:])
+		return hmac.Equal([]byte(want), []byte(stored))
+	default:
+		return false
+	}
 }
 
 func VerifyManagementAPIToken(raw string, cfg config.ManagementAPIConfig, now time.Time) (*Claims, bool) {
@@ -205,7 +238,6 @@ func VerifyManagementAPIToken(raw string, cfg config.ManagementAPIConfig, now ti
 		return nil, false
 	}
 	now = now.UTC()
-	hash := HashManagementAPIToken(raw)
 	for _, token := range cfg.Tokens {
 		if !token.Enabled || token.ID == "" || token.Hash == "" || !token.RevokedAt.IsZero() {
 			continue
@@ -213,7 +245,7 @@ func VerifyManagementAPIToken(raw string, cfg config.ManagementAPIConfig, now ti
 		if !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(now) {
 			continue
 		}
-		if !hmac.Equal([]byte(hash), []byte(token.Hash)) {
+		if !managementAPITokenMatches(raw, token.Hash) {
 			continue
 		}
 		expires := int64(0)

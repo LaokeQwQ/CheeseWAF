@@ -96,19 +96,15 @@ func (r *RedisBackend) Consume(ctx context.Context, jti string) bool {
 		return false
 	}
 	key := r.prefix + jti
-	// GETDEL when available; fallback GET+DEL.
+	// GETDEL when available; atomic Lua fallback for older Redis (avoids GET+DEL race).
 	raw, err := r.doString(ctx, "GETDEL", key)
 	if err != nil {
-		// Fallback for older Redis.
-		raw, err = r.doString(ctx, "GET", key)
+		raw, err = r.doString(ctx, "EVAL",
+			`local v=redis.call('GET',KEYS[1]); if v then redis.call('DEL',KEYS[1]) end; return v`,
+			"1", key)
 		if err != nil {
 			return r.failOpen
 		}
-		if raw == "" {
-			return false
-		}
-		_ = r.do(ctx, "DEL", key)
-		return true
 	}
 	return raw != ""
 }
@@ -124,9 +120,8 @@ func (r *RedisBackend) Close() error {
 	return nil
 }
 
-func (r *RedisBackend) ensureConn(ctx context.Context) (net.Conn, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// ensureConnLocked dials and authenticates. Caller must hold r.mu.
+func (r *RedisBackend) ensureConnLocked(ctx context.Context) (net.Conn, error) {
 	if r.conn != nil {
 		return r.conn, nil
 	}
@@ -171,12 +166,12 @@ func (r *RedisBackend) ensureConn(ctx context.Context) (net.Conn, error) {
 }
 
 func (r *RedisBackend) do(ctx context.Context, args ...string) error {
-	conn, err := r.ensureConn(ctx)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	conn, err := r.ensureConnLocked(ctx)
 	if err != nil {
 		return err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	if err := r.writeCommand(conn, args...); err != nil {
 		_ = conn.Close()
@@ -192,12 +187,12 @@ func (r *RedisBackend) do(ctx context.Context, args ...string) error {
 }
 
 func (r *RedisBackend) doString(ctx context.Context, args ...string) (string, error) {
-	conn, err := r.ensureConn(ctx)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	conn, err := r.ensureConnLocked(ctx)
 	if err != nil {
 		return "", err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	if err := r.writeCommand(conn, args...); err != nil {
 		_ = conn.Close()
