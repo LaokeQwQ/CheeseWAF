@@ -197,8 +197,9 @@ func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator 
 }
 
 func HashManagementAPIToken(raw string) string {
-	// Prefer bcrypt for offline resistance; cost is acceptable for rare token creates.
-	hash, err := bcrypt.GenerateFromPassword([]byte(strings.TrimSpace(raw)), 12)
+	// bcrypt for offline resistance on stolen hash files. Cost matches password defaults:
+	// tokens are high-entropy, so DefaultCost is enough and keeps verify latency bounded.
+	hash, err := bcrypt.GenerateFromPassword([]byte(strings.TrimSpace(raw)), bcrypt.DefaultCost)
 	if err != nil {
 		// Fail closed to a non-matching marker rather than store raw.
 		sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))

@@ -55,47 +55,68 @@ func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*mid
 	if h == nil || h.Config == nil {
 		return nil, nil, false
 	}
-	h.configMutationMu.Lock()
+	at = at.UTC()
+	// Hash under a shared lock so concurrent authentications can proceed in parallel.
+	// Holding the exclusive write lock across bcrypt serialized requests and hung Windows CI.
+	h.configMutationMu.RLock()
 	claims, ok := middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
 	if !ok {
-		h.configMutationMu.Unlock()
+		h.configMutationMu.RUnlock()
 		return nil, nil, false
 	}
-	for idx := range h.Config.APISec.ManagementAPI.Tokens {
-		token := &h.Config.APISec.ManagementAPI.Tokens[idx]
+	interval := h.managementTokenFlushInterval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	needsTouch := false
+	for _, token := range h.Config.APISec.ManagementAPI.Tokens {
 		if token.ID != claims.ID {
 			continue
 		}
-		interval := h.managementTokenFlushInterval
-		if interval <= 0 {
-			interval = time.Minute
+		if token.LastUsedAt.IsZero() || at.Sub(token.LastUsedAt) >= interval {
+			needsTouch = true
 		}
-		if !token.LastUsedAt.IsZero() && at.Sub(token.LastUsedAt) < interval {
-			h.configMutationMu.Unlock()
-			h.configMutationMu.RLock()
-			claims, ok = middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
-			if !ok {
-				h.configMutationMu.RUnlock()
-				return nil, nil, false
-			}
-			return claims, h.configMutationMu.RUnlock, true
-		}
-		previous := token.LastUsedAt
-		token.LastUsedAt = at.UTC()
-		if err := h.persistManagementAPITokenUseLocked(); err != nil {
-			token.LastUsedAt = previous
-		}
-		h.configMutationMu.Unlock()
-		h.configMutationMu.RLock()
-		claims, ok = middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
-		if !ok {
-			h.configMutationMu.RUnlock()
-			return nil, nil, false
-		}
+		break
+	}
+	if !needsTouch {
 		return claims, h.configMutationMu.RUnlock, true
 	}
+	tokenID := claims.ID
+	h.configMutationMu.RUnlock()
+
+	h.configMutationMu.Lock()
+	// Touch last-used by id without re-hashing; re-check revoke/enabled for the race window.
+	for idx := range h.Config.APISec.ManagementAPI.Tokens {
+		token := &h.Config.APISec.ManagementAPI.Tokens[idx]
+		if token.ID != tokenID {
+			continue
+		}
+		if !token.Enabled || !token.RevokedAt.IsZero() {
+			h.configMutationMu.Unlock()
+			return nil, nil, false
+		}
+		if !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(at) {
+			h.configMutationMu.Unlock()
+			return nil, nil, false
+		}
+		if token.LastUsedAt.IsZero() || at.Sub(token.LastUsedAt) >= interval {
+			previous := token.LastUsedAt
+			token.LastUsedAt = at
+			if err := h.persistManagementAPITokenUseLocked(); err != nil {
+				token.LastUsedAt = previous
+			}
+		}
+		break
+	}
 	h.configMutationMu.Unlock()
-	return nil, nil, false
+
+	h.configMutationMu.RLock()
+	claims, ok = middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
+	if !ok {
+		h.configMutationMu.RUnlock()
+		return nil, nil, false
+	}
+	return claims, h.configMutationMu.RUnlock, true
 }
 
 func (h *Handler) persistManagementAPITokenUseLocked() error {
