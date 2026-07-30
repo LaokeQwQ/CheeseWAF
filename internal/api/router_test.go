@@ -103,7 +103,7 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 	}{
 		{name: "system update", method: http.MethodPut, path: "/api/system", body: []byte(`{}`)},
 		{name: "storage test", method: http.MethodPost, path: "/api/system/storage/test", body: []byte(`{"backend":"sqlite"}`)},
-		{name: "create user", method: http.MethodPost, path: "/api/users", body: []byte(`{"username":"next","password":"correct-horse-battery","role":"readonly"}`)},
+		{name: "create user", method: http.MethodPost, path: "/api/users", body: []byte(`{"username":"next","password":"Correct-Horse-9x!","role":"readonly"}`)},
 		{name: "update user", method: http.MethodPut, path: "/api/users/admin-id", body: []byte(`{"role":"admin"}`)},
 		{name: "disable 2fa", method: http.MethodPost, path: "/api/users/admin-id/2fa/disable", body: []byte(`{}`)},
 		{name: "ip tags", method: http.MethodPut, path: "/api/ip/tags", body: []byte(`{"tags":{}}`)},
@@ -1299,7 +1299,7 @@ func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
 		t.Fatalf("reader token should start active, got %d: %s", before.Code, before.Body.String())
 	}
 
-	update := perform(router, http.MethodPut, "/api/users/reader-id", adminToken, []byte(`{"password":"new-reader-password","role":"readonly"}`))
+	update := perform(router, http.MethodPut, "/api/users/reader-id", adminToken, []byte(`{"password":"N7v!mKq2PxR","role":"readonly"}`))
 	if update.Code != http.StatusOK {
 		t.Fatalf("expected admin to update reader, got %d: %s", update.Code, update.Body.String())
 	}

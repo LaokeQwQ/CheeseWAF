@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -60,7 +61,9 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 			entry.User = claims.Username
 			entry.Role = claims.Role
 		}
-		_ = a.Write(r.Context(), entry)
+		if err := a.Write(r.Context(), entry); err != nil {
+			log.Printf("audit: write failed method=%s path=%s status=%d: %v", entry.Method, entry.Path, entry.Status, err)
+		}
 	})
 }
 
@@ -76,24 +79,31 @@ func (a *Auditor) Write(ctx context.Context, entry AuditEntry) error {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
+		log.Printf("audit: context cancelled before write path=%s: %v", a.path, err)
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(a.path), 0o750); err != nil {
+		log.Printf("audit: mkdir failed path=%s: %v", a.path, err)
 		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	file, err := os.OpenFile(a.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
 	if err != nil {
+		log.Printf("audit: open failed path=%s: %v", a.path, err)
 		return err
 	}
 	defer file.Close()
 	data, err := json.Marshal(entry)
 	if err != nil {
+		log.Printf("audit: marshal failed: %v", err)
 		return err
 	}
-	_, err = file.Write(append(data, '\n'))
-	return err
+	if _, err = file.Write(append(data, '\n')); err != nil {
+		log.Printf("audit: write failed path=%s: %v", a.path, err)
+		return err
+	}
+	return nil
 }
 
 func (a *Auditor) Query(limit int) ([]AuditEntry, error) {

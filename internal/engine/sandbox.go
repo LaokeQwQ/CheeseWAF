@@ -8,7 +8,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -30,7 +29,19 @@ const (
 	MaxJSONNestingDepth = 32
 	// MaxMultipartParts prevents excessive multipart form parsing.
 	MaxMultipartParts = 64
+	// maxInflightRegexMatches bounds timed-out regexp goroutines so ReDoS
+	// payloads cannot accumulate unlimited workers (stdlib regexp is not interruptible).
+	maxInflightRegexMatches = 64
+	// maxInflightGuards bounds detector Guard workers on timeout paths.
+	maxInflightGuards = 128
 )
+
+// regexMatchSlots holds a permit until the match goroutine finishes, even after
+// the caller timed out. That caps leaked workers under ReDoS load.
+var regexMatchSlots = make(chan struct{}, maxInflightRegexMatches)
+
+// guardSlots bounds concurrent Guard workers the same way.
+var guardSlots = make(chan struct{}, maxInflightGuards)
 
 // BoundedRegex wraps a regexp.Regexp with timeout protection for ReDoS.
 type BoundedRegex struct{ re *regexp.Regexp }
@@ -55,8 +66,15 @@ func (b *BoundedRegex) MatchString(s string) bool {
 	if len(s) > MaxDecodedBytes {
 		s = s[:MaxDecodedBytes]
 	}
+	select {
+	case regexMatchSlots <- struct{}{}:
+	default:
+		// Overload: fail closed (no-match) rather than spawning more workers.
+		return false
+	}
 	done := make(chan bool, 1)
 	go func() {
+		defer func() { <-regexMatchSlots }()
 		done <- b.re.MatchString(s)
 	}()
 	select {
@@ -75,8 +93,14 @@ func (b *BoundedRegex) Match(b2 []byte) bool {
 	if len(b2) > MaxDecodedBytes {
 		b2 = b2[:MaxDecodedBytes]
 	}
+	select {
+	case regexMatchSlots <- struct{}{}:
+	default:
+		return false
+	}
 	done := make(chan bool, 1)
 	go func() {
+		defer func() { <-regexMatchSlots }()
 		done <- b.re.Match(b2)
 	}()
 	select {
@@ -149,12 +173,19 @@ func DecodeSafe(raw string) decoder.Decoded {
 // Guard runs a detection function with panic recovery and timeout protection.
 // Returns nil if the function panics, times out, or exceeds allocation limits.
 func Guard[T any](fn func() (T, error)) (result T, err error) {
+	var zero T
+	select {
+	case guardSlots <- struct{}{}:
+	default:
+		return zero, fmt.Errorf("detection overload: too many in-flight guards")
+	}
 	done := make(chan struct {
 		res T
 		err error
 	}, 1)
 
 	go func() {
+		defer func() { <-guardSlots }()
 		defer func() {
 			if r := recover(); r != nil {
 				stack := string(debug.Stack())
@@ -177,7 +208,6 @@ func Guard[T any](fn func() (T, error)) (result T, err error) {
 	case r := <-done:
 		return r.res, r.err
 	case <-time.After(2 * time.Second):
-		var zero T
 		return zero, fmt.Errorf("detection deadline exceeded (2s)")
 	}
 }
@@ -221,22 +251,26 @@ func (cb *CircuitBreaker) Allow() bool {
 	if cb.open {
 		return false
 	}
-	if atomic.LoadInt32(&cb.current) >= int32(cb.maxConcurrent) {
-		return false
-	}
-	return true
+	return cb.current < int32(cb.maxConcurrent)
 }
 
+// Acquire reserves a slot atomically under the breaker lock (check+increment).
 func (cb *CircuitBreaker) Acquire() bool {
-	if !cb.Allow() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.open || cb.current >= int32(cb.maxConcurrent) {
 		return false
 	}
-	atomic.AddInt32(&cb.current, 1)
+	cb.current++
 	return true
 }
 
 func (cb *CircuitBreaker) Release() {
-	atomic.AddInt32(&cb.current, -1)
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.current > 0 {
+		cb.current--
+	}
 }
 
 func (cb *CircuitBreaker) Trip() {

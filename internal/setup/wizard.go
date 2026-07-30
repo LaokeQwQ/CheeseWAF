@@ -280,7 +280,7 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
     <code>Certificate: {{.CertFile}}</code>
     <form method="post" action="/setup">
       <label>Username<input name="username" autocomplete="username" required minlength="3" value="admin"></label>
-      <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="10"></label>
+      <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="10" title="At least 10 chars; 3 of: upper, lower, non-repeating digits, special"></label>
       <label>Admin listener<input name="admin_listen" required value="{{.AdminListen}}"></label>
       <label>Admin access strategy
         <select name="admin_strategy">

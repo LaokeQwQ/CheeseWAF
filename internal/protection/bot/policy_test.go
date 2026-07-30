@@ -699,6 +699,9 @@ func TestChallengeClearanceCookieSecureBehindHTTPSProxy(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "curl/8.0")
 	req.Header.Set("X-Forwarded-Proto", "https")
+	// TLS-terminated reverse proxy: peer must be in TrustedCIDRs for XFP to count.
+	req.RemoteAddr = "10.0.0.5:443"
+	req = req.WithContext(ContextWithTrustedCIDRs(req.Context(), []string{"10.0.0.0/8"}))
 	rr := httptest.NewRecorder()
 
 	policy.ServeChallenge(rr, req, "203.0.113.10")

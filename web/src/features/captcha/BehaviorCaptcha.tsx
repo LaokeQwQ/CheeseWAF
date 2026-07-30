@@ -277,6 +277,7 @@ function ChallengeBody(props: BodyProps) {
       <SafeImage
         src={challenge.presentation.image}
         alt={localizedPrompt(challenge, locale)}
+        missingLabel="Invalid or missing image data"
       />
     );
   if (challenge.type === "text_click" || challenge.type === "icon_click") {
@@ -364,7 +365,7 @@ function ChallengeBody(props: BodyProps) {
       />
     );
   if (challenge.type === "shape_slider") return <SliderBody {...props} />;
-  return <PointerBody {...props} />;
+  return null;
 }
 function SafeImage({
   src,
@@ -372,12 +373,14 @@ function SafeImage({
   className,
   style,
   onLoad,
+  missingLabel,
 }: {
   src?: string;
   alt: string;
   className?: string;
   style?: React.CSSProperties;
   onLoad?: React.ReactEventHandler<HTMLImageElement>;
+  missingLabel?: string;
 }) {
   const safe = safeImageDataUri(src);
   return safe ? (
@@ -391,119 +394,7 @@ function SafeImage({
     />
   ) : (
     <div className={styles.missingImage} role="alert">
-      Invalid or missing image data
-    </div>
-  );
-}
-
-function PointerBody({
-  challenge,
-  disabled,
-  started,
-  setResponse,
-  setStatus,
-  submit,
-}: BodyProps) {
-  const [track, setTrack] = useState<CaptchaTrackPoint[]>([]);
-  const active = useRef<number>();
-  const surface = useRef<HTMLDivElement>(null);
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const scratch = challenge.type === "scratch";
-  const resetCanvas = () => {
-    const c = canvas.current,
-      ctx = c?.getContext("2d");
-    if (!c || !ctx) return;
-    ctx.clearRect(0, 0, c.width, c.height);
-    if (scratch) {
-      ctx.fillStyle = "#aeb7c2";
-      ctx.fillRect(0, 0, c.width, c.height);
-    }
-  };
-  useEffect(resetCanvas, [challenge.token]);
-  const paint = (next: CaptchaTrackPoint[]) => {
-    const c = canvas.current,
-      ctx = c?.getContext("2d");
-    if (!c || !ctx || next.length < 2) return;
-    const a = next[next.length - 2],
-      b = next[next.length - 1];
-    ctx.globalCompositeOperation = scratch ? "destination-out" : "source-over";
-    ctx.strokeStyle = "#e23d28";
-    ctx.lineWidth = scratch ? 28 : 5;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo((a.x / 10000) * c.width, (a.y / 10000) * c.height);
-    ctx.lineTo((b.x / 10000) * c.width, (b.y / 10000) * c.height);
-    ctx.stroke();
-  };
-  const add = (event: React.PointerEvent, kind: string) => {
-    if (!surface.current) return track;
-    const point = trackPoint(
-      normalizePoint(
-        event.clientX,
-        event.clientY,
-        surface.current.getBoundingClientRect(),
-      ),
-      performance.now() - started.current,
-      kind,
-    );
-    const next = appendTrack(track, point);
-    setTrack(next);
-    paint(next);
-    return next;
-  };
-  const down = (event: React.PointerEvent) => {
-    if (disabled) return;
-    active.current = event.pointerId;
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setStatus("interacting");
-    setTrack([]);
-    resetCanvas();
-    add(event, "down");
-  };
-  const move = (event: React.PointerEvent) => {
-    if (active.current === event.pointerId) add(event, "move");
-  };
-  const up = (event: React.PointerEvent) => {
-    if (active.current !== event.pointerId) return;
-    const next = add(event, "up");
-    active.current = undefined;
-    const answer = {
-      track: next,
-      duration_ms: Math.round(performance.now() - started.current),
-    };
-    setResponse(answer);
-    void submit(answer);
-  };
-  const cancel = (event: React.PointerEvent) => {
-    if (active.current === event.pointerId) {
-      active.current = undefined;
-      setTrack([]);
-      resetCanvas();
-      setResponse({});
-      setStatus("ready");
-    }
-  };
-  return (
-    <div
-      ref={surface}
-      data-testid="captcha-surface"
-      className={styles.surface}
-      onPointerDown={down}
-      onPointerMove={move}
-      onPointerUp={up}
-      onPointerCancel={cancel}
-    >
-      <SafeImage
-        src={challenge.presentation.image}
-        alt={challenge.presentation.prompt || challenge.type}
-      />
-      <canvas
-        ref={canvas}
-        className={styles.overlay}
-        width="400"
-        height="220"
-        aria-hidden="true"
-      />
+      {missingLabel || alt || "Image unavailable"}
     </div>
   );
 }
@@ -515,6 +406,7 @@ function SliderBody({
   setResponse,
   setStatus,
   submit,
+  locale,
 }: BodyProps) {
   const [value, setValue] = useState(0);
   const [sliderTrack, setSliderTrack] = useState<CaptchaTrackPoint[]>([]);
@@ -572,6 +464,9 @@ function SliderBody({
     setSliderTrack([]);
     void submit(answer);
   };
+  const prompt = localizedPrompt(challenge, locale);
+  const pieceAlt = locale.startsWith("zh") ? "可移动拼图块" : "Movable puzzle piece";
+  const imageMissing = locale.startsWith("zh") ? "图片不可用" : "Image unavailable";
   return (
     <div className={styles.sliderArea}>
       <div
@@ -580,18 +475,20 @@ function SliderBody({
       >
         <SafeImage
           src={challenge.presentation.image}
-          alt={challenge.presentation.prompt || challenge.type}
+          alt={prompt}
+          missingLabel={imageMissing}
         />
         <SafeImage
           src={challenge.presentation.piece}
-          alt="movable puzzle piece"
+          alt={pieceAlt}
+          missingLabel={imageMissing}
           className={styles.piece}
           style={pieceStyle}
         />
       </div>
       <input
         className={sliderStyles.range}
-        aria-label={challenge.presentation.prompt || challenge.type}
+        aria-label={prompt}
         type="range"
         min="0"
         max="10000"
@@ -599,14 +496,24 @@ function SliderBody({
         style={{ "--captcha-progress": `${value / 100}%` } as React.CSSProperties}
         disabled={disabled}
         onChange={(e) => change(Number(e.target.value))}
+        onPointerDown={() => {
+          started.current = performance.now();
+          setSliderTrack([]);
+        }}
         onPointerUp={finish}
         onPointerCancel={() => {
           setSliderTrack([]);
           setResponse({});
           setStatus("ready");
         }}
+        onKeyDown={(e) => {
+          if (!e.repeat && ["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(e.key)) {
+            started.current = performance.now();
+            setSliderTrack([]);
+          }
+        }}
         onKeyUp={(e) => {
-          if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key))
+          if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(e.key))
             finish();
         }}
       />

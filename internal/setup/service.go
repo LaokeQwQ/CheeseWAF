@@ -14,6 +14,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passpolicy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -304,8 +305,8 @@ func normalizeSetupPayload(payload SetupPayload, defaultAdminListen string) (Set
 	if payload.Username == "" || len(payload.Username) < 3 {
 		return payload, fmt.Errorf("%w: username must contain at least 3 characters", ErrSetupValidation)
 	}
-	if len(payload.Password) < 10 {
-		return payload, fmt.Errorf("%w: password must contain at least 10 characters", ErrSetupValidation)
+	if err := passpolicy.Validate(payload.Password, payload.Username); err != nil {
+		return payload, fmt.Errorf("%w: %s", ErrSetupValidation, err.Error())
 	}
 	if payload.AdminListen == "" {
 		payload.AdminListen = defaultAdminListen

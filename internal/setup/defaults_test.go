@@ -151,7 +151,7 @@ func TestWizardSetupHandlerCreatesAdminAndMarksComplete(t *testing.T) {
 	}
 	done := make(chan struct{})
 	handler := wizard.setupHTTPHandler(bundle, done)
-	body := `{"username":"admin","password":"correct-horse-battery","admin_listen":"127.0.0.1:9444"}`
+	body := `{"username":"admin","password":"Correct-Horse-9x!","admin_listen":"127.0.0.1:9444"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -198,7 +198,7 @@ func TestWizardSetupCanEnablePublicAdminTLS(t *testing.T) {
 	}
 	payload := SetupPayload{
 		Username:      "admin",
-		Password:      "correct-horse-battery",
+		Password:      "Correct-Horse-9x!",
 		AdminListen:   "0.0.0.0:9443",
 		AdminStrategy: "public_tls",
 	}
@@ -225,7 +225,7 @@ func TestCompleteSetupRejectsPublicAdminWithoutPublicTLS(t *testing.T) {
 	}
 	payload := SetupPayload{
 		Username:    "admin",
-		Password:    "correct-horse-battery",
+		Password:    "Correct-Horse-9x!",
 		AdminListen: "0.0.0.0:9443",
 	}
 	if err := wizard.completeSetup(context.Background(), bundle, payload); err == nil {

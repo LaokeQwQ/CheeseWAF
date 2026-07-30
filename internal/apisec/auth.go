@@ -178,8 +178,15 @@ func (a *Authenticator) Evaluate(r *http.Request) *AuthFinding {
 	if !hasExp || expires <= 0 {
 		return &AuthFinding{Kind: "invalid", Field: "exp", Message: "API authorization token is missing exp", Severity: "high"}
 	}
-	if int64(expires) <= a.now().Unix() {
+	nowUnix := a.now().Unix()
+	const clockSkew = int64(60)
+	// exp: token is expired at/after exp (strict boundary).
+	if int64(expires) <= nowUnix {
 		return &AuthFinding{Kind: "invalid", Field: "exp", Message: "API authorization token is expired", Severity: "high"}
+	}
+	// nbf: allow limited clock skew so slightly-early tokens are accepted.
+	if nbf, hasNBF := numericClaim(claims["nbf"]); hasNBF && int64(nbf)-clockSkew > nowUnix {
+		return &AuthFinding{Kind: "invalid", Field: "nbf", Message: "API authorization token is not yet valid", Severity: "high"}
 	}
 	if len(requirement.issuers) > 0 {
 		issuer, _ := stringClaim(claims["iss"])
@@ -205,14 +212,26 @@ func (a *Authenticator) Evaluate(r *http.Request) *AuthFinding {
 }
 
 func (a *Authenticator) requirementFor(r *http.Request) (authRequirement, bool) {
-	for _, endpoint := range a.endpoints {
-		if endpoint.matches(r) {
-			return authRequirement{
-				issuers:        firstSet(endpoint.issuers, a.issuers),
-				audiences:      firstSet(endpoint.audiences, a.audiences),
-				requiredScopes: firstList(endpoint.requiredScopes, a.requiredScopes),
-			}, true
+	// Prefer the most specific matching endpoint policy (longest path pattern).
+	// Policy-local issuers, audiences, and scopes override globals when set.
+	var best *authEndpointPolicy
+	bestLen := -1
+	for i := range a.endpoints {
+		if !a.endpoints[i].matches(r) {
+			continue
 		}
+		n := len(a.endpoints[i].pattern.String())
+		if n > bestLen {
+			bestLen = n
+			best = &a.endpoints[i]
+		}
+	}
+	if best != nil {
+		return authRequirement{
+			issuers:        firstSet(best.issuers, a.issuers),
+			audiences:      firstSet(best.audiences, a.audiences),
+			requiredScopes: firstList(best.requiredScopes, a.requiredScopes),
+		}, true
 	}
 	path := r.URL.Path
 	if strings.HasPrefix(path, "/api/") || path == "/api" {

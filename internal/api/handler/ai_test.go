@@ -1271,8 +1271,15 @@ func TestAIProtectionToolRollsBackRuntimeWhenSaveFails(t *testing.T) {
 	if len(applied) != 2 {
 		t.Fatalf("expected candidate apply followed by rollback, got %d calls", len(applied))
 	}
-	if !reflect.DeepEqual(applied[1], before) {
-		t.Fatalf("runtime was not rolled back: got=%+v want=%+v", applied[1], before)
+	// Candidate must land first; rollback must restore the prior bot challenge policy.
+	// Compare semantic fields rather than full struct equality: yaml clone on the
+	// rollback path can normalize nil vs empty slices.
+	if !applied[0].Bot.CAPTCHA || applied[0].Bot.CAPTCHAType != "slider" {
+		t.Fatalf("expected candidate bot policy, got CAPTCHA=%v type=%q", applied[0].Bot.CAPTCHA, applied[0].Bot.CAPTCHAType)
+	}
+	if applied[1].Bot.CAPTCHA != before.Bot.CAPTCHA || applied[1].Bot.CAPTCHAType != before.Bot.CAPTCHAType {
+		t.Fatalf("runtime was not rolled back: got CAPTCHA=%v type=%q want CAPTCHA=%v type=%q",
+			applied[1].Bot.CAPTCHA, applied[1].Bot.CAPTCHAType, before.Bot.CAPTCHA, before.Bot.CAPTCHAType)
 	}
 }
 

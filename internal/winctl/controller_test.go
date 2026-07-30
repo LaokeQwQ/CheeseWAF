@@ -7,6 +7,15 @@ import (
 	"testing"
 )
 
+func testController(t *testing.T) *Controller {
+	t.Helper()
+	c, err := New(Options{Binary: "cheesewaf", ConfigPath: "c.yaml", DataDir: t.TempDir(), Listen: "127.0.0.1:17943"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func TestNewRejectsNonLoopbackListen(t *testing.T) {
 	_, err := New(Options{Listen: "0.0.0.0:17943"})
 	if err == nil {
@@ -22,6 +31,9 @@ func TestNewDefaultsLoopback(t *testing.T) {
 	if c.opts.Listen != "127.0.0.1:17943" {
 		t.Fatalf("listen = %q", c.opts.Listen)
 	}
+	if c.ControlToken() == "" {
+		t.Fatal("expected control token")
+	}
 	paths := c.Paths()
 	if paths["binary"] == "" || paths["config"] == "" {
 		t.Fatalf("paths incomplete: %+v", paths)
@@ -29,7 +41,8 @@ func TestNewDefaultsLoopback(t *testing.T) {
 }
 
 func TestLocalOnlyHandlerRejectsNonLoopback(t *testing.T) {
-	h := withLocalOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := testController(t)
+	h := withLocalOnly(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -42,7 +55,8 @@ func TestLocalOnlyHandlerRejectsNonLoopback(t *testing.T) {
 }
 
 func TestLocalOnlyHandlerAllowsLoopback(t *testing.T) {
-	h := withLocalOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := testController(t)
+	h := withLocalOnly(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -55,12 +69,14 @@ func TestLocalOnlyHandlerAllowsLoopback(t *testing.T) {
 }
 
 func TestLocalOnlyRejectsNonLoopbackOriginOnPOST(t *testing.T) {
-	h := withLocalOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := testController(t)
+	h := withLocalOnly(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	req := httptest.NewRequest(http.MethodPost, "/api/start", nil)
 	req.RemoteAddr = "127.0.0.1:9999"
 	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("X-CheeseWAF-Control-Token", c.ControlToken())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -68,13 +84,30 @@ func TestLocalOnlyRejectsNonLoopbackOriginOnPOST(t *testing.T) {
 	}
 }
 
-func TestLocalOnlyAllowsLoopbackOriginOnPOST(t *testing.T) {
-	h := withLocalOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestLocalOnlyRejectsMissingControlTokenOnPOST(t *testing.T) {
+	c := testController(t)
+	h := withLocalOnly(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	req := httptest.NewRequest(http.MethodPost, "/api/start", nil)
 	req.RemoteAddr = "127.0.0.1:9999"
 	req.Header.Set("Origin", "http://127.0.0.1:17943")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestLocalOnlyAllowsLoopbackOriginOnPOST(t *testing.T) {
+	c := testController(t)
+	h := withLocalOnly(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/start", nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+	req.Header.Set("Origin", "http://127.0.0.1:17943")
+	req.Header.Set("X-CheeseWAF-Control-Token", c.ControlToken())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
@@ -101,7 +134,7 @@ func TestStatusHandlerJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	rec := httptest.NewRecorder()
-	withLocalOnly(http.HandlerFunc(c.handleStatus)).ServeHTTP(rec, req)
+	withLocalOnly(c, http.HandlerFunc(c.handleStatus)).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}

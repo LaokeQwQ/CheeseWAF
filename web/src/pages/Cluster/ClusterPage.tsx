@@ -39,7 +39,7 @@ type ClusterCertificateForm = {
 
 type DeployMethod = 'ansible' | 'ssh';
 type DeployAuthMethod = 'agent' | 'password' | 'private_key';
-type DeployHostKeyMode = 'fingerprint';
+
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -53,7 +53,6 @@ export default function ClusterPage() {
   const [deployMethod, setDeployMethod] = useState<DeployMethod>('ansible');
   const [deployWizardStep, setDeployWizardStep] = useState(0);
   const [deployAuthMethod, setDeployAuthMethod] = useState<DeployAuthMethod>('agent');
-  const [deployHostKeyMode, setDeployHostKeyMode] = useState<DeployHostKeyMode>('fingerprint');
   const [ansibleNodes, setAnsibleNodes] = useState<ClusterAnsibleHost[]>([
     { name: 'waf-a', address: '', role: 'waf', ssh_port: 22 },
   ]);
@@ -283,7 +282,7 @@ export default function ClusterPage() {
     setDeployWizardStep(0);
     setDeployMethod('ansible');
     setDeployAuthMethod('agent');
-    setDeployHostKeyMode('fingerprint');
+
     setActiveDeployTaskId(null);
     setSubmittedDeployTask(null);
     setAnsiblePackage(null);
@@ -309,7 +308,7 @@ export default function ClusterPage() {
           <h1>{t('cluster.title')}</h1>
           <p>{t('cluster.subtitle')}</p>
         </div>
-        <Button loading={isFetching} onClick={() => void refetch()}>{t('cluster.refresh')}</Button>
+        <Button loading={isLoading} onClick={() => void refetch()}>{t('cluster.refresh')}</Button>
       </section>
 
       {isStatusError && (
@@ -717,6 +716,8 @@ export default function ClusterPage() {
           <div className="cluster-deploy-methods" role="radiogroup" aria-label={t('cluster.deployWizardMethodLabel')}>
             <button
               type="button"
+              role="radio"
+              aria-checked={deployMethod === 'ansible'}
               className={`cluster-deploy-method ${deployMethod === 'ansible' ? 'cluster-deploy-method-active' : ''}`}
               onClick={() => {
                 setDeployMethod('ansible');
@@ -728,6 +729,8 @@ export default function ClusterPage() {
             </button>
             <button
               type="button"
+              role="radio"
+              aria-checked={deployMethod === 'ssh'}
               className={`cluster-deploy-method ${deployMethod === 'ssh' ? 'cluster-deploy-method-active' : ''}`}
               onClick={() => {
                 setDeployMethod('ssh');
@@ -767,7 +770,7 @@ export default function ClusterPage() {
                   <Button size="small" icon={<Plus size={15} />} onClick={addAnsibleNode}>{t('cluster.deployWizardAddNode')}</Button>
                 </div>
                 {ansibleNodes.map((node, index) => (
-                  <div className="cluster-ansible-node" key={`ansible-node-${index}`}>
+                  <div className="cluster-ansible-node" key={node.name ? `ansible-node-${node.name}-${index}` : `ansible-node-${index}`}>
                     <Input
                       value={node.name}
                       placeholder={t('cluster.deployWizardNodeName')}
