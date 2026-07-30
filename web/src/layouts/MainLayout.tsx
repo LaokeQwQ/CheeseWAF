@@ -929,7 +929,7 @@ function fallbackText(t: (key: string, options?: Record<string, unknown>) => str
 }
 
 function currentAccount() {
-  // C1: JWT is HttpOnly; username/role come from session API / cached profile when available.
+  // Prefer session profile cache; do not decode tokens from localStorage.
   const fallback = { username: '', role: '' };
   try {
     const cached = sessionStorage.getItem('cheesewaf-account');
@@ -943,20 +943,5 @@ function currentAccount() {
   } catch {
     /* ignore */
   }
-  // Legacy localStorage JWT fallback during migration window only.
-  const token = localStorage.getItem('cheesewaf-token') ?? '';
-  const payload = token.split('.')[1];
-  if (!payload) {
-    return fallback;
-  }
-  try {
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const decoded = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))) as { username?: string; role?: string };
-    return {
-      username: decoded.username || fallback.username,
-      role: decoded.role || fallback.role,
-    };
-  } catch {
-    return fallback;
-  }
+  return fallback;
 }

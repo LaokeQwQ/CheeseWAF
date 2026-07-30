@@ -49,7 +49,7 @@ type HTTPObjectClient struct {
 
 func NewHTTPObjectClient(cfg S3Config, credentialFile string) (*HTTPObjectClient, error) {
 	// Confine to the credential file's parent directory + basename (single path component).
-	// Never pass the full operator path string to os.ReadFile (CodeQL go/path-injection).
+	// Read via a rooted join rather than the raw operator path string.
 	clean := filepath.Clean(strings.TrimSpace(credentialFile))
 	dir := filepath.Dir(clean)
 	base := filepath.Base(clean)

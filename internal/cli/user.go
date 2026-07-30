@@ -214,7 +214,7 @@ func changeUserPassword(ctx context.Context, sqlitePath, username string, opts c
 		return "", err
 	}
 	user.PasswordHash = string(hash)
-	// Password reset must not silently disable 2FA (security report C2).
+	// Keep 2FA enabled on password reset unless the operator passes --reset-2fa.
 	if opts.Reset2FA {
 		user.TwoFAEnabled = false
 		user.TwoFASecret = ""

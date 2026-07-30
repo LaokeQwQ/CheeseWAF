@@ -79,7 +79,7 @@ export default function LoginPage() {
   const captchaVerifyControllerRef = useRef<AbortController | null>(null);
   const captchaPowControllerRef = useRef<AbortController | null>(null);
   const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
-  // C1: session is cookie-based; do not gate on localStorage JWT.
+  // Session is cookie-based; do not gate the UI on localStorage tokens.
   const token = null as string | null;
   const stateFrom = (location.state as { from?: string } | null)?.from;
   const queryFrom = new URLSearchParams(location.search).get('returnTo');

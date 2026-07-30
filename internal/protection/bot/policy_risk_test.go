@@ -297,7 +297,7 @@ func TestBehaviorOwnerCookieAlwaysSecureHttpOnly(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{
 		Enabled: true, CAPTCHA: true, CAPTCHAType: "shape_slider", Secret: "test-secret", CookieName: "cw_clearance",
 	})
-	// CodeQL go/cookie-secure-not-set requires Secure:true constant on Set-Cookie.
+	// Clearance cookies must set Secure:true as a constant.
 	// Production WAF challenges assume HTTPS or TLS-terminated reverse proxy.
 	for _, req := range []*http.Request{
 		httptest.NewRequest(http.MethodGet, "http://example.test/", nil),
