@@ -76,10 +76,11 @@ func peerIP(remoteAddr string) string {
 	if host == "" {
 		return ""
 	}
+	// Forward only a parsed IP; reject hostnames or unparsed RemoteAddr values.
 	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
 		return ip.String()
 	}
-	return host
+	return ""
 }
 
 func transportForTimeout(timeout time.Duration) *http.Transport {

@@ -585,7 +585,7 @@ describe('Login CAPTCHA username binding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'login.submit' }));
 
     await waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
-    // C1: JWT is HttpOnly cookie; localStorage must not hold session tokens.
+    // Session JWT is HttpOnly; localStorage must not hold session tokens.
     expect(localStorage.getItem('cheesewaf-token')).toBeNull();
   });
 });

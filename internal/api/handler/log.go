@@ -12,10 +12,15 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
+const maxLogQueryLimit = 1000
+
 func (h *Handler) ListLogs(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit == 0 {
+	if limit <= 0 {
 		limit = 50
+	}
+	if limit > maxLogQueryLimit {
+		limit = maxLogQueryLimit
 	}
 	startTime, ok := parseLogTimeQuery(w, r, "start")
 	if !ok {

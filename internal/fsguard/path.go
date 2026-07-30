@@ -54,8 +54,7 @@ func SafeConfigPath(path string) (string, error) {
 }
 
 // RelUnderRoot converts candidate (absolute or relative) into a filepath.IsLocal
-// relative path under root. This is the shape CodeQL documents as safe
-// (join with a root + local relative component checks).
+// relative path under root (join with a fixed root and reject non-local components).
 func RelUnderRoot(root, candidate string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -183,24 +182,20 @@ func SafePathComponent(name string) error {
 	return nil
 }
 
-// IsLocalRedirect reports whether s is a same-origin relative redirect target.
-// This is the exact second-character barrier shape CodeQL documents for
-// go/unvalidated-url-redirection and go/bad-redirect-check.
+// IsLocalRedirect reports whether s is a same-origin relative redirect target:
+// leading '/', and the second byte is neither '/' nor '\\' (blocks scheme-relative URLs).
 func IsLocalRedirect(s string) bool {
 	return len(s) > 0 && s[0] == '/' && (len(s) == 1 || (s[1] != '/' && s[1] != '\\'))
 }
 
-// IsLocalURL reports whether raw is a same-origin relative URL safe for
-// http.Redirect. The function name matches CodeQL's RedirectCheckBarrier
-// (isLocalURL / isValidRedirect), which treats a true result as a barrier.
-// Implementation follows CodeQL's documented fix: replace '\', parse, require
-// empty Hostname (relative URL).
+// IsLocalURL reports whether raw is a same-origin relative URL safe for http.Redirect.
+// Backslashes are normalized to '/', then the URL is parsed; host, scheme, opaque, and userinfo must be empty.
 func IsLocalURL(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return false
 	}
-	// Browsers treat '\' as '/'; normalize before parse (CodeQL recommendation).
+	// Browsers treat '\' as '/'; normalize before parse.
 	raw = strings.ReplaceAll(raw, "\\", "/")
 	if strings.HasPrefix(raw, "//") {
 		return false
@@ -272,7 +267,6 @@ func SanitizeLocalRedirect(redir string) string {
 		return "/"
 	}
 	pathPart = collapseLocalPath(pathPart)
-	// CodeQL-recognized second-character guard on the returned value.
 	if !IsLocalRedirect(pathPart) {
 		return "/"
 	}
