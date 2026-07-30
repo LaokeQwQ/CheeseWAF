@@ -7,9 +7,10 @@
 .metric:last-child { border-right: 0; }
 .metricIcon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 7px; background: var(--surface-soft); color: var(--accent); }
 .metricIcon svg { width: 18px; height: 18px; }
-.danger .metricIcon { color: var(--color-danger-6); background: var(--color-danger-light-1); }
-.warning .metricIcon { color: var(--color-warning-6); background: var(--color-warning-light-1); }
-.success .metricIcon { color: var(--color-success-6); background: var(--color-success-light-1); }
+.brand .metricIcon { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.danger .metricIcon { color: var(--accent-danger, var(--color-danger-6)); background: color-mix(in srgb, var(--accent-danger, #f53f3f) 12%, var(--surface)); }
+.warning .metricIcon { color: var(--accent-warning, var(--color-warning-6)); background: color-mix(in srgb, var(--accent-warning, #ff7d00) 12%, var(--surface)); }
+.success .metricIcon { color: var(--accent-success, var(--color-success-6)); background: color-mix(in srgb, var(--accent-success, #00b42a) 12%, var(--surface)); }
 .metricLabel { min-width: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.35; }
 .metric strong { grid-column: 1 / -1; align-self: end; font-size: 27px; line-height: 1; font-variant-numeric: tabular-nums; }
 .metric strong.muted { font-size: 14px; color: var(--text-muted); font-weight: 500; }
@@ -79,4 +80,25 @@
 @media (max-width: 680px) { .header { align-items: stretch; } .header > .actions { display: flex; width: 100%; } .actions :global(.arco-select) { flex: 1; min-width: 0; } .metrics, .skeletonMetrics { grid-template-columns: repeat(2, 1fr); } .metric:nth-child(3n) { border-right: 1px solid var(--border-color); } .metric:nth-child(2n) { border-right: 0; } .metric:nth-child(-n + 4) { border-bottom: 1px solid var(--border-color); } .effectList { grid-template-columns: 1fr; } .panelHeading { display: grid; } .chart { height: 230px; padding-left: 38px; padding-right: 10px; } .chartGrid { left: 38px; right: 10px; } .legend { gap: 10px; } .eventTable { display: none; } .eventCards { display: grid; gap: 10px; padding: 0 16px 16px; } }
 @media (max-width: 430px) { .actions { align-items: stretch; } .actions :global(.arco-btn) { width: 40px; padding-inline: 0; } .actions :global(.arco-btn span:not(.arco-icon-hover)) { display: none; } .metric { min-height: 104px; padding: 14px; } .metric strong { font-size: 23px; } .quickPanel button { padding: 14px 12px; } }
 @media (prefers-reduced-motion: reduce) { .bucket > i, .bucketTip, .rateTrack i, .quickPanel button { transition: none; } .spinning { animation: none; } }
-.pageTabs{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--border-color, var(--color-border-2))}.pageTabs button{display:flex;align-items:center;gap:8px;padding:12px 16px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--text-secondary, var(--color-text-2));cursor:pointer}.pageTabs button.activeTab{border-color:var(--accent);color:var(--accent);font-weight:600}.danger .metricIcon{color:var(--accent-danger, var(--color-danger-6))}.success .metricIcon{color:var(--accent-success, var(--color-success-6))}
+.pageTabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--border-color, var(--color-border-2));
+}
+.pageTabs button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary, var(--color-text-2));
+  cursor: pointer;
+}
+.pageTabs button.activeTab {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}

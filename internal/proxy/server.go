@@ -143,16 +143,23 @@ func (s *Server) HealthRegistry() *HealthRegistry {
 	return s.health
 }
 
-func (s *Server) UpdateSites(sites []config.SiteConfig) {
+// UpdateSites refreshes site routing and certificates. Certificate load errors
+// are returned so callers can roll back instead of reporting success with a stale cert.
+func (s *Server) UpdateSites(sites []config.SiteConfig) error {
 	if s == nil {
-		return
+		return nil
 	}
+	prev := s.config.Sites
 	s.config.Sites = append([]config.SiteConfig(nil), sites...)
 	if s.certs != nil {
-		_ = s.certs.Update(s.config)
+		if err := s.certs.Update(s.config); err != nil {
+			s.config.Sites = prev
+			return err
+		}
 	}
 	s.health = NewHealthRegistry(s.config.Sites)
 	s.lb.UpdateSites(s.config.Sites, s.health)
+	return nil
 }
 
 func (s *Server) UpdatePipeline(pipeline *engine.Pipeline) {
@@ -276,6 +283,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// decisions stay consistent for the whole request (no per-call re-resolution).
 	r = r.WithContext(bot.ContextWithTrustedCIDRs(r.Context(), site.WAF.AccessControl.TrustedCIDRs))
 	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
+
+	https := requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs)
+	if site.Certificate.ForceHTTPS && !https && r.Method != http.MethodConnect {
+		host := r.Host
+		if host == "" {
+			host = r.URL.Host
+		}
+		http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusMovedPermanently)
+		return
+	}
+	if https && site.Certificate.HSTS {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
 
 	// Clean path for bot/IP/path policy only. Keep r.URL.Path unchanged so
 	// open-redirect guards (e.g. scheme-relative "//host") still see the raw path.
@@ -460,8 +480,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect, code := rewriter.Apply(r); redirect {
-		// Apply already confines Path. CodeQL RedirectCheckBarrier: local isLocalURL
-		// + redirect sanitized string (not url.URL.String()).
+		// Same-origin relative redirect only; redirect the validated string, not a re-serialized URL.
 		loc := fsguard.SanitizeLocalRedirect(r.URL.RequestURI())
 		loc = strings.ReplaceAll(loc, "\\", "/")
 		if isLocalURL(loc) {
@@ -640,7 +659,7 @@ func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request,
 	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
 }
 
-// isLocalURL is the CodeQL RedirectCheckBarrier identifier used before http.Redirect.
+// isLocalURL reports whether raw is a same-origin relative URL safe for redirects.
 func isLocalURL(raw string) bool {
 	return fsguard.IsLocalURL(raw)
 }

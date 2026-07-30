@@ -14,10 +14,11 @@ import {
 } from '@arco-design/web-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, CircleAlert, Clock3, KeyRound, LockKeyhole, Network, Plus, Save, ShieldCheck, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { APIRequestError, deleteSite, fetchACMEProviders, fetchSite, issueSiteACMECertificate, updateSite } from '../../api/client';
+import { useServerDraft } from '../../hooks/useServerDraft';
 import type { ACMEDNSProvider, ACMEEvent, ACMEIssueRequest, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
 import { asCSV, normalizeSite, splitList } from './siteModel';
 import './SiteDetailPage.css';
@@ -33,23 +34,26 @@ export default function SiteDetailPage() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [site, setSite] = useState<Site | null>(null);
   const [acmeEvents, setAcmeEvents] = useState<ACMEEvent[]>([]);
   const [envRows, setEnvRows] = useState<EnvRow[]>([]);
+  const envDirtyRef = useRef(false);
   const { data, error, isError, isLoading, refetch } = useQuery({
     queryKey: ['site', id],
     queryFn: () => fetchSite(id),
     retry: false,
     enabled: Boolean(id),
   });
+  const serverSite = useMemo(() => (data ? normalizeSite(data) : undefined), [data]);
+  const { draft: site, setDraft: setSite, markClean } = useServerDraft(serverSite);
 
   useEffect(() => {
-    if (data) {
-      const next = normalizeSite(data);
-      setSite(next);
-      setEnvRows(envToRows(next.advanced.certificate.acme.env));
+    if (!serverSite) {
+      return;
     }
-  }, [data]);
+    if (!envDirtyRef.current) {
+      setEnvRows(envToRows(serverSite.advanced.certificate.acme.env));
+    }
+  }, [serverSite]);
 
   const {
     data: acmeProvidersData = [],
@@ -68,7 +72,9 @@ export default function SiteDetailPage() {
     mutationFn: (payload: Site) => updateSite(payload.id, normalizeSite(payload)),
     onSuccess: (saved) => {
       const next = normalizeSite(saved);
-      setSite(next);
+      markClean(next);
+      setEnvRows(envToRows(next.advanced.certificate.acme.env));
+      envDirtyRef.current = false;
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       queryClient.invalidateQueries({ queryKey: ['site', id] });
       ArcoMessage.success(t('sites.saved'));
@@ -88,8 +94,9 @@ export default function SiteDetailPage() {
     mutationFn: (payload: ACMEIssueRequest) => issueSiteACMECertificate(id, payload),
     onSuccess: (response) => {
       const next = normalizeSite(response.site);
-      setSite(next);
+      markClean(next);
       setEnvRows(envToRows(next.advanced.certificate.acme.env));
+      envDirtyRef.current = false;
       setAcmeEvents(response.events ?? response.result?.events ?? []);
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       queryClient.invalidateQueries({ queryKey: ['site', id] });
@@ -131,10 +138,10 @@ export default function SiteDetailPage() {
   }
 
   const updateField = <K extends keyof Site>(key: K, value: Site[K]) => {
-    setSite((current) => current ? { ...current, [key]: value } : current);
+    setSite((current) => (current ? { ...current, [key]: value } : current));
   };
   const updateAdvanced = <K extends keyof SiteAdvanced>(section: K, patch: Partial<SiteAdvanced[K]>) => {
-    setSite((current) => current
+    setSite((current) => (current
       ? {
         ...current,
         advanced: {
@@ -145,11 +152,11 @@ export default function SiteDetailPage() {
           } as SiteAdvanced[K],
         },
       }
-      : current);
+      : current));
   };
   const updateCertificate = (patch: Partial<SiteAdvanced['certificate']>) => updateAdvanced('certificate', patch);
   const updateACME = (patch: Partial<SiteAdvanced['certificate']['acme']>) => {
-    setSite((current) => current
+    setSite((current) => (current
       ? {
         ...current,
         advanced: {
@@ -163,9 +170,10 @@ export default function SiteDetailPage() {
           },
         },
       }
-      : current);
+      : current));
   };
   const syncEnvRows = (rows: EnvRow[]) => {
+    envDirtyRef.current = true;
     setEnvRows(rows);
     updateACME({ env: rowsToEnv(rows) });
   };
@@ -194,16 +202,16 @@ export default function SiteDetailPage() {
           ...current.advanced,
           rewrite: [
             ...current.advanced.rewrite,
-            { id: `rewrite-${Date.now()}`, pattern: '', replacement: '', redirect_code: 0, enabled: false },
+            { id: `rewrite-${Date.now()}-${Math.random().toString(16).slice(2)}`, pattern: '', replacement: '', redirect_code: 0, enabled: false },
           ],
         },
       };
     });
   };
   const removeRewrite = (idToRemove: string) => {
-    setSite((current) => current
+    setSite((current) => (current
       ? { ...current, advanced: { ...current.advanced, rewrite: current.advanced.rewrite.filter((rule) => rule.id !== idToRemove) } }
-      : current);
+      : current));
   };
   const submitACME = () => {
     if (!site) {
@@ -278,7 +286,7 @@ export default function SiteDetailPage() {
               <label><span>{t('sites.name')}</span><Input value={site.name} onChange={(value) => updateField('name', value)} /></label>
               <label><span>{t('sites.domain')}</span><Input value={asCSV(site.domains)} placeholder="example.com, www.example.com" onChange={(value) => updateField('domains', splitList(value))} /><em>{t('sites.domainHint')}</em></label>
               <label><span>{t('sites.upstream')}</span><Input value={asCSV(site.upstreams)} placeholder="127.0.0.1:9000, https://origin.example.com" onChange={(value) => updateField('upstreams', splitList(value))} /><em>{t('sites.upstreamHint')}</em></label>
-              <label><span>{t('sites.listen')}</span><InputNumber value={site.listen_port} min={1} max={65535} onChange={(value) => updateField('listen_port', Number(value || 80))} /></label>
+              <label><span>{t('sites.listen')}</span><InputNumber value={site.listen_port || undefined} min={1} max={65535} onChange={(value) => updateField('listen_port', value == null ? 0 : Number(value))} /></label>
               <label>
                 <span>{t('sites.loadBalance')}</span>
                 <Select value={site.loadbalance} onChange={(value) => updateField('loadbalance', value as string)}>
@@ -350,7 +358,7 @@ export default function SiteDetailPage() {
                 <div className="wide-field site-acme-status">
                   {site.advanced.certificate.acme.last_status && (
                     <Tag color={site.advanced.certificate.acme.last_status === 'succeeded' ? 'green' : 'orange'}>
-                      {t('sites.acmeLastStatus')}: {site.advanced.certificate.acme.last_status}
+                      {t('sites.acmeLastStatus')}: {stepStatusText(site.advanced.certificate.acme.last_status, t)}
                     </Tag>
                   )}
                   {site.advanced.certificate.acme.expires_at && (
@@ -445,7 +453,7 @@ export default function SiteDetailPage() {
                 ['semantic_ssrf', 'SSRF'],
                 ['semantic_nosql', 'NoSQLi'],
                 ['semantic_ssti', 'SSTI'],
-                ['bot', 'Bot'],
+                ['bot', t('protection.bot')],
                 ['ratelimit', t('protection.ratelimit')],
                 ['acl', t('protection.acl')],
                 ['apisec', t('nav.apisec')],
@@ -872,7 +880,7 @@ function ACMEWizard({
         </Steps>
         <div className="acme-events">
           {events.length ? events.map((event, index) => (
-            <details className={`acme-event acme-event-${event.status}`} key={`${event.step}-${index}`} open={event.status === 'failed'}>
+            <details className={`acme-event acme-event-${event.status}`} key={`${event.step}-${event.timestamp}-${event.status}-${index}`} open={event.status === 'failed'}>
               <summary>
                 <span><Clock3 size={14} /> {t(`sites.acmeStep.${event.step}`)}</span>
                 <Tag color={event.status === 'failed' ? 'red' : event.status === 'succeeded' ? 'green' : 'blue'}>{stepStatusText(event.status, t)}</Tag>

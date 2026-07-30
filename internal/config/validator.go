@@ -188,6 +188,14 @@ func Validate(cfg *Config) error {
 		if site.WAF.Mode != "" && site.WAF.Mode != "block" && site.WAF.Mode != "monitor" && site.WAF.Mode != "off" {
 			return fmt.Errorf("site %q has invalid waf.mode %q", site.Name, site.WAF.Mode)
 		}
+		if site.WAF.Performance.MaxBodyBytes < 0 {
+			return fmt.Errorf("site %q waf.performance.max_body_bytes must be non-negative", site.Name)
+		}
+		// Cap to avoid configuration-induced OOM (1 GiB hard ceiling).
+		const maxBodyCeiling int64 = 1 << 30
+		if site.WAF.Performance.MaxBodyBytes > maxBodyCeiling {
+			return fmt.Errorf("site %q waf.performance.max_body_bytes exceeds 1GiB ceiling", site.Name)
+		}
 		if err := validateSiteCertificate(site); err != nil {
 			return err
 		}
@@ -717,12 +725,21 @@ func validateManagementAPI(api ManagementAPIConfig) error {
 		if strings.TrimSpace(token.Hash) == "" {
 			return fmt.Errorf("management api token %q hash is required", id)
 		}
-		digest := strings.TrimPrefix(token.Hash, "sha256:")
-		if !strings.HasPrefix(token.Hash, "sha256:") || len(digest) != 64 {
-			return fmt.Errorf("management api token %q hash must be sha256 digest", id)
-		}
-		if _, err := hex.DecodeString(digest); err != nil {
-			return fmt.Errorf("management api token %q hash must be hexadecimal sha256 digest", id)
+		switch {
+		case strings.HasPrefix(token.Hash, "bcrypt:"):
+			if len(token.Hash) < len("bcrypt:")+20 {
+				return fmt.Errorf("management api token %q bcrypt hash is invalid", id)
+			}
+		case strings.HasPrefix(token.Hash, "sha256:"):
+			digest := strings.TrimPrefix(token.Hash, "sha256:")
+			if len(digest) != 64 {
+				return fmt.Errorf("management api token %q hash must be sha256 digest", id)
+			}
+			if _, err := hex.DecodeString(digest); err != nil {
+				return fmt.Errorf("management api token %q hash must be hexadecimal sha256 digest", id)
+			}
+		default:
+			return fmt.Errorf("management api token %q hash must use bcrypt: or sha256: prefix", id)
 		}
 		if len(token.Scopes) == 0 {
 			return fmt.Errorf("management api token %q must define at least one scope", id)

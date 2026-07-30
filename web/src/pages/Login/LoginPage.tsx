@@ -47,6 +47,8 @@ export default function LoginPage() {
   const [requires2FA, setRequires2FA] = useState(false);
   const [username, setUsername] = useState('');
   const [options, setOptions] = useState<LoginOptions | null>(null);
+  const [optionsError, setOptionsError] = useState('');
+  const [optionsLoading, setOptionsLoading] = useState(true);
   const [challenge, setChallenge] = useState<LoginCAPTCHAChallenge | null>(null);
   const [powPayload, setPowPayload] = useState<LoginCAPTCHAPayload | null>(null);
   const [activeCaptchaMode, setActiveCaptchaMode] = useState<LoginCAPTCHAMode>('slider');
@@ -67,6 +69,7 @@ export default function LoginPage() {
   const sliderImageRef = useRef<HTMLImageElement | null>(null);
   const captchaCloseTimerRef = useRef<number | null>(null);
   const captchaRefreshTimerRef = useRef<number | null>(null);
+  const navigateTimerRef = useRef<number | null>(null);
   const captchaIssueSequenceRef = useRef(0);
   const captchaVerifySequenceRef = useRef(0);
   const usernameRef = useRef(username);
@@ -76,7 +79,8 @@ export default function LoginPage() {
   const captchaVerifyControllerRef = useRef<AbortController | null>(null);
   const captchaPowControllerRef = useRef<AbortController | null>(null);
   const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
-  const token = localStorage.getItem('cheesewaf-token');
+  // Session is cookie-based; do not gate the UI on localStorage tokens.
+  const token = null as string | null;
   const stateFrom = (location.state as { from?: string } | null)?.from;
   const queryFrom = new URLSearchParams(location.search).get('returnTo');
   const from = sanitizeInternalReturnPath(queryFrom ?? stateFrom);
@@ -230,40 +234,47 @@ export default function LoginPage() {
     }
   }, [applyCaptchaResponse, mobileCaptcha, options, resetSlider, t]);
 
+  const loadLoginOptions = useCallback(async () => {
+    const started = performance.now();
+    setOptionsLoading(true);
+    setOptionsError('');
+    try {
+      const nextOptions = normalizeLoginOptions(await fetchLoginOptions());
+      setOptions(nextOptions);
+      setOptionsError('');
+      if (!nextOptions.captcha.enabled) {
+        setChallenge(null);
+        setPowPayload(null);
+        setSlider(null);
+        resetSlider();
+        setCaptchaState('disabled');
+      }
+    } catch (err) {
+      setOptions(null);
+      setOptionsError(err instanceof Error && err.message.trim() ? err.message : t('login.optionsLoadFailed'));
+      setCaptchaState('error');
+    } finally {
+      setOptionsLoading(false);
+      setLoadMs(Math.round(performance.now() - started));
+    }
+  }, [resetSlider, t]);
+
   useEffect(() => {
     let cancelled = false;
-    const started = performance.now();
-    async function bootstrap() {
-      try {
-        const nextOptions = normalizeLoginOptions(await fetchLoginOptions());
-        if (cancelled) {
-          return;
-        }
-        setOptions(nextOptions);
-        if (!nextOptions.captcha.enabled) {
-          setChallenge(null);
-          setPowPayload(null);
-          setSlider(null);
-          resetSlider();
-          setCaptchaState('disabled');
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setCaptchaState('error');
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadMs(Math.round(performance.now() - started));
-        }
-      }
-    }
-    bootstrap();
+    void (async () => {
+      if (cancelled) return;
+      await loadLoginOptions();
+    })();
     return () => {
       cancelled = true;
       captchaIssueControllerRef.current?.abort();
       captchaIssueSequenceRef.current += 1;
+      if (navigateTimerRef.current != null) {
+        window.clearTimeout(navigateTimerRef.current);
+        navigateTimerRef.current = null;
+      }
     };
-  }, [resetSlider]);
+  }, [loadLoginOptions]);
 
   useEffect(() => {
     if (!options?.captcha.enabled) {
@@ -407,12 +418,17 @@ export default function LoginPage() {
       if (captcha) {
         captcha.username = submittedUsername;
       }
-      const result = await login(submittedUsername, values.password ?? '', values.totpCode, captcha);
-      localStorage.setItem('cheesewaf-token', result.token);
+      await login(submittedUsername, values.password ?? '', values.totpCode, captcha);
       const message = t('login.success');
       setSuccess(message);
       ArcoMessage.success(message);
-      window.setTimeout(() => navigate(from, { replace: true }), 220);
+      if (navigateTimerRef.current != null) {
+        window.clearTimeout(navigateTimerRef.current);
+      }
+      navigateTimerRef.current = window.setTimeout(() => {
+        navigateTimerRef.current = null;
+        navigate(from, { replace: true });
+      }, 220);
     } catch (err) {
       if (err instanceof APIRequestError && err.code === 'TWO_FA_REQUIRED') {
         setRequires2FA(true);
@@ -730,6 +746,12 @@ export default function LoginPage() {
                 <Input prefix={<LockKeyhole size={16} />} maxLength={6} inputMode="numeric" />
               </Form.Item>
             )}
+            {optionsError && (
+              <div className="inline-error" role="alert">
+                <span>{optionsError}</span>
+                <Button size="small" loading={optionsLoading} onClick={() => void loadLoginOptions()}>{t('common.retry')}</Button>
+              </div>
+            )}
             {options?.captcha.enabled && isLoginUsernameReady(username) && (
               <button
                 type="button"
@@ -746,7 +768,7 @@ export default function LoginPage() {
               </button>
             )}
             <div className="pressable">
-              <Button type="primary" htmlType="submit" loading={loading} long>
+              <Button type="primary" htmlType="submit" loading={loading} long disabled={Boolean(optionsError) || optionsLoading}>
                 {t('login.submit')}
               </Button>
             </div>

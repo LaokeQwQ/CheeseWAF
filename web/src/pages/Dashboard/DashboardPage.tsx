@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { Activity, ChevronRight, Cpu, HardDrive, Maximize2, MemoryStick, Recycle, RotateCcw, Server, ShieldCheck, Zap } from 'lucide-react';
 import { fetchLogs, fetchMonitorSummary, fetchSites, reclaimSystemResources } from '../../api/client';
+import QueryErrorState from '../../components/QueryErrorState';
 import type { LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
 
@@ -65,21 +66,21 @@ export default function DashboardPage() {
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  const { data: monitor, isLoading: loadingMonitor, isFetching: fetchingMonitor, refetch: refetchMonitor } = useQuery({
+  const { data: monitor, isLoading: loadingMonitor, isFetching: fetchingMonitor, isError: monitorError, refetch: refetchMonitor } = useQuery({
     queryKey: ['monitor-summary'],
     queryFn: fetchMonitorSummary,
     refetchInterval: refreshMs,
     retry: false,
     staleTime: Math.max(1000, Math.floor(refreshMs * 0.8)),
   });
-  const { data: periodLogs, isLoading: loadingPeriod, refetch: refetchPeriodLogs } = useQuery({
+  const { data: periodLogs, isLoading: loadingPeriod, isFetching: fetchingPeriod, isError: periodLogsError, dataUpdatedAt: periodUpdatedAt, refetch: refetchPeriodLogs } = useQuery({
     queryKey: ['dashboard-period-logs', statsRange, customRange],
     queryFn: () => fetchLogs(buildStatsQuery(statsRange, customRange, statsRange === customStatsRangeValue ? 2500 : 1500)),
     refetchInterval: totalsRefreshMs,
     retry: false,
     staleTime: 20_000,
   });
-  const { data: liveLogs, isLoading: loadingLive, isFetching: fetchingLive, refetch: refetchLiveLogs } = useQuery({
+  const { data: liveLogs, isLoading: loadingLive, isFetching: fetchingLive, isError: liveLogsError, refetch: refetchLiveLogs } = useQuery({
     queryKey: ['dashboard-live-logs'],
     queryFn: () => fetchLogs(buildWindowQuery(realtimeWindowSeconds, 180)),
     refetchInterval: refreshMs,
@@ -112,7 +113,8 @@ export default function DashboardPage() {
   const liveEntries = Array.isArray(liveLogs?.items) ? liveLogs.items : [];
   const siteItems = Array.isArray(sites) ? sites : [];
   const hasSiteItems = Array.isArray(sites);
-  const statsWindow = useMemo(() => statsWindowFromState(statsRange, customRange), [customRange, statsRange]);
+  // Recompute relative windows whenever period logs refetch so the chart end advances with "now".
+  const statsWindow = useMemo(() => statsWindowFromState(statsRange, customRange), [customRange, statsRange, periodUpdatedAt]);
   const customRangePickerValue = useMemo(() => customRange.map(formatDateTimePickerValue) as [string, string], [customRange]);
   const traffic = useMemo(() => buildTraffic(entries, statsWindow.start, statsWindow.end), [entries, statsWindow.end, statsWindow.start]);
   const visibleTraffic = useMemo(() => sliceVisibleTraffic(traffic, chartWindowRatio), [chartWindowRatio, traffic]);
@@ -122,8 +124,18 @@ export default function DashboardPage() {
   const threats = useMemo(() => buildThreatMix(entries, t), [entries, t]);
   const averageLatency = useMemo(() => averageRequestLatency(entries), [entries]);
   const periodRequests = traffic.reduce((sum, point) => sum + point.count, 0);
-  const periodBlockedCount = entries.filter((entry) => entry.action === 'block').length;
-  const liveRequests = liveEntries.length;
+  const periodBlockedCount = useMemo(() => {
+    const startTime = statsWindow.start.getTime();
+    const endTime = statsWindow.end.getTime();
+    return entries.filter((entry) => {
+      if (entry.action !== 'block') {
+        return false;
+      }
+      const time = Date.parse(entry.timestamp);
+      return Number.isFinite(time) && time >= startTime && time <= endTime + 60_000;
+    }).length;
+  }, [entries, statsWindow.end, statsWindow.start]);
+  const liveRequests = typeof liveLogs?.total === 'number' ? liveLogs.total : liveEntries.length;
   const liveBlockedCount = liveEntries.filter((entry) => entry.action === 'block').length;
   const siteCount = hasSiteItems ? siteItems.length : snapshot?.sites ?? 0;
   const enabledSiteCount = siteItems.filter((site) => site.enabled !== false).length;
@@ -244,6 +256,7 @@ export default function DashboardPage() {
                     <Button
                       className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
                       icon={<RotateCcw size={15} />}
+                      aria-label={t('dashboard.manualRefresh')}
                       onClick={manualRefresh}
                     />
                   </Tooltip>
@@ -251,54 +264,59 @@ export default function DashboardPage() {
                     <Button
                       className="icon-button"
                       icon={<Maximize2 size={15} />}
+                      aria-label={t('dashboard.resetChartView')}
                       onClick={() => setChartWindowRatio(1)}
                     />
                   </Tooltip>
                 </div>
               </div>
             </div>
-            <Spin loading={loading}>
-              <div ref={totalsChartRef} className="traffic-chart" aria-label={t('dashboard.totals')}>
-                <div className="chart-y-axis" aria-hidden="true">
-                  <span>{yMax}</span>
-                  <span>{yMid}</span>
-                  <span>0</span>
-                </div>
-                <div className="chart-scroll" tabIndex={0} aria-label={t('dashboard.chartScrollAria')}>
-                  <div
-                    className="chart-scroll-body"
-                    style={{
-                      '--bar-count': Math.max(visibleTraffic.length, 1),
-                      minWidth: chartMinWidthPx > 0 ? `${chartMinWidthPx}px` : undefined,
-                    } as CSSProperties}
-                  >
-                    <div className="chart-plot">
-                      {visibleTraffic.map((point, index) => (
-                        <span
-                          key={`${point.label}-${index}`}
-                          className="chart-bar"
-                          style={{ height: `${Math.max((point.count / yMax) * 100, point.count > 0 ? 5 : 2)}%` }}
-                          title={`${formatNumber(point.count)} · ${point.label}`}
-                          aria-hidden="true"
-                        >
-                          <i />
-                        </span>
-                      ))}
-                    </div>
-                    <div className="chart-x-axis chart-x-axis-scroll" aria-hidden="true">
-                      {visibleTraffic.map((point, index) => {
-                        const show = shouldShowChartTick(index, visibleTraffic.length);
-                        return (
-                          <span key={`tick-${point.label}-${index}`} className={show ? 'chart-x-tick' : 'chart-x-tick chart-x-tick-hidden'}>
-                            {show ? point.label : ''}
+            {periodLogsError ? (
+              <QueryErrorState onRetry={() => void refetchPeriodLogs()} retrying={fetchingPeriod} />
+            ) : (
+              <Spin loading={loading}>
+                <div ref={totalsChartRef} className="traffic-chart" aria-label={t('dashboard.totals')}>
+                  <div className="chart-y-axis" aria-hidden="true">
+                    <span>{yMax}</span>
+                    <span>{yMid}</span>
+                    <span>0</span>
+                  </div>
+                  <div className="chart-scroll" tabIndex={0} aria-label={t('dashboard.chartScrollAria')}>
+                    <div
+                      className="chart-scroll-body"
+                      style={{
+                        '--bar-count': Math.max(visibleTraffic.length, 1),
+                        minWidth: chartMinWidthPx > 0 ? `${chartMinWidthPx}px` : undefined,
+                      } as CSSProperties}
+                    >
+                      <div className="chart-plot">
+                        {visibleTraffic.map((point, index) => (
+                          <span
+                            key={`${point.label}-${index}`}
+                            className="chart-bar"
+                            style={{ height: `${Math.max((point.count / yMax) * 100, point.count > 0 ? 5 : 2)}%` }}
+                            title={`${formatNumber(point.count)} · ${point.label}`}
+                            aria-hidden="true"
+                          >
+                            <i />
                           </span>
-                        );
-                      })}
+                        ))}
+                      </div>
+                      <div className="chart-x-axis chart-x-axis-scroll" aria-hidden="true">
+                        {visibleTraffic.map((point, index) => {
+                          const show = shouldShowChartTick(index, visibleTraffic.length);
+                          return (
+                            <span key={`tick-${point.label}-${index}`} className={show ? 'chart-x-tick' : 'chart-x-tick chart-x-tick-hidden'}>
+                              {show ? point.label : ''}
+                            </span>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </Spin>
+              </Spin>
+            )}
             <div className="dashboard-chart-footer">
               <div className="chart-legend" aria-label={t('dashboard.trafficRequests')}>
                 <span><i /> {t('dashboard.trafficRequests')}</span>
@@ -319,47 +337,53 @@ export default function DashboardPage() {
               </Link>
             </div>
             <div className="event-list-scroll" tabIndex={0} aria-label={t('dashboard.eventScrollAria')}>
-              <div className="event-list event-list-table" role="table" aria-label={t('dashboard.events')}>
-                <div className="event-row event-row-head" role="row">
-                  <span className="event-col-time">{t('dashboard.eventTime')}</span>
-                  <span className="event-col-id">{t('dashboard.eventId')}</span>
-                  <span className="event-col-ip">{t('dashboard.sourceIp')}</span>
-                  <span className="event-col-geo">{t('dashboard.ipLocation')}</span>
-                  <span className="event-col-type">{t('dashboard.attackType')}</span>
-                  <span className="event-col-action">{t('dashboard.action')}</span>
+              {periodLogsError ? (
+                <QueryErrorState onRetry={() => void refetchPeriodLogs()} retrying={fetchingPeriod} />
+              ) : visibleSecurityEntries.length === 0 ? (
+                <div className="empty-state">{t('dashboard.noSecurityEvents')}</div>
+              ) : (
+                <div className="event-list event-list-table" role="table" aria-label={t('dashboard.events')}>
+                  <div className="event-row event-row-head" role="row">
+                    <span className="event-col-time" role="columnheader">{t('dashboard.eventTime')}</span>
+                    <span className="event-col-id" role="columnheader">{t('dashboard.eventId')}</span>
+                    <span className="event-col-ip" role="columnheader">{t('dashboard.sourceIp')}</span>
+                    <span className="event-col-geo" role="columnheader">{t('dashboard.ipLocation')}</span>
+                    <span className="event-col-type" role="columnheader">{t('dashboard.attackType')}</span>
+                    <span className="event-col-action" role="columnheader">{t('dashboard.action')}</span>
+                  </div>
+                  {visibleSecurityEntries.map((event) => {
+                    const eventKey = event.id || event.trace_id || `${event.client_ip}-${event.timestamp}`;
+                    return (
+                      <div className="event-row" key={eventKey} role="row">
+                        <span className="event-time event-col-time" role="cell" data-label={t('dashboard.eventTime')} title={event.timestamp}>{formatEventTime(event.timestamp)}</span>
+                        <Link
+                          className="event-trace-link event-col-id"
+                          role="cell"
+                          data-label={t('dashboard.eventId')}
+                          to={`/logs/${encodeURIComponent(event.trace_id || event.id || '-')}`}
+                          title={event.trace_id || event.id || '-'}
+                        >
+                          <code className="event-trace">{event.trace_id || event.id || '-'}</code>
+                        </Link>
+                        <span className="event-source event-col-ip" role="cell" data-label={t('dashboard.sourceIp')} title={event.client_ip || '-'}>
+                          {event.client_ip || '-'}
+                        </span>
+                        <span className="event-country event-col-geo" role="cell" data-label={t('dashboard.ipLocation')} title={eventLocationLabel(event, t)}>
+                          {eventLocationLabel(event, t)}
+                        </span>
+                        <span className="event-status-group event-col-type" role="cell" data-label={t('dashboard.attackType')}>
+                          <Tag color={event.category ? 'orange' : event.action === 'pass' || !event.action ? 'green' : 'blue'}>{eventCategoryLabel(event, t)}</Tag>
+                        </span>
+                        <span className="event-status-group event-col-action" role="cell" data-label={t('dashboard.action')}>
+                          <Tag color={event.action === 'block' ? 'red' : 'blue'}>
+                            {displayAction(event.action, t)}
+                          </Tag>
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
-                {visibleSecurityEntries.length === 0 && <div className="empty-state">{t('dashboard.noSecurityEvents')}</div>}
-                {visibleSecurityEntries.map((event) => {
-                  const eventKey = event.id || event.trace_id || `${event.client_ip}-${event.timestamp}`;
-                  return (
-                    <div className="event-row" key={eventKey} role="row">
-                      <span className="event-time event-col-time" data-label={t('dashboard.eventTime')} title={event.timestamp}>{formatEventTime(event.timestamp)}</span>
-                      <Link
-                        className="event-trace-link event-col-id"
-                        data-label={t('dashboard.eventId')}
-                        to={`/logs/${encodeURIComponent(event.trace_id || event.id || '-')}`}
-                        title={event.trace_id || event.id || '-'}
-                      >
-                        <code className="event-trace">{event.trace_id || event.id || '-'}</code>
-                      </Link>
-                      <span className="event-source event-col-ip" data-label={t('dashboard.sourceIp')} title={event.client_ip || '-'}>
-                        {event.client_ip || '-'}
-                      </span>
-                      <span className="event-country event-col-geo" data-label={t('dashboard.ipLocation')} title={eventLocationLabel(event, t)}>
-                        {eventLocationLabel(event, t)}
-                      </span>
-                      <span className="event-status-group event-col-type" data-label={t('dashboard.attackType')}>
-                        <Tag color={event.category ? 'orange' : event.action === 'pass' || !event.action ? 'green' : 'blue'}>{eventCategoryLabel(event, t)}</Tag>
-                      </span>
-                      <span className="event-status-group event-col-action" data-label={t('dashboard.action')}>
-                        <Tag color={event.action === 'block' ? 'red' : 'blue'}>
-                          {displayAction(event.action, t)}
-                        </Tag>
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
+              )}
             </div>
           </section>
         </div>
@@ -372,28 +396,33 @@ export default function DashboardPage() {
                 <Button
                   className={fetchingLive ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
                   icon={<RotateCcw size={14} />}
+                  aria-label={t('dashboard.manualRefresh')}
                   onClick={() => void refetchLiveLogs()}
                 />
               </Tooltip>
             </div>
-            <Spin loading={loadingLive && !liveLogs}>
-              <div className="realtime-summary">
-                <div>
-                  <span>{t('dashboard.liveRequests')}</span>
-                  <strong>{formatNumber(liveRequests)}</strong>
+            {liveLogsError ? (
+              <QueryErrorState onRetry={() => void refetchLiveLogs()} retrying={fetchingLive} />
+            ) : (
+              <Spin loading={loadingLive && !liveLogs}>
+                <div className="realtime-summary">
+                  <div>
+                    <span>{t('dashboard.liveRequests')}</span>
+                    <strong>{formatNumber(liveRequests)}</strong>
+                  </div>
+                  <div>
+                    <span>{t('dashboard.liveBlocked')}</span>
+                    <strong>{formatNumber(liveBlockedCount)}</strong>
+                  </div>
+                  <div>
+                    <span>{t('dashboard.liveRate')}</span>
+                    <strong>{formatRate(liveRequests / realtimeWindowSeconds)}</strong>
+                  </div>
                 </div>
-                <div>
-                  <span>{t('dashboard.liveBlocked')}</span>
-                  <strong>{formatNumber(liveBlockedCount)}</strong>
-                </div>
-                <div>
-                  <span>{t('dashboard.liveRate')}</span>
-                  <strong>{formatRate(liveRequests / realtimeWindowSeconds)}</strong>
-                </div>
-              </div>
-              <RealtimeLineChart points={liveSeries} />
-              <span className="realtime-window">{t('dashboard.last60s')}</span>
-            </Spin>
+                <RealtimeLineChart points={liveSeries} />
+                <span className="realtime-window">{t('dashboard.last60s')}</span>
+              </Spin>
+            )}
           </section>
 
           <section className="panel">
@@ -403,67 +432,82 @@ export default function DashboardPage() {
                 <Button
                   className={fetchingMonitor ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
                   icon={<RotateCcw size={14} />}
+                  aria-label={t('dashboard.manualRefresh')}
                   onClick={() => void refetchMonitor()}
                 />
               </Tooltip>
             </div>
-            <div className="resource-stack">
-              <div className="resource-row">
-                <Cpu size={18} />
-                <span>{t('dashboard.cpu')}</span>
-                <Progress percent={cpuPercent} size="small" showText={false} />
-                <strong>{formatPercent(host?.cpu_percent ?? 0)}</strong>
-                <small>{cpuCount > 0 ? t('dashboard.cpuHint', { cores: cpuCount }) : t('common.unknown')}</small>
-              </div>
-              <div className="resource-row">
-                <Activity size={18} />
-                <span>{t('dashboard.systemLoad')}</span>
-                <Progress percent={loadPercent} size="small" showText={false} />
-                <strong>{formatLoad(load1)}</strong>
-                <small>{cpuCount > 0 ? t('dashboard.loadHint', { cores: cpuCount }) : t('dashboard.loadHintNoCores')}</small>
-              </div>
-              <div className="resource-row">
-                <MemoryStick size={18} />
-                <span>{t('dashboard.memory')}</span>
-                <Progress percent={memoryHostPercent} size="small" showText={false} />
-                <strong>{formatPercent(host?.memory_percent ?? 0)}</strong>
-                <small>{formatCapacity(host?.memory_used ?? 0, host?.memory_total ?? 0, t)}</small>
-              </div>
-              <div className="resource-row">
-                <Recycle size={18} />
-                <span>{t('dashboard.swap')}</span>
-                <Progress percent={swapPercent} size="small" showText={false} />
-                <strong>{formatPercent(host?.swap_percent ?? 0)}</strong>
-                <small>{formatCapacity(host?.swap_used ?? 0, host?.swap_total ?? 0, t, 'dashboard.swapNotEnabled')}</small>
-              </div>
-              <div className="resource-row">
-                <HardDrive size={18} />
-                <span>{t('dashboard.disk')}</span>
-                <Progress percent={diskPercent} size="small" showText={false} />
-                <strong>{formatPercent(host?.disk_percent ?? 0)}</strong>
-                <small>{formatCapacity(host?.disk_used ?? 0, host?.disk_total ?? 0, t)}</small>
-              </div>
-              <div className="resource-row" aria-label={t('dashboard.processRuntime')}>
-                <Server size={18} />
-                <span>{t('dashboard.runtimeServiceProcesses')}</span>
-                <span className="resource-row-track" aria-hidden="true" />
-                <strong>{formatNumber(snapshot?.process_count ?? (snapshot ? 1 : 0))}</strong>
-              </div>
-              <div className="resource-row">
-                <Zap size={18} />
-                <span>{t('dashboard.runtimeServiceMemory')}</span>
-                <span className="resource-row-track" aria-hidden="true" />
-                <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
-              </div>
-            </div>
-            <div className="resource-actions">
-              <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('memory')}>
-                {t('dashboard.reclaimMemory')}
-              </Button>
-              <Button icon={<Recycle size={14} />} loading={reclaimMutation.isPending} onClick={() => reclaimMutation.mutate('swap')}>
-                {t('dashboard.reclaimSwap')}
-              </Button>
-            </div>
+            {monitorError ? (
+              <QueryErrorState onRetry={() => void refetchMonitor()} retrying={fetchingMonitor} />
+            ) : (
+              <>
+                <div className="resource-stack">
+                  <div className="resource-row">
+                    <Cpu size={18} />
+                    <span>{t('dashboard.cpu')}</span>
+                    <Progress percent={cpuPercent} size="small" showText={false} />
+                    <strong>{formatPercent(host?.cpu_percent ?? 0)}</strong>
+                    <small>{cpuCount > 0 ? t('dashboard.cpuHint', { cores: cpuCount }) : t('common.unknown')}</small>
+                  </div>
+                  <div className="resource-row">
+                    <Activity size={18} />
+                    <span>{t('dashboard.systemLoad')}</span>
+                    <Progress percent={loadPercent} size="small" showText={false} />
+                    <strong>{formatLoad(load1)}</strong>
+                    <small>{cpuCount > 0 ? t('dashboard.loadHint', { cores: cpuCount }) : t('dashboard.loadHintNoCores')}</small>
+                  </div>
+                  <div className="resource-row">
+                    <MemoryStick size={18} />
+                    <span>{t('dashboard.memory')}</span>
+                    <Progress percent={memoryHostPercent} size="small" showText={false} />
+                    <strong>{formatPercent(host?.memory_percent ?? 0)}</strong>
+                    <small>{formatCapacity(host?.memory_used ?? 0, host?.memory_total ?? 0, t)}</small>
+                  </div>
+                  <div className="resource-row">
+                    <Recycle size={18} />
+                    <span>{t('dashboard.swap')}</span>
+                    <Progress percent={swapPercent} size="small" showText={false} />
+                    <strong>{formatPercent(host?.swap_percent ?? 0)}</strong>
+                    <small>{formatCapacity(host?.swap_used ?? 0, host?.swap_total ?? 0, t, 'dashboard.swapNotEnabled')}</small>
+                  </div>
+                  <div className="resource-row">
+                    <HardDrive size={18} />
+                    <span>{t('dashboard.disk')}</span>
+                    <Progress percent={diskPercent} size="small" showText={false} />
+                    <strong>{formatPercent(host?.disk_percent ?? 0)}</strong>
+                    <small>{formatCapacity(host?.disk_used ?? 0, host?.disk_total ?? 0, t)}</small>
+                  </div>
+                  <div className="resource-row" aria-label={t('dashboard.processRuntime')}>
+                    <Server size={18} />
+                    <span>{t('dashboard.runtimeServiceProcesses')}</span>
+                    <span className="resource-row-track" aria-hidden="true" />
+                    <strong>{formatNumber(snapshot?.process_count ?? (snapshot ? 1 : 0))}</strong>
+                  </div>
+                  <div className="resource-row">
+                    <Zap size={18} />
+                    <span>{t('dashboard.runtimeServiceMemory')}</span>
+                    <span className="resource-row-track" aria-hidden="true" />
+                    <strong>{formatBytes(snapshot?.memory_alloc ?? 0)}</strong>
+                  </div>
+                </div>
+                <div className="resource-actions">
+                  <Button
+                    icon={<Recycle size={14} />}
+                    loading={reclaimMutation.isPending && reclaimMutation.variables === 'memory'}
+                    onClick={() => reclaimMutation.mutate('memory')}
+                  >
+                    {t('dashboard.reclaimMemory')}
+                  </Button>
+                  <Button
+                    icon={<Recycle size={14} />}
+                    loading={reclaimMutation.isPending && reclaimMutation.variables === 'swap'}
+                    onClick={() => reclaimMutation.mutate('swap')}
+                  >
+                    {t('dashboard.reclaimSwap')}
+                  </Button>
+                </div>
+              </>
+            )}
           </section>
 
           <section className="panel">
@@ -471,7 +515,11 @@ export default function DashboardPage() {
               <h2>{t('dashboard.threatMix')}</h2>
             </div>
             <div className="threat-list">
-              {threats.length === 0 && <div className="empty-state">{t('monitor.requests')}: 0</div>}
+              {periodLogsError ? (
+                <QueryErrorState onRetry={() => void refetchPeriodLogs()} retrying={fetchingPeriod} />
+              ) : threats.length === 0 ? (
+                <div className="empty-state">{t('common.noData')}</div>
+              ) : null}
               {threats.map((threat, index) => (
                 <div className="threat-row" key={threat.name}>
                   <span>{threat.name}</span>

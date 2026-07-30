@@ -381,13 +381,17 @@ export default function AIPage() {
                       <Form.Item label={t('ai.selfLearningConfidence')} field="selfLearningMinConfidence"><Input type="number" min={0.9} max={1} step={0.001} /></Form.Item>
                       <Form.Item label={t('ai.selfLearningMinEvents')} field="selfLearningMinEvents"><Input type="number" min={2} /></Form.Item>
                       <Form.Item
-                        label={i18n.language.startsWith('zh') ? '最多分析事件' : 'Max Events'}
+                        label={t('ai.maxEventsLabel')}
                         field="selfLearningMaxEvents"
                         rules={[{
                           validator: (value, callback) => {
                             const numeric = Number(value);
                             if (!Number.isInteger(numeric) || numeric < SELF_LEARNING_MAX_EVENTS_RANGE.min || numeric > SELF_LEARNING_MAX_EVENTS_RANGE.max) {
-                              callback(`self_learning.max_events must be ${SELF_LEARNING_MAX_EVENTS_RANGE.min}-${SELF_LEARNING_MAX_EVENTS_RANGE.max}`);
+                              callback(t('ai.maxEventsRange', {
+                                min: SELF_LEARNING_MAX_EVENTS_RANGE.min,
+                                max: SELF_LEARNING_MAX_EVENTS_RANGE.max,
+                                defaultValue: `max_events must be ${SELF_LEARNING_MAX_EVENTS_RANGE.min}-${SELF_LEARNING_MAX_EVENTS_RANGE.max}`,
+                              }));
                               return;
                             }
                             callback();
@@ -479,36 +483,33 @@ export default function AIPage() {
               {!isLoading && eventPageItems.length === 0 && <div className="empty-state">{t('ai.noEvents')}</div>}
               {!isLoading && eventPageItems.map((record) => {
                 const key = eventKey(record);
+                const selectedRow = Boolean(selected && eventKey(selected) === key);
                 return (
                   <article
-                    className={`ai-events-list-row${selected && eventKey(selected) === key ? ' ai-events-list-row-active' : ''}`}
+                    className={`ai-events-list-row${selectedRow ? ' ai-events-list-row-active' : ''}`}
                     key={key}
-                    role="button"
-                    tabIndex={0}
-                    aria-pressed={Boolean(selected && eventKey(selected) === key)}
-                    onClick={() => setSelectedId(key)}
-                    onKeyDown={(event) => {
-                      if (event.target !== event.currentTarget) {
-                        return;
-                      }
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        setSelectedId(key);
-                      }
-                    }}
+                    aria-current={selectedRow ? 'true' : undefined}
                   >
-                    <header className="ai-event-row-head">
-                      <div className="ai-event-row-identity">
-                        <time dateTime={record.timestamp} title={formatTime(record.timestamp)}>{formatCompactTime(record.timestamp)}</time>
-                        <span title={record.client_ip || '-'}>{record.client_ip || '-'}</span>
-                      </div>
-                      <div className="ai-event-row-tags">
-                        <Tag color={actionColor(record.action)}>{displayAction(record.action, t)}</Tag>
-                        {record.category ? <Tag color="orange">{displayCategory(record.category, t)}</Tag> : <Tag>{t('common.monitor')}</Tag>}
-                      </div>
-                    </header>
-                    <code className="ai-event-row-uri" title={record.uri || '-'}>{record.uri || '-'}</code>
-                    <footer className="ai-events-row-actions" role="group" aria-label={t('ai.analysis')} onClick={(event) => event.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="ai-event-row-select"
+                      aria-pressed={selectedRow}
+                      style={{ all: 'unset', display: 'grid', gap: 'inherit', width: '100%', cursor: 'pointer', boxSizing: 'border-box' }}
+                      onClick={() => setSelectedId(key)}
+                    >
+                      <header className="ai-event-row-head">
+                        <div className="ai-event-row-identity">
+                          <time dateTime={record.timestamp} title={formatTime(record.timestamp)}>{formatCompactTime(record.timestamp)}</time>
+                          <span title={record.client_ip || '-'}>{record.client_ip || '-'}</span>
+                        </div>
+                        <div className="ai-event-row-tags">
+                          <Tag color={actionColor(record.action)}>{displayAction(record.action, t)}</Tag>
+                          {record.category ? <Tag color="orange">{displayCategory(record.category, t)}</Tag> : <Tag>{t('common.monitor')}</Tag>}
+                        </div>
+                      </header>
+                      <code className="ai-event-row-uri" title={record.uri || '-'}>{record.uri || '-'}</code>
+                    </button>
+                    <footer className="ai-events-row-actions" role="group" aria-label={t('ai.analysis')}>
                       <Link
                         to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`}
                         className="table-action-link"
@@ -606,7 +607,7 @@ export default function AIPage() {
                           <strong>{t('ai.evidence')}</strong>
                           <ul>
                             {(selectedAnalysis.evidence ?? []).length > 0
-                              ? selectedAnalysis.evidence.map((item) => <li key={item}>{item}</li>)
+                              ? selectedAnalysis.evidence.map((item, index) => <li key={`evidence-${index}`}>{item}</li>)
                               : <li>-</li>}
                           </ul>
                         </section>
@@ -614,7 +615,7 @@ export default function AIPage() {
                           <strong>{t('ai.actions')}</strong>
                           <ul>
                             {(selectedAnalysis.recommended_actions ?? []).length > 0
-                              ? selectedAnalysis.recommended_actions.map((item) => <li key={item}>{item}</li>)
+                              ? selectedAnalysis.recommended_actions.map((item, index) => <li key={`action-${index}`}>{item}</li>)
                               : <li>-</li>}
                           </ul>
                         </section>
@@ -652,7 +653,7 @@ function AnalysisLiveTrace({
     return null;
   }
   const visibleTrace = formatAnalysisTraceEvents(trace, t)
-    .filter((item): item is string => Boolean(item))
+    .filter((item): item is { key: string; text: string } => Boolean(item))
     .slice(-5);
   return (
     <div className="analysis-live-trace">
@@ -675,8 +676,8 @@ function AnalysisLiveTrace({
       {visibleTrace.length > 0 && (
         <ul>
           {visibleTrace.map((item) => (
-            <li key={item}>
-              <span>{item}</span>
+            <li key={item.key}>
+              <span>{item.text}</span>
             </li>
           ))}
         </ul>
@@ -687,14 +688,15 @@ function AnalysisLiveTrace({
 
 function formatAnalysisTraceEvents(trace: AIAssistantTraceEvent[], t: (key: string, options?: Record<string, unknown>) => string) {
   const toolDeltaCounts = new Map<string, number>();
-  return trace.map((event) => {
+  return trace.map((event, index) => {
     if (event.type === 'tool_call_delta') {
       const tool = event.tool_name || t('common.unknown');
       const chunks = (toolDeltaCounts.get(tool) ?? 0) + 1;
       toolDeltaCounts.set(tool, chunks);
-      return t('ai.toolDeltaLive', { tool, chunks });
+      return { key: `trace-${index}-${event.type}-${tool}-${chunks}`, text: t('ai.toolDeltaLive', { tool, chunks }) };
     }
-    return formatAnalysisTraceEvent(event, t);
+    const text = formatAnalysisTraceEvent(event, t);
+    return text ? { key: `trace-${index}-${event.type}`, text } : '';
   });
 }
 
@@ -877,7 +879,7 @@ export function buildAIConfigPayload(
 export function validateSelfLearningMaxEvents(value: unknown) {
   const numeric = Number(value);
   if (!Number.isInteger(numeric) || numeric < SELF_LEARNING_MAX_EVENTS_RANGE.min || numeric > SELF_LEARNING_MAX_EVENTS_RANGE.max) {
-    throw new Error(`self_learning.max_events must be ${SELF_LEARNING_MAX_EVENTS_RANGE.min}-${SELF_LEARNING_MAX_EVENTS_RANGE.max}`);
+    throw new Error(`max_events must be ${SELF_LEARNING_MAX_EVENTS_RANGE.min}-${SELF_LEARNING_MAX_EVENTS_RANGE.max}`);
   }
   return numeric;
 }

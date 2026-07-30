@@ -91,6 +91,8 @@ type Policy struct {
 	behaviorPending        *behaviorPendingStore
 	issueBehaviorChallenge func(captcha.BehaviorOptions) (captcha.BehaviorChallenge, error)
 	metrics                *ChallengeMetrics
+	// challengeWorkers bounds concurrent challenge generation; full pool → 503.
+	challengeWorkers *ChallengeWorkerPool
 }
 
 type behaviorPending struct {
@@ -339,6 +341,8 @@ func NewPolicyWithClock(cfg config.BotProtectionConfig, clock timekeeper.Clock) 
 		behaviorPending:        newBehaviorPendingStore(10000, 8, now),
 		issueBehaviorChallenge: captcha.IssueBehaviorChallenge,
 		metrics:                ProcessChallengeMetrics(),
+		// Bound generation concurrency to store concurrent capacity (default 256 under rate window).
+		challengeWorkers: NewChallengeWorkerPool(powStore.concurrentCap),
 	}
 }
 
@@ -460,8 +464,7 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			http.Error(w, "bot clearance unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		// Secure must be a constant true for CodeQL go/cookie-secure-not-set.
-		// Challenge cookies require HTTPS (or TLS-terminated reverse proxy).
+		// Clearance cookies are admin-facing and always Secure (HTTPS / TLS-terminated edge).
 		http.SetCookie(w, &http.Cookie{
 			Name:     p.cookieName,
 			Value:    value,
@@ -475,22 +478,21 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		if r.Method == http.MethodPost {
 			status = http.StatusSeeOther
 		}
-		// Same-origin only. CodeQL RedirectCheckBarrier requires a local
-		// predicate named isLocalURL; redirect the sanitized string (not
-		// url.URL.String(), which re-taints the sink for go/unvalidated-url-redirection).
-		loc := fsguard.SanitizeLocalRedirect(returnURL)
-		loc = strings.ReplaceAll(loc, "\\", "/")
-		if isLocalURL(loc) {
-			http.Redirect(w, r, loc, status)
-			return
-		}
-		http.Redirect(w, r, "/", status)
+		// Only same-origin relative paths; unsafe targets fall back to "/".
+		redirectLocal(w, r, returnURL, status)
 		return
 	}
 	if submittedType != "" && p.usesBehaviorChallenge(selection, clientIP, site) {
 		p.serveBehaviorChallenge(w, r, clientIP, site, selection.kind)
 		return
 	}
+	// Bound concurrent generation so overload fails closed with 503.
+	releaseWorker, ok := p.tryAcquireChallengeWorker()
+	if !ok {
+		http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer releaseWorker()
 	nonce, err := randomToken(18)
 	if err != nil {
 		http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
@@ -633,11 +635,30 @@ func (p *Policy) usesBehaviorChallenge(selection captchaSelection, clientIP, sit
 	return selection.behavior
 }
 
+func (p *Policy) tryAcquireChallengeWorker() (release func(), ok bool) {
+	if p == nil || p.challengeWorkers == nil {
+		return func() {}, true
+	}
+	// Synchronous slot hold for the duration of challenge generation.
+	select {
+	case p.challengeWorkers.sem <- struct{}{}:
+		return func() { <-p.challengeWorkers.sem }, true
+	default:
+		return func() {}, false
+	}
+}
+
 func (p *Policy) serveBehaviorChallenge(w http.ResponseWriter, r *http.Request, clientIP, site, selectedType string) {
 	if p.behaviorPending == nil || p.failureTracker == nil || p.behaviorRenderer == nil || p.issueBehaviorChallenge == nil {
 		http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	releaseWorker, ok := p.tryAcquireChallengeWorker()
+	if !ok {
+		http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer releaseWorker()
 	decision := p.failureTracker.Check(p.failureKey(clientIP, site))
 	if decision.Blocked {
 		p.recordChallengeMetric(ChallengeMetricCAPTCHABlocked, site, "behavior", clientIP)
@@ -815,7 +836,7 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	p.behaviorPending.Finalize(jti)
 	p.failureTracker.Reset(key)
 	p.recordChallengeMetric(ChallengeMetricSuccess, site, string(pending.kind), clientIP)
-	// CodeQL go/cookie-secure-not-set requires Secure: true (constant). TLS-terminate in front of WAF.
+	// Always Secure; terminate TLS at the edge or serve HTTPS directly.
 	_ = secure
 	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusOK)
@@ -837,7 +858,7 @@ func (p *Policy) behaviorOwner(r *http.Request, site string, issue, secure bool)
 		return "", nil, err
 	}
 	expires := p.now().Add(p.ttl)
-	_ = secure // retained for call-site TLS intent; Secure is always true (CodeQL + production default).
+	_ = secure // call site may pass TLS intent; cookie Secure is always set.
 	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
 }
 func (p *Policy) signBehaviorOwner(owner, site string, expires time.Time) string {
@@ -2247,10 +2268,21 @@ type waitingData struct {
 	Nonce      string
 }
 
-// isLocalURL is the CodeQL RedirectCheckBarrier identifier. Keep this exact name
-// and gate every user-influenced http.Redirect in this package through it.
+// isLocalURL reports whether raw is a same-origin relative URL safe for redirects.
 func isLocalURL(raw string) bool {
 	return fsguard.IsLocalURL(raw)
+}
+
+// redirectLocal redirects only after sanitize + isLocalURL. Unsafe targets become "/".
+// Redirect the validated string itself, not a re-serialized url.URL.
+func redirectLocal(w http.ResponseWriter, r *http.Request, raw string, status int) {
+	loc := fsguard.SanitizeLocalRedirect(raw)
+	loc = strings.ReplaceAll(loc, "\\", "/")
+	if !isLocalURL(loc) {
+		http.Redirect(w, r, "/", status)
+		return
+	}
+	http.Redirect(w, r, loc, status)
 }
 
 type trustedCIDRsContextKey struct{}

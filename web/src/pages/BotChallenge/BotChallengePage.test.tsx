@@ -64,16 +64,13 @@ const challengeLog = {
   metadata: { captcha_type: 'pow' },
 };
 
-function tokenWithScopes(scopes: string[]) {
-  const payload = btoa(JSON.stringify({ role: 'api_token', scope: scopes }))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-  return `header.${payload}.signature`;
-}
-
 function renderPage(scopes: string[]) {
-  localStorage.setItem('cheesewaf-token', tokenWithScopes(scopes));
+  const canReadLogs = scopes.includes('read:logs') || scopes.includes('*');
+  sessionStorage.setItem(
+    'cheesewaf-account',
+    JSON.stringify({ username: 'tester', role: canReadLogs ? 'admin' : 'api_token' }),
+  );
+  localStorage.removeItem('cheesewaf-token');
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -91,10 +88,13 @@ function eventPanel() {
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
   botAPI.fetchBotChallengeMetrics.mockResolvedValue(metrics);
   clientAPI.fetchLogs.mockResolvedValue({ items: [], total: 0 });
 });

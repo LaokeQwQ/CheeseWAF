@@ -49,3 +49,19 @@ func TestNewReverseProxyPreservesOriginalForwardedHost(t *testing.T) {
 		t.Fatalf("expected original forwarded host, got %q", got)
 	}
 }
+
+func TestPeerIPOnlyReturnsParsedAddresses(t *testing.T) {
+	cases := map[string]string{
+		"203.0.113.9:443":    "203.0.113.9",
+		"[2001:db8::1]:8443": "2001:db8::1",
+		"not-an-ip:80":       "",
+		"evil.example":       "",
+		"":                   "",
+		"203.0.113.10":       "203.0.113.10",
+	}
+	for in, want := range cases {
+		if got := peerIP(in); got != want {
+			t.Fatalf("peerIP(%q)=%q, want %q", in, got, want)
+		}
+	}
+}

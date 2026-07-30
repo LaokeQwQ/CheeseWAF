@@ -4,6 +4,8 @@ import { CloudDownload, Plus, ShieldAlert, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchSystemConfig, updateSystemConfig } from '../../api/client';
+import QueryErrorState from '../../components/QueryErrorState';
+import { useServerDraft } from '../../hooks/useServerDraft';
 import type { SystemConfig } from '../../types/api';
 import { fallbackSystem, normalizeSystem, second, secondsToDuration, durationSeconds } from '../System/systemModel';
 
@@ -18,12 +20,32 @@ const FEED_PAGE_SIZE = 4;
 export default function UpdatesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [system, setSystem] = useState<SystemConfig>(fallbackSystem);
   const [feedPage, setFeedPage] = useState(1);
   const [keySyncing, setKeySyncing] = useState(false);
   const [otaServerSelection, setOtaServerSelection] = useState(OFFICIAL_OTA_SERVER);
   const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
-  const { data } = systemQuery;
+  const { data, isError, isFetching, isLoading, isSuccess, error, refetch } = systemQuery;
+  const serverSystem = useMemo(() => {
+    if (!data) {
+      return undefined;
+    }
+    const normalized = normalizeSystem(data);
+    if (!normalized.update.ota.server) {
+      normalized.update.ota.server = OFFICIAL_OTA_SERVER;
+    }
+    return normalized;
+  }, [data]);
+  const { draft, setDraft, markClean, isDirty } = useServerDraft(serverSystem);
+  const system = draft ?? fallbackSystem;
+  const ready = Boolean(draft) && isSuccess;
+
+  useEffect(() => {
+    if (!serverSystem || isDirty()) {
+      return;
+    }
+    setOtaServerSelection(resolveOTAServerSelectValue(serverSystem.update.ota.server));
+  }, [serverSystem, isDirty]);
+
   const enabledFeeds = useMemo(() => system.vulnerability.feeds.filter((feed) => feed.enabled).length, [system.vulnerability.feeds]);
   const feedPageCount = Math.max(1, Math.ceil(system.vulnerability.feeds.length / FEED_PAGE_SIZE));
   const visibleFeeds = system.vulnerability.feeds.slice((feedPage - 1) * FEED_PAGE_SIZE, feedPage * FEED_PAGE_SIZE);
@@ -34,40 +56,31 @@ export default function UpdatesPage() {
   const customUpdateServerValue = showCustomUpdateServer && !OTA_SERVER_OPTIONS.includes(configuredUpdateServer) ? configuredUpdateServer : '';
 
   useEffect(() => {
-    if (data) {
-      const normalized = normalizeSystem(data);
-      if (!normalized.update.ota.server) {
-        normalized.update.ota.server = OFFICIAL_OTA_SERVER;
-      }
-      setOtaServerSelection(resolveOTAServerSelectValue(normalized.update.ota.server));
-      setSystem(normalized);
-    }
-  }, [data]);
-
-  useEffect(() => {
     setFeedPage((current) => Math.min(current, feedPageCount));
   }, [feedPageCount]);
 
   const saveMutation = useMutation({
     mutationFn: updateSystemConfig,
     onSuccess: (saved) => {
-      setSystem(normalizeSystem(saved));
+      const normalized = normalizeSystem(saved);
+      markClean(normalized);
+      setOtaServerSelection(resolveOTAServerSelectValue(normalized.update.ota.server || OFFICIAL_OTA_SERVER));
       queryClient.invalidateQueries({ queryKey: ['system'] });
       ArcoMessage.success(t('updates.saved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (mutationError) => ArcoMessage.error(mutationError.message),
   });
 
-  const patchSystem = (patch: Partial<SystemConfig>) => setSystem((current) => normalizeSystem({ ...current, ...patch }));
+  const patchSystem = (patch: Partial<SystemConfig>) => setDraft((current) => normalizeSystem({ ...(current ?? fallbackSystem), ...patch }));
 
   function saveUpdatesConfig() {
-    if (!systemQuery.isSuccess) {
+    if (!ready) {
       return;
     }
     try {
       saveMutation.mutate(buildUpdatesSavePayload(system, otaServerSelection));
-    } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : t('updates.publicKeySyncFailed'));
+    } catch {
+      ArcoMessage.error(t('updates.invalidCustomServer'));
     }
   }
 
@@ -97,6 +110,38 @@ export default function UpdatesPage() {
     }
   }
 
+  if (isLoading && !draft) {
+    return (
+      <section className="page-surface">
+        <header className="page-header">
+          <div>
+            <h1>{t('updates.title')}</h1>
+            <p>{t('updates.subtitle')}</p>
+          </div>
+        </header>
+        <div className="empty-state" role="status">{t('common.loading')}</div>
+      </section>
+    );
+  }
+
+  if (isError && !draft) {
+    return (
+      <section className="page-surface">
+        <header className="page-header">
+          <div>
+            <h1>{t('updates.title')}</h1>
+            <p>{t('updates.subtitle')}</p>
+          </div>
+        </header>
+        <QueryErrorState
+          message={error instanceof Error ? error.message : undefined}
+          onRetry={() => { void refetch(); }}
+          retrying={isFetching}
+        />
+      </section>
+    );
+  }
+
   return (
     <section className="page-surface">
       <header className="page-header">
@@ -104,11 +149,18 @@ export default function UpdatesPage() {
           <h1>{t('updates.title')}</h1>
           <p>{t('updates.subtitle')}</p>
         </div>
-        {systemQuery.isError && <Button onClick={() => systemQuery.refetch()} loading={systemQuery.isFetching}>{t('common.retry')}</Button>}
-        <Button type="primary" icon={<CloudDownload size={16} />} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess} onClick={saveUpdatesConfig}>
+        <Button type="primary" icon={<CloudDownload size={16} />} loading={saveMutation.isPending} disabled={!ready} onClick={saveUpdatesConfig}>
           {t('common.save')}
         </Button>
       </header>
+
+      {isError && (
+        <QueryErrorState
+          message={error instanceof Error ? error.message : undefined}
+          onRetry={() => { void refetch(); }}
+          retrying={isFetching}
+        />
+      )}
 
       <section className="updates-summary">
         <div>
@@ -135,7 +187,7 @@ export default function UpdatesPage() {
             <Tag color={system.update.ota.enabled ? 'green' : 'gray'}>{system.update.ota.enabled ? t('system.enabled') : t('system.disabled')}</Tag>
           </div>
           <div className="updates-runtime-form">
-            <label className="switch-line updates-main-switch"><span>{t('updates.enableAutoUpdate')}</span><Switch checked={system.update.ota.enabled} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
+            <label className="switch-line updates-main-switch"><span>{t('updates.enableAutoUpdate')}</span><Switch checked={system.update.ota.enabled} disabled={!ready} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
             <label className="wide-field"><span>{t('system.updateServer')}</span>
               <Select
                 value={updateServerSelectValue}
@@ -185,7 +237,7 @@ export default function UpdatesPage() {
             <h2><ShieldAlert size={16} /> {t('updates.vulnerabilityFeeds')}</h2>
             <Space wrap>
               <Switch checked={system.vulnerability.enabled} onChange={(enabled) => patchSystem({ vulnerability: { ...system.vulnerability, enabled } })} />
-              <Button icon={<Plus size={15} />} onClick={() => addVulnerabilityFeed(setSystem)}>{t('common.add')}</Button>
+              <Button icon={<Plus size={15} />} onClick={() => addVulnerabilityFeed(setDraft)} disabled={!ready}>{t('common.add')}</Button>
             </Space>
           </div>
           <div className="feed-list feed-list-detailed">
@@ -194,18 +246,18 @@ export default function UpdatesPage() {
               return (
               <div className="feed-card" key={feed.id}>
                 <div className="feed-card-head">
-                  <Switch checked={feed.enabled} onChange={(enabled) => updateVulnerabilityFeed(index, { enabled }, setSystem)} />
-                  <Input value={feed.name} placeholder="NVD" onChange={(name) => updateVulnerabilityFeed(index, { name }, setSystem)} />
-                  <Button status="danger" icon={<Trash2 size={14} />} onClick={() => removeVulnerabilityFeed(feed.id, setSystem)} />
+                  <Switch checked={feed.enabled} onChange={(enabled) => updateVulnerabilityFeed(index, { enabled }, setDraft)} />
+                  <Input value={feed.name} placeholder="NVD" onChange={(name) => updateVulnerabilityFeed(index, { name }, setDraft)} />
+                  <Button status="danger" icon={<Trash2 size={14} />} aria-label={t('common.delete')} onClick={() => removeVulnerabilityFeed(feed.id, setDraft)} />
                 </div>
                 <div className="feed-card-body">
                   <label className="wide-field">
                     <span>URL</span>
-                    <Input value={feed.url} placeholder="https://..." onChange={(url) => updateVulnerabilityFeed(index, { url }, setSystem)} />
+                    <Input value={feed.url} placeholder="https://..." onChange={(url) => updateVulnerabilityFeed(index, { url }, setDraft)} />
                   </label>
                   <label>
                     <span>{t('ip.format')}</span>
-                    <Select value={feed.type || 'json'} onChange={(type) => updateVulnerabilityFeed(index, { type: type as string }, setSystem)}>
+                    <Select value={feed.type || 'json'} onChange={(type) => updateVulnerabilityFeed(index, { type: type as string }, setDraft)}>
                       <Select.Option value="json">JSON</Select.Option>
                       <Select.Option value="nvd">NVD</Select.Option>
                       <Select.Option value="osv">OSV</Select.Option>
@@ -214,7 +266,7 @@ export default function UpdatesPage() {
                   </label>
                   <label>
                     <span>{t('rules.severity')}</span>
-                    <Select value={feed.min_severity} onChange={(min_severity) => updateVulnerabilityFeed(index, { min_severity: min_severity as string }, setSystem)}>
+                    <Select value={feed.min_severity} onChange={(min_severity) => updateVulnerabilityFeed(index, { min_severity: min_severity as string }, setDraft)}>
                       <Select.Option value="low">{t('rules.low')}</Select.Option>
                       <Select.Option value="medium">{t('rules.medium')}</Select.Option>
                       <Select.Option value="high">{t('rules.high')}</Select.Option>
@@ -223,11 +275,11 @@ export default function UpdatesPage() {
                   </label>
                   <label>
                     <span>{t('system.checkIntervalHours')}</span>
-                    <InputNumber value={durationSeconds(feed.interval) / 3600} min={1} max={720} onChange={(value) => updateVulnerabilityFeed(index, { interval: secondsToDuration(Number(value || 12) * 3600) }, setSystem)} />
+                    <InputNumber value={durationSeconds(feed.interval) / 3600} min={1} max={720} onChange={(value) => updateVulnerabilityFeed(index, { interval: secondsToDuration(Number(value || 12) * 3600) }, setDraft)} />
                   </label>
                   <label className="switch-line">
                     <span>{t('updates.notify')}</span>
-                    <Switch checked={feed.notify} onChange={(notify) => updateVulnerabilityFeed(index, { notify }, setSystem)} />
+                    <Switch checked={feed.notify} onChange={(notify) => updateVulnerabilityFeed(index, { notify }, setDraft)} />
                   </label>
                 </div>
               </div>
@@ -249,46 +301,55 @@ export default function UpdatesPage() {
   );
 }
 
-function addVulnerabilityFeed(setSystem: React.Dispatch<React.SetStateAction<SystemConfig>>) {
-  setSystem((current) => ({
-    ...current,
-    vulnerability: {
-      ...current.vulnerability,
-      feeds: [
-        ...current.vulnerability.feeds,
-        {
-          id: `feed-${Date.now()}`,
-          name: '',
-          type: 'json',
-          url: '',
-          interval: 12 * 60 * 60 * second,
-          min_severity: 'high',
-          notify: true,
-          enabled: true,
-        },
-      ],
-    },
-  }));
+function addVulnerabilityFeed(setSystem: (next: SystemConfig | ((prev: SystemConfig | undefined) => SystemConfig)) => void) {
+  setSystem((current) => {
+    const base = current ?? fallbackSystem;
+    return {
+      ...base,
+      vulnerability: {
+        ...base.vulnerability,
+        feeds: [
+          ...base.vulnerability.feeds,
+          {
+            id: `feed-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            name: '',
+            type: 'json',
+            url: '',
+            interval: 12 * 60 * 60 * second,
+            min_severity: 'high',
+            notify: true,
+            enabled: true,
+          },
+        ],
+      },
+    };
+  });
 }
 
-function updateVulnerabilityFeed(index: number, patch: Partial<Feed>, setSystem: React.Dispatch<React.SetStateAction<SystemConfig>>) {
-  setSystem((current) => ({
-    ...current,
-    vulnerability: {
-      ...current.vulnerability,
-      feeds: current.vulnerability.feeds.map((feed, feedIndex) => (feedIndex === index ? { ...feed, ...patch } : feed)),
-    },
-  }));
+function updateVulnerabilityFeed(index: number, patch: Partial<Feed>, setSystem: (next: SystemConfig | ((prev: SystemConfig | undefined) => SystemConfig)) => void) {
+  setSystem((current) => {
+    const base = current ?? fallbackSystem;
+    return {
+      ...base,
+      vulnerability: {
+        ...base.vulnerability,
+        feeds: base.vulnerability.feeds.map((feed, feedIndex) => (feedIndex === index ? { ...feed, ...patch } : feed)),
+      },
+    };
+  });
 }
 
-function removeVulnerabilityFeed(id: string, setSystem: React.Dispatch<React.SetStateAction<SystemConfig>>) {
-  setSystem((current) => ({
-    ...current,
-    vulnerability: {
-      ...current.vulnerability,
-      feeds: current.vulnerability.feeds.filter((feed) => feed.id !== id),
-    },
-  }));
+function removeVulnerabilityFeed(id: string, setSystem: (next: SystemConfig | ((prev: SystemConfig | undefined) => SystemConfig)) => void) {
+  setSystem((current) => {
+    const base = current ?? fallbackSystem;
+    return {
+      ...base,
+      vulnerability: {
+        ...base.vulnerability,
+        feeds: base.vulnerability.feeds.filter((feed) => feed.id !== id),
+      },
+    };
+  });
 }
 
 export function resolveOTAServerSelectValue(server: string) {
@@ -316,6 +377,7 @@ export function validateOTAServer(server: string, selection = resolveOTAServerSe
 export function buildUpdatesSavePayload(system: SystemConfig, selection = resolveOTAServerSelectValue(system.update.ota.server)): Pick<SystemConfig, 'update' | 'vulnerability'> {
   const validatedServer = validateOTAServer(system.update.ota.server, selection);
   if (!validatedServer) {
+    // Message substring kept for unit tests; UI maps this to updates.invalidCustomServer.
     throw new Error('Custom OTA source must be a valid HTTPS URL.');
   }
   return {

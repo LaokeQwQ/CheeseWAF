@@ -1,0 +1,115 @@
+.rule-editor-modal .arco-modal-content {
+  max-width: min(960px, 100vw - 32px);
+}
+
+.rule-editor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rule-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px 20px;
+}
+
+.rule-editor-section {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rule-editor-section h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.rule-template-panel {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.rule-template-panel > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.rule-template-panel strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.rule-template-panel span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.rule-template-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rule-template-list button {
+  appearance: none;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
+}
+
+.rule-template-list button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.rule-template-list button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.rule-test-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.rule-test-box > span {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.rule-editor-form .form-action-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+@media (max-width: 900px) {
+  .rule-editor-grid {
+    grid-template-columns: 1fr;
+  }
+}

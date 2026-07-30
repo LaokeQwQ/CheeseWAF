@@ -132,8 +132,8 @@ describe('AI self-learning max_events', () => {
   });
 
   it('rejects max_events outside the allowed integer range', () => {
-    expect(() => validateSelfLearningMaxEvents(0)).toThrow('self_learning.max_events');
-    expect(() => validateSelfLearningMaxEvents(10_001)).toThrow('self_learning.max_events');
-    expect(() => validateSelfLearningMaxEvents(42.5)).toThrow('self_learning.max_events');
+    expect(() => validateSelfLearningMaxEvents(0)).toThrow(/max_events must be/);
+    expect(() => validateSelfLearningMaxEvents(10_001)).toThrow(/max_events must be/);
+    expect(() => validateSelfLearningMaxEvents(42.5)).toThrow(/max_events must be/);
   });
 });

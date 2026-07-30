@@ -574,9 +574,9 @@ describe('Login CAPTCHA username binding', () => {
     expect(screen.queryByText('login.captchaWidgetVerified')).toBeNull();
   });
 
-  it('keeps a stable hook order when a successful login stores the session token', async () => {
+  it('keeps a stable hook order when a successful login completes cookie session', async () => {
     api.fetchLoginCaptcha.mockResolvedValue(captcha('successful-login-token'));
-    api.login.mockResolvedValue({ token: 'session-token', user: { username: 'Cheese', role: 'admin' } });
+    api.login.mockResolvedValue({ csrf: 'csrf-token', user: { username: 'Cheese', role: 'admin' }, session_cookie: true });
     renderLogin();
     fillUsername();
     await verifyCaptcha('successful-login-receipt');
@@ -585,6 +585,7 @@ describe('Login CAPTCHA username binding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'login.submit' }));
 
     await waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
-    expect(localStorage.getItem('cheesewaf-token')).toBe('session-token');
+    // Session JWT is HttpOnly; localStorage must not hold session tokens.
+    expect(localStorage.getItem('cheesewaf-token')).toBeNull();
   });
 });

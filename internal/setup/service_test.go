@@ -108,7 +108,7 @@ func setupFailureFixture(t *testing.T, dataDir string) (DefaultPaths, *config.Co
 func validSetupPayload() SetupPayload {
 	return SetupPayload{
 		Username:      "admin",
-		Password:      "correct-horse-battery",
+		Password:      "Correct-Horse-9x!",
 		AdminListen:   "0.0.0.0:9443",
 		AdminStrategy: "public_tls",
 	}

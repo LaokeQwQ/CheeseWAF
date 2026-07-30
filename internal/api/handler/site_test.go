@@ -516,10 +516,11 @@ func TestSiteResponsesRedactInlinePrivateKeyAndACMEEnv(t *testing.T) {
 
 func TestIssueSiteACMEIgnoresUntrustedRuntimeFields(t *testing.T) {
 	handler, _, site := newSiteTestHandler(t)
+	handler.Config.ACME.Enabled = true
 	handler.Config.ACME.ACMESHPath = "/opt/cheesewaf/bin/acme.sh"
 	handler.Config.ACME.Home = filepath.Join(t.TempDir(), "acme-home")
 	handler.Config.ACME.CertDir = filepath.Join(t.TempDir(), "certs")
-	handler.Config.ACME.ReloadCommand = "systemctl reload cheesewaf"
+	handler.Config.ACME.ReloadCommand = "/usr/bin/true"
 	issuer := &recordingACMEIssuer{}
 	handler.ACMEIssuer = issuer
 
