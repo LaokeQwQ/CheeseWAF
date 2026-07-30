@@ -370,9 +370,28 @@ func (h *Handler) ExportThreatIntel(w http.ResponseWriter, r *http.Request) {
 			if profile.List == "monitor" && len(profile.Tags) == 0 && len(profile.Intel) == 0 {
 				continue
 			}
-			_ = writer.Write([]string{profile.IP, profile.List, intString(profile.Reputation), strings.Join(profile.Tags, "|"), intelSummary(profile.Intel)})
+			_ = writer.Write([]string{
+				csvSafeCell(profile.IP),
+				csvSafeCell(profile.List),
+				csvSafeCell(intString(profile.Reputation)),
+				csvSafeCell(strings.Join(profile.Tags, "|")),
+				csvSafeCell(intelSummary(profile.Intel)),
+			})
 		}
 		writer.Flush()
+	}
+}
+
+// csvSafeCell neutralizes spreadsheet formula injection (=, +, -, @, tab, CR).
+func csvSafeCell(value string) string {
+	if value == "" {
+		return value
+	}
+	switch value[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + value
+	default:
+		return value
 	}
 }
 

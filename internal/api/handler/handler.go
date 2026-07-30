@@ -1143,6 +1143,9 @@ func sessionFromClaims(claims *middleware.Claims) *storage.Session {
 }
 
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
+	if !h.allowSetupMutation(w, r) {
+		return
+	}
 	var req dto.SetupRequest
 	if !decode(w, r, &req) {
 		return

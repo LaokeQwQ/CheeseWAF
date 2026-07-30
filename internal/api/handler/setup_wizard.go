@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 
@@ -20,14 +23,72 @@ func draftStore() *setup.DraftStore {
 	return setupDrafts
 }
 
-// SetupProbe runs the first-install performance probe (R0). Only meaningful when NeedsSetup.
-func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.Config == nil {
+// allowSetupMutation gates first-install endpoints: setup must still be needed,
+// optional setup token must match, and browser mutations need a loopback-ish Origin.
+func (h *Handler) allowSetupMutation(w http.ResponseWriter, r *http.Request) bool {
+	if h == nil {
 		writeError(w, http.StatusServiceUnavailable, "SETUP_UNAVAILABLE", "setup is unavailable")
-		return
+		return false
 	}
 	if !setup.NeedsSetup(h.setupDataDir()) {
 		writeError(w, http.StatusConflict, "SETUP_ALREADY_COMPLETE", "setup is already complete")
+		return false
+	}
+	// Authoritative safety: if any admin user already exists, refuse re-init even if lock is missing.
+	if h.Store != nil {
+		users, err := h.Store.ListUsers(r.Context())
+		if err == nil && len(users) > 0 {
+			writeError(w, http.StatusConflict, "SETUP_ALREADY_COMPLETE", "administrator already exists")
+			return false
+		}
+	}
+	if expected := strings.TrimSpace(os.Getenv("CHEESEWAF_SETUP_TOKEN")); expected != "" {
+		got := strings.TrimSpace(r.Header.Get("X-CheeseWAF-Setup-Token"))
+		if got == "" {
+			got = strings.TrimSpace(r.URL.Query().Get("setup_token"))
+		}
+		if got == "" || got != expected {
+			writeError(w, http.StatusUnauthorized, "SETUP_TOKEN_REQUIRED", "setup token is required")
+			return false
+		}
+	}
+	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+			if !isLocalOrSameOrigin(origin, r) {
+				writeError(w, http.StatusForbidden, "SETUP_ORIGIN_DENIED", "setup origin is not allowed")
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isLocalOrSameOrigin(origin string, r *http.Request) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	if r != nil && r.Host != "" {
+		reqHost := r.Host
+		if h, _, err := net.SplitHostPort(reqHost); err == nil {
+			reqHost = h
+		}
+		return strings.EqualFold(host, reqHost)
+	}
+	return false
+}
+
+// SetupProbe runs the first-install performance probe (R0). Only meaningful when NeedsSetup.
+func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
+	if !h.allowSetupMutation(w, r) {
+		return
+	}
+	if h.Config == nil {
+		writeError(w, http.StatusServiceUnavailable, "SETUP_UNAVAILABLE", "setup is unavailable")
 		return
 	}
 	dataDir := h.setupDataDir()
@@ -91,6 +152,9 @@ type setupDraftPatch struct {
 
 // SetupDraftPatch updates multi-step wizard fields. CompleteSetup remains a separate final call.
 func (h *Handler) SetupDraftPatch(w http.ResponseWriter, r *http.Request) {
+	if !h.allowSetupMutation(w, r) {
+		return
+	}
 	id := setupSessionID(r)
 	if id == "" {
 		writeError(w, http.StatusUnauthorized, "SETUP_SESSION_REQUIRED", "setup session required")
