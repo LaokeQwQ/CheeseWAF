@@ -1,4 +1,13 @@
-import { vi } from 'vitest';
+import { cleanup } from '@testing-library/react';
+import { afterEach, vi } from 'vitest';
+
+afterEach(async () => {
+  cleanup();
+  // Flush microtasks so component transition teardown finishes before the next case.
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+});
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

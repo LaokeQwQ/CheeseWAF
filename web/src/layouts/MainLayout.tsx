@@ -118,7 +118,10 @@ export default function MainLayout() {
   const [notificationPage, setNotificationPage] = useState(1);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
+  const [searchHighlight, setSearchHighlight] = useState(0);
   const notificationShellRef = useRef<HTMLDivElement | null>(null);
+  const notificationTriggerRef = useRef<HTMLSpanElement | null>(null);
+  const searchBlurTimerRef = useRef<number | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const account = currentAccount();
   const shellClassName = [
@@ -135,6 +138,12 @@ export default function MainLayout() {
     if (!notificationsOpen) {
       return undefined;
     }
+    const panel = notificationShellRef.current?.querySelector<HTMLElement>('#cheesewaf-notification-panel');
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusable = panel?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    focusable?.[0]?.focus();
     const closeFromOutside = (event: PointerEvent) => {
       const target = event.target;
       if (target instanceof Node && notificationShellRef.current?.contains(target)) {
@@ -147,13 +156,41 @@ export default function MainLayout() {
         setNotificationsOpen(false);
       }
     };
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !panel || !focusable || focusable.length === 0) {
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener('pointerdown', closeFromOutside, { capture: true });
     window.addEventListener('keydown', closeFromEscape);
+    window.addEventListener('keydown', trapFocus);
     return () => {
       window.removeEventListener('pointerdown', closeFromOutside, { capture: true });
       window.removeEventListener('keydown', closeFromEscape);
+      window.removeEventListener('keydown', trapFocus);
+      if (previousFocus && document.contains(previousFocus)) {
+        previousFocus.focus();
+      } else {
+        notificationTriggerRef.current?.querySelector<HTMLElement>('button')?.focus();
+      }
     };
   }, [notificationsOpen]);
+
+  useEffect(() => () => {
+    if (searchBlurTimerRef.current != null) {
+      window.clearTimeout(searchBlurTimerRef.current);
+      searchBlurTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (!mobileNavOpen) {
@@ -289,7 +326,6 @@ export default function MainLayout() {
     } catch {
       // Local logout must still work if the session is already expired or the API is unreachable.
     } finally {
-      localStorage.removeItem('cheesewaf-token');
       queryClient.clear();
       navigate('/login', { replace: true });
     }
@@ -308,7 +344,7 @@ export default function MainLayout() {
           </div>
         </div>
 
-        <nav className="nav-list" aria-label="Primary">
+        <nav className="nav-list" aria-label={t('common.primaryNav')}>
           {navGroups.map((group) => {
             const collapsed = Boolean(collapsedGroups[group.labelKey]);
             return (
@@ -366,7 +402,14 @@ export default function MainLayout() {
           </Tooltip>
         </div>
       </aside>
-      <button className="mobile-nav-backdrop" type="button" aria-label={t('common.close')} onClick={() => setMobileNavOpen(false)} />
+      <button
+        className="mobile-nav-backdrop"
+        type="button"
+        aria-label={t('common.close')}
+        aria-hidden={!mobileNavOpen}
+        tabIndex={mobileNavOpen ? 0 : -1}
+        onClick={() => setMobileNavOpen(false)}
+      />
 
       <div className="app-main">
         <header className="topbar">
@@ -394,33 +437,65 @@ export default function MainLayout() {
               prefix={<Search size={16} />}
               placeholder={t('common.search')}
               aria-label={t('common.search')}
+              aria-controls={searchOpen ? 'cheesewaf-search-results' : undefined}
+              aria-expanded={searchOpen}
               allowClear
               value={searchValue}
               onChange={(value) => {
                 setSearchValue(value);
+                setSearchHighlight(0);
                 setSearchOpen(Boolean(String(value).trim()));
               }}
-              onFocus={() => setSearchOpen(Boolean(searchValue.trim()))}
-              onBlur={() => window.setTimeout(() => setSearchOpen(false), 120)}
+              onFocus={() => {
+                if (searchBlurTimerRef.current != null) {
+                  window.clearTimeout(searchBlurTimerRef.current);
+                  searchBlurTimerRef.current = null;
+                }
+                setSearchOpen(Boolean(searchValue.trim()));
+              }}
+              onBlur={() => {
+                if (searchBlurTimerRef.current != null) {
+                  window.clearTimeout(searchBlurTimerRef.current);
+                }
+                searchBlurTimerRef.current = window.setTimeout(() => {
+                  searchBlurTimerRef.current = null;
+                  setSearchOpen(false);
+                }, 120);
+              }}
+              onKeyDown={(event) => {
+                if (!searchOpen || searchResults.length === 0) {
+                  return;
+                }
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setSearchHighlight((current) => (current + 1) % searchResults.length);
+                } else if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setSearchHighlight((current) => (current - 1 + searchResults.length) % searchResults.length);
+                }
+              }}
               onPressEnter={() => {
-                const first = searchResults[0];
-                if (first) {
-                  navigate(first.to);
+                const target = searchResults[searchHighlight] ?? searchResults[0];
+                if (target) {
+                  navigate(target.to);
                   setSearchOpen(false);
                   setSearchValue('');
                 }
               }}
             />
             {searchOpen && (
-              <div className="topbar-search-panel" role="listbox">
+              <div className="topbar-search-panel" role="listbox" id="cheesewaf-search-results">
                 {searchResults.length === 0 ? (
                   <div className="topbar-search-empty">{t('shell.searchEmpty')}</div>
-                ) : searchResults.map((item) => (
+                ) : searchResults.map((item, index) => (
                   <button
                     key={item.key}
                     type="button"
-                    className="topbar-search-result"
+                    role="option"
+                    aria-selected={index === searchHighlight}
+                    className={index === searchHighlight ? 'topbar-search-result topbar-search-result-active' : 'topbar-search-result'}
                     onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => setSearchHighlight(index)}
                     onClick={() => {
                       navigate(item.to);
                       setSearchOpen(false);
@@ -439,7 +514,7 @@ export default function MainLayout() {
           <div className="topbar-right">
             <div className="topbar-actions">
               <div className="notification-shell" ref={notificationShellRef}>
-                <span className="notification-trigger">
+                <span className="notification-trigger" ref={notificationTriggerRef}>
                   <Button
                     className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
                     icon={<Bell size={18} />}
@@ -465,7 +540,9 @@ export default function MainLayout() {
                     filter={notificationFilter}
                     loading={notificationQuery.isLoading}
                     error={notificationQuery.isError}
-                    busy={notificationMutation.isPending || markAllReadMutation.isPending || clearNotificationsMutation.isPending}
+                    busy={notificationMutation.isPending}
+                    markAllBusy={markAllReadMutation.isPending}
+                    clearBusy={clearNotificationsMutation.isPending}
                     onRetry={() => void notificationQuery.refetch()}
                     onPageChange={setNotificationPage}
                     onFilterChange={(filter) => {
@@ -559,6 +636,8 @@ export function NotificationPanel({
   loading,
   error,
   busy,
+  markAllBusy = false,
+  clearBusy = false,
   onRetry,
   onPageChange,
   onFilterChange,
@@ -578,6 +657,8 @@ export function NotificationPanel({
   loading: boolean;
   error: boolean;
   busy: boolean;
+  markAllBusy?: boolean;
+  clearBusy?: boolean;
   onRetry: () => void;
   onPageChange: (page: number) => void;
   onFilterChange: (filter: NotificationFilter) => void;
@@ -595,11 +676,13 @@ export function NotificationPanel({
     { key: 'pinned', label: t('shell.notificationFilterPinned') },
   ];
   const keyedItems = withStableNotificationKeys(items);
+  const anyBusy = busy || markAllBusy || clearBusy;
   return (
     <section
       id="cheesewaf-notification-panel"
       className="notification-panel"
       role="dialog"
+      aria-modal="true"
       aria-label={t('shell.notifications')}
     >
       <header>
@@ -626,8 +709,8 @@ export function NotificationPanel({
       )}
       {total > 0 && (
         <div className="notification-actions">
-          <Button size="mini" loading={busy} disabled={unread === 0 || busy} onClick={onMarkAllRead}>{t('shell.markAllRead')}</Button>
-          <Button size="mini" status="warning" loading={busy} disabled={total === 0 || busy} onClick={onClearAll}>{t('shell.clearAllNotifications')}</Button>
+          <Button size="mini" loading={markAllBusy} disabled={unread === 0 || anyBusy} onClick={onMarkAllRead}>{t('shell.markAllRead')}</Button>
+          <Button size="mini" status="warning" loading={clearBusy} disabled={total === 0 || anyBusy} onClick={onClearAll}>{t('shell.clearAllNotifications')}</Button>
         </div>
       )}
       <div className="notification-list">
@@ -649,7 +732,7 @@ export function NotificationPanel({
                 {item.pinned && <Tag size="small" color="arcoblue">{t('shell.pinnedNotification')}</Tag>}
               </span>
               <strong>{item.message}</strong>
-              <em><Clock3 size={12} /> {formatRelativeTime(item.created_at)}</em>
+              <em><Clock3 size={12} /> {formatRelativeTime(item.created_at, i18n.resolvedLanguage || undefined)}</em>
             </button>
             <div className="notification-item-actions">
               <button
@@ -688,10 +771,10 @@ type KeyedNotification = { item: Notification; notificationKey: string };
 export function withStableNotificationKeys(items: readonly Notification[]): KeyedNotification[] {
   const occurrences = new globalThis.Map<string, number>();
   return items.map((item) => {
-    const fingerprint = JSON.stringify([item.id, item.type, item.title, item.message, item.target, item.read, item.pinned, item.created_at, item.updated_at]);
-    const occurrence = (occurrences.get(fingerprint) ?? 0) + 1;
-    occurrences.set(fingerprint, occurrence);
-    return { item, notificationKey: `${fingerprint}#${occurrence}` };
+    const base = String(item.id || `${item.created_at}:${item.title}:${item.message}`).trim() || 'notification';
+    const occurrence = (occurrences.get(base) ?? 0) + 1;
+    occurrences.set(base, occurrence);
+    return { item, notificationKey: occurrence === 1 ? base : `${base}#${occurrence}` };
   });
 }
 
@@ -765,7 +848,7 @@ function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : [];
 }
 
-function formatRelativeTime(value: string) {
+function formatRelativeTime(value: string, locale?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value || '-';
@@ -780,7 +863,7 @@ function formatRelativeTime(value: string) {
   if (seconds < 86400) {
     return `${Math.round(seconds / 3600)}h`;
   }
-  return date.toLocaleString();
+  return date.toLocaleString(locale);
 }
 
 function connectionState(failures: number, status: string | undefined, fetching: boolean, lastHeartbeatAt: number) {
@@ -846,20 +929,19 @@ function fallbackText(t: (key: string, options?: Record<string, unknown>) => str
 }
 
 function currentAccount() {
-  const token = localStorage.getItem('cheesewaf-token') ?? '';
+  // Prefer session profile cache; do not decode tokens from localStorage.
   const fallback = { username: '', role: '' };
-  const payload = token.split('.')[1];
-  if (!payload) {
-    return fallback;
-  }
   try {
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const decoded = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))) as { username?: string; role?: string };
-    return {
-      username: decoded.username || fallback.username,
-      role: decoded.role || fallback.role,
-    };
+    const cached = sessionStorage.getItem('cheesewaf-account');
+    if (cached) {
+      const parsed = JSON.parse(cached) as { username?: string; role?: string };
+      return {
+        username: parsed.username || fallback.username,
+        role: parsed.role || fallback.role,
+      };
+    }
   } catch {
-    return fallback;
+    /* ignore */
   }
+  return fallback;
 }

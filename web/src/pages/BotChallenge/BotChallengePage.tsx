@@ -46,9 +46,12 @@ export default function BotChallengePage() {
       </div>
     </header>
 
-    <div className={styles.pageTabs} role="tablist" aria-label={t('botChallenge.title')}><button type="button" role="tab" aria-selected={pageTab === 'overview'} className={pageTab === 'overview' ? styles.activeTab : undefined} onClick={() => setPageTab('overview')}><Activity size={17}/>{t('botChallenge.overviewTab')}</button><button type="button" role="tab" aria-selected={pageTab === 'assets'} className={pageTab === 'assets' ? styles.activeTab : undefined} onClick={() => setPageTab('assets')}><Image size={17}/>{t('botChallenge.assetsTab')}</button></div>
-    {pageTab === 'assets' ? <CaptchaAssetsPanel/> : loading ? <OverviewSkeleton /> : failed ? <LoadError t={t} retry={refreshAll}/> : <>
-      <MetricGrid metrics={metrics} t={t}/>
+    <div className={styles.pageTabs} role="tablist" aria-label={t('botChallenge.title')}>
+      <button type="button" role="tab" id="bot-challenge-tab-overview" aria-controls="bot-challenge-panel-overview" aria-selected={pageTab === 'overview'} tabIndex={pageTab === 'overview' ? 0 : -1} className={pageTab === 'overview' ? styles.activeTab : undefined} onClick={() => setPageTab('overview')}><Activity size={17}/>{t('botChallenge.overviewTab')}</button>
+      <button type="button" role="tab" id="bot-challenge-tab-assets" aria-controls="bot-challenge-panel-assets" aria-selected={pageTab === 'assets'} tabIndex={pageTab === 'assets' ? 0 : -1} className={pageTab === 'assets' ? styles.activeTab : undefined} onClick={() => setPageTab('assets')}><Image size={17}/>{t('botChallenge.assetsTab')}</button>
+    </div>
+    {pageTab === 'assets' ? <div id="bot-challenge-panel-assets" role="tabpanel" aria-labelledby="bot-challenge-tab-assets"><CaptchaAssetsPanel/></div> : loading ? <OverviewSkeleton /> : failed ? <LoadError t={t} retry={refreshAll}/> : <div id="bot-challenge-panel-overview" role="tabpanel" aria-labelledby="bot-challenge-tab-overview">
+      <MetricGrid metrics={metrics} t={t} locale={locale}/>
       <div className={styles.workspace}>
         <section className={`panel ${styles.trendPanel}`}>
           <div className={`panel-heading ${styles.panelHeading}`}><div><h2>{t('botChallenge.trend')}</h2><span>{t('botChallenge.metricsSource')}</span></div><TrendLegend t={t}/></div>
@@ -63,19 +66,19 @@ export default function BotChallengePage() {
       </div>
       <TypeEffectPanel points={metrics?.trend ?? []} t={t}/>
       <EventTable events={events} loading={eventsQuery.isLoading} forbidden={eventsForbidden} error={eventsError} retry={() => void eventsQuery.refetch()} locale={locale} navigate={navigate} t={t}/>
-    </>}
+    </div>}
   </section>;
 }
 
-function MetricGrid({ metrics, t }: { metrics?: BotChallengeMetrics; t: TFunction }) {
+function MetricGrid({ metrics, t, locale }: { metrics?: BotChallengeMetrics; t: TFunction; locale: string }) {
   const totals = metrics?.totals;
   const hasOutcomes = (totals?.successes ?? 0) + (totals?.failures ?? 0) > 0;
   const items = [
-    { icon: <Users/>, label: t('botChallenge.challengedClients'), value: formatNumber(totals?.challenged_people), tone: 'brand' },
-    { icon: <Bot/>, label: t('botChallenge.challengeCount'), value: formatNumber(totals?.challenges), tone: 'brand' },
-    { icon: <ShieldX/>, label: t('botChallenge.blockedClients'), value: formatNumber(totals?.blocked_people), tone: 'danger' },
-    { icon: <ShieldAlert/>, label: t('botChallenge.blockCount'), value: formatNumber(totals?.blocks), tone: 'danger' },
-    { icon: <Activity/>, label: t('botChallenge.captchaBlocked'), value: formatNumber(totals?.captcha_blocks), tone: 'warning' },
+    { icon: <Users/>, label: t('botChallenge.challengedClients'), value: formatNumber(totals?.challenged_people, locale), tone: 'brand' },
+    { icon: <Bot/>, label: t('botChallenge.challengeCount'), value: formatNumber(totals?.challenges, locale), tone: 'brand' },
+    { icon: <ShieldX/>, label: t('botChallenge.blockedClients'), value: formatNumber(totals?.blocked_people, locale), tone: 'danger' },
+    { icon: <ShieldAlert/>, label: t('botChallenge.blockCount'), value: formatNumber(totals?.blocks, locale), tone: 'danger' },
+    { icon: <Activity/>, label: t('botChallenge.captchaBlocked'), value: formatNumber(totals?.captcha_blocks, locale), tone: 'warning' },
     { icon: <CheckCircle2/>, label: t('botChallenge.passRate'), value: hasOutcomes ? `${((totals?.pass_rate ?? 0) * 100).toFixed(1)}%` : t('botChallenge.notAvailable'), tone: 'success', muted: !hasOutcomes },
   ];
   return <div className={styles.metrics}>{items.map((item) => <div className={`${styles.metric} ${styles[item.tone]}`} key={item.label}><span className={styles.metricIcon}>{item.icon}</span><span className={styles.metricLabel}>{item.label}</span><strong className={item.muted ? styles.muted : undefined}>{item.value}</strong></div>)}</div>;
@@ -138,7 +141,7 @@ function EventTable({ events, loading, forbidden, error, retry, locale, navigate
   return <section className={`panel ${styles.eventPanel}`}>
     <div className={'panel-heading'}><h2>{t('botChallenge.events')}</h2><span>{t('botChallenge.eventsHint')}</span></div>
     {forbidden ? <EventPanelState
-      title={t('botChallenge.captchaAssets.forbidden')}
+      title={t('botChallenge.eventsForbidden', { defaultValue: t('botChallenge.captchaAssets.forbidden') })}
       hint={t('botChallenge.eventsPermissionHint', { defaultValue: 'The read:logs permission is required to view challenge events. Metrics remain available with read:protection.' })}
     /> : error ? <EventPanelState title={t('botChallenge.loadFailed')} hint={eventErrorMessage(error, t)} retry={retry} retryLabel={t('common.retry')}/> : <>
       <div className={styles.eventTable}><Table loading={loading} rowKey={'id'} pagination={{ pageSize: 10, hideOnSinglePage: true, sizeCanChange: false }} data={events} noDataElement={<Empty description={t('botChallenge.noEvents')}/>} scroll={{ x: 980 }} columns={[{ title: t('botChallenge.time'), dataIndex: 'timestamp', width: 180, render: (value: string) => new Date(value).toLocaleString(locale) }, { title: t('botChallenge.clientIp'), dataIndex: 'clientIp', width: 150 }, { title: t('botChallenge.location'), dataIndex: 'country', width: 120, render: (value: string) => value || t('common.unknown') }, { title: t('botChallenge.site'), dataIndex: 'siteId', width: 150, render: (value: string) => value || '—' }, { title: t('botChallenge.type'), dataIndex: 'challengeType', width: 140, render: (value: string) => typeLabel(value ?? 'unknown', t) }, { title: t('botChallenge.outcome'), dataIndex: 'outcome', width: 110, render: (value: string) => <OutcomeTag value={value} t={t}/> }, { title: t('botChallenge.reason'), dataIndex: 'reason', ellipsis: true }, { title: t('botChallenge.traceId'), dataIndex: 'traceId', width: 190, render: (value: string, row: BotChallengeEvent) => <button className={styles.trace} onClick={() => navigate(`/logs/${encodeURIComponent(value || row.id)}`)}>{value || row.id}</button> }]}/></div>
@@ -152,28 +155,26 @@ function QuickAction({ icon, title, hint, onClick }: { icon: React.ReactNode; ti
 function LoadError({ t, retry }: { t: TFunction; retry: () => void }) { return <div className={styles.error} role={'alert'}><ShieldX size={20}/><div><strong>{t('botChallenge.loadFailed')}</strong><span>{t('botChallenge.loadFailedHint')}</span></div><Button onClick={retry}>{t('common.retry')}</Button></div>; }
 function OverviewSkeleton() { return <div className={styles.loading} aria-busy={true}><div className={styles.skeletonMetrics}>{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} text={{ rows: 2, width: ['55%', '35%'] }} animation/>)}</div><Skeleton text={{ rows: 6 }} animation/></div>; }
 function OutcomeTag({ value, t }: { value: string; t: TFunction }) { const colors: Record<string, string> = { passed: 'green', failed: 'orange', blocked: 'red', issued: 'blue' }; return <Tag color={colors[value] ?? 'gray'}>{t(`botChallenge.outcomes.${value}`)}</Tag>; }
-function formatNumber(value?: number) { return value == null ? '—' : new Intl.NumberFormat().format(value); }
+function formatNumber(value?: number, locale?: string) { return value == null ? '—' : new Intl.NumberFormat(locale).format(value); }
 function formatBucketTime(value: string, locale: string, count: number) { return new Date(value).toLocaleString(locale, count > 24 ? { month: 'short', day: 'numeric' } : { hour: '2-digit', minute: '2-digit' }); }
 function typeLabel(type: string, t: TFunction) { return t(`protection.captchaTypes.${type}`, { defaultValue: type === 'unknown' ? t('common.unknown') : type }); }
 function eventErrorMessage(error: unknown, t: TFunction) { return error instanceof Error && error.message.trim() ? error.message : t('botChallenge.loadFailedHint'); }
 function isHTTPStatus(error: unknown, status: number) { return error instanceof APIRequestError && error.status === status; }
 type EventPermission = 'allowed' | 'denied' | 'unknown';
 function readLogsPermission(): EventPermission {
-  const token = localStorage.getItem('cheesewaf-token') ?? '';
-  const payload = token.split('.')[1];
-  if (!payload) return 'unknown';
+  // UI-only hint; the API still enforces read:logs. Use session profile, not stored tokens.
   try {
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const claims = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))) as { role?: string; scope?: string | string[]; scopes?: string | string[] };
-    if (claims.role === 'admin') return 'allowed';
-    const rawScopes = claims.scope ?? claims.scopes;
-    const scopes = (Array.isArray(rawScopes) ? rawScopes : typeof rawScopes === 'string' ? rawScopes.split(/\s+/) : []).filter(Boolean);
-    const explicitPermissions = scopes.filter((scope) => scope === '*' || scope.includes(':'));
-    if (explicitPermissions.length === 0) return 'unknown';
-    return explicitPermissions.some((scope) => scope === 'read:logs' || scope === '*' || (scope.endsWith('*') && 'read:logs'.startsWith(scope.slice(0, -1)))) ? 'allowed' : 'denied';
+    const cached = sessionStorage.getItem('cheesewaf-account');
+    if (cached) {
+      const account = JSON.parse(cached) as { role?: string };
+      if (account.role === 'admin' || account.role === 'operator') return 'allowed';
+      if (account.role === 'readonly') return 'allowed';
+      if (account.role) return 'denied';
+    }
   } catch {
-    return 'unknown';
+    /* ignore */
   }
+  return 'unknown';
 }
 function groupTrend(points: BotChallengeMetricPoint[]) { const map = new Map<string, BotChallengeMetricPoint>(); for (const point of points) { const item = map.get(point.time) ?? { time: point.time, type: 'all', issued: 0, successes: 0, failures: 0, blocks: 0 }; item.issued += point.issued; item.successes += point.successes; item.failures += point.failures; item.blocks += point.blocks; map.set(point.time, item); } return [...map.values()].sort((a, b) => a.time.localeCompare(b.time)); }
 function aggregateEffects(points: BotChallengeMetricPoint[]): BotChallengeTypeEffect[] { const map = new Map<string, BotChallengeTypeEffect>(); for (const point of points) { const item = map.get(point.type) ?? { type: point.type, issued: 0, passed: 0, failed: 0 }; item.issued += point.issued; item.passed = (item.passed ?? 0) + point.successes; item.failed = (item.failed ?? 0) + point.failures + point.blocks; map.set(point.type, item); } return [...map.values()].map((item) => { const decided = (item.passed ?? 0) + (item.failed ?? 0); return { ...item, passRate: decided ? (item.passed ?? 0) / decided : undefined }; }).sort((a, b) => b.issued - a.issued); }

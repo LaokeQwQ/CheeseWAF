@@ -37,7 +37,7 @@ func openLocalAssetFS(path string) (*localAssetFS, error) {
 		unix.Close(fd)
 		return nil, err
 	}
-	// Do not attach the absolute path as the *os.File name (CodeQL path-injection).
+	// Use a fixed name for the root *os.File; do not pass the absolute path as the name.
 	return &localAssetFS{root: os.NewFile(uintptr(fd), "captcha-asset-root")}, nil
 }
 
@@ -160,8 +160,7 @@ func (f *localAssetFS) open(kind Kind, name string) (*os.File, error) {
 		}
 		return nil, fmt.Errorf("captcha asset %q is not a regular file", name)
 	}
-	// Constant label only: openat already confined the FD; never pass user name
-	// into os.NewFile (CodeQL go/path-injection treats the name as a path).
+	// Constant label only: openat already confined the FD; never pass a user path into os.NewFile.
 	return os.NewFile(uintptr(fd), "captcha-asset-file"), nil
 }
 

@@ -128,10 +128,13 @@ function newUITraceID() {
 }
 
 function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
-  const token = localStorage.getItem("cheesewaf-token");
-  if (!token) {
+  // Gate on cookie CSRF presence (session cookie is HttpOnly). Never put secrets in body.
+  const hasSession = document.cookie.includes("cheesewaf_csrf=") || sessionStorage.getItem("cheesewaf-authed") === "1";
+  if (!hasSession) {
     return;
   }
+  const csrfMatch = document.cookie.match(/(?:^|;\s*)cheesewaf_csrf=([^;]+)/);
+  const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : "";
   const payload = {
     trace_id: traceID || newUITraceID(),
     name: error.name,
@@ -149,9 +152,10 @@ function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
   void fetch("/api/ui/errors", {
     method: "POST",
     keepalive: true,
+    credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+      ...(csrf ? { "X-CSRF-Token": csrf } : {}),
     },
     body: JSON.stringify(payload),
   }).catch((reportError) => {

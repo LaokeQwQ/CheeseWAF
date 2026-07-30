@@ -102,7 +102,7 @@ func TestSanitizeLocalRedirect(t *testing.T) {
 			t.Fatalf("SanitizeLocalRedirect(%q)=%q want %q", in, got, want)
 		}
 	}
-	// CodeQL second-character property on all non-root returns.
+	// Non-root returns must keep the second-character relative-path rule.
 	for in := range cases {
 		got := SanitizeLocalRedirect(in)
 		if !IsLocalRedirect(got) {

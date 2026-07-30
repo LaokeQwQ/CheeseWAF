@@ -223,7 +223,6 @@ export default function SitesPage() {
             loading={isLoading}
             data={rows}
             className="sites-table"
-            scroll={{ x: 760 }}
             noDataElement={<Empty description={t('common.noData')} />}
             columns={[
               {
@@ -257,7 +256,7 @@ export default function SitesPage() {
                 title: t('sites.listen'),
                 dataIndex: 'listen_port',
                 width: 88,
-                render: (port: number) => <code>:{port || 80}</code>,
+                render: (port: number | undefined | null) => <code>{port == null || port === 0 ? '—' : `:${port}`}</code>,
               },
               {
                 title: t('sites.mode'),
@@ -302,7 +301,7 @@ export default function SitesPage() {
                 <dl>
                   <div><dt>{t('sites.domain')}</dt><dd title={domains}>{domains}</dd></div>
                   <div><dt>{t('sites.upstream')}</dt><dd title={upstreams}>{upstreams}</dd></div>
-                  <div><dt>{t('sites.listen')}</dt><dd><code>:{site.listen_port || 80}</code></dd></div>
+                  <div><dt>{t('sites.listen')}</dt><dd><code>{site.listen_port == null || site.listen_port === 0 ? '—' : `:${site.listen_port}`}</code></dd></div>
                   <div><dt>{t('sites.mode')}</dt><dd>{renderMode(site.waf_mode)}</dd></div>
                 </dl>
                 <footer>
@@ -438,7 +437,7 @@ export default function SitesPage() {
             <label><span>{t('sites.maxBody')}</span><InputNumber value={draft.maxBodyBytes} min={1024} step={1024 * 1024} onChange={(value) => updateDraft('maxBodyBytes', Number(value || 0))} /></label>
             <label className="switch-line"><span>{t('sites.passHost')}</span><Switch checked={draft.passHost} onChange={(value) => updateDraft('passHost', value)} /></label>
             <label><span>{t('sites.hostHeader')}</span><Input value={draft.hostHeader} placeholder="origin.example.internal" onChange={(value) => updateDraft('hostHeader', value)} /></label>
-            <label className="switch-line"><span>Bot</span><Switch checked={draft.bot} onChange={(value) => updateDraft('bot', value)} /></label>
+            <label className="switch-line"><span>{t('protection.bot')}</span><Switch checked={draft.bot} onChange={(value) => updateDraft('bot', value)} /></label>
             <label className="switch-line"><span>{t('protection.ratelimit')}</span><Switch checked={draft.ratelimit} onChange={(value) => updateDraft('ratelimit', value)} /></label>
             <label className="switch-line"><span>{t('protection.acl')}</span><Switch checked={draft.acl} onChange={(value) => updateDraft('acl', value)} /></label>
             <label className="switch-line"><span>{t('nav.apisec')}</span><Switch checked={draft.apisec} onChange={(value) => updateDraft('apisec', value)} /></label>

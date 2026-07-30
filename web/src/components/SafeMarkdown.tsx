@@ -41,7 +41,7 @@ export default function SafeMarkdown({ text, className = '' }: Props) {
           );
         }
         if (block.type === 'list') {
-          return <ul key={`list-${index}`}>{block.items.map((item) => <li key={item}>{renderInlineMarkdown(item)}</li>)}</ul>;
+          return <ul key={`list-${index}`}>{block.items.map((item, itemIndex) => <li key={`${index}-${itemIndex}`}>{renderInlineMarkdown(item)}</li>)}</ul>;
         }
         if (block.type === 'heading') {
           const Heading = `h${Math.min(4, Math.max(3, block.level))}` as 'h3' | 'h4';
@@ -223,11 +223,11 @@ function renderInlineMarkdown(text: string) {
   const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean);
   return parts.map((part, index) => {
     if (part.startsWith('`') && part.endsWith('`')) {
-      return <code key={`${part}-${index}`}>{part.slice(1, -1)}</code>;
+      return <code key={`code-${index}`}>{part.slice(1, -1)}</code>;
     }
     if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong>;
+      return <strong key={`strong-${index}`}>{part.slice(2, -2)}</strong>;
     }
-    return <span key={`${part}-${index}`}>{part}</span>;
+    return <span key={`text-${index}`}>{part}</span>;
   });
 }

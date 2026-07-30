@@ -41,6 +41,34 @@ func TestNewRequestContextWithLimitsReplaysFullyInspectedBody(t *testing.T) {
 	}
 }
 
+func TestDeferredBodyEnsureOnce(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("hello-body"))
+	ctx, err := NewRequestContextDeferredBody(req, "site-a", nil, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.DecodedBody != nil || ctx.bodyLoaded {
+		t.Fatal("deferred constructor must not read body")
+	}
+	if err := ctx.EnsureBody(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(ctx.DecodedBody); got != "hello-body" {
+		t.Fatalf("decoded = %q", got)
+	}
+	// Idempotent
+	if err := ctx.EnsureBody(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(ctx.DecodedBody); got != "hello-body" {
+		t.Fatalf("second ensure decoded = %q", got)
+	}
+	replayed, err := io.ReadAll(req.Body)
+	if err != nil || string(replayed) != "hello-body" {
+		t.Fatalf("replayed = %q err=%v", replayed, err)
+	}
+}
+
 func TestClientIPIgnoresForwardedHeadersByDefault(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
 	req.RemoteAddr = "198.51.100.20:1234"
