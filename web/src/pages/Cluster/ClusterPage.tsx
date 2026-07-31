@@ -3,8 +3,8 @@ import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconf
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask } from '../../api/client';
-import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration } from '../../types/api';
+import { createClusterBootstrapPlan, createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, fetchClusterTrafficPeers, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask, startClusterRollingUpgrade } from '../../api/client';
+import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterBootstrapPlan, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration, ClusterRollingJob, ClusterTrafficPeersResponse } from '../../types/api';
 
 type ClusterDeployForm = {
   host?: string;
@@ -65,6 +65,11 @@ export default function ClusterPage() {
   const [latestCertificate, setLatestCertificate] = useState<ClusterNodeCertificateRotateResponse | null>(null);
   const [tokenOperationError, setTokenOperationError] = useState<string | null>(null);
   const [revokingTokenID, setRevokingTokenID] = useState<string | null>(null);
+  const [bootstrapPlan, setBootstrapPlan] = useState<ClusterBootstrapPlan | null>(null);
+  const [rollingJob, setRollingJob] = useState<ClusterRollingJob | null>(null);
+  const [trafficPeers, setTrafficPeers] = useState<ClusterTrafficPeersResponse | null>(null);
+  const [bootstrapForm] = Form.useForm<{ role?: string; nodeId?: string; controllerUrl?: string; advertiseAddr?: string }>();
+  const [rollingForm] = Form.useForm<{ hosts?: string; user?: string }>();
   const { data, isLoading, refetch, isFetching, isError: isStatusError, error: statusError } = useQuery({
     queryKey: ['cluster-status'],
     queryFn: fetchClusterStatus,
@@ -289,6 +294,64 @@ export default function ClusterPage() {
     setSelectedAnsibleFile('README.md');
   };
 
+  const bootstrapMutation = useMutation({
+    mutationFn: createClusterBootstrapPlan,
+    onSuccess: (plan) => {
+      setBootstrapPlan(plan);
+      ArcoMessage.success(t('cluster.bootstrapPlanReady', { defaultValue: 'Bootstrap plan ready' }));
+    },
+    onError: (error: Error) => ArcoMessage.error(error.message),
+  });
+
+  const rollingMutation = useMutation({
+    mutationFn: startClusterRollingUpgrade,
+    onSuccess: (job) => {
+      setRollingJob(job);
+      ArcoMessage.success(t('cluster.rollingStarted', { defaultValue: 'Rolling upgrade started' }));
+    },
+    onError: (error: Error) => ArcoMessage.error(error.message),
+  });
+
+  const submitBootstrapPlan = async () => {
+    const values = await bootstrapForm.validate();
+    bootstrapMutation.mutate({
+      role: values.role || 'waf',
+      node_id: String(values.nodeId || '').trim(),
+      controller_url: String(values.controllerUrl || '').trim(),
+      advertise_addr: String(values.advertiseAddr || '').trim(),
+      token_ttl: '15m',
+      token_max_uses: 1,
+    });
+  };
+
+  const submitRollingUpgrade = async () => {
+    const values = await rollingForm.validate();
+    const user = String(values.user || 'root').trim();
+    const hosts = String(values.hosts || '')
+      .split(/[\n,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (hosts.length === 0) {
+      ArcoMessage.warning(t('cluster.rollingHostsRequired', { defaultValue: 'Enter at least one host' }));
+      return;
+    }
+    rollingMutation.mutate({
+      targets: hosts.map((host) => ({ host, user })),
+      pause_between: '3s',
+      stop_on_failure: true,
+      restart_service: true,
+    });
+  };
+
+  const loadTrafficPeers = async () => {
+    try {
+      const result = await fetchClusterTrafficPeers('least_conn');
+      setTrafficPeers(result);
+    } catch (error) {
+      ArcoMessage.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const submitCertificateSigning = async () => {
     const values = await certificateForm.validate();
     const nodeID = String(values.nodeId || '').trim();
@@ -394,6 +457,84 @@ export default function ClusterPage() {
             </Card>
           </section>
         )}
+
+        <Card className="cluster-join-card">
+          <div className="cluster-card-head cluster-card-head-compact">
+            <span className="cluster-icon"><PackageCheck size={18} /></span>
+            <div>
+              <Typography.Title heading={5}>{t('cluster.bootstrapTitle', { defaultValue: 'Install and join orchestration' })}</Typography.Title>
+              <Typography.Paragraph>{t('cluster.bootstrapHint', { defaultValue: 'Mint a one-time join token and get the install-then-join checklist for a new node.' })}</Typography.Paragraph>
+            </div>
+          </div>
+          <Form form={bootstrapForm} layout="vertical" initialValues={{ role: 'waf' }} className="cluster-token-form">
+            <div className="cluster-token-fields">
+              <Form.Item label={t('cluster.role')} field="role">
+                <Select options={[{ label: 'waf', value: 'waf' }, { label: 'monitor', value: 'monitor' }]} />
+              </Form.Item>
+              <Form.Item label={t('cluster.nodeId', { defaultValue: 'Node ID' })} field="nodeId" rules={[{ required: true }]}>
+                <Input placeholder="waf-b" />
+              </Form.Item>
+              <Form.Item label={t('cluster.controllerUrl', { defaultValue: 'Controller URL' })} field="controllerUrl" rules={[{ required: true }]}>
+                <Input placeholder="https://controller.example:9443" />
+              </Form.Item>
+              <Form.Item label={t('cluster.advertiseAddr', { defaultValue: 'Advertise address' })} field="advertiseAddr" rules={[{ required: true }]}>
+                <Input placeholder="10.0.0.2:9444" />
+              </Form.Item>
+            </div>
+            <Button type="primary" loading={bootstrapMutation.isPending} onClick={() => void submitBootstrapPlan()}>
+              {t('cluster.createBootstrapPlan', { defaultValue: 'Create bootstrap plan' })}
+            </Button>
+          </Form>
+          {bootstrapPlan && (
+            <div className="cluster-result-note">
+              <strong>{t('cluster.joinCommand', { defaultValue: 'Join command' })}</strong>
+              <pre className="cluster-command">{bootstrapPlan.join_command}</pre>
+              <p>{bootstrapPlan.install_hint}</p>
+              <p>{bootstrapPlan.post_join_hint}</p>
+            </div>
+          )}
+        </Card>
+
+        <Card className="cluster-join-card">
+          <div className="cluster-card-head cluster-card-head-compact">
+            <span className="cluster-icon"><RotateCcw size={18} /></span>
+            <div>
+              <Typography.Title heading={5}>{t('cluster.rollingTitle', { defaultValue: 'Rolling upgrade' })}</Typography.Title>
+              <Typography.Paragraph>{t('cluster.rollingHint', { defaultValue: 'Upgrade nodes one by one: install binary, restart service, stop on first failure.' })}</Typography.Paragraph>
+            </div>
+          </div>
+          <Form form={rollingForm} layout="vertical" initialValues={{ user: 'root' }} className="cluster-token-form">
+            <Form.Item label={t('cluster.rollingHosts', { defaultValue: 'Hosts (one per line)' })} field="hosts" rules={[{ required: true }]}>
+              <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={'waf-a.example\nwaf-b.example'} />
+            </Form.Item>
+            <Form.Item label={t('cluster.sshUser', { defaultValue: 'SSH user' })} field="user">
+              <Input />
+            </Form.Item>
+            <Button type="primary" loading={rollingMutation.isPending} onClick={() => void submitRollingUpgrade()}>
+              {t('cluster.startRolling', { defaultValue: 'Start rolling upgrade' })}
+            </Button>
+          </Form>
+          {rollingJob && (
+            <div className="cluster-result-note">
+              <strong>{rollingJob.id}</strong> · {rollingJob.status}
+              <ul>
+                {rollingJob.steps?.map((step) => (
+                  <li key={`${step.index}-${step.host}`}>{step.host}: {step.stage} / {step.status} {step.message ? `— ${step.message}` : ''}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <Button style={{ marginTop: 12 }} onClick={() => void loadTrafficPeers()}>
+            {t('cluster.loadTrafficPeers', { defaultValue: 'Preview traffic peers (least_conn)' })}
+          </Button>
+          {trafficPeers && (
+            <div className="cluster-result-note">
+              <strong>{t('cluster.selectedPeer', { defaultValue: 'Selected peer' })}</strong>
+              <span>{trafficPeers.selected?.node_id || '—'} {trafficPeers.selected?.advertise_addr || ''}</span>
+              <span>{t('cluster.eligiblePeers', { defaultValue: 'Eligible' })}: {trafficPeers.peers?.length ?? 0}</span>
+            </div>
+          )}
+        </Card>
 
         <Card className="cluster-join-card">
           <div className="cluster-card-head cluster-card-head-compact">

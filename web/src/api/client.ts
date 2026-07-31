@@ -1,7 +1,7 @@
 import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterStatus, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { TimeSyncStatus } from '../types/api';
 
 export const apiClient = axios.create({
@@ -500,6 +500,30 @@ export function fetchClusterDeploymentTasks() {
 
 export function fetchClusterAudit() {
   return unwrap<ClusterAuditList>(apiClient.get('/cluster/audit'));
+}
+
+export function createClusterBootstrapPlan(payload: ClusterBootstrapPlanRequest) {
+  return unwrap<ClusterBootstrapPlan>(apiClient.post('/cluster/orchestrate/bootstrap', payload));
+}
+
+export function startClusterRollingUpgrade(payload: ClusterRollingUpgradeRequest) {
+  return unwrap<ClusterRollingJob>(apiClient.post('/cluster/orchestrate/rolling-upgrade', payload, { timeout: 15_000 }));
+}
+
+export function fetchClusterRollingUpgrade(id: string) {
+  return unwrap<ClusterRollingJob>(apiClient.get(`/cluster/orchestrate/rolling-upgrade/${encodeURIComponent(id)}`));
+}
+
+export function fetchClusterRollingUpgrades() {
+  return unwrap<{ items: ClusterRollingJob[]; total: number }>(apiClient.get('/cluster/orchestrate/rolling-upgrade'));
+}
+
+export function fetchClusterTrafficPeers(mode?: string, region?: string) {
+  const params = new URLSearchParams();
+  if (mode) params.set('mode', mode);
+  if (region) params.set('region', region);
+  const query = params.toString();
+  return unwrap<ClusterTrafficPeersResponse>(apiClient.get(`/cluster/traffic/peers${query ? `?${query}` : ''}`));
 }
 
 export function fetchAPISecEndpoints() {

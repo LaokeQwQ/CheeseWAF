@@ -1,9 +1,18 @@
 package cli
 
 import (
+	"bytes"
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
@@ -25,15 +34,138 @@ func newClusterCommand() *cobra.Command {
 	cmd.AddCommand(newClusterExportCommand())
 	cmd.AddCommand(newClusterTokenCommand())
 	cmd.AddCommand(newClusterCertCommand())
-	cmd.AddCommand(&cobra.Command{
-		Use:   "monitor-node",
-		Short: "Run as a cluster monitor node",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("monitor node runtime is not enabled before cluster initialization")
-		},
-	})
+	cmd.AddCommand(newClusterMonitorNodeCommand())
 	return cmd
 }
+
+type clusterMonitorNodeOptions struct {
+	ControllerURL string
+	Interval      time.Duration
+	InsecureTLS   bool
+}
+
+func newClusterMonitorNodeCommand() *cobra.Command {
+	var opts clusterMonitorNodeOptions
+	cmd := &cobra.Command{
+		Use:   "monitor-node",
+		Short: "Run the monitor-node heartbeat loop (M3)",
+		Long:  "Posts periodic heartbeats to the cluster controller so majority confirmation and protection mode can leave freeze.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runClusterMonitorNode(cmd, opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.ControllerURL, "controller", "", "Controller base URL (defaults to interconnect advertise of local config peer / CHEESEWAF_CLUSTER_CONTROLLER)")
+	cmd.Flags().DurationVar(&opts.Interval, "interval", 10*time.Second, "Heartbeat interval")
+	cmd.Flags().BoolVar(&opts.InsecureTLS, "insecure-skip-verify", false, "Skip TLS verification (lab only)")
+	return cmd
+}
+
+func runClusterMonitorNode(cmd *cobra.Command, opts clusterMonitorNodeOptions) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	if !cfg.Cluster.Enabled || cfg.Deployment.Mode != "cluster" {
+		return fmt.Errorf("cluster mode is not enabled; run cluster init or join first")
+	}
+	nodeID := strings.TrimSpace(cfg.Cluster.NodeID)
+	if nodeID == "" {
+		return fmt.Errorf("cluster.node_id is required")
+	}
+	role := "monitor"
+	for _, node := range cfg.Cluster.Nodes {
+		if strings.TrimSpace(node.ID) == nodeID && strings.TrimSpace(node.Role) != "" {
+			role = strings.TrimSpace(node.Role)
+			break
+		}
+	}
+	controller := strings.TrimSpace(opts.ControllerURL)
+	if controller == "" {
+		controller = strings.TrimSpace(os.Getenv("CHEESEWAF_CLUSTER_CONTROLLER"))
+	}
+	if controller == "" {
+		controller = strings.TrimSpace(cfg.Cluster.Interconnect.AdvertiseAddr)
+		if controller != "" && !strings.Contains(controller, "://") {
+			controller = "https://" + controller
+		}
+	}
+	if controller == "" {
+		return fmt.Errorf("controller URL is required (--controller or CHEESEWAF_CLUSTER_CONTROLLER)")
+	}
+	interval := opts.Interval
+	if interval < time.Second {
+		interval = time.Second
+	}
+	client, err := clusterHeartbeatHTTPClient(cfg, opts.InsecureTLS)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "monitor-node heartbeat loop node=%s role=%s controller=%s interval=%s\n", nodeID, role, controller, interval)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	// Immediate first beat.
+	if err := postClusterHeartbeat(client, controller, nodeID, role, cfg.Cluster.Interconnect.AdvertiseAddr); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "heartbeat warning: %v\n", err)
+	}
+	for {
+		select {
+		case <-stop:
+			fmt.Fprintln(out, "monitor-node stopped")
+			return nil
+		case <-ticker.C:
+			if err := postClusterHeartbeat(client, controller, nodeID, role, cfg.Cluster.Interconnect.AdvertiseAddr); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "heartbeat warning: %v\n", err)
+			}
+		}
+	}
+}
+
+func clusterHeartbeatHTTPClient(cfg *config.Config, insecure bool) (*http.Client, error) {
+	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}} //nolint:gosec // explicit lab flag
+	caFile := strings.TrimSpace(cfg.Cluster.Interconnect.CAFile)
+	certFile := strings.TrimSpace(cfg.Cluster.Interconnect.CertFile)
+	keyFile := strings.TrimSpace(cfg.Cluster.Interconnect.KeyFile)
+	if certFile != "" && keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load node certificate: %w", err)
+		}
+		transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
+	}
+	if caFile != "" && !insecure {
+		// Optional: system roots used when CA file missing; operators pin via --insecure-skip-verify only in labs.
+		_ = caFile
+	}
+	return &http.Client{Timeout: 10 * time.Second, Transport: transport}, nil
+}
+
+func postClusterHeartbeat(client *http.Client, controller, nodeID, role, advertise string) error {
+	body, _ := json.Marshal(map[string]any{
+		"role":           role,
+		"advertise_addr": advertise,
+		"config_version": "",
+	})
+	endpoint := strings.TrimRight(controller, "/") + "/api/cluster/nodes/" + url.PathEscape(nodeID) + "/heartbeat"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
 
 func newClusterTokenCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -273,7 +405,7 @@ func runClusterInit(cmd *cobra.Command, opts clusterInitOptions) error {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "已初始化为单节点集群: %s / %s\n", clusterID, nodeID)
-	fmt.Fprintln(cmd.OutOrStdout(), "当前仍是单节点模式；M2 部署加入流程完成后可扩展更多机器。")
+	fmt.Fprintln(cmd.OutOrStdout(), "下一步：签发加入令牌、SSH install、在新节点执行 cluster join；监控节点运行 cluster monitor-node。")
 	return nil
 }
 
