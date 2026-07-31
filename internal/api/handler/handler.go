@@ -29,6 +29,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/orchestrate"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/traffic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
@@ -54,6 +56,9 @@ type Handler struct {
 	ClusterDeployTasks           *deploy.TaskManager
 	ClusterDeployAuth            *deploy.AuthorizationStore
 	ClusterHeartbeats            *cluster.HeartbeatRegistry
+	clusterRolling               *orchestrate.RollingManager
+	clusterTraffic               *traffic.Scheduler
+	clusterTrafficMu             sync.Mutex
 	ACMEIssuer                   acme.Issuer
 	TimeSync                     TimeSyncService
 	LoginCAPTCHAState            *loginCAPTCHAState
