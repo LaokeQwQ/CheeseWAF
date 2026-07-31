@@ -82,12 +82,30 @@ func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL,
 		return nil, ErrNoUpstream
 	}
 	index := 0
-	if site.LoadBalance == "ip_hash" && clientIP != "" {
-		for _, r := range clientIP {
-			index += int(r)
+	mode := strings.ToLower(strings.TrimSpace(site.LoadBalance))
+	switch mode {
+	case "ip_hash":
+		if clientIP != "" {
+			for _, r := range clientIP {
+				index += int(r)
+			}
+			index %= len(candidates)
 		}
-		index %= len(candidates)
-	} else {
+	case "least_conn":
+		// Approximate least-connections via rotating preference weighted by inverse of recent picks.
+		lb.mu.Lock()
+		index = lb.next[site.ID] % len(candidates)
+		// Prefer lower slot under a simple expanding window.
+		if len(candidates) > 1 {
+			second := (index + 1) % len(candidates)
+			if lb.next[site.ID+":slot:"+candidates[second].Address] < lb.next[site.ID+":slot:"+candidates[index].Address] {
+				index = second
+			}
+		}
+		lb.next[site.ID+":slot:"+candidates[index].Address]++
+		lb.next[site.ID] = index + 1
+		lb.mu.Unlock()
+	default:
 		lb.mu.Lock()
 		index = lb.next[site.ID] % len(candidates)
 		lb.next[site.ID] = index + 1
