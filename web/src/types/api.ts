@@ -1181,6 +1181,86 @@ export type ClusterJoinTokenList = {
   total: number;
 };
 
+export type ClusterBootstrapPlanRequest = {
+  role?: string;
+  node_id: string;
+  controller_url: string;
+  advertise_addr: string;
+  token_ttl?: string;
+  token_max_uses?: number;
+};
+
+export type ClusterBootstrapPlan = {
+  role: string;
+  node_id: string;
+  controller_url: string;
+  advertise_addr: string;
+  token_id: string;
+  token_value?: string;
+  token_expires_at?: string;
+  join_command: string;
+  install_hint: string;
+  post_join_hint: string;
+  recommended_next?: string[];
+};
+
+export type ClusterRollingTarget = {
+  node_id?: string;
+  host: string;
+  user: string;
+  port?: number;
+  password?: string;
+  private_key?: string;
+  host_key_sha256?: string;
+};
+
+export type ClusterRollingUpgradeRequest = {
+  targets: ClusterRollingTarget[];
+  pause_between?: string;
+  stop_on_failure?: boolean;
+  restart_service?: boolean;
+};
+
+export type ClusterRollingStep = {
+  index: number;
+  node_id?: string;
+  host: string;
+  stage: string;
+  status: string;
+  message?: string;
+  task_id?: string;
+  updated_at: string;
+};
+
+export type ClusterRollingJob = {
+  id: string;
+  status: string;
+  message?: string;
+  steps: ClusterRollingStep[];
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+  stop_on_failure: boolean;
+  restart_service: boolean;
+};
+
+export type ClusterTrafficPeer = {
+  node_id: string;
+  advertise_addr: string;
+  region?: string;
+  weight: number;
+  online: boolean;
+  can_receive: boolean;
+};
+
+export type ClusterTrafficPeersResponse = {
+  mode: string;
+  peers: ClusterTrafficPeer[];
+  selected?: ClusterTrafficPeer;
+  ok: boolean;
+  status: ClusterStatus;
+};
+
 export type ClusterJoinTokenCreateRequest = {
   role: 'waf' | 'monitor' | string;
   ttl: string;
