@@ -214,4 +214,3 @@ func (h *Handler) clusterTrafficScheduler() *traffic.Scheduler {
 	}
 	return h.clusterTraffic
 }
-

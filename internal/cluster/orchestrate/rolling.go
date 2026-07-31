@@ -15,13 +15,13 @@ const (
 	RollingStatusFailed    = "failed"
 	RollingStatusCancelled = "cancelled"
 
-	RollingStepQueued    = "queued"
-	RollingStepDraining  = "draining"
+	RollingStepQueued     = "queued"
+	RollingStepDraining   = "draining"
 	RollingStepInstalling = "installing"
 	RollingStepRestarting = "restarting"
-	RollingStepHealthy   = "healthy"
-	RollingStepFailed    = "failed"
-	RollingStepSkipped   = "skipped"
+	RollingStepHealthy    = "healthy"
+	RollingStepFailed     = "failed"
+	RollingStepSkipped    = "skipped"
 )
 
 // RollingTarget is one host in a rolling upgrade batch.
@@ -58,15 +58,15 @@ type RollingStep struct {
 
 // RollingJob is a multi-host upgrade run.
 type RollingJob struct {
-	ID          string        `json:"id"`
-	Status      string        `json:"status"`
-	Message     string        `json:"message,omitempty"`
-	Steps       []RollingStep `json:"steps"`
-	StartedAt   time.Time     `json:"started_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
-	FinishedAt  *time.Time    `json:"finished_at,omitempty"`
-	StopOnFail  bool          `json:"stop_on_failure"`
-	Restart     bool          `json:"restart_service"`
+	ID           string        `json:"id"`
+	Status       string        `json:"status"`
+	Message      string        `json:"message,omitempty"`
+	Steps        []RollingStep `json:"steps"`
+	StartedAt    time.Time     `json:"started_at"`
+	UpdatedAt    time.Time     `json:"updated_at"`
+	FinishedAt   *time.Time    `json:"finished_at,omitempty"`
+	StopOnFail   bool          `json:"stop_on_failure"`
+	Restart      bool          `json:"restart_service"`
 	PauseBetween time.Duration `json:"-"`
 }
 

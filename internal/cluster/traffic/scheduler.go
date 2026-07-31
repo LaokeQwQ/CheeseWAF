@@ -31,8 +31,8 @@ type Peer struct {
 
 // Scheduler picks among eligible peers.
 type Scheduler struct {
-	mu      sync.Mutex
-	rr      int
+	mu       sync.Mutex
+	rr       int
 	inflight map[string]int
 }
 

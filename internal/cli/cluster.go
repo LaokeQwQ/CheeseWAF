@@ -166,7 +166,6 @@ func postClusterHeartbeat(client *http.Client, controller, nodeID, role, adverti
 	return nil
 }
 
-
 func newClusterTokenCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "token",
