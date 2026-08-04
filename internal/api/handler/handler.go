@@ -27,6 +27,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	captchaassets "github.com/LaokeQwQ/CheeseWAF/internal/captcha/assets"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/consensus"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/orchestrate"
@@ -59,6 +60,8 @@ type Handler struct {
 	clusterRolling               *orchestrate.RollingManager
 	clusterTraffic               *traffic.Scheduler
 	clusterTrafficMu             sync.Mutex
+	clusterConsensus             *consensus.Coordinator
+	clusterConsensusMu           sync.Mutex
 	ACMEIssuer                   acme.Issuer
 	TimeSync                     TimeSyncService
 	LoginCAPTCHAState            *loginCAPTCHAState
