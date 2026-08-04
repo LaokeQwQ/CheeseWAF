@@ -37,11 +37,13 @@ type RollingTarget struct {
 
 // RollingUpgradeRequest starts a sequential multi-node binary upgrade.
 type RollingUpgradeRequest struct {
-	Targets         []RollingTarget `json:"targets"`
-	PauseBetween    string          `json:"pause_between,omitempty"`
-	StopOnFailure   *bool           `json:"stop_on_failure,omitempty"`
-	RestartService  *bool           `json:"restart_service,omitempty"`
-	HealthURLSuffix string          `json:"health_url_suffix,omitempty"`
+	Targets        []RollingTarget `json:"targets"`
+	PauseBetween   string          `json:"pause_between,omitempty"`
+	StopOnFailure  *bool           `json:"stop_on_failure,omitempty"`
+	RestartService *bool           `json:"restart_service,omitempty"`
+	// AutoRollback reinstalls previously succeeded targets in reverse order when a step fails.
+	AutoRollback    *bool  `json:"auto_rollback,omitempty"`
+	HealthURLSuffix string `json:"health_url_suffix,omitempty"`
 }
 
 // RollingStep is one target's progress.
@@ -67,7 +69,14 @@ type RollingJob struct {
 	FinishedAt   *time.Time    `json:"finished_at,omitempty"`
 	StopOnFail   bool          `json:"stop_on_failure"`
 	Restart      bool          `json:"restart_service"`
-	PauseBetween time.Duration `json:"-"`
+	AutoRollback bool          `json:"auto_rollback"`
+	// RollbackOf links a reverse-order reinstall job to the failed upgrade it repairs.
+	RollbackOf string `json:"rollback_of,omitempty"`
+	// RollbackJobID is filled when auto-rollback starts a follow-up job.
+	RollbackJobID string        `json:"rollback_job_id,omitempty"`
+	PauseBetween  time.Duration `json:"-"`
+	// targets retains credentials for rollback; never serialized to clients.
+	targets []RollingTarget `json:"-"`
 }
 
 // DeployStarter starts a single-host deploy task (install / restart).
@@ -124,6 +133,10 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 	if req.RestartService != nil {
 		restart = *req.RestartService
 	}
+	autoRollback := false
+	if req.AutoRollback != nil {
+		autoRollback = *req.AutoRollback
+	}
 	pause := 3 * time.Second
 	if strings.TrimSpace(req.PauseBetween) != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(req.PauseBetween))
@@ -136,6 +149,7 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 		pause = d
 	}
 	now := m.now().UTC()
+	targetsCopy := append([]RollingTarget(nil), req.Targets...)
 	job := &RollingJob{
 		ID:           m.newID(),
 		Status:       RollingStatusPending,
@@ -143,8 +157,10 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 		UpdatedAt:    now,
 		StopOnFail:   stopOnFail,
 		Restart:      restart,
+		AutoRollback: autoRollback,
 		PauseBetween: pause,
 		Steps:        make([]RollingStep, 0, len(req.Targets)),
+		targets:      targetsCopy,
 	}
 	for i, target := range req.Targets {
 		job.Steps = append(job.Steps, RollingStep{
@@ -160,7 +176,61 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 	m.jobs[job.ID] = job
 	m.mu.Unlock()
 
-	go m.run(context.Background(), job.ID, req.Targets)
+	go m.run(context.Background(), job.ID, targetsCopy)
+	return m.Get(job.ID)
+}
+
+// StartRollback rebuilds previously succeeded hosts from a finished job in reverse order.
+func (m *RollingManager) StartRollback(ctx context.Context, jobID string) (*RollingJob, error) {
+	if m == nil {
+		return nil, fmt.Errorf("rolling upgrade manager is unavailable")
+	}
+	src, err := m.Get(jobID)
+	if err != nil {
+		return nil, err
+	}
+	if src.Status == RollingStatusPending || src.Status == RollingStatusRunning {
+		return nil, fmt.Errorf("cannot roll back a job that is still running")
+	}
+	m.mu.Lock()
+	stored, ok := m.jobs[strings.TrimSpace(jobID)]
+	if !ok {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("rolling upgrade job not found")
+	}
+	targets := append([]RollingTarget(nil), stored.targets...)
+	pause := stored.PauseBetween
+	restart := stored.Restart
+	m.mu.Unlock()
+
+	reversed := reverseSucceededTargets(src.Steps, targets)
+	if len(reversed) == 0 {
+		return nil, fmt.Errorf("no succeeded targets available to roll back")
+	}
+	stop := true
+	auto := false
+	pauseStr := ""
+	if pause > 0 {
+		pauseStr = pause.String()
+	}
+	job, err := m.Start(ctx, RollingUpgradeRequest{
+		Targets:        reversed,
+		PauseBetween:   pauseStr,
+		StopOnFailure:  &stop,
+		RestartService: &restart,
+		AutoRollback:   &auto,
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.updateJob(job.ID, func(j *RollingJob) {
+		j.RollbackOf = src.ID
+		j.Message = fmt.Sprintf("rollback of %s", src.ID)
+	})
+	m.updateJob(src.ID, func(j *RollingJob) {
+		j.RollbackJobID = job.ID
+		j.UpdatedAt = m.now().UTC()
+	})
 	return m.Get(job.ID)
 }
 
@@ -211,6 +281,7 @@ func (m *RollingManager) run(ctx context.Context, jobID string, targets []Rollin
 			m.updateStep(jobID, i, RollingStepFailed, RollingStatusFailed, err.Error(), taskID)
 			if m.shouldStop(jobID) {
 				m.failJob(jobID, fmt.Sprintf("install failed on %s: %v", target.Host, err))
+				m.maybeAutoRollback(jobID)
 				return
 			}
 			continue
@@ -226,6 +297,7 @@ func (m *RollingManager) run(ctx context.Context, jobID string, targets []Rollin
 			m.updateStep(jobID, i, RollingStepFailed, RollingStatusFailed, message, taskID)
 			if m.shouldStop(jobID) {
 				m.failJob(jobID, fmt.Sprintf("install failed on %s: %s", target.Host, message))
+				m.maybeAutoRollback(jobID)
 				return
 			}
 			continue
@@ -238,6 +310,7 @@ func (m *RollingManager) run(ctx context.Context, jobID string, targets []Rollin
 				m.updateStep(jobID, i, RollingStepFailed, RollingStatusFailed, err.Error(), restartID)
 				if m.shouldStop(jobID) {
 					m.failJob(jobID, fmt.Sprintf("restart failed on %s: %v", target.Host, err))
+					m.maybeAutoRollback(jobID)
 					return
 				}
 				continue
@@ -253,6 +326,7 @@ func (m *RollingManager) run(ctx context.Context, jobID string, targets []Rollin
 				m.updateStep(jobID, i, RollingStepFailed, RollingStatusFailed, message, restartID)
 				if m.shouldStop(jobID) {
 					m.failJob(jobID, fmt.Sprintf("restart failed on %s: %s", target.Host, message))
+					m.maybeAutoRollback(jobID)
 					return
 				}
 				continue
@@ -288,6 +362,67 @@ func (m *RollingManager) shouldStop(jobID string) bool {
 		return true
 	}
 	return job.StopOnFail
+}
+
+func (m *RollingManager) maybeAutoRollback(jobID string) {
+	job, err := m.Get(jobID)
+	if err != nil || job == nil || !job.AutoRollback || job.RollbackOf != "" {
+		// Never auto-chain rollbacks of rollbacks.
+		return
+	}
+	if job.Status != RollingStatusFailed {
+		return
+	}
+	hasSucceeded := false
+	for _, step := range job.Steps {
+		if step.Status == RollingStatusSucceeded {
+			hasSucceeded = true
+			break
+		}
+	}
+	if !hasSucceeded {
+		return
+	}
+	rollback, err := m.StartRollback(context.Background(), jobID)
+	if err != nil {
+		m.updateJob(jobID, func(j *RollingJob) {
+			if j.Message == "" {
+				j.Message = err.Error()
+			} else {
+				j.Message = j.Message + "; auto-rollback failed: " + err.Error()
+			}
+			j.UpdatedAt = m.now().UTC()
+		})
+		return
+	}
+	m.updateJob(jobID, func(j *RollingJob) {
+		j.RollbackJobID = rollback.ID
+		j.Message = j.Message + "; auto-rollback started as " + rollback.ID
+		j.UpdatedAt = m.now().UTC()
+	})
+}
+
+func reverseSucceededTargets(steps []RollingStep, targets []RollingTarget) []RollingTarget {
+	byHost := map[string]RollingTarget{}
+	for _, target := range targets {
+		byHost[strings.TrimSpace(target.Host)] = target
+	}
+	out := make([]RollingTarget, 0, len(steps))
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		if step.Status != RollingStatusSucceeded {
+			continue
+		}
+		if target, ok := byHost[strings.TrimSpace(step.Host)]; ok {
+			out = append(out, target)
+			continue
+		}
+		out = append(out, RollingTarget{
+			NodeID: step.NodeID,
+			Host:   step.Host,
+		})
+	}
+	return out
 }
 
 func (m *RollingManager) failJob(jobID, message string) {

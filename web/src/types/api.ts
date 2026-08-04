@@ -1219,6 +1219,7 @@ export type ClusterRollingUpgradeRequest = {
   pause_between?: string;
   stop_on_failure?: boolean;
   restart_service?: boolean;
+  auto_rollback?: boolean;
 };
 
 export type ClusterRollingStep = {
@@ -1242,6 +1243,9 @@ export type ClusterRollingJob = {
   finished_at?: string;
   stop_on_failure: boolean;
   restart_service: boolean;
+  auto_rollback?: boolean;
+  rollback_of?: string;
+  rollback_job_id?: string;
 };
 
 export type ClusterTrafficPeer = {
@@ -1256,9 +1260,33 @@ export type ClusterTrafficPeer = {
 export type ClusterTrafficPeersResponse = {
   mode: string;
   peers: ClusterTrafficPeer[];
+  healthy?: ClusterTrafficPeer[];
   selected?: ClusterTrafficPeer;
   ok: boolean;
   status: ClusterStatus;
+};
+
+export type ClusterConfigVersionRecord = {
+  version: string;
+  leader_id: string;
+  message?: string;
+  created_at: string;
+};
+
+export type ClusterConsensusSnapshot = {
+  provider: string;
+  leader_id?: string;
+  local_node_id?: string;
+  local_role?: string;
+  term: number;
+  majority_confirmed: boolean;
+  can_write_config: boolean;
+  online_voters: number;
+  voting_nodes: number;
+  etcd_configured?: boolean;
+  etcd_endpoints?: string[];
+  recent_versions?: ClusterConfigVersionRecord[];
+  reason?: string;
 };
 
 export type ClusterJoinTokenCreateRequest = {

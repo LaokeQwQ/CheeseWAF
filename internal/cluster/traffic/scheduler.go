@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 )
@@ -31,13 +32,20 @@ type Peer struct {
 
 // Scheduler picks among eligible peers.
 type Scheduler struct {
-	mu       sync.Mutex
-	rr       int
-	inflight map[string]int
+	mu              sync.Mutex
+	rr              int
+	inflight        map[string]int
+	circuits        map[string]circuitState
+	circuitFailures int
+	circuitOpenFor  time.Duration
+	pressureLimit   int
+	now             func() time.Time
 }
 
 func NewScheduler() *Scheduler {
-	return &Scheduler{inflight: map[string]int{}}
+	s := &Scheduler{inflight: map[string]int{}}
+	s.ensureAdvanced()
+	return s
 }
 
 // EligiblePeers filters runtime nodes to online WAF nodes that accept traffic.

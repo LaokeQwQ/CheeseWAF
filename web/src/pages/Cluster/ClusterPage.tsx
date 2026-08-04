@@ -3,7 +3,7 @@ import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconf
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { createClusterBootstrapPlan, createClusterJoinToken, fetchClusterAudit, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, fetchClusterTrafficPeers, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask, startClusterRollingUpgrade } from '../../api/client';
+import { createClusterBootstrapPlan, createClusterJoinToken, fetchClusterAudit, fetchClusterConsensus, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, fetchClusterTrafficPeers, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask, startClusterRollingRollback, startClusterRollingUpgrade } from '../../api/client';
 import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterBootstrapPlan, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration, ClusterRollingJob, ClusterTrafficPeersResponse } from '../../types/api';
 
 type ClusterDeployForm = {
@@ -73,6 +73,13 @@ export default function ClusterPage() {
   const { data, isLoading, refetch, isFetching, isError: isStatusError, error: statusError } = useQuery({
     queryKey: ['cluster-status'],
     queryFn: fetchClusterStatus,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+    retry: false,
+  });
+  const { data: consensus } = useQuery({
+    queryKey: ['cluster-consensus'],
+    queryFn: fetchClusterConsensus,
     refetchInterval: 15_000,
     staleTime: 10_000,
     retry: false,
@@ -340,13 +347,25 @@ export default function ClusterPage() {
       pause_between: '3s',
       stop_on_failure: true,
       restart_service: true,
+      auto_rollback: true,
     });
   };
 
-  const loadTrafficPeers = async () => {
+  const loadTrafficPeers = async (mode: string = 'least_conn') => {
     try {
-      const result = await fetchClusterTrafficPeers('least_conn');
+      const result = await fetchClusterTrafficPeers(mode, undefined, mode === 'sticky' ? 'preview-session' : undefined);
       setTrafficPeers(result);
+    } catch (error) {
+      ArcoMessage.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const rollbackRollingJob = async () => {
+    if (!rollingJob?.id) return;
+    try {
+      const job = await startClusterRollingRollback(rollingJob.id);
+      setRollingJob(job);
+      ArcoMessage.success(t('cluster.rollbackStarted', { defaultValue: 'Rollback started' }));
     } catch (error) {
       ArcoMessage.error(error instanceof Error ? error.message : String(error));
     }
@@ -432,6 +451,12 @@ export default function ClusterPage() {
                 <div><span>{t('cluster.wafNodes')}</span><strong>{data.waf_node_count}</strong></div>
                 <div><span>{t('cluster.monitorNodes')}</span><strong>{data.monitor_node_count}</strong></div>
                 <div><span>{t('cluster.consistency')}</span><strong>{consensusLabel(data.consensus_provider, t)}</strong></div>
+                {consensus && (
+                  <>
+                    <div><span>{t('cluster.leader', { defaultValue: 'Leader' })}</span><strong>{consensus.leader_id || '—'}</strong></div>
+                    <div><span>{t('cluster.localRole', { defaultValue: 'Local role' })}</span><strong>{consensus.local_role || '—'}</strong></div>
+                  </>
+                )}
               </div>
               {!data.enabled && (
                 <div className="cluster-empty-action">
@@ -517,21 +542,35 @@ export default function ClusterPage() {
           {rollingJob && (
             <div className="cluster-result-note">
               <strong>{rollingJob.id}</strong> · {rollingJob.status}
+              {rollingJob.rollback_of ? ` · rollback of ${rollingJob.rollback_of}` : ''}
+              {rollingJob.rollback_job_id ? ` · rollback job ${rollingJob.rollback_job_id}` : ''}
               <ul>
                 {rollingJob.steps?.map((step) => (
                   <li key={`${step.index}-${step.host}`}>{step.host}: {step.stage} / {step.status} {step.message ? `— ${step.message}` : ''}</li>
                 ))}
               </ul>
+              {(rollingJob.status === 'failed' || rollingJob.status === 'succeeded') && !rollingJob.rollback_of && (
+                <Button style={{ marginTop: 8 }} onClick={() => void rollbackRollingJob()}>
+                  {t('cluster.startRollback', { defaultValue: 'Start rollback' })}
+                </Button>
+              )}
             </div>
           )}
-          <Button style={{ marginTop: 12 }} onClick={() => void loadTrafficPeers()}>
-            {t('cluster.loadTrafficPeers', { defaultValue: 'Preview traffic peers (least_conn)' })}
-          </Button>
+          <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Button onClick={() => void loadTrafficPeers('least_conn')}>
+              {t('cluster.loadTrafficPeers', { defaultValue: 'Preview traffic peers (least_conn)' })}
+            </Button>
+            <Button onClick={() => void loadTrafficPeers('sticky')}>
+              {t('cluster.loadStickyPeers', { defaultValue: 'Preview sticky peers' })}
+            </Button>
+          </div>
           {trafficPeers && (
             <div className="cluster-result-note">
               <strong>{t('cluster.selectedPeer', { defaultValue: 'Selected peer' })}</strong>
               <span>{trafficPeers.selected?.node_id || '—'} {trafficPeers.selected?.advertise_addr || ''}</span>
               <span>{t('cluster.eligiblePeers', { defaultValue: 'Eligible' })}: {trafficPeers.peers?.length ?? 0}</span>
+              <span>{t('cluster.healthyPeers', { defaultValue: 'Healthy' })}: {trafficPeers.healthy?.length ?? trafficPeers.peers?.length ?? 0}</span>
+              <span>{t('cluster.trafficMode', { defaultValue: 'Mode' })}: {trafficPeers.mode}</span>
             </div>
           )}
         </Card>

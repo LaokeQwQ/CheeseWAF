@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/consensus"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/orchestrate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/traffic"
@@ -196,14 +197,83 @@ func (h *Handler) ClusterTrafficPeers(w http.ResponseWriter, r *http.Request) {
 	}
 	clientIP := remoteIPFromRequest(r)
 	prefer := strings.TrimSpace(r.URL.Query().Get("region"))
-	selected, ok := h.clusterTrafficScheduler().Pick(mode, peers, clientIP, prefer)
+	stickyKey := strings.TrimSpace(r.URL.Query().Get("sticky_key"))
+	if stickyKey == "" {
+		stickyKey = strings.TrimSpace(r.URL.Query().Get("session"))
+	}
+	// report=failure|success updates circuit state for a peer without selecting.
+	if report := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("report"))); report != "" {
+		nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
+		sched := h.clusterTrafficScheduler()
+		switch report {
+		case "failure", "fail":
+			sched.ReportFailure(nodeID)
+		case "success", "ok":
+			sched.ReportSuccess(nodeID)
+		}
+	}
+	healthy := h.clusterTrafficScheduler().FilterHealthy(peers)
+	selected, ok := h.clusterTrafficScheduler().PickAdvanced(mode, peers, clientIP, prefer, stickyKey)
 	writeData(w, map[string]any{
 		"mode":     mode,
 		"peers":    peers,
+		"healthy":  healthy,
 		"selected": selected,
 		"ok":       ok,
 		"status":   cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)),
 	})
+}
+
+// ClusterConsensusStatus returns the built-in coordinator view (leader, role, freeze).
+func (h *Handler) ClusterConsensusStatus(w http.ResponseWriter, r *http.Request) {
+	lang := requestLanguage(r)
+	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
+	nodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	snap := h.clusterConsensusCoordinator().Evaluate(status, nodes)
+	writeData(w, snap)
+}
+
+type clusterConfigVersionRequest struct {
+	Version string `json:"version"`
+	Message string `json:"message"`
+}
+
+// ClusterProposeConfigVersion records a config version on the writable leader.
+func (h *Handler) ClusterProposeConfigVersion(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
+	var req clusterConfigVersionRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	lang := requestLanguage(r)
+	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
+	nodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	rec, err := h.clusterConsensusCoordinator().ProposeConfigVersion(req.Version, req.Message, status, nodes)
+	if err != nil {
+		writeError(w, http.StatusConflict, "CLUSTER_CONSENSUS_REJECTED", err.Error())
+		return
+	}
+	writeData(w, rec)
+}
+
+// ClusterStartRollingRollback starts reverse-order reinstall for a finished rolling job.
+func (h *Handler) ClusterStartRollingRollback(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
+	}
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	job, err := h.clusterRollingManager().StartRollback(r.Context(), id)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "CLUSTER_ROLLING_NOT_FOUND", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "CLUSTER_ROLLING_INVALID", err.Error())
+		return
+	}
+	writeData(w, job)
 }
 
 func (h *Handler) clusterTrafficScheduler() *traffic.Scheduler {
@@ -213,4 +283,26 @@ func (h *Handler) clusterTrafficScheduler() *traffic.Scheduler {
 		h.clusterTraffic = traffic.NewScheduler()
 	}
 	return h.clusterTraffic
+}
+
+func (h *Handler) clusterConsensusCoordinator() *consensus.Coordinator {
+	h.clusterConsensusMu.Lock()
+	defer h.clusterConsensusMu.Unlock()
+	if h.clusterConsensus == nil {
+		provider := "builtin"
+		var etcd []string
+		localID := ""
+		if h.Config != nil {
+			provider = strings.TrimSpace(h.Config.Cluster.Consensus.Provider)
+			etcd = append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...)
+			localID = strings.TrimSpace(h.Config.Cluster.NodeID)
+		}
+		h.clusterConsensus = consensus.NewCoordinator(consensus.Options{
+			Provider:      provider,
+			LocalNodeID:   localID,
+			EtcdEndpoints: etcd,
+			Now:           h.nowUTC,
+		})
+	}
+	return h.clusterConsensus
 }
