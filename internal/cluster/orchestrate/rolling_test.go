@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,14 @@ func (f *fakeDeployStarter) StartInstall(_ context.Context, target RollingTarget
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id := "install-" + target.Host
+	f.calls = append(f.calls, id)
+	return id, nil
+}
+
+func (f *fakeDeployStarter) StartRollbackInstall(_ context.Context, target RollingTarget) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := "rollback-install-" + target.Host
 	f.calls = append(f.calls, id)
 	return id, nil
 }
@@ -108,4 +117,112 @@ func TestRollingUpgradeStopsOnFailure(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for failed rolling job")
+}
+
+func TestRollingAutoRollbackOnFailure(t *testing.T) {
+	starter := &fakeDeployStarter{fail: map[string]bool{"install-b.example": true}}
+	idSeq := 0
+	mgr := NewRollingManager(starter, func() string {
+		idSeq++
+		return fmt.Sprintf("job-rb-%d", idSeq)
+	}, time.Now().UTC)
+
+	stop := true
+	restart := false
+	auto := true
+	job, err := mgr.Start(context.Background(), RollingUpgradeRequest{
+		Targets: []RollingTarget{
+			{Host: "a.example", User: "root"},
+			{Host: "b.example", User: "root"},
+		},
+		StopOnFailure:  &stop,
+		RestartService: &restart,
+		AutoRollback:   &auto,
+		PauseBetween:   "1ms",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := mgr.Get(job.ID)
+		if got.Status == RollingStatusFailed && got.RollbackJobID != "" {
+			rb, err := mgr.Get(got.RollbackJobID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Wait for rollback to finish.
+			rbDeadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(rbDeadline) {
+				rb, _ = mgr.Get(got.RollbackJobID)
+				if rb.Status == RollingStatusSucceeded {
+					if rb.RollbackOf != job.ID {
+						t.Fatalf("rollback_of=%q want %q", rb.RollbackOf, job.ID)
+					}
+					if rb.DeployAction != rollingActionRollbackInstall {
+						t.Fatalf("deploy_action=%q want rollback-install", rb.DeployAction)
+					}
+					if len(rb.Steps) != 1 || rb.Steps[0].Host != "a.example" {
+						t.Fatalf("rollback should only restore succeeded host a: %+v", rb.Steps)
+					}
+					// Rollback must call rollback-install, not install again.
+					foundRollback := false
+					for _, call := range starter.calls {
+						if call == "rollback-install-a.example" {
+							foundRollback = true
+							break
+						}
+					}
+					if !foundRollback {
+						t.Fatalf("expected rollback-install call, calls=%v", starter.calls)
+					}
+					return
+				}
+				if rb.Status == RollingStatusFailed {
+					t.Fatalf("rollback failed: %+v", rb)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Fatal("timed out waiting for rollback job")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for auto-rollback")
+}
+
+func TestStartRollbackManual(t *testing.T) {
+	starter := &fakeDeployStarter{fail: map[string]bool{}}
+	idSeq := 0
+	mgr := NewRollingManager(starter, func() string {
+		idSeq++
+		return fmt.Sprintf("job-m-%d", idSeq)
+	}, time.Now().UTC)
+	restart := false
+	job, err := mgr.Start(context.Background(), RollingUpgradeRequest{
+		Targets: []RollingTarget{
+			{Host: "a.example", User: "root"},
+			{Host: "b.example", User: "root"},
+		},
+		RestartService: &restart,
+		PauseBetween:   "1ms",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := mgr.Get(job.ID)
+		if got.Status == RollingStatusSucceeded {
+			rb, err := mgr.StartRollback(context.Background(), job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rb.RollbackOf != job.ID {
+				t.Fatalf("rollback_of=%q", rb.RollbackOf)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for success before manual rollback")
 }
