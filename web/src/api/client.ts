@@ -539,6 +539,12 @@ export function startClusterRollingRollback(id: string) {
   return unwrap<ClusterRollingJob>(apiClient.post(`/cluster/orchestrate/rolling-upgrade/${encodeURIComponent(id)}/rollback`, {}));
 }
 
+export function reportClusterTrafficPeer(nodeId: string, report: 'failure' | 'success') {
+  return unwrap<{ ok: boolean; node_id: string; report: string }>(
+    apiClient.post('/cluster/traffic/peers/report', { node_id: nodeId, report }),
+  );
+}
+
 export function fetchAPISecEndpoints() {
   return unwrap<APISecSummary>(apiClient.get('/apisec/endpoints'));
 }

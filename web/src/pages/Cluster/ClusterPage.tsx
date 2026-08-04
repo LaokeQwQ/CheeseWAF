@@ -3,7 +3,7 @@ import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconf
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { createClusterBootstrapPlan, createClusterJoinToken, fetchClusterAudit, fetchClusterConsensus, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterStatus, fetchClusterTrafficPeers, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask, startClusterRollingRollback, startClusterRollingUpgrade } from '../../api/client';
+import { createClusterBootstrapPlan, createClusterJoinToken, fetchClusterAudit, fetchClusterConsensus, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterRollingUpgrade, fetchClusterStatus, fetchClusterTrafficPeers, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask, startClusterRollingRollback, startClusterRollingUpgrade } from '../../api/client';
 import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterBootstrapPlan, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration, ClusterRollingJob, ClusterTrafficPeersResponse } from '../../types/api';
 
 type ClusterDeployForm = {
@@ -82,6 +82,31 @@ export default function ClusterPage() {
     queryFn: fetchClusterConsensus,
     refetchInterval: 15_000,
     staleTime: 10_000,
+    retry: false,
+  });
+  const rollingJobID = rollingJob?.id;
+  const rollingNeedsPoll = Boolean(
+    rollingJobID && (rollingJob?.status === 'pending' || rollingJob?.status === 'running' || rollingJob?.rollback_job_id),
+  );
+  useQuery({
+    queryKey: ['cluster-rolling-job', rollingJobID],
+    queryFn: async () => {
+      if (!rollingJobID) return null;
+      const job = await fetchClusterRollingUpgrade(rollingJobID);
+      setRollingJob(job);
+      if (job.rollback_job_id && job.status === 'failed') {
+        try {
+          const rb = await fetchClusterRollingUpgrade(job.rollback_job_id);
+          setRollingJob(rb);
+          return rb;
+        } catch {
+          return job;
+        }
+      }
+      return job;
+    },
+    enabled: rollingNeedsPoll,
+    refetchInterval: rollingNeedsPoll ? 2000 : false,
     retry: false,
   });
   const { data: tokens, isFetching: isFetchingTokens, isError: isTokensError, error: tokensError, refetch: refetchTokens } = useQuery({

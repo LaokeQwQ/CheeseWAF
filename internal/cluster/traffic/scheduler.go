@@ -22,12 +22,12 @@ const (
 
 // Peer is a traffic-eligible WAF node.
 type Peer struct {
-	NodeID        string
-	AdvertiseAddr string
-	Region        string
-	Weight        int
-	Online        bool
-	CanReceive    bool
+	NodeID        string `json:"node_id"`
+	AdvertiseAddr string `json:"advertise_addr"`
+	Region        string `json:"region,omitempty"`
+	Weight        int    `json:"weight"`
+	Online        bool   `json:"online"`
+	CanReceive    bool   `json:"can_receive"`
 }
 
 // Scheduler picks among eligible peers.
@@ -62,7 +62,8 @@ func EligiblePeers(nodes []cluster.RuntimeNodeStatus) []Peer {
 		if addr == "" {
 			continue
 		}
-		weight := 1
+		// Default weight leaves headroom so pressure demotion can reduce it.
+		weight := 4
 		out = append(out, Peer{
 			NodeID:        node.NodeID,
 			AdvertiseAddr: addr,

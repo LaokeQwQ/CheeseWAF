@@ -160,8 +160,11 @@ func (c *Coordinator) ProposeConfigVersion(version, message string, status clust
 	if !snap.CanWriteConfig {
 		return ConfigVersionRecord{}, fmt.Errorf("config writes are frozen: %s", strings.TrimSpace(snap.Reason))
 	}
-	if snap.LocalRole != RoleLeader && snap.LocalNodeID != "" && snap.LeaderID != "" && snap.LocalNodeID != snap.LeaderID {
-		return ConfigVersionRecord{}, fmt.Errorf("only the cluster leader may propose config versions (leader=%s)", snap.LeaderID)
+	if strings.TrimSpace(snap.LocalNodeID) == "" {
+		return ConfigVersionRecord{}, fmt.Errorf("local node id is required to propose config versions")
+	}
+	if snap.LocalRole != RoleLeader {
+		return ConfigVersionRecord{}, fmt.Errorf("only the cluster leader may propose config versions (leader=%s role=%s)", snap.LeaderID, snap.LocalRole)
 	}
 	rec := ConfigVersionRecord{
 		Version:   version,

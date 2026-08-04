@@ -51,6 +51,10 @@ func (s *handlerDeployStarter) StartInstall(ctx context.Context, target orchestr
 	return s.start(ctx, target, "install")
 }
 
+func (s *handlerDeployStarter) StartRollbackInstall(ctx context.Context, target orchestrate.RollingTarget) (string, error) {
+	return s.start(ctx, target, "rollback-install")
+}
+
 func (s *handlerDeployStarter) StartRestart(ctx context.Context, target orchestrate.RollingTarget) (string, error) {
 	return s.start(ctx, target, "restart-service")
 }
@@ -201,19 +205,8 @@ func (h *Handler) ClusterTrafficPeers(w http.ResponseWriter, r *http.Request) {
 	if stickyKey == "" {
 		stickyKey = strings.TrimSpace(r.URL.Query().Get("session"))
 	}
-	// report=failure|success updates circuit state for a peer without selecting.
-	if report := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("report"))); report != "" {
-		nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
-		sched := h.clusterTrafficScheduler()
-		switch report {
-		case "failure", "fail":
-			sched.ReportFailure(nodeID)
-		case "success", "ok":
-			sched.ReportSuccess(nodeID)
-		}
-	}
-	healthy := h.clusterTrafficScheduler().FilterHealthy(peers)
 	selected, ok := h.clusterTrafficScheduler().PickAdvanced(mode, peers, clientIP, prefer, stickyKey)
+	healthy := h.clusterTrafficScheduler().FilterHealthy(peers)
 	writeData(w, map[string]any{
 		"mode":     mode,
 		"peers":    peers,
@@ -222,6 +215,35 @@ func (h *Handler) ClusterTrafficPeers(w http.ResponseWriter, r *http.Request) {
 		"ok":       ok,
 		"status":   cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)),
 	})
+}
+
+type clusterTrafficReportRequest struct {
+	NodeID string `json:"node_id"`
+	Report string `json:"report"` // failure | success
+}
+
+// ClusterTrafficPeerReport records circuit success/failure for a peer (write path).
+func (h *Handler) ClusterTrafficPeerReport(w http.ResponseWriter, r *http.Request) {
+	var req clusterTrafficReportRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	nodeID := strings.TrimSpace(req.NodeID)
+	if nodeID == "" {
+		writeError(w, http.StatusBadRequest, "CLUSTER_TRAFFIC_INVALID", "node_id is required")
+		return
+	}
+	sched := h.clusterTrafficScheduler()
+	switch strings.TrimSpace(strings.ToLower(req.Report)) {
+	case "failure", "fail":
+		sched.ReportFailure(nodeID)
+	case "success", "ok":
+		sched.ReportSuccess(nodeID)
+	default:
+		writeError(w, http.StatusBadRequest, "CLUSTER_TRAFFIC_INVALID", "report must be failure or success")
+		return
+	}
+	writeData(w, map[string]any{"ok": true, "node_id": nodeID, "report": strings.TrimSpace(strings.ToLower(req.Report))})
 }
 
 // ClusterConsensusStatus returns the built-in coordinator view (leader, role, freeze).

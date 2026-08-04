@@ -1246,6 +1246,7 @@ export type ClusterRollingJob = {
   auto_rollback?: boolean;
   rollback_of?: string;
   rollback_job_id?: string;
+  deploy_action?: string;
 };
 
 export type ClusterTrafficPeer = {

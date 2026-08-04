@@ -156,6 +156,7 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:cluster")).Get("/cluster/orchestrate/rolling-upgrade/{id}", h.ClusterGetRollingUpgrade)
 			r.With(require("write:cluster")).Post("/cluster/orchestrate/rolling-upgrade/{id}/rollback", h.ClusterStartRollingRollback)
 			r.With(require("read:cluster")).Get("/cluster/traffic/peers", h.ClusterTrafficPeers)
+			r.With(require("write:cluster")).Post("/cluster/traffic/peers/report", h.ClusterTrafficPeerReport)
 			r.With(require("read:cluster")).Get("/cluster/consensus", h.ClusterConsensusStatus)
 			r.With(require("write:cluster")).Post("/cluster/consensus/config-version", h.ClusterProposeConfigVersion)
 			r.With(require("read:system")).Get("/system/map/china-boundary", h.ChinaMapBoundary)

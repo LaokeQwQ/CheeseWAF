@@ -70,21 +70,30 @@ type RollingJob struct {
 	StopOnFail   bool          `json:"stop_on_failure"`
 	Restart      bool          `json:"restart_service"`
 	AutoRollback bool          `json:"auto_rollback"`
-	// RollbackOf links a reverse-order reinstall job to the failed upgrade it repairs.
+	// RollbackOf links a reverse-order restore job to the failed upgrade it repairs.
 	RollbackOf string `json:"rollback_of,omitempty"`
 	// RollbackJobID is filled when auto-rollback starts a follow-up job.
-	RollbackJobID string        `json:"rollback_job_id,omitempty"`
-	PauseBetween  time.Duration `json:"-"`
+	RollbackJobID string `json:"rollback_job_id,omitempty"`
+	// DeployAction is install for upgrades and rollback-install for backup restore.
+	DeployAction string        `json:"deploy_action,omitempty"`
+	PauseBetween time.Duration `json:"-"`
 	// targets retains credentials for rollback; never serialized to clients.
 	targets []RollingTarget `json:"-"`
 }
 
-// DeployStarter starts a single-host deploy task (install / restart).
+// DeployStarter starts a single-host deploy task (install / rollback / restart).
 type DeployStarter interface {
 	StartInstall(ctx context.Context, target RollingTarget) (taskID string, err error)
+	// StartRollbackInstall restores the newest remote binary backup (rollback-install).
+	StartRollbackInstall(ctx context.Context, target RollingTarget) (taskID string, err error)
 	StartRestart(ctx context.Context, target RollingTarget) (taskID string, err error)
 	WaitTask(ctx context.Context, taskID string) (ok bool, message string, err error)
 }
+
+const (
+	rollingActionInstall         = "install"
+	rollingActionRollbackInstall = "rollback-install"
+)
 
 // RollingManager runs sequential rolling upgrades.
 type RollingManager struct {
@@ -158,6 +167,7 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 		StopOnFail:   stopOnFail,
 		Restart:      restart,
 		AutoRollback: autoRollback,
+		DeployAction: rollingActionInstall,
 		PauseBetween: pause,
 		Steps:        make([]RollingStep, 0, len(req.Targets)),
 		targets:      targetsCopy,
@@ -180,7 +190,8 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 	return m.Get(job.ID)
 }
 
-// StartRollback rebuilds previously succeeded hosts from a finished job in reverse order.
+// StartRollback restores previously succeeded hosts from a finished job in reverse order.
+// Each host uses rollback-install (newest remote backup), not a fresh install of the new binary.
 func (m *RollingManager) StartRollback(ctx context.Context, jobID string) (*RollingJob, error) {
 	if m == nil {
 		return nil, fmt.Errorf("rolling upgrade manager is unavailable")
@@ -192,19 +203,38 @@ func (m *RollingManager) StartRollback(ctx context.Context, jobID string) (*Roll
 	if src.Status == RollingStatusPending || src.Status == RollingStatusRunning {
 		return nil, fmt.Errorf("cannot roll back a job that is still running")
 	}
+	if strings.TrimSpace(src.RollbackJobID) != "" {
+		return m.Get(src.RollbackJobID)
+	}
+	if src.DeployAction == rollingActionRollbackInstall || strings.TrimSpace(src.RollbackOf) != "" {
+		return nil, fmt.Errorf("cannot roll back a rollback job")
+	}
 	m.mu.Lock()
 	stored, ok := m.jobs[strings.TrimSpace(jobID)]
 	if !ok {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("rolling upgrade job not found")
 	}
+	if strings.TrimSpace(stored.RollbackJobID) != "" {
+		existing := stored.RollbackJobID
+		m.mu.Unlock()
+		return m.Get(existing)
+	}
 	targets := append([]RollingTarget(nil), stored.targets...)
 	pause := stored.PauseBetween
 	restart := stored.Restart
+	// Reserve the rollback slot before spawning so concurrent calls do not double-start.
+	placeholderID := m.newID()
+	stored.RollbackJobID = placeholderID
 	m.mu.Unlock()
 
 	reversed := reverseSucceededTargets(src.Steps, targets)
 	if len(reversed) == 0 {
+		m.updateJob(src.ID, func(j *RollingJob) {
+			if j.RollbackJobID == placeholderID {
+				j.RollbackJobID = ""
+			}
+		})
 		return nil, fmt.Errorf("no succeeded targets available to roll back")
 	}
 	stop := true
@@ -213,24 +243,38 @@ func (m *RollingManager) StartRollback(ctx context.Context, jobID string) (*Roll
 	if pause > 0 {
 		pauseStr = pause.String()
 	}
-	job, err := m.Start(ctx, RollingUpgradeRequest{
-		Targets:        reversed,
-		PauseBetween:   pauseStr,
-		StopOnFailure:  &stop,
-		RestartService: &restart,
-		AutoRollback:   &auto,
-	})
-	if err != nil {
-		return nil, err
+	// Build rollback job with reserved id and rollback-install action.
+	now := m.now().UTC()
+	job := &RollingJob{
+		ID:           placeholderID,
+		Status:       RollingStatusPending,
+		StartedAt:    now,
+		UpdatedAt:    now,
+		StopOnFail:   stop,
+		Restart:      restart,
+		AutoRollback: auto,
+		DeployAction: rollingActionRollbackInstall,
+		RollbackOf:   src.ID,
+		Message:      fmt.Sprintf("rollback of %s (restore remote backups)", src.ID),
+		PauseBetween: pause,
+		Steps:        make([]RollingStep, 0, len(reversed)),
+		targets:      append([]RollingTarget(nil), reversed...),
 	}
-	m.updateJob(job.ID, func(j *RollingJob) {
-		j.RollbackOf = src.ID
-		j.Message = fmt.Sprintf("rollback of %s", src.ID)
-	})
-	m.updateJob(src.ID, func(j *RollingJob) {
-		j.RollbackJobID = job.ID
-		j.UpdatedAt = m.now().UTC()
-	})
+	for i, target := range reversed {
+		job.Steps = append(job.Steps, RollingStep{
+			Index:     i,
+			NodeID:    strings.TrimSpace(target.NodeID),
+			Host:      strings.TrimSpace(target.Host),
+			Stage:     RollingStepQueued,
+			Status:    RollingStatusPending,
+			UpdatedAt: now,
+		})
+	}
+	_ = pauseStr // pause already applied on job
+	m.mu.Lock()
+	m.jobs[job.ID] = job
+	m.mu.Unlock()
+	go m.run(context.Background(), job.ID, reversed)
 	return m.Get(job.ID)
 }
 
@@ -275,12 +319,17 @@ func (m *RollingManager) run(ctx context.Context, jobID string, targets []Rollin
 			m.failJob(jobID, "rolling upgrade cancelled")
 			return
 		}
-		m.updateStep(jobID, i, RollingStepInstalling, RollingStatusRunning, "uploading and installing binary", "")
-		taskID, err := m.starter.StartInstall(ctx, target)
+		action := m.deployAction(jobID)
+		stageLabel := "uploading and installing binary"
+		if action == rollingActionRollbackInstall {
+			stageLabel = "restoring newest binary backup"
+		}
+		m.updateStep(jobID, i, RollingStepInstalling, RollingStatusRunning, stageLabel, "")
+		taskID, err := m.startDeploy(ctx, action, target)
 		if err != nil {
 			m.updateStep(jobID, i, RollingStepFailed, RollingStatusFailed, err.Error(), taskID)
 			if m.shouldStop(jobID) {
-				m.failJob(jobID, fmt.Sprintf("install failed on %s: %v", target.Host, err))
+				m.failJob(jobID, fmt.Sprintf("%s failed on %s: %v", action, target.Host, err))
 				m.maybeAutoRollback(jobID)
 				return
 			}
@@ -292,11 +341,11 @@ func (m *RollingManager) run(ctx context.Context, jobID string, targets []Rollin
 				message = err.Error()
 			}
 			if message == "" {
-				message = "install task failed"
+				message = action + " task failed"
 			}
 			m.updateStep(jobID, i, RollingStepFailed, RollingStatusFailed, message, taskID)
 			if m.shouldStop(jobID) {
-				m.failJob(jobID, fmt.Sprintf("install failed on %s: %s", target.Host, message))
+				m.failJob(jobID, fmt.Sprintf("%s failed on %s: %s", action, target.Host, message))
 				m.maybeAutoRollback(jobID)
 				return
 			}
@@ -362,6 +411,21 @@ func (m *RollingManager) shouldStop(jobID string) bool {
 		return true
 	}
 	return job.StopOnFail
+}
+
+func (m *RollingManager) deployAction(jobID string) string {
+	job, err := m.Get(jobID)
+	if err != nil || job == nil || strings.TrimSpace(job.DeployAction) == "" {
+		return rollingActionInstall
+	}
+	return job.DeployAction
+}
+
+func (m *RollingManager) startDeploy(ctx context.Context, action string, target RollingTarget) (string, error) {
+	if action == rollingActionRollbackInstall {
+		return m.starter.StartRollbackInstall(ctx, target)
+	}
+	return m.starter.StartInstall(ctx, target)
 }
 
 func (m *RollingManager) maybeAutoRollback(jobID string) {

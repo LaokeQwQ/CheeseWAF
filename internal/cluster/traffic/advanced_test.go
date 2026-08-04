@@ -1,6 +1,8 @@
 package traffic
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,5 +61,42 @@ func TestReportSuccessClearsCircuit(t *testing.T) {
 	s.ReportSuccess("a")
 	if healthy := s.FilterHealthy(peers); len(healthy) != 2 {
 		t.Fatalf("expected circuit clear, healthy=%+v", healthy)
+	}
+}
+
+func TestPeerJSONSnakeCase(t *testing.T) {
+	raw, err := json.Marshal(Peer{
+		NodeID: "waf-a", AdvertiseAddr: "10.0.0.1:1", Region: "cn", Weight: 4, Online: true, CanReceive: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	for _, key := range []string{`"node_id"`, `"advertise_addr"`, `"can_receive"`} {
+		if !strings.Contains(s, key) {
+			t.Fatalf("missing %s in %s", key, s)
+		}
+	}
+	if strings.Contains(s, `"NodeID"`) {
+		t.Fatalf("PascalCase leaked: %s", s)
+	}
+}
+
+func TestPressureDemotesWeight(t *testing.T) {
+	s := NewScheduler()
+	s.ConfigureAdvanced(AdvancedOptions{PressureLimit: 4})
+	peers := []Peer{{NodeID: "a", AdvertiseAddr: "a", Weight: 4}, {NodeID: "b", AdvertiseAddr: "b", Weight: 4}}
+	for i := 0; i < 4; i++ {
+		s.Acquire("a")
+	}
+	healthy := s.FilterHealthy(peers)
+	var a Peer
+	for _, p := range healthy {
+		if p.NodeID == "a" {
+			a = p
+		}
+	}
+	if a.Weight != 1 {
+		t.Fatalf("pressure should demote weight to 1, got %d", a.Weight)
 	}
 }
