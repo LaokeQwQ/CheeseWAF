@@ -6,7 +6,10 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    // Fork per file so CSSTransition timers cannot fire after another suite tears down jsdom.
     pool: 'forks',
+    isolate: true,
+    fileParallelism: false,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary'],
