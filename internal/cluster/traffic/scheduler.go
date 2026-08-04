@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 )
@@ -21,23 +22,30 @@ const (
 
 // Peer is a traffic-eligible WAF node.
 type Peer struct {
-	NodeID        string
-	AdvertiseAddr string
-	Region        string
-	Weight        int
-	Online        bool
-	CanReceive    bool
+	NodeID        string `json:"node_id"`
+	AdvertiseAddr string `json:"advertise_addr"`
+	Region        string `json:"region,omitempty"`
+	Weight        int    `json:"weight"`
+	Online        bool   `json:"online"`
+	CanReceive    bool   `json:"can_receive"`
 }
 
 // Scheduler picks among eligible peers.
 type Scheduler struct {
-	mu       sync.Mutex
-	rr       int
-	inflight map[string]int
+	mu              sync.Mutex
+	rr              int
+	inflight        map[string]int
+	circuits        map[string]circuitState
+	circuitFailures int
+	circuitOpenFor  time.Duration
+	pressureLimit   int
+	now             func() time.Time
 }
 
 func NewScheduler() *Scheduler {
-	return &Scheduler{inflight: map[string]int{}}
+	s := &Scheduler{inflight: map[string]int{}}
+	s.ensureAdvanced()
+	return s
 }
 
 // EligiblePeers filters runtime nodes to online WAF nodes that accept traffic.
@@ -54,7 +62,8 @@ func EligiblePeers(nodes []cluster.RuntimeNodeStatus) []Peer {
 		if addr == "" {
 			continue
 		}
-		weight := 1
+		// Default weight leaves headroom so pressure demotion can reduce it.
+		weight := 4
 		out = append(out, Peer{
 			NodeID:        node.NodeID,
 			AdvertiseAddr: addr,
