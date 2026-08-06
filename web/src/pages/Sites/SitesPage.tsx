@@ -335,7 +335,7 @@ export default function SitesPage() {
           </div>
         )}
       >
-        <Steps current={step + 1} size="small" className="setup-steps">
+        <Steps current={step} size="small" className="setup-steps">
           <Steps.Step title={t('sites.stepBasic')} icon={<Network size={16} />} />
           <Steps.Step title={t('sites.stepTls')} icon={<LockKeyhole size={16} />} />
           <Steps.Step title={t('sites.stepProtection')} icon={<ShieldCheck size={16} />} />
