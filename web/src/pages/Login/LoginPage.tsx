@@ -1,4 +1,4 @@
-import { Button, Form, Input, Message as ArcoMessage, Modal, Select } from '@arco-design/web-react';
+import { Button, Form, Input, Message as ArcoMessage, Modal, Select } from '../../ui';
 import '../../styles/arco-components';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { TFunction } from 'i18next';

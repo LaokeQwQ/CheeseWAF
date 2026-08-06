@@ -6,7 +6,7 @@ import {
   Select,
   Switch,
   Tag,
-} from '@arco-design/web-react';
+} from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Clock3, RefreshCw, RotateCw } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';

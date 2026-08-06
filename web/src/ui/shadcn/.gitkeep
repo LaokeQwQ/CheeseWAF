@@ -1,0 +1,2 @@
+# Reserved for secondary design-system pieces (shadcn) when Appica lacks a control.
+# Pages must import only via web/src/ui, never from this folder directly.

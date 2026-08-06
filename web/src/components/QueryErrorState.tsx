@@ -1,4 +1,4 @@
-import { Button } from '@arco-design/web-react';
+import { Button } from '../ui';
 import { useTranslation } from 'react-i18next';
 
 type Props = {

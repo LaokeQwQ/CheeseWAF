@@ -1,4 +1,4 @@
-import { Button, Empty, Input, Message, Modal, Select, Skeleton, Switch, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, Message, Modal, Select, Skeleton, Switch, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cloud, Eye, FileImage, HardDrive, RefreshCw, Save, ShieldAlert, ShieldX, Trash2, Upload } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';

@@ -1,4 +1,4 @@
-import { Button, Radio, Table, Tag } from '@arco-design/web-react';
+import { Button, Radio, Table, Tag } from '../../ui';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';

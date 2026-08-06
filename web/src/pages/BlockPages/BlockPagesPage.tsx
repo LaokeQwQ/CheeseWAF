@@ -1,4 +1,4 @@
-import { Button, Empty, Input, Message as ArcoMessage, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, Message as ArcoMessage, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';

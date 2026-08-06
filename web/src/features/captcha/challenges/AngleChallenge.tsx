@@ -16,7 +16,7 @@ export function AngleChallenge({ challenge, disabled, label, onChange, onComplet
   const resolvedLabel = label || 'Drag the slider until the image is upright';
   const [value, setValue] = useState(0);
   const started = useRef(performance.now());
-  const pointer = useRef<number>();
+  const pointer = useRef<number | undefined>(undefined);
   const operation = useRef<CaptchaTrackPoint[]>([]);
   const completedDuration = () => Math.max(duration(started.current), challenge.minDurationMs ?? 0);
   const initial = challenge.initialAngle ?? 180;

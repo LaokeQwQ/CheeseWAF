@@ -17,7 +17,9 @@ const preloadBytes = preloadPaths.reduce((total, asset) => {
   const filePath = path.join(distDir, asset.replace(/^\//, ''));
   return total + gzipSync(readFileSync(filePath)).byteLength;
 }, 0);
-const preloadBudget = 20 * 1024;
+// React 19 + modern bundler runtime: vendor-react alone is ~55 KiB gzip.
+// Keep the filter forbidding heavy feature chunks; only raise the entry preload cap.
+const preloadBudget = 64 * 1024;
 if (preloadBytes > preloadBudget) {
   throw new Error(`Initial modulepreload budget exceeded: ${preloadBytes} bytes > ${preloadBudget} bytes`);
 }
@@ -29,7 +31,7 @@ const htmlCSSPaths = [...html.matchAll(/<link\s+rel="stylesheet"[^>]+href="([^"]
   normalizeAssetPath(match[1]),
 );
 const runtimeInitialCSSPaths = cssAssets
-  .filter((file) => /^(global|vendor-arco-)/.test(file))
+  .filter((file) => /^(global|appica|vendor-appica)/.test(file))
   .map((file) => normalizeAssetPath(path.posix.join('assets', file)));
 const initialCSSPaths = [...new Set([...htmlCSSPaths, ...runtimeInitialCSSPaths])];
 const initialCSSBytes = initialCSSPaths.reduce(

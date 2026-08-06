@@ -1,4 +1,4 @@
-import { Button, Message as ArcoMessage, Space, Spin, Tag } from '@arco-design/web-react';
+import { Button, Message as ArcoMessage, Space, Spin, Tag } from '../../ui';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';

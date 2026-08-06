@@ -1,4 +1,4 @@
-import { Button, Empty, Input, InputNumber, Message as ArcoMessage, Select, Space, Switch, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, InputNumber, Message as ArcoMessage, Select, Space, Switch, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CloudDownload, Plus, ShieldAlert, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';

@@ -1,4 +1,4 @@
-import { Button, Checkbox, Form, Input, Message as ArcoMessage, Radio, Select, Steps } from '@arco-design/web-react';
+import { Button, Checkbox, Form, Input, Message as ArcoMessage, Radio, Select, Steps } from '../../ui';
 import '../../styles/arco-components';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';

@@ -1,4 +1,4 @@
-import { Tag } from '@arco-design/web-react';
+import { Tag } from '../ui';
 import { Activity, Gauge, Layers3, ShieldCheck } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';

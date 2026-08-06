@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconfirm, Radio, Select, Spin, Steps, Table, Tag, Typography } from '@arco-design/web-react';
+import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconfirm, Radio, Select, Spin, Steps, Table, Tag, Typography } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -347,7 +347,7 @@ export default function ClusterPage() {
   const submitBootstrapPlan = async () => {
     const values = await bootstrapForm.validate();
     bootstrapMutation.mutate({
-      role: values.role || 'waf',
+      role: String(values.role || 'waf'),
       node_id: String(values.nodeId || '').trim(),
       controller_url: String(values.controllerUrl || '').trim(),
       advertise_addr: String(values.advertiseAddr || '').trim(),

@@ -10,7 +10,7 @@ import {
   Table,
   Tabs,
   Tag,
-} from '@arco-design/web-react';
+} from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Database, Image, KeyRound, MapPinned, Plus, ServerCog, ShieldAlert, Trash2 } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';

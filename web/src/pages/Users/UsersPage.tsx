@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Modal, Pagination, Select, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, Message as ArcoMessage, Modal, Pagination, Select, Table, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode';

@@ -1,4 +1,4 @@
-import { Tag } from '@arco-design/web-react';
+import { Tag } from '../ui';
 import { useTranslation } from 'react-i18next';
 import type { AttackAnalysis } from '../types/api';
 import SafeMarkdown from './SafeMarkdown';

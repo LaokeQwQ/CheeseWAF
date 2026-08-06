@@ -17,8 +17,8 @@ const messageMocks = vi.hoisted(() => ({
 
 const navigateMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
+vi.mock('../../ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../ui')>();
   return {
     ...actual,
     Message: messageMocks,

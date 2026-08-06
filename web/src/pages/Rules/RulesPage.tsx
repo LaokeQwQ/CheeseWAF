@@ -1,4 +1,4 @@
-import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Select, Switch, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Select, Switch, Table, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';

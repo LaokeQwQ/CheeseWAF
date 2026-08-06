@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Input, Menu, Message as ArcoMessage, Modal, Pagination, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Dropdown, Input, Menu, Message as ArcoMessage, Modal, Pagination, Select, Space, Tag, Tooltip } from '../ui';
 import '../styles/arco-components';
 import '../styles/console-layout-hardening.css';
 import {

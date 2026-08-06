@@ -1,4 +1,4 @@
-import { Button, DatePicker, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, DatePicker, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '../../ui';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';

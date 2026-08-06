@@ -1,4 +1,4 @@
-import { Progress, Table, Tag } from '@arco-design/web-react';
+import { Progress, Table, Tag } from '../../ui';
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';

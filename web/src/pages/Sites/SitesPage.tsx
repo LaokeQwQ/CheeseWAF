@@ -11,7 +11,7 @@ import {
   Switch,
   Table,
   Tag,
-} from '@arco-design/web-react';
+} from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, LockKeyhole, Network, Plus, Route, Server, ShieldCheck } from 'lucide-react';
 import { useMemo, useState } from 'react';

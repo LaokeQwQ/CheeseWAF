@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, InputNumber, Message as ArcoMessage, Modal, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
+import { Button, Input, InputNumber, Message as ArcoMessage, Modal, Popover, Select, Space, Switch, Table, Tabs, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';

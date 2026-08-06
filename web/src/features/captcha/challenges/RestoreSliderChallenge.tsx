@@ -13,7 +13,7 @@ export const restoreOffsetForSlider=(initial:number,max:number,value:number)=>in
 
 export function RestoreSliderChallenge({challenge,disabled,label,onChange,onComplete}:RestoreSliderChallengeProps){
   const resolvedLabel=label||'Drag the slider to align the image halves';
-  const [value,setValue]=useState(5000); const started=useRef(performance.now()); const pointer=useRef<number>(); const operation=useRef<CaptchaTrackPoint[]>([]);
+  const [value,setValue]=useState(5000); const started=useRef(performance.now()); const pointer=useRef<number | undefined>(undefined); const operation=useRef<CaptchaTrackPoint[]>([]);
   const moving=challenge.movingPart??'top'; const max=challenge.maxOffsetPercent??32; const initial=challenge.initialOffsetPercent??-max;
   const offset=restoreOffsetForSlider(initial,max,value); const answer=():RestoreSliderAnswer=>{const durationMs=elapsed(started.current);const point={x:value,y:5000};return{offset:Math.round(offset*100)/100,point,track:appendTrack(operation.current,trackPoint(point,durationMs,'up')),durationMs}};
   const width=challenge.width??320,height=challenge.height??180;

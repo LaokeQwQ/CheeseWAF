@@ -1,4 +1,4 @@
-import { Button, Input, Message as ArcoMessage, Select, Switch } from '@arco-design/web-react';
+import { Button, Input, Message as ArcoMessage, Select, Switch } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
