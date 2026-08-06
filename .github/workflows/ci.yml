@@ -199,8 +199,8 @@ jobs:
       - name: Audit web dependencies
         working-directory: web
         # Gate with documented allowlist (see web/scripts/npm-audit-gate.mjs).
-        # Do not use bare `npm audit --audit-level=high` until React 19 + RR 8.3
-        # lands; that upgrade is blocked on Arco React 19 support.
+        # Admin UI is Appica + React 19; remaining allowlist covers react-router 7
+        # RSC advisory until an intentional upgrade to react-router 8.3+.
         run: node scripts/npm-audit-gate.mjs
 
   security-corpus:

@@ -97,6 +97,9 @@ export default defineConfig({
   },
 });
 
+// Only runtime + React on the critical preload path. vendor-appica is still
+// imported by the entry (ThemeProvider in App.tsx) but must not modulepreload —
+// it is large and discovered via the module graph after bootstrap.
 function isCriticalEntryPreload(dependency: string) {
   return dependency.includes('rolldown-runtime') || dependency.includes('vendor-react');
 }

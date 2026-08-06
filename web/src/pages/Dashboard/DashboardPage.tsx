@@ -1,4 +1,4 @@
-import { Button, DatePicker, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '../../ui';
+import { Button, DatePicker, Message, Progress, Select, Spin, Tag, Tooltip } from '../../ui';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -100,13 +100,13 @@ export default function DashboardPage() {
       const actions = Array.isArray(result.actions) ? result.actions : [];
       const message = `${t('dashboard.reclaimResult')}: ${actions.filter((item) => item.ok).length}/${actions.length}`;
       if (result.ok) {
-        ArcoMessage.success(message);
+        Message.success(message);
       } else {
-        ArcoMessage.warning(message);
+        Message.warning(message);
       }
       queryClient.invalidateQueries({ queryKey: ['monitor-summary'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const snapshot = monitor?.snapshot;
   const entries = Array.isArray(periodLogs?.items) ? periodLogs.items : [];

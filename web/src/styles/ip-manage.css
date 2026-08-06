@@ -60,7 +60,9 @@
   width: 100%;
 }
 
-.ip-manage-page .ip-access-table .arco-table-td {
+.ip-manage-page .ip-access-table .arco-table-td,
+.ip-manage-page .ip-access-table [data-slot='table-cell'],
+.ip-manage-page .ip-access-table td {
   vertical-align: top;
 }
 
@@ -145,7 +147,9 @@
 .ip-manage-page .ip-row-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
 .ip-manage-page .ip-row-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled),
 .ip-manage-page .ip-entry-card-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
-.ip-manage-page .ip-entry-card-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled) {
+.ip-manage-page .ip-entry-card-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled),
+.ip-manage-page .ip-row-actions [data-slot='button']:not([data-variant='primary']):not([data-variant='destructive']):not([data-variant='link']):not(:disabled),
+.ip-manage-page .ip-entry-card-actions [data-slot='button']:not([data-variant='primary']):not([data-variant='destructive']):not([data-variant='link']):not(:disabled) {
   color: var(--text);
   background: color-mix(in srgb, var(--surface) 92%, var(--surface-soft));
   border-color: color-mix(in srgb, var(--border) 86%, var(--text-muted));
@@ -156,21 +160,27 @@
 .ip-manage-page .ip-row-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
 .ip-manage-page .ip-row-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover,
 .ip-manage-page .ip-entry-card-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
-.ip-manage-page .ip-entry-card-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover {
+.ip-manage-page .ip-entry-card-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover,
+.ip-manage-page .ip-row-actions [data-slot='button']:not([data-variant='primary']):not([data-variant='destructive']):not([data-variant='link']):not(:disabled):hover,
+.ip-manage-page .ip-entry-card-actions [data-slot='button']:not([data-variant='primary']):not([data-variant='destructive']):not([data-variant='link']):not(:disabled):hover {
   color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
 
 .ip-manage-page .ip-row-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
-.ip-manage-page .ip-entry-card-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled) {
+.ip-manage-page .ip-entry-card-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
+.ip-manage-page .ip-row-actions [data-slot='button'][data-variant='destructive']:not(:disabled),
+.ip-manage-page .ip-entry-card-actions [data-slot='button'][data-variant='destructive']:not(:disabled) {
   color: var(--accent-danger);
   background: color-mix(in srgb, var(--accent-danger) 8%, var(--surface));
   border-color: color-mix(in srgb, var(--accent-danger) 18%, var(--border));
 }
 
 .ip-manage-page .ip-row-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
-.ip-manage-page .ip-entry-card-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover {
+.ip-manage-page .ip-entry-card-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
+.ip-manage-page .ip-row-actions [data-slot='button'][data-variant='destructive']:not(:disabled):hover,
+.ip-manage-page .ip-entry-card-actions [data-slot='button'][data-variant='destructive']:not(:disabled):hover {
   color: var(--accent-danger);
   background: color-mix(in srgb, var(--accent-danger) 13%, var(--surface));
   border-color: color-mix(in srgb, var(--accent-danger) 32%, var(--border));
@@ -183,17 +193,24 @@
   border-radius: 8px;
 }
 
-.ip-manage-page .ip-entries-table .arco-table {
+.ip-manage-page .ip-entries-table .arco-table,
+.ip-manage-page .ip-entries-table [data-slot='table'],
+.ip-manage-page .ip-entries-table table {
   min-width: 1020px;
 }
 
-.ip-manage-page .ip-entries-table .arco-table-container {
+.ip-manage-page .ip-entries-table .arco-table-container,
+.ip-manage-page .ip-entries-table [data-slot='table'] {
   overflow-x: auto;
   overscroll-behavior-inline: contain;
 }
 
 .ip-manage-page .ip-entries-table .arco-table-th,
-.ip-manage-page .ip-entries-table .arco-table-td {
+.ip-manage-page .ip-entries-table .arco-table-td,
+.ip-manage-page .ip-entries-table [data-slot='table-head'],
+.ip-manage-page .ip-entries-table [data-slot='table-cell'],
+.ip-manage-page .ip-entries-table th,
+.ip-manage-page .ip-entries-table td {
   white-space: nowrap;
 }
 
@@ -230,7 +247,8 @@
   border-bottom: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
 }
 
-.ip-manage-page .provider-card-head > .arco-switch {
+.ip-manage-page .provider-card-head > .arco-switch,
+.ip-manage-page .provider-card-head > [data-slot='switch'] {
   width: auto;
   justify-self: start;
   align-self: center;
@@ -262,7 +280,9 @@
   gap: 6px;
 }
 
-.ip-manage-page .provider-actions .arco-btn {
+.ip-manage-page .provider-actions .arco-btn,
+.ip-manage-page .provider-actions .arco-button,
+.ip-manage-page .provider-actions [data-slot='button'] {
   width: auto;
   min-width: 72px;
   flex: 0 0 auto;
@@ -528,7 +548,8 @@
 }
 
 .ip-manage-page .ip-entry-card-actions .arco-btn,
-.ip-manage-page .ip-entry-card-actions .arco-button {
+.ip-manage-page .ip-entry-card-actions .arco-button,
+.ip-manage-page .ip-entry-card-actions [data-slot='button'] {
   flex: 1 1 104px;
   justify-content: center;
   white-space: nowrap;
@@ -664,7 +685,9 @@
   min-width: 112px;
 }
 
-.ip-manage-page .ip-access-table .arco-table {
+.ip-manage-page .ip-access-table .arco-table,
+.ip-manage-page .ip-access-table [data-slot='table'],
+.ip-manage-page .ip-access-table table {
   min-width: 860px;
 }
 
@@ -914,11 +937,14 @@
   }
 
 .ip-manage-page .ip-entry-card-actions .arco-btn:nth-child(3),
-.ip-manage-page .ip-entry-card-actions .arco-button:nth-child(3) {
+.ip-manage-page .ip-entry-card-actions .arco-button:nth-child(3),
+.ip-manage-page .ip-entry-card-actions [data-slot='button']:nth-child(3) {
     grid-column: 1 / -1;
   }
 
-.ip-manage-page .ip-entry-card-actions .arco-btn {
+.ip-manage-page .ip-entry-card-actions .arco-btn,
+.ip-manage-page .ip-entry-card-actions .arco-button,
+.ip-manage-page .ip-entry-card-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -938,7 +964,8 @@
     align-items: center;
   }
 
-.ip-manage-page .provider-card-head > .arco-switch {
+.ip-manage-page .provider-card-head > .arco-switch,
+.ip-manage-page .provider-card-head > [data-slot='switch'] {
     grid-column: 1;
     grid-row: 1;
   }
@@ -975,7 +1002,8 @@
   }
 
 .ip-manage-page .provider-actions .arco-btn,
-.ip-manage-page .provider-actions .arco-button {
+.ip-manage-page .provider-actions .arco-button,
+.ip-manage-page .provider-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -998,7 +1026,9 @@
     max-height: none;
   }
 
-.ip-manage-page .ip-entry-card-actions .arco-btn {
+.ip-manage-page .ip-entry-card-actions .arco-btn,
+.ip-manage-page .ip-entry-card-actions .arco-button,
+.ip-manage-page .ip-entry-card-actions [data-slot='button'] {
     flex: 1 1 92px;
   }
 }
@@ -1059,7 +1089,8 @@
 }
 
 .ip-manage-page .provider-actions .arco-btn,
-.ip-manage-page .provider-actions .arco-button {
+.ip-manage-page .provider-actions .arco-button,
+.ip-manage-page .provider-actions [data-slot='button'] {
   min-width: 66px;
 }
 
@@ -1148,7 +1179,8 @@
   }
 
 .ip-manage-page .provider-actions .arco-btn,
-.ip-manage-page .provider-actions .arco-button {
+.ip-manage-page .provider-actions .arco-button,
+.ip-manage-page .provider-actions [data-slot='button'] {
     width: 100%;
     min-width: 0;
     min-height: 32px;
@@ -1277,7 +1309,8 @@
   }
 
 .ip-manage-page .provider-actions .arco-btn,
-.ip-manage-page .provider-actions .arco-button {
+.ip-manage-page .provider-actions .arco-button,
+.ip-manage-page .provider-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -1301,7 +1334,9 @@
   gap: 8px;
 }
 
-.ip-manage-page .provider-actions .arco-btn {
+.ip-manage-page .provider-actions .arco-btn,
+.ip-manage-page .provider-actions .arco-button,
+.ip-manage-page .provider-actions [data-slot='button'] {
   min-width: 68px;
 }
 
@@ -1320,7 +1355,9 @@
     justify-content: stretch;
   }
 
-.ip-manage-page .provider-actions .arco-btn {
+.ip-manage-page .provider-actions .arco-btn,
+.ip-manage-page .provider-actions .arco-button,
+.ip-manage-page .provider-actions [data-slot='button'] {
     flex: 1 1 auto;
   }
 }
@@ -1331,7 +1368,9 @@
     grid-template-columns: 1fr;
   }
 
-.ip-manage-page .provider-actions .arco-btn {
+.ip-manage-page .provider-actions .arco-btn,
+.ip-manage-page .provider-actions .arco-button,
+.ip-manage-page .provider-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -1400,7 +1439,8 @@
 }
 
 .ip-manage-page .ip-header-actions .arco-btn,
-.ip-manage-page .ip-header-actions .arco-button {
+.ip-manage-page .ip-header-actions .arco-button,
+.ip-manage-page .ip-header-actions [data-slot='button'] {
   min-width: 74px;
   width: auto;
   justify-content: center;
@@ -1421,7 +1461,8 @@
   }
 
 .ip-manage-page .ip-header-actions .arco-btn,
-.ip-manage-page .ip-header-actions .arco-button {
+.ip-manage-page .ip-header-actions .arco-button,
+.ip-manage-page .ip-header-actions [data-slot='button'] {
     width: 100% !important;
     min-width: 0;
     height: 34px;
@@ -1431,7 +1472,8 @@
   }
 
 .ip-manage-page .ip-header-actions .arco-btn svg,
-.ip-manage-page .ip-header-actions .arco-button svg {
+.ip-manage-page .ip-header-actions .arco-button svg,
+.ip-manage-page .ip-header-actions [data-slot='button'] svg {
     width: 14px;
     height: 14px;
   }
@@ -1501,7 +1543,9 @@
     gap: 8px;
   }
 
-.ip-manage-page .ip-access-rule-card-actions .arco-btn {
+.ip-manage-page .ip-access-rule-card-actions .arco-btn,
+.ip-manage-page .ip-access-rule-card-actions .arco-button,
+.ip-manage-page .ip-access-rule-card-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -1513,7 +1557,8 @@
   }
 
 .ip-manage-page .ip-header-actions .arco-btn-primary,
-.ip-manage-page .ip-header-actions .arco-button-primary {
+.ip-manage-page .ip-header-actions .arco-button-primary,
+.ip-manage-page .ip-header-actions [data-slot='button'][data-variant='primary'] {
     grid-column: 1 / -1;
   }
 }

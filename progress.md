@@ -628,12 +628,14 @@ M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ans
 - 分支：`feature/ui-appica-main`；本地规划见 gitignore 的 task.md / implementation_plan.md。
 - 验收：`web` 无 `@arco-design`；typecheck / test / build 通过；PR 合入 dev 后按分支流晋升。
 
-## UI migration: Arco → Appica (2026-08-07)
+## UI migration: Arco → Appica (2026-08-07) — COMPLETED
 
-- Branch: eature/ui-appica-main (tracks promotion into dev).
+- Status: **COMPLETED**.
+- Branch: `feature/ui-appica-main`.
+- PR: **#301** open → `dev`.
 - Decision locked: **Appica primary**, shadcn secondary (gap-only), **Arco removed**.
-- Foundation: React 19, Tailwind CSS 4, @appica/ui-react, styles/appica.css, vite endor-appica chunk.
-- Design system surface: web/src/ui (rco-compat, Message toast host, confirm/Modal).
-- Pages/components/layouts import from relative ui instead of @arco-design/web-react.
-- Status: adapters + import migration in progress; typecheck cleanup + test mock rewrite next; then PR.
-- Verify update: typecheck green; vitest 271/271.
+- Foundation: React 19, Tailwind CSS 4, `@appica/ui-react`, `styles/appica.css`, vite `vendor-appica` chunk.
+- Design system surface: `web/src/ui` (arco-compat adapters, Message toast host, confirm/Modal).
+- Pages/components/layouts import from relative `ui` instead of `@arco-design/web-react`.
+- Verify: typecheck green; vitest **271/271**; build green.
+- Remaining debt (non-blocking): CSS residual `.arco` dual-selectors; Playwright scripts may still assume old Arco DOM — update when e2e is next touched.

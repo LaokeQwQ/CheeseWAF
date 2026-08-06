@@ -1,4 +1,4 @@
-import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Select, Spin, Switch, Table, Tabs, Tag } from '../../ui';
+import { Button, Form, Input, InputNumber, Message, Modal, Select, Spin, Switch, Table, Tabs, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -102,28 +102,28 @@ export default function ProtectionPage() {
       const fields = Object.keys(variables) as Array<keyof typeof variables>;
       setPolicySaving((prev) => { const next = { ...prev }; for (const f of fields) delete next[f]; return next; });
       setPolicyDraft(protection.policy);
-      ArcoMessage.error(mutationError.message);
+      Message.error(mutationError.message);
     },
   });
   const ipMutation = useMutation({
     mutationFn: updateIPProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); ArcoMessage.success(t('common.saved')); },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed')),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); Message.success(t('common.saved')); },
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('common.requestFailed')),
   });
   const rateMutation = useMutation({
     mutationFn: updateRateLimit,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); ArcoMessage.success(t('common.saved')); },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed')),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); Message.success(t('common.saved')); },
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('common.requestFailed')),
   });
   const botMutation = useMutation({
     mutationFn: updateBotProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); ArcoMessage.success(t('common.saved')); },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed')),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); Message.success(t('common.saved')); },
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('common.requestFailed')),
   });
   const aclMutation = useMutation({
     mutationFn: updateACLProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); ArcoMessage.success(t('common.saved')); },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed')),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); Message.success(t('common.saved')); },
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('common.requestFailed')),
   });
   const [aclDraft, setAclDraft] = useState<ACLRule | null>(null);
   const [aclEditing, setAclEditing] = useState(false);
@@ -165,7 +165,7 @@ export default function ProtectionPage() {
     if (!aclDraft) return;
     const name = aclDraft.name.trim();
     if (!name) {
-      ArcoMessage.warning(t('rules.nameHint', { defaultValue: t('rules.namePlaceholder') }));
+      Message.warning(t('rules.nameHint', { defaultValue: t('rules.namePlaceholder') }));
       return;
     }
     const nextDraft = { ...aclDraft, name };

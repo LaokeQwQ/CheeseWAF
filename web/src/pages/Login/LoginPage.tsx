@@ -1,5 +1,4 @@
-import { Button, Form, Input, Message as ArcoMessage, Modal, Select } from '../../ui';
-import '../../styles/arco-components';
+import { Button, Form, Input, Message, Modal, Select } from '../../ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -421,7 +420,7 @@ export default function LoginPage() {
       await login(submittedUsername, values.password ?? '', values.totpCode, captcha);
       const message = t('login.success');
       setSuccess(message);
-      ArcoMessage.success(message);
+      Message.success(message);
       if (navigateTimerRef.current != null) {
         window.clearTimeout(navigateTimerRef.current);
       }
@@ -433,7 +432,7 @@ export default function LoginPage() {
       if (err instanceof APIRequestError && err.code === 'TWO_FA_REQUIRED') {
         setRequires2FA(true);
         setError(t('login.totpRequired'));
-        ArcoMessage.warning(t('login.totpRequired'));
+        Message.warning(t('login.totpRequired'));
         await refreshCaptcha(false);
         return;
       }

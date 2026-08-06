@@ -37,7 +37,10 @@ try {
   await go('/sites');
   await page.waitForTimeout(1200);
   const sitesHeaderWrap = await page.evaluate(() => {
-    const ths = [...document.querySelectorAll('.sites-table thead th, .sites-table .arco-table-th')];
+    // Dual: native table headers + Arco-compat adapters that still emit .arco-table-th
+    const ths = [...document.querySelectorAll(
+      '.sites-table thead th, .sites-table table th, .sites-table [role="columnheader"], .sites-table .arco-table-th',
+    )];
     return ths.map((th) => {
       const style = getComputedStyle(th);
       return {
@@ -58,10 +61,21 @@ try {
   await go('/users');
   await page.waitForTimeout(1200);
   const pagination = await page.evaluate(() => {
-    const select = document.querySelector('.users-page .arco-pagination .arco-select-view, .users-page .arco-table-pagination .arco-select-view');
+    // Dual: Arco-compat pagination/select views + native select/combobox/button page-size controls
+    const select = document.querySelector([
+      '.users-page .arco-pagination .arco-select-view',
+      '.users-page .arco-table-pagination .arco-select-view',
+      '.users-page .arco-pagination select',
+      '.users-page .arco-table-pagination select',
+      '.users-page nav select',
+      '.users-page [class*="pagination"] select',
+      '.users-page [class*="pagination"] [role="combobox"]',
+      '.users-page select',
+      '.users-page [role="combobox"]',
+    ].join(', '));
     if (!select) return { found: false };
     const rect = select.getBoundingClientRect();
-    const text = (select.textContent || '').trim();
+    const text = (select.textContent || select.value || '').trim();
     return {
       found: true,
       width: Math.round(rect.width),
@@ -71,12 +85,28 @@ try {
   });
   step('users-page-size', pagination);
   if (pagination.found && pagination.width < 96) report.ok = false;
-  // open size dropdown if present
-  const sizeTrigger = page.locator('.users-page .arco-pagination .arco-select-view, .users-page .arco-table-pagination .arco-select-view').first();
+  // open size dropdown if present (Arco adapters and native select/combobox)
+  const sizeTrigger = page.locator([
+    '.users-page .arco-pagination .arco-select-view',
+    '.users-page .arco-table-pagination .arco-select-view',
+    '.users-page .arco-pagination select',
+    '.users-page .arco-table-pagination select',
+    '.users-page nav select',
+    '.users-page [class*="pagination"] select',
+    '.users-page [class*="pagination"] [role="combobox"]',
+    '.users-page select',
+    '.users-page [role="combobox"]',
+  ].join(', ')).first();
   if (await sizeTrigger.count()) {
     await sizeTrigger.click();
     await page.waitForTimeout(400);
-    const popup = page.locator('.arco-select-popup, .arco-trigger-popup').last();
+    const popup = page.locator([
+      '.arco-select-popup',
+      '.arco-trigger-popup',
+      '[role="listbox"]',
+      '[data-radix-select-viewport]',
+      '[data-slot="select-content"]',
+    ].join(', ')).last();
     const visible = await popup.isVisible().catch(() => false);
     const popupBox = visible ? await popup.boundingBox() : null;
     step('users-page-size-popup', { visible, height: popupBox?.height ?? 0 });
@@ -85,11 +115,22 @@ try {
     await page.keyboard.press('Escape');
   }
 
-  // Icon/button alignment sample
+  // Icon/button alignment sample (Arco-compat .arco-btn* + native primary buttons)
   const iconAlign = await page.evaluate(() => {
-    const btn = document.querySelector('.page-header .arco-btn-primary, .users-page .arco-btn-primary');
+    const btn = document.querySelector([
+      '.page-header .arco-btn-primary',
+      '.users-page .arco-btn-primary',
+      '.page-header button.arco-btn',
+      '.users-page button.arco-btn',
+      '.page-header button[data-variant="default"]',
+      '.page-header button[data-variant="primary"]',
+      '.users-page button[data-variant="default"]',
+      '.users-page button[data-variant="primary"]',
+      '.page-header button',
+      '.users-page .page-header button',
+    ].join(', '));
     if (!btn) return { found: false };
-    const svg = btn.querySelector('svg');
+    const svg = btn.querySelector('svg, .arco-icon, .arco-btn-icon svg, .arco-btn-icon');
     const span = btn.querySelector('span');
     if (!svg || !span) return { found: true, hasSvg: !!svg };
     const br = btn.getBoundingClientRect();

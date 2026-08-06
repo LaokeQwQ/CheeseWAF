@@ -6,11 +6,10 @@
  *  - why the risk is accepted for CheeseWAF today
  *  - the follow-up that removes the allowlist entry
  *
- * SPA (Vite + React 18 + Arco) does not use React Router RSC / SSR single-fetch
+ * SPA (Vite + React 19 + Appica) does not use React Router RSC / SSR single-fetch
  * action pipelines. The only remaining high finding (GHSA-qwww-vcr4-c8h2) is
- * fixed in react-router 8.3.0, which requires React >=19.2.7 and dropping
- * react-router-dom. Arco Design still calls ReactDOM.render (removed in React 19),
- * so the RR8+React19 migration is blocked until Arco is React-19-ready.
+ * fixed in react-router 8.3.0 (and dropping react-router-dom). React 19 is
+ * already in use; follow-up is the RR upgrade when ready.
  */
 import { execFileSync } from "node:child_process";
 
@@ -20,7 +19,7 @@ const ALLOWLIST = {
     reason:
       "RSC-mode CSRF in react-router 7.12–8.2; CheeseWAF admin is a client-only SPA without RSC/SSR actions.",
     followUp:
-      "Upgrade to React 19.2.7+ and react-router 8.3.0 once @arco-design/web-react supports React 19 (no ReactDOM.render).",
+      "Upgrade to react-router 8.3.0+ (React 19 already in use) and drop react-router-dom when migration is scheduled.",
   },
 };
 

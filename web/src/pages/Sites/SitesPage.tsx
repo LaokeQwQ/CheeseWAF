@@ -3,7 +3,7 @@ import {
   Empty,
   Input,
   InputNumber,
-  Message as ArcoMessage,
+  Message,
   Modal,
   Select,
   Space,
@@ -99,14 +99,14 @@ export default function SitesPage() {
   const mutation = useMutation({
     mutationFn: createSite,
     onSuccess: (site) => {
-      ArcoMessage.success(t('sites.created'));
+      Message.success(t('sites.created'));
       setOpen(false);
       setStep(0);
       setDraft(initialDraft);
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       navigate(`/sites/${site.id}`);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const rows = data ?? [];
   const basicStepValid = useMemo(

@@ -2,7 +2,7 @@ import {
   Button,
   Input,
   InputNumber,
-  Message as ArcoMessage,
+  Message,
   Select,
   Switch,
   Tag,
@@ -49,17 +49,17 @@ export default function TimeSyncPanel({ value, onChange }: TimeSyncPanelProps) {
 
   const acceptOperation = (status: TimeSyncStatus, message: string) => {
     queryClient.setQueryData(timeSyncQueryKey, status);
-    ArcoMessage.success(message);
+    Message.success(message);
   };
   const reselectMutation = useMutation({
     mutationFn: reselectTimeSync,
     onSuccess: (status) => acceptOperation(status, t('system.timeSyncReselectSuccess')),
-    onError: (error) => ArcoMessage.error(timeSyncErrorMessage(error, t)),
+    onError: (error) => Message.error(timeSyncErrorMessage(error, t)),
   });
   const syncMutation = useMutation({
     mutationFn: syncTimeNow,
     onSuccess: (status) => acceptOperation(status, t('system.timeSyncNowSuccess')),
-    onError: (error) => ArcoMessage.error(timeSyncErrorMessage(error, t)),
+    onError: (error) => Message.error(timeSyncErrorMessage(error, t)),
   });
 
   const status = statusQuery.data;

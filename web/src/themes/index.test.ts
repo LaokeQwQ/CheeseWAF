@@ -5,7 +5,7 @@ describe('theme bootstrap', () => {
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.removeAttribute('data-theme');
-    document.body.removeAttribute('arco-theme');
+    document.documentElement.style.colorScheme = '';
   });
 
   it('reads a valid persisted theme before React mounts', () => {
@@ -21,20 +21,26 @@ describe('theme bootstrap', () => {
     expect(readInitialTheme()).toBe('light');
   });
 
-  it('applies matching document and Arco color schemes', () => {
+  it('applies matching document data-theme and color schemes', () => {
     applyTheme('dark');
     expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(document.documentElement.style.colorScheme).toBe('dark');
-    expect(document.body.getAttribute('arco-theme')).toBe('dark');
+
+    applyTheme('blackGold');
+    expect(document.documentElement.dataset.theme).toBe('black-gold');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('black-gold');
+    expect(document.documentElement.style.colorScheme).toBe('dark');
 
     applyTheme('blueWhite');
     expect(document.documentElement.dataset.theme).toBe('blue-white');
-    expect(document.body.hasAttribute('arco-theme')).toBe(false);
+    expect(document.documentElement.getAttribute('data-theme')).toBe('blue-white');
+    expect(document.documentElement.style.colorScheme).toBe('light');
 
     applyTheme('pinkWhite');
     expect(document.documentElement.dataset.theme).toBe('pink-white');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('pink-white');
     expect(document.documentElement.style.colorScheme).toBe('light');
-    expect(document.body.hasAttribute('arco-theme')).toBe(false);
   });
 
   it('loads every theme stylesheet before it is activated', async () => {

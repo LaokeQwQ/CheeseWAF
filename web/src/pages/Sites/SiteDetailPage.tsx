@@ -3,7 +3,7 @@ import {
   Empty,
   Input,
   InputNumber,
-  Message as ArcoMessage,
+  Message,
   Select,
   Space,
   Spin,
@@ -77,18 +77,18 @@ export default function SiteDetailPage() {
       envDirtyRef.current = false;
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       queryClient.invalidateQueries({ queryKey: ['site', id] });
-      ArcoMessage.success(t('sites.saved'));
+      Message.success(t('sites.saved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const deleteMutation = useMutation({
     mutationFn: () => deleteSite(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sites'] });
-      ArcoMessage.success(t('sites.deleted'));
+      Message.success(t('sites.deleted'));
       navigate('/sites');
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const acmeMutation = useMutation({
     mutationFn: (payload: ACMEIssueRequest) => issueSiteACMECertificate(id, payload),
@@ -100,12 +100,12 @@ export default function SiteDetailPage() {
       setAcmeEvents(response.events ?? response.result?.events ?? []);
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       queryClient.invalidateQueries({ queryKey: ['site', id] });
-      ArcoMessage.success(t('sites.acmeIssued'));
+      Message.success(t('sites.acmeIssued'));
     },
     onError: (error: Error) => {
       const data = error instanceof APIRequestError ? error.data as { events?: ACMEEvent[]; result?: { events?: ACMEEvent[] } } | undefined : undefined;
       setAcmeEvents(data?.events ?? data?.result?.events ?? []);
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
   });
   const selectedProvider = useMemo(
@@ -234,7 +234,7 @@ export default function SiteDetailPage() {
   const saveSite = () => {
     const problem = validateSiteDraft(site, t);
     if (problem) {
-      ArcoMessage.warning(problem);
+      Message.warning(problem);
       return;
     }
     saveMutation.mutate(site);
@@ -275,6 +275,12 @@ export default function SiteDetailPage() {
       </div>
 
       <fieldset className="panel site-detail-panel site-detail-fieldset" disabled={isMutating} aria-busy={isMutating}>
+        {acmeProvidersFailed && (
+          <div className="inline-error acme-provider-error site-detail-acme-error" role="alert">
+            <span>{queryErrorMessage(acmeProvidersError, t('sites.notFound'))}</span>
+            <Button size="small" onClick={() => void refetchACMEProviders()}>{t('common.retry')}</Button>
+          </div>
+        )}
         <Tabs defaultActiveTab="basic" className="site-detail-tabs">
           <Tabs.TabPane key="basic" title={<span className="tab-title"><Network size={15} />{t('sites.stepBasic')}</span>}>
             <section className="site-form-section">
@@ -370,7 +376,9 @@ export default function SiteDetailPage() {
             <ACMEWizard
               site={site}
               providers={acmeProviderList}
-              providersError={acmeProvidersFailed ? queryErrorMessage(acmeProvidersError, t('sites.notFound')) : ''}
+              // Banner is rendered above Tabs so role=alert stays in the a11y tree
+              // even when the TLS pane is inactive (Base UI panels use hidden/inert).
+              providersError=""
               providersLoading={acmeProvidersLoading}
               selectedProviderName={selectedProvider?.name}
               envRows={envRows}

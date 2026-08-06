@@ -22,7 +22,8 @@
   grid-column: 1 / -1;
 }
 
-.captcha-pool-field .arco-select-view {
+.captcha-pool-field .arco-select-view,
+.captcha-pool-field [data-slot='select-trigger'] {
   min-height: 38px;
 }
 

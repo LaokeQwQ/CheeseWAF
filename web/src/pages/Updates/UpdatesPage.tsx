@@ -1,4 +1,4 @@
-import { Button, Empty, Input, InputNumber, Message as ArcoMessage, Select, Space, Switch, Tag } from '../../ui';
+import { Button, Empty, Input, InputNumber, Message, Select, Space, Switch, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CloudDownload, Plus, ShieldAlert, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -66,9 +66,9 @@ export default function UpdatesPage() {
       markClean(normalized);
       setOtaServerSelection(resolveOTAServerSelectValue(normalized.update.ota.server || OFFICIAL_OTA_SERVER));
       queryClient.invalidateQueries({ queryKey: ['system'] });
-      ArcoMessage.success(t('updates.saved'));
+      Message.success(t('updates.saved'));
     },
-    onError: (mutationError) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError) => Message.error(mutationError.message),
   });
 
   const patchSystem = (patch: Partial<SystemConfig>) => setDraft((current) => normalizeSystem({ ...(current ?? fallbackSystem), ...patch }));
@@ -80,14 +80,14 @@ export default function UpdatesPage() {
     try {
       saveMutation.mutate(buildUpdatesSavePayload(system, otaServerSelection));
     } catch {
-      ArcoMessage.error(t('updates.invalidCustomServer'));
+      Message.error(t('updates.invalidCustomServer'));
     }
   }
 
   async function syncOfficialPublicKey() {
     const validatedServer = validateOTAServer(system.update.ota.server, otaServerSelection);
     if (!validatedServer) {
-      ArcoMessage.error(t('updates.invalidCustomServer'));
+      Message.error(t('updates.invalidCustomServer'));
       return;
     }
     setKeySyncing(true);
@@ -102,9 +102,9 @@ export default function UpdatesPage() {
         throw new Error(t('updates.publicKeyInvalid'));
       }
       patchSystem({ update: { ota: { ...system.update.ota, server: validatedServer, public_key: publicKey } } });
-      ArcoMessage.success(t('updates.publicKeySynced'));
+      Message.success(t('updates.publicKeySynced'));
     } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : t('updates.publicKeySyncFailed'));
+      Message.error(error instanceof Error ? error.message : t('updates.publicKeySyncFailed'));
     } finally {
       setKeySyncing(false);
     }

@@ -6,7 +6,7 @@ const distDir = path.resolve('dist');
 const html = readFileSync(path.join(distDir, 'index.html'), 'utf8');
 const preloadPaths = [...html.matchAll(/<link\s+rel="modulepreload"[^>]+href="([^"]+)"/g)].map((match) => match[1]);
 const forbiddenPreloads = preloadPaths.filter((asset) =>
-  /three|visualization|qrcode|attack|map|AIPage|IPManage|BlockPages/i.test(asset),
+  /three|visualization|qrcode|attack|map|AIPage|IPManage|BlockPages|appica|vendor-appica/i.test(asset),
 );
 
 if (forbiddenPreloads.length > 0) {

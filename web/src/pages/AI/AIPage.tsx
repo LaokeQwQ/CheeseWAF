@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Form, Input, InputNumber, Message as ArcoMessage, Select, Space, Spin, Switch, Tag } from '../../ui';
+import { Button, Form, Input, InputNumber, Message, Select, Space, Spin, Switch, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -167,14 +167,14 @@ export default function AIPage() {
     mutationFn: updateAIConfig,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ai-config'] });
-      ArcoMessage.success(t('system.saved'));
+      Message.success(t('system.saved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const testMutation = useMutation({
     mutationFn: (target: 'assistant' | 'reasoning') => testAIConnection(buildAIModelRequest(form.getFieldsValue(), target)),
-    onSuccess: () => ArcoMessage.success(t('ai.testOk')),
-    onError: (error) => ArcoMessage.error(error.message),
+    onSuccess: () => Message.success(t('ai.testOk')),
+    onError: (error) => Message.error(error.message),
   });
   const modelsMutation = useMutation({
     mutationFn: (target: 'assistant' | 'reasoning') => {
@@ -186,17 +186,17 @@ export default function AIPage() {
       } else {
         setModels(result.items ?? []);
       }
-      ArcoMessage.success(t('ai.modelsLoaded', { count: result.total ?? result.items?.length ?? 0 }));
+      Message.success(t('ai.modelsLoaded', { count: result.total ?? result.items?.length ?? 0 }));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const selfLearningMutation = useMutation({
     mutationFn: (dryRun: boolean) => runAISelfLearning({ dry_run: dryRun, language: i18n.language }),
     onSuccess: (report) => {
       setSelfLearningReport(report);
-      ArcoMessage.success(t('ai.selfLearningRunOk', { candidates: report.candidates.length, applied: report.applied.length }));
+      Message.success(t('ai.selfLearningRunOk', { candidates: report.candidates.length, applied: report.applied.length }));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const eventAnalysisMutation = useMutation({
     mutationFn: async ({ entry, controller }: { entry: LogEntry; controller: AbortController }) => {
@@ -225,7 +225,7 @@ export default function AIPage() {
       if (error instanceof APIRequestError && error.code === 'AI_ANALYSIS_CANCELLED') {
         return;
       }
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
     onSettled: (_data, _error, variables) => {
       if (!variables) {
@@ -251,9 +251,9 @@ export default function AIPage() {
         }
         return next;
       });
-      ArcoMessage.success(`${t('ai.analyzed')} ${result.total}`);
+      Message.success(`${t('ai.analyzed')} ${result.total}`);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const analyzingEventKey = eventAnalysisMutation.variables ? eventKey(eventAnalysisMutation.variables.entry) : '';
 
@@ -324,7 +324,7 @@ export default function AIPage() {
               try {
                 updateMutation.mutate(buildAIConfigPayload(allValues, config, assistantConfig, reasoningConfig));
               } catch (error) {
-                ArcoMessage.error(error instanceof Error ? error.message : t('ai.invalidConfig'));
+                Message.error(error instanceof Error ? error.message : t('ai.invalidConfig'));
               }
             }}
           >

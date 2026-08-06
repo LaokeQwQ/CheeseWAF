@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Modal, Pagination, Select, Table, Tag } from '../../ui';
+import { Button, Form, Input, Message, Modal, Pagination, Select, Table, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode';
@@ -126,24 +126,24 @@ export default function UsersPage() {
   const createMutation = useMutation({
     mutationFn: createUser,
     onSuccess: async () => {
-      ArcoMessage.success(t('users.created'));
+      Message.success(t('users.created'));
       setCreateOpen(false);
       createForm.resetFields();
       await queryClient.invalidateQueries({ queryKey: ['users'] });
       await queryClient.invalidateQueries({ queryKey: ['shell-users'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, user }: { id: string; user: Partial<User> & { password?: string } }) => updateUser(id, user),
     onSuccess: async () => {
-      ArcoMessage.success(t('users.updated'));
+      Message.success(t('users.updated'));
       setEditUser(null);
       await queryClient.invalidateQueries({ queryKey: ['users'] });
       await queryClient.invalidateQueries({ queryKey: ['shell-users'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
 
   const twoFASetupMutation = useMutation({
@@ -152,42 +152,42 @@ export default function UsersPage() {
       const qr = await QRCode.toDataURL(setup.otpauth_url, { margin: 1, width: 180 });
       setTwoFA((current) => current.user?.id === variables.userId ? { ...current, setup, qr, code: '' } : current);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
 
   const twoFAEnableMutation = useMutation({
     mutationFn: () => enableUser2FA(twoFA.user?.id ?? '', twoFA.setup?.secret ?? '', twoFA.code),
     onSuccess: async () => {
-      ArcoMessage.success(t('users.twoFAEnabled'));
+      Message.success(t('users.twoFAEnabled'));
       setTwoFA({ code: '' });
       await queryClient.invalidateQueries({ queryKey: ['users'] });
       await queryClient.invalidateQueries({ queryKey: ['shell-users'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
 
   const twoFADisableMutation = useMutation({
     mutationFn: ({ user, values }: { user: User; values: TwoFADisableDraft }) => disableUser2FA(user.id, values.password, values.code),
     onSuccess: async () => {
-      ArcoMessage.success(t('users.twoFADisabled'));
+      Message.success(t('users.twoFADisabled'));
       setDisableUser(null);
       disableForm.resetFields();
       await queryClient.invalidateQueries({ queryKey: ['users'] });
       await queryClient.invalidateQueries({ queryKey: ['shell-users'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
 
   const twoFARecoveryMutation = useMutation({
     mutationFn: ({ user, values }: { user: User; values: TwoFARecoveryDraft }) => recoverUser2FA(user.id, values.password, values.confirmUsername),
     onSuccess: async () => {
-      ArcoMessage.success(t('users.twoFARecovered'));
+      Message.success(t('users.twoFARecovered'));
       setRecoveryUser(null);
       recoveryForm.resetFields();
       await queryClient.invalidateQueries({ queryKey: ['users'] });
       await queryClient.invalidateQueries({ queryKey: ['shell-users'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
 
   function open2FASetup(user: User) {

@@ -1,4 +1,4 @@
-import { Button, Message as ArcoMessage, Space, Spin, Tag } from '../../ui';
+import { Button, Message, Space, Spin, Tag } from '../../ui';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -45,7 +45,7 @@ export default function LogDetailPage() {
         }
       }, controller.signal);
     },
-    onError: (mutationError) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError) => Message.error(mutationError.message),
   });
   const analysis = analysisMutation.data;
 

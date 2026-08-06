@@ -119,7 +119,8 @@
 }
 
 .attack-map-page .map-controls .arco-radio,
-.attack-map-page .map-controls .arco-radio-button {
+.attack-map-page .map-controls .arco-radio-button,
+.attack-map-page .map-controls [data-slot='button'] {
   flex: 0 0 auto;
   white-space: nowrap;
 }
@@ -128,7 +129,8 @@
   gap: 4px;
 }
 
-.attack-map-page .map-mode-switch .arco-radio-button {
+.attack-map-page .map-mode-switch .arco-radio-button,
+.attack-map-page .map-mode-switch [data-slot='button'] {
   min-width: 54px;
   height: 30px;
   display: inline-flex;
@@ -146,13 +148,15 @@
     transform 140ms ease;
 }
 
+/* Vendor radio pseudo chrome — no-op under adapter button radios */
 .attack-map-page .map-mode-switch .arco-radio-button::before,
 .attack-map-page .map-mode-switch .arco-radio-button::after {
   display: none !important;
 }
 
 .attack-map-page .map-mode-switch .arco-radio-checked,
-.attack-map-page .map-mode-switch .arco-radio-button-checked {
+.attack-map-page .map-mode-switch .arco-radio-button-checked,
+.attack-map-page .map-mode-switch [data-slot='button'][data-variant='primary'] {
   color: var(--accent-strong) !important;
   background: linear-gradient(
     180deg,
@@ -166,7 +170,9 @@
     0 8px 18px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-.attack-map-page .attack-map-table .arco-table {
+.attack-map-page .attack-map-table .arco-table,
+.attack-map-page .attack-map-table [data-slot='table'],
+.attack-map-page .attack-map-table table {
   min-width: 820px;
 }
 
@@ -176,15 +182,23 @@
 }
 
 .attack-map-page .attack-map-table .arco-table-th,
-.attack-map-page .attack-map-table .arco-table-td {
+.attack-map-page .attack-map-table .arco-table-td,
+.attack-map-page .attack-map-table [data-slot='table-head'],
+.attack-map-page .attack-map-table [data-slot='table-cell'],
+.attack-map-page .attack-map-table th,
+.attack-map-page .attack-map-table td {
   white-space: nowrap;
 }
 
-.attack-map-page .attack-map-table .arco-table-body .arco-table-tr {
+.attack-map-page .attack-map-table .arco-table-body .arco-table-tr,
+.attack-map-page .attack-map-table [data-slot='table-body'] [data-slot='table-row'],
+.attack-map-page .attack-map-table tbody tr {
   cursor: pointer;
 }
 
-.attack-map-page .attack-map-table .attack-region-row-selected .arco-table-td {
+.attack-map-page .attack-map-table .attack-region-row-selected .arco-table-td,
+.attack-map-page .attack-map-table .attack-region-row-selected [data-slot='table-cell'],
+.attack-map-page .attack-map-table .attack-region-row-selected td {
   background:
     linear-gradient(
       90deg,
@@ -193,7 +207,9 @@
     ) !important;
 }
 
-.attack-map-page .attack-map-table .attack-region-row-selected .arco-table-td:first-child {
+.attack-map-page .attack-map-table .attack-region-row-selected .arco-table-td:first-child,
+.attack-map-page .attack-map-table .attack-region-row-selected [data-slot='table-cell']:first-child,
+.attack-map-page .attack-map-table .attack-region-row-selected td:first-child {
   box-shadow: 3px 0 0 var(--accent-info) inset;
 }
 
@@ -352,13 +368,18 @@
 }
 
 .attack-map-page .map-controls .arco-btn.arco-btn-icon-only,
-.attack-map-page .map-controls .arco-btn-icon-only {
+.attack-map-page .map-controls .arco-btn-icon-only,
+.attack-map-page .map-controls [data-slot='button'][data-size='icon-sm'],
+.attack-map-page .map-controls [data-slot='button'][data-size='icon-md'],
+.attack-map-page .map-controls [data-slot='button'][data-size='icon-lg'] {
   width: 34px;
   height: 34px;
   padding: 0;
 }
 
-.attack-map-page .map-controls .arco-btn:not(.arco-btn-icon-only) {
+.attack-map-page .map-controls .arco-btn:not(.arco-btn-icon-only),
+.attack-map-page .map-controls .arco-button:not(.arco-btn-icon-only),
+.attack-map-page .map-controls [data-slot='button']:not([data-size^='icon-']) {
   width: auto;
   min-height: 34px;
   padding: 0 12px;
@@ -2313,12 +2334,15 @@
 }
 
 .attack-map-page .attack-map-table .arco-table,
-.attack-map-page .attack-map-table .arco-table-content-inner {
+.attack-map-page .attack-map-table .arco-table-content-inner,
+.attack-map-page .attack-map-table [data-slot='table'],
+.attack-map-page .attack-map-table table {
   min-width: 760px;
 }
 
 .attack-map-page .attack-map-table .arco-table-content,
-.attack-map-page .attack-map-table .arco-table-content-inner {
+.attack-map-page .attack-map-table .arco-table-content-inner,
+.attack-map-page .attack-map-table [data-slot='table'] {
   overflow-x: auto !important;
 }
 
@@ -2700,7 +2724,11 @@
 }
 
 .attack-map-page .map-workbench-header .map-zoom-group .arco-btn,
-.attack-map-page .map-workbench-header .map-action-group .arco-btn {
+.attack-map-page .map-workbench-header .map-action-group .arco-btn,
+.attack-map-page .map-workbench-header .map-zoom-group .arco-button,
+.attack-map-page .map-workbench-header .map-action-group .arco-button,
+.attack-map-page .map-workbench-header .map-zoom-group [data-slot='button'],
+.attack-map-page .map-workbench-header .map-action-group [data-slot='button'] {
   flex: 0 0 auto;
   min-width: 34px;
 }
@@ -2932,7 +2960,9 @@
     width: 100%;
   }
 
-  .attack-map-page .map-action-group .arco-btn {
+  .attack-map-page .map-action-group .arco-btn,
+  .attack-map-page .map-action-group .arco-button,
+  .attack-map-page .map-action-group [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -3095,7 +3125,9 @@
     min-width: 0 !important;
   }
 
-  .attack-map-page .map-action-group .arco-btn {
+  .attack-map-page .map-action-group .arco-btn,
+  .attack-map-page .map-action-group .arco-button,
+  .attack-map-page .map-action-group [data-slot='button'] {
     width: 100% !important;
     justify-content: center !important;
   }
@@ -3176,7 +3208,9 @@
   scrollbar-width: thin !important;
 }
 
-.attack-map-page .attack-map-table .arco-table {
+.attack-map-page .attack-map-table .arco-table,
+.attack-map-page .attack-map-table [data-slot='table'],
+.attack-map-page .attack-map-table table {
   min-width: 1040px !important;
 }
 
@@ -3232,7 +3266,8 @@
 }
 
 .attack-map-page .map-action-group .arco-btn,
-.attack-map-page .map-action-group .arco-button {
+.attack-map-page .map-action-group .arco-button,
+.attack-map-page .map-action-group [data-slot='button'] {
   width: auto;
   min-width: 0 !important;
   padding: 0 12px;
@@ -3536,7 +3571,9 @@
     width: 100% !important;
   }
 
-  .attack-map-page .map-action-group .arco-btn {
+  .attack-map-page .map-action-group .arco-btn,
+  .attack-map-page .map-action-group .arco-button,
+  .attack-map-page .map-action-group [data-slot='button'] {
     flex: 1 1 0 !important;
     justify-content: center !important;
   }

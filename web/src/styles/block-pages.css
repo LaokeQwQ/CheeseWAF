@@ -117,7 +117,9 @@
   gap: 8px;
 }
 
-.block-pages-page .block-editor-actions .arco-btn {
+.block-pages-page .block-editor-actions .arco-btn,
+.block-pages-page .block-editor-actions .arco-button,
+.block-pages-page .block-editor-actions [data-slot='button'] {
   width: auto;
   min-width: 108px;
   flex: 0 0 auto;
@@ -125,7 +127,8 @@
   white-space: nowrap;
 }
 
-.block-pages-page .block-editor-actions .arco-tag {
+.block-pages-page .block-editor-actions .arco-tag,
+.block-pages-page .block-editor-actions [data-slot='badge'] {
   display: inline-flex;
   align-items: center;
   max-width: min(100%, 360px);
@@ -247,7 +250,9 @@
   max-height: 520px;
 }
 
-.block-pages-page .block-page-workspace .arco-textarea-wrapper.code-editor {
+.block-pages-page .block-page-workspace .arco-textarea-wrapper.code-editor,
+.block-pages-page .block-page-workspace textarea.code-editor,
+.block-pages-page .block-page-workspace .arco-textarea.code-editor {
   overflow: hidden;
   background:
     linear-gradient(
@@ -321,7 +326,9 @@
     justify-self: start;
   }
 
-  .block-pages-page .block-editor-actions .arco-btn {
+  .block-pages-page .block-editor-actions .arco-btn,
+  .block-pages-page .block-editor-actions .arco-button,
+  .block-pages-page .block-editor-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -389,7 +396,8 @@
 }
 
 .block-pages-page .block-template-actions .arco-btn,
-.block-pages-page .block-template-actions .arco-button {
+.block-pages-page .block-template-actions .arco-button,
+.block-pages-page .block-template-actions [data-slot='button'] {
   flex: 1 1 118px;
   justify-content: center;
 }
@@ -403,7 +411,9 @@
   width: 100%;
 }
 
-.block-pages-page .block-editor-actions .arco-btn {
+.block-pages-page .block-editor-actions .arco-btn,
+.block-pages-page .block-editor-actions .arco-button,
+.block-pages-page .block-editor-actions [data-slot='button'] {
   min-width: 96px;
 }
 
@@ -415,7 +425,9 @@
   height: min(56vh, 560px) !important;
 }
 
-.block-pages-page .block-page-workspace .arco-textarea-wrapper.code-editor {
+.block-pages-page .block-page-workspace .arco-textarea-wrapper.code-editor,
+.block-pages-page .block-page-workspace textarea.code-editor,
+.block-pages-page .block-page-workspace .arco-textarea.code-editor {
   background:
     linear-gradient(
       90deg,
@@ -474,7 +486,9 @@
   }
 
   .block-pages-page .block-editor-actions .arco-tag,
-  .block-pages-page .block-editor-actions .arco-btn {
+  .block-pages-page .block-editor-actions .arco-btn,
+  .block-pages-page .block-editor-actions .arco-button,
+  .block-pages-page .block-editor-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -486,7 +500,8 @@
   }
 
   .block-pages-page .block-template-actions .arco-btn,
-  .block-pages-page .block-template-actions .arco-button {
+  .block-pages-page .block-template-actions .arco-button,
+  .block-pages-page .block-template-actions [data-slot='button'] {
     width: 100%;
     min-width: 0;
   }
@@ -529,7 +544,9 @@
   height: min(50vh, 500px) !important;
 }
 
-.block-pages-page .block-page-workspace .arco-textarea-wrapper.code-editor {
+.block-pages-page .block-page-workspace .arco-textarea-wrapper.code-editor,
+.block-pages-page .block-page-workspace textarea.code-editor,
+.block-pages-page .block-page-workspace .arco-textarea.code-editor {
   background: var(--surface);
 }
 
@@ -639,8 +656,10 @@
 
   .block-pages-page .block-template-actions .arco-btn,
   .block-pages-page .block-template-actions .arco-button,
+  .block-pages-page .block-template-actions [data-slot='button'],
   .block-pages-page .block-editor-actions .arco-btn,
-  .block-pages-page .block-editor-actions .arco-button {
+  .block-pages-page .block-editor-actions .arco-button,
+  .block-pages-page .block-editor-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -673,7 +692,11 @@
   }
 
   .block-pages-page .block-template-actions .arco-btn,
-  .block-pages-page .block-editor-actions .arco-btn {
+  .block-pages-page .block-template-actions .arco-button,
+  .block-pages-page .block-template-actions [data-slot='button'],
+  .block-pages-page .block-editor-actions .arco-btn,
+  .block-pages-page .block-editor-actions .arco-button,
+  .block-pages-page .block-editor-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -690,7 +713,9 @@
   gap: 8px;
 }
 
-.block-pages-page .block-page-workspace .block-editor-actions .arco-btn {
+.block-pages-page .block-page-workspace .block-editor-actions .arco-btn,
+.block-pages-page .block-page-workspace .block-editor-actions .arco-button,
+.block-pages-page .block-page-workspace .block-editor-actions [data-slot='button'] {
   flex: 0 0 auto;
   white-space: nowrap;
 }
@@ -706,7 +731,9 @@
   gap: 8px !important;
 }
 
-.block-pages-page .block-page-workspace .block-editor-actions .arco-btn {
+.block-pages-page .block-page-workspace .block-editor-actions .arco-btn,
+.block-pages-page .block-page-workspace .block-editor-actions .arco-button,
+.block-pages-page .block-page-workspace .block-editor-actions [data-slot='button'] {
   flex: 0 0 auto !important;
   white-space: nowrap !important;
 }

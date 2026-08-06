@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconfirm, Radio, Select, Spin, Steps, Table, Tag, Typography } from '../../ui';
+import { Button, Card, Form, Input, InputNumber, Message, Popconfirm, Radio, Select, Spin, Steps, Table, Tag, Typography } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -145,11 +145,11 @@ export default function ClusterPage() {
     onSuccess: (token) => {
       setLatestToken(token);
       void queryClient.invalidateQueries({ queryKey: ['cluster-join-tokens'] });
-      ArcoMessage.success(t('cluster.tokenCreated'));
+      Message.success(t('cluster.tokenCreated'));
     },
     onError: (error) => {
       setTokenOperationError(error.message);
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
   });
   const revokeTokenMutation = useMutation({
@@ -161,11 +161,11 @@ export default function ClusterPage() {
     onSuccess: (_result, id) => {
       setLatestToken((current) => (current?.id === id ? null : current));
       void queryClient.invalidateQueries({ queryKey: ['cluster-join-tokens'] });
-      ArcoMessage.success(t('cluster.tokenRevoked'));
+      Message.success(t('cluster.tokenRevoked'));
     },
     onError: (error) => {
       setTokenOperationError(error.message);
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
     onSettled: () => {
       setRevokingTokenID(null);
@@ -180,11 +180,11 @@ export default function ClusterPage() {
       clearDeploySecrets(form);
       void queryClient.invalidateQueries({ queryKey: ['cluster-deploy-tasks'] });
       void queryClient.invalidateQueries({ queryKey: ['cluster-status'] });
-      ArcoMessage.success(t('cluster.deployTaskStarted'));
+      Message.success(t('cluster.deployTaskStarted'));
     },
     onError: (error) => {
       clearDeploySecrets(form);
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
   });
   const ansiblePackageMutation = useMutation({
@@ -209,10 +209,10 @@ export default function ClusterPage() {
       const files = Object.keys(pkg.files || {}).sort();
       setSelectedAnsibleFile(files.includes('README.md') ? 'README.md' : files[0] || '');
       setDeployWizardStep(3);
-      ArcoMessage.success(t('cluster.deployWizardAnsibleGenerated'));
+      Message.success(t('cluster.deployWizardAnsibleGenerated'));
     },
     onError: (error) => {
-      ArcoMessage.error(errorMessage(error));
+      Message.error(errorMessage(error));
     },
   });
   const rotateCertificateMutation = useMutation({
@@ -224,10 +224,10 @@ export default function ClusterPage() {
       setLatestCertificate(result);
       certificateForm.setFieldValue('csr', '');
       void queryClient.invalidateQueries({ queryKey: ['cluster-nodes'] });
-      ArcoMessage.success(t('cluster.certSigned'));
+      Message.success(t('cluster.certSigned'));
     },
     onError: (error) => {
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
   });
 
@@ -235,7 +235,7 @@ export default function ClusterPage() {
     if (latestToken?.value) {
       const message = t('cluster.tokenClearBeforeCreate');
       setTokenOperationError(message);
-      ArcoMessage.warning(message);
+      Message.warning(message);
       return;
     }
     const values = tokenForm.getFieldsValue();
@@ -247,7 +247,14 @@ export default function ClusterPage() {
   };
 
   const submitDeployment = async (mode: 'check' | 'run') => {
-    const values = await form.validate();
+    let values: ClusterDeployForm;
+    try {
+      values = await form.validate();
+    } catch (errors) {
+      const first = firstFormError(errors);
+      if (first) Message.warning(first);
+      return;
+    }
     const action = String(values.action || 'install');
     const payload: ClusterDeploymentRequest = {
       host: String(values.host || '').trim(),
@@ -258,11 +265,11 @@ export default function ClusterPage() {
     const password = String(values.password || '').trim();
     const privateKey = String(values.privateKey || '').trim();
     if (deployAuthMethod === 'password' && !password) {
-      ArcoMessage.warning(t('cluster.deployPasswordRequired'));
+      Message.warning(t('cluster.deployPasswordRequired'));
       return;
     }
     if (deployAuthMethod === 'private_key' && !privateKey) {
-      ArcoMessage.warning(t('cluster.deployPrivateKeyRequired'));
+      Message.warning(t('cluster.deployPrivateKeyRequired'));
       return;
     }
     if (deployAuthMethod === 'password' && password) {
@@ -273,7 +280,7 @@ export default function ClusterPage() {
     }
     const hostKeySHA256 = String(values.hostKeySHA256 || '').trim();
     if (!hostKeySHA256) {
-      ArcoMessage.warning(t('cluster.deployHostKeyRequired'));
+      Message.warning(t('cluster.deployHostKeyRequired'));
       return;
     }
     if (hostKeySHA256) {
@@ -284,12 +291,12 @@ export default function ClusterPage() {
       deployTaskMutation.mutate(payload);
     } else {
       if (!activeDeployTask || activeDeployTask.action !== 'check' || activeDeployTask.status !== 'succeeded') {
-        ArcoMessage.warning(t('cluster.deployWizardPrecheckRequired'));
+        Message.warning(t('cluster.deployWizardPrecheckRequired'));
         return;
       }
       const checkedTask = await fetchClusterDeploymentTask(activeDeployTask.id);
       if (checkedTask.action !== 'check' || checkedTask.status !== 'succeeded' || !checkedTask.authorization?.handle) {
-        ArcoMessage.warning(t('cluster.deployWizardPrecheckRequired'));
+        Message.warning(t('cluster.deployWizardPrecheckRequired'));
         return;
       }
       payload.authorization = checkedTask.authorization.handle;
@@ -316,6 +323,7 @@ export default function ClusterPage() {
   const resetDeploymentWizard = () => {
     form.resetFields();
     ansibleForm.resetFields();
+    setAnsibleNodes([{ name: 'waf-a', address: '', role: 'waf', ssh_port: 22 }]);
     setDeployWizardStep(0);
     setDeployMethod('ansible');
     setDeployAuthMethod('agent');
@@ -330,22 +338,29 @@ export default function ClusterPage() {
     mutationFn: createClusterBootstrapPlan,
     onSuccess: (plan) => {
       setBootstrapPlan(plan);
-      ArcoMessage.success(t('cluster.bootstrapPlanReady', { defaultValue: 'Bootstrap plan ready' }));
+      Message.success(t('cluster.bootstrapPlanReady', { defaultValue: 'Bootstrap plan ready' }));
     },
-    onError: (error: Error) => ArcoMessage.error(error.message),
+    onError: (error: Error) => Message.error(error.message),
   });
 
   const rollingMutation = useMutation({
     mutationFn: startClusterRollingUpgrade,
     onSuccess: (job) => {
       setRollingJob(job);
-      ArcoMessage.success(t('cluster.rollingStarted', { defaultValue: 'Rolling upgrade started' }));
+      Message.success(t('cluster.rollingStarted', { defaultValue: 'Rolling upgrade started' }));
     },
-    onError: (error: Error) => ArcoMessage.error(error.message),
+    onError: (error: Error) => Message.error(error.message),
   });
 
   const submitBootstrapPlan = async () => {
-    const values = await bootstrapForm.validate();
+    let values: { role?: string; nodeId?: string; controllerUrl?: string; advertiseAddr?: string };
+    try {
+      values = await bootstrapForm.validate();
+    } catch (errors) {
+      const first = firstFormError(errors);
+      if (first) Message.warning(first);
+      return;
+    }
     bootstrapMutation.mutate({
       role: String(values.role || 'waf'),
       node_id: String(values.nodeId || '').trim(),
@@ -357,14 +372,21 @@ export default function ClusterPage() {
   };
 
   const submitRollingUpgrade = async () => {
-    const values = await rollingForm.validate();
+    let values: { hosts?: string; user?: string };
+    try {
+      values = await rollingForm.validate();
+    } catch (errors) {
+      const first = firstFormError(errors);
+      if (first) Message.warning(first);
+      return;
+    }
     const user = String(values.user || 'root').trim();
     const hosts = String(values.hosts || '')
       .split(/[\n,]+/)
       .map((item) => item.trim())
       .filter(Boolean);
     if (hosts.length === 0) {
-      ArcoMessage.warning(t('cluster.rollingHostsRequired', { defaultValue: 'Enter at least one host' }));
+      Message.warning(t('cluster.rollingHostsRequired', { defaultValue: 'Enter at least one host' }));
       return;
     }
     rollingMutation.mutate({
@@ -381,7 +403,7 @@ export default function ClusterPage() {
       const result = await fetchClusterTrafficPeers(mode, undefined, mode === 'sticky' ? 'preview-session' : undefined);
       setTrafficPeers(result);
     } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : String(error));
+      Message.error(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -390,19 +412,26 @@ export default function ClusterPage() {
     try {
       const job = await startClusterRollingRollback(rollingJob.id);
       setRollingJob(job);
-      ArcoMessage.success(t('cluster.rollbackStarted', { defaultValue: 'Rollback started' }));
+      Message.success(t('cluster.rollbackStarted', { defaultValue: 'Rollback started' }));
     } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : String(error));
+      Message.error(error instanceof Error ? error.message : String(error));
     }
   };
 
   const submitCertificateSigning = async () => {
-    const values = await certificateForm.validate();
+    let values: ClusterCertificateForm;
+    try {
+      values = await certificateForm.validate();
+    } catch (errors) {
+      const first = firstFormError(errors);
+      if (first) Message.warning(first);
+      return;
+    }
     const nodeID = String(values.nodeId || '').trim();
     const csr = String(values.csr || '').trim();
     const node = nodes?.items.find((item) => item.node_id === nodeID);
     if (node?.revoked) {
-      ArcoMessage.warning(t('cluster.certRevokedNode'));
+      Message.warning(t('cluster.certRevokedNode'));
       return;
     }
     rotateCertificateMutation.mutate({ nodeID, csr });
@@ -678,7 +707,7 @@ export default function ClusterPage() {
                 </Button>
                 <Button onClick={() => {
                   setLatestToken(null);
-                  ArcoMessage.success(t('cluster.tokenCleared'));
+                  Message.success(t('cluster.tokenCleared'));
                 }}>
                   {t('cluster.clearToken')}
                 </Button>
@@ -911,7 +940,8 @@ export default function ClusterPage() {
               <Typography.Paragraph>{t('cluster.deployWizardHint')}</Typography.Paragraph>
             </div>
           </div>
-          <Steps current={deployWizardStep + 1} size="small" className="cluster-deploy-steps">
+          {/* Steps adapter is 0-based (matches SetupPage); deployWizardStep is 0..3. */}
+          <Steps current={deployWizardStep} size="small" className="cluster-deploy-steps">
             <Steps.Step title={t('cluster.deployWizardStepMethod')} />
             <Steps.Step title={t('cluster.deployWizardStepTarget')} />
             <Steps.Step title={deployMethod === 'ssh' ? t('cluster.deployWizardStepPrecheck') : t('cluster.deployWizardStepPackage')} />
@@ -1199,6 +1229,15 @@ export default function ClusterPage() {
 function clearDeploySecrets(form: ReturnType<typeof Form.useForm<ClusterDeployForm>>[0]) {
   form.setFieldValue('password', '');
   form.setFieldValue('privateKey', '');
+}
+
+/** First field error message from Form.validate() rejection bag. */
+function firstFormError(errors: unknown): string | undefined {
+  if (!errors || typeof errors !== 'object') return undefined;
+  for (const value of Object.values(errors as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
 }
 
 function clusterModeLabel(mode: string | undefined, fallback: string | undefined, t: Translate) {
@@ -1965,9 +2004,9 @@ function displayTaskText(value: string) {
 async function copyText(value: string, successMessage: string, failureMessage: string) {
   try {
     await navigator.clipboard.writeText(value);
-    ArcoMessage.success(successMessage);
+    Message.success(successMessage);
   } catch {
-    ArcoMessage.error(failureMessage);
+    Message.error(failureMessage);
   }
 }
 

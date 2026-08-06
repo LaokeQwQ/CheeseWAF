@@ -1,4 +1,4 @@
-import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Select, Switch, Table, Tag } from '../../ui';
+import { Button, Form, Input, InputNumber, Message, Modal, Select, Switch, Table, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -24,7 +24,7 @@ export default function RulesPage() {
       setTestInput('');
       queryClient.invalidateQueries({ queryKey: ['rules'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const rows = data ?? [];
   const severityLabel = (severity: string) => {
@@ -52,7 +52,7 @@ export default function RulesPage() {
     const priority = Number(values.priority ?? 100);
     const validation = validateRuleDraft(pattern, priority, t);
     if (!validation.ok) {
-      ArcoMessage.warning(validation.error);
+      Message.warning(validation.error);
       return;
     }
     mutation.mutate({

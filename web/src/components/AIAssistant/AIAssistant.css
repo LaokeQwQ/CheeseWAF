@@ -68,12 +68,15 @@
 }
 
 .assistant-input .arco-input-inner-wrapper,
-.assistant-input .arco-input {
+.assistant-input .arco-input,
+.assistant-input [data-slot='input-wrapper'],
+.assistant-input [data-slot='input'] {
   min-height: 42px;
   border-radius: 999px !important;
 }
 
-.assistant-input .arco-input {
+.assistant-input .arco-input,
+.assistant-input [data-slot='input'] {
   padding-inline: 16px;
 }
 
@@ -223,7 +226,8 @@
   flex: 0 0 auto;
 }
 
-.assistant-approval-actions .arco-btn {
+.assistant-approval-actions .arco-btn,
+.assistant-approval-actions [data-slot='button'] {
   min-width: 86px;
   flex-shrink: 0;
   pointer-events: auto;
@@ -303,7 +307,8 @@
     justify-content: stretch !important;
   }
 
-  .assistant-approval-actions .arco-btn {
+  .assistant-approval-actions .arco-btn,
+  .assistant-approval-actions [data-slot='button'] {
     flex: 1 1 0 !important;
   }
 }

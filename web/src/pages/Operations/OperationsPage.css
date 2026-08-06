@@ -29,13 +29,19 @@
 }
 
 .ops-task-modal.arco-modal,
-.ops-task-modal .arco-modal {
+.ops-task-modal .arco-modal,
+.ops-task-modal[data-slot='dialog-popup'],
+.ops-task-modal [data-slot='dialog-popup'],
+.ops-task-modal[role='dialog'],
+.ops-task-modal [role='dialog'] {
   width: min(520px, calc(100vw - 24px)) !important;
   max-width: calc(100vw - 24px);
 }
 
 .ops-task-modal .arco-modal-content,
-.ops-task-modal.arco-modal .arco-modal-content {
+.ops-task-modal.arco-modal .arco-modal-content,
+.ops-task-modal [data-slot='dialog-content'],
+.ops-task-modal[data-slot='dialog-popup'] {
   max-height: calc(100vh - 100px);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -47,7 +53,9 @@
   }
 
   .ops-task-modal .form-action-row,
-  .ops-task-modal.arco-modal .form-action-row {
+  .ops-task-modal.arco-modal .form-action-row,
+  .ops-task-modal[data-slot='dialog-popup'] .form-action-row,
+  .ops-task-modal [data-slot='dialog-popup'] .form-action-row {
     position: static;
     padding-top: 12px;
     background: transparent;
