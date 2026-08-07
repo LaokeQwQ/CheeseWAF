@@ -1,5 +1,5 @@
 import { Button, Form, Input, Message, Modal, Select } from '../../ui';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
@@ -360,19 +360,25 @@ export default function LoginPage() {
   const showProductVersion = branding?.show_version !== false && Boolean(branding?.product_version);
   const productVersion = String(branding?.product_version ?? '').trim();
 
-  useEffect(() => {
+  // useLayoutEffect: ref is attached after DOM commit; useEffect can race under full-suite load
+  // and miss the first pause when reduced-motion video mounts with options.
+  useLayoutEffect(() => {
     const video = backgroundVideoRef.current;
     if (!video || !prefersReducedMotion) {
       return undefined;
     }
     const showFirstFrame = () => {
       video.pause();
-      video.currentTime = 0;
+      try {
+        video.currentTime = 0;
+      } catch {
+        // jsdom may reject seeking before metadata
+      }
     };
     showFirstFrame();
     video.addEventListener('loadedmetadata', showFirstFrame);
     return () => video.removeEventListener('loadedmetadata', showFirstFrame);
-  }, [safeBackgroundURL, prefersReducedMotion]);
+  }, [safeBackgroundURL, prefersReducedMotion, showBackgroundVideo]);
 
   function handleThemeChange(value: string) {
     if (isThemeName(value)) {

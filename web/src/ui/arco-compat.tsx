@@ -123,6 +123,15 @@ function isEmptyFormValue(value: unknown): boolean {
   return false;
 }
 
+/** First field error message from Form.validate() rejection bag (field → message). */
+function firstFormValidationError(errors: unknown): string | undefined {
+  if (!errors || typeof errors !== 'object') return undefined;
+  for (const value of Object.values(errors as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
+
 function createFormStore(initial: FormValues = {}): FormStore {
   let values: FormValues = { ...initial };
   let baseline: FormValues = { ...initial };
@@ -271,13 +280,16 @@ export function Form(props: {
         onSubmit={(event: FormEvent) => {
           event.preventDefault();
           // Arco Form validates registered field rules before onSubmit.
+          // form.validate() callers handle their own rejection; this path is native submit only.
           void store
             .validate()
             .then((next) => {
               onSubmitRef.current?.(next);
             })
-            .catch(() => {
-              /* validation failed — form.validate() callers handle rejection themselves */
+            .catch((errors) => {
+              // Surface first rule/required failure so submit is not a silent no-op.
+              const first = firstFormValidationError(errors);
+              if (first) Message.warning(first);
             });
         }}
       >
@@ -1285,6 +1297,8 @@ export function Table<T = Record<string, unknown>>(props: {
   const [innerPageSize, setInnerPageSize] = useState(
     paginate && typeof paginationConfig.pageSize === 'number' ? paginationConfig.pageSize : 10,
   );
+  // Must be before any early return so loading ↔ data transitions keep hook order stable.
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
 
   // sizeCanChange keeps page size local (Arco default); otherwise honor explicit pageSize.
   const pageSize = paginate
@@ -1335,12 +1349,26 @@ export function Table<T = Record<string, unknown>>(props: {
   const emptyContent = props.noDataElement ?? (
     <span className="text-foreground-muted">No data</span>
   );
+  const expandable = typeof props.expandedRowRender === 'function';
+  const colSpan = Math.max(columns.length, 1) + (expandable ? 1 : 0);
+
+  const toggleExpanded = (key: string) => {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   return (
     <div className={`arco-table arco-table-container w-full overflow-auto ${props.className || ''}`.trim()}>
       <AppicaTable hoverableRows className="arco-table-element">
         <TableHeader>
           <TableRow className="arco-table-tr">
+            {expandable ? (
+              <TableHead className="arco-table-th w-10" aria-label="Expand" />
+            ) : null}
             {columns.map((column, index) => (
               <TableHead
                 key={String(column.key || column.dataIndex || index)}
@@ -1356,14 +1384,14 @@ export function Table<T = Record<string, unknown>>(props: {
           {rows.length === 0 ? (
             <TableRow className="arco-table-tr">
               <TableCell
-                colSpan={Math.max(columns.length, 1)}
+                colSpan={colSpan}
                 className="arco-table-td arco-table-cell text-center text-foreground-muted"
               >
                 {emptyContent}
               </TableCell>
             </TableRow>
           ) : (
-            rows.map((record, rowIndex) => {
+            rows.flatMap((record, rowIndex) => {
               const absoluteIndex = paginate && !serverSide ? (current - 1) * pageSize + rowIndex : rowIndex;
               const key =
                 typeof props.rowKey === 'function'
@@ -1385,9 +1413,12 @@ export function Table<T = Record<string, unknown>>(props: {
                 typeof props.rowClassName === 'function'
                   ? props.rowClassName(record, absoluteIndex)
                   : props.rowClassName;
+              const isExpanded = expandable && expandedKeys.has(key);
               const rowClassName =
-                ['arco-table-tr', classFromProp, rowPropsClassName].filter(Boolean).join(' ') || undefined;
-              return (
+                ['arco-table-tr', classFromProp, rowPropsClassName, isExpanded ? 'arco-table-tr-expand' : '']
+                  .filter(Boolean)
+                  .join(' ') || undefined;
+              const mainRow = (
                 <TableRow
                   key={key}
                   className={rowClassName}
@@ -1395,6 +1426,22 @@ export function Table<T = Record<string, unknown>>(props: {
                   onKeyDown={(event) => rowOnKeyDown?.(event)}
                   {...(restRowProps as object)}
                 >
+                  {expandable ? (
+                    <TableCell className="arco-table-td arco-table-cell w-10">
+                      <button
+                        type="button"
+                        className="arco-table-expand-btn inline-flex h-6 w-6 items-center justify-center rounded border border-border text-xs"
+                        aria-expanded={isExpanded}
+                        aria-label={isExpanded ? 'Collapse row' : 'Expand row'}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleExpanded(key);
+                        }}
+                      >
+                        {isExpanded ? '−' : '+'}
+                      </button>
+                    </TableCell>
+                  ) : null}
                   {columns.map((column, colIndex) => {
                     const raw = column.dataIndex ? (record as Record<string, unknown>)[column.dataIndex] : undefined;
                     const content = column.render ? column.render(raw, record, absoluteIndex) : (raw as ReactNode);
@@ -1409,6 +1456,17 @@ export function Table<T = Record<string, unknown>>(props: {
                   })}
                 </TableRow>
               );
+              if (!expandable || !isExpanded) {
+                return [mainRow];
+              }
+              return [
+                mainRow,
+                <TableRow key={`${key}__expand`} className="arco-table-tr arco-table-expand-content">
+                  <TableCell colSpan={colSpan} className="arco-table-td arco-table-cell bg-background-muted/40 p-3">
+                    {props.expandedRowRender?.(record, absoluteIndex)}
+                  </TableCell>
+                </TableRow>,
+              ];
             })
           )}
         </TableBody>
@@ -1688,6 +1746,72 @@ Steps.Step = function Step(_props: {
   return null;
 };
 
+/**
+ * Normalize Date / ISO / "YYYY-MM-DD HH:mm" / datetime-local strings for native
+ * <input type="date|datetime-local"> (local calendar parts, T separator when timed).
+ */
+function toPickerInputValue(value: string | Date | null | undefined, showTime?: boolean | object): string {
+  if (value == null || value === '') {
+    return '';
+  }
+  if (typeof value === 'string') {
+    const raw = value.trim();
+    const localMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::\d{2})?)?/);
+    if (localMatch) {
+      if (showTime) {
+        const hour = localMatch[4] ?? '00';
+        const minute = localMatch[5] ?? '00';
+        return `${localMatch[1]}-${localMatch[2]}-${localMatch[3]}T${hour}:${minute}`;
+      }
+      return `${localMatch[1]}-${localMatch[2]}-${localMatch[3]}`;
+    }
+  }
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (!Number.isFinite(date.getTime())) {
+    return '';
+  }
+  const pad = (part: number) => String(part).padStart(2, '0');
+  const ymd = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  if (showTime) {
+    return `${ymd}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+  return ymd;
+}
+
+/** Arco-style dateString from a native date/datetime-local value (honors format spaces). */
+function formatPickerDateString(inputValue: string, showTime?: boolean | object, format?: string): string {
+  if (!inputValue) {
+    return '';
+  }
+  if (showTime) {
+    const base = inputValue.slice(0, 16);
+    const useSpace = !format || format.includes(' ');
+    return useSpace ? base.replace('T', ' ') : base;
+  }
+  return inputValue.slice(0, 10);
+}
+
+function parsePickerInputToDate(inputValue: string): Date | null {
+  if (!inputValue) {
+    return null;
+  }
+  const match = inputValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!match) {
+    const fallback = new Date(inputValue);
+    return Number.isFinite(fallback.getTime()) ? fallback : null;
+  }
+  const [, year, month, day, hour = '0', minute = '0', second = '0'] = match;
+  const date = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+  );
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
 export function DatePicker(props: {
   value?: string | Date | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1701,12 +1825,7 @@ export function DatePicker(props: {
   disabled?: boolean;
   [key: string]: unknown;
 }) {
-  const value =
-    props.value instanceof Date
-      ? props.value.toISOString().slice(0, props.showTime ? 16 : 10)
-      : props.value
-        ? String(props.value).slice(0, props.showTime ? 16 : 10)
-        : '';
+  const value = toPickerInputValue(props.value, props.showTime);
   return (
     <Input
       type={props.showTime ? 'datetime-local' : 'date'}
@@ -1715,13 +1834,18 @@ export function DatePicker(props: {
       style={props.style}
       placeholder={props.placeholder}
       disabled={props.disabled}
-      onChange={(next) => props.onChange?.(next || undefined, next || undefined)}
+      onChange={(next) => {
+        const raw = String(next || '');
+        const dateString = raw ? formatPickerDateString(raw, props.showTime, props.format) : undefined;
+        const date = raw ? parsePickerInputToDate(raw) : undefined;
+        props.onChange?.(dateString, date ?? dateString);
+      }}
     />
   );
 }
 
 DatePicker.RangePicker = function RangePicker(props: {
-  value?: [string, string] | string[] | null;
+  value?: [string, string] | string[] | Date[] | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onChange?: (...args: any[]) => void;
   className?: string;
@@ -1729,23 +1853,42 @@ DatePicker.RangePicker = function RangePicker(props: {
   showTime?: boolean | object;
   format?: string;
   allowClear?: boolean;
+  disabled?: boolean;
+  placeholder?: [string, string] | string[];
   [key: string]: unknown;
 }) {
-  const start = props.value?.[0] || '';
-  const end = props.value?.[1] || '';
+  // Arco RangePicker: onChange(dateString: string[], date: Date[]-like)
+  const startInput = toPickerInputValue(props.value?.[0] as string | Date | null | undefined, props.showTime);
+  const endInput = toPickerInputValue(props.value?.[1] as string | Date | null | undefined, props.showTime);
   const inputType = props.showTime ? 'datetime-local' : 'date';
+
+  const emitChange = (nextStart: string, nextEnd: string) => {
+    const dateString = [
+      formatPickerDateString(nextStart, props.showTime, props.format),
+      formatPickerDateString(nextEnd, props.showTime, props.format),
+    ];
+    const date = [parsePickerInputToDate(nextStart), parsePickerInputToDate(nextEnd)];
+    props.onChange?.(dateString, date);
+  };
+
   return (
     <div className={`inline-flex items-center gap-2 ${props.className || ''}`.trim()} style={props.style}>
       <Input
         type={inputType}
-        value={start}
-        onChange={(next) => props.onChange?.([String(next || ''), end], [String(next || ''), end])}
+        value={startInput}
+        disabled={props.disabled}
+        placeholder={props.placeholder?.[0]}
+        aria-label={props.placeholder?.[0] || 'Start date'}
+        onChange={(next) => emitChange(String(next || ''), endInput)}
       />
       <span className="text-foreground-muted">–</span>
       <Input
         type={inputType}
-        value={end}
-        onChange={(next) => props.onChange?.([start, String(next || '')], [start, String(next || '')])}
+        value={endInput}
+        disabled={props.disabled}
+        placeholder={props.placeholder?.[1]}
+        aria-label={props.placeholder?.[1] || 'End date'}
+        onChange={(next) => emitChange(startInput, String(next || ''))}
       />
     </div>
   );
@@ -1843,6 +1986,29 @@ export function Skeleton(props: {
   return <AppicaSkeleton className="h-24 w-full" />;
 }
 
+function mapTagColor(
+  color?: string,
+): 'primary' | 'secondary' | 'success' | 'warning' | 'error' | 'info' | 'soft' | undefined {
+  switch (color) {
+    case 'arcoblue':
+    case 'blue':
+      return 'info';
+    case 'green':
+      return 'success';
+    case 'red':
+    case 'orangered':
+      return 'error';
+    case 'orange':
+    case 'gold':
+      return 'warning';
+    case 'gray':
+    case 'grey':
+      return 'secondary';
+    default:
+      return undefined;
+  }
+}
+
 export function Tag(props: {
   children?: ReactNode;
   color?: string;
@@ -1854,8 +2020,12 @@ export function Tag(props: {
   onClose?: () => void;
   [key: string]: unknown;
 }) {
+  const variant = mapTagColor(props.color);
   return (
-    <Badge className={`arco-tag ${props.className || ''}`.trim()}>
+    <Badge
+      variant={variant}
+      className={`arco-tag ${props.color ? `arco-tag-${props.color}` : ''} ${props.className || ''}`.trim()}
+    >
       {props.icon}
       <span className="arco-tag-content">{props.children}</span>
     </Badge>
@@ -1973,6 +2143,9 @@ export const Typography = {
   }) => <span className={`${type === 'secondary' ? 'text-foreground-muted' : ''} ${className}`.trim()}>{children}</span>,
 };
 
+const MODAL_FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Modal(props: {
   visible?: boolean;
   open?: boolean;
@@ -1995,6 +2168,36 @@ export function Modal(props: {
   [key: string]: unknown;
 }) {
   const open = props.visible ?? props.open ?? false;
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onCancelRef = useRef(props.onCancel);
+  onCancelRef.current = props.onCancel;
+
+  // Escape closes via onCancel (Arco escToExit). Hooks run unconditionally so open can toggle.
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancelRef.current?.();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open]);
+
+  // Move focus into the dialog on open only — do not mark the rest of the document inert
+  // (keeps gates/controls behind the modal queryable for tests, matching prior Arco usage).
+  useEffect(() => {
+    if (!open) return undefined;
+    const id = window.requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusable = panel.querySelector<HTMLElement>(MODAL_FOCUSABLE_SELECTOR);
+      (focusable ?? panel).focus?.();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [open]);
+
   if (!open) {
     return null;
   }
@@ -2010,8 +2213,10 @@ export function Modal(props: {
       }}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
+        tabIndex={-1}
         aria-label={props['aria-label'] || (typeof props.title === 'string' ? props.title : undefined)}
         className={`arco-modal max-h-[90vh] w-full max-w-lg overflow-auto rounded-xl border border-border bg-background p-4 shadow-xl ${props.className || ''}`.trim()}
         style={props.style}

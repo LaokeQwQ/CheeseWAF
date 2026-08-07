@@ -630,12 +630,14 @@ M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ans
 
 ## UI migration: Arco → Appica (2026-08-07) — COMPLETED
 
-- Status: **COMPLETED**.
+- Status: **COMPLETED** (core migration); follow-ups in progress on PR.
 - Branch: `feature/ui-appica-main`.
-- PR: **#301** open → `dev`.
+- PR: **#301** open → `dev` (**3 commits** on PR).
 - Decision locked: **Appica primary**, shadcn secondary (gap-only), **Arco removed**.
 - Foundation: React 19, Tailwind CSS 4, `@appica/ui-react`, `styles/appica.css`, vite `vendor-appica` chunk.
 - Design system surface: `web/src/ui` (arco-compat adapters, Message toast host, confirm/Modal).
 - Pages/components/layouts import from relative `ui` instead of `@arco-design/web-react`.
-- Verify: typecheck green; vitest **271/271**; build green.
-- Remaining debt (non-blocking): CSS residual `.arco` dual-selectors; Playwright scripts may still assume old Arco DOM — update when e2e is next touched.
+- Dual CSS: residual `.arco` dual-selectors cleanup **done**.
+- In progress: Table `expandedRowRender` (Appica / adapter path).
+- Verify: typecheck green; vitest **276/276**; build green.
+- Remaining debt (non-blocking): Playwright scripts may still assume old Arco DOM — update when e2e is next touched.
