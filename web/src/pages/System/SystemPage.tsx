@@ -2,7 +2,7 @@ import {
   Button,
   Input,
   InputNumber,
-  Message as ArcoMessage,
+  Message,
   Popconfirm,
   Select,
   Space,
@@ -10,7 +10,7 @@ import {
   Table,
   Tabs,
   Tag,
-} from '@arco-design/web-react';
+} from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Database, Image, KeyRound, MapPinned, Plus, ServerCog, ShieldAlert, Trash2 } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
@@ -58,14 +58,14 @@ export default function SystemPage() {
       queryClient.invalidateQueries({ queryKey: ['system'] });
       queryClient.invalidateQueries({ queryKey: timeSyncQueryKey });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
-      ArcoMessage.success(t('system.saved'));
+      Message.success(t('system.saved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const storageTestMutation = useMutation({
     mutationFn: (backend: string) => testStorageBackend(backend, system.storage),
-    onSuccess: (result) => ArcoMessage.success(`${result.backend} ${t('system.testOk')}`),
-    onError: (error) => ArcoMessage.error(error.message),
+    onSuccess: (result) => Message.success(`${result.backend} ${t('system.testOk')}`),
+    onError: (error) => Message.error(error.message),
   });
 
   const baseSystem = (current: SystemConfig | undefined) => current ?? fallbackSystem;
@@ -199,31 +199,31 @@ export default function SystemPage() {
       setAPITokenDraft({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
       queryClient.invalidateQueries({ queryKey: ['system'] });
-      ArcoMessage.success(t('system.apiTokenCreated'));
+      Message.success(t('system.apiTokenCreated'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const revokeAPITokenMutation = useMutation({
     mutationFn: revokeManagementAPIToken,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
       queryClient.invalidateQueries({ queryKey: ['system'] });
-      ArcoMessage.success(t('system.apiTokenRevoked'));
+      Message.success(t('system.apiTokenRevoked'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const submitAPIToken = () => {
     if (latestAPIToken) {
-      ArcoMessage.warning(t('system.apiTokenClearBeforeCreate'));
+      Message.warning(t('system.apiTokenClearBeforeCreate'));
       return;
     }
     const name = apiTokenDraft.name.trim();
     if (!name) {
-      ArcoMessage.warning(t('system.apiTokenNameRequired'));
+      Message.warning(t('system.apiTokenNameRequired'));
       return;
     }
     if (apiTokenDraft.scopes.length === 0) {
-      ArcoMessage.warning(t('system.apiTokenScopesRequired'));
+      Message.warning(t('system.apiTokenScopesRequired'));
       return;
     }
     createAPITokenMutation.mutate({
@@ -726,7 +726,7 @@ export default function SystemPage() {
                         <Button icon={<Copy size={15} />} onClick={() => void copyText(latestAPIToken, t('system.apiTokenCopied'), t('system.apiTokenCopyFailed'))}>{t('system.copyAPIToken')}</Button>
                         <Button onClick={() => {
                           setLatestAPIToken('');
-                          ArcoMessage.success(t('system.apiTokenCleared'));
+                          Message.success(t('system.apiTokenCleared'));
                         }}>{t('system.clearAPIToken')}</Button>
                       </div>
                     </div>
@@ -966,9 +966,9 @@ function joinList(value: string[]) {
 async function copyText(value: string, successMessage: string, failureMessage: string) {
   try {
     await navigator.clipboard.writeText(value);
-    ArcoMessage.success(successMessage);
+    Message.success(successMessage);
   } catch {
-    ArcoMessage.error(failureMessage);
+    Message.error(failureMessage);
   }
 }
 

@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, InputNumber, Message as ArcoMessage, Modal, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
+import { Button, Input, InputNumber, Message, Modal, Popover, Select, Space, Switch, Table, Tabs, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
@@ -145,9 +145,9 @@ export default function IPManagePage() {
       accessRulesDirtyRef.current = false;
       setAccessRules(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
-      ArcoMessage.success(t('ip.accessRulesSaved'));
+      Message.success(t('ip.accessRulesSaved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const reputationMutation = useMutation({
     mutationFn: updateIPReputationOverrides,
@@ -155,9 +155,9 @@ export default function IPManagePage() {
       reputationDirtyRef.current = false;
       setReputationOverrides(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
-      ArcoMessage.success(t('ip.reputationSaved'));
+      Message.success(t('ip.reputationSaved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const providersMutation = useMutation({
     mutationFn: updateThreatIntelProviders,
@@ -165,9 +165,9 @@ export default function IPManagePage() {
       providersDirtyRef.current = false;
       setProviders(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
-      ArcoMessage.success(t('ip.providersSaved'));
+      Message.success(t('ip.providersSaved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const importMutation = useMutation({
     mutationFn: importThreatIntel,
@@ -187,7 +187,7 @@ export default function IPManagePage() {
     },
     onError: (error) => {
       setImportStatus(buildErrorStatus(t('ip.importFailed'), error.message));
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
   });
   const syncMutation = useMutation({
@@ -215,7 +215,7 @@ export default function IPManagePage() {
       if (providerId) {
         setProviderStatuses((current) => ({ ...current, [providerId]: status }));
       }
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
   });
   const providerTestMutation = useMutation({
@@ -232,7 +232,7 @@ export default function IPManagePage() {
     },
     onError: (error, provider) => {
       setProviderStatuses((current) => ({ ...current, [provider.id]: buildErrorStatus(t('ip.providerTestFailed'), error.message) }));
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
   });
   const lookupMutation = useMutation({
@@ -256,7 +256,7 @@ export default function IPManagePage() {
       const status = buildErrorStatus(t('ip.lookupFailed'), error.message);
       setLookupStatus(status);
       setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
-      ArcoMessage.error(error.message);
+      Message.error(error.message);
     },
   });
 
@@ -345,20 +345,20 @@ export default function IPManagePage() {
   const addAccessRule = () => {
     const entries = accessDraft.entries.length > 0 ? accessDraft.entries : splitList(accessDraft.entries.join(','));
     if (entries.length === 0) {
-      ArcoMessage.warning(t('ip.entriesRequired'));
+      Message.warning(t('ip.entriesRequired'));
       return;
     }
     const invalidEntries = entries.filter((entry) => !isValidIPOrCIDR(entry));
     if (invalidEntries.length > 0) {
-      ArcoMessage.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
+      Message.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
       return;
     }
     if ((accessDraft.scope === 'site' || accessDraft.scope === 'path') && !accessDraft.site_id) {
-      ArcoMessage.warning(t('ip.scopedSiteRequired'));
+      Message.warning(t('ip.scopedSiteRequired'));
       return;
     }
     if (accessDraft.scope === 'path' && !accessDraft.path_prefix.trim()) {
-      ArcoMessage.warning(t('ip.pathRequired'));
+      Message.warning(t('ip.pathRequired'));
       return;
     }
     const nextRule = normalizeAccessRuleForSave({
@@ -377,20 +377,20 @@ export default function IPManagePage() {
     const nextRules = accessRules.map((rule, ruleIndex) => (ruleIndex === index ? normalizeAccessRuleForSave(rule, defaultAccessRuleName) : rule));
     const current = nextRules[index];
     if (!current || current.entries.length === 0) {
-      ArcoMessage.warning(t('ip.entriesRequired'));
+      Message.warning(t('ip.entriesRequired'));
       return;
     }
     const invalidEntries = current.entries.filter((entry) => !isValidIPOrCIDR(entry));
     if (invalidEntries.length > 0) {
-      ArcoMessage.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
+      Message.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
       return;
     }
     if ((current.scope === 'site' || current.scope === 'path') && !current.site_id) {
-      ArcoMessage.warning(t('ip.scopedSiteRequired'));
+      Message.warning(t('ip.scopedSiteRequired'));
       return;
     }
     if (current.scope === 'path' && !current.path_prefix.trim()) {
-      ArcoMessage.warning(t('ip.pathRequired'));
+      Message.warning(t('ip.pathRequired'));
       return;
     }
     accessRulesDirtyRef.current = true;
@@ -464,29 +464,29 @@ export default function IPManagePage() {
       link.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed'));
+      Message.error(error instanceof Error ? error.message : t('common.requestFailed'));
     } finally {
       setExportingFormat(null);
     }
   };
   const validateImportDraft = () => {
     if (!importDraft.contents.trim()) {
-      ArcoMessage.warning(t('ip.iocRequired'));
+      Message.warning(t('ip.iocRequired'));
       return false;
     }
     if (!importDraft.source.trim()) {
-      ArcoMessage.warning(t('ip.sourceRequired'));
+      Message.warning(t('ip.sourceRequired'));
       return false;
     }
     const confidencePercent = importDraft.confidence * 100;
     if (!Number.isFinite(confidencePercent) || confidencePercent < 0 || confidencePercent > 100) {
-      ArcoMessage.warning(t('ip.confidenceInvalid'));
+      Message.warning(t('ip.confidenceInvalid'));
       return false;
     }
     if (importDraft.format === 'cidr') {
       const invalid = splitLines(importDraft.contents).filter((line) => !line.startsWith('#') && !isValidIPOrCIDR(firstToken(line)));
       if (invalid.length > 0) {
-        ArcoMessage.warning(t('ip.entriesInvalid', { value: invalid.slice(0, 3).join(', ') }));
+        Message.warning(t('ip.entriesInvalid', { value: invalid.slice(0, 3).join(', ') }));
         return false;
       }
     }
@@ -1160,14 +1160,14 @@ function buildErrorStatus(title: string, detail: string): IntelOperationStatus {
 
 function showStatusMessage(status: IntelOperationStatus) {
   if (status.tone === 'success') {
-    ArcoMessage.success(status.title);
+    Message.success(status.title);
     return;
   }
   if (status.tone === 'warning') {
-    ArcoMessage.warning(status.title);
+    Message.warning(status.title);
     return;
   }
-  ArcoMessage.error(status.title);
+  Message.error(status.title);
 }
 
 function formatStatusTime() {

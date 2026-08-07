@@ -15,7 +15,32 @@ describe('BehaviorCaptcha responses',()=>{
   it('pointercancel never submits',async()=>{const verify=vi.fn();render(<BehaviorCaptcha type="curve_draw" issue={vi.fn().mockResolvedValue(challenge('curve_draw'))} verify={verify} locale="en-US"/>);const surface=await screen.findByTestId('curve-draw-surface');rect(surface);fireEvent.pointerDown(surface,{pointerId:7,clientX:10,clientY:10});fireEvent.pointerCancel(surface,{pointerId:7});expect(verify).not.toHaveBeenCalled();});
   it('rejects unsafe image URLs',async()=>{render(<BehaviorCaptcha type="text_click" issue={vi.fn().mockResolvedValue(challenge('text_click',{image:'javascript:alert(1)'}))} verify={vi.fn()} locale="en-US"/>);expect((await screen.findByRole('alert')).textContent).toBe('Invalid or missing image data');expect(document.querySelector('img[src^="javascript:"]')).toBeNull();});
   it('uses the unified shell logo and optional close action',async()=>{const close=vi.fn();render(<BehaviorCaptcha type="text_click" issue={vi.fn().mockResolvedValue(challenge('text_click'))} verify={vi.fn()} locale="en-US" logoSrc="/custom-logo.png" onClose={close}/>);await screen.findByTestId('captcha-surface');expect(screen.getByLabelText('CheeseWAF').querySelector('img')?.getAttribute('src')).toBe('/custom-logo.png');fireEvent.click(screen.getByRole('button',{name:'Close'}));expect(close).toHaveBeenCalledOnce();});
-  it('does not expose server reasons and replaces a failed challenge after one second',async()=>{const issue=vi.fn().mockResolvedValueOnce(challenge('text_click')).mockResolvedValueOnce({...challenge('text_click'),token:'replacement-token'});render(<BehaviorCaptcha type="text_click" issue={issue} verify={vi.fn().mockResolvedValue({valid:false,reason:'secret tolerance=180'})} locale="en-US"/>);const surface=await screen.findByTestId('captcha-surface');rect(surface);vi.useFakeTimers();fireEvent.click(surface,{clientX:100,clientY:50});fireEvent.click(screen.getByRole('button',{name:'Verify'}));await vi.advanceTimersByTimeAsync(0);expect(screen.getByRole('status').textContent).toContain('Verification failed');expect(screen.queryByText(/secret tolerance/)).toBeNull();await vi.advanceTimersByTimeAsync(999);expect(issue).toHaveBeenCalledTimes(1);await vi.advanceTimersByTimeAsync(1);await vi.advanceTimersByTimeAsync(0);expect(issue).toHaveBeenCalledTimes(2);});
+  it('does not expose server reasons and replaces a failed challenge after one second', async () => {
+    const issue = vi.fn()
+      .mockResolvedValueOnce(challenge('text_click'))
+      .mockResolvedValueOnce({ ...challenge('text_click'), token: 'replacement-token' });
+    render(
+      <BehaviorCaptcha
+        type="text_click"
+        issue={issue}
+        verify={vi.fn().mockResolvedValue({ valid: false, reason: 'secret tolerance=180' })}
+        locale="en-US"
+      />,
+    );
+    const surface = await screen.findByTestId('captcha-surface');
+    rect(surface);
+    fireEvent.click(surface, { clientX: 100, clientY: 50 });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('Verification failed');
+    });
+    expect(screen.queryByText(/secret tolerance/)).toBeNull();
+    expect(issue).toHaveBeenCalledTimes(1);
+    // Retry is scheduled for 1s after failure; wait for the replacement issue call.
+    await waitFor(() => {
+      expect(issue).toHaveBeenCalledTimes(2);
+    }, { timeout: 2500 });
+  });
   it('locks duplicate automatic submissions and freezes after success',async()=>{let resolveVerify:(value:{valid:boolean})=>void=()=>{};const verify=vi.fn().mockImplementation(()=>new Promise((resolve)=>{resolveVerify=resolve}));render(<BehaviorCaptcha type="angle" issue={vi.fn().mockResolvedValue(challenge('angle'))} verify={verify} locale="en-US"/>);const range=await screen.findByRole('slider') as HTMLInputElement;fireEvent.pointerDown(range,{pointerId:2});fireEvent.change(range,{target:{value:'4200'}});fireEvent.pointerUp(range,{pointerId:2});fireEvent.pointerUp(range,{pointerId:2});expect(verify).toHaveBeenCalledTimes(1);resolveVerify({valid:true});await screen.findByText('Verified');expect(range.disabled).toBe(true);expect((screen.getByRole('button',{name:'New challenge'}) as HTMLButtonElement).disabled).toBe(true);});
   it.each([
     ['curve_draw','curve-draw-surface'],['curve_slider','curve-slider-control'],['rotate','rotate-puzzle-challenge'],['angle','angle-challenge'],['restore_slider','restore-slider-challenge'],

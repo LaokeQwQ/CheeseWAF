@@ -1,4 +1,4 @@
-import { Button, Empty, Input, Message as ArcoMessage, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, Message, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,7 +14,6 @@ import {
 } from '../../api/client';
 import type { BlockPageConfig } from '../../types/api';
 import '../../styles/block-pages.css';
-import '../../styles/arco-components';
 
 const blockPreviewStoragePrefix = 'cheesewaf-block-page-preview-html';
 
@@ -101,10 +100,10 @@ export default function BlockPagesPage() {
         selected: saved?.template_id || selected,
         customHTML: saved?.custom_html ?? customHTML,
       });
-      ArcoMessage.success(t('blockPages.saved'));
+      Message.success(t('blockPages.saved'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
-    onError: (mutationError: Error) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError: Error) => Message.error(mutationError.message),
   });
 
   const saveCustomMutation = useMutation({
@@ -114,20 +113,20 @@ export default function BlockPagesPage() {
         selected: saved?.template_id || selected,
         customHTML: saved?.custom_html ?? customHTML,
       });
-      ArcoMessage.success(t('blockPages.customSaved'));
+      Message.success(t('blockPages.customSaved'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
-    onError: (mutationError: Error) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError: Error) => Message.error(mutationError.message),
   });
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadBlockPageHTML(file, selected),
     onSuccess: async (result) => {
       markFormClean({ customHTML: result.config.custom_html, selected: result.config.template_id || selected });
-      ArcoMessage.success(t('blockPages.uploaded', { name: result.filename }));
+      Message.success(t('blockPages.uploaded', { name: result.filename }));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
-    onError: (mutationError: Error) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError: Error) => Message.error(mutationError.message),
   });
 
   const restoreMutation = useMutation({
@@ -137,10 +136,10 @@ export default function BlockPagesPage() {
         selected: saved?.template_id || selected,
         customHTML: saved?.custom_html ?? '',
       });
-      ArcoMessage.success(t('blockPages.restored'));
+      Message.success(t('blockPages.restored'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
-    onError: (mutationError: Error) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError: Error) => Message.error(mutationError.message),
   });
 
   async function copyTemplate() {
@@ -150,9 +149,9 @@ export default function BlockPagesPage() {
     }
     try {
       await navigator.clipboard.writeText(sourceHTML);
-      ArcoMessage.success(t('blockPages.copied'));
+      Message.success(t('blockPages.copied'));
     } catch {
-      ArcoMessage.error(t('blockPages.copyFailed'));
+      Message.error(t('blockPages.copyFailed'));
     }
   }
 
@@ -172,7 +171,7 @@ export default function BlockPagesPage() {
 
   function openPreviewWindow() {
     if (!safePreviewHTML.trim()) {
-      ArcoMessage.warning(t('blockPages.noPreviewContent'));
+      Message.warning(t('blockPages.noPreviewContent'));
       return;
     }
     // Never open executable same-origin blob URLs. Hand HTML to the in-app
@@ -181,7 +180,7 @@ export default function BlockPagesPage() {
     try {
       localStorage.setItem(token, JSON.stringify({ html: safePreviewHTML, created_at: Date.now() }));
     } catch {
-      ArcoMessage.error(t('blockPages.previewOpenFailed'));
+      Message.error(t('blockPages.previewOpenFailed'));
       return;
     }
     const previewURL = `/block-pages/preview?token=${encodeURIComponent(token)}`;
@@ -192,7 +191,7 @@ export default function BlockPagesPage() {
       } catch {
         // ignore storage cleanup failures
       }
-      ArcoMessage.error(t('blockPages.previewOpenFailed'));
+      Message.error(t('blockPages.previewOpenFailed'));
     }
   }
 
@@ -201,7 +200,7 @@ export default function BlockPagesPage() {
       return;
     }
     if (!customHTML.trim()) {
-      ArcoMessage.warning(t('blockPages.emptyCustom'));
+      Message.warning(t('blockPages.emptyCustom'));
       return;
     }
     saveCustomMutation.mutate();

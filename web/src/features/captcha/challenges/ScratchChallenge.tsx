@@ -9,7 +9,7 @@ export interface ScratchChallengeProps { imageSrc: string; maskSrc: string; widt
 
 export function ScratchChallenge({ imageSrc, maskSrc, width = 400, height = 220, label, disabled, startedAt, onInteractionStart, onSubmit }: ScratchChallengeProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const activePointer = useRef<number>();
+  const activePointer = useRef<number | undefined>(undefined);
   const trackRef = useRef<CaptchaTrackPoint[]>([]);
   const keyboardActive = useRef(false);
   const keyboardPoint = useRef({ x: 5000, y: 5000 });

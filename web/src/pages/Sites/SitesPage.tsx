@@ -3,7 +3,7 @@ import {
   Empty,
   Input,
   InputNumber,
-  Message as ArcoMessage,
+  Message,
   Modal,
   Select,
   Space,
@@ -11,7 +11,7 @@ import {
   Switch,
   Table,
   Tag,
-} from '@arco-design/web-react';
+} from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, LockKeyhole, Network, Plus, Route, Server, ShieldCheck } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -99,14 +99,14 @@ export default function SitesPage() {
   const mutation = useMutation({
     mutationFn: createSite,
     onSuccess: (site) => {
-      ArcoMessage.success(t('sites.created'));
+      Message.success(t('sites.created'));
       setOpen(false);
       setStep(0);
       setDraft(initialDraft);
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       navigate(`/sites/${site.id}`);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const rows = data ?? [];
   const basicStepValid = useMemo(
@@ -335,7 +335,7 @@ export default function SitesPage() {
           </div>
         )}
       >
-        <Steps current={step + 1} size="small" className="setup-steps">
+        <Steps current={step} size="small" className="setup-steps">
           <Steps.Step title={t('sites.stepBasic')} icon={<Network size={16} />} />
           <Steps.Step title={t('sites.stepTls')} icon={<LockKeyhole size={16} />} />
           <Steps.Step title={t('sites.stepProtection')} icon={<ShieldCheck size={16} />} />

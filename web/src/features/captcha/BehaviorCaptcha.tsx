@@ -73,9 +73,9 @@ export function BehaviorCaptcha({
   const requestSequence = useRef(0);
   const verifySequence = useRef(0);
   const activeToken = useRef("");
-  const issueController = useRef<AbortController>();
-  const verifyController = useRef<AbortController>();
-  const retryTimer = useRef<number>();
+  const issueController = useRef<AbortController | undefined>(undefined);
+  const verifyController = useRef<AbortController | undefined>(undefined);
+  const retryTimer = useRef<number | undefined>(undefined);
   const changeStatus = useCallback(
     (next: CaptchaStatus) => {
       setStatus(next);
@@ -529,7 +529,7 @@ function PowBody({
   submit,
   locale,
 }: BodyProps) {
-  const controller = useRef<AbortController>();
+  const controller = useRef<AbortController | undefined>(undefined);
   const [solving, setSolving] = useState(false);
   useEffect(() => () => controller.current?.abort(), []);
   const run = async () => {

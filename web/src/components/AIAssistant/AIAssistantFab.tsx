@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Button } from '@arco-design/web-react';
+import { Button } from '../../ui';
 import { Bot } from 'lucide-react';
 import {
   AI_FAB_DEFAULT_BOTTOM,

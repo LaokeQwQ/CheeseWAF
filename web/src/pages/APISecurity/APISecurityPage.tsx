@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Select, Table, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, Message, Select, Table, Tag } from '../../ui';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ClipboardCheck, Radar, RotateCcw, Trash2 } from 'lucide-react';
@@ -24,7 +24,7 @@ export default function APISecurityPage() {
       setHasValidated(true);
     },
     onError: (error) => {
-      ArcoMessage.error(error.message || t('common.requestFailed'));
+      Message.error(error.message || t('common.requestFailed'));
     },
   });
   const allEndpoints = data?.endpoints ?? [];

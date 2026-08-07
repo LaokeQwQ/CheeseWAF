@@ -1,0 +1,13 @@
+@import 'tailwindcss';
+@import '@appica/ui-react/styles.css';
+
+/* Path relative to this stylesheet so Tailwind emits library utilities. */
+@source '../../node_modules/@appica/ui-react/dist';
+
+html.dark {
+  color-scheme: dark;
+}
+
+html:not(.dark) {
+  color-scheme: light;
+}

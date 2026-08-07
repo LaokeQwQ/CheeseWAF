@@ -8,7 +8,7 @@ const cssAssets = readdirSync(path.join(distDir, 'assets')).filter((f) => f.ends
 const themeAssets = cssAssets.filter((f) => /^(light|dark|black-gold|blue-white|pink-white|miku-green)-/.test(f));
 const htmlCSSPaths = [...html.matchAll(/<link\s+rel="stylesheet"[^>]+href="([^"]+)"/g)].map((m) => m[1].replace(/^\//, ''));
 const runtimeInitialCSSPaths = cssAssets
-  .filter((f) => /^(global|vendor-arco-)/.test(f))
+  .filter((f) => /^(global|appica|vendor-appica)/.test(f))
   .map((f) => path.join('assets', f));
 const initialCSSPaths = [...new Set([...htmlCSSPaths, ...runtimeInitialCSSPaths])];
 let initial = 0;

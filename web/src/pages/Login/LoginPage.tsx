@@ -1,6 +1,5 @@
-import { Button, Form, Input, Message as ArcoMessage, Modal, Select } from '@arco-design/web-react';
-import '../../styles/arco-components';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Button, Form, Input, Message, Modal, Select } from '../../ui';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
@@ -361,19 +360,25 @@ export default function LoginPage() {
   const showProductVersion = branding?.show_version !== false && Boolean(branding?.product_version);
   const productVersion = String(branding?.product_version ?? '').trim();
 
-  useEffect(() => {
+  // useLayoutEffect: ref is attached after DOM commit; useEffect can race under full-suite load
+  // and miss the first pause when reduced-motion video mounts with options.
+  useLayoutEffect(() => {
     const video = backgroundVideoRef.current;
     if (!video || !prefersReducedMotion) {
       return undefined;
     }
     const showFirstFrame = () => {
       video.pause();
-      video.currentTime = 0;
+      try {
+        video.currentTime = 0;
+      } catch {
+        // jsdom may reject seeking before metadata
+      }
     };
     showFirstFrame();
     video.addEventListener('loadedmetadata', showFirstFrame);
     return () => video.removeEventListener('loadedmetadata', showFirstFrame);
-  }, [safeBackgroundURL, prefersReducedMotion]);
+  }, [safeBackgroundURL, prefersReducedMotion, showBackgroundVideo]);
 
   function handleThemeChange(value: string) {
     if (isThemeName(value)) {
@@ -421,7 +426,7 @@ export default function LoginPage() {
       await login(submittedUsername, values.password ?? '', values.totpCode, captcha);
       const message = t('login.success');
       setSuccess(message);
-      ArcoMessage.success(message);
+      Message.success(message);
       if (navigateTimerRef.current != null) {
         window.clearTimeout(navigateTimerRef.current);
       }
@@ -433,7 +438,7 @@ export default function LoginPage() {
       if (err instanceof APIRequestError && err.code === 'TWO_FA_REQUIRED') {
         setRequires2FA(true);
         setError(t('login.totpRequired'));
-        ArcoMessage.warning(t('login.totpRequired'));
+        Message.warning(t('login.totpRequired'));
         await refreshCaptcha(false);
         return;
       }

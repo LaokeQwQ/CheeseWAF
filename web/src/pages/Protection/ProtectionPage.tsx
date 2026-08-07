@@ -1,4 +1,4 @@
-import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Select, Spin, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
+import { Button, Form, Input, InputNumber, Message, Modal, Select, Spin, Switch, Table, Tabs, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -102,28 +102,28 @@ export default function ProtectionPage() {
       const fields = Object.keys(variables) as Array<keyof typeof variables>;
       setPolicySaving((prev) => { const next = { ...prev }; for (const f of fields) delete next[f]; return next; });
       setPolicyDraft(protection.policy);
-      ArcoMessage.error(mutationError.message);
+      Message.error(mutationError.message);
     },
   });
   const ipMutation = useMutation({
     mutationFn: updateIPProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); ArcoMessage.success(t('common.saved')); },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed')),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); Message.success(t('common.saved')); },
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('common.requestFailed')),
   });
   const rateMutation = useMutation({
     mutationFn: updateRateLimit,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); ArcoMessage.success(t('common.saved')); },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed')),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); Message.success(t('common.saved')); },
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('common.requestFailed')),
   });
   const botMutation = useMutation({
     mutationFn: updateBotProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); ArcoMessage.success(t('common.saved')); },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed')),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); Message.success(t('common.saved')); },
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('common.requestFailed')),
   });
   const aclMutation = useMutation({
     mutationFn: updateACLProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); ArcoMessage.success(t('common.saved')); },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed')),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); Message.success(t('common.saved')); },
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('common.requestFailed')),
   });
   const [aclDraft, setAclDraft] = useState<ACLRule | null>(null);
   const [aclEditing, setAclEditing] = useState(false);
@@ -165,7 +165,7 @@ export default function ProtectionPage() {
     if (!aclDraft) return;
     const name = aclDraft.name.trim();
     if (!name) {
-      ArcoMessage.warning(t('rules.nameHint', { defaultValue: t('rules.namePlaceholder') }));
+      Message.warning(t('rules.nameHint', { defaultValue: t('rules.namePlaceholder') }));
       return;
     }
     const nextDraft = { ...aclDraft, name };
@@ -321,38 +321,38 @@ export default function ProtectionPage() {
             }}
             onSubmit={(values) => botMutation.mutate({
               ...protection.bot,
-              enabled: values.enabled ?? protection.bot.enabled,
-              js_challenge: values.jsChallenge ?? protection.bot.js_challenge,
-              captcha: values.captcha ?? protection.bot.captcha,
-              captcha_type: values.captchaType ?? protection.bot.captcha_type,
+              enabled: asBool(values.enabled, protection.bot.enabled),
+              js_challenge: asBool(values.jsChallenge, protection.bot.js_challenge),
+              captcha: asBool(values.captcha, protection.bot.captcha),
+              captcha_type: asStr(values.captchaType, protection.bot.captcha_type),
               captcha_types: asArr(values.captchaTypes ?? protection.bot.captcha_types) as ProtectionCaptchaType[],
-              captcha_challenge_ttl: durationToNanoseconds(values.captchaChallengeTtl, protection.bot.captcha_challenge_ttl || '5m'),
-              captcha_failure_window: durationToNanoseconds(values.captchaFailureWindow, protection.bot.captcha_failure_window || '10m'),
-              captcha_block_duration: durationToNanoseconds(values.captchaBlockDuration, protection.bot.captcha_block_duration || '30m'),
+              captcha_challenge_ttl: durationToNanoseconds(asDuration(values.captchaChallengeTtl), protection.bot.captcha_challenge_ttl || '5m'),
+              captcha_failure_window: durationToNanoseconds(asDuration(values.captchaFailureWindow), protection.bot.captcha_failure_window || '10m'),
+              captcha_block_duration: durationToNanoseconds(asDuration(values.captchaBlockDuration), protection.bot.captcha_block_duration || '30m'),
               captcha_escalation_types: asArr(values.captchaEscalationTypes ?? protection.bot.captcha_escalation_types) as ProtectionCaptchaType[],
-              captcha_binding_mode: values.captchaBindingMode ?? protection.bot.captcha_binding_mode,
+              captcha_binding_mode: asStr(values.captchaBindingMode, protection.bot.captcha_binding_mode),
               captcha_policy_version: String(values.captchaPolicyVersion ?? protection.bot.captcha_policy_version ?? '').trim() || 'v1',
-              captcha_max_attempts: values.captchaMaxAttempts ?? protection.bot.captcha_max_attempts,
-              image_captcha_length: values.imageCaptchaLength ?? protection.bot.image_captcha_length,
-              image_captcha_width: values.imageCaptchaWidth ?? protection.bot.image_captcha_width,
-              image_captcha_height: values.imageCaptchaHeight ?? protection.bot.image_captcha_height,
-              image_captcha_audio_limit: values.imageCaptchaAudioLimit ?? protection.bot.image_captcha_audio_limit,
-              slider_captcha_width: values.sliderCaptchaWidth ?? protection.bot.slider_captcha_width,
-              slider_captcha_height: values.sliderCaptchaHeight ?? protection.bot.slider_captcha_height,
-              slider_captcha_piece: values.sliderCaptchaPiece ?? protection.bot.slider_captcha_piece,
-              slider_captcha_tolerance: values.sliderCaptchaTolerance ?? protection.bot.slider_captcha_tolerance,
-              slider_captcha_min_drag: durationToNanoseconds(values.sliderCaptchaMinDrag, protection.bot.slider_captcha_min_drag || '450ms'),
-              slider_captcha_track_required: values.sliderCaptchaTrackRequired ?? protection.bot.slider_captcha_track_required,
-              captcha_mobile_type: values.captchaMobileType ?? protection.bot.captcha_mobile_type,
-              challenge_difficulty: values.challengeDifficulty ?? protection.bot.challenge_difficulty,
-              altcha_max_number: values.altchaMaxNumber ?? protection.bot.altcha_max_number,
-              altcha_header_name: values.altchaHeaderName ?? protection.bot.altcha_header_name,
-              waiting_room: values.waitingRoom ?? protection.bot.waiting_room,
-              waiting_room_max_active: values.waitingRoomMaxActive ?? protection.bot.waiting_room_max_active,
-              waiting_room_ttl: durationToNanoseconds(values.waitingRoomTtl, protection.bot.waiting_room_ttl || '5m'),
-              challenge_ttl: durationToNanoseconds(values.challengeTtl, protection.bot.challenge_ttl || '30m'),
-              cookie_name: values.cookieName ?? protection.bot.cookie_name,
-              secret: values.secret ?? protection.bot.secret,
+              captcha_max_attempts: asNum(values.captchaMaxAttempts, protection.bot.captcha_max_attempts),
+              image_captcha_length: asNum(values.imageCaptchaLength, protection.bot.image_captcha_length),
+              image_captcha_width: asNum(values.imageCaptchaWidth, protection.bot.image_captcha_width),
+              image_captcha_height: asNum(values.imageCaptchaHeight, protection.bot.image_captcha_height),
+              image_captcha_audio_limit: asNum(values.imageCaptchaAudioLimit, protection.bot.image_captcha_audio_limit),
+              slider_captcha_width: asNum(values.sliderCaptchaWidth, protection.bot.slider_captcha_width),
+              slider_captcha_height: asNum(values.sliderCaptchaHeight, protection.bot.slider_captcha_height),
+              slider_captcha_piece: asNum(values.sliderCaptchaPiece, protection.bot.slider_captcha_piece),
+              slider_captcha_tolerance: asNum(values.sliderCaptchaTolerance, protection.bot.slider_captcha_tolerance),
+              slider_captcha_min_drag: durationToNanoseconds(asDuration(values.sliderCaptchaMinDrag), protection.bot.slider_captcha_min_drag || '450ms'),
+              slider_captcha_track_required: asBool(values.sliderCaptchaTrackRequired, protection.bot.slider_captcha_track_required),
+              captcha_mobile_type: asStr(values.captchaMobileType, protection.bot.captcha_mobile_type),
+              challenge_difficulty: asNum(values.challengeDifficulty, protection.bot.challenge_difficulty),
+              altcha_max_number: asNum(values.altchaMaxNumber, protection.bot.altcha_max_number),
+              altcha_header_name: asStr(values.altchaHeaderName, protection.bot.altcha_header_name),
+              waiting_room: asBool(values.waitingRoom, protection.bot.waiting_room),
+              waiting_room_max_active: asNum(values.waitingRoomMaxActive, protection.bot.waiting_room_max_active),
+              waiting_room_ttl: durationToNanoseconds(asDuration(values.waitingRoomTtl), protection.bot.waiting_room_ttl || '5m'),
+              challenge_ttl: durationToNanoseconds(asDuration(values.challengeTtl), protection.bot.challenge_ttl || '30m'),
+              cookie_name: asStr(values.cookieName, protection.bot.cookie_name),
+              secret: asStr(values.secret, protection.bot.secret),
               path_prefixes: asArr(values.protectedPaths ?? protection.bot.path_prefixes),
               exempt_path_prefixes: asArr(values.exemptPaths ?? protection.bot.exempt_path_prefixes),
               allowed_user_agents: asArr(values.allowedUA ?? protection.bot.allowed_user_agents),
@@ -479,7 +479,7 @@ export default function ProtectionPage() {
               ...protection.ip,
               geoip: {
                 ...protection.ip.geoip,
-                enabled: values.enabled,
+                enabled: asBool(values.enabled, protection.ip.geoip.enabled),
                 database: String(values.database ?? '').trim(),
                 precision_database: String(values.precisionDatabase ?? '').trim(),
                 blocked_countries: splitList(values.blocked).map((item) => item.toUpperCase()),
@@ -505,7 +505,14 @@ export default function ProtectionPage() {
             key={`ratelimit-${protection.ratelimit.enabled}-${protection.ratelimit.default.requests}-${protection.ratelimit.default.burst}`}
             layout="vertical"
             initialValues={{ enabled: protection.ratelimit.enabled, requests: protection.ratelimit.default.requests, burst: protection.ratelimit.default.burst }}
-            onSubmit={(values) => rateMutation.mutate({ enabled: values.enabled, default: { ...protection.ratelimit.default, requests: values.requests, burst: values.burst } })}
+            onSubmit={(values) => rateMutation.mutate({
+              enabled: asBool(values.enabled, protection.ratelimit.enabled),
+              default: {
+                ...protection.ratelimit.default,
+                requests: asNum(values.requests, protection.ratelimit.default.requests),
+                burst: asNum(values.burst, protection.ratelimit.default.burst),
+              },
+            })}
           >
             <div className="protection-form-grid">
               <Form.Item label={t('common.online')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
@@ -528,7 +535,7 @@ export default function ProtectionPage() {
             <div className="protection-form-grid protection-form-grid-compact">
               <label>
                 <span>{t('rules.name')}</span>
-                <Input value={aclDraft.name} placeholder={t('rules.namePlaceholder')} onChange={(name) => { setAclDraft((d) => d ? { ...d, name } : d); setAclUnsaved(true); }} />
+                <Input value={aclDraft.name} placeholder={t('rules.namePlaceholder')} onChange={(name: string) => { setAclDraft((d) => d ? { ...d, name } : d); setAclUnsaved(true); }} />
               </label>
               <label>
                 <span>{t('rules.method')}</span>
@@ -545,7 +552,7 @@ export default function ProtectionPage() {
               </label>
               <label>
                 <span>{t('rules.path')}</span>
-                <Input value={aclDraft.path_prefix || ''} placeholder="/admin" onChange={(path_prefix) => { setAclDraft((d) => d ? { ...d, path_prefix } : d); setAclUnsaved(true); }} />
+                <Input value={aclDraft.path_prefix || ''} placeholder="/admin" onChange={(path_prefix: string) => { setAclDraft((d) => d ? { ...d, path_prefix } : d); setAclUnsaved(true); }} />
               </label>
               <label>
                 <span>{t('logs.action')}</span>
@@ -558,7 +565,7 @@ export default function ProtectionPage() {
               </label>
               <label>
                 <span>{t('rules.header')}</span>
-                <Input value={aclDraft.header || ''} placeholder="X-Custom-Header" onChange={(header) => { setAclDraft((d) => d ? { ...d, header } : d); setAclUnsaved(true); }} />
+                <Input value={aclDraft.header || ''} placeholder="X-Custom-Header" onChange={(header: string) => { setAclDraft((d) => d ? { ...d, header } : d); setAclUnsaved(true); }} />
               </label>
               <label>
                 <span>{t('rules.enabled')}</span>
@@ -582,20 +589,23 @@ export default function ProtectionPage() {
             pagination={false}
             data={protection.acl.rules}
             columns={[
-              { title: t('rules.name'), dataIndex: 'name', width: 220, render: (name: string) => <strong className="acl-table-name" title={name}>{name}</strong> },
-              { title: t('rules.method'), dataIndex: 'method', width: 84, render: (method: string) => <span className="acl-table-method">{method || '*'}</span> },
-              { title: t('rules.path'), dataIndex: 'path_prefix', width: 320, render: (path: string) => <code className="table-code acl-table-path" title={path || '*'}>{path || '*'}</code> },
+              { title: t('rules.name'), dataIndex: 'name', width: 220, render: (name: unknown) => <strong className="acl-table-name" title={String(name ?? '')}>{String(name ?? '')}</strong> },
+              { title: t('rules.method'), dataIndex: 'method', width: 84, render: (method: unknown) => <span className="acl-table-method">{String(method || '*')}</span> },
+              { title: t('rules.path'), dataIndex: 'path_prefix', width: 320, render: (path: unknown) => <code className="table-code acl-table-path" title={String(path || '*')}>{String(path || '*')}</code> },
               {
                 title: t('logs.action'),
                 dataIndex: 'action',
                 width: 96,
-                render: (action: string) => <Tag color={action === 'block' ? 'red' : action === 'challenge' ? 'orange' : 'blue'}>{displayAction(action, t)}</Tag>,
+                render: (action: unknown) => {
+                  const actionValue = String(action ?? '');
+                  return <Tag color={actionValue === 'block' ? 'red' : actionValue === 'challenge' ? 'orange' : 'blue'}>{displayAction(actionValue, t)}</Tag>;
+                },
               },
               {
                 title: t('rules.enabled'),
                 dataIndex: 'enabled',
                 width: 78,
-                render: (_: boolean, record: ACLRule) => (
+                render: (_: unknown, record: ACLRule) => (
                   <Switch checked={record.enabled} loading={aclBusyId === record.id} size="small" onChange={(enabled) => toggleACL(record.id, enabled)} />
                 ),
               },
@@ -622,7 +632,7 @@ export default function ProtectionPage() {
               </header>
               <label>
                 <span>{t('rules.name')}</span>
-                <Input value={aclDraft.name} placeholder={t('rules.namePlaceholder')} onChange={(name) => { setAclDraft((d) => d ? { ...d, name } : d); setAclUnsaved(true); }} />
+                <Input value={aclDraft.name} placeholder={t('rules.namePlaceholder')} onChange={(name: string) => { setAclDraft((d) => d ? { ...d, name } : d); setAclUnsaved(true); }} />
               </label>
               <label>
                 <span>{t('rules.method')}</span>
@@ -639,7 +649,7 @@ export default function ProtectionPage() {
               </label>
               <label>
                 <span>{t('rules.path')}</span>
-                <Input value={aclDraft.path_prefix || ''} placeholder="/admin" onChange={(path_prefix) => { setAclDraft((d) => d ? { ...d, path_prefix } : d); setAclUnsaved(true); }} />
+                <Input value={aclDraft.path_prefix || ''} placeholder="/admin" onChange={(path_prefix: string) => { setAclDraft((d) => d ? { ...d, path_prefix } : d); setAclUnsaved(true); }} />
               </label>
               <label>
                 <span>{t('logs.action')}</span>
@@ -808,7 +818,7 @@ function ProtectionLevelSelect({ value, onChange, disabled }: { value?: string; 
   );
 }
 
-function CaptchaTypeSelect({ multiple = false, excludeRandom = false, value, onChange }: { multiple?: boolean; excludeRandom?: boolean; value?: string | string[]; onChange?: (value: string | string[]) => void }) {
+function CaptchaTypeSelect({ multiple = false, excludeRandom = false, value, onChange }: { multiple?: boolean; excludeRandom?: boolean; value?: string | string[]; onChange?: (value: unknown) => void }) {
   const { t } = useTranslation();
   const poolOptions = captchaTypes.filter((type) => type !== 'image' && type !== 'slider');
   const options = excludeRandom ? poolOptions.filter((type) => type !== 'random') : multiple ? poolOptions : captchaTypes;
@@ -937,35 +947,82 @@ function durationUnitLabel(unit: DurationUnit, t: ReturnType<typeof useTranslati
 }
 
 function ListEditor({ label, field, hint, placeholder }: { label: string; field: string; hint?: string; placeholder?: string }) {
-  const { t } = useTranslation();
   return (
     <Form.Item label={label} field={field} extra={hint}>
-      <Form.List field={field}>
-        {(fields, { add, remove }) => (
-          <div className="list-editor">
-            {fields.map((f) => (
-              <div className="list-editor-item" key={f.key}>
-                <Form.Item field={f.field} noStyle><Input placeholder={placeholder} /></Form.Item>
-                <Button
-                  size="mini"
-                  icon={<Trash2 size={12} />}
-                  aria-label={`${t('common.delete')} ${label}`}
-                  title={`${t('common.delete')} ${label}`}
-                  onClick={() => remove(f.key)}
-                />
-              </div>
-            ))}
-            <Button size="mini" icon={<Plus size={12} />} onClick={() => add()}>{t('common.add')}</Button>
-          </div>
-        )}
-      </Form.List>
+      <ListEditorControl label={label} placeholder={placeholder} />
     </Form.Item>
+  );
+}
+
+function ListEditorControl({
+  label,
+  placeholder,
+  value,
+  onChange,
+}: {
+  label: string;
+  placeholder?: string;
+  value?: unknown;
+  onChange?: (value: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  const items = Array.isArray(value) ? value.map((item) => String(item ?? '')) : [];
+  const update = (next: string[]) => onChange?.(next);
+  return (
+    <div className="list-editor">
+      {items.map((item, index) => (
+        <div className="list-editor-item" key={index}>
+          <Input
+            value={item}
+            placeholder={placeholder}
+            onChange={(next: string) => {
+              const copy = [...items];
+              copy[index] = next;
+              update(copy);
+            }}
+          />
+          <Button
+            size="mini"
+            icon={<Trash2 size={12} />}
+            aria-label={`${t('common.delete')} ${label}`}
+            title={`${t('common.delete')} ${label}`}
+            onClick={() => update(items.filter((_, i) => i !== index))}
+          />
+        </div>
+      ))}
+      <Button size="mini" icon={<Plus size={12} />} onClick={() => update([...items, ''])}>{t('common.add')}</Button>
+    </div>
   );
 }
 
 function asArr(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
   return [];
+}
+
+function asBool(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (value === undefined || value === null || value === '') return fallback;
+  return Boolean(value);
+}
+
+function asNum(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function asStr(value: unknown, fallback: string): string {
+  if (typeof value === 'string') return value;
+  if (value === undefined || value === null) return fallback;
+  return String(value);
+}
+
+function asDuration(value: unknown): number | string | undefined {
+  if (typeof value === 'number' || typeof value === 'string') return value;
+  if (value === undefined || value === null) return undefined;
+  return String(value);
 }
 
 function policyLevelLabel(level: string | undefined, t: ReturnType<typeof useTranslation>['t']) {

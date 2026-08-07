@@ -1,4 +1,5 @@
-/* Migrated from global.css: AI analysis page scoped rules. */
+/* Migrated from global.css: AI analysis page scoped rules.
+   Dual: keep adapter .arco-* classes + Appica [data-slot=…] / badge. */
 .ai-page
   .ai-events-row-actions
   .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
@@ -6,7 +7,10 @@
   .ai-events-row-actions
   .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(
     :disabled
-  ) {
+  ),
+.ai-page
+  .ai-events-row-actions
+  [data-slot='button']:not([data-variant='primary']):not(:disabled) {
   color: var(--text);
   background: color-mix(in srgb, var(--surface) 92%, var(--surface-soft));
   border-color: color-mix(in srgb, var(--border) 86%, var(--text-muted));
@@ -20,12 +24,17 @@
   .ai-events-row-actions
   .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(
     :disabled
-  ):hover {
+  ):hover,
+.ai-page
+  .ai-events-row-actions
+  [data-slot='button']:not([data-variant='primary']):not(:disabled):hover {
   color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
-.ai-page .ai-events-table .arco-table {
+.ai-page .ai-events-table .arco-table,
+.ai-page .ai-events-table [data-slot='table'],
+.ai-page .ai-events-table table {
   min-width: 860px;
 }
 .ai-page .ai-events-list-header > span {
@@ -104,7 +113,8 @@
 .ai-page .ai-events-row-actions .table-action-link {
   flex: 0 0 auto;
 }
-.ai-page .ai-events-row-actions .arco-btn {
+.ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
   width: auto;
   flex: 0 0 auto;
   min-width: 64px;
@@ -116,12 +126,14 @@
   justify-content: center;
   white-space: nowrap;
 }
-.ai-page .ai-events-row-actions .arco-btn:hover {
+.ai-page .ai-events-row-actions .arco-btn:hover,
+.ai-page .ai-events-row-actions [data-slot='button']:hover {
   color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
-.ai-page .ai-events-row-actions .arco-btn-primary {
+.ai-page .ai-events-row-actions .arco-btn-primary,
+.ai-page .ai-events-row-actions [data-slot='button'][data-variant='primary'] {
   color: var(--accent-contrast);
 }
 .ai-page .ai-config-save {
@@ -135,7 +147,8 @@
   align-items: center;
   min-width: 0;
 }
-.ai-page .ai-analysis-meta .arco-tag {
+.ai-page .ai-analysis-meta .arco-tag,
+.ai-page .ai-analysis-meta [data-slot='badge'] {
   margin: 0;
 }
 .ai-page .ai-analysis-meta > span {
@@ -165,6 +178,7 @@
   min-width: 0;
   margin-bottom: 0;
 }
+/* Form.Item adapter emits .arco-form-item; keep class for layout targeting. */
 .ai-page .ai-config-form .ai-field-enabled,
 .ai-page .ai-config-form .ai-field-async,
 .ai-page .ai-config-form .ai-field-private-api-base {
@@ -188,7 +202,8 @@
 .ai-page .ai-events-panel {
   min-width: 0;
 }
-.ai-page .ai-events-panel .arco-table-tr {
+.ai-page .ai-events-panel .arco-table-tr,
+.ai-page .ai-events-panel [data-slot='table-row'] {
   cursor: pointer;
 }
 .ai-page .ai-detail-grid {
@@ -313,7 +328,8 @@
   .ai-page .ai-events-row-actions {
     justify-content: stretch;
   }
-  .ai-page .ai-events-row-actions .arco-btn {
+  .ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
     flex: 1 1 0;
   }
   .ai-page .ai-config-form {
@@ -723,7 +739,8 @@
 .ai-page .ai-events-row-actions {
   justify-content: flex-end;
 }
-.ai-page .ai-events-row-actions .arco-btn {
+.ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
   min-width: 66px;
 }
 .ai-page .ai-detail-grid {
@@ -758,7 +775,8 @@
     display: grid;
     grid-template-columns: 1fr;
   }
-  .ai-page .ai-events-row-actions .arco-btn {
+  .ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
     width: 100%;
     justify-content: center;
   }
@@ -1045,10 +1063,12 @@
   min-width: 0;
 }
 .ai-page .ai-events-row-actions .table-action-link,
-.ai-page .ai-events-row-actions .arco-btn {
+.ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
   flex: 0 0 auto;
 }
-.ai-page .ai-events-row-actions .arco-btn {
+.ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
   min-width: 72px;
 }
 .ai-page .ai-detail-grid {
@@ -1167,7 +1187,7 @@
 .ai-page
   .ai-config-form
   .ai-field-private-api-base
-  .arco-form-item-control-wrapper {
+  .arco-form-item > :not(label):not(.arco-form-extra) {
   min-width: 0;
 }
 .ai-page .ai-config-form .ai-field-private-api-base .arco-form-extra {
@@ -1300,7 +1320,7 @@
 .ai-page
   .ai-model-config-grid
   .ai-model-private-field
-  .arco-form-item-control-wrapper {
+  .arco-form-item > :not(label):not(.arco-form-extra) {
   margin-bottom: 0 !important;
 }
 .ai-page .ai-model-config-grid .ai-model-private-field .arco-form-extra {
@@ -1396,7 +1416,8 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.ai-page .ai-events-row-actions .arco-btn {
+.ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
   min-width: 78px;
 }
 .ai-page .ai-detail-grid {
@@ -1683,7 +1704,10 @@
 .ai-page .ai-model-config-grid .arco-input,
 .ai-page .ai-model-config-grid .arco-input-inner-wrapper,
 .ai-page .ai-model-config-grid .arco-select,
-.ai-page .ai-model-config-grid .arco-select-view {
+.ai-page .ai-model-config-grid .arco-select-view,
+.ai-page .ai-model-config-grid [data-slot='input'],
+.ai-page .ai-model-config-grid [data-slot='input-wrapper'],
+.ai-page .ai-model-config-grid [data-slot='select-trigger'] {
   min-width: 0 !important;
   max-width: 100% !important;
 }
@@ -1698,7 +1722,7 @@
   gap: 10px !important;
 }
 .ai-page .ai-model-private-field .arco-form-label-item,
-.ai-page .ai-model-private-field .arco-form-item-control-wrapper {
+.ai-page .ai-model-private-field .arco-form-item > :not(label):not(.arco-form-extra) {
   min-width: 0 !important;
 }
 .ai-page .ai-model-private-field .arco-form-extra {
@@ -1849,7 +1873,8 @@
   gap: 6px !important;
 }
 .ai-page .ai-events-row-actions .table-action-link,
-.ai-page .ai-events-row-actions .arco-btn {
+.ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
   max-width: 100% !important;
   flex: 0 0 auto !important;
 }
@@ -2110,7 +2135,7 @@
   writing-mode: horizontal-tb !important;
   text-align: left !important;
 }
-.ai-page .ai-model-config-grid .arco-form-item-control-wrapper,
+.ai-page .ai-model-config-grid .arco-form-item > :not(label):not(.arco-form-extra),
 .ai-page .ai-model-config-grid .arco-input,
 .ai-page .ai-model-config-grid .arco-input-inner-wrapper,
 .ai-page .ai-model-config-grid .arco-select,
@@ -2135,6 +2160,7 @@
   margin-top: 0 !important;
 }
 .ai-page .ai-model-config-actions .arco-btn,
+.ai-page .ai-model-config-actions [data-slot='button'],
 .ai-page .ai-config-save {
   white-space: nowrap !important;
 }
@@ -2425,7 +2451,7 @@
 .ai-page
   .ai-config-main
   > .ai-config-section-global
-  .arco-form-item-control-wrapper {
+  .arco-form-item > :not(label):not(.arco-form-extra) {
   flex: 0 0 auto !important;
   width: auto !important;
   min-width: 0 !important;
@@ -2521,7 +2547,7 @@
   font-size: 12px !important;
   white-space: nowrap !important;
 }
-.ai-page .ai-config-inline-switches .arco-form-item-control-wrapper {
+.ai-page .ai-config-inline-switches .arco-form-item > :not(label):not(.arco-form-extra) {
   width: auto !important;
   min-width: 0 !important;
 }
@@ -2782,8 +2808,11 @@
     width: 100% !important;
   }
   .ai-page .ai-events-panel > .panel-heading .arco-select,
+  .ai-page .ai-events-panel > .panel-heading [data-slot='select-trigger'],
   .ai-page .ai-events-panel > .panel-heading .arco-btn,
-  .ai-page .ai-config-header-actions .arco-btn {
+  .ai-page .ai-events-panel > .panel-heading [data-slot='button'],
+  .ai-page .ai-config-header-actions .arco-btn,
+  .ai-page .ai-config-header-actions [data-slot='button'] {
     width: 100% !important;
   }
   .ai-page .ai-detail-grid,
@@ -2973,7 +3002,8 @@
   gap: 8px !important;
 }
 .ai-page .ai-events-row-actions .table-action-link,
-.ai-page .ai-events-row-actions .arco-btn {
+.ai-page .ai-events-row-actions .arco-btn,
+.ai-page .ai-events-row-actions [data-slot='button'] {
   flex: 0 0 auto !important;
   max-width: 100% !important;
 }
@@ -3178,7 +3208,8 @@
   justify-content: flex-start !important;
   gap: 10px !important;
 }
-.ai-page .ai-model-config-actions .arco-btn {
+.ai-page .ai-model-config-actions .arco-btn,
+.ai-page .ai-model-config-actions [data-slot='button'] {
   flex: 1 1 160px !important;
 }
 
@@ -3207,6 +3238,7 @@
   }
   .ai-page .ai-analysis-range-select,
   .ai-page .ai-events-panel > .panel-heading .arco-btn,
+  .ai-page .ai-events-panel > .panel-heading [data-slot='button'],
   .ai-page .ai-event-summary-action {
     width: 100% !important;
     min-width: 0 !important;
@@ -3241,7 +3273,8 @@
     flex-wrap: wrap !important;
   }
   .ai-page .ai-events-row-actions .table-action-link,
-  .ai-page .ai-events-row-actions .arco-btn {
+  .ai-page .ai-events-row-actions .arco-btn,
+  .ai-page .ai-events-row-actions [data-slot='button'] {
     flex: 1 1 120px !important;
   }
   .ai-page .ai-event-summary-card {

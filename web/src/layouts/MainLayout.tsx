@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Input, Menu, Message as ArcoMessage, Modal, Pagination, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
-import '../styles/arco-components';
+import { Button, Dropdown, Input, Menu, Message, Modal, Pagination, Select, Space, Tag, Tooltip } from '../ui';
 import '../styles/console-layout-hardening.css';
 import {
   BrainCircuit,
@@ -267,7 +266,7 @@ export default function MainLayout() {
       setNotificationPage(1);
       void refreshNotifications();
     },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
   });
   const markAllReadMutation = useMutation({
     mutationFn: markAllNotificationsReadAPI,
@@ -275,7 +274,7 @@ export default function MainLayout() {
       setNotificationPage(1);
       void refreshNotifications();
     },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
   });
   const clearNotificationsMutation = useMutation({
     mutationFn: clearNotifications,
@@ -283,7 +282,7 @@ export default function MainLayout() {
       setNotificationPage(1);
       void refreshNotifications();
     },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+    onError: (error) => Message.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
   });
   const searchResults = useMemo(
     () => buildSearchResults(searchValue, recentLogItems, auditItems, userItems, t),
@@ -442,9 +441,11 @@ export default function MainLayout() {
               allowClear
               value={searchValue}
               onChange={(value) => {
-                setSearchValue(value);
+                // Adapter onChange is Arco-shaped (value first); coerce for type-safe string state.
+                const next = String(value ?? '');
+                setSearchValue(next);
                 setSearchHighlight(0);
-                setSearchOpen(Boolean(String(value).trim()));
+                setSearchOpen(Boolean(next.trim()));
               }}
               onFocus={() => {
                 if (searchBlurTimerRef.current != null) {

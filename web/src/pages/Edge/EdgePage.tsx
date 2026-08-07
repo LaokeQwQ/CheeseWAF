@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Checkbox, Empty, Form, Input, InputNumber, Message as ArcoMessage, Select, Switch, Table } from '@arco-design/web-react';
+import { Button, Checkbox, Empty, Form, Input, InputNumber, Message, Select, Switch, Table } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Gauge, ListPlus, PackageCheck, Plus, Trash2 } from 'lucide-react';
@@ -34,9 +34,9 @@ export default function EdgePage() {
     onSuccess: (saved) => {
       markClean(saved);
       queryClient.invalidateQueries({ queryKey: ['edge'] });
-      ArcoMessage.success(t('common.saved'));
+      Message.success(t('common.saved'));
     },
-    onError: (mutationError) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError) => Message.error(mutationError.message),
   });
   const updateHeader = (index: number, patch: Partial<HeaderRule>) => {
     setDraft((current) => {

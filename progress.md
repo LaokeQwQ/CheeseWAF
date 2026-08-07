@@ -1,6 +1,6 @@
 # CheeseWAF 项目阶段进度
 
-更新时间：2026-07-15
+更新时间：2026-08-07
 
 ## 项目定位
 
@@ -620,3 +620,24 @@ M2 后端 / CLI / Web 基础能力正在推进：已实现无明文凭据的 Ans
 - 扩展：node child_process、LD_PRELOAD、FreeMarker ObjectConstructor、XInclude、参数实体 OOB XXE；0day 向动态加载/反射原语（无 CVE 号）。
 - IO 向基准（本机）：FullPipeline ~520µs/op；PipelineWithRules ~226µs；PipelineConcurrent ~143µs；Analyzer ~28µs；HealthProbe ~1.2µs。
 
+## 2026-08-06 管理端 UI：放弃 Arco，Appica 主设计系统
+
+- 决策：以 Appica UI（`@appica/ui-react`）为**主**设计系统；shadcn/ui 仅作**从库**补缺，禁止双主混用基础控件。
+- 基线：React 19 + Tailwind CSS v4 + Appica ThemeProvider / design tokens；页面经 `web/src/ui` 适配层接入。
+- 范围：替换全站 Arco 依赖与 import；地图 / Captcha / Three 仅换壳。
+- 分支：`feature/ui-appica-main`；本地规划见 gitignore 的 task.md / implementation_plan.md。
+- 验收：`web` 无 `@arco-design`；typecheck / test / build 通过；PR 合入 dev 后按分支流晋升。
+
+## UI migration: Arco → Appica (2026-08-07) — COMPLETED
+
+- Status: **COMPLETED** (core migration); follow-ups in progress on PR.
+- Branch: `feature/ui-appica-main`.
+- PR: **#301** open → `dev` (**3 commits** on PR).
+- Decision locked: **Appica primary**, shadcn secondary (gap-only), **Arco removed**.
+- Foundation: React 19, Tailwind CSS 4, `@appica/ui-react`, `styles/appica.css`, vite `vendor-appica` chunk.
+- Design system surface: `web/src/ui` (arco-compat adapters, Message toast host, confirm/Modal).
+- Pages/components/layouts import from relative `ui` instead of `@arco-design/web-react`.
+- Dual CSS: residual `.arco` dual-selectors cleanup **done**.
+- In progress: Table `expandedRowRender` (Appica / adapter path).
+- Verify: typecheck green; vitest **276/276**; build green.
+- Remaining debt (non-blocking): Playwright scripts may still assume old Arco DOM — update when e2e is next touched.

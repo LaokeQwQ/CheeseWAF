@@ -1,7 +1,8 @@
 .page { display: grid; gap: 18px; }
 .header { align-items: flex-end; }
 .actions { display: flex; gap: 8px; align-items: center; }
-.actions :global(.arco-select) { width: 156px; }
+.actions :global(.arco-select),
+.actions :global([data-slot='select-trigger']) { width: 156px; }
 .metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--border-color); border-radius: 8px; background: var(--surface); overflow: hidden; }
 .metric { min-width: 0; min-height: 118px; padding: 18px; display: grid; grid-template-columns: 34px minmax(0, 1fr); grid-template-rows: auto 1fr; gap: 10px; align-items: center; border-right: 1px solid var(--border-color); }
 .metric:last-child { border-right: 0; }
@@ -54,7 +55,8 @@
 .rateTrack { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--surface-soft); overflow: hidden; }
 .rateTrack i { display: block; height: 100%; border-radius: inherit; background: var(--color-success-6); transition: width 260ms ease; }
 .trace { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.eventPanel :global(.arco-table-container) { border-radius: 0 0 8px 8px; }
+.eventPanel :global(.arco-table-container),
+.eventPanel :global([data-slot='table']) { border-radius: 0 0 8px 8px; }
 .eventCards { display: none; }
 .eventCard { display: grid; gap: 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--surface-soft); }
 .eventCardHeading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; }
@@ -77,8 +79,8 @@
 @keyframes spin { to { transform: rotate(-360deg); } }
 @media (max-width: 1280px) { .metrics, .skeletonMetrics { grid-template-columns: repeat(3, 1fr); } .metric:nth-child(3n) { border-right: 0; } .metric:nth-child(-n + 3) { border-bottom: 1px solid var(--border-color); } }
 @media (max-width: 960px) { .workspace { grid-template-columns: 1fr; } .effectList { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 680px) { .header { align-items: stretch; } .header > .actions { display: flex; width: 100%; } .actions :global(.arco-select) { flex: 1; min-width: 0; } .metrics, .skeletonMetrics { grid-template-columns: repeat(2, 1fr); } .metric:nth-child(3n) { border-right: 1px solid var(--border-color); } .metric:nth-child(2n) { border-right: 0; } .metric:nth-child(-n + 4) { border-bottom: 1px solid var(--border-color); } .effectList { grid-template-columns: 1fr; } .panelHeading { display: grid; } .chart { height: 230px; padding-left: 38px; padding-right: 10px; } .chartGrid { left: 38px; right: 10px; } .legend { gap: 10px; } .eventTable { display: none; } .eventCards { display: grid; gap: 10px; padding: 0 16px 16px; } }
-@media (max-width: 430px) { .actions { align-items: stretch; } .actions :global(.arco-btn) { width: 40px; padding-inline: 0; } .actions :global(.arco-btn span:not(.arco-icon-hover)) { display: none; } .metric { min-height: 104px; padding: 14px; } .metric strong { font-size: 23px; } .quickPanel button { padding: 14px 12px; } }
+@media (max-width: 680px) { .header { align-items: stretch; } .header > .actions { display: flex; width: 100%; } .actions :global(.arco-select), .actions :global([data-slot='select-trigger']) { flex: 1; min-width: 0; } .metrics, .skeletonMetrics { grid-template-columns: repeat(2, 1fr); } .metric:nth-child(3n) { border-right: 1px solid var(--border-color); } .metric:nth-child(2n) { border-right: 0; } .metric:nth-child(-n + 4) { border-bottom: 1px solid var(--border-color); } .effectList { grid-template-columns: 1fr; } .panelHeading { display: grid; } .chart { height: 230px; padding-left: 38px; padding-right: 10px; } .chartGrid { left: 38px; right: 10px; } .legend { gap: 10px; } .eventTable { display: none; } .eventCards { display: grid; gap: 10px; padding: 0 16px 16px; } }
+@media (max-width: 430px) { .actions { align-items: stretch; } .actions :global(.arco-btn), .actions :global([data-slot='button']) { width: 40px; padding-inline: 0; } .actions :global(.arco-btn span:not(.arco-icon-hover)), .actions :global([data-slot='button'] > span:not(:has(svg))) { display: none; } .metric { min-height: 104px; padding: 14px; } .metric strong { font-size: 23px; } .quickPanel button { padding: 14px 12px; } }
 @media (prefers-reduced-motion: reduce) { .bucket > i, .bucketTip, .rateTrack i, .quickPanel button { transition: none; } .spinning { animation: none; } }
 .pageTabs {
   display: flex;

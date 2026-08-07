@@ -51,12 +51,18 @@ async function audit(path, name) {
       }
     }
 
-    const buttons = [...document.querySelectorAll('button, .arco-btn')].slice(0, 40).map((button) => {
-      const icon = button.querySelector('svg, .arco-icon, .arco-btn-icon svg, .arco-btn-icon');
+    // Dual: native <button> + Arco-compat adapters that still emit .arco-btn*
+    const buttons = [...document.querySelectorAll('button, .arco-btn, [role="button"]')].slice(0, 40).map((button) => {
+      const icon = button.querySelector(
+        'svg, .arco-icon, .arco-btn-icon svg, .arco-btn-icon, [class*="icon"] svg, [data-slot="icon"]',
+      );
       if (!icon) return null;
       const iconRect = icon.getBoundingClientRect();
       const textNode = [...button.querySelectorAll('span')].find(
-        (span) => !span.classList.contains('arco-btn-icon') && (span.textContent || '').trim(),
+        (span) =>
+          !span.classList.contains('arco-btn-icon') &&
+          !span.querySelector('svg') &&
+          (span.textContent || '').trim(),
       );
       if (!textNode) return null;
       const textRect = textNode.getBoundingClientRect();
@@ -110,7 +116,10 @@ async function audit(path, name) {
     const misalignedButtons = buttons.filter((item) => item.misalign);
     if (misalignedButtons.length) issues.push('icon-text-misalign');
 
-    const empties = [...document.querySelectorAll('.arco-empty, .page-empty, .empty-state, .map-empty')].map((el) => {
+    // Dual: Arco-compat empty + native empty-state patterns used after Appica migration
+    const empties = [...document.querySelectorAll(
+      '.arco-empty, .page-empty, .empty-state, .map-empty, [class*="empty-state"], [data-empty], [role="status"].empty-state',
+    )].map((el) => {
       const rect = el.getBoundingClientRect();
       return {
         cls: typeof el.className === 'string' ? el.className.slice(0, 80) : el.tagName,

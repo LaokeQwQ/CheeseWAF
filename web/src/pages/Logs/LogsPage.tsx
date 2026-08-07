@@ -1,4 +1,4 @@
-import { Button, Empty, Input, Select, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, Select, Tag } from '../../ui';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';

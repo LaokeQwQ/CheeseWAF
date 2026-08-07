@@ -1,4 +1,4 @@
-import { Button, Empty, Select, Skeleton, Table, Tag } from '@arco-design/web-react';
+import { Button, Empty, Select, Skeleton, Table, Tag } from '../../ui';
 import { useQuery } from '@tanstack/react-query';
 import type { TFunction } from 'i18next';
 import { Activity, ArrowRight, Bot, CheckCircle2, FlaskConical, Image, RefreshCw, Settings2, ShieldAlert, ShieldX, Users } from 'lucide-react';

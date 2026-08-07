@@ -1,5 +1,4 @@
-import { Button, Checkbox, Form, Input, Message as ArcoMessage, Radio, Select, Steps } from '@arco-design/web-react';
-import '../../styles/arco-components';
+import { Button, Checkbox, Form, Input, Message, Radio, Select, Steps } from '../../ui';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -84,7 +83,7 @@ export default function SetupPage() {
       setDone(true);
       setStep(4);
       setMessage(t('setup.success'));
-      ArcoMessage.success(t('setup.success'));
+      Message.success(t('setup.success'));
       window.setTimeout(() => navigate('/login', { replace: true }), 800);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : t('setup.failed'));

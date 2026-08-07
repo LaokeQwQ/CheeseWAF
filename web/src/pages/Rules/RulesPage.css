@@ -1,4 +1,7 @@
-.rule-editor-modal .arco-modal-content {
+.rule-editor-modal .arco-modal-content,
+.rule-editor-modal [data-slot='dialog-content'],
+.rule-editor-modal[data-slot='dialog-popup'],
+.rule-editor-modal[role='dialog'] {
   max-width: min(960px, 100vw - 32px);
 }
 

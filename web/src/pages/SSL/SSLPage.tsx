@@ -1,4 +1,4 @@
-import { Button, Input, Message as ArcoMessage, Select, Switch } from '@arco-design/web-react';
+import { Button, Input, Message, Select, Switch } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -25,9 +25,9 @@ export default function SSLPage() {
     onSuccess: (saved) => {
       markClean(normalizeSystem(saved));
       queryClient.invalidateQueries({ queryKey: ['system'] });
-      ArcoMessage.success(t('system.saved'));
+      Message.success(t('system.saved'));
     },
-    onError: (mutationError) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError) => Message.error(mutationError.message),
   });
 
   const patchACME = (patch: Partial<SystemConfig['acme']>) => {
@@ -258,7 +258,7 @@ function ACMEEnvEditor({
       if (normalized) {
         const duplicate = nextRows.some((row) => row.id !== id && row.key === normalized);
         if (duplicate) {
-          ArcoMessage.warning(t('system.acmeEnvKeyDuplicate'));
+          Message.warning(t('system.acmeEnvKeyDuplicate'));
           return;
         }
       }

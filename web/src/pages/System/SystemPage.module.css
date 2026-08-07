@@ -24,7 +24,8 @@
   gap: 8px !important;
 }
 
-:global(.time-sync-actions .arco-btn span) {
+:global(.time-sync-actions .arco-btn span),
+:global(.time-sync-actions [data-slot='button'] span) {
   color: inherit;
   font-size: inherit;
   line-height: inherit;
@@ -180,7 +181,10 @@
 }
 
 :global(.time-sync-duration-input .arco-input-number),
-:global(.time-sync-duration-input .arco-select) {
+:global(.time-sync-duration-input .arco-select),
+:global(.time-sync-duration-input [data-slot='input-wrapper']),
+:global(.time-sync-duration-input [data-slot='input']),
+:global(.time-sync-duration-input [data-slot='select-trigger']) {
   width: 100%;
   min-width: 0;
 }
@@ -191,7 +195,9 @@
 }
 
 :global(.time-sync-sources-field .arco-textarea-wrapper),
-:global(.time-sync-sources-field textarea) {
+:global(.time-sync-sources-field textarea),
+:global(.time-sync-sources-field [data-slot='textarea-wrapper']),
+:global(.time-sync-sources-field [data-slot='textarea']) {
   min-height: 124px;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -247,7 +253,8 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  :global(.time-sync-actions .arco-btn) {
+  :global(.time-sync-actions .arco-btn),
+  :global(.time-sync-actions [data-slot='button']) {
     width: 100%;
     justify-content: center;
   }
@@ -300,21 +307,25 @@
 }
 
 @media (max-width: 520px) {
-  :global(.system-settings-panel .arco-tabs-header) {
+  :global(.system-settings-panel .arco-tabs-header),
+  :global(.system-settings-panel [data-slot='tabs-list']) {
     padding-inline: 8px;
   }
 
   :global(.system-settings-panel .arco-tabs-header-nav),
-  :global(.system-settings-panel .arco-tabs-header-scroll) {
+  :global(.system-settings-panel .arco-tabs-header-scroll),
+  :global(.system-settings-panel [data-slot='tabs-list']) {
     width: 100%;
     max-width: none;
   }
 
-  :global(.system-settings-panel .arco-tabs-header-scroll) {
+  :global(.system-settings-panel .arco-tabs-header-scroll),
+  :global(.system-settings-panel [data-slot='tabs-list']) {
     overflow: visible;
   }
 
-  :global(.system-settings-panel .arco-tabs-header-title) {
+  :global(.system-settings-panel .arco-tabs-header-title),
+  :global(.system-settings-panel [data-slot='tabs-trigger']) {
     min-width: 0;
     flex: 1 1 25%;
     justify-content: center;

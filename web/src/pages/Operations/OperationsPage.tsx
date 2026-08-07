@@ -1,4 +1,4 @@
-import { Button, Empty, Form, Input, InputNumber, Message as ArcoMessage, Modal, Progress, Select, Switch, Table, Tag } from '@arco-design/web-react';
+import { Button, Empty, Form, Input, InputNumber, Message, Modal, Progress, Select, Switch, Table, Tag } from '../../ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -29,25 +29,25 @@ export default function OperationsPage() {
     mutationFn: cleanupStorage,
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ['storage'] });
-      ArcoMessage.success(t('ops.cleanupDone', { removed: result.removed, scanned: result.scanned }));
+      Message.success(t('ops.cleanupDone', { removed: result.removed, scanned: result.scanned }));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const backup = useMutation({
     mutationFn: exportBackup,
     onSuccess: (result) => {
       const destination = typeof result.path === 'string' ? `: ${result.path}` : '';
-      ArcoMessage.success(`${t('ops.backup')}${destination}`);
+      Message.success(`${t('ops.backup')}${destination}`);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const tasksMutation = useMutation({
     mutationFn: updateTasks,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      ArcoMessage.success(t('ops.tasksSaved'));
+      Message.success(t('ops.tasksSaved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => Message.error(error.message),
   });
   const dataSize = storage?.data ?? 0;
   const logSize = storage?.logs ?? 0;

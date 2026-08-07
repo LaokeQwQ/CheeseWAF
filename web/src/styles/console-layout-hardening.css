@@ -1,10 +1,14 @@
 /**
  * Console layout hardening (compact): empty/spacing, icon align, sites table,
  * users pageSize dropdown clipping. Loaded from MainLayout (not login CSS budget).
+ *
+ * Dual selectors: keep adapter-emitted .arco-* classes and match Appica slots
+ * ([data-slot=button|table*|switch]) + native table elements after Arco removal.
  */
 
 .page-surface .arco-btn,
-.page-surface .arco-button {
+.page-surface .arco-button,
+.page-surface [data-slot='button'] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -13,7 +17,8 @@
 }
 
 .page-surface .arco-btn > span,
-.page-surface .arco-button > span {
+.page-surface .arco-button > span,
+.page-surface [data-slot='button'] > span {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -22,7 +27,8 @@
 }
 
 .page-surface .arco-btn .arco-btn-icon,
-.page-surface .arco-button .arco-btn-icon {
+.page-surface .arco-button .arco-btn-icon,
+.page-surface [data-slot='button'] > span:has(svg) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -32,11 +38,14 @@
 .page-surface .arco-btn .arco-icon,
 .page-surface .arco-btn svg,
 .page-surface .arco-button svg,
+.page-surface [data-slot='button'] svg,
 .page-surface .panel-heading h2 svg,
 .page-surface .table-link svg,
 .page-surface .site-table-link svg,
 .page-surface .arco-input-prefix svg,
-.page-surface .arco-input-group-prefix svg {
+.page-surface .arco-input-group-prefix svg,
+.page-surface [data-slot='input-start'] svg,
+.page-surface [data-slot='input-end'] svg {
   display: block;
   flex: 0 0 auto;
   vertical-align: middle;
@@ -111,11 +120,15 @@
 }
 
 .page-surface .arco-table-th,
-.page-surface .arco-table-th .arco-table-th-item-title {
+.page-surface .arco-table-th .arco-table-th-item-title,
+.page-surface [data-slot='table-head'],
+.page-surface table th {
   white-space: nowrap;
 }
 
-.page-surface .arco-table-pagination {
+.page-surface .arco-table-pagination,
+.page-surface [data-slot='table'] + nav,
+.page-surface [data-slot='table'] ~ nav {
   overflow: visible;
 }
 
@@ -134,7 +147,10 @@
 }
 
 .users-page .arco-table-pagination,
-.users-page .arco-pagination {
+.users-page .arco-pagination,
+.users-page [class*='pagination'],
+.users-page nav:has(select),
+.users-page nav:has([role='combobox']) {
   position: relative;
   z-index: 5;
   overflow: visible;
@@ -149,13 +165,21 @@
 }
 
 .users-page .arco-pagination .arco-select,
-.users-page .arco-table-pagination .arco-select {
+.users-page .arco-table-pagination .arco-select,
+.users-page [class*='pagination'] select,
+.users-page [class*='pagination'] [role='combobox'],
+.users-page nav select,
+.users-page nav [role='combobox'] {
   min-width: 124px;
   flex: 0 0 auto;
 }
 
 .users-page .arco-pagination .arco-select-view,
-.users-page .arco-table-pagination .arco-select-view {
+.users-page .arco-table-pagination .arco-select-view,
+.users-page [class*='pagination'] select,
+.users-page [class*='pagination'] [role='combobox'],
+.users-page nav select,
+.users-page nav [role='combobox'] {
   min-width: 124px;
   width: auto;
   max-width: none;
@@ -173,7 +197,9 @@
 /* Trigger is in-page; option list is usually portaled to body */
 .users-page .arco-select-popup,
 .arco-trigger-popup .arco-select-popup,
-body > .arco-select-popup {
+body > .arco-select-popup,
+body > [data-slot='select-content'],
+body > [role='listbox'] {
   min-width: 132px !important;
   z-index: 40;
 }
@@ -192,27 +218,35 @@ body > .arco-select-popup {
 .sites-desktop-table .arco-table,
 .sites-desktop-table .arco-table-container,
 .sites-desktop-table .arco-table-content-inner,
-.sites-desktop-table .arco-table-content-scroll {
+.sites-desktop-table .arco-table-content-scroll,
+.sites-desktop-table [data-slot='table'],
+.sites-desktop-table table {
   width: 100%;
 }
 
 .sites-table table,
-.sites-table .arco-table-element {
+.sites-table .arco-table-element,
+.sites-table [data-slot='table'] {
   width: 100% !important;
   min-width: 760px;
   table-layout: fixed;
 }
 
-.sites-table .arco-table-th {
+.sites-table .arco-table-th,
+.sites-table [data-slot='table-head'],
+.sites-table th {
   white-space: nowrap;
   vertical-align: middle;
 }
 
-.sites-table .arco-table-th .arco-table-th-item {
+.sites-table .arco-table-th .arco-table-th-item,
+.sites-table [data-slot='table-head'] {
   white-space: nowrap;
 }
 
-.sites-table .arco-table-td {
+.sites-table .arco-table-td,
+.sites-table [data-slot='table-cell'],
+.sites-table td {
   vertical-align: middle;
 }
 
@@ -227,7 +261,11 @@ body > .arco-select-popup {
 /* Action column sits flush right; flexible middle columns absorb extra width */
 .sites-table colgroup col:last-child,
 .sites-table .arco-table-th:last-child,
-.sites-table .arco-table-td:last-child {
+.sites-table .arco-table-td:last-child,
+.sites-table [data-slot='table-head']:last-child,
+.sites-table [data-slot='table-cell']:last-child,
+.sites-table th:last-child,
+.sites-table td:last-child {
   width: 104px !important;
   min-width: 104px;
   max-width: 120px;
@@ -235,15 +273,13 @@ body > .arco-select-popup {
   padding-right: 12px;
 }
 
-.sites-table .arco-table-th:last-child .arco-table-th-item {
+.sites-table .arco-table-th:last-child .arco-table-th-item,
+.sites-table [data-slot='table-head']:last-child,
+.sites-table th:last-child {
   justify-content: flex-end;
 }
 
-/* Avoid fixed-right sticky gutter looking like empty dead space on wide screens */
-.sites-table .arco-table-col-fixed-right::before,
-.sites-table .arco-table-col-fixed-right-first::after {
-  box-shadow: none;
-}
+/* Arco fixed-column sticky gutters removed with vendor table; keep comment for history. */
 
 .ip-manage-page {
   gap: 18px;
@@ -284,7 +320,11 @@ body > .arco-select-popup {
 .page-surface .system-fieldset .arco-select-view,
 .page-surface .system-fieldset .arco-input-number,
 .page-surface .system-fieldset .arco-textarea-wrapper,
-.page-surface .system-fieldset label > .arco-input {
+.page-surface .system-fieldset label > .arco-input,
+.page-surface .system-fieldset [data-slot='input-wrapper'],
+.page-surface .system-fieldset [data-slot='input'],
+.page-surface .system-fieldset [data-slot='select-trigger'],
+.page-surface .system-fieldset [data-slot='textarea'] {
   width: 100%;
   max-width: 100%;
   min-width: 0;
@@ -292,7 +332,9 @@ body > .arco-select-popup {
 }
 
 .page-surface .system-fieldset .arco-input-inner-wrapper .arco-input,
-.page-surface .system-fieldset label > .arco-input {
+.page-surface .system-fieldset label > .arco-input,
+.page-surface .system-fieldset [data-slot='input-wrapper'] [data-slot='input'],
+.page-surface .system-fieldset [data-slot='input'] {
   min-width: 0;
   width: 100%;
   overflow: hidden;
@@ -306,6 +348,22 @@ body > .arco-select-popup {
 
 .page-surface .system-tls-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* Switch alignment in system/settings action rows (adapter .arco-switch + Appica slot) */
+.page-surface .arco-switch,
+.page-surface [data-slot='switch'] {
+  flex: 0 0 auto;
+  vertical-align: middle;
+}
+
+.page-surface .switch-line,
+.page-surface label:has(> .arco-switch),
+.page-surface label:has(> [data-slot='switch']) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 /* When TLS card is very narrow, stack switches + paths single column */
