@@ -367,10 +367,24 @@ jobs:
       - name: Verify branch release artifacts
         shell: bash
         run: bash scripts/ci/verify-release.sh release
+      - name: Sanitize artifact name
+        id: release-artifact
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        run: |
+          # Match package-release.sh channel sanitization: branch slashes are invalid in artifact names.
+          safe_ref="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')"
+          if [[ -z "$safe_ref" ]]; then
+            safe_ref="custom"
+          fi
+          echo "name=cheesewaf-${safe_ref}-${RUN_NUMBER}-${SHA}" >> "$GITHUB_OUTPUT"
       - name: Upload branch release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
+          name: ${{ steps.release-artifact.outputs.name }}
           path: release/*
           if-no-files-found: error
           retention-days: 30
