@@ -29,7 +29,7 @@ const htmlCSSPaths = [...html.matchAll(/<link\s+rel="stylesheet"[^>]+href="([^"]
   normalizeAssetPath(match[1]),
 );
 const runtimeInitialCSSPaths = cssAssets
-  .filter((file) => /^(global|vendor-arco-)/.test(file))
+  .filter((file) => /^(global|shadcn|vendor-ui)/.test(file))
   .map((file) => normalizeAssetPath(path.posix.join('assets', file)));
 const initialCSSPaths = [...new Set([...htmlCSSPaths, ...runtimeInitialCSSPaths])];
 const initialCSSBytes = initialCSSPaths.reduce(

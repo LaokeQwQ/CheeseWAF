@@ -40,8 +40,8 @@ describe('CaptchaAssetsPanel', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'botChallenge.captchaAssets.storage' }));
 
     const label = await screen.findByText('botChallenge.captchaAssets.allowPrivateEndpoint');
-    const toggle = label.closest('label')?.querySelector('.arco-switch');
-    expect(toggle?.classList.contains('arco-switch-checked')).toBe(true);
+    const toggle = label.closest('label')?.querySelector('[role="switch"]');
+    expect(toggle?.getAttribute('data-state')).toBe('checked');
     expect(screen.getByText('botChallenge.captchaAssets.allowPrivateEndpointRisk')).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('botChallenge.captchaAssets.endpoint'), { target: { value: 's3.changed.test' } });

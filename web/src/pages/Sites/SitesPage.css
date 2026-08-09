@@ -14,18 +14,9 @@
   overscroll-behavior-inline: contain;
 }
 
-.sites-table table,
-.sites-table .arco-table-element {
+.sites-table table{
   width: 100%;
   table-layout: fixed;
-}
-
-.sites-table .arco-table-th {
-  white-space: nowrap;
-}
-
-.sites-table .arco-table-th .arco-table-th-item-title {
-  white-space: nowrap;
 }
 
 .sites-table .site-table-actions {
@@ -34,32 +25,6 @@
   justify-content: flex-end;
   width: 100%;
 }
-
-.sites-table .arco-table-th:last-child,
-.sites-table .arco-table-td:last-child {
-  width: 104px;
-  max-width: 120px;
-  text-align: right;
-}
-
-.sites-list-panel .arco-empty {
-  margin: 8px 0 4px;
-}
-
-.site-wizard-modal.arco-modal,
-.site-wizard-modal .arco-modal {
-  width: min(860px, calc(100vw - 24px)) !important;
-  max-width: calc(100vw - 24px);
-}
-
-.site-wizard-modal .arco-modal-body,
-.site-wizard-modal.arco-modal .arco-modal-body {
-  max-height: calc(100vh - 180px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.sites-table .arco-table-cell,
 .site-table-link,
 .site-table-link span,
 .site-table-text {
@@ -159,36 +124,12 @@
     overflow-wrap: anywhere;
     color: var(--text);
   }
-
-  .sites-mobile-card footer .arco-btn {
-    width: 100%;
-  }
 }
 
 @media (max-width: 480px) {
-  .site-wizard-modal .setup-steps,
-  .site-wizard-modal.arco-modal .setup-steps {
+  .site-wizard-modal .setup-steps{
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px 8px;
-  }
-
-  .site-wizard-modal .setup-steps .arco-steps-item,
-  .site-wizard-modal.arco-modal .setup-steps .arco-steps-item {
-    width: auto !important;
-    min-width: 0;
-    margin: 0;
-  }
-
-  .site-wizard-modal .setup-steps .arco-steps-item-title,
-  .site-wizard-modal.arco-modal .setup-steps .arco-steps-item-title {
-    min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-
-  .site-wizard-modal .setup-steps .arco-steps-item-tail,
-  .site-wizard-modal.arco-modal .setup-steps .arco-steps-item-tail {
-    display: none;
   }
 }

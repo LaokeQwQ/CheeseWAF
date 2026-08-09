@@ -22,10 +22,6 @@
   grid-column: 1 / -1;
 }
 
-.captcha-pool-field .arco-select-view {
-  min-height: 38px;
-}
-
 .protection-page-state {
   min-height: 220px;
   display: grid;

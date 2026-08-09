@@ -1,13 +1,22 @@
-import { Button, Radio, Table, Tag } from '@arco-design/web-react';
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  Badge,
+  Button,
+  Spinner,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui';
 import { fetchChinaMapBoundaryByCode, fetchLogs } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import { preloadAttackScreenPage, preloadGlobeMap } from '../../routes/preload';
-import type { LogEntry } from '../../types/api';
 import { displayAction, displayCategory, displayCountry, displayGeoPlace, displaySeverity, isSameGeoCountry } from '../../utils/display';
 import {
   aggregateRegions,
@@ -250,22 +259,30 @@ export default function AttackMapPage() {
           </div>
           <div className="attack-map-toolbar">
             <div className="map-controls">
-              <span className="map-control-group map-mode-switch">
-                <Radio.Group type="button" value={mode} onChange={(value) => selectMode(value as MapMode)}>
-                  <Radio value="2d">{t('attackMap.mode2d')}</Radio>
-                  <Radio
-                    value="3d"
-                    onMouseEnter={() => void preloadGlobeMap()}
-                    onFocus={() => void preloadGlobeMap()}
+              <span className="map-control-group map-mode-switch inline-flex rounded-md border">
+                {([
+                  { value: '2d' as const, label: t('attackMap.mode2d') },
+                  { value: '3d' as const, label: t('attackMap.mode3d'), preload: true },
+                  { value: 'china' as const, label: t('attackMap.modeChina') },
+                ]).map((item) => (
+                  <Button
+                    key={item.value}
+                    type="button"
+                    size="sm"
+                    variant={mode === item.value ? 'default' : 'ghost'}
+                    className="rounded-none first:rounded-l-md last:rounded-r-md"
+                    onMouseEnter={item.preload ? () => void preloadGlobeMap() : undefined}
+                    onFocus={item.preload ? () => void preloadGlobeMap() : undefined}
+                    onClick={() => selectMode(item.value)}
                   >
-                    {t('attackMap.mode3d')}
-                  </Radio>
-                  <Radio value="china">{t('attackMap.modeChina')}</Radio>
-                </Radio.Group>
+                    {item.label}
+                  </Button>
+                ))}
               </span>
               <span className="map-control-group map-zoom-group" role="group" aria-label={t('attackMap.zoomControlsAria')}>
                 <Button
-                  icon={<ZoomOut size={14} />}
+                  size="icon"
+                  variant="outline"
                   aria-label={t('attackMap.zoomOut')}
                   title={t('attackMap.zoomOut')}
                   disabled={mode === '3d' && zoom <= 0.75}
@@ -276,9 +293,12 @@ export default function AttackMapPage() {
                     }
                     updateZoom((current) => current - 0.15);
                   }}
-                />
+                >
+                  <ZoomOut size={14} />
+                </Button>
                 <Button
-                  icon={<ZoomIn size={14} />}
+                  size="icon"
+                  variant="outline"
                   aria-label={t('attackMap.zoomIn')}
                   title={t('attackMap.zoomIn')}
                   disabled={mode === '3d' && zoom >= 3}
@@ -289,14 +309,17 @@ export default function AttackMapPage() {
                     }
                     updateZoom((current) => current + 0.15);
                   }}
-                />
-                <Button icon={<RotateCcw size={14} />} onClick={() => resetView()} aria-label={t('attackMap.resetView')}>
+                >
+                  <ZoomIn size={14} />
+                </Button>
+                <Button variant="outline" onClick={() => resetView()} aria-label={t('attackMap.resetView')}>
+                  <RotateCcw size={14} />
                   {t('attackMap.resetView')}
                 </Button>
               </span>
               <span className="map-control-group map-action-group">
                 <Button
-                  icon={<Maximize2 size={14} />}
+                  variant="outline"
                   onMouseEnter={() => {
                     void preloadAttackScreenPage();
                     void preloadGlobeMap();
@@ -311,6 +334,7 @@ export default function AttackMapPage() {
                     navigate('/attack-map/screen');
                   }}
                 >
+                  <Maximize2 size={14} />
                   {t('attackMap.bigScreen')}
                 </Button>
               </span>
@@ -375,34 +399,12 @@ export default function AttackMapPage() {
           <span>{t('attackMap.locationDetailsHint')}</span>
         </div>
         <div className="desktop-table-wrap">
-          <Table
-            rowKey="key"
-            pagination={{ pageSize: 8, showTotal: true }}
+          <AttackRegionTable
+            regions={visibleMapRegions}
+            selectedRegionKey={selectedRegionKey}
+            onSelectRegion={setSelectedRegionKey}
             loading={isLoading}
-            data={visibleMapRegions}
-            rowClassName={(record) => (record.key === selectedRegionKey ? 'attack-region-row-selected' : '')}
-            onRow={(record) => ({
-              tabIndex: 0,
-              onClick: () => setSelectedRegionKey(record.key),
-              onKeyDown: (event: KeyboardEvent) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  setSelectedRegionKey(record.key);
-                }
-              },
-            })}
-            expandedRowRender={(record) => <RegionEventDetails region={record as AttackRegion} />}
-            columns={[
-              { title: t('attackMap.country'), dataIndex: 'countryCode', render: (value: string) => displayCountry(value, t) },
-              { title: t('attackMap.location'), dataIndex: 'locationName', render: (_: string, record: AttackRegion) => formatRegionLocation(record, t) },
-              { title: t('attackMap.precision'), dataIndex: 'precision', render: (value: LocationPrecision) => t(`attackMap.precisionLevel.${value}`) },
-              { title: t('attackMap.accuracy'), dataIndex: 'accuracyRadiusKm', render: (_: number | null, record: AttackRegion) => formatAccuracy(record, t) },
-              { title: t('attackMap.locationSource'), dataIndex: 'locationSource', render: (value: string) => value || '-' },
-              { title: t('attackMap.attacks'), dataIndex: 'attacks' },
-              { title: t('attackMap.riskLabel'), dataIndex: 'level', render: (level: ThreatLevel) => <Tag color={riskTagColor(level)}>{t(`attackMap.risk.${level}`)}</Tag> },
-              { title: t('attackMap.top'), dataIndex: 'top', render: (top: string) => <Tag color="orange">{displayCategory(top, t)}</Tag> },
-              { title: t('attackMap.sources'), dataIndex: 'sourcePrefixes', render: (items: string[]) => items.join(', ') || '-' },
-            ]}
+            t={t}
           />
         </div>
         <div className="mobile-card-list attack-region-cards">
@@ -448,7 +450,7 @@ function AttackRegionCard({
     >
       <header>
         <strong>{formatRegionLocation(region, t)}</strong>
-        <Tag color={riskTagColor(region.level)}>{t(`attackMap.risk.${region.level}`)}</Tag>
+        <Badge variant={riskBadgeVariant(region.level)}>{t(`attackMap.risk.${region.level}`)}</Badge>
       </header>
       <dl>
         <div>
@@ -469,7 +471,7 @@ function AttackRegionCard({
         </div>
         <div>
           <dt>{t('attackMap.top')}</dt>
-          <dd><Tag color="orange">{displayCategory(region.top, t)}</Tag></dd>
+          <dd><Badge variant="warning">{displayCategory(region.top, t)}</Badge></dd>
         </div>
         <div>
           <dt>{t('attackMap.sources')}</dt>
@@ -477,6 +479,156 @@ function AttackRegionCard({
         </div>
       </dl>
     </article>
+  );
+}
+
+const REGION_PAGE_SIZE = 8;
+
+function AttackRegionTable({
+  regions,
+  selectedRegionKey,
+  onSelectRegion,
+  loading,
+  t,
+}: {
+  regions: AttackRegion[];
+  selectedRegionKey: string | null;
+  onSelectRegion: (key: string) => void;
+  loading: boolean;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const [page, setPage] = useState(1);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const totalPages = Math.max(1, Math.ceil(regions.length / REGION_PAGE_SIZE));
+  const pageItems = regions.slice((page - 1) * REGION_PAGE_SIZE, page * REGION_PAGE_SIZE);
+  const pageStart = regions.length === 0 ? 0 : (page - 1) * REGION_PAGE_SIZE + 1;
+  const pageEnd = Math.min(page * REGION_PAGE_SIZE, regions.length);
+
+  useEffect(() => {
+    setPage(1);
+  }, [regions]);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+
+  if (loading && regions.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-10">
+        <Spinner />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-8" />
+            <TableHead>{t('attackMap.country')}</TableHead>
+            <TableHead>{t('attackMap.location')}</TableHead>
+            <TableHead>{t('attackMap.precision')}</TableHead>
+            <TableHead>{t('attackMap.accuracy')}</TableHead>
+            <TableHead>{t('attackMap.locationSource')}</TableHead>
+            <TableHead>{t('attackMap.attacks')}</TableHead>
+            <TableHead>{t('attackMap.riskLabel')}</TableHead>
+            <TableHead>{t('attackMap.top')}</TableHead>
+            <TableHead>{t('attackMap.sources')}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {pageItems.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={10} className="text-center text-muted-foreground">{t('common.noData')}</TableCell>
+            </TableRow>
+          ) : pageItems.map((record) => {
+            const selected = record.key === selectedRegionKey;
+            const expanded = record.key === expandedKey;
+            return (
+              <Fragment key={record.key}>
+                <TableRow
+                  className={selected ? 'attack-region-row-selected' : ''}
+                  data-state={selected ? 'selected' : undefined}
+                  tabIndex={0}
+                  onClick={() => onSelectRegion(record.key)}
+                  onKeyDown={(event: KeyboardEvent) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onSelectRegion(record.key);
+                    }
+                  }}
+                >
+                  <TableCell>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      aria-expanded={expanded}
+                      aria-label={t('attackMap.locationDetails')}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setExpandedKey((current) => (current === record.key ? null : record.key));
+                      }}
+                    >
+                      <ChevronDown size={14} className={expanded ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                    </Button>
+                  </TableCell>
+                  <TableCell>{displayCountry(record.countryCode, t)}</TableCell>
+                  <TableCell>{formatRegionLocation(record, t)}</TableCell>
+                  <TableCell>{t(`attackMap.precisionLevel.${record.precision as LocationPrecision}`)}</TableCell>
+                  <TableCell>{formatAccuracy(record, t)}</TableCell>
+                  <TableCell>{record.locationSource || '-'}</TableCell>
+                  <TableCell>{record.attacks}</TableCell>
+                  <TableCell>
+                    <Badge variant={riskBadgeVariant(record.level)}>{t(`attackMap.risk.${record.level}`)}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="warning">{displayCategory(record.top, t)}</Badge>
+                  </TableCell>
+                  <TableCell>{record.sourcePrefixes.join(', ') || '-'}</TableCell>
+                </TableRow>
+                {expanded ? (
+                  <TableRow>
+                    <TableCell colSpan={10}>
+                      <RegionEventDetails region={record} />
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+              </Fragment>
+            );
+          })}
+        </TableBody>
+      </Table>
+      {regions.length > REGION_PAGE_SIZE && (
+        <footer className="security-events-pagination">
+          <span>{pageStart}-{pageEnd} / {regions.length}</span>
+          <div>
+            <Button
+              size="icon"
+              variant="outline"
+              aria-label={t('common.back')}
+              disabled={page <= 1}
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+            >
+              <ChevronLeft size={15} />
+            </Button>
+            <strong>{page}</strong>
+            <Button
+              size="icon"
+              variant="outline"
+              aria-label={t('common.next')}
+              disabled={page >= totalPages}
+              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+            >
+              <ChevronRight size={15} />
+            </Button>
+          </div>
+        </footer>
+      )}
+    </div>
   );
 }
 
@@ -495,8 +647,8 @@ function RegionEventDetails({ region }: { region: AttackRegion }) {
             <span>{formatShortTime(event.timestamp)}</span>
             <span>{event.client_ip || '-'}</span>
             <span>{event.method || 'GET'} {event.uri || '/'}</span>
-            <Tag color={event.action === 'block' ? 'red' : 'orange'}>{displayAction(event.action, t)}</Tag>
-            <Tag color={riskTagColor(threatLevelFor(1, severityRank(event.severity), 1))}>{displaySeverity(event.severity, t)}</Tag>
+            <Badge variant={event.action === 'block' ? 'destructive' : 'warning'}>{displayAction(event.action, t)}</Badge>
+            <Badge variant={riskBadgeVariant(threatLevelFor(1, severityRank(event.severity), 1))}>{displaySeverity(event.severity, t)}</Badge>
           </div>
         ))}
       </div>
@@ -538,16 +690,15 @@ function renderGlobeFallback(regions: AttackRegion[], countryLevels: Map<string,
   );
 }
 
-function riskTagColor(level: ThreatLevel) {
+function riskBadgeVariant(level: ThreatLevel): 'destructive' | 'warning' | 'default' {
   switch (level) {
     case 'critical':
-      return 'red';
     case 'high':
-      return 'orangered';
+      return 'destructive';
     case 'medium':
-      return 'orange';
+      return 'warning';
     default:
-      return 'blue';
+      return 'default';
   }
 }
 

@@ -1,5 +1,34 @@
 import { useState } from 'react';
-import { Button, Card, Form, Input, InputNumber, Message as ArcoMessage, Popconfirm, Radio, Select, Spin, Steps, Table, Tag, Typography } from '@arco-design/web-react';
+import {
+  Badge,
+  Button,
+  Card,
+  CardDescription,
+  CardTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  RadioGroup,
+  RadioGroupItem,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Spinner,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Textarea,
+  toast,
+} from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -37,6 +66,18 @@ type ClusterCertificateForm = {
   csr?: string;
 };
 
+type ClusterBootstrapForm = {
+  role?: string;
+  nodeId?: string;
+  controllerUrl?: string;
+  advertiseAddr?: string;
+};
+
+type ClusterRollingForm = {
+  hosts?: string;
+  user?: string;
+};
+
 type DeployMethod = 'ansible' | 'ssh';
 type DeployAuthMethod = 'agent' | 'password' | 'private_key';
 
@@ -46,10 +87,12 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 export default function ClusterPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [form] = Form.useForm<ClusterDeployForm>();
-  const [ansibleForm] = Form.useForm<ClusterAnsibleForm>();
-  const [tokenForm] = Form.useForm<ClusterTokenForm>();
-  const [certificateForm] = Form.useForm<ClusterCertificateForm>();
+  const [deployForm, setDeployForm] = useState<ClusterDeployForm>({ user: 'root', port: 22, action: 'install' });
+  const [ansibleForm, setAnsibleForm] = useState<ClusterAnsibleForm>({ clusterId: 'cheesewaf-mesh', channel: 'canary' });
+  const [tokenForm, setTokenForm] = useState<ClusterTokenForm>({ role: 'waf', ttl: '15m', maxUses: 1 });
+  const [certificateForm, setCertificateForm] = useState<ClusterCertificateForm>({});
+  const [bootstrapForm, setBootstrapForm] = useState<ClusterBootstrapForm>({ role: 'waf' });
+  const [rollingForm, setRollingForm] = useState<ClusterRollingForm>({ user: 'root' });
   const [deployMethod, setDeployMethod] = useState<DeployMethod>('ansible');
   const [deployWizardStep, setDeployWizardStep] = useState(0);
   const [deployAuthMethod, setDeployAuthMethod] = useState<DeployAuthMethod>('agent');
@@ -65,11 +108,11 @@ export default function ClusterPage() {
   const [latestCertificate, setLatestCertificate] = useState<ClusterNodeCertificateRotateResponse | null>(null);
   const [tokenOperationError, setTokenOperationError] = useState<string | null>(null);
   const [revokingTokenID, setRevokingTokenID] = useState<string | null>(null);
+  const [revokeConfirmID, setRevokeConfirmID] = useState<string | null>(null);
   const [bootstrapPlan, setBootstrapPlan] = useState<ClusterBootstrapPlan | null>(null);
   const [rollingJob, setRollingJob] = useState<ClusterRollingJob | null>(null);
   const [trafficPeers, setTrafficPeers] = useState<ClusterTrafficPeersResponse | null>(null);
-  const [bootstrapForm] = Form.useForm<{ role?: string; nodeId?: string; controllerUrl?: string; advertiseAddr?: string }>();
-  const [rollingForm] = Form.useForm<{ hosts?: string; user?: string }>();
+  const [auditPage, setAuditPage] = useState(0);
   const { data, isLoading, refetch, isFetching, isError: isStatusError, error: statusError } = useQuery({
     queryKey: ['cluster-status'],
     queryFn: fetchClusterStatus,
@@ -145,11 +188,11 @@ export default function ClusterPage() {
     onSuccess: (token) => {
       setLatestToken(token);
       void queryClient.invalidateQueries({ queryKey: ['cluster-join-tokens'] });
-      ArcoMessage.success(t('cluster.tokenCreated'));
+      toast.success(t('cluster.tokenCreated'));
     },
     onError: (error) => {
       setTokenOperationError(error.message);
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
   });
   const revokeTokenMutation = useMutation({
@@ -161,11 +204,11 @@ export default function ClusterPage() {
     onSuccess: (_result, id) => {
       setLatestToken((current) => (current?.id === id ? null : current));
       void queryClient.invalidateQueries({ queryKey: ['cluster-join-tokens'] });
-      ArcoMessage.success(t('cluster.tokenRevoked'));
+      toast.success(t('cluster.tokenRevoked'));
     },
     onError: (error) => {
       setTokenOperationError(error.message);
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
     onSettled: () => {
       setRevokingTokenID(null);
@@ -177,19 +220,19 @@ export default function ClusterPage() {
       setActiveDeployTaskId(task.id);
       setSubmittedDeployTask(task);
       setDeployWizardStep((current) => Math.max(current, 3));
-      clearDeploySecrets(form);
+      setDeployForm((current) => ({ ...current, password: '', privateKey: '' }));
       void queryClient.invalidateQueries({ queryKey: ['cluster-deploy-tasks'] });
       void queryClient.invalidateQueries({ queryKey: ['cluster-status'] });
-      ArcoMessage.success(t('cluster.deployTaskStarted'));
+      toast.success(t('cluster.deployTaskStarted'));
     },
     onError: (error) => {
-      clearDeploySecrets(form);
-      ArcoMessage.error(error.message);
+      setDeployForm((current) => ({ ...current, password: '', privateKey: '' }));
+      toast.error(error.message);
     },
   });
   const ansiblePackageMutation = useMutation({
     mutationFn: () => {
-      const values = ansibleForm.getFieldsValue();
+      const values = ansibleForm;
       const normalizedNodes = normalizeAnsibleNodes(ansibleNodes);
       if (!normalizedNodes.length) {
         throw new Error(t('cluster.deployWizardAnsibleNodeRequired'));
@@ -209,10 +252,10 @@ export default function ClusterPage() {
       const files = Object.keys(pkg.files || {}).sort();
       setSelectedAnsibleFile(files.includes('README.md') ? 'README.md' : files[0] || '');
       setDeployWizardStep(3);
-      ArcoMessage.success(t('cluster.deployWizardAnsibleGenerated'));
+      toast.success(t('cluster.deployWizardAnsibleGenerated'));
     },
     onError: (error) => {
-      ArcoMessage.error(errorMessage(error));
+      toast.error(errorMessage(error));
     },
   });
   const rotateCertificateMutation = useMutation({
@@ -222,12 +265,12 @@ export default function ClusterPage() {
     },
     onSuccess: (result) => {
       setLatestCertificate(result);
-      certificateForm.setFieldValue('csr', '');
+      setCertificateForm((current) => ({ ...current, csr: '' }));
       void queryClient.invalidateQueries({ queryKey: ['cluster-nodes'] });
-      ArcoMessage.success(t('cluster.certSigned'));
+      toast.success(t('cluster.certSigned'));
     },
     onError: (error) => {
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
   });
 
@@ -235,10 +278,10 @@ export default function ClusterPage() {
     if (latestToken?.value) {
       const message = t('cluster.tokenClearBeforeCreate');
       setTokenOperationError(message);
-      ArcoMessage.warning(message);
+      toast.warning(message);
       return;
     }
-    const values = tokenForm.getFieldsValue();
+    const values = tokenForm;
     createTokenMutation.mutate({
       role: String(values.role || 'waf'),
       ttl: String(values.ttl || '15m'),
@@ -247,7 +290,19 @@ export default function ClusterPage() {
   };
 
   const submitDeployment = async (mode: 'check' | 'run') => {
-    const values = await form.validate();
+    const values = deployForm;
+    if (!String(values.host || '').trim()) {
+      toast.warning(t('cluster.deployHostRequired'));
+      return;
+    }
+    if (!String(values.user || '').trim()) {
+      toast.warning(t('cluster.deployUserRequired'));
+      return;
+    }
+    if (!values.port) {
+      toast.warning(t('cluster.deployPortRequired'));
+      return;
+    }
     const action = String(values.action || 'install');
     const payload: ClusterDeploymentRequest = {
       host: String(values.host || '').trim(),
@@ -258,11 +313,11 @@ export default function ClusterPage() {
     const password = String(values.password || '').trim();
     const privateKey = String(values.privateKey || '').trim();
     if (deployAuthMethod === 'password' && !password) {
-      ArcoMessage.warning(t('cluster.deployPasswordRequired'));
+      toast.warning(t('cluster.deployPasswordRequired'));
       return;
     }
     if (deployAuthMethod === 'private_key' && !privateKey) {
-      ArcoMessage.warning(t('cluster.deployPrivateKeyRequired'));
+      toast.warning(t('cluster.deployPrivateKeyRequired'));
       return;
     }
     if (deployAuthMethod === 'password' && password) {
@@ -273,7 +328,7 @@ export default function ClusterPage() {
     }
     const hostKeySHA256 = String(values.hostKeySHA256 || '').trim();
     if (!hostKeySHA256) {
-      ArcoMessage.warning(t('cluster.deployHostKeyRequired'));
+      toast.warning(t('cluster.deployHostKeyRequired'));
       return;
     }
     if (hostKeySHA256) {
@@ -284,12 +339,12 @@ export default function ClusterPage() {
       deployTaskMutation.mutate(payload);
     } else {
       if (!activeDeployTask || activeDeployTask.action !== 'check' || activeDeployTask.status !== 'succeeded') {
-        ArcoMessage.warning(t('cluster.deployWizardPrecheckRequired'));
+        toast.warning(t('cluster.deployWizardPrecheckRequired'));
         return;
       }
       const checkedTask = await fetchClusterDeploymentTask(activeDeployTask.id);
       if (checkedTask.action !== 'check' || checkedTask.status !== 'succeeded' || !checkedTask.authorization?.handle) {
-        ArcoMessage.warning(t('cluster.deployWizardPrecheckRequired'));
+        toast.warning(t('cluster.deployWizardPrecheckRequired'));
         return;
       }
       payload.authorization = checkedTask.authorization.handle;
@@ -314,8 +369,8 @@ export default function ClusterPage() {
   };
 
   const resetDeploymentWizard = () => {
-    form.resetFields();
-    ansibleForm.resetFields();
+    setDeployForm({ user: 'root', port: 22, action: 'install' });
+    setAnsibleForm({ clusterId: 'cheesewaf-mesh', channel: 'canary' });
     setDeployWizardStep(0);
     setDeployMethod('ansible');
     setDeployAuthMethod('agent');
@@ -330,22 +385,26 @@ export default function ClusterPage() {
     mutationFn: createClusterBootstrapPlan,
     onSuccess: (plan) => {
       setBootstrapPlan(plan);
-      ArcoMessage.success(t('cluster.bootstrapPlanReady', { defaultValue: 'Bootstrap plan ready' }));
+      toast.success(t('cluster.bootstrapPlanReady', { defaultValue: 'Bootstrap plan ready' }));
     },
-    onError: (error: Error) => ArcoMessage.error(error.message),
+    onError: (error: Error) => toast.error(error.message),
   });
 
   const rollingMutation = useMutation({
     mutationFn: startClusterRollingUpgrade,
     onSuccess: (job) => {
       setRollingJob(job);
-      ArcoMessage.success(t('cluster.rollingStarted', { defaultValue: 'Rolling upgrade started' }));
+      toast.success(t('cluster.rollingStarted', { defaultValue: 'Rolling upgrade started' }));
     },
-    onError: (error: Error) => ArcoMessage.error(error.message),
+    onError: (error: Error) => toast.error(error.message),
   });
 
   const submitBootstrapPlan = async () => {
-    const values = await bootstrapForm.validate();
+    const values = bootstrapForm;
+    if (!String(values.nodeId || '').trim() || !String(values.controllerUrl || '').trim() || !String(values.advertiseAddr || '').trim()) {
+      toast.warning(t('cluster.bootstrapFieldsRequired', { defaultValue: 'Node ID, controller URL, and advertise address are required' }));
+      return;
+    }
     bootstrapMutation.mutate({
       role: values.role || 'waf',
       node_id: String(values.nodeId || '').trim(),
@@ -357,14 +416,14 @@ export default function ClusterPage() {
   };
 
   const submitRollingUpgrade = async () => {
-    const values = await rollingForm.validate();
+    const values = rollingForm;
     const user = String(values.user || 'root').trim();
     const hosts = String(values.hosts || '')
       .split(/[\n,]+/)
       .map((item) => item.trim())
       .filter(Boolean);
     if (hosts.length === 0) {
-      ArcoMessage.warning(t('cluster.rollingHostsRequired', { defaultValue: 'Enter at least one host' }));
+      toast.warning(t('cluster.rollingHostsRequired', { defaultValue: 'Enter at least one host' }));
       return;
     }
     rollingMutation.mutate({
@@ -381,7 +440,7 @@ export default function ClusterPage() {
       const result = await fetchClusterTrafficPeers(mode, undefined, mode === 'sticky' ? 'preview-session' : undefined);
       setTrafficPeers(result);
     } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : String(error));
+      toast.error(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -390,23 +449,32 @@ export default function ClusterPage() {
     try {
       const job = await startClusterRollingRollback(rollingJob.id);
       setRollingJob(job);
-      ArcoMessage.success(t('cluster.rollbackStarted', { defaultValue: 'Rollback started' }));
+      toast.success(t('cluster.rollbackStarted', { defaultValue: 'Rollback started' }));
     } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : String(error));
+      toast.error(error instanceof Error ? error.message : String(error));
     }
   };
 
   const submitCertificateSigning = async () => {
-    const values = await certificateForm.validate();
+    const values = certificateForm;
     const nodeID = String(values.nodeId || '').trim();
     const csr = String(values.csr || '').trim();
+    if (!nodeID) {
+      toast.warning(t('cluster.certNodeRequired'));
+      return;
+    }
+    if (!csr) {
+      toast.warning(t('cluster.certCSRRequired'));
+      return;
+    }
     const node = nodes?.items.find((item) => item.node_id === nodeID);
     if (node?.revoked) {
-      ArcoMessage.warning(t('cluster.certRevokedNode'));
+      toast.warning(t('cluster.certRevokedNode'));
       return;
     }
     rotateCertificateMutation.mutate({ nodeID, csr });
   };
+
 
   return (
     <main className="page-surface cluster-page">
@@ -415,60 +483,46 @@ export default function ClusterPage() {
           <h1>{t('cluster.title')}</h1>
           <p>{t('cluster.subtitle')}</p>
         </div>
-        <Button loading={isLoading} onClick={() => void refetch()}>{t('cluster.refresh')}</Button>
+        <Button variant="outline" loading={isLoading} onClick={() => void refetch()}>{t('cluster.refresh')}</Button>
       </section>
 
       {isStatusError && (
         <div className="cluster-result-note cluster-result-note-error cluster-status-error">
           <strong>{t('cluster.statusLoadFailed')}</strong>
           <span>{errorMessage(statusError)}</span>
-          <Button size="small" onClick={() => void refetch()}>{t('common.retry')}</Button>
+          <Button size="sm" variant="outline" onClick={() => void refetch()}>{t('common.retry')}</Button>
         </div>
       )}
 
-      <Spin loading={isLoading && !data}>
+      {isLoading && !data ? <div className="flex justify-center p-8"><Spinner /></div> : null}
+
+      <div>
         {data && (
           <section className="cluster-grid">
             <Card className="cluster-status-card">
               <div className="cluster-card-head">
                 <span className="cluster-icon"><Network size={18} /></span>
                 <div>
-                  <Typography.Title heading={5}>{t('cluster.currentMode')}</Typography.Title>
-                  <Typography.Paragraph>{t('cluster.currentModeHint')}</Typography.Paragraph>
+                  <CardTitle>{t('cluster.currentMode')}</CardTitle>
+                  <CardDescription>{t('cluster.currentModeHint')}</CardDescription>
                 </div>
-                <Tag color={data.enabled ? 'green' : 'gray'}>{data.enabled ? t('common.enabled') : t('cluster.standalone')}</Tag>
+                <Badge variant={data.enabled ? 'success' : 'secondary'}>{data.enabled ? t('common.enabled') : t('cluster.standalone')}</Badge>
               </div>
-
               <div className="cluster-status-main">
-                <div>
-                  <span>{t('cluster.mode')}</span>
-                  <strong>{clusterModeLabel(data.mode, data.product_mode_label, t)}</strong>
-                </div>
-                <div>
-                  <span>{t('cluster.configWrites')}</span>
-                  <strong>{data.can_write_config ? t('cluster.allowed') : t('cluster.protected')}</strong>
-                </div>
-                <div>
-                  <span>{t('cluster.traffic')}</span>
-                  <strong>{data.can_receive_traffic ? t('cluster.receiving') : t('cluster.notReceiving')}</strong>
-                </div>
-                <div>
-                  <span>{t('cluster.majority')}</span>
-                  <strong>{data.majority_confirmed ? t('cluster.confirmed') : t('cluster.unconfirmed')}</strong>
-                </div>
+                <div><span>{t('cluster.mode')}</span><strong>{clusterModeLabel(data.mode, data.product_mode_label, t)}</strong></div>
+                <div><span>{t('cluster.configWrites')}</span><strong>{data.can_write_config ? t('cluster.allowed') : t('cluster.protected')}</strong></div>
+                <div><span>{t('cluster.traffic')}</span><strong>{data.can_receive_traffic ? t('cluster.receiving') : t('cluster.notReceiving')}</strong></div>
+                <div><span>{t('cluster.majority')}</span><strong>{data.majority_confirmed ? t('cluster.confirmed') : t('cluster.unconfirmed')}</strong></div>
               </div>
-
-              {data.protection_mode_reason && (
-                <div className="cluster-protection-note">{data.protection_mode_reason}</div>
-              )}
+              {data.protection_mode_reason && <div className="cluster-protection-note">{data.protection_mode_reason}</div>}
             </Card>
 
             <Card className="cluster-status-card">
               <div className="cluster-card-head">
                 <span className="cluster-icon cluster-icon-safe"><ShieldCheck size={18} /></span>
                 <div>
-                  <Typography.Title heading={5}>{t('cluster.nodes')}</Typography.Title>
-                  <Typography.Paragraph>{t('cluster.nodesHint')}</Typography.Paragraph>
+                  <CardTitle>{t('cluster.nodes')}</CardTitle>
+                  <CardDescription>{t('cluster.nodesHint')}</CardDescription>
                 </div>
               </div>
               <div className="cluster-node-summary">
@@ -486,7 +540,7 @@ export default function ClusterPage() {
               {!data.enabled && (
                 <div className="cluster-empty-action">
                   <p>{t('cluster.singleNodeHint')}</p>
-                  <Button onClick={() => document.getElementById('cluster-deploy-wizard')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+                  <Button variant="outline" onClick={() => document.getElementById('cluster-deploy-wizard')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
                     {t('cluster.fullWizardPending')}
                   </Button>
                 </div>
@@ -500,8 +554,8 @@ export default function ClusterPage() {
               <div className="cluster-card-head">
                 <span className="cluster-icon"><Network size={18} /></span>
                 <div>
-                  <Typography.Title heading={5}>{t('cluster.currentMode')}</Typography.Title>
-                  <Typography.Paragraph>{t('cluster.statusUnavailable')}</Typography.Paragraph>
+                  <CardTitle>{t('cluster.currentMode')}</CardTitle>
+                  <CardDescription>{t('cluster.statusUnavailable')}</CardDescription>
                 </div>
               </div>
             </Card>
@@ -512,29 +566,39 @@ export default function ClusterPage() {
           <div className="cluster-card-head cluster-card-head-compact">
             <span className="cluster-icon"><PackageCheck size={18} /></span>
             <div>
-              <Typography.Title heading={5}>{t('cluster.bootstrapTitle', { defaultValue: 'Install and join orchestration' })}</Typography.Title>
-              <Typography.Paragraph>{t('cluster.bootstrapHint', { defaultValue: 'Mint a one-time join token and get the install-then-join checklist for a new node.' })}</Typography.Paragraph>
+              <CardTitle>{t('cluster.bootstrapTitle', { defaultValue: 'Install and join orchestration' })}</CardTitle>
+              <CardDescription>{t('cluster.bootstrapHint', { defaultValue: 'Mint a one-time join token and get the install-then-join checklist for a new node.' })}</CardDescription>
             </div>
           </div>
-          <Form form={bootstrapForm} layout="vertical" initialValues={{ role: 'waf' }} className="cluster-token-form">
+          <div className="cluster-token-form">
             <div className="cluster-token-fields">
-              <Form.Item label={t('cluster.role')} field="role">
-                <Select options={[{ label: 'waf', value: 'waf' }, { label: 'monitor', value: 'monitor' }]} />
-              </Form.Item>
-              <Form.Item label={t('cluster.nodeId', { defaultValue: 'Node ID' })} field="nodeId" rules={[{ required: true }]}>
-                <Input placeholder="waf-b" />
-              </Form.Item>
-              <Form.Item label={t('cluster.controllerUrl', { defaultValue: 'Controller URL' })} field="controllerUrl" rules={[{ required: true }]}>
-                <Input placeholder="https://controller.example:9443" />
-              </Form.Item>
-              <Form.Item label={t('cluster.advertiseAddr', { defaultValue: 'Advertise address' })} field="advertiseAddr" rules={[{ required: true }]}>
-                <Input placeholder="10.0.0.2:9444" />
-              </Form.Item>
+              <label>
+                <span>{t('cluster.role')}</span>
+                <Select value={bootstrapForm.role || 'waf'} onValueChange={(role) => setBootstrapForm((c) => ({ ...c, role }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="waf">waf</SelectItem>
+                    <SelectItem value="monitor">monitor</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label>
+                <span>{t('cluster.nodeId', { defaultValue: 'Node ID' })}</span>
+                <Input placeholder="waf-b" value={bootstrapForm.nodeId || ''} onChange={(e) => setBootstrapForm((c) => ({ ...c, nodeId: e.target.value }))} />
+              </label>
+              <label>
+                <span>{t('cluster.controllerUrl', { defaultValue: 'Controller URL' })}</span>
+                <Input placeholder="https://controller.example:9443" value={bootstrapForm.controllerUrl || ''} onChange={(e) => setBootstrapForm((c) => ({ ...c, controllerUrl: e.target.value }))} />
+              </label>
+              <label>
+                <span>{t('cluster.advertiseAddr', { defaultValue: 'Advertise address' })}</span>
+                <Input placeholder="10.0.0.2:9444" value={bootstrapForm.advertiseAddr || ''} onChange={(e) => setBootstrapForm((c) => ({ ...c, advertiseAddr: e.target.value }))} />
+              </label>
             </div>
-            <Button type="primary" loading={bootstrapMutation.isPending} onClick={() => void submitBootstrapPlan()}>
+            <Button loading={bootstrapMutation.isPending} onClick={() => void submitBootstrapPlan()}>
               {t('cluster.createBootstrapPlan', { defaultValue: 'Create bootstrap plan' })}
             </Button>
-          </Form>
+          </div>
           {bootstrapPlan && (
             <div className="cluster-result-note">
               <strong>{t('cluster.joinCommand', { defaultValue: 'Join command' })}</strong>
@@ -549,21 +613,23 @@ export default function ClusterPage() {
           <div className="cluster-card-head cluster-card-head-compact">
             <span className="cluster-icon"><RotateCcw size={18} /></span>
             <div>
-              <Typography.Title heading={5}>{t('cluster.rollingTitle', { defaultValue: 'Rolling upgrade' })}</Typography.Title>
-              <Typography.Paragraph>{t('cluster.rollingHint', { defaultValue: 'Upgrade nodes one by one: install binary, restart service, stop on first failure.' })}</Typography.Paragraph>
+              <CardTitle>{t('cluster.rollingTitle', { defaultValue: 'Rolling upgrade' })}</CardTitle>
+              <CardDescription>{t('cluster.rollingHint', { defaultValue: 'Upgrade nodes one by one: install binary, restart service, stop on first failure.' })}</CardDescription>
             </div>
           </div>
-          <Form form={rollingForm} layout="vertical" initialValues={{ user: 'root' }} className="cluster-token-form">
-            <Form.Item label={t('cluster.rollingHosts', { defaultValue: 'Hosts (one per line)' })} field="hosts" rules={[{ required: true }]}>
-              <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={'waf-a.example\nwaf-b.example'} />
-            </Form.Item>
-            <Form.Item label={t('cluster.sshUser', { defaultValue: 'SSH user' })} field="user">
-              <Input />
-            </Form.Item>
-            <Button type="primary" loading={rollingMutation.isPending} onClick={() => void submitRollingUpgrade()}>
+          <div className="cluster-token-form">
+            <label>
+              <span>{t('cluster.rollingHosts', { defaultValue: 'Hosts (one per line)' })}</span>
+              <Textarea rows={4} placeholder={'waf-a.example\nwaf-b.example'} value={rollingForm.hosts || ''} onChange={(e) => setRollingForm((c) => ({ ...c, hosts: e.target.value }))} />
+            </label>
+            <label>
+              <span>{t('cluster.sshUser', { defaultValue: 'SSH user' })}</span>
+              <Input value={rollingForm.user || ''} onChange={(e) => setRollingForm((c) => ({ ...c, user: e.target.value }))} />
+            </label>
+            <Button loading={rollingMutation.isPending} onClick={() => void submitRollingUpgrade()}>
               {t('cluster.startRolling', { defaultValue: 'Start rolling upgrade' })}
             </Button>
-          </Form>
+          </div>
           {rollingJob && (
             <div className="cluster-result-note">
               <strong>{rollingJob.id}</strong> · {rollingJob.status}
@@ -575,17 +641,17 @@ export default function ClusterPage() {
                 ))}
               </ul>
               {(rollingJob.status === 'failed' || rollingJob.status === 'succeeded') && !rollingJob.rollback_of && (
-                <Button style={{ marginTop: 8 }} onClick={() => void rollbackRollingJob()}>
+                <Button className="mt-2" variant="outline" onClick={() => void rollbackRollingJob()}>
                   {t('cluster.startRollback', { defaultValue: 'Start rollback' })}
                 </Button>
               )}
             </div>
           )}
-          <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Button onClick={() => void loadTrafficPeers('least_conn')}>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => void loadTrafficPeers('least_conn')}>
               {t('cluster.loadTrafficPeers', { defaultValue: 'Preview traffic peers (least_conn)' })}
             </Button>
-            <Button onClick={() => void loadTrafficPeers('sticky')}>
+            <Button variant="outline" onClick={() => void loadTrafficPeers('sticky')}>
               {t('cluster.loadStickyPeers', { defaultValue: 'Preview sticky peers' })}
             </Button>
           </div>
@@ -604,67 +670,83 @@ export default function ClusterPage() {
           <div className="cluster-card-head cluster-card-head-compact">
             <span className="cluster-icon"><KeyRound size={18} /></span>
             <div>
-              <Typography.Title heading={5}>{t('cluster.joinTitle')}</Typography.Title>
-              <Typography.Paragraph>{t('cluster.joinHint')}</Typography.Paragraph>
+              <CardTitle>{t('cluster.joinTitle')}</CardTitle>
+              <CardDescription>{t('cluster.joinHint')}</CardDescription>
             </div>
           </div>
-          <Form
-            form={tokenForm}
-            layout="vertical"
-            initialValues={{ role: 'waf', ttl: '15m', maxUses: 1 }}
-            className="cluster-token-form"
-            onValuesChange={(_, values) => {
-              setJoinCommandFields({
-                controllerUrl: values.controllerUrl,
-                nodeId: values.nodeId,
-                advertiseAddr: values.advertiseAddr,
-              });
-            }}
-          >
+          <div className="cluster-token-form">
             <div className="cluster-token-fields">
-              <Form.Item label={t('cluster.tokenRole')} field="role">
-                <Select>
-                  <Select.Option value="waf">{t('cluster.roleWaf')}</Select.Option>
-                  <Select.Option value="monitor">{t('cluster.roleMonitor')}</Select.Option>
+              <label>
+                <span>{t('cluster.tokenRole')}</span>
+                <Select value={tokenForm.role || 'waf'} onValueChange={(role) => setTokenForm((c) => ({ ...c, role }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="waf">{t('cluster.roleWaf')}</SelectItem>
+                    <SelectItem value="monitor">{t('cluster.roleMonitor')}</SelectItem>
+                  </SelectContent>
                 </Select>
-              </Form.Item>
-              <Form.Item label={t('cluster.tokenTTL')} field="ttl" extra={t('cluster.tokenTTLHint')}>
-                <Select allowCreate>
-                  <Select.Option value="15m">15m</Select.Option>
-                  <Select.Option value="30m">30m</Select.Option>
-                  <Select.Option value="1h">1h</Select.Option>
-                  <Select.Option value="6h">6h</Select.Option>
+              </label>
+              <label>
+                <span>{t('cluster.tokenTTL')}</span>
+                <Select value={tokenForm.ttl || '15m'} onValueChange={(ttl) => setTokenForm((c) => ({ ...c, ttl }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="15m">15m</SelectItem>
+                    <SelectItem value="30m">30m</SelectItem>
+                    <SelectItem value="1h">1h</SelectItem>
+                    <SelectItem value="6h">6h</SelectItem>
+                  </SelectContent>
                 </Select>
-              </Form.Item>
-              <Form.Item label={t('cluster.tokenMaxUses')} field="maxUses" extra={t('cluster.tokenMaxUsesHint')}>
-                <InputNumber min={1} max={100} precision={0} />
-              </Form.Item>
-              <Form.Item label={t('cluster.joinControllerUrl')} field="controllerUrl" extra={t('cluster.joinControllerUrlHint')}>
-                <Input placeholder="https://controller.example.com:9443" allowClear />
-              </Form.Item>
-              <Form.Item label={t('cluster.joinNodeId')} field="nodeId" extra={t('cluster.joinNodeIdHint')}>
-                <Input placeholder="waf-1" allowClear />
-              </Form.Item>
-              <Form.Item label={t('cluster.joinAdvertiseAddr')} field="advertiseAddr" extra={t('cluster.joinAdvertiseAddrHint')}>
-                <Input placeholder="192.168.6.250:9444" allowClear />
-              </Form.Item>
-              <Form.Item label=" ">
+                <em>{t('cluster.tokenTTLHint')}</em>
+              </label>
+              <label>
+                <span>{t('cluster.tokenMaxUses')}</span>
+                <Input type="number" min={1} max={100} value={tokenForm.maxUses ?? 1} onChange={(e) => setTokenForm((c) => ({ ...c, maxUses: Number(e.target.value || 1) }))} />
+                <em>{t('cluster.tokenMaxUsesHint')}</em>
+              </label>
+              <label>
+                <span>{t('cluster.joinControllerUrl')}</span>
+                <Input placeholder="https://controller.example.com:9443" value={tokenForm.controllerUrl || ''} onChange={(e) => {
+                  const controllerUrl = e.target.value;
+                  setTokenForm((c) => ({ ...c, controllerUrl }));
+                  setJoinCommandFields((c) => ({ ...c, controllerUrl }));
+                }} />
+                <em>{t('cluster.joinControllerUrlHint')}</em>
+              </label>
+              <label>
+                <span>{t('cluster.joinNodeId')}</span>
+                <Input placeholder="waf-1" value={tokenForm.nodeId || ''} onChange={(e) => {
+                  const nodeId = e.target.value;
+                  setTokenForm((c) => ({ ...c, nodeId }));
+                  setJoinCommandFields((c) => ({ ...c, nodeId }));
+                }} />
+                <em>{t('cluster.joinNodeIdHint')}</em>
+              </label>
+              <label>
+                <span>{t('cluster.joinAdvertiseAddr')}</span>
+                <Input placeholder="192.168.6.250:9444" value={tokenForm.advertiseAddr || ''} onChange={(e) => {
+                  const advertiseAddr = e.target.value;
+                  setTokenForm((c) => ({ ...c, advertiseAddr }));
+                  setJoinCommandFields((c) => ({ ...c, advertiseAddr }));
+                }} />
+                <em>{t('cluster.joinAdvertiseAddrHint')}</em>
+              </label>
+              <div>
                 <Button
-                  type="primary"
                   loading={createTokenMutation.isPending}
                   disabled={Boolean(latestToken?.value) || revokeTokenMutation.isPending}
                   onClick={() => void submitToken()}
                 >
                   {t('cluster.createToken')}
                 </Button>
-              </Form.Item>
+              </div>
             </div>
-          </Form>
+          </div>
           {tokenOperationError && (
             <div className="cluster-result-note cluster-result-note-error cluster-inline-error">
               <strong>{t('cluster.tokenOperationFailed')}</strong>
               <span>{tokenOperationError}</span>
-              <Button size="mini" onClick={() => setTokenOperationError(null)}>{t('common.close')}</Button>
+              <Button size="sm" variant="outline" onClick={() => setTokenOperationError(null)}>{t('common.close')}</Button>
             </div>
           )}
           {latestToken?.value && (
@@ -673,12 +755,12 @@ export default function ClusterPage() {
               <span>{t('cluster.tokenSecretHint')}</span>
               <code>{latestToken.value}</code>
               <div className="cluster-token-actions">
-                <Button icon={<Copy size={15} />} onClick={() => void copyText(latestToken.value || '', t('cluster.copied'), t('cluster.copyFailed'))}>
-                  {t('cluster.copyToken')}
+                <Button variant="outline" onClick={() => void copyText(latestToken.value || '', t('cluster.copied'), t('cluster.copyFailed'))}>
+                  <Copy size={15} />{t('cluster.copyToken')}
                 </Button>
-                <Button onClick={() => {
+                <Button variant="outline" onClick={() => {
                   setLatestToken(null);
-                  ArcoMessage.success(t('cluster.tokenCleared'));
+                  toast.success(t('cluster.tokenCleared'));
                 }}>
                   {t('cluster.clearToken')}
                 </Button>
@@ -691,88 +773,91 @@ export default function ClusterPage() {
               <strong>{t('cluster.loadFailed')}</strong>
               {isTokensError && <span>{t('cluster.tokenLoadFailed')}: {errorMessage(tokensError)}</span>}
               {isNodesError && <span>{t('cluster.nodeLoadFailed')}: {errorMessage(nodesError)}</span>}
-              <Button
-                size="small"
-                onClick={() => {
-                  void refetchTokens();
-                  void refetchNodes();
-                }}
-              >
-                {t('common.retry')}
-              </Button>
+              <Button size="sm" variant="outline" onClick={() => { void refetchTokens(); void refetchNodes(); }}>{t('common.retry')}</Button>
             </div>
           )}
           <div className="cluster-tables-grid">
-            <Table
-              className="cluster-token-table"
-              rowKey="id"
-              loading={isFetchingTokens}
-              pagination={false}
-              data={tokens?.items || []}
-              columns={[
-                { title: t('cluster.tokenID'), dataIndex: 'id', render: (value: string) => <code>{value}</code> },
-                { title: t('cluster.tokenRole'), dataIndex: 'role', render: (value: string) => roleTag(value, t) },
-                { title: t('cluster.tokenUsage'), render: (_: unknown, item: ClusterJoinToken) => `${item.used_count}/${item.max_uses}` },
-                { title: t('cluster.tokenExpires'), dataIndex: 'expires_at', render: formatTimestamp },
-                {
-                  title: t('common.actions'),
-                  render: (_: unknown, item: ClusterJoinToken) => (
-                    <Popconfirm
-                      title={t('cluster.revokeConfirmTitle')}
-                      content={t('cluster.revokeConfirmContent')}
-                      okText={t('common.confirm')}
-                      cancelText={t('common.cancel')}
-                      disabled={item.revoked || revokeTokenMutation.isPending}
-                      onOk={() => revokeTokenMutation.mutate(item.id)}
-                    >
-                      <Button
-                        size="mini"
-                        status="danger"
-                        disabled={item.revoked || revokeTokenMutation.isPending}
-                        loading={revokingTokenID === item.id}
-                      >
-                        {item.revoked ? t('cluster.revoked') : t('cluster.revoke')}
-                      </Button>
-                    </Popconfirm>
-                  ),
-                },
-              ]}
-              scroll={{ x: 720 }}
-            />
-            <Table
-              className="cluster-node-table"
-              rowKey="node_id"
-              loading={isFetchingNodes}
-              pagination={false}
-              data={nodes?.items || []}
-              columns={[
-                { title: t('cluster.nodeID'), dataIndex: 'node_id', render: (value: string) => <code>{value}</code> },
-                { title: t('cluster.nodeRole'), dataIndex: 'role', render: (value: string) => roleTag(value, t) },
-                { title: t('cluster.nodeRuntimeState'), render: (_: unknown, item: ClusterNodeRegistration) => runtimeStateTag(item, t) },
-                { title: t('cluster.nodeAdvertise'), dataIndex: 'advertise_addr' },
-                { title: t('cluster.nodeLastHeartbeat'), render: (_: unknown, item: ClusterNodeRegistration) => formatRuntimeHeartbeat(item) },
-                { title: t('cluster.nodeConfigVersion'), render: (_: unknown, item: ClusterNodeRegistration) => item.runtime?.config_version || '-' },
-                {
-                  title: t('common.actions'),
-                  render: (_: unknown, item) => (
-                    <Button
-                      size="mini"
-                      disabled={item.revoked}
-                      onClick={() => {
-                        certificateForm.setFieldValue('nodeId', item.node_id);
-                        setLatestCertificate(null);
-                        document.getElementById('cluster-cert-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                      }}
-                    >
-                      {t('cluster.certSign')}
-                    </Button>
-                  ),
-                },
-                { title: t('cluster.nodeJoined'), dataIndex: 'joined_at', render: formatTimestamp },
-                { title: t('cluster.nodeCertExpiry'), dataIndex: 'certificate_expiry', render: formatTimestamp },
-              ]}
-              scroll={{ x: 1080 }}
-            />
+            <div className="relative">
+              {isFetchingTokens && <div className="absolute inset-0 z-10 bg-background/40" aria-busy />}
+              <Table className="cluster-token-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('cluster.tokenID')}</TableHead>
+                    <TableHead>{t('cluster.tokenRole')}</TableHead>
+                    <TableHead>{t('cluster.tokenUsage')}</TableHead>
+                    <TableHead>{t('cluster.tokenExpires')}</TableHead>
+                    <TableHead>{t('common.actions')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(tokens?.items || []).map((item) => (
+                    <TableRow key={item.id}>
+                      <TableCell><code>{item.id}</code></TableCell>
+                      <TableCell>{roleTag(item.role, t)}</TableCell>
+                      <TableCell>{item.used_count}/{item.max_uses}</TableCell>
+                      <TableCell>{formatTimestamp(item.expires_at)}</TableCell>
+                      <TableCell>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          disabled={item.revoked || revokeTokenMutation.isPending}
+                          loading={revokingTokenID === item.id}
+                          onClick={() => setRevokeConfirmID(item.id)}
+                        >
+                          {item.revoked ? t('cluster.revoked') : t('cluster.revoke')}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="relative">
+              {isFetchingNodes && <div className="absolute inset-0 z-10 bg-background/40" aria-busy />}
+              <Table className="cluster-node-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('cluster.nodeID')}</TableHead>
+                    <TableHead>{t('cluster.nodeRole')}</TableHead>
+                    <TableHead>{t('cluster.nodeRuntimeState')}</TableHead>
+                    <TableHead>{t('cluster.nodeAdvertise')}</TableHead>
+                    <TableHead>{t('cluster.nodeLastHeartbeat')}</TableHead>
+                    <TableHead>{t('cluster.nodeConfigVersion')}</TableHead>
+                    <TableHead>{t('common.actions')}</TableHead>
+                    <TableHead>{t('cluster.nodeJoined')}</TableHead>
+                    <TableHead>{t('cluster.nodeCertExpiry')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(nodes?.items || []).map((item) => (
+                    <TableRow key={item.node_id}>
+                      <TableCell><code>{item.node_id}</code></TableCell>
+                      <TableCell>{roleTag(item.role, t)}</TableCell>
+                      <TableCell>{runtimeStateTag(item, t)}</TableCell>
+                      <TableCell>{item.advertise_addr}</TableCell>
+                      <TableCell>{formatRuntimeHeartbeat(item)}</TableCell>
+                      <TableCell>{item.runtime?.config_version || '-'}</TableCell>
+                      <TableCell>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={item.revoked}
+                          onClick={() => {
+                            setCertificateForm((c) => ({ ...c, nodeId: item.node_id }));
+                            setLatestCertificate(null);
+                            document.getElementById('cluster-cert-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                          }}
+                        >
+                          {t('cluster.certSign')}
+                        </Button>
+                      </TableCell>
+                      <TableCell>{formatTimestamp(item.joined_at)}</TableCell>
+                      <TableCell>{formatTimestamp(item.certificate_expiry)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           </div>
           <div className="cluster-mobile-cards">
             <section className="cluster-mobile-list" aria-label={t('cluster.joinTokenList')}>
@@ -788,23 +873,15 @@ export default function ClusterPage() {
                     <div><dt>{t('cluster.tokenExpires')}</dt><dd>{formatTimestamp(item.expires_at)}</dd></div>
                   </dl>
                   <div className="cluster-mobile-actions">
-                    <Popconfirm
-                      title={t('cluster.revokeConfirmTitle')}
-                      content={t('cluster.revokeConfirmContent')}
-                      okText={t('common.confirm')}
-                      cancelText={t('common.cancel')}
+                    <Button
+                      size="sm"
+                      variant="destructive"
                       disabled={item.revoked || revokeTokenMutation.isPending}
-                      onOk={() => revokeTokenMutation.mutate(item.id)}
+                      loading={revokingTokenID === item.id}
+                      onClick={() => setRevokeConfirmID(item.id)}
                     >
-                      <Button
-                        size="small"
-                        status="danger"
-                        disabled={item.revoked || revokeTokenMutation.isPending}
-                        loading={revokingTokenID === item.id}
-                      >
-                        {item.revoked ? t('cluster.revoked') : t('cluster.revoke')}
-                      </Button>
-                    </Popconfirm>
+                      {item.revoked ? t('cluster.revoked') : t('cluster.revoke')}
+                    </Button>
                   </div>
                 </article>
               )) : <div className="cluster-mobile-empty">{t('common.noData')}</div>}
@@ -825,10 +902,11 @@ export default function ClusterPage() {
                   </dl>
                   <div className="cluster-mobile-actions">
                     <Button
-                      size="small"
+                      size="sm"
+                      variant="outline"
                       disabled={item.revoked}
                       onClick={() => {
-                        certificateForm.setFieldValue('nodeId', item.node_id);
+                        setCertificateForm((c) => ({ ...c, nodeId: item.node_id }));
                         setLatestCertificate(null);
                         document.getElementById('cluster-cert-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                       }}
@@ -848,41 +926,32 @@ export default function ClusterPage() {
                 <span>{t('cluster.certHint')}</span>
               </div>
             </div>
-            <Form form={certificateForm} layout="vertical" className="cluster-cert-form">
+            <div className="cluster-cert-form">
               <div className="cluster-cert-fields">
-                <Form.Item
-                  label={t('cluster.certNode')}
-                  field="nodeId"
-                  rules={[{ required: true, message: t('cluster.certNodeRequired') }]}
-                >
-                  <Select placeholder={t('cluster.certNodePlaceholder')}>
-                    {(nodes?.items || []).map((node) => (
-                      <Select.Option key={node.node_id} value={node.node_id} disabled={node.revoked}>
-                        {node.node_id} · {roleLabelText(node.role, t)}
-                      </Select.Option>
-                    ))}
+                <label>
+                  <span>{t('cluster.certNode')}</span>
+                  <Select value={certificateForm.nodeId || undefined} onValueChange={(nodeId) => setCertificateForm((c) => ({ ...c, nodeId }))}>
+                    <SelectTrigger><SelectValue placeholder={t('cluster.certNodePlaceholder')} /></SelectTrigger>
+                    <SelectContent>
+                      {(nodes?.items || []).map((node) => (
+                        <SelectItem key={node.node_id} value={node.node_id} disabled={node.revoked}>
+                          {node.node_id} · {roleLabelText(node.role, t)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
                   </Select>
-                </Form.Item>
-                <Form.Item
-                  label={t('cluster.certCSR')}
-                  field="csr"
-                  rules={[{ required: true, message: t('cluster.certCSRRequired') }]}
-                >
-                  <Input.TextArea autoSize={{ minRows: 5, maxRows: 10 }} placeholder="-----BEGIN CERTIFICATE REQUEST-----" />
-                </Form.Item>
+                </label>
+                <label>
+                  <span>{t('cluster.certCSR')}</span>
+                  <Textarea rows={5} placeholder="-----BEGIN CERTIFICATE REQUEST-----" value={certificateForm.csr || ''} onChange={(e) => setCertificateForm((c) => ({ ...c, csr: e.target.value }))} />
+                </label>
               </div>
               <div className="cluster-cert-actions">
-                <Button
-                  type="primary"
-                  icon={<ShieldCheck size={16} />}
-                  loading={rotateCertificateMutation.isPending}
-                  disabled={rotateCertificateMutation.isPending}
-                  onClick={() => void submitCertificateSigning()}
-                >
-                  {t('cluster.certSubmit')}
+                <Button loading={rotateCertificateMutation.isPending} disabled={rotateCertificateMutation.isPending} onClick={() => void submitCertificateSigning()}>
+                  <ShieldCheck size={16} />{t('cluster.certSubmit')}
                 </Button>
               </div>
-            </Form>
+            </div>
             {latestCertificate && (
               <div className="cluster-result-note cluster-result-note-ok cluster-cert-result">
                 <strong>{t('cluster.certResultTitle')}</strong>
@@ -891,11 +960,11 @@ export default function ClusterPage() {
                 <span>{t('cluster.certSerial')}: <code>{latestCertificate.node.certificate_serial}</code></span>
                 <span>{t('cluster.nodeCertExpiry')}: {formatTimestamp(latestCertificate.node.certificate_expiry)}</span>
                 <div className="cluster-cert-result-actions">
-                  <Button icon={<Copy size={15} />} onClick={() => void copyText(latestCertificate.certificates.cert, t('cluster.copied'), t('cluster.copyFailed'))}>
-                    {t('cluster.copyCertificate')}
+                  <Button variant="outline" onClick={() => void copyText(latestCertificate.certificates.cert, t('cluster.copied'), t('cluster.copyFailed'))}>
+                    <Copy size={15} />{t('cluster.copyCertificate')}
                   </Button>
-                  <Button icon={<Copy size={15} />} onClick={() => void copyText(latestCertificate.certificates.ca, t('cluster.copied'), t('cluster.copyFailed'))}>
-                    {t('cluster.copyCA')}
+                  <Button variant="outline" onClick={() => void copyText(latestCertificate.certificates.ca, t('cluster.copied'), t('cluster.copyFailed'))}>
+                    <Copy size={15} />{t('cluster.copyCA')}
                   </Button>
                 </div>
               </div>
@@ -907,41 +976,29 @@ export default function ClusterPage() {
           <div className="cluster-card-head cluster-card-head-compact">
             <span className="cluster-icon"><PackageCheck size={18} /></span>
             <div>
-              <Typography.Title heading={5}>{t('cluster.deployWizardTitle')}</Typography.Title>
-              <Typography.Paragraph>{t('cluster.deployWizardHint')}</Typography.Paragraph>
+              <CardTitle>{t('cluster.deployWizardTitle')}</CardTitle>
+              <CardDescription>{t('cluster.deployWizardHint')}</CardDescription>
             </div>
           </div>
-          <Steps current={deployWizardStep + 1} size="small" className="cluster-deploy-steps">
-            <Steps.Step title={t('cluster.deployWizardStepMethod')} />
-            <Steps.Step title={t('cluster.deployWizardStepTarget')} />
-            <Steps.Step title={deployMethod === 'ssh' ? t('cluster.deployWizardStepPrecheck') : t('cluster.deployWizardStepPackage')} />
-            <Steps.Step title={t('cluster.deployWizardStepResult')} />
-          </Steps>
+          <div className="cluster-deploy-steps flex flex-wrap gap-2 mb-4">
+            {[
+              t('cluster.deployWizardStepMethod'),
+              t('cluster.deployWizardStepTarget'),
+              deployMethod === 'ssh' ? t('cluster.deployWizardStepPrecheck') : t('cluster.deployWizardStepPackage'),
+              t('cluster.deployWizardStepResult'),
+            ].map((title, index) => (
+              <div key={title} className={`rounded-md border px-3 py-1 text-sm ${index <= deployWizardStep ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
+                {index + 1}. {title}
+              </div>
+            ))}
+          </div>
 
           <div className="cluster-deploy-methods" role="radiogroup" aria-label={t('cluster.deployWizardMethodLabel')}>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={deployMethod === 'ansible'}
-              className={`cluster-deploy-method ${deployMethod === 'ansible' ? 'cluster-deploy-method-active' : ''}`}
-              onClick={() => {
-                setDeployMethod('ansible');
-                setDeployWizardStep(0);
-              }}
-            >
+            <button type="button" role="radio" aria-checked={deployMethod === 'ansible'} className={`cluster-deploy-method ${deployMethod === 'ansible' ? 'cluster-deploy-method-active' : ''}`} onClick={() => { setDeployMethod('ansible'); setDeployWizardStep(0); }}>
               <strong>{t('cluster.deployWizardMethodAnsible')}</strong>
               <span>{t('cluster.deployWizardMethodAnsibleHint')}</span>
             </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={deployMethod === 'ssh'}
-              className={`cluster-deploy-method ${deployMethod === 'ssh' ? 'cluster-deploy-method-active' : ''}`}
-              onClick={() => {
-                setDeployMethod('ssh');
-                setDeployWizardStep(0);
-              }}
-            >
+            <button type="button" role="radio" aria-checked={deployMethod === 'ssh'} className={`cluster-deploy-method ${deployMethod === 'ssh' ? 'cluster-deploy-method-active' : ''}`} onClick={() => { setDeployMethod('ssh'); setDeployWizardStep(0); }}>
               <strong>{t('cluster.deployWizardMethodSSH')}</strong>
               <span>{t('cluster.deployWizardMethodSSHHint')}</span>
             </button>
@@ -949,188 +1006,137 @@ export default function ClusterPage() {
 
           {deployMethod === 'ansible' ? (
             <div className="cluster-wizard-panel">
-              <Form
-                form={ansibleForm}
-                layout="vertical"
-                initialValues={{ clusterId: 'cheesewaf-mesh', channel: 'canary' }}
-                className="cluster-deploy-form"
-              >
+              <div className="cluster-deploy-form">
                 <div className="cluster-ansible-summary">
-                  <Form.Item label={t('cluster.deployWizardClusterID')} field="clusterId" extra={t('cluster.deployWizardClusterIDHint')}>
-                    <Input placeholder="cheesewaf-mesh" allowClear />
-                  </Form.Item>
-                  <Form.Item label={t('cluster.deployWizardChannel')} field="channel" extra={t('cluster.deployWizardChannelHint')}>
-                    <Select>
-                      <Select.Option value="dev">{t('cluster.channelDev')}</Select.Option>
-                      <Select.Option value="canary">{t('cluster.channelCanary')}</Select.Option>
-                      <Select.Option value="stable">{t('cluster.channelStable')}</Select.Option>
+                  <label>
+                    <span>{t('cluster.deployWizardClusterID')}</span>
+                    <Input placeholder="cheesewaf-mesh" value={ansibleForm.clusterId || ''} onChange={(e) => setAnsibleForm((c) => ({ ...c, clusterId: e.target.value }))} />
+                    <em>{t('cluster.deployWizardClusterIDHint')}</em>
+                  </label>
+                  <label>
+                    <span>{t('cluster.deployWizardChannel')}</span>
+                    <Select value={ansibleForm.channel || 'canary'} onValueChange={(channel) => setAnsibleForm((c) => ({ ...c, channel }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="dev">{t('cluster.channelDev')}</SelectItem>
+                        <SelectItem value="canary">{t('cluster.channelCanary')}</SelectItem>
+                        <SelectItem value="stable">{t('cluster.channelStable')}</SelectItem>
+                      </SelectContent>
                     </Select>
-                  </Form.Item>
+                    <em>{t('cluster.deployWizardChannelHint')}</em>
+                  </label>
                 </div>
-              </Form>
-
+              </div>
               <div className="cluster-ansible-node-list">
                 <div className="cluster-section-title">
                   <strong>{t('cluster.deployWizardAnsibleNodes')}</strong>
-                  <Button size="small" icon={<Plus size={15} />} onClick={addAnsibleNode}>{t('cluster.deployWizardAddNode')}</Button>
+                  <Button size="sm" variant="outline" onClick={addAnsibleNode}><Plus size={15} />{t('cluster.deployWizardAddNode')}</Button>
                 </div>
                 {ansibleNodes.map((node, index) => (
                   <div className="cluster-ansible-node" key={node.name ? `ansible-node-${node.name}-${index}` : `ansible-node-${index}`}>
-                    <Input
-                      value={node.name}
-                      placeholder={t('cluster.deployWizardNodeName')}
-                      onChange={(value) => updateAnsibleNode(index, { name: value })}
-                    />
-                    <Input
-                      value={node.address}
-                      placeholder={t('cluster.deployWizardNodeAddress')}
-                      onChange={(value) => updateAnsibleNode(index, { address: value })}
-                    />
-                    <Select value={node.role} onChange={(value) => updateAnsibleNode(index, { role: String(value) })}>
-                      <Select.Option value="waf">{t('cluster.roleWaf')}</Select.Option>
-                      <Select.Option value="monitor">{t('cluster.roleMonitor')}</Select.Option>
+                    <Input value={node.name} placeholder={t('cluster.deployWizardNodeName')} onChange={(e) => updateAnsibleNode(index, { name: e.target.value })} />
+                    <Input value={node.address} placeholder={t('cluster.deployWizardNodeAddress')} onChange={(e) => updateAnsibleNode(index, { address: e.target.value })} />
+                    <Select value={node.role} onValueChange={(role) => updateAnsibleNode(index, { role })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="waf">{t('cluster.roleWaf')}</SelectItem>
+                        <SelectItem value="monitor">{t('cluster.roleMonitor')}</SelectItem>
+                      </SelectContent>
                     </Select>
-                    <InputNumber
-                      value={node.ssh_port}
-                      min={1}
-                      max={65535}
-                      precision={0}
-                      onChange={(value) => updateAnsibleNode(index, { ssh_port: Number(value || 22) })}
-                    />
-                    <Input
-                      value={node.region || ''}
-                      placeholder={t('cluster.deployWizardNodeRegion')}
-                      onChange={(value) => updateAnsibleNode(index, { region: value })}
-                    />
-                    <Button
-                      icon={<Trash2 size={15} />}
-                      disabled={ansibleNodes.length <= 1}
-                      onClick={() => removeAnsibleNode(index)}
-                    >
-                      {t('common.delete')}
-                    </Button>
+                    <Input type="number" min={1} max={65535} value={node.ssh_port} onChange={(e) => updateAnsibleNode(index, { ssh_port: Number(e.target.value || 22) })} />
+                    <Input value={node.region || ''} placeholder={t('cluster.deployWizardNodeRegion')} onChange={(e) => updateAnsibleNode(index, { region: e.target.value })} />
+                    <Button variant="outline" disabled={ansibleNodes.length <= 1} onClick={() => removeAnsibleNode(index)}><Trash2 size={15} />{t('common.delete')}</Button>
                   </div>
                 ))}
               </div>
-
               <div className="cluster-deploy-actions">
-                <Button
-                  type="primary"
-                  icon={<PackageCheck size={16} />}
-                  loading={ansiblePackageMutation.isPending}
-                  disabled={ansiblePackageMutation.isPending}
-                  onClick={() => ansiblePackageMutation.mutate()}
-                >
-                  {t('cluster.deployWizardGeneratePackage')}
+                <Button loading={ansiblePackageMutation.isPending} disabled={ansiblePackageMutation.isPending} onClick={() => ansiblePackageMutation.mutate()}>
+                  <PackageCheck size={16} />{t('cluster.deployWizardGeneratePackage')}
                 </Button>
-                <Button icon={<RotateCcw size={16} />} onClick={resetDeploymentWizard}>{t('common.reset')}</Button>
+                <Button variant="outline" onClick={resetDeploymentWizard}><RotateCcw size={16} />{t('common.reset')}</Button>
               </div>
-
               {ansiblePackage && (
-                <AnsiblePackageViewer
-                  pkg={ansiblePackage}
-                  selectedFile={selectedAnsibleFile}
-                  setSelectedFile={setSelectedAnsibleFile}
-                  t={t}
-                />
+                <AnsiblePackageViewer pkg={ansiblePackage} selectedFile={selectedAnsibleFile} setSelectedFile={setSelectedAnsibleFile} t={t} />
               )}
             </div>
           ) : (
             <div className="cluster-wizard-panel">
-              <Form
-                form={form}
-                layout="vertical"
-                initialValues={{ user: 'root', port: 22, action: 'install' }}
-                className="cluster-deploy-form"
-              >
+              <div className="cluster-deploy-form">
                 <div className="cluster-deploy-fields">
-                  <Form.Item
-                    label={t('cluster.deployHost')}
-                    field="host"
-                    rules={[{ required: true, message: t('cluster.deployHostRequired') }]}
-                    extra={t('cluster.deployWizardHostHint')}
-                  >
-                    <Input placeholder="192.0.2.10" allowClear onFocus={() => setDeployWizardStep(1)} />
-                  </Form.Item>
-                  <Form.Item
-                    label={t('cluster.deployUser')}
-                    field="user"
-                    rules={[{ required: true, message: t('cluster.deployUserRequired') }]}
-                  >
-                    <Input placeholder="root" allowClear onFocus={() => setDeployWizardStep(1)} />
-                  </Form.Item>
-                  <Form.Item
-                    label={t('cluster.deployPort')}
-                    field="port"
-                    rules={[{ required: true, message: t('cluster.deployPortRequired') }]}
-                  >
-                    <InputNumber min={1} max={65535} precision={0} onFocus={() => setDeployWizardStep(1)} />
-                  </Form.Item>
-                  <Form.Item label={t('cluster.deployAction')} field="action" extra={t('cluster.deployWizardActionHint')}>
-                    <Select onChange={() => setDeployWizardStep(1)}>
-                      <Select.Option value="install">{t('cluster.deployActionInstall')}</Select.Option>
-                      <Select.Option value="rollback-install">{t('cluster.deployActionRollbackInstall')}</Select.Option>
-                      <Select.Option value="restart-service">{t('cluster.deployActionRestart')}</Select.Option>
+                  <label>
+                    <span>{t('cluster.deployHost')}</span>
+                    <Input placeholder="192.0.2.10" value={deployForm.host || ''} onFocus={() => setDeployWizardStep(1)} onChange={(e) => setDeployForm((c) => ({ ...c, host: e.target.value }))} />
+                    <em>{t('cluster.deployWizardHostHint')}</em>
+                  </label>
+                  <label>
+                    <span>{t('cluster.deployUser')}</span>
+                    <Input placeholder="root" value={deployForm.user || ''} onFocus={() => setDeployWizardStep(1)} onChange={(e) => setDeployForm((c) => ({ ...c, user: e.target.value }))} />
+                  </label>
+                  <label>
+                    <span>{t('cluster.deployPort')}</span>
+                    <Input type="number" min={1} max={65535} value={deployForm.port ?? 22} onFocus={() => setDeployWizardStep(1)} onChange={(e) => setDeployForm((c) => ({ ...c, port: Number(e.target.value || 22) }))} />
+                  </label>
+                  <label>
+                    <span>{t('cluster.deployAction')}</span>
+                    <Select value={deployForm.action || 'install'} onValueChange={(action) => { setDeployForm((c) => ({ ...c, action })); setDeployWizardStep(1); }}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="install">{t('cluster.deployActionInstall')}</SelectItem>
+                        <SelectItem value="rollback-install">{t('cluster.deployActionRollbackInstall')}</SelectItem>
+                        <SelectItem value="restart-service">{t('cluster.deployActionRestart')}</SelectItem>
+                      </SelectContent>
                     </Select>
-                  </Form.Item>
+                    <em>{t('cluster.deployWizardActionHint')}</em>
+                  </label>
                 </div>
-
                 <div className="cluster-credential-panel">
                   <div className="cluster-section-title">
                     <strong>{t('cluster.deployWizardAuthTitle')}</strong>
                     <span>{t('cluster.deployWizardAuthHint')}</span>
                   </div>
-                  <Radio.Group type="button" value={deployAuthMethod} onChange={(value) => setDeployAuthMethod(value as DeployAuthMethod)}>
-                    <Radio value="agent">{t('cluster.deployWizardAuthAgent')}</Radio>
-                    <Radio value="password">{t('cluster.deployWizardAuthPassword')}</Radio>
-                    <Radio value="private_key">{t('cluster.deployWizardAuthPrivateKey')}</Radio>
-                  </Radio.Group>
+                  <RadioGroup className="flex flex-wrap gap-4" value={deployAuthMethod} onValueChange={(value) => setDeployAuthMethod(value as DeployAuthMethod)}>
+                    <label className="flex items-center gap-2"><RadioGroupItem value="agent" id="auth-agent" /><span>{t('cluster.deployWizardAuthAgent')}</span></label>
+                    <label className="flex items-center gap-2"><RadioGroupItem value="password" id="auth-password" /><span>{t('cluster.deployWizardAuthPassword')}</span></label>
+                    <label className="flex items-center gap-2"><RadioGroupItem value="private_key" id="auth-key" /><span>{t('cluster.deployWizardAuthPrivateKey')}</span></label>
+                  </RadioGroup>
                   {deployAuthMethod === 'password' && (
-                    <Form.Item label={t('cluster.deployPassword')} field="password" extra={t('cluster.deployPasswordHint')}>
-                      <Input.Password placeholder={t('cluster.deployPasswordPlaceholder')} autoComplete="new-password" allowClear />
-                    </Form.Item>
+                    <label>
+                      <span>{t('cluster.deployPassword')}</span>
+                      <Input type="password" autoComplete="new-password" placeholder={t('cluster.deployPasswordPlaceholder')} value={deployForm.password || ''} onChange={(e) => setDeployForm((c) => ({ ...c, password: e.target.value }))} />
+                      <em>{t('cluster.deployPasswordHint')}</em>
+                    </label>
                   )}
                   {deployAuthMethod === 'private_key' && (
-                    <Form.Item label={t('cluster.deployPrivateKey')} field="privateKey" extra={t('cluster.deployPrivateKeyHint')}>
-                      <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />
-                    </Form.Item>
+                    <label>
+                      <span>{t('cluster.deployPrivateKey')}</span>
+                      <Textarea rows={4} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={deployForm.privateKey || ''} onChange={(e) => setDeployForm((c) => ({ ...c, privateKey: e.target.value }))} />
+                      <em>{t('cluster.deployPrivateKeyHint')}</em>
+                    </label>
                   )}
                 </div>
-
                 <div className="cluster-hostkey-panel">
                   <div className="cluster-section-title">
                     <strong>{t('cluster.deployWizardHostKeyTitle')}</strong>
                     <span>{t('cluster.deployWizardHostKeyHint')}</span>
                   </div>
-                  <Form.Item label={t('cluster.deployHostKey')} field="hostKeySHA256" extra={t('cluster.deployHostKeyHint')}>
-                      <Input placeholder="SHA256:..." allowClear />
-                  </Form.Item>
+                  <label>
+                    <span>{t('cluster.deployHostKey')}</span>
+                    <Input placeholder="SHA256:..." value={deployForm.hostKeySHA256 || ''} onChange={(e) => setDeployForm((c) => ({ ...c, hostKeySHA256: e.target.value }))} />
+                    <em>{t('cluster.deployHostKeyHint')}</em>
+                  </label>
                 </div>
-
                 <div className="cluster-deploy-actions">
-                  <Button
-                    icon={<ShieldCheck size={16} />}
-                    loading={deployTaskMutation.isPending}
-                    disabled={deployTaskMutation.isPending}
-                    onClick={() => void submitDeployment('check')}
-                  >
-                    {t('cluster.deployWizardRunPrecheck')}
+                  <Button variant="outline" loading={deployTaskMutation.isPending} disabled={deployTaskMutation.isPending} onClick={() => void submitDeployment('check')}>
+                    <ShieldCheck size={16} />{t('cluster.deployWizardRunPrecheck')}
                   </Button>
-                  <Button
-                    type="primary"
-                    icon={<Play size={16} />}
-                    loading={deployTaskMutation.isPending}
-                    disabled={deployTaskMutation.isPending || !activeDeployTask || activeDeployTask.action !== 'check' || activeDeployTask.status !== 'succeeded'}
-                    onClick={() => void submitDeployment('run')}
-                  >
-                    {t('cluster.deployWizardStartAction')}
+                  <Button loading={deployTaskMutation.isPending} disabled={deployTaskMutation.isPending || !activeDeployTask || activeDeployTask.action !== 'check' || activeDeployTask.status !== 'succeeded'} onClick={() => void submitDeployment('run')}>
+                    <Play size={16} />{t('cluster.deployWizardStartAction')}
                   </Button>
-                  <Button icon={<RotateCcw size={16} />} disabled={deployTaskMutation.isPending} onClick={resetDeploymentWizard}>
-                    {t('common.reset')}
+                  <Button variant="outline" disabled={deployTaskMutation.isPending} onClick={resetDeploymentWizard}>
+                    <RotateCcw size={16} />{t('common.reset')}
                   </Button>
                 </div>
-              </Form>
-
+              </div>
               <DeploymentTaskPanel
                 activeDeployTask={activeDeployTask}
                 deployTasks={deployTasks?.items || []}
@@ -1147,19 +1153,19 @@ export default function ClusterPage() {
           <div className="cluster-card-head cluster-card-head-compact">
             <span className="cluster-icon cluster-icon-safe"><ShieldCheck size={18} /></span>
             <div>
-              <Typography.Title heading={5}>{t('cluster.auditTitle')}</Typography.Title>
-              <Typography.Paragraph>{t('cluster.auditHint')}</Typography.Paragraph>
+              <CardTitle>{t('cluster.auditTitle')}</CardTitle>
+              <CardDescription>{t('cluster.auditHint')}</CardDescription>
             </div>
           </div>
           <div className="cluster-audit-toolbar">
-            <Tag color="arcoblue">{t('cluster.auditScopeTag')}</Tag>
-            <Button size="small" loading={isFetchingAudit} onClick={() => void refetchAudit()}>{t('cluster.auditRefresh')}</Button>
+            <Badge variant="default">{t('cluster.auditScopeTag')}</Badge>
+            <Button size="sm" variant="outline" loading={isFetchingAudit} onClick={() => void refetchAudit()}>{t('cluster.auditRefresh')}</Button>
           </div>
           {isAuditError && (
             <div className="cluster-result-note cluster-result-note-error cluster-inline-error">
               <strong>{t('cluster.auditLoadFailed')}</strong>
               <span>{errorMessage(auditError)}</span>
-              <Button size="mini" onClick={() => void refetchAudit()}>{t('common.retry')}</Button>
+              <Button size="sm" variant="outline" onClick={() => void refetchAudit()}>{t('common.retry')}</Button>
             </div>
           )}
           {!isAuditError && !auditEntries.length && !isFetchingAudit && (
@@ -1169,21 +1175,37 @@ export default function ClusterPage() {
             </div>
           )}
           <div className="table-scroll cluster-audit-table">
-            <Table
-              rowKey={clusterAuditRowKey}
-              loading={isFetchingAudit && !auditEntries.length}
-              pagination={auditEntries.length > 10 ? { pageSize: 10, sizeCanChange: true } : false}
-              data={auditEntries}
-              columns={[
-                { title: t('cluster.auditTime'), dataIndex: 'timestamp', width: 150, render: (value: string) => <span className="nowrap-cell" title={value}>{formatTimestamp(value) || '-'}</span> },
-                { title: t('cluster.auditSourceType'), width: 130, render: (_: unknown, item: ClusterAuditEntry) => <ClusterAuditSourceCell entry={item} t={t} /> },
-                { title: t('cluster.auditAction'), width: 100, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-text">{clusterAuditAction(item, t)}</span> },
-                { title: t('cluster.auditActor'), width: 100, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-text">{clusterAuditActor(item, t)}</span> },
-                { title: t('cluster.auditStatus'), width: 80, render: (_: unknown, item: ClusterAuditEntry) => clusterAuditStatusTag(item, t) },
-                { title: t('cluster.auditMessage'), width: 180, render: (_: unknown, item: ClusterAuditEntry) => <span className="cluster-audit-message">{clusterAuditMessage(item, t)}</span> },
-              ]}
-              scroll={{ x: 740 }}
-            />
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('cluster.auditTime')}</TableHead>
+                  <TableHead>{t('cluster.auditSourceType')}</TableHead>
+                  <TableHead>{t('cluster.auditAction')}</TableHead>
+                  <TableHead>{t('cluster.auditActor')}</TableHead>
+                  <TableHead>{t('cluster.auditStatus')}</TableHead>
+                  <TableHead>{t('cluster.auditMessage')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(auditEntries.length > 10 ? auditEntries.slice(auditPage * 10, (auditPage + 1) * 10) : auditEntries).map((entry) => (
+                  <TableRow key={clusterAuditRowKey(entry)}>
+                    <TableCell><span className="nowrap-cell" title={entry.timestamp}>{formatTimestamp(entry.timestamp) || '-'}</span></TableCell>
+                    <TableCell><ClusterAuditSourceCell entry={entry} t={t} /></TableCell>
+                    <TableCell><span className="cluster-audit-text">{clusterAuditAction(entry, t)}</span></TableCell>
+                    <TableCell><span className="cluster-audit-text">{clusterAuditActor(entry, t)}</span></TableCell>
+                    <TableCell>{clusterAuditStatusTag(entry, t)}</TableCell>
+                    <TableCell><span className="cluster-audit-message">{clusterAuditMessage(entry, t)}</span></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {auditEntries.length > 10 && (
+              <div className="flex justify-end gap-2 py-2">
+                <Button size="sm" variant="outline" disabled={auditPage <= 0} onClick={() => setAuditPage((p) => p - 1)}>{t('common.prev', { defaultValue: 'Prev' })}</Button>
+                <span className="text-sm text-muted-foreground">{auditPage + 1}/{Math.ceil(auditEntries.length / 10)}</span>
+                <Button size="sm" variant="outline" disabled={auditPage >= Math.ceil(auditEntries.length / 10) - 1} onClick={() => setAuditPage((p) => p + 1)}>{t('common.next', { defaultValue: 'Next' })}</Button>
+              </div>
+            )}
           </div>
           <div className="mobile-card-list cluster-audit-cards">
             {auditEntries.map((entry) => (
@@ -1191,14 +1213,33 @@ export default function ClusterPage() {
             ))}
           </div>
         </Card>
-      </Spin>
+      </div>
+
+      <Dialog open={Boolean(revokeConfirmID)} onOpenChange={(open) => { if (!open) setRevokeConfirmID(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('cluster.revokeConfirmTitle')}</DialogTitle>
+            <DialogDescription>{t('cluster.revokeConfirmContent')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRevokeConfirmID(null)}>{t('common.cancel')}</Button>
+            <Button
+              variant="destructive"
+              loading={Boolean(revokingTokenID)}
+              onClick={() => {
+                if (revokeConfirmID) {
+                  revokeTokenMutation.mutate(revokeConfirmID);
+                  setRevokeConfirmID(null);
+                }
+              }}
+            >
+              {t('common.confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
   );
-}
-
-function clearDeploySecrets(form: ReturnType<typeof Form.useForm<ClusterDeployForm>>[0]) {
-  form.setFieldValue('password', '');
-  form.setFieldValue('privateKey', '');
 }
 
 function clusterModeLabel(mode: string | undefined, fallback: string | undefined, t: Translate) {
@@ -1234,25 +1275,25 @@ function consensusLabel(provider: string | undefined, t: Translate) {
 
 function roleTag(role: string, t: Translate) {
   if (role === 'monitor') {
-    return <Tag color="arcoblue">{t('cluster.roleMonitor')}</Tag>;
+    return <Badge variant="default">{t('cluster.roleMonitor')}</Badge>;
   }
   if (role === 'waf') {
-    return <Tag color="green">{t('cluster.roleWaf')}</Tag>;
+    return <Badge variant="success">{t('cluster.roleWaf')}</Badge>;
   }
-  return <Tag color="gray">{role ? t('cluster.roleUnknown', { role }) : t('common.unknown')}</Tag>;
+  return <Badge variant="secondary">{role ? t('cluster.roleUnknown', { role }) : t('common.unknown')}</Badge>;
 }
 
 function runtimeStateTag(item: ClusterNodeRegistration, t: Translate) {
   const state = item.runtime?.state || 'unknown';
   switch (state) {
     case 'online':
-      return <Tag color="green">{item.runtime?.local ? t('cluster.nodeStateLocal') : t('cluster.nodeStateOnline')}</Tag>;
+      return <Badge variant="success">{item.runtime?.local ? t('cluster.nodeStateLocal') : t('cluster.nodeStateOnline')}</Badge>;
     case 'stale':
-      return <Tag color="orangered">{t('cluster.nodeStateStale')}</Tag>;
+      return <Badge variant="warning">{t('cluster.nodeStateStale')}</Badge>;
     case 'unknown':
-      return <Tag color="gray">{t('cluster.nodeStateUnknown')}</Tag>;
+      return <Badge variant="secondary">{t('cluster.nodeStateUnknown')}</Badge>;
     default:
-      return <Tag color="gray">{state}</Tag>;
+      return <Badge variant="secondary">{state}</Badge>;
   }
 }
 
@@ -1441,34 +1482,41 @@ function DeploymentTaskPanel({
           <span>{t('cluster.deployTasksEmptyHint')}</span>
         </div>
       )}
-      <div className="table-scroll cluster-deploy-task-table">
-        <Table
-          rowKey="id"
-          loading={isFetchingDeployTasks && !deployTasks.length}
-          pagination={false}
-          data={deployTasks}
-          columns={[
-            { title: t('cluster.deployTaskID'), dataIndex: 'id', render: (value: string) => <code>{value}</code> },
-            { title: t('cluster.deployHost'), render: (_: unknown, item: ClusterDeploymentTask) => `${item.user}@${item.host}:${item.port}` },
-            { title: t('cluster.deployAction'), dataIndex: 'action', render: (value: string) => deployActionLabel(value, t) },
-            { title: t('cluster.deployTaskStatus'), dataIndex: 'status', render: (value: string) => deployTaskStatusTag(value, t) },
-            { title: t('cluster.deployTaskUpdated'), dataIndex: 'updated_at', render: formatTimestamp },
-            {
-              title: t('common.actions'),
-              render: (_: unknown, item: ClusterDeploymentTask) => (
-                <Button size="mini" onClick={() => setActiveDeployTaskId(item.id)}>{t('cluster.deployTaskView')}</Button>
-              ),
-            },
-          ]}
-          scroll={{ x: 840 }}
-        />
+      <div className="table-scroll cluster-deploy-task-table relative">
+        {isFetchingDeployTasks && !deployTasks.length && <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/40"><Spinner /></div>}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t('cluster.deployTaskID')}</TableHead>
+              <TableHead>{t('cluster.deployHost')}</TableHead>
+              <TableHead>{t('cluster.deployAction')}</TableHead>
+              <TableHead>{t('cluster.deployTaskStatus')}</TableHead>
+              <TableHead>{t('cluster.deployTaskUpdated')}</TableHead>
+              <TableHead>{t('common.actions')}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {deployTasks.map((item) => (
+              <TableRow key={item.id}>
+                <TableCell><code>{item.id}</code></TableCell>
+                <TableCell>{item.user}@{item.host}:{item.port}</TableCell>
+                <TableCell>{deployActionLabel(item.action, t)}</TableCell>
+                <TableCell>{deployTaskStatusTag(item.status, t)}</TableCell>
+                <TableCell>{formatTimestamp(item.updated_at)}</TableCell>
+                <TableCell>
+                  <Button size="sm" variant="outline" onClick={() => setActiveDeployTaskId(item.id)}>{t('cluster.deployTaskView')}</Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </div>
       <div className="mobile-card-list cluster-deploy-task-cards">
         {deployTasks.map((task) => (
           <DeploymentTaskCard key={task.id} task={task} setActiveDeployTaskId={setActiveDeployTaskId} t={t} />
         ))}
       </div>
-      <Button size="small" loading={isFetchingDeployTasks} onClick={() => void refetchDeployTasks()}>{t('cluster.deployTaskRefresh')}</Button>
+      <Button size="sm" loading={isFetchingDeployTasks} onClick={() => void refetchDeployTasks()}>{t('cluster.deployTaskRefresh')}</Button>
     </div>
   );
 }
@@ -1486,7 +1534,7 @@ function DeploymentTaskCard({ task, setActiveDeployTaskId, t }: { task: ClusterD
         <div><dt>{t('cluster.deployAction')}</dt><dd>{deployActionLabel(task.action, t)}</dd></div>
         <div><dt>{t('cluster.deployTaskUpdated')}</dt><dd>{formatTimestamp(task.updated_at)}</dd></div>
       </dl>
-      <Button size="small" onClick={() => setActiveDeployTaskId(task.id)}>{t('cluster.deployTaskView')}</Button>
+      <Button size="sm" onClick={() => setActiveDeployTaskId(task.id)}>{t('cluster.deployTaskView')}</Button>
     </article>
   );
 }
@@ -1513,22 +1561,21 @@ function AnsiblePackageViewer({
           <span>{t('cluster.deployWizardPackageReadyHint')}</span>
         </div>
         <div className="cluster-ansible-package-actions">
-          <Button icon={<Download size={15} />} disabled={!activeFile} onClick={() => downloadTextFile(activeFile, content)}>
-            {t('cluster.deployWizardDownloadFile')}
-          </Button>
-          <Button icon={<Download size={15} />} onClick={() => downloadAnsiblePackage(pkg)}>
-            {t('cluster.deployWizardDownloadPackage')}
-          </Button>
+          <Button variant="outline" disabled={!activeFile} onClick={() => downloadTextFile(activeFile, content)}><Download size={15} />{t('cluster.deployWizardDownloadFile')}</Button>
+          <Button variant="outline" onClick={() => downloadAnsiblePackage(pkg)}><Download size={15} />{t('cluster.deployWizardDownloadPackage')}</Button>
         </div>
       </div>
       <div className="cluster-ansible-file-picker">
-        <Select value={activeFile} onChange={(value) => setSelectedFile(String(value))}>
-          {files.map((file) => (
-            <Select.Option key={file} value={file}>{file}</Select.Option>
-          ))}
+        <Select value={activeFile} onValueChange={(value) => setSelectedFile(value)}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {files.map((file) => (
+              <SelectItem key={file} value={file}>{file}</SelectItem>
+            ))}
+          </SelectContent>
         </Select>
-        <Button icon={<Copy size={15} />} disabled={!content} onClick={() => void copyText(content, t('cluster.copied'), t('cluster.copyFailed'))}>
-          {t('common.copy')}
+        <Button variant="outline" disabled={!content} onClick={() => void copyText(content, t('cluster.copied'), t('cluster.copyFailed'))}>
+          <Copy size={15} />{t('common.copy')}
         </Button>
       </div>
       <pre className="cluster-ansible-preview">{content || t('cluster.deployWizardPackageEmpty')}</pre>
@@ -1539,7 +1586,7 @@ function AnsiblePackageViewer({
 function ClusterAuditSourceCell({ entry, t }: { entry: ClusterAuditEntry; t: Translate }) {
   return (
     <span className="cluster-audit-source">
-      <Tag color={clusterAuditSourceColor(entry.source)}>{clusterAuditSourceLabel(entry.source, t)}</Tag>
+      <Badge variant={clusterAuditSourceVariant(entry.source)}>{clusterAuditSourceLabel(entry.source, t)}</Badge>
       <span className="cluster-audit-type">{clusterAuditEventTypeLabel(entry.event_type, t)}</span>
     </span>
   );
@@ -1684,21 +1731,21 @@ function clusterAuditStatusTag(entry: ClusterAuditEntry, t: Translate) {
       return deployTaskStatusTag(status.toLowerCase(), t);
     case 'ok':
     case 'success':
-      return <Tag color="green">{t('cluster.auditStatusOK')}</Tag>;
+      return <Badge variant="success">{t('cluster.auditStatusOK')}</Badge>;
     case 'error':
     case 'rejected':
-      return <Tag color="red">{t('cluster.auditStatusFailed')}</Tag>;
+      return <Badge variant="destructive">{t('cluster.auditStatusFailed')}</Badge>;
     default:
       break;
   }
   if (typeof entry.status_code === 'number' && entry.status_code > 0) {
     return httpStatusTag(entry.status_code);
   }
-  return status ? <Tag color="gray">{status}</Tag> : <Tag color="gray">-</Tag>;
+  return status ? <Badge variant="secondary">{status}</Badge> : <Badge variant="secondary">-</Badge>;
 }
 
 function httpStatusTag(status: number) {
-  return <Tag color={status >= 400 ? 'red' : 'green'}>{status}</Tag>;
+  return <Badge variant={status >= 400 ? 'destructive' : 'success'}>{status}</Badge>;
 }
 
 function clusterAuditSourceLabel(source: string, t: Translate) {
@@ -1719,14 +1766,14 @@ function clusterAuditSourceLabel(source: string, t: Translate) {
   }
 }
 
-function clusterAuditSourceColor(source: string) {
+function clusterAuditSourceVariant(source: string): 'success' | 'default' | 'secondary' {
   if (isDeployAuditSource(source)) {
-    return 'green';
+    return 'success';
   }
   if (source === 'cluster_join' || source === 'node_join') {
-    return 'purple';
+    return 'default';
   }
-  return 'arcoblue';
+  return 'default';
 }
 
 function clusterAuditEventTypeLabel(eventType: string, t: Translate) {
@@ -1784,17 +1831,17 @@ function compensationActionLabel(action: string, t: Translate) {
 function deployTaskStatusTag(status: string, t: Translate) {
   switch (status) {
     case 'pending':
-      return <Tag color="gray">{t('cluster.deployTaskPending')}</Tag>;
+      return <Badge variant="secondary">{t('cluster.deployTaskPending')}</Badge>;
     case 'running':
-      return <Tag color="arcoblue">{t('cluster.deployTaskRunning')}</Tag>;
+      return <Badge variant="default">{t('cluster.deployTaskRunning')}</Badge>;
     case 'succeeded':
-      return <Tag color="green">{t('cluster.deployTaskSucceeded')}</Tag>;
+      return <Badge variant="success">{t('cluster.deployTaskSucceeded')}</Badge>;
     case 'failed':
-      return <Tag color="red">{t('cluster.deployTaskFailed')}</Tag>;
+      return <Badge variant="destructive">{t('cluster.deployTaskFailed')}</Badge>;
     case 'cancelled':
-      return <Tag color="orangered">{t('cluster.deployTaskCancelled')}</Tag>;
+      return <Badge variant="warning">{t('cluster.deployTaskCancelled')}</Badge>;
     default:
-      return <Tag color="gray">{status || t('common.unknown')}</Tag>;
+      return <Badge variant="secondary">{status || t('common.unknown')}</Badge>;
   }
 }
 
@@ -1860,7 +1907,7 @@ function JoinCommandBlock({ token, fields, t }: { token: ClusterJoinToken; field
       {joinCommand ? (
         <>
           <code>{joinCommand}</code>
-          <Button icon={<Copy size={15} />} onClick={() => void copyText(joinCommand, t('cluster.copied'), t('cluster.copyFailed'))}>
+          <Button variant="outline" onClick={() => void copyText(joinCommand, t('cluster.copied'), t('cluster.copyFailed'))}><Copy size={15} />
             {t('cluster.copyJoinCommand')}
           </Button>
         </>
@@ -1965,9 +2012,9 @@ function displayTaskText(value: string) {
 async function copyText(value: string, successMessage: string, failureMessage: string) {
   try {
     await navigator.clipboard.writeText(value);
-    ArcoMessage.success(successMessage);
+    toast.success(successMessage);
   } catch {
-    ArcoMessage.error(failureMessage);
+    toast.error(failureMessage);
   }
 }
 
