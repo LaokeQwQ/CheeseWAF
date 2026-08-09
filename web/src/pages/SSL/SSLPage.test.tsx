@@ -8,16 +8,15 @@ const apiMocks = vi.hoisted(() => ({
   updateSystemConfig: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return { ...actual, Message: messageMocks };
-});
+vi.mock('sonner', () => ({
+  toast: toastMocks,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -68,7 +67,7 @@ describe('SSLPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
     await waitFor(() => expect(apiMocks.updateSystemConfig).toHaveBeenCalled());
     expect(apiMocks.updateSystemConfig.mock.calls[0]?.[0].acme.account_email).toBe('security@example.com');
-    expect(messageMocks.success).toHaveBeenCalledWith('system.saved');
+    expect(toastMocks.success).toHaveBeenCalledWith('system.saved');
   });
 
   it('adds a DNS provider card to the ACME draft', async () => {

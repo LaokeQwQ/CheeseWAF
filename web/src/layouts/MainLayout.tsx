@@ -1,8 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Input, Menu, Message as ArcoMessage, Modal, Pagination, Select, Space, Tag, Tooltip } from '@arco-design/web-react';
-import '../styles/arco-components';
+import {
+  Badge,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  toast,
+} from '@/components/ui';
 import '../styles/console-layout-hardening.css';
 import {
   BrainCircuit,
@@ -33,6 +55,9 @@ import {
   UserCog,
   UserRound,
   SunMoon,
+  X,
+  ChevronLeft,
+  ChevronRight,
   type LucideIcon,
 } from 'lucide-react';
 import i18n from '../i18n';
@@ -87,6 +112,7 @@ const navGroups: NavGroup[] = [
 ];
 
 const allNavItems = navGroups.flatMap((group) => group.items);
+
 export default function MainLayout() {
   const { t } = useTranslation();
   const location = useLocation();
@@ -119,6 +145,7 @@ export default function MainLayout() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const [searchHighlight, setSearchHighlight] = useState(0);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const notificationShellRef = useRef<HTMLDivElement | null>(null);
   const notificationTriggerRef = useRef<HTMLSpanElement | null>(null);
   const searchBlurTimerRef = useRef<number | null>(null);
@@ -267,7 +294,7 @@ export default function MainLayout() {
       setNotificationPage(1);
       void refreshNotifications();
     },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+    onError: (error) => toast.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
   });
   const markAllReadMutation = useMutation({
     mutationFn: markAllNotificationsReadAPI,
@@ -275,7 +302,7 @@ export default function MainLayout() {
       setNotificationPage(1);
       void refreshNotifications();
     },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+    onError: (error) => toast.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
   });
   const clearNotificationsMutation = useMutation({
     mutationFn: clearNotifications,
@@ -283,7 +310,7 @@ export default function MainLayout() {
       setNotificationPage(1);
       void refreshNotifications();
     },
-    onError: (error) => ArcoMessage.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
+    onError: (error) => toast.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
   });
   const searchResults = useMemo(
     () => buildSearchResults(searchValue, recentLogItems, auditItems, userItems, t),
@@ -308,12 +335,16 @@ export default function MainLayout() {
   }
 
   function clearAllNotifications() {
-    Modal.confirm({
-      title: t('shell.clearNotificationsConfirmTitle'),
-      content: t('shell.clearNotificationsConfirmContent'),
-      okButtonProps: { status: 'danger' },
-      onOk: () => clearNotificationsMutation.mutateAsync(),
-    });
+    setClearConfirmOpen(true);
+  }
+
+  async function confirmClearNotifications() {
+    try {
+      await clearNotificationsMutation.mutateAsync();
+      setClearConfirmOpen(false);
+    } catch {
+      // Error already toasted via mutation onError.
+    }
   }
 
   function toggleNotificationPin(item: Notification) {
@@ -330,6 +361,12 @@ export default function MainLayout() {
       navigate('/login', { replace: true });
     }
   }
+
+  const sidebarToggleLabel = mobileNavOpen
+    ? t('shell.closeSidebar')
+    : sidebarCollapsed
+      ? t('shell.expandSidebar')
+      : t('shell.collapseSidebar');
 
   return (
     <div className={shellClassName}>
@@ -394,11 +431,14 @@ export default function MainLayout() {
               <span>{connectionDetail(connection.state, healthFailures, t)}</span>
             </div>
           </button>
-          <Tooltip content={versionTooltip(version, t)}>
-            <button className="sidebar-version" type="button" onClick={() => navigate('/updates')}>
-              <span>CheeseWAF</span>
-              <strong>{versionLabel(version, t)}</strong>
-            </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button className="sidebar-version" type="button" onClick={() => navigate('/updates')}>
+                <span>CheeseWAF</span>
+                <strong>{versionLabel(version, t)}</strong>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{versionTooltip(version, t)}</TooltipContent>
           </Tooltip>
         </div>
       </aside>
@@ -413,76 +453,105 @@ export default function MainLayout() {
 
       <div className="app-main">
         <header className="topbar">
-          <Space className="topbar-left" size={10}>
-            <Tooltip content={mobileNavOpen ? t('shell.closeSidebar') : sidebarCollapsed ? t('shell.expandSidebar') : t('shell.collapseSidebar')}>
-              <Button
-                className="icon-button"
-                icon={<MenuIcon size={18} />}
-                aria-expanded={mobileNavOpen}
-                aria-label={mobileNavOpen ? t('shell.closeSidebar') : sidebarCollapsed ? t('shell.expandSidebar') : t('shell.collapseSidebar')}
-                onClick={() => {
-                  if (window.matchMedia('(max-width: 1024px)').matches) {
-                    setMobileNavOpen((open) => !open);
-                    return;
-                  }
-                  setSidebarCollapsed(!sidebarCollapsed);
-                }}
-              />
+          <div className="topbar-left gap-2.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  className="icon-button"
+                  size="icon"
+                  variant="outline"
+                  aria-expanded={mobileNavOpen}
+                  aria-label={sidebarToggleLabel}
+                  onClick={() => {
+                    if (window.matchMedia('(max-width: 1024px)').matches) {
+                      setMobileNavOpen((open) => !open);
+                      return;
+                    }
+                    setSidebarCollapsed(!sidebarCollapsed);
+                  }}
+                >
+                  <MenuIcon size={18} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{sidebarToggleLabel}</TooltipContent>
             </Tooltip>
             <button className="topbar-mobile-brand" type="button" aria-label={t('common.home')} onClick={() => navigate('/')}>
               <BrandLogo />
             </button>
-            <Input
-              className="topbar-search"
-              prefix={<Search size={16} />}
-              placeholder={t('common.search')}
-              aria-label={t('common.search')}
-              aria-controls={searchOpen ? 'cheesewaf-search-results' : undefined}
-              aria-expanded={searchOpen}
-              allowClear
-              value={searchValue}
-              onChange={(value) => {
-                setSearchValue(value);
-                setSearchHighlight(0);
-                setSearchOpen(Boolean(String(value).trim()));
-              }}
-              onFocus={() => {
-                if (searchBlurTimerRef.current != null) {
-                  window.clearTimeout(searchBlurTimerRef.current);
-                  searchBlurTimerRef.current = null;
-                }
-                setSearchOpen(Boolean(searchValue.trim()));
-              }}
-              onBlur={() => {
-                if (searchBlurTimerRef.current != null) {
-                  window.clearTimeout(searchBlurTimerRef.current);
-                }
-                searchBlurTimerRef.current = window.setTimeout(() => {
-                  searchBlurTimerRef.current = null;
-                  setSearchOpen(false);
-                }, 120);
-              }}
-              onKeyDown={(event) => {
-                if (!searchOpen || searchResults.length === 0) {
-                  return;
-                }
-                if (event.key === 'ArrowDown') {
-                  event.preventDefault();
-                  setSearchHighlight((current) => (current + 1) % searchResults.length);
-                } else if (event.key === 'ArrowUp') {
-                  event.preventDefault();
-                  setSearchHighlight((current) => (current - 1 + searchResults.length) % searchResults.length);
-                }
-              }}
-              onPressEnter={() => {
-                const target = searchResults[searchHighlight] ?? searchResults[0];
-                if (target) {
-                  navigate(target.to);
-                  setSearchOpen(false);
-                  setSearchValue('');
-                }
-              }}
-            />
+            <div className="topbar-search relative">
+              <Search
+                size={16}
+                className="pointer-events-none absolute left-3 top-1/2 z-[1] -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <Input
+                className="pl-9 pr-8"
+                placeholder={t('common.search')}
+                aria-label={t('common.search')}
+                aria-controls={searchOpen ? 'cheesewaf-search-results' : undefined}
+                aria-expanded={searchOpen}
+                value={searchValue}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setSearchValue(value);
+                  setSearchHighlight(0);
+                  setSearchOpen(Boolean(String(value).trim()));
+                }}
+                onFocus={() => {
+                  if (searchBlurTimerRef.current != null) {
+                    window.clearTimeout(searchBlurTimerRef.current);
+                    searchBlurTimerRef.current = null;
+                  }
+                  setSearchOpen(Boolean(searchValue.trim()));
+                }}
+                onBlur={() => {
+                  if (searchBlurTimerRef.current != null) {
+                    window.clearTimeout(searchBlurTimerRef.current);
+                  }
+                  searchBlurTimerRef.current = window.setTimeout(() => {
+                    searchBlurTimerRef.current = null;
+                    setSearchOpen(false);
+                  }, 120);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    const target = searchResults[searchHighlight] ?? searchResults[0];
+                    if (target) {
+                      event.preventDefault();
+                      navigate(target.to);
+                      setSearchOpen(false);
+                      setSearchValue('');
+                    }
+                    return;
+                  }
+                  if (!searchOpen || searchResults.length === 0) {
+                    return;
+                  }
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setSearchHighlight((current) => (current + 1) % searchResults.length);
+                  } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setSearchHighlight((current) => (current - 1 + searchResults.length) % searchResults.length);
+                  }
+                }}
+              />
+              {searchValue ? (
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 z-[1] inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+                  aria-label={t('common.reset')}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setSearchValue('');
+                    setSearchHighlight(0);
+                    setSearchOpen(false);
+                  }}
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
+            </div>
             {searchOpen && (
               <div className="topbar-search-panel" role="listbox" id="cheesewaf-search-results">
                 {searchResults.length === 0 ? (
@@ -509,7 +578,7 @@ export default function MainLayout() {
                 ))}
               </div>
             )}
-          </Space>
+          </div>
 
           <div className="topbar-right">
             <div className="topbar-actions">
@@ -517,7 +586,8 @@ export default function MainLayout() {
                 <span className="notification-trigger" ref={notificationTriggerRef}>
                   <Button
                     className={notificationsOpen ? 'icon-button notification-button notification-button-active' : 'icon-button notification-button'}
-                    icon={<Bell size={18} />}
+                    size="icon"
+                    variant="outline"
                     aria-label={t('shell.notifications')}
                     aria-expanded={notificationsOpen}
                     aria-haspopup="dialog"
@@ -526,7 +596,9 @@ export default function MainLayout() {
                       setSearchOpen(false);
                       setNotificationsOpen((open) => !open);
                     }}
-                  />
+                  >
+                    <Bell size={18} />
+                  </Button>
                   {unreadNotifications > 0 && <span className="notification-dot">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span>}
                 </span>
                 {notificationsOpen && (
@@ -563,56 +635,52 @@ export default function MainLayout() {
                   />
                 )}
               </div>
-              <Select
-                aria-label={t('system.theme')}
-                className="topbar-select"
-                value={theme}
-                prefix={<SunMoon size={15} />}
-                onChange={(value) => setTheme(value as ThemeName)}
-              >
-                {themeOptions.map((option) => (
-                  <Select.Option key={option.value} value={option.value}>
-                    {t(option.labelKey)}
-                  </Select.Option>
-                ))}
+              <Select value={theme} onValueChange={(value) => setTheme(value as ThemeName)}>
+                <SelectTrigger className="topbar-select" aria-label={t('system.theme')}>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <SunMoon size={15} className="shrink-0" />
+                    <SelectValue />
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  {themeOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {t(option.labelKey)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
-              <Select
-                aria-label={t('system.language')}
-                className="language-select"
-                value={language}
-                prefix={<Languages size={15} />}
-                onChange={(value) => setLanguage(value as Language)}
-              >
-                <Select.Option value="zh-CN">中文</Select.Option>
-                <Select.Option value="en-US">English</Select.Option>
+              <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
+                <SelectTrigger className="language-select" aria-label={t('system.language')}>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Languages size={15} className="shrink-0" />
+                    <SelectValue />
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="zh-CN">中文</SelectItem>
+                  <SelectItem value="en-US">English</SelectItem>
+                </SelectContent>
               </Select>
             </div>
-            <Dropdown
-              droplist={
-                <Menu
-                  onClickMenuItem={(key) => {
-                    if (key === 'users') {
-                      navigate('/users');
-                    }
-                    if (key === 'logout') {
-                      handleLogout();
-                    }
-                  }}
-                >
-                  <Menu.Item key="users">
-                    <span className="menu-inline"><UserCog size={14} /> {t('shell.admin')}</span>
-                  </Menu.Item>
-                  <Menu.Item key="logout">
-                    <span className="menu-inline"><LogOut size={14} /> {t('common.logout')}</span>
-                  </Menu.Item>
-                </Menu>
-              }
-            >
-              <button className="account-button" type="button">
-                <UserRound size={16} />
-                <span>{account.username}</span>
-              </button>
-            </Dropdown>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="account-button" type="button">
+                  <UserRound size={16} />
+                  <span>{account.username}</span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => navigate('/users')}>
+                  <UserCog size={14} />
+                  {t('shell.admin')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void handleLogout()}>
+                  <LogOut size={14} />
+                  {t('common.logout')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
 
@@ -621,6 +689,27 @@ export default function MainLayout() {
         </main>
         {showGlobalAssistant && <AIAssistantEntry />}
       </div>
+
+      <Dialog open={clearConfirmOpen} onOpenChange={setClearConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('shell.clearNotificationsConfirmTitle')}</DialogTitle>
+            <DialogDescription>{t('shell.clearNotificationsConfirmContent')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClearConfirmOpen(false)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              loading={clearNotificationsMutation.isPending}
+              onClick={() => void confirmClearNotifications()}
+            >
+              {t('common.confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -677,6 +766,7 @@ export function NotificationPanel({
   ];
   const keyedItems = withStableNotificationKeys(items);
   const anyBusy = busy || markAllBusy || clearBusy;
+  const pageCount = Math.max(1, Math.ceil(filteredTotal / pageSize));
   return (
     <section
       id="cheesewaf-notification-panel"
@@ -687,9 +777,9 @@ export function NotificationPanel({
     >
       <header>
         <strong>{t('shell.notifications')}</strong>
-        <Tag color={unread > 0 ? 'orange' : 'green'}>
+        <Badge variant={unread > 0 ? 'warning' : 'success'}>
           {total ? t('shell.notificationPanelSummary', { unread, total }) : t('common.healthy')}
-        </Tag>
+        </Badge>
       </header>
       {total > 0 && (
         <div className="notification-filter-tabs" role="tablist" aria-label={t('shell.notifications')}>
@@ -709,13 +799,20 @@ export function NotificationPanel({
       )}
       {total > 0 && (
         <div className="notification-actions">
-          <Button size="mini" loading={markAllBusy} disabled={unread === 0 || anyBusy} onClick={onMarkAllRead}>{t('shell.markAllRead')}</Button>
-          <Button size="mini" status="warning" loading={clearBusy} disabled={total === 0 || anyBusy} onClick={onClearAll}>{t('shell.clearAllNotifications')}</Button>
+          <Button size="sm" loading={markAllBusy} disabled={unread === 0 || anyBusy} onClick={onMarkAllRead}>
+            {t('shell.markAllRead')}
+          </Button>
+          <Button size="sm" variant="outline" loading={clearBusy} disabled={total === 0 || anyBusy} onClick={onClearAll}>
+            {t('shell.clearAllNotifications')}
+          </Button>
         </div>
       )}
       <div className="notification-list">
         {error ? (
-          <div className="notification-empty"><span>{t('shell.notificationLoadFailed')}</span><Button size="mini" onClick={onRetry}>{t('common.retry')}</Button></div>
+          <div className="notification-empty">
+            <span>{t('shell.notificationLoadFailed')}</span>
+            <Button size="sm" onClick={onRetry}>{t('common.retry')}</Button>
+          </div>
         ) : loading && items.length === 0 ? (
           <div className="notification-empty">{t('common.loading')}</div>
         ) : items.length === 0 ? (
@@ -729,7 +826,7 @@ export function NotificationPanel({
               <span className="notification-item-title">
                 {!item.read && <i aria-hidden="true" />}
                 {item.title}
-                {item.pinned && <Tag size="small" color="arcoblue">{t('shell.pinnedNotification')}</Tag>}
+                {item.pinned && <Badge variant="default" className="ml-1">{t('shell.pinnedNotification')}</Badge>}
               </span>
               <strong>{item.message}</strong>
               <em><Clock3 size={12} /> {formatRelativeTime(item.created_at, i18n.resolvedLanguage || undefined)}</em>
@@ -760,7 +857,29 @@ export function NotificationPanel({
         ))}
       </div>
       {filteredTotal > pageSize && (
-        <Pagination simple size="mini" current={page} pageSize={pageSize} total={filteredTotal} onChange={onPageChange} />
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page <= 1}
+            aria-label={t('common.back')}
+            onClick={() => onPageChange(page - 1)}
+          >
+            <ChevronLeft size={14} />
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            {page} / {pageCount}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page >= pageCount}
+            aria-label={t('common.next')}
+            onClick={() => onPageChange(page + 1)}
+          >
+            <ChevronRight size={14} />
+          </Button>
+        </div>
       )}
     </section>
   );

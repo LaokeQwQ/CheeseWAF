@@ -54,16 +54,6 @@
   line-height: 1.35;
 }
 
-.ip-manage-page .ip-access-scope-fields .arco-select,
-.ip-manage-page .ip-access-scope-fields .arco-input,
-.ip-manage-page .provider-headers-field .arco-textarea-wrapper {
-  width: 100%;
-}
-
-.ip-manage-page .ip-access-table .arco-table-td {
-  vertical-align: top;
-}
-
 .ip-manage-page .ip-access-table-desktop {
   display: block;
 }
@@ -83,26 +73,13 @@
   overflow: visible;
 }
 
-.ip-manage-page .provider-headers-field textarea,
-.ip-manage-page .provider-headers-field .arco-textarea {
+.ip-manage-page .provider-headers-field textarea{
   font-family: var(--mono-font, var(--font-mono, monospace));
   min-height: 72px;
   padding: 10px 12px;
   background: var(--surface);
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   border-radius: 8px;
-}
-
-.ip-manage-page .provider-headers-field .arco-textarea-wrapper {
-  background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
-  border-radius: 8px;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--highlight-color) 48%, transparent);
-}
-
-.ip-manage-page .provider-headers-field .arco-textarea-wrapper:hover,
-.ip-manage-page .provider-headers-field .arco-textarea-wrapper:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
 }
 
 @media (max-width: 1180px) {
@@ -141,62 +118,6 @@
   }
 }
 
-/* Migrated from global.css: IP management page-scoped rules. */
-.ip-manage-page .ip-row-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
-.ip-manage-page .ip-row-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled),
-.ip-manage-page .ip-entry-card-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
-.ip-manage-page .ip-entry-card-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled) {
-  color: var(--text);
-  background: color-mix(in srgb, var(--surface) 92%, var(--surface-soft));
-  border-color: color-mix(in srgb, var(--border) 86%, var(--text-muted));
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--highlight-color) 52%, transparent)
-    inset;
-}
-
-.ip-manage-page .ip-row-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
-.ip-manage-page .ip-row-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover,
-.ip-manage-page .ip-entry-card-actions .arco-btn:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
-.ip-manage-page .ip-entry-card-actions .arco-button:not(.arco-button-primary):not(.arco-button-disabled):not(:disabled):hover {
-  color: var(--accent-strong);
-  background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-}
-
-.ip-manage-page .ip-row-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled),
-.ip-manage-page .ip-entry-card-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled) {
-  color: var(--accent-danger);
-  background: color-mix(in srgb, var(--accent-danger) 8%, var(--surface));
-  border-color: color-mix(in srgb, var(--accent-danger) 18%, var(--border));
-}
-
-.ip-manage-page .ip-row-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover,
-.ip-manage-page .ip-entry-card-actions .arco-btn-status-danger:not(.arco-btn-primary):not(.arco-btn-disabled):not(:disabled):hover {
-  color: var(--accent-danger);
-  background: color-mix(in srgb, var(--accent-danger) 13%, var(--surface));
-  border-color: color-mix(in srgb, var(--accent-danger) 32%, var(--border));
-}
-
-.ip-manage-page .ip-entry-card-actions .arco-btn-size-mini {
-  height: 32px !important;
-  min-height: 32px !important;
-  padding-inline: 12px !important;
-  border-radius: 8px;
-}
-
-.ip-manage-page .ip-entries-table .arco-table {
-  min-width: 1020px;
-}
-
-.ip-manage-page .ip-entries-table .arco-table-container {
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-}
-
-.ip-manage-page .ip-entries-table .arco-table-th,
-.ip-manage-page .ip-entries-table .arco-table-td {
-  white-space: nowrap;
-}
-
 .ip-manage-page .ip-entry-card-list {
   display: none;
 }
@@ -230,12 +151,6 @@
   border-bottom: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
 }
 
-.ip-manage-page .provider-card-head > .arco-switch {
-  width: auto;
-  justify-self: start;
-  align-self: center;
-}
-
 .ip-manage-page .provider-card-head > div:not(.provider-actions) {
   min-width: 0;
   display: grid;
@@ -260,13 +175,6 @@
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 6px;
-}
-
-.ip-manage-page .provider-actions .arco-btn {
-  width: auto;
-  min-width: 72px;
-  flex: 0 0 auto;
-  white-space: nowrap;
 }
 
 .ip-manage-page .provider-field-grid {
@@ -297,12 +205,6 @@
 .ip-manage-page .ip-lookup-grid label > span {
   color: var(--text-muted);
   font-size: 12px;
-}
-
-.ip-manage-page .provider-field-grid .arco-input-number,
-.ip-manage-page .ip-import-grid .arco-input-number,
-.ip-manage-page .ip-lookup-grid .arco-input-number {
-  width: 100%;
 }
 
 .ip-manage-page .intel-status {
@@ -379,33 +281,6 @@
 .ip-manage-page .intel-status-compact {
   margin-top: 10px;
 }
-
-.ip-manage-page .provider-card .arco-input-inner-wrapper,
-.ip-manage-page .provider-card .arco-textarea-wrapper,
-.ip-manage-page .provider-card .arco-select-view,
-.ip-manage-page .provider-card .arco-input-number,
-.ip-manage-page .provider-card label > .arco-input {
-  min-height: 36px;
-  background: var(--surface);
-  border-color: color-mix(in srgb, var(--border) 86%, var(--text-muted));
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--highlight-color) 48%, transparent);
-}
-
-.ip-manage-page .provider-card .arco-input-inner-wrapper:hover,
-.ip-manage-page .provider-card .arco-textarea-wrapper:hover,
-.ip-manage-page .provider-card .arco-select-view:hover,
-.ip-manage-page .provider-card label > .arco-input:hover {
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
-}
-
-.ip-manage-page .ip-import-grid .ioc-field .arco-textarea-wrapper,
-.ip-manage-page .ip-import-grid .ioc-field .arco-input-inner-wrapper {
-  min-height: 220px;
-  align-items: stretch;
-  background: var(--surface) !important;
-}
-
-.ip-manage-page .ip-import-grid .ioc-field .arco-textarea,
 .ip-manage-page .ip-import-grid .ioc-field textarea {
   background: var(--surface) !important;
 }
@@ -434,8 +309,7 @@
   min-height: 430px;
 }
 
-.ip-manage-page /* Ensure Arco Select dropdowns render above containers and are clickable */
-.ip-access-draft-grid,
+.ip-manage-page .ip-access-draft-grid,
 .ip-manage-page .ip-import-grid,
 .ip-manage-page .ip-lookup-grid,
 .ip-manage-page .provider-field-grid {
@@ -527,13 +401,6 @@
   justify-content: stretch;
 }
 
-.ip-manage-page .ip-entry-card-actions .arco-btn,
-.ip-manage-page .ip-entry-card-actions .arco-button {
-  flex: 1 1 104px;
-  justify-content: center;
-  white-space: nowrap;
-}
-
 .ip-manage-page .ip-score-button {
   display: inline-flex;
   align-items: center;
@@ -561,10 +428,6 @@
   transform: translateY(1px);
 }
 
-.ip-manage-page .ip-score-button .arco-tag {
-  margin: 0;
-}
-
 .ip-manage-page .ip-score-button span {
   font-size: 12px;
 }
@@ -573,10 +436,6 @@
   width: 220px;
   display: grid;
   gap: 10px;
-}
-
-.ip-manage-page .ip-score-popover .arco-input-number {
-  width: 100%;
 }
 
 .ip-manage-page .ip-score-popover > div:last-child {
@@ -627,22 +486,6 @@
   min-width: 0;
 }
 
-.ip-manage-page .ip-access-site-field .arco-select-view-disabled,
-.ip-manage-page .ip-access-path-field .arco-input-disabled,
-.ip-manage-page .ip-access-path-field .arco-input-inner-wrapper-disabled {
-  cursor: not-allowed;
-  color: color-mix(in srgb, var(--text-muted) 72%, transparent) !important;
-  border-color: color-mix(in srgb, var(--border-subtle) 74%, transparent) !important;
-  background:
-    repeating-linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--surface-soft) 76%, var(--surface)),
-      color-mix(in srgb, var(--surface-soft) 76%, var(--surface)) 8px,
-      color-mix(in srgb, var(--surface-soft) 56%, var(--app-bg)) 8px,
-      color-mix(in srgb, var(--surface-soft) 56%, var(--app-bg)) 16px
-    ) !important;
-}
-
 .ip-manage-page .ip-access-draft-actions {
   min-width: 0;
   display: flex;
@@ -662,10 +505,6 @@
 .ip-manage-page .ip-access-add-button {
   align-self: end;
   min-width: 112px;
-}
-
-.ip-manage-page .ip-access-table .arco-table {
-  min-width: 860px;
 }
 
 .ip-manage-page .ip-access-table-desktop {
@@ -752,21 +591,6 @@
 .ip-manage-page .tag-token-input:focus-within {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
-.ip-manage-page .tag-token-input .arco-input-inner-wrapper {
-  flex: 1 1 120px;
-  min-width: 96px;
-  height: 26px;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-
-.ip-manage-page .tag-token-input .arco-input {
-  height: 26px;
-  padding: 0 4px;
 }
 
 .ip-manage-page .tag-token-input-item {
@@ -913,16 +737,6 @@
     gap: 8px;
   }
 
-.ip-manage-page .ip-entry-card-actions .arco-btn:nth-child(3),
-.ip-manage-page .ip-entry-card-actions .arco-button:nth-child(3) {
-    grid-column: 1 / -1;
-  }
-
-.ip-manage-page .ip-entry-card-actions .arco-btn {
-    width: 100%;
-    justify-content: center;
-  }
-
 .ip-manage-page .provider-card-head,
 .ip-manage-page .provider-field-grid,
 .ip-manage-page .ip-lookup-grid {
@@ -936,11 +750,6 @@
 .ip-manage-page .provider-card-head {
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
-  }
-
-.ip-manage-page .provider-card-head > .arco-switch {
-    grid-column: 1;
-    grid-row: 1;
   }
 
 .ip-manage-page .provider-card-head > div:not(.provider-actions) {
@@ -974,12 +783,6 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-.ip-manage-page .provider-actions .arco-btn,
-.ip-manage-page .provider-actions .arco-button {
-    width: 100%;
-    justify-content: center;
-  }
-
 .ip-manage-page .ip-entries-table {
     display: none;
   }
@@ -997,10 +800,6 @@
 .ip-manage-page .ip-entry-card .ip-token-row {
     max-height: none;
   }
-
-.ip-manage-page .ip-entry-card-actions .arco-btn {
-    flex: 1 1 92px;
-  }
 }
 
 .ip-manage-page .provider-card {
@@ -1013,16 +812,6 @@
 .ip-manage-page .ip-manage-panel {
   padding: 18px;
   min-height: 0;
-}
-
-.ip-manage-page .ip-manage-panel .arco-tabs-content {
-  padding-top: 16px;
-}
-
-.ip-manage-page .ip-manage-panel .arco-tabs-header-title {
-  min-height: 38px;
-  padding: 0 14px;
-  border-radius: 8px 8px 0 0;
 }
 
 .ip-manage-page .provider-list {
@@ -1056,11 +845,6 @@
 
 .ip-manage-page .provider-actions {
   flex-wrap: nowrap;
-}
-
-.ip-manage-page .provider-actions .arco-btn,
-.ip-manage-page .provider-actions .arco-button {
-  min-width: 66px;
 }
 
 .ip-manage-page .provider-field-grid {
@@ -1145,13 +929,6 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
     width: 100%;
     gap: 8px;
-  }
-
-.ip-manage-page .provider-actions .arco-btn,
-.ip-manage-page .provider-actions .arco-button {
-    width: 100%;
-    min-width: 0;
-    min-height: 32px;
   }
 }
 
@@ -1275,16 +1052,6 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
     width: 100%;
   }
-
-.ip-manage-page .provider-actions .arco-btn,
-.ip-manage-page .provider-actions .arco-button {
-    width: 100%;
-    justify-content: center;
-  }
-}
-
-.ip-manage-page .ip-manage-panel .arco-tabs-header-title {
-  border-radius: 7px 7px 0 0;
 }
 
 .ip-manage-page .provider-card-head,
@@ -1301,10 +1068,6 @@
   gap: 8px;
 }
 
-.ip-manage-page .provider-actions .arco-btn {
-  min-width: 68px;
-}
-
 .ip-manage-page .tag-token-input {
   min-height: 36px;
   align-items: center;
@@ -1319,21 +1082,12 @@
 .ip-manage-page .provider-actions {
     justify-content: stretch;
   }
-
-.ip-manage-page .provider-actions .arco-btn {
-    flex: 1 1 auto;
-  }
 }
 
 @media (max-width: 560px) {
 .ip-manage-page .provider-actions {
     display: grid;
     grid-template-columns: 1fr;
-  }
-
-.ip-manage-page .provider-actions .arco-btn {
-    width: 100%;
-    justify-content: center;
   }
 }
 
@@ -1345,8 +1099,6 @@
 .ip-manage-page .ip-import-grid {
   grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
 }
-
-.ip-manage-page .ip-import-grid .ioc-field .arco-textarea,
 .ip-manage-page .ip-import-grid .ioc-field textarea {
   min-height: 300px !important;
 }
@@ -1399,13 +1151,6 @@
   gap: 8px;
 }
 
-.ip-manage-page .ip-header-actions .arco-btn,
-.ip-manage-page .ip-header-actions .arco-button {
-  min-width: 74px;
-  width: auto;
-  justify-content: center;
-}
-
 @media (max-width: 640px) {
 .ip-manage-page .page-header {
     display: grid !important;
@@ -1418,22 +1163,6 @@
     grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
     gap: 8px;
     width: 100%;
-  }
-
-.ip-manage-page .ip-header-actions .arco-btn,
-.ip-manage-page .ip-header-actions .arco-button {
-    width: 100% !important;
-    min-width: 0;
-    height: 34px;
-    padding-inline: 8px;
-    border-radius: 8px;
-    font-size: 13px;
-  }
-
-.ip-manage-page .ip-header-actions .arco-btn svg,
-.ip-manage-page .ip-header-actions .arco-button svg {
-    width: 14px;
-    height: 14px;
   }
 
 .ip-manage-page .ip-intel-workspace,
@@ -1500,21 +1229,11 @@
     grid-template-columns: 1fr 1fr;
     gap: 8px;
   }
-
-.ip-manage-page .ip-access-rule-card-actions .arco-btn {
-    width: 100%;
-    justify-content: center;
-  }
 }
 
 @media (max-width: 380px) {
 .ip-manage-page .ip-header-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-  }
-
-.ip-manage-page .ip-header-actions .arco-btn-primary,
-.ip-manage-page .ip-header-actions .arco-button-primary {
-    grid-column: 1 / -1;
   }
 }
 
@@ -1533,11 +1252,6 @@
   display: grid;
   grid-template-columns: minmax(96px, 0.82fr) minmax(116px, 1fr);
   gap: 8px;
-}
-
-.ip-manage-page .duration-input-group .arco-select,
-.ip-manage-page .duration-input-group .arco-input-number {
-  min-width: 0;
 }
 
 @media (max-width: 620px) {

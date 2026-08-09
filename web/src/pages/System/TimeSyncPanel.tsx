@@ -1,12 +1,16 @@
 import {
+  Badge,
   Button,
   Input,
-  InputNumber,
-  Message as ArcoMessage,
   Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Switch,
-  Tag,
-} from '@arco-design/web-react';
+  Textarea,
+  toast,
+} from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Clock3, RefreshCw, RotateCw } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
@@ -49,17 +53,17 @@ export default function TimeSyncPanel({ value, onChange }: TimeSyncPanelProps) {
 
   const acceptOperation = (status: TimeSyncStatus, message: string) => {
     queryClient.setQueryData(timeSyncQueryKey, status);
-    ArcoMessage.success(message);
+    toast.success(message);
   };
   const reselectMutation = useMutation({
     mutationFn: reselectTimeSync,
     onSuccess: (status) => acceptOperation(status, t('system.timeSyncReselectSuccess')),
-    onError: (error) => ArcoMessage.error(timeSyncErrorMessage(error, t)),
+    onError: (error) => toast.error(timeSyncErrorMessage(error, t)),
   });
   const syncMutation = useMutation({
     mutationFn: syncTimeNow,
     onSuccess: (status) => acceptOperation(status, t('system.timeSyncNowSuccess')),
-    onError: (error) => ArcoMessage.error(timeSyncErrorMessage(error, t)),
+    onError: (error) => toast.error(timeSyncErrorMessage(error, t)),
   });
 
   const status = statusQuery.data;
@@ -92,22 +96,22 @@ export default function TimeSyncPanel({ value, onChange }: TimeSyncPanelProps) {
         </div>
         <div className="time-sync-actions">
           <Button
-            size="small"
-            icon={<RefreshCw size={14} />}
+            size="sm"
+            variant="outline"
             loading={reselectMutation.isPending}
             disabled={operationDisabled}
             onClick={() => reselectMutation.mutate()}
           >
+            <RefreshCw size={14} />
             {t('system.timeSyncReselect')}
           </Button>
           <Button
-            size="small"
-            type="primary"
-            icon={<RotateCw size={14} />}
+            size="sm"
             loading={syncMutation.isPending}
             disabled={operationDisabled}
             onClick={() => syncMutation.mutate()}
           >
+            <RotateCw size={14} />
             {t('system.timeSyncNow')}
           </Button>
         </div>
@@ -116,7 +120,7 @@ export default function TimeSyncPanel({ value, onChange }: TimeSyncPanelProps) {
       {statusQuery.isError && (
         <div className="time-sync-query-error" role="status">
           <span>{t('system.timeSyncStatusUnavailable')}</span>
-          <Button size="mini" onClick={() => void statusQuery.refetch()} loading={statusQuery.isFetching}>
+          <Button size="sm" variant="outline" onClick={() => void statusQuery.refetch()} loading={statusQuery.isFetching}>
             {t('common.retry')}
           </Button>
         </div>
@@ -127,11 +131,11 @@ export default function TimeSyncPanel({ value, onChange }: TimeSyncPanelProps) {
         <dl className="time-sync-status-grid" aria-label={t('system.timeSyncRuntimeStatus')}>
           <StatusItem
             label={t('system.timeSyncEnabled')}
-            value={status ? <Tag color={status.enabled ? 'green' : 'gray'}>{status.enabled ? t('system.enabled') : t('system.disabled')}</Tag> : '--'}
+            value={status ? <Badge variant={status.enabled ? 'success' : 'secondary'}>{status.enabled ? t('system.enabled') : t('system.disabled')}</Badge> : '--'}
           />
           <StatusItem
             label={t('common.status')}
-            value={<Tag color={timeSyncStateColor(status?.state)}>{timeSyncStateLabel(status, statusQuery.isLoading, t)}</Tag>}
+            value={<Badge variant={timeSyncStateVariant(status?.state)}>{timeSyncStateLabel(status, statusQuery.isLoading, t)}</Badge>}
           />
           <StatusItem label={t('system.timeSyncActiveSource')} value={sourceValue(status?.active_source)} emphasized />
           <StatusItem label={t('system.timeSyncCurrentTime')} value={formatTimestamp(status?.current_time, '--')} />
@@ -163,16 +167,17 @@ export default function TimeSyncPanel({ value, onChange }: TimeSyncPanelProps) {
         <div className="site-detail-grid time-sync-config-grid">
           <label className="switch-line time-sync-switch-field">
             <span>{t('system.timeSyncEnabled')}</span>
-            <Switch checked={value.enabled} onChange={(enabled) => onChange({ enabled })} />
+            <Switch checked={value.enabled} onCheckedChange={(enabled) => onChange({ enabled })} />
           </label>
           <label>
             <span>{t('system.timeSyncSamples')}</span>
-            <InputNumber
+            <Input
+              type="number"
               min={1}
               max={16}
               value={value.samples_per_source}
-              onChange={(samples) => {
-                const next = Number(samples);
+              onChange={(event) => {
+                const next = Number(event.target.value);
                 if (Number.isFinite(next)) onChange({ samples_per_source: next });
               }}
             />
@@ -227,12 +232,11 @@ export default function TimeSyncPanel({ value, onChange }: TimeSyncPanelProps) {
           </label>
           <label className="time-sync-sources-field">
             <span>{t('system.timeSyncSources')}</span>
-            {/* Prefer fixed rows over autoSize: Arco autoSize yields NaN heights under jsdom. */}
-            <Input.TextArea
+            <Textarea
               value={sourcesText}
               rows={sourcesTextareaRows}
               placeholder={t('system.timeSyncSourcesPlaceholder')}
-              onChange={patchSources}
+              onChange={(event) => patchSources(event.target.value)}
             />
             <em>{t('system.timeSyncSourcesHint')}</em>
           </label>
@@ -259,9 +263,21 @@ function DurationUnitInput({
   };
   return (
     <div className="duration-unit-input time-sync-duration-input">
-      <InputNumber min={1} value={parts.amount} onChange={(amount) => emit(amount)} />
-      <Select value={parts.unit} onChange={(unit) => emit(parts.amount, String(unit) as DurationUnit)}>
-        {units.map((unit) => <Select.Option key={unit} value={unit}>{durationUnitLabel(unit, t)}</Select.Option>)}
+      <Input
+        type="number"
+        min={1}
+        value={parts.amount}
+        onChange={(event) => emit(event.target.value)}
+      />
+      <Select value={parts.unit} onValueChange={(unit) => emit(parts.amount, unit as DurationUnit)}>
+        <SelectTrigger>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {units.map((unit) => (
+            <SelectItem key={unit} value={unit}>{durationUnitLabel(unit, t)}</SelectItem>
+          ))}
+        </SelectContent>
       </Select>
     </div>
   );
@@ -292,11 +308,11 @@ function formatTimestamp(value: string | undefined, fallback: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function timeSyncStateColor(state?: string) {
-  if (state === 'synchronized') return 'green';
-  if (state === 'synchronizing') return 'blue';
-  if (state === 'local') return 'orange';
-  return 'gray';
+function timeSyncStateVariant(state?: string): 'success' | 'default' | 'warning' | 'secondary' {
+  if (state === 'synchronized') return 'success';
+  if (state === 'synchronizing') return 'default';
+  if (state === 'local') return 'warning';
+  return 'secondary';
 }
 
 function timeSyncStateLabel(

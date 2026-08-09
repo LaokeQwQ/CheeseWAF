@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Message, Switch, Tag } from '@arco-design/web-react';
+import { Badge, Button, Input, Switch, toast } from '@/components/ui';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, ChevronDown, ChevronUp, Send, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -210,7 +210,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
       return continueAIApprovalStream(execution.approval.id, prompt, 30, i18n.language, deepThink, recordPendingTrace, controller.signal);
     },
     onSuccess: (reply, { execution }) => {
-      Message.success(t('assistant.toolExecuted'));
+      toast.success(t('assistant.toolExecuted'));
       appendAssistantReply(reply, { approvalID: execution.approval?.id });
       setContinuingApprovalID(null);
       void refetchApprovals();
@@ -220,13 +220,13 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
       if (reconciled) {
         setThread((current) => markApprovalStatus(current, reconciled.id, reconciled.status));
         if (reconciled.status === 'failed') {
-          Message.error(reconciled.error || error.message);
+          toast.error(reconciled.error || error.message);
         } else if (reconciled.status === 'executing') {
-          Message.info(t('assistant.approvalStatus.executing', { defaultValue: 'Execution continues on the server' }));
+          toast.info(t('assistant.approvalStatus.executing', { defaultValue: 'Execution continues on the server' }));
         } else if (reconciled.status === 'executed') {
-          Message.success(t('assistant.approvalStatus.executed', { defaultValue: 'Executed' }));
+          toast.success(t('assistant.approvalStatus.executed', { defaultValue: 'Executed' }));
         } else {
-          Message.warning(t('assistant.approvalStatus.pending', { defaultValue: 'Approval is waiting to continue' }));
+          toast.warning(t('assistant.approvalStatus.pending', { defaultValue: 'Approval is waiting to continue' }));
         }
         clearPendingState();
       } else {
@@ -234,7 +234,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
         if (execution.approval?.id) {
           setThread((current) => markApprovalStatus(current, execution.approval?.id, 'approved'));
         }
-        Message.warning(error.message);
+        toast.warning(error.message);
         appendAssistantError(error);
       }
       setContinuingApprovalID(null);
@@ -249,13 +249,13 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
       return approveAIApproval(execution.approval.id);
     },
     onSuccess: (approval) => {
-      Message.success(t('assistant.approvalReady'));
+      toast.success(t('assistant.approvalReady'));
       setThread((current) => markApprovalStatus(current, approval.id, approval.status));
       void refetchApprovals();
     },
     onError: (error) => {
       const forbidden = error instanceof APIRequestError && (error.status === 403 || error.code === 'AI_APPROVAL_FORBIDDEN');
-      Message.error(forbidden ? t('assistant.needsAnotherApprover') : error.message);
+      toast.error(forbidden ? t('assistant.needsAnotherApprover') : error.message);
     },
   });
   const rejectToolMutation = useMutation({
@@ -266,7 +266,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
       return rejectAIApproval(execution.approval.id);
     },
     onSuccess: (approval) => {
-      Message.info(t('assistant.approvalRejected'));
+      toast.info(t('assistant.approvalRejected'));
       setThread((current) => [
         ...markApprovalStatus(current, approval.id, 'rejected'),
         {
@@ -279,7 +279,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
       ]);
       void refetchApprovals();
     },
-    onError: (error) => Message.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
 
   function clearCloseTimer() {
@@ -498,7 +498,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
         >
           <header>
             <strong>{t('assistant.title')}</strong>
-            {tools?.length ? <Tag>{t('assistant.toolsAvailable', { count: tools.length })}</Tag> : null}
+            {tools?.length ? <Badge variant="secondary">{t('assistant.toolsAvailable', { count: tools.length })}</Badge> : null}
             <button
               className="assistant-close-button"
               type="button"
@@ -554,7 +554,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                 </div>
                 {(message.status || message.meta) && (
                   <div className="assistant-message-status">
-                    {message.status && <Tag>{message.status}</Tag>}
+                    {message.status && <Badge variant="secondary">{message.status}</Badge>}
                     {message.meta && (
                       <div className="assistant-meta">
                         {message.meta.provider && <span>{message.meta.model ? `${message.meta.provider} / ${message.meta.model}` : message.meta.provider}</span>}
@@ -698,8 +698,7 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                                 </div>
                                 <div className="assistant-approval-actions">
                                   <Button
-                                    size="small"
-                                    type="primary"
+                                    size="sm"
                                     className="assistant-approval-approve"
                                     loading={
                                       tool.approval.status === 'pending'
@@ -716,8 +715,8 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
                                     {tool.approval.status === 'approved' ? t('assistant.continueApproved') : t('assistant.approve')}
                                   </Button>
                                   <Button
-                                    size="small"
-                                    status="warning"
+                                    size="sm"
+                                    variant="outline"
                                     className="assistant-approval-reject"
                                     disabled={
                                       assistantBusy
@@ -749,17 +748,24 @@ export default function AIAssistant({ initialOpen = false }: AIAssistantProps) {
           </div>
           <div className="assistant-input">
             <label className="assistant-deep-think-toggle">
-              <Switch size="small" checked={deepThink} onChange={setDeepThink} />
+              <Switch checked={deepThink} onCheckedChange={setDeepThink} />
               <span>{t('assistant.deepThink')}</span>
             </label>
             <Input
               value={draft}
               aria-label={t('assistant.inputLabel')}
               placeholder={t('assistant.placeholder')}
-              onChange={setDraft}
-              onPressEnter={submit}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  submit();
+                }
+              }}
             />
-            <Button className="assistant-send-button" type="primary" icon={<Send size={15} />} loading={assistantBusy} onClick={submit} />
+            <Button className="assistant-send-button" size="icon" loading={assistantBusy} onClick={submit} aria-label={t('assistant.send', { defaultValue: 'Send' })}>
+              {!assistantBusy ? <Send size={15} /> : null}
+            </Button>
           </div>
         </section>
       )}

@@ -51,12 +51,12 @@ async function audit(path, name) {
       }
     }
 
-    const buttons = [...document.querySelectorAll('button, .arco-btn')].slice(0, 40).map((button) => {
-      const icon = button.querySelector('svg, .arco-icon, .arco-btn-icon svg, .arco-btn-icon');
+    const buttons = [...document.querySelectorAll('button')].slice(0, 40).map((button) => {
+      const icon = button.querySelector('svg');
       if (!icon) return null;
       const iconRect = icon.getBoundingClientRect();
       const textNode = [...button.querySelectorAll('span')].find(
-        (span) => !span.classList.contains('arco-btn-icon') && (span.textContent || '').trim(),
+        (span) => (span.textContent || '').trim(),
       );
       if (!textNode) return null;
       const textRect = textNode.getBoundingClientRect();
@@ -110,7 +110,7 @@ async function audit(path, name) {
     const misalignedButtons = buttons.filter((item) => item.misalign);
     if (misalignedButtons.length) issues.push('icon-text-misalign');
 
-    const empties = [...document.querySelectorAll('.arco-empty, .page-empty, .empty-state, .map-empty')].map((el) => {
+    const empties = [...document.querySelectorAll('.page-empty, .empty-state, .map-empty')].map((el) => {
       const rect = el.getBoundingClientRect();
       return {
         cls: typeof el.className === 'string' ? el.className.slice(0, 80) : el.tagName,
