@@ -1912,7 +1912,6 @@ function badgeVariantFromColor(color: string | undefined): 'default' | 'secondar
     case 'orange':
       return 'warning';
     case 'blue':
-    case 'arcoblue':
       return 'default';
     default:
       return 'secondary';

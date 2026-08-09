@@ -1,6 +1,6 @@
 /**
  * Pure shadcn/ui public surface.
- * Pages import from `@/components/ui` only — never raw @radix-ui or Arco.
+ * Pages import from `@/components/ui` only — never raw @radix-ui.
  */
 export * from './button';
 export * from './input';

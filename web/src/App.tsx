@@ -15,9 +15,6 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
     void loadThemeStyles(theme);
-    const root = document.documentElement;
-    const darkThemes = new Set(['dark', 'black-gold']);
-    root.classList.toggle('dark', darkThemes.has(theme));
   }, [theme]);
 
   useEffect(() => {

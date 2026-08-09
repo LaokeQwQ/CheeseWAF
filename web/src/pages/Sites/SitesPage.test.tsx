@@ -156,7 +156,7 @@ describe('SitesPage query states', () => {
     renderSites();
 
     expect((await screen.findByRole('alert')).textContent).toContain('site list unavailable');
-    expect(document.querySelector('.arco-spin-loading')).toBeNull();
+    expect(document.querySelector('.animate-spin')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'common.retry' }));
 
