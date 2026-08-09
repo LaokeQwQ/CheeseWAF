@@ -1,4 +1,20 @@
-import { Button, Empty, Select, Skeleton, Table, Tag } from '@arco-design/web-react';
+import {
+  Badge,
+  Button,
+  Empty,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Skeleton,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui';
 import { useQuery } from '@tanstack/react-query';
 import type { TFunction } from 'i18next';
 import { Activity, ArrowRight, Bot, CheckCircle2, FlaskConical, Image, RefreshCw, Settings2, ShieldAlert, ShieldX, Users } from 'lucide-react';
@@ -18,6 +34,7 @@ export default function BotChallengePage() {
   const navigate = useNavigate();
   const [range, setRange] = useState<BotChallengeRange>('24h');
   const [pageTab, setPageTab] = useState<'overview' | 'assets'>('overview');
+  const [eventPage, setEventPage] = useState(0);
   const eventsPermission = readLogsPermission();
   const metricsQuery = useQuery({ queryKey: ['bot-challenge-metrics', range], queryFn: () => fetchBotChallengeMetrics(range), staleTime: 20_000, refetchInterval: 30_000, retry: 1 });
   const eventsQuery = useQuery({ queryKey: ['bot-challenge-events', range], queryFn: () => fetchLogs({ start: new Date(Date.now() - RANGE_HOURS[range] * 3_600_000).toISOString(), limit: 250 }), enabled: eventsPermission !== 'denied', staleTime: 20_000, refetchInterval: 30_000, retry: false });
@@ -39,10 +56,20 @@ export default function BotChallengePage() {
     <header className={`page-header ${styles.header}`}>
       <div><h1>{t('botChallenge.title')}</h1><p>{t('botChallenge.subtitle')}</p></div>
       <div className={styles.actions}>
-        <Select value={range} onChange={setRange} aria-label={t('botChallenge.period')}>
-          {(['1h', '6h', '24h', '7d', '30d'] as BotChallengeRange[]).map((value) => <Select.Option key={value} value={value}>{t(`botChallenge.ranges.${value}`)}</Select.Option>)}
+        <Select value={range} onValueChange={(value) => { setRange(value as BotChallengeRange); setEventPage(0); }}>
+          <SelectTrigger className={styles.rangeSelect} aria-label={t('botChallenge.period')}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(['1h', '6h', '24h', '7d', '30d'] as BotChallengeRange[]).map((value) => (
+              <SelectItem key={value} value={value}>{t(`botChallenge.ranges.${value}`)}</SelectItem>
+            ))}
+          </SelectContent>
         </Select>
-        <Button aria-label={t('common.refresh')} icon={<RefreshCw className={refreshing ? styles.spinning : undefined} size={16}/>} loading={refreshing} onClick={refreshAll}>{t('common.refresh')}</Button>
+        <Button aria-label={t('common.refresh')} variant="outline" loading={refreshing} onClick={refreshAll}>
+          <RefreshCw className={refreshing ? styles.spinning : undefined} size={16}/>
+          {t('common.refresh')}
+        </Button>
       </div>
     </header>
 
@@ -65,7 +92,7 @@ export default function BotChallengePage() {
         </aside>
       </div>
       <TypeEffectPanel points={metrics?.trend ?? []} t={t}/>
-      <EventTable events={events} loading={eventsQuery.isLoading} forbidden={eventsForbidden} error={eventsError} retry={() => void eventsQuery.refetch()} locale={locale} navigate={navigate} t={t}/>
+      <EventTable events={events} loading={eventsQuery.isLoading} forbidden={eventsForbidden} error={eventsError} retry={() => void eventsQuery.refetch()} locale={locale} navigate={navigate} t={t} page={eventPage} setPage={setEventPage}/>
     </div>}
   </section>;
 }
@@ -125,7 +152,10 @@ function TypeEffectPanel({ points, t }: { points: BotChallengeMetricPoint[]; t: 
   return <section className={`panel ${styles.effectPanel}`}><div className={'panel-heading'}><h2>{t('botChallenge.typeEffect')}</h2><span>{t('botChallenge.typeEffectHint')}</span></div>{effects.length ? <div className={styles.effectList}>{effects.map((item) => <div key={item.type}><div><strong>{typeLabel(item.type, t)}</strong><span>{t('botChallenge.issuedCount', { count: item.issued })}</span></div><b>{item.passRate == null ? t('botChallenge.noOutcomeData') : `${(item.passRate * 100).toFixed(1)}%`}</b><div className={styles.rateTrack}><i style={{ width: `${(item.passRate ?? 0) * 100}%` }}/></div></div>)}</div> : <Empty description={t('botChallenge.noTypeData')}/>}</section>;
 }
 
-function EventTable({ events, loading, forbidden, error, retry, locale, navigate, t }: { events: BotChallengeEvent[]; loading: boolean; forbidden: boolean; error?: unknown; retry: () => void; locale: string; navigate: (path: string) => void; t: TFunction }) {
+function EventTable({ events, loading, forbidden, error, retry, locale, navigate, t, page, setPage }: { events: BotChallengeEvent[]; loading: boolean; forbidden: boolean; error?: unknown; retry: () => void; locale: string; navigate: (path: string) => void; t: TFunction; page: number; setPage: (page: number) => void }) {
+  const pageSize = 10;
+  const pageCount = Math.max(1, Math.ceil(events.length / pageSize));
+  const paged = events.slice(page * pageSize, (page + 1) * pageSize);
   const eventRows = events.map((event) => ({
     label: event.traceId || event.id,
     values: [
@@ -144,17 +174,74 @@ function EventTable({ events, loading, forbidden, error, retry, locale, navigate
       title={t('botChallenge.eventsForbidden', { defaultValue: t('botChallenge.captchaAssets.forbidden') })}
       hint={t('botChallenge.eventsPermissionHint', { defaultValue: 'The read:logs permission is required to view challenge events. Metrics remain available with read:protection.' })}
     /> : error ? <EventPanelState title={t('botChallenge.loadFailed')} hint={eventErrorMessage(error, t)} retry={retry} retryLabel={t('common.retry')}/> : <>
-      <div className={styles.eventTable}><Table loading={loading} rowKey={'id'} pagination={{ pageSize: 10, hideOnSinglePage: true, sizeCanChange: false }} data={events} noDataElement={<Empty description={t('botChallenge.noEvents')}/>} scroll={{ x: 980 }} columns={[{ title: t('botChallenge.time'), dataIndex: 'timestamp', width: 180, render: (value: string) => new Date(value).toLocaleString(locale) }, { title: t('botChallenge.clientIp'), dataIndex: 'clientIp', width: 150 }, { title: t('botChallenge.location'), dataIndex: 'country', width: 120, render: (value: string) => value || t('common.unknown') }, { title: t('botChallenge.site'), dataIndex: 'siteId', width: 150, render: (value: string) => value || '—' }, { title: t('botChallenge.type'), dataIndex: 'challengeType', width: 140, render: (value: string) => typeLabel(value ?? 'unknown', t) }, { title: t('botChallenge.outcome'), dataIndex: 'outcome', width: 110, render: (value: string) => <OutcomeTag value={value} t={t}/> }, { title: t('botChallenge.reason'), dataIndex: 'reason', ellipsis: true }, { title: t('botChallenge.traceId'), dataIndex: 'traceId', width: 190, render: (value: string, row: BotChallengeEvent) => <button className={styles.trace} onClick={() => navigate(`/logs/${encodeURIComponent(value || row.id)}`)}>{value || row.id}</button> }]}/></div>
-      <div className={styles.eventCards}>{loading ? <Skeleton text={{ rows: 3 }} animation/> : eventRows.length === 0 ? <Empty description={t('botChallenge.noEvents')}/> : eventRows.map(({ label, values, event }) => <article key={event.id} className={styles.eventCard}><div className={styles.eventCardHeading}><OutcomeTag value={event.outcome} t={t}/><button className={styles.trace} onClick={() => navigate(`/logs/${encodeURIComponent(label)}`)}>{label}</button></div><dl>{values.map(([term, value]) => <div key={term}><dt>{term}</dt><dd>{value}</dd></div>)}</dl></article>)}</div>
+      <div className={styles.eventTable}>
+        {loading ? <div className="p-4"><Skeleton className="h-24 w-full" /></div> : events.length === 0 ? <Empty description={t('botChallenge.noEvents')}/> : (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('botChallenge.time')}</TableHead>
+                  <TableHead>{t('botChallenge.clientIp')}</TableHead>
+                  <TableHead>{t('botChallenge.location')}</TableHead>
+                  <TableHead>{t('botChallenge.site')}</TableHead>
+                  <TableHead>{t('botChallenge.type')}</TableHead>
+                  <TableHead>{t('botChallenge.outcome')}</TableHead>
+                  <TableHead>{t('botChallenge.reason')}</TableHead>
+                  <TableHead>{t('botChallenge.traceId')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paged.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>{new Date(row.timestamp).toLocaleString(locale)}</TableCell>
+                    <TableCell>{row.clientIp}</TableCell>
+                    <TableCell>{row.country || t('common.unknown')}</TableCell>
+                    <TableCell>{row.siteId || '—'}</TableCell>
+                    <TableCell>{typeLabel(row.challengeType ?? 'unknown', t)}</TableCell>
+                    <TableCell><OutcomeTag value={row.outcome} t={t}/></TableCell>
+                    <TableCell className="max-w-[200px] truncate">{row.reason}</TableCell>
+                    <TableCell>
+                      <button className={styles.trace} onClick={() => navigate(`/logs/${encodeURIComponent(row.traceId || row.id)}`)}>{row.traceId || row.id}</button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {events.length > pageSize && (
+              <div className="flex items-center justify-end gap-2 p-2">
+                <Button size="sm" variant="outline" disabled={page <= 0} onClick={() => setPage(page - 1)}>{t('common.prev', { defaultValue: 'Prev' })}</Button>
+                <span className="text-sm text-muted-foreground">{page + 1}/{pageCount}</span>
+                <Button size="sm" variant="outline" disabled={page >= pageCount - 1} onClick={() => setPage(page + 1)}>{t('common.next', { defaultValue: 'Next' })}</Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      <div className={styles.eventCards}>{loading ? <Skeleton className="h-24 w-full" /> : eventRows.length === 0 ? <Empty description={t('botChallenge.noEvents')}/> : eventRows.map(({ label, values, event }) => <article key={event.id} className={styles.eventCard}><div className={styles.eventCardHeading}><OutcomeTag value={event.outcome} t={t}/><button className={styles.trace} onClick={() => navigate(`/logs/${encodeURIComponent(label)}`)}>{label}</button></div><dl>{values.map(([term, value]) => <div key={term}><dt>{term}</dt><dd>{value}</dd></div>)}</dl></article>)}</div>
     </>}
   </section>;
 }
 
-function EventPanelState({ title, hint, retry, retryLabel }: { title: string; hint: string; retry?: () => void; retryLabel?: string }) { return <div className={styles.eventState} role={retry ? 'alert' : 'status'}><ShieldX/><div><strong>{title}</strong><span>{hint}</span></div>{retry && <Button onClick={retry}>{retryLabel}</Button>}</div>; }
+function EventPanelState({ title, hint, retry, retryLabel }: { title: string; hint: string; retry?: () => void; retryLabel?: string }) { return <div className={styles.eventState} role={retry ? 'alert' : 'status'}><ShieldX/><div><strong>{title}</strong><span>{hint}</span></div>{retry && <Button variant="outline" onClick={retry}>{retryLabel}</Button>}</div>; }
 function QuickAction({ icon, title, hint, onClick }: { icon: React.ReactNode; title: string; hint: string; onClick: () => void }) { return <button type={'button'} onClick={onClick}>{icon}<span><strong>{title}</strong><small>{hint}</small></span><ArrowRight/></button>; }
-function LoadError({ t, retry }: { t: TFunction; retry: () => void }) { return <div className={styles.error} role={'alert'}><ShieldX size={20}/><div><strong>{t('botChallenge.loadFailed')}</strong><span>{t('botChallenge.loadFailedHint')}</span></div><Button onClick={retry}>{t('common.retry')}</Button></div>; }
-function OverviewSkeleton() { return <div className={styles.loading} aria-busy={true}><div className={styles.skeletonMetrics}>{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} text={{ rows: 2, width: ['55%', '35%'] }} animation/>)}</div><Skeleton text={{ rows: 6 }} animation/></div>; }
-function OutcomeTag({ value, t }: { value: string; t: TFunction }) { const colors: Record<string, string> = { passed: 'green', failed: 'orange', blocked: 'red', issued: 'blue' }; return <Tag color={colors[value] ?? 'gray'}>{t(`botChallenge.outcomes.${value}`)}</Tag>; }
+function LoadError({ t, retry }: { t: TFunction; retry: () => void }) { return <div className={styles.error} role={'alert'}><ShieldX size={20}/><div><strong>{t('botChallenge.loadFailed')}</strong><span>{t('botChallenge.loadFailedHint')}</span></div><Button variant="outline" onClick={retry}>{t('common.retry')}</Button></div>; }
+function OverviewSkeleton() {
+  return (
+    <div className={styles.loading} aria-busy={true}>
+      <div className={styles.skeletonMetrics}>{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-20 w-full" />)}</div>
+      <Skeleton className="h-40 w-full" />
+    </div>
+  );
+}
+function OutcomeTag({ value, t }: { value: string; t: TFunction }) {
+  const variants: Record<string, 'success' | 'warning' | 'destructive' | 'default' | 'secondary'> = {
+    passed: 'success',
+    failed: 'warning',
+    blocked: 'destructive',
+    issued: 'default',
+  };
+  return <Badge variant={variants[value] ?? 'secondary'}>{t(`botChallenge.outcomes.${value}`)}</Badge>;
+}
 function formatNumber(value?: number, locale?: string) { return value == null ? '—' : new Intl.NumberFormat(locale).format(value); }
 function formatBucketTime(value: string, locale: string, count: number) { return new Date(value).toLocaleString(locale, count > 24 ? { month: 'short', day: 'numeric' } : { hour: '2-digit', minute: '2-digit' }); }
 function typeLabel(type: string, t: TFunction) { return t(`protection.captchaTypes.${type}`, { defaultValue: type === 'unknown' ? t('common.unknown') : type }); }

@@ -1,9 +1,9 @@
-import { Button, Message as ArcoMessage, Space, Spin, Tag } from '@arco-design/web-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, BrainCircuit, ShieldAlert } from 'lucide-react';
+import { Badge, Button, Spinner, toast } from '@/components/ui';
 import { analyzeLogReferenceStream, fetchLogEvent } from '../../api/client';
 import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
 import PolicyDecisionCard from '../../components/PolicyDecisionCard';
@@ -45,7 +45,7 @@ export default function LogDetailPage() {
         }
       }, controller.signal);
     },
-    onError: (mutationError) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError) => toast.error(mutationError.message),
   });
   const analysis = analysisMutation.data;
 
@@ -71,81 +71,87 @@ export default function LogDetailPage() {
           <h1>{t('logs.eventDetail')}</h1>
           <p>{event ? event.trace_id || event.id : reference}</p>
         </div>
-        <Button icon={<ArrowLeft size={16} />} onClick={() => navigate('/logs')}>
+        <Button variant="outline" onClick={() => navigate('/logs')}>
+          <ArrowLeft size={16} />
           {t('logs.backToLogs')}
         </Button>
       </header>
 
-      <Spin loading={isLoading}>
-        {error && <section className="panel"><div className="empty-state">{error.message}</div></section>}
-        {event && (
-          <div className="event-detail-grid">
-            <div className="event-detail-main">
-              <section className="panel">
-                <div className="panel-heading">
-                  <h2><ShieldAlert size={16} /> {t('logs.event')}</h2>
-                  <Space wrap>
-                    <Tag color={actionColor(event.action)}>{displayAction(event.action, t)}</Tag>
-                    <Tag color={event.category ? 'orange' : 'green'}>{displayCategory(event.category, t)}</Tag>
-                    <Tag>{displaySeverity(event.severity, t)}</Tag>
-                  </Space>
-                </div>
-                <div className="detail-kv-grid">
-                  <DetailKV label={t('logs.trace')} value={event.trace_id || event.id || '-'} />
-                  <DetailKV label={t('logs.time')} value={formatTime(event.timestamp, locale)} />
-                  <DetailKV label={t('logs.source')} value={event.client_ip || '-'} />
-                  <DetailKV label={t('dashboard.ipLocation')} value={formatLogLocation(event, t)} />
-                  <DetailKV label={t('logs.method')} value={event.method || '-'} />
-                  <DetailKV label={t('logs.path')} value={<code className="detail-inline-code">{event.uri || '-'}</code>} />
-                  <DetailKV label={t('logs.status')} value={String(event.status_code || '-')} />
-                  <DetailKV label={t('logs.latency')} value={formatLatency(event.latency)} />
-                  <DetailKV label={t('logs.site')} value={event.site_id || '-'} />
-                  <DetailKV label={t('logs.detector')} value={event.detector_id || '-'} />
-                </div>
-              </section>
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Spinner />
+        </div>
+      ) : (
+        <>
+          {error && <section className="panel"><div className="empty-state">{error.message}</div></section>}
+          {event && (
+            <div className="event-detail-grid">
+              <div className="event-detail-main">
+                <section className="panel">
+                  <div className="panel-heading">
+                    <h2><ShieldAlert size={16} /> {t('logs.event')}</h2>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant={actionBadgeVariant(event.action)}>{displayAction(event.action, t)}</Badge>
+                      <Badge variant={event.category ? 'warning' : 'success'}>{displayCategory(event.category, t)}</Badge>
+                      <Badge variant="secondary">{displaySeverity(event.severity, t)}</Badge>
+                    </div>
+                  </div>
+                  <div className="detail-kv-grid">
+                    <DetailKV label={t('logs.trace')} value={event.trace_id || event.id || '-'} />
+                    <DetailKV label={t('logs.time')} value={formatTime(event.timestamp, locale)} />
+                    <DetailKV label={t('logs.source')} value={event.client_ip || '-'} />
+                    <DetailKV label={t('dashboard.ipLocation')} value={formatLogLocation(event, t)} />
+                    <DetailKV label={t('logs.method')} value={event.method || '-'} />
+                    <DetailKV label={t('logs.path')} value={<code className="detail-inline-code">{event.uri || '-'}</code>} />
+                    <DetailKV label={t('logs.status')} value={String(event.status_code || '-')} />
+                    <DetailKV label={t('logs.latency')} value={formatLatency(event.latency)} />
+                    <DetailKV label={t('logs.site')} value={event.site_id || '-'} />
+                    <DetailKV label={t('logs.detector')} value={event.detector_id || '-'} />
+                  </div>
+                </section>
 
-              <PolicyDecisionCard metadata={event.metadata} />
-              <OpsSignalsCard metadata={event.metadata} t={t} />
+                <PolicyDecisionCard metadata={event.metadata} />
+                <OpsSignalsCard metadata={event.metadata} t={t} />
 
-              <section className="panel">
-                <div className="panel-heading">
-                  <h2>{t('logs.requestEvidence')}</h2>
-                </div>
-                <div className="detail-field-stack">
-                  <DetailCode title={t('logs.message')} value={event.message} />
-                  <DetailCode title={t('logs.payload')} value={event.payload} />
-                  <DetailCode title={t('logs.userAgent')} value={event.user_agent} />
-                  <DetailCode title={t('logs.metadata')} value={formatMetadata(event.metadata)} />
-                </div>
-              </section>
+                <section className="panel">
+                  <div className="panel-heading">
+                    <h2>{t('logs.requestEvidence')}</h2>
+                  </div>
+                  <div className="detail-field-stack">
+                    <DetailCode title={t('logs.message')} value={event.message} />
+                    <DetailCode title={t('logs.payload')} value={event.payload} />
+                    <DetailCode title={t('logs.userAgent')} value={event.user_agent} />
+                    <DetailCode title={t('logs.metadata')} value={formatMetadata(event.metadata)} />
+                  </div>
+                </section>
+              </div>
+
+              <aside className="event-detail-side">
+                <section className="panel">
+                  <div className="panel-heading">
+                    <h2><BrainCircuit size={16} /> {t('ai.eventAnalysis')}</h2>
+                    {analysis && <Badge variant={riskBadgeVariant(analysis.risk)}>{displayRisk(analysis.risk, t)}</Badge>}
+                  </div>
+                  <Button
+                    className="w-full"
+                    loading={analysisMutation.isPending}
+                    onClick={() => analysisMutation.mutate(event)}
+                  >
+                    {analysis ? t('ai.reanalyze') : t('ai.run')}
+                  </Button>
+                  <AnalysisLiveTrace
+                    pending={analysisMutation.isPending}
+                    trace={analysisTrace}
+                    reasoning={streamReasoning}
+                    content={streamContent}
+                  />
+                  <AnalysisResult analysis={analysis} />
+                </section>
+              </aside>
             </div>
-
-            <aside className="event-detail-side">
-              <section className="panel">
-                <div className="panel-heading">
-                  <h2><BrainCircuit size={16} /> {t('ai.eventAnalysis')}</h2>
-                  {analysis && <Tag color={riskColor(analysis.risk)}>{displayRisk(analysis.risk, t)}</Tag>}
-                </div>
-                <Button
-                  type="primary"
-                  long
-                  loading={analysisMutation.isPending}
-                  onClick={() => analysisMutation.mutate(event)}
-                >
-                  {analysis ? t('ai.reanalyze') : t('ai.run')}
-                </Button>
-                <AnalysisLiveTrace
-                  pending={analysisMutation.isPending}
-                  trace={analysisTrace}
-                  reasoning={streamReasoning}
-                  content={streamContent}
-                />
-                <AnalysisResult analysis={analysis} />
-              </section>
-            </aside>
-          </div>
-        )}
-      </Spin>
+          )}
+        </>
+      )}
     </section>
   );
 }
@@ -227,7 +233,7 @@ function AnalysisLiveTrace({
     <div className="analysis-live-trace">
       <div>
         <strong>{pending ? t('ai.thinking') : t('ai.analysisTrace')}</strong>
-        {pending && <Spin size={14} />}
+        {pending && <Spinner className="size-3.5" />}
       </div>
       {reasoning && (
         <section>
@@ -361,29 +367,28 @@ function formatLatency(nanoseconds: number) {
   return `${(nanoseconds / 1_000_000).toFixed(1)}ms`;
 }
 
-function actionColor(action: string) {
+function actionBadgeVariant(action: string): 'destructive' | 'warning' | 'default' | 'secondary' {
   switch (action) {
     case 'block':
-      return 'red';
+      return 'destructive';
     case 'challenge':
-      return 'orange';
+      return 'warning';
     case 'log':
-      return 'blue';
+      return 'default';
     default:
-      return 'gray';
+      return 'secondary';
   }
 }
 
-function riskColor(risk: string) {
+function riskBadgeVariant(risk: string): 'destructive' | 'warning' | 'success' {
   switch (risk) {
     case 'critical':
-      return 'red';
     case 'high':
-      return 'orangered';
+      return 'destructive';
     case 'medium':
-      return 'orange';
+      return 'warning';
     default:
-      return 'green';
+      return 'success';
   }
 }
 

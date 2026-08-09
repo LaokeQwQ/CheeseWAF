@@ -1,4 +1,14 @@
-import { Button, Input, Message as ArcoMessage, Select, Switch } from '@arco-design/web-react';
+import {
+  Button,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  toast,
+} from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -25,9 +35,9 @@ export default function SSLPage() {
     onSuccess: (saved) => {
       markClean(normalizeSystem(saved));
       queryClient.invalidateQueries({ queryKey: ['system'] });
-      ArcoMessage.success(t('system.saved'));
+      toast.success(t('system.saved'));
     },
-    onError: (mutationError) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError) => toast.error(mutationError.message),
   });
 
   const patchACME = (patch: Partial<SystemConfig['acme']>) => {
@@ -97,7 +107,6 @@ export default function SSLPage() {
           <p>{t('ssl.subtitle')}</p>
         </div>
         <Button
-          type="primary"
           onClick={() => saveMutation.mutate({ acme: system.acme })}
           loading={saveMutation.isPending}
           disabled={!isSuccess}
@@ -123,50 +132,56 @@ export default function SSLPage() {
           <div className="site-detail-grid">
             <label className="switch-line">
               <span>{t('system.acmeEnabled')}</span>
-              <Switch checked={system.acme.enabled} onChange={(enabled) => patchACME({ enabled })} disabled={!isSuccess} />
+              <Switch checked={system.acme.enabled} onCheckedChange={(enabled) => patchACME({ enabled })} disabled={!isSuccess} />
             </label>
             <label className="switch-line">
               <span>{t('system.acmeNotify')}</span>
-              <Switch checked={system.acme.notify} onChange={(notify) => patchACME({ notify })} disabled={!isSuccess} />
+              <Switch checked={system.acme.notify} onCheckedChange={(notify) => patchACME({ notify })} disabled={!isSuccess} />
             </label>
             <label>
               <span>{t('system.acmePath')}</span>
-              <Input value={system.acme.acme_sh_path} placeholder="acme.sh" onChange={(acme_sh_path) => patchACME({ acme_sh_path })} disabled={!isSuccess} />
+              <Input value={system.acme.acme_sh_path} placeholder="acme.sh" onChange={(e) => patchACME({ acme_sh_path: e.target.value })} disabled={!isSuccess} />
             </label>
             <label>
               <span>{t('system.acmeServer')}</span>
-              <Select value={system.acme.server || 'letsencrypt'} onChange={(server) => patchACME({ server: server as string })} disabled={!isSuccess}>
-                <Select.Option value="letsencrypt">Let's Encrypt</Select.Option>
-                <Select.Option value="zerossl">ZeroSSL</Select.Option>
-                <Select.Option value="https://acme-v02.api.letsencrypt.org/directory">Let's Encrypt API</Select.Option>
-                <Select.Option value="https://acme-staging-v02.api.letsencrypt.org/directory">Let's Encrypt Staging</Select.Option>
+              <Select value={system.acme.server || 'letsencrypt'} onValueChange={(server) => patchACME({ server })} disabled={!isSuccess}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="letsencrypt">Let&apos;s Encrypt</SelectItem>
+                  <SelectItem value="zerossl">ZeroSSL</SelectItem>
+                  <SelectItem value="https://acme-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt API</SelectItem>
+                  <SelectItem value="https://acme-staging-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt Staging</SelectItem>
+                </SelectContent>
               </Select>
             </label>
             <label>
               <span>{t('system.acmeAccountEmail')}</span>
-              <Input value={system.acme.account_email} placeholder="ops@example.com" onChange={(account_email) => patchACME({ account_email })} disabled={!isSuccess} />
+              <Input value={system.acme.account_email} placeholder="ops@example.com" onChange={(e) => patchACME({ account_email: e.target.value })} disabled={!isSuccess} />
             </label>
             <label>
               <span>{t('system.acmeKeyType')}</span>
-              <Select value={system.acme.key_type || 'ec-256'} onChange={(key_type) => patchACME({ key_type: key_type as string })} disabled={!isSuccess}>
-                <Select.Option value="ec-256">ECDSA P-256</Select.Option>
-                <Select.Option value="ec-384">ECDSA P-384</Select.Option>
-                <Select.Option value="2048">RSA 2048</Select.Option>
-                <Select.Option value="3072">RSA 3072</Select.Option>
-                <Select.Option value="4096">RSA 4096</Select.Option>
+              <Select value={system.acme.key_type || 'ec-256'} onValueChange={(key_type) => patchACME({ key_type })} disabled={!isSuccess}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ec-256">ECDSA P-256</SelectItem>
+                  <SelectItem value="ec-384">ECDSA P-384</SelectItem>
+                  <SelectItem value="2048">RSA 2048</SelectItem>
+                  <SelectItem value="3072">RSA 3072</SelectItem>
+                  <SelectItem value="4096">RSA 4096</SelectItem>
+                </SelectContent>
               </Select>
             </label>
             <label>
               <span>{t('system.acmeHome')}</span>
-              <Input value={system.acme.home} placeholder="./data/acme" onChange={(home) => patchACME({ home })} disabled={!isSuccess} />
+              <Input value={system.acme.home} placeholder="./data/acme" onChange={(e) => patchACME({ home: e.target.value })} disabled={!isSuccess} />
             </label>
             <label>
               <span>{t('system.acmeCertDir')}</span>
-              <Input value={system.acme.cert_dir} placeholder="./data/certs" onChange={(cert_dir) => patchACME({ cert_dir })} disabled={!isSuccess} />
+              <Input value={system.acme.cert_dir} placeholder="./data/certs" onChange={(e) => patchACME({ cert_dir: e.target.value })} disabled={!isSuccess} />
             </label>
             <label className="wide-field">
               <span>{t('system.acmeReloadCommand')}</span>
-              <Input value={system.acme.reload_command} placeholder="systemctl reload cheesewaf" onChange={(reload_command) => patchACME({ reload_command })} disabled={!isSuccess} />
+              <Input value={system.acme.reload_command} placeholder="systemctl reload cheesewaf" onChange={(e) => patchACME({ reload_command: e.target.value })} disabled={!isSuccess} />
             </label>
           </div>
         </section>
@@ -177,25 +192,37 @@ export default function SSLPage() {
               <strong>{t('system.acmeDNSProviders')}</strong>
               <span>{t('system.acmeDNSProvidersHint')}</span>
             </div>
-            <Button size="small" icon={<Plus size={14} />} onClick={addProvider} disabled={!isSuccess}>{t('common.add')}</Button>
+            <Button size="sm" variant="outline" onClick={addProvider} disabled={!isSuccess}>
+              <Plus size={14} />
+              {t('common.add')}
+            </Button>
           </header>
           <div className="acme-provider-list">
             {system.acme.dns_providers.map((provider, index) => (
               <section className="acme-provider-card" key={index}>
                 <div className="acme-provider-head">
-                  <Switch checked={provider.enabled} onChange={(enabled) => updateProvider(index, { enabled })} disabled={!isSuccess} />
+                  <Switch checked={provider.enabled} onCheckedChange={(enabled) => updateProvider(index, { enabled })} disabled={!isSuccess} />
                   <Input
                     value={provider.id}
                     placeholder="cloudflare"
                     aria-label={t('system.acmeDNSProviders')}
-                    onChange={(id) => updateProvider(index, { id })}
+                    onChange={(e) => updateProvider(index, { id: e.target.value })}
                     disabled={!isSuccess}
                   />
-                  <Button size="mini" status="danger" icon={<Trash2 size={13} />} onClick={() => removeProvider(index)} disabled={!isSuccess}>{t('common.delete')}</Button>
+                  <Button size="sm" variant="destructive" onClick={() => removeProvider(index)} disabled={!isSuccess}>
+                    <Trash2 size={13} />
+                    {t('common.delete')}
+                  </Button>
                 </div>
                 <div className="site-detail-grid">
-                  <label><span>{t('sites.name')}</span><Input value={provider.name} placeholder="Cloudflare" onChange={(name) => updateProvider(index, { name })} disabled={!isSuccess} /></label>
-                  <label><span>{t('system.acmeDNSAPI')}</span><Input value={provider.api} placeholder="dns_cf" onChange={(api) => updateProvider(index, { api })} disabled={!isSuccess} /></label>
+                  <label>
+                    <span>{t('sites.name')}</span>
+                    <Input value={provider.name} placeholder="Cloudflare" onChange={(e) => updateProvider(index, { name: e.target.value })} disabled={!isSuccess} />
+                  </label>
+                  <label>
+                    <span>{t('system.acmeDNSAPI')}</span>
+                    <Input value={provider.api} placeholder="dns_cf" onChange={(e) => updateProvider(index, { api: e.target.value })} disabled={!isSuccess} />
+                  </label>
                   <ACMEEnvEditor
                     provider={provider}
                     disabled={!isSuccess}
@@ -258,7 +285,7 @@ function ACMEEnvEditor({
       if (normalized) {
         const duplicate = nextRows.some((row) => row.id !== id && row.key === normalized);
         if (duplicate) {
-          ArcoMessage.warning(t('system.acmeEnvKeyDuplicate'));
+          toast.warning(t('system.acmeEnvKeyDuplicate'));
           return;
         }
       }
@@ -278,7 +305,10 @@ function ACMEEnvEditor({
     <div className="wide-field acme-env-editor">
       <div className="fieldset-header-action">
         <span>{t('system.acmeEnvKey')}</span>
-        <Button size="mini" icon={<Plus size={12} />} onClick={addRow} disabled={disabled}>{t('common.add')}</Button>
+        <Button size="sm" variant="outline" onClick={addRow} disabled={disabled}>
+          <Plus size={12} />
+          {t('common.add')}
+        </Button>
       </div>
       {rows.map((row, slot) => (
         <div className="site-detail-grid acme-env-row" key={row.id}>
@@ -288,15 +318,17 @@ function ACMEEnvEditor({
               value={row.key}
               placeholder={slot === 0 ? 'CF_TOKEN' : 'CF_ACCOUNT_ID'}
               disabled={disabled}
-              onChange={(key) => updateRow(row.id, { key })}
+              onChange={(e) => updateRow(row.id, { key: e.target.value })}
             />
           </label>
           <label>
             <span>{t('system.acmeEnvValue')} {slot + 1}</span>
-            <Input.Password
+            <Input
+              type="password"
               value={row.value}
               disabled={disabled}
-              onChange={(value) => {
+              onChange={(e) => {
+                const value = e.target.value;
                 // Keep incomplete rows local; never invent TOKEN/SECRET keys.
                 if (!row.key.trim()) {
                   dirtyRef.current = true;
@@ -308,13 +340,14 @@ function ACMEEnvEditor({
             />
           </label>
           <Button
-            size="mini"
-            status="danger"
-            icon={<Trash2 size={12} />}
+            size="icon"
+            variant="destructive"
             aria-label={t('common.delete')}
             disabled={disabled}
             onClick={() => removeRow(row.id)}
-          />
+          >
+            <Trash2 size={12} />
+          </Button>
         </div>
       ))}
     </div>

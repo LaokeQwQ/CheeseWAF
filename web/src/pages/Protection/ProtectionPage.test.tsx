@@ -12,16 +12,16 @@ const apiMocks = vi.hoisted(() => ({
   updateRateLimit: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return { ...actual, Message: messageMocks };
-});
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), toastMocks),
+  Toaster: () => null,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -157,7 +157,7 @@ describe('ProtectionPage query and ACL interactions', () => {
   it('persists an ACL enabled switch change', async () => {
     renderProtection();
     await screen.findAllByText('ACL fixture');
-    const toggle = desktopACLRow().querySelector('.arco-switch');
+    const toggle = desktopACLRow().querySelector('[role="switch"]');
     expect(toggle).toBeTruthy();
 
     fireEvent.click(toggle as Element);
@@ -180,7 +180,7 @@ describe('ProtectionPage query and ACL interactions', () => {
     fireEvent.change(nameInput, { target: { value: 'ACL edited draft' } });
     fireEvent.click(within(editor as HTMLElement).getByRole('button', { name: 'common.save' }));
 
-    await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith('ACL save failed'));
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('ACL save failed'));
     expect(document.querySelector('.acl-editor-card')).toBeTruthy();
     expect(nameInput.value).toBe('ACL edited draft');
   });
@@ -234,6 +234,6 @@ describe('ProtectionPage bot form integrity', () => {
     apiMocks.fetchProtection.mockResolvedValue(fixture);
     renderProtection();
 
-    expect(await screen.findByText('protection.captchaTypeImage')).toBeTruthy();
+    expect((await screen.findAllByText('protection.captchaTypeImage')).length).toBeGreaterThan(0);
   });
 });

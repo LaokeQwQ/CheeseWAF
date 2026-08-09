@@ -12,7 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   updateSite: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
@@ -20,13 +20,9 @@ const messageMocks = vi.hoisted(() => ({
 
 const navigateMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return {
-    ...actual,
-    Message: messageMocks,
-  };
-});
+vi.mock('sonner', () => ({
+  toast: toastMocks,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -118,10 +114,10 @@ describe('SiteDetailPage save failures', () => {
 
     const input = await renameAndSave('edited-site');
 
-    await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith(message));
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith(message));
     expect(apiMocks.updateSite.mock.calls[0]?.[0]).toBe('site-1');
     expect(apiMocks.updateSite.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ name: 'edited-site' }));
-    expect(messageMocks.success).not.toHaveBeenCalled();
+    expect(toastMocks.success).not.toHaveBeenCalled();
     expect(invalidateQueries).not.toHaveBeenCalled();
     expect(apiMocks.fetchSite).toHaveBeenCalledTimes(1);
     expect(client.getQueryData(['site', 'site-1'])).toEqual(initial);
@@ -149,8 +145,8 @@ describe('SiteDetailPage save success', () => {
     expect(client.getQueryData(['site', 'site-1'])).toEqual(persisted);
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['sites'] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['site', 'site-1'] });
-    expect(messageMocks.success).toHaveBeenCalledWith('sites.saved');
-    expect(messageMocks.error).not.toHaveBeenCalled();
+    expect(toastMocks.success).toHaveBeenCalledWith('sites.saved');
+    expect(toastMocks.error).not.toHaveBeenCalled();
   });
 });
 

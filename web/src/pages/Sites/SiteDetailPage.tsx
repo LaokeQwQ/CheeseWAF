@@ -1,17 +1,22 @@
 import {
+  Badge,
   Button,
   Empty,
   Input,
-  InputNumber,
-  Message as ArcoMessage,
   Select,
-  Space,
-  Spin,
-  Steps,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Spinner,
   Switch,
   Tabs,
-  Tag,
-} from '@arco-design/web-react';
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  Textarea,
+  toast,
+} from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, CircleAlert, Clock3, KeyRound, LockKeyhole, Network, Plus, Save, ShieldCheck, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -77,18 +82,18 @@ export default function SiteDetailPage() {
       envDirtyRef.current = false;
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       queryClient.invalidateQueries({ queryKey: ['site', id] });
-      ArcoMessage.success(t('sites.saved'));
+      toast.success(t('sites.saved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const deleteMutation = useMutation({
     mutationFn: () => deleteSite(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sites'] });
-      ArcoMessage.success(t('sites.deleted'));
+      toast.success(t('sites.deleted'));
       navigate('/sites');
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const acmeMutation = useMutation({
     mutationFn: (payload: ACMEIssueRequest) => issueSiteACMECertificate(id, payload),
@@ -100,12 +105,12 @@ export default function SiteDetailPage() {
       setAcmeEvents(response.events ?? response.result?.events ?? []);
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       queryClient.invalidateQueries({ queryKey: ['site', id] });
-      ArcoMessage.success(t('sites.acmeIssued'));
+      toast.success(t('sites.acmeIssued'));
     },
     onError: (error: Error) => {
       const data = error instanceof APIRequestError ? error.data as { events?: ACMEEvent[]; result?: { events?: ACMEEvent[] } } | undefined : undefined;
       setAcmeEvents(data?.events ?? data?.result?.events ?? []);
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
   });
   const selectedProvider = useMemo(
@@ -115,20 +120,23 @@ export default function SiteDetailPage() {
   const isMutating = saveMutation.isPending || deleteMutation.isPending || acmeMutation.isPending;
 
   if (isLoading) {
-    return <Spin className="page-spinner" />;
+    return <Spinner className="page-spinner" />;
   }
   if (isError) {
     return (
       <section className="page-surface site-detail-page">
         <header className="page-header">
           <div className="site-title-stack">
-            <Button icon={<ArrowLeft size={16} />} onClick={() => navigate('/sites')}>{t('common.back')}</Button>
+            <Button variant="outline" onClick={() => navigate('/sites')}>
+              <ArrowLeft size={16} />
+              {t('common.back')}
+            </Button>
             <div><h1>{t('sites.title')}</h1></div>
           </div>
         </header>
         <div className="inline-error site-detail-load-error" role="alert">
           <span>{queryErrorMessage(error, t('sites.notFound'))}</span>
-          <Button size="small" onClick={() => refetch()}>{t('common.retry')}</Button>
+          <Button size="sm" onClick={() => refetch()}>{t('common.retry')}</Button>
         </div>
       </section>
     );
@@ -234,7 +242,7 @@ export default function SiteDetailPage() {
   const saveSite = () => {
     const problem = validateSiteDraft(site, t);
     if (problem) {
-      ArcoMessage.warning(problem);
+      toast.warning(problem);
       return;
     }
     saveMutation.mutate(site);
@@ -244,7 +252,8 @@ export default function SiteDetailPage() {
     <section className="page-surface site-detail-page">
       <header className="page-header">
         <div className="site-title-stack">
-          <Button icon={<ArrowLeft size={16} />} disabled={isMutating} onClick={() => navigate('/sites')}>
+          <Button variant="outline" disabled={isMutating} onClick={() => navigate('/sites')}>
+            <ArrowLeft size={16} />
             {t('common.back')}
           </Button>
           <div>
@@ -252,19 +261,26 @@ export default function SiteDetailPage() {
             <p title={site.domains.join(', ')}>{site.domains.join(', ')}</p>
           </div>
         </div>
-        <Space wrap className="site-detail-actions">
-          <Tag color={site.enabled ? 'green' : 'gray'}>{site.enabled ? t('common.online') : t('sites.disabled')}</Tag>
-          <Button status="danger" icon={<Trash2 size={16} />} disabled={isMutating} loading={deleteMutation.isPending} onClick={() => {
-            if (window.confirm(t('sites.deleteConfirm'))) {
-              deleteMutation.mutate();
-            }
-          }}>
+        <div className="site-detail-actions flex flex-wrap items-center gap-2">
+          <Badge variant={site.enabled ? 'success' : 'secondary'}>{site.enabled ? t('common.online') : t('sites.disabled')}</Badge>
+          <Button
+            variant="destructive"
+            disabled={isMutating}
+            loading={deleteMutation.isPending}
+            onClick={() => {
+              if (window.confirm(t('sites.deleteConfirm'))) {
+                deleteMutation.mutate();
+              }
+            }}
+          >
+            <Trash2 size={16} />
             {t('common.delete')}
           </Button>
-          <Button type="primary" icon={<Save size={16} />} disabled={isMutating} loading={saveMutation.isPending} onClick={saveSite}>
+          <Button disabled={isMutating} loading={saveMutation.isPending} onClick={saveSite}>
+            <Save size={16} />
             {t('common.save')}
           </Button>
-        </Space>
+        </div>
       </header>
 
       <div className="site-detail-summary">
@@ -275,27 +291,58 @@ export default function SiteDetailPage() {
       </div>
 
       <fieldset className="panel site-detail-panel site-detail-fieldset" disabled={isMutating} aria-busy={isMutating}>
-        <Tabs defaultActiveTab="basic" className="site-detail-tabs">
-          <Tabs.TabPane key="basic" title={<span className="tab-title"><Network size={15} />{t('sites.stepBasic')}</span>}>
+        <Tabs defaultValue="basic" className="site-detail-tabs">
+          <TabsList className="flex flex-wrap h-auto gap-1">
+            <TabsTrigger value="basic" className="tab-title"><Network size={15} />{t('sites.stepBasic')}</TabsTrigger>
+            <TabsTrigger value="tls" className="tab-title"><LockKeyhole size={15} />{t('sites.stepTls')}</TabsTrigger>
+            <TabsTrigger value="protection" className="tab-title"><ShieldCheck size={15} />{t('sites.stepProtection')}</TabsTrigger>
+            <TabsTrigger value="health" className="tab-title"><CheckCircle2 size={15} />{t('sites.healthCheck')}</TabsTrigger>
+            <TabsTrigger value="rewrite">{t('sites.rewrite')}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="basic" forceMount className="data-[state=inactive]:hidden">
             <section className="site-form-section">
               <header className="site-form-section-header">
                 <strong>{t('sites.basicIngress')}</strong>
                 <span>{t('sites.basicIngressHint')}</span>
               </header>
               <div className="site-detail-grid">
-              <label><span>{t('sites.name')}</span><Input value={site.name} onChange={(value) => updateField('name', value)} /></label>
-              <label><span>{t('sites.domain')}</span><Input value={asCSV(site.domains)} placeholder="example.com, www.example.com" onChange={(value) => updateField('domains', splitList(value))} /><em>{t('sites.domainHint')}</em></label>
-              <label><span>{t('sites.upstream')}</span><Input value={asCSV(site.upstreams)} placeholder="127.0.0.1:9000, https://origin.example.com" onChange={(value) => updateField('upstreams', splitList(value))} /><em>{t('sites.upstreamHint')}</em></label>
-              <label><span>{t('sites.listen')}</span><InputNumber value={site.listen_port || undefined} min={1} max={65535} onChange={(value) => updateField('listen_port', value == null ? 0 : Number(value))} /></label>
-              <label>
-                <span>{t('sites.loadBalance')}</span>
-                <Select value={site.loadbalance} onChange={(value) => updateField('loadbalance', value as string)}>
-                  <Select.Option value="round_robin">{t('sites.lbRoundRobin')}</Select.Option>
-                  <Select.Option value="weighted">{t('sites.lbWeighted')}</Select.Option>
-                  <Select.Option value="ip_hash">{t('sites.lbIPHash')}</Select.Option>
-                </Select>
-              </label>
-              <label className="switch-line"><span>{t('common.online')}</span><Switch checked={site.enabled} onChange={(value) => updateField('enabled', value)} /></label>
+                <label><span>{t('sites.name')}</span><Input value={site.name} onChange={(e) => updateField('name', e.target.value)} /></label>
+                <label>
+                  <span>{t('sites.domain')}</span>
+                  <Input value={asCSV(site.domains)} placeholder="example.com, www.example.com" onChange={(e) => updateField('domains', splitList(e.target.value))} />
+                  <em>{t('sites.domainHint')}</em>
+                </label>
+                <label>
+                  <span>{t('sites.upstream')}</span>
+                  <Input value={asCSV(site.upstreams)} placeholder="127.0.0.1:9000, https://origin.example.com" onChange={(e) => updateField('upstreams', splitList(e.target.value))} />
+                  <em>{t('sites.upstreamHint')}</em>
+                </label>
+                <label>
+                  <span>{t('sites.listen')}</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={site.listen_port || ''}
+                    onChange={(e) => updateField('listen_port', e.target.value === '' ? 0 : Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>{t('sites.loadBalance')}</span>
+                  <Select value={site.loadbalance} onValueChange={(value) => updateField('loadbalance', value)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="round_robin">{t('sites.lbRoundRobin')}</SelectItem>
+                      <SelectItem value="weighted">{t('sites.lbWeighted')}</SelectItem>
+                      <SelectItem value="ip_hash">{t('sites.lbIPHash')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <label className="switch-line">
+                  <span>{t('common.online')}</span>
+                  <Switch checked={site.enabled} onCheckedChange={(value) => updateField('enabled', value)} />
+                </label>
               </div>
             </section>
 
@@ -305,64 +352,120 @@ export default function SiteDetailPage() {
                 <span>{t('sites.originSettingsHint')}</span>
               </header>
               <div className="site-detail-grid">
-              <label>
-                <span>{t('sites.originScheme')}</span>
-                <Select value={site.advanced.origin.scheme} onChange={(value) => updateAdvanced('origin', { scheme: value as string })}>
-                  <Select.Option value="http">HTTP</Select.Option>
-                  <Select.Option value="https">HTTPS</Select.Option>
-                </Select>
-              </label>
-              <label className="switch-line"><span>{t('sites.passHost')}</span><Switch checked={site.advanced.origin.pass_host} onChange={(value) => updateAdvanced('origin', { pass_host: value })} /></label>
-              <label><span>{t('sites.hostHeader')}</span><Input value={site.advanced.origin.host_header} onChange={(value) => updateAdvanced('origin', { host_header: value })} /></label>
-              <label><span>{t('sites.proxyTimeout')}</span><DurationStringInput value={site.advanced.origin.proxy_timeout} fallback="30s" onChange={(value) => updateAdvanced('origin', { proxy_timeout: value })} /><em>{t('sites.proxyTimeoutHint')}</em></label>
-              <label><span>{t('sites.maxBody')}</span><ByteUnitInput value={site.advanced.origin.max_body_bytes} minBytes={1024} onChange={(value) => updateAdvanced('origin', { max_body_bytes: value })} /><em>{t('sites.maxBodyHint')}</em></label>
-              <label><span>{t('sites.maxHeader')}</span><ByteUnitInput value={site.advanced.origin.max_header_size} minBytes={1024} defaultUnit="KB" onChange={(value) => updateAdvanced('origin', { max_header_size: value })} /><em>{t('sites.maxHeaderHint')}</em></label>
+                <label>
+                  <span>{t('sites.originScheme')}</span>
+                  <Select value={site.advanced.origin.scheme} onValueChange={(value) => updateAdvanced('origin', { scheme: value })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="http">HTTP</SelectItem>
+                      <SelectItem value="https">HTTPS</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <label className="switch-line">
+                  <span>{t('sites.passHost')}</span>
+                  <Switch checked={site.advanced.origin.pass_host} onCheckedChange={(value) => updateAdvanced('origin', { pass_host: value })} />
+                </label>
+                <label>
+                  <span>{t('sites.hostHeader')}</span>
+                  <Input value={site.advanced.origin.host_header} onChange={(e) => updateAdvanced('origin', { host_header: e.target.value })} />
+                </label>
+                <label>
+                  <span>{t('sites.proxyTimeout')}</span>
+                  <DurationStringInput value={site.advanced.origin.proxy_timeout} fallback="30s" onChange={(value) => updateAdvanced('origin', { proxy_timeout: value })} />
+                  <em>{t('sites.proxyTimeoutHint')}</em>
+                </label>
+                <label>
+                  <span>{t('sites.maxBody')}</span>
+                  <ByteUnitInput value={site.advanced.origin.max_body_bytes} minBytes={1024} onChange={(value) => updateAdvanced('origin', { max_body_bytes: value })} />
+                  <em>{t('sites.maxBodyHint')}</em>
+                </label>
+                <label>
+                  <span>{t('sites.maxHeader')}</span>
+                  <ByteUnitInput value={site.advanced.origin.max_header_size} minBytes={1024} defaultUnit="KB" onChange={(value) => updateAdvanced('origin', { max_header_size: value })} />
+                  <em>{t('sites.maxHeaderHint')}</em>
+                </label>
               </div>
             </section>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="tls" title={<span className="tab-title"><LockKeyhole size={15} />{t('sites.stepTls')}</span>}>
+          <TabsContent value="tls" forceMount className="data-[state=inactive]:hidden">
             <div className="site-detail-grid">
-              <label className="switch-line"><span>{t('sites.enableSsl')}</span><Switch checked={site.enable_ssl} onChange={(value) => updateField('enable_ssl', value)} /></label>
+              <label className="switch-line">
+                <span>{t('sites.enableSsl')}</span>
+                <Switch checked={site.enable_ssl} onCheckedChange={(value) => updateField('enable_ssl', value)} />
+              </label>
               <label>
                 <span>{t('sites.certificateMode')}</span>
-                <Select value={site.advanced.certificate.mode} onChange={(value) => updateAdvanced('certificate', { mode: value as string })}>
-                  <Select.Option value="file">{t('sites.certFile')}</Select.Option>
-                  <Select.Option value="inline">{t('sites.certInline')}</Select.Option>
-                  <Select.Option value="acme">{t('sites.certAcme')}</Select.Option>
+                <Select value={site.advanced.certificate.mode} onValueChange={(value) => updateAdvanced('certificate', { mode: value })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="file">{t('sites.certFile')}</SelectItem>
+                    <SelectItem value="inline">{t('sites.certInline')}</SelectItem>
+                    <SelectItem value="acme">{t('sites.certAcme')}</SelectItem>
+                  </SelectContent>
                 </Select>
               </label>
               {site.enable_ssl && site.advanced.certificate.mode === 'file' && (
                 <>
-                  <label className="wide-field system-path-field"><span>{t('sites.certFile')}</span><Input value={site.cert_file ?? ''} onChange={(value) => updateField('cert_file', value)} /></label>
-                  <label className="wide-field system-path-field"><span>{t('sites.keyFile')}</span><Input value={site.key_file ?? ''} onChange={(value) => updateField('key_file', value)} /></label>
+                  <label className="wide-field system-path-field">
+                    <span>{t('sites.certFile')}</span>
+                    <Input value={site.cert_file ?? ''} onChange={(e) => updateField('cert_file', e.target.value)} />
+                  </label>
+                  <label className="wide-field system-path-field">
+                    <span>{t('sites.keyFile')}</span>
+                    <Input value={site.key_file ?? ''} onChange={(e) => updateField('key_file', e.target.value)} />
+                  </label>
                 </>
               )}
               {site.enable_ssl && site.advanced.certificate.mode === 'inline' && (
                 <>
-                  <label className="wide-field"><span>{t('sites.certPem')}</span><Input.TextArea value={site.advanced.certificate.cert_pem ?? ''} autoSize={{ minRows: 4, maxRows: 8 }} onChange={(value) => updateAdvanced('certificate', { cert_pem: value })} /></label>
-                  <label className="wide-field"><span>{t('sites.keyPem')}</span><Input.TextArea value={site.advanced.certificate.key_pem ?? ''} autoSize={{ minRows: 4, maxRows: 8 }} placeholder={site.advanced.certificate.cert_pem ? t('sites.keyPemUnchangedHint') : undefined} onChange={(value) => updateAdvanced('certificate', { key_pem: value })} /></label>
+                  <label className="wide-field">
+                    <span>{t('sites.certPem')}</span>
+                    <Textarea value={site.advanced.certificate.cert_pem ?? ''} rows={4} onChange={(e) => updateAdvanced('certificate', { cert_pem: e.target.value })} />
+                  </label>
+                  <label className="wide-field">
+                    <span>{t('sites.keyPem')}</span>
+                    <Textarea
+                      value={site.advanced.certificate.key_pem ?? ''}
+                      rows={4}
+                      placeholder={site.advanced.certificate.cert_pem ? t('sites.keyPemUnchangedHint') : undefined}
+                      onChange={(e) => updateAdvanced('certificate', { key_pem: e.target.value })}
+                    />
+                  </label>
                 </>
               )}
-              <label className="switch-line"><span>{t('sites.autoRenew')}</span><Switch checked={site.advanced.certificate.auto_renew} onChange={(value) => updateAdvanced('certificate', { auto_renew: value })} /></label>
-              <label className="switch-line"><span>{t('sites.forceHttps')}</span><Switch checked={site.advanced.certificate.force_https} onChange={(value) => updateAdvanced('certificate', { force_https: value })} /></label>
-              <label className="switch-line"><span>{t('sites.hsts')}</span><Switch checked={site.advanced.certificate.hsts} onChange={(value) => updateAdvanced('certificate', { hsts: value })} /></label>
+              <label className="switch-line">
+                <span>{t('sites.autoRenew')}</span>
+                <Switch checked={site.advanced.certificate.auto_renew} onCheckedChange={(value) => updateAdvanced('certificate', { auto_renew: value })} />
+              </label>
+              <label className="switch-line">
+                <span>{t('sites.forceHttps')}</span>
+                <Switch checked={site.advanced.certificate.force_https} onCheckedChange={(value) => updateAdvanced('certificate', { force_https: value })} />
+              </label>
+              <label className="switch-line">
+                <span>{t('sites.hsts')}</span>
+                <Switch checked={site.advanced.certificate.hsts} onCheckedChange={(value) => updateAdvanced('certificate', { hsts: value })} />
+              </label>
               <label>
                 <span>{t('sites.minTls')}</span>
-                <Select value={site.advanced.certificate.min_tls_version} onChange={(value) => updateAdvanced('certificate', { min_tls_version: value as string })}>
-                  <Select.Option value="1.2">TLS 1.2</Select.Option>
-                  <Select.Option value="1.3">TLS 1.3</Select.Option>
+                <Select value={site.advanced.certificate.min_tls_version} onValueChange={(value) => updateAdvanced('certificate', { min_tls_version: value })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1.2">TLS 1.2</SelectItem>
+                    <SelectItem value="1.3">TLS 1.3</SelectItem>
+                  </SelectContent>
                 </Select>
               </label>
               {(site.advanced.certificate.acme.last_status || site.advanced.certificate.acme.expires_at) && (
-                <div className="wide-field site-acme-status">
+                <div className="wide-field site-acme-status flex flex-wrap gap-2">
                   {site.advanced.certificate.acme.last_status && (
-                    <Tag color={site.advanced.certificate.acme.last_status === 'succeeded' ? 'green' : 'orange'}>
+                    <Badge variant={site.advanced.certificate.acme.last_status === 'succeeded' ? 'success' : 'warning'}>
                       {t('sites.acmeLastStatus')}: {stepStatusText(site.advanced.certificate.acme.last_status, t)}
-                    </Tag>
+                    </Badge>
                   )}
                   {site.advanced.certificate.acme.expires_at && (
-                    <Tag>{t('sites.acmeExpires')}: {new Date(site.advanced.certificate.acme.expires_at).toLocaleString()}</Tag>
+                    <Badge variant="outline">{t('sites.acmeExpires')}: {new Date(site.advanced.certificate.acme.expires_at).toLocaleString()}</Badge>
                   )}
                 </div>
               )}
@@ -386,55 +489,64 @@ export default function SiteDetailPage() {
               onRetryProviders={() => refetchACMEProviders()}
               t={t}
             />
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="protection" title={<span className="tab-title"><ShieldCheck size={15} />{t('sites.stepProtection')}</span>}>
+          <TabsContent value="protection" forceMount className="data-[state=inactive]:hidden">
             <section className="site-form-section">
               <header className="site-form-section-header">
                 <strong>{t('sites.sitePolicy')}</strong>
                 <span>{t('sites.sitePolicyHint')}</span>
               </header>
               <div className="site-detail-grid">
-              <label className="switch-line"><span>{t('sites.wafEnabled')}</span><Switch checked={site.waf_enabled} onChange={(value) => updateField('waf_enabled', value)} /></label>
-              <label className="switch-line">
-                <span>{t('sites.accessLogEnabled')}</span>
-                <Switch
-                  checked={site.advanced.access_log_enabled !== false}
-                  onChange={(value) => setSite((current) => (current
-                    ? { ...current, advanced: { ...current.advanced, access_log_enabled: value } }
-                    : current))}
-                />
-              </label>
-              <em className="site-field-hint site-field-hint-wide">{t('sites.accessLogEnabledHint')}</em>
-              <label>
-                <span>{t('sites.wafMode')}</span>
-                <Select value={site.waf_mode} onChange={(value) => updateField('waf_mode', value as string)}>
-                  <Select.Option value="block">{t('sites.modeBlock')}</Select.Option>
-                  <Select.Option value="monitor">{t('sites.modeMonitor')}</Select.Option>
-                  <Select.Option value="off">{t('sites.modeOff')}</Select.Option>
-                </Select>
-              </label>
-              {[
-                ['web_attack', t('sites.webAttackLevel')],
-                ['api_security', t('sites.apiSecurityLevel')],
-                ['bot_cc', t('sites.botCCLevel')],
-                ['threat_intel', t('sites.threatIntelLevel')],
-              ].map(([key, label]) => (
-                <label key={String(key)}>
-                  <span>{label}</span>
-                  <Select
-                    value={site.advanced.policy[key as keyof Site['advanced']['policy']] || ''}
-                    onChange={(value) => updateAdvanced('policy', { [key]: value } as Partial<Site['advanced']['policy']>)}
-                  >
-                    <Select.Option value="">{t('sites.levelInherit')}</Select.Option>
-                    <Select.Option value="off">{t('sites.levelOff')}</Select.Option>
-                    <Select.Option value="low">{t('sites.levelLow')}</Select.Option>
-                    <Select.Option value="smart">{t('sites.levelSmart')}</Select.Option>
-                    <Select.Option value="high">{t('sites.levelHigh')}</Select.Option>
-                    <Select.Option value="strict">{t('sites.levelStrict')}</Select.Option>
+                <label className="switch-line">
+                  <span>{t('sites.wafEnabled')}</span>
+                  <Switch checked={site.waf_enabled} onCheckedChange={(value) => updateField('waf_enabled', value)} />
+                </label>
+                <label className="switch-line">
+                  <span>{t('sites.accessLogEnabled')}</span>
+                  <Switch
+                    checked={site.advanced.access_log_enabled !== false}
+                    onCheckedChange={(value) => setSite((current) => (current
+                      ? { ...current, advanced: { ...current.advanced, access_log_enabled: value } }
+                      : current))}
+                  />
+                </label>
+                <em className="site-field-hint site-field-hint-wide">{t('sites.accessLogEnabledHint')}</em>
+                <label>
+                  <span>{t('sites.wafMode')}</span>
+                  <Select value={site.waf_mode} onValueChange={(value) => updateField('waf_mode', value)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="block">{t('sites.modeBlock')}</SelectItem>
+                      <SelectItem value="monitor">{t('sites.modeMonitor')}</SelectItem>
+                      <SelectItem value="off">{t('sites.modeOff')}</SelectItem>
+                    </SelectContent>
                   </Select>
                 </label>
-              ))}
+                {[
+                  ['web_attack', t('sites.webAttackLevel')],
+                  ['api_security', t('sites.apiSecurityLevel')],
+                  ['bot_cc', t('sites.botCCLevel')],
+                  ['threat_intel', t('sites.threatIntelLevel')],
+                ].map(([key, label]) => (
+                  <label key={String(key)}>
+                    <span>{label}</span>
+                    <Select
+                      value={site.advanced.policy[key as keyof Site['advanced']['policy']] || '__inherit__'}
+                      onValueChange={(value) => updateAdvanced('policy', { [key]: value === '__inherit__' ? '' : value } as Partial<Site['advanced']['policy']>)}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__inherit__">{t('sites.levelInherit')}</SelectItem>
+                        <SelectItem value="off">{t('sites.levelOff')}</SelectItem>
+                        <SelectItem value="low">{t('sites.levelLow')}</SelectItem>
+                        <SelectItem value="smart">{t('sites.levelSmart')}</SelectItem>
+                        <SelectItem value="high">{t('sites.levelHigh')}</SelectItem>
+                        <SelectItem value="strict">{t('sites.levelStrict')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                ))}
               </div>
             </section>
 
@@ -444,28 +556,28 @@ export default function SiteDetailPage() {
                 <span>{t('sites.detectorsHint')}</span>
               </header>
               <div className="site-protection-switch-grid">
-              {[
-                ['semantic_sql', 'SQLi'],
-                ['semantic_xss', 'XSS'],
-                ['semantic_rce', 'RCE'],
-                ['semantic_lfi', 'LFI'],
-                ['semantic_xxe', 'XXE'],
-                ['semantic_ssrf', 'SSRF'],
-                ['semantic_nosql', 'NoSQLi'],
-                ['semantic_ssti', 'SSTI'],
-                ['bot', t('protection.bot')],
-                ['ratelimit', t('protection.ratelimit')],
-                ['acl', t('protection.acl')],
-                ['apisec', t('nav.apisec')],
-              ].map(([key, label]) => (
-                <label className="switch-line" key={String(key)}>
-                  <span>{label}</span>
-                  <Switch
-                    checked={Boolean(site.advanced.protection[key as keyof Site['advanced']['protection']])}
-                    onChange={(value) => updateAdvanced('protection', { [key]: value } as Partial<Site['advanced']['protection']>)}
-                  />
-                </label>
-              ))}
+                {[
+                  ['semantic_sql', 'SQLi'],
+                  ['semantic_xss', 'XSS'],
+                  ['semantic_rce', 'RCE'],
+                  ['semantic_lfi', 'LFI'],
+                  ['semantic_xxe', 'XXE'],
+                  ['semantic_ssrf', 'SSRF'],
+                  ['semantic_nosql', 'NoSQLi'],
+                  ['semantic_ssti', 'SSTI'],
+                  ['bot', t('protection.bot')],
+                  ['ratelimit', t('protection.ratelimit')],
+                  ['acl', t('protection.acl')],
+                  ['apisec', t('nav.apisec')],
+                ].map(([key, label]) => (
+                  <label className="switch-line" key={String(key)}>
+                    <span>{label}</span>
+                    <Switch
+                      checked={Boolean(site.advanced.protection[key as keyof Site['advanced']['protection']])}
+                      onCheckedChange={(value) => updateAdvanced('protection', { [key]: value } as Partial<Site['advanced']['protection']>)}
+                    />
+                  </label>
+                ))}
               </div>
             </section>
 
@@ -479,12 +591,15 @@ export default function SiteDetailPage() {
                   <span>{t('sites.budgetExhaustedPolicy')}</span>
                   <Select
                     value={site.advanced.semantic_policy?.budget_exhausted_policy || 'auto'}
-                    onChange={(value) => updateAdvanced('semantic_policy', { budget_exhausted_policy: String(value || 'auto') })}
+                    onValueChange={(value) => updateAdvanced('semantic_policy', { budget_exhausted_policy: value || 'auto' })}
                   >
-                    <Select.Option value="auto">{t('sites.budgetPolicyAuto')}</Select.Option>
-                    <Select.Option value="open">{t('sites.budgetPolicyOpen')}</Select.Option>
-                    <Select.Option value="observe">{t('sites.budgetPolicyObserve')}</Select.Option>
-                    <Select.Option value="closed">{t('sites.budgetPolicyClosed')}</Select.Option>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">{t('sites.budgetPolicyAuto')}</SelectItem>
+                      <SelectItem value="open">{t('sites.budgetPolicyOpen')}</SelectItem>
+                      <SelectItem value="observe">{t('sites.budgetPolicyObserve')}</SelectItem>
+                      <SelectItem value="closed">{t('sites.budgetPolicyClosed')}</SelectItem>
+                    </SelectContent>
                   </Select>
                   <em>{t('sites.budgetExhaustedPolicyHint')}</em>
                 </label>
@@ -493,7 +608,7 @@ export default function SiteDetailPage() {
                   <Input
                     value={asCSV(site.advanced.semantic_policy?.path_allowlist || [])}
                     placeholder="/health, /static/*, /metrics"
-                    onChange={(value) => updateAdvanced('semantic_policy', { path_allowlist: splitList(value) })}
+                    onChange={(e) => updateAdvanced('semantic_policy', { path_allowlist: splitList(e.target.value) })}
                   />
                   <em>{t('sites.pathAllowlistHint')}</em>
                 </label>
@@ -502,7 +617,7 @@ export default function SiteDetailPage() {
                   <Input
                     value={asCSV(site.advanced.semantic_policy?.param_allowlist || [])}
                     placeholder="content, body, description"
-                    onChange={(value) => updateAdvanced('semantic_policy', { param_allowlist: splitList(value) })}
+                    onChange={(e) => updateAdvanced('semantic_policy', { param_allowlist: splitList(e.target.value) })}
                   />
                   <em>{t('sites.paramAllowlistHint')}</em>
                 </label>
@@ -515,49 +630,124 @@ export default function SiteDetailPage() {
                 <span>{t('sites.responseAndAccessHint')}</span>
               </header>
               <div className="site-detail-grid">
-              <label className="switch-line"><span>{t('sites.responseInspection')}</span><Switch checked={site.advanced.response.enabled} onChange={(value) => updateAdvanced('response', { enabled: value })} /></label>
-              <label><span>{t('sites.responseMaxBody')}</span><ByteUnitInput value={site.advanced.response.max_body_bytes} minBytes={1024} onChange={(value) => updateAdvanced('response', { max_body_bytes: value })} /></label>
-              <label className="wide-field"><span>{t('sites.sensitivePatterns')}</span><Input value={asCSV(site.advanced.response.sensitive_patterns)} placeholder="password, token, secret" onChange={(value) => updateAdvanced('response', { sensitive_patterns: splitList(value) })} /><em>{t('sites.sensitivePatternsHint')}</em></label>
-              <label className="switch-line"><span>{t('sites.authEnabled')}</span><Switch checked={site.advanced.access_control.auth_enabled} onChange={(value) => updateAdvanced('access_control', { auth_enabled: value })} /></label>
-              <label className="switch-line"><span>{t('sites.waitingRoom')}</span><Switch checked={site.advanced.access_control.waiting_room} onChange={(value) => updateAdvanced('access_control', { waiting_room: value })} /></label>
-              <label className="switch-line"><span>{t('sites.dynamicGuard')}</span><Switch checked={site.advanced.access_control.dynamic_guard} onChange={(value) => updateAdvanced('access_control', { dynamic_guard: value })} /></label>
-              <label className="wide-field"><span>{t('sites.trustedCidrs')}</span><Input value={asCSV(site.advanced.access_control.trusted_cidrs)} placeholder="203.0.113.10, 198.51.100.0/24" onChange={(value) => updateAdvanced('access_control', { trusted_cidrs: splitList(value) })} /><em>{t('sites.trustedCidrsHint')}</em></label>
+                <label className="switch-line">
+                  <span>{t('sites.responseInspection')}</span>
+                  <Switch checked={site.advanced.response.enabled} onCheckedChange={(value) => updateAdvanced('response', { enabled: value })} />
+                </label>
+                <label>
+                  <span>{t('sites.responseMaxBody')}</span>
+                  <ByteUnitInput value={site.advanced.response.max_body_bytes} minBytes={1024} onChange={(value) => updateAdvanced('response', { max_body_bytes: value })} />
+                </label>
+                <label className="wide-field">
+                  <span>{t('sites.sensitivePatterns')}</span>
+                  <Input value={asCSV(site.advanced.response.sensitive_patterns)} placeholder="password, token, secret" onChange={(e) => updateAdvanced('response', { sensitive_patterns: splitList(e.target.value) })} />
+                  <em>{t('sites.sensitivePatternsHint')}</em>
+                </label>
+                <label className="switch-line">
+                  <span>{t('sites.authEnabled')}</span>
+                  <Switch checked={site.advanced.access_control.auth_enabled} onCheckedChange={(value) => updateAdvanced('access_control', { auth_enabled: value })} />
+                </label>
+                <label className="switch-line">
+                  <span>{t('sites.waitingRoom')}</span>
+                  <Switch checked={site.advanced.access_control.waiting_room} onCheckedChange={(value) => updateAdvanced('access_control', { waiting_room: value })} />
+                </label>
+                <label className="switch-line">
+                  <span>{t('sites.dynamicGuard')}</span>
+                  <Switch checked={site.advanced.access_control.dynamic_guard} onCheckedChange={(value) => updateAdvanced('access_control', { dynamic_guard: value })} />
+                </label>
+                <label className="wide-field">
+                  <span>{t('sites.trustedCidrs')}</span>
+                  <Input value={asCSV(site.advanced.access_control.trusted_cidrs)} placeholder="203.0.113.10, 198.51.100.0/24" onChange={(e) => updateAdvanced('access_control', { trusted_cidrs: splitList(e.target.value) })} />
+                  <em>{t('sites.trustedCidrsHint')}</em>
+                </label>
               </div>
             </section>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="health" title={<span className="tab-title"><CheckCircle2 size={15} />{t('sites.healthCheck')}</span>}>
+          <TabsContent value="health" forceMount className="data-[state=inactive]:hidden">
             <div className="site-detail-grid">
-              <label className="switch-line"><span>{t('sites.healthCheck')}</span><Switch checked={site.advanced.health_check.enabled} onChange={(value) => updateAdvanced('health_check', { enabled: value })} /></label>
-              <label><span>{t('sites.healthPath')}</span><Input value={site.advanced.health_check.path} onChange={(value) => updateAdvanced('health_check', { path: value })} /></label>
-              <label><span>{t('sites.healthInterval')}</span><DurationStringInput value={site.advanced.health_check.interval} fallback="30s" onChange={(value) => updateAdvanced('health_check', { interval: value })} /></label>
-              <label><span>{t('sites.healthTimeout')}</span><DurationStringInput value={site.advanced.health_check.timeout} fallback="3s" onChange={(value) => updateAdvanced('health_check', { timeout: value })} /></label>
-              <label><span>{t('sites.healthyThreshold')}</span><InputNumber value={site.advanced.health_check.healthy_threshold} min={1} onChange={(value) => updateAdvanced('health_check', { healthy_threshold: Number(value || 1) })} /></label>
-              <label><span>{t('sites.unhealthyThreshold')}</span><InputNumber value={site.advanced.health_check.unhealthy_threshold} min={1} onChange={(value) => updateAdvanced('health_check', { unhealthy_threshold: Number(value || 1) })} /></label>
+              <label className="switch-line">
+                <span>{t('sites.healthCheck')}</span>
+                <Switch checked={site.advanced.health_check.enabled} onCheckedChange={(value) => updateAdvanced('health_check', { enabled: value })} />
+              </label>
+              <label>
+                <span>{t('sites.healthPath')}</span>
+                <Input value={site.advanced.health_check.path} onChange={(e) => updateAdvanced('health_check', { path: e.target.value })} />
+              </label>
+              <label>
+                <span>{t('sites.healthInterval')}</span>
+                <DurationStringInput value={site.advanced.health_check.interval} fallback="30s" onChange={(value) => updateAdvanced('health_check', { interval: value })} />
+              </label>
+              <label>
+                <span>{t('sites.healthTimeout')}</span>
+                <DurationStringInput value={site.advanced.health_check.timeout} fallback="3s" onChange={(value) => updateAdvanced('health_check', { timeout: value })} />
+              </label>
+              <label>
+                <span>{t('sites.healthyThreshold')}</span>
+                <Input
+                  type="number"
+                  min={1}
+                  value={site.advanced.health_check.healthy_threshold}
+                  onChange={(e) => updateAdvanced('health_check', { healthy_threshold: Number(e.target.value || 1) })}
+                />
+              </label>
+              <label>
+                <span>{t('sites.unhealthyThreshold')}</span>
+                <Input
+                  type="number"
+                  min={1}
+                  value={site.advanced.health_check.unhealthy_threshold}
+                  onChange={(e) => updateAdvanced('health_check', { unhealthy_threshold: Number(e.target.value || 1) })}
+                />
+              </label>
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="rewrite" title={t('sites.rewrite')}>
+          <TabsContent value="rewrite" forceMount className="data-[state=inactive]:hidden">
             <div className="rewrite-toolbar">
-              <Button icon={<Plus size={15} />} onClick={addRewrite}>{t('common.add')}</Button>
+              <Button variant="outline" onClick={addRewrite}>
+                <Plus size={15} />
+                {t('common.add')}
+              </Button>
             </div>
             <div className="rewrite-list">
               {site.advanced.rewrite.map((rule, index) => (
                 <div className="rewrite-row" key={rule.id}>
                   <div className="rewrite-row-head">
-                    <label className="switch-line"><span>{t('sites.rewriteEnabled')}</span><Switch checked={rule.enabled} onChange={(value) => updateRewrite(index, { enabled: value })} /></label>
-                    <Button status="danger" icon={<Trash2 size={15} />} onClick={() => removeRewrite(rule.id)}>{t('common.delete')}</Button>
+                    <label className="switch-line">
+                      <span>{t('sites.rewriteEnabled')}</span>
+                      <Switch checked={rule.enabled} onCheckedChange={(value) => updateRewrite(index, { enabled: value })} />
+                    </label>
+                    <Button variant="destructive" size="sm" onClick={() => removeRewrite(rule.id)}>
+                      <Trash2 size={15} />
+                      {t('common.delete')}
+                    </Button>
                   </div>
                   <div className="rewrite-row-grid">
-                    <label><span>{t('sites.rewritePattern')}</span><Input value={rule.pattern} placeholder="^/old/(.*)$" onChange={(value) => updateRewrite(index, { pattern: value })} /></label>
-                    <label><span>{t('sites.rewriteReplacement')}</span><Input value={rule.replacement} placeholder="/new/$1" onChange={(value) => updateRewrite(index, { replacement: value })} /></label>
-                    <label><span>{t('sites.rewriteCode')}</span><InputNumber value={rule.redirect_code} min={0} max={308} onChange={(value) => updateRewrite(index, { redirect_code: Number(value || 0) })} /></label>
+                    <label>
+                      <span>{t('sites.rewritePattern')}</span>
+                      <Input value={rule.pattern} placeholder="^/old/(.*)$" onChange={(e) => updateRewrite(index, { pattern: e.target.value })} />
+                    </label>
+                    <label>
+                      <span>{t('sites.rewriteReplacement')}</span>
+                      <Input value={rule.replacement} placeholder="/new/$1" onChange={(e) => updateRewrite(index, { replacement: e.target.value })} />
+                    </label>
+                    <label>
+                      <span>{t('sites.rewriteCode')}</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={308}
+                        value={rule.redirect_code}
+                        onChange={(e) => updateRewrite(index, { redirect_code: Number(e.target.value || 0) })}
+                      />
+                    </label>
                   </div>
                 </div>
               ))}
               {!site.advanced.rewrite.length && <Empty description={t('sites.noRewrite')} />}
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
         </Tabs>
       </fieldset>
     </section>
@@ -598,12 +788,15 @@ function DurationStringInput({
   };
   return (
     <div className="compound-input site-unit-input">
-      <InputNumber min={1} value={parts.amount} onChange={(next) => emit(next)} />
-      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as DurationUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
-        <Select.Option value="s">{t('common.seconds')}</Select.Option>
-        <Select.Option value="m">{t('common.minutes')}</Select.Option>
-        <Select.Option value="h">{t('common.hours')}</Select.Option>
-        <Select.Option value="d">{t('common.days')}</Select.Option>
+      <Input type="number" min={1} value={parts.amount} onChange={(e) => emit(e.target.value)} />
+      <Select value={unit} onValueChange={(next) => { const nextUnit = next as DurationUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="s">{t('common.seconds')}</SelectItem>
+          <SelectItem value="m">{t('common.minutes')}</SelectItem>
+          <SelectItem value="h">{t('common.hours')}</SelectItem>
+          <SelectItem value="d">{t('common.days')}</SelectItem>
+        </SelectContent>
       </Select>
     </div>
   );
@@ -631,11 +824,20 @@ function ByteUnitInput({
   };
   return (
     <div className="compound-input site-unit-input">
-      <InputNumber min={0} value={parts.amount} precision={parts.unit === 'GB' || parts.unit === 'MB' ? 2 : 0} onChange={(next) => emit(next)} />
-      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as ByteUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
-        <Select.Option value="KB">KB</Select.Option>
-        <Select.Option value="MB">MB</Select.Option>
-        <Select.Option value="GB">GB</Select.Option>
+      <Input
+        type="number"
+        min={0}
+        step={parts.unit === 'GB' || parts.unit === 'MB' ? 0.01 : 1}
+        value={parts.amount}
+        onChange={(e) => emit(e.target.value)}
+      />
+      <Select value={unit} onValueChange={(next) => { const nextUnit = next as ByteUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="KB">KB</SelectItem>
+          <SelectItem value="MB">MB</SelectItem>
+          <SelectItem value="GB">GB</SelectItem>
+        </SelectContent>
       </Select>
     </div>
   );
@@ -770,13 +972,15 @@ function ACMEWizard({
           <h2><KeyRound size={17} /> {t('sites.acmeWizardTitle')}</h2>
           <p>{t('sites.acmeWizardHint')}</p>
         </div>
-        <Space wrap>
-          <Tag color={site.advanced.certificate.mode === 'acme' ? 'green' : 'gray'}>{site.advanced.certificate.mode === 'acme' ? t('sites.certAcme') : t('sites.acmeNotActive')}</Tag>
-          <Button onClick={onEnableMode}>{t('sites.acmeUseMode')}</Button>
-          <Button type="primary" loading={loading} disabled={!canIssue} onClick={onIssue}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={site.advanced.certificate.mode === 'acme' ? 'success' : 'secondary'}>
+            {site.advanced.certificate.mode === 'acme' ? t('sites.certAcme') : t('sites.acmeNotActive')}
+          </Badge>
+          <Button variant="outline" onClick={onEnableMode}>{t('sites.acmeUseMode')}</Button>
+          <Button loading={loading} disabled={!canIssue} onClick={onIssue}>
             {t('sites.acmeIssue')}
           </Button>
-        </Space>
+        </div>
       </header>
 
       <div className="acme-layout">
@@ -784,59 +988,68 @@ function ACMEWizard({
           {providersError && (
             <div className="inline-error acme-provider-error" role="alert">
               <span>{providersError}</span>
-              <Button size="small" onClick={onRetryProviders}>{t('common.retry')}</Button>
+              <Button size="sm" onClick={onRetryProviders}>{t('common.retry')}</Button>
             </div>
           )}
           <div className="site-detail-grid acme-config-grid">
             <label>
               <span>{t('sites.acmeProvider')}</span>
               <Select
-                value={acme.provider_id}
-                allowClear
-                loading={providersLoading}
-                placeholder={t('sites.acmeProviderPlaceholder')}
-                onChange={(providerID) => {
+                value={acme.provider_id || undefined}
+                disabled={providersLoading}
+                onValueChange={(providerID) => {
                   const provider = providers.find((item) => item.id === providerID);
                   onPatchACME({ provider_id: String(providerID ?? ''), dns_api: provider?.api ?? acme.dns_api });
                 }}
               >
-                {providers.map((provider) => (
-                  <Select.Option key={provider.id} value={provider.id}>
-                    {provider.name || provider.id} · {provider.api}
-                  </Select.Option>
-                ))}
+                <SelectTrigger>
+                  <SelectValue placeholder={t('sites.acmeProviderPlaceholder')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {providers.map((provider) => (
+                    <SelectItem key={provider.id} value={provider.id}>
+                      {provider.name || provider.id} · {provider.api}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </label>
             <label>
               <span>{t('sites.acmeDNSAPI')}</span>
-              <Input value={acme.dns_api} placeholder="dns_cf" onChange={(dns_api) => onPatchACME({ dns_api })} />
+              <Input value={acme.dns_api} placeholder="dns_cf" onChange={(e) => onPatchACME({ dns_api: e.target.value })} />
             </label>
             <label>
               <span>{t('sites.acmeAccountEmail')}</span>
-              <Input value={acme.account_email} placeholder="ops@example.com" onChange={(account_email) => onPatchACME({ account_email })} />
+              <Input value={acme.account_email} placeholder="ops@example.com" onChange={(e) => onPatchACME({ account_email: e.target.value })} />
             </label>
             <label>
               <span>{t('sites.acmeServer')}</span>
-              <Select value={acme.server || 'letsencrypt'} onChange={(server) => onPatchACME({ server: server as string })}>
-                <Select.Option value="letsencrypt">Let's Encrypt</Select.Option>
-                <Select.Option value="zerossl">ZeroSSL</Select.Option>
-                <Select.Option value="https://acme-v02.api.letsencrypt.org/directory">Let's Encrypt API</Select.Option>
-                <Select.Option value="https://acme-staging-v02.api.letsencrypt.org/directory">Let's Encrypt Staging</Select.Option>
+              <Select value={acme.server || 'letsencrypt'} onValueChange={(server) => onPatchACME({ server })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="letsencrypt">Let&apos;s Encrypt</SelectItem>
+                  <SelectItem value="zerossl">ZeroSSL</SelectItem>
+                  <SelectItem value="https://acme-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt API</SelectItem>
+                  <SelectItem value="https://acme-staging-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt Staging</SelectItem>
+                </SelectContent>
               </Select>
             </label>
             <label>
               <span>{t('sites.acmeKeyType')}</span>
-              <Select value={acme.key_type || 'ec-256'} onChange={(key_type) => onPatchACME({ key_type: key_type as string })}>
-                <Select.Option value="ec-256">ECDSA P-256</Select.Option>
-                <Select.Option value="ec-384">ECDSA P-384</Select.Option>
-                <Select.Option value="2048">RSA 2048</Select.Option>
-                <Select.Option value="3072">RSA 3072</Select.Option>
-                <Select.Option value="4096">RSA 4096</Select.Option>
+              <Select value={acme.key_type || 'ec-256'} onValueChange={(key_type) => onPatchACME({ key_type })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ec-256">ECDSA P-256</SelectItem>
+                  <SelectItem value="ec-384">ECDSA P-384</SelectItem>
+                  <SelectItem value="2048">RSA 2048</SelectItem>
+                  <SelectItem value="3072">RSA 3072</SelectItem>
+                  <SelectItem value="4096">RSA 4096</SelectItem>
+                </SelectContent>
               </Select>
             </label>
             <label className="switch-line">
               <span>{t('sites.acmeNotify')}</span>
-              <Switch checked={acme.notify} onChange={(notify) => onPatchACME({ notify })} />
+              <Switch checked={acme.notify} onCheckedChange={(notify) => onPatchACME({ notify })} />
             </label>
           </div>
         </section>
@@ -847,20 +1060,25 @@ function ACMEWizard({
               <strong>{t('sites.acmeDNSEnv')}</strong>
               <span>{selectedProviderName ? t('sites.acmeProviderUsingSavedEnv', { name: selectedProviderName }) : t('sites.acmeDNSEnvHint')}</span>
             </div>
-            <Button size="small" icon={<Plus size={14} />} onClick={addEnv}>{t('common.add')}</Button>
+            <Button size="sm" variant="outline" onClick={addEnv}>
+              <Plus size={14} />
+              {t('common.add')}
+            </Button>
           </header>
           <div className="acme-env-list">
             {envRows.map((row) => (
               <div className="acme-env-row" key={row.id}>
-                <Input value={row.key} placeholder="CF_TOKEN" onChange={(key) => updateEnv(row.id, { key: key.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} />
-                <Input.Password value={row.value} placeholder={t('sites.acmeSecretValue')} onChange={(value) => updateEnv(row.id, { value })} />
+                <Input value={row.key} placeholder="CF_TOKEN" onChange={(e) => updateEnv(row.id, { key: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} />
+                <Input type="password" value={row.value} placeholder={t('sites.acmeSecretValue')} onChange={(e) => updateEnv(row.id, { value: e.target.value })} />
                 <Button
-                  icon={<Trash2 size={14} />}
-                  status="danger"
+                  size="icon"
+                  variant="destructive"
                   aria-label={t('common.delete')}
                   title={t('common.delete')}
                   onClick={() => removeEnv(row.id)}
-                />
+                >
+                  <Trash2 size={14} />
+                </Button>
               </div>
             ))}
             {!envRows.length && (
@@ -871,19 +1089,32 @@ function ACMEWizard({
       </div>
 
       <section className="acme-pipeline">
-        <Steps current={currentStep} size="small" className="acme-steps">
-          {acmeStepOrder.map((step) => {
+        <div className="acme-steps flex flex-wrap gap-2 mb-3">
+          {acmeStepOrder.map((step, index) => {
             const event = latestEvent(events, step);
-            const status = event?.status === 'failed' ? 'error' : event?.status === 'succeeded' ? 'finish' : event?.status === 'running' ? 'process' : 'wait';
-            return <Steps.Step key={step} status={status} title={t(`sites.acmeStep.${step}`)} description={event?.message} />;
+            const statusClass = event?.status === 'failed'
+              ? 'bg-destructive/15 text-destructive'
+              : event?.status === 'succeeded'
+                ? 'bg-emerald-500/15 text-emerald-700'
+                : event?.status === 'running' || index === currentStep
+                  ? 'bg-primary/15 text-primary'
+                  : 'bg-muted text-muted-foreground';
+            return (
+              <div key={step} className={`rounded-md px-2 py-1 text-xs ${statusClass}`} title={event?.message}>
+                <strong>{t(`sites.acmeStep.${step}`)}</strong>
+                {event?.message ? <div className="opacity-80">{event.message}</div> : null}
+              </div>
+            );
           })}
-        </Steps>
+        </div>
         <div className="acme-events">
           {events.length ? events.map((event, index) => (
             <details className={`acme-event acme-event-${event.status}`} key={`${event.step}-${event.timestamp}-${event.status}-${index}`} open={event.status === 'failed'}>
               <summary>
                 <span><Clock3 size={14} /> {t(`sites.acmeStep.${event.step}`)}</span>
-                <Tag color={event.status === 'failed' ? 'red' : event.status === 'succeeded' ? 'green' : 'blue'}>{stepStatusText(event.status, t)}</Tag>
+                <Badge variant={event.status === 'failed' ? 'destructive' : event.status === 'succeeded' ? 'success' : 'default'}>
+                  {stepStatusText(event.status, t)}
+                </Badge>
               </summary>
               <p>{event.message}</p>
               {event.output && <pre>{event.output}</pre>}

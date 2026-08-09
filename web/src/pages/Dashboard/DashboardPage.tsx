@@ -1,9 +1,24 @@
-import { Button, DatePicker, Message as ArcoMessage, Progress, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { Activity, ChevronRight, Cpu, HardDrive, Maximize2, MemoryStick, Recycle, RotateCcw, Server, ShieldCheck, Zap } from 'lucide-react';
+import {
+  Badge,
+  Button,
+  Input,
+  Progress,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Spinner,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  toast,
+} from '@/components/ui';
 import { fetchLogs, fetchMonitorSummary, fetchSites, reclaimSystemResources } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import type { LogEntry, LogQuery } from '../../types/api';
@@ -14,7 +29,6 @@ const realtimeWindowSeconds = 60;
 const totalsRefreshMs = 10_000;
 const refreshOptions = [1000, 3000, 5000, 10000];
 const customStatsRangeValue = -1;
-const dateTimePickerFormat = 'YYYY-MM-DD HH:mm';
 /** Wheel-zoom floor: never show a thinner slice than this fraction of the period. */
 const CHART_MIN_WINDOW_RATIO = 0.25;
 /**
@@ -35,7 +49,6 @@ const defaultCustomRange = () => {
   const start = new Date(end.getTime() - 6 * 60 * 60 * 1000);
   return [start.toISOString(), end.toISOString()] as [string, string];
 };
-const DateRangePicker = DatePicker.RangePicker;
 
 export default function DashboardPage() {
   const { t } = useTranslation();
@@ -100,13 +113,13 @@ export default function DashboardPage() {
       const actions = Array.isArray(result.actions) ? result.actions : [];
       const message = `${t('dashboard.reclaimResult')}: ${actions.filter((item) => item.ok).length}/${actions.length}`;
       if (result.ok) {
-        ArcoMessage.success(message);
+        toast.success(message);
       } else {
-        ArcoMessage.warning(message);
+        toast.warning(message);
       }
       queryClient.invalidateQueries({ queryKey: ['monitor-summary'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const snapshot = monitor?.snapshot;
   const entries = Array.isArray(periodLogs?.items) ? periodLogs.items : [];
@@ -115,7 +128,7 @@ export default function DashboardPage() {
   const hasSiteItems = Array.isArray(sites);
   // Recompute relative windows whenever period logs refetch so the chart end advances with "now".
   const statsWindow = useMemo(() => statsWindowFromState(statsRange, customRange), [customRange, statsRange, periodUpdatedAt]);
-  const customRangePickerValue = useMemo(() => customRange.map(formatDateTimePickerValue) as [string, string], [customRange]);
+  const customRangeLocal = useMemo(() => customRange.map(toDateTimeLocalValue) as [string, string], [customRange]);
   const traffic = useMemo(() => buildTraffic(entries, statsWindow.start, statsWindow.end), [entries, statsWindow.end, statsWindow.start]);
   const visibleTraffic = useMemo(() => sliceVisibleTraffic(traffic, chartWindowRatio), [chartWindowRatio, traffic]);
   const securityEntries = useMemo(() => entries.filter(isSecurityEvent), [entries]);
@@ -159,9 +172,9 @@ export default function DashboardPage() {
   const yMid = formatNumber(Math.round(yMax / 2));
   // Enforce min scale so 24h/7d axis labels (e.g. 08:42) stay readable and scroll instead of crushing.
   const chartMinWidthPx = Math.max(visibleTraffic.length * CHART_MIN_BAR_WIDTH_PX, 0);
-  const monitorState = snapshot
-    ? { color: 'green', label: t('common.online') }
-    : { color: loadingMonitor ? 'blue' : 'orange', label: loadingMonitor ? t('common.loading') : t('shell.connectionReconnecting') };
+  const monitorState: { variant: 'success' | 'default' | 'warning'; label: string } = snapshot
+    ? { variant: 'success', label: t('common.online') }
+    : { variant: loadingMonitor ? 'default' : 'warning', label: loadingMonitor ? t('common.loading') : t('shell.connectionReconnecting') };
   const manualRefresh = () => {
     void refetchMonitor();
     void refetchLiveLogs();
@@ -175,10 +188,20 @@ export default function DashboardPage() {
       setCustomRange(defaultCustomRange());
     }
   };
-  const handleCustomRangeChange = (dateString: string[], date: unknown[]) => {
-    const next = normalizeDateRange(dateString) ?? normalizeDateRange(date);
-    if (next) {
+  const handleCustomRangePart = (index: 0 | 1, localValue: string) => {
+    const date = fromDateTimeLocalValue(localValue);
+    if (!date) {
+      return;
+    }
+    const next: [string, string] = [...customRange] as [string, string];
+    next[index] = date.toISOString();
+    if (Date.parse(next[1]) > Date.parse(next[0])) {
       setCustomRange(next);
+      setChartWindowRatio(1);
+    } else if (index === 0) {
+      // Keep start; bump end if invalid order is temporary while typing.
+      const end = new Date(date.getTime() + 60 * 60 * 1000);
+      setCustomRange([next[0], end.toISOString()]);
       setChartWindowRatio(1);
     }
   };
@@ -190,9 +213,10 @@ export default function DashboardPage() {
           <h1>{t('dashboard.title')}</h1>
           <p>{t('dashboard.subtitle')}</p>
         </div>
-        <Tag color={monitorState.color} icon={<ShieldCheck size={14} />}>
+        <Badge variant={monitorState.variant} className="inline-flex items-center gap-1">
+          <ShieldCheck size={14} />
           {monitorState.label}
-        </Tag>
+        </Badge>
       </header>
 
       <div className="metric-grid">
@@ -228,45 +252,80 @@ export default function DashboardPage() {
               >
                 <div className="dashboard-chart-control">
                   <span className="dashboard-chart-control-label">{t('dashboard.statsWindow')}</span>
-                  <Select className="dashboard-footer-select" value={statsRange} onChange={(value) => handleStatsRangeChange(Number(value))}>
-                    {statsRangeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
+                  <Select value={String(statsRange)} onValueChange={(value) => handleStatsRangeChange(Number(value))}>
+                    <SelectTrigger className="dashboard-footer-select w-[140px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {statsRangeOptions.map((option) => (
+                        <SelectItem key={option.value} value={String(option.value)}>{t(option.labelKey)}</SelectItem>
+                      ))}
+                    </SelectContent>
                   </Select>
                 </div>
                 {statsRange === customStatsRangeValue && (
                   <div className="dashboard-chart-control dashboard-chart-custom-range">
                     <span className="dashboard-chart-control-label">{t('dashboard.customTimeRange')}</span>
-                    <DateRangePicker
-                      className="dashboard-date-range"
-                      showTime
-                      value={customRangePickerValue}
-                      onChange={handleCustomRangeChange}
-                      allowClear={false}
-                      format={dateTimePickerFormat}
-                    />
+                    <div className="dashboard-date-range flex flex-wrap items-center gap-2">
+                      <Input
+                        type="datetime-local"
+                        className="w-auto min-w-[11rem]"
+                        value={customRangeLocal[0]}
+                        onChange={(event) => handleCustomRangePart(0, event.target.value)}
+                        aria-label={`${t('dashboard.customTimeRange')} start`}
+                      />
+                      <span aria-hidden="true">–</span>
+                      <Input
+                        type="datetime-local"
+                        className="w-auto min-w-[11rem]"
+                        value={customRangeLocal[1]}
+                        onChange={(event) => handleCustomRangePart(1, event.target.value)}
+                        aria-label={`${t('dashboard.customTimeRange')} end`}
+                      />
+                    </div>
                   </div>
                 )}
                 <div className="dashboard-chart-control dashboard-chart-refresh-control">
                   <span className="dashboard-chart-control-label">{t('dashboard.autoRefresh')}</span>
-                  <Select className="dashboard-footer-select dashboard-refresh-select" value={refreshMs} onChange={(value) => setRefreshMs(Number(value))}>
-                    {refreshOptions.map((value) => <Select.Option key={value} value={value}>{value / 1000}s</Select.Option>)}
+                  <Select value={String(refreshMs)} onValueChange={(value) => setRefreshMs(Number(value))}>
+                    <SelectTrigger className="dashboard-footer-select dashboard-refresh-select w-[90px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {refreshOptions.map((value) => (
+                        <SelectItem key={value} value={String(value)}>{value / 1000}s</SelectItem>
+                      ))}
+                    </SelectContent>
                   </Select>
                 </div>
                 <div className="dashboard-chart-actions">
-                  <Tooltip content={t('dashboard.manualRefresh')}>
-                    <Button
-                      className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
-                      icon={<RotateCcw size={15} />}
-                      aria-label={t('dashboard.manualRefresh')}
-                      onClick={manualRefresh}
-                    />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        size="icon"
+                        variant="outline"
+                        className={refreshingLiveResources ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
+                        aria-label={t('dashboard.manualRefresh')}
+                        onClick={manualRefresh}
+                      >
+                        <RotateCcw size={15} />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('dashboard.manualRefresh')}</TooltipContent>
                   </Tooltip>
-                  <Tooltip content={t('dashboard.resetChartView')}>
-                    <Button
-                      className="icon-button"
-                      icon={<Maximize2 size={15} />}
-                      aria-label={t('dashboard.resetChartView')}
-                      onClick={() => setChartWindowRatio(1)}
-                    />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        size="icon"
+                        variant="outline"
+                        className="icon-button"
+                        aria-label={t('dashboard.resetChartView')}
+                        onClick={() => setChartWindowRatio(1)}
+                      >
+                        <Maximize2 size={15} />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('dashboard.resetChartView')}</TooltipContent>
                   </Tooltip>
                 </div>
               </div>
@@ -274,7 +333,12 @@ export default function DashboardPage() {
             {periodLogsError ? (
               <QueryErrorState onRetry={() => void refetchPeriodLogs()} retrying={fetchingPeriod} />
             ) : (
-              <Spin loading={loading}>
+              <div className="relative">
+                {loading && (
+                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/50">
+                    <Spinner />
+                  </div>
+                )}
                 <div ref={totalsChartRef} className="traffic-chart" aria-label={t('dashboard.totals')}>
                   <div className="chart-y-axis" aria-hidden="true">
                     <span>{yMax}</span>
@@ -315,7 +379,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 </div>
-              </Spin>
+              </div>
             )}
             <div className="dashboard-chart-footer">
               <div className="chart-legend" aria-label={t('dashboard.trafficRequests')}>
@@ -372,12 +436,14 @@ export default function DashboardPage() {
                           {eventLocationLabel(event, t)}
                         </span>
                         <span className="event-status-group event-col-type" role="cell" data-label={t('dashboard.attackType')}>
-                          <Tag color={event.category ? 'orange' : event.action === 'pass' || !event.action ? 'green' : 'blue'}>{eventCategoryLabel(event, t)}</Tag>
+                          <Badge variant={event.category ? 'warning' : event.action === 'pass' || !event.action ? 'success' : 'default'}>
+                            {eventCategoryLabel(event, t)}
+                          </Badge>
                         </span>
                         <span className="event-status-group event-col-action" role="cell" data-label={t('dashboard.action')}>
-                          <Tag color={event.action === 'block' ? 'red' : 'blue'}>
+                          <Badge variant={event.action === 'block' ? 'destructive' : 'default'}>
                             {displayAction(event.action, t)}
-                          </Tag>
+                          </Badge>
                         </span>
                       </div>
                     );
@@ -392,19 +458,30 @@ export default function DashboardPage() {
           <section className="panel realtime-panel">
             <div className="panel-heading">
               <h2>{t('dashboard.realtime')}</h2>
-              <Tooltip content={t('dashboard.manualRefresh')}>
-                <Button
-                  className={fetchingLive ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
-                  icon={<RotateCcw size={14} />}
-                  aria-label={t('dashboard.manualRefresh')}
-                  onClick={() => void refetchLiveLogs()}
-                />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    className={fetchingLive ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
+                    aria-label={t('dashboard.manualRefresh')}
+                    onClick={() => void refetchLiveLogs()}
+                  >
+                    <RotateCcw size={14} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t('dashboard.manualRefresh')}</TooltipContent>
               </Tooltip>
             </div>
             {liveLogsError ? (
               <QueryErrorState onRetry={() => void refetchLiveLogs()} retrying={fetchingLive} />
             ) : (
-              <Spin loading={loadingLive && !liveLogs}>
+              <div className="relative">
+                {loadingLive && !liveLogs && (
+                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/50">
+                    <Spinner />
+                  </div>
+                )}
                 <div className="realtime-summary">
                   <div>
                     <span>{t('dashboard.liveRequests')}</span>
@@ -421,20 +498,26 @@ export default function DashboardPage() {
                 </div>
                 <RealtimeLineChart points={liveSeries} />
                 <span className="realtime-window">{t('dashboard.last60s')}</span>
-              </Spin>
+              </div>
             )}
           </section>
 
           <section className="panel">
             <div className="panel-heading">
               <h2>{t('dashboard.resources')}</h2>
-              <Tooltip content={t('dashboard.manualRefresh')}>
-                <Button
-                  className={fetchingMonitor ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
-                  icon={<RotateCcw size={14} />}
-                  aria-label={t('dashboard.manualRefresh')}
-                  onClick={() => void refetchMonitor()}
-                />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    className={fetchingMonitor ? 'icon-button refresh-button refresh-button-active' : 'icon-button refresh-button'}
+                    aria-label={t('dashboard.manualRefresh')}
+                    onClick={() => void refetchMonitor()}
+                  >
+                    <RotateCcw size={14} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t('dashboard.manualRefresh')}</TooltipContent>
               </Tooltip>
             </div>
             {monitorError ? (
@@ -445,35 +528,35 @@ export default function DashboardPage() {
                   <div className="resource-row">
                     <Cpu size={18} />
                     <span>{t('dashboard.cpu')}</span>
-                    <Progress percent={cpuPercent} size="small" showText={false} />
+                    <Progress value={cpuPercent} />
                     <strong>{formatPercent(host?.cpu_percent ?? 0)}</strong>
                     <small>{cpuCount > 0 ? t('dashboard.cpuHint', { cores: cpuCount }) : t('common.unknown')}</small>
                   </div>
                   <div className="resource-row">
                     <Activity size={18} />
                     <span>{t('dashboard.systemLoad')}</span>
-                    <Progress percent={loadPercent} size="small" showText={false} />
+                    <Progress value={loadPercent} />
                     <strong>{formatLoad(load1)}</strong>
                     <small>{cpuCount > 0 ? t('dashboard.loadHint', { cores: cpuCount }) : t('dashboard.loadHintNoCores')}</small>
                   </div>
                   <div className="resource-row">
                     <MemoryStick size={18} />
                     <span>{t('dashboard.memory')}</span>
-                    <Progress percent={memoryHostPercent} size="small" showText={false} />
+                    <Progress value={memoryHostPercent} />
                     <strong>{formatPercent(host?.memory_percent ?? 0)}</strong>
                     <small>{formatCapacity(host?.memory_used ?? 0, host?.memory_total ?? 0, t)}</small>
                   </div>
                   <div className="resource-row">
                     <Recycle size={18} />
                     <span>{t('dashboard.swap')}</span>
-                    <Progress percent={swapPercent} size="small" showText={false} />
+                    <Progress value={swapPercent} />
                     <strong>{formatPercent(host?.swap_percent ?? 0)}</strong>
                     <small>{formatCapacity(host?.swap_used ?? 0, host?.swap_total ?? 0, t, 'dashboard.swapNotEnabled')}</small>
                   </div>
                   <div className="resource-row">
                     <HardDrive size={18} />
                     <span>{t('dashboard.disk')}</span>
-                    <Progress percent={diskPercent} size="small" showText={false} />
+                    <Progress value={diskPercent} />
                     <strong>{formatPercent(host?.disk_percent ?? 0)}</strong>
                     <small>{formatCapacity(host?.disk_used ?? 0, host?.disk_total ?? 0, t)}</small>
                   </div>
@@ -492,17 +575,19 @@ export default function DashboardPage() {
                 </div>
                 <div className="resource-actions">
                   <Button
-                    icon={<Recycle size={14} />}
+                    variant="outline"
                     loading={reclaimMutation.isPending && reclaimMutation.variables === 'memory'}
                     onClick={() => reclaimMutation.mutate('memory')}
                   >
+                    <Recycle size={14} />
                     {t('dashboard.reclaimMemory')}
                   </Button>
                   <Button
-                    icon={<Recycle size={14} />}
+                    variant="outline"
                     loading={reclaimMutation.isPending && reclaimMutation.variables === 'swap'}
                     onClick={() => reclaimMutation.mutate('swap')}
                   >
+                    <Recycle size={14} />
                     {t('dashboard.reclaimSwap')}
                   </Button>
                 </div>
@@ -524,10 +609,9 @@ export default function DashboardPage() {
                 <div className="threat-row" key={threat.name}>
                   <span>{threat.name}</span>
                   <Progress
-                    percent={threat.value}
-                    showText={false}
-                    color={threatColors[index % threatColors.length]}
-                    size="small"
+                    value={threat.value}
+                    className="[&>div]:bg-[var(--threat-color)]"
+                    style={{ '--threat-color': threatColors[index % threatColors.length] } as CSSProperties}
                   />
                   <strong>{threat.value}%</strong>
                 </div>
@@ -774,56 +858,21 @@ function validCustomRange(range: [string, string]) {
   return Number.isFinite(start) && Number.isFinite(end) && end > start;
 }
 
-function normalizeDateRange(date: unknown[]): [string, string] | null {
-  if (!Array.isArray(date) || date.length !== 2) {
-    return null;
-  }
-  const start = dateLikeToDate(date[0]);
-  const end = dateLikeToDate(date[1]);
-  if (!start || !end || end.getTime() <= start.getTime()) {
-    return null;
-  }
-  return [start.toISOString(), end.toISOString()];
-}
-
-function dateLikeToDate(value: unknown) {
-  if (value instanceof Date) {
-    return value;
-  }
-  if (typeof value === 'string' || typeof value === 'number') {
-    if (typeof value === 'string') {
-      const local = parsePickerDateTime(value);
-      if (local) {
-        return local;
-      }
-    }
-    const date = new Date(value);
-    return Number.isFinite(date.getTime()) ? date : null;
-  }
-  if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') {
-    const date = value.toDate();
-    return date instanceof Date && Number.isFinite(date.getTime()) ? date : null;
-  }
-  return null;
-}
-
-function parsePickerDateTime(value: string) {
-  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
-  if (!match) {
-    return null;
-  }
-  const [, year, month, day, hour, minute] = match;
-  const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
-  return Number.isFinite(date.getTime()) ? date : null;
-}
-
-function formatDateTimePickerValue(value: string) {
+function toDateTimeLocalValue(value: string) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) {
     return '';
   }
   const pad = (part: number) => String(part).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function fromDateTimeLocalValue(value: string) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : null;
 }
 
 function compactRangeLabel(range: [string, string]) {
