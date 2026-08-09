@@ -1,32 +1,82 @@
-import { Button, Form, Input, InputNumber, Message as ArcoMessage, Modal, Select, Switch, Table, Tag } from '@arco-design/web-react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, ShieldCheck, Wand2 } from 'lucide-react';
+import {
+  Badge,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Textarea,
+  toast,
+} from '@/components/ui';
 import { createRule, fetchRules } from '../../api/client';
 import { ruleTemplates, testPattern, validateRuleDraft } from './rulesLogic';
 import './RulesPage.css';
+
+type RuleDraft = {
+  name: string;
+  description: string;
+  pattern: string;
+  location: string;
+  action: string;
+  severity: string;
+  priority: number;
+};
+
+const emptyDraft = (): RuleDraft => ({
+  name: '',
+  description: '',
+  pattern: '',
+  location: 'uri',
+  action: 'block',
+  severity: 'medium',
+  priority: 100,
+});
+
+const PAGE_SIZE = 8;
 
 export default function RulesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [patternDraft, setPatternDraft] = useState('');
+  const [draft, setDraft] = useState<RuleDraft>(emptyDraft);
   const [testInput, setTestInput] = useState('');
-  const [form] = Form.useForm();
+  const [page, setPage] = useState(1);
   const { data, isError, isLoading, refetch } = useQuery({ queryKey: ['rules'], queryFn: () => fetchRules(), retry: false });
   const mutation = useMutation({
     mutationFn: createRule,
     onSuccess: () => {
       setOpen(false);
-      form.resetFields();
-      setPatternDraft('');
+      setDraft(emptyDraft());
       setTestInput('');
       queryClient.invalidateQueries({ queryKey: ['rules'] });
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const rows = data ?? [];
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const pageRows = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return rows.slice(start, start + PAGE_SIZE);
+  }, [page, rows]);
   const severityLabel = (severity: string) => {
     if (severity === 'low') return t('rules.low');
     if (severity === 'medium') return t('rules.medium');
@@ -34,35 +84,40 @@ export default function RulesPage() {
     if (severity === 'critical') return t('rules.critical');
     return severity;
   };
+  const severityVariant = (severity: string): 'destructive' | 'warning' | 'default' | 'secondary' => {
+    if (severity === 'critical') return 'destructive';
+    if (severity === 'high') return 'warning';
+    if (severity === 'medium') return 'default';
+    return 'secondary';
+  };
   const templates = ruleTemplates(t);
-  const testResult = testPattern(patternDraft, testInput);
+  const testResult = testPattern(draft.pattern, testInput);
   const applyPattern = (pattern: string) => {
-    setPatternDraft(pattern);
-    form.setFieldValue('pattern', pattern);
+    setDraft((current) => ({ ...current, pattern }));
   };
   const closeModal = () => {
     if (mutation.isPending) return;
     setOpen(false);
-    form.resetFields();
-    setPatternDraft('');
+    setDraft(emptyDraft());
     setTestInput('');
   };
-  const handleRuleSubmit = (values: Record<string, any>) => {
-    const pattern = String(values.pattern || patternDraft || '').trim();
-    const priority = Number(values.priority ?? 100);
+  const handleRuleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    const pattern = draft.pattern.trim();
+    const priority = Number(draft.priority ?? 100);
     const validation = validateRuleDraft(pattern, priority, t);
     if (!validation.ok) {
-      ArcoMessage.warning(validation.error);
+      toast.warning(validation.error);
       return;
     }
     mutation.mutate({
-      site_id: values.site_id ?? 'default',
-      name: values.name,
-      description: values.description ?? '',
+      site_id: 'default',
+      name: draft.name,
+      description: draft.description ?? '',
       pattern,
-      location: values.location ?? 'uri',
-      action: values.action ?? 'block',
-      severity: values.severity ?? 'medium',
+      location: draft.location ?? 'uri',
+      action: draft.action ?? 'block',
+      severity: draft.severity ?? 'medium',
       priority,
       enabled: true,
     });
@@ -75,12 +130,14 @@ export default function RulesPage() {
           <h1>{t('rules.wafTitle')}</h1>
           <p>{t('rules.subtitle')}</p>
         </div>
-        <Button type="primary" icon={<Plus size={16} />} onClick={() => {
-          form.resetFields();
-          setPatternDraft('');
-          setTestInput('');
-          setOpen(true);
-        }}>
+        <Button
+          onClick={() => {
+            setDraft(emptyDraft());
+            setTestInput('');
+            setOpen(true);
+          }}
+        >
+          <Plus size={16} />
           {t('rules.create')}
         </Button>
       </header>
@@ -89,148 +146,214 @@ export default function RulesPage() {
         {isError && (
           <div className="inline-error">
             <span>{t('rules.loadFailed')}</span>
-            <Button size="small" onClick={() => refetch()}>{t('common.retry')}</Button>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>{t('common.retry')}</Button>
           </div>
         )}
-        <Table
-          rowKey="id"
-          pagination={{ pageSize: 8 }}
-          loading={isLoading}
-          data={rows}
-          columns={[
-            {
-              title: t('rules.name'),
-              dataIndex: 'name',
-              render: (name: string) => (
-                <span className="table-identity">
-                  <ShieldCheck size={17} />
-                  {name}
-                </span>
-              ),
-            },
-            { title: t('rules.pattern'), dataIndex: 'pattern', render: (pattern: string) => <code className="table-code" title={pattern}>{pattern}</code> },
-            { title: t('rules.location'), dataIndex: 'location' },
-            {
-              title: t('rules.severity'),
-              dataIndex: 'severity',
-              render: (severity: string) => (
-                <span className="status-group">
-                  <Tag color={severity === 'critical' ? 'red' : severity === 'high' ? 'orange' : severity === 'medium' ? 'gold' : 'blue'}>{severityLabel(severity)}</Tag>
-                </span>
-              ),
-            },
-            { title: t('rules.priority'), dataIndex: 'priority' },
-            {
-              title: t('rules.enabled'),
-              dataIndex: 'enabled',
-              render: (enabled: boolean) => (
-                <Switch
-                  checked={enabled}
-                  size="small"
-                  disabled
-                  aria-label={enabled ? t('common.enabled') : t('common.disabled')}
-                />
-              ),
-            },
-          ]}
-        />
+        {isLoading ? (
+          <div className="skeleton-list" role="status">{t('common.loading')}</div>
+        ) : (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('rules.name')}</TableHead>
+                  <TableHead>{t('rules.pattern')}</TableHead>
+                  <TableHead>{t('rules.location')}</TableHead>
+                  <TableHead>{t('rules.severity')}</TableHead>
+                  <TableHead>{t('rules.priority')}</TableHead>
+                  <TableHead>{t('rules.enabled')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pageRows.map((rule) => (
+                  <TableRow key={rule.id}>
+                    <TableCell>
+                      <span className="table-identity">
+                        <ShieldCheck size={17} />
+                        {rule.name}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <code className="table-code" title={rule.pattern}>{rule.pattern}</code>
+                    </TableCell>
+                    <TableCell>{rule.location}</TableCell>
+                    <TableCell>
+                      <span className="status-group">
+                        <Badge variant={severityVariant(rule.severity)}>{severityLabel(rule.severity)}</Badge>
+                      </span>
+                    </TableCell>
+                    <TableCell>{rule.priority}</TableCell>
+                    <TableCell>
+                      <Switch
+                        checked={rule.enabled}
+                        disabled
+                        aria-label={rule.enabled ? t('common.enabled') : t('common.disabled')}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {rows.length > PAGE_SIZE && (
+              <div className="form-action-row" style={{ marginTop: 12 }}>
+                <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                  ‹
+                </Button>
+                <span>{page} / {totalPages}</span>
+                <Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
+                  ›
+                </Button>
+              </div>
+            )}
+          </>
+        )}
       </section>
 
-      <Modal
-        className="rule-editor-modal"
-        title={t('rules.create')}
-        visible={open}
-        onCancel={closeModal}
-        footer={null}
-        unmountOnExit
-        maskClosable={!mutation.isPending}
-        escToExit={!mutation.isPending}
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!next) closeModal();
+          else setOpen(true);
+        }}
       >
-        <Form
-          form={form}
-          layout="vertical"
-          className="rule-editor-form"
-          onSubmit={handleRuleSubmit}
-          initialValues={{ location: 'uri', action: 'block', severity: 'medium', priority: 100, pattern: '' }}
-        >
-          <div className="rule-editor-grid">
-            <section className="rule-editor-section">
-              <h2>{t('rules.basicInfo')}</h2>
-              <Form.Item label={t('rules.name')} field="name" required extra={t('rules.nameHint')}><Input placeholder={t('rules.namePlaceholder')} /></Form.Item>
-              <Form.Item label={t('rules.description')} field="description" extra={t('rules.descriptionHint')}><Input.TextArea autoSize={{ minRows: 2, maxRows: 4 }} /></Form.Item>
-            </section>
-
-            <section className="rule-editor-section">
-              <h2>{t('rules.matchCondition')}</h2>
-              <Form.Item label={t('rules.pattern')} field="pattern" required extra={t('rules.patternHint')}>
-                <Input.TextArea
-                  autoSize={{ minRows: 4, maxRows: 8 }}
-                  placeholder={t('rules.patternPlaceholder')}
-                  onChange={(value) => setPatternDraft(String(value ?? ''))}
-                />
-              </Form.Item>
-              <div className="rule-template-panel">
-                <div>
-                  <strong><Wand2 size={14} /> {t('rules.expressionGenerator')}</strong>
-                  <span>{t('rules.expressionGeneratorHint')}</span>
+        <DialogContent className="rule-editor-modal max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>{t('rules.create')}</DialogTitle>
+          </DialogHeader>
+          <form className="rule-editor-form" noValidate onSubmit={handleRuleSubmit}>
+            <div className="rule-editor-grid">
+              <section className="rule-editor-section">
+                <h2>{t('rules.basicInfo')}</h2>
+                <div className="field-stack">
+                  <Label htmlFor="rule-name">{t('rules.name')}</Label>
+                  <Input
+                    id="rule-name"
+                    placeholder={t('rules.namePlaceholder')}
+                    value={draft.name}
+                    onChange={(e) => setDraft((c) => ({ ...c, name: e.target.value }))}
+                    required
+                  />
+                  <span className="field-help">{t('rules.nameHint')}</span>
                 </div>
-                <div className="rule-template-list">
-                  {templates.map((template) => (
-                    <button
-                      type="button"
-                      key={template.key}
-                      onClick={() => applyPattern(template.pattern)}
-                      title={template.description}
-                    >
-                      {template.label}
-                    </button>
-                  ))}
+                <div className="field-stack">
+                  <Label htmlFor="rule-description">{t('rules.description')}</Label>
+                  <Textarea
+                    id="rule-description"
+                    value={draft.description}
+                    onChange={(e) => setDraft((c) => ({ ...c, description: e.target.value }))}
+                    rows={3}
+                  />
+                  <span className="field-help">{t('rules.descriptionHint')}</span>
                 </div>
-              </div>
-              <label className="rule-test-box">
-                <span>{t('rules.testInput')}</span>
-                <Input.TextArea value={testInput} autoSize={{ minRows: 3, maxRows: 6 }} placeholder={t('rules.testInputPlaceholder')} onChange={setTestInput} />
-                <Tag color={testResult.ok ? (testResult.matched ? 'red' : 'green') : 'orange'}>
-                  {testResult.ok ? (testResult.matched ? t('rules.testMatched') : t('rules.testNotMatched')) : testResult.error}
-                </Tag>
-              </label>
-            </section>
+              </section>
 
-            <section className="rule-editor-section">
-              <h2>{t('rules.actionAndPriority')}</h2>
-              <Form.Item label={t('rules.location')} field="location" extra={t('rules.locationHint')}>
-                <Select>
-                  <Select.Option value="uri">{t('rules.locationURI')}</Select.Option>
-                  <Select.Option value="header">{t('rules.locationHeader')}</Select.Option>
-                  <Select.Option value="query">{t('rules.locationQuery')}</Select.Option>
-                  <Select.Option value="body">{t('rules.locationBody')}</Select.Option>
-                  <Select.Option value="cookie">{t('rules.locationCookie')}</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item label={t('logs.action')} field="action" extra={t('rules.actionHint')}>
-                <Select>
-                  <Select.Option value="block">{t('common.block')}</Select.Option>
-                  <Select.Option value="challenge">{t('logs.challenge')}</Select.Option>
-                  <Select.Option value="log">{t('logs.log')}</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item label={t('rules.severity')} field="severity" extra={t('rules.severityHint')}>
-                <Select>
-                  <Select.Option value="low">{t('rules.low')}</Select.Option>
-                  <Select.Option value="medium">{t('rules.medium')}</Select.Option>
-                  <Select.Option value="high">{t('rules.high')}</Select.Option>
-                  <Select.Option value="critical">{t('rules.critical')}</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item label={`${t('rules.priority')} (${t('rules.priorityHint')})`} field="priority" extra={t('rules.priorityHelp')}><InputNumber min={1} max={999} /></Form.Item>
-            </section>
-          </div>
-          <div className="form-action-row">
-            <Button onClick={closeModal} disabled={mutation.isPending}>{t('common.cancel')}</Button>
-            <Button type="primary" htmlType="submit" loading={mutation.isPending}>{t('common.save')}</Button>
-          </div>
-        </Form>
-      </Modal>
+              <section className="rule-editor-section">
+                <h2>{t('rules.matchCondition')}</h2>
+                <div className="field-stack">
+                  <Label htmlFor="rule-pattern">{t('rules.pattern')}</Label>
+                  <Textarea
+                    id="rule-pattern"
+                    rows={5}
+                    placeholder={t('rules.patternPlaceholder')}
+                    value={draft.pattern}
+                    onChange={(e) => setDraft((c) => ({ ...c, pattern: e.target.value }))}
+                  />
+                  <span className="field-help">{t('rules.patternHint')}</span>
+                </div>
+                <div className="rule-template-panel">
+                  <div>
+                    <strong><Wand2 size={14} /> {t('rules.expressionGenerator')}</strong>
+                    <span>{t('rules.expressionGeneratorHint')}</span>
+                  </div>
+                  <div className="rule-template-list">
+                    {templates.map((template) => (
+                      <button
+                        type="button"
+                        key={template.key}
+                        onClick={() => applyPattern(template.pattern)}
+                        title={template.description}
+                      >
+                        {template.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label className="rule-test-box">
+                  <span>{t('rules.testInput')}</span>
+                  <Textarea
+                    value={testInput}
+                    rows={3}
+                    placeholder={t('rules.testInputPlaceholder')}
+                    onChange={(e) => setTestInput(e.target.value)}
+                  />
+                  <Badge variant={testResult.ok ? (testResult.matched ? 'destructive' : 'success') : 'warning'}>
+                    {testResult.ok ? (testResult.matched ? t('rules.testMatched') : t('rules.testNotMatched')) : testResult.error}
+                  </Badge>
+                </label>
+              </section>
+
+              <section className="rule-editor-section">
+                <h2>{t('rules.actionAndPriority')}</h2>
+                <div className="field-stack">
+                  <Label>{t('rules.location')}</Label>
+                  <Select value={draft.location} onValueChange={(location) => setDraft((c) => ({ ...c, location }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="uri">{t('rules.locationURI')}</SelectItem>
+                      <SelectItem value="header">{t('rules.locationHeader')}</SelectItem>
+                      <SelectItem value="query">{t('rules.locationQuery')}</SelectItem>
+                      <SelectItem value="body">{t('rules.locationBody')}</SelectItem>
+                      <SelectItem value="cookie">{t('rules.locationCookie')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="field-help">{t('rules.locationHint')}</span>
+                </div>
+                <div className="field-stack">
+                  <Label>{t('logs.action')}</Label>
+                  <Select value={draft.action} onValueChange={(action) => setDraft((c) => ({ ...c, action }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="block">{t('common.block')}</SelectItem>
+                      <SelectItem value="challenge">{t('logs.challenge')}</SelectItem>
+                      <SelectItem value="log">{t('logs.log')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="field-help">{t('rules.actionHint')}</span>
+                </div>
+                <div className="field-stack">
+                  <Label>{t('rules.severity')}</Label>
+                  <Select value={draft.severity} onValueChange={(severity) => setDraft((c) => ({ ...c, severity }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">{t('rules.low')}</SelectItem>
+                      <SelectItem value="medium">{t('rules.medium')}</SelectItem>
+                      <SelectItem value="high">{t('rules.high')}</SelectItem>
+                      <SelectItem value="critical">{t('rules.critical')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="field-help">{t('rules.severityHint')}</span>
+                </div>
+                <div className="field-stack">
+                  <Label htmlFor="rule-priority">{`${t('rules.priority')} (${t('rules.priorityHint')})`}</Label>
+                  <Input
+                    id="rule-priority"
+                    type="number"
+                    min={1}
+                    max={999}
+                    value={draft.priority}
+                    onChange={(e) => setDraft((c) => ({ ...c, priority: Number(e.target.value || 100) }))}
+                  />
+                  <span className="field-help">{t('rules.priorityHelp')}</span>
+                </div>
+              </section>
+            </div>
+            <DialogFooter className="form-action-row">
+              <Button type="button" variant="outline" onClick={closeModal} disabled={mutation.isPending}>{t('common.cancel')}</Button>
+              <Button type="submit" loading={mutation.isPending}>{t('common.save')}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

@@ -1,5 +1,36 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, InputNumber, Message as ArcoMessage, Modal, Popover, Select, Space, Switch, Table, Tabs, Tag } from '@arco-design/web-react';
+import {
+  Badge,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  Textarea,
+  toast,
+} from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
@@ -81,6 +112,7 @@ export default function IPManagePage() {
   const [syncStatus, setSyncStatus] = useState<IntelOperationStatus | null>(null);
   const [lookupStatus, setLookupStatus] = useState<IntelOperationStatus | null>(null);
   const [exportingFormat, setExportingFormat] = useState<'csv' | 'stix' | null>(null);
+  const [deleteRuleId, setDeleteRuleId] = useState<string | null>(null);
   const [entriesPage, setEntriesPage] = useState(1);
   const tagsDirtyRef = useRef(false);
   const accessRulesDirtyRef = useRef(false);
@@ -145,9 +177,9 @@ export default function IPManagePage() {
       accessRulesDirtyRef.current = false;
       setAccessRules(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
-      ArcoMessage.success(t('ip.accessRulesSaved'));
+      toast.success(t('ip.accessRulesSaved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const reputationMutation = useMutation({
     mutationFn: updateIPReputationOverrides,
@@ -155,9 +187,9 @@ export default function IPManagePage() {
       reputationDirtyRef.current = false;
       setReputationOverrides(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
-      ArcoMessage.success(t('ip.reputationSaved'));
+      toast.success(t('ip.reputationSaved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const providersMutation = useMutation({
     mutationFn: updateThreatIntelProviders,
@@ -165,9 +197,9 @@ export default function IPManagePage() {
       providersDirtyRef.current = false;
       setProviders(saved);
       queryClient.invalidateQueries({ queryKey: ['ip-rules'] });
-      ArcoMessage.success(t('ip.providersSaved'));
+      toast.success(t('ip.providersSaved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const importMutation = useMutation({
     mutationFn: importThreatIntel,
@@ -187,7 +219,7 @@ export default function IPManagePage() {
     },
     onError: (error) => {
       setImportStatus(buildErrorStatus(t('ip.importFailed'), error.message));
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
   });
   const syncMutation = useMutation({
@@ -215,7 +247,7 @@ export default function IPManagePage() {
       if (providerId) {
         setProviderStatuses((current) => ({ ...current, [providerId]: status }));
       }
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
   });
   const providerTestMutation = useMutation({
@@ -232,7 +264,7 @@ export default function IPManagePage() {
     },
     onError: (error, provider) => {
       setProviderStatuses((current) => ({ ...current, [provider.id]: buildErrorStatus(t('ip.providerTestFailed'), error.message) }));
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
   });
   const lookupMutation = useMutation({
@@ -256,7 +288,7 @@ export default function IPManagePage() {
       const status = buildErrorStatus(t('ip.lookupFailed'), error.message);
       setLookupStatus(status);
       setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
   });
 
@@ -345,20 +377,20 @@ export default function IPManagePage() {
   const addAccessRule = () => {
     const entries = accessDraft.entries.length > 0 ? accessDraft.entries : splitList(accessDraft.entries.join(','));
     if (entries.length === 0) {
-      ArcoMessage.warning(t('ip.entriesRequired'));
+      toast.warning(t('ip.entriesRequired'));
       return;
     }
     const invalidEntries = entries.filter((entry) => !isValidIPOrCIDR(entry));
     if (invalidEntries.length > 0) {
-      ArcoMessage.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
+      toast.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
       return;
     }
     if ((accessDraft.scope === 'site' || accessDraft.scope === 'path') && !accessDraft.site_id) {
-      ArcoMessage.warning(t('ip.scopedSiteRequired'));
+      toast.warning(t('ip.scopedSiteRequired'));
       return;
     }
     if (accessDraft.scope === 'path' && !accessDraft.path_prefix.trim()) {
-      ArcoMessage.warning(t('ip.pathRequired'));
+      toast.warning(t('ip.pathRequired'));
       return;
     }
     const nextRule = normalizeAccessRuleForSave({
@@ -377,20 +409,20 @@ export default function IPManagePage() {
     const nextRules = accessRules.map((rule, ruleIndex) => (ruleIndex === index ? normalizeAccessRuleForSave(rule, defaultAccessRuleName) : rule));
     const current = nextRules[index];
     if (!current || current.entries.length === 0) {
-      ArcoMessage.warning(t('ip.entriesRequired'));
+      toast.warning(t('ip.entriesRequired'));
       return;
     }
     const invalidEntries = current.entries.filter((entry) => !isValidIPOrCIDR(entry));
     if (invalidEntries.length > 0) {
-      ArcoMessage.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
+      toast.warning(t('ip.entriesInvalid', { value: invalidEntries.slice(0, 3).join(', ') }));
       return;
     }
     if ((current.scope === 'site' || current.scope === 'path') && !current.site_id) {
-      ArcoMessage.warning(t('ip.scopedSiteRequired'));
+      toast.warning(t('ip.scopedSiteRequired'));
       return;
     }
     if (current.scope === 'path' && !current.path_prefix.trim()) {
-      ArcoMessage.warning(t('ip.pathRequired'));
+      toast.warning(t('ip.pathRequired'));
       return;
     }
     accessRulesDirtyRef.current = true;
@@ -398,19 +430,17 @@ export default function IPManagePage() {
     saveAccessRules(nextRules);
   };
   const removeAccessRule = (id: string) => {
-    Modal.confirm({
-      title: t('common.confirmDeleteTitle'),
-      content: t('common.confirmDeleteEntry'),
-      okText: t('common.delete'),
-      cancelText: t('common.cancel'),
-      okButtonProps: { status: 'danger' },
-      onOk: () => {
-        const nextRules = accessRules.filter((rule) => rule.id !== id);
-        accessRulesDirtyRef.current = true;
-        setAccessRules(nextRules);
-        saveAccessRules(nextRules);
-      },
-    });
+    setDeleteRuleId(id);
+  };
+  const confirmRemoveAccessRule = () => {
+    if (!deleteRuleId) {
+      return;
+    }
+    const nextRules = accessRules.filter((rule) => rule.id !== deleteRuleId);
+    accessRulesDirtyRef.current = true;
+    setAccessRules(nextRules);
+    saveAccessRules(nextRules);
+    setDeleteRuleId(null);
   };
   const updateAccessRule = (index: number, patch: Partial<IPAccessRule>) => {
     accessRulesDirtyRef.current = true;
@@ -464,29 +494,29 @@ export default function IPManagePage() {
       link.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : t('common.requestFailed'));
+      toast.error(error instanceof Error ? error.message : t('common.requestFailed'));
     } finally {
       setExportingFormat(null);
     }
   };
   const validateImportDraft = () => {
     if (!importDraft.contents.trim()) {
-      ArcoMessage.warning(t('ip.iocRequired'));
+      toast.warning(t('ip.iocRequired'));
       return false;
     }
     if (!importDraft.source.trim()) {
-      ArcoMessage.warning(t('ip.sourceRequired'));
+      toast.warning(t('ip.sourceRequired'));
       return false;
     }
     const confidencePercent = importDraft.confidence * 100;
     if (!Number.isFinite(confidencePercent) || confidencePercent < 0 || confidencePercent > 100) {
-      ArcoMessage.warning(t('ip.confidenceInvalid'));
+      toast.warning(t('ip.confidenceInvalid'));
       return false;
     }
     if (importDraft.format === 'cidr') {
       const invalid = splitLines(importDraft.contents).filter((line) => !line.startsWith('#') && !isValidIPOrCIDR(firstToken(line)));
       if (invalid.length > 0) {
-        ArcoMessage.warning(t('ip.entriesInvalid', { value: invalid.slice(0, 3).join(', ') }));
+        toast.warning(t('ip.entriesInvalid', { value: invalid.slice(0, 3).join(', ') }));
         return false;
       }
     }
@@ -499,6 +529,7 @@ export default function IPManagePage() {
     importMutation.mutate({ ...importDraft, source: importDraft.source.trim(), labels: importDraft.labels });
   };
 
+
   return (
     <section className="page-surface ip-manage-page">
       <header className="page-header">
@@ -510,13 +541,17 @@ export default function IPManagePage() {
           <span className="table-identity ip-header-actions">
             {(activeTab === 'providers' || activeTab === 'import') && hasThreatIntel && (
               <>
-                <Button icon={<FileDown size={16} />} loading={exportingFormat === 'csv'} disabled={Boolean(exportingFormat)} onClick={() => { void saveIntelFile('csv'); }}>{t('ip.exportCsv')}</Button>
-                <Button icon={<FileDown size={16} />} loading={exportingFormat === 'stix'} disabled={Boolean(exportingFormat)} onClick={() => { void saveIntelFile('stix'); }}>{t('ip.exportStix')}</Button>
+                <Button variant="outline" loading={exportingFormat === 'csv'} disabled={Boolean(exportingFormat)} onClick={() => { void saveIntelFile('csv'); }}>
+                  <FileDown size={16} />{t('ip.exportCsv')}
+                </Button>
+                <Button variant="outline" loading={exportingFormat === 'stix'} disabled={Boolean(exportingFormat)} onClick={() => { void saveIntelFile('stix'); }}>
+                  <FileDown size={16} />{t('ip.exportStix')}
+                </Button>
               </>
             )}
             {activeTab === 'entries' && tagsChanged && (
-              <Button type="primary" icon={<Tags size={16} />} loading={tagMutation.isPending} onClick={() => tagMutation.mutate(draftTags)}>
-                {t('ip.saveTags')}
+              <Button loading={tagMutation.isPending} onClick={() => tagMutation.mutate(draftTags)}>
+                <Tags size={16} />{t('ip.saveTags')}
               </Button>
             )}
           </span>
@@ -525,8 +560,8 @@ export default function IPManagePage() {
 
       <section className="panel ip-manage-panel">
         <Tabs
-          activeTab={activeTab}
-          onChange={(tab) => {
+          value={activeTab}
+          onValueChange={(tab) => {
             const next = new URLSearchParams(routeParams);
             if (tab === 'entries') {
               next.delete('tab');
@@ -536,106 +571,99 @@ export default function IPManagePage() {
             setRouteParams(next, { replace: true });
           }}
         >
-          <Tabs.TabPane key="entries" title={t('ip.entries')}>
+          <TabsList className="mb-3 flex h-auto flex-wrap">
+            <TabsTrigger value="entries">{t('ip.entries')}</TabsTrigger>
+            <TabsTrigger value="access">{t('ip.accessRules')}</TabsTrigger>
+            <TabsTrigger value="providers">{t('ip.providers')}</TabsTrigger>
+            <TabsTrigger value="import">{t('ip.import')}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="entries">
             <div className="toolbar-row toolbar-row-compact ip-toolbar">
-              <Input className="toolbar-search" prefix={<Search size={16} />} value={search} placeholder={t('common.search')} allowClear onChange={setSearch} />
+              <div className="relative toolbar-search">
+                <Search size={16} className="absolute left-2.5 top-1/2 -translate-y-1/2 opacity-50" />
+                <Input className="pl-8" value={search} placeholder={t('common.search')} onChange={(event) => setSearch(event.target.value)} />
+              </div>
             </div>
             <div className="table-panel table-panel-embedded ip-entries-table">
-              <Table
-                rowKey="ip"
-                pagination={{ pageSize: 10 }}
-                loading={isLoading}
-                data={filtered}
-                columns={[
-                  {
-                    title: 'IP',
-                    dataIndex: 'ip',
-                    render: (ip: string) => (
-                      <span className="table-identity">
-                        <Shield size={17} />
-                        {ip}
-                      </span>
-                    ),
-                  },
-                  {
-                    title: t('ip.list'),
-                    dataIndex: 'list',
-                    render: (list: string) => {
-                      const label = list === 'whitelist' ? t('ip.whitelist') : list === 'blacklist' ? t('ip.blacklist') : t('common.monitor');
-                      const color = list === 'whitelist' ? 'green' : list === 'blacklist' ? 'red' : 'blue';
-                      return <Tag color={color}>{label}</Tag>;
-                    },
-                  },
-                  {
-                    title: t('ip.reputation'),
-                    dataIndex: 'reputation',
-                    render: (value: number, record: IPReputationEntry) => (
-                      <ReputationOverrideEditor
-                        value={value}
-                        override={record.reputation_override}
-                        saving={reputationMutation.isPending}
-                        onSave={(score) => saveReputationOverride(record.ip, score)}
-                        onReset={() => resetReputationOverride(record.ip)}
-                      />
-                    ),
-                  },
-                  {
-                    title: t('ip.tags'),
-                    dataIndex: 'tags',
-                    render: (_: string[], record: IPReputationEntry) => (
-                      <EditableTagInput
-                        tags={tagsFor(record, draftTags)}
-                        onChange={(tags) => {
-                          tagsDirtyRef.current = true;
-                          setDraftTags((current) => ({ ...current, [record.ip]: tags }));
-                        }}
-                      />
-                    ),
-                  },
-                  {
-                    title: t('ip.intel'),
-                    dataIndex: 'intel',
-                    render: (_: unknown, record: IPReputationEntry) => (
-                      <span className="intel-chip-list">
-                        {intelFor(record).length === 0 ? <span className="intel-chip intel-chip-muted">{t('common.monitor')}</span> : intelFor(record).map((item) => {
-                          const confidence = formatConfidenceSuffix(item.confidence);
-                          return (
-                            <span key={`${record.ip}-${item.id || item.value}`} className={`intel-chip intel-chip-${intelColor(item.severity)}`}>
-                              <span>{item.source || displaySeverity(item.severity, t)}</span>
-                              <strong>{displayAction(item.action || 'challenge', t)}{confidence}</strong>
-                            </span>
-                          );
-                        })}
-                      </span>
-                    ),
-                  },
-                  {
-                    title: t('ip.activity'),
-                    dataIndex: 'stats',
-                    render: (_: unknown, record: IPReputationEntry) => {
+              {isLoading ? (
+                <div className="empty-state" role="status">{t('common.loading')}</div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>IP</TableHead>
+                      <TableHead>{t('ip.list')}</TableHead>
+                      <TableHead>{t('ip.reputation')}</TableHead>
+                      <TableHead>{t('ip.tags')}</TableHead>
+                      <TableHead>{t('ip.intel')}</TableHead>
+                      <TableHead>{t('ip.activity')}</TableHead>
+                      <TableHead>{t('ip.actions')}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filtered.map((record) => {
+                      const listLabel = record.list === 'whitelist' ? t('ip.whitelist') : record.list === 'blacklist' ? t('ip.blacklist') : t('common.monitor');
                       const stats = statsFor(record);
-                      return `${stats.blocked}/${stats.total}`;
-                    },
-                  },
-                  {
-                    title: t('ip.actions'),
-                    dataIndex: 'actions',
-                    render: (_: unknown, record: IPReputationEntry) => (
-                      <Space className="ip-row-actions" wrap size={6}>
-                        <Button size="mini" icon={<CheckCircle2 size={13} />} loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'allow')}>
-                          {t('ip.allow')}
-                        </Button>
-                        <Button size="mini" status="danger" icon={<Ban size={13} />} loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'block')}>
-                          {t('ip.block')}
-                        </Button>
-                        <Button size="mini" icon={<RotateCcw size={13} />} loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'monitor')}>
-                          {t('common.monitor')}
-                        </Button>
-                      </Space>
-                    ),
-                  },
-                ]}
-              />
+                      return (
+                        <TableRow key={record.ip}>
+                          <TableCell>
+                            <span className="table-identity"><Shield size={17} />{record.ip}</span>
+                          </TableCell>
+                          <TableCell><Badge variant={listBadgeVariant(record.list)}>{listLabel}</Badge></TableCell>
+                          <TableCell>
+                            <ReputationOverrideEditor
+                              value={record.reputation}
+                              override={record.reputation_override}
+                              saving={reputationMutation.isPending}
+                              onSave={(score) => saveReputationOverride(record.ip, score)}
+                              onReset={() => resetReputationOverride(record.ip)}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <EditableTagInput
+                              tags={tagsFor(record, draftTags)}
+                              onChange={(tags) => {
+                                tagsDirtyRef.current = true;
+                                setDraftTags((current) => ({ ...current, [record.ip]: tags }));
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <span className="intel-chip-list">
+                              {intelFor(record).length === 0 ? (
+                                <span className="intel-chip intel-chip-muted">{t('common.monitor')}</span>
+                              ) : intelFor(record).map((item) => {
+                                const confidence = formatConfidenceSuffix(item.confidence);
+                                return (
+                                  <span key={`${record.ip}-${item.id || item.value}`} className={`intel-chip intel-chip-${intelColor(item.severity)}`}>
+                                    <span>{item.source || displaySeverity(item.severity, t)}</span>
+                                    <strong>{displayAction(item.action || 'challenge', t)}{confidence}</strong>
+                                  </span>
+                                );
+                              })}
+                            </span>
+                          </TableCell>
+                          <TableCell>{stats.blocked}/{stats.total}</TableCell>
+                          <TableCell>
+                            <div className="ip-row-actions flex flex-wrap items-center gap-1.5">
+                              <Button size="sm" variant="outline" loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'allow')}>
+                                <CheckCircle2 size={13} />{t('ip.allow')}
+                              </Button>
+                              <Button size="sm" variant="destructive" loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'block')}>
+                                <Ban size={13} />{t('ip.block')}
+                              </Button>
+                              <Button size="sm" variant="outline" loading={accessRulesMutation.isPending} onClick={() => applyIPDisposition(record.ip, 'monitor')}>
+                                <RotateCcw size={13} />{t('common.monitor')}
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              )}
             </div>
             <div className="ip-entry-card-list">
               {isLoading && <div className="empty-state">{t('common.loading')}</div>}
@@ -662,60 +690,67 @@ export default function IPManagePage() {
               {!isLoading && filtered.length > entriesPageSize && (
                 <div className="feed-pagination">
                   <span>{t('updates.feedPage', { page: entriesPage, total: entriesPageCount, defaultValue: `Page ${entriesPage} / ${entriesPageCount}` })}</span>
-                  <Space>
-                    <Button disabled={entriesPage <= 1} onClick={() => setEntriesPage((current) => Math.max(1, current - 1))}>{t('common.back')}</Button>
-                    <Button disabled={entriesPage >= entriesPageCount} onClick={() => setEntriesPage((current) => Math.min(entriesPageCount, current + 1))}>{t('common.next')}</Button>
-                  </Space>
+                  <div className="flex gap-2">
+                    <Button variant="outline" disabled={entriesPage <= 1} onClick={() => setEntriesPage((current) => Math.max(1, current - 1))}>{t('common.back')}</Button>
+                    <Button variant="outline" disabled={entriesPage >= entriesPageCount} onClick={() => setEntriesPage((current) => Math.min(entriesPageCount, current + 1))}>{t('common.next')}</Button>
+                  </div>
                 </div>
               )}
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="access" title={t('ip.accessRules')}>
+          <TabsContent value="access">
             <div className="ip-access-workspace">
               <section className="ip-access-editor">
                 <div className="system-section-title">
                   <h2><ListPlus size={16} /> {t('ip.accessRules')}</h2>
-                  <Button type="primary" loading={accessRulesMutation.isPending} onClick={() => saveAccessRules()}>{t('common.save')}</Button>
+                  <Button loading={accessRulesMutation.isPending} onClick={() => saveAccessRules()}>{t('common.save')}</Button>
                 </div>
                 <div className="ip-access-draft-grid">
                   <label className="ip-access-rule-name-field">
                     <span>{t('rules.name')}</span>
-                    <Input value={accessDraft.name} placeholder={t('ip.ruleNamePlaceholder')} onChange={(name) => setAccessDraft((current) => ({ ...current, name }))} />
+                    <Input value={accessDraft.name} placeholder={t('ip.ruleNamePlaceholder')} onChange={(event) => setAccessDraft((current) => ({ ...current, name: event.target.value }))} />
                   </label>
                   <label className="ip-access-description-field">
                     <span>{t('ip.ruleDescription')}</span>
-                    <Input value={accessDraft.description} placeholder={t('ip.ruleDescriptionPlaceholder')} onChange={(description) => setAccessDraft((current) => ({ ...current, description }))} />
+                    <Input value={accessDraft.description} placeholder={t('ip.ruleDescriptionPlaceholder')} onChange={(event) => setAccessDraft((current) => ({ ...current, description: event.target.value }))} />
                     <small>{t('ip.ruleDescriptionHint')}</small>
                   </label>
                   <label>
                     <span>{t('logs.action')}</span>
-                    <Select value={accessDraft.action} onChange={(action) => setAccessDraft((current) => ({ ...current, action: action as string }))}>
-                      <Select.Option value="allow">{t('ip.allow')}</Select.Option>
-                      <Select.Option value="block">{t('ip.block')}</Select.Option>
-                      <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
+                    <Select value={accessDraft.action} onValueChange={(action) => setAccessDraft((current) => ({ ...current, action }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="allow">{t('ip.allow')}</SelectItem>
+                        <SelectItem value="block">{t('ip.block')}</SelectItem>
+                        <SelectItem value="monitor">{t('common.monitor')}</SelectItem>
+                      </SelectContent>
                     </Select>
                     <small>{t('ip.accessActionHint')}</small>
                   </label>
                   <label>
                     <span>{t('ip.scope')}</span>
-                    <Select value={accessDraft.scope} onChange={(scope) => setAccessDraft((current) => ({ ...current, ...normalizeAccessScopePatch(current, String(scope || 'global')) }))}>
-                      <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
-                      <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
-                      <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
+                    <Select value={accessDraft.scope} onValueChange={(scope) => setAccessDraft((current) => ({ ...current, ...normalizeAccessScopePatch(current, String(scope || 'global')) }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="global">{t('ip.scopeGlobal')}</SelectItem>
+                        <SelectItem value="site">{t('ip.scopeSite')}</SelectItem>
+                        <SelectItem value="path">{t('ip.scopePath')}</SelectItem>
+                      </SelectContent>
                     </Select>
                     <small>{t('ip.accessScopeHint')}</small>
                   </label>
                   <label className="ip-access-site-field">
                     <span>{t('sites.title')}</span>
                     <Select
-                      allowClear
                       disabled={accessDraft.scope === 'global'}
                       value={accessDraft.site_id || undefined}
-                      placeholder={t('ip.optionalSite')}
-                      onChange={(site_id) => setAccessDraft((current) => ({ ...current, site_id: String(site_id || '') }))}
+                      onValueChange={(site_id) => setAccessDraft((current) => ({ ...current, site_id: String(site_id || '') }))}
                     >
-                      {sites.map((site) => <Select.Option key={site.id} value={site.id}>{site.name || site.id}</Select.Option>)}
+                      <SelectTrigger><SelectValue placeholder={t('ip.optionalSite')} /></SelectTrigger>
+                      <SelectContent>
+                        {sites.map((site) => <SelectItem key={site.id} value={site.id}>{site.name || site.id}</SelectItem>)}
+                      </SelectContent>
                     </Select>
                     <small>{accessDraft.scope === 'global' ? t('ip.globalScopeHint') : accessDraft.scope === 'site' ? t('ip.siteScopeHint') : t('ip.pathScopeSiteHint')}</small>
                   </label>
@@ -725,156 +760,140 @@ export default function IPManagePage() {
                       disabled={accessDraft.scope !== 'path'}
                       value={accessDraft.path_prefix}
                       placeholder="/admin"
-                      onChange={(path_prefix) => setAccessDraft((current) => ({ ...current, path_prefix }))}
+                      onChange={(event) => setAccessDraft((current) => ({ ...current, path_prefix: event.target.value }))}
                     />
                     <small>{accessDraft.scope === 'path' ? t('ip.pathScopeHint') : t('ip.pathDisabledHint')}</small>
                   </label>
                   <label className="ip-access-entries-field">
                     <span>{t('ip.entriesInput')}</span>
-                    <Input value={accessDraft.entries.join(', ')} placeholder="203.0.113.10, 198.51.100.0/24" onChange={(value) => setAccessDraft((current) => ({ ...current, entries: splitList(value) }))} />
+                    <Input value={accessDraft.entries.join(', ')} placeholder="203.0.113.10, 198.51.100.0/24" onChange={(event) => setAccessDraft((current) => ({ ...current, entries: splitList(event.target.value) }))} />
                     <small>{t('ip.entriesHint')}</small>
                   </label>
                   <div className="ip-access-draft-actions">
-                    <label className="switch-line ip-access-enabled"><span>{t('rules.enabled')}</span><Switch checked={accessDraft.enabled} onChange={(enabled) => setAccessDraft((current) => ({ ...current, enabled }))} /></label>
-                    <Button className="ip-access-add-button" type="primary" icon={<Plus size={15} />} onClick={addAccessRule}>{t('ip.addRule')}</Button>
+                    <label className="switch-line ip-access-enabled">
+                      <span>{t('rules.enabled')}</span>
+                      <Switch checked={accessDraft.enabled} onCheckedChange={(enabled) => setAccessDraft((current) => ({ ...current, enabled }))} />
+                    </label>
+                    <Button className="ip-access-add-button" onClick={addAccessRule}><Plus size={15} />{t('ip.addRule')}</Button>
                   </div>
                 </div>
               </section>
               <div className="table-panel table-panel-embedded ip-access-table">
                 <div className="ip-access-table-desktop">
-                  <Table
-                    rowKey="id"
-                    pagination={false}
-                    data={accessRules}
-                    scroll={{ x: 1360 }}
-                    columns={[
-                      {
-                        title: t('rules.name'),
-                        dataIndex: 'name',
-                        width: 220,
-                        render: (name: string, rule: IPAccessRule, index: number) => (
-                          <div className="ip-access-name-edit">
-                            <Input value={name || rule.id} onChange={(value) => updateAccessRule(index, { name: value })} />
-                            <Input.TextArea
-                              value={rule.description || ''}
-                              placeholder={t('ip.ruleDescriptionPlaceholder')}
-                              autoSize={{ minRows: 1, maxRows: 3 }}
-                              onChange={(description) => updateAccessRule(index, { description })}
-                            />
-                          </div>
-                        ),
-                      },
-                      {
-                        title: t('logs.action'),
-                        dataIndex: 'action',
-                        width: 150,
-                        render: (action: string, _rule: IPAccessRule, index: number) => (
-                          <Select value={action || 'allow'} onChange={(value) => updateAccessRule(index, { action: value as string })}>
-                            <Select.Option value="allow">{t('ip.allow')}</Select.Option>
-                            <Select.Option value="block">{t('ip.block')}</Select.Option>
-                            <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
-                          </Select>
-                        ),
-                      },
-                      {
-                        title: t('ip.scope'),
-                        dataIndex: 'scope',
-                        width: 560,
-                        render: (_scope: string, rule: IPAccessRule, index: number) => (
-                          <AccessRuleScopeEditor
-                            rule={rule}
-                            sites={sites}
-                            t={t}
-                            onChange={(patch) => updateAccessRule(index, patch)}
-                          />
-                        ),
-                      },
-                      { title: t('ip.entriesInput'), dataIndex: 'entries', width: 220, render: (entries: string[], _rule: IPAccessRule, index: number) => <Input value={(entries || []).join(', ')} onChange={(value) => updateAccessRule(index, { entries: splitList(value) })} /> },
-                      { title: t('rules.enabled'), dataIndex: 'enabled', width: 90, render: (enabled: boolean, _rule: IPAccessRule, index: number) => <Switch checked={enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} /> },
-                      {
-                        title: t('ip.actions'),
-                        dataIndex: 'actions',
-                        width: 120,
-                        render: (_: unknown, rule: IPAccessRule, index: number) => (
-                          <span className="action-group ip-access-row-actions">
-                            <Button size="small" loading={accessRulesMutation.isPending} onClick={() => saveEditedAccessRule(index)}>
-                              {t('common.save')}
-                            </Button>
-                            <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeAccessRule(rule.id)}>
-                              {t('common.delete')}
-                            </Button>
-                          </span>
-                        ),
-                      },
-                    ]}
-                  />
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t('rules.name')}</TableHead>
+                        <TableHead>{t('logs.action')}</TableHead>
+                        <TableHead>{t('ip.scope')}</TableHead>
+                        <TableHead>{t('ip.entriesInput')}</TableHead>
+                        <TableHead>{t('rules.enabled')}</TableHead>
+                        <TableHead>{t('ip.actions')}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {accessRules.map((rule, index) => (
+                        <TableRow key={rule.id}>
+                          <TableCell>
+                            <div className="ip-access-name-edit space-y-1">
+                              <Input value={rule.name || rule.id} onChange={(event) => updateAccessRule(index, { name: event.target.value })} />
+                              <Textarea
+                                value={rule.description || ''}
+                                placeholder={t('ip.ruleDescriptionPlaceholder')}
+                                rows={2}
+                                onChange={(event) => updateAccessRule(index, { description: event.target.value })}
+                              />
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Select value={rule.action || 'allow'} onValueChange={(value) => updateAccessRule(index, { action: value })}>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="allow">{t('ip.allow')}</SelectItem>
+                                <SelectItem value="block">{t('ip.block')}</SelectItem>
+                                <SelectItem value="monitor">{t('common.monitor')}</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell>
+                            <AccessRuleScopeEditor rule={rule} sites={sites} t={t} onChange={(patch) => updateAccessRule(index, patch)} />
+                          </TableCell>
+                          <TableCell>
+                            <Input value={(rule.entries || []).join(', ')} onChange={(event) => updateAccessRule(index, { entries: splitList(event.target.value) })} />
+                          </TableCell>
+                          <TableCell>
+                            <Switch checked={rule.enabled} onCheckedChange={(value) => updateAccessRule(index, { enabled: value })} />
+                          </TableCell>
+                          <TableCell>
+                            <span className="action-group ip-access-row-actions">
+                              <Button size="sm" variant="outline" loading={accessRulesMutation.isPending} onClick={() => saveEditedAccessRule(index)}>{t('common.save')}</Button>
+                              <Button size="sm" variant="destructive" onClick={() => removeAccessRule(rule.id)}><Trash2 size={14} />{t('common.delete')}</Button>
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 </div>
                 <div className="ip-access-card-list">
                   {accessRules.map((rule, index) => (
                     <article className="ip-access-rule-card" key={rule.id || index}>
                       <label className="ip-access-rule-card-name">
                         <span>{t('rules.name')}</span>
-                        <Input value={rule.name || rule.id} onChange={(value) => updateAccessRule(index, { name: value })} />
+                        <Input value={rule.name || rule.id} onChange={(event) => updateAccessRule(index, { name: event.target.value })} />
                       </label>
                       <label className="ip-access-rule-card-description">
                         <span>{t('ip.ruleDescription')}</span>
-                        <Input.TextArea
+                        <Textarea
                           value={rule.description || ''}
                           placeholder={t('ip.ruleDescriptionPlaceholder')}
-                          autoSize={{ minRows: 1, maxRows: 3 }}
-                          onChange={(description) => updateAccessRule(index, { description })}
+                          rows={2}
+                          onChange={(event) => updateAccessRule(index, { description: event.target.value })}
                         />
                       </label>
                       <div className="ip-access-rule-card-grid">
                         <label>
                           <span>{t('logs.action')}</span>
-                          <Select value={rule.action || 'allow'} onChange={(value) => updateAccessRule(index, { action: value as string })}>
-                            <Select.Option value="allow">{t('ip.allow')}</Select.Option>
-                            <Select.Option value="block">{t('ip.block')}</Select.Option>
-                            <Select.Option value="monitor">{t('common.monitor')}</Select.Option>
+                          <Select value={rule.action || 'allow'} onValueChange={(value) => updateAccessRule(index, { action: value })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="allow">{t('ip.allow')}</SelectItem>
+                              <SelectItem value="block">{t('ip.block')}</SelectItem>
+                              <SelectItem value="monitor">{t('common.monitor')}</SelectItem>
+                            </SelectContent>
                           </Select>
                         </label>
-                        <AccessRuleScopeEditor
-                          compact
-                          rule={rule}
-                          sites={sites}
-                          t={t}
-                          onChange={(patch) => updateAccessRule(index, patch)}
-                        />
+                        <AccessRuleScopeEditor compact rule={rule} sites={sites} t={t} onChange={(patch) => updateAccessRule(index, patch)} />
                         <label className="ip-access-rule-card-entries">
                           <span>{t('ip.entriesInput')}</span>
-                          <Input value={(rule.entries || []).join(', ')} onChange={(value) => updateAccessRule(index, { entries: splitList(value) })} />
+                          <Input value={(rule.entries || []).join(', ')} onChange={(event) => updateAccessRule(index, { entries: splitList(event.target.value) })} />
                         </label>
                         <label className="switch-line ip-access-rule-card-enabled">
                           <span>{t('rules.enabled')}</span>
-                          <Switch checked={rule.enabled} onChange={(value) => updateAccessRule(index, { enabled: value })} />
+                          <Switch checked={rule.enabled} onCheckedChange={(value) => updateAccessRule(index, { enabled: value })} />
                         </label>
                       </div>
                       <small className="ip-access-rule-card-scope">{scopeLabel(rule, t)}</small>
                       <div className="ip-access-rule-card-actions">
-                        <Button size="small" loading={accessRulesMutation.isPending} onClick={() => saveEditedAccessRule(index)}>
-                          {t('common.save')}
-                        </Button>
-                        <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeAccessRule(rule.id)}>
-                          {t('common.delete')}
-                        </Button>
+                        <Button size="sm" variant="outline" loading={accessRulesMutation.isPending} onClick={() => saveEditedAccessRule(index)}>{t('common.save')}</Button>
+                        <Button size="sm" variant="destructive" onClick={() => removeAccessRule(rule.id)}><Trash2 size={14} />{t('common.delete')}</Button>
                       </div>
                     </article>
                   ))}
                 </div>
               </div>
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="providers" title={t('ip.providers')}>
+          <TabsContent value="providers">
             <div className="system-section">
               <div className="system-section-title">
                 <h2><CloudDownload size={16} /> {t('ip.providers')}</h2>
-                <Space wrap>
-                  <Button icon={<Plus size={15} />} onClick={addProvider}>{t('common.add')}</Button>
-                  <Button onClick={() => syncMutation.mutate(undefined)} loading={syncMutation.isPending}>{t('ip.syncAll')}</Button>
-                  <Button type="primary" loading={providersMutation.isPending} onClick={() => providersMutation.mutate(providers.map(normalizeProviderForSave))}>{t('common.save')}</Button>
-                </Space>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="outline" onClick={addProvider}><Plus size={15} />{t('common.add')}</Button>
+                  <Button variant="outline" onClick={() => syncMutation.mutate(undefined)} loading={syncMutation.isPending}>{t('ip.syncAll')}</Button>
+                  <Button loading={providersMutation.isPending} onClick={() => providersMutation.mutate(providers.map(normalizeProviderForSave))}>{t('common.save')}</Button>
+                </div>
               </div>
               <div className="provider-list">
                 {providers.map((provider, index) => {
@@ -882,115 +901,129 @@ export default function IPManagePage() {
                   return (
                     <article className="provider-card" key={provider.id}>
                       <div className="provider-card-head">
-                        <Switch checked={provider.enabled} onChange={(enabled) => updateProvider(index, { enabled })} />
+                        <Switch checked={provider.enabled} onCheckedChange={(enabled) => updateProvider(index, { enabled })} />
                         <div>
                           <strong>{provider.name || t('ip.providerName')}</strong>
                           <span>{provider.endpoint || t('ip.providerEndpointEmpty')}</span>
                         </div>
                         <div className="provider-actions">
-                          <Button size="small" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(normalizeProviderForSave(provider))}>{t('system.test')}</Button>
-                          <Button size="small" loading={syncMutation.isPending} onClick={() => syncMutation.mutate(provider.id)}>{t('ip.sync')}</Button>
-                          <Button size="small" status="danger" icon={<Trash2 size={14} />} onClick={() => removeProvider(provider.id)}>
-                            {t('common.delete')}
-                          </Button>
+                          <Button size="sm" variant="outline" loading={providerTestMutation.isPending} onClick={() => providerTestMutation.mutate(normalizeProviderForSave(provider))}>{t('system.test')}</Button>
+                          <Button size="sm" variant="outline" loading={syncMutation.isPending} onClick={() => syncMutation.mutate(provider.id)}>{t('ip.sync')}</Button>
+                          <Button size="sm" variant="destructive" onClick={() => removeProvider(provider.id)}><Trash2 size={14} />{t('common.delete')}</Button>
                         </div>
                       </div>
                       {status && <IntelStatusPanel status={status} t={t} />}
                       <div className="provider-field-grid">
                         <label>
                           <span>{t('ip.providerName')}</span>
-                          <Input value={provider.name} placeholder={t('ip.providerName')} onChange={(name) => updateProvider(index, { name })} />
+                          <Input value={provider.name} placeholder={t('ip.providerName')} onChange={(event) => updateProvider(index, { name: event.target.value })} />
                         </label>
                         <label>
                           <span>{t('ip.providerType')}</span>
-                          <Select value={provider.type} onChange={(type) => applyProviderTemplate(index, type as string)}>
-                            {providerTemplates.map((template) => (
-                              <Select.Option key={template.type} value={template.type}>{t(template.nameKey)}</Select.Option>
-                            ))}
+                          <Select value={provider.type} onValueChange={(type) => applyProviderTemplate(index, type)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {providerTemplates.map((template) => (
+                                <SelectItem key={template.type} value={template.type}>{t(template.nameKey)}</SelectItem>
+                              ))}
+                            </SelectContent>
                           </Select>
                           <small>{t(providerTemplateFor(provider.type).hintKey)}</small>
                         </label>
                         <label>
                           <span>{t('ip.format')}</span>
-                          <Select value={provider.format || 'stix'} onChange={(format) => updateProvider(index, { format: format as string })}>
-                            {formatOptions.map((format) => <Select.Option key={format} value={format}>{formatLabel(format)}</Select.Option>)}
+                          <Select value={provider.format || 'stix'} onValueChange={(format) => updateProvider(index, { format })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {formatOptions.map((format) => <SelectItem key={format} value={format}>{formatLabel(format)}</SelectItem>)}
+                            </SelectContent>
                           </Select>
                           <small>{t('ip.formatHint')}</small>
                         </label>
                         <label>
                           <span>{t('logs.action')}</span>
-                          <Select value={normalizeProviderAction(provider.action)} onChange={(action) => updateProvider(index, { action: action as string })}>
-                            <Select.Option value="challenge">{displayAction('challenge', t)}</Select.Option>
-                            <Select.Option value="block">{displayAction('block', t)}</Select.Option>
-                            <Select.Option value="log">{displayAction('log', t)}</Select.Option>
+                          <Select value={normalizeProviderAction(provider.action)} onValueChange={(action) => updateProvider(index, { action })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="challenge">{displayAction('challenge', t)}</SelectItem>
+                              <SelectItem value="block">{displayAction('block', t)}</SelectItem>
+                              <SelectItem value="log">{displayAction('log', t)}</SelectItem>
+                            </SelectContent>
                           </Select>
                           <small>{t('ip.providerActionHint')}</small>
                         </label>
                         <label className="provider-endpoint-field">
                           <span>{t('ip.endpoint')}</span>
-                          <Input value={provider.endpoint} placeholder="https://..." onChange={(endpoint) => updateProvider(index, { endpoint })} />
+                          <Input value={provider.endpoint} placeholder="https://..." onChange={(event) => updateProvider(index, { endpoint: event.target.value })} />
                           <small>{t('ip.endpointHint')}</small>
                         </label>
                         <label>
                           <span>{t('ip.providerAuth')}</span>
-                          <Select value={provider.auth_type || 'bearer'} onChange={(auth_type) => updateProvider(index, { auth_type: auth_type as string })}>
-                            <Select.Option value="bearer">{t('ip.authBearer')}</Select.Option>
-                            <Select.Option value="header">{t('ip.authHeader')}</Select.Option>
-                            <Select.Option value="query">{t('ip.authQuery')}</Select.Option>
-                            <Select.Option value="basic">{t('ip.authBasic')}</Select.Option>
-                            <Select.Option value="none">{t('ip.authNone')}</Select.Option>
+                          <Select value={provider.auth_type || 'bearer'} onValueChange={(auth_type) => updateProvider(index, { auth_type })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="bearer">{t('ip.authBearer')}</SelectItem>
+                              <SelectItem value="header">{t('ip.authHeader')}</SelectItem>
+                              <SelectItem value="query">{t('ip.authQuery')}</SelectItem>
+                              <SelectItem value="basic">{t('ip.authBasic')}</SelectItem>
+                              <SelectItem value="none">{t('ip.authNone')}</SelectItem>
+                            </SelectContent>
                           </Select>
                           <small>{t('ip.authHint')}</small>
                         </label>
                         <label>
                           <span>{t('ip.apiKey')}</span>
-                          <Input.Password
+                          <Input
+                            type="password"
                             value={provider.api_key}
                             placeholder={provider.auth_type === 'basic' ? 'user:password' : t('ip.apiKey')}
                             disabled={provider.auth_type === 'none'}
-                            onChange={(api_key) => updateProvider(index, { api_key })}
+                            onChange={(event) => updateProvider(index, { api_key: event.target.value })}
                           />
                           <small>{provider.auth_type === 'none' ? t('ip.authNoneHint') : t('ip.apiKeyPreserveHint')}</small>
                         </label>
                         <label className="provider-headers-field">
                           <span>{t('ip.providerHeaders')}</span>
-                          <Input.TextArea
+                          <Textarea
                             value={headersToText(provider.headers)}
                             placeholder={t('ip.providerHeadersPlaceholder')}
-                            autoSize={{ minRows: 2, maxRows: 5 }}
-                            onChange={(raw) => updateProvider(index, { headers: textToHeaders(raw) })}
+                            rows={3}
+                            onChange={(event) => updateProvider(index, { headers: textToHeaders(event.target.value) })}
                           />
                           <small>{t('ip.providerHeadersHint')}</small>
                         </label>
                         <label className="provider-interval-field">
                           <span>{t('ip.intervalValue')}</span>
                           <div className="duration-input-group">
-                            <InputNumber
+                            <Input
+                              type="number"
                               value={durationAmount(provider.interval)}
                               min={1}
                               max={intervalMax(provider.interval)}
-                              precision={0}
-                              onChange={(value) => updateProvider(index, { interval: secondsToDuration(Number(value || 1) * intervalUnitSeconds(intervalUnit(provider.interval))) })}
+                              onChange={(event) => updateProvider(index, { interval: secondsToDuration(Number(event.target.value || 1) * intervalUnitSeconds(intervalUnit(provider.interval))) })}
                             />
                             <Select
                               value={intervalUnit(provider.interval)}
-                              onChange={(unit) => updateProvider(index, { interval: secondsToDuration(durationAmount(provider.interval) * intervalUnitSeconds(unit as string)) })}
+                              onValueChange={(unit) => updateProvider(index, { interval: secondsToDuration(durationAmount(provider.interval) * intervalUnitSeconds(unit)) })}
                             >
-                              <Select.Option value="minute">{t('common.minutes')}</Select.Option>
-                              <Select.Option value="hour">{t('common.hours')}</Select.Option>
-                              <Select.Option value="day">{t('common.days')}</Select.Option>
-                              <Select.Option value="month">30 {t('common.days')}</Select.Option>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="minute">{t('common.minutes')}</SelectItem>
+                                <SelectItem value="hour">{t('common.hours')}</SelectItem>
+                                <SelectItem value="day">{t('common.days')}</SelectItem>
+                                <SelectItem value="month">30 {t('common.days')}</SelectItem>
+                              </SelectContent>
                             </Select>
                           </div>
                           <small>{t('ip.intervalHint')}</small>
                         </label>
                         <label className="provider-notes-field">
                           <span>{t('ip.providerNotes')}</span>
-                          <Input.TextArea
+                          <Textarea
                             value={provider.notes || ''}
                             placeholder={t('ip.providerNotesPlaceholder')}
-                            autoSize={{ minRows: 2, maxRows: 4 }}
-                            onChange={(notes) => updateProvider(index, { notes })}
+                            rows={2}
+                            onChange={(event) => updateProvider(index, { notes: event.target.value })}
                           />
                         </label>
                       </div>
@@ -1000,9 +1033,9 @@ export default function IPManagePage() {
                 {!providers.length && <div className="empty-state">{t('ip.noProviders')}</div>}
               </div>
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="import" title={t('ip.import')}>
+          <TabsContent value="import">
             <div className="ip-intel-workspace">
               <section className="system-card ip-import-card">
                 <div className="system-section-title">
@@ -1014,31 +1047,54 @@ export default function IPManagePage() {
                 <div className="ip-import-grid">
                   <label>
                     <span>{t('ip.format')}</span>
-                    <Select value={importDraft.format} onChange={(format) => setImportDraft((current) => ({ ...current, format: format as string }))}>
-                      {formatOptions.map((format) => <Select.Option key={format} value={format}>{formatLabel(format)}</Select.Option>)}
+                    <Select value={importDraft.format} onValueChange={(format) => setImportDraft((current) => ({ ...current, format }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {formatOptions.map((format) => <SelectItem key={format} value={format}>{formatLabel(format)}</SelectItem>)}
+                      </SelectContent>
                     </Select>
                     <small>{formatHelp(importDraft.format, t)}</small>
                   </label>
-                  <label><span>{t('ip.source')}</span><Input value={importDraft.source} onChange={(source) => setImportDraft((current) => ({ ...current, source }))} /><small>{t('ip.sourceHint')}</small></label>
+                  <label>
+                    <span>{t('ip.source')}</span>
+                    <Input value={importDraft.source} onChange={(event) => setImportDraft((current) => ({ ...current, source: event.target.value }))} />
+                    <small>{t('ip.sourceHint')}</small>
+                  </label>
                   <label>
                     <span>{t('rules.severity')}</span>
-                    <Select value={importDraft.severity} onChange={(severity) => setImportDraft((current) => ({ ...current, severity: severity as string }))}>
-                      <Select.Option value="low">{t('rules.low')}</Select.Option>
-                      <Select.Option value="medium">{t('rules.medium')}</Select.Option>
-                      <Select.Option value="high">{t('rules.high')}</Select.Option>
-                      <Select.Option value="critical">{t('rules.critical')}</Select.Option>
+                    <Select value={importDraft.severity} onValueChange={(severity) => setImportDraft((current) => ({ ...current, severity }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">{t('rules.low')}</SelectItem>
+                        <SelectItem value="medium">{t('rules.medium')}</SelectItem>
+                        <SelectItem value="high">{t('rules.high')}</SelectItem>
+                        <SelectItem value="critical">{t('rules.critical')}</SelectItem>
+                      </SelectContent>
                     </Select>
                   </label>
                   <label>
                     <span>{t('logs.action')}</span>
-                    <Select value={importDraft.action} onChange={(action) => setImportDraft((current) => ({ ...current, action: action as string }))}>
-                      <Select.Option value="challenge">{displayAction('challenge', t)}</Select.Option>
-                      <Select.Option value="block">{displayAction('block', t)}</Select.Option>
-                      <Select.Option value="monitor">{displayAction('monitor', t)}</Select.Option>
-                      <Select.Option value="log">{displayAction('log', t)}</Select.Option>
+                    <Select value={importDraft.action} onValueChange={(action) => setImportDraft((current) => ({ ...current, action }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="challenge">{displayAction('challenge', t)}</SelectItem>
+                        <SelectItem value="block">{displayAction('block', t)}</SelectItem>
+                        <SelectItem value="monitor">{displayAction('monitor', t)}</SelectItem>
+                        <SelectItem value="log">{displayAction('log', t)}</SelectItem>
+                      </SelectContent>
                     </Select>
                   </label>
-                  <label><span>{t('ip.confidence')}</span><InputNumber value={importDraft.confidence * 100} min={0} max={100} precision={0} suffix="%" onChange={(value) => setImportDraft((current) => ({ ...current, confidence: Number(value || 0) / 100 }))} /><small>{t('ip.confidenceHint')}</small></label>
+                  <label>
+                    <span>{t('ip.confidence')}</span>
+                    <Input
+                      type="number"
+                      value={importDraft.confidence * 100}
+                      min={0}
+                      max={100}
+                      onChange={(event) => setImportDraft((current) => ({ ...current, confidence: Number(event.target.value || 0) / 100 }))}
+                    />
+                    <small>{t('ip.confidenceHint')}</small>
+                  </label>
                   <label className="wide-field tag-token-field">
                     <span>{t('ip.labels')}</span>
                     <TagTokenInput
@@ -1047,11 +1103,19 @@ export default function IPManagePage() {
                       placeholder={t('ip.labelPlaceholder')}
                     />
                   </label>
-                  <label className="ioc-field"><span>{t('ip.ioc')}</span><Input.TextArea value={importDraft.contents} placeholder={t('ip.iocPlaceholder')} autoSize={{ minRows: 10, maxRows: 16 }} onChange={(contents) => setImportDraft((current) => ({ ...current, contents }))} /><small>{t('ip.iocHint')}</small></label>
+                  <label className="ioc-field">
+                    <span>{t('ip.ioc')}</span>
+                    <Textarea
+                      value={importDraft.contents}
+                      placeholder={t('ip.iocPlaceholder')}
+                      rows={12}
+                      onChange={(event) => setImportDraft((current) => ({ ...current, contents: event.target.value }))}
+                    />
+                    <small>{t('ip.iocHint')}</small>
+                  </label>
                 </div>
                 <div className="form-action-row">
                   <Button
-                    type="primary"
                     disabled={!importDraft.contents.trim()}
                     loading={importMutation.isPending}
                     onClick={runImport}
@@ -1071,15 +1135,22 @@ export default function IPManagePage() {
                 <div className="ip-lookup-grid">
                   <label>
                     <span>{t('ip.providerName')}</span>
-                    <Select value={lookupDraft.providerId} onChange={(providerId) => setLookupDraft((current) => ({ ...current, providerId: providerId as string }))}>
-                      {providers.map((provider) => <Select.Option key={provider.id} value={provider.id}>{provider.name || provider.id}</Select.Option>)}
+                    <Select value={lookupDraft.providerId} onValueChange={(providerId) => setLookupDraft((current) => ({ ...current, providerId }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {providers.map((provider) => <SelectItem key={provider.id} value={provider.id}>{provider.name || provider.id}</SelectItem>)}
+                      </SelectContent>
                     </Select>
                     <small>{providers.length ? t('ip.lookupProviderHint') : t('ip.noProviders')}</small>
                   </label>
-                  <label><span>IP</span><Input value={lookupDraft.ip} placeholder="8.8.8.8" onChange={(ip) => setLookupDraft((current) => ({ ...current, ip }))} /><small>{t('ip.lookupIPHint')}</small></label>
+                  <label>
+                    <span>IP</span>
+                    <Input value={lookupDraft.ip} placeholder="8.8.8.8" onChange={(event) => setLookupDraft((current) => ({ ...current, ip: event.target.value }))} />
+                    <small>{t('ip.lookupIPHint')}</small>
+                  </label>
                 </div>
                 <div className="form-action-row">
-                  <Button type="primary" disabled={!lookupDraft.providerId || !lookupDraft.ip} loading={lookupMutation.isPending} onClick={() => lookupMutation.mutate()}>
+                  <Button disabled={!lookupDraft.providerId || !lookupDraft.ip} loading={lookupMutation.isPending} onClick={() => lookupMutation.mutate()}>
                     {t('ip.lookup')}
                   </Button>
                 </div>
@@ -1087,9 +1158,22 @@ export default function IPManagePage() {
                 {syncStatus && <IntelStatusPanel status={syncStatus} t={t} compact />}
               </section>
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
         </Tabs>
       </section>
+
+      <Dialog open={deleteRuleId !== null} onOpenChange={(open) => { if (!open) setDeleteRuleId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('common.confirmDeleteTitle')}</DialogTitle>
+            <DialogDescription>{t('common.confirmDeleteEntry')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteRuleId(null)}>{t('common.cancel')}</Button>
+            <Button variant="destructive" onClick={confirmRemoveAccessRule}>{t('common.delete')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
@@ -1160,14 +1244,14 @@ function buildErrorStatus(title: string, detail: string): IntelOperationStatus {
 
 function showStatusMessage(status: IntelOperationStatus) {
   if (status.tone === 'success') {
-    ArcoMessage.success(status.title);
+    toast.success(status.title);
     return;
   }
   if (status.tone === 'warning') {
-    ArcoMessage.warning(status.title);
+    toast.warning(status.title);
     return;
   }
-  ArcoMessage.error(status.title);
+  toast.error(status.title);
 }
 
 function formatStatusTime() {
@@ -1224,6 +1308,7 @@ function formatConfidenceLabel(value: number) {
   return `${Math.round(Math.max(0, Math.min(100, percent)))}%`;
 }
 
+
 function IPEntryMobileCard({
   entry,
   tags,
@@ -1250,7 +1335,6 @@ function IPEntryMobileCard({
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const list = entry.list === 'whitelist' ? t('ip.whitelist') : entry.list === 'blacklist' ? t('ip.blacklist') : t('common.monitor');
-  const listColor = entry.list === 'whitelist' ? 'green' : entry.list === 'blacklist' ? 'red' : 'blue';
   const stats = statsFor(entry);
   const intel = intelFor(entry);
 
@@ -1261,7 +1345,7 @@ function IPEntryMobileCard({
           <Shield size={17} />
           <strong>{entry.ip}</strong>
         </span>
-        <Tag color={listColor}>{list}</Tag>
+        <Badge variant={listBadgeVariant(entry.list)}>{list}</Badge>
       </header>
       <div className="ip-entry-card-grid">
         <div>
@@ -1298,15 +1382,13 @@ function IPEntryMobileCard({
         </span>
       </div>
       <div className="ip-entry-card-actions">
-        <Button size="small" icon={<CheckCircle2 size={14} />} loading={savingAccess} onClick={onAllow}>{t('ip.allow')}</Button>
-        <Button size="small" status="danger" icon={<Ban size={14} />} loading={savingAccess} onClick={onBlock}>{t('ip.block')}</Button>
-        <Button size="small" icon={<RotateCcw size={14} />} loading={savingAccess} onClick={onMonitor}>{t('common.monitor')}</Button>
+        <Button size="sm" variant="outline" loading={savingAccess} onClick={onAllow}><CheckCircle2 size={14} />{t('ip.allow')}</Button>
+        <Button size="sm" variant="destructive" loading={savingAccess} onClick={onBlock}><Ban size={14} />{t('ip.block')}</Button>
+        <Button size="sm" variant="outline" loading={savingAccess} onClick={onMonitor}><RotateCcw size={14} />{t('common.monitor')}</Button>
       </div>
     </article>
   );
 }
-
-
 
 function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
   const { t } = useTranslation();
@@ -1327,22 +1409,21 @@ function EditableTagInput({ tags, onChange }: { tags: string[]; onChange: (tags:
     <div className="ip-tag-editor">
       <div className="ip-token-row">
         {tags.length > 0 ? tags.map((tag) => <span className="ip-token" key={tag}>{tag}</span>) : <span className="ip-token-muted">-</span>}
-        <Popover
-          popupVisible={open}
-          onVisibleChange={setOpen}
-          trigger="click"
-          position="bottom"
-          content={(
-            <div className="ip-tag-popover">
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button className="ip-tag-edit-btn" size="sm" variant="ghost" aria-label={t('common.edit')}>
+              <Pencil size={12} />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-64">
+            <div className="ip-tag-popover space-y-2">
               <TagTokenInput value={draft} onChange={setDraft} placeholder={t('ip.labelPlaceholder')} />
-              <div>
-                <Button size="mini" onClick={() => setDraft(tags)}>{t('common.reset')}</Button>
-                <Button size="mini" type="primary" onClick={commit}>{t('common.save')}</Button>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => setDraft(tags)}>{t('common.reset')}</Button>
+                <Button size="sm" onClick={commit}>{t('common.save')}</Button>
               </div>
             </div>
-          )}
-        >
-          <Button className="ip-tag-edit-btn" size="mini" icon={<Pencil size={12} />} aria-label={t('common.edit')} />
+          </PopoverContent>
         </Popover>
       </div>
     </div>
@@ -1408,10 +1489,10 @@ function TagTokenInput({
         </span>
       ))}
       <Input
-        size="small"
+        className="h-8"
         value={draft}
         placeholder={value.length ? '' : placeholder}
-        onChange={setDraft}
+        onChange={(event) => setDraft(event.target.value)}
         onBlur={() => addToken(draft)}
         onKeyDown={handleKeyDown}
       />
@@ -1441,25 +1522,28 @@ function ReputationOverrideEditor({
   }, [override, value]);
 
   return (
-    <Popover
-      popupVisible={open}
-      onVisibleChange={setOpen}
-      trigger="click"
-      position="bottom"
-      content={(
-        <div className="ip-score-popover">
-          <InputNumber min={0} max={100} precision={0} value={draft} onChange={(score) => setDraft(Number(score ?? value))} />
-          <div>
-            <Button size="mini" disabled={override === undefined} onClick={() => { onReset(); setOpen(false); }}>{t('common.reset')}</Button>
-            <Button size="mini" type="primary" loading={saving} onClick={() => { onSave(draft); setOpen(false); }}>{t('common.save')}</Button>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button className="ip-score-button" type="button">
+          <Badge variant={reputationBadgeVariant(value)}>{value}</Badge>
+          {override !== undefined && <span>{t('ip.manual')}</span>}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-48">
+        <div className="ip-score-popover space-y-2">
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            value={draft}
+            onChange={(event) => setDraft(Number(event.target.value ?? value))}
+          />
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" disabled={override === undefined} onClick={() => { onReset(); setOpen(false); }}>{t('common.reset')}</Button>
+            <Button size="sm" loading={saving} onClick={() => { onSave(draft); setOpen(false); }}>{t('common.save')}</Button>
           </div>
         </div>
-      )}
-    >
-      <button className="ip-score-button" type="button">
-        <Tag color={reputationColor(value)}>{value}</Tag>
-        {override !== undefined && <span>{t('ip.manual')}</span>}
-      </button>
+      </PopoverContent>
     </Popover>
   );
 }
@@ -1482,23 +1566,27 @@ function AccessRuleScopeEditor({
     <div className={compact ? 'ip-access-scope-fields ip-access-scope-fields-compact' : 'ip-access-scope-fields'}>
       <label>
         <span>{t('ip.scope')}</span>
-        <Select value={scope} onChange={(value) => onChange(normalizeAccessScopePatch(rule, String(value || 'global')))}>
-          <Select.Option value="global">{t('ip.scopeGlobal')}</Select.Option>
-          <Select.Option value="site">{t('ip.scopeSite')}</Select.Option>
-          <Select.Option value="path">{t('ip.scopePath')}</Select.Option>
+        <Select value={scope} onValueChange={(value) => onChange(normalizeAccessScopePatch(rule, String(value || 'global')))}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="global">{t('ip.scopeGlobal')}</SelectItem>
+            <SelectItem value="site">{t('ip.scopeSite')}</SelectItem>
+            <SelectItem value="path">{t('ip.scopePath')}</SelectItem>
+          </SelectContent>
         </Select>
         <small>{scopeLabel(rule, t)}</small>
       </label>
       <label>
         <span>{t('sites.title')}</span>
         <Select
-          allowClear
           disabled={scope === 'global'}
           value={rule.site_id || undefined}
-          placeholder={t('ip.optionalSite')}
-          onChange={(site_id) => onChange({ site_id: String(site_id || '') })}
+          onValueChange={(site_id) => onChange({ site_id: String(site_id || '') })}
         >
-          {sites.map((site) => <Select.Option key={site.id} value={site.id}>{site.name || site.id}</Select.Option>)}
+          <SelectTrigger><SelectValue placeholder={t('ip.optionalSite')} /></SelectTrigger>
+          <SelectContent>
+            {sites.map((site) => <SelectItem key={site.id} value={site.id}>{site.name || site.id}</SelectItem>)}
+          </SelectContent>
         </Select>
         <small>{scope === 'global' ? t('ip.globalScopeHint') : scope === 'site' ? t('ip.siteScopeHint') : t('ip.pathScopeSiteHint')}</small>
       </label>
@@ -1508,7 +1596,7 @@ function AccessRuleScopeEditor({
           disabled={scope !== 'path'}
           value={rule.path_prefix || ''}
           placeholder="/admin"
-          onChange={(path_prefix) => onChange({ path_prefix })}
+          onChange={(event) => onChange({ path_prefix: event.target.value })}
         />
         <small>{scope === 'path' ? t('ip.pathScopeHint') : t('ip.pathDisabledHint')}</small>
       </label>
@@ -1751,15 +1839,6 @@ function intervalMax(value: number | string | undefined) {
   return 43_200;
 }
 
-function reputationColor(value: number) {
-  if (value >= 80) {
-    return 'green';
-  }
-  if (value >= 50) {
-    return 'orange';
-  }
-  return 'red';
-}
 
 function intelColor(severity: string) {
   switch (severity) {
@@ -1822,4 +1901,32 @@ function scopeLabel(rule: IPAccessRule, t: (key: string) => string) {
     return `${t('ip.scopePath')} · ${site}${rule.path_prefix || '/'}`;
   }
   return t('ip.scopeGlobal');
+}
+
+function badgeVariantFromColor(color: string | undefined): 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'outline' {
+  switch (String(color ?? '')) {
+    case 'red':
+      return 'destructive';
+    case 'green':
+      return 'success';
+    case 'orange':
+      return 'warning';
+    case 'blue':
+    case 'arcoblue':
+      return 'default';
+    default:
+      return 'secondary';
+  }
+}
+
+function listBadgeVariant(list: string): 'success' | 'destructive' | 'default' {
+  if (list === 'whitelist') return 'success';
+  if (list === 'blacklist') return 'destructive';
+  return 'default';
+}
+
+function reputationBadgeVariant(value: number): 'success' | 'warning' | 'destructive' {
+  if (value >= 80) return 'success';
+  if (value >= 50) return 'warning';
+  return 'destructive';
 }

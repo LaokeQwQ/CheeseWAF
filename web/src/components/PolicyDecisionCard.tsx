@@ -1,4 +1,4 @@
-import { Tag } from '@arco-design/web-react';
+import { Badge } from '@/components/ui';
 import { Activity, Gauge, Layers3, ShieldCheck } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -47,9 +47,9 @@ export default function PolicyDecisionCard({ metadata, compact = false }: Policy
           <strong>{reason}</strong>
         </div>
         <div className="policy-decision-tags">
-          <Tag color={actionColor(decision.action)}>{displayAction(decision.action, t)}</Tag>
-          <Tag>{policyLevelLabel(decision.level, t)}</Tag>
-          {decision.paranoiaLevel ? <Tag color="arcoblue">{t('logs.policyParanoiaLevel', { level: decision.paranoiaLevel })}</Tag> : null}
+          <Badge variant={actionBadgeVariant(decision.action)}>{displayAction(decision.action, t)}</Badge>
+          <Badge variant="secondary">{policyLevelLabel(decision.level, t)}</Badge>
+          {decision.paranoiaLevel ? <Badge variant="default">{t('logs.policyParanoiaLevel', { level: decision.paranoiaLevel })}</Badge> : null}
         </div>
       </header>
 
@@ -172,17 +172,17 @@ function policyLevelLabel(level: string | undefined, t: (key: string, options?: 
   }
 }
 
-function actionColor(action: string | undefined) {
+function actionBadgeVariant(action: string | undefined): 'destructive' | 'warning' | 'success' | 'default' {
   switch (String(action ?? '').trim().toLowerCase()) {
     case 'block':
-      return 'red';
+      return 'destructive';
     case 'challenge':
-      return 'orange';
+      return 'warning';
     case 'allow':
     case 'pass':
-      return 'green';
+      return 'success';
     default:
-      return 'arcoblue';
+      return 'default';
   }
 }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Button } from '@arco-design/web-react';
+import { Button } from '@/components/ui';
 import { Bot } from 'lucide-react';
 import {
   AI_FAB_DEFAULT_BOTTOM,
@@ -156,15 +156,15 @@ export default function AIAssistantFab({
         aria-expanded={expanded}
         aria-haspopup={expanded === undefined ? undefined : 'dialog'}
         aria-controls={controls}
-        className={['ai-fab', dragging ? 'ai-fab-dragging' : '', className].filter(Boolean).join(' ')}
-        type="primary"
-        shape="circle"
+        className={['ai-fab', 'rounded-full', 'h-14', 'w-14', dragging ? 'ai-fab-dragging' : '', className].filter(Boolean).join(' ')}
+        size="icon"
         loading={loading}
-        icon={<Bot size={36} strokeWidth={1.8} />}
         style={style}
         onPointerDown={handlePointerDown}
         onClick={handleClick}
-      />
+      >
+        {!loading ? <Bot size={36} strokeWidth={1.8} /> : null}
+      </Button>
       {children}
     </div>
   );
@@ -174,4 +174,3 @@ export default function AIAssistantFab({
   }
   return createPortal(host, document.body);
 }
-

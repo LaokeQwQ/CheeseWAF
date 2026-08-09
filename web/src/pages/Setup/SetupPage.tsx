@@ -1,9 +1,21 @@
-import { Button, Checkbox, Form, Input, Message as ArcoMessage, Radio, Select, Steps } from '@arco-design/web-react';
-import '../../styles/arco-components';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, Cpu, LockKeyhole, Network, UserRound } from 'lucide-react';
+import {
+  Button,
+  Checkbox,
+  Input,
+  Label,
+  RadioGroup,
+  RadioGroupItem,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  toast,
+} from '@/components/ui';
 import { apiClient, setupAdmin, unwrapAPIResponse } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import { passwordPolicyErrorKey } from '../../utils/passwordPolicy';
@@ -31,6 +43,7 @@ export default function SetupPage() {
   const [profile, setProfile] = useState<ProfileKey>('medium');
   const [confirmed, setConfirmed] = useState(false);
   const [account, setAccount] = useState({ username: '', password: '', adminListen: '127.0.0.1:9443', adminStrategy: 'local' });
+  const [accountError, setAccountError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -64,6 +77,42 @@ export default function SetupPage() {
     }
   }
 
+  async function handleAccountSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAccountError('');
+    const next = {
+      username: account.username.trim(),
+      password: account.password,
+      adminListen: account.adminListen.trim() || '127.0.0.1:9443',
+      adminStrategy: account.adminStrategy || 'local',
+    };
+    if (!next.username) {
+      setAccountError(t('setup.usernameRequired'));
+      return;
+    }
+    if (!next.password) {
+      setAccountError(t('setup.passwordRequired'));
+      return;
+    }
+    const policyKey = passwordPolicyErrorKey(next.password, '');
+    if (policyKey) {
+      setAccountError(t(`passwordPolicy.${policyKey}`));
+      return;
+    }
+    if (!next.adminListen) {
+      setAccountError(t('setup.adminListen', { defaultValue: 'Admin listen address is required.' }));
+      return;
+    }
+    setAccount(next);
+    await persistDraft({
+      username: next.username,
+      password: next.password,
+      admin_listen: next.adminListen,
+      admin_strategy: next.adminStrategy,
+    });
+    setStep(3);
+  }
+
   async function handleComplete() {
     if (!confirmed) {
       setMessage(t('setup.confirmRequired', { defaultValue: 'Confirm the review checklist before completing setup.' }));
@@ -84,7 +133,7 @@ export default function SetupPage() {
       setDone(true);
       setStep(4);
       setMessage(t('setup.success'));
-      ArcoMessage.success(t('setup.success'));
+      toast.success(t('setup.success'));
       window.setTimeout(() => navigate('/login', { replace: true }), 800);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : t('setup.failed'));
@@ -92,6 +141,14 @@ export default function SetupPage() {
       setLoading(false);
     }
   }
+
+  const steps = [
+    { title: t('setup.probe', { defaultValue: 'Probe' }), icon: <Cpu size={16} /> },
+    { title: t('setup.profile', { defaultValue: 'Profile' }), icon: <Network size={16} /> },
+    { title: t('setup.account'), icon: <UserRound size={16} /> },
+    { title: t('setup.review', { defaultValue: 'Review' }), icon: <CheckCircle2 size={16} /> },
+    { title: t('setup.complete'), icon: <LockKeyhole size={16} /> },
+  ];
 
   return (
     <main className="auth-screen setup-screen">
@@ -104,13 +161,23 @@ export default function SetupPage() {
           </div>
         </div>
 
-        <Steps current={step} size="small" className="setup-steps">
-          <Steps.Step title={t('setup.probe', { defaultValue: 'Probe' })} icon={<Cpu size={16} />} />
-          <Steps.Step title={t('setup.profile', { defaultValue: 'Profile' })} icon={<Network size={16} />} />
-          <Steps.Step title={t('setup.account')} icon={<UserRound size={16} />} />
-          <Steps.Step title={t('setup.review', { defaultValue: 'Review' })} icon={<CheckCircle2 size={16} />} />
-          <Steps.Step title={t('setup.complete')} icon={<LockKeyhole size={16} />} />
-        </Steps>
+        <ol className="setup-steps flex flex-wrap items-center gap-3 text-sm">
+          {steps.map((item, index) => (
+            <li
+              key={item.title}
+              className={[
+                'inline-flex items-center gap-1.5',
+                index === step ? 'font-semibold text-foreground' : 'text-muted-foreground',
+                index < step ? 'opacity-80' : '',
+              ].filter(Boolean).join(' ')}
+              aria-current={index === step ? 'step' : undefined}
+            >
+              <span aria-hidden="true">{item.icon}</span>
+              <span>{item.title}</span>
+              {index < steps.length - 1 ? <span className="ml-1 text-muted-foreground/60" aria-hidden="true">/</span> : null}
+            </li>
+          ))}
+        </ol>
 
         {step === 0 && (
           <div className="auth-form">
@@ -126,7 +193,7 @@ export default function SetupPage() {
             ) : (
               <p>{t('common.loading')}</p>
             )}
-            <Button type="primary" long disabled={!probe} onClick={() => setStep(1)}>
+            <Button className="w-full" disabled={!probe} onClick={() => setStep(1)}>
               {t('common.next', { defaultValue: 'Next' })}
             </Button>
           </div>
@@ -134,15 +201,28 @@ export default function SetupPage() {
 
         {step === 1 && (
           <div className="auth-form">
-            <Radio.Group value={profile} onChange={(v) => setProfile(v as ProfileKey)} direction="vertical">
-              <Radio value="low">low</Radio>
-              <Radio value="medium">medium</Radio>
-              <Radio value="high">high</Radio>
-              <Radio value="custom">custom (advanced knobs after install)</Radio>
-            </Radio.Group>
+            <RadioGroup
+              value={profile}
+              onValueChange={(value) => setProfile(value as ProfileKey)}
+              className="grid gap-3"
+            >
+              {([
+                { value: 'low', label: 'low' },
+                { value: 'medium', label: 'medium' },
+                { value: 'high', label: 'high' },
+                { value: 'custom', label: 'custom (advanced knobs after install)' },
+              ] as const).map((option) => (
+                <div key={option.value} className="flex items-center gap-2">
+                  <RadioGroupItem value={option.value} id={`setup-profile-${option.value}`} />
+                  <Label htmlFor={`setup-profile-${option.value}`} className="font-normal">
+                    {option.label}
+                  </Label>
+                </div>
+              ))}
+            </RadioGroup>
             <div className="setup-actions" style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-              <Button onClick={() => setStep(0)}>{t('common.back', { defaultValue: 'Back' })}</Button>
-              <Button type="primary" onClick={async () => { await persistDraft({ profile }); setStep(2); }}>
+              <Button variant="outline" onClick={() => setStep(0)}>{t('common.back', { defaultValue: 'Back' })}</Button>
+              <Button onClick={async () => { await persistDraft({ profile }); setStep(2); }}>
                 {t('common.next', { defaultValue: 'Next' })}
               </Button>
             </div>
@@ -150,71 +230,59 @@ export default function SetupPage() {
         )}
 
         {step === 2 && (
-          <Form
-            layout="vertical"
-            className="auth-form"
-            initialValues={account}
-            onSubmit={async (values) => {
-              const next = {
-                username: values.username ?? '',
-                password: values.password ?? '',
-                adminListen: values.adminListen ?? '127.0.0.1:9443',
-                adminStrategy: values.adminStrategy ?? 'local',
-              };
-              setAccount(next);
-              await persistDraft({
-                username: next.username,
-                password: next.password,
-                admin_listen: next.adminListen,
-                admin_strategy: next.adminStrategy,
-              });
-              setStep(3);
-            }}
-          >
-            <Form.Item label={t('setup.username')} field="username" rules={[{ required: true, message: t('setup.usernameRequired') }]}>
-              <Input placeholder="admin" autoComplete="username" />
-            </Form.Item>
-            <Form.Item
-              label={t('setup.password')}
-              field="password"
-              extra={t('users.passwordHint')}
-              rules={[
-                { required: true, message: t('setup.passwordRequired') },
-                {
-                  validator: (value, callback) => {
-                    const password = value == null ? '' : String(value);
-                    if (!password) {
-                      callback();
-                      return;
-                    }
-                    const key = passwordPolicyErrorKey(password, '');
-                    if (key) {
-                      callback(t(`passwordPolicy.${key}`));
-                      return;
-                    }
-                    callback();
-                  },
-                },
-              ]}
-            >
-              <Input.Password autoComplete="new-password" placeholder="********" />
-            </Form.Item>
-            <Form.Item label={`${t('setup.network')} / ${t('setup.adminListen')}`} field="adminListen" rules={[{ required: true }]}>
-              <Input placeholder="127.0.0.1:9443" />
-            </Form.Item>
-            <Form.Item label={t('setup.adminStrategy', { defaultValue: 'Admin strategy' })} field="adminStrategy">
-              <Select
-                options={[
-                  { value: 'local', label: t('setup.strategyLocal') },
-                  { value: 'public_tls', label: t('setup.strategyPublicTLS') },
-                ]}
+          <form className="auth-form" onSubmit={handleAccountSubmit}>
+            <div className="mb-3.5 grid gap-1.5">
+              <Label htmlFor="setup-username">{t('setup.username')}</Label>
+              <Input
+                id="setup-username"
+                placeholder="admin"
+                autoComplete="username"
+                value={account.username}
+                onChange={(event) => setAccount((prev) => ({ ...prev, username: event.target.value }))}
               />
-            </Form.Item>
-            <div className="setup-actions" style={{ display: 'flex', gap: 8 }}>
-              <Button onClick={() => setStep(1)}>{t('common.back', { defaultValue: 'Back' })}</Button>
-              <Button type="primary" htmlType="submit">{t('common.next', { defaultValue: 'Next' })}</Button>
             </div>
-          </Form>
+            <div className="mb-3.5 grid gap-1.5">
+              <Label htmlFor="setup-password">{t('setup.password')}</Label>
+              <Input
+                id="setup-password"
+                type="password"
+                autoComplete="new-password"
+                placeholder="********"
+                value={account.password}
+                onChange={(event) => setAccount((prev) => ({ ...prev, password: event.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">{t('users.passwordHint')}</p>
+            </div>
+            <div className="mb-3.5 grid gap-1.5">
+              <Label htmlFor="setup-admin-listen">{`${t('setup.network')} / ${t('setup.adminListen')}`}</Label>
+              <Input
+                id="setup-admin-listen"
+                placeholder="127.0.0.1:9443"
+                value={account.adminListen}
+                onChange={(event) => setAccount((prev) => ({ ...prev, adminListen: event.target.value }))}
+              />
+            </div>
+            <div className="mb-3.5 grid gap-1.5">
+              <Label htmlFor="setup-admin-strategy">{t('setup.adminStrategy', { defaultValue: 'Admin strategy' })}</Label>
+              <Select
+                value={account.adminStrategy}
+                onValueChange={(value) => setAccount((prev) => ({ ...prev, adminStrategy: value }))}
+              >
+                <SelectTrigger id="setup-admin-strategy">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="local">{t('setup.strategyLocal')}</SelectItem>
+                  <SelectItem value="public_tls">{t('setup.strategyPublicTLS')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {accountError ? <p className="auth-error" role="alert">{accountError}</p> : null}
+            <div className="setup-actions" style={{ display: 'flex', gap: 8 }}>
+              <Button type="button" variant="outline" onClick={() => setStep(1)}>{t('common.back', { defaultValue: 'Back' })}</Button>
+              <Button type="submit">{t('common.next', { defaultValue: 'Next' })}</Button>
+            </div>
+          </form>
         )}
 
         {step === 3 && (
@@ -226,12 +294,19 @@ export default function SetupPage() {
               <li>admin_listen: {account.adminListen}</li>
               <li>admin_strategy: {account.adminStrategy}</li>
             </ul>
-            <Checkbox checked={confirmed} onChange={setConfirmed}>
-              {t('setup.confirmCheck', { defaultValue: 'I have reviewed the settings and want to complete setup.' })}
-            </Checkbox>
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id="setup-confirm"
+                checked={confirmed}
+                onCheckedChange={(value) => setConfirmed(value === true)}
+              />
+              <Label htmlFor="setup-confirm" className="font-normal leading-snug">
+                {t('setup.confirmCheck', { defaultValue: 'I have reviewed the settings and want to complete setup.' })}
+              </Label>
+            </div>
             <div className="setup-actions" style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-              <Button onClick={() => setStep(2)}>{t('common.back', { defaultValue: 'Back' })}</Button>
-              <Button type="primary" loading={loading} disabled={!confirmed || done} onClick={handleComplete}>
+              <Button variant="outline" onClick={() => setStep(2)}>{t('common.back', { defaultValue: 'Back' })}</Button>
+              <Button loading={loading} disabled={!confirmed || done} onClick={handleComplete}>
                 {t('setup.complete')}
               </Button>
             </div>

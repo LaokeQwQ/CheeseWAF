@@ -1,4 +1,4 @@
-import { Tag } from '@arco-design/web-react';
+import { Badge } from '@/components/ui';
 import { useTranslation } from 'react-i18next';
 import type { AttackAnalysis } from '../types/api';
 import SafeMarkdown from './SafeMarkdown';
@@ -12,9 +12,9 @@ export default function AIAnalysisMeta({ analysis }: Props) {
   const provider = [analysis.provider, analysis.model].filter(Boolean).join(' / ');
   return (
     <div className="ai-analysis-meta">
-      <Tag color={analysis.ai_used ? 'green' : 'blue'}>
+      <Badge variant={analysis.ai_used ? 'success' : 'default'}>
         {analysis.ai_used ? t('ai.aiUsed') : t('ai.heuristicUsed')}
-      </Tag>
+      </Badge>
       {provider && <span>{provider}</span>}
       {positive(analysis.output_tokens) && <span>{t('ai.outputTokens', { value: analysis.output_tokens })}</span>}
       {positive(analysis.total_tokens) && <span>{t('ai.totalTokens', { value: analysis.total_tokens })}</span>}

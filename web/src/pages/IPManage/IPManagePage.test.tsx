@@ -23,10 +23,9 @@ const messageMocks = vi.hoisted(() => ({
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return { ...actual, Message: messageMocks };
-});
+vi.mock('sonner', () => ({
+  toast: messageMocks,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({

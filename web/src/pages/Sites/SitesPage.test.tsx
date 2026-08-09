@@ -9,7 +9,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchSites: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
@@ -17,13 +17,9 @@ const messageMocks = vi.hoisted(() => ({
 
 const navigateMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return {
-    ...actual,
-    Message: messageMocks,
-  };
-});
+vi.mock('sonner', () => ({
+  toast: toastMocks,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -111,8 +107,8 @@ describe('SitesPage create failures', () => {
     await completeCreateWizard('new-site');
     fireEvent.click(screen.getByRole('button', { name: 'common.finish' }));
 
-    await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith(message));
-    expect(messageMocks.success).not.toHaveBeenCalled();
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith(message));
+    expect(toastMocks.success).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
     expect(invalidateQueries).not.toHaveBeenCalled();
     expect(apiMocks.fetchSites).toHaveBeenCalledTimes(1);
@@ -147,8 +143,8 @@ describe('SitesPage create success', () => {
     expect(client.getQueryData(['sites'])).toEqual([persisted]);
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['sites'] });
     expect(navigateMock).toHaveBeenCalledWith('/sites/site-new');
-    expect(messageMocks.success).toHaveBeenCalledWith('sites.created');
-    expect(messageMocks.error).not.toHaveBeenCalled();
+    expect(toastMocks.success).toHaveBeenCalledWith('sites.created');
+    expect(toastMocks.error).not.toHaveBeenCalled();
   });
 });
 
@@ -192,7 +188,7 @@ describe('SitesPage wizard validation', () => {
 
     const sslLabel = screen.getByText('sites.enableSsl').closest('label');
     expect(sslLabel).toBeTruthy();
-    fireEvent.click((sslLabel as HTMLElement).querySelector('.arco-switch') as Element);
+    fireEvent.click((sslLabel as HTMLElement).querySelector('[role="switch"]') as Element);
     expect((screen.getByRole('button', { name: 'common.next' }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.change(screen.getByPlaceholderText('/etc/cheesewaf/certs/site.crt'), { target: { value: '/certs/site.crt' } });

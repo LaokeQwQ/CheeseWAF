@@ -1,15 +1,16 @@
-import { Button, Empty, Input, Select, Tag } from '@arco-design/web-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Eye, Search } from 'lucide-react';
+import { Badge, Button, Empty, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui';
 import { fetchLogs } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
 import { filterLogs, paginate, type LogViewMode } from './logsLogic';
 
 const PAGE_SIZE = 8;
+const ALL = '__all__';
 
 export default function LogsPage() {
   const { t, i18n } = useTranslation();
@@ -65,30 +66,59 @@ export default function LogsPage() {
       <div className="toolbar-row">
         <Select
           value={viewMode}
-          placeholder={t('logs.viewMode')}
-          onChange={(value) => {
+          onValueChange={(value) => {
             setViewMode(value as LogViewMode);
             setAction(undefined);
             setCategory(undefined);
           }}
-          style={{ minWidth: 140 }}
         >
-          <Select.Option value="security">{t('logs.viewSecurity')}</Select.Option>
-          <Select.Option value="access">{t('logs.viewAccess')}</Select.Option>
-          <Select.Option value="all">{t('logs.viewAll')}</Select.Option>
+          <SelectTrigger className="min-w-[140px]" aria-label={t('logs.viewMode')}>
+            <SelectValue placeholder={t('logs.viewMode')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="security">{t('logs.viewSecurity')}</SelectItem>
+            <SelectItem value="access">{t('logs.viewAccess')}</SelectItem>
+            <SelectItem value="all">{t('logs.viewAll')}</SelectItem>
+          </SelectContent>
         </Select>
-        <Input value={search} onChange={setSearch} prefix={<Search size={16} />} placeholder={t('common.search')} allowClear />
+        <div className="relative min-w-[160px] flex-1">
+          <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="pl-9"
+            placeholder={t('common.search')}
+          />
+        </div>
         {viewMode !== 'access' && (
-          <Select value={category} placeholder={t('logs.category')} allowClear onChange={(value) => setCategory(value as string | undefined)}>
-            {['sqli', 'xss', 'rce', 'lfi', 'ssrf', 'nosqli', 'ssti', 'xxe', 'bot', 'threat_intel'].map((item) => (
-              <Select.Option key={item} value={item}>{displayCategory(item, t)}</Select.Option>
-            ))}
+          <Select
+            value={category ?? ALL}
+            onValueChange={(value) => setCategory(value === ALL ? undefined : value)}
+          >
+            <SelectTrigger className="min-w-[140px]" aria-label={t('logs.category')}>
+              <SelectValue placeholder={t('logs.category')} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL}>{t('logs.category')}</SelectItem>
+              {['sqli', 'xss', 'rce', 'lfi', 'ssrf', 'nosqli', 'ssti', 'xxe', 'bot', 'threat_intel'].map((item) => (
+                <SelectItem key={item} value={item}>{displayCategory(item, t)}</SelectItem>
+              ))}
+            </SelectContent>
           </Select>
         )}
-        <Select value={action} placeholder={t('logs.action')} allowClear onChange={(value) => setAction(value as string | undefined)}>
-          {actionOptions.map((item) => (
-            <Select.Option key={item} value={item}>{displayAction(item, t)}</Select.Option>
-          ))}
+        <Select
+          value={action ?? ALL}
+          onValueChange={(value) => setAction(value === ALL ? undefined : value)}
+        >
+          <SelectTrigger className="min-w-[140px]" aria-label={t('logs.action')}>
+            <SelectValue placeholder={t('logs.action')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{t('logs.action')}</SelectItem>
+            {actionOptions.map((item) => (
+              <SelectItem key={item} value={item}>{displayAction(item, t)}</SelectItem>
+            ))}
+          </SelectContent>
         </Select>
       </div>
 
@@ -120,10 +150,10 @@ export default function LogsPage() {
                 <span title={entry.client_ip || '-'}>{entry.client_ip || '-'}</span>
               </div>
               <div className="security-event-cell" data-label={t('logs.category')}>
-                <Tag color={entry.category ? 'orange' : 'green'}>{displayCategory(entry.category || entry.action || 'pass', t)}</Tag>
+                <Badge variant={entry.category ? 'warning' : 'success'}>{displayCategory(entry.category || entry.action || 'pass', t)}</Badge>
               </div>
               <div className="security-event-cell" data-label={t('logs.action')}>
-                <Tag color={actionTagColor(entry.action)}>{displayAction(entry.action, t)}</Tag>
+                <Badge variant={actionBadgeVariant(entry.action)}>{displayAction(entry.action, t)}</Badge>
               </div>
               <div className="security-event-cell security-event-uri" data-label={t('logs.path')}>
                 <code title={entry.uri || '-'}>{entry.uri || '-'}</code>
@@ -136,10 +166,11 @@ export default function LogsPage() {
               </div>
               <div className="security-event-cell security-event-actions" data-label={t('logs.detail')}>
                 <Button
-                  size="small"
-                  icon={<Eye size={14} />}
+                  size="sm"
+                  variant="outline"
                   onClick={() => navigate(`/logs/${encodeURIComponent(entry.trace_id || entry.id)}`)}
                 >
+                  <Eye size={14} />
                   {t('logs.viewDetail')}
                 </Button>
               </div>
@@ -151,18 +182,24 @@ export default function LogsPage() {
             <span>{pageStart}-{pageEnd} / {logs.length}</span>
             <div>
               <Button
+                size="icon"
+                variant="outline"
                 aria-label={t('common.back')}
-                icon={<ChevronLeft size={15} />}
                 disabled={page <= 1}
                 onClick={() => setPage((current) => Math.max(1, current - 1))}
-              />
+              >
+                <ChevronLeft size={15} />
+              </Button>
               <strong>{page}</strong>
               <Button
+                size="icon"
+                variant="outline"
                 aria-label={t('common.next')}
-                icon={<ChevronRight size={15} />}
                 disabled={page >= totalPages}
                 onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-              />
+              >
+                <ChevronRight size={15} />
+              </Button>
             </div>
           </footer>
         )}
@@ -179,17 +216,17 @@ function formatTime(value: string, locale?: string) {
   return date.toLocaleString(locale);
 }
 
-function actionTagColor(action: string) {
+function actionBadgeVariant(action: string): 'destructive' | 'warning' | 'success' | 'default' {
   switch (String(action ?? '').toLowerCase()) {
     case 'block':
-      return 'red';
+      return 'destructive';
     case 'challenge':
-      return 'orangered';
+      return 'warning';
     case 'pass':
     case 'cache_hit':
     case 'redirect':
-      return 'green';
+      return 'success';
     default:
-      return 'blue';
+      return 'default';
   }
 }

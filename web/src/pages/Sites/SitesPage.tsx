@@ -1,17 +1,28 @@
 import {
+  Badge,
   Button,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Empty,
   Input,
-  InputNumber,
-  Message as ArcoMessage,
-  Modal,
   Select,
-  Space,
-  Steps,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Switch,
   Table,
-  Tag,
-} from '@arco-design/web-react';
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Textarea,
+  toast,
+} from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, LockKeyhole, Network, Plus, Route, Server, ShieldCheck } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -84,6 +95,13 @@ const initialDraft: WizardDraft = {
   apisec: true,
 };
 
+const wizardSteps = [
+  { key: 'basic', icon: Network },
+  { key: 'tls', icon: LockKeyhole },
+  { key: 'protection', icon: ShieldCheck },
+  { key: 'review', icon: CheckCircle2 },
+] as const;
+
 export default function SitesPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -99,14 +117,14 @@ export default function SitesPage() {
   const mutation = useMutation({
     mutationFn: createSite,
     onSuccess: (site) => {
-      ArcoMessage.success(t('sites.created'));
+      toast.success(t('sites.created'));
       setOpen(false);
       setStep(0);
       setDraft(initialDraft);
       queryClient.invalidateQueries({ queryKey: ['sites'] });
       navigate(`/sites/${site.id}`);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const rows = data ?? [];
   const basicStepValid = useMemo(
@@ -149,53 +167,60 @@ export default function SitesPage() {
     const isAcme = draft.certificateMode === 'acme';
     const enableSSL = isAcme ? true : draft.enableSSL;
     return {
-    name: draft.name.trim(),
-    domains: splitList(draft.domains),
-    upstreams: splitList(draft.upstreams),
-    listen_port: draft.listenPort,
-    loadbalance: draft.loadbalance,
-    enable_ssl: enableSSL,
-    cert_file: enableSSL && draft.certificateMode === 'file' ? draft.certFile.trim() : '',
-    key_file: enableSSL && draft.certificateMode === 'file' ? draft.keyFile.trim() : '',
-    waf_enabled: draft.wafEnabled,
-    waf_mode: draft.wafMode,
-    enabled: draft.enabled,
-    advanced: {
-      ...defaultSiteAdvanced,
-      access_log_enabled: true,
-      certificate: {
-        ...defaultSiteAdvanced.certificate,
-        mode: draft.certificateMode,
-        cert_pem: enableSSL && draft.certificateMode === 'inline' ? draft.certPEM.trim() : '',
-        key_pem: enableSSL && draft.certificateMode === 'inline' ? draft.keyPEM.trim() : '',
-        auto_renew: isAcme ? true : defaultSiteAdvanced.certificate.auto_renew,
-        force_https: isAcme ? true : draft.forceHTTPS,
-        hsts: isAcme ? true : draft.hsts,
-        min_tls_version: draft.minTLSVersion,
+      name: draft.name.trim(),
+      domains: splitList(draft.domains),
+      upstreams: splitList(draft.upstreams),
+      listen_port: draft.listenPort,
+      loadbalance: draft.loadbalance,
+      enable_ssl: enableSSL,
+      cert_file: enableSSL && draft.certificateMode === 'file' ? draft.certFile.trim() : '',
+      key_file: enableSSL && draft.certificateMode === 'file' ? draft.keyFile.trim() : '',
+      waf_enabled: draft.wafEnabled,
+      waf_mode: draft.wafMode,
+      enabled: draft.enabled,
+      advanced: {
+        ...defaultSiteAdvanced,
+        access_log_enabled: true,
+        certificate: {
+          ...defaultSiteAdvanced.certificate,
+          mode: draft.certificateMode,
+          cert_pem: enableSSL && draft.certificateMode === 'inline' ? draft.certPEM.trim() : '',
+          key_pem: enableSSL && draft.certificateMode === 'inline' ? draft.keyPEM.trim() : '',
+          auto_renew: isAcme ? true : defaultSiteAdvanced.certificate.auto_renew,
+          force_https: isAcme ? true : draft.forceHTTPS,
+          hsts: isAcme ? true : draft.hsts,
+          min_tls_version: draft.minTLSVersion,
+        },
+        origin: {
+          ...defaultSiteAdvanced.origin,
+          scheme: draft.originScheme,
+          pass_host: draft.passHost,
+          host_header: draft.hostHeader.trim(),
+          proxy_timeout: draft.proxyTimeout,
+          max_body_bytes: draft.maxBodyBytes,
+        },
+        health_check: {
+          ...defaultSiteAdvanced.health_check,
+          enabled: draft.healthCheck,
+          path: draft.healthPath || '/',
+        },
+        protection: {
+          ...defaultSiteAdvanced.protection,
+          bot: draft.bot,
+          ratelimit: draft.ratelimit,
+          acl: draft.acl,
+          apisec: draft.apisec,
+        },
       },
-      origin: {
-        ...defaultSiteAdvanced.origin,
-        scheme: draft.originScheme,
-        pass_host: draft.passHost,
-        host_header: draft.hostHeader.trim(),
-        proxy_timeout: draft.proxyTimeout,
-        max_body_bytes: draft.maxBodyBytes,
-      },
-      health_check: {
-        ...defaultSiteAdvanced.health_check,
-        enabled: draft.healthCheck,
-        path: draft.healthPath || '/',
-      },
-      protection: {
-        ...defaultSiteAdvanced.protection,
-        bot: draft.bot,
-        ratelimit: draft.ratelimit,
-        acl: draft.acl,
-        apisec: draft.apisec,
-      },
-    },
+    };
   };
-  };
+
+  const stepTitles = [
+    t('sites.stepBasic'),
+    t('sites.stepTls'),
+    t('sites.stepProtection'),
+    t('sites.stepReview'),
+  ];
 
   return (
     <section className="page-surface">
@@ -204,7 +229,8 @@ export default function SitesPage() {
           <h1>{t('sites.title')}</h1>
           <p>{t('sites.subtitle')}</p>
         </div>
-        <Button type="primary" icon={<Plus size={16} />} onClick={() => setOpen(true)}>
+        <Button onClick={() => setOpen(true)}>
+          <Plus size={16} />
           {t('sites.create')}
         </Button>
       </header>
@@ -213,77 +239,71 @@ export default function SitesPage() {
         {isError && (
           <div className="inline-error sites-query-error" role="alert">
             <span>{queryErrorMessage(error, t('common.noData'))}</span>
-            <Button size="small" onClick={() => refetch()}>{t('common.retry')}</Button>
+            <Button size="sm" onClick={() => refetch()}>{t('common.retry')}</Button>
           </div>
         )}
         <div className="sites-desktop-table">
-          <Table
-            rowKey="id"
-            pagination={false}
-            loading={isLoading}
-            data={rows}
-            className="sites-table"
-            noDataElement={<Empty description={t('common.noData')} />}
-            columns={[
-              {
-                title: t('sites.name'),
-                dataIndex: 'name',
-                ellipsis: true,
-                render: (name: string, record: Site) => (
-                  <button className="table-link site-table-link" title={name} type="button" onClick={() => navigate(`/sites/${record.id}`)}>
-                    <Server size={16} />
-                    <span>{name}</span>
-                  </button>
-                ),
-              },
-              {
-                title: t('sites.domain'),
-                ellipsis: true,
-                render: (_: unknown, record: Site) => {
-                  const value = record.domains?.join(', ') || '-';
-                  return <span className="site-table-text" title={value}>{value}</span>;
-                },
-              },
-              {
-                title: t('sites.upstream'),
-                ellipsis: true,
-                render: (_: unknown, record: Site) => {
-                  const value = record.upstreams?.join(', ') || '-';
-                  return <span className="site-table-text" title={value}>{value}</span>;
-                },
-              },
-              {
-                title: t('sites.listen'),
-                dataIndex: 'listen_port',
-                width: 88,
-                render: (port: number | undefined | null) => <code>{port == null || port === 0 ? '—' : `:${port}`}</code>,
-              },
-              {
-                title: t('sites.mode'),
-                dataIndex: 'waf_mode',
-                width: 100,
-                render: (mode: string) => <Tag color={mode === 'block' ? 'green' : mode === 'monitor' ? 'orange' : 'gray'}>{renderMode(mode)}</Tag>,
-              },
-              {
-                title: t('sites.status'),
-                dataIndex: 'enabled',
-                width: 96,
-                render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'gray'}>{enabled ? t('common.online') : t('sites.disabled')}</Tag>,
-              },
-              {
-                title: t('common.actions'),
-                width: 104,
-                fixed: 'right' as const,
-                render: (_: unknown, record: Site) => (
-                  <div className="site-table-actions">
-                    <Button size="small" onClick={() => navigate(`/sites/${record.id}`)}>
-                      {t('sites.manage')}
-                    </Button>
-                  </div>
-                ),
-              },
-            ]}
-          />
+          {isLoading ? (
+            <div className="skeleton-list" role="status" />
+          ) : rows.length === 0 ? (
+            <Empty description={t('common.noData')} />
+          ) : (
+            <Table className="sites-table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('sites.name')}</TableHead>
+                  <TableHead>{t('sites.domain')}</TableHead>
+                  <TableHead>{t('sites.upstream')}</TableHead>
+                  <TableHead className="w-[88px]">{t('sites.listen')}</TableHead>
+                  <TableHead className="w-[100px]">{t('sites.mode')}</TableHead>
+                  <TableHead className="w-[96px]">{t('sites.status')}</TableHead>
+                  <TableHead className="w-[104px]">{t('common.actions')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((site) => {
+                  const domains = site.domains?.join(', ') || '-';
+                  const upstreams = site.upstreams?.join(', ') || '-';
+                  return (
+                    <TableRow key={site.id}>
+                      <TableCell>
+                        <button className="table-link site-table-link" title={site.name} type="button" onClick={() => navigate(`/sites/${site.id}`)}>
+                          <Server size={16} />
+                          <span>{site.name}</span>
+                        </button>
+                      </TableCell>
+                      <TableCell>
+                        <span className="site-table-text" title={domains}>{domains}</span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="site-table-text" title={upstreams}>{upstreams}</span>
+                      </TableCell>
+                      <TableCell>
+                        <code>{site.listen_port == null || site.listen_port === 0 ? '—' : `:${site.listen_port}`}</code>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={site.waf_mode === 'block' ? 'success' : site.waf_mode === 'monitor' ? 'warning' : 'secondary'}>
+                          {renderMode(site.waf_mode)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={site.enabled ? 'success' : 'secondary'}>
+                          {site.enabled ? t('common.online') : t('sites.disabled')}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="site-table-actions">
+                          <Button size="sm" variant="outline" onClick={() => navigate(`/sites/${site.id}`)}>
+                            {t('sites.manage')}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
         </div>
         <div className="sites-mobile-list">
           {isLoading ? <div className="skeleton-list" /> : rows.length ? rows.map((site) => {
@@ -296,7 +316,9 @@ export default function SitesPage() {
                     <Server size={17} />
                     <strong>{site.name}</strong>
                   </button>
-                  <Tag color={site.enabled ? 'green' : 'gray'}>{site.enabled ? t('common.online') : t('sites.disabled')}</Tag>
+                  <Badge variant={site.enabled ? 'success' : 'secondary'}>
+                    {site.enabled ? t('common.online') : t('sites.disabled')}
+                  </Badge>
                 </header>
                 <dl>
                   <div><dt>{t('sites.domain')}</dt><dd title={domains}>{domains}</dd></div>
@@ -305,7 +327,7 @@ export default function SitesPage() {
                   <div><dt>{t('sites.mode')}</dt><dd>{renderMode(site.waf_mode)}</dd></div>
                 </dl>
                 <footer>
-                  <Button type="primary" onClick={() => navigate(`/sites/${site.id}`)}>{t('sites.manage')}</Button>
+                  <Button onClick={() => navigate(`/sites/${site.id}`)}>{t('sites.manage')}</Button>
                 </footer>
               </article>
             );
@@ -313,154 +335,246 @@ export default function SitesPage() {
         </div>
       </section>
 
-      <Modal
-        className="site-wizard-modal"
-        title={t('sites.create')}
-        visible={open}
-        onCancel={closeWizard}
-        footer={(
-          <div className="modal-actions">
-            <Button disabled={step === 0} onClick={() => setStep((value) => Math.max(0, value - 1))}>
+      <Dialog open={open} onOpenChange={(next) => { if (!next) closeWizard(); else setOpen(true); }}>
+        <DialogContent className="site-wizard-modal max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('sites.create')}</DialogTitle>
+          </DialogHeader>
+
+          <div className="setup-steps flex flex-wrap gap-2 mb-4" role="list">
+            {wizardSteps.map((item, index) => {
+              const Icon = item.icon;
+              const active = index === step;
+              const done = index < step;
+              return (
+                <div
+                  key={item.key}
+                  role="listitem"
+                  className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs ${active ? 'bg-primary text-primary-foreground' : done ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
+                >
+                  <Icon size={14} />
+                  <span>{stepTitles[index]}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {step === 0 && (
+            <div className="site-wizard-grid">
+              <div className="site-flow" aria-hidden>
+                <div className="site-flow-node">{t('sites.flowClient')}</div>
+                <Route size={18} />
+                <div className="site-flow-node site-flow-node-active">CheeseWAF</div>
+                <Route size={18} />
+                <div className="site-flow-node">{t('sites.flowOrigin')}</div>
+              </div>
+              <div className="form-grid">
+                <label>
+                  <span>{t('sites.name')}</span>
+                  <Input value={draft.name} placeholder="portal.example.com" onChange={(e) => updateDraft('name', e.target.value)} />
+                </label>
+                <label>
+                  <span>{t('sites.domain')}</span>
+                  <Input value={draft.domains} placeholder="example.com, www.example.com" onChange={(e) => updateDraft('domains', e.target.value)} />
+                </label>
+                <label>
+                  <span>{t('sites.upstream')}</span>
+                  <Input value={draft.upstreams} placeholder="127.0.0.1:9000, 10.0.0.12:8080" onChange={(e) => updateDraft('upstreams', e.target.value)} />
+                </label>
+                <label>
+                  <span>{t('sites.listen')}</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={draft.listenPort}
+                    onChange={(e) => updateDraft('listenPort', Number(e.target.value || 80))}
+                  />
+                </label>
+                <label>
+                  <span>{t('sites.loadBalance')}</span>
+                  <Select value={draft.loadbalance} onValueChange={(value) => updateDraft('loadbalance', value)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="round_robin">{t('sites.lbRoundRobin')}</SelectItem>
+                      <SelectItem value="weighted">{t('sites.lbWeighted')}</SelectItem>
+                      <SelectItem value="ip_hash">{t('sites.lbIPHash')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <label>
+                  <span>{t('sites.originScheme')}</span>
+                  <Select value={draft.originScheme} onValueChange={(value) => updateDraft('originScheme', value)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="http">HTTP</SelectItem>
+                      <SelectItem value="https">HTTPS</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {step === 1 && (
+            <div className="form-grid">
+              <label className="switch-line">
+                <span>{t('sites.enableSsl')}</span>
+                <Switch checked={draft.enableSSL} onCheckedChange={(value) => updateDraft('enableSSL', value)} />
+              </label>
+              <label>
+                <span>{t('sites.certificateMode')}</span>
+                <Select value={draft.certificateMode} onValueChange={(value) => updateDraft('certificateMode', value)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="file">{t('sites.certFile')}</SelectItem>
+                    <SelectItem value="inline">{t('sites.certInline')}</SelectItem>
+                    <SelectItem value="acme">{t('sites.certAcme')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              {draft.enableSSL && draft.certificateMode === 'file' && (
+                <>
+                  <label>
+                    <span>{t('sites.certFile')}</span>
+                    <Input value={draft.certFile} placeholder="/etc/cheesewaf/certs/site.crt" onChange={(e) => updateDraft('certFile', e.target.value)} />
+                  </label>
+                  <label>
+                    <span>{t('sites.keyFile')}</span>
+                    <Input value={draft.keyFile} placeholder="/etc/cheesewaf/certs/site.key" onChange={(e) => updateDraft('keyFile', e.target.value)} />
+                  </label>
+                </>
+              )}
+              {draft.enableSSL && draft.certificateMode === 'inline' && (
+                <>
+                  <label className="wide-field">
+                    <span>{t('sites.certPem')}</span>
+                    <Textarea value={draft.certPEM} rows={4} onChange={(e) => updateDraft('certPEM', e.target.value)} />
+                  </label>
+                  <label className="wide-field">
+                    <span>{t('sites.keyPem')}</span>
+                    <Textarea value={draft.keyPEM} rows={4} onChange={(e) => updateDraft('keyPEM', e.target.value)} />
+                  </label>
+                </>
+              )}
+              <label className="switch-line">
+                <span>{t('sites.forceHttps')}</span>
+                <Switch checked={draft.forceHTTPS} onCheckedChange={(value) => updateDraft('forceHTTPS', value)} />
+              </label>
+              <label className="switch-line">
+                <span>{t('sites.hsts')}</span>
+                <Switch checked={draft.hsts} onCheckedChange={(value) => updateDraft('hsts', value)} />
+              </label>
+              <label>
+                <span>{t('sites.minTls')}</span>
+                <Select value={draft.minTLSVersion} onValueChange={(value) => updateDraft('minTLSVersion', value)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1.2">TLS 1.2</SelectItem>
+                    <SelectItem value="1.3">TLS 1.3</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="form-grid">
+              <label className="switch-line">
+                <span>{t('sites.wafEnabled')}</span>
+                <Switch checked={draft.wafEnabled} onCheckedChange={(value) => updateDraft('wafEnabled', value)} />
+              </label>
+              <label>
+                <span>{t('sites.wafMode')}</span>
+                <Select value={draft.wafMode} onValueChange={(value) => updateDraft('wafMode', value)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="block">{t('sites.modeBlock')}</SelectItem>
+                    <SelectItem value="monitor">{t('sites.modeMonitor')}</SelectItem>
+                    <SelectItem value="off">{t('sites.modeOff')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label>
+                <span>{t('sites.proxyTimeout')}</span>
+                <Input value={draft.proxyTimeout} placeholder="30s" onChange={(e) => updateDraft('proxyTimeout', e.target.value)} />
+              </label>
+              <label>
+                <span>{t('sites.maxBody')}</span>
+                <Input
+                  type="number"
+                  min={1024}
+                  step={1024 * 1024}
+                  value={draft.maxBodyBytes}
+                  onChange={(e) => updateDraft('maxBodyBytes', Number(e.target.value || 0))}
+                />
+              </label>
+              <label className="switch-line">
+                <span>{t('sites.passHost')}</span>
+                <Switch checked={draft.passHost} onCheckedChange={(value) => updateDraft('passHost', value)} />
+              </label>
+              <label>
+                <span>{t('sites.hostHeader')}</span>
+                <Input value={draft.hostHeader} placeholder="origin.example.internal" onChange={(e) => updateDraft('hostHeader', e.target.value)} />
+              </label>
+              <label className="switch-line">
+                <span>{t('protection.bot')}</span>
+                <Switch checked={draft.bot} onCheckedChange={(value) => updateDraft('bot', value)} />
+              </label>
+              <label className="switch-line">
+                <span>{t('protection.ratelimit')}</span>
+                <Switch checked={draft.ratelimit} onCheckedChange={(value) => updateDraft('ratelimit', value)} />
+              </label>
+              <label className="switch-line">
+                <span>{t('protection.acl')}</span>
+                <Switch checked={draft.acl} onCheckedChange={(value) => updateDraft('acl', value)} />
+              </label>
+              <label className="switch-line">
+                <span>{t('nav.apisec')}</span>
+                <Switch checked={draft.apisec} onCheckedChange={(value) => updateDraft('apisec', value)} />
+              </label>
+              <label className="switch-line">
+                <span>{t('sites.healthCheck')}</span>
+                <Switch checked={draft.healthCheck} onCheckedChange={(value) => updateDraft('healthCheck', value)} />
+              </label>
+              <label>
+                <span>{t('sites.healthPath')}</span>
+                <Input value={draft.healthPath} placeholder="/health" onChange={(e) => updateDraft('healthPath', e.target.value)} />
+              </label>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="site-review">
+              <strong>{draft.name || '-'}</strong>
+              <span>{splitList(draft.domains).join(', ') || '-'}</span>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="default">{draft.originScheme.toUpperCase()}</Badge>
+                <Badge variant={draft.wafMode === 'block' ? 'success' : 'warning'}>{renderMode(draft.wafMode)}</Badge>
+                <Badge variant={draft.enableSSL ? 'success' : 'secondary'}>{draft.enableSSL ? 'TLS' : 'HTTP'}</Badge>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {splitList(draft.upstreams).map((upstream) => <code key={upstream}>{upstream}</code>)}
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="modal-actions">
+            <Button variant="outline" disabled={step === 0} onClick={() => setStep((value) => Math.max(0, value - 1))}>
               {t('common.back')}
             </Button>
             {step < 3 ? (
-              <Button type="primary" disabled={!canAdvance} onClick={() => setStep((value) => Math.min(3, value + 1))}>
+              <Button disabled={!canAdvance} onClick={() => setStep((value) => Math.min(3, value + 1))}>
                 {t('common.next')}
               </Button>
             ) : (
-              <Button type="primary" disabled={!canCreate} loading={mutation.isPending} onClick={() => mutation.mutate(createPayload())}>
+              <Button disabled={!canCreate} loading={mutation.isPending} onClick={() => mutation.mutate(createPayload())}>
                 {t('common.finish')}
               </Button>
             )}
-          </div>
-        )}
-      >
-        <Steps current={step + 1} size="small" className="setup-steps">
-          <Steps.Step title={t('sites.stepBasic')} icon={<Network size={16} />} />
-          <Steps.Step title={t('sites.stepTls')} icon={<LockKeyhole size={16} />} />
-          <Steps.Step title={t('sites.stepProtection')} icon={<ShieldCheck size={16} />} />
-          <Steps.Step title={t('sites.stepReview')} icon={<CheckCircle2 size={16} />} />
-        </Steps>
-
-        {step === 0 && (
-          <div className="site-wizard-grid">
-            <div className="site-flow" aria-hidden>
-              <div className="site-flow-node">{t('sites.flowClient')}</div>
-              <Route size={18} />
-              <div className="site-flow-node site-flow-node-active">CheeseWAF</div>
-              <Route size={18} />
-              <div className="site-flow-node">{t('sites.flowOrigin')}</div>
-            </div>
-            <div className="form-grid">
-              <label>
-                <span>{t('sites.name')}</span>
-                <Input value={draft.name} placeholder="portal.example.com" onChange={(value) => updateDraft('name', value)} />
-              </label>
-              <label>
-                <span>{t('sites.domain')}</span>
-                <Input value={draft.domains} placeholder="example.com, www.example.com" onChange={(value) => updateDraft('domains', value)} />
-              </label>
-              <label>
-                <span>{t('sites.upstream')}</span>
-                <Input value={draft.upstreams} placeholder="127.0.0.1:9000, 10.0.0.12:8080" onChange={(value) => updateDraft('upstreams', value)} />
-              </label>
-              <label>
-                <span>{t('sites.listen')}</span>
-                <InputNumber value={draft.listenPort} min={1} max={65535} onChange={(value) => updateDraft('listenPort', Number(value || 80))} />
-              </label>
-              <label>
-                <span>{t('sites.loadBalance')}</span>
-                <Select value={draft.loadbalance} onChange={(value) => updateDraft('loadbalance', value as string)}>
-                  <Select.Option value="round_robin">{t('sites.lbRoundRobin')}</Select.Option>
-                  <Select.Option value="weighted">{t('sites.lbWeighted')}</Select.Option>
-                  <Select.Option value="ip_hash">{t('sites.lbIPHash')}</Select.Option>
-                </Select>
-              </label>
-              <label>
-                <span>{t('sites.originScheme')}</span>
-                <Select value={draft.originScheme} onChange={(value) => updateDraft('originScheme', value as string)}>
-                  <Select.Option value="http">HTTP</Select.Option>
-                  <Select.Option value="https">HTTPS</Select.Option>
-                </Select>
-              </label>
-            </div>
-          </div>
-        )}
-
-        {step === 1 && (
-          <div className="form-grid">
-            <label className="switch-line"><span>{t('sites.enableSsl')}</span><Switch checked={draft.enableSSL} onChange={(value) => updateDraft('enableSSL', value)} /></label>
-            <label>
-              <span>{t('sites.certificateMode')}</span>
-              <Select value={draft.certificateMode} onChange={(value) => updateDraft('certificateMode', value as string)}>
-                <Select.Option value="file">{t('sites.certFile')}</Select.Option>
-                <Select.Option value="inline">{t('sites.certInline')}</Select.Option>
-                <Select.Option value="acme">{t('sites.certAcme')}</Select.Option>
-              </Select>
-            </label>
-            {draft.enableSSL && draft.certificateMode === 'file' && (
-              <>
-                <label><span>{t('sites.certFile')}</span><Input value={draft.certFile} placeholder="/etc/cheesewaf/certs/site.crt" onChange={(value) => updateDraft('certFile', value)} /></label>
-                <label><span>{t('sites.keyFile')}</span><Input value={draft.keyFile} placeholder="/etc/cheesewaf/certs/site.key" onChange={(value) => updateDraft('keyFile', value)} /></label>
-              </>
-            )}
-            {draft.enableSSL && draft.certificateMode === 'inline' && (
-              <>
-                <label className="wide-field"><span>{t('sites.certPem')}</span><Input.TextArea value={draft.certPEM} autoSize={{ minRows: 4, maxRows: 8 }} onChange={(value) => updateDraft('certPEM', value)} /></label>
-                <label className="wide-field"><span>{t('sites.keyPem')}</span><Input.TextArea value={draft.keyPEM} autoSize={{ minRows: 4, maxRows: 8 }} onChange={(value) => updateDraft('keyPEM', value)} /></label>
-              </>
-            )}
-            <label className="switch-line"><span>{t('sites.forceHttps')}</span><Switch checked={draft.forceHTTPS} onChange={(value) => updateDraft('forceHTTPS', value)} /></label>
-            <label className="switch-line"><span>{t('sites.hsts')}</span><Switch checked={draft.hsts} onChange={(value) => updateDraft('hsts', value)} /></label>
-            <label>
-              <span>{t('sites.minTls')}</span>
-              <Select value={draft.minTLSVersion} onChange={(value) => updateDraft('minTLSVersion', value as string)}>
-                <Select.Option value="1.2">TLS 1.2</Select.Option>
-                <Select.Option value="1.3">TLS 1.3</Select.Option>
-              </Select>
-            </label>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="form-grid">
-            <label className="switch-line"><span>{t('sites.wafEnabled')}</span><Switch checked={draft.wafEnabled} onChange={(value) => updateDraft('wafEnabled', value)} /></label>
-            <label>
-              <span>{t('sites.wafMode')}</span>
-              <Select value={draft.wafMode} onChange={(value) => updateDraft('wafMode', value as string)}>
-                <Select.Option value="block">{t('sites.modeBlock')}</Select.Option>
-                <Select.Option value="monitor">{t('sites.modeMonitor')}</Select.Option>
-                <Select.Option value="off">{t('sites.modeOff')}</Select.Option>
-              </Select>
-            </label>
-            <label><span>{t('sites.proxyTimeout')}</span><Input value={draft.proxyTimeout} placeholder="30s" onChange={(value) => updateDraft('proxyTimeout', value)} /></label>
-            <label><span>{t('sites.maxBody')}</span><InputNumber value={draft.maxBodyBytes} min={1024} step={1024 * 1024} onChange={(value) => updateDraft('maxBodyBytes', Number(value || 0))} /></label>
-            <label className="switch-line"><span>{t('sites.passHost')}</span><Switch checked={draft.passHost} onChange={(value) => updateDraft('passHost', value)} /></label>
-            <label><span>{t('sites.hostHeader')}</span><Input value={draft.hostHeader} placeholder="origin.example.internal" onChange={(value) => updateDraft('hostHeader', value)} /></label>
-            <label className="switch-line"><span>{t('protection.bot')}</span><Switch checked={draft.bot} onChange={(value) => updateDraft('bot', value)} /></label>
-            <label className="switch-line"><span>{t('protection.ratelimit')}</span><Switch checked={draft.ratelimit} onChange={(value) => updateDraft('ratelimit', value)} /></label>
-            <label className="switch-line"><span>{t('protection.acl')}</span><Switch checked={draft.acl} onChange={(value) => updateDraft('acl', value)} /></label>
-            <label className="switch-line"><span>{t('nav.apisec')}</span><Switch checked={draft.apisec} onChange={(value) => updateDraft('apisec', value)} /></label>
-            <label className="switch-line"><span>{t('sites.healthCheck')}</span><Switch checked={draft.healthCheck} onChange={(value) => updateDraft('healthCheck', value)} /></label>
-            <label><span>{t('sites.healthPath')}</span><Input value={draft.healthPath} placeholder="/health" onChange={(value) => updateDraft('healthPath', value)} /></label>
-          </div>
-        )}
-
-        {step === 3 && (
-          <div className="site-review">
-            <strong>{draft.name || '-'}</strong>
-            <span>{splitList(draft.domains).join(', ') || '-'}</span>
-            <div>
-              <Tag color="blue">{draft.originScheme.toUpperCase()}</Tag>
-              <Tag color={draft.wafMode === 'block' ? 'green' : 'orange'}>{renderMode(draft.wafMode)}</Tag>
-              <Tag color={draft.enableSSL ? 'green' : 'gray'}>{draft.enableSSL ? 'TLS' : 'HTTP'}</Tag>
-            </div>
-            <Space wrap>
-              {splitList(draft.upstreams).map((upstream) => <code key={upstream}>{upstream}</code>)}
-            </Space>
-          </div>
-        )}
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

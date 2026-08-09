@@ -9,16 +9,16 @@ const apiMocks = vi.hoisted(() => ({
   syncTimeNow: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return { ...actual, Message: messageMocks };
-});
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), toastMocks),
+  Toaster: () => null,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -106,12 +106,12 @@ describe('TimeSyncPanel', () => {
     expect((reselect as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(reselect);
     await waitFor(() => expect(apiMocks.reselectTimeSync).toHaveBeenCalled());
-    expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncReselectSuccess');
+    expect(toastMocks.success).toHaveBeenCalledWith('system.timeSyncReselectSuccess');
 
     const syncNow = screen.getByRole('button', { name: /system\.timeSyncNow/ });
     fireEvent.click(syncNow);
     await waitFor(() => expect(apiMocks.syncTimeNow).toHaveBeenCalled());
-    expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncNowSuccess');
+    expect(toastMocks.success).toHaveBeenCalledWith('system.timeSyncNowSuccess');
   });
 
   it('disables reselect/sync operations when time sync is off', async () => {
