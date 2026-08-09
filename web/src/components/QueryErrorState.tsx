@@ -1,4 +1,4 @@
-import { Button } from '@arco-design/web-react';
+import { Button } from '@/components/ui';
 import { useTranslation } from 'react-i18next';
 
 type Props = {
@@ -19,7 +19,7 @@ export default function QueryErrorState({ title, message, onRetry, retrying, cla
         {message ? <span>{message}</span> : null}
       </div>
       {onRetry ? (
-        <Button size="small" type="primary" loading={retrying} onClick={onRetry}>
+        <Button size="sm" loading={retrying} onClick={onRetry}>
           {t('common.retry')}
         </Button>
       ) : null}

@@ -1,6 +1,4 @@
-.rule-editor-modal .arco-modal-content {
-  max-width: min(960px, 100vw - 32px);
-}
+
 
 .rule-editor-form {
   display: flex;

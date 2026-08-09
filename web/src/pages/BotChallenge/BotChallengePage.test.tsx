@@ -110,7 +110,7 @@ describe('Bot challenge theme integration', () => {
 
   it('keeps the mobile range and refresh controls in one flex row', () => {
     expect(stylesSource).toMatch(/\.header\s*>\s*\.actions\s*\{[^}]*display:\s*flex/);
-    expect(stylesSource).toMatch(/\.actions\s+:global\(\.arco-select\)\s*\{[^}]*flex:\s*1[^}]*min-width:\s*0/);
+    expect(stylesSource).toMatch(/\.rangeSelect\s*\{[^}]*flex:\s*1[^}]*min-width:\s*0/);
   });
 });
 

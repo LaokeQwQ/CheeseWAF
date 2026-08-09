@@ -1,17 +1,20 @@
-import { useState } from 'react';
-import { Button, Form, Input, Message as ArcoMessage, Select, Table, Tag } from '@arco-design/web-react';
+import { useState, type FormEvent } from 'react';
+import { Badge, Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, toast } from '@/components/ui';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ClipboardCheck, Radar, RotateCcw, Trash2 } from 'lucide-react';
 import { fetchAPISecEndpoints, validateAPIRequest } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
-import type { APIEndpoint } from '../../types/api';
 
 export default function APISecurityPage() {
   const { t } = useTranslation();
   const [findings, setFindings] = useState<Array<Record<string, unknown>>>([]);
   const [hasValidated, setHasValidated] = useState(false);
   const [ignoredEndpoints, setIgnoredEndpoints] = useState<Set<string>>(new Set());
+  const [method, setMethod] = useState('GET');
+  const [path, setPath] = useState('/api/search');
+  const [query, setQuery] = useState('');
+  const [headers, setHeaders] = useState('');
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['apisec'],
     queryFn: fetchAPISecEndpoints,
@@ -24,7 +27,7 @@ export default function APISecurityPage() {
       setHasValidated(true);
     },
     onError: (error) => {
-      ArcoMessage.error(error.message || t('common.requestFailed'));
+      toast.error(error.message || t('common.requestFailed'));
     },
   });
   const allEndpoints = data?.endpoints ?? [];
@@ -40,6 +43,17 @@ export default function APISecurityPage() {
       const next = new Set(prev);
       next.delete(key);
       return next;
+    });
+  }
+
+  function onValidate(event: FormEvent) {
+    event.preventDefault();
+    validateMutation.mutate({
+      method,
+      path,
+      query,
+      headers: parseHeaders(headers),
+      content_length: 0,
     });
   }
 
@@ -59,57 +73,68 @@ export default function APISecurityPage() {
           ) : (
             <>
               <div className="api-endpoints-table">
-                <Table
-                  rowKey={(r) => r.method + r.path}
-                  pagination={false}
-                  loading={isLoading}
-                  data={visibleEndpoints}
-                  columns={[
-                    { title: t('apisec.method'), dataIndex: 'method', width: 72, render: (v: string) => <Tag>{v}</Tag> },
-                    { title: t('apisec.path'), dataIndex: 'path', render: (v: string) => <code className="table-code api-endpoint-path" title={v}>{v}</code> },
-                    { title: t('apisec.count'), dataIndex: 'count', width: 76 },
-                    { title: t('apisec.blocked'), dataIndex: 'blocked', width: 72, render: (v: number) => <Tag color={v > 0 ? 'red' : 'green'}>{v}</Tag> },
-                    {
-                      title: t('apisec.status'),
-                      dataIndex: 'status_family',
-                      width: 150,
-                      render: (_: unknown, rec: APIEndpoint) => (
-                        <span className="api-status-group">{Object.entries(rec.status_family).map(([k, v]) => <Tag key={k}>{k}: {v}</Tag>)}</span>
-                      ),
-                    },
-                    {
-                      title: '',
-                      dataIndex: 'actions',
-                      width: 88,
-                      render: (_: unknown, rec: APIEndpoint) => (
-                        <span className="api-table-actions">
-                          <Button
-                            size="mini"
-                            icon={<Trash2 size={14} />}
-                            onClick={() => ignoreEndpoint(rec.method + rec.path)}
-                          >
-                            {t('common.ignore')}
-                          </Button>
-                        </span>
-                      ),
-                    },
-                  ]}
-                  tableLayoutFixed
-                />
+                {isLoading ? (
+                  <div className="empty-state" role="status">{t('common.loading')}</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t('apisec.method')}</TableHead>
+                        <TableHead>{t('apisec.path')}</TableHead>
+                        <TableHead>{t('apisec.count')}</TableHead>
+                        <TableHead>{t('apisec.blocked')}</TableHead>
+                        <TableHead>{t('apisec.status')}</TableHead>
+                        <TableHead />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {visibleEndpoints.map((rec) => (
+                        <TableRow key={rec.method + rec.path}>
+                          <TableCell><Badge variant="secondary">{rec.method}</Badge></TableCell>
+                          <TableCell><code className="table-code api-endpoint-path" title={rec.path}>{rec.path}</code></TableCell>
+                          <TableCell>{rec.count}</TableCell>
+                          <TableCell>
+                            <Badge variant={rec.blocked > 0 ? 'destructive' : 'success'}>{rec.blocked}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span className="api-status-group">
+                              {Object.entries(rec.status_family).map(([k, v]) => (
+                                <Badge key={k} variant="outline">{k}: {v}</Badge>
+                              ))}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => ignoreEndpoint(rec.method + rec.path)}
+                            >
+                              <Trash2 size={14} />
+                              {t('common.ignore')}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
               </div>
               <div className="api-endpoints-mobile">
                 {visibleEndpoints.map((endpoint) => (
                   <article className="api-endpoint-card" key={endpoint.method + endpoint.path}>
                     <div className="api-endpoint-card-heading">
-                      <Tag>{endpoint.method}</Tag>
+                      <Badge variant="secondary">{endpoint.method}</Badge>
                       <code title={endpoint.path}>{endpoint.path}</code>
                     </div>
                     <dl>
                       <div><dt>{t('apisec.count')}</dt><dd>{endpoint.count}</dd></div>
-                      <div><dt>{t('apisec.blocked')}</dt><dd><Tag color={endpoint.blocked > 0 ? 'red' : 'green'}>{endpoint.blocked}</Tag></dd></div>
-                      <div><dt>{t('apisec.status')}</dt><dd className="api-status-group">{Object.entries(endpoint.status_family).map(([key, value]) => <Tag key={key}>{key}: {value}</Tag>)}</dd></div>
+                      <div><dt>{t('apisec.blocked')}</dt><dd><Badge variant={endpoint.blocked > 0 ? 'destructive' : 'success'}>{endpoint.blocked}</Badge></dd></div>
+                      <div><dt>{t('apisec.status')}</dt><dd className="api-status-group">{Object.entries(endpoint.status_family).map(([key, value]) => <Badge key={key} variant="outline">{key}: {value}</Badge>)}</dd></div>
                     </dl>
-                    <Button size="small" icon={<Trash2 size={14} />} onClick={() => ignoreEndpoint(endpoint.method + endpoint.path)}>{t('common.ignore')}</Button>
+                    <Button size="sm" variant="outline" onClick={() => ignoreEndpoint(endpoint.method + endpoint.path)}>
+                      <Trash2 size={14} />
+                      {t('common.ignore')}
+                    </Button>
                   </article>
                 ))}
               </div>
@@ -121,18 +146,19 @@ export default function APISecurityPage() {
                     return (
                       <Button
                         key={key}
-                        size="mini"
-                        icon={<RotateCcw size={12} />}
+                        size="sm"
+                        variant="outline"
                         title={`${endpoint.method} ${endpoint.path}`}
                         aria-label={`${t('common.reset')}: ${endpoint.method} ${endpoint.path}`}
                         onClick={() => restoreEndpoint(key)}
                       >
+                        <RotateCcw size={12} />
                         {endpoint.method} · {t('common.reset')}
                       </Button>
                     );
                   })}
                   {ignoredList.length > 1 && (
-                    <Button size="mini" onClick={() => setIgnoredEndpoints(new Set())}>
+                    <Button size="sm" variant="ghost" onClick={() => setIgnoredEndpoints(new Set())}>
                       {t('common.reset')}
                     </Button>
                   )}
@@ -144,36 +170,39 @@ export default function APISecurityPage() {
         <section className="panel api-validation-panel">
           <div className="panel-heading"><h2><ClipboardCheck size={16} /> {t('apisec.validation')}</h2></div>
           <p className="field-help">{t('apisec.validationHint')}</p>
-          <Form
-            layout="vertical"
-            initialValues={{ method: 'GET', path: '/api/search', query: '', headers: '' }}
-            onSubmit={(values) => validateMutation.mutate({
-              method: values.method,
-              path: values.path,
-              query: values.query,
-              headers: parseHeaders(values.headers),
-              content_length: 0,
-            })}
-          >
-            <Form.Item label={t('apisec.method')} field="method">
-              <Select>
-                <Select.Option value="GET">GET</Select.Option>
-                <Select.Option value="POST">POST</Select.Option>
-                <Select.Option value="PUT">PUT</Select.Option>
-                <Select.Option value="DELETE">DELETE</Select.Option>
+          <form className="space-y-3" onSubmit={onValidate}>
+            <div className="space-y-1.5">
+              <Label>{t('apisec.method')}</Label>
+              <Select value={method} onValueChange={setMethod}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="GET">GET</SelectItem>
+                  <SelectItem value="POST">POST</SelectItem>
+                  <SelectItem value="PUT">PUT</SelectItem>
+                  <SelectItem value="DELETE">DELETE</SelectItem>
+                </SelectContent>
               </Select>
-            </Form.Item>
-            <Form.Item label={t('apisec.path')} field="path"><Input placeholder="/api/search" /></Form.Item>
-            <Form.Item label={t('apisec.query')} field="query"><Input placeholder="q=test&page=1" /></Form.Item>
-            <Form.Item label={t('apisec.headers')} field="headers"><Input placeholder="Content-Type: application/json" /></Form.Item>
-            <Button type="primary" htmlType="submit" loading={validateMutation.isPending}>{t('apisec.validate')}</Button>
-          </Form>
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t('apisec.path')}</Label>
+              <Input placeholder="/api/search" value={path} onChange={(e) => setPath(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t('apisec.query')}</Label>
+              <Input placeholder="q=test&page=1" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t('apisec.headers')}</Label>
+              <Input placeholder="Content-Type: application/json" value={headers} onChange={(e) => setHeaders(e.target.value)} />
+            </div>
+            <Button type="submit" loading={validateMutation.isPending}>{t('apisec.validate')}</Button>
+          </form>
           <div className="event-list api-findings">
             {!hasValidated
               ? null
               : findings.length === 0
-                ? <Tag color="green">{t('apisec.clean')}</Tag>
-                : findings.map((f, i) => <Tag className="api-finding-tag" key={i} color="orange">{String(f.message)}</Tag>)}
+                ? <Badge variant="success">{t('apisec.clean')}</Badge>
+                : findings.map((f, i) => <Badge className="api-finding-tag" key={i} variant="warning">{String(f.message)}</Badge>)}
           </div>
         </section>
       </div>

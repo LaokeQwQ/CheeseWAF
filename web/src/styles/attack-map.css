@@ -111,92 +111,6 @@
   flex: 0 0 auto;
 }
 
-.attack-map-page .map-controls .arco-radio-group {
-  max-width: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.attack-map-page .map-controls .arco-radio,
-.attack-map-page .map-controls .arco-radio-button {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.attack-map-page .map-mode-switch .arco-radio-group {
-  gap: 4px;
-}
-
-.attack-map-page .map-mode-switch .arco-radio-button {
-  min-width: 54px;
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 12px !important;
-  color: var(--text-muted);
-  background: transparent !important;
-  border: 0 !important;
-  border-radius: 6px !important;
-  transition:
-    background 140ms ease,
-    box-shadow 140ms ease,
-    color 140ms ease,
-    transform 140ms ease;
-}
-
-.attack-map-page .map-mode-switch .arco-radio-button::before,
-.attack-map-page .map-mode-switch .arco-radio-button::after {
-  display: none !important;
-}
-
-.attack-map-page .map-mode-switch .arco-radio-checked,
-.attack-map-page .map-mode-switch .arco-radio-button-checked {
-  color: var(--accent-strong) !important;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent-soft) 74%, var(--surface)),
-    var(--surface)
-  ) !important;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)) !important;
-  box-shadow:
-    0 1px 0 color-mix(in srgb, var(--attack-highlight-white) 72%, transparent)
-      inset,
-    0 8px 18px color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-.attack-map-page .attack-map-table .arco-table {
-  min-width: 820px;
-}
-
-.attack-map-page .attack-map-table .arco-spin,
-.attack-map-page .attack-map-table .arco-spin-children {
-  min-width: 0;
-}
-
-.attack-map-page .attack-map-table .arco-table-th,
-.attack-map-page .attack-map-table .arco-table-td {
-  white-space: nowrap;
-}
-
-.attack-map-page .attack-map-table .arco-table-body .arco-table-tr {
-  cursor: pointer;
-}
-
-.attack-map-page .attack-map-table .attack-region-row-selected .arco-table-td {
-  background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--accent-info) 12%, transparent),
-      color-mix(in srgb, var(--accent) 7%, transparent)
-    ) !important;
-}
-
-.attack-map-page .attack-map-table .attack-region-row-selected .arco-table-td:first-child {
-  box-shadow: 3px 0 0 var(--accent-info) inset;
-}
-
 .attack-map-page .attack-region-card {
   cursor: pointer;
   transition:
@@ -349,19 +263,6 @@
       transparent 50.06%
     );
   opacity: 0.22;
-}
-
-.attack-map-page .map-controls .arco-btn.arco-btn-icon-only,
-.attack-map-page .map-controls .arco-btn-icon-only {
-  width: 34px;
-  height: 34px;
-  padding: 0;
-}
-
-.attack-map-page .map-controls .arco-btn:not(.arco-btn-icon-only) {
-  width: auto;
-  min-height: 34px;
-  padding: 0 12px;
 }
 
 .attack-map-page .map-can-pan {
@@ -2243,16 +2144,6 @@
     flex: 1 1 100%;
   }
 
-  .attack-map-page .map-mode-switch .arco-radio-group {
-    width: 100%;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .attack-map-page .map-mode-switch .arco-radio-button {
-    justify-content: center;
-  }
-
   .attack-screen-topbar {
     flex-wrap: wrap;
     height: auto;
@@ -2310,16 +2201,6 @@
 .attack-map-page .attack-map-table {
   overflow-x: auto;
   overscroll-behavior-inline: contain;
-}
-
-.attack-map-page .attack-map-table .arco-table,
-.attack-map-page .attack-map-table .arco-table-content-inner {
-  min-width: 760px;
-}
-
-.attack-map-page .attack-map-table .arco-table-content,
-.attack-map-page .attack-map-table .arco-table-content-inner {
-  overflow-x: auto !important;
 }
 
 @media (max-width: 1024px) {
@@ -2632,14 +2513,6 @@
     width: 100%;
     justify-content: center;
   }
-
-  .attack-map-page .map-mode-switch .arco-radio-group {
-    width: 100%;
-  }
-
-  .attack-map-page .map-mode-switch .arco-radio-button {
-    flex: 1 1 0;
-  }
 }
 
 .attack-map-page .map-canvas.map-mode-china {
@@ -2699,12 +2572,6 @@
   min-width: max-content;
 }
 
-.attack-map-page .map-workbench-header .map-zoom-group .arco-btn,
-.attack-map-page .map-workbench-header .map-action-group .arco-btn {
-  flex: 0 0 auto;
-  min-width: 34px;
-}
-
 @media (max-width: 1180px) {
   .attack-map-page .map-workbench-header {
     grid-template-columns: 1fr;
@@ -2754,11 +2621,6 @@
 
 .attack-map-page .map-mode-switch {
   min-width: 236px;
-}
-
-.attack-map-page .map-mode-switch .arco-radio-group {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .attack-map-page .map-zoom-group {
@@ -2931,11 +2793,6 @@
   .attack-map-page .map-action-group {
     width: 100%;
   }
-
-  .attack-map-page .map-action-group .arco-btn {
-    width: 100%;
-    justify-content: center;
-  }
 }
 
 /* Map/globe/AI/block-preview overrides 2026-06. */
@@ -2974,11 +2831,6 @@
 
 .attack-map-page .map-mode-switch {
   min-width: 236px !important;
-}
-
-.attack-map-page .map-mode-switch .arco-radio-group {
-  display: grid !important;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
 }
 
 .attack-map-page .map-canvas {
@@ -3094,11 +2946,6 @@
     width: 100% !important;
     min-width: 0 !important;
   }
-
-  .attack-map-page .map-action-group .arco-btn {
-    width: 100% !important;
-    justify-content: center !important;
-  }
 }
 
 .attack-map-page .map-canvas {
@@ -3176,10 +3023,6 @@
   scrollbar-width: thin !important;
 }
 
-.attack-map-page .attack-map-table .arco-table {
-  min-width: 1040px !important;
-}
-
 .attack-screen .globe-stage,
 .attack-screen-globe canvas,
 .attack-map-page .map-mode-3d .globe-stage,
@@ -3229,14 +3072,6 @@
   gap: 8px !important;
   align-items: center !important;
   padding-inline: 5px;
-}
-
-.attack-map-page .map-action-group .arco-btn,
-.attack-map-page .map-action-group .arco-button {
-  width: auto;
-  min-width: 0 !important;
-  padding: 0 12px;
-  white-space: nowrap !important;
 }
 
 .attack-map-page .map-mode-switch {
@@ -3534,11 +3369,6 @@
   .attack-map-page .attack-map-toolbar .map-controls,
   .attack-map-page .map-action-group {
     width: 100% !important;
-  }
-
-  .attack-map-page .map-action-group .arco-btn {
-    flex: 1 1 0 !important;
-    justify-content: center !important;
   }
 }
 

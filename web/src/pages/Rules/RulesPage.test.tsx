@@ -7,16 +7,16 @@ const apiMocks = vi.hoisted(() => ({
   fetchRules: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return { ...actual, Message: messageMocks };
-});
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), toastMocks),
+  Toaster: () => null,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -100,7 +100,7 @@ describe('RulesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'rules.create' }));
     fireEvent.change(screen.getByPlaceholderText('rules.namePlaceholder'), { target: { value: 'empty' } });
     fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
-    await waitFor(() => expect(messageMocks.warning).toHaveBeenCalled());
+    await waitFor(() => expect(toastMocks.warning).toHaveBeenCalled());
     expect(apiMocks.createRule).not.toHaveBeenCalled();
   });
 });

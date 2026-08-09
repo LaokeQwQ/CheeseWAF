@@ -7,6 +7,11 @@ const apiMocks = vi.hoisted(() => ({
   updateEdgePolicy: vi.fn(),
 }));
 
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn() }),
+  Toaster: () => null,
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));

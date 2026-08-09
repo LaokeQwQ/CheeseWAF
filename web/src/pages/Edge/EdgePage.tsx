@@ -1,10 +1,31 @@
-import { useEffect, useState } from 'react';
-import { Button, Checkbox, Empty, Form, Input, InputNumber, Message as ArcoMessage, Select, Switch, Table } from '@arco-design/web-react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Gauge, ListPlus, PackageCheck, Plus, Trash2 } from 'lucide-react';
+import {
+  Button,
+  Checkbox,
+  Empty,
+  Input,
+  Label,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  toast,
+} from '@/components/ui';
 import { fetchEdgePolicy, updateEdgePolicy } from '../../api/client';
-import QueryErrorState from '../../components/QueryErrorState';
 import { useServerDraft } from '../../hooks/useServerDraft';
 import type { EdgeConfig } from '../../types/api';
 
@@ -34,10 +55,82 @@ export default function EdgePage() {
     onSuccess: (saved) => {
       markClean(saved);
       queryClient.invalidateQueries({ queryKey: ['edge'] });
-      ArcoMessage.success(t('common.saved'));
+      toast.success(t('common.saved'));
     },
-    onError: (mutationError) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError) => toast.error(mutationError.message),
   });
+
+  // Local form state for cache / compression panels (synced from server draft)
+  const [cacheForm, setCacheForm] = useState({
+    enabled: edge.cache.enabled,
+    mode: edge.cache.mode || 'off',
+    ttl: durationToNanoseconds(edge.cache.ttl),
+    paths: (edge.cache.path_prefixes ?? []).join(','),
+    statusCodes: statusCodesToChoices(edge.cache.status_codes),
+    maxBody: edge.cache.max_body_bytes || 2 * 1024 * 1024,
+  });
+  const [compressionForm, setCompressionForm] = useState({
+    enabled: edge.compression.enabled,
+    algorithms: normalizeAlgorithms(edge.compression.algorithms),
+    level: normalizeCompressionLevel(edge.compression.level),
+    minBytes: edge.compression.min_bytes || 1024,
+    types: (edge.compression.content_types ?? []).join(','),
+  });
+
+  useEffect(() => {
+    if (!data) return;
+    setCacheForm({
+      enabled: data.cache.enabled,
+      mode: data.cache.mode || 'off',
+      ttl: durationToNanoseconds(data.cache.ttl),
+      paths: (data.cache.path_prefixes ?? []).join(','),
+      statusCodes: statusCodesToChoices(data.cache.status_codes),
+      maxBody: data.cache.max_body_bytes || 2 * 1024 * 1024,
+    });
+    setCompressionForm({
+      enabled: data.compression.enabled,
+      algorithms: normalizeAlgorithms(data.compression.algorithms),
+      level: normalizeCompressionLevel(data.compression.level),
+      minBytes: data.compression.min_bytes || 1024,
+      types: (data.compression.content_types ?? []).join(','),
+    });
+  }, [data]);
+
+  const pushCacheToDraft = (values: typeof cacheForm) => {
+    setDraft((current) => {
+      const base = current ?? fallback;
+      return {
+        ...base,
+        cache: {
+          ...base.cache,
+          enabled: Boolean(values.enabled),
+          mode: String(values.mode ?? base.cache.mode),
+          ttl: Number(values.ttl || 0),
+          path_prefixes: split(values.paths),
+          status_codes: parseStatusCodeChoices(values.statusCodes),
+          max_body_bytes: Number(values.maxBody || 0),
+        },
+      };
+    });
+  };
+
+  const pushCompressionToDraft = (values: typeof compressionForm) => {
+    setDraft((current) => {
+      const base = current ?? fallback;
+      return {
+        ...base,
+        compression: {
+          ...base.compression,
+          enabled: Boolean(values.enabled),
+          algorithms: Array.isArray(values.algorithms) ? values.algorithms.map(String) : [],
+          level: Number(values.level || 5),
+          min_bytes: Number(values.minBytes || 0),
+          content_types: split(values.types),
+        },
+      };
+    });
+  };
+
   const updateHeader = (index: number, patch: Partial<HeaderRule>) => {
     setDraft((current) => {
       const base = current ?? fallback;
@@ -85,44 +178,69 @@ export default function EdgePage() {
       };
     });
   };
-  const syncCacheFromForm = (values: Record<string, unknown>) => {
-    setDraft((current) => {
-      const base = current ?? fallback;
-      return {
-        ...base,
-        cache: {
-          ...base.cache,
-          enabled: Boolean(values.enabled),
-          mode: String(values.mode ?? base.cache.mode),
-          ttl: Number(values.ttl || 0),
-          path_prefixes: split(values.paths),
-          status_codes: parseStatusCodeChoices(values.statusCodes),
-          max_body_bytes: Number(values.maxBody || 0),
-        },
-      };
-    });
-  };
-  const syncCompressionFromForm = (values: Record<string, unknown>) => {
-    setDraft((current) => {
-      const base = current ?? fallback;
-      return {
-        ...base,
-        compression: {
-          ...base.compression,
-          enabled: Boolean(values.enabled),
-          algorithms: Array.isArray(values.algorithms) ? values.algorithms.map(String) : [],
-          level: Number(values.level || 5),
-          min_bytes: Number(values.minBytes || 0),
-          content_types: split(values.types),
-        },
-      };
-    });
-  };
+
   const saveDraft = () => {
     if (!isSuccess && !draft) {
       return;
     }
-    mutation.mutate(edge);
+    // Ensure latest form values are in draft
+    const next: EdgeConfig = {
+      ...edge,
+      cache: {
+        ...edge.cache,
+        enabled: cacheForm.enabled,
+        mode: cacheForm.mode,
+        ttl: Number(cacheForm.ttl || 0),
+        path_prefixes: split(cacheForm.paths),
+        status_codes: parseStatusCodeChoices(cacheForm.statusCodes),
+        max_body_bytes: Number(cacheForm.maxBody || 0),
+      },
+      compression: {
+        ...edge.compression,
+        enabled: compressionForm.enabled,
+        algorithms: Array.isArray(compressionForm.algorithms) ? compressionForm.algorithms : [],
+        level: Number(compressionForm.level || 5),
+        min_bytes: Number(compressionForm.minBytes || 0),
+        content_types: split(compressionForm.types),
+      },
+    };
+    setDraft(next);
+    mutation.mutate(next);
+  };
+
+  const saveCache = (event: FormEvent) => {
+    event.preventDefault();
+    const next: EdgeConfig = {
+      ...edge,
+      cache: {
+        ...edge.cache,
+        enabled: cacheForm.enabled,
+        mode: cacheForm.mode,
+        ttl: Number(cacheForm.ttl || 0),
+        path_prefixes: split(cacheForm.paths),
+        status_codes: parseStatusCodeChoices(cacheForm.statusCodes),
+        max_body_bytes: Number(cacheForm.maxBody || 0),
+      },
+    };
+    setDraft(next);
+    mutation.mutate(next);
+  };
+
+  const saveCompression = (event: FormEvent) => {
+    event.preventDefault();
+    const next: EdgeConfig = {
+      ...edge,
+      compression: {
+        ...edge.compression,
+        enabled: compressionForm.enabled,
+        algorithms: Array.isArray(compressionForm.algorithms) ? compressionForm.algorithms : [],
+        level: Number(compressionForm.level || 5),
+        min_bytes: Number(compressionForm.minBytes || 0),
+        content_types: split(compressionForm.types),
+      },
+    };
+    setDraft(next);
+    mutation.mutate(next);
   };
 
   if (isLoading && !draft) {
@@ -148,11 +266,13 @@ export default function EdgePage() {
             <p>{t('edge.subtitle')}</p>
           </div>
         </header>
-        <QueryErrorState
-          message={error instanceof Error ? error.message : undefined}
-          onRetry={() => { void refetch(); }}
-          retrying={isFetching}
-        />
+        <div className="query-error-state" role="alert">
+          <div className="query-error-state__body">
+            <strong>{t('common.loadFailed')}</strong>
+            {error instanceof Error ? <span>{error.message}</span> : null}
+          </div>
+          <Button size="sm" loading={isFetching} onClick={() => { void refetch(); }}>{t('common.retry')}</Button>
+        </div>
       </section>
     );
   }
@@ -164,128 +284,198 @@ export default function EdgePage() {
           <h1>{t('edge.title')}</h1>
           <p>{t('edge.subtitle')}</p>
         </div>
-        <Button type="primary" onClick={saveDraft} loading={mutation.isPending} disabled={!isSuccess && !draft}>
+        <Button onClick={saveDraft} loading={mutation.isPending} disabled={!isSuccess && !draft}>
           {t('common.save')}
         </Button>
       </header>
 
       {isError && (
-        <QueryErrorState
-          message={error instanceof Error ? error.message : undefined}
-          onRetry={() => { void refetch(); }}
-          retrying={isFetching}
-        />
+        <div className="query-error-state" role="alert">
+          <div className="query-error-state__body">
+            <strong>{t('common.loadFailed')}</strong>
+            {error instanceof Error ? <span>{error.message}</span> : null}
+          </div>
+          <Button size="sm" loading={isFetching} onClick={() => { void refetch(); }}>{t('common.retry')}</Button>
+        </div>
       )}
 
       <div className="edge-settings-grid">
         <section className="panel">
           <div className="panel-heading"><h2><PackageCheck size={16} /> {t('edge.cache')}</h2></div>
-          <Form
-            key={data ? `cache-${data.cache.enabled}-${data.cache.mode}-${data.cache.ttl}-${data.cache.max_body_bytes}` : 'cache-pending'}
-            layout="vertical"
-            initialValues={{
-              enabled: edge.cache.enabled,
-              mode: edge.cache.mode,
-              ttl: durationToNanoseconds(edge.cache.ttl),
-              paths: edge.cache.path_prefixes.join(','),
-              statusCodes: statusCodesToChoices(edge.cache.status_codes),
-              maxBody: edge.cache.max_body_bytes || 2 * 1024 * 1024,
-            }}
-            onValuesChange={(_, values) => syncCacheFromForm(values)}
-            onSubmit={(values) => {
-              const next: EdgeConfig = {
-                ...edge,
-                cache: {
-                  ...edge.cache,
-                  enabled: values.enabled,
-                  mode: values.mode,
-                  ttl: Number(values.ttl || 0),
-                  path_prefixes: split(values.paths),
-                  status_codes: parseStatusCodeChoices(values.statusCodes),
-                  max_body_bytes: Number(values.maxBody || 0),
-                },
-              };
-              setDraft(next);
-              mutation.mutate(next);
-            }}
-          >
-            <Form.Item label={t('edge.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-            <Form.Item label={t('edge.mode')} field="mode" extra={t('edge.modeHint')}>
-              <Select>
-                <Select.Option value="public">{t('edge.modePublic')}</Select.Option>
-                <Select.Option value="private">{t('edge.modePrivate')}</Select.Option>
-                <Select.Option value="off">{t('edge.modeOff')}</Select.Option>
+          <form className="edge-form" onSubmit={saveCache}>
+            <div className="field-stack">
+              <Label>{t('edge.enabled')}</Label>
+              <Switch
+                checked={cacheForm.enabled}
+                onCheckedChange={(enabled) => {
+                  const next = { ...cacheForm, enabled };
+                  setCacheForm(next);
+                  pushCacheToDraft(next);
+                }}
+              />
+            </div>
+            <div className="field-stack">
+              <Label>{t('edge.mode')}</Label>
+              <Select
+                value={cacheForm.mode || 'off'}
+                onValueChange={(mode) => {
+                  const next = { ...cacheForm, mode };
+                  setCacheForm(next);
+                  pushCacheToDraft(next);
+                }}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {!['public', 'private', 'off'].includes(cacheForm.mode) && cacheForm.mode ? (
+                    <SelectItem value={cacheForm.mode}>{cacheForm.mode}</SelectItem>
+                  ) : null}
+                  <SelectItem value="public">{t('edge.modePublic')}</SelectItem>
+                  <SelectItem value="private">{t('edge.modePrivate')}</SelectItem>
+                  <SelectItem value="off">{t('edge.modeOff')}</SelectItem>
+                </SelectContent>
               </Select>
-            </Form.Item>
-            <Form.Item label="TTL" field="ttl" extra={t('edge.ttlHint')}>
-              <DurationUnitInput />
-            </Form.Item>
-            <Form.Item label={t('edge.paths')} field="paths" extra={t('edge.pathsHint')}>
-              <Input placeholder="/assets/,/static/" />
-            </Form.Item>
-            <Form.Item label={t('edge.statusCodes')} field="statusCodes" extra={t('edge.statusCodesHint')}>
-              <StatusCodeSelector />
-            </Form.Item>
-            <Form.Item label={t('edge.maxBody')} field="maxBody" extra={t('edge.maxBodyHint')}>
-              <ByteUnitInput minBytes={1024} />
-            </Form.Item>
-            <div className="form-action-row"><Button type="primary" htmlType="submit">{t('common.save')}</Button></div>
-          </Form>
+              <span className="field-help">{t('edge.modeHint')}</span>
+            </div>
+            <div className="field-stack">
+              <Label>TTL</Label>
+              <DurationUnitInput
+                value={cacheForm.ttl}
+                onChange={(ttl) => {
+                  const next = { ...cacheForm, ttl };
+                  setCacheForm(next);
+                  pushCacheToDraft(next);
+                }}
+              />
+              <span className="field-help">{t('edge.ttlHint')}</span>
+            </div>
+            <div className="field-stack">
+              <Label>{t('edge.paths')}</Label>
+              <Input
+                placeholder="/assets/,/static/"
+                value={cacheForm.paths}
+                onChange={(e) => {
+                  const next = { ...cacheForm, paths: e.target.value };
+                  setCacheForm(next);
+                  pushCacheToDraft(next);
+                }}
+              />
+              <span className="field-help">{t('edge.pathsHint')}</span>
+            </div>
+            <div className="field-stack">
+              <Label>{t('edge.statusCodes')}</Label>
+              <StatusCodeSelector
+                value={cacheForm.statusCodes}
+                onChange={(statusCodes) => {
+                  const next = { ...cacheForm, statusCodes };
+                  setCacheForm(next);
+                  pushCacheToDraft(next);
+                }}
+              />
+              <span className="field-help">{t('edge.statusCodesHint')}</span>
+            </div>
+            <div className="field-stack">
+              <Label>{t('edge.maxBody')}</Label>
+              <ByteUnitInput
+                value={cacheForm.maxBody}
+                minBytes={1024}
+                onChange={(maxBody) => {
+                  const next = { ...cacheForm, maxBody };
+                  setCacheForm(next);
+                  pushCacheToDraft(next);
+                }}
+              />
+              <span className="field-help">{t('edge.maxBodyHint')}</span>
+            </div>
+            <div className="form-action-row"><Button type="submit">{t('common.save')}</Button></div>
+          </form>
         </section>
 
         <section className="panel">
           <div className="panel-heading"><h2><Gauge size={16} /> {t('edge.compression')}</h2></div>
-          <Form
-            key={data ? `compression-${data.compression.enabled}-${data.compression.level}-${data.compression.min_bytes}` : 'compression-pending'}
-            layout="vertical"
-            initialValues={{
-              enabled: edge.compression.enabled,
-              algorithms: normalizeAlgorithms(edge.compression.algorithms),
-              level: normalizeCompressionLevel(edge.compression.level),
-              minBytes: edge.compression.min_bytes || 1024,
-              types: edge.compression.content_types.join(','),
-            }}
-            onValuesChange={(_, values) => syncCompressionFromForm(values)}
-            onSubmit={(values) => {
-              const next: EdgeConfig = {
-                ...edge,
-                compression: {
-                  ...edge.compression,
-                  enabled: values.enabled,
-                  algorithms: Array.isArray(values.algorithms) ? values.algorithms : [],
-                  level: Number(values.level || 5),
-                  min_bytes: Number(values.minBytes || 0),
-                  content_types: split(values.types),
-                },
-              };
-              setDraft(next);
-              mutation.mutate(next);
-            }}
-          >
-            <Form.Item label={t('edge.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-            <Form.Item label={t('edge.algorithms')} field="algorithms" extra={t('edge.algorithmsHint')}>
-              <Checkbox.Group className="edge-checkbox-group">
-                <Checkbox value="gzip">Gzip</Checkbox>
-                <Checkbox value="br">Brotli (br)</Checkbox>
-              </Checkbox.Group>
-            </Form.Item>
-            <Form.Item label={t('edge.level')} field="level" extra={t('edge.levelHint')}>
-              <Select>
-                <Select.Option value={1}>{t('edge.levelFast')}</Select.Option>
-                <Select.Option value={3}>{t('edge.levelLight')}</Select.Option>
-                <Select.Option value={5}>{t('edge.levelBalanced')}</Select.Option>
-                <Select.Option value={7}>{t('edge.levelStrong')}</Select.Option>
-                <Select.Option value={9}>{t('edge.levelCompact')}</Select.Option>
+          <form className="edge-form" onSubmit={saveCompression}>
+            <div className="field-stack">
+              <Label>{t('edge.enabled')}</Label>
+              <Switch
+                checked={compressionForm.enabled}
+                onCheckedChange={(enabled) => {
+                  const next = { ...compressionForm, enabled };
+                  setCompressionForm(next);
+                  pushCompressionToDraft(next);
+                }}
+              />
+            </div>
+            <div className="field-stack">
+              <Label>{t('edge.algorithms')}</Label>
+              <div className="edge-checkbox-group flex gap-4">
+                {(['gzip', 'br'] as const).map((algo) => (
+                  <label key={algo} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={compressionForm.algorithms.includes(algo)}
+                      onCheckedChange={(checked) => {
+                        const algorithms = checked
+                          ? Array.from(new Set([...compressionForm.algorithms, algo]))
+                          : compressionForm.algorithms.filter((item) => item !== algo);
+                        const next = { ...compressionForm, algorithms };
+                        setCompressionForm(next);
+                        pushCompressionToDraft(next);
+                      }}
+                    />
+                    {algo === 'gzip' ? 'Gzip' : 'Brotli (br)'}
+                  </label>
+                ))}
+              </div>
+              <span className="field-help">{t('edge.algorithmsHint')}</span>
+            </div>
+            <div className="field-stack">
+              <Label>{t('edge.level')}</Label>
+              <Select
+                value={String(compressionForm.level)}
+                onValueChange={(level) => {
+                  const next = { ...compressionForm, level: Number(level) };
+                  setCompressionForm(next);
+                  pushCompressionToDraft(next);
+                }}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">{t('edge.levelFast')}</SelectItem>
+                  <SelectItem value="3">{t('edge.levelLight')}</SelectItem>
+                  <SelectItem value="5">{t('edge.levelBalanced')}</SelectItem>
+                  <SelectItem value="7">{t('edge.levelStrong')}</SelectItem>
+                  <SelectItem value="9">{t('edge.levelCompact')}</SelectItem>
+                </SelectContent>
               </Select>
-            </Form.Item>
-            <Form.Item label={t('edge.minBytes')} field="minBytes" extra={t('edge.minBytesHint')}>
-              <ByteUnitInput minBytes={0} defaultUnit="KB" />
-            </Form.Item>
-            <Form.Item label={t('edge.types')} field="types" extra={t('edge.typesHint')}>
-              <Input placeholder="text/,application/json,application/javascript" />
-            </Form.Item>
-            <div className="form-action-row"><Button type="primary" htmlType="submit">{t('common.save')}</Button></div>
-          </Form>
+              <span className="field-help">{t('edge.levelHint')}</span>
+            </div>
+            <div className="field-stack">
+              <Label>{t('edge.minBytes')}</Label>
+              <ByteUnitInput
+                value={compressionForm.minBytes}
+                minBytes={0}
+                defaultUnit="KB"
+                onChange={(minBytes) => {
+                  const next = { ...compressionForm, minBytes };
+                  setCompressionForm(next);
+                  pushCompressionToDraft(next);
+                }}
+              />
+              <span className="field-help">{t('edge.minBytesHint')}</span>
+            </div>
+            <div className="field-stack">
+              <Label>{t('edge.types')}</Label>
+              <Input
+                placeholder="text/,application/json,application/javascript"
+                value={compressionForm.types}
+                onChange={(e) => {
+                  const next = { ...compressionForm, types: e.target.value };
+                  setCompressionForm(next);
+                  pushCompressionToDraft(next);
+                }}
+              />
+              <span className="field-help">{t('edge.typesHint')}</span>
+            </div>
+            <div className="form-action-row"><Button type="submit">{t('common.save')}</Button></div>
+          </form>
         </section>
       </div>
 
@@ -293,35 +483,79 @@ export default function EdgePage() {
         <div className="panel-heading">
           <h2><ListPlus size={16} /> {t('edge.headers')}</h2>
           <div className="table-identity">
-            <Button icon={<Plus size={14} />} onClick={addHeader}>{t('common.add')}</Button>
-            <Button type="primary" onClick={saveDraft} loading={mutation.isPending}>{t('common.save')}</Button>
+            <Button variant="outline" onClick={addHeader}><Plus size={14} />{t('common.add')}</Button>
+            <Button onClick={saveDraft} loading={mutation.isPending}>{t('common.save')}</Button>
           </div>
         </div>
-        <Table
-          rowKey="id"
-          pagination={false}
-          data={edge.headers.rules}
-          noDataElement={<Empty description={t('common.noData')} />}
-          columns={[
-            { title: t('rules.name'), dataIndex: 'name', render: (_: string, record: HeaderRule, index: number) => <Input value={record.name} onChange={(value) => updateHeader(index, { name: value })} /> },
-            {
-              title: t('edge.operation'),
-              dataIndex: 'operation',
-              render: (_: string, record: HeaderRule, index: number) => (
-                <Select value={record.operation} onChange={(value) => updateHeader(index, { operation: value as HeaderRule['operation'] })}>
-                  <Select.Option value="set">{t('edge.operationSet')}</Select.Option>
-                  <Select.Option value="add">{t('edge.operationAppend')}</Select.Option>
-                  <Select.Option value="delete">{t('edge.operationRemove')}</Select.Option>
-                </Select>
-              ),
-            },
-            { title: t('edge.header'), dataIndex: 'header', render: (_: string, record: HeaderRule, index: number) => <Input value={record.header} onChange={(value) => updateHeader(index, { header: value })} /> },
-            { title: t('edge.value'), dataIndex: 'value', render: (_: string, record: HeaderRule, index: number) => <Input value={record.value} disabled={record.operation === 'delete'} onChange={(value) => updateHeader(index, { value })} /> },
-            { title: t('edge.paths'), dataIndex: 'path_prefix', render: (_: string, record: HeaderRule, index: number) => <Input value={record.path_prefix} placeholder="/api/" onChange={(value) => updateHeader(index, { path_prefix: value })} /> },
-            { title: t('rules.enabled'), dataIndex: 'enabled', render: (_: boolean, record: HeaderRule, index: number) => <Switch checked={record.enabled} size="small" onChange={(enabled) => updateHeader(index, { enabled })} /> },
-            { title: '', dataIndex: 'action', render: (_: unknown, record: HeaderRule) => <Button status="danger" icon={<Trash2 size={14} />} aria-label={t('common.delete')} onClick={() => removeHeader(record.id)} /> },
-          ]}
-        />
+        {edge.headers.rules.length === 0 ? (
+          <Empty description={t('common.noData')} />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('rules.name')}</TableHead>
+                <TableHead>{t('edge.operation')}</TableHead>
+                <TableHead>{t('edge.header')}</TableHead>
+                <TableHead>{t('edge.value')}</TableHead>
+                <TableHead>{t('edge.paths')}</TableHead>
+                <TableHead>{t('rules.enabled')}</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {edge.headers.rules.map((record, index) => (
+                <TableRow key={record.id}>
+                  <TableCell>
+                    <Input value={record.name} onChange={(e) => updateHeader(index, { name: e.target.value })} />
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={record.operation}
+                      onValueChange={(value) => updateHeader(index, { operation: value as HeaderRule['operation'] })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="set">{t('edge.operationSet')}</SelectItem>
+                        <SelectItem value="add">{t('edge.operationAppend')}</SelectItem>
+                        <SelectItem value="delete">{t('edge.operationRemove')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                  <TableCell>
+                    <Input value={record.header} onChange={(e) => updateHeader(index, { header: e.target.value })} />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      value={record.value}
+                      disabled={record.operation === 'delete'}
+                      onChange={(e) => updateHeader(index, { value: e.target.value })}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      value={record.path_prefix}
+                      placeholder="/api/"
+                      onChange={(e) => updateHeader(index, { path_prefix: e.target.value })}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Switch checked={record.enabled} onCheckedChange={(enabled) => updateHeader(index, { enabled })} />
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="destructive"
+                      size="icon"
+                      aria-label={t('common.delete')}
+                      onClick={() => removeHeader(record.id)}
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
       </section>
     </section>
   );
@@ -332,43 +566,45 @@ function split(value: unknown) {
 }
 
 function normalizeAlgorithms(value: string[]) {
-  const out = value.map((item) => (item === 'brotli' ? 'br' : item)).filter((item) => item === 'br' || item === 'gzip');
+  const out = (value ?? []).map((item) => (item === 'brotli' ? 'br' : item)).filter((item) => item === 'br' || item === 'gzip');
   return out.length > 0 ? Array.from(new Set(out)) : ['br', 'gzip'];
 }
 
 function normalizeCompressionLevel(level: number) {
-  if (level <= 2) {
-    return 1;
-  }
-  if (level <= 4) {
-    return 3;
-  }
-  if (level <= 6) {
-    return 5;
-  }
-  if (level <= 8) {
-    return 7;
-  }
-  if (level >= 9) {
-    return 9;
-  }
+  if (level <= 2) return 1;
+  if (level <= 4) return 3;
+  if (level <= 6) return 5;
+  if (level <= 8) return 7;
+  if (level >= 9) return 9;
   return 5;
 }
 
 function StatusCodeSelector({ value, onChange }: { value?: string[]; onChange?: (next: string[]) => void }) {
   const selected = Array.isArray(value) ? value : [];
+  const toggle = (choice: string) => {
+    const next = selected.includes(choice)
+      ? selected.filter((item) => item !== choice)
+      : [...selected, choice];
+    onChange?.(next);
+  };
   return (
-    <Select
-      mode="multiple"
-      value={selected}
-      onChange={(next) => onChange?.((Array.isArray(next) ? next : []).map(String))}
-      allowClear
-      placeholder="2xx, 3xx, 200, 304"
-    >
-      {statusCodeChoices.map((choice) => (
-        <Select.Option key={choice} value={choice}>{choice}</Select.Option>
-      ))}
-    </Select>
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="outline" className="w-full justify-start font-normal">
+          {selected.length > 0 ? selected.join(', ') : '2xx, 3xx, 200, 304'}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 max-h-64 overflow-auto" align="start">
+        <div className="flex flex-col gap-2">
+          {statusCodeChoices.map((choice) => (
+            <label key={choice} className="flex items-center gap-2 text-sm">
+              <Checkbox checked={selected.includes(choice)} onCheckedChange={() => toggle(choice)} />
+              {choice}
+            </label>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -428,13 +664,28 @@ function DurationUnitInput({ value, onChange }: { value?: number | string; onCha
   };
 
   return (
-    <div className="compound-input">
-      <InputNumber min={1} value={parts.amount} onChange={(next) => emit(next)} />
-      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as DurationUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
-        <Select.Option value="d">{t('common.days')}</Select.Option>
-        <Select.Option value="h">{t('common.hours')}</Select.Option>
-        <Select.Option value="m">{t('common.minutes')}</Select.Option>
-        <Select.Option value="s">{t('common.seconds')}</Select.Option>
+    <div className="compound-input flex gap-2">
+      <Input
+        type="number"
+        min={1}
+        value={parts.amount}
+        onChange={(e) => emit(e.target.value)}
+      />
+      <Select
+        value={unit}
+        onValueChange={(next) => {
+          const nextUnit = next as DurationUnit;
+          setUnit(nextUnit);
+          emit(parts.amount, nextUnit);
+        }}
+      >
+        <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="d">{t('common.days')}</SelectItem>
+          <SelectItem value="h">{t('common.hours')}</SelectItem>
+          <SelectItem value="m">{t('common.minutes')}</SelectItem>
+          <SelectItem value="s">{t('common.seconds')}</SelectItem>
+        </SelectContent>
       </Select>
     </div>
   );
@@ -461,11 +712,27 @@ function ByteUnitInput({
     onChange?.(Math.max(minBytes, Math.round(numeric * byteUnitMultiplier(nextUnit))));
   };
   return (
-    <div className="compound-input">
-      <InputNumber min={0} value={parts.amount} precision={parts.unit === 'MB' ? 2 : 0} onChange={(next) => emit(next)} />
-      <Select value={unit} onChange={(next) => { const nextUnit = String(next) as ByteUnit; setUnit(nextUnit); emit(parts.amount, nextUnit); }}>
-        <Select.Option value="KB">KB</Select.Option>
-        <Select.Option value="MB">MB</Select.Option>
+    <div className="compound-input flex gap-2">
+      <Input
+        type="number"
+        min={0}
+        step={parts.unit === 'MB' ? 0.01 : 1}
+        value={parts.amount}
+        onChange={(e) => emit(e.target.value)}
+      />
+      <Select
+        value={unit}
+        onValueChange={(next) => {
+          const nextUnit = next as ByteUnit;
+          setUnit(nextUnit);
+          emit(parts.amount, nextUnit);
+        }}
+      >
+        <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="KB">KB</SelectItem>
+          <SelectItem value="MB">MB</SelectItem>
+        </SelectContent>
       </Select>
     </div>
   );
@@ -483,18 +750,10 @@ function durationToNanoseconds(value: number | string | undefined) {
   if (!Number.isFinite(numeric)) {
     return 5 * durationUnitToNanoseconds('m');
   }
-  if (raw.endsWith('d')) {
-    return numeric * durationUnitToNanoseconds('d');
-  }
-  if (raw.endsWith('h')) {
-    return numeric * durationUnitToNanoseconds('h');
-  }
-  if (raw.endsWith('m')) {
-    return numeric * durationUnitToNanoseconds('m');
-  }
-  if (raw.endsWith('s')) {
-    return numeric * durationUnitToNanoseconds('s');
-  }
+  if (raw.endsWith('d')) return numeric * durationUnitToNanoseconds('d');
+  if (raw.endsWith('h')) return numeric * durationUnitToNanoseconds('h');
+  if (raw.endsWith('m')) return numeric * durationUnitToNanoseconds('m');
+  if (raw.endsWith('s')) return numeric * durationUnitToNanoseconds('s');
   return numeric;
 }
 

@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import { codeInspectorPlugin } from '@agent-eyes/agent-eyes';
 import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
@@ -13,6 +14,11 @@ const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 const enableAgentEyes = process.env.NODE_ENV !== 'production' && process.env.CHEESEWAF_AGENT_EYES !== '0';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': path.resolve(projectRoot, 'src'),
+    },
+  },
   plugins: [
     // code-inspector must register before @vitejs/plugin-react
     ...(enableAgentEyes
@@ -27,6 +33,7 @@ export default defineConfig({
         ]
       : []),
     react(),
+    tailwindcss(),
     chinaMapStaticAssets(),
   ],
   server: {
@@ -58,8 +65,8 @@ export default defineConfig({
           if (modulePath.includes('/react/') || modulePath.includes('/react-dom/') || modulePath.includes('/scheduler/')) {
             return 'vendor-react';
           }
-          if (modulePath.includes('/@arco-design/')) {
-            return arcoChunk(modulePath);
+          if (modulePath.includes('/@radix-ui/') || modulePath.includes('/class-variance-authority/') || modulePath.includes('/sonner/')) {
+            return 'vendor-ui';
           }
           if (modulePath.includes('/three/src/renderers/shaders/') || modulePath.includes('/three/src/renderers/webgl/') || modulePath.includes('/three/src/renderers/WebGL')) {
             return 'vendor-three-webgl';
@@ -96,50 +103,8 @@ export default defineConfig({
 });
 
 function isCriticalEntryPreload(dependency: string) {
-  return dependency.includes('rolldown-runtime') || dependency.includes('vendor-react');
-}
-
-function arcoChunk(modulePath: string) {
-  const lowerPath = modulePath.toLowerCase();
-  if (
-    lowerPath.includes('/table') ||
-    lowerPath.includes('/pagination') ||
-    lowerPath.includes('/virtual-list') ||
-    lowerPath.includes('/resize-box')
-  ) {
-    return 'vendor-arco-data';
-  }
-  if (
-    lowerPath.includes('/form') ||
-    lowerPath.includes('/input') ||
-    lowerPath.includes('/input-number') ||
-    lowerPath.includes('/select') ||
-    lowerPath.includes('/date-picker') ||
-    lowerPath.includes('/time-picker') ||
-    lowerPath.includes('/checkbox') ||
-    lowerPath.includes('/radio') ||
-    lowerPath.includes('/switch') ||
-    lowerPath.includes('/upload') ||
-    lowerPath.includes('/cascader')
-  ) {
-    return 'vendor-arco-form';
-  }
-  if (
-    lowerPath.includes('/modal') ||
-    lowerPath.includes('/drawer') ||
-    lowerPath.includes('/popover') ||
-    lowerPath.includes('/popconfirm') ||
-    lowerPath.includes('/dropdown') ||
-    lowerPath.includes('/tooltip') ||
-    lowerPath.includes('/message') ||
-    lowerPath.includes('/notification') ||
-    lowerPath.includes('/trigger') ||
-    lowerPath.includes('/tabs') ||
-    lowerPath.includes('/steps')
-  ) {
-    return 'vendor-arco-overlay';
-  }
-  return 'vendor-arco-core';
+  // Keep initial modulepreload under the 20 KiB gzip budget (vendor-react alone is ~45 KiB gzip).
+  return dependency.includes('rolldown-runtime');
 }
 
 function chinaMapStaticAssets(): Plugin {

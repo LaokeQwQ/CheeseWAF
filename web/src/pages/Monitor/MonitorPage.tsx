@@ -1,8 +1,8 @@
-import { Progress, Table, Tag } from '@arco-design/web-react';
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Activity, AlertTriangle, Cpu, Database, HardDrive, ShieldAlert } from 'lucide-react';
+import { Badge, Progress, Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui';
 import { fetchMonitorSummary } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import type { Alert } from '../../types/api';
@@ -23,6 +23,7 @@ export default function MonitorPage() {
   const diskTotal = snapshot?.host?.disk_total ?? 0;
   const loading = isLoading && !data;
   const processCount = snapshot?.process_count;
+  const alerts: Alert[] = data?.alerts ?? [];
 
   if (isError && !data) {
     return (
@@ -66,13 +67,13 @@ export default function MonitorPage() {
             <div>
               <HardDrive size={16} />
               <span>{t('monitor.dataPath')}</span>
-              <Progress percent={usagePercent(dataBytes, diskTotal)} size="small" />
+              <Progress value={usagePercent(dataBytes, diskTotal)} />
               <span>{formatBytes(dataBytes)}</span>
             </div>
             <div>
               <HardDrive size={16} />
               <span>{t('monitor.logsPath')}</span>
-              <Progress percent={usagePercent(logBytes, diskTotal)} size="small" />
+              <Progress value={usagePercent(logBytes, diskTotal)} />
               <span>{formatBytes(logBytes)}</span>
             </div>
           </div>
@@ -81,18 +82,38 @@ export default function MonitorPage() {
         <section className="panel monitor-alerts-panel">
           <div className="panel-heading"><h2><AlertTriangle size={16} /> {t('monitor.alerts')}</h2></div>
           <div className="table-scroll monitor-alerts-table">
-            <Table
-              rowKey="rule_id"
-              pagination={false}
-              loading={loading}
-              data={data?.alerts ?? []}
-              columns={[
-                { title: t('monitor.rule'), dataIndex: 'name' },
-                { title: t('monitor.severity'), dataIndex: 'severity', render: (value: string) => <Tag color={severityColor(value)}>{displaySeverity(value, t)}</Tag> },
-                { title: t('monitor.message'), dataIndex: 'message' },
-                { title: t('monitor.value'), dataIndex: 'value', render: (_: number, record: Alert) => `${record.value} / ${record.threshold}` },
-              ]}
-            />
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Spinner />
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('monitor.rule')}</TableHead>
+                    <TableHead>{t('monitor.severity')}</TableHead>
+                    <TableHead>{t('monitor.message')}</TableHead>
+                    <TableHead>{t('monitor.value')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {alerts.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-muted-foreground">{t('common.noData')}</TableCell>
+                    </TableRow>
+                  ) : alerts.map((alert) => (
+                    <TableRow key={alert.rule_id}>
+                      <TableCell>{alert.name}</TableCell>
+                      <TableCell>
+                        <Badge variant={severityBadgeVariant(alert.severity)}>{displaySeverity(alert.severity, t)}</Badge>
+                      </TableCell>
+                      <TableCell>{alert.message}</TableCell>
+                      <TableCell>{`${alert.value} / ${alert.threshold}`}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
           </div>
         </section>
       </div>
@@ -133,15 +154,12 @@ function usagePercent(value: number, total: number) {
   return 0;
 }
 
-function severityColor(value: string) {
-  if (value === 'critical') {
-    return 'red';
-  }
-  if (value === 'high') {
-    return 'orange';
+function severityBadgeVariant(value: string): 'destructive' | 'warning' | 'default' {
+  if (value === 'critical' || value === 'high') {
+    return 'destructive';
   }
   if (value === 'medium') {
-    return 'gold';
+    return 'warning';
   }
-  return 'blue';
+  return 'default';
 }
