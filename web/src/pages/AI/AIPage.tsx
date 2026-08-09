@@ -1,9 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Form, Input, InputNumber, Message as ArcoMessage, Select, Space, Spin, Switch, Tag } from '@arco-design/web-react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Eye, KeyRound, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
+import {
+  Badge,
+  Button,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Spinner,
+  Switch,
+  toast,
+} from '@/components/ui';
 import { APIRequestError, analyzeEventsStream, analyzeLogReferenceStream, fetchAIConfig, fetchAIModels, fetchLogs, runAISelfLearning, testAIConnection, updateAIConfig } from '../../api/client';
 import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
 import PolicyDecisionCard from '../../components/PolicyDecisionCard';
@@ -21,6 +34,39 @@ const analysisRanges = [
 ];
 const AI_EVENT_PAGE_SIZE = 8;
 export const SELF_LEARNING_MAX_EVENTS_RANGE = { min: 1, max: 10_000 };
+
+type AIFormValues = {
+  enabled: boolean;
+  provider: string;
+  apiBase: string;
+  apiKey: string;
+  model: string;
+  assistantProvider: string;
+  assistantAPIBase: string;
+  assistantAPIKey: string;
+  assistantModel: string;
+  assistantAllowPrivateAPIBase: boolean;
+  reasoningProvider: string;
+  reasoningAPIBase: string;
+  reasoningAPIKey: string;
+  reasoningModel: string;
+  reasoningAllowPrivateAPIBase: boolean;
+  async: boolean;
+  allowPrivateAPIBase: boolean;
+  selfLearningEnabled: boolean;
+  selfLearningAutoApply: boolean;
+  selfLearningDryRun: boolean;
+  selfLearningInterval: string;
+  selfLearningAt: string;
+  selfLearningMinConfidence: number | string;
+  selfLearningMinEvents: number | string;
+  selfLearningMaxEvents: number | string;
+  selfLearningMaxRulesPerRun: number | string;
+  selfLearningAction: string;
+  knowledgeEnabled: boolean;
+  knowledgeBuiltin: boolean;
+  knowledgeMaxSnippets: number | string;
+};
 
 const fallback: AIConfig = {
   enabled: false,
@@ -66,10 +112,44 @@ const fallback: AIConfig = {
   },
 };
 
+function formValuesFromConfig(config: AIConfig, assistantConfig: AIModelConfig, reasoningConfig: AIModelConfig): AIFormValues {
+  return {
+    enabled: config.enabled,
+    provider: config.provider || 'openai',
+    apiBase: config.api_base,
+    apiKey: '',
+    model: config.model,
+    assistantProvider: assistantConfig.provider,
+    assistantAPIBase: assistantConfig.api_base,
+    assistantAPIKey: '',
+    assistantModel: assistantConfig.model,
+    assistantAllowPrivateAPIBase: assistantConfig.allow_private_api_base,
+    reasoningProvider: reasoningConfig.provider,
+    reasoningAPIBase: reasoningConfig.api_base,
+    reasoningAPIKey: '',
+    reasoningModel: reasoningConfig.model,
+    reasoningAllowPrivateAPIBase: reasoningConfig.allow_private_api_base,
+    async: config.async,
+    allowPrivateAPIBase: config.allow_private_api_base,
+    selfLearningEnabled: config.self_learning?.enabled ?? false,
+    selfLearningAutoApply: config.self_learning?.auto_apply ?? false,
+    selfLearningDryRun: config.self_learning?.dry_run ?? true,
+    selfLearningInterval: formatDurationInput(config.self_learning?.interval ?? '24h'),
+    selfLearningAt: config.self_learning?.at ?? '03:30',
+    selfLearningMinConfidence: config.self_learning?.min_confidence ?? 0.995,
+    selfLearningMinEvents: config.self_learning?.min_events ?? 5,
+    selfLearningMaxEvents: config.self_learning?.max_events ?? 200,
+    selfLearningMaxRulesPerRun: config.self_learning?.max_rules_per_run ?? 3,
+    selfLearningAction: config.self_learning?.action ?? 'block',
+    knowledgeEnabled: config.knowledge?.enabled ?? true,
+    knowledgeBuiltin: config.knowledge?.builtin ?? true,
+    knowledgeMaxSnippets: config.knowledge?.max_snippets ?? 5,
+  };
+}
+
 export default function AIPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
-  const [form] = Form.useForm();
   const singleAnalysisAbortRef = useRef<{ key: string; controller: AbortController } | null>(null);
   const [selectedId, setSelectedId] = useState('');
   const [analysisRange, setAnalysisRange] = useState('24h');
@@ -85,6 +165,7 @@ export default function AIPage() {
   const [reasoningModels, setReasoningModels] = useState<AIModelInfo[]>([]);
   const [selfLearningReport, setSelfLearningReport] = useState<AISelfLearningReport | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [maxEventsError, setMaxEventsError] = useState('');
   const configQuery = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
   const { data } = configQuery;
   const { data: logs, isLoading } = useQuery({
@@ -96,6 +177,7 @@ export default function AIPage() {
   const config = data ?? fallback;
   const assistantConfig = normalizeAIModel(config.assistant, config);
   const reasoningConfig = normalizeAIModel(config.reasoning, config);
+  const [formValues, setFormValues] = useState<AIFormValues>(() => formValuesFromConfig(config, assistantConfig, reasoningConfig));
   const providerLabel = config.provider === 'anthropic'
     ? t('ai.providerAnthropic')
     : t('ai.providerOpenAI');
@@ -115,39 +197,37 @@ export default function AIPage() {
   }, [events, selectedId]);
 
   useEffect(() => {
-    form.setFieldsValue({
-      enabled: config.enabled,
-      provider: config.provider || 'openai',
-      apiBase: config.api_base,
-      apiKey: '',
-      model: config.model,
-      assistantProvider: assistantConfig.provider,
-      assistantAPIBase: assistantConfig.api_base,
-      assistantAPIKey: '',
-      assistantModel: assistantConfig.model,
-      assistantAllowPrivateAPIBase: assistantConfig.allow_private_api_base,
-      reasoningProvider: reasoningConfig.provider,
-      reasoningAPIBase: reasoningConfig.api_base,
-      reasoningAPIKey: '',
-      reasoningModel: reasoningConfig.model,
-      reasoningAllowPrivateAPIBase: reasoningConfig.allow_private_api_base,
-      async: config.async,
-      allowPrivateAPIBase: config.allow_private_api_base,
-      selfLearningEnabled: config.self_learning?.enabled ?? false,
-      selfLearningAutoApply: config.self_learning?.auto_apply ?? false,
-      selfLearningDryRun: config.self_learning?.dry_run ?? true,
-      selfLearningInterval: formatDurationInput(config.self_learning?.interval ?? '24h'),
-      selfLearningAt: config.self_learning?.at ?? '03:30',
-      selfLearningMinConfidence: config.self_learning?.min_confidence ?? 0.995,
-      selfLearningMinEvents: config.self_learning?.min_events ?? 5,
-      selfLearningMaxEvents: config.self_learning?.max_events ?? 200,
-      selfLearningMaxRulesPerRun: config.self_learning?.max_rules_per_run ?? 3,
-      selfLearningAction: config.self_learning?.action ?? 'block',
-      knowledgeEnabled: config.knowledge?.enabled ?? true,
-      knowledgeBuiltin: config.knowledge?.builtin ?? true,
-      knowledgeMaxSnippets: config.knowledge?.max_snippets ?? 5,
-    });
-  }, [assistantConfig.api_base, assistantConfig.allow_private_api_base, assistantConfig.model, assistantConfig.provider, config.allow_private_api_base, config.api_base, config.async, config.enabled, config.knowledge?.builtin, config.knowledge?.enabled, config.knowledge?.max_snippets, config.model, config.provider, config.self_learning?.action, config.self_learning?.at, config.self_learning?.auto_apply, config.self_learning?.dry_run, config.self_learning?.enabled, config.self_learning?.interval, config.self_learning?.max_events, config.self_learning?.max_rules_per_run, config.self_learning?.min_confidence, config.self_learning?.min_events, form, reasoningConfig.api_base, reasoningConfig.allow_private_api_base, reasoningConfig.model, reasoningConfig.provider]);
+    setFormValues(formValuesFromConfig(config, assistantConfig, reasoningConfig));
+    setMaxEventsError('');
+  }, [
+    assistantConfig.api_base,
+    assistantConfig.allow_private_api_base,
+    assistantConfig.model,
+    assistantConfig.provider,
+    config.allow_private_api_base,
+    config.api_base,
+    config.async,
+    config.enabled,
+    config.knowledge?.builtin,
+    config.knowledge?.enabled,
+    config.knowledge?.max_snippets,
+    config.model,
+    config.provider,
+    config.self_learning?.action,
+    config.self_learning?.at,
+    config.self_learning?.auto_apply,
+    config.self_learning?.dry_run,
+    config.self_learning?.enabled,
+    config.self_learning?.interval,
+    config.self_learning?.max_events,
+    config.self_learning?.max_rules_per_run,
+    config.self_learning?.min_confidence,
+    config.self_learning?.min_events,
+    reasoningConfig.api_base,
+    reasoningConfig.allow_private_api_base,
+    reasoningConfig.model,
+    reasoningConfig.provider,
+  ]);
 
   useEffect(() => {
     setEventPage(1);
@@ -163,22 +243,26 @@ export default function AIPage() {
     singleAnalysisAbortRef.current?.controller.abort();
   }, []);
 
+  const setField = <K extends keyof AIFormValues>(key: K, value: AIFormValues[K]) => {
+    setFormValues((current) => ({ ...current, [key]: value }));
+  };
+
   const updateMutation = useMutation({
     mutationFn: updateAIConfig,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ai-config'] });
-      ArcoMessage.success(t('system.saved'));
+      toast.success(t('system.saved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const testMutation = useMutation({
-    mutationFn: (target: 'assistant' | 'reasoning') => testAIConnection(buildAIModelRequest(form.getFieldsValue(), target)),
-    onSuccess: () => ArcoMessage.success(t('ai.testOk')),
-    onError: (error) => ArcoMessage.error(error.message),
+    mutationFn: (target: 'assistant' | 'reasoning') => testAIConnection(buildAIModelRequest(formValues, target)),
+    onSuccess: () => toast.success(t('ai.testOk')),
+    onError: (error) => toast.error(error.message),
   });
   const modelsMutation = useMutation({
     mutationFn: (target: 'assistant' | 'reasoning') => {
-      return fetchAIModels(buildAIModelRequest(form.getFieldsValue(), target));
+      return fetchAIModels(buildAIModelRequest(formValues, target));
     },
     onSuccess: (result, target) => {
       if (target === 'reasoning') {
@@ -186,17 +270,17 @@ export default function AIPage() {
       } else {
         setModels(result.items ?? []);
       }
-      ArcoMessage.success(t('ai.modelsLoaded', { count: result.total ?? result.items?.length ?? 0 }));
+      toast.success(t('ai.modelsLoaded', { count: result.total ?? result.items?.length ?? 0 }));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const selfLearningMutation = useMutation({
     mutationFn: (dryRun: boolean) => runAISelfLearning({ dry_run: dryRun, language: i18n.language }),
     onSuccess: (report) => {
       setSelfLearningReport(report);
-      ArcoMessage.success(t('ai.selfLearningRunOk', { candidates: report.candidates.length, applied: report.applied.length }));
+      toast.success(t('ai.selfLearningRunOk', { candidates: report.candidates.length, applied: report.applied.length }));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const eventAnalysisMutation = useMutation({
     mutationFn: async ({ entry, controller }: { entry: LogEntry; controller: AbortController }) => {
@@ -225,7 +309,7 @@ export default function AIPage() {
       if (error instanceof APIRequestError && error.code === 'AI_ANALYSIS_CANCELLED') {
         return;
       }
-      ArcoMessage.error(error.message);
+      toast.error(error.message);
     },
     onSettled: (_data, _error, variables) => {
       if (!variables) {
@@ -251,9 +335,9 @@ export default function AIPage() {
         }
         return next;
       });
-      ArcoMessage.success(`${t('ai.analyzed')} ${result.total}`);
+      toast.success(`${t('ai.analyzed')} ${result.total}`);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const analyzingEventKey = eventAnalysisMutation.variables ? eventKey(eventAnalysisMutation.variables.entry) : '';
 
@@ -262,6 +346,28 @@ export default function AIPage() {
     const controller = new AbortController();
     singleAnalysisAbortRef.current = { key: eventKey(entry), controller };
     eventAnalysisMutation.mutate({ entry, controller });
+  }
+
+  function handleSave(event: FormEvent) {
+    event.preventDefault();
+    if (!configQuery.isSuccess) {
+      return;
+    }
+    const numeric = Number(formValues.selfLearningMaxEvents);
+    if (!Number.isInteger(numeric) || numeric < SELF_LEARNING_MAX_EVENTS_RANGE.min || numeric > SELF_LEARNING_MAX_EVENTS_RANGE.max) {
+      setMaxEventsError(t('ai.maxEventsRange', {
+        min: SELF_LEARNING_MAX_EVENTS_RANGE.min,
+        max: SELF_LEARNING_MAX_EVENTS_RANGE.max,
+        defaultValue: `max_events must be ${SELF_LEARNING_MAX_EVENTS_RANGE.min}-${SELF_LEARNING_MAX_EVENTS_RANGE.max}`,
+      }));
+      return;
+    }
+    setMaxEventsError('');
+    try {
+      updateMutation.mutate(buildAIConfigPayload(formValues, config, assistantConfig, reasoningConfig));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('ai.invalidConfig'));
+    }
   }
 
   return (
@@ -278,11 +384,22 @@ export default function AIPage() {
           <div className="panel-heading">
             <h2><PlugZap size={16} /> {t('ai.connection')}</h2>
             <div className="ai-config-header-actions">
-              <Form className="ai-config-inline-switches" form={form} layout="inline">
-                <Form.Item label={t('ai.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-                <Form.Item label={t('ai.async')} field="async" triggerPropName="checked"><Switch /></Form.Item>
-              </Form>
-              <Button icon={<ShieldCheck size={14} />} onClick={() => testMutation.mutate('assistant')} loading={testMutation.isPending && testMutation.variables === 'assistant'}>
+              <div className="ai-config-inline-switches flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="ai-enabled">{t('ai.enabled')}</Label>
+                  <Switch id="ai-enabled" checked={formValues.enabled} onCheckedChange={(checked) => setField('enabled', checked)} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="ai-async">{t('ai.async')}</Label>
+                  <Switch id="ai-async" checked={formValues.async} onCheckedChange={(checked) => setField('async', checked)} />
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => testMutation.mutate('assistant')}
+                loading={testMutation.isPending && testMutation.variables === 'assistant'}
+              >
+                <ShieldCheck size={14} />
                 {t('ai.test')}
               </Button>
             </div>
@@ -302,38 +419,15 @@ export default function AIPage() {
               <strong>{config.api_key_set ? t('ai.keyStored') : t('ai.keyMissing')}</strong>
             </div>
           </div>
-          <Form
-            className="ai-config-form"
-            form={form}
-            key={`ai-${config.enabled}-${config.provider}-${config.api_base}-${config.model}-${config.api_key_set}`}
-            layout="vertical"
-            initialValues={{
-              enabled: config.enabled,
-              provider: config.provider || 'openai',
-              apiBase: config.api_base,
-              apiKey: config.api_key ?? '',
-              model: config.model,
-              async: config.async,
-              allowPrivateAPIBase: config.allow_private_api_base,
-            }}
-            onSubmit={(values) => {
-              if (!configQuery.isSuccess) {
-                return;
-              }
-              const allValues = { ...values, ...form.getFieldsValue() };
-              try {
-                updateMutation.mutate(buildAIConfigPayload(allValues, config, assistantConfig, reasoningConfig));
-              } catch (error) {
-                ArcoMessage.error(error instanceof Error ? error.message : t('ai.invalidConfig'));
-              }
-            }}
-          >
+          <form className="ai-config-form" onSubmit={handleSave}>
             <div className="ai-config-main">
               <AIModelFormBlock
                 title={t('ai.assistantModel')}
                 description={t('ai.assistantModelHint')}
                 prefix="assistant"
                 t={t}
+                values={formValues}
+                setField={setField}
                 models={modelOptions(models, assistantConfig.model)}
                 loadingModels={modelsMutation.isPending && modelsMutation.variables === 'assistant'}
                 keyStored={assistantConfig.api_key_set}
@@ -346,6 +440,8 @@ export default function AIPage() {
                 description={t('ai.reasoningModelHint')}
                 prefix="reasoning"
                 t={t}
+                values={formValues}
+                setField={setField}
                 models={modelOptions(reasoningModels, reasoningConfig.model)}
                 loadingModels={modelsMutation.isPending && modelsMutation.variables === 'reasoning'}
                 keyStored={reasoningConfig.api_key_set}
@@ -373,55 +469,56 @@ export default function AIPage() {
                       <span>{t('ai.selfLearningHint')}</span>
                     </header>
                     <div className="ai-config-section">
-                      <Form.Item label={t('common.enabled')} field="selfLearningEnabled" triggerPropName="checked"><Switch /></Form.Item>
-                      <Form.Item label={t('ai.selfLearningAutoApply')} field="selfLearningAutoApply" triggerPropName="checked"><Switch /></Form.Item>
-                      <Form.Item label={t('ai.selfLearningDryRun')} field="selfLearningDryRun" triggerPropName="checked"><Switch /></Form.Item>
-                      <Form.Item label={t('ai.selfLearningInterval')} field="selfLearningInterval"><Input placeholder="24h" /></Form.Item>
-                      <Form.Item label={t('ai.selfLearningAt')} field="selfLearningAt"><Input placeholder="03:30" /></Form.Item>
-                      <Form.Item label={t('ai.selfLearningConfidence')} field="selfLearningMinConfidence"><Input type="number" min={0.9} max={1} step={0.001} /></Form.Item>
-                      <Form.Item label={t('ai.selfLearningMinEvents')} field="selfLearningMinEvents"><Input type="number" min={2} /></Form.Item>
-                      <Form.Item
-                        label={t('ai.maxEventsLabel')}
-                        field="selfLearningMaxEvents"
-                        rules={[{
-                          validator: (value, callback) => {
-                            const numeric = Number(value);
-                            if (!Number.isInteger(numeric) || numeric < SELF_LEARNING_MAX_EVENTS_RANGE.min || numeric > SELF_LEARNING_MAX_EVENTS_RANGE.max) {
-                              callback(t('ai.maxEventsRange', {
-                                min: SELF_LEARNING_MAX_EVENTS_RANGE.min,
-                                max: SELF_LEARNING_MAX_EVENTS_RANGE.max,
-                                defaultValue: `max_events must be ${SELF_LEARNING_MAX_EVENTS_RANGE.min}-${SELF_LEARNING_MAX_EVENTS_RANGE.max}`,
-                              }));
-                              return;
-                            }
-                            callback();
-                          },
-                        }]}
-                      >
-                        <InputNumber min={SELF_LEARNING_MAX_EVENTS_RANGE.min} max={SELF_LEARNING_MAX_EVENTS_RANGE.max} step={1} precision={0} />
-                      </Form.Item>
-                      <Form.Item label={t('ai.selfLearningMaxRules')} field="selfLearningMaxRulesPerRun"><Input type="number" min={1} max={20} /></Form.Item>
-                      <Form.Item label={t('ai.selfLearningAction')} field="selfLearningAction">
-                        <Select>
-                          <Select.Option value="block">{displayAction('block', t)}</Select.Option>
-                          <Select.Option value="challenge">{displayAction('challenge', t)}</Select.Option>
-                          <Select.Option value="log">{displayAction('log', t)}</Select.Option>
+                      <FieldSwitch label={t('common.enabled')} checked={formValues.selfLearningEnabled} onChange={(v) => setField('selfLearningEnabled', v)} />
+                      <FieldSwitch label={t('ai.selfLearningAutoApply')} checked={formValues.selfLearningAutoApply} onChange={(v) => setField('selfLearningAutoApply', v)} />
+                      <FieldSwitch label={t('ai.selfLearningDryRun')} checked={formValues.selfLearningDryRun} onChange={(v) => setField('selfLearningDryRun', v)} />
+                      <FieldInput label={t('ai.selfLearningInterval')} value={String(formValues.selfLearningInterval)} onChange={(v) => setField('selfLearningInterval', v)} placeholder="24h" />
+                      <FieldInput label={t('ai.selfLearningAt')} value={String(formValues.selfLearningAt)} onChange={(v) => setField('selfLearningAt', v)} placeholder="03:30" />
+                      <FieldInput label={t('ai.selfLearningConfidence')} type="number" value={String(formValues.selfLearningMinConfidence)} onChange={(v) => setField('selfLearningMinConfidence', v)} min={0.9} max={1} step={0.001} />
+                      <FieldInput label={t('ai.selfLearningMinEvents')} type="number" value={String(formValues.selfLearningMinEvents)} onChange={(v) => setField('selfLearningMinEvents', v)} min={2} />
+                      <div className="space-y-1.5">
+                        <Label>{t('ai.maxEventsLabel')}</Label>
+                        <Input
+                          type="number"
+                          min={SELF_LEARNING_MAX_EVENTS_RANGE.min}
+                          max={SELF_LEARNING_MAX_EVENTS_RANGE.max}
+                          step={1}
+                          value={String(formValues.selfLearningMaxEvents)}
+                          onChange={(event) => {
+                            setField('selfLearningMaxEvents', event.target.value);
+                            setMaxEventsError('');
+                          }}
+                        />
+                        {maxEventsError ? <p className="text-xs text-destructive">{maxEventsError}</p> : null}
+                      </div>
+                      <FieldInput label={t('ai.selfLearningMaxRules')} type="number" value={String(formValues.selfLearningMaxRulesPerRun)} onChange={(v) => setField('selfLearningMaxRulesPerRun', v)} min={1} max={20} />
+                      <div className="space-y-1.5">
+                        <Label>{t('ai.selfLearningAction')}</Label>
+                        <Select value={formValues.selfLearningAction} onValueChange={(value) => setField('selfLearningAction', value)}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="block">{displayAction('block', t)}</SelectItem>
+                            <SelectItem value="challenge">{displayAction('challenge', t)}</SelectItem>
+                            <SelectItem value="log">{displayAction('log', t)}</SelectItem>
+                          </SelectContent>
                         </Select>
-                      </Form.Item>
+                      </div>
                     </div>
-                    <Space wrap>
-                      <Button onClick={() => selfLearningMutation.mutate(true)} loading={selfLearningMutation.isPending}>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" onClick={() => selfLearningMutation.mutate(true)} loading={selfLearningMutation.isPending}>
                         {t('ai.selfLearningDryRunNow')}
                       </Button>
-                      <Button status="warning" onClick={() => selfLearningMutation.mutate(false)} loading={selfLearningMutation.isPending}>
+                      <Button type="button" variant="secondary" onClick={() => selfLearningMutation.mutate(false)} loading={selfLearningMutation.isPending}>
                         {t('ai.selfLearningRunNow')}
                       </Button>
-                    </Space>
+                    </div>
                     {selfLearningReport && (
                       <div className="ai-self-learning-report">
-                        <Tag>{t('ai.selfLearningCandidates', { count: selfLearningReport.candidates.length })}</Tag>
-                        <Tag color="green">{t('ai.selfLearningApplied', { count: selfLearningReport.applied.length })}</Tag>
-                        <Tag color="orange">{t('ai.selfLearningSkipped', { count: selfLearningReport.skipped.length })}</Tag>
+                        <Badge variant="secondary">{t('ai.selfLearningCandidates', { count: selfLearningReport.candidates.length })}</Badge>
+                        <Badge variant="success">{t('ai.selfLearningApplied', { count: selfLearningReport.applied.length })}</Badge>
+                        <Badge variant="warning">{t('ai.selfLearningSkipped', { count: selfLearningReport.skipped.length })}</Badge>
                       </div>
                     )}
                   </div>
@@ -431,41 +528,41 @@ export default function AIPage() {
                       <span>{t('ai.knowledgeHint')}</span>
                     </header>
                     <div className="ai-config-section ai-knowledge-grid">
-                      <Form.Item label={t('common.enabled')} field="knowledgeEnabled" triggerPropName="checked"><Switch /></Form.Item>
-                      <Form.Item label={t('ai.knowledgeBuiltin')} field="knowledgeBuiltin" triggerPropName="checked"><Switch /></Form.Item>
-                      <Form.Item label={t('ai.knowledgeMaxSnippets')} field="knowledgeMaxSnippets"><Input type="number" min={1} max={20} /></Form.Item>
+                      <FieldSwitch label={t('common.enabled')} checked={formValues.knowledgeEnabled} onChange={(v) => setField('knowledgeEnabled', v)} />
+                      <FieldSwitch label={t('ai.knowledgeBuiltin')} checked={formValues.knowledgeBuiltin} onChange={(v) => setField('knowledgeBuiltin', v)} />
+                      <FieldInput label={t('ai.knowledgeMaxSnippets')} type="number" value={String(formValues.knowledgeMaxSnippets)} onChange={(v) => setField('knowledgeMaxSnippets', v)} min={1} max={20} />
                     </div>
                   </div>
                 </div>
               </div>
               <div className="ai-config-actions-row">
-              {configQuery.isError && (
-                <Button onClick={() => configQuery.refetch()} loading={configQuery.isFetching}>{t('common.retry')}</Button>
-              )}
-              <Button className="ai-config-save" type="primary" htmlType="submit" loading={updateMutation.isPending} disabled={!configQuery.isSuccess}>{t('common.save')}</Button>
+                {configQuery.isError && (
+                  <Button type="button" variant="outline" onClick={() => configQuery.refetch()} loading={configQuery.isFetching}>{t('common.retry')}</Button>
+                )}
+                <Button className="ai-config-save" type="submit" loading={updateMutation.isPending} disabled={!configQuery.isSuccess}>{t('common.save')}</Button>
               </div>
             </div>
-          </Form>
+          </form>
         </section>
 
         <section className="panel ai-events-panel">
           <div className="panel-heading">
             <h2><ListChecks size={16} /> {t('ai.events')}</h2>
-            <Space wrap>
-              <Select
-                className="ai-analysis-range-select"
-                aria-label={t('ai.timeRange')}
-                value={analysisRange}
-                onChange={setAnalysisRange}
-              >
-                {analysisRanges.map((range) => (
-                  <Select.Option key={range.value} value={range.value}>{t(range.labelKey)}</Select.Option>
-                ))}
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={analysisRange} onValueChange={setAnalysisRange}>
+                <SelectTrigger className="ai-analysis-range-select w-[140px]" aria-label={t('ai.timeRange')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {analysisRanges.map((range) => (
+                    <SelectItem key={range.value} value={range.value}>{t(range.labelKey)}</SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
-              <Button type="primary" onClick={() => batchAnalysisMutation.mutate()} loading={batchAnalysisMutation.isPending} disabled={events.length === 0}>
+              <Button onClick={() => batchAnalysisMutation.mutate()} loading={batchAnalysisMutation.isPending} disabled={events.length === 0}>
                 {t('ai.analyzeRecent')}
               </Button>
-            </Space>
+            </div>
           </div>
           <div className="ai-events-list-panel">
             <div className="ai-events-list-header" aria-hidden="true">
@@ -503,8 +600,8 @@ export default function AIPage() {
                           <span title={record.client_ip || '-'}>{record.client_ip || '-'}</span>
                         </div>
                         <div className="ai-event-row-tags">
-                          <Tag color={actionColor(record.action)}>{displayAction(record.action, t)}</Tag>
-                          {record.category ? <Tag color="orange">{displayCategory(record.category, t)}</Tag> : <Tag>{t('common.monitor')}</Tag>}
+                          <Badge variant={actionBadgeVariant(record.action)}>{displayAction(record.action, t)}</Badge>
+                          {record.category ? <Badge variant="warning">{displayCategory(record.category, t)}</Badge> : <Badge variant="secondary">{t('common.monitor')}</Badge>}
                         </div>
                       </header>
                       <code className="ai-event-row-uri" title={record.uri || '-'}>{record.uri || '-'}</code>
@@ -514,10 +611,14 @@ export default function AIPage() {
                         to={`/logs/${encodeURIComponent(record.trace_id || record.id)}`}
                         className="table-action-link"
                       >
-                        <Button size="small" icon={<Eye size={14} />}>{t('logs.detail')}</Button>
+                        <Button size="sm" variant="outline">
+                          <Eye size={14} />
+                          {t('logs.detail')}
+                        </Button>
                       </Link>
                       <Button
-                        size="small"
+                        size="sm"
+                        variant="outline"
                         loading={eventAnalysisMutation.isPending && analyzingEventKey === key}
                         onClick={() => {
                           setSelectedId(key);
@@ -536,18 +637,24 @@ export default function AIPage() {
                 <span>{eventPageStart}-{eventPageEnd} / {events.length}</span>
                 <div>
                   <Button
+                    size="icon"
+                    variant="outline"
                     aria-label={t('common.back')}
-                    icon={<ChevronLeft size={15} />}
                     disabled={eventPage <= 1}
                     onClick={() => setEventPage((current) => Math.max(1, current - 1))}
-                  />
+                  >
+                    <ChevronLeft size={15} />
+                  </Button>
                   <strong>{eventPage}</strong>
                   <Button
+                    size="icon"
+                    variant="outline"
                     aria-label={t('common.next')}
-                    icon={<ChevronRight size={15} />}
                     disabled={eventPage >= eventPageCount}
                     onClick={() => setEventPage((current) => Math.min(eventPageCount, current + 1))}
-                  />
+                  >
+                    <ChevronRight size={15} />
+                  </Button>
                 </div>
               </footer>
             )}
@@ -557,7 +664,7 @@ export default function AIPage() {
         <section className="panel ai-event-detail">
           <div className="panel-heading">
             <h2><BrainCircuit size={16} /> {t('ai.eventAnalysis')}</h2>
-            {selectedAnalysis && <Tag color={riskColor(selectedAnalysis.risk)}>{displayRisk(selectedAnalysis.risk, t)}</Tag>}
+            {selectedAnalysis && <Badge variant={riskBadgeVariant(selectedAnalysis.risk)}>{displayRisk(selectedAnalysis.risk, t)}</Badge>}
           </div>
           {selected ? (
             <div className="ai-detail-workbench">
@@ -568,13 +675,12 @@ export default function AIPage() {
                   <code>{selected.method} {selected.uri}</code>
                 </div>
                 <div className="ai-event-summary-meta">
-                  <Tag>{selected.client_ip || '-'}</Tag>
-                  <Tag color={actionColor(selected.action)}>{displayAction(selected.action, t)}</Tag>
-                  <Tag color="orange">{displayCategory(selected.category, t)}</Tag>
+                  <Badge variant="secondary">{selected.client_ip || '-'}</Badge>
+                  <Badge variant={actionBadgeVariant(selected.action)}>{displayAction(selected.action, t)}</Badge>
+                  <Badge variant="warning">{displayCategory(selected.category, t)}</Badge>
                 </div>
                 <Button
                   className="ai-event-summary-action"
-                  type="primary"
                   loading={eventAnalysisMutation.isPending && analyzingEventKey === eventKey(selected)}
                   onClick={() => startEventAnalysis(selected)}
                 >
@@ -637,6 +743,50 @@ export default function AIPage() {
   );
 }
 
+function FieldSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <Label>{label}</Label>
+      <Switch checked={checked} onCheckedChange={onChange} />
+    </div>
+  );
+}
+
+function FieldInput({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  placeholder,
+  min,
+  max,
+  step,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  placeholder?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <Input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </div>
+  );
+}
+
 function AnalysisLiveTrace({
   pending,
   trace,
@@ -659,7 +809,7 @@ function AnalysisLiveTrace({
     <div className="analysis-live-trace">
       <div>
         <strong>{pending ? t('ai.thinking') : t('ai.analysisTrace')}</strong>
-        {pending && <Spin size={14} />}
+        {pending && <Spinner className="size-3.5" />}
       </div>
       {reasoning && (
         <section>
@@ -912,6 +1062,8 @@ function AIModelFormBlock({
   description,
   prefix,
   t,
+  values,
+  setField,
   models,
   loadingModels,
   keyStored,
@@ -923,6 +1075,8 @@ function AIModelFormBlock({
   description: string;
   prefix: 'assistant' | 'reasoning';
   t: (key: string, options?: Record<string, unknown>) => string;
+  values: AIFormValues;
+  setField: <K extends keyof AIFormValues>(key: K, value: AIFormValues[K]) => void;
   models: AIModelInfo[];
   loadingModels: boolean;
   keyStored: boolean;
@@ -930,6 +1084,15 @@ function AIModelFormBlock({
   onTest: () => void;
   testing: boolean;
 }) {
+  const providerKey = `${prefix}Provider` as const;
+  const apiBaseKey = `${prefix}APIBase` as const;
+  const modelKey = `${prefix}Model` as const;
+  const apiKeyKey = `${prefix}APIKey` as const;
+  const privateKey = `${prefix}AllowPrivateAPIBase` as const;
+  const modelValue = String(values[modelKey] || '');
+  const modelIds = models.map((model) => model.id);
+  const knownModel = modelIds.includes(modelValue);
+
   return (
     <div className="ai-config-subpanel ai-model-config-subpanel">
       <header>
@@ -937,37 +1100,86 @@ function AIModelFormBlock({
         <span>{description}</span>
       </header>
       <div className="ai-config-section ai-model-config-grid">
-        <Form.Item label={t('ai.provider')} field={`${prefix}Provider`}>
-          <Select>
-            <Select.Option value="openai">{t('ai.providerOpenAI')}</Select.Option>
-            <Select.Option value="anthropic">{t('ai.providerAnthropic')}</Select.Option>
+        <div className="space-y-1.5">
+          <Label>{t('ai.provider')}</Label>
+          <Select value={String(values[providerKey] || 'openai')} onValueChange={(value) => setField(providerKey, value)}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="openai">{t('ai.providerOpenAI')}</SelectItem>
+              <SelectItem value="anthropic">{t('ai.providerAnthropic')}</SelectItem>
+            </SelectContent>
           </Select>
-        </Form.Item>
-        <Form.Item label={t('ai.apiBase')} field={`${prefix}APIBase`}><Input /></Form.Item>
-        <Form.Item label={t('ai.model')} field={`${prefix}Model`}>
-          <Select allowCreate showSearch placeholder={t('ai.modelPlaceholder')} notFoundContent={loadingModels ? t('ai.modelsLoading') : t('ai.modelsEmpty')}>
-            {models.map((model) => (
-              <Select.Option key={model.id} value={model.id}>
-                {model.owned_by ? `${model.id} · ${model.owned_by}` : model.id}
-              </Select.Option>
-            ))}
-          </Select>
-        </Form.Item>
-        <Form.Item label={t('ai.apiKey')} field={`${prefix}APIKey`}>
-          <Input.Password placeholder={keyStored ? t('ai.keyStored') : ''} />
-        </Form.Item>
-        <Form.Item className="ai-model-private-field" label={t('ai.allowPrivateAPIBase')} field={`${prefix}AllowPrivateAPIBase`} triggerPropName="checked" extra={t('ai.allowPrivateAPIBaseHint')}>
-          <Switch />
-        </Form.Item>
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('ai.apiBase')}</Label>
+          <Input value={String(values[apiBaseKey] || '')} onChange={(event) => setField(apiBaseKey, event.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('ai.model')}</Label>
+          {models.length > 0 ? (
+            <Select
+              value={knownModel ? modelValue : modelIds[0]}
+              onValueChange={(value) => setField(modelKey, value)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={t('ai.modelPlaceholder')} />
+              </SelectTrigger>
+              <SelectContent>
+                {models.map((model) => (
+                  <SelectItem key={model.id} value={model.id}>
+                    {model.owned_by ? `${model.id} · ${model.owned_by}` : model.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <>
+              <Input
+                value={modelValue}
+                placeholder={loadingModels ? t('ai.modelsLoading') : t('ai.modelPlaceholder')}
+                onChange={(event) => setField(modelKey, event.target.value)}
+              />
+              {!loadingModels ? <p className="text-xs text-muted-foreground">{t('ai.modelsEmpty')}</p> : null}
+            </>
+          )}
+          {models.length > 0 && !knownModel && (
+            <Input
+              className="mt-1"
+              value={modelValue}
+              placeholder={t('ai.modelPlaceholder')}
+              onChange={(event) => setField(modelKey, event.target.value)}
+            />
+          )}
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('ai.apiKey')}</Label>
+          <Input
+            type="password"
+            value={String(values[apiKeyKey] || '')}
+            placeholder={keyStored ? t('ai.keyStored') : ''}
+            onChange={(event) => setField(apiKeyKey, event.target.value)}
+          />
+        </div>
+        <div className="ai-model-private-field flex items-center justify-between gap-2">
+          <div>
+            <Label>{t('ai.allowPrivateAPIBase')}</Label>
+            <p className="text-xs text-muted-foreground">{t('ai.allowPrivateAPIBaseHint')}</p>
+          </div>
+          <Switch checked={Boolean(values[privateKey])} onCheckedChange={(checked) => setField(privateKey, checked)} />
+        </div>
       </div>
-      <Space className="ai-model-config-actions" wrap>
-        <Button htmlType="button" icon={<KeyRound size={14} />} onClick={onFetchModels} loading={loadingModels}>
+      <div className="ai-model-config-actions flex flex-wrap gap-2">
+        <Button type="button" variant="outline" onClick={onFetchModels} loading={loadingModels}>
+          <KeyRound size={14} />
           {t('ai.fetchModels')}
         </Button>
-        <Button htmlType="button" icon={<ShieldCheck size={14} />} onClick={onTest} loading={testing}>
+        <Button type="button" variant="outline" onClick={onTest} loading={testing}>
+          <ShieldCheck size={14} />
           {t('ai.test')}
         </Button>
-      </Space>
+      </div>
     </div>
   );
 }
@@ -1009,29 +1221,28 @@ function isSecurityEvent(entry: LogEntry) {
   return ['threat_intel', 'ip_access', 'geoip', 'acl', 'bot', 'cc', 'ratelimit', 'api_security', 'protocol_enforcement', 'custom_rule'].includes(category);
 }
 
-function actionColor(action: string) {
+function actionBadgeVariant(action: string): 'destructive' | 'warning' | 'default' | 'secondary' {
   switch (action) {
     case 'block':
-      return 'red';
+      return 'destructive';
     case 'challenge':
-      return 'orange';
+      return 'warning';
     case 'log':
-      return 'blue';
+      return 'default';
     default:
-      return 'gray';
+      return 'secondary';
   }
 }
 
-function riskColor(risk: string) {
+function riskBadgeVariant(risk: string): 'destructive' | 'warning' | 'success' {
   switch (risk) {
     case 'critical':
-      return 'red';
     case 'high':
-      return 'orangered';
+      return 'destructive';
     case 'medium':
-      return 'orange';
+      return 'warning';
     default:
-      return 'green';
+      return 'success';
   }
 }
 

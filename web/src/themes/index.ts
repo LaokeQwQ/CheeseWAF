@@ -43,11 +43,8 @@ export function applyTheme(theme: ThemeName) {
   root.dataset.theme = themeAttribute[theme];
   root.style.colorScheme = themeMeta[theme].colorScheme;
 
-  if (theme === 'dark' || theme === 'blackGold') {
-    document.body.setAttribute('arco-theme', 'dark');
-  } else {
-    document.body.removeAttribute('arco-theme');
-  }
+  const dark = theme === 'dark' || theme === 'blackGold';
+  root.classList.toggle('dark', dark);
 
   let meta = document.querySelector('meta[name="theme-color"]') as HTMLMetaElement | null;
   if (!meta) {

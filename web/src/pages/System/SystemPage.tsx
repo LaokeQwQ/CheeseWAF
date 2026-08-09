@@ -1,16 +1,32 @@
 import {
+  Badge,
   Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Input,
-  InputNumber,
-  Message as ArcoMessage,
-  Popconfirm,
   Select,
-  Space,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Switch,
   Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
   Tabs,
-  Tag,
-} from '@arco-design/web-react';
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  Textarea,
+  toast,
+} from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Database, Image, KeyRound, MapPinned, Plus, ServerCog, ShieldAlert, Trash2 } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
@@ -44,6 +60,8 @@ export default function SystemPage() {
   const setLanguage = useAppStore((state) => state.setLanguage);
   const [apiTokenDraft, setAPITokenDraft] = useState({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
   const [latestAPIToken, setLatestAPIToken] = useState('');
+  const [revokeTokenId, setRevokeTokenId] = useState<string | null>(null);
+  const [apiTokenPage, setAPITokenPage] = useState(0);
   const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
   const { data } = systemQuery;
   const apiTokensQuery = useQuery({ queryKey: ['management-api-tokens'], queryFn: fetchManagementAPITokens, retry: false });
@@ -58,14 +76,14 @@ export default function SystemPage() {
       queryClient.invalidateQueries({ queryKey: ['system'] });
       queryClient.invalidateQueries({ queryKey: timeSyncQueryKey });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
-      ArcoMessage.success(t('system.saved'));
+      toast.success(t('system.saved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const storageTestMutation = useMutation({
     mutationFn: (backend: string) => testStorageBackend(backend, system.storage),
-    onSuccess: (result) => ArcoMessage.success(`${result.backend} ${t('system.testOk')}`),
-    onError: (error) => ArcoMessage.error(error.message),
+    onSuccess: (result) => toast.success(`${result.backend} ${t('system.testOk')}`),
+    onError: (error) => toast.error(error.message),
   });
 
   const baseSystem = (current: SystemConfig | undefined) => current ?? fallbackSystem;
@@ -199,31 +217,32 @@ export default function SystemPage() {
       setAPITokenDraft({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
       queryClient.invalidateQueries({ queryKey: ['system'] });
-      ArcoMessage.success(t('system.apiTokenCreated'));
+      toast.success(t('system.apiTokenCreated'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const revokeAPITokenMutation = useMutation({
     mutationFn: revokeManagementAPIToken,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
       queryClient.invalidateQueries({ queryKey: ['system'] });
-      ArcoMessage.success(t('system.apiTokenRevoked'));
+      toast.success(t('system.apiTokenRevoked'));
+      setRevokeTokenId(null);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const submitAPIToken = () => {
     if (latestAPIToken) {
-      ArcoMessage.warning(t('system.apiTokenClearBeforeCreate'));
+      toast.warning(t('system.apiTokenClearBeforeCreate'));
       return;
     }
     const name = apiTokenDraft.name.trim();
     if (!name) {
-      ArcoMessage.warning(t('system.apiTokenNameRequired'));
+      toast.warning(t('system.apiTokenNameRequired'));
       return;
     }
     if (apiTokenDraft.scopes.length === 0) {
-      ArcoMessage.warning(t('system.apiTokenScopesRequired'));
+      toast.warning(t('system.apiTokenScopesRequired'));
       return;
     }
     createAPITokenMutation.mutate({
@@ -234,6 +253,10 @@ export default function SystemPage() {
       enabled: true,
     });
   };
+
+  const tokenPageSize = 6;
+  const tokenPageCount = Math.max(1, Math.ceil(apiTokens.length / tokenPageSize));
+  const pagedTokens = apiTokens.slice(apiTokenPage * tokenPageSize, (apiTokenPage + 1) * tokenPageSize);
 
   return (
     <section className="page-surface">
@@ -253,12 +276,19 @@ export default function SystemPage() {
       )}
 
       <section className="panel system-settings-panel">
-        <Tabs className="system-tabs" defaultActiveTab="runtime">
-          <Tabs.TabPane key="runtime" title={<span className="tab-title"><ServerCog size={15} />{t('system.runtime')}</span>}>
+        <Tabs className="system-tabs" defaultValue="runtime">
+          <TabsList className="system-tabs-list w-full justify-start flex-wrap h-auto">
+            <TabsTrigger value="runtime" className="tab-title"><ServerCog size={15} />{t('system.runtime')}</TabsTrigger>
+            <TabsTrigger value="console" className="tab-title"><Image size={15} />{t('system.consoleLogin')}</TabsTrigger>
+            <TabsTrigger value="storage" className="tab-title"><Database size={15} />{t('system.storage')}</TabsTrigger>
+            <TabsTrigger value="apisec" className="tab-title"><ShieldAlert size={15} />{t('system.apiSecurity')}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="runtime">
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.interface')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ server: system.server, ...(system.time_sync ? { time_sync: system.time_sync } : {}), tls: system.tls, logging: system.logging })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
+                <Button onClick={() => saveMutation.mutate({ server: system.server, ...(system.time_sync ? { time_sync: system.time_sync } : {}), tls: system.tls, logging: system.logging })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups">
                 <section className="system-fieldset">
@@ -269,35 +299,41 @@ export default function SystemPage() {
                   <div className="site-detail-grid system-runtime-grid">
                     <label>
                       <span>{t('system.theme')}</span>
-                      <Select value={theme} onChange={(value) => setTheme(value as ThemeName)}>
-                        {themeOptions.map((option) => <Select.Option key={option.value} value={option.value}>{t(option.labelKey)}</Select.Option>)}
+                      <Select value={theme} onValueChange={(value) => setTheme(value as ThemeName)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {themeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                        </SelectContent>
                       </Select>
                     </label>
                     <label>
                       <span>{t('system.language')}</span>
                       <Select
                         value={language}
-                        onChange={(value) => {
+                        onValueChange={(value) => {
                           const next = value as Language;
                           setLanguage(next);
-                          i18n.changeLanguage(next);
+                          void i18n.changeLanguage(next);
                         }}
                       >
-                        <Select.Option value="zh-CN">中文</Select.Option>
-                        <Select.Option value="en-US">English</Select.Option>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="zh-CN">中文</SelectItem>
+                          <SelectItem value="en-US">English</SelectItem>
+                        </SelectContent>
                       </Select>
                     </label>
                     <label className="switch-line">
                       <span>{t('system.showAiAssistantFab')}</span>
-                      <Switch checked={aiAssistantFabVisible} onChange={setAiAssistantFabVisible} />
+                      <Switch checked={aiAssistantFabVisible} onCheckedChange={setAiAssistantFabVisible} />
                     </label>
-                    <label><span>HTTP</span><Input value={system.server.listen} onChange={(listen) => patchSystem({ server: { ...system.server, listen } })} /></label>
-                    <label><span>HTTPS</span><Input value={system.server.listen_tls} onChange={(listen_tls) => patchSystem({ server: { ...system.server, listen_tls } })} /></label>
-                    <label><span>HTTP/3 UDP</span><Input value={system.server.listen_http3} onChange={(listen_http3) => patchSystem({ server: { ...system.server, listen_http3 } })} /></label>
-                    <label><span>{t('system.adminListen')}</span><Input value={system.server.admin_listen} onChange={(admin_listen) => patchSystem({ server: { ...system.server, admin_listen } })} /></label>
-                    <label className="switch-line"><span>{t('system.adminPublic')}</span><Switch checked={system.server.admin_public} onChange={(admin_public) => patchSystem({ server: { ...system.server, admin_public } })} /></label>
-                    <label className="switch-line"><span>HTTP/3</span><Switch checked={system.server.http3.enabled} onChange={(enabled) => patchSystem({ server: { ...system.server, http3: { ...system.server.http3, enabled } } })} /></label>
-                    <label className="switch-line"><span>0-RTT</span><Switch checked={system.server.http3.zero_rtt} onChange={(zero_rtt) => patchSystem({ server: { ...system.server, http3: { ...system.server.http3, zero_rtt } } })} /></label>
+                    <label><span>HTTP</span><Input value={system.server.listen} onChange={(e) => patchSystem({ server: { ...system.server, listen: e.target.value } })} /></label>
+                    <label><span>HTTPS</span><Input value={system.server.listen_tls} onChange={(e) => patchSystem({ server: { ...system.server, listen_tls: e.target.value } })} /></label>
+                    <label><span>HTTP/3 UDP</span><Input value={system.server.listen_http3} onChange={(e) => patchSystem({ server: { ...system.server, listen_http3: e.target.value } })} /></label>
+                    <label><span>{t('system.adminListen')}</span><Input value={system.server.admin_listen} onChange={(e) => patchSystem({ server: { ...system.server, admin_listen: e.target.value } })} /></label>
+                    <label className="switch-line"><span>{t('system.adminPublic')}</span><Switch checked={system.server.admin_public} onCheckedChange={(admin_public) => patchSystem({ server: { ...system.server, admin_public } })} /></label>
+                    <label className="switch-line"><span>HTTP/3</span><Switch checked={system.server.http3.enabled} onCheckedChange={(enabled) => patchSystem({ server: { ...system.server, http3: { ...system.server.http3, enabled } } })} /></label>
+                    <label className="switch-line"><span>0-RTT</span><Switch checked={system.server.http3.zero_rtt} onCheckedChange={(zero_rtt) => patchSystem({ server: { ...system.server, http3: { ...system.server.http3, zero_rtt } } })} /></label>
                   </div>
                 </section>
                 <section className="system-fieldset">
@@ -306,14 +342,13 @@ export default function SystemPage() {
                     <span>{t('system.tlsHint')}</span>
                   </header>
                   <div className="site-detail-grid system-tls-grid">
-                    <label className="switch-line"><span>{t('system.adminTls')}</span><Switch checked={system.server.admin_tls.enabled} onChange={(enabled) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, enabled } } })} /></label>
-                    <label className="switch-line"><span>{t('system.autoCert')}</span><Switch checked={system.tls.auto_cert} onChange={(auto_cert) => patchSystem({ tls: { ...system.tls, auto_cert } })} /></label>
-                    <label className="switch-line"><span>HSTS</span><Switch checked={system.tls.hsts} onChange={(hsts) => patchSystem({ tls: { ...system.tls, hsts } })} /></label>
-                    {/* Path fields span full card width so long cert paths are not clipped in half-columns. */}
-                    <label className="wide-field system-path-field"><span>{t('system.adminTlsCert')}</span><Input value={system.server.admin_tls.cert_file} onChange={(cert_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, cert_file } } })} /></label>
-                    <label className="wide-field system-path-field"><span>{t('system.adminTlsKey')}</span><Input value={system.server.admin_tls.key_file} onChange={(key_file) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, key_file } } })} /></label>
-                    <label className="wide-field system-path-field"><span>{t('sites.certFile')}</span><Input value={system.tls.cert_file} onChange={(cert_file) => patchSystem({ tls: { ...system.tls, cert_file } })} /></label>
-                    <label className="wide-field system-path-field"><span>{t('sites.keyFile')}</span><Input value={system.tls.key_file} onChange={(key_file) => patchSystem({ tls: { ...system.tls, key_file } })} /></label>
+                    <label className="switch-line"><span>{t('system.adminTls')}</span><Switch checked={system.server.admin_tls.enabled} onCheckedChange={(enabled) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, enabled } } })} /></label>
+                    <label className="switch-line"><span>{t('system.autoCert')}</span><Switch checked={system.tls.auto_cert} onCheckedChange={(auto_cert) => patchSystem({ tls: { ...system.tls, auto_cert } })} /></label>
+                    <label className="switch-line"><span>HSTS</span><Switch checked={system.tls.hsts} onCheckedChange={(hsts) => patchSystem({ tls: { ...system.tls, hsts } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('system.adminTlsCert')}</span><Input value={system.server.admin_tls.cert_file} onChange={(e) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, cert_file: e.target.value } } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('system.adminTlsKey')}</span><Input value={system.server.admin_tls.key_file} onChange={(e) => patchSystem({ server: { ...system.server, admin_tls: { ...system.server.admin_tls, key_file: e.target.value } } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('sites.certFile')}</span><Input value={system.tls.cert_file} onChange={(e) => patchSystem({ tls: { ...system.tls, cert_file: e.target.value } })} /></label>
+                    <label className="wide-field system-path-field"><span>{t('sites.keyFile')}</span><Input value={system.tls.key_file} onChange={(e) => patchSystem({ tls: { ...system.tls, key_file: e.target.value } })} /></label>
                   </div>
                 </section>
                 <section className="system-fieldset">
@@ -322,20 +357,20 @@ export default function SystemPage() {
                     <span>{t('system.loggingHint')}</span>
                   </header>
                   <div className="site-detail-grid">
-                    <label><span>{t('system.logPath')}</span><Input value={system.logging.output.file.path} onChange={(path) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, path } } } })} /></label>
-                    <label><span>{t('system.logMaxBackups')}</span><InputNumber value={system.logging.output.file.max_backups} min={1} max={365} onChange={(max_backups) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, max_backups: Number(max_backups || 1) } } } })} /></label>
+                    <label><span>{t('system.logPath')}</span><Input value={system.logging.output.file.path} onChange={(e) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, path: e.target.value } } } })} /></label>
+                    <label><span>{t('system.logMaxBackups')}</span><Input type="number" value={system.logging.output.file.max_backups} min={1} max={365} onChange={(e) => patchSystem({ logging: { ...system.logging, output: { ...system.logging.output, file: { ...system.logging.output.file, max_backups: Number(e.target.value || 1) } } } })} /></label>
                   </div>
                 </section>
                 {system.time_sync && <TimeSyncPanel value={system.time_sync} onChange={patchTimeSync} />}
               </div>
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="console" title={<span className="tab-title"><Image size={15} />{t('system.consoleLogin')}</span>}>
+          <TabsContent value="console">
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.consoleLogin')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
+                <Button onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups console-settings-grid">
                 <section className="system-fieldset">
@@ -348,74 +383,82 @@ export default function SystemPage() {
                       <span>{t('system.loginCaptchaEnabled')}</span>
                       <Switch
                         checked={system.console.login.captcha.enabled}
-                        onChange={(enabled) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, enabled } })}
+                        onCheckedChange={(enabled) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, enabled } })}
                       />
                     </label>
                     <label>
                       <span>{t('system.loginCaptchaMode')}</span>
                       <Select
                         value={system.console.login.captcha.mode || 'slider'}
-                        onChange={(mode) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, mode: mode as string } })}
+                        onValueChange={(mode) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, mode } })}
                       >
-                        <Select.Option value="slider">{t('system.loginCaptchaSlider')}</Select.Option>
-                        <Select.Option value="pow">{t('system.loginCaptchaPow')}</Select.Option>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="slider">{t('system.loginCaptchaSlider')}</SelectItem>
+                          <SelectItem value="pow">{t('system.loginCaptchaPow')}</SelectItem>
+                        </SelectContent>
                       </Select>
                     </label>
                     <label>
                       <span>{t('system.loginCaptchaMaxNumber')}</span>
-                      <InputNumber
+                      <Input
+                        type="number"
                         min={1000}
                         max={50000000}
                         step={1000}
                         value={system.console.login.captcha.max_number}
-                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, max_number: Number(value || 75000) } })}
+                        onChange={(e) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, max_number: Number(e.target.value || 75000) } })}
                       />
                     </label>
                     <label>
                       <span>{t('system.loginCaptchaTTL')}</span>
-                      <InputNumber
+                      <Input
+                        type="number"
                         min={30}
                         max={600}
                         step={30}
                         value={durationSeconds(system.console.login.captcha.ttl)}
-                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, ttl: secondsToDuration(value) } })}
+                        onChange={(e) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, ttl: secondsToDuration(Number(e.target.value)) } })}
                       />
                     </label>
                     <label>
                       <span>{t('system.loginSliderTolerance')}</span>
-                      <InputNumber
+                      <Input
+                        type="number"
                         min={2}
                         max={20}
                         value={system.console.login.captcha.slider.tolerance}
-                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, tolerance: Number(value || 6) } } })}
+                        onChange={(e) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, tolerance: Number(e.target.value || 6) } } })}
                       />
                     </label>
                     <label>
                       <span>{t('system.loginSliderMinDrag')}</span>
-                      <InputNumber
+                      <Input
+                        type="number"
                         min={100}
                         max={10000}
                         step={50}
                         value={durationMilliseconds(system.console.login.captcha.slider.min_drag)}
-                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, min_drag: millisecondsToDuration(value || 450) } } })}
+                        onChange={(e) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, min_drag: millisecondsToDuration(Number(e.target.value || 450)) } } })}
                       />
                     </label>
                     <label className="switch-line">
                       <span>{t('system.loginSliderPowEnabled')}</span>
                       <Switch
                         checked={system.console.login.captcha.slider.pow_enabled}
-                        onChange={(pow_enabled) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_enabled } } })}
+                        onCheckedChange={(pow_enabled) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_enabled } } })}
                       />
                     </label>
                     <label>
                       <span>{t('system.loginSliderPowMax')}</span>
-                      <InputNumber
+                      <Input
+                        type="number"
                         min={1000}
                         max={50000000}
                         step={1000}
                         disabled={!system.console.login.captcha.slider.pow_enabled}
                         value={system.console.login.captcha.slider.pow_max_number}
-                        onChange={(value) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_max_number: Number(value || 12000) } } })}
+                        onChange={(e) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_max_number: Number(e.target.value || 12000) } } })}
                       />
                     </label>
                   </div>
@@ -431,7 +474,7 @@ export default function SystemPage() {
                       <span>{t('system.securityEntryEnabled')}</span>
                       <Switch
                         checked={system.console.login.security_entry.enabled}
-                        onChange={(enabled) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, enabled } })}
+                        onCheckedChange={(enabled) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, enabled } })}
                       />
                     </label>
                     <label>
@@ -439,7 +482,7 @@ export default function SystemPage() {
                       <Input
                         value={system.console.login.security_entry.path}
                         placeholder="/__cheesewaf-entry"
-                        onChange={(path) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, path } })}
+                        onChange={(e) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, path: e.target.value } })}
                       />
                     </label>
                     <label>
@@ -447,7 +490,7 @@ export default function SystemPage() {
                       <Input
                         value={system.console.login.security_entry.cookie_name}
                         placeholder="cheesewaf_admin_entry"
-                        onChange={(cookie_name) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, cookie_name } })}
+                        onChange={(e) => patchConsoleLogin({ security_entry: { ...system.console.login.security_entry, cookie_name: e.target.value } })}
                       />
                     </label>
                   </div>
@@ -463,18 +506,21 @@ export default function SystemPage() {
                       <span>{t('system.loginBackgroundEnabled')}</span>
                       <Switch
                         checked={system.console.login.background.enabled}
-                        onChange={(enabled) => patchConsoleLogin({ background: { ...system.console.login.background, enabled } })}
+                        onCheckedChange={(enabled) => patchConsoleLogin({ background: { ...system.console.login.background, enabled } })}
                       />
                     </label>
                     <label>
                       <span>{t('system.loginBackgroundType')}</span>
                       <Select
                         value={system.console.login.background.type || 'auto'}
-                        onChange={(type) => patchConsoleLogin({ background: { ...system.console.login.background, type: type as string } })}
+                        onValueChange={(type) => patchConsoleLogin({ background: { ...system.console.login.background, type } })}
                       >
-                        <Select.Option value="auto">{t('system.loginBackgroundAuto')}</Select.Option>
-                        <Select.Option value="image">{t('system.loginBackgroundImage')}</Select.Option>
-                        <Select.Option value="video">{t('system.loginBackgroundVideo')}</Select.Option>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">{t('system.loginBackgroundAuto')}</SelectItem>
+                          <SelectItem value="image">{t('system.loginBackgroundImage')}</SelectItem>
+                          <SelectItem value="video">{t('system.loginBackgroundVideo')}</SelectItem>
+                        </SelectContent>
                       </Select>
                     </label>
                     <label className="wide-field">
@@ -482,7 +528,7 @@ export default function SystemPage() {
                       <Input
                         value={system.console.login.background.url}
                         placeholder="https://example.com/admin-bg.webp"
-                        onChange={(url) => patchConsoleLogin({ background: { ...system.console.login.background, url } })}
+                        onChange={(e) => patchConsoleLogin({ background: { ...system.console.login.background, url: e.target.value } })}
                       />
                     </label>
                   </div>
@@ -499,14 +545,14 @@ export default function SystemPage() {
                       <Input
                         value={system.console.login.copyright ?? ''}
                         placeholder="Copyright © CheeseWAF. All rights reserved."
-                        onChange={(copyright) => patchConsoleLogin({ copyright })}
+                        onChange={(e) => patchConsoleLogin({ copyright: e.target.value })}
                       />
                     </label>
                     <label className="switch-line">
                       <span>{t('system.loginShowProductVersion')}</span>
                       <Switch
                         checked={system.console.login.show_product_version !== false}
-                        onChange={(show_product_version) => patchConsoleLogin({ show_product_version })}
+                        onCheckedChange={(show_product_version) => patchConsoleLogin({ show_product_version })}
                       />
                     </label>
                   </div>
@@ -522,17 +568,20 @@ export default function SystemPage() {
                       <span>{t('system.chinaBoundaryEnabled')}</span>
                       <Switch
                         checked={system.console.map.china_boundary.enabled}
-                        onChange={(enabled) => patchChinaBoundary({ enabled })}
+                        onCheckedChange={(enabled) => patchChinaBoundary({ enabled })}
                       />
                     </label>
                     <label>
                       <span>{t('system.mapBoundarySourceType')}</span>
                       <Select
                         value={system.console.map.china_boundary.source_type || 'file'}
-                        onChange={(source_type) => patchChinaBoundary({ source_type: source_type as string })}
+                        onValueChange={(source_type) => patchChinaBoundary({ source_type })}
                       >
-                        <Select.Option value="file">{t('system.mapBoundaryFile')}</Select.Option>
-                        <Select.Option value="url">{t('system.mapBoundaryURL')}</Select.Option>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="file">{t('system.mapBoundaryFile')}</SelectItem>
+                          <SelectItem value="url">{t('system.mapBoundaryURL')}</SelectItem>
+                        </SelectContent>
                       </Select>
                     </label>
                     <label className="wide-field">
@@ -540,7 +589,7 @@ export default function SystemPage() {
                       <Input
                         value={system.console.map.china_boundary.source}
                         placeholder={system.console.map.china_boundary.source_type === 'url' ? 'https://example.com/china-boundary.geojson' : './data/maps/china-boundary.geojson'}
-                        onChange={(source) => patchChinaBoundary({ source })}
+                        onChange={(e) => patchChinaBoundary({ source: e.target.value })}
                       />
                     </label>
                     <label>
@@ -548,7 +597,7 @@ export default function SystemPage() {
                       <Input
                         value={system.console.map.china_boundary.license}
                         placeholder={t('system.mapBoundaryLicensePlaceholder')}
-                        onChange={(license) => patchChinaBoundary({ license })}
+                        onChange={(e) => patchChinaBoundary({ license: e.target.value })}
                       />
                     </label>
                     <label>
@@ -556,7 +605,7 @@ export default function SystemPage() {
                       <Input
                         value={system.console.map.china_boundary.review_id}
                         placeholder={t('system.mapBoundaryReviewIDPlaceholder')}
-                        onChange={(review_id) => patchChinaBoundary({ review_id })}
+                        onChange={(e) => patchChinaBoundary({ review_id: e.target.value })}
                       />
                     </label>
                     <label className="wide-field">
@@ -564,81 +613,81 @@ export default function SystemPage() {
                       <Input
                         value={system.console.map.china_boundary.attribution}
                         placeholder={t('system.mapBoundaryAttributionPlaceholder')}
-                        onChange={(attribution) => patchChinaBoundary({ attribution })}
+                        onChange={(e) => patchChinaBoundary({ attribution: e.target.value })}
                       />
                     </label>
                     <label className="switch-line">
                       <span>{t('system.mapBoundaryAllowInsecure')}</span>
                       <Switch
                         checked={system.console.map.china_boundary.allow_insecure}
-                        onChange={(allow_insecure) => patchChinaBoundary({ allow_insecure })}
+                        onCheckedChange={(allow_insecure) => patchChinaBoundary({ allow_insecure })}
                       />
                     </label>
                     <label className="switch-line">
                       <span>{t('system.mapBoundaryAllowPrivate')}</span>
                       <Switch
                         checked={system.console.map.china_boundary.allow_private}
-                        onChange={(allow_private) => patchChinaBoundary({ allow_private })}
+                        onCheckedChange={(allow_private) => patchChinaBoundary({ allow_private })}
                       />
                     </label>
                   </div>
                 </section>
               </div>
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="storage" title={<span className="tab-title"><Database size={15} />{t('system.storage')}</span>}>
+          <TabsContent value="storage">
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.storage')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ storage: system.storage })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
+                <Button onClick={() => saveMutation.mutate({ storage: system.storage })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="storage-grid">
                 <StoragePanel title="SQLite" enabled action={() => storageTestMutation.mutate('sqlite')} loading={storageTestMutation.isPending}>
-                  <label><span>{t('system.path')}</span><Input value={system.storage.sqlite.path} onChange={(path) => patchStorage('sqlite', { path })} /></label>
+                  <label><span>{t('system.path')}</span><Input value={system.storage.sqlite.path} onChange={(e) => patchStorage('sqlite', { path: e.target.value })} /></label>
                 </StoragePanel>
 
                 <StoragePanel title="Redis" enabled={system.storage.redis.enabled} onToggle={(enabled) => patchStorage('redis', { enabled })} action={() => storageTestMutation.mutate('redis')} loading={storageTestMutation.isPending}>
-                  <label><span>{t('system.address')}</span><Input value={system.storage.redis.address} onChange={(address) => patchStorage('redis', { address })} /></label>
+                  <label><span>{t('system.address')}</span><Input value={system.storage.redis.address} onChange={(e) => patchStorage('redis', { address: e.target.value })} /></label>
                 </StoragePanel>
 
                 <StoragePanel title="PostgreSQL" enabled={system.storage.postgresql.enabled} onToggle={(enabled) => patchStorage('postgresql', { enabled })} action={() => storageTestMutation.mutate('postgresql')} loading={storageTestMutation.isPending}>
-                  <label><span>{t('system.dsn')}</span><Input.Password value={system.storage.postgresql.dsn} onChange={(dsn) => patchStorage('postgresql', { dsn })} /></label>
-                  <label><span>{t('system.table')}</span><Input value={system.storage.postgresql.table} onChange={(table) => patchStorage('postgresql', { table })} /></label>
-                  <label><span>{t('system.timeoutSeconds')}</span><InputNumber value={durationSeconds(system.storage.postgresql.timeout)} min={1} max={120} onChange={(value) => patchStorage('postgresql', { timeout: secondsToDuration(value) })} /></label>
+                  <label><span>{t('system.dsn')}</span><Input type="password" value={system.storage.postgresql.dsn} onChange={(e) => patchStorage('postgresql', { dsn: e.target.value })} /></label>
+                  <label><span>{t('system.table')}</span><Input value={system.storage.postgresql.table} onChange={(e) => patchStorage('postgresql', { table: e.target.value })} /></label>
+                  <label><span>{t('system.timeoutSeconds')}</span><Input type="number" value={durationSeconds(system.storage.postgresql.timeout)} min={1} max={120} onChange={(e) => patchStorage('postgresql', { timeout: secondsToDuration(Number(e.target.value)) })} /></label>
                 </StoragePanel>
 
                 <StoragePanel title="Elasticsearch" enabled={system.storage.elasticsearch.enabled} onToggle={(enabled) => patchStorage('elasticsearch', { enabled })} action={() => storageTestMutation.mutate('elasticsearch')} loading={storageTestMutation.isPending}>
-                  <label><span>{t('system.endpoint')}</span><Input value={system.storage.elasticsearch.endpoint} onChange={(endpoint) => patchStorage('elasticsearch', { endpoint })} /></label>
-                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.elasticsearch.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('elasticsearch', { allow_private_endpoint })} /></label>
-                  <label><span>{t('system.index')}</span><Input value={system.storage.elasticsearch.index} onChange={(index) => patchStorage('elasticsearch', { index })} /></label>
-                  <label><span>{t('setup.username')}</span><Input value={system.storage.elasticsearch.username} onChange={(username) => patchStorage('elasticsearch', { username })} /></label>
-                  <label><span>{t('system.apiKey')}</span><Input.Password value={system.storage.elasticsearch.api_key} onChange={(api_key) => patchStorage('elasticsearch', { api_key })} /></label>
-                  <label><span>{t('system.timeoutSeconds')}</span><InputNumber value={durationSeconds(system.storage.elasticsearch.timeout)} min={1} max={120} onChange={(value) => patchStorage('elasticsearch', { timeout: secondsToDuration(value) })} /></label>
+                  <label><span>{t('system.endpoint')}</span><Input value={system.storage.elasticsearch.endpoint} onChange={(e) => patchStorage('elasticsearch', { endpoint: e.target.value })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.elasticsearch.allow_private_endpoint} onCheckedChange={(allow_private_endpoint) => patchStorage('elasticsearch', { allow_private_endpoint })} /></label>
+                  <label><span>{t('system.index')}</span><Input value={system.storage.elasticsearch.index} onChange={(e) => patchStorage('elasticsearch', { index: e.target.value })} /></label>
+                  <label><span>{t('setup.username')}</span><Input value={system.storage.elasticsearch.username} onChange={(e) => patchStorage('elasticsearch', { username: e.target.value })} /></label>
+                  <label><span>{t('system.apiKey')}</span><Input type="password" value={system.storage.elasticsearch.api_key} onChange={(e) => patchStorage('elasticsearch', { api_key: e.target.value })} /></label>
+                  <label><span>{t('system.timeoutSeconds')}</span><Input type="number" value={durationSeconds(system.storage.elasticsearch.timeout)} min={1} max={120} onChange={(e) => patchStorage('elasticsearch', { timeout: secondsToDuration(Number(e.target.value)) })} /></label>
                 </StoragePanel>
 
                 <StoragePanel title="ClickHouse" enabled={system.storage.clickhouse.enabled} onToggle={(enabled) => patchStorage('clickhouse', { enabled })} action={() => storageTestMutation.mutate('clickhouse')} loading={storageTestMutation.isPending}>
-                  <label><span>{t('system.endpoint')}</span><Input value={system.storage.clickhouse.endpoint} onChange={(endpoint) => patchStorage('clickhouse', { endpoint })} /></label>
-                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.clickhouse.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('clickhouse', { allow_private_endpoint })} /></label>
-                  <label><span>{t('system.database')}</span><Input value={system.storage.clickhouse.database} onChange={(database) => patchStorage('clickhouse', { database })} /></label>
-                  <label><span>{t('system.table')}</span><Input value={system.storage.clickhouse.table} onChange={(table) => patchStorage('clickhouse', { table })} /></label>
-                  <label><span>{t('setup.username')}</span><Input value={system.storage.clickhouse.username} onChange={(username) => patchStorage('clickhouse', { username })} /></label>
+                  <label><span>{t('system.endpoint')}</span><Input value={system.storage.clickhouse.endpoint} onChange={(e) => patchStorage('clickhouse', { endpoint: e.target.value })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.clickhouse.allow_private_endpoint} onCheckedChange={(allow_private_endpoint) => patchStorage('clickhouse', { allow_private_endpoint })} /></label>
+                  <label><span>{t('system.database')}</span><Input value={system.storage.clickhouse.database} onChange={(e) => patchStorage('clickhouse', { database: e.target.value })} /></label>
+                  <label><span>{t('system.table')}</span><Input value={system.storage.clickhouse.table} onChange={(e) => patchStorage('clickhouse', { table: e.target.value })} /></label>
+                  <label><span>{t('setup.username')}</span><Input value={system.storage.clickhouse.username} onChange={(e) => patchStorage('clickhouse', { username: e.target.value })} /></label>
                 </StoragePanel>
 
                 <StoragePanel title="VictoriaLogs" enabled={system.storage.victorialogs.enabled} onToggle={(enabled) => patchStorage('victorialogs', { enabled })} action={() => storageTestMutation.mutate('victorialogs')} loading={storageTestMutation.isPending}>
-                  <label><span>{t('system.endpoint')}</span><Input value={system.storage.victorialogs.endpoint} onChange={(endpoint) => patchStorage('victorialogs', { endpoint })} /></label>
-                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.victorialogs.allow_private_endpoint} onChange={(allow_private_endpoint) => patchStorage('victorialogs', { allow_private_endpoint })} /></label>
-                  <label><span>{t('system.timeoutSeconds')}</span><InputNumber value={durationSeconds(system.storage.victorialogs.timeout)} min={1} max={120} onChange={(value) => patchStorage('victorialogs', { timeout: secondsToDuration(value) })} /></label>
+                  <label><span>{t('system.endpoint')}</span><Input value={system.storage.victorialogs.endpoint} onChange={(e) => patchStorage('victorialogs', { endpoint: e.target.value })} /></label>
+                  <label className="switch-line"><span>{t('system.allowPrivateStorageEndpoint')}</span><Switch checked={system.storage.victorialogs.allow_private_endpoint} onCheckedChange={(allow_private_endpoint) => patchStorage('victorialogs', { allow_private_endpoint })} /></label>
+                  <label><span>{t('system.timeoutSeconds')}</span><Input type="number" value={durationSeconds(system.storage.victorialogs.timeout)} min={1} max={120} onChange={(e) => patchStorage('victorialogs', { timeout: secondsToDuration(Number(e.target.value)) })} /></label>
                 </StoragePanel>
               </div>
             </div>
-          </Tabs.TabPane>
+          </TabsContent>
 
-          <Tabs.TabPane key="apisec" title={<span className="tab-title"><ShieldAlert size={15} />{t('system.apiSecurity')}</span>}>
+          <TabsContent value="apisec">
             <div className="system-section">
               <div className="system-section-title">
                 <h2><KeyRound size={16} /> {t('system.jwtAuth')}</h2>
-                <Button type="primary" onClick={() => saveMutation.mutate({ apisec: system.apisec })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
+                <Button onClick={() => saveMutation.mutate({ apisec: system.apisec })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups">
                 <section className="system-fieldset">
@@ -649,27 +698,27 @@ export default function SystemPage() {
                   <div className="site-detail-grid">
                     <label className="switch-line">
                       <span>{t('system.apiSecurityEnabled')}</span>
-                      <Switch checked={Boolean(system.apisec.enabled)} onChange={(enabled) => patchAPISec({ enabled })} />
+                      <Switch checked={Boolean(system.apisec.enabled)} onCheckedChange={(enabled) => patchAPISec({ enabled })} />
                     </label>
                     <label className="switch-line">
                       <span>{t('system.jwtAuthEnabled')}</span>
-                      <Switch checked={apiAuth.enabled} onChange={(enabled) => patchAPIAuth({ enabled })} />
+                      <Switch checked={apiAuth.enabled} onCheckedChange={(enabled) => patchAPIAuth({ enabled })} />
                     </label>
                     <label>
                       <span>{t('system.jwtAlgorithms')}</span>
-                      <Input value={joinList(apiAuth.jwt_algorithms)} placeholder="HS256, RS256" onChange={(value) => patchAPIAuth({ jwt_algorithms: splitList(value) })} />
+                      <Input value={joinList(apiAuth.jwt_algorithms)} placeholder="HS256, RS256" onChange={(e) => patchAPIAuth({ jwt_algorithms: splitList(e.target.value) })} />
                     </label>
                     <label>
                       <span>{t('system.jwtIssuers')}</span>
-                      <Input value={joinList(apiAuth.jwt_issuers)} placeholder="https://issuer.example.com" onChange={(value) => patchAPIAuth({ jwt_issuers: splitList(value) })} />
+                      <Input value={joinList(apiAuth.jwt_issuers)} placeholder="https://issuer.example.com" onChange={(e) => patchAPIAuth({ jwt_issuers: splitList(e.target.value) })} />
                     </label>
                     <label>
                       <span>{t('system.jwtAudiences')}</span>
-                      <Input value={joinList(apiAuth.jwt_audiences)} placeholder="orders-api, admin-api" onChange={(value) => patchAPIAuth({ jwt_audiences: splitList(value) })} />
+                      <Input value={joinList(apiAuth.jwt_audiences)} placeholder="orders-api, admin-api" onChange={(e) => patchAPIAuth({ jwt_audiences: splitList(e.target.value) })} />
                     </label>
                     <label className="wide-field">
                       <span>{t('system.requiredScopes')}</span>
-                      <Input value={joinList(apiAuth.required_scopes)} placeholder="orders:read, admin:read" onChange={(value) => patchAPIAuth({ required_scopes: splitList(value) })} />
+                      <Input value={joinList(apiAuth.required_scopes)} placeholder="orders:read, admin:read" onChange={(e) => patchAPIAuth({ required_scopes: splitList(e.target.value) })} />
                     </label>
                   </div>
                 </section>
@@ -680,40 +729,42 @@ export default function SystemPage() {
                       <strong><KeyRound size={15} /> {t('system.managementAPI')}</strong>
                       <span>{t('system.managementAPIHint')}</span>
                     </div>
-                    <Switch checked={managementAPI.enabled} onChange={(enabled) => patchManagementAPI({ enabled })} />
+                    <Switch checked={managementAPI.enabled} onCheckedChange={(enabled) => patchManagementAPI({ enabled })} />
                   </header>
                   <div className="api-token-create-grid">
                     <label>
                       <span>{t('system.apiTokenName')}</span>
-                      <Input value={apiTokenDraft.name} placeholder={t('system.apiTokenNamePlaceholder')} onChange={(name) => setAPITokenDraft((draft) => ({ ...draft, name }))} />
+                      <Input value={apiTokenDraft.name} placeholder={t('system.apiTokenNamePlaceholder')} onChange={(e) => setAPITokenDraft((draft) => ({ ...draft, name: e.target.value }))} />
                     </label>
                     <label>
                       <span>{t('system.apiTokenScopes')}</span>
-                      <Select
-                        mode="multiple"
-                        allowCreate
-                        value={apiTokenDraft.scopes}
+                      <Input
+                        value={apiTokenDraft.scopes.join(', ')}
                         placeholder="read:system"
-                        onChange={(scopes) => setAPITokenDraft((draft) => ({ ...draft, scopes: Array.isArray(scopes) ? scopes.map(String) : [] }))}
-                      >
-                        {apiTokenScopeOptions.map((scope) => <Select.Option key={scope} value={scope}>{scope}</Select.Option>)}
-                      </Select>
+                        onChange={(e) => setAPITokenDraft((draft) => ({ ...draft, scopes: splitList(e.target.value) }))}
+                      />
                     </label>
                     <label>
                       <span>{t('system.apiTokenTTL')}</span>
-                      <Select value={apiTokenDraft.ttl} allowCreate onChange={(ttl) => setAPITokenDraft((draft) => ({ ...draft, ttl: String(ttl ?? '') }))}>
-                        <Select.Option value="1h">1h</Select.Option>
-                        <Select.Option value="24h">24h</Select.Option>
-                        <Select.Option value="168h">7d</Select.Option>
-                        <Select.Option value="720h">30d</Select.Option>
-                        <Select.Option value="">{t('system.apiTokenNoExpiry')}</Select.Option>
+                      <Select
+                        value={apiTokenDraft.ttl === '' ? '__none__' : apiTokenDraft.ttl}
+                        onValueChange={(ttl) => setAPITokenDraft((draft) => ({ ...draft, ttl: ttl === '__none__' ? '' : ttl }))}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="1h">1h</SelectItem>
+                          <SelectItem value="24h">24h</SelectItem>
+                          <SelectItem value="168h">7d</SelectItem>
+                          <SelectItem value="720h">30d</SelectItem>
+                          <SelectItem value="__none__">{t('system.apiTokenNoExpiry')}</SelectItem>
+                        </SelectContent>
                       </Select>
                     </label>
                     <label className="wide-field">
                       <span>{t('system.apiTokenNotes')}</span>
-                      <Input value={apiTokenDraft.notes} placeholder={t('system.apiTokenNotesPlaceholder')} onChange={(notes) => setAPITokenDraft((draft) => ({ ...draft, notes }))} />
+                      <Input value={apiTokenDraft.notes} placeholder={t('system.apiTokenNotesPlaceholder')} onChange={(e) => setAPITokenDraft((draft) => ({ ...draft, notes: e.target.value }))} />
                     </label>
-                    <Button type="primary" loading={createAPITokenMutation.isPending} disabled={!managementAPI.enabled || Boolean(latestAPIToken)} onClick={submitAPIToken}>
+                    <Button loading={createAPITokenMutation.isPending} disabled={!managementAPI.enabled || Boolean(latestAPIToken)} onClick={submitAPIToken}>
                       {t('system.createAPIToken')}
                     </Button>
                   </div>
@@ -723,10 +774,10 @@ export default function SystemPage() {
                       <span>{t('system.apiTokenSecretHint')}</span>
                       <code>{latestAPIToken}</code>
                       <div className="cluster-token-actions">
-                        <Button icon={<Copy size={15} />} onClick={() => void copyText(latestAPIToken, t('system.apiTokenCopied'), t('system.apiTokenCopyFailed'))}>{t('system.copyAPIToken')}</Button>
-                        <Button onClick={() => {
+                        <Button variant="outline" onClick={() => void copyText(latestAPIToken, t('system.apiTokenCopied'), t('system.apiTokenCopyFailed'))}><Copy size={15} />{t('system.copyAPIToken')}</Button>
+                        <Button variant="outline" onClick={() => {
                           setLatestAPIToken('');
-                          ArcoMessage.success(t('system.apiTokenCleared'));
+                          toast.success(t('system.apiTokenCleared'));
                         }}>{t('system.clearAPIToken')}</Button>
                       </div>
                     </div>
@@ -738,30 +789,48 @@ export default function SystemPage() {
                       retrying={apiTokensQuery.isFetching}
                     />
                   )}
-                  <Table
-                    rowKey="id"
-                    loading={apiTokensQuery.isFetching}
-                    pagination={{ pageSize: 6, sizeCanChange: true }}
-                    data={apiTokens}
-                    columns={[
-                      { title: t('system.apiTokenName'), dataIndex: 'name', render: (name: string, item: ManagementAPIToken) => <div className="api-token-name"><strong>{name}</strong><span>{item.prefix}</span></div> },
-                      { title: t('system.apiTokenScopes'), dataIndex: 'scopes', render: (scopes: string[]) => <span className="api-token-scope-list">{(scopes || []).map((scope) => <Tag key={scope}>{scope}</Tag>)}</span> },
-                      { title: t('system.apiTokenExpires'), dataIndex: 'expires_at', render: (value: string) => formatSystemTimestamp(value, t('system.apiTokenNoExpiry')) },
-                      { title: t('common.status'), render: (_: unknown, item: ManagementAPIToken) => <Tag color={item.enabled ? 'green' : 'gray'}>{item.enabled ? t('system.enabled') : t('system.disabled')}</Tag> },
-                      {
-                        title: t('common.actions'),
-                        render: (_: unknown, item: ManagementAPIToken) => (
-                          <Popconfirm
-                            title={t('system.apiTokenRevokeConfirmTitle')}
-                            content={t('system.apiTokenRevokeConfirm')}
-                            onOk={() => revokeAPITokenMutation.mutate(item.id)}
-                          >
-                            <Button size="mini" status="danger" disabled={!item.enabled} loading={revokeAPITokenMutation.isPending}>{t('common.revoke')}</Button>
-                          </Popconfirm>
-                        ),
-                      },
-                    ]}
-                  />
+                  <div className="relative">
+                    {apiTokensQuery.isFetching && <div className="absolute inset-0 z-10 bg-background/40" aria-busy />}
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>{t('system.apiTokenName')}</TableHead>
+                          <TableHead>{t('system.apiTokenScopes')}</TableHead>
+                          <TableHead>{t('system.apiTokenExpires')}</TableHead>
+                          <TableHead>{t('common.status')}</TableHead>
+                          <TableHead>{t('common.actions')}</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {pagedTokens.map((item: ManagementAPIToken) => (
+                          <TableRow key={item.id}>
+                            <TableCell><div className="api-token-name"><strong>{item.name}</strong><span>{item.prefix}</span></div></TableCell>
+                            <TableCell><span className="api-token-scope-list">{(item.scopes || []).map((scope) => <Badge key={scope} variant="secondary">{scope}</Badge>)}</span></TableCell>
+                            <TableCell>{formatSystemTimestamp(item.expires_at, t('system.apiTokenNoExpiry'))}</TableCell>
+                            <TableCell><Badge variant={item.enabled ? 'success' : 'secondary'}>{item.enabled ? t('system.enabled') : t('system.disabled')}</Badge></TableCell>
+                            <TableCell>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                disabled={!item.enabled}
+                                loading={revokeAPITokenMutation.isPending && revokeTokenId === item.id}
+                                onClick={() => setRevokeTokenId(item.id)}
+                              >
+                                {t('common.revoke')}
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    {apiTokens.length > tokenPageSize && (
+                      <div className="flex items-center justify-end gap-2 py-2">
+                        <Button size="sm" variant="outline" disabled={apiTokenPage <= 0} onClick={() => setAPITokenPage((p) => p - 1)}>{t('common.prev', { defaultValue: 'Prev' })}</Button>
+                        <span className="text-sm text-muted-foreground">{apiTokenPage + 1}/{tokenPageCount}</span>
+                        <Button size="sm" variant="outline" disabled={apiTokenPage >= tokenPageCount - 1} onClick={() => setAPITokenPage((p) => p + 1)}>{t('common.next', { defaultValue: 'Next' })}</Button>
+                      </div>
+                    )}
+                  </div>
                 </section>
 
                 <section className="system-fieldset">
@@ -770,7 +839,7 @@ export default function SystemPage() {
                       <strong>{t('system.apiAuthEndpointPolicies')}</strong>
                       <span>{t('system.apiAuthEndpointPoliciesHint')}</span>
                     </div>
-                    <Button size="small" icon={<Plus size={14} />} onClick={addAPIAuthEndpoint}>{t('common.add')}</Button>
+                    <Button size="sm" variant="outline" onClick={addAPIAuthEndpoint}><Plus size={14} />{t('common.add')}</Button>
                   </header>
                   <div className="endpoint-policy-list">
                     {apiAuth.endpoint_policies.length === 0 ? (
@@ -778,34 +847,37 @@ export default function SystemPage() {
                     ) : apiAuth.endpoint_policies.map((policy, index) => (
                       <section className="endpoint-policy-row" key={`${policy.id}-${index}`}>
                         <div className="endpoint-policy-head">
-                          <Switch checked={policy.enabled} onChange={(enabled) => patchAPIAuthEndpoint(index, { enabled })} />
-                          <Input value={policy.id} placeholder="orders-write" onChange={(id) => patchAPIAuthEndpoint(index, { id })} />
-                          <Button size="mini" status="danger" icon={<Trash2 size={13} />} onClick={() => removeAPIAuthEndpoint(index)}>{t('common.delete')}</Button>
+                          <Switch checked={policy.enabled} onCheckedChange={(enabled) => patchAPIAuthEndpoint(index, { enabled })} />
+                          <Input value={policy.id} placeholder="orders-write" onChange={(e) => patchAPIAuthEndpoint(index, { id: e.target.value })} />
+                          <Button size="sm" variant="destructive" onClick={() => removeAPIAuthEndpoint(index)}><Trash2 size={13} />{t('common.delete')}</Button>
                         </div>
                         <div className="site-detail-grid">
                           <label>
                             <span>{t('apisec.method')}</span>
-                            <Select value={policy.method || 'GET'} onChange={(method) => patchAPIAuthEndpoint(index, { method: method as string })}>
-                              {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((method) => (
-                                <Select.Option key={method} value={method}>{method}</Select.Option>
-                              ))}
+                            <Select value={policy.method || 'GET'} onValueChange={(method) => patchAPIAuthEndpoint(index, { method })}>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((method) => (
+                                  <SelectItem key={method} value={method}>{method}</SelectItem>
+                                ))}
+                              </SelectContent>
                             </Select>
                           </label>
                           <label>
                             <span>{t('system.pathPattern')}</span>
-                            <Input value={policy.path_pattern} placeholder="^/api/orders$" onChange={(path_pattern) => patchAPIAuthEndpoint(index, { path_pattern })} />
+                            <Input value={policy.path_pattern} placeholder="^/api/orders$" onChange={(e) => patchAPIAuthEndpoint(index, { path_pattern: e.target.value })} />
                           </label>
                           <label>
                             <span>{t('system.jwtIssuers')}</span>
-                            <Input value={joinList(policy.jwt_issuers)} onChange={(value) => patchAPIAuthEndpoint(index, { jwt_issuers: splitList(value) })} />
+                            <Input value={joinList(policy.jwt_issuers)} onChange={(e) => patchAPIAuthEndpoint(index, { jwt_issuers: splitList(e.target.value) })} />
                           </label>
                           <label>
                             <span>{t('system.jwtAudiences')}</span>
-                            <Input value={joinList(policy.jwt_audiences)} onChange={(value) => patchAPIAuthEndpoint(index, { jwt_audiences: splitList(value) })} />
+                            <Input value={joinList(policy.jwt_audiences)} onChange={(e) => patchAPIAuthEndpoint(index, { jwt_audiences: splitList(e.target.value) })} />
                           </label>
                           <label className="wide-field">
                             <span>{t('system.requiredScopes')}</span>
-                            <Input value={joinList(policy.required_scopes)} onChange={(value) => patchAPIAuthEndpoint(index, { required_scopes: splitList(value) })} />
+                            <Input value={joinList(policy.required_scopes)} onChange={(e) => patchAPIAuthEndpoint(index, { required_scopes: splitList(e.target.value) })} />
                           </label>
                         </div>
                       </section>
@@ -821,57 +893,78 @@ export default function SystemPage() {
                   <div className="site-detail-grid">
                     <label>
                       <span>{t('system.jwtSharedSecret')}</span>
-                      <Input.Password value={apiAuth.jwt_shared_secret} onChange={(jwt_shared_secret) => patchAPIAuth({ jwt_shared_secret })} />
+                      <Input type="password" value={apiAuth.jwt_shared_secret} onChange={(e) => patchAPIAuth({ jwt_shared_secret: e.target.value })} />
                     </label>
                     <label>
                       <span>{t('system.jwtPublicKeyFile')}</span>
-                      <Input value={apiAuth.jwt_public_key_file} onChange={(jwt_public_key_file) => patchAPIAuth({ jwt_public_key_file })} />
+                      <Input value={apiAuth.jwt_public_key_file} onChange={(e) => patchAPIAuth({ jwt_public_key_file: e.target.value })} />
                     </label>
                     <label className="wide-field">
                       <span>{t('system.jwtPublicKeyPEM')}</span>
-                      <Input.TextArea
-                        autoSize={{ minRows: 3, maxRows: 7 }}
+                      <Textarea
+                        rows={4}
                         value={apiAuth.jwt_public_key_pem}
-                        onChange={(jwt_public_key_pem) => patchAPIAuth({ jwt_public_key_pem })}
+                        onChange={(e) => patchAPIAuth({ jwt_public_key_pem: e.target.value })}
                       />
                     </label>
                     <label>
                       <span>{t('system.jwksFile')}</span>
-                      <Input value={apiAuth.jwks_file} onChange={(jwks_file) => patchAPIAuth({ jwks_file })} />
+                      <Input value={apiAuth.jwks_file} onChange={(e) => patchAPIAuth({ jwks_file: e.target.value })} />
                     </label>
                     <label>
                       <span>{t('system.jwksURL')}</span>
-                      <Input value={apiAuth.jwks_url} placeholder="https://issuer.example.com/.well-known/jwks.json" onChange={(jwks_url) => patchAPIAuth({ jwks_url })} />
+                      <Input value={apiAuth.jwks_url} placeholder="https://issuer.example.com/.well-known/jwks.json" onChange={(e) => patchAPIAuth({ jwks_url: e.target.value })} />
                     </label>
                     <label>
                       <span>{t('system.jwksCacheFile')}</span>
-                      <Input value={apiAuth.jwks_cache_file} onChange={(jwks_cache_file) => patchAPIAuth({ jwks_cache_file })} />
+                      <Input value={apiAuth.jwks_cache_file} onChange={(e) => patchAPIAuth({ jwks_cache_file: e.target.value })} />
                     </label>
                     <label>
                       <span>{t('system.jwksRefreshInterval')}</span>
-                      <InputNumber
+                      <Input
+                        type="number"
                         min={60}
                         step={60}
                         value={durationSeconds(apiAuth.jwks_refresh_interval)}
-                        onChange={(value) => patchAPIAuth({ jwks_refresh_interval: secondsToDuration(Number(value || 0)) })}
+                        onChange={(e) => patchAPIAuth({ jwks_refresh_interval: secondsToDuration(Number(e.target.value || 0)) })}
                       />
                     </label>
                     <label>
                       <span>{t('system.jwksJSON')}</span>
-                      <Input.TextArea
-                        autoSize={{ minRows: 3, maxRows: 7 }}
+                      <Textarea
+                        rows={4}
                         value={apiAuth.jwks_json}
-                        onChange={(jwks_json) => patchAPIAuth({ jwks_json })}
+                        onChange={(e) => patchAPIAuth({ jwks_json: e.target.value })}
                       />
                     </label>
                   </div>
                 </section>
               </div>
             </div>
-          </Tabs.TabPane>
-
+          </TabsContent>
         </Tabs>
       </section>
+
+      <Dialog open={Boolean(revokeTokenId)} onOpenChange={(open) => { if (!open) setRevokeTokenId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('system.apiTokenRevokeConfirmTitle')}</DialogTitle>
+            <DialogDescription>{t('system.apiTokenRevokeConfirm')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRevokeTokenId(null)}>{t('common.cancel')}</Button>
+            <Button
+              variant="destructive"
+              loading={revokeAPITokenMutation.isPending}
+              onClick={() => {
+                if (revokeTokenId) revokeAPITokenMutation.mutate(revokeTokenId);
+              }}
+            >
+              {t('common.revoke')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
@@ -903,25 +996,6 @@ function readManagementAPI(system: SystemConfig): ManagementAPIConfig {
     tokens: Array.isArray(management.tokens) ? management.tokens : [],
   };
 }
-
-const apiTokenScopeOptions = [
-  'read:system',
-  'write:system',
-  'read:monitor',
-  'read:logs',
-  'read:sites',
-  'write:sites',
-  'read:rules',
-  'write:rules',
-  'read:protection',
-  'write:protection',
-  'read:apisec',
-  'write:apisec',
-  'read:ai',
-  'write:ai',
-  'read:*',
-  'write:*',
-];
 
 function endpointPoliciesValue(value: unknown): APISecAuthEndpointPolicyConfig[] {
   if (!Array.isArray(value)) {
@@ -966,9 +1040,9 @@ function joinList(value: string[]) {
 async function copyText(value: string, successMessage: string, failureMessage: string) {
   try {
     await navigator.clipboard.writeText(value);
-    ArcoMessage.success(successMessage);
+    toast.success(successMessage);
   } catch {
-    ArcoMessage.error(failureMessage);
+    toast.error(failureMessage);
   }
 }
 
@@ -1001,10 +1075,10 @@ function StoragePanel({
     <section className="system-card storage-card">
       <div className="system-section-title">
         <h2>{title}</h2>
-        <Space>
-          {onToggle && <Switch checked={enabled} onChange={onToggle} />}
-          <Button size="small" onClick={action} loading={loading}>{t('system.test')}</Button>
-        </Space>
+        <div className="flex items-center gap-2">
+          {onToggle && <Switch checked={enabled} onCheckedChange={onToggle} />}
+          <Button size="sm" variant="outline" onClick={action} loading={loading}>{t('system.test')}</Button>
+        </div>
       </div>
       <div className="storage-card-body">{children}</div>
     </section>

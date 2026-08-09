@@ -200,7 +200,7 @@ jobs:
         working-directory: web
         # Gate with documented allowlist (see web/scripts/npm-audit-gate.mjs).
         # Do not use bare `npm audit --audit-level=high` until React 19 + RR 8.3
-        # lands; that upgrade is blocked on Arco React 19 support.
+        # lands; gated via npm-audit-gate allowlist until React 19 + RR 8.3 lands.
         run: node scripts/npm-audit-gate.mjs
 
   security-corpus:

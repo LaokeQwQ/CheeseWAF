@@ -1,4 +1,4 @@
-import { Button, Empty, Input, Message as ArcoMessage, Tag } from '@arco-design/web-react';
+import { Badge, Button, Empty, Textarea, toast } from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,7 +14,6 @@ import {
 } from '../../api/client';
 import type { BlockPageConfig } from '../../types/api';
 import '../../styles/block-pages.css';
-import '../../styles/arco-components';
 
 const blockPreviewStoragePrefix = 'cheesewaf-block-page-preview-html';
 
@@ -101,10 +100,10 @@ export default function BlockPagesPage() {
         selected: saved?.template_id || selected,
         customHTML: saved?.custom_html ?? customHTML,
       });
-      ArcoMessage.success(t('blockPages.saved'));
+      toast.success(t('blockPages.saved'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
-    onError: (mutationError: Error) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError: Error) => toast.error(mutationError.message),
   });
 
   const saveCustomMutation = useMutation({
@@ -114,20 +113,20 @@ export default function BlockPagesPage() {
         selected: saved?.template_id || selected,
         customHTML: saved?.custom_html ?? customHTML,
       });
-      ArcoMessage.success(t('blockPages.customSaved'));
+      toast.success(t('blockPages.customSaved'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
-    onError: (mutationError: Error) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError: Error) => toast.error(mutationError.message),
   });
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadBlockPageHTML(file, selected),
     onSuccess: async (result) => {
       markFormClean({ customHTML: result.config.custom_html, selected: result.config.template_id || selected });
-      ArcoMessage.success(t('blockPages.uploaded', { name: result.filename }));
+      toast.success(t('blockPages.uploaded', { name: result.filename }));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
-    onError: (mutationError: Error) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError: Error) => toast.error(mutationError.message),
   });
 
   const restoreMutation = useMutation({
@@ -137,10 +136,10 @@ export default function BlockPagesPage() {
         selected: saved?.template_id || selected,
         customHTML: saved?.custom_html ?? '',
       });
-      ArcoMessage.success(t('blockPages.restored'));
+      toast.success(t('blockPages.restored'));
       await queryClient.invalidateQueries({ queryKey: ['block-page-config'] });
     },
-    onError: (mutationError: Error) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError: Error) => toast.error(mutationError.message),
   });
 
   async function copyTemplate() {
@@ -150,9 +149,9 @@ export default function BlockPagesPage() {
     }
     try {
       await navigator.clipboard.writeText(sourceHTML);
-      ArcoMessage.success(t('blockPages.copied'));
+      toast.success(t('blockPages.copied'));
     } catch {
-      ArcoMessage.error(t('blockPages.copyFailed'));
+      toast.error(t('blockPages.copyFailed'));
     }
   }
 
@@ -172,7 +171,7 @@ export default function BlockPagesPage() {
 
   function openPreviewWindow() {
     if (!safePreviewHTML.trim()) {
-      ArcoMessage.warning(t('blockPages.noPreviewContent'));
+      toast.warning(t('blockPages.noPreviewContent'));
       return;
     }
     // Never open executable same-origin blob URLs. Hand HTML to the in-app
@@ -181,7 +180,7 @@ export default function BlockPagesPage() {
     try {
       localStorage.setItem(token, JSON.stringify({ html: safePreviewHTML, created_at: Date.now() }));
     } catch {
-      ArcoMessage.error(t('blockPages.previewOpenFailed'));
+      toast.error(t('blockPages.previewOpenFailed'));
       return;
     }
     const previewURL = `/block-pages/preview?token=${encodeURIComponent(token)}`;
@@ -192,7 +191,7 @@ export default function BlockPagesPage() {
       } catch {
         // ignore storage cleanup failures
       }
-      ArcoMessage.error(t('blockPages.previewOpenFailed'));
+      toast.error(t('blockPages.previewOpenFailed'));
     }
   }
 
@@ -201,7 +200,7 @@ export default function BlockPagesPage() {
       return;
     }
     if (!customHTML.trim()) {
-      ArcoMessage.warning(t('blockPages.emptyCustom'));
+      toast.warning(t('blockPages.emptyCustom'));
       return;
     }
     saveCustomMutation.mutate();
@@ -224,8 +223,13 @@ export default function BlockPagesPage() {
           <p>{t('blockPages.subtitle')}</p>
         </div>
         <div className="block-page-header-actions">
-          {configQuery.isSuccess && <Tag className="status-pill" icon={<CheckCircle2 size={14} />}>{sourceLabel}</Tag>}
-          {isError && <Button onClick={() => { templatesQuery.refetch(); configQuery.refetch(); }}>{t('common.retry')}</Button>}
+          {configQuery.isSuccess && (
+            <Badge className="status-pill" variant="success">
+              <CheckCircle2 size={14} />
+              {sourceLabel}
+            </Badge>
+          )}
+          {isError && <Button variant="outline" onClick={() => { templatesQuery.refetch(); configQuery.refetch(); }}>{t('common.retry')}</Button>}
         </div>
       </header>
 
@@ -233,7 +237,7 @@ export default function BlockPagesPage() {
         <div className="inline-error" role="alert">
           <span>{t('blockPages.loadFailed')}</span>
           {error instanceof APIRequestError && error.traceID && <code>{error.traceID}</code>}
-          <Button size="small" onClick={() => { templatesQuery.refetch(); configQuery.refetch(); }}>{t('common.retry')}</Button>
+          <Button size="sm" variant="outline" onClick={() => { templatesQuery.refetch(); configQuery.refetch(); }}>{t('common.retry')}</Button>
         </div>
       )}
 
@@ -265,8 +269,8 @@ export default function BlockPagesPage() {
             </div>
           ) : <Empty description={t('blockPages.noTemplates')} />}
           <div className="block-template-actions">
-            <Button disabled={!templateHTML} onClick={() => setCustomHTML(templateHTML)}>{t('blockPages.useAsBase')}</Button>
-            <Button type="primary" loading={saveBuiltInMutation.isPending} disabled={!template || !configQuery.isSuccess} onClick={() => saveBuiltInMutation.mutate()}>{t('blockPages.useBuiltIn')}</Button>
+            <Button variant="outline" disabled={!templateHTML} onClick={() => setCustomHTML(templateHTML)}>{t('blockPages.useAsBase')}</Button>
+            <Button loading={saveBuiltInMutation.isPending} disabled={!template || !configQuery.isSuccess} onClick={() => saveBuiltInMutation.mutate()}>{t('blockPages.useBuiltIn')}</Button>
           </div>
         </section>
 
@@ -278,18 +282,27 @@ export default function BlockPagesPage() {
             </div>
             <div className="block-editor-actions">
               <input ref={fileInputRef} type="file" accept=".html,.htm,text/html" hidden onChange={onUploadChange} />
-              <Tag>{t('blockPages.sizeLabel', { size: formatBytes(customBytes) })}</Tag>
-              <Button icon={<FileUp size={14} />} loading={uploadMutation.isPending} disabled={!configQuery.isSuccess} onClick={() => fileInputRef.current?.click()}>{t('blockPages.uploadHtml')}</Button>
-              <Button icon={<RotateCcw size={14} />} loading={restoreMutation.isPending} disabled={!configQuery.isSuccess || (!activeConfig?.custom_enabled && !customHTML)} onClick={() => restoreMutation.mutate()}>{t('blockPages.restoreBuiltIn')}</Button>
-              <Button icon={<Save size={14} />} type="primary" loading={saveCustomMutation.isPending} disabled={!configQuery.isSuccess} onClick={saveCustom}>{t('blockPages.saveCustom')}</Button>
+              <Badge variant="secondary">{t('blockPages.sizeLabel', { size: formatBytes(customBytes) })}</Badge>
+              <Button variant="outline" loading={uploadMutation.isPending} disabled={!configQuery.isSuccess} onClick={() => fileInputRef.current?.click()}>
+                <FileUp size={14} />
+                {t('blockPages.uploadHtml')}
+              </Button>
+              <Button variant="outline" loading={restoreMutation.isPending} disabled={!configQuery.isSuccess || (!activeConfig?.custom_enabled && !customHTML)} onClick={() => restoreMutation.mutate()}>
+                <RotateCcw size={14} />
+                {t('blockPages.restoreBuiltIn')}
+              </Button>
+              <Button loading={saveCustomMutation.isPending} disabled={!configQuery.isSuccess} onClick={saveCustom}>
+                <Save size={14} />
+                {t('blockPages.saveCustom')}
+              </Button>
             </div>
           </div>
-          <Input.TextArea
-            className="code-editor"
+          <Textarea
+            className="code-editor min-h-[360px]"
             value={customHTML}
             placeholder={t('blockPages.editorPlaceholder')}
-            onChange={setCustomHTML}
-            autoSize={{ minRows: 18, maxRows: 26 }}
+            onChange={(event) => setCustomHTML(event.target.value)}
+            rows={18}
           />
         </section>
 
@@ -300,10 +313,19 @@ export default function BlockPagesPage() {
               <p>{t('blockPages.previewHint')}</p>
             </div>
             <div className="block-editor-actions">
-              {previewQuery.data?.event_id && <Tag className="status-pill">{t('blockPages.previewEvent', { id: previewQuery.data.event_id })}</Tag>}
-              <Button icon={<ExternalLink size={14} />} disabled={!previewHTML.trim()} onClick={openPreviewWindow}>{t('blockPages.openPreview')}</Button>
-              <Button icon={<Copy size={14} />} disabled={!templateHTML && !customHTML.trim()} onClick={copyTemplate}>{t('blockPages.copyHtml')}</Button>
-              <Button icon={<Download size={14} />} disabled={!templateHTML && !customHTML.trim()} onClick={downloadTemplate}>{t('blockPages.downloadHtml')}</Button>
+              {previewQuery.data?.event_id && <Badge className="status-pill" variant="secondary">{t('blockPages.previewEvent', { id: previewQuery.data.event_id })}</Badge>}
+              <Button variant="outline" disabled={!previewHTML.trim()} onClick={openPreviewWindow}>
+                <ExternalLink size={14} />
+                {t('blockPages.openPreview')}
+              </Button>
+              <Button variant="outline" disabled={!templateHTML && !customHTML.trim()} onClick={copyTemplate}>
+                <Copy size={14} />
+                {t('blockPages.copyHtml')}
+              </Button>
+              <Button variant="outline" disabled={!templateHTML && !customHTML.trim()} onClick={downloadTemplate}>
+                <Download size={14} />
+                {t('blockPages.downloadHtml')}
+              </Button>
             </div>
           </div>
           {previewQuery.error instanceof APIRequestError && (

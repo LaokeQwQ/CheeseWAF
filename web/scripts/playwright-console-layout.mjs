@@ -37,7 +37,7 @@ try {
   await go('/sites');
   await page.waitForTimeout(1200);
   const sitesHeaderWrap = await page.evaluate(() => {
-    const ths = [...document.querySelectorAll('.sites-table thead th, .sites-table .arco-table-th')];
+    const ths = [...document.querySelectorAll('.sites-table thead th')];
     return ths.map((th) => {
       const style = getComputedStyle(th);
       return {
@@ -58,10 +58,12 @@ try {
   await go('/users');
   await page.waitForTimeout(1200);
   const pagination = await page.evaluate(() => {
-    const select = document.querySelector('.users-page .arco-pagination .arco-select-view, .users-page .arco-table-pagination .arco-select-view');
+    const select = document.querySelector(
+      '.users-page select, .users-page [role=combobox], .users-page .pagination select, .users-page .pagination [role=combobox]',
+    );
     if (!select) return { found: false };
     const rect = select.getBoundingClientRect();
-    const text = (select.textContent || '').trim();
+    const text = (select.textContent || select.value || '').trim();
     return {
       found: true,
       width: Math.round(rect.width),
@@ -72,11 +74,13 @@ try {
   step('users-page-size', pagination);
   if (pagination.found && pagination.width < 96) report.ok = false;
   // open size dropdown if present
-  const sizeTrigger = page.locator('.users-page .arco-pagination .arco-select-view, .users-page .arco-table-pagination .arco-select-view').first();
+  const sizeTrigger = page.locator(
+    '.users-page select, .users-page [role=combobox], .users-page .pagination select, .users-page .pagination [role=combobox]',
+  ).first();
   if (await sizeTrigger.count()) {
     await sizeTrigger.click();
     await page.waitForTimeout(400);
-    const popup = page.locator('.arco-select-popup, .arco-trigger-popup').last();
+    const popup = page.locator('[role=listbox], [data-radix-select-content]').last();
     const visible = await popup.isVisible().catch(() => false);
     const popupBox = visible ? await popup.boundingBox() : null;
     step('users-page-size-popup', { visible, height: popupBox?.height ?? 0 });
@@ -87,7 +91,7 @@ try {
 
   // Icon/button alignment sample
   const iconAlign = await page.evaluate(() => {
-    const btn = document.querySelector('.page-header .arco-btn-primary, .users-page .arco-btn-primary');
+    const btn = document.querySelector('.page-header button, .users-page .page-header button');
     if (!btn) return { found: false };
     const svg = btn.querySelector('svg');
     const span = btn.querySelector('span');

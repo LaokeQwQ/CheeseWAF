@@ -15,19 +15,16 @@ const apiMocks = vi.hoisted(() => ({
   updateSystemConfig: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return {
-    ...actual,
-    Message: messageMocks,
-  };
-});
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), toastMocks),
+  Toaster: () => null,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -160,8 +157,8 @@ describe('SystemPage persistence failures', () => {
 
     const input = await editRuntimeListenAndSave(':18080', ':8080');
 
-    await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith(message));
-    expect(messageMocks.success).not.toHaveBeenCalled();
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith(message));
+    expect(toastMocks.success).not.toHaveBeenCalled();
     expect(invalidateQueries).not.toHaveBeenCalled();
     expect(apiMocks.fetchSystemConfig).toHaveBeenCalledTimes(1);
     expect(client.getQueryData(['system'])).toEqual(initial);
@@ -193,8 +190,8 @@ describe('SystemPage persistence success', () => {
     await waitFor(() => expect((screen.getByDisplayValue(':8080') as HTMLInputElement).value).toBe(':8080'));
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['system'] });
     expect(client.getQueryData(['system'])).toEqual(persisted);
-    expect(messageMocks.success).toHaveBeenCalledWith('system.saved');
-    expect(messageMocks.error).not.toHaveBeenCalled();
+    expect(toastMocks.success).toHaveBeenCalledWith('system.saved');
+    expect(toastMocks.error).not.toHaveBeenCalled();
   });
 
   it('shows calibrated runtime status and invokes both time synchronization operations', async () => {
@@ -215,11 +212,11 @@ describe('SystemPage persistence success', () => {
 
       fireEvent.click(reselect);
       await waitFor(() => expect(apiMocks.reselectTimeSync).toHaveBeenCalledTimes(1));
-      await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncReselectSuccess'));
+      await waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith('system.timeSyncReselectSuccess'));
 
       fireEvent.click(sync);
       await waitFor(() => expect(apiMocks.syncTimeNow).toHaveBeenCalledTimes(1));
-      await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('system.timeSyncNowSuccess'));
+      await waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith('system.timeSyncNowSuccess'));
 
       expect(consoleError.mock.calls.some((args) => String(args[0] ?? '').includes('`NaN` is an invalid value for the `height`'))).toBe(false);
     } finally {

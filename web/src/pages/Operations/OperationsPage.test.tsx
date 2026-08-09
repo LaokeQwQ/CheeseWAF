@@ -11,16 +11,16 @@ const apiMocks = vi.hoisted(() => ({
   updateTasks: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return { ...actual, Message: messageMocks };
-});
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), toastMocks),
+  Toaster: () => null,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string, options?: Record<string, unknown>) => options ? `${key}:${JSON.stringify(options)}` : key }),
@@ -146,7 +146,8 @@ describe('OperationsPage query states', () => {
 
     expect(await screen.findByDisplayValue('21:45')).toBeTruthy();
     expect(screen.getByDisplayValue('https://reports.example.test/hook')).toBeTruthy();
-    expect(document.querySelector('.ops-report-panel .arco-switch-checked')).toBeTruthy();
+    const reportPanel = document.querySelector('.ops-report-panel');
+    expect(reportPanel?.querySelector('[role="switch"][data-state="checked"]')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
 
@@ -175,7 +176,7 @@ describe('OperationsPage task mutations', () => {
     fireEvent.change(nameInput, { target: { value: 'Edited cleanup draft' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'common.save' }));
 
-    await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith('task save failed'));
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('task save failed'));
     expect(screen.getByRole('dialog')).toBeTruthy();
     expect(nameInput.value).toBe('Edited cleanup draft');
   });
@@ -186,7 +187,7 @@ describe('OperationsPage task mutations', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'ops.backup' }));
 
-    await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith('backup failed'));
-    expect(messageMocks.success).not.toHaveBeenCalled();
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('backup failed'));
+    expect(toastMocks.success).not.toHaveBeenCalled();
   });
 });
