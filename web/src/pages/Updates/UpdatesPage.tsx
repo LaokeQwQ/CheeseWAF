@@ -1,4 +1,4 @@
-import { Button, Empty, Input, InputNumber, Message as ArcoMessage, Select, Space, Switch, Tag } from '@arco-design/web-react';
+import { Badge, Button, Empty, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Switch, toast } from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CloudDownload, Plus, ShieldAlert, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -66,9 +66,9 @@ export default function UpdatesPage() {
       markClean(normalized);
       setOtaServerSelection(resolveOTAServerSelectValue(normalized.update.ota.server || OFFICIAL_OTA_SERVER));
       queryClient.invalidateQueries({ queryKey: ['system'] });
-      ArcoMessage.success(t('updates.saved'));
+      toast.success(t('updates.saved'));
     },
-    onError: (mutationError) => ArcoMessage.error(mutationError.message),
+    onError: (mutationError) => toast.error(mutationError.message),
   });
 
   const patchSystem = (patch: Partial<SystemConfig>) => setDraft((current) => normalizeSystem({ ...(current ?? fallbackSystem), ...patch }));
@@ -80,14 +80,14 @@ export default function UpdatesPage() {
     try {
       saveMutation.mutate(buildUpdatesSavePayload(system, otaServerSelection));
     } catch {
-      ArcoMessage.error(t('updates.invalidCustomServer'));
+      toast.error(t('updates.invalidCustomServer'));
     }
   }
 
   async function syncOfficialPublicKey() {
     const validatedServer = validateOTAServer(system.update.ota.server, otaServerSelection);
     if (!validatedServer) {
-      ArcoMessage.error(t('updates.invalidCustomServer'));
+      toast.error(t('updates.invalidCustomServer'));
       return;
     }
     setKeySyncing(true);
@@ -102,9 +102,9 @@ export default function UpdatesPage() {
         throw new Error(t('updates.publicKeyInvalid'));
       }
       patchSystem({ update: { ota: { ...system.update.ota, server: validatedServer, public_key: publicKey } } });
-      ArcoMessage.success(t('updates.publicKeySynced'));
+      toast.success(t('updates.publicKeySynced'));
     } catch (error) {
-      ArcoMessage.error(error instanceof Error ? error.message : t('updates.publicKeySyncFailed'));
+      toast.error(error instanceof Error ? error.message : t('updates.publicKeySyncFailed'));
     } finally {
       setKeySyncing(false);
     }
@@ -149,7 +149,8 @@ export default function UpdatesPage() {
           <h1>{t('updates.title')}</h1>
           <p>{t('updates.subtitle')}</p>
         </div>
-        <Button type="primary" icon={<CloudDownload size={16} />} loading={saveMutation.isPending} disabled={!ready} onClick={saveUpdatesConfig}>
+        <Button loading={saveMutation.isPending} disabled={!ready} onClick={saveUpdatesConfig}>
+          <CloudDownload size={16} />
           {t('common.save')}
         </Button>
       </header>
@@ -184,14 +185,24 @@ export default function UpdatesPage() {
         <section className="panel updates-runtime-panel">
           <div className="panel-heading">
             <h2><CloudDownload size={16} /> {t('updates.runtimeUpdate')}</h2>
-            <Tag color={system.update.ota.enabled ? 'green' : 'gray'}>{system.update.ota.enabled ? t('system.enabled') : t('system.disabled')}</Tag>
+            <Badge variant={system.update.ota.enabled ? 'success' : 'secondary'}>
+              {system.update.ota.enabled ? t('system.enabled') : t('system.disabled')}
+            </Badge>
           </div>
           <div className="updates-runtime-form">
-            <label className="switch-line updates-main-switch"><span>{t('updates.enableAutoUpdate')}</span><Switch checked={system.update.ota.enabled} disabled={!ready} onChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })} /></label>
-            <label className="wide-field"><span>{t('system.updateServer')}</span>
+            <label className="switch-line updates-main-switch">
+              <span>{t('updates.enableAutoUpdate')}</span>
+              <Switch
+                checked={system.update.ota.enabled}
+                disabled={!ready}
+                onCheckedChange={(enabled) => patchSystem({ update: { ota: { ...system.update.ota, enabled } } })}
+              />
+            </label>
+            <label className="wide-field">
+              <span>{t('system.updateServer')}</span>
               <Select
                 value={updateServerSelectValue}
-                onChange={(server) => {
+                onValueChange={(server) => {
                   const selected = String(server);
                   setOtaServerSelection(selected);
                   if (selected !== CUSTOM_OTA_SERVER_OPTION) {
@@ -201,33 +212,83 @@ export default function UpdatesPage() {
                   }
                 }}
               >
-                <Select.Option value={OFFICIAL_OTA_SERVER}>{t('updates.officialServer')} ({OFFICIAL_OTA_SERVER})</Select.Option>
-                <Select.Option value={FORGEJO_OTA_SERVER}>{t('updates.forgejoServer')}</Select.Option>
-                <Select.Option value={GITHUB_OTA_SERVER}>{t('updates.githubServer')}</Select.Option>
-                <Select.Option value={CUSTOM_OTA_SERVER_OPTION}>{t('updates.customServer')}</Select.Option>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={OFFICIAL_OTA_SERVER}>{t('updates.officialServer')} ({OFFICIAL_OTA_SERVER})</SelectItem>
+                  <SelectItem value={FORGEJO_OTA_SERVER}>{t('updates.forgejoServer')}</SelectItem>
+                  <SelectItem value={GITHUB_OTA_SERVER}>{t('updates.githubServer')}</SelectItem>
+                  <SelectItem value={CUSTOM_OTA_SERVER_OPTION}>{t('updates.customServer')}</SelectItem>
+                </SelectContent>
               </Select>
             </label>
             {showCustomUpdateServer && (
-              <label className="wide-field"><span>{t('updates.customURL')}</span><Input value={customUpdateServerValue} placeholder="https://" onChange={(server) => patchSystem({ update: { ota: { ...system.update.ota, server } } })} /></label>
+              <label className="wide-field">
+                <span>{t('updates.customURL')}</span>
+                <Input
+                  value={customUpdateServerValue}
+                  placeholder="https://"
+                  onChange={(event) => patchSystem({ update: { ota: { ...system.update.ota, server: event.target.value } } })}
+                />
+              </label>
             )}
             <label>
               <span>{t('system.channel')}</span>
-              <Select value={system.update.ota.channel} onChange={(channel) => patchSystem({ update: { ota: { ...system.update.ota, channel: channel as string } } })}>
-                <Select.Option value="stable">{t('updates.channelStable')}</Select.Option>
-                <Select.Option value="canary">{t('updates.channelCanary')}</Select.Option>
-                <Select.Option value="dev">{t('updates.channelDev')}</Select.Option>
+              <Select
+                value={system.update.ota.channel}
+                onValueChange={(channel) => patchSystem({ update: { ota: { ...system.update.ota, channel } } })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="stable">{t('updates.channelStable')}</SelectItem>
+                  <SelectItem value="canary">{t('updates.channelCanary')}</SelectItem>
+                  <SelectItem value="dev">{t('updates.channelDev')}</SelectItem>
+                </SelectContent>
               </Select>
             </label>
-            <label><span>{t('system.checkIntervalHours')}</span><InputNumber value={durationSeconds(system.update.ota.check_interval) / 3600} min={1} max={168} onChange={(value) => patchSystem({ update: { ota: { ...system.update.ota, check_interval: secondsToDuration(Number(value || 1) * 3600) } } })} /></label>
-            <label className="switch-line"><span>{t('system.autoUpdateRules')}</span><Switch checked={system.update.ota.auto_update_rules} onChange={(auto_update_rules) => patchSystem({ update: { ota: { ...system.update.ota, auto_update_rules } } })} /></label>
-            <label className="switch-line"><span>{t('system.autoUpdateBinary')}</span><Switch checked={system.update.ota.auto_update_binary} onChange={(auto_update_binary) => patchSystem({ update: { ota: { ...system.update.ota, auto_update_binary } } })} /></label>
-            <label className="switch-line"><span>{t('system.verifySignature')}</span><Switch checked={system.update.ota.verify_signature} onChange={(verify_signature) => patchSystem({ update: { ota: { ...system.update.ota, verify_signature } } })} /></label>
+            <label>
+              <span>{t('system.checkIntervalHours')}</span>
+              <Input
+                type="number"
+                min={1}
+                max={168}
+                value={durationSeconds(system.update.ota.check_interval) / 3600}
+                onChange={(event) => patchSystem({
+                  update: {
+                    ota: {
+                      ...system.update.ota,
+                      check_interval: secondsToDuration(Number(event.target.value || 1) * 3600),
+                    },
+                  },
+                })}
+              />
+            </label>
+            <label className="switch-line">
+              <span>{t('system.autoUpdateRules')}</span>
+              <Switch
+                checked={system.update.ota.auto_update_rules}
+                onCheckedChange={(auto_update_rules) => patchSystem({ update: { ota: { ...system.update.ota, auto_update_rules } } })}
+              />
+            </label>
+            <label className="switch-line">
+              <span>{t('system.autoUpdateBinary')}</span>
+              <Switch
+                checked={system.update.ota.auto_update_binary}
+                onCheckedChange={(auto_update_binary) => patchSystem({ update: { ota: { ...system.update.ota, auto_update_binary } } })}
+              />
+            </label>
+            <label className="switch-line">
+              <span>{t('system.verifySignature')}</span>
+              <Switch
+                checked={system.update.ota.verify_signature}
+                onCheckedChange={(verify_signature) => patchSystem({ update: { ota: { ...system.update.ota, verify_signature } } })}
+              />
+            </label>
             <div className="updates-public-key wide-field">
               <div>
                 <span>{t('system.publicKey')}</span>
                 <strong>{system.update.ota.public_key ? publicKeySummary(system.update.ota.public_key, t) : t('updates.publicKeyNotSet')}</strong>
               </div>
-              <Button loading={keySyncing} onClick={syncOfficialPublicKey}>{t('updates.syncPublicKey')}</Button>
+              <Button variant="outline" loading={keySyncing} onClick={syncOfficialPublicKey}>{t('updates.syncPublicKey')}</Button>
             </div>
           </div>
         </section>
@@ -235,64 +296,85 @@ export default function UpdatesPage() {
         <section className="panel updates-feeds-panel">
           <div className="panel-heading">
             <h2><ShieldAlert size={16} /> {t('updates.vulnerabilityFeeds')}</h2>
-            <Space wrap>
-              <Switch checked={system.vulnerability.enabled} onChange={(enabled) => patchSystem({ vulnerability: { ...system.vulnerability, enabled } })} />
-              <Button icon={<Plus size={15} />} onClick={() => addVulnerabilityFeed(setDraft)} disabled={!ready}>{t('common.add')}</Button>
-            </Space>
+            <div className="flex flex-wrap items-center gap-2">
+              <Switch
+                checked={system.vulnerability.enabled}
+                onCheckedChange={(enabled) => patchSystem({ vulnerability: { ...system.vulnerability, enabled } })}
+              />
+              <Button variant="outline" onClick={() => addVulnerabilityFeed(setDraft)} disabled={!ready}>
+                <Plus size={15} />
+                {t('common.add')}
+              </Button>
+            </div>
           </div>
           <div className="feed-list feed-list-detailed">
             {visibleFeeds.map((feed, pageIndex) => {
               const index = (feedPage - 1) * FEED_PAGE_SIZE + pageIndex;
               return (
-              <div className="feed-card" key={feed.id}>
-                <div className="feed-card-head">
-                  <Switch checked={feed.enabled} onChange={(enabled) => updateVulnerabilityFeed(index, { enabled }, setDraft)} />
-                  <Input value={feed.name} placeholder="NVD" onChange={(name) => updateVulnerabilityFeed(index, { name }, setDraft)} />
-                  <Button status="danger" icon={<Trash2 size={14} />} aria-label={t('common.delete')} onClick={() => removeVulnerabilityFeed(feed.id, setDraft)} />
+                <div className="feed-card" key={feed.id}>
+                  <div className="feed-card-head">
+                    <Switch checked={feed.enabled} onCheckedChange={(enabled) => updateVulnerabilityFeed(index, { enabled }, setDraft)} />
+                    <Input value={feed.name} placeholder="NVD" onChange={(event) => updateVulnerabilityFeed(index, { name: event.target.value }, setDraft)} />
+                    <Button variant="destructive" size="icon" aria-label={t('common.delete')} onClick={() => removeVulnerabilityFeed(feed.id, setDraft)}>
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                  <div className="feed-card-body">
+                    <label className="wide-field">
+                      <span>URL</span>
+                      <Input value={feed.url} placeholder="https://..." onChange={(event) => updateVulnerabilityFeed(index, { url: event.target.value }, setDraft)} />
+                    </label>
+                    <label>
+                      <span>{t('ip.format')}</span>
+                      <Select value={feed.type || 'json'} onValueChange={(type) => updateVulnerabilityFeed(index, { type }, setDraft)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="json">JSON</SelectItem>
+                          <SelectItem value="nvd">NVD</SelectItem>
+                          <SelectItem value="osv">OSV</SelectItem>
+                          <SelectItem value="cve">CVE</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </label>
+                    <label>
+                      <span>{t('rules.severity')}</span>
+                      <Select value={feed.min_severity} onValueChange={(min_severity) => updateVulnerabilityFeed(index, { min_severity }, setDraft)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="low">{t('rules.low')}</SelectItem>
+                          <SelectItem value="medium">{t('rules.medium')}</SelectItem>
+                          <SelectItem value="high">{t('rules.high')}</SelectItem>
+                          <SelectItem value="critical">{t('rules.critical')}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </label>
+                    <label>
+                      <span>{t('system.checkIntervalHours')}</span>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={720}
+                        value={durationSeconds(feed.interval) / 3600}
+                        onChange={(event) => updateVulnerabilityFeed(index, { interval: secondsToDuration(Number(event.target.value || 12) * 3600) }, setDraft)}
+                      />
+                    </label>
+                    <label className="switch-line">
+                      <span>{t('updates.notify')}</span>
+                      <Switch checked={feed.notify} onCheckedChange={(notify) => updateVulnerabilityFeed(index, { notify }, setDraft)} />
+                    </label>
+                  </div>
                 </div>
-                <div className="feed-card-body">
-                  <label className="wide-field">
-                    <span>URL</span>
-                    <Input value={feed.url} placeholder="https://..." onChange={(url) => updateVulnerabilityFeed(index, { url }, setDraft)} />
-                  </label>
-                  <label>
-                    <span>{t('ip.format')}</span>
-                    <Select value={feed.type || 'json'} onChange={(type) => updateVulnerabilityFeed(index, { type: type as string }, setDraft)}>
-                      <Select.Option value="json">JSON</Select.Option>
-                      <Select.Option value="nvd">NVD</Select.Option>
-                      <Select.Option value="osv">OSV</Select.Option>
-                      <Select.Option value="cve">CVE</Select.Option>
-                    </Select>
-                  </label>
-                  <label>
-                    <span>{t('rules.severity')}</span>
-                    <Select value={feed.min_severity} onChange={(min_severity) => updateVulnerabilityFeed(index, { min_severity: min_severity as string }, setDraft)}>
-                      <Select.Option value="low">{t('rules.low')}</Select.Option>
-                      <Select.Option value="medium">{t('rules.medium')}</Select.Option>
-                      <Select.Option value="high">{t('rules.high')}</Select.Option>
-                      <Select.Option value="critical">{t('rules.critical')}</Select.Option>
-                    </Select>
-                  </label>
-                  <label>
-                    <span>{t('system.checkIntervalHours')}</span>
-                    <InputNumber value={durationSeconds(feed.interval) / 3600} min={1} max={720} onChange={(value) => updateVulnerabilityFeed(index, { interval: secondsToDuration(Number(value || 12) * 3600) }, setDraft)} />
-                  </label>
-                  <label className="switch-line">
-                    <span>{t('updates.notify')}</span>
-                    <Switch checked={feed.notify} onChange={(notify) => updateVulnerabilityFeed(index, { notify }, setDraft)} />
-                  </label>
-                </div>
-              </div>
-            ); })}
+              );
+            })}
             {!system.vulnerability.feeds.length && <Empty description={t('system.noFeeds')} />}
           </div>
           {system.vulnerability.feeds.length > FEED_PAGE_SIZE && (
             <div className="feed-pagination">
               <span>{t('updates.feedPage', { page: feedPage, total: feedPageCount })}</span>
-              <Space>
-                <Button disabled={feedPage <= 1} onClick={() => setFeedPage((current) => Math.max(1, current - 1))}>{t('common.back')}</Button>
-                <Button disabled={feedPage >= feedPageCount} onClick={() => setFeedPage((current) => Math.min(feedPageCount, current + 1))}>{t('common.next')}</Button>
-              </Space>
+              <div className="flex gap-2">
+                <Button variant="outline" disabled={feedPage <= 1} onClick={() => setFeedPage((current) => Math.max(1, current - 1))}>{t('common.back')}</Button>
+                <Button variant="outline" disabled={feedPage >= feedPageCount} onClick={() => setFeedPage((current) => Math.min(feedPageCount, current + 1))}>{t('common.next')}</Button>
+              </div>
             </div>
           )}
         </section>

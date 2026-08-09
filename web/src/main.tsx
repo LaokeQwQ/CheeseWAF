@@ -5,7 +5,11 @@ import App from './App';
 import { loadThemeStyles, readInitialTheme } from './themes';
 
 async function bootstrap() {
-  await Promise.all([import('./styles/global.css'), loadThemeStyles(readInitialTheme())]);
+  await Promise.all([
+    import('./styles/shadcn.css'),
+    import('./styles/global.css'),
+    loadThemeStyles(readInitialTheme()),
+  ]);
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <App />

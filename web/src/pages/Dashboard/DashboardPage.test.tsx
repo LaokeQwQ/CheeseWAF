@@ -10,16 +10,16 @@ const apiMocks = vi.hoisted(() => ({
   reclaimSystemResources: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return { ...actual, Message: messageMocks };
-});
+vi.mock('sonner', () => ({
+  toast: toastMocks,
+  Toaster: () => null,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string, opts?: Record<string, unknown>) => (opts ? `${key}:${JSON.stringify(opts)}` : key) }),
@@ -30,6 +30,7 @@ vi.mock('../../api/client', async (importOriginal) => {
   return { ...actual, ...apiMocks };
 });
 
+import { TooltipProvider } from '@/components/ui';
 import DashboardPage from './DashboardPage';
 
 function log(partial: Record<string, unknown>) {
@@ -53,9 +54,11 @@ function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <DashboardPage />
-      </MemoryRouter>
+      <TooltipProvider>
+        <MemoryRouter>
+          <DashboardPage />
+        </MemoryRouter>
+      </TooltipProvider>
     </QueryClientProvider>,
   );
   return client;
@@ -122,7 +125,7 @@ describe('DashboardPage', () => {
     fireEvent.click(memoryBtn!);
     await waitFor(() => expect(apiMocks.reclaimSystemResources).toHaveBeenCalled());
     expect(apiMocks.reclaimSystemResources.mock.calls[0]?.[0]).toBe('memory');
-    expect(messageMocks.success).toHaveBeenCalled();
+    expect(toastMocks.success).toHaveBeenCalled();
   });
 
   it('surfaces reclaim failures', async () => {
@@ -133,6 +136,6 @@ describe('DashboardPage', () => {
     const swapBtn = screen.getByText('dashboard.reclaimSwap').closest('button');
     expect(swapBtn).toBeTruthy();
     fireEvent.click(swapBtn!);
-    await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith('permission denied'));
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('permission denied'));
   });
 });

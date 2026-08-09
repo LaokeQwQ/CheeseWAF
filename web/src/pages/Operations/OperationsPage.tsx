@@ -1,8 +1,34 @@
-import { Button, Empty, Form, Input, InputNumber, Message as ArcoMessage, Modal, Progress, Select, Switch, Table, Tag } from '@arco-design/web-react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Archive, Database, Edit3, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import {
+  Badge,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Empty,
+  Input,
+  Label,
+  Progress,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  toast,
+} from '@/components/ui';
 import { cleanupStorage, exportBackup, fetchStorageStats, fetchTasks, updateTasks } from '../../api/client';
 import type { ScheduledTask } from '../../types/api';
 import './OperationsPage.css';
@@ -29,25 +55,25 @@ export default function OperationsPage() {
     mutationFn: cleanupStorage,
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ['storage'] });
-      ArcoMessage.success(t('ops.cleanupDone', { removed: result.removed, scanned: result.scanned }));
+      toast.success(t('ops.cleanupDone', { removed: result.removed, scanned: result.scanned }));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const backup = useMutation({
     mutationFn: exportBackup,
     onSuccess: (result) => {
       const destination = typeof result.path === 'string' ? `: ${result.path}` : '';
-      ArcoMessage.success(`${t('ops.backup')}${destination}`);
+      toast.success(`${t('ops.backup')}${destination}`);
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const tasksMutation = useMutation({
     mutationFn: updateTasks,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      ArcoMessage.success(t('ops.tasksSaved'));
+      toast.success(t('ops.tasksSaved'));
     },
-    onError: (error) => ArcoMessage.error(error.message),
+    onError: (error) => toast.error(error.message),
   });
   const dataSize = storage?.data ?? 0;
   const logSize = storage?.logs ?? 0;
@@ -56,6 +82,36 @@ export default function OperationsPage() {
   const logShare = Math.round((logSize / total) * 100);
   const reportTask = tasks.find((task) => task.type === 'security_report') ?? defaultReportTask(t);
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [reportForm, setReportForm] = useState({
+    enabled: reportTask.enabled,
+    frequency: reportTask.frequency ?? 'daily',
+    at: reportTask.at ?? '08:00',
+    channel: reportTask.channel ?? 'file',
+    recipient: reportTask.recipient ?? './data/reports',
+    period: reportTask.period ?? 'daily',
+  });
+  const [taskForm, setTaskForm] = useState<TaskFormValues | null>(null);
+
+  useEffect(() => {
+    setReportForm({
+      enabled: reportTask.enabled,
+      frequency: reportTask.frequency ?? 'daily',
+      at: reportTask.at ?? '08:00',
+      channel: reportTask.channel ?? 'file',
+      recipient: reportTask.recipient ?? './data/reports',
+      period: reportTask.period ?? 'daily',
+    });
+  }, [reportTask.id, reportTask.enabled, reportTask.frequency, reportTask.at, reportTask.channel, reportTask.recipient, reportTask.period]);
+
+  useEffect(() => {
+    if (editingTask) {
+      setTaskForm(taskToFormValues(editingTask));
+    } else {
+      setTaskForm(null);
+    }
+  }, [editingTask]);
+
   const busyTaskId = tasksMutation.isPending
     ? (() => {
         const next = tasksMutation.variables ?? [];
@@ -85,18 +141,25 @@ export default function OperationsPage() {
     const exists = latest.some((item) => item.id === task.id);
     persistTasks(exists ? latest.map((item) => (item.id === task.id ? nextTask : item)) : [...latest, nextTask], onSuccess);
   };
-  const removeTask = (id: string) => {
-    Modal.confirm({
-      title: t('common.confirmDeleteTitle'),
-      content: t('common.confirmDeleteEntry'),
-      okText: t('common.delete'),
-      cancelText: t('common.cancel'),
-      okButtonProps: { status: 'danger' },
-      onOk: () => {
-        const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
-        persistTasks(latest.filter((task) => task.id !== id));
-      },
-    });
+  const removeTask = (id: string) => setDeleteTarget(id);
+  const confirmRemoveTask = () => {
+    if (!deleteTarget) return;
+    const id = deleteTarget;
+    setDeleteTarget(null);
+    const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
+    persistTasks(latest.filter((task) => task.id !== id));
+  };
+
+  const submitReport = (event: FormEvent) => {
+    event.preventDefault();
+    const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
+    tasksMutation.mutate(upsertReportTask(latest, { ...reportTask, ...reportForm }, t));
+  };
+
+  const submitTaskForm = (event: FormEvent) => {
+    event.preventDefault();
+    if (!editingTask || !taskForm) return;
+    saveTask(editingTask, normalizeTaskFormValues(editingTask, taskForm), () => setEditingTask(null));
   };
 
   return (
@@ -106,7 +169,8 @@ export default function OperationsPage() {
           <h1>{t('ops.title')}</h1>
           <p>{t('ops.subtitle')}</p>
         </div>
-        <Button type="primary" icon={<Archive size={16} />} onClick={() => backup.mutate()} loading={backup.isPending}>
+        <Button onClick={() => backup.mutate()} loading={backup.isPending}>
+          <Archive size={16} />
           {t('ops.backup')}
         </Button>
       </header>
@@ -121,17 +185,20 @@ export default function OperationsPage() {
               <div className="resource-stack">
                 <div title={t('ops.shareHint')}>
                   <Database size={18} /><span>{t('ops.dataDir')}</span>
-                  <Progress percent={dataShare} formatText={() => `${dataShare}%`} />
+                  <Progress value={dataShare} />
                   <code className="resource-value">{formatBytes(dataSize)}</code>
                 </div>
                 <div title={t('ops.shareHint')}>
                   <Archive size={18} /><span>{t('ops.logsDir')}</span>
-                  <Progress percent={logShare} formatText={() => `${logShare}%`} />
+                  <Progress value={logShare} />
                   <code className="resource-value">{formatBytes(logSize)}</code>
                 </div>
               </div>
               <div className="panel-actions">
-                <Button icon={<RotateCcw size={16} />} onClick={() => cleanup.mutate()} loading={cleanup.isPending}>{t('ops.cleanup')}</Button>
+                <Button variant="outline" onClick={() => cleanup.mutate()} loading={cleanup.isPending}>
+                  <RotateCcw size={16} />
+                  {t('ops.cleanup')}
+                </Button>
               </div>
             </>
           )}
@@ -141,43 +208,65 @@ export default function OperationsPage() {
           {tasksQuery.isLoading ? <div className="skeleton-list" /> : tasksQuery.isError ? (
             <QueryError error={tasksQuery.error} onRetry={() => tasksQuery.refetch()} retryLabel={t('common.retry')} fallbackMessage={t('common.noData')} />
           ) : (
-            <Form
-              key={`${reportTask.id}-${reportTask.enabled}-${reportTask.frequency}-${reportTask.at}-${reportTask.channel}-${reportTask.recipient}`}
-              className="ops-report-form"
-              layout="vertical"
-              initialValues={{
-                enabled: reportTask.enabled,
-                frequency: reportTask.frequency ?? 'daily',
-                at: reportTask.at ?? '08:00',
-                channel: reportTask.channel ?? 'file',
-                recipient: reportTask.recipient ?? './data/reports',
-                period: reportTask.period ?? 'daily',
-              }}
-              onSubmit={(values) => {
-                const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
-                tasksMutation.mutate(upsertReportTask(latest, { ...reportTask, ...values }, t));
-              }}
-            >
-              <Form.Item label={t('ops.report')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-              <Form.Item label={t('ops.every')} field="frequency">
-                <Select>
-                  <Select.Option value="daily">{t('ops.daily')}</Select.Option>
-                  <Select.Option value="weekly">{t('ops.weekly')}</Select.Option>
-                  <Select.Option value="monthly">{t('ops.monthly')}</Select.Option>
+            <form className="ops-report-form" onSubmit={submitReport}>
+              <div className="field-stack">
+                <Label>{t('ops.report')}</Label>
+                <Switch
+                  checked={reportForm.enabled}
+                  onCheckedChange={(enabled) => setReportForm((c) => ({ ...c, enabled }))}
+                />
+              </div>
+              <div className="field-stack">
+                <Label>{t('ops.every')}</Label>
+                <Select
+                  value={reportForm.frequency}
+                  onValueChange={(frequency) => setReportForm((c) => ({ ...c, frequency }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="daily">{t('ops.daily')}</SelectItem>
+                    <SelectItem value="weekly">{t('ops.weekly')}</SelectItem>
+                    <SelectItem value="monthly">{t('ops.monthly')}</SelectItem>
+                  </SelectContent>
                 </Select>
-              </Form.Item>
-              <Form.Item label={t('ops.at')} field="at" rules={timeRules}><Input placeholder="08:00" /></Form.Item>
-              <Form.Item label={t('ops.channel')} field="channel">
-                <Select>
-                  <Select.Option value="file">{t('ops.file')}</Select.Option>
-                  <Select.Option value="webhook">Webhook</Select.Option>
+              </div>
+              <div className="field-stack">
+                <Label htmlFor="ops-report-at">{t('ops.at')}</Label>
+                <Input
+                  id="ops-report-at"
+                  placeholder="08:00"
+                  value={reportForm.at}
+                  required
+                  pattern="(?:[01]\d|2[0-3]):[0-5]\d"
+                  title="HH:mm"
+                  onChange={(e) => setReportForm((c) => ({ ...c, at: e.target.value }))}
+                />
+              </div>
+              <div className="field-stack">
+                <Label>{t('ops.channel')}</Label>
+                <Select
+                  value={reportForm.channel}
+                  onValueChange={(channel) => setReportForm((c) => ({ ...c, channel }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="file">{t('ops.file')}</SelectItem>
+                    <SelectItem value="webhook">Webhook</SelectItem>
+                  </SelectContent>
                 </Select>
-              </Form.Item>
-              <Form.Item className="ops-report-recipient" label={t('ops.recipient')} field="recipient"><Input /></Form.Item>
-              <Form.Item className="ops-report-actions">
-                <Button type="primary" htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
-              </Form.Item>
-            </Form>
+              </div>
+              <div className="field-stack ops-report-recipient">
+                <Label htmlFor="ops-report-recipient">{t('ops.recipient')}</Label>
+                <Input
+                  id="ops-report-recipient"
+                  value={reportForm.recipient}
+                  onChange={(e) => setReportForm((c) => ({ ...c, recipient: e.target.value }))}
+                />
+              </div>
+              <div className="ops-report-actions">
+                <Button type="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
+              </div>
+            </form>
           )}
         </section>
       </div>
@@ -185,58 +274,75 @@ export default function OperationsPage() {
       <section className="table-panel ops-task-panel">
         <div className="panel-heading">
           <h2>{t('ops.taskList')}</h2>
-          <Button icon={<Plus size={15} />} disabled={tasksQuery.isLoading || tasksQuery.isError || tasksMutation.isPending} onClick={() => setEditingTask(newScheduledTask(t))}>{t('common.add')}</Button>
+          <Button
+            variant="outline"
+            disabled={tasksQuery.isLoading || tasksQuery.isError || tasksMutation.isPending}
+            onClick={() => setEditingTask(newScheduledTask(t))}
+          >
+            <Plus size={15} />
+            {t('common.add')}
+          </Button>
         </div>
         {tasksQuery.isLoading ? <div className="skeleton-list" /> : tasksQuery.isError ? (
           <QueryError error={tasksQuery.error} onRetry={() => tasksQuery.refetch()} retryLabel={t('common.retry')} fallbackMessage={t('common.noData')} />
         ) : tasks.length === 0 ? <Empty description={t('common.noData')} /> : (
           <>
             <div className="desktop-table-wrap">
-              <Table
-                rowKey="id"
-                pagination={false}
-                className="ops-task-table"
-                data={tasks}
-                columns={[
-                  { title: t('ops.task'), dataIndex: 'name', width: 220, render: (name: string) => <span className="ops-task-name" title={name}>{name}</span> },
-                  { title: t('ops.type'), dataIndex: 'type', width: 126, render: (type: string) => <span className="status-group"><Tag>{taskTypeLabel(type, t)}</Tag></span> },
-                  { title: t('ops.every'), dataIndex: 'every', width: 136, render: (_: unknown, record: ScheduledTask) => <span className="ops-task-schedule">{formatTaskSchedule(record, t)}</span> },
-                  { title: t('ops.target'), dataIndex: 'target', width: 260, render: (target: string) => <code className="table-code ops-task-target" title={target || '-'}>{target || '-'}</code> },
-                  {
-                    title: t('rules.enabled'),
-                    dataIndex: 'enabled',
-                    width: 78,
-                    render: (enabled: boolean, record: ScheduledTask) => (
-                      <Switch
-                        size="small"
-                        checked={enabled}
-                        loading={busyTaskId === record.id}
-                        onChange={(next) => void patchTask(record.id, { enabled: next })}
-                      />
-                    ),
-                  },
-                  {
-                    title: t('common.actions'),
-                    dataIndex: 'actions',
-                    width: 166,
-                    render: (_: unknown, record: ScheduledTask) => (
-                      <span className="table-action-group ops-task-actions">
-                        <Button size="mini" icon={<Edit3 size={13} />} onClick={() => setEditingTask(record)}>{t('common.edit')}</Button>
-                        <Button
-                          size="mini"
-                          status="danger"
-                          icon={<Trash2 size={13} />}
-                          disabled={tasksMutation.isPending}
-                          loading={busyTaskId === record.id}
-                          onClick={() => removeTask(record.id)}
-                        >
-                          {t('common.delete')}
-                        </Button>
-                      </span>
-                    ),
-                  },
-                ]}
-              />
+              <Table className="ops-task-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('ops.task')}</TableHead>
+                    <TableHead>{t('ops.type')}</TableHead>
+                    <TableHead>{t('ops.every')}</TableHead>
+                    <TableHead>{t('ops.target')}</TableHead>
+                    <TableHead>{t('rules.enabled')}</TableHead>
+                    <TableHead>{t('common.actions')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tasks.map((record) => (
+                    <TableRow key={record.id}>
+                      <TableCell>
+                        <span className="ops-task-name" title={record.name}>{record.name}</span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="status-group"><Badge variant="secondary">{taskTypeLabel(record.type, t)}</Badge></span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="ops-task-schedule">{formatTaskSchedule(record, t)}</span>
+                      </TableCell>
+                      <TableCell>
+                        <code className="table-code ops-task-target" title={record.target || '-'}>{record.target || '-'}</code>
+                      </TableCell>
+                      <TableCell>
+                        <Switch
+                          checked={record.enabled}
+                          disabled={busyTaskId === record.id}
+                          onCheckedChange={(next) => void patchTask(record.id, { enabled: next })}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <span className="table-action-group ops-task-actions">
+                          <Button size="sm" variant="outline" onClick={() => setEditingTask(record)}>
+                            <Edit3 size={13} />
+                            {t('common.edit')}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={tasksMutation.isPending}
+                            loading={busyTaskId === record.id}
+                            onClick={() => removeTask(record.id)}
+                          >
+                            <Trash2 size={13} />
+                            {t('common.delete')}
+                          </Button>
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
             <div className="mobile-card-list ops-task-cards">
               {tasks.map((task) => (
@@ -254,64 +360,164 @@ export default function OperationsPage() {
           </>
         )}
       </section>
-      <Modal
-        title={t('ops.editTask')}
-        visible={Boolean(editingTask)}
-        footer={null}
-        onCancel={() => setEditingTask(null)}
-        className="ops-task-modal"
-      >
-        {editingTask && (
-          <Form
-            key={`${editingTask.id}-${editingTask.enabled}-${editingTask.every}-${editingTask.frequency}`}
-            className="ops-task-form"
-            layout="vertical"
-            initialValues={taskToFormValues(editingTask)}
-            onSubmit={(values: TaskFormValues) => {
-              saveTask(editingTask, normalizeTaskFormValues(editingTask, values), () => setEditingTask(null));
-            }}
-          >
-            <div className="ops-task-form-grid">
-              <Form.Item label={t('ops.task')} field="name" rules={[{ required: true }]}>
-                <Input placeholder={t('ops.taskNamePlaceholder')} />
-              </Form.Item>
-              <Form.Item label={t('ops.type')} field="type" rules={[{ required: true }]}>
-                <Select>
-                  {taskTypeOptions.map((type) => <Select.Option key={type} value={type}>{taskTypeLabel(type, t)}</Select.Option>)}
-                </Select>
-              </Form.Item>
-              <Form.Item label={t('ops.frequency')} field="frequency" rules={[{ required: true }]}>
-                <Select>
-                  {taskFrequencyOptions.map((frequency) => <Select.Option key={frequency} value={frequency}>{frequencyLabel(frequency, t)}</Select.Option>)}
-                </Select>
-              </Form.Item>
-              <Form.Item label={t('ops.at')} field="at" rules={timeRules}><Input placeholder="08:00" /></Form.Item>
-              <Form.Item label={t('ops.everyValue')} field="everyValue">
-                <InputNumber min={1} max={31 * 24 * 60} />
-              </Form.Item>
-              <Form.Item label={t('ops.everyUnit')} field="everyUnit">
-                <Select>
-                  {durationUnitOptions.map((unit) => <Select.Option key={unit} value={unit}>{durationUnitLabel(unit, t)}</Select.Option>)}
-                </Select>
-              </Form.Item>
-              <Form.Item label={t('ops.target')} field="target"><Input placeholder="./logs" /></Form.Item>
-              <Form.Item label={t('ops.keep')} field="keep"><InputNumber min={1} max={365} /></Form.Item>
-              <Form.Item label={t('ops.channel')} field="channel">
-                <Select allowClear>
-                  <Select.Option value="file">{t('ops.file')}</Select.Option>
-                  <Select.Option value="webhook">Webhook</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item label={t('ops.recipient')} field="recipient"><Input placeholder="./data/reports" /></Form.Item>
-            </div>
-            <Form.Item label={t('rules.enabled')} field="enabled" triggerPropName="checked"><Switch /></Form.Item>
-            <div className="form-action-row">
-              <Button onClick={() => setEditingTask(null)} disabled={tasksMutation.isPending}>{t('common.close')}</Button>
-              <Button type="primary" htmlType="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
-            </div>
-          </Form>
-        )}
-      </Modal>
+
+      <Dialog open={Boolean(editingTask)} onOpenChange={(open) => { if (!open) setEditingTask(null); }}>
+        <DialogContent className="ops-task-modal max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t('ops.editTask')}</DialogTitle>
+          </DialogHeader>
+          {editingTask && taskForm && (
+            <form className="ops-task-form" onSubmit={submitTaskForm}>
+              <div className="ops-task-form-grid">
+                <div className="field-stack">
+                  <Label htmlFor="task-name">{t('ops.task')}</Label>
+                  <Input
+                    id="task-name"
+                    required
+                    placeholder={t('ops.taskNamePlaceholder')}
+                    value={taskForm.name}
+                    onChange={(e) => setTaskForm((c) => (c ? { ...c, name: e.target.value } : c))}
+                  />
+                </div>
+                <div className="field-stack">
+                  <Label>{t('ops.type')}</Label>
+                  <Select
+                    value={taskForm.type || 'cleanup'}
+                    onValueChange={(type) => setTaskForm((c) => (c ? { ...c, type } : c))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {taskTypeOptions.map((type) => (
+                        <SelectItem key={type} value={type}>{taskTypeLabel(type, t)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="field-stack">
+                  <Label>{t('ops.frequency')}</Label>
+                  <Select
+                    value={taskForm.frequency || 'interval'}
+                    onValueChange={(frequency) => setTaskForm((c) => (c ? { ...c, frequency } : c))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {taskFrequencyOptions.map((frequency) => (
+                        <SelectItem key={frequency} value={frequency}>{frequencyLabel(frequency, t)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="field-stack">
+                  <Label htmlFor="task-at">{t('ops.at')}</Label>
+                  <Input
+                    id="task-at"
+                    placeholder="08:00"
+                    required
+                    pattern="(?:[01]\d|2[0-3]):[0-5]\d"
+                    title="HH:mm"
+                    value={taskForm.at || ''}
+                    onChange={(e) => setTaskForm((c) => (c ? { ...c, at: e.target.value } : c))}
+                  />
+                </div>
+                <div className="field-stack">
+                  <Label htmlFor="task-every-value">{t('ops.everyValue')}</Label>
+                  <Input
+                    id="task-every-value"
+                    type="number"
+                    min={1}
+                    max={31 * 24 * 60}
+                    value={taskForm.everyValue ?? 1}
+                    onChange={(e) => setTaskForm((c) => (c ? { ...c, everyValue: Number(e.target.value || 1) } : c))}
+                  />
+                </div>
+                <div className="field-stack">
+                  <Label>{t('ops.everyUnit')}</Label>
+                  <Select
+                    value={taskForm.everyUnit || 'h'}
+                    onValueChange={(everyUnit) => setTaskForm((c) => (c ? { ...c, everyUnit: everyUnit as DurationUnit } : c))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {durationUnitOptions.map((unit) => (
+                        <SelectItem key={unit} value={unit}>{durationUnitLabel(unit, t)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="field-stack">
+                  <Label htmlFor="task-target">{t('ops.target')}</Label>
+                  <Input
+                    id="task-target"
+                    placeholder="./logs"
+                    value={taskForm.target || ''}
+                    onChange={(e) => setTaskForm((c) => (c ? { ...c, target: e.target.value } : c))}
+                  />
+                </div>
+                <div className="field-stack">
+                  <Label htmlFor="task-keep">{t('ops.keep')}</Label>
+                  <Input
+                    id="task-keep"
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={taskForm.keep ?? 7}
+                    onChange={(e) => setTaskForm((c) => (c ? { ...c, keep: Number(e.target.value || 7) } : c))}
+                  />
+                </div>
+                <div className="field-stack">
+                  <Label>{t('ops.channel')}</Label>
+                  <Select
+                    value={taskForm.channel || '__none__'}
+                    onValueChange={(channel) => setTaskForm((c) => (c ? { ...c, channel: channel === '__none__' ? '' : channel } : c))}
+                  >
+                    <SelectTrigger><SelectValue placeholder={t('ops.channel')} /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">—</SelectItem>
+                      <SelectItem value="file">{t('ops.file')}</SelectItem>
+                      <SelectItem value="webhook">Webhook</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="field-stack">
+                  <Label htmlFor="task-recipient">{t('ops.recipient')}</Label>
+                  <Input
+                    id="task-recipient"
+                    placeholder="./data/reports"
+                    value={taskForm.recipient || ''}
+                    onChange={(e) => setTaskForm((c) => (c ? { ...c, recipient: e.target.value } : c))}
+                  />
+                </div>
+              </div>
+              <div className="field-stack">
+                <Label>{t('rules.enabled')}</Label>
+                <Switch
+                  checked={Boolean(taskForm.enabled)}
+                  onCheckedChange={(enabled) => setTaskForm((c) => (c ? { ...c, enabled } : c))}
+                />
+              </div>
+              <DialogFooter className="form-action-row">
+                <Button type="button" variant="outline" onClick={() => setEditingTask(null)} disabled={tasksMutation.isPending}>
+                  {t('common.close')}
+                </Button>
+                <Button type="submit" loading={tasksMutation.isPending}>{t('common.save')}</Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('common.confirmDeleteTitle')}</DialogTitle>
+            <DialogDescription>{t('common.confirmDeleteEntry')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDeleteTarget(null)}>{t('common.cancel')}</Button>
+            <Button type="button" variant="destructive" onClick={confirmRemoveTask}>{t('common.delete')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
@@ -336,11 +542,6 @@ function defaultReportTask(t: Translate): ScheduledTask {
     enabled: false,
   };
 }
-
-const timeRules = [
-  { required: true },
-  { match: /^(?:[01]\d|2[0-3]):[0-5]\d$/, message: 'HH:mm' },
-];
 
 function upsertReportTask(tasks: ScheduledTask[], next: ScheduledTask, t: Translate) {
   const base = defaultReportTask(t);
@@ -368,18 +569,10 @@ function formatBytes(value: number) {
 }
 
 function taskTypeLabel(type: string, t: (key: string, options?: Record<string, unknown>) => string) {
-  if (type === 'security_report') {
-    return t('ops.report');
-  }
-  if (type === 'cleanup') {
-    return t('ops.cleanup');
-  }
-  if (type === 'backup') {
-    return t('ops.backupTask');
-  }
-  if (type === 'ai_self_learning' || type === 'self_learning_rules') {
-    return t('ops.aiSelfLearning');
-  }
+  if (type === 'security_report') return t('ops.report');
+  if (type === 'cleanup') return t('ops.cleanup');
+  if (type === 'backup') return t('ops.backupTask');
+  if (type === 'ai_self_learning' || type === 'self_learning_rules') return t('ops.aiSelfLearning');
   return type || '-';
 }
 
@@ -526,7 +719,7 @@ function QueryError({
   return (
     <div className="inline-error ops-query-error" role="alert">
       <span>{message}</span>
-      <Button size="small" onClick={onRetry}>{retryLabel}</Button>
+      <Button size="sm" variant="outline" onClick={onRetry}>{retryLabel}</Button>
     </div>
   );
 }
@@ -550,7 +743,7 @@ function TaskCard({
     <article className="mobile-data-card">
       <header>
         <strong className="ops-task-card-title" title={task.name}>{task.name}</strong>
-        <Tag>{taskTypeLabel(task.type, t)}</Tag>
+        <Badge variant="secondary">{taskTypeLabel(task.type, t)}</Badge>
       </header>
       <dl>
         <div>
@@ -564,13 +757,14 @@ function TaskCard({
         <div>
           <dt>{t('rules.enabled')}</dt>
           <dd>
-            <Switch size="small" checked={task.enabled} loading={busy} onChange={onToggle} />
+            <Switch checked={task.enabled} disabled={busy} onCheckedChange={onToggle} />
           </dd>
         </div>
       </dl>
       <div className="mobile-card-actions">
-        <Button icon={<Edit3 size={14} />} onClick={onEdit}>{t('common.edit')}</Button>
-        <Button status="danger" icon={<Trash2 size={14} />} disabled={busy} onClick={onDelete}>
+        <Button variant="outline" onClick={onEdit}><Edit3 size={14} />{t('common.edit')}</Button>
+        <Button variant="destructive" disabled={busy} onClick={onDelete}>
+          <Trash2 size={14} />
           {t('common.delete')}
         </Button>
       </div>

@@ -67,16 +67,6 @@
   outline-offset: 2px;
 }
 
-.assistant-input .arco-input-inner-wrapper,
-.assistant-input .arco-input {
-  min-height: 42px;
-  border-radius: 999px !important;
-}
-
-.assistant-input .arco-input {
-  padding-inline: 16px;
-}
-
 .assistant-input {
   grid-template-columns: auto minmax(0, 1fr) 40px;
   align-items: center;
@@ -223,12 +213,6 @@
   flex: 0 0 auto;
 }
 
-.assistant-approval-actions .arco-btn {
-  min-width: 86px;
-  flex-shrink: 0;
-  pointer-events: auto;
-}
-
 .assistant-approval-actions .assistant-approval-approve,
 .assistant-approval-actions .assistant-approval-reject {
   border-radius: 999px !important;
@@ -301,10 +285,6 @@
   .assistant-approval-actions {
     width: 100% !important;
     justify-content: stretch !important;
-  }
-
-  .assistant-approval-actions .arco-btn {
-    flex: 1 1 0 !important;
   }
 }
 

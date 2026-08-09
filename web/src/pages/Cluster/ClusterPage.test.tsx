@@ -14,18 +14,24 @@ const apiMocks = vi.hoisted(() => ({
   startClusterDeploymentTask: vi.fn(),
   fetchClusterDeploymentTask: vi.fn(),
   rotateClusterNodeCertificate: vi.fn(),
+  fetchClusterConsensus: vi.fn(),
+  fetchClusterRollingUpgrade: vi.fn(),
+  createClusterBootstrapPlan: vi.fn(),
+  startClusterRollingUpgrade: vi.fn(),
+  startClusterRollingRollback: vi.fn(),
+  fetchClusterTrafficPeers: vi.fn(),
 }));
 
-const messageMocks = vi.hoisted(() => ({
+const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }));
 
-vi.mock('@arco-design/web-react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@arco-design/web-react')>();
-  return { ...actual, Message: messageMocks };
-});
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), toastMocks),
+  Toaster: () => null,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -67,6 +73,7 @@ const statusFixture = {
 beforeEach(() => {
   vi.clearAllMocks();
   apiMocks.fetchClusterStatus.mockResolvedValue(statusFixture);
+  apiMocks.fetchClusterConsensus.mockResolvedValue(null);
   apiMocks.fetchClusterJoinTokens.mockResolvedValue({
     items: [
       {
@@ -138,7 +145,7 @@ describe('ClusterPage', () => {
       max_uses: 1,
     }));
     expect(await screen.findByText('join-secret-value')).toBeTruthy();
-    expect(messageMocks.success).toHaveBeenCalledWith('cluster.tokenCreated');
+    expect(toastMocks.success).toHaveBeenCalledWith('cluster.tokenCreated');
   });
 
   it('disables create-token after secret is shown until cleared', async () => {
@@ -161,7 +168,7 @@ describe('ClusterPage', () => {
     expect(apiMocks.createClusterJoinToken).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'cluster.clearToken' }));
-    await waitFor(() => expect(messageMocks.success).toHaveBeenCalledWith('cluster.tokenCleared'));
+    await waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith('cluster.tokenCleared'));
     expect(createBtn().disabled).toBe(false);
   });
 

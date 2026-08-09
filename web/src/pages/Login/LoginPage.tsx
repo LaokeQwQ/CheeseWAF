@@ -1,10 +1,23 @@
-import { Button, Form, Input, Message as ArcoMessage, Modal, Select } from '@arco-design/web-react';
-import '../../styles/arco-components';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type PointerEvent } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { Languages, LockKeyhole, MoveRight, RefreshCcw, ShieldCheck, SunMoon, UserRound, X } from 'lucide-react';
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  toast,
+} from '@/components/ui';
 import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login, sanitizeInternalReturnPath, verifyLoginCaptcha } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import { useAppStore, type Language } from '../../stores';
@@ -46,6 +59,8 @@ export default function LoginPage() {
   const [success, setSuccess] = useState('');
   const [requires2FA, setRequires2FA] = useState(false);
   const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [totpCode, setTotpCode] = useState('');
   const [options, setOptions] = useState<LoginOptions | null>(null);
   const [optionsError, setOptionsError] = useState('');
   const [optionsLoading, setOptionsLoading] = useState(true);
@@ -387,14 +402,19 @@ export default function LoginPage() {
     }
   }
 
-  async function handleSubmit(values: { username?: string; password?: string; totpCode?: string }) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     setLoading(true);
     setError('');
     setSuccess('');
     try {
-      const submittedUsername = normalizeLoginUsername(values.username ?? '');
+      const submittedUsername = normalizeLoginUsername(username);
       if (!isLoginUsernameReady(submittedUsername)) {
         setError(localizedLoginText(t, 'login.usernameRequired', 'Enter a valid username.'));
+        return;
+      }
+      if (!password) {
+        setError(t('login.passwordRequired'));
         return;
       }
       if (options?.captcha.enabled && (captchaState !== 'verified' || captchaUsernameRef.current !== submittedUsername)) {
@@ -418,10 +438,10 @@ export default function LoginPage() {
       if (captcha) {
         captcha.username = submittedUsername;
       }
-      await login(submittedUsername, values.password ?? '', values.totpCode, captcha);
+      await login(submittedUsername, password, totpCode || undefined, captcha);
       const message = t('login.success');
       setSuccess(message);
-      ArcoMessage.success(message);
+      toast.success(message);
       if (navigateTimerRef.current != null) {
         window.clearTimeout(navigateTimerRef.current);
       }
@@ -433,7 +453,7 @@ export default function LoginPage() {
       if (err instanceof APIRequestError && err.code === 'TWO_FA_REQUIRED') {
         setRequires2FA(true);
         setError(t('login.totpRequired'));
-        ArcoMessage.warning(t('login.totpRequired'));
+        toast.warning(t('login.totpRequired'));
         await refreshCaptcha(false);
         return;
       }
@@ -454,7 +474,7 @@ export default function LoginPage() {
     }
   }
 
-  function handlePointerDown(event: React.PointerEvent<HTMLElement>) {
+  function handlePointerDown(event: PointerEvent<HTMLElement>) {
     if (!slider || loading || captchaState === 'loading' || captchaState === 'solving' || captchaState === 'checking' || captchaState === 'verified' || captchaState === 'invalid' || captchaState === 'error') {
       return;
     }
@@ -478,7 +498,7 @@ export default function LoginPage() {
     setSliderTrack([sliderTrackPoint(event, sliderX, 'down', 0)]);
   }
 
-  function handlePointerMove(event: React.PointerEvent<HTMLElement>) {
+  function handlePointerMove(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId || !slider) {
       return;
@@ -548,7 +568,7 @@ export default function LoginPage() {
     }
   }
 
-  async function handlePointerUp(event: React.PointerEvent<HTMLElement>) {
+  async function handlePointerUp(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId || !slider) {
       return;
@@ -576,7 +596,7 @@ export default function LoginPage() {
     await verifySliderPosition(finalVisualX, elapsed, currentSlider, finalTrack);
   }
 
-  function handleSliderKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+  function handleSliderKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
     if (!slider || captchaState === 'checking' || captchaState === 'verified') {
       return;
     }
@@ -682,28 +702,32 @@ export default function LoginPage() {
   return (
     <main className={safeBackgroundURL ? 'auth-screen auth-screen-media' : 'auth-screen'}>
       <div className="auth-toolbar" role="toolbar" aria-label={t('system.theme')}>
-        <Select
-          aria-label={t('system.theme')}
-          className="auth-toolbar-select"
-          value={isThemeName(theme) ? theme : 'light'}
-          prefix={<SunMoon size={15} />}
-          onChange={handleThemeChange}
-        >
-          {themeOptions.map((option) => (
-            <Select.Option key={option.value} value={option.value}>
-              {t(option.labelKey)}
-            </Select.Option>
-          ))}
+        <Select value={isThemeName(theme) ? theme : 'light'} onValueChange={handleThemeChange}>
+          <SelectTrigger className="auth-toolbar-select" aria-label={t('system.theme')}>
+            <span className="inline-flex items-center gap-2">
+              <SunMoon size={15} />
+              <SelectValue />
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            {themeOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {t(option.labelKey)}
+              </SelectItem>
+            ))}
+          </SelectContent>
         </Select>
-        <Select
-          aria-label={t('system.language')}
-          className="auth-toolbar-select"
-          value={isLanguage(language) ? language : 'zh-CN'}
-          prefix={<Languages size={15} />}
-          onChange={handleLanguageChange}
-        >
-          <Select.Option value="zh-CN">中文</Select.Option>
-          <Select.Option value="en-US">English</Select.Option>
+        <Select value={isLanguage(language) ? language : 'zh-CN'} onValueChange={handleLanguageChange}>
+          <SelectTrigger className="auth-toolbar-select" aria-label={t('system.language')}>
+            <span className="inline-flex items-center gap-2">
+              <Languages size={15} />
+              <SelectValue />
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="zh-CN">中文</SelectItem>
+            <SelectItem value="en-US">English</SelectItem>
+          </SelectContent>
         </Select>
       </div>
       {showBackgroundVideo && (
@@ -734,22 +758,55 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <Form layout="vertical" className="auth-form" onSubmit={handleSubmit}>
-            <Form.Item label={t('login.username')} field="username" rules={[{ required: true, message: t('login.usernameRequired') }]}>
-              <Input prefix={<UserRound size={16} />} autoComplete="username" value={username} onChange={handleUsernameChange} />
-            </Form.Item>
-            <Form.Item label={t('login.password')} field="password" rules={[{ required: true, message: t('login.passwordRequired') }]}>
-              <Input.Password prefix={<LockKeyhole size={16} />} autoComplete="current-password" />
-            </Form.Item>
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <div className="mb-3.5 grid gap-1.5">
+              <Label htmlFor="login-username">{t('login.username')}</Label>
+              <div className="relative">
+                <UserRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                <Input
+                  id="login-username"
+                  className="pl-9"
+                  autoComplete="username"
+                  value={username}
+                  onChange={(event) => handleUsernameChange(event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="mb-3.5 grid gap-1.5">
+              <Label htmlFor="login-password">{t('login.password')}</Label>
+              <div className="relative">
+                <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                <Input
+                  id="login-password"
+                  type="password"
+                  className="pl-9"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </div>
+            </div>
             {requires2FA && (
-              <Form.Item label={t('login.totp')} field="totpCode">
-                <Input prefix={<LockKeyhole size={16} />} maxLength={6} inputMode="numeric" />
-              </Form.Item>
+              <div className="mb-3.5 grid gap-1.5">
+                <Label htmlFor="login-totp">{t('login.totp')}</Label>
+                <div className="relative">
+                  <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                  <Input
+                    id="login-totp"
+                    className="pl-9"
+                    maxLength={6}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={totpCode}
+                    onChange={(event) => setTotpCode(event.target.value)}
+                  />
+                </div>
+              </div>
             )}
             {optionsError && (
               <div className="inline-error" role="alert">
                 <span>{optionsError}</span>
-                <Button size="small" loading={optionsLoading} onClick={() => void loadLoginOptions()}>{t('common.retry')}</Button>
+                <Button size="sm" loading={optionsLoading} onClick={() => void loadLoginOptions()}>{t('common.retry')}</Button>
               </div>
             )}
             {options?.captcha.enabled && isLoginUsernameReady(username) && (
@@ -768,13 +825,13 @@ export default function LoginPage() {
               </button>
             )}
             <div className="pressable">
-              <Button type="primary" htmlType="submit" loading={loading} long disabled={Boolean(optionsError) || optionsLoading}>
+              <Button type="submit" className="w-full" loading={loading} disabled={Boolean(optionsError) || optionsLoading}>
                 {t('login.submit')}
               </Button>
             </div>
             {error && <p className="form-error" role="alert">{error}</p>}
             {success && <p className="form-success" role="status">{success}</p>}
-          </Form>
+          </form>
           {(copyrightText || showProductVersion) && (
             <footer className="auth-footer">
               {copyrightText ? <p className="auth-footer-copyright">{copyrightText}</p> : null}
@@ -788,108 +845,118 @@ export default function LoginPage() {
           {loadMs == null ? t('login.loading') : t('login.loadTime', { ms: loadMs })}
         </div>
       </div>
-      <Modal
-        className="auth-captcha-modal"
-        title={null}
-        visible={captchaModalOpen}
-        onCancel={closeCaptchaModal}
-        footer={null}
-        closable={false}
-        unmountOnExit
-        aria-label={t('login.captchaWidgetTitle')}
+      <Dialog
+        open={captchaModalOpen}
+        modal={false}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeCaptchaModal();
+          } else {
+            setCaptchaModalOpen(true);
+          }
+        }}
       >
-        <div className={`auth-captcha-widget auth-captcha-state-${captchaState}`}>
-          <div className="auth-captcha-widget-head">
-            <div>
-              <strong>{t('login.captchaWidgetTitle')}</strong>
-              <span>{captchaState === 'verified' ? t('login.captchaWidgetVerified') : t('login.captchaWidgetHint')}</span>
-            </div>
-          </div>
-          {captchaState === 'verified' ? (
-            <div className="auth-slider-success" role="status">
-              <ShieldCheck size={18} />
-              <span>{t('login.sliderReleasedWithTime', { seconds: formatSeconds(lastSliderDragMs) })}</span>
-            </div>
-          ) : sliderMode && slider ? (
-            <div className={sliderClass} style={{ '--slider-width': `${slider.width}px` } as CSSProperties}>
-              <div className="auth-slider-stage" aria-label={t('login.sliderImage')} role="img" style={{ aspectRatio: `${slider.width} / ${slider.height}` }}>
-                <img ref={sliderImageRef} className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
-                {slider.piece && (
-                  <img
-                    className="auth-slider-piece"
-                    src={slider.piece}
-                    width={slider.piece_size}
-                    height={slider.piece_size}
-                    alt={t('login.sliderPiece')}
-                    draggable={false}
-                    style={{
-                      left: `${(sliderX / slider.width) * 100}%`,
-                      top: `${(slider.target_y / slider.height) * 100}%`,
-                      width: `${(slider.piece_size / slider.width) * 100}%`,
-                      height: 'auto',
-                    }}
-                  />
-                )}
-                {(captchaState === 'invalid' || captchaState === 'checking') && (
-                  <div className="auth-slider-stage-tip">
-                    {captchaState === 'invalid'
-                      ? t('login.sliderInvalidRefreshing')
-                      : t('login.sliderChecking')}
-                  </div>
-                )}
+        <DialogContent
+          className="auth-captcha-modal w-[min(94vw,368px)] max-w-[min(94vw,368px)] gap-0 overflow-hidden border p-0 sm:rounded-xl"
+          showCloseButton={false}
+        >
+          <div className={`auth-captcha-widget auth-captcha-state-${captchaState}`}>
+            <div className="auth-captcha-widget-head">
+              <div>
+                <DialogTitle className="text-base font-semibold leading-none tracking-tight">
+                  {t('login.captchaWidgetTitle')}
+                </DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground">
+                  {captchaState === 'verified' ? t('login.captchaWidgetVerified') : t('login.captchaWidgetHint')}
+                </DialogDescription>
               </div>
-              {showSliderFeedback && (
-                <div className="auth-slider-feedback" aria-live="polite">
-                  <div>
-                    <strong>{sliderCopy}</strong>
-                    <span>{captchaState === 'invalid' ? t('login.sliderReloading') : t('login.captchaGateHint')}</span>
-                  </div>
+            </div>
+            {captchaState === 'verified' ? (
+              <div className="auth-slider-success" role="status">
+                <ShieldCheck size={18} />
+                <span>{t('login.sliderReleasedWithTime', { seconds: formatSeconds(lastSliderDragMs) })}</span>
+              </div>
+            ) : sliderMode && slider ? (
+              <div className={sliderClass} style={{ '--slider-width': `${slider.width}px` } as CSSProperties}>
+                <div className="auth-slider-stage" aria-label={t('login.sliderImage')} role="img" style={{ aspectRatio: `${slider.width} / ${slider.height}` }}>
+                  <img ref={sliderImageRef} className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
+                  {slider.piece && (
+                    <img
+                      className="auth-slider-piece"
+                      src={slider.piece}
+                      width={slider.piece_size}
+                      height={slider.piece_size}
+                      alt={t('login.sliderPiece')}
+                      draggable={false}
+                      style={{
+                        left: `${(sliderX / slider.width) * 100}%`,
+                        top: `${(slider.target_y / slider.height) * 100}%`,
+                        width: `${(slider.piece_size / slider.width) * 100}%`,
+                        height: 'auto',
+                      }}
+                    />
+                  )}
+                  {(captchaState === 'invalid' || captchaState === 'checking') && (
+                    <div className="auth-slider-stage-tip">
+                      {captchaState === 'invalid'
+                        ? t('login.sliderInvalidRefreshing')
+                        : t('login.sliderChecking')}
+                    </div>
+                  )}
                 </div>
-              )}
-              <div
-                ref={trackRef}
-                className={sliderX > 0 ? 'auth-slider-track auth-slider-track-progress' : 'auth-slider-track'}
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-                onPointerCancel={handlePointerUp}
-              >
-                <span className="auth-slider-fill" style={{ width: sliderX > 0 ? `${sliderProgress(sliderX, slider) * 100}%` : 0 }} />
-                <button
-                  type="button"
-                  className={sliderDone ? 'auth-slider-thumb auth-slider-thumb-done' : 'auth-slider-thumb'}
-                  style={{ left: `${sliderProgress(sliderX, slider) * 100}%`, transform: `translateX(-${sliderProgress(sliderX, slider) * 100}%)` }}
-                  role="slider"
-                  aria-valuemin={0}
-                  aria-valuemax={getSliderLayoutTravel(slider)}
-                  aria-valuenow={toServerSliderX(sliderX, slider)}
-                  aria-label={t('login.sliderLabel')}
-                  aria-disabled={captchaState === 'checking'}
-                  onKeyDown={handleSliderKeyDown}
+                {showSliderFeedback && (
+                  <div className="auth-slider-feedback" aria-live="polite">
+                    <div>
+                      <strong>{sliderCopy}</strong>
+                      <span>{captchaState === 'invalid' ? t('login.sliderReloading') : t('login.captchaGateHint')}</span>
+                    </div>
+                  </div>
+                )}
+                <div
+                  ref={trackRef}
+                  className={sliderX > 0 ? 'auth-slider-track auth-slider-track-progress' : 'auth-slider-track'}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerCancel={handlePointerUp}
                 >
-                  <MoveRight size={18} />
-                </button>
-                <span className={sliderDone ? 'auth-slider-copy auth-slider-copy-done' : 'auth-slider-copy'}>{sliderCopy}</span>
-              </div>
-              <div className="auth-captcha-widget-foot">
-                <span className="auth-captcha-widget-brand"><BrandLogo /> <strong>CheeseWAF</strong></span>
-                <div>
-                  <button type="button" onClick={() => void refreshCaptcha()} aria-label={t('login.captchaRefresh')} disabled={captchaState === 'checking' || captchaState === 'loading'}>
-                    <RefreshCcw size={15} />
+                  <span className="auth-slider-fill" style={{ width: sliderX > 0 ? `${sliderProgress(sliderX, slider) * 100}%` : 0 }} />
+                  <button
+                    type="button"
+                    className={sliderDone ? 'auth-slider-thumb auth-slider-thumb-done' : 'auth-slider-thumb'}
+                    style={{ left: `${sliderProgress(sliderX, slider) * 100}%`, transform: `translateX(-${sliderProgress(sliderX, slider) * 100}%)` }}
+                    role="slider"
+                    aria-valuemin={0}
+                    aria-valuemax={getSliderLayoutTravel(slider)}
+                    aria-valuenow={toServerSliderX(sliderX, slider)}
+                    aria-label={t('login.sliderLabel')}
+                    aria-disabled={captchaState === 'checking'}
+                    onKeyDown={handleSliderKeyDown}
+                  >
+                    <MoveRight size={18} />
                   </button>
-                  <button type="button" onClick={closeCaptchaModal} aria-label={t('login.captchaModalClose')}>
-                    <X size={16} />
-                  </button>
+                  <span className={sliderDone ? 'auth-slider-copy auth-slider-copy-done' : 'auth-slider-copy'}>{sliderCopy}</span>
+                </div>
+                <div className="auth-captcha-widget-foot">
+                  <span className="auth-captcha-widget-brand"><BrandLogo /> <strong>CheeseWAF</strong></span>
+                  <div>
+                    <button type="button" onClick={() => void refreshCaptcha()} aria-label={t('login.captchaRefresh')} disabled={captchaState === 'checking' || captchaState === 'loading'}>
+                      <RefreshCcw size={15} />
+                    </button>
+                    <button type="button" onClick={closeCaptchaModal} aria-label={t('login.captchaModalClose')}>
+                      <X size={16} />
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : (
-            <div className="auth-captcha-compact">
-              <span>{captchaState === 'loading' ? t('login.captchaState.loading') : t('login.powHint')}</span>
-            </div>
-          )}
-        </div>
-      </Modal>
+            ) : (
+              <div className="auth-captcha-compact">
+                <span>{captchaState === 'loading' ? t('login.captchaState.loading') : t('login.powHint')}</span>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }
@@ -1116,7 +1183,7 @@ function toServerSliderX(visualX: number, slider: LoginSliderCAPTCHAChallenge) {
 }
 
 function sliderTrackPoint(
-  event: React.PointerEvent<HTMLElement>,
+  event: PointerEvent<HTMLElement>,
   sliderX: number,
   type: 'down' | 'move' | 'up',
   elapsedMs: number,
