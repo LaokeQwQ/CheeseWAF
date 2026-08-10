@@ -97,12 +97,14 @@ cheesewaf-deploy-*.tar.gz
 cheesewaf-*-deploy.tar.gz
 
 # Markdown policy (all branches): only public surface docs may be tracked.
-# Allowed: README.md, README_CN.md, progress.md (repo root only).
+# Allowed: README.md, README_CN.md, progress.md, PERFORMANCE_DELIVERY.md (repo root only).
 # Everything else (plans, audits, upgrades, agent notes, docs/**, etc.) stays local.
 *.md
 !/README.md
 !/README_CN.md
 !/progress.md
+!/PERFORMANCE_DELIVERY.md
+!docs/performance-optimization.md
 *.private.md
 *.local.md
 
