@@ -105,14 +105,18 @@ func (d *XSSDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 	return nil, nil
 }
 
+// executableXSSContext reports whether the normalized text sits in an
+// executable HTML/JS context.
+//
+// Do NOT put a bare-substring pre-filter in front of this battery. The patterns
+// below match whitespace-evaded tags (`< script`), namespaced tags
+// (`<xhtml:script`), the generic `on<event>=` family, charset vectors
+// (x-mac-farsi, utf7), encoding chains (`&#60;`, `\x61`) and bare JS primitives
+// (`/**/`, `call(alert)`) that no small literal set covers. A gate tried here
+// dropped 21 of 38 battery-matched payloads, and because heuristicScores also
+// calls this, the miss silently removed the xss category from scoring too.
+// See TestExecutableXSSContextKeepsFullPatternCoverage.
 func executableXSSContext(normalized string) bool {
-	fastSignatures := []string{
-		"<script", "onload=", "onerror=", "onclick=", "onmouseover=",
-		"javascript:", "data:text/html", "<svg", "<iframe", "onfocus=",
-	}
-	if !containsAny(normalized, fastSignatures) {
-		return false
-	}
 	for _, pattern := range xssPatterns {
 		if pattern.MatchString(normalized) {
 			return true

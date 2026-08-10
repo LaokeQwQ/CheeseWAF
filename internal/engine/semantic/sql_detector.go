@@ -149,25 +149,29 @@ func truncate(s string, max int) string {
 	return s[:max]
 }
 
+// sqlSignatures are matched verbatim against the executable SQL projection.
+// Hoisted to package scope so the slice header is static data rather than being
+// rebuilt per call. Do not front this with a containsAny pre-filter: the loop
+// below already short-circuits on the first hit, so a pre-filter costs a full
+// redundant scan on hits and saves nothing on misses.
+var sqlSignatures = []string{
+	"' or '1'='1",
+	"\" or \"1\"=\"1",
+	" union select ",
+	" union all select ",
+	" sleep(",
+	" benchmark(",
+	" pg_sleep(",
+	" information_schema",
+	" or 1=1",
+	" and 1=1",
+}
+
 func looksLikeSQLi(raw string) (bool, string) {
 	text := executableSQLText(raw)
-	signatures := []string{
-		"' or '1'='1",
-		"\" or \"1\"=\"1",
-		" union select ",
-		" union all select ",
-		" sleep(",
-		" benchmark(",
-		" pg_sleep(",
-		" information_schema",
-		" or 1=1",
-		" and 1=1",
-	}
-	if containsAny(text, signatures) {
-		for _, sig := range signatures {
-			if strings.Contains(text, sig) {
-				return true, "SQL injection signature matched: " + strings.TrimSpace(sig)
-			}
+	for _, sig := range sqlSignatures {
+		if strings.Contains(text, sig) {
+			return true, "SQL injection signature matched: " + strings.TrimSpace(sig)
 		}
 	}
 	words := tokens(text)
@@ -216,8 +220,7 @@ func looksLikeSQLi(raw string) (bool, string) {
 }
 
 func sqlExecutionContext(text, compact string) bool {
-	return containsAny(text, []string{"'", ";", "--", "/*", " select ", " exec ", " execute ", " begin ", " declare "}) ||
-		containsAny(compact, []string{"unionselect", "or1=1"})
+	return containsAny(text, sqlCommonNeedles) || containsAny(compact, sqlCompactNeedles)
 }
 
 func requestText(reqCtx *engine.RequestContext) string {
