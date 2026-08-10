@@ -29,6 +29,9 @@ func (d *WebshellDetector) Priority() int { return 350 }
 
 func (d *WebshellDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
 	surface := requestText(reqCtx)
+	if securityDocumentContext(surface) {
+		return nil, nil
+	}
 	normalized := strings.ToLower(surface)
 
 	// ---- PHP webshell signatures ----
@@ -64,7 +67,10 @@ func (d *WebshellDetector) Detect(_ context.Context, reqCtx *engine.RequestConte
 	}
 
 	// ---- ASPX webshell signatures ----
-	if strings.Contains(normalized, "system.diagnostics.process") || strings.Contains(normalized, "eval(request[") {
+	// Bare system.diagnostics.process additionally requires request-input
+	// reachability; see analyzeWebshell for the rationale.
+	if strings.Contains(normalized, "eval(request[") ||
+		(strings.Contains(normalized, "system.diagnostics.process") && hasASPXRequestInput(normalized)) {
 		return &engine.DetectionResult{
 			Detected:   true,
 			DetectorID: d.ID(),
@@ -109,8 +115,25 @@ func hasExternalInput(normalized string) bool {
 	return rxPHPSuperglobal.MatchString(normalized)
 }
 
+// hasASPXRequestInput reports whether the text references ASP.NET request input
+// (Request[...], Request.Form/QueryString/Cookies/Params/Item, or the classic
+// VBScript Request(...) accessor). It is the ASP.NET analogue of
+// hasExternalInput and supplies the reachability half of the ASPX branch.
+func hasASPXRequestInput(normalized string) bool {
+	return rxASPXRequestInput.MatchString(normalized)
+}
+
 // analyzeWebshell is the semantic analyzer entry point called from analyzer.go.
+//
+// Webshell grammar appears verbatim inside vulnerability disclosures, POC
+// templates and CTF writeups, so this routes through the shared
+// securityDocumentContext guard like every other prose-colliding category. A
+// disclosure that quotes System.Diagnostics.Process is not a request that
+// starts a process. See TestWebshellRejectsSecurityDocuments.
 func analyzeWebshell(candidate semanticCandidate) (Hit, bool) {
+	if securityDocumentContext(candidate.text) {
+		return Hit{}, false
+	}
 	normalized := strings.ToLower(candidate.text)
 
 	// PHP webshell: execution primitive + external input
@@ -131,8 +154,15 @@ func analyzeWebshell(candidate semanticCandidate) (Hit, bool) {
 		}), true
 	}
 
-	// ASPX webshell: Process.Start or eval(Request[
-	if strings.Contains(normalized, "system.diagnostics.process") || strings.Contains(normalized, "eval(request[") {
+	// ASPX webshell: dynamic evaluation of request input, or process start whose
+	// argument is request-controlled. eval(Request[ already carries the input
+	// reachability in the token itself. A bare system.diagnostics.process does
+	// not: it is the ordinary .NET way to start any process and shows up in
+	// prose, stack traces and framework source, so it additionally requires a
+	// request-input reference — matching the reachability requirement the PHP
+	// branch above already enforces via hasExternalInput.
+	if strings.Contains(normalized, "eval(request[") ||
+		(strings.Contains(normalized, "system.diagnostics.process") && hasASPXRequestInput(normalized)) {
 		return hit(candidate, "webshell", engine.SeverityCritical, 0.92, map[string]bool{
 			"syntax: ASP.NET process or dynamic evaluation primitive":     true,
 			"semantics: request input reaches server-side code execution": true,
@@ -158,6 +188,8 @@ var (
 	rxPHPObfuscate = regexp.MustCompile(`(?:base64_decode|gzinflate|str_rot13|gzuncompress|create_function)\s*\(`)
 	// PHP superglobals
 	rxPHPSuperglobal = regexp.MustCompile(`(?i)\$_(?:post|get|request|cookie)\s*\[`)
+	// ASP.NET request-input accessors (reachability half of the ASPX branch)
+	rxASPXRequestInput = regexp.MustCompile(`(?i)request\s*(?:\[|\(|\.\s*(?:form|querystring|cookies|params|item|headers|inputstream)\b)`)
 	// Common webshell filenames
 	rxWebshellPath = regexp.MustCompile(`/(?:web)?shell\.php|/c(?:99|100)\.php|/r57\.php|/backdoor\.php|/cmd\.php|/[a-z0-9_-]*shell[a-z0-9_-]*\.(?:php|jsp|aspx)`)
 )
