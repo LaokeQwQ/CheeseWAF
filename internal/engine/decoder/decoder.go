@@ -2,7 +2,6 @@
 package decoder
 
 import (
-	"encoding/base64"
 	"html"
 	"net/url"
 	"regexp"
@@ -16,10 +15,23 @@ type Decoded struct {
 	Text   string
 }
 
+// queryUnescapeReference and htmlUnescapeReference are the ungated primitives.
+// Decode calls them behind cheap byte gates; the equivalence test calls them
+// directly as the oracle, and also pins that the gates are exact.
+func queryUnescapeReference(text string) (string, error) { return url.QueryUnescape(text) }
+func htmlUnescapeReference(text string) string           { return html.UnescapeString(text) }
+
 func Decode(raw string) Decoded {
 	text := raw
 	layers := []string{"raw"}
 	for i := 0; i < 3; i++ {
+		// QueryUnescape can only transform '%' escapes and '+'. Without either
+		// byte it returns (text, nil) unchanged, so the loop would break on the
+		// next == text check anyway. Skipping the call avoids net/url.unescape,
+		// which profiled as the single hottest leaf in the analyzer benchmark.
+		if !strings.ContainsAny(text, "%+") {
+			break
+		}
 		next, err := url.QueryUnescape(text)
 		if err != nil || next == text {
 			break
@@ -27,9 +39,13 @@ func Decode(raw string) Decoded {
 		text = next
 		layers = append(layers, "url")
 	}
-	if unescaped := html.UnescapeString(text); unescaped != text {
-		text = unescaped
-		layers = append(layers, "html")
+	// Every HTML entity begins with '&', so without one UnescapeString is a
+	// no-op and its scan is pure cost.
+	if strings.IndexByte(text, '&') >= 0 {
+		if unescaped := html.UnescapeString(text); unescaped != text {
+			text = unescaped
+			layers = append(layers, "html")
+		}
 	}
 	if looksLikeEncodedPayload(text) {
 		if b64, ok := TryBase64(strings.TrimSpace(text)); ok && printableRatio(b64) > 0.65 {
@@ -47,12 +63,23 @@ func Decode(raw string) Decoded {
 
 // DeepDecode performs aggressive multi-layer decoding to reveal obfuscated payloads.
 func DeepDecode(raw string) Decoded {
-	result := Decode(raw)
+	return deepDecodeFrom(Decode(raw))
+}
+
+// deepDecodeFrom is DeepDecode's second pass over an already-computed first
+// pass. DecodeAll needs both the shallow and deep result, and previously got
+// them by decoding raw twice; this lets it decode once and share.
+func deepDecodeFrom(result Decoded) Decoded {
 	if len(result.Layers) > 1 {
 		second := Decode(result.Text)
 		if len(second.Layers) > 1 {
+			// Layers is shared with the caller's copy of the shallow result, so
+			// append must not write into its backing array.
+			merged := make([]string, 0, len(result.Layers)+len(second.Layers)-1)
+			merged = append(merged, result.Layers...)
+			merged = append(merged, second.Layers[1:]...)
 			result.Text = second.Text
-			result.Layers = append(result.Layers, second.Layers[1:]...)
+			result.Layers = merged
 		}
 	}
 	return result
@@ -112,17 +139,26 @@ func printableRatio(text string) float64 {
 
 // DecodeAll returns multiple decode variants for thorough scanning.
 func DecodeAll(raw string) []Decoded {
+	// One shallow pass, shared. DeepDecode(raw) used to redo Decode(raw) from
+	// scratch, so every candidate paid the whole url/html/base64/unicode chain
+	// twice. sqlCandidateTexts calls this per segment per field, which made it
+	// the top cumulative cost in the analyzer profile.
 	result := Decode(raw)
-	deep := DeepDecode(raw)
-	out := []Decoded{result}
+	deep := deepDecodeFrom(result)
+	out := make([]Decoded, 0, 3)
+	out = append(out, result)
 	if deep.Text != result.Text {
 		out = append(out, deep)
 	}
 	// Try base64 variants on the deeply decoded result
-	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-		decoded, err := encoding.DecodeString(strings.TrimSpace(deep.Text))
+	trimmedDeep := strings.TrimSpace(deep.Text)
+	for _, encoding := range base64Encodings {
+		decoded, err := encoding.DecodeString(trimmedDeep)
 		if err == nil && len(decoded) > 0 && printableRatio(string(decoded)) > 0.7 {
-			out = append(out, Decoded{Raw: deep.Text, Layers: append(deep.Layers, "base64"), Text: string(decoded)})
+			layers := make([]string, 0, len(deep.Layers)+1)
+			layers = append(layers, deep.Layers...)
+			layers = append(layers, "base64")
+			out = append(out, Decoded{Raw: deep.Text, Layers: layers, Text: string(decoded)})
 			break
 		}
 	}

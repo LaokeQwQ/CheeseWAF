@@ -66,7 +66,11 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 }
 
 func sqlCandidateTexts(reqCtx *engine.RequestContext) []string {
-	seen := map[string]struct{}{}
+	// Dedup stays exact, but the map is only built once the candidate count makes
+	// hashing cheaper than the linear compare it replaces. Ordinary requests
+	// produce a handful of candidates and never allocate it, matching the
+	// dedupMapThreshold policy already used by the analyzer's candidate path.
+	var seen map[string]struct{}
 	candidates := make([]string, 0, 8)
 	addRaw := func(text string) {
 		if len(candidates) >= maxSQLCandidateTexts {
@@ -74,6 +78,22 @@ func sqlCandidateTexts(reqCtx *engine.RequestContext) []string {
 		}
 		text = strings.TrimSpace(text)
 		if text == "" {
+			return
+		}
+		if seen == nil {
+			for _, existing := range candidates {
+				if existing == text {
+					return
+				}
+			}
+			if len(candidates)+1 >= dedupMapThreshold {
+				seen = make(map[string]struct{}, 2*dedupMapThreshold)
+				for _, existing := range candidates {
+					seen[existing] = struct{}{}
+				}
+				seen[text] = struct{}{}
+			}
+			candidates = append(candidates, text)
 			return
 		}
 		if _, ok := seen[text]; ok {
