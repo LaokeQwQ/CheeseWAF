@@ -19,6 +19,8 @@ const tokenStorageKey = 'cheesewaf-token';
 const authFlagKey = 'cheesewaf-authed';
 const csrfCookieName = 'cheesewaf_csrf';
 const csrfHeaderName = 'X-CSRF-Token';
+const setupTokenStorageKey = 'cheesewaf-setup-token';
+const setupTokenHeaderName = 'X-CheeseWAF-Setup-Token';
 let refreshPromise: Promise<void> | null = null;
 let authRedirectScheduled = false;
 let authRedirectLocationForTest: AuthRedirectLocation | null = null;
@@ -70,6 +72,57 @@ export function isAuthenticatedFlag(): boolean {
   return sessionStorage.getItem(authFlagKey) === '1' || !!readCSRFCookie();
 }
 
+type SetupLocation = Pick<Location, 'hash' | 'pathname' | 'search'>;
+type SetupHistory = Pick<History, 'replaceState' | 'state'>;
+
+export function captureSetupTokenFromFragment(
+  locationRef: SetupLocation = window.location,
+  historyRef: SetupHistory = window.history,
+): string {
+  const rawFragment = locationRef.hash.startsWith('#') ? locationRef.hash.slice(1) : locationRef.hash;
+  const params = new URLSearchParams(rawFragment);
+  const token = (params.get('setup_token') ?? '').trim();
+  if (!token) {
+    return '';
+  }
+  try {
+    sessionStorage.setItem(setupTokenStorageKey, token);
+  } catch {
+    return '';
+  }
+  params.delete('setup_token');
+  const remaining = params.toString();
+  historyRef.replaceState(historyRef.state, '', `${locationRef.pathname}${locationRef.search}${remaining ? `#${remaining}` : ''}`);
+  return token;
+}
+
+function setupToken(): string {
+  try {
+    return sessionStorage.getItem(setupTokenStorageKey)?.trim() ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function clearSetupToken() {
+  try {
+    sessionStorage.removeItem(setupTokenStorageKey);
+  } catch {
+    /* ignore */
+  }
+}
+
+function isSetupMutation(method: string, requestURL: string): boolean {
+  let path: string;
+  try {
+    path = new URL(requestURL, 'https://cheesewaf.invalid').pathname.replace(/^\/api/, '');
+  } catch {
+    return false;
+  }
+  return (method === 'post' && (path === '/setup' || path === '/setup/probe'))
+    || (method === 'patch' && path === '/setup/draft');
+}
+
 function clearLegacyTokenStorage() {
   try {
     localStorage.removeItem(tokenStorageKey);
@@ -79,8 +132,15 @@ function clearLegacyTokenStorage() {
 }
 
 apiClient.interceptors.request.use(async (config) => {
-  const url = String(config.url ?? '');
-  const method = String(config.method ?? 'get').toLowerCase();
+	const url = String(config.url ?? '');
+	const method = String(config.method ?? 'get').toLowerCase();
+	if (isSetupMutation(method, url)) {
+		captureSetupTokenFromFragment();
+		const token = setupToken();
+		if (token) {
+			config.headers[setupTokenHeaderName] = token;
+		}
+	}
   // Cookie session: credentials already include HttpOnly JWT. Attach CSRF on mutations.
   if (['post', 'put', 'patch', 'delete'].includes(method) && !url.includes('/auth/login') && !url.includes('/setup') && !url.includes('/auth/captcha')) {
     const csrf = getCSRFToken();
@@ -404,16 +464,18 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
   }
 }
 
-export function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
-  return unwrap<{ user: { username: string; role: string } }>(
-    apiClient.post('/setup', {
+export async function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
+	const result = await unwrap<{ user: { username: string; role: string } }>(
+		apiClient.post('/setup', {
       username,
       password,
       admin_listen: adminListen,
       admin_strategy: adminStrategy,
       admin_public: adminStrategy === 'public_tls',
-    }),
-  );
+		}),
+	);
+	clearSetupToken();
+	return result;
 }
 
 export function fetchSites() {

@@ -163,9 +163,11 @@ func looksLikeSQLi(raw string) (bool, string) {
 		" or 1=1",
 		" and 1=1",
 	}
-	for _, sig := range signatures {
-		if strings.Contains(text, sig) {
-			return true, "SQL injection signature matched: " + strings.TrimSpace(sig)
+	if containsAny(text, signatures) {
+		for _, sig := range signatures {
+			if strings.Contains(text, sig) {
+				return true, "SQL injection signature matched: " + strings.TrimSpace(sig)
+			}
 		}
 	}
 	words := tokens(text)
@@ -180,7 +182,7 @@ func looksLikeSQLi(raw string) (bool, string) {
 		return true, "destructive SQL keyword sequence matched"
 	}
 	compact := compactSQL(text)
-	if sqlComment.MatchString(normalize(raw)) && (contains(words, "or") || contains(words, "union") || contains(words, "select") || strings.Contains(compact, "or1=1") || strings.Contains(compact, "unionselect")) {
+	if sqlComment.MatchString(normalize(raw)) && (contains(words, "or") || contains(words, "union") || contains(words, "select") || containsAny(compact, []string{"or1=1", "unionselect"})) {
 		return true, "SQL comment sequence with executable query context matched"
 	}
 	if sqlOrderByInference.MatchString(text) {
@@ -189,7 +191,7 @@ func looksLikeSQLi(raw string) (bool, string) {
 	if sqlHavingInference.MatchString(text) {
 		return true, "SQL HAVING inference with comment matched"
 	}
-	if sqlRegexProbe.MatchString(text) && (contains(words, "and") || contains(words, "or") || strings.Contains(text, "database()") || strings.Contains(text, "version()") || strings.Contains(text, "user()")) {
+	if sqlRegexProbe.MatchString(text) && (contains(words, "and") || contains(words, "or") || containsAny(text, []string{"database()", "version()", "user()"})) {
 		return true, "SQL regex or LIKE inference probe matched"
 	}
 	if sqlProcedureAnalyse.MatchString(text) {
@@ -204,27 +206,18 @@ func looksLikeSQLi(raw string) (bool, string) {
 	if sqlDangerousFunc.MatchString(text) && sqlExecutionContext(text, compact) {
 		return true, "SQL dialect-specific command or network side effect matched"
 	}
-	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || strings.Contains(compact, "select")) {
+	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || containsAny(compact, []string{"select"})) {
 		return true, "error-based SQL function with query composition matched"
 	}
-	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || strings.Contains(compact, "orchar") || strings.Contains(compact, "andchar")) {
+	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || containsAny(compact, []string{"orchar", "andchar"})) {
 		return true, "SQL function comparison inside boolean predicate matched"
 	}
 	return false, ""
 }
 
 func sqlExecutionContext(text, compact string) bool {
-	return strings.Contains(text, "'") ||
-		strings.Contains(text, ";") ||
-		strings.Contains(text, "--") ||
-		strings.Contains(text, "/*") ||
-		strings.Contains(text, " select ") ||
-		strings.Contains(text, " exec ") ||
-		strings.Contains(text, " execute ") ||
-		strings.Contains(text, " begin ") ||
-		strings.Contains(text, " declare ") ||
-		strings.Contains(compact, "unionselect") ||
-		strings.Contains(compact, "or1=1")
+	return containsAny(text, []string{"'", ";", "--", "/*", " select ", " exec ", " execute ", " begin ", " declare "}) ||
+		containsAny(compact, []string{"unionselect", "or1=1"})
 }
 
 func requestText(reqCtx *engine.RequestContext) string {

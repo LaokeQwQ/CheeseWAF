@@ -2,6 +2,9 @@ package log_sink
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -14,7 +17,19 @@ type MultiSink struct {
 }
 
 func NewFromConfig(cfg config.StorageConfig, filePath string) (storage.LogSink, error) {
-	file, err := NewFileSink(filePath)
+	return NewFromConfigWithFile(cfg, config.FileLogConfig{Path: filePath})
+}
+
+func NewFromConfigWithFile(cfg config.StorageConfig, fileConfig config.FileLogConfig) (storage.LogSink, error) {
+	var maxSizeBytes int64
+	var err error
+	if fileConfig.MaxSize != "" {
+		maxSizeBytes, err = config.ParseFileLogSize(fileConfig.MaxSize)
+		if err != nil {
+			return nil, fmt.Errorf("parse file log max size: %w", err)
+		}
+	}
+	file, err := NewFileSinkWithRotation(fileConfig.Path, maxSizeBytes, fileConfig.MaxBackups)
 	if err != nil {
 		return nil, err
 	}
@@ -22,7 +37,7 @@ func NewFromConfig(cfg config.StorageConfig, filePath string) (storage.LogSink, 
 	if cfg.ClickHouse.Enabled {
 		sink, err := NewClickHouseSink(cfg.ClickHouse, nil)
 		if err != nil {
-			_ = file.Close()
+			_ = closeLogSinks(sinks)
 			return nil, err
 		}
 		sinks = append(sinks, sink)
@@ -30,7 +45,7 @@ func NewFromConfig(cfg config.StorageConfig, filePath string) (storage.LogSink, 
 	if cfg.VictoriaLogs.Enabled {
 		sink, err := NewVictoriaLogsSink(cfg.VictoriaLogs, nil)
 		if err != nil {
-			_ = file.Close()
+			_ = closeLogSinks(sinks)
 			return nil, err
 		}
 		sinks = append(sinks, sink)
@@ -38,9 +53,7 @@ func NewFromConfig(cfg config.StorageConfig, filePath string) (storage.LogSink, 
 	if cfg.PostgreSQL.Enabled {
 		sink, err := NewPostgreSQLSink(cfg.PostgreSQL)
 		if err != nil {
-			for _, existing := range sinks {
-				_ = existing.Close()
-			}
+			_ = closeLogSinks(sinks)
 			return nil, err
 		}
 		sinks = append(sinks, sink)
@@ -48,9 +61,7 @@ func NewFromConfig(cfg config.StorageConfig, filePath string) (storage.LogSink, 
 	if cfg.Elasticsearch.Enabled {
 		sink, err := NewElasticsearchSink(cfg.Elasticsearch, nil)
 		if err != nil {
-			for _, existing := range sinks {
-				_ = existing.Close()
-			}
+			_ = closeLogSinks(sinks)
 			return nil, err
 		}
 		sinks = append(sinks, sink)
@@ -59,12 +70,13 @@ func NewFromConfig(cfg config.StorageConfig, filePath string) (storage.LogSink, 
 }
 
 func (s *MultiSink) Write(ctx context.Context, entry *storage.LogEntry) error {
+	var errs []error
 	for _, sink := range s.sinks {
 		if err := sink.Write(ctx, entry); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("write %T: %w", sink, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (s *MultiSink) Query(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
@@ -109,20 +121,44 @@ func (s *MultiSink) Count(ctx context.Context, filter storage.LogFilter) (int64,
 }
 
 func (s *MultiSink) Flush(ctx context.Context) error {
-	for _, sink := range s.sinks {
+	return runAllLogSinks(s.sinks, func(sink storage.LogSink) error {
 		if err := sink.Flush(ctx); err != nil {
-			return err
+			return fmt.Errorf("flush %T: %w", sink, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *MultiSink) Close() error {
-	var first error
-	for _, sink := range s.sinks {
-		if err := sink.Close(); err != nil && first == nil {
-			first = err
+	return closeLogSinks(s.sinks)
+}
+
+func closeLogSinks(sinks []storage.LogSink) error {
+	return runAllLogSinks(sinks, func(sink storage.LogSink) error {
+		if err := sink.Close(); err != nil {
+			return fmt.Errorf("close %T: %w", sink, err)
 		}
+		return nil
+	})
+}
+
+func runAllLogSinks(sinks []storage.LogSink, operation func(storage.LogSink) error) error {
+	if len(sinks) == 0 {
+		return nil
 	}
-	return first
+	errs := make([]error, len(sinks))
+	var wait sync.WaitGroup
+	wait.Add(len(sinks))
+	for index, sink := range sinks {
+		index, sink := index, sink
+		go func() {
+			defer wait.Done()
+			if sink == nil {
+				return
+			}
+			errs[index] = operation(sink)
+		}()
+	}
+	wait.Wait()
+	return errors.Join(errs...)
 }

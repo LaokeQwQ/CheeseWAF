@@ -42,4 +42,7 @@ func TestHealthReportsUnavailableApprovalPersistence(t *testing.T) {
 	if !ok || persistence["healthy"] != false {
 		t.Fatalf("unexpected approval persistence health: %#v", data["ai_approval_persistence"])
 	}
+	if _, leaked := persistence["error"]; leaked {
+		t.Fatalf("public health response leaked internal persistence error: %#v", persistence)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,12 +58,19 @@ type Client struct {
 	openai       openaisdk.Client
 }
 
-const defaultAIHTTPTimeout = 5 * time.Minute
+const (
+	defaultAIHTTPTimeout       = 5 * time.Minute
+	maxAIJSONResponseBytes     = 4 << 20
+	maxAIStreamResponseBytes   = 16 << 20
+)
+
+var errAIResponseTooLarge = errors.New("AI API response exceeds byte limit")
 
 func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = newAIHTTPClient(cfg, defaultAIHTTPTimeout)
 	}
+	httpClient = withAIResponseLimits(httpClient)
 	provider := normalizeProvider(cfg.Provider)
 	client := &Client{
 		provider:     provider,
@@ -76,6 +84,69 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 		client.openai = newOpenAISDKClient(client.apiBase, client.apiKey, httpClient)
 	}
 	return client
+}
+
+type aiResponseLimitTransport struct {
+	base        http.RoundTripper
+	jsonLimit   int64
+	streamLimit int64
+}
+
+func (t *aiResponseLimitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil {
+		return resp, err
+	}
+	limit := t.jsonLimit
+	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		limit = t.streamLimit
+	}
+	if limit <= 0 {
+		limit = maxAIJSONResponseBytes
+	}
+	resp.Body = &aiLimitedReadCloser{body: resp.Body, remaining: limit, limit: limit}
+	return resp, nil
+}
+
+type aiLimitedReadCloser struct {
+	body      io.ReadCloser
+	remaining int64
+	limit     int64
+}
+
+func (r *aiLimitedReadCloser) Read(p []byte) (int, error) {
+	if r.remaining > 0 {
+		if int64(len(p)) > r.remaining {
+			p = p[:r.remaining]
+		}
+		n, err := r.body.Read(p)
+		r.remaining -= int64(n)
+		return n, err
+	}
+	var probe [1]byte
+	n, err := r.body.Read(probe[:])
+	if n > 0 {
+		return 0, fmt.Errorf("%w (%d bytes)", errAIResponseTooLarge, r.limit)
+	}
+	return 0, err
+}
+
+func (r *aiLimitedReadCloser) Close() error {
+	return r.body.Close()
+}
+
+func withAIResponseLimits(client *http.Client) *http.Client {
+	clone := *client
+	clone.Transport = &aiResponseLimitTransport{
+		base:        client.Transport,
+		jsonLimit:   maxAIJSONResponseBytes,
+		streamLimit: maxAIStreamResponseBytes,
+	}
+	return &clone
 }
 
 func NewClientWithTimeout(cfg config.AIConfig, timeout time.Duration) *Client {
@@ -386,7 +457,7 @@ func (c *Client) listOpenAIModels(ctx context.Context) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
@@ -492,7 +563,7 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*Co
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
@@ -565,7 +636,7 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
@@ -629,7 +700,7 @@ func (c *Client) listAnthropicModels(ctx context.Context) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
@@ -670,7 +741,7 @@ func (c *Client) completeAnthropicStream(ctx context.Context, messages []Message
 	if err != nil {
 		return nil, false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode >= 300 {
 		return nil, false, fmt.Errorf("ai api returned %s", resp.Status)
 	}
@@ -697,7 +768,7 @@ func (c *Client) completeAnthropicToolPlanStream(ctx context.Context, messages [
 	if err != nil {
 		return nil, false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode >= 300 {
 		return nil, false, fmt.Errorf("ai api returned %s", resp.Status)
 	}

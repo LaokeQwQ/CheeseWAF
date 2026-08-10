@@ -18,6 +18,7 @@ import {
   syncTimeNow,
   verifyCaptchaLabChallenge,
   clearNotifications,
+	setupAdmin,
   fetchNotifications,
   markAllNotificationsRead,
   logout,
@@ -51,6 +52,55 @@ describe('CAPTCHA Lab API cancellation', () => {
 
     expect(post).toHaveBeenCalledWith('/captcha/lab/verify', response, { signal: controller.signal });
   });
+});
+
+describe('first-install setup token', () => {
+	let originalAdapter: typeof apiClient.defaults.adapter;
+
+	beforeEach(() => {
+		sessionStorage.clear();
+		window.history.replaceState({}, '', '/setup');
+		originalAdapter = apiClient.defaults.adapter;
+	});
+
+	afterEach(() => {
+		sessionStorage.clear();
+		window.history.replaceState({}, '', '/');
+		apiClient.defaults.adapter = originalAdapter;
+		vi.restoreAllMocks();
+	});
+
+	it('moves the fragment token into session storage and sends it only on setup mutations', async () => {
+		window.history.replaceState({}, '', '/setup#setup_token=fragment-secret');
+		const seenHeaders: Array<string | undefined> = [];
+		const adapter = vi.fn(async (config) => {
+			seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
+			return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
+		});
+
+		await apiClient.post('/setup/probe', {}, { adapter });
+		await apiClient.post('/users/user-1/2fa/setup', {}, { adapter });
+
+		expect(seenHeaders).toEqual(['fragment-secret', undefined]);
+		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBe('fragment-secret');
+		expect(window.location.hash).toBe('');
+	});
+
+	it('clears the setup token only after setup completes successfully', async () => {
+		window.history.replaceState({}, '', '/setup#setup_token=one-time-secret');
+		const adapter = vi.fn(async (config) => ({
+			data: { data: { user: { username: 'admin', role: 'admin' } } },
+			status: 200,
+			statusText: 'OK',
+			headers: {},
+			config,
+		}));
+		apiClient.defaults.adapter = adapter;
+
+		await setupAdmin('admin', 'Correct-Horse-9x!', '127.0.0.1:9443');
+
+		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBeNull();
+	});
 });
 
 describe('time synchronization API', () => {

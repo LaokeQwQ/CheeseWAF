@@ -1,0 +1,36 @@
+﻿goos: windows
+goarch: amd64
+pkg: github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic
+cpu: AMD Ryzen 5 5500                               
+BenchmarkSQLDetector-12         	  110809	     11266 ns/op	    2840 B/op	      72 allocs/op
+BenchmarkSQLDetector-12         	  122725	      9881 ns/op	    2840 B/op	      72 allocs/op
+BenchmarkSQLDetector-12         	  122979	      9923 ns/op	    2850 B/op	      72 allocs/op
+BenchmarkSQLDetector-12         	  127734	      9656 ns/op	    2845 B/op	      72 allocs/op
+BenchmarkSQLDetector-12         	  120222	      9580 ns/op	    2844 B/op	      72 allocs/op
+BenchmarkSQLDetector-12         	  124309	      9558 ns/op	    2843 B/op	      72 allocs/op
+BenchmarkXSSDetector-12         	  551300	      2234 ns/op	     538 B/op	      10 allocs/op
+BenchmarkXSSDetector-12         	  485191	      2384 ns/op	     537 B/op	      10 allocs/op
+BenchmarkXSSDetector-12         	  455601	      2357 ns/op	     537 B/op	      10 allocs/op
+BenchmarkXSSDetector-12         	  506025	      2710 ns/op	     537 B/op	      10 allocs/op
+BenchmarkXSSDetector-12         	  459444	      2801 ns/op	     537 B/op	      10 allocs/op
+BenchmarkXSSDetector-12         	  533956	      2389 ns/op	     537 B/op	      10 allocs/op
+BenchmarkRCEDetector-12         	  614851	      1762 ns/op	     292 B/op	       6 allocs/op
+BenchmarkRCEDetector-12         	  752649	      1736 ns/op	     292 B/op	       6 allocs/op
+BenchmarkRCEDetector-12         	  672584	      1815 ns/op	     291 B/op	       6 allocs/op
+BenchmarkRCEDetector-12         	  598620	      2059 ns/op	     292 B/op	       6 allocs/op
+BenchmarkRCEDetector-12         	  669951	      1972 ns/op	     291 B/op	       6 allocs/op
+BenchmarkRCEDetector-12         	  788565	      1716 ns/op	     291 B/op	       6 allocs/op
+BenchmarkFullPipeline-12        	    9465	    145289 ns/op	   14849 B/op	     193 allocs/op
+BenchmarkFullPipeline-12        	    6387	    172985 ns/op	   14809 B/op	     193 allocs/op
+BenchmarkFullPipeline-12        	    7614	    162575 ns/op	   14707 B/op	     193 allocs/op
+BenchmarkFullPipeline-12        	    9396	    123500 ns/op	   14887 B/op	     193 allocs/op
+BenchmarkFullPipeline-12        	    9939	    111622 ns/op	   14850 B/op	     193 allocs/op
+BenchmarkFullPipeline-12        	    9699	    114518 ns/op	   14646 B/op	     193 allocs/op
+BenchmarkSemanticAnalyzer-12    	  335272	      4501 ns/op	    2675 B/op	      25 allocs/op
+BenchmarkSemanticAnalyzer-12    	  253366	      5411 ns/op	    2670 B/op	      25 allocs/op
+BenchmarkSemanticAnalyzer-12    	  219164	      6043 ns/op	    2674 B/op	      25 allocs/op
+BenchmarkSemanticAnalyzer-12    	  284451	      5620 ns/op	    2668 B/op	      25 allocs/op
+BenchmarkSemanticAnalyzer-12    	  235515	      6313 ns/op	    2673 B/op	      25 allocs/op
+BenchmarkSemanticAnalyzer-12    	  205192	      4896 ns/op	    2670 B/op	      25 allocs/op
+PASS
+ok  	github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic	43.628s

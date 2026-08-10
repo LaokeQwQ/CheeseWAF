@@ -661,7 +661,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if IsWebSocketUpgrade(r) {
-		rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
+		rp := NewReverseProxyForClient(target, site.WAF.Performance.ProxyTimeout, reqCtx.ClientIP)
 		var proxyErr error
 		rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
 			proxyErr = err
@@ -686,7 +686,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	cacheCandidate := retrySafe && edgeRT.cache.CaptureCandidate(r)
 	compressCandidate := retrySafe && edgeRT.compress.MayApplyRequest(r)
 	if !cacheCandidate && !compressCandidate {
-		rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
+		rp := NewReverseProxyForClient(target, site.WAF.Performance.ProxyTimeout, reqCtx.ClientIP)
 		var proxyErr error
 		rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
 			proxyErr = err
@@ -723,7 +723,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	captureLimit := edgeCaptureLimit(site, edgeRT.cache, cacheCandidate, compressCandidate)
 	capture := edge.NewAdaptiveCaptureWriter(w, captureLimit)
-	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
+	rp := NewReverseProxyForClient(target, site.WAF.Performance.ProxyTimeout, reqCtx.ClientIP)
 	var proxyErr error
 	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
 		proxyErr = err

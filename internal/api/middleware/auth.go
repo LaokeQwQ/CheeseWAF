@@ -163,11 +163,18 @@ func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator 
 					writeUnauthorized(w)
 					return
 				}
+				// Authentication cleanup must finish before business handlers run. In
+				// particular, an authenticator must never carry a configuration read
+				// lock into a handler that may need the corresponding write lock.
 				if release != nil {
-					defer release()
+					release()
 				}
 				ctx := context.WithValue(r.Context(), UserContextKey, claims)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				// Keep the authenticated context on the request pointer as well as
+				// passing it downstream. The audit middleware may wrap this middleware
+				// and inspect the original request after the handler returns.
+				*r = *r.WithContext(ctx)
+				next.ServeHTTP(w, r)
 				return
 			}
 
@@ -191,21 +198,18 @@ func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator 
 				return
 			}
 			ctx := context.WithValue(r.Context(), UserContextKey, claims)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			*r = *r.WithContext(ctx)
+			next.ServeHTTP(w, r)
 		})
 	}
 }
 
 func HashManagementAPIToken(raw string) string {
-	// bcrypt for offline resistance on stolen hash files. Cost matches password defaults:
-	// tokens are high-entropy, so DefaultCost is enough and keeps verify latency bounded.
-	hash, err := bcrypt.GenerateFromPassword([]byte(strings.TrimSpace(raw)), bcrypt.DefaultCost)
-	if err != nil {
-		// Fail closed to a non-matching marker rather than store raw.
-		sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
-		return "sha256:" + hex.EncodeToString(sum[:])
-	}
-	return "bcrypt:" + string(hash)
+	// Management tokens contain 256 random bits, so a fast one-way digest does
+	// not reduce offline resistance. It avoids exposing every unauthenticated API
+	// request to password-hash CPU cost. bcrypt remains accepted for migration.
+	sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // HashManagementAPITokenLegacySHA256 is used only for tests that need deterministic digests.
@@ -243,6 +247,13 @@ func VerifyManagementAPIToken(raw string, cfg config.ManagementAPIConfig, now ti
 			continue
 		}
 		if !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(now) {
+			continue
+		}
+		// Prefixes are public lookup keys generated with each token. Filtering
+		// before hash verification keeps legacy bcrypt compatibility without an
+		// attacker forcing one bcrypt operation per configured token.
+		prefix := strings.TrimSpace(token.Prefix)
+		if prefix == "" || !strings.HasPrefix(raw, prefix) {
 			continue
 		}
 		if !managementAPITokenMatches(raw, token.Hash) {

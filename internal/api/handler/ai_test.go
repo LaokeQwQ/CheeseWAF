@@ -381,6 +381,22 @@ func TestAnalyzeEventsRejectsInvalidTimeRange(t *testing.T) {
 	}
 }
 
+func TestAnalyzeEventsRejectsBatchAboveCostBoundary(t *testing.T) {
+	handler := New(Options{Config: ptrConfig(config.Default())})
+	for _, endpoint := range []string{"/api/ai/events/analyze", "/api/ai/events/analyze/stream"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader([]byte(`{"limit":21}`)))
+		if strings.HasSuffix(endpoint, "/stream") {
+			handler.AnalyzeEventsStream(recorder, request)
+		} else {
+			handler.AnalyzeEvents(recorder, request)
+		}
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "AI_BATCH_LIMIT_EXCEEDED") {
+			t.Fatalf("endpoint %s accepted oversized batch: %d %s", endpoint, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestAnalyzeLogReferenceLoadsStoredEvent(t *testing.T) {
 	sink := &filteringAISink{items: []storage.LogEntry{{
 		ID:         "log-1",

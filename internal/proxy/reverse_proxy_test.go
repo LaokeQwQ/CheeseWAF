@@ -104,3 +104,47 @@ func TestNewReverseProxyStripsAllProviderIdentityHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestNewReverseProxyForClientForwardsValidatedClientIdentity(t *testing.T) {
+	target, err := url.Parse("http://origin.internal:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := NewReverseProxyForClient(target, time.Second, "203.0.113.42")
+	req, err := http.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.RemoteAddr = "192.0.2.10:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.99")
+	req.Header.Set("CF-Connecting-IP", "198.51.100.100")
+
+	proxy.Director(req)
+	if got := req.Header.Get("X-Forwarded-For"); got != "203.0.113.42" {
+		t.Fatalf("X-Forwarded-For = %q, want validated client IP", got)
+	}
+	if got := req.Header.Get("X-Real-IP"); got != "203.0.113.42" {
+		t.Fatalf("X-Real-IP = %q, want validated client IP", got)
+	}
+	if got := req.Header.Get("CF-Connecting-IP"); got != "" {
+		t.Fatalf("provider identity header leaked upstream as %q", got)
+	}
+}
+
+func TestNewReverseProxyForClientRejectsInvalidValidatedIdentity(t *testing.T) {
+	target, err := url.Parse("http://origin.internal:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := NewReverseProxyForClient(target, time.Second, "not-an-ip")
+	req, err := http.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.RemoteAddr = "192.0.2.10:1234"
+
+	proxy.Director(req)
+	if got := req.Header.Get("X-Forwarded-For"); got != "192.0.2.10" {
+		t.Fatalf("X-Forwarded-For = %q, want socket peer fallback", got)
+	}
+}

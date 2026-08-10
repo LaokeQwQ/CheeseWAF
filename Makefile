@@ -12,6 +12,7 @@ LDFLAGS      := -s -w -X '$(MODULE)/internal/version.Version=$(VERSION)' -X '$(M
 
 GO           := go
 GOFLAGS      := -trimpath
+GCFLAGS      := -l=4
 CGO_ENABLED  := 0
 
 .PHONY: all build build-cli run test test-go web-build security-corpus security-corpus-http security-gate lint clean dev help
@@ -39,7 +40,7 @@ all: build build-cli
 
 ## build: Build the cheesewaf binary
 build:
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/cheesewaf/
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/cheesewaf/
 
 ## build-cli: Build and create waf-cli symlink/copy
 build-cli: build
@@ -78,15 +79,15 @@ package-windows-nsis-payload: package-windows-cli
 
 ## build-linux: Cross-compile for Linux amd64
 build-linux:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/cheesewaf/
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/cheesewaf/
 	@cp bin/$(BINARY_NAME)-linux-amd64 bin/$(CLI_NAME)-linux-amd64
 
 ## build-darwin: Cross-compile for macOS arm64 (Apple Silicon)
 build-darwin:
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-darwin-arm64 ./cmd/cheesewaf/
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-darwin-arm64 ./cmd/cheesewaf/
 	@cp bin/$(BINARY_NAME)-darwin-arm64 bin/$(CLI_NAME)-darwin-arm64
 
-## build-all: Build for all platforms (Linux amd64/arm64, macOS amd64/arm64, Windows amd64/arm64)
+## build-all: Build for all platforms (Linux amd64/arm64, macOS amd64/arm64, Windows amd64/arm64, LoongArch)
 build-all:
 	@echo "Building for all platforms..."
 	@for goos in linux darwin windows; do \
@@ -94,11 +95,15 @@ build-all:
 			ext=""; \
 			if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
 			echo "  → $$goos/$$goarch"; \
-			GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" \
+			GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" \
 				-o bin/$(BINARY_NAME)-$$goos-$$goarch$$ext ./cmd/cheesewaf/; \
 			cp bin/$(BINARY_NAME)-$$goos-$$goarch$$ext bin/$(CLI_NAME)-$$goos-$$goarch$$ext; \
 		done; \
 	done
+	@echo "  → linux/loong64"
+	@GOOS=linux GOARCH=loong64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" \
+		-o bin/$(BINARY_NAME)-linux-loong64 ./cmd/cheesewaf/
+	@cp bin/$(BINARY_NAME)-linux-loong64 bin/$(CLI_NAME)-linux-loong64
 	@echo "Done! All binaries in bin/"
 
 ## run: Run cheesewaf serve

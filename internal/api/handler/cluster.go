@@ -548,6 +548,12 @@ func (h *Handler) recordClusterJoinAudit(r *http.Request, req clusterJoinRequest
 	if h == nil || h.Auditor == nil {
 		return
 	}
+	// Sample failed join attempts: only record 10% to reduce audit I/O amplification
+	if status >= 400 && status < 600 {
+		if time.Now().UnixNano()%10 != 0 {
+			return
+		}
+	}
 	nodeID := strings.TrimSpace(req.NodeID)
 	target := "cluster"
 	if nodeID != "" {
@@ -637,6 +643,12 @@ type clusterJoinCertificates struct {
 }
 
 func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
+	// Rate limit cluster join to prevent audit I/O amplification
+	limiterKey := "cluster:join:" + remoteIPFromRequest(r)
+	if !h.clusterJoinRateLimiter().Allow(limiterKey, h.nowUTC()) {
+		writeError(w, http.StatusTooManyRequests, "CLUSTER_JOIN_RATE_LIMITED", "too many join requests")
+		return
+	}
 	started := time.Now()
 	var req clusterJoinRequest
 	auditStatus := http.StatusBadRequest

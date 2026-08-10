@@ -43,6 +43,7 @@ func TestVictoriaLogsQueryUsesLogsQLAndDecodesRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sink: %v", err)
 	}
+	defer sink.Close()
 	items, total, err := sink.Query(context.Background(), storage.LogFilter{
 		ClientIP: "198.51.100.9",
 		Tags:     []string{"bot"},
@@ -76,11 +77,38 @@ func TestVictoriaLogsWriteAddsEventTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sink: %v", err)
 	}
+	defer sink.Close()
 	when := time.Date(2026, 5, 28, 8, 0, 0, 0, time.UTC)
 	if err := sink.Write(context.Background(), &storage.LogEntry{ID: "1", Timestamp: when, Message: "blocked sql injection"}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	if err := sink.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
 	if !strings.Contains(body, `"_time":"2026-05-28T08:00:00Z"`) || !strings.Contains(body, `"_msg":"blocked sql injection"`) {
 		t.Fatalf("victorialogs payload missing indexed fields: %s", body)
+	}
+}
+
+func TestVictoriaLogsQueryRejectsRowsBeyondLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if strings.Contains(r.Form.Get("query"), "stats count() total") {
+			_, _ = w.Write([]byte(`{"total":2}` + "\n"))
+			return
+		}
+		_, _ = w.Write([]byte("{\"id\":\"1\"}\n{\"id\":\"2\"}\n"))
+	}))
+	defer server.Close()
+
+	sink, err := NewVictoriaLogsSink(config.VictoriaLogsConfig{Endpoint: server.URL}, server.Client())
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	defer sink.Close()
+	if _, _, err := sink.Query(context.Background(), storage.LogFilter{Limit: 1}); err == nil || !strings.Contains(err.Error(), "exceeds 1 rows") {
+		t.Fatalf("expected bounded row error, got %v", err)
 	}
 }

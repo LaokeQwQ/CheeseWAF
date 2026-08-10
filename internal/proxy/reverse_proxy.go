@@ -34,6 +34,16 @@ var stripClientForwardHeaders = append([]string{
 }, proxytrust.ProviderIdentityHeaders()...)
 
 func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReverseProxy {
+	return newReverseProxy(target, timeout, "")
+}
+
+// NewReverseProxyForClient rebuilds upstream forwarding headers from the
+// client identity already validated by the proxy trust policy.
+func NewReverseProxyForClient(target *url.URL, timeout time.Duration, clientIP string) *httputil.ReverseProxy {
+	return newReverseProxy(target, timeout, normalizedClientIP(clientIP))
+}
+
+func newReverseProxy(target *url.URL, timeout time.Duration, trustedClientIP string) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -51,7 +61,11 @@ func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReversePr
 		if originalHost != "" {
 			r.Header.Set("X-Forwarded-Host", originalHost)
 		}
-		if ip := peerIP(clientAddr); ip != "" {
+		ip := trustedClientIP
+		if ip == "" {
+			ip = peerIP(clientAddr)
+		}
+		if ip != "" {
 			r.Header.Set("X-Forwarded-For", ip)
 			r.Header.Set("X-Real-IP", ip)
 		}
@@ -62,6 +76,14 @@ func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReversePr
 		}
 	}
 	return proxy
+}
+
+func normalizedClientIP(raw string) string {
+	ip := net.ParseIP(strings.Trim(strings.TrimSpace(raw), "[]"))
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 func peerIP(remoteAddr string) string {

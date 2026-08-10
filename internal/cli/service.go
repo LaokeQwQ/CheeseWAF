@@ -7,11 +7,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -109,6 +111,10 @@ func runServe(ctx context.Context) error {
 	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
 		return err
 	}
+	clusterIdentityService, clusterHeartbeats, err := initializeClusterRuntime(cfg, clock)
+	if err != nil {
+		return err
+	}
 	if err := writePID(cfg.Setup.RuntimeDir); err != nil {
 		return err
 	}
@@ -126,16 +132,15 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	setupToken := strings.TrimSpace(os.Getenv("CHEESEWAF_SETUP_TOKEN"))
-	// Generate a high-entropy token for remote first-install requests.
-	if setup.NeedsSetup(cfg.Setup.DataDir) {
+	setupPending := setup.NeedsSetup(cfg.Setup.DataDir)
+	// Every first-install mutation, including loopback requests, requires this token.
+	if setupPending {
 		if setupToken == "" {
 			token, err := setup.GenerateSetupToken()
 			if err != nil {
 				return fmt.Errorf("generate setup token: %w", err)
 			}
 			setupToken = token
-			fmt.Printf("Setup token (save this, shown only once): %s\n", token)
-			fmt.Printf("   Use via the X-CheeseWAF-Setup-Token request header\n")
 		}
 	}
 	if err := seedSites(ctx, store, cfg); err != nil {
@@ -193,37 +198,47 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS)
+	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS, cfg.Cluster.Interconnect)
 	if err != nil {
 		return err
 	}
+	if setupPending {
+		fmt.Printf("Complete first-install setup: %s\n", setupBrowserURL(adminScheme, cfg.Server.AdminListen, setupToken))
+	}
+	adminRouter := api.NewRouter(api.Options{
+		Config:              cfg,
+		ConfigPath:          loadedConfigPath,
+		Store:               store,
+		Sink:                sink,
+		Hub:                 hub,
+		Secret:              authSecret,
+		SetupToken:          setupToken,
+		Clock:               clock,
+		TimeSync:            timeSync,
+		ClusterIdentity:     clusterIdentityService,
+		ClusterHeartbeats:   clusterHeartbeats,
+		OnSitesChanged:      reloadSites,
+		OnEdgeChanged:       proxyServer.UpdateEdge,
+		OnProtectionChanged: proxyServer.UpdateProtection,
+		OnAPISecChanged:     proxyServer.UpdateAPISec,
+		OnBlockPageChanged:  proxyServer.UpdateBlockPage,
+		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
+		},
+	})
 	admin := &http.Server{
-		Addr: cfg.Server.AdminListen,
-		Handler: adminHandlerWithClock(cfg, api.NewRouter(api.Options{
-			Config:              cfg,
-			ConfigPath:          loadedConfigPath,
-			Store:               store,
-			Sink:                sink,
-			Hub:                 hub,
-			Secret:              authSecret,
-			SetupToken:          setupToken,
-			Clock:               clock,
-			TimeSync:            timeSync,
-			OnSitesChanged:      reloadSites,
-			OnEdgeChanged:       proxyServer.UpdateEdge,
-			OnProtectionChanged: proxyServer.UpdateProtection,
-			OnAPISecChanged:     proxyServer.UpdateAPISec,
-			OnBlockPageChanged:  proxyServer.UpdateBlockPage,
-			OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
-				return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
-			},
-		}), authSecret, clock),
+		Addr:              cfg.Server.AdminListen,
+		Handler:           adminHandlerWithClock(cfg, adminRouter, authSecret, clock),
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
 		WriteTimeout:      cfg.Server.WriteTimeout,
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		MaxHeaderBytes:    1 << 20,
+	}
+	interconnect, err := newClusterInterconnectServer(cfg, adminRouter, clusterIdentityService)
+	if err != nil {
+		return err
 	}
 
 	http3Server, altSvc, err := proxyServer.HTTP3Server()
@@ -247,9 +262,12 @@ func runServe(ctx context.Context) error {
 		fmt.Printf("CheeseWAF HTTP/3 proxy listening on %s\n", http3Server.Addr)
 	}
 	fmt.Printf("CheeseWAF admin API listening on %s://%s\n", adminScheme, cfg.Server.AdminListen)
+	if interconnect != nil {
+		fmt.Printf("CheeseWAF cluster interconnect listening on https://%s (mTLS)\n", interconnect.Addr)
+	}
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 5)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -281,6 +299,15 @@ func runServe(ctx context.Context) error {
 			}
 		}()
 	}
+	if interconnect != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := proxy.ListenAndServe(ctx, interconnect); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -296,8 +323,22 @@ func runServe(ctx context.Context) error {
 	if http3Server != nil {
 		_ = http3Server.Shutdown(shutdownCtx)
 	}
+	if interconnect != nil {
+		_ = interconnect.Shutdown(shutdownCtx)
+	}
 	wg.Wait()
 	return nil
+}
+
+func setupBrowserURL(scheme, adminListen, token string) string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(adminListen))
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("%s://%s/setup#setup_token=%s", scheme, net.JoinHostPort(host, port), url.QueryEscape(token))
 }
 
 func validateStartupUsers(ctx context.Context, dataDir string, store storage.UserStore) error {
@@ -886,7 +927,8 @@ func loadConfig() (*config.Config, string, error) {
 	return cfg, bundle.Paths.ConfigFile, nil
 }
 
-func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
+func adminTLSConfig(cfg config.AdminTLSConfig, interconnect ...config.InterconnectConfig) (*tls.Config, string, error) {
+	clusterMTLS := len(interconnect) > 0 && interconnect[0].MTLSRequired
 	if !cfg.Enabled {
 		return nil, "http", nil
 	}
@@ -894,10 +936,29 @@ func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("load admin TLS certificate: %w", err)
 	}
-	return &tls.Config{
+	tlsConfig := &tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{cert},
-	}, "https", nil
+	}
+	if clusterMTLS {
+		caPath := strings.TrimSpace(interconnect[0].CAFile)
+		if caPath != "" {
+			caPEM, err := os.ReadFile(caPath)
+			if err != nil {
+				return nil, "", fmt.Errorf("read cluster mTLS CA: %w", err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caPEM) {
+				return nil, "", fmt.Errorf("parse cluster mTLS CA %s", caPath)
+			}
+			// Keep browser/admin clients usable while requesting and verifying node
+			// certificates. The heartbeat handler enforces that a verified, enrolled
+			// node certificate is present for the cluster endpoint.
+			tlsConfig.ClientCAs = pool
+			tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
+		}
+	}
+	return tlsConfig, "https", nil
 }
 
 func ensureAdminTLSCertificate(cfg *config.Config) error {

@@ -41,6 +41,17 @@ func TestDirectorySizeCacheAvoidsRepeatedWalksUntilExpiry(t *testing.T) {
 	}
 }
 
+func TestSetupBrowserURLUsesFragmentAndReachableLoopbackHost(t *testing.T) {
+	got := setupBrowserURL("https", "0.0.0.0:9443", "secret with+symbols")
+	want := "https://127.0.0.1:9443/setup#setup_token=secret+with%2Bsymbols"
+	if got != want {
+		t.Fatalf("setupBrowserURL() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "?setup_token=") {
+		t.Fatalf("setup token must not be placed in the query string: %q", got)
+	}
+}
+
 func TestEnsureAdminTLSCertificateGeneratesOnce(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Default()
