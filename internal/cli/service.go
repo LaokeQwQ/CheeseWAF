@@ -27,6 +27,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
+	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/scheduler"
@@ -39,11 +40,61 @@ import (
 var readAdminEntryNonce = rand.Read
 var executablePath = os.Executable
 
+const (
+	minimumMonitorCollectionInterval = time.Minute
+	monitorDirectorySizeCacheTTL     = 5 * time.Minute
+)
+
+type directorySizeCacheEntry struct {
+	size       int64
+	measuredAt time.Time
+}
+
+type directorySizeCache struct {
+	ttl     time.Duration
+	entries map[string]directorySizeCacheEntry
+}
+
+func newDirectorySizeCache(ttl time.Duration) *directorySizeCache {
+	if ttl <= 0 {
+		ttl = monitorDirectorySizeCacheTTL
+	}
+	return &directorySizeCache{ttl: ttl, entries: make(map[string]directorySizeCacheEntry)}
+}
+
+func (c *directorySizeCache) size(root string, now time.Time) int64 {
+	if strings.TrimSpace(root) == "" {
+		return 0
+	}
+	key := filepath.Clean(root)
+	if cached, ok := c.entries[key]; ok {
+		age := now.Sub(cached.measuredAt)
+		if age >= 0 && age < c.ttl {
+			return cached.size
+		}
+	}
+	size := serviceDirSize(key)
+	c.entries[key] = directorySizeCacheEntry{size: size, measuredAt: now}
+	return size
+}
+
 func runServe(ctx context.Context) error {
 	cfg, loadedConfigPath, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	// Tune the collector before anything allocates in earnest. The controller
+	// measures the memory this process is actually allowed to use (container
+	// limit when present, physical RAM otherwise) and adjusts GOGC from live GC
+	// CPU and heap pressure. Operator-set GOGC/GOMEMLIMIT are respected.
+	gcTuner, err := gctune.Start(gcTuneConfigFromConfig(cfg.Performance.GC))
+	if err != nil {
+		// A rejected tuning config is a misconfiguration worth surfacing, not a
+		// reason to refuse to serve traffic: the runtime defaults are still safe.
+		fmt.Printf("gc tuning disabled: %v\n", err)
+	}
+	defer gcTuner.Stop()
+
 	timeSync, err := timekeeper.NewService(timekeeperConfigFromConfig(cfg.TimeSync), timekeeper.Dependencies{})
 	if err != nil {
 		return fmt.Errorf("configure application clock: %w", err)
@@ -74,11 +125,24 @@ func runServe(ctx context.Context) error {
 	if err := validateStartupUsers(ctx, cfg.Setup.DataDir, store); err != nil {
 		return err
 	}
+	setupToken := strings.TrimSpace(os.Getenv("CHEESEWAF_SETUP_TOKEN"))
+	// Generate a high-entropy token for remote first-install requests.
+	if setup.NeedsSetup(cfg.Setup.DataDir) {
+		if setupToken == "" {
+			token, err := setup.GenerateSetupToken()
+			if err != nil {
+				return fmt.Errorf("generate setup token: %w", err)
+			}
+			setupToken = token
+			fmt.Printf("Setup token (save this, shown only once): %s\n", token)
+			fmt.Printf("   Use via the X-CheeseWAF-Setup-Token request header\n")
+		}
+	}
 	if err := seedSites(ctx, store, cfg); err != nil {
 		return err
 	}
 
-	sink, err := logsink.NewFromConfig(cfg.Storage, cfg.Logging.Output.File.Path)
+	sink, err := logsink.NewFromConfigWithFile(cfg.Storage, cfg.Logging.Output.File)
 	if err != nil {
 		return err
 	}
@@ -92,6 +156,8 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer proxyServer.Close()
+	var healthChecker *proxy.HealthChecker
 	reloadSites := func(sites []config.SiteConfig) error {
 		next := *cfg
 		next.Sites = append([]config.SiteConfig(nil), sites...)
@@ -103,9 +169,13 @@ func runServe(ctx context.Context) error {
 			return err
 		}
 		proxyServer.UpdatePipeline(nextPipeline)
+		if healthChecker != nil {
+			healthChecker.UpdateSites(sites)
+		}
 		return nil
 	}
-	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
+	healthChecker = proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry())
+	healthChecker.Start(ctx)
 	startRemoteWrite(ctx, cfg, store, sink, time.Now())
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
@@ -136,9 +206,11 @@ func runServe(ctx context.Context) error {
 			Sink:                sink,
 			Hub:                 hub,
 			Secret:              authSecret,
+			SetupToken:          setupToken,
 			Clock:               clock,
 			TimeSync:            timeSync,
 			OnSitesChanged:      reloadSites,
+			OnEdgeChanged:       proxyServer.UpdateEdge,
 			OnProtectionChanged: proxyServer.UpdateProtection,
 			OnAPISecChanged:     proxyServer.UpdateAPISec,
 			OnBlockPageChanged:  proxyServer.UpdateBlockPage,
@@ -645,9 +717,10 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 	alerter := monitor.NewAlerter(cfg.Monitor.Alerts)
 	notifiers := monitornotify.NewManager(cfg.Monitor.Notifiers)
 	interval := cfg.Monitor.RemoteWrite.Interval
-	if interval <= 0 {
-		interval = 30 * time.Second
+	if interval < minimumMonitorCollectionInterval {
+		interval = minimumMonitorCollectionInterval
 	}
+	dirSizes := newDirectorySizeCache(monitorDirectorySizeCacheTTL)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -657,9 +730,10 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 				return
 			case <-ticker.C:
 				logs, _, _ := sink.Query(ctx, storage.LogFilter{Limit: 1000})
+				now := time.Now()
 				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
-					"data": serviceDirSize(cfg.Setup.DataDir),
-					"logs": serviceDirSize(filepath.Dir(cfg.Logging.Output.File.Path)),
+					"data": dirSizes.size(cfg.Setup.DataDir, now),
+					"logs": dirSizes.size(filepath.Dir(cfg.Logging.Output.File.Path), now),
 				})
 				_ = writer.Push(ctx, snapshot)
 				alerts := alerter.Evaluate(snapshot)
@@ -690,10 +764,10 @@ func serviceDirSize(root string) int64 {
 }
 
 func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
-	// Wire budget metrics once; safe to re-assign.
-	engine.OnDetectionBudgetExhausted = func() {
+	// Atomic registration is safe while site hot reloads rebuild the pipeline.
+	engine.SetDetectionBudgetExhaustedHook(func() {
 		semantic.ProcessMetrics().RecordBudgetExhausted()
-	}
+	})
 	var detectors []engine.Detector
 	if len(cfg.Sites) == 0 {
 		return engine.NewPipeline(), nil
@@ -720,6 +794,10 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 		}
 		if switches.RCE {
 			semanticCategories = append(semanticCategories, "rce")
+			// RCE is the production switch for the higher-confidence command
+			// execution families that share the same response action. Keep their
+			// categories distinct so telemetry and policy routing remain useful.
+			semanticCategories = append(semanticCategories, "webshell", "log4shell")
 		}
 		if switches.LFI {
 			semanticCategories = append(semanticCategories, "lfi")
@@ -737,8 +815,13 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			semanticCategories = append(semanticCategories, "ssti")
 		}
 		if len(semanticCategories) > 0 {
-			analyzer := semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)
+			paranoiaLevel := site.WAF.ParanoiaLevel
+			if paranoiaLevel <= 0 || paranoiaLevel > 4 {
+				paranoiaLevel = 2
+			}
+			analyzer := semantic.NewAnalyzer(site.WAF.Mode, paranoiaLevel, semanticCategories...)
 			analyzer.SetAllowlists(site.WAF.SemanticPolicy.PathAllowlist, site.WAF.SemanticPolicy.ParamAllowlist)
+			fmt.Printf("semantic analyzer initialized: site_id=%s paranoia_level=%d\n", site.ID, paranoiaLevel)
 			detectors = append(detectors, siteScopedDetector{
 				siteID:   site.ID,
 				detector: analyzer,

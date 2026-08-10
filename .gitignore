@@ -18,6 +18,9 @@ CheeseWAF-*-setup.exe
 
 # Coverage, profiles, and temporary test artifacts
 *.out
+*.prof
+*.pgo
+default.pgo
 coverage.*
 *.coverprofile
 profile.cov
@@ -149,3 +152,12 @@ web/.code-inspector/
 
 # Local one-off notes
 ui_fixing.md
+
+# Large corpus files (cleaned from external datasets, not committable)
+internal/engine/semantic/testdata/cybersec_benign_clean.jsonl
+internal/engine/semantic/testdata/cybersec_attack_clean.jsonl
+internal/engine/semantic/testdata/mined_secprose_probe.jsonl
+
+# Regenerable test artifacts (FP exports, eval reports). The root /tmp/ rule is
+# anchored to the repo root and does not cover package-local tmp dirs.
+internal/engine/semantic/tmp/

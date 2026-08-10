@@ -152,7 +152,7 @@ func TestAnalyzerFollowsStagedSemanticFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewAnalyzer("block", "sqli").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestAnalyzerDetectsNoSQLOperatorInjectionWithEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewAnalyzer("block", "nosqli").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "nosqli").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestAnalyzerDetectsSSTIWithEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewAnalyzer("block", "ssti").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "ssti").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestAnalyzerUsesHeaderAndBodyInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewAnalyzer("block", "xss", "ssrf").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "xss", "ssrf").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestAnalyzerDoesNotFlagBenignText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewAnalyzer("block", "sqli", "xss").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "sqli", "xss").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestAnalyzerAgainstOpenWAFRegressionPayloads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewAnalyzer("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -427,7 +427,7 @@ func TestAnalyzerKeepsOpenWAFNegativeCasesClean(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewAnalyzer("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}

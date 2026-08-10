@@ -226,3 +226,61 @@ func TestStartRollbackManual(t *testing.T) {
 	}
 	t.Fatal("timed out waiting for success before manual rollback")
 }
+
+func TestRollingCredentialsSurviveRollbackWindowAndClearAfterRollback(t *testing.T) {
+	starter := &fakeDeployStarter{fail: map[string]bool{}}
+	idSeq := 0
+	mgr := NewRollingManager(starter, func() string {
+		idSeq++
+		return fmt.Sprintf("job-credentials-%d", idSeq)
+	}, time.Now().UTC)
+	restart := false
+	job, err := mgr.Start(context.Background(), RollingUpgradeRequest{
+		Targets:        []RollingTarget{{Host: "a.example", User: "root", Password: "one-time-secret"}},
+		RestartService: &restart,
+		PauseBetween:   "1ms",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRollingStatus(t, mgr, job.ID, RollingStatusSucceeded)
+	mgr.mu.Lock()
+	if got := mgr.jobs[job.ID].targets[0].Password; got != "one-time-secret" {
+		mgr.mu.Unlock()
+		t.Fatalf("credentials must remain available during the bounded rollback window, got %q", got)
+	}
+	mgr.mu.Unlock()
+
+	rollback, err := mgr.StartRollback(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRollingStatus(t, mgr, rollback.ID, RollingStatusSucceeded)
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if got := mgr.jobs[job.ID].targets[0].Password; got != "" {
+		t.Fatalf("source credentials were not cleared after rollback: %q", got)
+	}
+	if got := mgr.jobs[rollback.ID].targets[0].Password; got != "" {
+		t.Fatalf("rollback credentials were not cleared after rollback: %q", got)
+	}
+}
+
+func waitRollingStatus(t *testing.T, mgr *RollingManager, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job, err := mgr.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Status == want {
+			return
+		}
+		if job.Status == RollingStatusFailed {
+			t.Fatalf("rolling job %s failed: %+v", id, job)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for rolling job %s status %s", id, want)
+}

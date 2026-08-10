@@ -91,27 +91,29 @@ func TestClientIPWithTrustedProxiesRequiresTrustedRemote(t *testing.T) {
 	}
 }
 
-func TestClientIPWithTrustedProxiesUsesCDNHeaders(t *testing.T) {
+func TestClientIPWithTrustedProxiesIgnoresCDNHeadersWithoutProviderBinding(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
 	req.RemoteAddr = "198.51.100.20:1234"
 	req.Header.Set("CF-Connecting-IP", "203.0.113.10")
 
-	if got := ClientIPWithTrustedProxies(req, []string{"198.51.100.0/24"}); got != "203.0.113.10" {
-		t.Fatalf("expected CF-Connecting-IP, got %q", got)
+	if got := ClientIPWithTrustedProxies(req, []string{"198.51.100.0/24"}); got != "198.51.100.20" {
+		t.Fatalf("generic trusted CIDRs must not enable Cloudflare headers, got %q", got)
 	}
 }
 
-func TestClientIPWithTrustedProxiesUsesAdditionalCDNHeaders(t *testing.T) {
+func TestClientIPWithTrustedProxyProvidersUsesOnlyBoundProviderHeaders(t *testing.T) {
 	tests := []struct {
-		name   string
-		header string
-		value  string
-		want   string
+		name     string
+		provider string
+		header   string
+		value    string
+		want     string
 	}{
-		{name: "aliyun", header: "Ali-CDN-Real-IP", value: "203.0.113.21", want: "203.0.113.21"},
-		{name: "vercel list", header: "X-Vercel-Forwarded-For", value: "203.0.113.22, 198.51.100.20", want: "203.0.113.22"},
-		{name: "digitalocean", header: "DO-Connecting-IP", value: "203.0.113.23", want: "203.0.113.23"},
-		{name: "azure", header: "X-Azure-ClientIP", value: "203.0.113.24", want: "203.0.113.24"},
+		{name: "cloudflare", provider: "cloudflare", header: "CF-Connecting-IP", value: "203.0.113.20", want: "203.0.113.20"},
+		{name: "aliyun", provider: "aliyun", header: "Ali-CDN-Real-IP", value: "203.0.113.21", want: "203.0.113.21"},
+		{name: "vercel list", provider: "vercel", header: "X-Vercel-Forwarded-For", value: "203.0.113.22, 198.51.100.20", want: "203.0.113.22"},
+		{name: "digitalocean", provider: "digitalocean", header: "DO-Connecting-IP", value: "203.0.113.23", want: "203.0.113.23"},
+		{name: "azure", provider: "azure", header: "X-Azure-ClientIP", value: "203.0.113.24", want: "203.0.113.24"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -119,10 +121,41 @@ func TestClientIPWithTrustedProxiesUsesAdditionalCDNHeaders(t *testing.T) {
 			req.RemoteAddr = "198.51.100.20:1234"
 			req.Header.Set(tc.header, tc.value)
 
-			if got := ClientIPWithTrustedProxies(req, []string{"198.51.100.0/24"}); got != tc.want {
+			providers := map[string][]string{tc.provider: {"198.51.100.0/24"}}
+			if got := ClientIPWithTrustedProxyProviders(req, nil, providers); got != tc.want {
 				t.Fatalf("expected %s, got %q", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestClientIPWithTrustedProxyProvidersRequiresProviderCIDRMatch(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	req.RemoteAddr = "198.51.100.20:1234"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.10")
+
+	got := ClientIPWithTrustedProxyProviders(
+		req,
+		[]string{"198.51.100.0/24"},
+		map[string][]string{"cloudflare": {"192.0.2.0/24"}},
+	)
+	if got != "198.51.100.20" {
+		t.Fatalf("generic proxy must not supply a provider-bound header, got %q", got)
+	}
+}
+
+func TestClientIPWithTrustedProxyProvidersDoesNotCrossProviderBindings(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	req.RemoteAddr = "198.51.100.20:1234"
+	req.Header.Set("Fastly-Client-IP", "203.0.113.10")
+
+	got := ClientIPWithTrustedProxyProviders(
+		req,
+		nil,
+		map[string][]string{"cloudflare": {"198.51.100.0/24"}},
+	)
+	if got != "198.51.100.20" {
+		t.Fatalf("Cloudflare binding must not enable Fastly headers, got %q", got)
 	}
 }
 
@@ -154,5 +187,21 @@ func TestClientIPWithTrustedProxiesParsesForwardedHeader(t *testing.T) {
 
 	if got := ClientIPWithTrustedProxies(req, []string{"198.51.100.20"}); got != "2001:db8::10" {
 		t.Fatalf("expected forwarded IPv6 address, got %q", got)
+	}
+}
+
+func TestProviderCIDRsParticipateInValidatedForwardedChain(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	req.RemoteAddr = "198.51.100.20:1234"
+	req.Header.Add("X-Forwarded-For", "203.0.113.10")
+	req.Header.Add("X-Forwarded-For", "198.51.100.20")
+
+	got := ClientIPWithTrustedProxyProviders(
+		req,
+		nil,
+		map[string][]string{"cloudflare": {"198.51.100.0/24"}},
+	)
+	if got != "203.0.113.10" {
+		t.Fatalf("expected provider CIDR to validate the forwarding chain, got %q", got)
 	}
 }

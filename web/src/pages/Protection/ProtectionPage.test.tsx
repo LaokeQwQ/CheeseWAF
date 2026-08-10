@@ -187,6 +187,23 @@ describe('ProtectionPage query and ACL interactions', () => {
 });
 
 describe('ProtectionPage bot form integrity', () => {
+  it('preserves an unsaved bot draft when another section invalidates protection', async () => {
+    renderProtection();
+    await screen.findAllByText('ACL fixture');
+    const botPanel = document.querySelector('.protection-bot-panel') as HTMLElement;
+    const botEnabled = within(botPanel).getAllByRole('switch')[0];
+    expect(botEnabled.getAttribute('data-state')).toBe('unchecked');
+    fireEvent.click(botEnabled);
+    expect(within(botPanel).getAllByRole('switch')[0].getAttribute('data-state')).toBe('checked');
+
+    const aclToggle = desktopACLRow().querySelector('[role="switch"]');
+    fireEvent.click(aclToggle as Element);
+
+    await waitFor(() => expect(apiMocks.updateACLProtection).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(apiMocks.fetchProtection.mock.calls.length).toBeGreaterThan(1));
+    expect(within(botPanel).getAllByRole('switch')[0].getAttribute('data-state')).toBe('checked');
+  });
+
   it('preserves unvisited tab values and server-only fields on direct save', async () => {
     const fixture = structuredClone(protectionFixture);
     fixture.bot = {

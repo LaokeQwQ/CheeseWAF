@@ -19,7 +19,7 @@ func (d *SSTIDetector) Name() string  { return "SSTI Semantic Detector" }
 func (d *SSTIDetector) Priority() int { return 350 }
 
 func (d *SSTIDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
-	result, err := NewAnalyzer(d.mode, "ssti").Detect(ctx, reqCtx)
+	result, err := NewAnalyzer(d.mode, 2, "ssti").Detect(ctx, reqCtx)
 	if result != nil {
 		result.DetectorID = d.ID()
 	}

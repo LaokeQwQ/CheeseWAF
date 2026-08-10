@@ -186,6 +186,7 @@ export type SiteAccessControl = {
   waiting_room: boolean;
   dynamic_guard: boolean;
   trusted_cidrs: string[];
+  trusted_proxy_providers?: Record<string, string[]>;
 };
 
 export type Rule = {
@@ -617,7 +618,7 @@ export type BotChallengeMetrics = { range: string; bucket: string; site_id?: str
 
 export type CAPTCHAAssetKind = 'background' | 'font' | 'icon' | 'logo';
 export type CAPTCHAAsset = { id: string; kind: CAPTCHAAssetKind; name: string; content_type: string; size: number; sha256: string; created_at: string };
-export type CAPTCHAAssetLimits = { max_image_bytes: number; max_font_bytes: number; max_pixels: number };
+export type CAPTCHAAssetLimits = { max_image_bytes: number; max_font_bytes: number; max_pixels: number; max_assets: number; max_total_bytes: number };
 export type CAPTCHAAssetConfig = {
   backend: 'local' | 's3';
   local: { path: string };

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -263,6 +264,118 @@ func TestPipelineSemanticGroupConcurrentMerge(t *testing.T) {
 	if len(reqCtx.Results) != 2 {
 		t.Fatalf("expected 2 results, got %#v", reqCtx.Results)
 	}
+}
+
+func TestPipelineGuardOverloadAppliesConfiguredFailMode(t *testing.T) {
+	tests := []struct {
+		name         string
+		priority     int
+		policy       string
+		wantAction   Action
+		wantDetected bool
+	}{
+		{name: "pre-filter open", priority: 10, policy: "open", wantAction: ActionPass},
+		{name: "pre-filter observe", priority: 10, policy: "observe", wantAction: ActionLog, wantDetected: true},
+		{name: "pre-filter closed", priority: 10, policy: "closed", wantAction: ActionChallenge, wantDetected: true},
+		{name: "semantic-only open", priority: 290, policy: "open", wantAction: ActionPass},
+		{name: "semantic-only observe", priority: 290, policy: "observe", wantAction: ActionLog, wantDetected: true},
+		{name: "semantic-only closed", priority: 290, policy: "closed", wantAction: ActionChallenge, wantDetected: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			saturateGuardSlots(t)
+			var called atomic.Int32
+			detector := &countingDetector{
+				id: "malicious-payload", priority: tc.priority,
+				fn: func(context.Context, *RequestContext) (*DetectionResult, error) {
+					called.Add(1)
+					return &DetectionResult{
+						Detected: true, DetectorID: "malicious-payload", Category: "rce",
+						Severity: SeverityCritical, Action: ActionBlock, Confidence: 0.99,
+					}, nil
+				},
+			}
+			reqCtx := &RequestContext{Metadata: map[string]any{"budget_exhausted_policy": tc.policy}}
+
+			got, err := NewPipeline(detector).Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if called.Load() != 0 {
+				t.Fatalf("detector ran despite saturated guard capacity: calls=%d", called.Load())
+			}
+			if got == nil || got.Action != tc.wantAction || got.Detected != tc.wantDetected {
+				t.Fatalf("policy %q result = %#v, want action=%s detected=%v", tc.policy, got, tc.wantAction, tc.wantDetected)
+			}
+			if reqCtx.Metadata["detection_analysis_incomplete"] != true || reqCtx.Metadata["detection_overloaded"] != true {
+				t.Fatalf("overload must explicitly mark incomplete analysis: %#v", reqCtx.Metadata)
+			}
+			if reason := reqCtx.Metadata["detection_analysis_incomplete_reason"]; reason != "guard_overload" {
+				t.Fatalf("incomplete reason = %#v, want guard_overload", reason)
+			}
+			if reqCtx.Metadata["detection_budget_exhausted"] != true {
+				t.Fatalf("overload must enter budget fail-mode: %#v", reqCtx.Metadata)
+			}
+			if tc.policy != "open" && got.Category != "detection_budget" {
+				t.Fatalf("fail-mode category = %q, want detection_budget", got.Category)
+			}
+		})
+	}
+}
+
+func TestDetectionBudgetHookConcurrentRegistration(t *testing.T) {
+	SetDetectionBudgetExhaustedHook(nil)
+	t.Cleanup(func() { SetDetectionBudgetExhaustedHook(nil) })
+
+	var calls atomic.Int64
+	hook := func() { calls.Add(1) }
+	SetDetectionBudgetExhaustedHook(hook)
+
+	const goroutines = 8
+	const iterations = 250
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for range iterations {
+				SetDetectionBudgetExhaustedHook(hook)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for range iterations {
+				reqCtx := &RequestContext{Metadata: map[string]any{
+					"budget_exhausted_policy": "open",
+				}}
+				_ = finalizeBudgetExhausted(reqCtx, nil)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got, want := calls.Load(), int64(goroutines*iterations); got != want {
+		t.Fatalf("hook calls = %d, want %d", got, want)
+	}
+}
+
+func saturateGuardSlots(t *testing.T) {
+	t.Helper()
+	if got := len(guardSlots); got != 0 {
+		t.Fatalf("guard slots not empty before saturation: %d", got)
+	}
+	if got := cap(guardSlots); got != maxInflightGuards {
+		t.Fatalf("guard slot capacity = %d, want %d", got, maxInflightGuards)
+	}
+	for i := 0; i < cap(guardSlots); i++ {
+		guardSlots <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < cap(guardSlots); i++ {
+			<-guardSlots
+		}
+	})
 }
 
 type countingDetector struct {

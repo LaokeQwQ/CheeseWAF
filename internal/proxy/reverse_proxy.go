@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
 )
 
 var ErrNoUpstream = errors.New("no upstream available")
@@ -22,20 +24,14 @@ var sharedTransports = struct {
 }{items: make(map[time.Duration]*http.Transport)}
 
 // Client-forged forwarding identity headers are stripped before rebuild.
-var stripClientForwardHeaders = []string{
+var stripClientForwardHeaders = append([]string{
 	"Forwarded",
 	"X-Forwarded-For",
 	"X-Forwarded-Host",
 	"X-Forwarded-Proto",
 	"X-Forwarded-Port",
 	"X-Forwarded-Scheme",
-	"X-Real-IP",
-	"X-Client-IP",
-	"X-Original-Forwarded-For",
-	"CF-Connecting-IP",
-	"True-Client-IP",
-	"Fastly-Client-IP",
-}
+}, proxytrust.ProviderIdentityHeaders()...)
 
 func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)

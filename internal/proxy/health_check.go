@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
 type HealthRegistry struct {
@@ -41,7 +42,35 @@ func (r *HealthRegistry) Set(address string, healthy bool) {
 		return
 	}
 	r.mu.Lock()
-	r.states[normalizeUpstream(address)] = healthy
+	key := normalizeUpstream(address)
+	if _, ok := r.states[key]; ok {
+		r.states[key] = healthy
+	}
+	r.mu.Unlock()
+}
+
+// UpdateSites updates the registry in place so users retain one source of truth.
+func (r *HealthRegistry) UpdateSites(sites []config.SiteConfig) {
+	if r == nil {
+		return
+	}
+	next := make(map[string]struct{})
+	for _, site := range sites {
+		for _, upstream := range site.Upstreams {
+			next[normalizeUpstream(upstream.Address)] = struct{}{}
+		}
+	}
+	r.mu.Lock()
+	for address := range r.states {
+		if _, ok := next[address]; !ok {
+			delete(r.states, address)
+		}
+	}
+	for address := range next {
+		if _, ok := r.states[address]; !ok {
+			r.states[address] = true
+		}
+	}
 	r.mu.Unlock()
 }
 
@@ -59,9 +88,13 @@ func (r *HealthRegistry) Snapshot() map[string]bool {
 }
 
 type HealthChecker struct {
+	mu       sync.Mutex
 	registry *HealthRegistry
 	sites    []config.SiteConfig
 	client   *http.Client
+	parent   context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 }
 
 func NewHealthChecker(sites []config.SiteConfig, registry *HealthRegistry) *HealthChecker {
@@ -83,12 +116,42 @@ func (h *HealthChecker) Start(ctx context.Context) {
 	if h == nil {
 		return
 	}
+	h.mu.Lock()
+	h.parent = ctx
+	h.restartLocked()
+	h.mu.Unlock()
+}
+
+// UpdateSites replaces the checker generation after the previous loops exit.
+func (h *HealthChecker) UpdateSites(sites []config.SiteConfig) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.sites = append([]config.SiteConfig(nil), sites...)
+	if h.parent != nil {
+		h.restartLocked()
+	}
+	h.mu.Unlock()
+}
+
+func (h *HealthChecker) restartLocked() {
+	if h.cancel != nil {
+		h.cancel()
+		h.wg.Wait()
+	}
+	ctx, cancel := context.WithCancel(h.parent)
+	h.cancel = cancel
 	for _, site := range h.sites {
 		if !site.WAF.HealthCheck.Enabled {
 			continue
 		}
 		site := site
-		go h.loop(ctx, site)
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			h.loop(ctx, site)
+		}()
 	}
 }
 
@@ -134,7 +197,7 @@ func (h *HealthChecker) check(site config.SiteConfig) {
 			h.registry.Set(upstream.Address, false)
 			continue
 		}
-		_ = resp.Body.Close()
+		_ = netguard.DrainAndClose(resp.Body)
 		h.registry.Set(upstream.Address, resp.StatusCode >= 200 && resp.StatusCode < 500)
 	}
 }

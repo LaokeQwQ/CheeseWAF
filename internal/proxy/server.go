@@ -6,8 +6,10 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/apisec"
@@ -26,29 +28,84 @@ import (
 )
 
 type Server struct {
-	config     *config.Config
-	pipeline   *engine.Pipeline
-	pipelineMu sync.RWMutex
-	logSink    storage.LogSink
-	renderer   *blockpage.Renderer
-	lb         *LoadBalancer
-	blacklist  *ip.Blacklist
-	whitelist  *ip.Whitelist
-	access     *ip.AccessPolicy
-	geoip      *ip.GeoIPPolicy
-	intel      *ip.Intel
-	acl        *acl.Policy
-	bot        *bot.Policy
-	limiter    *ratelimit.Limiter
-	health     *HealthRegistry
-	headers    *edge.HeaderModifier
-	cache      *edge.Cache
-	compress   *edge.Compressor
-	apiSchema  *apisec.Validator
-	apiLimit   *apisec.RateLimiter
-	apiAuth    *apisec.Authenticator
-	certs      *SiteCertificateStore
-	clock      timekeeper.Clock
+	config           *config.Config
+	runtimeMu        sync.RWMutex
+	pipeline         *engine.Pipeline
+	pipelineMu       sync.RWMutex
+	logSink          storage.LogSink
+	renderer         *blockpage.Renderer
+	lb               *LoadBalancer
+	access           *ip.AccessPolicy
+	geoip            *ip.GeoIPPolicy
+	intel            *ip.Intel
+	acl              *acl.Policy
+	bot              *bot.Policy
+	limiter          *ratelimit.Limiter
+	health           *HealthRegistry
+	edgeRuntime      atomic.Pointer[edgeRuntime]
+	siteRuntimes     atomic.Pointer[siteRuntimeSet]
+	apiSchema        *apisec.Validator
+	apiLimit         *apisec.RateLimiter
+	apiAuth          *apisec.Authenticator
+	apiSecEnabled    bool
+	protectionPolicy config.ProtectionPolicyConfig
+	certs            *SiteCertificateStore
+	clock            timekeeper.Clock
+}
+
+type edgeRuntime struct {
+	headers  *edge.HeaderModifier
+	cache    *edge.Cache
+	compress *edge.Compressor
+}
+
+type siteRuntime struct {
+	site              config.SiteConfig
+	rewriter          *Rewriter
+	inspector         *response.Inspector
+	trustedProxy      *engine.TrustedProxyPolicy
+	trustedProxyCIDRs []string
+}
+
+type siteRuntimeSet struct {
+	byID map[string]*siteRuntime
+}
+
+func newEdgeRuntime(cfg config.EdgeConfig) *edgeRuntime {
+	return &edgeRuntime{
+		headers:  edge.NewHeaderModifier(cfg.Headers),
+		cache:    edge.NewCache(cfg.Cache),
+		compress: edge.NewCompressor(cfg.Compression),
+	}
+}
+
+func newSiteRuntimeSet(sites []config.SiteConfig) (*siteRuntimeSet, error) {
+	set := &siteRuntimeSet{byID: make(map[string]*siteRuntime, len(sites))}
+	for _, site := range sites {
+		trustedProxy, err := engine.NewTrustedProxyPolicy(
+			site.WAF.AccessControl.TrustedCIDRs,
+			site.WAF.AccessControl.TrustedProxyProviders,
+		)
+		if err != nil {
+			return nil, err
+		}
+		rewriter, err := NewRewriter(site.WAF.Rewrite)
+		if err != nil {
+			return nil, err
+		}
+		inspector, err := response.New(site.WAF.Response)
+		if err != nil {
+			return nil, err
+		}
+		set.byID[site.ID] = &siteRuntime{
+			site:              site,
+			rewriter:          rewriter,
+			inspector:         inspector,
+			trustedProxy:      trustedProxy,
+			trustedProxyCIDRs: trustedProxy.AllTrustedCIDRs(),
+		}
+	}
+	return set, nil
 }
 
 func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink) (*Server, error) {
@@ -59,11 +116,7 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
 	}
-	blacklist, err := ip.NewBlacklist(cfg.Protection.IP.Blacklist)
-	if err != nil {
-		return nil, err
-	}
-	whitelist, err := ip.NewWhitelist(cfg.Protection.IP.Whitelist)
+	siteRuntimes, err := newSiteRuntimeSet(cfg.Sites)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +128,12 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 	if err != nil {
 		return nil, err
 	}
+	geoipOwned := true
+	defer func() {
+		if geoipOwned {
+			_ = geoip.Close()
+		}
+	}()
 	intel, err := ip.NewIntel(cfg.Protection.IP.ThreatIntel)
 	if err != nil {
 		return nil, err
@@ -88,10 +147,18 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 	if err != nil {
 		return nil, err
 	}
-	apiAuth, err := apisec.NewAuthenticatorWithClock(cfg.APISec, clock)
+	apiSec := cfg.APISec
+	apiSec.Auth.JWKSCacheRoot = filepath.Join(cfg.Setup.DataDir, "apisec")
+	apiAuth, err := apisec.NewAuthenticatorWithClock(apiSec, clock)
 	if err != nil {
 		return nil, err
 	}
+	apiAuthOwned := true
+	defer func() {
+		if apiAuthOwned {
+			_ = apiAuth.Close()
+		}
+	}()
 	renderer, err := blockpage.NewRendererFromConfig(cfg.BlockPage)
 	if err != nil {
 		return nil, err
@@ -100,30 +167,41 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
-		config:    cfg,
-		pipeline:  pipeline,
-		logSink:   sink,
-		renderer:  renderer,
-		lb:        NewLoadBalancer(cfg.Sites).WithHealth(health),
-		blacklist: blacklist,
-		whitelist: whitelist,
-		access:    access,
-		geoip:     geoip,
-		intel:     intel,
-		acl:       acl.NewPolicy(cfg.Protection.ACL),
-		bot:       bot.NewPolicyWithClock(cfg.Protection.Bot, clock),
-		limiter:   ratelimit.New(cfg.Protection.RateLimit.Default, cfg.Protection.RateLimit.Enabled),
-		health:    health,
-		headers:   edge.NewHeaderModifier(cfg.Edge.Headers),
-		cache:     edge.NewCache(cfg.Edge.Cache),
-		compress:  edge.NewCompressor(cfg.Edge.Compression),
-		apiSchema: apiSchema,
-		apiLimit:  apiLimit,
-		apiAuth:   apiAuth,
-		certs:     certs,
-		clock:     clock,
-	}, nil
+	server := &Server{
+		config:           cfg,
+		pipeline:         pipeline,
+		logSink:          sink,
+		renderer:         renderer,
+		lb:               NewLoadBalancer(cfg.Sites).WithHealth(health),
+		access:           access,
+		geoip:            geoip,
+		intel:            intel,
+		acl:              acl.NewPolicy(cfg.Protection.ACL),
+		bot:              bot.NewPolicyWithClock(cfg.Protection.Bot, clock),
+		limiter:          ratelimit.New(cfg.Protection.RateLimit.Default, cfg.Protection.RateLimit.Enabled),
+		health:           health,
+		apiSchema:        apiSchema,
+		apiLimit:         apiLimit,
+		apiAuth:          apiAuth,
+		apiSecEnabled:    cfg.APISec.Enabled,
+		protectionPolicy: cfg.Protection.Policy,
+		certs:            certs,
+		clock:            clock,
+	}
+	server.edgeRuntime.Store(newEdgeRuntime(cfg.Edge))
+	server.siteRuntimes.Store(siteRuntimes)
+	geoipOwned = false
+	apiAuthOwned = false
+	return server, nil
+}
+
+// UpdateEdge atomically replaces all request-time Edge components.
+func (s *Server) UpdateEdge(cfg config.EdgeConfig) error {
+	if s == nil {
+		return nil
+	}
+	s.edgeRuntime.Store(newEdgeRuntime(cfg))
+	return nil
 }
 
 func (s *Server) UpdateBlockPage(page config.BlockPageConfig) error {
@@ -134,8 +212,9 @@ func (s *Server) UpdateBlockPage(page config.BlockPageConfig) error {
 	if err != nil {
 		return err
 	}
-	s.config.BlockPage = page
+	s.runtimeMu.Lock()
 	s.renderer = renderer
+	s.runtimeMu.Unlock()
 	return nil
 }
 
@@ -149,16 +228,20 @@ func (s *Server) UpdateSites(sites []config.SiteConfig) error {
 	if s == nil {
 		return nil
 	}
-	prev := s.config.Sites
-	s.config.Sites = append([]config.SiteConfig(nil), sites...)
+	runtimes, err := newSiteRuntimeSet(sites)
+	if err != nil {
+		return err
+	}
+	nextConfig := *s.config
+	nextConfig.Sites = append([]config.SiteConfig(nil), sites...)
 	if s.certs != nil {
-		if err := s.certs.Update(s.config); err != nil {
-			s.config.Sites = prev
+		if err := s.certs.Update(&nextConfig); err != nil {
 			return err
 		}
 	}
-	s.health = NewHealthRegistry(s.config.Sites)
-	s.lb.UpdateSites(s.config.Sites, s.health)
+	s.health.UpdateSites(sites)
+	s.lb.UpdateSites(sites, s.health)
+	s.siteRuntimes.Store(runtimes)
 	return nil
 }
 
@@ -199,15 +282,18 @@ func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
 	if err != nil {
 		return err
 	}
+	apiSec.Auth.JWKSCacheRoot = filepath.Join(s.config.Setup.DataDir, "apisec")
 	apiAuth, err := apisec.NewAuthenticatorWithClock(apiSec, s.clock)
 	if err != nil {
 		return err
 	}
+	s.runtimeMu.Lock()
 	oldAuth := s.apiAuth
-	s.config.APISec = apiSec
 	s.apiSchema = apiSchema
 	s.apiLimit = apiLimit
 	s.apiAuth = apiAuth
+	s.apiSecEnabled = apiSec.Enabled
+	s.runtimeMu.Unlock()
 	if oldAuth != nil {
 		_ = oldAuth.Close()
 	}
@@ -217,14 +303,6 @@ func (s *Server) UpdateAPISec(apiSec config.APISecConfig) error {
 func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	if s == nil {
 		return nil
-	}
-	blacklist, err := ip.NewBlacklist(protection.IP.Blacklist)
-	if err != nil {
-		return err
-	}
-	whitelist, err := ip.NewWhitelist(protection.IP.Whitelist)
-	if err != nil {
-		return err
 	}
 	access, err := ip.NewAccessPolicy(protection.IP)
 	if err != nil {
@@ -236,23 +314,46 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	}
 	intel, err := ip.NewIntel(protection.IP.ThreatIntel)
 	if err != nil {
+		_ = geoip.Close()
 		return err
 	}
-	apiLimit, err := apisec.NewRateLimiter(s.config.APISec.RateLimits)
-	if err != nil {
-		return err
-	}
-	s.config.Protection = protection
-	s.blacklist = blacklist
-	s.whitelist = whitelist
+	s.runtimeMu.Lock()
+	oldGeoIP := s.geoip
 	s.access = access
 	s.geoip = geoip
 	s.intel = intel
 	s.acl = acl.NewPolicy(protection.ACL)
 	s.bot = bot.NewPolicyWithClock(protection.Bot, s.clock)
 	s.limiter = ratelimit.New(protection.RateLimit.Default, protection.RateLimit.Enabled)
-	s.apiLimit = apiLimit
+	s.protectionPolicy = protection.Policy
+	s.runtimeMu.Unlock()
+	if oldGeoIP != nil {
+		_ = oldGeoIP.Close()
+	}
 	return nil
+}
+
+// Close releases runtime resources after in-flight requests have exited.
+func (s *Server) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.runtimeMu.Lock()
+	geoip := s.geoip
+	auth := s.apiAuth
+	s.geoip = nil
+	s.apiAuth = nil
+	s.runtimeMu.Unlock()
+	var closeErr error
+	if geoip != nil {
+		closeErr = geoip.Close()
+	}
+	if auth != nil {
+		if err := auth.Close(); closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }
 
 func (s *Server) Handler() http.Handler {
@@ -272,6 +373,24 @@ func (s *Server) HTTPServer() *http.Server {
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+	s.runtimeMu.RLock()
+	runtimeLocked := true
+	unlockRuntime := func() {
+		if runtimeLocked {
+			s.runtimeMu.RUnlock()
+			runtimeLocked = false
+		}
+	}
+	lockRuntime := func() {
+		if !runtimeLocked {
+			s.runtimeMu.RLock()
+			runtimeLocked = true
+		}
+	}
+	defer func() {
+		lockRuntime()
+		s.runtimeMu.RUnlock()
+	}()
 	start := time.Now()
 	site := s.lb.SiteForHost(r.Host)
 	// Never fall back to another tenant: unmatched Host gets 421 before bot/WAF.
@@ -279,12 +398,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Misdirected Request: no site matches this host", http.StatusMisdirectedRequest)
 		return
 	}
+	siteSet := s.siteRuntimes.Load()
+	edgeRT := s.edgeRuntime.Load()
+	if siteSet == nil || siteSet.byID[site.ID] == nil || edgeRT == nil {
+		http.Error(w, "runtime configuration unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	siteRT := siteSet.byID[site.ID]
 	// Attach trusted proxy CIDRs early so bot clearance cookies and X-Forwarded-Proto
 	// decisions stay consistent for the whole request (no per-call re-resolution).
-	r = r.WithContext(bot.ContextWithTrustedCIDRs(r.Context(), site.WAF.AccessControl.TrustedCIDRs))
-	policy := config.EffectiveProtectionPolicy(s.config.Protection.Policy, site.WAF.ProtectionPolicy)
+	r = r.WithContext(bot.ContextWithTrustedCIDRs(r.Context(), siteRT.trustedProxyCIDRs))
+	policy := config.EffectiveProtectionPolicy(s.protectionPolicy, site.WAF.ProtectionPolicy)
 
-	https := requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs)
+	https := requestIsHTTPS(r, siteRT.trustedProxyCIDRs)
 	if site.Certificate.ForceHTTPS && !https && r.Method != http.MethodConnect {
 		host := r.Host
 		if host == "" {
@@ -303,7 +429,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if !pathOK {
 		s.block(w, &engine.RequestContext{
 			Request:  r,
-			ClientIP: engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs),
+			ClientIP: siteRT.trustedProxy.ClientIP(r),
 			TraceID:  blockpage.NewTraceID(),
 			SiteID:   site.ID,
 			Metadata: map[string]any{"invalid_path": r.URL.Path},
@@ -315,7 +441,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if violation := engine.DetectProtocolViolations(r); violation != nil {
 		s.block(w, &engine.RequestContext{
 			Request:  r,
-			ClientIP: engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs),
+			ClientIP: siteRT.trustedProxy.ClientIP(r),
 			TraceID:  blockpage.NewTraceID(),
 			SiteID:   site.ID,
 			Metadata: map[string]any{"protocol_violation": violation.Type},
@@ -338,8 +464,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			maxRequestBody = maxVerifyBody
 		}
 	}
+	// Keep the same cap on requests that skip body inspection. MaxBytesReader
+	// also bounds chunked and HTTP/2 bodies whose ContentLength is unknown.
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	}
 	// Defer body I/O until APISec/WAF (or verify). IP/geo/bot/rate use headers only.
-	reqCtx, err := engine.NewRequestContextDeferredBody(r, site.ID, site.WAF.AccessControl.TrustedCIDRs, maxRequestBody)
+	reqCtx, err := engine.NewRequestContextDeferredBodyWithTrustedProxyPolicy(r, site.ID, siteRT.trustedProxy, maxRequestBody)
 	if err != nil {
 		if errors.Is(err, engine.ErrRequestBodyTooLarge) {
 			s.proxyError(w, r, site, nil, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
@@ -427,7 +558,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Body needed for schema/WAF inspection; still deferred for pure bot/rate early exits.
-	if (s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff) || (site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff) {
+	if (s.apiSecEnabled && policy.APISecurity != config.ProtectionLevelOff) || (site.WAF.Enabled && site.WAF.Mode != "off" && policy.WebAttack != config.ProtectionLevelOff) {
 		if err := reqCtx.EnsureBody(); err != nil {
 			if errors.Is(err, engine.ErrRequestBodyTooLarge) {
 				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
@@ -437,7 +568,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if s.config.APISec.Enabled && policy.APISecurity != config.ProtectionLevelOff {
+	if s.apiSecEnabled && policy.APISecurity != config.ProtectionLevelOff {
 		if finding := s.apiAuth.Evaluate(r); finding != nil && !ipAllowed {
 			result := apiAuthDetection(*finding)
 			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
@@ -474,12 +605,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	rewriter, err := NewRewriter(site.WAF.Rewrite)
-	if err != nil {
-		s.proxyError(w, r, site, reqCtx, "proxy_error", "rewrite configuration error", http.StatusInternalServerError, start, err)
-		return
-	}
-	if redirect, code := rewriter.Apply(r); redirect {
+	if redirect, code := siteRT.rewriter.Apply(r); redirect {
 		// Same-origin relative redirect only; redirect the validated string, not a re-serialized URL.
 		loc := fsguard.SanitizeLocalRedirect(r.URL.RequestURI())
 		loc = strings.ReplaceAll(loc, "\\", "/")
@@ -522,9 +648,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.headers.Apply(r)
-	if cached, ok := s.cache.Get(r); ok {
-		s.compress.Apply(r, &cached)
+	edgeRT.headers.Apply(r)
+	if cached, ok := edgeRT.cache.Get(r); ok {
+		edgeRT.compress.Apply(r, &cached)
 		edge.WriteCaptured(w, cached)
 		s.writeLog(r.Context(), reqCtx, "cache_hit", cached.Status, start, nil)
 		return
@@ -540,31 +666,34 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
 			proxyErr = err
 		}
+		unlockRuntime()
 		rp.ServeHTTP(w, r)
+		lockRuntime()
 		if proxyErr != nil {
-			s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
+			status := http.StatusBadGateway
+			category, message := "proxy_error", "upstream proxy error"
+			if requestBodyTooLarge(proxyErr) {
+				status = http.StatusRequestEntityTooLarge
+				category, message = "request_too_large", "request body exceeds site limit"
+			}
+			s.proxyError(w, r, site, reqCtx, category, message, status, start, proxyErr)
 			return
 		}
 		s.writeLog(r.Context(), reqCtx, "pass", http.StatusSwitchingProtocols, start, nil)
 		return
 	}
 	retrySafe := retrySafeRequest(r)
-	cacheCandidate := retrySafe && s.cache.CaptureCandidate(r)
-	compressCandidate := retrySafe && s.compress.MayApplyRequest(r)
+	cacheCandidate := retrySafe && edgeRT.cache.CaptureCandidate(r)
+	compressCandidate := retrySafe && edgeRT.compress.MayApplyRequest(r)
 	if !cacheCandidate && !compressCandidate {
 		rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
 		var proxyErr error
 		rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
 			proxyErr = err
 		}
-		if site.WAF.Response.Enabled {
-			inspector, err := response.New(site.WAF.Response)
-			if err != nil {
-				s.proxyError(w, r, site, reqCtx, "proxy_error", "response inspector configuration error", http.StatusInternalServerError, start, err)
-				return
-			}
+		if siteRT.inspector.Enabled() {
 			rp.ModifyResponse = func(resp *http.Response) error {
-				finding, err := inspector.InspectHTTP(resp)
+				finding, err := siteRT.inspector.InspectHTTP(resp)
 				if err != nil {
 					return err
 				}
@@ -576,28 +705,38 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		recorder := &proxyStatusRecorder{ResponseWriter: w, status: http.StatusOK}
+		unlockRuntime()
 		rp.ServeHTTP(recorder, r)
+		lockRuntime()
 		if proxyErr != nil {
-			s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
+			status := http.StatusBadGateway
+			category, message := "proxy_error", "upstream proxy error"
+			if requestBodyTooLarge(proxyErr) {
+				status = http.StatusRequestEntityTooLarge
+				category, message = "request_too_large", "request body exceeds site limit"
+			}
+			s.proxyError(w, r, site, reqCtx, category, message, status, start, proxyErr)
 			return
 		}
 		s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
 		return
 	}
-	capture := edge.NewAdaptiveCaptureWriter(w, edgeCaptureLimit(site, s.cache, cacheCandidate, compressCandidate))
+	captureLimit := edgeCaptureLimit(site, edgeRT.cache, cacheCandidate, compressCandidate)
+	capture := edge.NewAdaptiveCaptureWriter(w, captureLimit)
 	rp := NewReverseProxy(target, site.WAF.Performance.ProxyTimeout)
 	var proxyErr error
 	rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
 		proxyErr = err
 	}
-	if site.WAF.Response.Enabled {
-		inspector, err := response.New(site.WAF.Response)
-		if err != nil {
-			s.proxyError(w, r, site, reqCtx, "proxy_error", "response inspector configuration error", http.StatusInternalServerError, start, err)
-			return
+	rp.ModifyResponse = func(resp *http.Response) error {
+		streaming := response.IsStreamingContentType(resp.Header.Get("Content-Type"))
+		cacheResponseCandidate := cacheCandidate && edgeRT.cache.MayStoreResponse(resp)
+		compressResponseCandidate := compressCandidate && edgeRT.compress.MayApplyResponse(r, resp)
+		if streaming || (captureLimit > 0 && resp.ContentLength > captureLimit) || (!cacheResponseCandidate && !compressResponseCandidate) {
+			capture.DisableBuffering()
 		}
-		rp.ModifyResponse = func(resp *http.Response) error {
-			finding, err := inspector.InspectHTTP(resp)
+		if siteRT.inspector.Enabled() && !streaming {
+			finding, err := siteRT.inspector.InspectHTTP(resp)
 			if err != nil {
 				return err
 			}
@@ -605,11 +744,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
 				reqCtx.Metadata["response_finding"] = finding
 			}
-			return nil
 		}
+		return nil
 	}
+	unlockRuntime()
 	rp.ServeHTTP(capture, r)
-	if capture.TooLarge() {
+	lockRuntime()
+	if capture.Committed() {
 		if proxyErr != nil || capture.Err() != nil {
 			err := proxyErr
 			if err == nil {
@@ -626,15 +767,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if proxyErr != nil {
-		s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
+		status := http.StatusBadGateway
+		category, message := "proxy_error", "upstream proxy error"
+		if requestBodyTooLarge(proxyErr) {
+			status = http.StatusRequestEntityTooLarge
+			category, message = "request_too_large", "request body exceeds site limit"
+		}
+		s.proxyError(w, r, site, reqCtx, category, message, status, start, proxyErr)
 		return
 	}
 	captured := capture.Response()
 	if cacheCandidate {
-		s.cache.Store(r, captured)
+		edgeRT.cache.Store(r, captured)
 		captured.Header.Set("X-CheeseWAF-Cache", "MISS")
 	}
-	s.compress.Apply(r, &captured)
+	edgeRT.compress.Apply(r, &captured)
 	edge.WriteCaptured(w, captured)
 	s.writeLog(r.Context(), reqCtx, "pass", captured.Status, start, nil)
 }
@@ -653,15 +800,30 @@ func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request,
 		clientIP = reqCtx.ClientIP
 	}
 	if clientIP == "" {
-		clientIP = engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+		clientIP = engine.ClientIPWithTrustedProxyProviders(
+			r,
+			site.WAF.AccessControl.TrustedCIDRs,
+			site.WAF.AccessControl.TrustedProxyProviders,
+		)
 	}
 	// Body was size-capped and rewound by EnsureBody on the verify path.
-	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, site.WAF.AccessControl.TrustedCIDRs))
+	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, trustedProxyCIDRs(site.WAF.AccessControl)))
 }
 
 // isLocalURL reports whether raw is a same-origin relative URL safe for redirects.
 func isLocalURL(raw string) bool {
 	return fsguard.IsLocalURL(raw)
+}
+
+func requestBodyTooLarge(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, engine.ErrRequestBodyTooLarge) {
+		return true
+	}
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
 }
 
 func requestIsHTTPS(r *http.Request, trustedCIDRs []string) bool {
@@ -676,6 +838,14 @@ func requestIsHTTPS(r *http.Request, trustedCIDRs []string) bool {
 	}
 	proto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
 	return strings.EqualFold(proto, "https")
+}
+
+func trustedProxyCIDRs(access config.SiteAccessControlConfig) []string {
+	policy, err := engine.NewTrustedProxyPolicy(access.TrustedCIDRs, access.TrustedProxyProviders)
+	if err != nil {
+		return nil
+	}
+	return policy.AllTrustedCIDRs()
 }
 
 func remoteIPInCIDRs(remoteAddr string, cidrs []string) bool {
@@ -753,7 +923,7 @@ func (s *Server) proxyError(w http.ResponseWriter, r *http.Request, site config.
 	if reqCtx == nil {
 		reqCtx = &engine.RequestContext{
 			Request:  r,
-			ClientIP: engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs),
+			ClientIP: engine.ClientIPWithTrustedProxyProviders(r, site.WAF.AccessControl.TrustedCIDRs, site.WAF.AccessControl.TrustedProxyProviders),
 			TraceID:  blockpage.NewTraceID(),
 			SiteID:   site.ID,
 			Metadata: map[string]any{},
@@ -769,7 +939,7 @@ func (s *Server) proxyError(w http.ResponseWriter, r *http.Request, site config.
 		reqCtx.SiteID = site.ID
 	}
 	if reqCtx.ClientIP == "" && r != nil {
-		reqCtx.ClientIP = engine.ClientIPWithTrustedProxies(r, site.WAF.AccessControl.TrustedCIDRs)
+		reqCtx.ClientIP = engine.ClientIPWithTrustedProxyProviders(r, site.WAF.AccessControl.TrustedCIDRs, site.WAF.AccessControl.TrustedProxyProviders)
 	}
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
@@ -1333,17 +1503,14 @@ func (s *Server) blockPageData(reqCtx *engine.RequestContext, attackType, messag
 		data.SiteID = reqCtx.SiteID
 	}
 	data.AttackType = attackType
-	if s != nil && s.config != nil && data.SiteID != "" {
-		for i := range s.config.Sites {
-			site := s.config.Sites[i]
-			if site.ID != data.SiteID {
-				continue
+	if s != nil && data.SiteID != "" {
+		if set := s.siteRuntimes.Load(); set != nil {
+			if runtime := set.byID[data.SiteID]; runtime != nil {
+				data.SiteName = strings.TrimSpace(runtime.site.Name)
+				if data.SiteName == "" {
+					data.SiteName = runtime.site.ID
+				}
 			}
-			data.SiteName = strings.TrimSpace(site.Name)
-			if data.SiteName == "" {
-				data.SiteName = site.ID
-			}
-			break
 		}
 	}
 	return data
@@ -1504,14 +1671,20 @@ func isPlainAccessLog(entry *storage.LogEntry) bool {
 }
 
 func (s *Server) siteAccessLogEnabled(siteID string) bool {
-	if s == nil || s.config == nil {
+	if s == nil {
 		return true
 	}
 	siteID = strings.TrimSpace(siteID)
-	for i := range s.config.Sites {
-		site := s.config.Sites[i]
-		if site.ID == siteID || (siteID == "" && i == 0) {
-			return site.WAF.AccessLogOn()
+	set := s.siteRuntimes.Load()
+	if set == nil {
+		return true
+	}
+	if runtime := set.byID[siteID]; runtime != nil {
+		return runtime.site.WAF.AccessLogOn()
+	}
+	if siteID == "" {
+		for _, runtime := range set.byID {
+			return runtime.site.WAF.AccessLogOn()
 		}
 	}
 	// Unknown site id: default on so we do not silently drop security-adjacent traffic logs.

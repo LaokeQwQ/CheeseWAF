@@ -65,3 +65,42 @@ func TestPeerIPOnlyReturnsParsedAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestNewReverseProxyStripsAllProviderIdentityHeaders(t *testing.T) {
+	target, err := url.Parse("http://origin.internal:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := NewReverseProxy(target, time.Second)
+	req, err := http.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.RemoteAddr = "192.0.2.10:1234"
+	for _, header := range stripClientForwardHeaders {
+		req.Header.Set(header, "203.0.113.99")
+	}
+
+	proxy.Director(req)
+	for _, header := range stripClientForwardHeaders {
+		got := req.Header.Get(header)
+		switch http.CanonicalHeaderKey(header) {
+		case http.CanonicalHeaderKey("X-Forwarded-For"), http.CanonicalHeaderKey("X-Real-IP"):
+			if got != "192.0.2.10" {
+				t.Fatalf("%s was not rebuilt from the socket peer: %q", header, got)
+			}
+		case http.CanonicalHeaderKey("X-Forwarded-Host"):
+			if got != "app.example.test" {
+				t.Fatalf("forwarded host was not rebuilt from the request host: %q", got)
+			}
+		case http.CanonicalHeaderKey("X-Forwarded-Proto"):
+			if got != "http" {
+				t.Fatalf("forwarded proto was not rebuilt from the request transport: %q", got)
+			}
+		default:
+			if got != "" {
+				t.Fatalf("provider identity header %s leaked upstream as %q", header, got)
+			}
+		}
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	clusterobject "github.com/LaokeQwQ/CheeseWAF/internal/cluster/object"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -158,7 +159,7 @@ func postClusterHeartbeat(client *http.Client, controller, nodeID, role, adverti
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
