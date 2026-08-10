@@ -106,6 +106,13 @@ func (d *XSSDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 }
 
 func executableXSSContext(normalized string) bool {
+	fastSignatures := []string{
+		"<script", "onload=", "onerror=", "onclick=", "onmouseover=",
+		"javascript:", "data:text/html", "<svg", "<iframe", "onfocus=",
+	}
+	if !containsAny(normalized, fastSignatures) {
+		return false
+	}
 	for _, pattern := range xssPatterns {
 		if pattern.MatchString(normalized) {
 			return true

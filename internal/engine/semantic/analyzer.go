@@ -2638,7 +2638,7 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	if xssStyleExecutionContext.MatchString(lower) {
 		reasons["syntax: executable CSS expression or javascript URL"] = true
 	}
-	if strings.Contains(lower, "document.cookie") || strings.Contains(lower, "localstorage") || strings.Contains(lower, "fetch(") {
+	if containsAny(lower, []string{"document.cookie", "localstorage", "fetch("}) {
 		reasons["semantics: browser credential or network side effect"] = true
 	}
 	if len(reasons) == 0 {
