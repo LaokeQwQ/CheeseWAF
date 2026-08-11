@@ -40,7 +40,8 @@ func Decode(raw string) Decoded {
 		layers = append(layers, "url")
 	}
 	// Every HTML entity begins with '&', so without one UnescapeString is a
-	// no-op and its scan is pure cost.
+	// no-op. It opens with the same IndexByte scan internally, so this gate saves
+	// the call and the comparison rather than the scan.
 	if strings.IndexByte(text, '&') >= 0 {
 		if unescaped := html.UnescapeString(text); unescaped != text {
 			text = unescaped
@@ -108,18 +109,47 @@ func unescapeUnicode(raw string) (string, bool) {
 	return out, changed
 }
 
-var encodedPayloadPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)^[a-z0-9+/=]{20,}$`),
-	regexp.MustCompile(`(?i)(?:%[0-9a-f]{2}){4,}`),
-	regexp.MustCompile(`(?i)(?:(?:\\u[0-9a-f]{4}|\\x[0-9a-f]{2}){2,})`),
-	regexp.MustCompile(`(?i)(?:&#x?[0-9a-f]+;){2,}`),
-}
+// Patterns that mark text as plausibly carrying another encoding layer. Named
+// individually rather than kept in a slice so looksLikeEncodedPayload can front
+// each one with its own cheap precondition.
+var (
+	rxBase64Blob = regexp.MustCompile(`(?i)^[a-z0-9+/=]{20,}$`)
+	rxPercentRun = regexp.MustCompile(`(?i)(?:%[0-9a-f]{2}){4,}`)
+	rxEscapeRun  = regexp.MustCompile(`(?i)(?:(?:\\u[0-9a-f]{4}|\\x[0-9a-f]{2}){2,})`)
+	rxEntityRun  = regexp.MustCompile(`(?i)(?:&#x?[0-9a-f]+;){2,}`)
+)
 
+// looksLikeEncodedPayload runs on every Decode call, so rather than entering the
+// regex engine four times unconditionally each pattern is fronted by a byte-level
+// precondition derived from the pattern itself: the literal byte it cannot match
+// without, and the shortest byte length it can possibly match.
+//
+// Every gate is a provable *superset* of its pattern, so this cannot answer false
+// where the ungated battery answers true. The minimum lengths are byte counts and
+// hold even under the Unicode case folding (?i) implies, because folding can only
+// ever make a matched rune wider than one byte, never narrower.
+// TestEncodedPayloadGateIsSuperset pins that against the same compiled patterns
+// run without gates, over the corpus and randomized inputs.
+//
+// This pays off because Decode has already URL- and HTML-unescaped by the time it
+// reaches here: on ordinary traffic the marker bytes are gone and all four
+// patterns are skipped outright.
 func looksLikeEncodedPayload(text string) bool {
-	for _, p := range encodedPayloadPatterns {
-		if p.MatchString(text) {
-			return true
-		}
+	// ^[a-z0-9+/=]{20,}$ has no marker byte, but cannot match under 20 bytes.
+	if len(text) >= 20 && rxBase64Blob.MatchString(text) {
+		return true
+	}
+	// (?:%[0-9a-f]{2}){4,} needs a '%' and at least 4*3 bytes.
+	if len(text) >= 12 && strings.IndexByte(text, '%') >= 0 && rxPercentRun.MatchString(text) {
+		return true
+	}
+	// (?:\u[0-9a-f]{4}|\x[0-9a-f]{2}){2,} needs a '\' and at least 2*4 bytes.
+	if len(text) >= 8 && strings.IndexByte(text, '\\') >= 0 && rxEscapeRun.MatchString(text) {
+		return true
+	}
+	// (?:&#x?[0-9a-f]+;){2,} needs an '&' and at least 2*4 bytes.
+	if len(text) >= 8 && strings.IndexByte(text, '&') >= 0 && rxEntityRun.MatchString(text) {
+		return true
 	}
 	return false
 }
