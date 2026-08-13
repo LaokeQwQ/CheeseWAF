@@ -62,7 +62,7 @@ func BenchmarkFullPipeline(b *testing.B) {
 }
 
 func BenchmarkSemanticAnalyzer(b *testing.B) {
-	analyzer := NewAnalyzer("block")
+	analyzer := NewAnalyzer("block", 2)
 	req := httptest.NewRequest("GET", "/search?q=1'+or+1=1--", nil)
 	reqCtx, _ := engine.NewRequestContext(req, "default")
 	b.ResetTimer()
@@ -73,7 +73,7 @@ func BenchmarkSemanticAnalyzer(b *testing.B) {
 
 func BenchmarkSemanticAnalyzerCleanGET(b *testing.B) {
 	processCandidateCache.resetForTest()
-	analyzer := NewAnalyzer("block")
+	analyzer := NewAnalyzer("block", 2)
 	req := httptest.NewRequest("GET", "/api/users?sort=name&dir=asc&page=2", nil)
 	reqCtx, _ := engine.NewRequestContext(req, "default")
 	b.ReportAllocs()
@@ -88,7 +88,7 @@ func BenchmarkSemanticAnalyzerCleanGET(b *testing.B) {
 
 func BenchmarkSemanticAnalyzerHealthProbe(b *testing.B) {
 	processCandidateCache.resetForTest()
-	analyzer := NewAnalyzer("block")
+	analyzer := NewAnalyzer("block", 2)
 	req := httptest.NewRequest("GET", "/health", nil)
 	reqCtx, _ := engine.NewRequestContext(req, "default")
 	b.ReportAllocs()
@@ -102,7 +102,7 @@ func BenchmarkSemanticAnalyzerHealthProbe(b *testing.B) {
 }
 
 func BenchmarkSemanticAnalyzerMultiFieldParallel(b *testing.B) {
-	analyzer := NewAnalyzer("block")
+	analyzer := NewAnalyzer("block", 2)
 	// Enough independent fields to engage the candidate worker pool.
 	body := `{"a":"hello","b":"world","c":"order-status","d":"select-theme","e":"1 union select password from users","f":"normal","g":"ok","h":"uuid-550e"}`
 	req := httptest.NewRequest("POST", "/api/batch", strings.NewReader(body))
@@ -122,7 +122,7 @@ func BenchmarkSemanticAnalyzerMultiFieldParallel(b *testing.B) {
 }
 
 func BenchmarkSemanticAnalyzerParallelRequests(b *testing.B) {
-	analyzer := NewAnalyzer("block")
+	analyzer := NewAnalyzer("block", 2)
 	payloads := []string{
 		"/search?q=select+a+theme",
 		"/search?q=1+union+select+1,2--",

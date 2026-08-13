@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,35 @@ func TestJoinTokenIsOneTimeAndExpires(t *testing.T) {
 	clock.Advance(2 * time.Minute)
 	if err := svc.ConsumeJoinToken(expired.Value); err == nil {
 		t.Fatal("expired token must be rejected")
+	}
+}
+
+func TestJoinTokenStateIsBoundedAndExpiredEntriesArePruned(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clock := NewFakeClock(now)
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxJoinTokens; i++ {
+		id := fmt.Sprintf("token-%d", i)
+		hash := fmt.Sprintf("hash-%d", i)
+		expires := now.Add(time.Hour)
+		if i == 0 {
+			expires = now.Add(-time.Second)
+		}
+		token := &JoinToken{ID: id, Hash: hash, Role: "waf", ExpiresAt: expires, MaxUses: 1, CreatedAt: now}
+		svc.tokens[id] = token
+		svc.tokensByHash[hash] = token
+	}
+	if _, err := svc.CreateJoinToken("waf", time.Minute, 1); err != nil {
+		t.Fatalf("expired token should be pruned before enforcing the cap: %v", err)
+	}
+	if len(svc.tokens) != maxJoinTokens || len(svc.tokensByHash) != maxJoinTokens {
+		t.Fatalf("token stores must remain bounded and synchronized: ids=%d hashes=%d", len(svc.tokens), len(svc.tokensByHash))
+	}
+	if _, err := svc.CreateJoinToken("waf", time.Minute, 1); err == nil {
+		t.Fatal("expected active join token cap to reject another token")
 	}
 }
 

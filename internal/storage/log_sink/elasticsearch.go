@@ -12,12 +12,14 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
 type ElasticsearchSink struct {
 	cfg    config.ElasticsearchConfig
 	client *http.Client
+	async  *asyncLogWriter
 }
 
 func NewElasticsearchSink(cfg config.ElasticsearchConfig, client *http.Client) (*ElasticsearchSink, error) {
@@ -36,10 +38,22 @@ func NewElasticsearchSink(cfg config.ElasticsearchConfig, client *http.Client) (
 	if client == nil {
 		client = guardedLogSinkHTTPClient(cfg.Timeout, "elasticsearch endpoint", cfg.AllowPrivateEndpoint)
 	}
-	return &ElasticsearchSink{cfg: cfg, client: client}, nil
+	sink := &ElasticsearchSink{cfg: cfg, client: client}
+	sink.async = newAsyncLogWriter("elasticsearch", sink.writeSync, nil, func() error {
+		sink.client.CloseIdleConnections()
+		return nil
+	}, asyncLogWriterOptions{})
+	return sink, nil
 }
 
 func (s *ElasticsearchSink) Write(ctx context.Context, entry *storage.LogEntry) error {
+	if s.async == nil {
+		return s.writeSync(ctx, entry)
+	}
+	return s.async.Write(ctx, entry)
+}
+
+func (s *ElasticsearchSink) writeSync(ctx context.Context, entry *storage.LogEntry) error {
 	if entry == nil {
 		return nil
 	}
@@ -67,7 +81,7 @@ func (s *ElasticsearchSink) Write(ctx context.Context, entry *storage.LogEntry) 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("elasticsearch returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -76,6 +90,8 @@ func (s *ElasticsearchSink) Write(ctx context.Context, entry *storage.LogEntry) 
 }
 
 func (s *ElasticsearchSink) Query(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
+	limit := normalizedLimit(filter.Limit)
+	filter.Limit = limit
 	query := elasticsearchQuery(filter)
 	data, err := json.Marshal(query)
 	if err != nil {
@@ -92,7 +108,7 @@ func (s *ElasticsearchSink) Query(ctx context.Context, filter storage.LogFilter)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, 0, fmt.Errorf("elasticsearch returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -105,8 +121,11 @@ func (s *ElasticsearchSink) Query(ctx context.Context, filter storage.LogFilter)
 			} `json:"hits"`
 		} `json:"hits"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := decodeBoundedLogQueryJSON(resp.Body, &out); err != nil {
 		return nil, 0, err
+	}
+	if len(out.Hits.Hits) > limit {
+		return nil, 0, fmt.Errorf("elasticsearch response exceeds %d rows", limit)
 	}
 	entries := make([]storage.LogEntry, 0, len(out.Hits.Hits))
 	for _, hit := range out.Hits.Hits {
@@ -115,12 +134,25 @@ func (s *ElasticsearchSink) Query(ctx context.Context, filter storage.LogFilter)
 	return entries, elasticsearchTotal(out.Hits.Total, int64(len(entries))), nil
 }
 
-func (s *ElasticsearchSink) Flush(context.Context) error {
-	return nil
+func (s *ElasticsearchSink) Flush(ctx context.Context) error {
+	if s.async == nil {
+		return nil
+	}
+	return s.async.Flush(ctx)
 }
 
 func (s *ElasticsearchSink) Close() error {
-	return nil
+	if s.async == nil {
+		return nil
+	}
+	return s.async.Close()
+}
+
+func (s *ElasticsearchSink) AsyncStats() AsyncLogSinkStats {
+	if s.async == nil {
+		return AsyncLogSinkStats{}
+	}
+	return s.async.Stats()
 }
 
 func (s *ElasticsearchSink) applyAuth(req *http.Request) {
@@ -135,10 +167,7 @@ func (s *ElasticsearchSink) applyAuth(req *http.Request) {
 }
 
 func elasticsearchQuery(filter storage.LogFilter) map[string]any {
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 100
-	}
+	limit := normalizedLimit(filter.Limit)
 	offset := filter.Offset
 	if offset < 0 {
 		offset = 0

@@ -15,6 +15,8 @@ var (
 	ErrReferenceExpired  = errors.New("captcha asset reference expired")
 	ErrReferenceUsed     = errors.New("captcha asset reference already used")
 	ErrReferenceCapacity = errors.New("captcha asset reference capacity reached")
+	ErrQuotaExceeded     = errors.New("captcha asset storage quota exceeded")
+	errObjectListLimit   = errors.New("S3 list object limit exceeded")
 )
 
 type Kind string
@@ -60,6 +62,12 @@ type ObjectClient interface {
 	GetObject(ctx context.Context, bucket, key string) (io.ReadCloser, error)
 	DeleteObject(ctx context.Context, bucket, key string) error
 	ListObjects(ctx context.Context, bucket, prefix string) ([]ObjectInfo, error)
+}
+
+// LimitedObjectClient lets stores stop remote enumeration once their configured
+// quota has been reached. Implementations without it remain supported.
+type LimitedObjectClient interface {
+	ListObjectsLimited(ctx context.Context, bucket, prefix string, maxObjects int) ([]ObjectInfo, error)
 }
 
 type ObjectInfo struct {

@@ -12,7 +12,7 @@ import {
   updateBlockPageConfig,
   uploadBlockPageHTML,
 } from '../../api/client';
-import type { BlockPageConfig } from '../../types/api';
+import type { BlockPageConfig, BlockPagePreview } from '../../types/api';
 import '../../styles/block-pages.css';
 
 const blockPreviewStoragePrefix = 'cheesewaf-block-page-preview-html';
@@ -27,7 +27,8 @@ export default function BlockPagesPage() {
   const activeConfig = isBlockPageConfig(configQuery.data) ? configQuery.data : undefined;
   const [selected, setSelectedState] = useState('minimal');
   const [customHTML, setCustomHTMLState] = useState('');
-  const [previewDraft, setPreviewDraft] = useState('');
+  const [previewState, setPreviewState] = useState<{ data?: BlockPagePreview; error?: unknown; isFetching: boolean }>({ isFetching: false });
+  const previewRevisionRef = useRef(0);
   const formDirtyRef = useRef(false);
   const formHydratedRef = useRef(false);
 
@@ -78,19 +79,31 @@ export default function BlockPagesPage() {
   const customBytes = new Blob([customHTML]).size;
 
   useEffect(() => {
+    const revision = ++previewRevisionRef.current;
+    const controller = new AbortController();
+    setPreviewState({ isFetching: false });
+    if (isLoading || (!template && !customHTML.trim())) {
+      return () => controller.abort();
+    }
     const timer = window.setTimeout(() => {
-      setPreviewDraft(JSON.stringify(previewPayload));
+      setPreviewState({ isFetching: true });
+      void previewBlockPageConfig(previewPayload, controller.signal).then((preview) => {
+        if (!controller.signal.aborted && previewRevisionRef.current === revision) {
+          setPreviewState({ data: preview, isFetching: false });
+        }
+      }).catch((previewError: unknown) => {
+        if (!controller.signal.aborted && previewRevisionRef.current === revision) {
+          setPreviewState({ error: previewError, isFetching: false });
+        }
+      });
     }, 350);
-    return () => window.clearTimeout(timer);
-  }, [previewPayload]);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [customHTML, isLoading, previewPayload, template]);
 
-  const previewQuery = useQuery({
-    queryKey: ['block-page-preview', previewDraft],
-    queryFn: () => previewBlockPageConfig(JSON.parse(previewDraft) as typeof previewPayload),
-    enabled: Boolean(previewDraft) && !isLoading && Boolean(template || customHTML.trim()),
-    retry: false,
-  });
-  const previewHTML = previewQuery.data?.html ?? (customHTML.trim() ? customHTML : templateHTML);
+  const previewHTML = previewState.data?.html ?? (customHTML.trim() ? customHTML : templateHTML);
   const safePreviewHTML = useMemo(() => sanitizeBlockPreviewHTML(previewHTML), [previewHTML]);
 
   const saveBuiltInMutation = useMutation({
@@ -313,7 +326,7 @@ export default function BlockPagesPage() {
               <p>{t('blockPages.previewHint')}</p>
             </div>
             <div className="block-editor-actions">
-              {previewQuery.data?.event_id && <Badge className="status-pill" variant="secondary">{t('blockPages.previewEvent', { id: previewQuery.data.event_id })}</Badge>}
+              {previewState.data?.event_id && <Badge className="status-pill" variant="secondary">{t('blockPages.previewEvent', { id: previewState.data.event_id })}</Badge>}
               <Button variant="outline" disabled={!previewHTML.trim()} onClick={openPreviewWindow}>
                 <ExternalLink size={14} />
                 {t('blockPages.openPreview')}
@@ -328,14 +341,14 @@ export default function BlockPagesPage() {
               </Button>
             </div>
           </div>
-          {previewQuery.error instanceof APIRequestError && (
+          {previewState.error instanceof APIRequestError && (
             <div className="inline-error block-preview-error" role="alert">
-              <span>{previewQuery.error.rawMessage}</span>
-              {previewQuery.error.traceID && <code>{previewQuery.error.traceID}</code>}
+              <span>{previewState.error.rawMessage}</span>
+              {previewState.error.traceID && <code>{previewState.error.traceID}</code>}
             </div>
           )}
           <div className="block-preview-frame">
-            {previewQuery.isFetching && !safePreviewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="" referrerPolicy="no-referrer" srcDoc={safePreviewHTML} />}
+            {previewState.isFetching && !safePreviewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="" referrerPolicy="no-referrer" srcDoc={safePreviewHTML} />}
           </div>
         </section>
       </div>

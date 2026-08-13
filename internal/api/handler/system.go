@@ -414,7 +414,7 @@ func (h *Handler) readRemoteMapBoundary(ctx context.Context, source string, boun
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("boundary source returned HTTP %d", resp.StatusCode)
 	}
@@ -736,7 +736,7 @@ func testHTTP(ctx context.Context, endpoint, username, password, apiKey string, 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("endpoint returned %s", resp.Status)
 	}

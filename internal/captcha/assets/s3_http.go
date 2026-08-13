@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,11 +117,11 @@ func (c *HTTPObjectClient) GetObject(ctx context.Context, bucket, key string) (i
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		resp.Body.Close()
+		_ = netguard.DrainAndClose(resp.Body)
 		return nil, ErrNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		resp.Body.Close()
+		_ = netguard.DrainAndClose(resp.Body)
 		return nil, fmt.Errorf("S3 returned status %d", resp.StatusCode)
 	}
 	return resp.Body, nil
@@ -133,6 +134,13 @@ func (c *HTTPObjectClient) DeleteObject(ctx context.Context, bucket, key string)
 	return c.do(req, nil)
 }
 func (c *HTTPObjectClient) ListObjects(ctx context.Context, bucket, prefix string) ([]ObjectInfo, error) {
+	return c.ListObjectsLimited(ctx, bucket, prefix, maxS3ListObjects)
+}
+
+func (c *HTTPObjectClient) ListObjectsLimited(ctx context.Context, bucket, prefix string, maxObjects int) ([]ObjectInfo, error) {
+	if maxObjects < 1 || maxObjects > maxS3ListObjects {
+		return nil, fmt.Errorf("S3 list object limit must be between 1 and %d", maxS3ListObjects)
+	}
 	var out []ObjectInfo
 	continuationToken := ""
 	seenContinuationTokens := make(map[string]int)
@@ -142,11 +150,19 @@ func (c *HTTPObjectClient) ListObjects(ctx context.Context, bucket, prefix strin
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		remainingObjects := maxObjects - len(out)
+		if remainingObjects <= 0 {
+			return nil, fmt.Errorf("%w (%d)", errObjectListLimit, maxObjects)
+		}
 		if pageCount >= maxS3ListPages {
 			return nil, fmt.Errorf("S3 list page limit exceeded (%d)", maxS3ListPages)
 		}
 		pageCount++
-		q := url.Values{"list-type": {"2"}, "prefix": {prefix}}
+		pageSize := remainingObjects
+		if pageSize > 1000 {
+			pageSize = 1000
+		}
+		q := url.Values{"list-type": {"2"}, "prefix": {prefix}, "max-keys": {strconv.Itoa(pageSize)}}
 		if continuationToken != "" {
 			q.Set("continuation-token", continuationToken)
 		}
@@ -179,8 +195,8 @@ func (c *HTTPObjectClient) ListObjects(ctx context.Context, bucket, prefix strin
 			return nil, fmt.Errorf("S3 list cumulative response byte limit exceeded (%d)", maxS3ListCumulativeResponseBytes)
 		}
 		responseBytes += pageResponseBytes
-		if len(raw.Contents) > maxS3ListObjects-len(out) {
-			return nil, fmt.Errorf("S3 list object limit exceeded (%d)", maxS3ListObjects)
+		if len(raw.Contents) > maxObjects-len(out) {
+			return nil, fmt.Errorf("%w (%d)", errObjectListLimit, maxObjects)
 		}
 		for _, v := range raw.Contents {
 			out = append(out, ObjectInfo{Key: v.Key, Size: v.Size, ETag: v.ETag, LastModified: v.LastModified})

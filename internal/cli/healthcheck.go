@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/spf13/cobra"
 )
@@ -75,8 +75,7 @@ func checkAdminReadiness(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("admin readiness request failed: %w", err)
 	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
+	defer netguard.DrainAndClose(response.Body)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("admin readiness returned HTTP %d", response.StatusCode)
 	}

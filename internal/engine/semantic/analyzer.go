@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -35,6 +36,8 @@ type Analyzer struct {
 	// paramAllowlist skips query/form/json/cookie fields by parameter name
 	// (case-insensitive). Does not skip path/uri or headers.
 	paramAllowlist map[string]struct{}
+	// paranoiaLevel controls block decision sensitivity (0=off, 1=low, 2=default, 3=high, 4=paranoid).
+	paranoiaLevel int
 }
 
 type InputPoint struct {
@@ -67,13 +70,13 @@ type semanticCandidate struct {
 	text  string
 }
 
-func NewAnalyzer(mode string, categories ...string) *Analyzer {
+func NewAnalyzer(mode string, paranoiaLevel int, categories ...string) *Analyzer {
 	if mode == "" {
 		mode = "block"
 	}
 	enabled := map[string]bool{}
 	if len(categories) == 0 {
-		for _, category := range []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"} {
+		for _, category := range []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti", "webshell", "log4shell"} {
 			enabled[category] = true
 		}
 	} else {
@@ -84,7 +87,7 @@ func NewAnalyzer(mode string, categories ...string) *Analyzer {
 			}
 		}
 	}
-	return &Analyzer{mode: mode, enabled: enabled, catFP: enabledCategoryFingerprint(enabled)}
+	return &Analyzer{mode: mode, enabled: enabled, catFP: enabledCategoryFingerprint(enabled), paranoiaLevel: paranoiaLevel}
 }
 
 // SetAllowlists configures commercial path/param skip lists. Safe to call once
@@ -120,8 +123,8 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		return nil, nil
 	}
 
-	candidates := a.filterAllowlistedCandidates(extractCandidates(reqCtx))
-	report, best, incomplete := a.analyzeAllCandidates(ctx, candidates)
+	candidates := extractCandidatesWithAllowlist(reqCtx, a.paramAllowlist)
+	report, best, haveBest, incomplete := a.analyzeAllCandidates(ctx, candidates)
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
 	}
@@ -134,11 +137,11 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	if incomplete {
 		reqCtx.Metadata["semantic_analysis_incomplete"] = true
 	}
-	if best == nil {
+	if !haveBest {
 		return nil, nil
 	}
 	action := actionForMode(a.mode)
-	if a.mode == "block" && !blockableHit(*best) {
+	if a.mode == "block" && !a.blockableHit(best) {
 		return nil, nil
 	}
 	if action == engine.ActionBlock {
@@ -149,7 +152,7 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	category = best.Category
 	return &engine.DetectionResult{
 		Detected:   true,
-		DetectorID: a.ID() + "." + best.Category,
+		DetectorID: analyzerDetectorID(best.Category),
 		Category:   best.Category,
 		Severity:   best.Severity,
 		Action:     action,
@@ -159,59 +162,88 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	}, nil
 }
 
+// analyzerDetectorIDs holds the precomputed "semantic.analyzer.<category>"
+// strings. Detect built this with a runtime concat on every hit, which is one
+// allocation per blocked request for a fixed set of eight categories.
+var analyzerDetectorIDs = map[string]string{
+	"sqli":       "semantic.analyzer.sqli",
+	"xss":        "semantic.analyzer.xss",
+	"rce":        "semantic.analyzer.rce",
+	"lfi":        "semantic.analyzer.lfi",
+	"xxe":        "semantic.analyzer.xxe",
+	"ssrf":       "semantic.analyzer.ssrf",
+	"nosqli":     "semantic.analyzer.nosqli",
+	"ssti":       "semantic.analyzer.ssti",
+	"webshell":   "semantic.analyzer.webshell",
+	"log4shell":  "semantic.analyzer.log4shell",
+	"shellshock": "semantic.analyzer.shellshock",
+}
+
+// analyzerDetectorID returns the detector ID for a hit category, falling back to
+// the original concat for any category outside the known set.
+func analyzerDetectorID(category string) string {
+	if id, ok := analyzerDetectorIDs[category]; ok {
+		return id
+	}
+	return "semantic.analyzer." + category
+}
+
 // analyzeAllCandidates runs field analysis. Multi-field requests use a bounded
 // worker pool so multi-core CPUs scan independent parameters concurrently while
 // preserving FP-first merge rules and stable Input ordering.
 // incomplete is true only when the context cancelled mid-scan (fields skipped).
-func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semanticCandidate) (AnalysisReport, *Hit, bool) {
-	report := AnalysisReport{Inputs: make([]InputPoint, 0, len(candidates))}
+// best is only meaningful when haveBest is true; returning it by value keeps the
+// winning Hit off the heap (the previous *Hit escaped on every hit).
+func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semanticCandidate) (AnalysisReport, Hit, bool, bool) {
+	var merge candidateMerge
+	merge.report.Inputs = make([]InputPoint, 0, len(candidates))
 	if len(candidates) == 0 {
-		return report, nil, false
+		return merge.report, Hit{}, false, false
 	}
 
-	type fieldOut struct {
-		input InputPoint
-		hits  []Hit
-	}
-
-	// Sequential for tiny requests (lower scheduling overhead).
+	// Sequential for tiny requests (lower scheduling overhead). Keeps the
+	// critical-hit early exit: with one or two fields there is nothing to gain
+	// from scanning past a decided block.
 	if len(candidates) < 3 {
-		var best *Hit
-		anomalyScore := 0
-		var anomalyNotes []string
 		incomplete := false
 		for _, candidate := range candidates {
 			if err := ctx.Err(); err != nil {
 				incomplete = true
 				break
 			}
-			report.Inputs = append(report.Inputs, candidate.input)
-			hits := a.analyzeCandidate(candidate)
-			for _, next := range hits {
-				if note, pts := anomalyContribution(next); pts > 0 {
-					anomalyScore += pts
-					if len(anomalyNotes) < 8 {
-						anomalyNotes = append(anomalyNotes, note)
-					}
-				}
-				if a.mode == "block" && !blockableHit(next) {
-					continue
-				}
-				report.Hits = append(report.Hits, next)
-				if best == nil || betterHit(next, *best) {
-					next := next
-					best = &next
-				}
-			}
-			if a.mode == "block" && best != nil && best.Severity >= engine.SeverityCritical && best.Confidence >= 0.92 {
+			merge.report.Inputs = append(merge.report.Inputs, candidate.input)
+			merge.add(a.mode, a, a.analyzeCandidate(candidate))
+			if a.mode == "block" && merge.haveBest &&
+				merge.best.Severity >= engine.SeverityCritical && merge.best.Confidence >= 0.92 {
 				break
 			}
 		}
-		if anomalyScore > 0 {
-			report.AnomalyScore = anomalyScore
-			report.AnomalyNotes = anomalyNotes
+		merge.finish()
+		return merge.report, merge.best, merge.haveBest, incomplete
+	}
+
+	// Mid-size requests: byte-for-byte the same report/best/incomplete as the
+	// worker pool below (every field scanned, index-ordered merge, no early
+	// exit) but without the pool's fixed cost. Spawning goroutines plus the
+	// escaping WaitGroup/atomic counter was 6 allocations and more scheduler
+	// time than the few extra field scans it overlapped.
+	if len(candidates) < parallelCandidateThreshold {
+		skipped := false
+		for i := range candidates {
+			merge.report.Inputs = append(merge.report.Inputs, candidates[i].input)
+			if ctx.Err() != nil {
+				skipped = true
+				continue
+			}
+			merge.add(a.mode, a, a.analyzeCandidate(candidates[i]))
 		}
-		return report, best, incomplete
+		merge.finish()
+		return merge.report, merge.best, merge.haveBest, skipped
+	}
+
+	type fieldOut struct {
+		input InputPoint
+		hits  []Hit
 	}
 
 	outs := make([]fieldOut, len(candidates))
@@ -229,54 +261,83 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 	var next atomic.Int64
 	var skipped atomic.Bool
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
+	scan := func() {
+		for {
+			i := int(next.Add(1) - 1)
+			if i >= len(candidates) {
+				return
+			}
+			if ctx.Err() != nil {
+				outs[i] = fieldOut{input: candidates[i].input}
+				skipped.Store(true)
+				continue
+			}
+			hits := a.analyzeCandidate(candidates[i])
+			outs[i] = fieldOut{input: candidates[i].input, hits: hits}
+		}
+	}
+	// The caller runs as one of the workers, so only workers-1 goroutines are
+	// spawned. Same work-stealing distribution, one less handoff per request.
+	for w := 1; w < workers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for {
-				i := int(next.Add(1) - 1)
-				if i >= len(candidates) {
-					return
-				}
-				if ctx.Err() != nil {
-					outs[i] = fieldOut{input: candidates[i].input}
-					skipped.Store(true)
-					continue
-				}
-				hits := a.analyzeCandidate(candidates[i])
-				outs[i] = fieldOut{input: candidates[i].input, hits: hits}
-			}
+			scan()
 		}()
 	}
+	scan()
 	wg.Wait()
 
-	var best *Hit
-	anomalyScore := 0
-	var anomalyNotes []string
 	for i := range outs {
-		report.Inputs = append(report.Inputs, outs[i].input)
-		for _, next := range outs[i].hits {
-			if note, pts := anomalyContribution(next); pts > 0 {
-				anomalyScore += pts
-				if len(anomalyNotes) < 8 {
-					anomalyNotes = append(anomalyNotes, note)
-				}
-			}
-			if a.mode == "block" && !blockableHit(next) {
-				continue
-			}
-			report.Hits = append(report.Hits, next)
-			if best == nil || betterHit(next, *best) {
-				next := next
-				best = &next
+		merge.report.Inputs = append(merge.report.Inputs, outs[i].input)
+		merge.add(a.mode, a, outs[i].hits)
+	}
+	merge.finish()
+	return merge.report, merge.best, merge.haveBest, skipped.Load()
+}
+
+// parallelCandidateThreshold is the candidate count at which the bounded worker
+// pool starts paying for itself. Below it the sequential mid-size path produces
+// identical output for less cost.
+const parallelCandidateThreshold = 8
+
+// candidateMerge accumulates per-field results under the FP-first merge rules.
+// Shared by the sequential and pooled paths so all three code paths cannot drift
+// apart in how they pick best / score anomalies.
+type candidateMerge struct {
+	report       AnalysisReport
+	best         Hit
+	haveBest     bool
+	anomalyScore int
+	anomalyNotes []string
+}
+
+func (m *candidateMerge) add(mode string, a *Analyzer, hits []Hit) {
+	for _, next := range hits {
+		if note, pts := anomalyContribution(next); pts > 0 {
+			m.anomalyScore += pts
+			if len(m.anomalyNotes) < 8 {
+				m.anomalyNotes = append(m.anomalyNotes, note)
 			}
 		}
+		if mode == "block" && !a.blockableHit(next) {
+			continue
+		}
+		m.report.Hits = append(m.report.Hits, next)
+		if !m.haveBest || betterHit(next, m.best) {
+			m.best = next
+			m.haveBest = true
+		}
 	}
-	if anomalyScore > 0 {
-		report.AnomalyScore = anomalyScore
-		report.AnomalyNotes = anomalyNotes
+}
+
+// finish folds the anomaly tally into the report. Callers read report/best/
+// haveBest directly off the struct so the winning Hit never needs a heap copy.
+func (m *candidateMerge) finish() {
+	if m.anomalyScore > 0 {
+		m.report.AnomalyScore = m.anomalyScore
+		m.report.AnomalyNotes = m.anomalyNotes
 	}
-	return report, best, skipped.Load()
 }
 
 // anomalyContribution scores weak/strong signals for CRS-like anomaly observability.
@@ -308,16 +369,22 @@ func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
 		return nil
 	}
 
-	key := candidateCacheKey(a.mode, a.catFP, candidate.text)
-	if cached, ok := processCandidateCache.get(key); ok {
-		ProcessMetrics().RecordCache(true)
-		return cached
+	cacheable := len(candidate.text) <= maxCacheableCandidateBytes
+	var key uint64
+	if cacheable {
+		key = candidateCacheKey(a.mode, a.catFP, candidate.input.Source, candidate.input.Name, candidate.text)
+		if cached, ok := processCandidateCache.get(key); ok {
+			ProcessMetrics().RecordCache(true)
+			return cached
+		}
+		ProcessMetrics().RecordCache(false)
 	}
-	ProcessMetrics().RecordCache(false)
 
 	guesses := guessCategories(candidate.text)
 	if len(guesses) == 0 {
-		processCandidateCache.put(key, nil)
+		if cacheable {
+			processCandidateCache.put(key, nil)
+		}
 		return nil
 	}
 	var hits []Hit
@@ -329,7 +396,9 @@ func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
 			hits = append(hits, hit)
 		}
 	}
-	processCandidateCache.put(key, hits)
+	if cacheable {
+		processCandidateCache.put(key, hits)
+	}
 	return hits
 }
 
@@ -405,6 +474,10 @@ func categoryPriority(hit Hit) int {
 	payloadContext := payload + " " + decodedPayload
 	context := strings.ToLower(hit.Syntax + " " + hit.Semantics)
 	switch hit.Category {
+	case "log4shell", "shellshock":
+		return 100
+	case "webshell":
+		return 98
 	case "xxe":
 		if strings.Contains(payload, "<!doctype") || strings.Contains(payload, "<!entity") ||
 			strings.Contains(payload, "xinclude") || strings.Contains(payload, "xi:include") {
@@ -457,6 +530,12 @@ func categoryPriority(hit Hit) int {
 			return 80
 		}
 	case "sqli":
+		if strings.Contains(payloadContext, "into outfile") ||
+			strings.Contains(payloadContext, "xp_cmdshell") ||
+			strings.Contains(payloadContext, "openrowset") ||
+			strings.Contains(payloadContext, "copy ") && strings.Contains(payloadContext, " to program") {
+			return 99
+		}
 		if strings.Contains(context, "database") ||
 			strings.Contains(context, "union select") ||
 			strings.Contains(context, "query composition") ||
@@ -477,12 +556,24 @@ func categoryPriority(hit Hit) int {
 }
 
 const (
-	maxInputRawBytes  = 16 << 10 // 16 KiB per field
-	maxCandidates     = 64
-	maxDecodeVariants = 8
-	maxJSONNodes      = 200
-	maxJSONDepth      = 8
+	maxInputRawBytes           = 16 << 10 // 16 KiB per field
+	maxCacheableCandidateBytes = 2 << 10  // bound process-cache retained payload memory
+	maxCandidates              = 64
+	// dedupMapThreshold is the candidate count at which the fingerprint map stops
+	// being more expensive than the linear exact compare it guards. Below it the
+	// map is never allocated; ordinary requests never reach it.
+	dedupMapThreshold      = 12
+	maxDecodeVariants      = 8
+	maxJSONNodes           = 200
+	maxJSONDepth           = 8
+	maxJSONTreeDecodeBytes = 256 << 10
 )
+
+// rawCoverageSignal is not a detector or block decision. It only selects the
+// most useful bounded window from an oversized value and promotes suspicious
+// inputs when a request exceeds the global candidate budget. Final decisions
+// still go through the category-specific syntax and semantic analyzers.
+var rawCoverageSignal = regexp.MustCompile(`(?i)(?:\$\{\s*jndi\s*:|<\?(?:php|=)|<!\s*(?:doctype|entity)|<\s*script\b|javascript\s*:|(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b|(?:union(?:\s|%20)+(?:all(?:\s|%20)+)?select|(?:or|and)(?:\s|%20)+\d+(?:\s|%20)*=(?:\s|%20)*\d+)|\.\.[/\\]|%2e%2e(?:%2f|/)|\{\{|\{%|%\{|<%|\$(?:where|function|eval|regex|ne|gt|gte|lt|lte)\b|https?://(?:127(?:\.\d+){3}|169\.254(?:\.\d+){2}|localhost\b)|\(\)\s*\{)`)
 
 func normalizePathAllowlist(paths []string) []string {
 	if len(paths) == 0 {
@@ -596,6 +687,13 @@ func paramAllowlisted(source, name string, allow map[string]struct{}) bool {
 }
 
 func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
+	return extractCandidatesWithAllowlist(reqCtx, nil)
+}
+
+// extractCandidatesWithAllowlist applies parameter exclusions before the
+// bounded candidate budget. Filtering after truncation lets an attacker fill
+// the budget with allowlisted fields and hide a later unallowlisted payload.
+func extractCandidatesWithAllowlist(reqCtx *engine.RequestContext, allow map[string]struct{}) []semanticCandidate {
 	if reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
@@ -603,11 +701,20 @@ func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 	// Fast-path health/static probes: no query, no body, benign path → zero work.
 	if isBenignProbePath(r.URL.Path) && r.URL.RawQuery == "" &&
 		(r.Method == http.MethodGet || r.Method == http.MethodHead) &&
-		len(reqCtx.DecodedBody) == 0 {
+		len(reqCtx.DecodedBody) == 0 && !hasInspectableHeaders(r.Header) {
 		return nil
 	}
 
-	inputs := make([]InputPoint, 0, 16)
+	groups := make([][]InputPoint, 0, 5)
+	var allowSkipped int
+	add := func(group *[]InputPoint, input InputPoint) {
+		if paramAllowlisted(input.Source, input.Name, allow) {
+			allowSkipped++
+			return
+		}
+		*group = append(*group, input)
+	}
+	uriInputs := make([]InputPoint, 0, 2)
 	// Path only for ordinary traffic — avoid re-scanning the full RequestURI
 	// (which previously doubled work with per-param query extraction).
 	pathRaw := r.URL.EscapedPath()
@@ -615,58 +722,259 @@ func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
 		pathRaw = r.URL.Path
 	}
 	if pathRaw != "" && pathRaw != "/" {
-		inputs = append(inputs, InputPoint{Source: "uri", Name: "path", Raw: clipRaw(pathRaw), Layers: []string{"raw"}})
+		add(&uriInputs, InputPoint{Source: "uri", Name: "path", Raw: clipRaw(pathRaw), Layers: rawLayersOnly})
 	}
-	queryValues := mergeQueryValues(r.URL.RawQuery, r.URL.Query())
-	for key, values := range queryValues {
-		inputs = append(inputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(key), Layers: []string{"raw"}})
-		for _, value := range values {
-			inputs = append(inputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(value), Layers: []string{"raw"}})
+	// url.Query() allocates a url.Values map even for an empty RawQuery, and the
+	// loop below would then iterate zero times. Skip the whole step instead.
+	if r.URL.RawQuery != "" {
+		queryValues := mergeQueryValues(r.URL.RawQuery, r.URL.Query())
+		queryInputs := make([]InputPoint, 0, len(queryValues)*2)
+		// Sort keys to make candidate order deterministic across runs. Map iteration
+		// randomness + maxCandidates cap creates an architectural flaw where a payload
+		// beyond the cap can be scanned on one request and skipped on the next.
+		keys := make([]string, 0, len(queryValues))
+		for key := range queryValues {
+			keys = append(keys, key)
 		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			values := queryValues[key]
+			add(&queryInputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(key), Layers: rawLayersOnly})
+			for _, value := range values {
+				add(&queryInputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(value), Layers: rawLayersOnly})
+			}
+		}
+		groups = append(groups, queryInputs)
 	}
 	// Suspicious raw query (shell glue) — keep a single fused candidate so
 	// payloads that standard ParseQuery splits still get analyzed.
 	if raw := r.URL.RawQuery; raw != "" && suspiciousRawQuery(raw) {
-		inputs = append(inputs, InputPoint{Source: "uri", Name: "raw_query", Raw: clipRaw(raw), Layers: []string{"raw"}})
+		add(&uriInputs, InputPoint{Source: "uri", Name: "raw_query", Raw: clipRaw(raw), Layers: rawLayersOnly})
 	}
-	for key, values := range r.Header {
-		if skipHeader(key) {
-			continue
-		}
-		for _, value := range values {
-			inputs = append(inputs, InputPoint{Source: "header", Name: key, Raw: clipRaw(value), Layers: []string{"raw"}})
-		}
-	}
-	for _, cookie := range r.Cookies() {
-		inputs = append(inputs, InputPoint{Source: "cookie", Name: cookie.Name, Raw: clipRaw(cookie.Value), Layers: []string{"raw"}})
-	}
-	inputs = append(inputs, bodyInputs(r, reqCtx.DecodedBody)...)
+	groups = append([][]InputPoint{uriInputs}, groups...)
 
-	candidates := make([]semanticCandidate, 0, len(inputs)+4)
-	seen := make(map[string]struct{}, len(inputs)*2)
-	for _, input := range inputs {
-		if len(candidates) >= maxCandidates {
-			break
+	headerInputs := make([]InputPoint, 0, len(r.Header))
+	// Sort header keys for deterministic order.
+	headerKeys := make([]string, 0, len(r.Header))
+	for key := range r.Header {
+		if !skipHeader(key) {
+			headerKeys = append(headerKeys, key)
 		}
-		for _, variant := range decodeVariants(input.Raw) {
+	}
+	sort.Strings(headerKeys)
+	for _, key := range headerKeys {
+		for _, value := range r.Header[key] {
+			add(&headerInputs, InputPoint{Source: "header", Name: key, Raw: clipRaw(value), Layers: rawLayersOnly})
+		}
+	}
+	groups = append(groups, headerInputs)
+
+	cookies := r.Cookies()
+	cookieInputs := make([]InputPoint, 0, len(cookies))
+	for _, cookie := range cookies {
+		add(&cookieInputs, InputPoint{Source: "cookie", Name: cookie.Name, Raw: clipRaw(cookie.Value), Layers: rawLayersOnly})
+	}
+	groups = append(groups, cookieInputs)
+	bodyGroup := make([]InputPoint, 0, 4)
+	for _, input := range bodyInputs(r, reqCtx.DecodedBody) {
+		add(&bodyGroup, input)
+	}
+	groups = append(groups, bodyGroup)
+	if allowSkipped > 0 {
+		ProcessMetrics().RecordAllowlistSkip("param")
+	}
+	if totalInputPoints(groups) > maxCandidates {
+		if priority := priorityInputPoints(groups); len(priority) > 0 {
+			groups = append([][]InputPoint{priority}, groups...)
+		}
+	}
+
+	// Size to the work actually present rather than to the maxCandidates ceiling.
+	// Ordinary traffic carries a handful of fields, and the overwhelmingly common
+	// case is one variant per field, so reserving 64 slots allocated ~40x more
+	// than a typical request ever filled — that single line was 44% of all bytes
+	// allocated by the analyzer. The cap still bounds pathological requests.
+	expected := totalInputPoints(groups)
+	if expected > maxCandidates {
+		expected = maxCandidates
+	}
+	candidates := make([]semanticCandidate, 0, expected)
+	// Dedup on a cheap 64-bit fingerprint of source+name+text instead of building
+	// a concatenated string key per variant (that concat was 3 allocs/req).
+	// Collisions only ever drop a duplicate-looking candidate, so guard with an
+	// exact compare against the already-kept candidates before skipping.
+	//
+	// The map is a performance guard, not the correctness oracle: dedupHit's exact
+	// compare is. Skipping requires both a fingerprint hit and an exact match, and
+	// any exact duplicate must already have inserted its own fingerprint, so
+	// "fingerprint seen AND exact dup" is equivalent to "exact dup" alone. That
+	// makes the map safe to omit while the candidate list is short enough for the
+	// linear compare to be the cheaper of the two, which is the common case and
+	// avoids a 128-bucket map allocation per request.
+	var seen map[uint64]struct{}
+	// Stack scratch: the overwhelmingly common case is exactly one variant.
+	var variantScratch [maxDecodeVariants]decodedVariant
+	cursors := make([]fairInputCursor, len(groups))
+	for i := range groups {
+		cursors[i] = fairInputCursor{inputs: groups[i], right: len(groups[i]) - 1}
+	}
+	for {
+		progressed := false
+		for i := range cursors {
+			input, ok := cursors[i].next()
+			if !ok {
+				continue
+			}
+			progressed = true
+			variants := decodeVariantsInto(variantScratch[:0], input.Raw)
+			for _, variant := range variants {
+				if len(candidates) >= maxCandidates {
+					break
+				}
+				text := strings.TrimSpace(variant.text)
+				if text == "" {
+					continue
+				}
+				// Below the threshold the linear exact compare over a short slice
+				// beats hashing plus a map probe, so the map is never built. Above
+				// it, build the map once and backfill the fingerprints already
+				// accepted so the guard stays complete.
+				if seen == nil && len(candidates) >= dedupMapThreshold {
+					seen = make(map[uint64]struct{}, maxCandidates)
+					for i := range candidates {
+						seen[candidateDedupKey(candidates[i].input.Source, candidates[i].input.Name, candidates[i].text)] = struct{}{}
+					}
+				}
+				key := candidateDedupKey(input.Source, input.Name, text)
+				if seen == nil {
+					if dedupHit(candidates, input.Source, input.Name, text) {
+						continue
+					}
+				} else {
+					if _, ok := seen[key]; ok && dedupHit(candidates, input.Source, input.Name, text) {
+						continue
+					}
+					seen[key] = struct{}{}
+				}
+				next := input
+				next.Layers = variant.layers
+				candidates = append(candidates, semanticCandidate{input: next, text: text})
+			}
 			if len(candidates) >= maxCandidates {
 				break
 			}
-			text := strings.TrimSpace(variant.text)
-			if text == "" {
-				continue
-			}
-			key := input.Source + "\x00" + input.Name + "\x00" + text
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			next := input
-			next.Layers = variant.layers
-			candidates = append(candidates, semanticCandidate{input: next, text: text})
+		}
+		if len(candidates) >= maxCandidates || !progressed {
+			break
 		}
 	}
 	return candidates
+}
+
+// fairInputCursor alternates from the head and tail of a source group. A
+// request with many ordinary fields therefore cannot hide a late attack field
+// simply by arriving first; the source still receives a bounded, deterministic
+// share of the global candidate budget.
+type fairInputCursor struct {
+	inputs   []InputPoint
+	left     int
+	right    int
+	takeTail bool
+}
+
+func totalInputPoints(groups [][]InputPoint) int {
+	total := 0
+	for _, group := range groups {
+		if len(group) > int(^uint(0)>>1)-total {
+			return int(^uint(0) >> 1)
+		}
+		total += len(group)
+	}
+	return total
+}
+
+func priorityInputPoints(groups [][]InputPoint) []InputPoint {
+	type rankedInput struct {
+		input InputPoint
+		score int
+	}
+	ranked := make([]rankedInput, 0, maxCandidates)
+	for _, group := range groups {
+		for _, input := range group {
+			score := inputCoverageScore(input)
+			if score == 0 {
+				continue
+			}
+			ranked = append(ranked, rankedInput{input: input, score: score})
+		}
+	}
+	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+	if len(ranked) > maxCandidates {
+		ranked = ranked[:maxCandidates]
+	}
+	out := make([]InputPoint, len(ranked))
+	for i := range ranked {
+		out[i] = ranked[i].input
+	}
+	return out
+}
+
+func inputCoverageScore(input InputPoint) int {
+	score := 0
+	if rawCoverageSignal.MatchString(input.Raw) {
+		score += 100
+	}
+	if needsDeepDecode(input.Raw) {
+		score += 20
+	}
+	name := strings.ToLower(input.Name)
+	for _, marker := range []string{"cmd", "command", "exec", "shell", "query", "url", "uri", "redirect", "callback", "file", "path", "template"} {
+		if strings.Contains(name, marker) {
+			score += 10
+			break
+		}
+	}
+	return score
+}
+
+func (c *fairInputCursor) next() (InputPoint, bool) {
+	if c == nil || c.left > c.right || len(c.inputs) == 0 {
+		return InputPoint{}, false
+	}
+	var input InputPoint
+	if c.takeTail {
+		input = c.inputs[c.right]
+		c.right--
+	} else {
+		input = c.inputs[c.left]
+		c.left++
+	}
+	c.takeTail = !c.takeTail
+	return input, true
+}
+
+// candidateDedupKey fingerprints source+name+text with FNV-1a, matching the
+// old "source\x00name\x00text" string key without allocating it.
+func candidateDedupKey(source, name, text string) uint64 {
+	h := uint64(14695981039346656037)
+	h = fnv64aAddString(h, source)
+	h = fnv64aAddByte(h, 0)
+	h = fnv64aAddString(h, name)
+	h = fnv64aAddByte(h, 0)
+	return fnv64aAddString(h, text)
+}
+
+// dedupHit confirms a fingerprint match is a real duplicate. Keeps dedup exact
+// so a hash collision can never silently drop a distinct attack candidate.
+func dedupHit(candidates []semanticCandidate, source, name, text string) bool {
+	for i := range candidates {
+		if candidates[i].text == text &&
+			candidates[i].input.Source == source &&
+			candidates[i].input.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // isBenignProbePath matches common health/static endpoints that should never
@@ -681,11 +989,67 @@ func isBenignProbePath(path string) bool {
 	}
 }
 
+func hasInspectableHeaders(header http.Header) bool {
+	for key, values := range header {
+		if skipHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			if value != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func clipRaw(raw string) string {
 	if len(raw) <= maxInputRawBytes {
 		return raw
 	}
-	return raw[:maxInputRawBytes]
+	if match := rawCoverageSignal.FindStringIndex(raw); match != nil {
+		start, end := rawCoverageWindow(len(raw), match[0], match[1])
+		return strings.Clone(raw[start:end])
+	}
+	// Keep both ends: prefix-only clipping lets an attacker hide a payload just
+	// beyond the retained window. The separator prevents the two samples from
+	// forming a synthetic token across the cut while keeping the allocation
+	// bounded for the process cache.
+	head := maxInputRawBytes / 2
+	tail := maxInputRawBytes - head - 1
+	return strings.Clone(raw[:head] + "\n" + raw[len(raw)-tail:])
+}
+
+func clipRawBytes(raw []byte) string {
+	if len(raw) > maxInputRawBytes {
+		if match := rawCoverageSignal.FindIndex(raw); match != nil {
+			start, end := rawCoverageWindow(len(raw), match[0], match[1])
+			return string(raw[start:end])
+		}
+		head := maxInputRawBytes / 2
+		tail := maxInputRawBytes - head - 1
+		out := make([]byte, maxInputRawBytes)
+		copy(out, raw[:head])
+		out[head] = '\n'
+		copy(out[head+1:], raw[len(raw)-tail:])
+		return string(out)
+	}
+	return string(raw)
+}
+
+func rawCoverageWindow(length, matchStart, matchEnd int) (int, int) {
+	if length <= maxInputRawBytes {
+		return 0, length
+	}
+	center := matchStart + (matchEnd-matchStart)/2
+	start := center - maxInputRawBytes/2
+	if start < 0 {
+		start = 0
+	}
+	if start > length-maxInputRawBytes {
+		start = length - maxInputRawBytes
+	}
+	return start, start + maxInputRawBytes
 }
 
 // mergeQueryValues combines standard and lenient query parsing so attack
@@ -766,53 +1130,324 @@ func lenientQueryValues(rawQuery string) url.Values {
 	return out
 }
 
+// bodyInputs extracts the body's input points.
+//
+// It deliberately builds its own slice rather than appending into the caller's:
+// the JSON walkers bound their output with len(*inputs) >= maxCandidates, so
+// sharing the caller's slice would make path/query/header inputs consume the
+// body's candidate budget and could drop attack fields that are extracted today.
 func bodyInputs(r *http.Request, body []byte) []InputPoint {
 	if len(body) == 0 {
 		return nil
 	}
-	// charset=utf-16 bodies are often delivered as raw LE/BE bytes; convert before analysis.
-	if ct := strings.ToLower(r.Header.Get("Content-Type")); strings.Contains(ct, "utf-16") {
-		if decoded, ok := decodeUTF16Payload(string(body)); ok {
-			body = []byte(decoded)
-		}
-	} else if decoded, ok := decodeUTF16Payload(string(body)); ok {
-		// BOM-present bodies even without charset declaration (XXE evasion).
+	// charset=utf-16 bodies are often delivered as raw LE/BE bytes; convert before
+	// analysis. Both branches ran the same byte-level check, so decode once and
+	// operate on []byte directly (the old string(body) round-trip allocated a full
+	// copy of every body on the hot path).
+	if decoded, ok := decodeUTF16PayloadBytes(body); ok {
 		body = []byte(decoded)
 	}
-	var inputs []InputPoint
-	contentType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	// Pre-sized: growing from nil cost two reallocations for even a two-field
+	// body. Capacity does not affect the maxCandidates/maxJSONNodes budgets, which
+	// are all length checks, so this is purely fewer reallocations. Four is the
+	// smallest capacity that covers a minimal JSON object (key+value per field)
+	// without inflating bytes/op for the common small body.
+	inputs := make([]InputPoint, 0, 4)
+	contentType := requestMediaType(r.Header.Get("Content-Type"))
 	switch contentType {
 	case "application/x-www-form-urlencoded":
 		values, err := url.ParseQuery(string(body))
 		if err == nil {
 			for key, list := range values {
-				inputs = append(inputs, InputPoint{Source: "body.form", Name: key, Raw: key, Layers: []string{"raw"}})
+				inputs = append(inputs, InputPoint{Source: "body.form", Name: key, Raw: key, Layers: rawLayersOnly})
 				for _, value := range list {
-					inputs = append(inputs, InputPoint{Source: "body.form", Name: key, Raw: value, Layers: []string{"raw"}})
+					inputs = append(inputs, InputPoint{Source: "body.form", Name: key, Raw: value, Layers: rawLayersOnly})
 				}
 			}
-			return inputs
+			return withBodyCoverage(body, inputs)
 		}
 	case "application/json":
 		flattenJSONInputs("body.json", "", body, &inputs)
 		if len(inputs) > 0 {
-			return inputs
+			return withBodyCoverage(body, inputs)
 		}
 	case "multipart/form-data":
 		if boundary := boundaryFromContentType(r.Header.Get("Content-Type")); boundary != "" {
-			return multipartInputs(body, boundary)
+			return withBodyCoverage(body, multipartInputs(body, boundary))
 		}
 	}
 	if json.Valid(body) {
 		flattenJSONInputs("body.json", "", body, &inputs)
 	}
 	if len(inputs) == 0 {
-		inputs = append(inputs, InputPoint{Source: "body.raw", Name: "body", Raw: string(body), Layers: []string{"raw"}})
+		inputs = append(inputs, InputPoint{Source: "body.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
 	}
-	return inputs
+	return withBodyCoverage(body, inputs)
+}
+
+func withBodyCoverage(body []byte, inputs []InputPoint) []InputPoint {
+	if len(inputs) == 0 || (len(body) <= maxInputRawBytes && len(inputs) < maxCandidates) {
+		return inputs
+	}
+	if inputs[0].Source == "body.raw" {
+		return inputs
+	}
+	covered := make([]InputPoint, 0, len(inputs)+1)
+	covered = append(covered, InputPoint{
+		Source: "body.raw",
+		Name:   "body",
+		Raw:    clipRawBytes(body),
+		Layers: rawLayersOnly,
+	})
+	return append(covered, inputs...)
+}
+
+var (
+	hexEscapeMarkerLower = []byte(`\x`)
+	hexEscapeMarkerUpper = []byte(`\X`)
+)
+
+// decodeUTF16PayloadBytes is the []byte twin of decodeUTF16Payload. It keeps the
+// identical decision order (hex-escaped dump first, then raw UTF-16) but avoids
+// materialising the body as a string: the hex branch is the only one that needs
+// a string, and it is gated on the escape marker actually being present.
+func decodeUTF16PayloadBytes(raw []byte) (string, bool) {
+	if bytes.Contains(raw, hexEscapeMarkerLower) || bytes.Contains(raw, hexEscapeMarkerUpper) {
+		if unescaped, ok := unescapeHexByteString(string(raw)); ok {
+			if out, ok2 := decodeUTF16FromBytes([]byte(unescaped)); ok2 {
+				return out, true
+			}
+		}
+	}
+	return decodeUTF16FromBytes(raw)
+}
+
+// knownBodyMediaTypes are the only media types bodyInputs branches on.
+var knownBodyMediaTypes = [...]string{
+	"application/x-www-form-urlencoded",
+	"application/json",
+	"multipart/form-data",
+}
+
+// requestMediaType extracts the bare media type from a Content-Type header
+// without allocating in the common parameterless case (mime.ParseMediaType
+// always builds a params map). Headers carrying parameters still go through the
+// strict stdlib parse so malformed-parameter handling is unchanged. Any value
+// outside knownBodyMediaTypes returns "", which reaches the same default branch
+// the previous code did.
+func requestMediaType(header string) string {
+	if header == "" {
+		return ""
+	}
+	if strings.IndexByte(header, ';') >= 0 {
+		mediaType, _, err := mime.ParseMediaType(header)
+		if err != nil {
+			return ""
+		}
+		return mediaType
+	}
+	trimmed := strings.TrimSpace(header)
+	for _, known := range knownBodyMediaTypes {
+		if len(trimmed) == len(known) && strings.EqualFold(trimmed, known) {
+			return known
+		}
+	}
+	return ""
 }
 
 func flattenJSONInputs(source, prefix string, raw []byte, inputs *[]InputPoint) {
+	// Fast path: walk the bytes directly. Bails on anything it cannot reproduce
+	// byte-for-byte (escapes, non-ASCII, trailing garbage, malformed structure),
+	// in which case the decoder walk below runs on the untouched input.
+	mark := len(*inputs)
+	w := jsonWalker{src: raw, source: source, inputs: inputs}
+	if w.value(prefix, 0, false) {
+		w.skipWS()
+		if w.pos == len(raw) {
+			return
+		}
+	}
+	// Fast path aborted mid-document: discard whatever it emitted so the decoder
+	// walk starts from the same state it would have seen.
+	*inputs = (*inputs)[:mark]
+	if len(raw) > maxJSONTreeDecodeBytes {
+		flattenJSONInputsStream(source, prefix, raw, inputs)
+		return
+	}
+	flattenJSONInputsDecode(source, prefix, raw, inputs)
+}
+
+// flattenJSONInputsStream avoids constructing a complete map[string]any tree
+// for large JSON bodies the byte walker declines (escaped or non-ASCII text).
+// It validates the entire document while retaining a bounded head/tail sample,
+// so late fields still receive semantic coverage without body-sized object
+// graphs and interface boxing.
+func flattenJSONInputsStream(source, prefix string, raw []byte, inputs *[]InputPoint) {
+	capacity := maxCandidates - len(*inputs)
+	if capacity <= 0 {
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	collector := newJSONInputCollector(capacity)
+	if err := streamJSONValue(decoder, source, prefix, 0, &collector); err != nil {
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return
+	}
+	collector.appendTo(inputs)
+}
+
+type jsonInputCollector struct {
+	head     []InputPoint
+	tail     []InputPoint
+	headMax  int
+	tailMax  int
+	tailNext int
+}
+
+func newJSONInputCollector(capacity int) jsonInputCollector {
+	if capacity < 0 {
+		capacity = 0
+	}
+	headMax := (capacity + 1) / 2
+	return jsonInputCollector{
+		head:    make([]InputPoint, 0, headMax),
+		tail:    make([]InputPoint, 0, capacity-headMax),
+		headMax: headMax,
+		tailMax: capacity - headMax,
+	}
+}
+
+func (c *jsonInputCollector) add(input InputPoint) {
+	if len(c.head) < c.headMax {
+		c.head = append(c.head, input)
+		return
+	}
+	if c.tailMax == 0 {
+		return
+	}
+	if len(c.tail) < c.tailMax {
+		c.tail = append(c.tail, input)
+		return
+	}
+	c.tail[c.tailNext] = input
+	c.tailNext = (c.tailNext + 1) % c.tailMax
+}
+
+func (c *jsonInputCollector) appendTo(inputs *[]InputPoint) {
+	*inputs = append(*inputs, c.head...)
+	if len(c.tail) < c.tailMax || c.tailNext == 0 {
+		*inputs = append(*inputs, c.tail...)
+		return
+	}
+	*inputs = append(*inputs, c.tail[c.tailNext:]...)
+	*inputs = append(*inputs, c.tail[:c.tailNext]...)
+}
+
+func streamJSONValue(decoder *json.Decoder, source, prefix string, depth int, collector *jsonInputCollector) error {
+	if depth > maxJSONDepth {
+		return discardJSONValue(decoder)
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, composite := token.(json.Delim)
+	if !composite {
+		switch value := token.(type) {
+		case string:
+			collector.add(InputPoint{Source: source, Name: prefix, Raw: clipRaw(value), Layers: rawLayersOnly})
+		case json.Number, bool, float64:
+			collector.add(InputPoint{Source: source, Name: prefix, Raw: toString(value), Layers: rawLayersOnly})
+		}
+		return nil
+	}
+
+	switch delim {
+	case '{':
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("json object key is not a string")
+			}
+			name := key
+			if prefix != "" {
+				name = prefix + "." + key
+			}
+			collector.add(InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: rawLayersOnly})
+			if err := streamJSONValue(decoder, source, name, depth+1, collector); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim('}') {
+			return fmt.Errorf("json object terminator is %v", end)
+		}
+		return nil
+	case '[':
+		name := prefix + "[]"
+		for decoder.More() {
+			if err := streamJSONValue(decoder, source, name, depth+1, collector); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim(']') {
+			return fmt.Errorf("json array terminator is %v", end)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unexpected json delimiter %q", delim)
+	}
+}
+
+func discardJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	if delim != '{' && delim != '[' {
+		return fmt.Errorf("unexpected json delimiter %q", delim)
+	}
+	level := 1
+	for level > 0 {
+		token, err = decoder.Token()
+		if err != nil {
+			return err
+		}
+		if delim, ok = token.(json.Delim); !ok {
+			continue
+		}
+		switch delim {
+		case '{', '[':
+			level++
+		case '}', ']':
+			level--
+		}
+	}
+	return nil
+}
+
+// flattenJSONInputsDecode is the original decoder-backed walk, kept as the
+// authority for every body the byte walker declines.
+func flattenJSONInputsDecode(source, prefix string, raw []byte, inputs *[]InputPoint) {
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -838,7 +1473,7 @@ func flattenJSONValue(source, prefix string, value any, inputs *[]InputPoint, de
 			if prefix != "" {
 				name = prefix + "." + key
 			}
-			*inputs = append(*inputs, InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: []string{"raw"}})
+			*inputs = append(*inputs, InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: rawLayersOnly})
 			flattenJSONValue(source, name, value, inputs, depth+1, nodes)
 		}
 	case []any:
@@ -850,9 +1485,9 @@ func flattenJSONValue(source, prefix string, value any, inputs *[]InputPoint, de
 			_ = idx
 		}
 	case string:
-		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: clipRaw(typed), Layers: []string{"raw"}})
+		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: clipRaw(typed), Layers: rawLayersOnly})
 	case json.Number, bool, float64:
-		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: toString(typed), Layers: []string{"raw"}})
+		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: toString(typed), Layers: rawLayersOnly})
 	}
 }
 
@@ -867,6 +1502,7 @@ func boundaryFromContentType(header string) string {
 func multipartInputs(body []byte, boundary string) []InputPoint {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	var inputs []InputPoint
+	buf := make([]byte, maxInputRawBytes)
 	for len(inputs) < 128 {
 		part, err := reader.NextPart()
 		if err != nil {
@@ -886,17 +1522,19 @@ func multipartInputs(body []byte, boundary string) []InputPoint {
 		if fileName != "" {
 			inputs = append(inputs, InputPoint{
 				Source: "body.multipart",
-				Name:   name + ".filename",
-				Raw:    fileName,
-				Layers: []string{"raw"},
+				Name:   clipRaw(name + ".filename"),
+				Raw:    clipRaw(fileName),
+				Layers: rawLayersOnly,
 			})
 		}
-		buf := make([]byte, 64*1024)
-		n, _ := part.Read(buf)
+		n, err := io.ReadFull(part, buf)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			continue
+		}
 		if n == 0 {
 			continue
 		}
-		inputs = append(inputs, InputPoint{Source: "body.multipart", Name: name, Raw: string(buf[:n]), Layers: []string{"raw"}})
+		inputs = append(inputs, InputPoint{Source: "body.multipart", Name: clipRaw(name), Raw: string(buf[:n]), Layers: rawLayersOnly})
 	}
 	return inputs
 }
@@ -906,19 +1544,36 @@ type decodedVariant struct {
 	layers []string
 }
 
-func decodeVariants(raw string) []decodedVariant {
+// rawLayersOnly is the immutable {"raw"} layer slice shared by every undecoded
+// input point. InputPoint.Layers and decodedVariant.layers are read-only after
+// construction (appendLayers copies before extending), so one process-wide
+// singleton removes a per-field allocation without any aliasing risk.
+var rawLayersOnly = []string{"raw"}
+
+// decodeVariantsInto appends decode variants for raw into dst and returns the
+// result. Callers pass a stack-resident scratch array so the common
+// single-variant case costs zero allocations.
+func decodeVariantsInto(dst []decodedVariant, raw string) []decodedVariant {
 	// UTF-16 LE/BE BOM payloads (XXE evasion). Expand once into UTF-8 text.
 	if utf8FromUTF16, ok := decodeUTF16Payload(raw); ok && utf8FromUTF16 != raw {
 		raw = utf8FromUTF16
 	}
 	// Hot path: plain text without encode markers needs no expansion queue.
 	if !needsDeepDecode(raw) {
-		return []decodedVariant{{text: raw, layers: []string{"raw"}}}
+		return append(dst, decodedVariant{text: raw, layers: rawLayersOnly})
 	}
-	queue := []decodedVariant{{text: raw, layers: []string{"raw"}}}
-	var out []decodedVariant
+	return decodeVariantsDeep(dst, raw)
+}
+
+// decodeVariantsDeep runs the bounded multi-layer expansion queue. Split out of
+// decodeVariantsInto so the hot single-variant path stays inlinable and its
+// queue/map allocations never appear on ordinary traffic.
+func decodeVariantsDeep(dst []decodedVariant, raw string) []decodedVariant {
+	queue := []decodedVariant{{text: raw, layers: rawLayersOnly}}
+	out := dst
+	base := len(dst) // keep the maxDecodeVariants bound relative to what we add
 	seen := map[string]struct{}{}
-	for len(queue) > 0 && len(out) < maxDecodeVariants {
+	for len(queue) > 0 && len(out)-base < maxDecodeVariants {
 		item := queue[0]
 		queue = queue[1:]
 		if _, ok := seen[item.text]; ok {
@@ -1176,7 +1831,7 @@ func guessCategories(raw string) []string {
 		hints = hintSQL | hintXSS | hintRCE | hintLFI | hintXXE | hintSSRF | hintNoSQL | hintSSTI
 	}
 	text := normalize(raw)
-	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti"}
+	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti", "webshell", "log4shell"}
 	scores := map[string]int{}
 	if hints&hintSQL != 0 {
 		// Cheap substring gates before expensive compactSQL / multi-regex suite.
@@ -1198,8 +1853,8 @@ func guessCategories(raw string) []string {
 				sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) ||
 				sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) ||
 				sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) ||
-				sqlMetadataObject.MatchString(text) || sqlSubquery.MatchString(text) ||
-				sqlCaseWhen.MatchString(text) || sqlFileData.MatchString(text) ||
+				sqlMetadataObject.MatchString(text) || guardedMatchString2K(sqlSubquery, text) ||
+				guardedMatchString2K(sqlCaseWhen, text) || sqlFileData.MatchString(text) ||
 				sqlTimeFunction.MatchString(text) || sqlDangerousFunc.MatchString(text) {
 				scores["sqli"] += 2
 			}
@@ -1247,6 +1902,21 @@ func guessCategories(raw string) []string {
 			scores["ssti"] += 2
 		}
 	}
+	if hints&hintWebshell != 0 {
+		if (strings.Contains(text, "<?php") || strings.Contains(text, "<?=")) ||
+			(strings.Contains(text, "eval(") && (strings.Contains(text, "$_post") || strings.Contains(text, "$_get") || strings.Contains(text, "$_request"))) ||
+			strings.Contains(text, "base64_decode") || strings.Contains(text, "gzinflate") ||
+			strings.Contains(text, "runtime.getruntime()") || strings.Contains(text, "processbuilder") ||
+			strings.Contains(text, "system.diagnostics.process") ||
+			(strings.Contains(text, ".php") && (strings.Contains(text, "action=") || strings.Contains(text, "cmd=") || strings.Contains(text, "shell"))) {
+			scores["webshell"] += 2
+		}
+	}
+	if hints&hintLog4Shell != 0 {
+		if strings.Contains(text, "${jndi:") || strings.Contains(text, "() { :;};") {
+			scores["log4shell"] += 2
+		}
+	}
 	var guesses []string
 	for _, category := range ordered {
 		if scores[category] > 0 {
@@ -1265,6 +1935,8 @@ const (
 	hintSSRF
 	hintNoSQL
 	hintSSTI
+	hintWebshell
+	hintLog4Shell
 )
 
 // scanAttackHints does a single ASCII-oriented pass to decide which detector
@@ -1360,11 +2032,31 @@ func scanAttackHints(raw string) int {
 	}
 	// SSTI
 	if strings.Contains(lower, "{{") || strings.Contains(lower, "{%") ||
-		strings.Contains(lower, "${") || strings.Contains(lower, "#{") ||
+		strings.Contains(lower, "%{") || strings.Contains(lower, "${") || strings.Contains(lower, "#{") ||
 		strings.Contains(lower, "<%") || strings.Contains(lower, "__class__") ||
 		strings.Contains(lower, "__globals__") || strings.Contains(lower, "popen") ||
 		strings.Contains(lower, "objectspace") || strings.Contains(lower, "classloader") {
 		hints |= hintSSTI
+	}
+	// Webshell
+	if strings.Contains(lower, "<?php") || strings.Contains(lower, "<?=") ||
+		strings.Contains(lower, "eval(") || strings.Contains(lower, "system(") ||
+		strings.Contains(lower, "shell_exec") || strings.Contains(lower, "passthru") ||
+		strings.Contains(lower, "exec(") || strings.Contains(lower, "assert(") ||
+		strings.Contains(lower, "$_post") || strings.Contains(lower, "$_get") ||
+		strings.Contains(lower, "$_request") || strings.Contains(lower, "$_cookie") ||
+		strings.Contains(lower, "base64_decode") || strings.Contains(lower, "gzinflate") ||
+		strings.Contains(lower, "runtime.getruntime()") || strings.Contains(lower, "processbuilder") ||
+		strings.Contains(lower, "request.getparameter") || strings.Contains(lower, "${param.") ||
+		strings.Contains(lower, "system.diagnostics.process") || strings.Contains(lower, "eval(request[") ||
+		(strings.Contains(lower, ".php") && (strings.Contains(lower, "action=") || strings.Contains(lower, "cmd=") || strings.Contains(lower, "exec="))) {
+		hints |= hintWebshell
+	}
+	// Log4Shell & Shellshock
+	if strings.Contains(lower, "${jndi:") || strings.Contains(lower, "() { :;};") ||
+		strings.Contains(lower, "jndi:ldap://") || strings.Contains(lower, "jndi:rmi://") ||
+		strings.Contains(lower, "jndi:dns://") {
+		hints |= hintLog4Shell
 	}
 	return hints
 }
@@ -1387,6 +2079,10 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 		return analyzeNoSQL(candidate)
 	case "ssti":
 		return analyzeSSTI(candidate)
+	case "webshell":
+		return analyzeWebshell(candidate)
+	case "log4shell", "shellshock":
+		return analyzeLog4Shell(candidate)
 	default:
 		return Hit{}, false
 	}
@@ -1451,6 +2147,111 @@ var (
 	lfiCommandReadSink = regexp.MustCompile(`(?i)\b(?:cat|type|more|less|head|tail)\s+(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
 )
 
+// sqlCommentTruncationShape returns true if SQL comment markers appear in actual
+// injection context (after quote, paren, equals, digit) rather than in prose,
+// C code comments, Markdown, or email addresses (user@example.com, list--item).
+func sqlCommentTruncationShape(text string) bool {
+	lower := strings.ToLower(text)
+	// Check for -- (must not be in email or Markdown list context)
+	if strings.Contains(text, "--") {
+		idx := strings.Index(text, "--")
+		if idx > 0 {
+			before := text[idx-1]
+			// Injection context: quote, paren, digit, equals precedes --
+			if before == '\'' || before == '"' || before == ')' || before == '=' ||
+				(before >= '0' && before <= '9') {
+				return true
+			}
+			// Check for SQL keyword before --: SELECT--, WHERE--
+			if idx >= 6 {
+				prevWord := strings.ToLower(text[idx-6 : idx])
+				if strings.Contains(prevWord, "select") || strings.Contains(prevWord, "where") ||
+					strings.Contains(prevWord, "union") || strings.Contains(prevWord, "order") {
+					return true
+				}
+			}
+		}
+	}
+	// Check for /* (must not be C/Java code comment at line start)
+	if strings.Contains(text, "/*") {
+		idx := strings.Index(text, "/*")
+		// C code comment pattern: line start or after newline
+		if idx == 0 || (idx > 0 && (text[idx-1] == '\n' || text[idx-1] == '\r')) {
+			// Check next line for typical C comment pattern: * Routine, * Copyright
+			if idx+10 < len(text) {
+				snippet := text[idx : idx+10]
+				if strings.Contains(snippet, "* ") || strings.Contains(snippet, "**") {
+					return false // C code comment block
+				}
+			}
+		}
+		// Injection context: after quote, paren, or embedded in SQL
+		if idx > 0 {
+			before := text[idx-1]
+			if before == '\'' || before == '"' || before == ')' || before == '=' ||
+				(before >= '0' && before <= '9') {
+				return true
+			}
+		}
+		// SQL comment obfuscation: SELECT/**/FROM, UNION/**/SELECT
+		afterComment := idx + 2
+		if afterComment < len(text) {
+			closeIdx := strings.Index(text[afterComment:], "*/")
+			if closeIdx >= 0 && closeIdx <= 20 {
+				// Short comment gap, check if SQL keywords surround it
+				afterClose := afterComment + closeIdx + 2
+				if afterClose < len(text) {
+					nextWord := strings.ToLower(strings.TrimSpace(text[afterClose:min(afterClose+10, len(text))]))
+					if strings.HasPrefix(nextWord, "select") || strings.HasPrefix(nextWord, "from") ||
+						strings.HasPrefix(nextWord, "union") || strings.HasPrefix(nextWord, "where") {
+						return true
+					}
+				}
+			}
+		}
+	}
+	// Check for # (hash comment, less common in prose)
+	if strings.Contains(lower, "#") && (strings.Contains(lower, "select") ||
+		strings.Contains(lower, "union") || strings.Contains(lower, "where")) {
+		return true
+	}
+	return false
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// sqlUnionSelectInjectionShape returns true if UNION/SELECT appears in actual
+// injection context (quote break, comment, semicolon, FROM/WHERE clause) rather
+// than documentation prose like "the UNION operator allows SELECT statements".
+func sqlUnionSelectInjectionShape(text string) bool {
+	lower := strings.ToLower(text)
+	// Injection markers: quote, semicolon, comment, parentheses for subquery
+	if strings.Contains(text, "'") || strings.Contains(text, "\"") ||
+		strings.Contains(text, ";") || strings.Contains(text, "--") ||
+		strings.Contains(text, "/*") || strings.Contains(text, "#") {
+		return true
+	}
+	// Real injection continuation: UNION ... SELECT ... FROM/WHERE
+	if strings.Contains(lower, "union") && strings.Contains(lower, "select") {
+		afterSelect := lower[strings.Index(lower, "select")+6:]
+		// Trim leading whitespace/comments
+		afterSelect = strings.TrimSpace(afterSelect)
+		// Check for FROM, WHERE, or column list indicators
+		if strings.Contains(afterSelect, "from") || strings.Contains(afterSelect, "where") ||
+			// Column list indicators: number, *, NULL, identifiers followed by comma
+			(len(afterSelect) > 0 && (afterSelect[0] >= '0' && afterSelect[0] <= '9' ||
+				afterSelect[0] == '*' || strings.HasPrefix(afterSelect, "null"))) {
+			return true
+		}
+	}
+	return false
+}
+
 func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	// Probe surfaces before comment-bridging so SELECT/**/WHERE and IF((SELECT
 	// shapes stay visible; full analysis still uses bridged executable text.
@@ -1459,11 +2260,27 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	words := tokens(text)
 	reasons := map[string]bool{}
 	if containsOrdered(words, "union", "select") {
-		reasons["syntax: UNION SELECT query composition"] = true
+		// FP hardening: prose can contain "the UNION operator allows SELECT..." without
+		// injection context. Require either: quote/comment/semicolon, or FROM/WHERE after.
+		if sqlUnionSelectInjectionShape(text) {
+			reasons["syntax: UNION SELECT query composition"] = true
+		}
 	}
 	compact := compactSQL(text)
+	// NOTE: deliberately NOT gated by sqlUnionSelectInjectionShape alone. That
+	// gate costs 89 attack detections in the 0xlipon-asql family, whose payloads
+	// carry "union select" with no quote, comment, or column list — the same
+	// bare shape an article uses when naming the technique.
+	//
+	// plainProseUnionMention adds the discriminator the shape guard lacks:
+	// English sentence structure. It suppresses only text that is plainly
+	// spaced, carries no SQL companion at all, and reads as a sentence. A
+	// working UNION injection must still supply a column list or FROM clause,
+	// so it cannot reach this branch.
 	if strings.Contains(compact, "unionselect") || strings.Contains(compact, "unionallselect") {
-		reasons["syntax: obfuscated UNION SELECT query composition"] = true
+		if !plainProseUnionMention(candidate.text) {
+			reasons["syntax: obfuscated UNION SELECT query composition"] = true
+		}
 	}
 	if strings.Contains(compact, "or1=1") || strings.Contains(compact, "and1=1") {
 		reasons["syntax: obfuscated boolean tautology predicate"] = true
@@ -1483,7 +2300,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlDialectTimeFunction.MatchString(text) && sqlExecutionContext(text, compact) {
 		reasons["semantics: dialect-specific database time-delay side effect"] = true
 	}
-	if sqlSelectFrom.MatchString(text) {
+	if guardedMatchString2K(sqlSelectFrom, text) {
 		reasons["syntax: SELECT FROM query grammar"] = true
 	}
 	if sqlIfSelectProbe.MatchString(normalized) || sqlIfSelectProbe.MatchString(text) ||
@@ -1491,15 +2308,15 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		reasons["syntax: IF/XOR SELECT boolean-blind probe"] = true
 		reasons["semantics: boolean database value inference"] = true
 	}
-	if (sqlSelectWhere.MatchString(normalized) || sqlSelectWhere.MatchString(text)) &&
+	if (guardedMatchString2K(sqlSelectWhere, normalized) || guardedMatchString2K(sqlSelectWhere, text)) &&
 		(sqlComment.MatchString(normalized) || strings.Contains(normalized, "/**/") ||
 			sqlIfSelectProbe.MatchString(normalized) || sqlXorSelectProbe.MatchString(normalized)) {
 		reasons["syntax: SELECT WHERE boolean probe"] = true
 	}
-	if sqlSubquery.MatchString(text) {
+	if guardedMatchString2K(sqlSubquery, text) {
 		reasons["syntax: parenthesized SELECT subquery"] = true
 	}
-	if sqlCaseWhen.MatchString(text) {
+	if guardedMatchString2K(sqlCaseWhen, text) {
 		reasons["syntax: CASE WHEN conditional expression"] = true
 		reasons["semantics: conditional database value inference"] = true
 	}
@@ -1510,7 +2327,11 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		reasons["semantics: destructive database operation"] = true
 	}
 	if sqlComment.MatchString(text) && (contains(words, "or") || contains(words, "union") || contains(words, "select")) {
-		reasons["syntax: SQL comment used to truncate query"] = true
+		// FP hardening: C code comments, Markdown, email addresses contain comment-like
+		// markers without injection context. Require position-based evidence.
+		if sqlCommentTruncationShape(text) {
+			reasons["syntax: SQL comment used to truncate query"] = true
+		}
 	}
 	if sqlOrderByInference.MatchString(text) {
 		reasons["syntax: ORDER/GROUP BY column-count inference with SQL comment"] = true
@@ -1552,6 +2373,86 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		severity = engine.SeverityCritical
 		confidence += 0.04
 	}
+
+	// Apply shape guards in order of specificity (most specific first).
+	//
+	// The guards below classify the *document*, so they must see the document as
+	// it arrived — not the bridged, NFKC-normalized detection text. normalize()
+	// drops control characters, which includes "\n", whenever the input is not
+	// plain ASCII (the ASCII fast path keeps newlines). Feeding it to the guards
+	// silently disabled every line-anchored shape (source-file import blocks,
+	// roff control lines, changelog version headings, C comment blocks) for any
+	// document containing a single non-ASCII byte — a curly quote or one CJK
+	// character was enough. Every other detector already passes candidate.text
+	// here; this path was the outlier.
+	doc := candidate.text
+
+	// Markdown heading date context: Changelog entries (#### 1.6.9 - March 16, 2019)
+	if markdownHeadingDateContext(doc) {
+		confidence *= 0.4
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Compute the attack-evidence window once; both securityDocumentContext and
+	// technicalDocumentationContext run on this window so that a prose prefix
+	// + filler padding separated from the payload cannot suppress detection
+	// via either guard.
+	sqlWin := evidenceWindow(doc, []string{
+		"xp_cmdshell", "exec master", "union select", "union all select",
+		"into outfile", "load_file", "information_schema", "sleep(",
+		"benchmark(", "waitfor delay", "pg_sleep", "1=1", "1=0",
+		"' or", "\" or", "or 1=", "and 1=",
+	})
+
+	// Security document context: vulnerability reports, CTF writeups, training
+	// material, academic papers, Chinese technical articles, and source files all
+	// quote SQL grammar verbatim without composing a query.
+	if securityDocumentContextWindowed(doc, sqlWin) {
+		confidence *= 0.4
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// C source code comments: /* packet-nasdaq-itch.c */
+	if cSourceCodeCommentContext(doc) {
+		confidence *= 0.5
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
+	if httpProtocolContextShape(doc) {
+		confidence *= 0.6
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Markdown code block guard: reduce confidence for code examples
+	if markdownCodeBlockShape(doc) {
+		confidence *= 0.6
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Technical documentation keyword guard: AND-gate — full document must satisfy techdoc
+	// (captures document-level markers like 安全/分析 that appear far from the indicator)
+	// AND the local evidence window must also satisfy techdoc (ensures the attack example
+	// is surrounded by explanatory prose, not oracle filler padding).
+	// Oracle bypass: filler region near payload has no techdoc markers → window returns false.
+	// Legitimate doc: explanatory text around examples contains 示例/攻击/vulnerability/etc.
+	if technicalDocumentationContext(doc) && technicalDocumentationContext(sqlWin) {
+		confidence *= 0.7
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
 	return hit(candidate, "sqli", severity, confidence, reasons), true
 }
 
@@ -1650,6 +2551,22 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 		severity = engine.SeverityCritical
 		confidence += 0.02
 	}
+
+	// Security prose quotes MongoDB operators verbatim ("$regex", "$ne") when
+	// explaining NoSQL injection. A document-scale article is not a query.
+	// Use evidenceInProseContext so that a prose prefix + filler bypass cannot
+	// suppress detection of a real NoSQL injection operator.
+	if evidenceInProseContext(text, []string{
+		"$where", "$eval", "$function", "$or", "$and", "$regex",
+		"$ne", "$nin", "$gt", "$gte", "$lt", "$lte", "$not",
+		"mapreduce", "$accumulator", "$expr",
+	}) {
+		confidence *= 0.4
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
 	return hit(candidate, "nosqli", severity, confidence, reasons), true
 }
 
@@ -1708,6 +2625,23 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 		severity = engine.SeverityMedium
 		confidence = 0.78 + confidenceBonus(reasons)
 	}
+
+	// Template-expression syntax appears verbatim in webshell writeups, exploit
+	// sources, and SSTI tutorials. A document-scale article is not a template.
+	// Use evidenceInProseContext so that a prose prefix + filler bypass cannot
+	// suppress detection of a real template injection payload.
+	if evidenceInProseContext(text, []string{
+		"{{", "{%", "${", "<#", "#{", "[[",
+		"__class__", "__mro__", "__subclasses__", "__globals__",
+		"freemarker.template", "classloader", "processbuilder",
+		"objectspace", "java.lang.runtime",
+	}) {
+		confidence *= 0.4
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
 	return hit(candidate, "ssti", severity, confidence, reasons), true
 }
 
@@ -1733,13 +2667,59 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	if xssStyleExecutionContext.MatchString(lower) {
 		reasons["syntax: executable CSS expression or javascript URL"] = true
 	}
-	if strings.Contains(lower, "document.cookie") || strings.Contains(lower, "localstorage") || strings.Contains(lower, "fetch(") {
+	if containsAny(lower, []string{"document.cookie", "localstorage", "fetch("}) {
 		reasons["semantics: browser credential or network side effect"] = true
 	}
 	if len(reasons) == 0 {
 		return Hit{}, false
 	}
-	return hit(candidate, "xss", engine.SeverityHigh, 0.86+confidenceBonus(reasons), reasons), true
+
+	confidence := 0.86 + confidenceBonus(reasons)
+
+	// Apply shape guards in order of specificity (most specific first)
+
+	// Vulnerability report context: XSS in vulnerability titles
+	if vulnerabilityReportContext(text) {
+		confidence *= 0.55
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
+	if httpProtocolContextShape(lower) {
+		confidence *= 0.6
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Markdown code block guard: reduce confidence for code examples
+	if markdownCodeBlockShape(text) {
+		confidence *= 0.6
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Compute the attack-evidence window so that a prose prefix + filler padding
+	// separated from the payload cannot suppress detection via techdoc markers
+	// appearing only in the outer document, not adjacent to the XSS payload.
+	xssWin := evidenceWindow(text, []string{
+		"<script", "onerror=", "onload=", "javascript:", "alert(",
+		"prompt(", "confirm(", "document.cookie", "eval(", "<iframe",
+		"svg onload",
+	})
+
+	// Technical documentation keyword guard: AND-gate — full document AND local window.
+	if technicalDocumentationContext(text) && technicalDocumentationContext(xssWin) {
+		confidence *= 0.7
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	return hit(candidate, "xss", engine.SeverityHigh, confidence, reasons), true
 }
 
 func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
@@ -1747,46 +2727,53 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	lower := normalize(text)
 	sink := rceExecutionSink(candidate.input.Name)
 	reasons := map[string]bool{}
-	for _, pattern := range rcePatterns {
-		if pattern.MatchString(text) {
-			reasons["syntax: shell metacharacter plus executable command"] = true
+	// Markdown table markup turns "| id |" into a fake pipe-plus-command shape.
+	// Outside an execution sink, a table delimiter row means the pipes are cell
+	// separators. Inside a sink, table markup earns no trust.
+	tableMarkup := !sink && markdownTableShape(text)
+
+	if !tableMarkup {
+		for _, pattern := range rcePatterns {
+			if guardedMatchString2K(pattern, text) {
+				reasons["syntax: shell metacharacter plus executable command"] = true
+			}
 		}
 	}
 	// Bare English ";" must not count outside execution sinks (major FP source in docs).
-	if sink && rceShellControl.MatchString(text) {
+	if sink && guardedMatchString2K(rceShellControl, text) {
 		reasons["syntax: shell control operator or command substitution"] = true
-	} else if !sink && rceShellControlEvidence(lower) {
+	} else if !sink && !tableMarkup && rceShellControlEvidence(lower) {
 		reasons["syntax: shell control operator or command substitution"] = true
 	}
-	if rceWhitespaceEvasion.MatchString(text) {
+	if guardedMatchString2K(rceWhitespaceEvasion, text) {
 		reasons["syntax: shell whitespace evasion"] = true
 	}
 	if sink {
 		reasons["context: command execution parameter"] = true
 	}
-	if rcePowerShellSideFx.MatchString(text) || rceEncodedPowerShell.MatchString(text) || rceNetWebClientSideFx.MatchString(text) {
+	if guardedMatchString2K(rcePowerShellSideFx, text) || guardedMatchString2K(rceEncodedPowerShell, text) || guardedMatchString2K(rceNetWebClientSideFx, text) {
 		reasons["semantics: PowerShell dynamic execution or encoded command"] = true
 	}
-	if rcePowerShellReverseShell.MatchString(text) {
+	if guardedMatchString2K(rcePowerShellReverseShell, text) {
 		reasons["semantics: shell reverse connection primitive"] = true
 		reasons["semantics: PowerShell dynamic execution or encoded command"] = true
 	}
-	if rceInterpreterInline.MatchString(text) {
+	if guardedMatchString2K(rceInterpreterInline, text) {
 		reasons["semantics: interpreter inline command execution"] = true
 	}
-	if rceDownloadExecChain.MatchString(text) {
+	if guardedMatchString2K(rceDownloadExecChain, text) {
 		reasons["semantics: download-to-shell execution chain"] = true
 	}
-	if rceReverseShellPrimitive.MatchString(text) {
+	if guardedMatchString2K(rceReverseShellPrimitive, text) {
 		reasons["semantics: shell reverse connection primitive"] = true
 	}
 	// Loader/reflective primitives: only count as RCE evidence when tied to an
 	// execution sink or another hard shell/runtime signal (avoid doc FPs like
 	// "set LD_PRELOAD=/path" in prose without a command parameter).
-	if rceLoaderPrimitive.MatchString(text) {
-		if sink || rceShellControlEvidence(lower) || rceInterpreterInline.MatchString(text) ||
-			rcePowerShellSideFx.MatchString(text) || rceDownloadExecChain.MatchString(text) ||
-			rceReverseShellPrimitive.MatchString(text) {
+	if guardedMatchString2K(rceLoaderPrimitive, text) {
+		if sink || rceShellControlEvidence(lower) || guardedMatchString2K(rceInterpreterInline, text) ||
+			guardedMatchString2K(rcePowerShellSideFx, text) || guardedMatchString2K(rceDownloadExecChain, text) ||
+			guardedMatchString2K(rceReverseShellPrimitive, text) {
 			reasons["semantics: dynamic loader or reflective code loading primitive"] = true
 		}
 	}
@@ -1801,7 +2788,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 		reasons["semantics: PHP runtime command or include execution"] = true
 		reasons["syntax: null-byte path suffix bypass"] = true
 	}
-	if rceTemplateExecutionPrimitive.MatchString(text) {
+	if guardedMatchString2K(rceTemplateExecutionPrimitive, text) {
 		reasons["semantics: template or language runtime command execution primitive"] = true
 	}
 	if strings.Contains(lower, "<?php") && (strings.Contains(lower, "system(") || strings.Contains(lower, "passthru(") || strings.Contains(lower, "shell_exec(") || strings.Contains(lower, "exec(") || strings.Contains(lower, "include(") || strings.Contains(lower, "require(") || strings.Contains(lower, "eval(")) {
@@ -1821,7 +2808,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 		reasons["semantics: template or language runtime command execution primitive"] = true
 	}
 	words := tokens(text)
-	for _, command := range []string{"cat", "whoami", "uname", "curl", "wget", "bash", "sh", "zsh", "dash", "pwsh", "powershell", "cmd", "python", "python3", "perl", "php", "ruby", "node", "nc", "ncat", "netcat", "socat", "lua", "iex", "invoke-expression", "sleep", "ping", "nslookup"} {
+	for command := range rceCommandNames {
 		if contains(words, command) {
 			// Tool names alone in prose are not intent; require sink or hard execution shape.
 			if sink || rceShellControlEvidence(lower) || rceWhitespaceEvasion.MatchString(text) || rceInterpreterInline.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceEncodedPowerShell.MatchString(text) || rceDownloadExecChain.MatchString(text) {
@@ -1845,21 +2832,140 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	if !sink && !rceHardSignal(reasons) {
 		return Hit{}, false
 	}
-	return hit(candidate, "rce", engine.SeverityCritical, 0.87+confidenceBonus(reasons), reasons), true
+
+	confidence := 0.87 + confidenceBonus(reasons)
+
+	// Apply shape guards in order of specificity (most specific first)
+
+	// Compute the attack-evidence window once; securityDocumentContext and
+	// technicalDocumentationContext both run on this window so that a prose
+	// prefix + filler padding separated from the payload cannot suppress
+	// detection via either guard.
+	rceWin := evidenceWindow(text, []string{
+		";cat ", "|cat ", "| cat ", ";id", "|id", "| id",
+		"|bash", "| bash", "|sh ", "| sh ", "/bin/sh", "/bin/bash",
+		"/etc/passwd", "/etc/shadow", "whoami", "nc ", "netcat",
+		"wget ", "curl ", "<?php", "eval(", "system(", "passthru(",
+		"shell_exec(", "proc_open(", "popen(", "exec(",
+		"runtime.exec", "processbuilder", "() { :;};", "${jndi:",
+	})
+
+	// Security document context: vulnerability reports, CTF writeups, training
+	// material, academic papers, Chinese technical articles, and source files all
+	// quote shell commands verbatim without invoking them.
+	if securityDocumentContextWindowed(text, rceWin) {
+		confidence *= 0.4
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// PowerShell documentation: technical descriptions of PowerShell features
+	if powerShellDocumentationContext(text) {
+		confidence *= 0.55
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// HTTP header documentation: explaining HTTP headers as examples
+	if httpHeaderDocumentationContext(text) {
+		confidence *= 0.5
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
+	if httpProtocolContextShape(lower) {
+		confidence *= 0.6
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Markdown code block guard: reduce confidence for code examples
+	if markdownCodeBlockShape(text) {
+		confidence *= 0.6
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Technical documentation keyword guard: AND-gate — full document AND local window.
+	if technicalDocumentationContext(text) && technicalDocumentationContext(rceWin) {
+		confidence *= 0.7
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	return hit(candidate, "rce", engine.SeverityCritical, confidence, reasons), true
 }
 
 var rceShellMetacharCommand = regexp.MustCompile(`(?i)(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b`)
+
+// rceCommandNames is the set of executable names that count as command-execution
+// intent. It is the single source of truth for both token scanning in analyzeRCE
+// and the backtick discrimination in rceShellControlEvidence: a single word in
+// backticks that names a real command is substitution, not Markdown inline code.
+var rceCommandNames = map[string]bool{
+	"cat": true, "whoami": true, "uname": true, "curl": true, "wget": true,
+	"bash": true, "sh": true, "zsh": true, "dash": true, "pwsh": true,
+	"powershell": true, "cmd": true, "python": true, "python3": true,
+	"perl": true, "php": true, "ruby": true, "node": true, "nc": true,
+	"ncat": true, "netcat": true, "socat": true, "lua": true, "iex": true,
+	"invoke-expression": true, "sleep": true, "ping": true, "nslookup": true,
+}
 
 func rceShellControlEvidence(lower string) bool {
 	if strings.Contains(lower, "$(") || strings.Contains(lower, "&&") || strings.Contains(lower, "||") {
 		return true
 	}
 	// Markdown fenced code uses ``` which must not count as shell backticks.
-	// Only leftover single-backtick command substitution is evidence.
-	if strings.Contains(strings.ReplaceAll(lower, "```", ""), "`") {
-		return true
+	text := strings.ReplaceAll(lower, "```", "")
+	if !strings.Contains(text, "`") {
+		return rceShellMetacharCommand.MatchString(lower)
 	}
-	return rceShellMetacharCommand.MatchString(lower)
+	// Backticks present. Distinguish Markdown inline code from shell command substitution.
+	// Markdown: `SLEEP`, `UNION`, `SELECT` — single keyword, no spaces/shell meta
+	// Shell: `cat /etc/passwd`, `curl http://...`, `$(cmd)` — has spaces or shell syntax
+	parts := strings.Split(text, "`")
+	if len(parts)%2 == 1 && len(parts) >= 3 {
+		// Balanced pairs. Check each backtick-enclosed segment.
+		hasShellPattern := false
+		for i := 1; i < len(parts); i += 2 {
+			content := strings.TrimSpace(parts[i])
+			if len(content) == 0 {
+				continue // Empty backticks
+			}
+			// Shell command substitution markers
+			if strings.ContainsAny(content, " \t\n;|&><$()") {
+				hasShellPattern = true
+				break
+			}
+			// Single-word technical terms (SQL keywords, function names) are Markdown
+			// Multi-word or containing shell metachar is shell syntax
+			words := strings.Fields(content)
+			if len(words) > 1 {
+				hasShellPattern = true
+				break
+			}
+			// A single word that is itself a shell command name is command
+			// substitution, not prose: report`whoami` executes. Markdown inline
+			// code in documentation names APIs and operators (`site:`, `SELECT`),
+			// not argv[0] of a real command.
+			if len(words) == 1 && rceCommandNames[strings.Trim(words[0], "()$;|&")] {
+				hasShellPattern = true
+				break
+			}
+		}
+		if !hasShellPattern {
+			return false // All backtick pairs are Markdown inline code
+		}
+	}
+	// Unbalanced or contains shell patterns
+	return true
 }
 
 func rceHardSignal(reasons map[string]bool) bool {
@@ -1963,7 +3069,71 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	if !hasPathSignal {
 		return Hit{}, false
 	}
-	return hit(candidate, "lfi", engine.SeverityHigh, 0.85+confidenceBonus(reasons), reasons), true
+
+	// RESTful path guard: /api/v1/users/{id}, GET /admin/dashboard, /@username/settings
+	if restfulPathShape(text) {
+		return Hit{}, false
+	}
+
+	confidence := 0.85 + confidenceBonus(reasons)
+
+	// Apply shape guards in order of specificity (most specific first)
+
+	// Book/ISBN documentation: technical books should not trigger LFI
+	if bookDocumentationContext(text) {
+		confidence *= 0.5
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Compute the attack-evidence window once; securityDocumentContext and
+	// technicalDocumentationContext both run on this window so that a prose
+	// prefix + filler padding separated from the payload cannot suppress
+	// detection via either guard.
+	lfiWin := evidenceWindow(text, []string{
+		"../", "....//", `..\/`, ".htaccess",
+		"/etc/passwd", "/etc/shadow", "/proc/self", "/root/",
+		"php://", "phar://", "zip://", "expect://", "data://",
+		".ssh/id_rsa", ".aws/credentials", ".git/config", ".env",
+		"web-inf/web.xml", "boot.ini", "win.ini", "wp-config",
+		"docker.sock", "/var/log/",
+	})
+
+	// Security document context: reports, writeups, papers, and source files
+	// quote paths like /etc/passwd and file:// URIs as subject matter.
+	if securityDocumentContextWindowed(text, lfiWin) {
+		confidence *= 0.4
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
+	if httpProtocolContextShape(text) {
+		confidence *= 0.6
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Markdown code block guard: reduce confidence for code examples
+	if markdownCodeBlockShape(text) {
+		confidence *= 0.6
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	// Technical documentation keyword guard: AND-gate — full document AND local window.
+	if technicalDocumentationContext(text) && technicalDocumentationContext(lfiWin) {
+		confidence *= 0.7
+		if confidence < 0.7 {
+			return Hit{}, false
+		}
+	}
+
+	return hit(candidate, "lfi", engine.SeverityHigh, confidence, reasons), true
 }
 
 // lfiRemoteIncludeContext is true when a file or include parameter carries a remote URL.
@@ -2253,12 +3423,45 @@ func hasSyntaxReason(reasons map[string]bool) bool {
 // blockableHit enforces the FP-first policy for production block mode:
 // weak single-signal hits must not block legitimate traffic.
 // Prefer miss over wrong block.
-func blockableHit(h Hit) bool {
+func (a *Analyzer) blockableHit(h Hit) bool {
+	// Level 0 (Off): never block, only log
+	if a.paranoiaLevel == 0 {
+		return false
+	}
+
 	if h.Category == "" || h.Payload == "" {
 		return false
 	}
 	syntaxOK := h.Syntax != "" && !strings.HasSuffix(h.Syntax, "none") && !strings.Contains(h.Syntax, "attack grammar matched")
 	semanticsOK := h.Semantics != "" && !strings.HasSuffix(h.Semantics, "none") && !strings.Contains(h.Semantics, "malicious behavior inferred from context")
+
+	// Level 4 (Paranoid): block on any semantic evidence with confidence >= 0.5
+	if a.paranoiaLevel >= 4 {
+		return (syntaxOK || semanticsOK) && h.Confidence >= 0.5
+	}
+
+	// Level 3 (High): block on confidence >= 0.8 with High severity, or single evidence with Medium+
+	if a.paranoiaLevel == 3 {
+		if h.Confidence >= 0.8 && (h.Severity == engine.SeverityHigh || h.Severity == engine.SeverityCritical) {
+			return true
+		}
+		if (syntaxOK || semanticsOK) && h.Severity >= engine.SeverityMedium {
+			return true
+		}
+	}
+
+	// Level 1 (Low): require very high confidence (>=0.95) with Critical, or two evidence with High
+	if a.paranoiaLevel == 1 {
+		if h.Confidence >= 0.95 && h.Severity == engine.SeverityCritical {
+			return true
+		}
+		if syntaxOK && semanticsOK && h.Severity >= engine.SeverityHigh {
+			return true
+		}
+		return false
+	}
+
+	// Level 2 (Default): original logic - require two evidence types or specific single evidence
 	if syntaxOK && semanticsOK {
 		return true
 	}
@@ -2446,17 +3649,39 @@ func printableRatio(value string) float64 {
 	return float64(printable) / float64(len([]rune(value)))
 }
 
+// skippedHeaders holds the lowercase header names that carry no
+// attacker-controlled semantics worth scanning. Kept as a set so skipHeader can
+// fold the key into a stack buffer instead of allocating a lowercased copy
+// (strings.ToLower allocated once per request for every canonical header).
+var skippedHeaders = map[string]struct{}{
+	"accept": {}, "accept-encoding": {}, "accept-language": {}, "connection": {},
+	"content-length": {}, "content-type": {}, "host": {}, "cache-control": {},
+	"pragma": {}, "upgrade-insecure-requests": {}, "sec-fetch-site": {},
+	"sec-fetch-mode": {}, "sec-fetch-dest": {}, "sec-fetch-user": {},
+	"sec-ch-ua": {}, "sec-ch-ua-mobile": {}, "sec-ch-ua-platform": {},
+	"dnt": {}, "priority": {}, "if-none-match": {}, "if-modified-since": {},
+	"range": {}, "te": {}, "trailer": {}, "transfer-encoding": {},
+}
+
+// skipHeaderMaxLen is the longest entry in skippedHeaders
+// ("upgrade-insecure-requests"). Longer keys can never match.
+const skipHeaderMaxLen = 25
+
 func skipHeader(key string) bool {
-	switch strings.ToLower(key) {
-	case "accept", "accept-encoding", "accept-language", "connection", "content-length",
-		"content-type", "host", "cache-control", "pragma", "upgrade-insecure-requests",
-		"sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user",
-		"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "dnt", "priority",
-		"if-none-match", "if-modified-since", "range", "te", "trailer", "transfer-encoding":
-		return true
-	default:
+	if len(key) == 0 || len(key) > skipHeaderMaxLen {
 		return false
 	}
+	var buf [skipHeaderMaxLen]byte
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	// The compiler elides the string header for map lookups on a byte slice.
+	_, ok := skippedHeaders[string(buf[:len(key)])]
+	return ok
 }
 
 func toString(value any) string {

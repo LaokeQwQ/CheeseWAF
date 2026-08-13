@@ -28,7 +28,7 @@ func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
 				t.Skipf("skipping corpus entry %q: %v", tc.Name, err)
 				return
 			}
-			result, err := NewAnalyzer("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}

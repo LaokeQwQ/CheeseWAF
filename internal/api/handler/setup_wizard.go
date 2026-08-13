@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,8 +26,15 @@ func draftStore() *setup.DraftStore {
 	return setupDrafts
 }
 
+func (h *Handler) setupDraftStore() *setup.DraftStore {
+	if h != nil && h.SetupDrafts != nil {
+		return h.SetupDrafts
+	}
+	return draftStore()
+}
+
 // allowSetupMutation gates first-install endpoints: setup must still be needed,
-// optional setup token must match, and browser mutations need a loopback-ish Origin.
+// the setup token must match, and browser mutations need a local or same Origin.
 func (h *Handler) allowSetupMutation(w http.ResponseWriter, r *http.Request) bool {
 	if h == nil {
 		writeError(w, http.StatusServiceUnavailable, "SETUP_UNAVAILABLE", "setup is unavailable")
@@ -42,15 +52,21 @@ func (h *Handler) allowSetupMutation(w http.ResponseWriter, r *http.Request) boo
 			return false
 		}
 	}
-	if expected := strings.TrimSpace(os.Getenv("CHEESEWAF_SETUP_TOKEN")); expected != "" {
-		got := strings.TrimSpace(r.Header.Get("X-CheeseWAF-Setup-Token"))
-		if got == "" {
-			got = strings.TrimSpace(r.URL.Query().Get("setup_token"))
-		}
-		if got == "" || got != expected {
-			writeError(w, http.StatusUnauthorized, "SETUP_TOKEN_REQUIRED", "setup token is required")
-			return false
-		}
+	expected := strings.TrimSpace(h.SetupToken)
+	if expected == "" {
+		expected = strings.TrimSpace(os.Getenv("CHEESEWAF_SETUP_TOKEN"))
+	}
+	if expected == "" {
+		expected = setup.GetSetupToken()
+	}
+	got := strings.TrimSpace(r.Header.Get("X-CheeseWAF-Setup-Token"))
+	if expected == "" || got == "" {
+		writeError(w, http.StatusUnauthorized, "SETUP_TOKEN_REQUIRED", "setup token is required")
+		return false
+	}
+	if !setupTokensEqual(got, expected) {
+		writeError(w, http.StatusUnauthorized, "SETUP_TOKEN_REQUIRED", "setup token is invalid")
+		return false
 	}
 	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
 		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
@@ -61,6 +77,11 @@ func (h *Handler) allowSetupMutation(w http.ResponseWriter, r *http.Request) boo
 		}
 	}
 	return true
+}
+func setupTokensEqual(got, expected string) bool {
+	gotHash := sha256.Sum256([]byte(got))
+	expectedHash := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(gotHash[:], expectedHash[:]) == 1
 }
 
 func isLocalOrSameOrigin(origin string, r *http.Request) bool {
@@ -91,19 +112,34 @@ func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "SETUP_UNAVAILABLE", "setup is unavailable")
 		return
 	}
-	dataDir := h.setupDataDir()
-	result := setup.RunProbe(r.Context(), dataDir)
-	// Bind/create draft session.
-	store := draftStore()
-	draft, err := store.Create()
+	store := h.setupDraftStore()
+	draft, cached, err := store.ReserveProbe(setupSessionID(r))
+	if cached {
+		h.writeSetupProbeResponse(w, draft, *draft.Probe)
+		return
+	}
+	if errors.Is(err, setup.ErrDraftStoreFull) {
+		writeError(w, http.StatusTooManyRequests, "SETUP_CAPACITY_REACHED", "too many active setup sessions")
+		return
+	}
+	if errors.Is(err, setup.ErrDraftProbeInProgress) {
+		writeError(w, http.StatusTooManyRequests, "SETUP_PROBE_IN_PROGRESS", "setup probe is already running")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "SETUP_DRAFT_ERROR", err.Error())
 		return
 	}
-	_, _ = store.Update(draft.ID, func(d *setup.SetupDraft) {
-		d.Probe = &result
-		d.Profile = result.Profile
-	})
+	result := h.runSetupProbe(r.Context(), h.setupDataDir())
+	draft, ok := store.CompleteProbe(draft.ID, result)
+	if !ok {
+		writeError(w, http.StatusConflict, "SETUP_DRAFT_EXPIRED", "setup session expired while probe was running")
+		return
+	}
+	h.writeSetupProbeResponse(w, draft, result)
+}
+
+func (h *Handler) writeSetupProbeResponse(w http.ResponseWriter, draft *setup.SetupDraft, result setup.ProbeResult) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     setup.SetupSessionCookie,
 		Value:    draft.ID,
@@ -131,7 +167,7 @@ func (h *Handler) SetupDraftGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "SETUP_SESSION_REQUIRED", "setup session required")
 		return
 	}
-	d, ok := draftStore().Get(id)
+	d, ok := h.setupDraftStore().Get(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "SETUP_DRAFT_NOT_FOUND", "setup draft not found or expired")
 		return
@@ -164,12 +200,12 @@ func (h *Handler) SetupDraftPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Password != "" {
-		if !draftStore().SetPassword(id, req.Password) {
+		if !h.setupDraftStore().SetPassword(id, req.Password) {
 			writeError(w, http.StatusNotFound, "SETUP_DRAFT_NOT_FOUND", "setup draft not found or expired")
 			return
 		}
 	}
-	d, ok := draftStore().Update(id, func(d *setup.SetupDraft) {
+	d, ok := h.setupDraftStore().Update(id, func(d *setup.SetupDraft) {
 		if req.Profile != "" {
 			d.Profile = setup.HardwareProfile(req.Profile)
 		}

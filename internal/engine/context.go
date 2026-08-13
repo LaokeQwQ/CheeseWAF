@@ -6,12 +6,11 @@ import (
 	"compress/gzip"
 	"errors"
 	"io"
-	"net"
 	"net/http"
-	"net/netip"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
 )
 
 const defaultRequestBodyLimit = 8 << 20
@@ -37,6 +36,22 @@ func NewRequestContextWithLimits(r *http.Request, siteID string, trustedCIDRs []
 // NewRequestContextDeferredBody skips body I/O until EnsureBody (hot-path lazy-once).
 func NewRequestContextDeferredBody(r *http.Request, siteID string, trustedCIDRs []string, maxBodyBytes int64) (*RequestContext, error) {
 	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, false)
+}
+
+// TrustedProxyPolicy is an immutable compiled client-IP trust policy.
+type TrustedProxyPolicy = proxytrust.Policy
+
+var directClientIPPolicy, _ = proxytrust.Compile(nil, nil)
+
+// NewTrustedProxyPolicy binds provider-specific headers to their own CIDRs.
+func NewTrustedProxyPolicy(trustedCIDRs []string, providerCIDRs map[string][]string) (*TrustedProxyPolicy, error) {
+	return proxytrust.Compile(trustedCIDRs, providerCIDRs)
+}
+
+// NewRequestContextDeferredBodyWithTrustedProxyPolicy uses a precompiled proxy
+// policy and skips body I/O until EnsureBody.
+func NewRequestContextDeferredBodyWithTrustedProxyPolicy(r *http.Request, siteID string, policy *TrustedProxyPolicy, maxBodyBytes int64) (*RequestContext, error) {
+	return newRequestContext(r, siteID, clientIPFromPolicy(r, policy), maxBodyBytes, false)
 }
 
 func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes int64, readBody bool) (*RequestContext, error) {
@@ -91,6 +106,11 @@ func (c *RequestContext) EnsureBody() error {
 	originalBody := c.Request.Body
 	raw, err := io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
 	if err != nil {
+		_ = originalBody.Close()
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return ErrRequestBodyTooLarge
+		}
 		return err
 	}
 	if int64(len(raw)) > maxBodyBytes {
@@ -169,148 +189,30 @@ func replayRequestBody(prefix []byte, rest io.ReadCloser) io.ReadCloser {
 }
 
 func ClientIP(r *http.Request) string {
-	return remoteAddrIP(r)
+	return clientIPFromPolicy(r, nil)
 }
 
+// ClientIPWithTrustedProxies accepts only the standardized forwarding chain.
+// Provider-specific headers require ClientIPWithTrustedProxyProviders.
 func ClientIPWithTrustedProxies(r *http.Request, trustedCIDRs []string) string {
-	remote := remoteAddrIP(r)
-	if !isTrustedProxy(remote, trustedCIDRs) {
-		return remote
-	}
-	if ip := forwardedForIP(r.Header.Get("X-Forwarded-For"), trustedCIDRs); ip != "" {
-		return ip
-	}
-	if ip := forwardedForIP(strings.Join(forwardedHeaderValues(r.Header.Get("Forwarded")), ","), trustedCIDRs); ip != "" {
-		return ip
-	}
-	for _, header := range []string{
-		"CF-Connecting-IP",
-		"True-Client-IP",
-		"Fastly-Client-IP",
-		"Fly-Client-IP",
-		"DO-Connecting-IP",
-		"Ali-CDN-Real-IP",
-		"CDN-Src-IP",
-		"X-CDN-Src-IP",
-		"X-Azure-ClientIP",
-		"X-Vercel-Forwarded-For",
-		"X-Original-Forwarded-For",
-		"X-Real-IP",
-		"X-Client-IP",
-		"X-Cluster-Client-IP",
-		"X-Appengine-User-IP",
-	} {
-		if ip := firstHeaderIP(r.Header.Get(header)); ip != "" {
-			return ip
-		}
-	}
-	return remote
+	return ClientIPWithTrustedProxyProviders(r, trustedCIDRs, nil)
 }
 
-func remoteAddrIP(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+// ClientIPWithTrustedProxyProviders resolves provider-specific headers only
+// when the socket peer matches that provider's explicitly configured CIDRs.
+func ClientIPWithTrustedProxyProviders(r *http.Request, trustedCIDRs []string, providerCIDRs map[string][]string) string {
+	policy, err := NewTrustedProxyPolicy(trustedCIDRs, providerCIDRs)
 	if err != nil {
-		host = r.RemoteAddr
+		return clientIPFromPolicy(r, nil)
 	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
-		return ip.String()
-	}
-	return strings.TrimSpace(r.RemoteAddr)
+	return clientIPFromPolicy(r, policy)
 }
 
-func isTrustedProxy(remote string, trustedCIDRs []string) bool {
-	ip, err := netip.ParseAddr(remote)
-	if err != nil {
-		return false
+func clientIPFromPolicy(r *http.Request, policy *TrustedProxyPolicy) string {
+	if policy == nil {
+		policy = directClientIPPolicy
 	}
-	for _, raw := range trustedCIDRs {
-		prefix, ok := parseTrustedPrefix(raw)
-		if ok && prefix.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-func parseTrustedPrefix(raw string) (netip.Prefix, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return netip.Prefix{}, false
-	}
-	if strings.Contains(raw, "/") {
-		prefix, err := netip.ParsePrefix(raw)
-		return prefix, err == nil
-	}
-	addr, err := netip.ParseAddr(raw)
-	if err != nil {
-		return netip.Prefix{}, false
-	}
-	if addr.Is4() {
-		return netip.PrefixFrom(addr, 32), true
-	}
-	return netip.PrefixFrom(addr, 128), true
-}
-
-func firstHeaderIP(value string) string {
-	for _, part := range strings.Split(value, ",") {
-		if ip := parseHeaderIP(part); ip != "" {
-			return ip
-		}
-	}
-	return ""
-}
-
-func forwardedForIP(value string, trustedCIDRs []string) string {
-	parts := strings.Split(value, ",")
-	var first string
-	for i := len(parts) - 1; i >= 0; i-- {
-		ip := parseHeaderIP(parts[i])
-		if ip == "" {
-			continue
-		}
-		first = ip
-		if !isTrustedProxy(ip, trustedCIDRs) {
-			return ip
-		}
-	}
-	return first
-}
-
-func forwardedHeaderValues(raw string) []string {
-	values := make([]string, 0)
-	for _, item := range strings.Split(raw, ",") {
-		for _, part := range strings.Split(item, ";") {
-			key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-			if !ok || !strings.EqualFold(strings.TrimSpace(key), "for") {
-				continue
-			}
-			values = append(values, value)
-		}
-	}
-	return values
-}
-
-func parseHeaderIP(raw string) string {
-	raw = strings.TrimSpace(strings.Trim(raw, `"`))
-	if raw == "" || strings.EqualFold(raw, "unknown") {
-		return ""
-	}
-	if strings.HasPrefix(raw, "[") {
-		if end := strings.Index(raw, "]"); end > 0 {
-			raw = raw[1:end]
-		}
-	}
-	if host, _, err := net.SplitHostPort(raw); err == nil {
-		raw = host
-	}
-	raw = strings.Trim(raw, "[]")
-	if ip := net.ParseIP(raw); ip != nil {
-		return ip.String()
-	}
-	return ""
+	return policy.ClientIP(r)
 }
 
 func (a Action) String() string {

@@ -18,7 +18,7 @@ func TestFPGateReport(t *testing.T) {
 	semantic.ProcessMetrics().ResetForTest()
 	semantic.ResetProcessCacheForTest()
 	var benignTotal, benignFP, attackTotal, attackMiss, attackHit int
-	a := semantic.NewAnalyzer("block")
+	a := semantic.NewAnalyzer("block", 2)
 	files := []string{
 		"testdata/curated_external_shapes.jsonl",
 		"testdata/benign_production_shapes.jsonl",

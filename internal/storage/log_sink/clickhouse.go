@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
 type ClickHouseSink struct {
 	cfg    config.ClickHouseConfig
 	client *http.Client
+	async  *asyncLogWriter
 }
 
 func NewClickHouseSink(cfg config.ClickHouseConfig, client *http.Client) (*ClickHouseSink, error) {
@@ -41,10 +43,22 @@ func NewClickHouseSink(cfg config.ClickHouseConfig, client *http.Client) (*Click
 	if client == nil {
 		client = guardedLogSinkHTTPClient(cfg.Timeout, "clickhouse endpoint", cfg.AllowPrivateEndpoint)
 	}
-	return &ClickHouseSink{cfg: cfg, client: client}, nil
+	sink := &ClickHouseSink{cfg: cfg, client: client}
+	sink.async = newAsyncLogWriter("clickhouse", sink.writeSync, nil, func() error {
+		sink.client.CloseIdleConnections()
+		return nil
+	}, asyncLogWriterOptions{})
+	return sink, nil
 }
 
 func (s *ClickHouseSink) Write(ctx context.Context, entry *storage.LogEntry) error {
+	if s.async == nil {
+		return s.writeSync(ctx, entry)
+	}
+	return s.async.Write(ctx, entry)
+}
+
+func (s *ClickHouseSink) writeSync(ctx context.Context, entry *storage.LogEntry) error {
 	if entry == nil {
 		return nil
 	}
@@ -71,7 +85,7 @@ func (s *ClickHouseSink) Write(ctx context.Context, entry *storage.LogEntry) err
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("clickhouse returned %s", resp.Status)
 	}
@@ -93,10 +107,7 @@ func (s *ClickHouseSink) Query(ctx context.Context, filter storage.LogFilter) ([
 		return nil, 0, fmt.Errorf("decode clickhouse count: %w", err)
 	}
 
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 100
-	}
+	limit := normalizedLimit(filter.Limit)
 	offset := filter.Offset
 	if offset < 0 {
 		offset = 0
@@ -105,19 +116,32 @@ func (s *ClickHouseSink) Query(ctx context.Context, filter storage.LogFilter) ([
 	if err != nil {
 		return nil, 0, err
 	}
-	entries, err := decodeLogEntryJSONLines(itemBody)
+	entries, err := decodeLogEntryJSONLines(itemBody, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("decode clickhouse rows: %w", err)
 	}
 	return entries, total, nil
 }
 
-func (s *ClickHouseSink) Flush(context.Context) error {
-	return nil
+func (s *ClickHouseSink) Flush(ctx context.Context) error {
+	if s.async == nil {
+		return nil
+	}
+	return s.async.Flush(ctx)
 }
 
 func (s *ClickHouseSink) Close() error {
-	return nil
+	if s.async == nil {
+		return nil
+	}
+	return s.async.Close()
+}
+
+func (s *ClickHouseSink) AsyncStats() AsyncLogSinkStats {
+	if s.async == nil {
+		return AsyncLogSinkStats{}
+	}
+	return s.async.Stats()
 }
 
 func (s *ClickHouseSink) doQuery(ctx context.Context, statement string) (io.ReadCloser, error) {
@@ -141,7 +165,7 @@ func (s *ClickHouseSink) doQuery(ctx context.Context, statement string) (io.Read
 		return nil, err
 	}
 	if resp.StatusCode >= 300 {
-		defer resp.Body.Close()
+		defer netguard.DrainAndClose(resp.Body)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("clickhouse returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
@@ -202,7 +226,7 @@ func quoteClickHouseIdentifierPath(value string) (string, error) {
 }
 
 func parseCountJSONLine(body io.ReadCloser, field string) (int64, error) {
-	defer body.Close()
+	defer netguard.DrainAndClose(body)
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 4<<20)
 	for scanner.Scan() {

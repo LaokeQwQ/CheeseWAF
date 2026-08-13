@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
 )
 
 var ErrNoUpstream = errors.New("no upstream available")
@@ -22,22 +24,26 @@ var sharedTransports = struct {
 }{items: make(map[time.Duration]*http.Transport)}
 
 // Client-forged forwarding identity headers are stripped before rebuild.
-var stripClientForwardHeaders = []string{
+var stripClientForwardHeaders = append([]string{
 	"Forwarded",
 	"X-Forwarded-For",
 	"X-Forwarded-Host",
 	"X-Forwarded-Proto",
 	"X-Forwarded-Port",
 	"X-Forwarded-Scheme",
-	"X-Real-IP",
-	"X-Client-IP",
-	"X-Original-Forwarded-For",
-	"CF-Connecting-IP",
-	"True-Client-IP",
-	"Fastly-Client-IP",
-}
+}, proxytrust.ProviderIdentityHeaders()...)
 
 func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReverseProxy {
+	return newReverseProxy(target, timeout, "")
+}
+
+// NewReverseProxyForClient rebuilds upstream forwarding headers from the
+// client identity already validated by the proxy trust policy.
+func NewReverseProxyForClient(target *url.URL, timeout time.Duration, clientIP string) *httputil.ReverseProxy {
+	return newReverseProxy(target, timeout, normalizedClientIP(clientIP))
+}
+
+func newReverseProxy(target *url.URL, timeout time.Duration, trustedClientIP string) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -55,7 +61,11 @@ func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReversePr
 		if originalHost != "" {
 			r.Header.Set("X-Forwarded-Host", originalHost)
 		}
-		if ip := peerIP(clientAddr); ip != "" {
+		ip := trustedClientIP
+		if ip == "" {
+			ip = peerIP(clientAddr)
+		}
+		if ip != "" {
 			r.Header.Set("X-Forwarded-For", ip)
 			r.Header.Set("X-Real-IP", ip)
 		}
@@ -66,6 +76,14 @@ func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReversePr
 		}
 	}
 	return proxy
+}
+
+func normalizedClientIP(raw string) string {
+	ip := net.ParseIP(strings.Trim(strings.TrimSpace(raw), "[]"))
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 func peerIP(remoteAddr string) string {

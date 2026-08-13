@@ -23,12 +23,16 @@ func (e *Engine) ID() string    { return "rules.custom" }
 func (e *Engine) Name() string  { return "Custom Rule Engine" }
 func (e *Engine) Priority() int { return 250 }
 
-func (e *Engine) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+func (e *Engine) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+	views := new(requestViews)
 	for _, rule := range e.rules {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !rule.Enabled {
 			continue
 		}
-		value := MatchValue(rule, reqCtx)
+		value := views.match(rule, reqCtx)
 		if rule.Pattern.MatchString(value) {
 			return &engine.DetectionResult{
 				Detected:   true,

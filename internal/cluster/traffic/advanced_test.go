@@ -2,6 +2,7 @@ package traffic
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,47 @@ func TestReportSuccessClearsCircuit(t *testing.T) {
 	s.ReportSuccess("a")
 	if healthy := s.FilterHealthy(peers); len(healthy) != 2 {
 		t.Fatalf("expected circuit clear, healthy=%+v", healthy)
+	}
+}
+
+func TestReportFailureBoundsCircuitMap(t *testing.T) {
+	s := NewScheduler()
+	for i := 0; i <= maxCircuitMapSize; i++ {
+		s.ReportFailure(fmt.Sprintf("node-%d", i))
+	}
+
+	s.mu.Lock()
+	count := len(s.circuits)
+	_, newestPresent := s.circuits[fmt.Sprintf("node-%d", maxCircuitMapSize)]
+	s.mu.Unlock()
+	if count >= maxCircuitMapSize {
+		t.Fatalf("circuit map was not compacted at capacity: %d", count)
+	}
+	if !newestPresent {
+		t.Fatal("new failure was dropped while compacting circuit map")
+	}
+}
+
+func TestReportFailurePrunesExpiredOpenCircuits(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	s := NewScheduler()
+	s.ConfigureAdvanced(AdvancedOptions{
+		CircuitFailures: 1,
+		CircuitOpenFor:  time.Second,
+		Now:             func() time.Time { return now },
+	})
+	for i := 0; i < maxCircuitMapSize; i++ {
+		s.ReportFailure(fmt.Sprintf("expired-%d", i))
+	}
+	now = now.Add(3 * time.Second)
+	s.ReportFailure("current")
+
+	s.mu.Lock()
+	count := len(s.circuits)
+	_, currentPresent := s.circuits["current"]
+	s.mu.Unlock()
+	if count != 1 || !currentPresent {
+		t.Fatalf("expired circuits were not pruned: count=%d current=%v", count, currentPresent)
 	}
 }
 
