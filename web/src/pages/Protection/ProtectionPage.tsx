@@ -39,6 +39,7 @@ import {
 import { fetchProtection, updateACLProtection, updateBotProtection, updateIPProtection, updateProtectionPolicy, updateRateLimit } from '../../api/client';
 import type { ACLRule, ProtectionCaptchaType, ProtectionConfig } from '../../types/api';
 import { displayAction } from '../../utils/display';
+import { useServerDraft } from '../../hooks/useServerDraft';
 import './ProtectionPage.css';
 
 type CaptchaTypeOption = ProtectionCaptchaType | 'image' | 'slider';
@@ -190,6 +191,36 @@ function botToForm(bot: ProtectionConfig['bot']): BotFormState {
   };
 }
 
+type GeoFormState = {
+  enabled: boolean;
+  database: string;
+  precisionDatabase: string;
+  blocked: string[];
+};
+
+function geoToForm(geoip: ProtectionConfig['ip']['geoip']): GeoFormState {
+  return {
+    enabled: geoip.enabled,
+    database: geoip.database,
+    precisionDatabase: geoip.precision_database,
+    blocked: geoip.blocked_countries,
+  };
+}
+
+type RateFormState = {
+  enabled: boolean;
+  requests: number;
+  burst: number;
+};
+
+function rateToForm(ratelimit: ProtectionConfig['ratelimit']): RateFormState {
+  return {
+    enabled: ratelimit.enabled,
+    requests: ratelimit.default.requests,
+    burst: ratelimit.default.burst,
+  };
+}
+
 export default function ProtectionPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -205,43 +236,30 @@ export default function ProtectionPage() {
   const [policySaving, setPolicySaving] = useState<Record<string, boolean>>({});
   useEffect(() => { setPolicyDraft(protection.policy); }, [protection.policy]);
 
-  const [botForm, setBotForm] = useState<BotFormState>(() => botToForm(protection.bot));
-  useEffect(() => { setBotForm(botToForm(protection.bot)); }, [protection.bot]);
+  const botServerForm = useMemo(() => botToForm(protection.bot), [protection.bot]);
+  const botDraft = useServerDraft(botServerForm);
+  const botForm = botDraft.draft ?? botServerForm;
+  const setBotForm = botDraft.setDraft;
 
-  const [geoForm, setGeoForm] = useState({
-    enabled: protection.ip.geoip.enabled,
-    database: protection.ip.geoip.database,
-    precisionDatabase: protection.ip.geoip.precision_database,
-    blocked: protection.ip.geoip.blocked_countries,
-  });
-  useEffect(() => {
-    setGeoForm({
-      enabled: protection.ip.geoip.enabled,
-      database: protection.ip.geoip.database,
-      precisionDatabase: protection.ip.geoip.precision_database,
-      blocked: protection.ip.geoip.blocked_countries,
-    });
-  }, [protection.ip.geoip]);
+  const geoServerForm = useMemo(() => geoToForm(protection.ip.geoip), [protection.ip.geoip]);
+  const geoDraft = useServerDraft(geoServerForm);
+  const geoForm = geoDraft.draft ?? geoServerForm;
+  const setGeoForm = geoDraft.setDraft;
 
-  const [rateForm, setRateForm] = useState({
-    enabled: protection.ratelimit.enabled,
-    requests: protection.ratelimit.default.requests,
-    burst: protection.ratelimit.default.burst,
-  });
-  useEffect(() => {
-    setRateForm({
-      enabled: protection.ratelimit.enabled,
-      requests: protection.ratelimit.default.requests,
-      burst: protection.ratelimit.default.burst,
-    });
-  }, [protection.ratelimit]);
+  const rateServerForm = useMemo(() => rateToForm(protection.ratelimit), [protection.ratelimit]);
+  const rateDraft = useServerDraft(rateServerForm);
+  const rateForm = rateDraft.draft ?? rateServerForm;
+  const setRateForm = rateDraft.setDraft;
 
   const policyMutation = useMutation({
     mutationFn: updateProtectionPolicy,
     onSuccess: (_result, variables) => {
       const fields = Object.keys(variables) as Array<keyof typeof variables>;
       setPolicySaving((prev) => { const next = { ...prev }; for (const f of fields) delete next[f]; return next; });
-      queryClient.invalidateQueries({ queryKey: ['protection'] });
+      queryClient.setQueryData<ProtectionConfig>(['protection'], (current) => {
+        if (!current) return current;
+        return { ...current, policy: { ...current.policy, ...variables } };
+      });
     },
     onError: (mutationError, variables) => {
       const fields = Object.keys(variables) as Array<keyof typeof variables>;
@@ -251,23 +269,38 @@ export default function ProtectionPage() {
     },
   });
   const ipMutation = useMutation({
-    mutationFn: updateIPProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); toast.success(t('common.saved')); },
+    mutationFn: ({ payload }: { payload: ProtectionConfig['ip']; revision: number }) => updateIPProtection(payload),
+    onSuccess: (saved, variables) => {
+      geoDraft.markClean(geoToForm(saved.geoip), variables.revision);
+      queryClient.setQueryData<ProtectionConfig>(['protection'], (current) => current ? { ...current, ip: saved } : current);
+      toast.success(t('common.saved'));
+    },
     onError: (err) => toast.error(err instanceof Error ? err.message : t('common.requestFailed')),
   });
   const rateMutation = useMutation({
-    mutationFn: updateRateLimit,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); toast.success(t('common.saved')); },
+    mutationFn: ({ payload }: { payload: ProtectionConfig['ratelimit']; revision: number }) => updateRateLimit(payload),
+    onSuccess: (saved, variables) => {
+      rateDraft.markClean(rateToForm(saved), variables.revision);
+      queryClient.setQueryData<ProtectionConfig>(['protection'], (current) => current ? { ...current, ratelimit: saved } : current);
+      toast.success(t('common.saved'));
+    },
     onError: (err) => toast.error(err instanceof Error ? err.message : t('common.requestFailed')),
   });
   const botMutation = useMutation({
-    mutationFn: updateBotProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); toast.success(t('common.saved')); },
+    mutationFn: ({ payload }: { payload: ProtectionConfig['bot']; revision: number }) => updateBotProtection(payload),
+    onSuccess: (saved, variables) => {
+      botDraft.markClean(botToForm(saved), variables.revision);
+      queryClient.setQueryData<ProtectionConfig>(['protection'], (current) => current ? { ...current, bot: saved } : current);
+      toast.success(t('common.saved'));
+    },
     onError: (err) => toast.error(err instanceof Error ? err.message : t('common.requestFailed')),
   });
   const aclMutation = useMutation({
     mutationFn: updateACLProtection,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['protection'] }); toast.success(t('common.saved')); },
+    onSuccess: (saved) => {
+      queryClient.setQueryData<ProtectionConfig>(['protection'], (current) => current ? { ...current, acl: saved } : current);
+      toast.success(t('common.saved'));
+    },
     onError: (err) => toast.error(err instanceof Error ? err.message : t('common.requestFailed')),
   });
   const [aclDraft, setAclDraft] = useState<ACLRule | null>(null);
@@ -350,7 +383,7 @@ export default function ProtectionPage() {
   function saveBot(event: FormEvent) {
     event.preventDefault();
     const values = botForm;
-    botMutation.mutate({
+    botMutation.mutate({ payload: {
       ...protection.bot,
       enabled: values.enabled ?? protection.bot.enabled,
       js_challenge: values.jsChallenge ?? protection.bot.js_challenge,
@@ -388,12 +421,12 @@ export default function ProtectionPage() {
       exempt_path_prefixes: asArr(values.exemptPaths ?? protection.bot.exempt_path_prefixes),
       allowed_user_agents: asArr(values.allowedUA ?? protection.bot.allowed_user_agents),
       suspicious_user_agents: asArr(values.suspiciousUA ?? protection.bot.suspicious_user_agents),
-    });
+    }, revision: botDraft.getRevision() });
   }
 
   function saveGeo(event: FormEvent) {
     event.preventDefault();
-    ipMutation.mutate({
+    ipMutation.mutate({ payload: {
       ...protection.ip,
       geoip: {
         ...protection.ip.geoip,
@@ -402,19 +435,19 @@ export default function ProtectionPage() {
         precision_database: String(geoForm.precisionDatabase ?? '').trim(),
         blocked_countries: splitList(geoForm.blocked).map((item) => item.toUpperCase()),
       },
-    });
+    }, revision: geoDraft.getRevision() });
   }
 
   function saveRate(event: FormEvent) {
     event.preventDefault();
-    rateMutation.mutate({
+    rateMutation.mutate({ payload: {
       enabled: rateForm.enabled,
       default: { ...protection.ratelimit.default, requests: rateForm.requests, burst: rateForm.burst },
-    });
+    }, revision: rateDraft.getRevision() });
   }
 
   const patchBot = <K extends keyof BotFormState>(key: K, value: BotFormState[K]) => {
-    setBotForm((c) => ({ ...c, [key]: value }));
+    setBotForm((current) => ({ ...(current ?? botForm), [key]: value }));
   };
 
   if (isLoading) {
@@ -680,16 +713,16 @@ export default function ProtectionPage() {
           <form onSubmit={saveGeo}>
             <div className="protection-form-grid">
               <Field label={t('protection.geoip')}>
-                <Switch checked={geoForm.enabled} onCheckedChange={(enabled) => setGeoForm((c) => ({ ...c, enabled }))} />
+                <Switch checked={geoForm.enabled} onCheckedChange={(enabled) => setGeoForm((current) => ({ ...(current ?? geoForm), enabled }))} />
               </Field>
               <Field label={t('protection.geoipDatabase')} hint={t('protection.geoipDatabaseHint')}>
-                <Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" value={geoForm.database} onChange={(e) => setGeoForm((c) => ({ ...c, database: e.target.value }))} />
+                <Input placeholder="/var/lib/cheesewaf/GeoLite2-City.mmdb" value={geoForm.database} onChange={(e) => setGeoForm((current) => ({ ...(current ?? geoForm), database: e.target.value }))} />
               </Field>
               <Field label={t('protection.geoipPrecisionDatabase')} hint={t('protection.geoipPrecisionDatabaseHint')}>
-                <Input placeholder="/var/lib/cheesewaf/ip-precision.json" value={geoForm.precisionDatabase} onChange={(e) => setGeoForm((c) => ({ ...c, precisionDatabase: e.target.value }))} />
+                <Input placeholder="/var/lib/cheesewaf/ip-precision.json" value={geoForm.precisionDatabase} onChange={(e) => setGeoForm((current) => ({ ...(current ?? geoForm), precisionDatabase: e.target.value }))} />
               </Field>
               <Field label={t('protection.blockedCountries')} hint={t('protection.blockedCountriesHint')}>
-                <GeoRegionSelector value={geoForm.blocked} onChange={(blocked) => setGeoForm((c) => ({ ...c, blocked }))} />
+                <GeoRegionSelector value={geoForm.blocked} onChange={(blocked) => setGeoForm((current) => ({ ...(current ?? geoForm), blocked }))} />
               </Field>
             </div>
             <div className="form-action-row">
@@ -704,13 +737,13 @@ export default function ProtectionPage() {
           <form onSubmit={saveRate}>
             <div className="protection-form-grid">
               <Field label={t('common.online')}>
-                <Switch checked={rateForm.enabled} onCheckedChange={(enabled) => setRateForm((c) => ({ ...c, enabled }))} />
+                <Switch checked={rateForm.enabled} onCheckedChange={(enabled) => setRateForm((current) => ({ ...(current ?? rateForm), enabled }))} />
               </Field>
               <Field label={t('protection.requests')}>
-                <Input type="number" min={1} max={100000} value={rateForm.requests} onChange={(e) => setRateForm((c) => ({ ...c, requests: Number(e.target.value || 1) }))} />
+                <Input type="number" min={1} max={100000} value={rateForm.requests} onChange={(e) => setRateForm((current) => ({ ...(current ?? rateForm), requests: Number(e.target.value || 1) }))} />
               </Field>
               <Field label={t('protection.burst')}>
-                <Input type="number" min={0} max={10000} value={rateForm.burst} onChange={(e) => setRateForm((c) => ({ ...c, burst: Number(e.target.value || 0) }))} />
+                <Input type="number" min={0} max={10000} value={rateForm.burst} onChange={(e) => setRateForm((current) => ({ ...(current ?? rateForm), burst: Number(e.target.value || 0) }))} />
               </Field>
             </div>
             <Button type="submit" loading={rateMutation.isPending}>{t('common.save')}</Button>

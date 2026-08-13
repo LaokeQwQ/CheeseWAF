@@ -184,15 +184,15 @@ func (h *Handler) DisableUser2FA(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.TrimSpace(req.Password) == "" || strings.TrimSpace(req.Code) == "" {
-			writeError(w, http.StatusUnauthorized, "TWO_FA_REQUIRED", "current password and two-factor code are required")
+			writeError(w, http.StatusBadRequest, "TWO_FA_REQUIRED", "current password and two-factor code are required")
 			return
 		}
 		if !h.verifyCurrentCallerPassword(r, req.Password) {
-			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid current password or two-factor code")
+			writeError(w, http.StatusBadRequest, "INVALID_CREDENTIALS", "invalid current password or two-factor code")
 			return
 		}
 		if !verifyTOTP(user.TwoFASecret, req.Code, h.nowUTC()) {
-			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid current password or two-factor code")
+			writeError(w, http.StatusBadRequest, "INVALID_CREDENTIALS", "invalid current password or two-factor code")
 			return
 		}
 	}
@@ -236,7 +236,7 @@ func (h *Handler) RecoverUser2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.verifyCurrentCallerPassword(r, req.Password) || strings.TrimSpace(req.ConfirmUsername) != user.Username {
-		writeError(w, http.StatusUnauthorized, "INVALID_RECOVERY_CONFIRMATION", "invalid recovery confirmation")
+		writeError(w, http.StatusBadRequest, "INVALID_RECOVERY_CONFIRMATION", "invalid recovery confirmation")
 		return
 	}
 

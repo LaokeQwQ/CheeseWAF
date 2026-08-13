@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 )
@@ -12,7 +13,15 @@ const (
 	// SetupSessionCookie is the server-side draft binder (HttpOnly).
 	SetupSessionCookie = "cheesewaf_setup_session"
 	// DefaultDraftTTL discards incomplete drafts.
-	DefaultDraftTTL = 30 * time.Minute
+	DefaultDraftTTL  = 30 * time.Minute
+	DefaultMaxDrafts = 100
+)
+
+var (
+	// ErrDraftStoreFull is returned when max draft capacity is reached.
+	ErrDraftStoreFull = errors.New("draft store full")
+	// ErrDraftProbeInProgress prevents duplicate probe I/O for one session.
+	ErrDraftProbeInProgress = errors.New("draft probe already in progress")
 )
 
 // SetupDraft holds multi-step wizard state until final confirmation.
@@ -29,22 +38,32 @@ type SetupDraft struct {
 	PasswordSet   bool            `json:"password_set"`
 	Confirmed     bool            `json:"confirmed"`
 	password      string          // never JSON-serialized
+	probeRunning  bool
 }
 
 // DraftStore is an in-memory draft registry keyed by setup session id.
 type DraftStore struct {
-	mu    sync.Mutex
-	items map[string]*SetupDraft
-	ttl   time.Duration
-	now   func() time.Time
+	mu        sync.Mutex
+	items     map[string]*SetupDraft
+	ttl       time.Duration
+	maxDrafts int
+	now       func() time.Time
 }
 
 // NewDraftStore creates a draft store with the given TTL.
 func NewDraftStore(ttl time.Duration) *DraftStore {
+	return NewDraftStoreWithLimit(ttl, DefaultMaxDrafts)
+}
+
+// NewDraftStoreWithLimit creates a draft store with an explicit capacity.
+func NewDraftStoreWithLimit(ttl time.Duration, maxDrafts int) *DraftStore {
 	if ttl <= 0 {
 		ttl = DefaultDraftTTL
 	}
-	return &DraftStore{items: map[string]*SetupDraft{}, ttl: ttl, now: time.Now}
+	if maxDrafts <= 0 {
+		maxDrafts = DefaultMaxDrafts
+	}
+	return &DraftStore{items: map[string]*SetupDraft{}, ttl: ttl, maxDrafts: maxDrafts, now: time.Now}
 }
 
 // Create allocates a new draft and returns it.
@@ -52,6 +71,10 @@ func (s *DraftStore) Create() (*SetupDraft, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.purgeLocked()
+	// Enforce max drafts to prevent memory exhaustion from repeated probe calls
+	if len(s.items) >= s.maxDrafts {
+		return nil, ErrDraftStoreFull
+	}
 	id, err := randomDraftID()
 	if err != nil {
 		return nil, err
@@ -64,6 +87,50 @@ func (s *DraftStore) Create() (*SetupDraft, error) {
 	}
 	s.items[id] = d
 	return cloneDraft(d), nil
+}
+
+// ReserveProbe atomically reuses a completed probe, reserves an existing
+// draft, or creates and reserves a new draft.
+func (s *DraftStore) ReserveProbe(id string) (*SetupDraft, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeLocked()
+	if d := s.items[id]; d != nil {
+		if d.Probe != nil {
+			return cloneDraft(d), true, nil
+		}
+		if d.probeRunning {
+			return nil, false, ErrDraftProbeInProgress
+		}
+		d.probeRunning = true
+		return cloneDraft(d), false, nil
+	}
+	if len(s.items) >= s.maxDrafts {
+		return nil, false, ErrDraftStoreFull
+	}
+	newID, err := randomDraftID()
+	if err != nil {
+		return nil, false, err
+	}
+	now := s.now().UTC()
+	d := &SetupDraft{ID: newID, CreatedAt: now, ExpiresAt: now.Add(s.ttl), probeRunning: true}
+	s.items[newID] = d
+	return cloneDraft(d), false, nil
+}
+
+// CompleteProbe stores a reserved probe result.
+func (s *DraftStore) CompleteProbe(id string, result ProbeResult) (*SetupDraft, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeLocked()
+	d := s.items[id]
+	if d == nil || !d.probeRunning {
+		return nil, false
+	}
+	d.Probe = &result
+	d.Profile = result.Profile
+	d.probeRunning = false
+	return cloneDraft(d), true
 }
 
 // Get returns a draft by id if present and not expired.
@@ -97,6 +164,7 @@ func (s *DraftStore) Update(id string, mut func(*SetupDraft)) (*SetupDraft, bool
 func (s *DraftStore) SetPassword(id, password string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeLocked()
 	d, ok := s.items[id]
 	if !ok {
 		return false
@@ -110,6 +178,7 @@ func (s *DraftStore) SetPassword(id, password string) bool {
 func (s *DraftStore) Password(id string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeLocked()
 	d, ok := s.items[id]
 	if !ok {
 		return "", false

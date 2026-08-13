@@ -1,6 +1,8 @@
 package ip
 
 import (
+	"net/netip"
+	"sort"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -24,7 +26,9 @@ type AccessDecision struct {
 }
 
 type AccessPolicy struct {
-	rules []accessRule
+	rules    []accessRule
+	exact    map[netip.Addr][]int
+	networks prefixIndex[int]
 }
 
 type accessRule struct {
@@ -39,7 +43,7 @@ type accessRule struct {
 }
 
 func NewAccessPolicy(cfg config.IPProtectionConfig) (*AccessPolicy, error) {
-	policy := &AccessPolicy{}
+	policy := &AccessPolicy{exact: make(map[netip.Addr][]int)}
 	if len(cfg.Whitelist) > 0 {
 		rule, err := newAccessRule(config.IPAccessRuleConfig{
 			ID:      "legacy-whitelist",
@@ -52,7 +56,7 @@ func NewAccessPolicy(cfg config.IPProtectionConfig) (*AccessPolicy, error) {
 		if err != nil {
 			return nil, err
 		}
-		policy.rules = append(policy.rules, rule)
+		policy.addRule(rule)
 	}
 	if len(cfg.Blacklist) > 0 {
 		rule, err := newAccessRule(config.IPAccessRuleConfig{
@@ -66,7 +70,7 @@ func NewAccessPolicy(cfg config.IPProtectionConfig) (*AccessPolicy, error) {
 		if err != nil {
 			return nil, err
 		}
-		policy.rules = append(policy.rules, rule)
+		policy.addRule(rule)
 	}
 	for _, item := range cfg.AccessRules {
 		if !item.Enabled {
@@ -77,10 +81,21 @@ func NewAccessPolicy(cfg config.IPProtectionConfig) (*AccessPolicy, error) {
 			return nil, err
 		}
 		if rule.matcher != nil {
-			policy.rules = append(policy.rules, rule)
+			policy.addRule(rule)
 		}
 	}
 	return policy, nil
+}
+
+func (p *AccessPolicy) addRule(rule accessRule) {
+	index := len(p.rules)
+	p.rules = append(p.rules, rule)
+	for addr := range rule.matcher.ips {
+		p.exact[addr] = append(p.exact[addr], index)
+	}
+	for _, prefix := range rule.matcher.prefixes {
+		p.networks.add(prefix, index)
+	}
 }
 
 func newAccessRule(item config.IPAccessRuleConfig) (accessRule, error) {
@@ -110,8 +125,22 @@ func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
 	var blockScore int
 	var monitor AccessDecision
 	var monitorScore int
-	for _, rule := range p.rules {
-		if !rule.applies(clientIP, siteID, path) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(clientIP))
+	if err != nil {
+		return AccessDecision{Action: "none"}
+	}
+	addr = addr.Unmap()
+	indices := append([]int(nil), p.exact[addr]...)
+	indices = append(indices, p.networks.match(addr)...)
+	sort.Ints(indices)
+	previous := -1
+	for _, index := range indices {
+		if index == previous {
+			continue
+		}
+		previous = index
+		rule := p.rules[index]
+		if !rule.appliesScope(siteID, path) {
 			continue
 		}
 		decision := rule.decision()
@@ -146,10 +175,7 @@ func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
 	return AccessDecision{Action: "none"}
 }
 
-func (r accessRule) applies(clientIP, siteID, path string) bool {
-	if r.matcher == nil || !r.matcher.Contains(clientIP) {
-		return false
-	}
+func (r accessRule) appliesScope(siteID, path string) bool {
 	switch r.scope {
 	case "site":
 		return r.siteID != "" && r.siteID == siteID

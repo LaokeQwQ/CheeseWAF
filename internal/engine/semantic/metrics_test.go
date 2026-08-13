@@ -59,3 +59,14 @@ func TestMetricsConcurrentRecord(t *testing.T) {
 		t.Fatalf("blocked=%d passed=%d", s.Blocked, s.Passed)
 	}
 }
+
+func TestMetricsResetClearsAllowlistCounters(t *testing.T) {
+	m := NewMetrics()
+	m.RecordAllowlistSkip("path")
+	m.RecordAllowlistSkip("param")
+	m.ResetForTest()
+	s := m.Snapshot()
+	if s.AllowlistPathSkips != 0 || s.AllowlistParamSkips != 0 {
+		t.Fatalf("allowlist counters survived reset: path=%d param=%d", s.AllowlistPathSkips, s.AllowlistParamSkips)
+	}
+}

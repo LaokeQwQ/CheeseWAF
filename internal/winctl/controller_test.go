@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -112,6 +113,35 @@ func TestLocalOnlyAllowsLoopbackOriginOnPOST(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+}
+
+func TestLocalOnlyRejectsControlTokenInQuery(t *testing.T) {
+	c := testController(t)
+	h := withLocalOnly(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/start?token="+c.ControlToken(), nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+	req.Header.Set("Origin", "http://127.0.0.1:17943")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestAutostartRejectsOversizedJSONBody(t *testing.T) {
+	c := testController(t)
+	payload := `{"enabled":true,"padding":"` + strings.Repeat("x", 8<<10) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/autostart", strings.NewReader(payload))
+	req.RemoteAddr = "127.0.0.1:9999"
+	req.Header.Set("Origin", "http://127.0.0.1:17943")
+	req.Header.Set("X-CheeseWAF-Control-Token", c.ControlToken())
+	rec := httptest.NewRecorder()
+	withLocalOnly(c, http.HandlerFunc(c.handleAutostart)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
 

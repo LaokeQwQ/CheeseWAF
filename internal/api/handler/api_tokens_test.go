@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,6 +41,9 @@ func TestManagementAPITokenCreateAndRevokePersistTransactionally(t *testing.T) {
 	if created.Name != "deploy" || created.Hash == "" || created.ExpiresAt.IsZero() {
 		t.Fatalf("unexpected created token: %+v", created)
 	}
+	if !strings.HasPrefix(created.Hash, "sha256:") {
+		t.Fatalf("created token hash = %q, want sha256", created.Hash)
+	}
 	if !created.CreatedAt.Equal(now) || !created.UpdatedAt.Equal(now) || !created.ExpiresAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("created token timestamps = created:%v updated:%v expires:%v, want %v/%v/%v", created.CreatedAt, created.UpdatedAt, created.ExpiresAt, now, now, now.Add(time.Hour))
 	}
@@ -71,6 +75,62 @@ func TestManagementAPITokenCreateAndRevokePersistTransactionally(t *testing.T) {
 	}
 	if persisted.APISec.ManagementAPI.Tokens[0].Enabled || persisted.APISec.ManagementAPI.Tokens[0].RevokedAt.IsZero() {
 		t.Fatalf("revoked token was not persisted: %+v", persisted.APISec.ManagementAPI.Tokens[0])
+	}
+}
+
+func TestManagementAPITokenAuthenticationDoesNotHoldConfigLockAcrossHandler(t *testing.T) {
+	cfg := config.Default()
+	cfg.APISec.ManagementAPI.Enabled = true
+	raw := "cwapi_write_system_fixture"
+	cfg.APISec.ManagementAPI.Tokens = []config.ManagementAPITokenConfig{{
+		ID: "write-system", Name: "write system", Prefix: "cwapi_write_system",
+		Hash: middleware.HashManagementAPIToken(raw), Scopes: []string{"write:system"}, Enabled: true,
+	}}
+	h := New(Options{Config: &cfg})
+	wrapped := middleware.ManagementAPIOrSessionMiddleware(nil, nil, h.AuthenticateManagementAPIToken)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := h.commitConfigMutation(func(*config.Config) error { return nil }, nil); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodPut, "/api/system", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		wrapped.ServeHTTP(recorder, req)
+		done <- recorder
+	}()
+	select {
+	case recorder := <-done:
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("write handler returned %d: %s", recorder.Code, recorder.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("management-token write handler deadlocked on the configuration lock")
+	}
+}
+
+func TestCreateManagementAPITokenRejectsActiveCapacity(t *testing.T) {
+	cfg := config.Default()
+	cfg.APISec.ManagementAPI.Enabled = true
+	for idx := 0; idx < config.MaxActiveManagementAPITokens; idx++ {
+		raw := fmt.Sprintf("cwapi_capacity_%04d_secret", idx)
+		cfg.APISec.ManagementAPI.Tokens = append(cfg.APISec.ManagementAPI.Tokens, config.ManagementAPITokenConfig{
+			ID: fmt.Sprintf("token-%d", idx), Name: fmt.Sprintf("token-%d", idx), Prefix: raw[:18],
+			Hash: middleware.HashManagementAPIToken(raw), Scopes: []string{"read:system"}, Enabled: true,
+		})
+	}
+	h := New(Options{Config: &cfg})
+	recorder := httptest.NewRecorder()
+	h.CreateManagementAPIToken(recorder, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", `{"name":"overflow","scopes":["read:system"]}`))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "API_TOKEN_CAPACITY") {
+		t.Fatalf("expected capacity error, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := len(cfg.APISec.ManagementAPI.Tokens); got != config.MaxActiveManagementAPITokens {
+		t.Fatalf("capacity failure mutated tokens: %d", got)
 	}
 }
 

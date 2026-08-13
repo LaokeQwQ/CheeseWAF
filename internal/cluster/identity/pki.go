@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -112,17 +111,20 @@ type NodeCertificateRotation struct {
 }
 
 type MemoryIdentityService struct {
-	mu        sync.Mutex
-	clock     Clock
-	clusterID string
-	statePath string
-	caKey     *ecdsa.PrivateKey
-	caCert    *x509.Certificate
-	caDER     []byte
-	tokens    map[string]*JoinToken
-	nodes     map[string]*NodeRegistration
-	revoked   map[string]string
+	mu           sync.Mutex
+	clock        Clock
+	clusterID    string
+	statePath    string
+	caKey        *ecdsa.PrivateKey
+	caCert       *x509.Certificate
+	caDER        []byte
+	tokens       map[string]*JoinToken
+	tokensByHash map[string]*JoinToken
+	nodes        map[string]*NodeRegistration
+	revoked      map[string]string
 }
+
+const maxJoinTokens = 1024
 
 func NewMemoryIdentityService(opts ServiceOptions) (*MemoryIdentityService, error) {
 	clock := opts.Clock
@@ -155,15 +157,16 @@ func NewMemoryIdentityService(opts ServiceOptions) (*MemoryIdentityService, erro
 		return nil, err
 	}
 	svc := &MemoryIdentityService{
-		clock:     clock,
-		clusterID: clusterID,
-		statePath: strings.TrimSpace(opts.StatePath),
-		caKey:     key,
-		caCert:    cert,
-		caDER:     caDER,
-		tokens:    map[string]*JoinToken{},
-		nodes:     map[string]*NodeRegistration{},
-		revoked:   map[string]string{},
+		clock:        clock,
+		clusterID:    clusterID,
+		statePath:    strings.TrimSpace(opts.StatePath),
+		caKey:        key,
+		caCert:       cert,
+		caDER:        caDER,
+		tokens:       map[string]*JoinToken{},
+		tokensByHash: map[string]*JoinToken{},
+		nodes:        map[string]*NodeRegistration{},
+		revoked:      map[string]string{},
 	}
 	if err := svc.loadState(); err != nil {
 		return nil, err
@@ -206,11 +209,17 @@ func (s *MemoryIdentityService) CreateJoinToken(role string, ttl time.Duration, 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneJoinTokensLocked(now)
+	if len(s.tokens) >= maxJoinTokens {
+		return JoinToken{}, fmt.Errorf("join token limit reached; revoke or wait for expired tokens")
+	}
 	stored := *token
 	stored.Value = ""
 	s.tokens[token.ID] = &stored
+	s.tokensByHash[token.Hash] = &stored
 	if err := s.saveStateLocked(); err != nil {
 		delete(s.tokens, token.ID)
+		delete(s.tokensByHash, token.Hash)
 		return JoinToken{}, err
 	}
 	return *token, nil
@@ -242,6 +251,7 @@ func (s *MemoryIdentityService) ValidateJoinToken(value string, expectedRole str
 func (s *MemoryIdentityService) ListJoinTokens() []JoinToken {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneJoinTokensLocked(s.clock.Now())
 	tokens := make([]JoinToken, 0, len(s.tokens))
 	for _, token := range s.tokens {
 		next := *token
@@ -464,7 +474,21 @@ func (s *MemoryIdentityService) RevokeJoinToken(id string) error {
 		return fmt.Errorf("join token not found")
 	}
 	token.Revoked = true
+	delete(s.tokensByHash, token.Hash)
 	return s.saveStateLocked()
+}
+
+func (s *MemoryIdentityService) pruneJoinTokensLocked(now time.Time) {
+	for id, token := range s.tokens {
+		if token == nil {
+			delete(s.tokens, id)
+			continue
+		}
+		if token.Revoked || !token.ExpiresAt.After(now) {
+			delete(s.tokens, id)
+			delete(s.tokensByHash, token.Hash)
+		}
+	}
 }
 
 func (s *MemoryIdentityService) IssueNodeCertificate(identity NodeIdentity) (*x509.Certificate, error) {
@@ -617,6 +641,7 @@ func (s *MemoryIdentityService) loadState() error {
 		return err
 	}
 	s.tokens = map[string]*JoinToken{}
+	s.tokensByHash = map[string]*JoinToken{}
 	for i := range state.Tokens {
 		token := state.Tokens[i]
 		token.Value = ""
@@ -624,6 +649,9 @@ func (s *MemoryIdentityService) loadState() error {
 			continue
 		}
 		s.tokens[token.ID] = &token
+		if !token.Revoked {
+			s.tokensByHash[token.Hash] = &token
+		}
 	}
 	s.nodes = map[string]*NodeRegistration{}
 	for i := range state.Nodes {
@@ -790,25 +818,24 @@ func (s *MemoryIdentityService) consumeJoinTokenLocked(hash string, expectedRole
 }
 
 func (s *MemoryIdentityService) validateJoinTokenLocked(hash string, expectedRole string) (*JoinToken, error) {
-	for _, token := range s.tokens {
-		if subtle.ConstantTimeCompare([]byte(token.Hash), []byte(hash)) != 1 {
-			continue
-		}
-		if token.Revoked {
-			return nil, fmt.Errorf("join token revoked")
-		}
-		if !s.clock.Now().Before(token.ExpiresAt) {
-			return nil, fmt.Errorf("join token expired")
-		}
-		if token.UsedCount >= token.MaxUses {
-			return nil, fmt.Errorf("join token already used")
-		}
-		if expectedRole != "" && token.Role != expectedRole {
-			return nil, fmt.Errorf("join token role %q cannot enroll %q node", token.Role, expectedRole)
-		}
-		return token, nil
+	// Use hash map lookup instead of O(n) iteration for token validation
+	token, exists := s.tokensByHash[hash]
+	if !exists {
+		return nil, fmt.Errorf("join token not found")
 	}
-	return nil, fmt.Errorf("join token not found")
+	if token.Revoked {
+		return nil, fmt.Errorf("join token revoked")
+	}
+	if !s.clock.Now().Before(token.ExpiresAt) {
+		return nil, fmt.Errorf("join token expired")
+	}
+	if token.UsedCount >= token.MaxUses {
+		return nil, fmt.Errorf("join token already used")
+	}
+	if expectedRole != "" && token.Role != expectedRole {
+		return nil, fmt.Errorf("join token role %q cannot enroll %q node", token.Role, expectedRole)
+	}
+	return token, nil
 }
 
 func enforcePOSIXPrivateMode() bool {

@@ -8,7 +8,9 @@ import {
   fetchAIApprovals,
   analyzeEventsStream,
   analyzeLogReferenceStream,
+  getCSRFToken,
   handleUnauthorizedAuthFailure,
+  isSessionInvalidAuthFailure,
   fetchHealth,
   fetchTimeSyncStatus,
   issueCaptchaLabChallenge,
@@ -16,10 +18,13 @@ import {
   syncTimeNow,
   verifyCaptchaLabChallenge,
   clearNotifications,
+	setupAdmin,
   fetchNotifications,
   markAllNotificationsRead,
+  logout,
   resetAuthRedirectStateForTest,
   sanitizeInternalReturnPath,
+  setCSRFToken,
   setAuthRedirectLocationForTest,
   updateNotification,
 } from './client';
@@ -47,6 +52,55 @@ describe('CAPTCHA Lab API cancellation', () => {
 
     expect(post).toHaveBeenCalledWith('/captcha/lab/verify', response, { signal: controller.signal });
   });
+});
+
+describe('first-install setup token', () => {
+	let originalAdapter: typeof apiClient.defaults.adapter;
+
+	beforeEach(() => {
+		sessionStorage.clear();
+		window.history.replaceState({}, '', '/setup');
+		originalAdapter = apiClient.defaults.adapter;
+	});
+
+	afterEach(() => {
+		sessionStorage.clear();
+		window.history.replaceState({}, '', '/');
+		apiClient.defaults.adapter = originalAdapter;
+		vi.restoreAllMocks();
+	});
+
+	it('moves the fragment token into session storage and sends it only on setup mutations', async () => {
+		window.history.replaceState({}, '', '/setup#setup_token=fragment-secret');
+		const seenHeaders: Array<string | undefined> = [];
+		const adapter = vi.fn(async (config) => {
+			seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
+			return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
+		});
+
+		await apiClient.post('/setup/probe', {}, { adapter });
+		await apiClient.post('/users/user-1/2fa/setup', {}, { adapter });
+
+		expect(seenHeaders).toEqual(['fragment-secret', undefined]);
+		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBe('fragment-secret');
+		expect(window.location.hash).toBe('');
+	});
+
+	it('clears the setup token only after setup completes successfully', async () => {
+		window.history.replaceState({}, '', '/setup#setup_token=one-time-secret');
+		const adapter = vi.fn(async (config) => ({
+			data: { data: { user: { username: 'admin', role: 'admin' } } },
+			status: 200,
+			statusText: 'OK',
+			headers: {},
+			config,
+		}));
+		apiClient.defaults.adapter = adapter;
+
+		await setupAdmin('admin', 'Correct-Horse-9x!', '127.0.0.1:9443');
+
+		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBeNull();
+	});
 });
 
 describe('time synchronization API', () => {
@@ -113,6 +167,7 @@ describe('authenticated fetch 401 handling', () => {
 
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     resetAuthRedirectStateForTest();
     setAuthRedirectLocationForTest({ pathname: '/ai', assign });
     assign.mockClear();
@@ -122,6 +177,7 @@ describe('authenticated fetch 401 handling', () => {
     vi.restoreAllMocks();
     resetAuthRedirectStateForTest();
     localStorage.clear();
+    sessionStorage.clear();
   });
 
   it('clears legacy token, React Query cache, and schedules only one login redirect', () => {
@@ -163,6 +219,29 @@ describe('authenticated fetch 401 handling', () => {
     expect(assign).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves the active session for business credential failures', async () => {
+    localStorage.setItem('cheesewaf-token', 'token');
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'INVALID_CREDENTIALS', message: 'invalid current password' },
+    }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    await expect(analyzeLogReferenceStream('trace-1')).rejects.toMatchObject({ status: 401, code: 'INVALID_CREDENTIALS' });
+
+    expect(localStorage.getItem('cheesewaf-token')).toBe('token');
+    expect(sessionStorage.getItem('cheesewaf-authed')).toBe('1');
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('recognizes only canonical 401 session failures', () => {
+    expect(isSessionInvalidAuthFailure(new APIRequestError('expired', 'UNAUTHORIZED', 401))).toBe(true);
+    expect(isSessionInvalidAuthFailure(new APIRequestError('bad password', 'INVALID_CREDENTIALS', 401))).toBe(false);
+    expect(isSessionInvalidAuthFailure(new APIRequestError('server error', 'UNAUTHORIZED', 500))).toBe(false);
+  });
+
   it('does not publish batch items when the SSE stream ends without done', async () => {
     const encoder = new TextEncoder();
     const item = { log_id: 'log-1', risk: 'high', summary: 'partial', evidence: [], event_type: 'sqli', ai_used: true, recommended_actions: [] };
@@ -176,6 +255,45 @@ describe('authenticated fetch 401 handling', () => {
 
     await expect(analyzeEventsStream({ limit: 10 }, onItem)).rejects.toMatchObject({ code: 'AI_EVENTS_ANALYSIS_STREAM_INCOMPLETE' });
     expect(onItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('logout state contract', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    sessionStorage.clear();
+    localStorage.clear();
+    setCSRFToken('');
+  });
+
+  it('clears local session state only after server confirmation', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    sessionStorage.setItem('cheesewaf-account', '{"username":"admin"}');
+    localStorage.setItem('cheesewaf-token', 'legacy');
+    setCSRFToken('csrf-token');
+    vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { data: { revoked: true } } });
+
+    await expect(logout()).resolves.toEqual({ revoked: true });
+
+    expect(sessionStorage.getItem('cheesewaf-authed')).toBeNull();
+    expect(sessionStorage.getItem('cheesewaf-account')).toBeNull();
+    expect(localStorage.getItem('cheesewaf-token')).toBeNull();
+    expect(getCSRFToken()).toBe('');
+  });
+
+  it('retains local session state when logout cannot reach the server', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    sessionStorage.setItem('cheesewaf-account', '{"username":"admin"}');
+    localStorage.setItem('cheesewaf-token', 'legacy');
+    setCSRFToken('csrf-token');
+    vi.spyOn(apiClient, 'post').mockRejectedValue(new Error('offline'));
+
+    await expect(logout()).rejects.toThrow('offline');
+
+    expect(sessionStorage.getItem('cheesewaf-authed')).toBe('1');
+    expect(sessionStorage.getItem('cheesewaf-account')).toBe('{"username":"admin"}');
+    expect(localStorage.getItem('cheesewaf-token')).toBe('legacy');
+    expect(getCSRFToken()).toBe('csrf-token');
   });
 });
 

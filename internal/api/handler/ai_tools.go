@@ -84,7 +84,10 @@ func (h *Handler) canDecideAIApproval(r *http.Request, id string) bool {
 	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
 		permissions = h.Config.APISec.Permissions
 	}
-	self := approval.RequesterSubject == actor.Subject && approval.RequesterSessionID == actor.SessionID && actor.Subject != ""
+	// Dual control is person-bound, not session-bound. Treat a second login by
+	// the requester as self-approval too; otherwise a user with approve:ai could
+	// create an approval in one session and approve it from another.
+	self := approval.RequesterSubject != "" && approval.RequesterSubject == actor.Subject
 	// Modify/Destructive tools require a second person with approve:ai — never self-approve.
 	if approval.Sensitivity >= ai.Modify {
 		if self {

@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -55,5 +56,24 @@ func TestDraftStoreLifecycle(t *testing.T) {
 	s.Delete(d.ID)
 	if _, ok := s.Get(d.ID); ok {
 		t.Fatal("expected deleted")
+	}
+}
+
+func TestDraftStoreProbeReservationDeduplicatesConcurrentWork(t *testing.T) {
+	store := NewDraftStoreWithLimit(time.Minute, 1)
+	draft, cached, err := store.ReserveProbe("")
+	if err != nil || cached {
+		t.Fatalf("first reservation = draft=%+v cached=%v err=%v", draft, cached, err)
+	}
+	if _, _, err := store.ReserveProbe(draft.ID); !errors.Is(err, ErrDraftProbeInProgress) {
+		t.Fatalf("second reservation error = %v", err)
+	}
+	result := ProbeResult{Profile: ProfileLow}
+	if _, ok := store.CompleteProbe(draft.ID, result); !ok {
+		t.Fatal("reserved probe could not be completed")
+	}
+	completed, cached, err := store.ReserveProbe(draft.ID)
+	if err != nil || !cached || completed.Probe == nil || completed.Probe.Profile != ProfileLow {
+		t.Fatalf("completed reservation = draft=%+v cached=%v err=%v", completed, cached, err)
 	}
 }

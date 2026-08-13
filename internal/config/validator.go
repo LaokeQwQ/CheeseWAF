@@ -9,11 +9,21 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
+)
+
+const (
+	maxTrustedProxyCIDRs  = 1024
+	minFileLogSizeBytes   = 1 << 10
+	maxFileLogSizeBytes   = 1 << 40
+	maxFileLogBackupCount = 100
 )
 
 func Validate(cfg *Config) error {
@@ -94,6 +104,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	if err := validateACME(cfg.ACME); err != nil {
+		return err
+	}
+	if err := validateFileLogging(cfg.Logging); err != nil {
 		return err
 	}
 	if cfg.Storage.ClickHouse.Enabled {
@@ -184,9 +197,31 @@ func Validate(cfg *Config) error {
 			if strings.TrimSpace(upstream.Address) == "" {
 				return fmt.Errorf("site %q has an empty upstream address", site.Name)
 			}
+			// Limit upstream weight to prevent OOM from weighted round-robin expansion
+			if upstream.Weight < 0 {
+				return fmt.Errorf("site %q upstream %q has negative weight %d", site.Name, upstream.Address, upstream.Weight)
+			}
+			if upstream.Weight > 1000 {
+				return fmt.Errorf("site %q upstream %q weight %d exceeds maximum 1000", site.Name, upstream.Address, upstream.Weight)
+			}
+		}
+		// Prevent total weighted expansion from exceeding reasonable memory bounds
+		totalWeight := 0
+		for _, upstream := range site.Upstreams {
+			weight := upstream.Weight
+			if weight <= 0 {
+				weight = 1
+			}
+			totalWeight += weight
+		}
+		if totalWeight > 10000 {
+			return fmt.Errorf("site %q total upstream weight %d exceeds maximum 10000", site.Name, totalWeight)
 		}
 		if site.WAF.Mode != "" && site.WAF.Mode != "block" && site.WAF.Mode != "monitor" && site.WAF.Mode != "off" {
 			return fmt.Errorf("site %q has invalid waf.mode %q", site.Name, site.WAF.Mode)
+		}
+		if site.WAF.ParanoiaLevel < 0 || site.WAF.ParanoiaLevel > 4 {
+			return fmt.Errorf("site %q waf.paranoia_level must be between 0 and 4", site.Name)
 		}
 		if site.WAF.Performance.MaxBodyBytes < 0 {
 			return fmt.Errorf("site %q waf.performance.max_body_bytes must be non-negative", site.Name)
@@ -234,9 +269,48 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("site %q has invalid rewrite rule %q: %w", site.Name, rewrite.ID, err)
 			}
 		}
+		trustedProxyCount := len(site.WAF.AccessControl.TrustedCIDRs)
+		if trustedProxyCount > maxTrustedProxyCIDRs {
+			return fmt.Errorf("site %q has %d trusted proxy CIDRs; maximum is %d", site.Name, trustedProxyCount, maxTrustedProxyCIDRs)
+		}
 		for _, cidr := range site.WAF.AccessControl.TrustedCIDRs {
+			if strings.TrimSpace(cidr) == "" {
+				return fmt.Errorf("site %q has empty trusted_cidrs entry", site.Name)
+			}
 			if err := validateIPEntry(cidr); err != nil {
 				return fmt.Errorf("site %q has invalid trusted_cidrs entry %q: %w", site.Name, cidr, err)
+			}
+		}
+		providerNames := make([]string, 0, len(site.WAF.AccessControl.TrustedProxyProviders))
+		for provider := range site.WAF.AccessControl.TrustedProxyProviders {
+			providerNames = append(providerNames, provider)
+		}
+		sort.Strings(providerNames)
+		canonicalProviders := make(map[string]string, len(providerNames))
+		for _, provider := range providerNames {
+			canonical, ok := proxytrust.CanonicalProvider(provider)
+			if !ok {
+				return fmt.Errorf("site %q has unsupported trusted proxy provider %q (supported: %s)", site.Name, provider, strings.Join(proxytrust.ProviderNamesSorted(), ", "))
+			}
+			if previous, exists := canonicalProviders[canonical]; exists {
+				return fmt.Errorf("site %q configures trusted proxy provider %q more than once (%q and %q)", site.Name, canonical, previous, provider)
+			}
+			canonicalProviders[canonical] = provider
+			cidrs := site.WAF.AccessControl.TrustedProxyProviders[provider]
+			if len(cidrs) == 0 {
+				return fmt.Errorf("site %q trusted proxy provider %q must define at least one CIDR", site.Name, provider)
+			}
+			trustedProxyCount += len(cidrs)
+			if trustedProxyCount > maxTrustedProxyCIDRs {
+				return fmt.Errorf("site %q has %d total trusted proxy CIDRs; maximum is %d", site.Name, trustedProxyCount, maxTrustedProxyCIDRs)
+			}
+			for _, cidr := range cidrs {
+				if strings.TrimSpace(cidr) == "" {
+					return fmt.Errorf("site %q trusted proxy provider %q has an empty CIDR entry", site.Name, provider)
+				}
+				if err := validateIPEntry(cidr); err != nil {
+					return fmt.Errorf("site %q trusted proxy provider %q has invalid CIDR %q: %w", site.Name, provider, cidr, err)
+				}
 			}
 		}
 	}
@@ -373,6 +447,10 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("monitor.prometheus.path %q conflicts with protected admin routes", path)
 		}
 	}
+	monitorCollectionEnabled := cfg.Monitor.RemoteWrite.Enabled || cfg.Monitor.Alerts.Enabled
+	if monitorCollectionEnabled && cfg.Monitor.RemoteWrite.Interval > 0 && cfg.Monitor.RemoteWrite.Interval < time.Minute {
+		return fmt.Errorf("monitor.remote_write.interval must be at least 1 minute when remote write or alerts are enabled")
+	}
 	if cfg.Monitor.RemoteWrite.Enabled {
 		if strings.TrimSpace(cfg.Monitor.RemoteWrite.Endpoint) == "" {
 			return fmt.Errorf("monitor.remote_write.endpoint is required when remote write is enabled")
@@ -425,6 +503,11 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("scheduled task %q target is invalid: %w", normalized.ID, err)
 			}
 		}
+		if strings.EqualFold(strings.TrimSpace(normalized.Type), "backup") {
+			if err := validateDedicatedManagedPath(normalized.Target, filepath.Join(cfg.Setup.DataDir, "backups")); err != nil {
+				return fmt.Errorf("scheduled task %q target is invalid: %w", normalized.ID, err)
+			}
+		}
 	}
 	for _, schema := range cfg.APISec.Validation.Schemas {
 		if !schema.Enabled {
@@ -466,6 +549,11 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("api auth jwks_refresh_interval must be at least 1m")
 			}
 		}
+		if cacheFile := strings.TrimSpace(cfg.APISec.Auth.JWKSCacheFile); cacheFile != "" {
+			if err := validateDedicatedManagedPath(cacheFile, filepath.Join(cfg.Setup.DataDir, "apisec")); err != nil {
+				return fmt.Errorf("api auth jwks_cache_file is invalid: %w", err)
+			}
+		}
 		// Fail closed: auth enabled without verification material is an auth bypass.
 		if strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSURL) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSCacheFile) == "" {
 			return fmt.Errorf("api auth enabled requires jwt_shared_secret, jwt_public_key_file, jwt_public_key_pem, jwks_file, jwks_json, jwks_url, or jwks_cache_file")
@@ -493,6 +581,79 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	return nil
+}
+
+func validateFileLogging(logging LoggingConfig) error {
+	outputType := strings.ToLower(strings.TrimSpace(logging.Output.Type))
+	if outputType == "" {
+		outputType = "file"
+	}
+	if outputType != "file" {
+		return fmt.Errorf("logging.output.type must be file")
+	}
+	file := logging.Output.File
+	if strings.TrimSpace(file.Path) == "" {
+		return fmt.Errorf("logging.output.file.path is required")
+	}
+	maxSize, err := ParseFileLogSize(file.MaxSize)
+	if err != nil {
+		return fmt.Errorf("logging.output.file.max_size is invalid: %w", err)
+	}
+	if maxSize < minFileLogSizeBytes || maxSize > maxFileLogSizeBytes {
+		return fmt.Errorf("logging.output.file.max_size must be between 1KiB and 1TiB")
+	}
+	if file.MaxBackups < 0 || file.MaxBackups > maxFileLogBackupCount {
+		return fmt.Errorf("logging.output.file.max_backups must be between 0 and %d", maxFileLogBackupCount)
+	}
+	return nil
+}
+
+// ParseFileLogSize parses binary byte units used by logging.output.file.max_size.
+// KB/MB/GB/TB and KiB/MiB/GiB/TiB are treated as powers of 1024.
+func ParseFileLogSize(raw string) (int64, error) {
+	value := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(raw), " ", ""))
+	if value == "" {
+		return 0, fmt.Errorf("size is required")
+	}
+	units := []struct {
+		suffix     string
+		multiplier int64
+	}{
+		{suffix: "TIB", multiplier: 1 << 40},
+		{suffix: "TB", multiplier: 1 << 40},
+		{suffix: "GIB", multiplier: 1 << 30},
+		{suffix: "GB", multiplier: 1 << 30},
+		{suffix: "MIB", multiplier: 1 << 20},
+		{suffix: "MB", multiplier: 1 << 20},
+		{suffix: "KIB", multiplier: 1 << 10},
+		{suffix: "KB", multiplier: 1 << 10},
+		{suffix: "B", multiplier: 1},
+	}
+	multiplier := int64(1)
+	for _, unit := range units {
+		if strings.HasSuffix(value, unit.suffix) {
+			value = strings.TrimSuffix(value, unit.suffix)
+			multiplier = unit.multiplier
+			break
+		}
+	}
+	if value == "" {
+		return 0, fmt.Errorf("size must include a positive integer")
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return 0, fmt.Errorf("size must be a positive integer followed by B, KB, MB, GB, or TB")
+		}
+	}
+	number, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || number <= 0 {
+		return 0, fmt.Errorf("size must be a positive integer")
+	}
+	const maxInt64 = int64(^uint64(0) >> 1)
+	if number > maxInt64/multiplier {
+		return 0, fmt.Errorf("size overflows int64")
+	}
+	return number * multiplier, nil
 }
 
 const (
@@ -646,6 +807,15 @@ func validateCAPTCHAAssets(cfg CAPTCHAAssetsConfig) error {
 	if cfg.Limits.MaxPixels < 1_000_000 || cfg.Limits.MaxPixels > 64_000_000 {
 		return fmt.Errorf("captcha_assets.limits.max_pixels must be between 1000000 and 64000000")
 	}
+	if cfg.Limits.MaxAssets < 1 || cfg.Limits.MaxAssets > 4_096 {
+		return fmt.Errorf("captcha_assets.limits.max_assets must be between 1 and 4096")
+	}
+	if cfg.Limits.MaxTotalBytes < 64<<10 || cfg.Limits.MaxTotalBytes > 64<<30 {
+		return fmt.Errorf("captcha_assets.limits.max_total_bytes must be between 64KiB and 64GiB")
+	}
+	if cfg.Limits.MaxTotalBytes < cfg.Limits.MaxImageBytes || cfg.Limits.MaxTotalBytes < cfg.Limits.MaxFontBytes {
+		return fmt.Errorf("captcha_assets.limits.max_total_bytes must be at least the per-file byte limits")
+	}
 	if strings.EqualFold(cfg.Backend, "local") && strings.TrimSpace(cfg.Local.Path) == "" {
 		return fmt.Errorf("captcha_assets.local.path is required")
 	}
@@ -708,8 +878,45 @@ func validateManagedSchedulerPath(target string, roots ...string) error {
 	return fmt.Errorf("must be inside the configured data or log directory")
 }
 
+func validateDedicatedManagedPath(target, root string) error {
+	target = strings.TrimSpace(target)
+	root = strings.TrimSpace(root)
+	if target == "" {
+		return nil
+	}
+	if root == "" {
+		return fmt.Errorf("managed root is not configured")
+	}
+	rootAbs, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return fmt.Errorf("resolve managed root: %w", err)
+	}
+	targetPath := filepath.Clean(target)
+	if !filepath.IsAbs(targetPath) {
+		candidateAbs, absErr := filepath.Abs(targetPath)
+		if absErr == nil {
+			if rel, relErr := filepath.Rel(rootAbs, candidateAbs); relErr == nil && (rel == "." || filepath.IsLocal(rel)) {
+				targetPath = candidateAbs
+			} else if filepath.IsLocal(targetPath) {
+				targetPath = filepath.Join(rootAbs, targetPath)
+			}
+		}
+	}
+	if filepath.Clean(targetPath) == rootAbs {
+		return nil
+	}
+	if _, err := fsguard.RelUnderRoot(rootAbs, targetPath); err != nil {
+		return fmt.Errorf("must be inside %q: %w", rootAbs, err)
+	}
+	return nil
+}
+
 func validateManagementAPI(api ManagementAPIConfig) error {
+	if len(api.Tokens) > MaxManagementAPITokens {
+		return fmt.Errorf("management api tokens exceed maximum of %d", MaxManagementAPITokens)
+	}
 	seen := map[string]struct{}{}
+	seenPrefixes := map[string]struct{}{}
 	for _, token := range api.Tokens {
 		id := strings.TrimSpace(token.ID)
 		if id == "" {
@@ -719,6 +926,14 @@ func validateManagementAPI(api ManagementAPIConfig) error {
 			return fmt.Errorf("management api token %q is duplicated", id)
 		}
 		seen[id] = struct{}{}
+		prefix := strings.TrimSpace(token.Prefix)
+		if len(prefix) < len("cwapi_")+4 {
+			return fmt.Errorf("management api token %q prefix is too short", id)
+		}
+		if _, ok := seenPrefixes[prefix]; ok {
+			return fmt.Errorf("management api token prefix %q is duplicated", prefix)
+		}
+		seenPrefixes[prefix] = struct{}{}
 		if strings.TrimSpace(token.Name) == "" {
 			return fmt.Errorf("management api token %q name is required", id)
 		}
