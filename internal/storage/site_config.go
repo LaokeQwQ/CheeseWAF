@@ -12,18 +12,19 @@ func SiteFromConfig(site config.SiteConfig) Site {
 		upstreams = append(upstreams, upstream.Address)
 	}
 	return Site{
-		ID:          site.ID,
-		Name:        site.Name,
-		Domains:     site.Domains,
-		Upstreams:   upstreams,
-		ListenPort:  site.ListenPort,
-		LoadBalance: site.LoadBalance,
-		EnableSSL:   site.EnableSSL,
-		CertFile:    site.CertFile,
-		KeyFile:     site.KeyFile,
-		WAFEnabled:  site.WAF.Enabled,
-		WAFMode:     site.WAF.Mode,
-		Enabled:     site.Enabled,
+		ID:            site.ID,
+		Name:          site.Name,
+		Domains:       site.Domains,
+		Upstreams:     upstreams,
+		ListenPort:    site.ListenPort,
+		LoadBalance:   site.LoadBalance,
+		EnableSSL:     site.EnableSSL,
+		CertFile:      site.CertFile,
+		KeyFile:       site.KeyFile,
+		WAFEnabled:    site.WAF.Enabled,
+		WAFMode:       site.WAF.Mode,
+		ParanoiaLevel: site.WAF.ParanoiaLevel,
+		Enabled:       site.Enabled,
 		Advanced: SiteAdvanced{
 			Certificate: CertificateConfig{
 				Mode:          site.Certificate.Mode,
@@ -148,6 +149,7 @@ func SiteToConfig(site Site) config.SiteConfig {
 		WAF: config.WAFConfig{
 			Enabled:          site.WAFEnabled,
 			Mode:             mode,
+			ParanoiaLevel:    site.ParanoiaLevel,
 			AccessLogEnabled: cloneBoolPtr(site.Advanced.AccessLogEnabled),
 			SemanticEngines: config.SemanticEngineSwitches{
 				SQL:   site.Advanced.Protection.SemanticSQL,

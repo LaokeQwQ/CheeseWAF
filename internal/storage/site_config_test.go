@@ -15,8 +15,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 		Domains:   []string{"example.test"},
 		Upstreams: []config.UpstreamConfig{{Address: "127.0.0.1:9000", Weight: 1}},
 		WAF: config.WAFConfig{
-			Enabled: true,
-			Mode:    "block",
+			Enabled:       true,
+			Mode:          "block",
+			ParanoiaLevel: 3,
 			SemanticEngines: config.SemanticEngineSwitches{
 				NoSQL: true,
 				SSTI:  true,
@@ -35,6 +36,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	if !site.Advanced.Protection.SemanticSSTI {
 		t.Fatalf("expected storage site to preserve SSTI semantic switch: %+v", site.Advanced.Protection)
 	}
+	if site.ParanoiaLevel != 3 {
+		t.Fatalf("expected storage site to preserve paranoia level 3, got %d", site.ParanoiaLevel)
+	}
 	if site.Advanced.SemanticPolicy.BudgetExhaustedPolicy != "closed" {
 		t.Fatalf("expected budget policy closed, got %+v", site.Advanced.SemanticPolicy)
 	}
@@ -47,6 +51,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	}
 	if !converted.WAF.SemanticEngines.SSTI {
 		t.Fatalf("expected config site to preserve SSTI semantic switch: %+v", converted.WAF.SemanticEngines)
+	}
+	if converted.WAF.ParanoiaLevel != 3 {
+		t.Fatalf("expected paranoia level to round-trip, got %d", converted.WAF.ParanoiaLevel)
 	}
 	if converted.WAF.SemanticPolicy.BudgetExhaustedPolicy != "closed" {
 		t.Fatalf("expected semantic policy round-trip: %+v", converted.WAF.SemanticPolicy)

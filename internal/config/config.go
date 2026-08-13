@@ -377,8 +377,9 @@ type WAFConfig struct {
 	// Security events (block/challenge/log with detections) are always recorded.
 	// Nil means default on (preserve historical full-access logging).
 	AccessLogEnabled *bool `yaml:"access_log_enabled,omitempty" json:"access_log_enabled,omitempty"`
-	// ParanoiaLevel controls blocking sensitivity (0=use default, 1=low, 2=default, 3=high, 4=paranoid).
-	// Disable semantic inspection with waf.mode or the per-category switches.
+	// ParanoiaLevel is blocking sensitivity: 1=low, 2=default, 3=high, 4=paranoid.
+	// 0 or any out-of-range value is treated as 2 so omitted YAML stays compatible.
+	// Turn semantic inspection off with waf.mode or the per-category switches.
 	ParanoiaLevel    int                      `yaml:"paranoia_level" json:"paranoia_level"`
 	SemanticEngines  SemanticEngineSwitches   `yaml:"semantic_engines" json:"semantic_engines"`
 	SemanticPolicy   SemanticPolicyConfig     `yaml:"semantic_policy" json:"semantic_policy"`
@@ -397,6 +398,16 @@ func (w WAFConfig) AccessLogOn() bool {
 		return true
 	}
 	return *w.AccessLogEnabled
+}
+
+const DefaultParanoiaLevel = 2
+
+// EffectiveParanoiaLevel maps omitted or invalid values to the default (2).
+func EffectiveParanoiaLevel(level int) int {
+	if level < 1 || level > 4 {
+		return DefaultParanoiaLevel
+	}
+	return level
 }
 
 // SemanticPolicyConfig holds commercial operational knobs for the staged analyzer.
