@@ -63,6 +63,7 @@ type Hit struct {
 	Severity   engine.Severity `json:"severity"`
 	Confidence float64         `json:"confidence"`
 	Payload    string          `json:"payload"`
+	Isolation  string          `json:"isolation,omitempty"`
 }
 
 type semanticCandidate struct {
@@ -3405,6 +3406,7 @@ func hit(candidate semanticCandidate, category string, severity engine.Severity,
 		Severity:   severity,
 		Confidence: confidence,
 		Payload:    strings.TrimSpace(candidate.text),
+		Isolation:  classifyPayloadIsolation(candidate.text),
 	}
 }
 
@@ -3452,6 +3454,11 @@ func (a *Analyzer) blockableHit(h Hit) bool {
 	}
 
 	if h.Category == "" || h.Payload == "" {
+		return false
+	}
+	// Embedded gadgets (prose around a payload) stay off the default block
+	// path. Current level 4 is the strictest shipped tier and still blocks them.
+	if h.Isolation == isolationEmbedded && a.paranoiaLevel < 4 {
 		return false
 	}
 	syntaxOK := h.Syntax != "" && !strings.HasSuffix(h.Syntax, "none") && !strings.Contains(h.Syntax, "attack grammar matched")
