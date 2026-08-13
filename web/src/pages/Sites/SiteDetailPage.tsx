@@ -523,6 +523,22 @@ export default function SiteDetailPage() {
                     </SelectContent>
                   </Select>
                 </label>
+                <label>
+                  <span>{t('sites.paranoiaLevel')}</span>
+                  <Select
+                    value={String(site.paranoia_level || 2)}
+                    onValueChange={(value) => updateField('paranoia_level', Number(value))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">{t('sites.paranoiaLow')}</SelectItem>
+                      <SelectItem value="2">{t('sites.paranoiaDefault')}</SelectItem>
+                      <SelectItem value="3">{t('sites.paranoiaHigh')}</SelectItem>
+                      <SelectItem value="4">{t('sites.paranoiaStrict')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <em className="site-field-hint site-field-hint-wide">{t('sites.paranoiaLevelHint')}</em>
                 {[
                   ['web_attack', t('sites.webAttackLevel')],
                   ['api_security', t('sites.apiSecurityLevel')],
