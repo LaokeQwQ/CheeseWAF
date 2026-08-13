@@ -662,7 +662,7 @@ func TestRouterAuditRecordsAuthenticationAndAuthorizationFailures(t *testing.T) 
 	}
 	allowed := perform(router, http.MethodGet, "/api/system", readerToken, nil)
 	if allowed.Code != http.StatusOK {
-		 t.Fatalf("readonly read status = %d, want 200: %s", allowed.Code, allowed.Body.String())
+		t.Fatalf("readonly read status = %d, want 200: %s", allowed.Code, allowed.Body.String())
 	}
 	unauthenticated := perform(router, http.MethodGet, "/api/system", "", nil)
 	if unauthenticated.Code != http.StatusUnauthorized {

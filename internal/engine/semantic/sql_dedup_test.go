@@ -138,7 +138,7 @@ func TestSQLCandidateDedupIsExactAcrossTheMapThreshold(t *testing.T) {
 				query.Add(fmt.Sprintf("dup%d", i), "shared-duplicate-value")
 			}
 
-			got := sqlCandidateTexts(sqlTestRequestContext("/search?" + query.Encode(), nil))
+			got := sqlCandidateTexts(sqlTestRequestContext("/search?"+query.Encode(), nil))
 
 			counts := map[string]int{}
 			for _, candidate := range got {

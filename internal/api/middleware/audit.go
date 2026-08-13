@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	defaultAuditFileBytes int64 = 8 << 20
-	defaultAuditBackups         = 3
-	defaultDeniedAuditPerMinute = 120
-	maxAuditQueryLimit          = 1000
-	maxAuditLineBytes           = 24 << 10
-	auditReadBufferBytes        = 16 << 10
+	defaultAuditFileBytes       int64 = 8 << 20
+	defaultAuditBackups               = 3
+	defaultDeniedAuditPerMinute       = 120
+	maxAuditQueryLimit                = 1000
+	maxAuditLineBytes                 = 24 << 10
+	auditReadBufferBytes              = 16 << 10
 
 	maxAuditSubjectBytes  = 128
 	maxAuditUserBytes     = 128

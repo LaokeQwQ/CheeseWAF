@@ -9,11 +9,11 @@ import (
 )
 
 const (
-	defaultAIMaxRequests  = 10
-	defaultAIMaxInFlight  = 2
-	defaultAIMaxSubjects  = 4096
-	defaultAIWindow       = time.Minute
-	defaultAISubjectTTL   = 10 * time.Minute
+	defaultAIMaxRequests = 10
+	defaultAIMaxInFlight = 2
+	defaultAIMaxSubjects = 4096
+	defaultAIWindow      = time.Minute
+	defaultAISubjectTTL  = 10 * time.Minute
 )
 
 type AIRequestLimitOptions struct {

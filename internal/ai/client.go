@@ -59,9 +59,9 @@ type Client struct {
 }
 
 const (
-	defaultAIHTTPTimeout       = 5 * time.Minute
-	maxAIJSONResponseBytes     = 4 << 20
-	maxAIStreamResponseBytes   = 16 << 20
+	defaultAIHTTPTimeout     = 5 * time.Minute
+	maxAIJSONResponseBytes   = 4 << 20
+	maxAIStreamResponseBytes = 16 << 20
 )
 
 var errAIResponseTooLarge = errors.New("AI API response exceeds byte limit")
