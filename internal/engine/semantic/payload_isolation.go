@@ -97,7 +97,13 @@ func stripGadgetOnce(text, gadget string) string {
 	if i < 0 {
 		return text
 	}
-	return text[:i] + text[i+len(g):]
+	end := i + len(g)
+	// leftover is only used for prose detection. Work on the lowercased
+	// string so Unicode case-folding cannot panic when it changes length.
+	if end > len(lower) {
+		return lower[:i]
+	}
+	return lower[:i] + lower[end:]
 }
 
 func stripThinWrappers(s string) string {

@@ -54,3 +54,70 @@ func TestReviewItemCreateListDecide(t *testing.T) {
 		t.Fatalf("second decide should be a no-op, got %+v", again)
 	}
 }
+
+func TestReviewItemPendingDedupAndAIVerdict(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	item := &ReviewItem{
+		SiteID:    "site-a",
+		URI:       "/search",
+		Category:  "webshell",
+		Payload:   "eval($_GET[cmd])",
+		Source:    "query",
+		ParamName: "s",
+		Status:    "pending",
+	}
+	if err := store.CreateReviewItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.HasPendingReview(ctx, "site-a", "webshell", "eval($_GET[cmd])", "/search")
+	if err != nil || !pending {
+		t.Fatalf("expected pending match, pending=%v err=%v", pending, err)
+	}
+	other, err := store.HasPendingReview(ctx, "site-a", "sqli", "eval($_GET[cmd])", "/search")
+	if err != nil || other {
+		t.Fatalf("different category should not match, pending=%v err=%v", other, err)
+	}
+	if err := store.SetReviewAIVerdict(ctx, item.ID, `{"risk":"high","summary":"php gadget","ai_used":false}`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetReviewItem(ctx, item.ID)
+	if err != nil || got == nil || got.AIVerdict == "" || got.ParamName != "s" {
+		t.Fatalf("verdict/param: %+v err=%v", got, err)
+	}
+}
+
+func TestSiteParanoiaLevelPersists(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	site := &Site{Name: "example", Domains: []string{"example.test"}, Upstreams: []string{"127.0.0.1:9000"}, ParanoiaLevel: 5, Enabled: true}
+	if err := store.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetSite(ctx, site.ID)
+	if err != nil || got == nil || got.ParanoiaLevel != 5 {
+		t.Fatalf("create persist: %+v err=%v", got, err)
+	}
+	got.ParanoiaLevel = 0
+	if err := store.UpdateSite(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.GetSite(ctx, site.ID)
+	if err != nil || again == nil || again.ParanoiaLevel != 0 {
+		t.Fatalf("level 0 must persist: %+v err=%v", again, err)
+	}
+}

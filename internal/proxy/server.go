@@ -51,6 +51,7 @@ type Server struct {
 	protectionPolicy config.ProtectionPolicyConfig
 	certs            *SiteCertificateStore
 	clock            timekeeper.Clock
+	reviews          ReviewQueue
 }
 
 type edgeRuntime struct {
@@ -1539,7 +1540,11 @@ func (s *Server) challengeThreatIntel(w http.ResponseWriter, r *http.Request, re
 }
 
 func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, action string, status int, start time.Time, extra *storage.LogEntry) {
-	if s.logSink == nil || reqCtx == nil || reqCtx.Request == nil {
+	if reqCtx == nil || reqCtx.Request == nil {
+		return
+	}
+	if s.logSink == nil {
+		s.enqueueReview(ctx, reqCtx, action)
 		return
 	}
 	s.attachBotRiskMetadata(reqCtx, action)
@@ -1625,9 +1630,11 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		entry.Action = "log"
 	}
 	if isPlainAccessLog(entry) && !s.siteAccessLogEnabled(reqCtx.SiteID) {
+		s.enqueueReview(ctx, reqCtx, action)
 		return
 	}
 	_ = s.logSink.Write(ctx, entry)
+	s.enqueueReview(ctx, reqCtx, action)
 }
 
 // attachBotRiskMetadata writes L1 risk_score/risk_band on every bot-enabled request

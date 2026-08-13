@@ -139,10 +139,14 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		reqCtx.Metadata["semantic_analysis_incomplete"] = true
 	}
 	if !haveBest {
+		if review, ok := strongestHit(report.Hits); ok {
+			reqCtx.Metadata["review_candidate"] = reviewCandidateMap(review, a.paranoiaLevel)
+		}
 		return nil, nil
 	}
 	action := actionForMode(a.mode)
 	if a.mode == "block" && !a.blockableHit(best) {
+		reqCtx.Metadata["review_candidate"] = reviewCandidateMap(best, a.paranoiaLevel)
 		return nil, nil
 	}
 	if action == engine.ActionBlock {
@@ -187,6 +191,31 @@ func analyzerDetectorID(category string) string {
 		return id
 	}
 	return "semantic.analyzer." + category
+}
+
+func strongestHit(hits []Hit) (Hit, bool) {
+	var best Hit
+	found := false
+	for _, hit := range hits {
+		if !found || betterHit(hit, best) {
+			best = hit
+			found = true
+		}
+	}
+	return best, found
+}
+
+func reviewCandidateMap(hit Hit, level int) map[string]any {
+	return map[string]any{
+		"category":         hit.Category,
+		"severity":         hit.Severity.String(),
+		"payload":          hit.Payload,
+		"shape":            hit.Isolation,
+		"source":           hit.Source,
+		"name":             hit.Name,
+		"protection_level": level,
+		"confidence":       hit.Confidence,
+	}
 }
 
 // analyzeAllCandidates runs field analysis. Multi-field requests use a bounded
@@ -321,10 +350,12 @@ func (m *candidateMerge) add(mode string, a *Analyzer, hits []Hit) {
 				m.anomalyNotes = append(m.anomalyNotes, note)
 			}
 		}
+		// Keep every hit in the report so detected-but-not-blocked
+		// requests can enter the review queue. Blocking still uses haveBest.
+		m.report.Hits = append(m.report.Hits, next)
 		if mode == "block" && !a.blockableHit(next) {
 			continue
 		}
-		m.report.Hits = append(m.report.Hits, next)
 		if !m.haveBest || betterHit(next, m.best) {
 			m.best = next
 			m.haveBest = true

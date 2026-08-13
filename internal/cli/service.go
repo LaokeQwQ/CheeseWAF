@@ -32,6 +32,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
+	"github.com/LaokeQwQ/CheeseWAF/internal/review"
 	"github.com/LaokeQwQ/CheeseWAF/internal/scheduler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -162,6 +163,11 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	defer proxyServer.Close()
+	var reviewAI *ai.Client
+	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
+		reviewAI = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
+	}
+	proxyServer.SetReviewQueue(&review.Queue{Store: store, Client: reviewAI})
 	var healthChecker *proxy.HealthChecker
 	reloadSites := func(sites []config.SiteConfig) error {
 		next := *cfg

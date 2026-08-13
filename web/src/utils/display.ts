@@ -20,6 +20,8 @@ const categoryKeys: Record<string, string> = {
   threat_intel: 'securityCategories.threatIntel',
   unknown: 'securityCategories.unknown',
   xss: 'securityCategories.xss',
+  webshell: 'securityCategories.webshell',
+  log4shell: 'securityCategories.log4shell',
 };
 
 const severityKeys: Record<string, string> = {

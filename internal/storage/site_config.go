@@ -98,6 +98,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				TrustedProxyProviders: cloneStringSlicesMap(site.WAF.AccessControl.TrustedProxyProviders),
 			},
 			AccessLogEnabled: cloneBoolPtr(site.WAF.AccessLogEnabled),
+			CustomRules:      siteCustomRulesFromConfig(site.WAF.CustomRules),
 		},
 	}
 }
@@ -190,7 +191,8 @@ func SiteToConfig(site Site) config.SiteConfig {
 				HealthyThreshold:   site.Advanced.HealthCheck.HealthyThreshold,
 				UnhealthyThreshold: site.Advanced.HealthCheck.UnhealthyThreshold,
 			},
-			Rewrite: siteRewriteToConfig(site.Advanced.Rewrite),
+			Rewrite:     siteRewriteToConfig(site.Advanced.Rewrite),
+			CustomRules: siteCustomRulesToConfig(site.Advanced.CustomRules),
 			AccessControl: config.SiteAccessControlConfig{
 				AuthEnabled:           site.Advanced.AccessControl.AuthEnabled,
 				WaitingRoom:           site.Advanced.AccessControl.WaitingRoom,
@@ -206,6 +208,40 @@ func SitesToConfig(sites []Site) []config.SiteConfig {
 	out := make([]config.SiteConfig, 0, len(sites))
 	for _, site := range sites {
 		out = append(out, SiteToConfig(site))
+	}
+	return out
+}
+
+func siteCustomRulesFromConfig(rules []config.CustomRuleConfig) []SiteCustomRule {
+	out := make([]SiteCustomRule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, SiteCustomRule{
+			ID:       rule.ID,
+			Name:     rule.Name,
+			Pattern:  rule.Pattern,
+			Location: rule.Location,
+			Action:   rule.Action,
+			Severity: rule.Severity,
+			Enabled:  rule.Enabled,
+			Priority: rule.Priority,
+		})
+	}
+	return out
+}
+
+func siteCustomRulesToConfig(rules []SiteCustomRule) []config.CustomRuleConfig {
+	out := make([]config.CustomRuleConfig, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, config.CustomRuleConfig{
+			ID:       rule.ID,
+			Name:     rule.Name,
+			Pattern:  rule.Pattern,
+			Location: rule.Location,
+			Action:   rule.Action,
+			Severity: rule.Severity,
+			Enabled:  rule.Enabled,
+			Priority: rule.Priority,
+		})
 	}
 	return out
 }

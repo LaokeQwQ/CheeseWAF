@@ -73,6 +73,7 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     sensitive_patterns: ['AKIA', 'password', 'secret', 'private key'],
   },
   rewrite: [],
+  custom_rules: [],
   access_control: {
     auth_enabled: false,
     waiting_room: false,
@@ -136,6 +137,7 @@ export function normalizeSite(input?: Partial<Site>): Site {
         sensitive_patterns: asArray(advanced.response?.sensitive_patterns),
       },
       rewrite: asArray(advanced.rewrite),
+      custom_rules: asArray(advanced.custom_rules),
       access_control: {
         ...defaultSiteAdvanced.access_control,
         ...advanced.access_control,

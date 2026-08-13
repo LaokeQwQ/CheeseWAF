@@ -25,6 +25,7 @@ const DYNAMIC_PREFIXES = [
   'securityActions.',
   'securityCategories.',
   'securitySeverity.',
+  'review.status.',
   'botChallenge.captchaAssets.kinds.',
   'botChallenge.outcomes.',
   'botChallenge.ranges.',

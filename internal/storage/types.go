@@ -101,6 +101,8 @@ type ReviewStore interface {
 	CreateReviewItem(ctx context.Context, item *ReviewItem) error
 	GetReviewItem(ctx context.Context, id string) (*ReviewItem, error)
 	ListReviewItems(ctx context.Context, filter ReviewFilter) ([]ReviewItem, int64, error)
+	HasPendingReview(ctx context.Context, siteID, category, payload, uri string) (bool, error)
+	SetReviewAIVerdict(ctx context.Context, id, verdict string) error
 	DecideReviewItem(ctx context.Context, id string, decision ReviewDecision) (*ReviewItem, error)
 }
 
@@ -116,6 +118,8 @@ type ReviewItem struct {
 	Payload          string    `json:"payload"`
 	ProtectionLevel  int       `json:"protection_level"`
 	Shape            string    `json:"shape"`
+	Source           string    `json:"source,omitempty"`
+	ParamName        string    `json:"param_name,omitempty"`
 	Status           string    `json:"status"`
 	AIVerdict        string    `json:"ai_verdict,omitempty"`
 	DecidedBySubject string    `json:"decided_by_subject,omitempty"`
@@ -249,6 +253,7 @@ type SiteAdvanced struct {
 	Policy         SiteProtectionPolicy  `json:"policy"`
 	Response       SiteResponseConfig    `json:"response"`
 	Rewrite        []SiteRewriteRule     `json:"rewrite"`
+	CustomRules    []SiteCustomRule      `json:"custom_rules,omitempty"`
 	AccessControl  SiteAccessControl     `json:"access_control"`
 	// AccessLogEnabled records normal pass/cache/redirect traffic. Security events always log.
 	// Omitted/nil defaults to true for backward compatibility.
@@ -344,6 +349,18 @@ type SiteRewriteRule struct {
 	Replacement  string `json:"replacement"`
 	RedirectCode int    `json:"redirect_code"`
 	Enabled      bool   `json:"enabled"`
+}
+
+// SiteCustomRule is a live site-scoped pattern applied by the request pipeline.
+type SiteCustomRule struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Pattern  string `json:"pattern"`
+	Location string `json:"location"`
+	Action   string `json:"action"`
+	Severity string `json:"severity"`
+	Enabled  bool   `json:"enabled"`
+	Priority int    `json:"priority"`
 }
 
 type SiteAccessControl struct {

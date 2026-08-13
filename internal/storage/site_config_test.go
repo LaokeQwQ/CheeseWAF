@@ -27,6 +27,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 				PathAllowlist:         []string{"/health", "/static/*"},
 				ParamAllowlist:        []string{"content"},
 			},
+			CustomRules: []config.CustomRuleConfig{{
+				ID: "review-1", Name: "block payload", Pattern: `eval\(`, Location: "body", Action: "block", Severity: "high", Enabled: true, Priority: 10,
+			}},
 		},
 	}
 	site := SiteFromConfig(original)
@@ -60,6 +63,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	}
 	if len(converted.WAF.SemanticPolicy.PathAllowlist) != 2 {
 		t.Fatalf("expected path allowlist round-trip: %+v", converted.WAF.SemanticPolicy)
+	}
+	if len(converted.WAF.CustomRules) != 1 || converted.WAF.CustomRules[0].ID != "review-1" {
+		t.Fatalf("expected custom rules round-trip: %+v", converted.WAF.CustomRules)
 	}
 }
 

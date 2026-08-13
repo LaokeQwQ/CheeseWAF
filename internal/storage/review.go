@@ -29,18 +29,18 @@ func (s *SQLiteStore) CreateReviewItem(ctx context.Context, item *ReviewItem) er
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO review_items(
 		id,trace_id,site_id,client_ip,method,uri,category,severity,payload,
-		protection_level,shape,status,ai_verdict,decided_by_subject,decided_by_name,
+		protection_level,shape,source,param_name,status,ai_verdict,decided_by_subject,decided_by_name,
 		decided_by_role,decided_at,decision,applied_rule_id,created_at
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		item.ID, item.TraceID, item.SiteID, item.ClientIP, item.Method, item.URI, item.Category, item.Severity, item.Payload,
-		item.ProtectionLevel, item.Shape, item.Status, item.AIVerdict, item.DecidedBySubject, item.DecidedByName,
+		item.ProtectionLevel, item.Shape, item.Source, item.ParamName, item.Status, item.AIVerdict, item.DecidedBySubject, item.DecidedByName,
 		item.DecidedByRole, formatReviewTime(item.DecidedAt), item.Decision, item.AppliedRuleID, formatTime(item.CreatedAt))
 	return err
 }
 
 func (s *SQLiteStore) GetReviewItem(ctx context.Context, id string) (*ReviewItem, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id,trace_id,site_id,client_ip,method,uri,category,severity,payload,
-		protection_level,shape,status,ai_verdict,decided_by_subject,decided_by_name,decided_by_role,
+		protection_level,shape,source,param_name,status,ai_verdict,decided_by_subject,decided_by_name,decided_by_role,
 		decided_at,decision,applied_rule_id,created_at FROM review_items WHERE id=?`, id)
 	item, err := scanReviewItem(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -63,7 +63,7 @@ func (s *SQLiteStore) ListReviewItems(ctx context.Context, filter ReviewFilter) 
 	}
 	queryArgs := append(append([]any(nil), args...), filter.Limit, filter.Offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT id,trace_id,site_id,client_ip,method,uri,category,severity,payload,
-		protection_level,shape,status,ai_verdict,decided_by_subject,decided_by_name,decided_by_role,
+		protection_level,shape,source,param_name,status,ai_verdict,decided_by_subject,decided_by_name,decided_by_role,
 		decided_at,decision,applied_rule_id,created_at FROM review_items WHERE `+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		return nil, 0, err
@@ -78,6 +78,28 @@ func (s *SQLiteStore) ListReviewItems(ctx context.Context, filter ReviewFilter) 
 		items = append(items, *item)
 	}
 	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) HasPendingReview(ctx context.Context, siteID, category, payload, uri string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM review_items
+		WHERE site_id=? AND category=? AND payload=? AND uri=? AND status='pending'`,
+		siteID, category, payload, uri).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func (s *SQLiteStore) SetReviewAIVerdict(ctx context.Context, id, verdict string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("review id is required")
+	}
+	if len(verdict) > 2000 {
+		verdict = verdict[:2000]
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE review_items SET ai_verdict=? WHERE id=?`, verdict, id)
+	return err
 }
 
 func (s *SQLiteStore) DecideReviewItem(ctx context.Context, id string, decision ReviewDecision) (*ReviewItem, error) {
@@ -147,7 +169,7 @@ func scanReviewItem(row scanner) (*ReviewItem, error) {
 	var decidedAt, createdAt string
 	if err := row.Scan(
 		&item.ID, &item.TraceID, &item.SiteID, &item.ClientIP, &item.Method, &item.URI, &item.Category, &item.Severity, &item.Payload,
-		&item.ProtectionLevel, &item.Shape, &item.Status, &item.AIVerdict, &item.DecidedBySubject, &item.DecidedByName, &item.DecidedByRole,
+		&item.ProtectionLevel, &item.Shape, &item.Source, &item.ParamName, &item.Status, &item.AIVerdict, &item.DecidedBySubject, &item.DecidedByName, &item.DecidedByRole,
 		&decidedAt, &item.Decision, &item.AppliedRuleID, &createdAt,
 	); err != nil {
 		return nil, err
