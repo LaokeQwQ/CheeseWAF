@@ -163,3 +163,7 @@ internal/engine/semantic/testdata/mined_secprose_probe.jsonl
 # Regenerable test artifacts (FP exports, eval reports). The root /tmp/ rule is
 # anchored to the repo root and does not cover package-local tmp dirs.
 internal/engine/semantic/tmp/
+
+# Local toolchain / abandoned UI backup (never ship)
+.codex-gocache/
+.backup-appica-*/
