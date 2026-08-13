@@ -1,5 +1,6 @@
 import { Badge, Button, Empty, Textarea, toast } from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import DOMPurify from 'dompurify';
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2, Copy, Download, ExternalLink, FileCode2, FileUp, RotateCcw, Save } from 'lucide-react';
@@ -12,7 +13,7 @@ import {
   updateBlockPageConfig,
   uploadBlockPageHTML,
 } from '../../api/client';
-import type { BlockPageConfig } from '../../types/api';
+import type { BlockPageConfig, BlockPagePreview } from '../../types/api';
 import '../../styles/block-pages.css';
 
 const blockPreviewStoragePrefix = 'cheesewaf-block-page-preview-html';
@@ -27,7 +28,8 @@ export default function BlockPagesPage() {
   const activeConfig = isBlockPageConfig(configQuery.data) ? configQuery.data : undefined;
   const [selected, setSelectedState] = useState('minimal');
   const [customHTML, setCustomHTMLState] = useState('');
-  const [previewDraft, setPreviewDraft] = useState('');
+  const [previewState, setPreviewState] = useState<{ data?: BlockPagePreview; error?: unknown; isFetching: boolean }>({ isFetching: false });
+  const previewRevisionRef = useRef(0);
   const formDirtyRef = useRef(false);
   const formHydratedRef = useRef(false);
 
@@ -78,19 +80,31 @@ export default function BlockPagesPage() {
   const customBytes = new Blob([customHTML]).size;
 
   useEffect(() => {
+    const revision = ++previewRevisionRef.current;
+    const controller = new AbortController();
+    setPreviewState({ isFetching: false });
+    if (isLoading || (!template && !customHTML.trim())) {
+      return () => controller.abort();
+    }
     const timer = window.setTimeout(() => {
-      setPreviewDraft(JSON.stringify(previewPayload));
+      setPreviewState({ isFetching: true });
+      void previewBlockPageConfig(previewPayload, controller.signal).then((preview) => {
+        if (!controller.signal.aborted && previewRevisionRef.current === revision) {
+          setPreviewState({ data: preview, isFetching: false });
+        }
+      }).catch((previewError: unknown) => {
+        if (!controller.signal.aborted && previewRevisionRef.current === revision) {
+          setPreviewState({ error: previewError, isFetching: false });
+        }
+      });
     }, 350);
-    return () => window.clearTimeout(timer);
-  }, [previewPayload]);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [customHTML, isLoading, previewPayload, template]);
 
-  const previewQuery = useQuery({
-    queryKey: ['block-page-preview', previewDraft],
-    queryFn: () => previewBlockPageConfig(JSON.parse(previewDraft) as typeof previewPayload),
-    enabled: Boolean(previewDraft) && !isLoading && Boolean(template || customHTML.trim()),
-    retry: false,
-  });
-  const previewHTML = previewQuery.data?.html ?? (customHTML.trim() ? customHTML : templateHTML);
+  const previewHTML = previewState.data?.html ?? (customHTML.trim() ? customHTML : templateHTML);
   const safePreviewHTML = useMemo(() => sanitizeBlockPreviewHTML(previewHTML), [previewHTML]);
 
   const saveBuiltInMutation = useMutation({
@@ -313,7 +327,7 @@ export default function BlockPagesPage() {
               <p>{t('blockPages.previewHint')}</p>
             </div>
             <div className="block-editor-actions">
-              {previewQuery.data?.event_id && <Badge className="status-pill" variant="secondary">{t('blockPages.previewEvent', { id: previewQuery.data.event_id })}</Badge>}
+              {previewState.data?.event_id && <Badge className="status-pill" variant="secondary">{t('blockPages.previewEvent', { id: previewState.data.event_id })}</Badge>}
               <Button variant="outline" disabled={!previewHTML.trim()} onClick={openPreviewWindow}>
                 <ExternalLink size={14} />
                 {t('blockPages.openPreview')}
@@ -328,14 +342,14 @@ export default function BlockPagesPage() {
               </Button>
             </div>
           </div>
-          {previewQuery.error instanceof APIRequestError && (
+          {previewState.error instanceof APIRequestError && (
             <div className="inline-error block-preview-error" role="alert">
-              <span>{previewQuery.error.rawMessage}</span>
-              {previewQuery.error.traceID && <code>{previewQuery.error.traceID}</code>}
+              <span>{previewState.error.rawMessage}</span>
+              {previewState.error.traceID && <code>{previewState.error.traceID}</code>}
             </div>
           )}
           <div className="block-preview-frame">
-            {previewQuery.isFetching && !safePreviewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="" referrerPolicy="no-referrer" srcDoc={safePreviewHTML} />}
+            {previewState.isFetching && !safePreviewHTML ? <div className="block-preview-loading">{t('blockPages.renderingPreview')}</div> : <iframe title={t('blockPages.preview')} sandbox="" referrerPolicy="no-referrer" srcDoc={safePreviewHTML} />}
           </div>
         </section>
       </div>
@@ -413,49 +427,17 @@ export function sanitizeBlockPreviewHTML(value: string) {
   if (!html) {
     return '';
   }
-  if (typeof DOMParser === 'undefined') {
+  if (typeof window === 'undefined') {
     return '';
   }
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script, iframe, object, embed, base, link[rel="import"], meta[http-equiv="refresh"]').forEach((node) => node.remove());
-  doc.querySelectorAll('*').forEach((element) => {
-    Array.from(element.attributes).forEach((attribute) => {
-      const name = attribute.name.toLowerCase();
-      if (name.startsWith('on')) {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      // Drop navigation/form targets that can escape the sandbox intent.
-      if (name === 'srcset' || name === 'action' || name === 'formaction' || name === 'form' || name === 'xlink:href') {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      if (isDangerousPreviewURLAttribute(name, attribute.value)) {
-        element.removeAttribute(attribute.name);
-      }
-    });
+  const clean = DOMPurify.sanitize(html, {
+    WHOLE_DOCUMENT: true,
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'base'],
+    FORBID_ATTR: ['srcset', 'action', 'formaction', 'form', 'xlink:href'],
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+    ADD_TAGS: ['html', 'head', 'body', 'meta', 'link', 'style', 'title'],
   });
-  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
-}
-
-function isDangerousPreviewURLAttribute(name: string, rawValue: string) {
-  if (!['href', 'src', 'poster', 'cite', 'data', 'background'].includes(name.toLowerCase())) {
-    return false;
-  }
-  const normalized = compactURLScheme(rawValue).toLowerCase();
-  return normalized.startsWith('javascript:') || normalized.startsWith('vbscript:') || normalized.startsWith('data:');
-}
-
-function compactURLScheme(value: string) {
-  let output = '';
-  for (const char of value.trim()) {
-    const code = char.charCodeAt(0);
-    if (code <= 0x20 || code === 0x7f) {
-      continue;
-    }
-    output += char;
-  }
-  return output;
+  return clean ? `<!doctype html>\n${clean}` : '';
 }
 
 function isBlockPageConfig(value: unknown): value is BlockPageConfig {

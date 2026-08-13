@@ -543,7 +543,7 @@ func fetchProvider(ctx context.Context, provider config.ThreatIntelProviderConfi
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("provider returned %s", resp.Status)
 	}
@@ -579,7 +579,7 @@ func lookupProviderIP(ctx context.Context, provider config.ThreatIntelProviderCo
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("provider returned %s", resp.Status)
 	}

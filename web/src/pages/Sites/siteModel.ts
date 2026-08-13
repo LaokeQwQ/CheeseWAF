@@ -94,6 +94,7 @@ export const defaultSite: Site = {
   key_file: '',
   waf_enabled: true,
   waf_mode: 'block',
+  paranoia_level: 2,
   advanced: defaultSiteAdvanced,
   enabled: true,
 };
@@ -105,6 +106,7 @@ export function normalizeSite(input?: Partial<Site>): Site {
     ...input,
     domains: asArray(input?.domains),
     upstreams: asArray(input?.upstreams),
+    paranoia_level: normalizeParanoiaLevel(input?.paranoia_level),
     advanced: {
       ...defaultSiteAdvanced,
       ...advanced,
@@ -157,4 +159,12 @@ export function asCSV(value: unknown[]) {
 
 function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+export function normalizeParanoiaLevel(value: unknown): number {
+  const level = Number(value);
+  if (!Number.isInteger(level) || level < 1 || level > 4) {
+    return 2;
+  }
+  return level;
 }

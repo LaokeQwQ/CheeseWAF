@@ -100,6 +100,7 @@ func TestAnalyzerReadinessMatrix(t *testing.T) {
 		{name: "ssti-ognl-runtime-exec", method: http.MethodPost, target: "/render", contentType: "application/x-www-form-urlencoded", body: "template=%25%7B%23context%5B%27xwork.MethodAccessor.denyMethodExecution%27%5D%3Dfalse%2C%40java.lang.Runtime%40getRuntime().exec(%27id%27)%7D", category: "ssti"},
 		{name: "ssti-arithmetic-probe-name", method: http.MethodPost, target: "/profile", contentType: "application/x-www-form-urlencoded", body: "name=%7B%7B7*7%7D%7D", category: "ssti"},
 		{name: "multipart-xss", method: http.MethodPost, target: "/upload", contentType: "multipart", body: "<xss onfocus=alert(1)>", category: "xss"},
+		{name: "multipart-buffered-tail-rce", method: http.MethodPost, target: "/upload", contentType: "multipart", body: strings.Repeat("a", 8<<10) + "; whoami", category: "rce"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -114,7 +115,7 @@ func TestAnalyzerReadinessMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewAnalyzer("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -184,7 +185,7 @@ func TestAnalyzerReadinessBenignMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewAnalyzer("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -201,7 +202,7 @@ func BenchmarkAnalyzerReadinessCorpus(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	analyzer := NewAnalyzer("block")
+	analyzer := NewAnalyzer("block", 2)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		reqCtx.Metadata = map[string]any{}

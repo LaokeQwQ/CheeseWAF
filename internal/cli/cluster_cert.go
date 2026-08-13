@@ -13,6 +13,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/spf13/cobra"
 )
 
@@ -212,7 +213,7 @@ func requestClusterCertRotate(client *http.Client, controllerURL string, apiToke
 	if err != nil {
 		return clusterCertRotateResponse{}, fmt.Errorf("cluster certificate rotation request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return clusterCertRotateResponse{}, fmt.Errorf("read cluster certificate rotation response: %w", err)

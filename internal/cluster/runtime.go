@@ -12,6 +12,10 @@ import (
 
 const (
 	DefaultHeartbeatTTL = 30 * time.Second
+	maxHeartbeatNodeID  = 64
+	maxHeartbeatRole    = 16
+	maxHeartbeatAddress = 256
+	maxHeartbeatVersion = 256
 
 	NodeStateOnline  = "online"
 	NodeStateStale   = "stale"
@@ -82,11 +86,23 @@ func (r *HeartbeatRegistry) Record(input Heartbeat) (Heartbeat, error) {
 	if nodeID == "" {
 		return Heartbeat{}, fmt.Errorf("node id is required")
 	}
+	if len(nodeID) > maxHeartbeatNodeID {
+		return Heartbeat{}, fmt.Errorf("node id is too long")
+	}
 	record := input
 	record.NodeID = nodeID
 	record.Role = strings.TrimSpace(record.Role)
 	record.AdvertiseAddr = strings.TrimSpace(record.AdvertiseAddr)
 	record.ConfigVersion = strings.TrimSpace(record.ConfigVersion)
+	if len(record.Role) > maxHeartbeatRole {
+		return Heartbeat{}, fmt.Errorf("heartbeat role is too long")
+	}
+	if len(record.AdvertiseAddr) > maxHeartbeatAddress {
+		return Heartbeat{}, fmt.Errorf("heartbeat advertise address is too long")
+	}
+	if len(record.ConfigVersion) > maxHeartbeatVersion {
+		return Heartbeat{}, fmt.Errorf("heartbeat config version is too long")
+	}
 	record.RecordedAt = r.now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()

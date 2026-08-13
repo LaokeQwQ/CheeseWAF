@@ -7,15 +7,21 @@ import (
 	"time"
 )
 
+type engineGeneration struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
 type Engine struct {
-	mu      sync.RWMutex
-	tasks   []Task
-	history []HistoryEntry
-	running map[string]struct{}
-	parent  context.Context
-	rootCtx context.Context
-	cancel  context.CancelFunc
-	runtime Runtime
+	lifecycleMu sync.Mutex
+	mu          sync.RWMutex
+	tasks       []Task
+	history     []HistoryEntry
+	running     map[string]struct{}
+	parent      context.Context
+	generation  *engineGeneration
+	runtime     Runtime
 }
 
 var activeEngine struct {
@@ -44,23 +50,18 @@ func (e *Engine) Start(ctx context.Context) {
 	if e == nil {
 		return
 	}
-	e.mu.Lock()
-	if e.cancel != nil {
-		e.cancel()
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	e.parent = ctx
-	e.rootCtx, e.cancel = context.WithCancel(ctx)
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
+	e.stopGeneration()
+
+	e.mu.RLock()
 	tasks := append([]Task(nil), e.tasks...)
-	rootCtx := e.rootCtx
-	e.mu.Unlock()
+	e.mu.RUnlock()
+	e.launchGeneration(ctx, tasks)
 	SetActive(e)
-	for _, task := range tasks {
-		if !task.Enabled {
-			continue
-		}
-		task := task
-		go e.loop(rootCtx, task)
-	}
 }
 
 func SetActive(engine *Engine) {
@@ -84,29 +85,62 @@ func (e *Engine) Replace(tasks []Task) error {
 			return UnsupportedTask(context.Background(), task)
 		}
 	}
+
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.tasks = append([]Task(nil), tasks...)
 	if len(tasks) > 0 {
 		e.runtime = tasks[0].Runtime
 	}
-	if e.cancel == nil {
+	parent := e.parent
+	started := e.generation != nil
+	e.mu.Unlock()
+	if !started {
 		return nil
 	}
-	e.cancel()
-	if e.parent == nil || e.parent.Err() != nil {
-		e.rootCtx = nil
-		e.cancel = nil
+
+	e.stopGeneration()
+	if parent == nil || parent.Err() != nil {
 		return nil
 	}
-	e.rootCtx, e.cancel = context.WithCancel(e.parent)
-	for _, task := range e.tasks {
+	e.launchGeneration(parent, tasks)
+	return nil
+}
+
+func (e *Engine) stopGeneration() {
+	e.mu.Lock()
+	old := e.generation
+	e.generation = nil
+	e.mu.Unlock()
+	if old == nil {
+		return
+	}
+	old.cancel()
+	old.wg.Wait()
+}
+
+func (e *Engine) launchGeneration(parent context.Context, tasks []Task) {
+	ctx, cancel := context.WithCancel(parent)
+	generation := &engineGeneration{ctx: ctx, cancel: cancel}
+	enabled := make([]Task, 0, len(tasks))
+	for _, task := range tasks {
 		if task.Enabled {
-			task := task
-			go e.loop(e.rootCtx, task)
+			enabled = append(enabled, task)
 		}
 	}
-	return nil
+	generation.wg.Add(len(enabled))
+	e.mu.Lock()
+	e.parent = parent
+	e.generation = generation
+	e.mu.Unlock()
+	for _, task := range enabled {
+		task := task
+		go func() {
+			defer generation.wg.Done()
+			e.loop(generation.ctx, task)
+		}()
+	}
 }
 
 func (e *Engine) RunNow(ctx context.Context, taskID string) {
@@ -148,6 +182,10 @@ func (e *Engine) loop(ctx context.Context, task Task) {
 	if delay <= 0 {
 		delay = 24 * time.Hour
 	}
+	interval := task.Every
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	for {
@@ -156,7 +194,10 @@ func (e *Engine) loop(ctx context.Context, task Task) {
 			return
 		case <-timer.C:
 			e.run(ctx, task)
-			timer.Reset(task.Every)
+			if ctx.Err() != nil {
+				return
+			}
+			timer.Reset(interval)
 		}
 	}
 }

@@ -12,18 +12,19 @@ func SiteFromConfig(site config.SiteConfig) Site {
 		upstreams = append(upstreams, upstream.Address)
 	}
 	return Site{
-		ID:          site.ID,
-		Name:        site.Name,
-		Domains:     site.Domains,
-		Upstreams:   upstreams,
-		ListenPort:  site.ListenPort,
-		LoadBalance: site.LoadBalance,
-		EnableSSL:   site.EnableSSL,
-		CertFile:    site.CertFile,
-		KeyFile:     site.KeyFile,
-		WAFEnabled:  site.WAF.Enabled,
-		WAFMode:     site.WAF.Mode,
-		Enabled:     site.Enabled,
+		ID:            site.ID,
+		Name:          site.Name,
+		Domains:       site.Domains,
+		Upstreams:     upstreams,
+		ListenPort:    site.ListenPort,
+		LoadBalance:   site.LoadBalance,
+		EnableSSL:     site.EnableSSL,
+		CertFile:      site.CertFile,
+		KeyFile:       site.KeyFile,
+		WAFEnabled:    site.WAF.Enabled,
+		WAFMode:       site.WAF.Mode,
+		ParanoiaLevel: site.WAF.ParanoiaLevel,
+		Enabled:       site.Enabled,
 		Advanced: SiteAdvanced{
 			Certificate: CertificateConfig{
 				Mode:          site.Certificate.Mode,
@@ -90,10 +91,11 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				UnhealthyThreshold: site.WAF.HealthCheck.UnhealthyThreshold,
 			},
 			AccessControl: SiteAccessControl{
-				AuthEnabled:  site.WAF.AccessControl.AuthEnabled,
-				WaitingRoom:  site.WAF.AccessControl.WaitingRoom,
-				DynamicGuard: site.WAF.AccessControl.DynamicGuard,
-				TrustedCIDRs: cloneStrings(site.WAF.AccessControl.TrustedCIDRs),
+				AuthEnabled:           site.WAF.AccessControl.AuthEnabled,
+				WaitingRoom:           site.WAF.AccessControl.WaitingRoom,
+				DynamicGuard:          site.WAF.AccessControl.DynamicGuard,
+				TrustedCIDRs:          cloneStrings(site.WAF.AccessControl.TrustedCIDRs),
+				TrustedProxyProviders: cloneStringSlicesMap(site.WAF.AccessControl.TrustedProxyProviders),
 			},
 			AccessLogEnabled: cloneBoolPtr(site.WAF.AccessLogEnabled),
 		},
@@ -147,6 +149,7 @@ func SiteToConfig(site Site) config.SiteConfig {
 		WAF: config.WAFConfig{
 			Enabled:          site.WAFEnabled,
 			Mode:             mode,
+			ParanoiaLevel:    site.ParanoiaLevel,
 			AccessLogEnabled: cloneBoolPtr(site.Advanced.AccessLogEnabled),
 			SemanticEngines: config.SemanticEngineSwitches{
 				SQL:   site.Advanced.Protection.SemanticSQL,
@@ -189,10 +192,11 @@ func SiteToConfig(site Site) config.SiteConfig {
 			},
 			Rewrite: siteRewriteToConfig(site.Advanced.Rewrite),
 			AccessControl: config.SiteAccessControlConfig{
-				AuthEnabled:  site.Advanced.AccessControl.AuthEnabled,
-				WaitingRoom:  site.Advanced.AccessControl.WaitingRoom,
-				DynamicGuard: site.Advanced.AccessControl.DynamicGuard,
-				TrustedCIDRs: cloneStrings(site.Advanced.AccessControl.TrustedCIDRs),
+				AuthEnabled:           site.Advanced.AccessControl.AuthEnabled,
+				WaitingRoom:           site.Advanced.AccessControl.WaitingRoom,
+				DynamicGuard:          site.Advanced.AccessControl.DynamicGuard,
+				TrustedCIDRs:          cloneStrings(site.Advanced.AccessControl.TrustedCIDRs),
+				TrustedProxyProviders: cloneStringSlicesMap(site.Advanced.AccessControl.TrustedProxyProviders),
 			},
 		},
 	}
@@ -236,6 +240,17 @@ func cloneStringMap(values map[string]string) map[string]string {
 	out := make(map[string]string, len(values))
 	for key, value := range values {
 		out[key] = value
+	}
+	return out
+}
+
+func cloneStringSlicesMap(values map[string][]string) map[string][]string {
+	if values == nil {
+		return map[string][]string{}
+	}
+	out := make(map[string][]string, len(values))
+	for key, entries := range values {
+		out[key] = cloneStrings(entries)
 	}
 	return out
 }

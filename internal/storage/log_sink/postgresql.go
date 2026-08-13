@@ -17,6 +17,7 @@ import (
 type PostgreSQLSink struct {
 	db    *sql.DB
 	table string
+	async *asyncLogWriter
 }
 
 func NewPostgreSQLSink(cfg config.PostgreSQLConfig) (*PostgreSQLSink, error) {
@@ -55,10 +56,18 @@ func NewPostgreSQLSink(cfg config.PostgreSQLConfig) (*PostgreSQLSink, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	sink.async = newAsyncLogWriter("postgresql", sink.writeSync, nil, sink.db.Close, asyncLogWriterOptions{})
 	return sink, nil
 }
 
 func (s *PostgreSQLSink) Write(ctx context.Context, entry *storage.LogEntry) error {
+	if s.async == nil {
+		return s.writeSync(ctx, entry)
+	}
+	return s.async.Write(ctx, entry)
+}
+
+func (s *PostgreSQLSink) writeSync(ctx context.Context, entry *storage.LogEntry) error {
 	if entry == nil {
 		return nil
 	}
@@ -168,12 +177,25 @@ func (s *PostgreSQLSink) Query(ctx context.Context, filter storage.LogFilter) ([
 	return entries, total, rows.Err()
 }
 
-func (s *PostgreSQLSink) Flush(context.Context) error {
-	return nil
+func (s *PostgreSQLSink) Flush(ctx context.Context) error {
+	if s.async == nil {
+		return nil
+	}
+	return s.async.Flush(ctx)
 }
 
 func (s *PostgreSQLSink) Close() error {
-	return s.db.Close()
+	if s.async == nil {
+		return s.db.Close()
+	}
+	return s.async.Close()
+}
+
+func (s *PostgreSQLSink) AsyncStats() AsyncLogSinkStats {
+	if s.async == nil {
+		return AsyncLogSinkStats{}
+	}
+	return s.async.Stats()
 }
 
 func (s *PostgreSQLSink) ensureTable(ctx context.Context) error {

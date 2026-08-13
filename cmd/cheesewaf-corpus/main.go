@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
 )
 
@@ -230,7 +230,7 @@ func validateAnalyzer(tc securitytest.Case) result {
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
-	detection, err := semantic.NewAnalyzer("block").Detect(context.Background(), reqCtx)
+	detection, err := semantic.NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
 	if err != nil {
 		res.Error = err.Error()
 		res.LatencyMS = durationMS(time.Since(start))
@@ -285,8 +285,7 @@ func validateHTTP(client *http.Client, baseURL string, blockStatuses map[int]str
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	defer netguard.DrainAndClose(resp.Body)
 	res.StatusCode = resp.StatusCode
 	_, res.Blocked = blockStatuses[resp.StatusCode]
 	switch tc.Label {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,10 +16,22 @@ type Pipeline struct {
 	mu        sync.RWMutex
 }
 
-// OnDetectionBudgetExhausted is an optional hook for metrics when the 100ms
-// semantic budget is exhausted. Set from package main/service wiring to avoid
-// import cycles with semantic metrics.
-var OnDetectionBudgetExhausted func()
+type detectionBudgetExhaustedHook func()
+
+// detectionBudgetHook is atomically replaceable because service hot reloads
+// can rebuild a pipeline while requests are recording exhausted budgets.
+var detectionBudgetHook atomic.Pointer[detectionBudgetExhaustedHook]
+
+// SetDetectionBudgetExhaustedHook installs an optional metrics hook without
+// introducing an import cycle with semantic metrics.
+func SetDetectionBudgetExhaustedHook(hook func()) {
+	if hook == nil {
+		detectionBudgetHook.Store(nil)
+		return
+	}
+	callback := detectionBudgetExhaustedHook(hook)
+	detectionBudgetHook.Store(&callback)
+}
 
 func NewPipeline(detectors ...Detector) *Pipeline {
 	p := &Pipeline{}
@@ -71,6 +84,12 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 	for _, detector := range preFilters {
 		result, err := Guard(func() (*DetectionResult, error) { return detector.Detect(ctx, reqCtx) })
 		if err != nil {
+			if errors.Is(err, ErrDetectionOverload) {
+				if parentErr := parentCtx.Err(); parentErr != nil {
+					return nil, parentErr
+				}
+				return finalizeGuardOverload(reqCtx, firstDetected), nil
+			}
 			continue
 		}
 		if result == nil {
@@ -105,6 +124,12 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 				snapshot := *result
 				firstDetected = &snapshot
 			}
+		}
+		if errors.Is(err, ErrDetectionOverload) {
+			if parentErr := parentCtx.Err(); parentErr != nil {
+				return nil, parentErr
+			}
+			return finalizeGuardOverload(reqCtx, firstDetected), nil
 		}
 		// Budget fail-mode only when analysis did not finish cleanly under the
 		// pipeline deadline. A clean pass that races the deadline must not be
@@ -154,9 +179,13 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 
 		// Merge in priority order for stable Results / Metadata.
 		var detectErr error
+		guardOverloaded := false
 		for i := range outs {
 			out := outs[i]
 			if out.err != nil {
+				if errors.Is(out.err, ErrDetectionOverload) {
+					guardOverloaded = true
+				}
 				// Prefer context errors for budget incompleteness.
 				if detectErr == nil || errors.Is(out.err, context.DeadlineExceeded) || errors.Is(out.err, context.Canceled) {
 					detectErr = out.err
@@ -177,6 +206,9 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 				snapshot := *out.result
 				firstDetected = &snapshot
 			}
+		}
+		if parentCtx.Err() == nil && guardOverloaded {
+			return finalizeGuardOverload(reqCtx, firstDetected), nil
 		}
 		if parentCtx.Err() == nil && budgetAnalysisIncomplete(ctx, reqCtx, detectErr) {
 			return finalizeBudgetExhausted(reqCtx, firstDetected), nil
@@ -213,9 +245,13 @@ func finalizeBudgetExhausted(reqCtx *RequestContext, firstDetected *DetectionRes
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
 	}
+	reqCtx.Metadata["detection_analysis_incomplete"] = true
+	if _, exists := reqCtx.Metadata["detection_analysis_incomplete_reason"]; !exists {
+		reqCtx.Metadata["detection_analysis_incomplete_reason"] = "pipeline_deadline"
+	}
 	reqCtx.Metadata["detection_budget_exhausted"] = true
-	if OnDetectionBudgetExhausted != nil {
-		OnDetectionBudgetExhausted()
+	if hook := detectionBudgetHook.Load(); hook != nil {
+		(*hook)()
 	}
 
 	policy, _ := reqCtx.Metadata["budget_exhausted_policy"].(string)
@@ -268,6 +304,15 @@ func finalizeBudgetExhausted(reqCtx *RequestContext, firstDetected *DetectionRes
 		}
 		return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}
 	}
+}
+
+func finalizeGuardOverload(reqCtx *RequestContext, firstDetected *DetectionResult) *DetectionResult {
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = map[string]any{}
+	}
+	reqCtx.Metadata["detection_overloaded"] = true
+	reqCtx.Metadata["detection_analysis_incomplete_reason"] = "guard_overload"
+	return finalizeBudgetExhausted(reqCtx, firstDetected)
 }
 
 // forkRequestContext creates an isolated context for concurrent detectors.

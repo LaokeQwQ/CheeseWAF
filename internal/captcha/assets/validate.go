@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -18,12 +19,16 @@ const (
 	DefaultMaxImageBytes = 8 << 20
 	DefaultMaxFontBytes  = 16 << 20
 	DefaultMaxPixels     = 16_000_000
+	DefaultMaxAssets     = 512
+	DefaultMaxTotalBytes = 512 << 20
 )
 
 type Limits struct {
 	MaxImageBytes int64
 	MaxFontBytes  int64
 	MaxPixels     int64
+	MaxAssets     int
+	MaxTotalBytes int64
 }
 
 func (l Limits) normalized() Limits {
@@ -36,7 +41,58 @@ func (l Limits) normalized() Limits {
 	if l.MaxPixels <= 0 {
 		l.MaxPixels = DefaultMaxPixels
 	}
+	if l.MaxAssets <= 0 {
+		l.MaxAssets = DefaultMaxAssets
+	}
+	if l.MaxTotalBytes <= 0 {
+		l.MaxTotalBytes = DefaultMaxTotalBytes
+	}
 	return l
+}
+
+func (l Limits) maxBytesFor(kind Kind) int64 {
+	l = l.normalized()
+	if kind == KindFont {
+		return l.MaxFontBytes
+	}
+	return l.MaxImageBytes
+}
+
+func (l Limits) allows(count int, totalBytes, addedBytes int64) bool {
+	l = l.normalized()
+	return count < l.MaxAssets && addedBytes > 0 && addedBytes <= l.MaxTotalBytes && totalBytes <= l.MaxTotalBytes-addedBytes
+}
+
+func validateStoredMetadata(asset Asset, expectedKind Kind, expectedID string, limits Limits) error {
+	if !validID(asset.ID) || (expectedID != "" && asset.ID != expectedID) {
+		return fmt.Errorf("%w: invalid asset id metadata", ErrInvalidAsset)
+	}
+	if !knownKind(asset.Kind) || (expectedKind != "" && asset.Kind != expectedKind) {
+		return fmt.Errorf("%w: invalid asset kind metadata", ErrInvalidAsset)
+	}
+	if asset.Size <= 0 || asset.Size > limits.maxBytesFor(asset.Kind) {
+		return fmt.Errorf("%w: invalid asset size metadata", ErrInvalidAsset)
+	}
+	if asset.CreatedAt.IsZero() {
+		return fmt.Errorf("%w: invalid asset creation time metadata", ErrInvalidAsset)
+	}
+	if asset.Name == "" || len(asset.Name) > 255 || strings.ContainsAny(asset.Name, "\\/\x00\r\n") {
+		return fmt.Errorf("%w: invalid asset name metadata", ErrInvalidAsset)
+	}
+	if asset.Kind == KindFont {
+		switch asset.ContentType {
+		case "font/otf", "font/ttf", "font/collection":
+		default:
+			return fmt.Errorf("%w: invalid font content type metadata", ErrInvalidAsset)
+		}
+	} else if asset.ContentType != "image/jpeg" && asset.ContentType != "image/png" {
+		return fmt.Errorf("%w: invalid image content type metadata", ErrInvalidAsset)
+	}
+	digest, err := hex.DecodeString(asset.SHA256)
+	if err != nil || len(digest) != sha256.Size {
+		return fmt.Errorf("%w: invalid asset digest metadata", ErrInvalidAsset)
+	}
+	return nil
 }
 
 func validate(kind Kind, name, declared string, r io.Reader, limits Limits) ([]byte, string, error) {

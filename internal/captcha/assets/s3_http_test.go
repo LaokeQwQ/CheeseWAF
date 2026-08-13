@@ -112,6 +112,32 @@ func TestHTTPObjectClientListObjectsFollowsContinuationToken(t *testing.T) {
 	}
 }
 
+func TestHTTPObjectClientListObjectsLimitedPushesDownRemainingBudget(t *testing.T) {
+	var maxKeys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		maxKeys = append(maxKeys, r.URL.Query().Get("max-keys"))
+		w.Header().Set("Content-Type", "application/xml")
+		if len(maxKeys) == 1 {
+			fmt.Fprint(w, s3ListResponseXML(1, true, "page-2"))
+			return
+		}
+		fmt.Fprint(w, s3ListResponseXML(1, false, ""))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPObjectClient(S3Config{Endpoint: server.URL, Region: "us-east-1", PathStyle: true, AllowPrivateEndpoint: true}, writeS3Credential(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := client.ListObjectsLimited(context.Background(), "bucket", "captcha/", 2)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("bounded list failed: items=%d err=%v", len(items), err)
+	}
+	if got := strings.Join(maxKeys, ","); got != "2,1" {
+		t.Fatalf("max-keys budgets = %q, want 2,1", got)
+	}
+}
+
 func s3ListResponseXML(count int, truncated bool, token string) string {
 	var b strings.Builder
 	b.WriteString("<ListBucketResult>")
@@ -269,7 +295,7 @@ func TestHTTPObjectClientRejectsCumulativeObjectLimit(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "object limit") {
 		t.Fatalf("expected object limit error, got %v", err)
 	}
-	if calls != wantObjectLimit/1000+1 {
+	if calls != wantObjectLimit/1000 {
 		t.Fatalf("unexpected request count: got %d", calls)
 	}
 }

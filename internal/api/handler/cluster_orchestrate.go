@@ -166,6 +166,9 @@ func (h *Handler) ClusterStartRollingUpgrade(w http.ResponseWriter, r *http.Requ
 	if !decode(w, r, &req) {
 		return
 	}
+	// Extract initiator from session/token for audit and rollback authorization
+	initiator := h.extractInitiator(r)
+	req.InitiatedBy = initiator
 	job, err := h.clusterRollingManager().Start(r.Context(), req.RollingUpgradeRequest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "CLUSTER_ROLLING_INVALID", err.Error())
@@ -233,6 +236,10 @@ func (h *Handler) ClusterTrafficPeerReport(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "CLUSTER_TRAFFIC_INVALID", "node_id is required")
 		return
 	}
+	if !h.isRegisteredNode(r.Context(), nodeID) {
+		writeError(w, http.StatusBadRequest, "CLUSTER_TRAFFIC_INVALID", "node_id must be a registered cluster node")
+		return
+	}
 	sched := h.clusterTrafficScheduler()
 	switch strings.TrimSpace(strings.ToLower(req.Report)) {
 	case "failure", "fail":
@@ -244,6 +251,16 @@ func (h *Handler) ClusterTrafficPeerReport(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeData(w, map[string]any{"ok": true, "node_id": nodeID, "report": strings.TrimSpace(strings.ToLower(req.Report))})
+}
+
+func (h *Handler) isRegisteredNode(ctx context.Context, nodeID string) bool {
+	registry := h.clusterHeartbeatRegistry()
+	if registry == nil {
+		return false
+	}
+	snapshot := registry.Snapshot()
+	_, exists := snapshot[nodeID]
+	return exists
 }
 
 // ClusterConsensusStatus returns the built-in coordinator view (leader, role, freeze).
@@ -286,6 +303,18 @@ func (h *Handler) ClusterStartRollingRollback(w http.ResponseWriter, r *http.Req
 		return
 	}
 	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	// Extract initiator for rollback authorization check
+	initiator := h.extractInitiator(r)
+	// Verify the user triggering rollback matches the original job initiator
+	originalJob, err := h.clusterRollingManager().Get(id)
+	if err != nil || originalJob == nil {
+		writeError(w, http.StatusNotFound, "CLUSTER_ROLLING_NOT_FOUND", "original job not found")
+		return
+	}
+	if originalJob.InitiatedBy != "" && originalJob.InitiatedBy != initiator {
+		writeError(w, http.StatusForbidden, "CLUSTER_ROLLING_UNAUTHORIZED", "rollback can only be initiated by the original user")
+		return
+	}
 	job, err := h.clusterRollingManager().StartRollback(r.Context(), id)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {

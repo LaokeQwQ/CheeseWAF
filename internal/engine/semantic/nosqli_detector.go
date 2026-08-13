@@ -19,7 +19,7 @@ func (d *NoSQLiDetector) Name() string  { return "NoSQL Injection Semantic Detec
 func (d *NoSQLiDetector) Priority() int { return 340 }
 
 func (d *NoSQLiDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
-	result, err := NewAnalyzer(d.mode, "nosqli").Detect(ctx, reqCtx)
+	result, err := NewAnalyzer(d.mode, 2, "nosqli").Detect(ctx, reqCtx)
 	if result != nil {
 		result.DetectorID = d.ID()
 	}

@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -119,6 +120,64 @@ func TestApprovalDigestRejectsNestedArgumentTampering(t *testing.T) {
 	tampered := map[string]any{"nested": map[string]any{"token": "secret", "enabled": false}}
 	if _, err := store.BeginExecutionFor(request.ID, "fake_modify", tampered, ApprovalActor{Subject: "user", SessionID: "session"}); err == nil {
 		t.Fatal("tampered arguments were accepted")
+	}
+}
+
+func TestApprovalStoreCapacityEvictsOldestCompletedRequest(t *testing.T) {
+	store := NewApprovalStore()
+	store.capacity = 2
+	first, err := store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"id": 1}, "", ApprovalActor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Approve(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.BeginExecution(first.ID, "fake_modify", map[string]any{"id": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.MarkExecuted(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"id": 2}, "", ApprovalActor{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"id": 3}, "", ApprovalActor{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Get(first.ID); ok {
+		t.Fatal("oldest completed approval was not evicted")
+	}
+	if got := len(store.List()); got != 2 {
+		t.Fatalf("approval count = %d, want 2", got)
+	}
+}
+
+func TestApprovalStoreCapacityRejectsWhenAllRequestsAreActive(t *testing.T) {
+	store := NewApprovalStore()
+	store.capacity = 2
+	for id := 1; id <= 2; id++ {
+		if _, err := store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"id": id}, "", ApprovalActor{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"id": 3}, "", ApprovalActor{}); err == nil {
+		t.Fatal("expected active approval capacity exhaustion")
+	}
+	if got := len(store.List()); got != 2 {
+		t.Fatalf("approval count = %d, want 2", got)
+	}
+}
+
+func TestApprovalStoreRejectsOversizedPersistentFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "approvals.json")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 65), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewApprovalStore()
+	store.maxBytes = 64
+	if err := store.UseFile(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected bounded-read error, got %v", err)
 	}
 }
 

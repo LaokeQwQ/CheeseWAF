@@ -1,143 +1,143 @@
-# CheeseWAF
+<p align="center">
+  <img src="web/public/cheesewaf-logo.png" alt="CheeseWAF 标志" width="160">
+</p>
 
-[English](README.md) | [简体中文](README_CN.md)
+<h1 align="center">CheeseWAF</h1>
 
-CheeseWAF is a Go-based Web Application Firewall scaffold focused on a
-single-binary deployment model, a shared management API, and unified Web,
-mobile browser, and `waf-cli` TUI operations.
+<p align="center">使用 Go 构建的自托管 Web 应用防火墙</p>
 
-## Current Status
+CheeseWAF 部署在客户端与源站之间。它通过反向代理检查请求和响应，并提供统一的管理 API、Web 控制台和终端管理入口。
 
-The repository currently includes:
+> 项目目前处于预发布阶段。配置格式和接口仍可能调整，请先在受控环境中验证，再用于生产流量。
 
-- Reverse proxy WAF flow with staged semantic analysis (input extraction, deep decoding, lexical/syntax/behavior scoring), custom rules, IP/ACL/rate-limit/Bot protection, threat intel import/subscription, signed JS proof-of-work challenge, Altcha-style PoW CAPTCHA, image CAPTCHA with opaque-token server audio and attempt limits, puzzle-slider CAPTCHA, waiting room, edge cache/header/Brotli+gzip compression policy, and response inspection.
-- Semantic regression coverage now includes function-based and error-based SQLi, MySQL executable version comments, PostgreSQL delay payloads, hex tautology, `ORDER BY`/`HAVING` inference, regex value probes, `PROCEDURE ANALYSE`, `xp_cmdshell`, and `into outfile` SQLi shapes; control-character/HTML-entity/data-URI/srcdoc/meta-refresh/CSS-expression/formaction/srcset XSS contexts; `${IFS}`/PowerShell/Pwsh/`cmd /c`/download-to-shell RCE variants; LFI Kubernetes-token, process-environment, and overlong-traversal cases; SSRF IPv6/IPv4-mapped IPv6/dotted-hex/dotted-octal/single-integer-hex/dynamic-DNS/file-scheme forms; Mongo/NoSQL operator, `$expr`, and `$function` injection for login/query contexts; SSTI object-graph/runtime/Twig/ERB execution chains; direct detector bypass samples; and paired benign cases that protect common documentation text from false positives. Maturity and benchmark details live in `docs/semantic-readiness.md`, and public corpus sourcing is tracked in `docs/semantic-corpus-sources.md`.
-- Repeatable semantic validation now has a dedicated `cheesewaf-corpus` runner. It replays the curated JSONL corpus against either the in-process analyzer or a deployed WAF listener and emits a JSON report with detection rate, false-positive rate, per-case latency, and failure evidence. Gate mode combines analyzer replay, deployed HTTP replay, `sqlmap`/XSStrike/nuclei/ZAP baseline wrappers, and checked-in nuclei negative templates for data-plane block regressions and the admin security-entry gate. The scanner wrappers prefer local executables, then fall back to Docker for sqlmap, XSStrike, nuclei, and ZAP when available; skipped external suites become warnings unless `--require-external` is used. Older site YAML files that predate newly added semantic engines backfill missing engine switches to safe defaults unless the operator explicitly sets them to `false`. The release-gate workflow is documented in `docs/security-validation.md`.
-- Shared Web/API/TUI management model with RBAC, audit logs, monitoring, API security, production deployment files, and a single-binary admin listener that serves both the REST API and built Web console. The Web site workspace covers domains, upstreams, TLS material, origin tuning, health checks, per-site semantic toggles including NoSQLi and SSTI, response inspection, access control, and rewrite rules.
-- Management API authorization is now route-scoped: every non-public admin API requires a Bearer token, realtime streams are no longer public, read routes require `read:*`-style permissions, and all mutating routes are guarded by focused `write:*` permissions for system, users, sites, rules, protection, threat intel, edge, AI, storage, and ops. Router regression tests verify unauthorized access, cookie-only CSRF-style requests, and readonly write attempts.
-- Admin tokens carry a unique token ID backed by a revocable server-side session. Login creates a session, `/api/auth/refresh` atomically revokes the old token ID and issues a new one, and `/api/auth/logout` revokes the current session before the Web console clears local state. Password/role and 2FA changes revoke existing sessions for the affected user, and expired/revoked sessions are pruned during login. The Web console refreshes valid near-expiry tokens before requests, while expired or invalid tokens still fall through to the normal 401 logout flow.
-- Admin login now uses a configurable console login profile: `/api/auth/captcha` issues a server-generated graphical slider CAPTCHA by default, while browser PoW remains available as either a standalone mode or an optional slider hardening switch. The slider target is kept in an encrypted, client-bound token and login submissions must pass server-side slider-position, expiry, and drag-duration checks before password/2FA validation; when auxiliary PoW is enabled it is verified on the same backend path. The Web login surface uses a centered flat human-verification bar that opens a compact slider widget on desktop, verifies the drag immediately through `/api/auth/captcha/verify` when the pointer is released, maps rendered drag distance back to the server-side slider coordinate, and returns the thumb/piece to the left after each release. A valid slider proof issues a short-lived, client-bound, one-time receipt; `/api/auth/login` consumes that receipt instead of accepting raw slider coordinates, so the verify endpoint cannot be used as a reusable coordinate oracle. Failed slider attempts show a warning state and automatically refresh the next puzzle, while successful attempts show the verified drag duration and lock the widget until login fails or the CAPTCHA is refreshed; coarse-pointer/mobile clients request PoW instead of showing the slider. System Settings can toggle CAPTCHA mode, tune slider tolerance/min-drag/optional PoW limits, and configure a security entry path that returns an Nginx-style `418 I'm a teapot` page for direct admin-port access or wrong entrances while the correct entrance sets an HttpOnly cookie with the same lifetime as the login session. The login page no longer hints default credentials, shows unobtrusive load timing below the login card, and supports operator-defined image or video background URLs through `console.login.background`.
-- Web console hardening includes localized security/category/severity labels, dashboard total-vs-live posture separation, 1/3/5/10s live refresh controls, selectable total-stat windows, chart axes, legend, zoom buttons, range-slider scaling, resilient event/resource card layouts, URL-addressable IP-management tabs, API security table layout isolation, route-level lazy loading, and 2D/China-region focus/interactive Three.js 3D attack-map views with zoom/pan controls, attack-intensity coloring, country-level GeoIP fallbacks, precise-location metadata support, WebGL fallback handling, responsive tables, and real log data. The China-region focus mode avoids drawing incomplete administrative borders from low-resolution world data; it plots real WAF geolocation points, reference anchors, and risk intensity by default. Administrative boundary rendering is opt-in through `console.map.china_boundary` and `/api/system/map/china-boundary`; operators must provide a licensed/compliant GeoJSON FeatureCollection plus auditable source proof such as a license statement or review ID before the console will render boundary paths. The 3D globe renderer is split into an on-demand chunk so ordinary console pages and 2D maps do not load Three.js up front.
-- The Dashboard resource panel now reads real host metrics from the monitor snapshot: CPU usage, 1-minute system load with CPU-core context, host memory usage, swap usage, disk usage, and separate process-runtime indicators for goroutines and CheeseWAF service memory. Live posture and resources auto-refresh at the selected 1/3/5/10s interval, support manual refresh, display disabled swap explicitly when the host has no swap device, and expose real memory/swap reclaim actions through the protected system API.
-- Attack/block events now have a dedicated detail view under `/logs/:traceId`, reachable from the Dashboard, attack log table, and AI event table. The detail page shows request evidence, detector metadata, payload/user-agent context, and runs single-event AI analysis by sending only the event reference; the backend resolves that reference from the real log sink before analysis, so the Web client cannot spoof the analyzed event body.
-- Block/error pages are runtime-configurable instead of preview-only. The proxy renders a formal infrastructure-style built-in HTML template by default, with an inline CheeseWAF logo, client/WAF/origin status flow, operator guidance, and a visible Event / Trace ID. Built-in public pages negotiate the first-render language from `Accept-Language` and currently ship English, Simplified Chinese, Traditional Chinese, and Japanese copy; unsupported preferred languages fall through to the next supported language instead of forcing English. The response also emits `Content-Language`, `Vary`, and `Accept-CH: Sec-CH-Time-Zone`, and a tiny inline script rechecks `navigator.languages` and the browser time zone so the visible time is localized to the visitor where the browser exposes it. Public pages keep detector internals in logs and show localized visitor-safe guidance instead of leaking backend English rule messages. Every block or proxy error response exposes the same lookup ID in the page body, `X-CheeseWAF-Trace-ID`, `X-CheeseWAF-Event-ID`, `Cache-Control: no-store`, and the WAF log entry. The Web console can enable built-in templates, upload/admin-edit custom Go `html/template` HTML, validate it server-side, persist it to YAML, hot-reload the proxy renderer without a restart, and call the same runtime renderer for a sandboxed preview before saving; if custom HTML omits the Event / Trace ID, CheeseWAF injects a visible fallback badge. Management API and authenticated frontend runtime errors now return both `trace_id` and `event_id` plus matching response headers, so the ID shown in the console can be used directly against backend logs.
-- Scheduled security reports can generate daily or weekly Markdown/JSON summaries from real WAF logs and deliver them to a local report directory or webhook. Reports include the time window, total and security-event counts, block/challenge/log-only totals, unique source IPs, action/severity/category/site/country breakdowns, top security source IPs, attacked URIs, detectors, and recent high-risk events while excluding ordinary pass traffic from risk rankings.
-- Frontend build output uses stable Vite/Rolldown vendor chunks for React, Arco, Three.js, visualization, runtime, and UI utility dependencies. Production source maps are disabled unless `VITE_SOURCEMAP=true` is set, keeping the released Web console payload small, while the large Three.js dependency stays isolated to the attack-map path.
-- The admin console hardens Rules, IP Control, Protection Policy, Operations, Updates & Vulnerability Feeds, Block Pages, Dashboard, attack logs, AI Operations, Attack Map/Attack Screen, and System Settings against failed API calls, cramped search inputs, overflowing tags, blank controlled selects, action-button squeeze, false online states, mixed settings layouts, and table word-break regressions. It uses explicit loading/error/empty states, scoped action footers, responsive token/chip groups, responsive attack/AI event lists that exclude ordinary pass traffic from attack logs, grouped settings sections, mobile IP profile cards with allow/block/reputation actions, mobile-safe AI entry handling, clickable health reconnect status, separated notification/account menus, and browser-verified layouts. UI changes are gated by desktop, laptop, tablet, and mobile visual regression checks.
-- GeoIP protection supports user-defined country CIDR overrides plus MaxMind-compatible `.mmdb` databases; proxy logs are enriched with `metadata.geo` country/city/region/lat/lon/accuracy/ASN fields so attack maps and reports can use real location data when a valid City database or threat-intel feed is configured.
-- Threat-intel indicators now carry action and confidence, are scored across severity/confidence/source count, normalize upstream confidence values whether providers return `0-1` ratios or `0-100` percentages, and are enforced in the proxy hot path according to the global/site `threat_intel` level. Console imports, provider sync, lookups, and protection setting updates trigger runtime policy refresh without requiring a service restart. Clean or empty provider lookups are not imported, and JSON keys that look like IPs/CIDRs are accepted only when their value carries an explicit threat signal. The importer recognizes common AbuseIPDB, AlienVault OTX, ThreatBook, MISP Attribute, and STIX IPv4/IPv6 shapes while preserving plain CIDR/CSV/manual imports.
-- IP access control now supports global, site-level, and directory/path-level allow/block rules in addition to the legacy global whitelist/blacklist. Allow rules keep the existing allowlist bypass semantics for IP-based protections, block rules stop requests before upstream proxying, and IP profiles can apply manual 0-100 reputation overrides. Site access control can define trusted proxy/CDN CIDRs; only trusted remote proxies are allowed to supply real-client headers such as `CF-Connecting-IP`, `True-Client-IP`, `Fastly-Client-IP`, `Fly-Client-IP`, `DO-Connecting-IP`, `Ali-CDN-Real-IP`, `CDN-Src-IP`, `X-CDN-Src-IP`, `X-Azure-ClientIP`, `X-Vercel-Forwarded-For`, `X-Original-Forwarded-For`, `X-Real-IP`, `X-Forwarded-For`, and RFC `Forwarded`.
-- Safe admin defaults: the CLI bootstraps runtime config under `./data`, the admin listener defaults to localhost, public admin binding requires `server.admin_public: true` plus `server.admin_tls`, and first-run setup can choose local/tunnel/reverse-proxy access or public HTTPS with a generated local CA-signed admin certificate.
-- The single-binary admin handler applies baseline browser safety headers to API, SPA fallback, and static assets: an enforcing `Content-Security-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a locked-down `Permissions-Policy`, and HSTS on HTTPS admin responses. Static admin assets get immutable cache headers and negotiated Brotli/gzip compression when the browser supports it, while SPA entry responses stay `no-cache`.
-- Smart protection policy controls for global and site-level Web attack, API security, Bot/CC, and threat-intel levels (`off`, `low`, `smart`, `high`, `strict`); empty site levels inherit the global default. Web attack protection now applies runtime severity/confidence thresholds (`low`: critical/0.90, `smart`: high/0.85, `high`: medium/0.78, `strict`: low/0.65) while respecting monitor/log-only detector modes and preserving detector-requested JS challenges. API security schema validation, endpoint rate-limit findings, and JWT claims-profile anomalies now follow the same level model, so low mode can record and pass lower-confidence API findings while smart mode blocks validated schema/rate-limit/auth breaches; system APISec setting updates rebuild the proxy validator, endpoint limiter, and auth checker without restarting the service.
-- Bot/CC protection levels are also enforced at runtime: suspicious bot detections and CC/rate-limit breaches are evaluated by severity/confidence thresholds, low-signal matches can be logged without blocking, and explicitly enabled waiting rooms remain active as traffic control.
-- Data-plane bot verification can be configured as `pow`, `image`, or `slider`. `pow` preserves the existing JS/Altcha-compatible proof-of-work flow, `image` renders a server-generated digit CAPTCHA plus an audio challenge generated on demand from an opaque, client-bound token; the URL does not encode the answer, audio retrieval is capped per token, and failed answer attempts lock the token until a fresh challenge is issued. `slider` renders a server-generated puzzle image/piece pair verified by encrypted target metadata, drag time, client binding, tolerance checks, and the same failed-attempt lockout before issuing the clearance cookie.
-- API authentication can now enforce WAF-side Bearer JWT signature validation with configured HMAC secrets, PEM public keys/certificates, local JWKS JSON/files, or remote JWKS subscriptions with cache files and background refresh, then apply issuer, audience, expiry, and scope checks through the same smart protection-policy model. Endpoint-level auth policies can override issuer/audience/scope requirements by method and path regex. Runtime APISec updates rebuild schema validation, endpoint rate limiting, and JWT auth without restarting the proxy, and disabled API auth skips JWT/JWKS initialization so optional cache paths cannot block service startup. The Web console exposes JWT signing, remote JWKS, and endpoint-policy settings under System Settings.
-- AI operations surfaces for real attack/block/challenge event analysis, selectable time-window batch analysis, per-event recommendations, and a chat-style console assistant backed by recent WAF events and monitor snapshots. Single-event analysis resolves `trace_id`/log ID server-side before generating recommendations, and assistant replies expose provider/model metadata plus token usage when the provider returns it. The assistant stream now reads provider SSE directly: OpenAI-compatible Chat Completions can surface `reasoning_content`/`reasoning`, content, and tool-call deltas, while Anthropic Messages can surface `thinking_delta`, `text_delta`, and tool `input_json_delta`; the UI measures time to first provider event separately from total response time and keeps the request open if the final answer takes longer. Assistant replies include safe process summaries, live provider-visible reasoning/tool traces, response timing, output-token speed, and timestamps without exposing hidden chain-of-thought. AI providers are configured as OpenAI-standard or Anthropic-standard endpoints with provider-specific authentication headers, and saved API keys are never returned to the Web console. AI prompts treat logs, payloads, runtime context, and operator questions as untrusted data, with explicit guardrails against prompt injection, secret disclosure, tool execution, and unapproved policy changes.
-- First-run setup wizard and REST setup API now share one completion service for validation, admin creation, SQLite migration, default config/certificate generation, and setup completion locking. The generated admin certificate bundle uses an ECDSA P-256 local CA (`CN=CheeseWAF Sign SSL CA`, `O=CheeseCloud Technology Ltc.`) and a server-auth leaf chain.
-- Prometheus metrics, alert evaluation, remote write, and queryable multi-sink logs for local file, ClickHouse, VictoriaLogs, PostgreSQL, and Elasticsearch. Metrics are available through authenticated `/api/metrics` by default; the bare scrape path such as `/metrics` is only exposed when `monitor.prometheus.public: true` is set explicitly.
-- Forgejo Actions CI as the primary build target, plus GitHub Actions as a secondary mirror check, covering PR flow validation, Go tests, web build, cross-platform builds, and branch-channel release artifacts. Pushes to `dev`, `canary`, and `master` build distinct `dev`, `canary`, and `stable` packages on both platforms. Forgejo uses local/mirrored Go and Node toolchain bootstrap scripts to avoid self-hosted runner timeouts against GitHub tool-cache downloads.
+## 核心能力
 
-Runtime Bot challenge secrets are generated per install. If an old config still
-contains an empty value or `change-me-in-production`, CheeseWAF rotates it at
-startup and saves the repaired runtime config.
+- **Web 攻击防护**：检测 SQL 注入、XSS、RCE、LFI、XXE、SSRF、NoSQL 注入和 SSTI，并支持自定义规则与响应检查。
+- **Bot 与流量控制**：提供限流、JS 工作量证明、图片验证码、滑块验证码和排队室。
+- **API 安全**：支持请求结构校验、端点限流，以及基于 HMAC、PEM 或 JWKS 的 JWT 验证。
+- **访问控制**：支持全局、站点和路径级规则，以及 IP 信誉、GeoIP 和按供应商绑定 CIDR 的可信代理识别。
+- **统一管理**：同一套数据可供 Web 控制台、REST API 和 `waf-cli` TUI 使用，并带有 RBAC、会话撤销和审计日志。
+- **监控与分析**：提供 Prometheus 指标、多种日志后端、安全报告、攻击地图和可选的 LLM 辅助分析。
+- **部署与集群**：提供 Docker、systemd 和 Windows 构建文件，并包含节点加入、证书轮换和滚动升级能力。
+- **可重复验证**：内置语义攻击样本回放工具，可测试进程内检测器或已部署的数据平面。
 
-## Development
+## 工作方式
 
-```bash
-go test ./cmd/... ./internal/...
-# On restricted Windows shells, keep the Go build cache inside the workspace:
-# PowerShell: $env:GOCACHE="$PWD\tmp\go-build-cache"; go test ./cmd/... ./internal/...
-go test -race -count=1 ./cmd/... ./internal/...
-go run ./cmd/cheesewaf-corpus --mode analyzer
-# Against a deployed data-plane listener:
-# go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
-# Full release gate; scanner wrappers use local tools first, then Docker when available:
-# go run ./cmd/cheesewaf-corpus --mode gate --base-url http://127.0.0.1:8080 --admin-url https://127.0.0.1:9443 --insecure --output security-gate.json
-go build -trimpath -o bin/cheesewaf ./cmd/cheesewaf/
-cd web && npm ci && npm run build
+```text
+客户端 ---> CheeseWAF 数据平面 ---> 源站
+                 |
+                 +-- 管理 API / Web 控制台 / waf-cli
+                 +-- 日志 / 指标 / 安全报告
 ```
 
-Private local planning files such as `task.md` and `implementation_plan.md` are
-intentionally ignored by Git.
+数据平面负责检测和转发流量。管理平面默认只监听本机，负责站点配置、规则、用户、日志和运行状态。
 
-Semantic engine maturity is tracked in `docs/semantic-readiness.md`; the
-repeatable security corpus gate is documented in `docs/security-validation.md`.
-The current claim is "working and explainable", not "ModSecurity/OWASP CRS
-parity".
+## 快速开始
 
-## Branch Release Artifacts
+### 使用 Docker Compose
 
-GitHub Actions and Forgejo Actions both package branch-specific artifacts after
-successful pushes to the protected branch chain:
+```bash
+git clone https://github.com/LaokeQwQ/CheeseWAF.git
+cd CheeseWAF
+docker compose -f deploy/docker/docker-compose.yml up -d --build
+docker compose -f deploy/docker/docker-compose.yml logs -f cheesewaf
+```
 
-| Branch | Channel | Version pattern |
-| --- | --- | --- |
-| `dev` | `dev` | `0.1.0-dev.<run>+<commit>` |
-| `canary` | `canary` | `0.1.0-canary.<run>+<commit>` |
-| `master` | `stable` | `0.1.0-beta.<run>+<commit>` |
+启动后访问：
 
-Each artifact bundle includes the `cheesewaf` binary, a `waf-cli` alias/copy,
-the built Web console, README files, `LICENSE`, `VERSION`, `release.json`, and a
-top-level `SHA256SUMS` file. The shared packaging script lives at
-`scripts/ci/package-release.sh` so GitHub and Forgejo build the same payloads.
+- 管理向导：`https://127.0.0.1:9443/setup`
+- 数据平面：`http://127.0.0.1:8080`
 
-The current hardening pass covers curated public-corpus-inspired semantic
-fixtures, real dashboard counters, live-vs-total posture separation, scoped
-Dashboard chart sizing, real host CPU/load/memory/swap/disk resource metrics,
-resource reclaim actions, single-event log detail/AI analysis, URL-addressable
-IP threat-intel/access-list tabs with scoped allow/block rules, trusted
-proxy/CDN real-client IP parsing, manual IP reputation overrides, honest
-health/reconnect states, less abstract
-2D/China-region/3D attack-map modes, APISec JWT
-signing/audience/remote-JWKS/endpoint-policy controls, route-scoped management
-API RBAC, richer scheduled security reports, GitHub branch-channel artifacts for
-`dev`, `canary`, and `stable`, and server-side single-event AI analysis lookup.
-Release candidates are accepted only after branch artifacts pass checksum,
-archive-layout, startup, static-asset MIME, proxy, security-header, corpus, and
-deployment verification. The repeatable checks live under `scripts/ci/` and
-`docs/security-validation.md`; repository documentation does not treat a past
-deployment snapshot as the current release state.
+容器使用自签名管理证书。首次初始化令牌只会写入启动日志。完成初始化后，请先把示例站点的上游地址改成真实源站。
 
-## Pre-Release Gaps
+停止服务：
 
-- The admin plane must be treated as a production security boundary: keep it
-  behind TLS or a trusted reverse proxy, bind it to localhost/private networks by
-  default, and avoid exposing browser tokens over plain HTTP.
-- Bare Prometheus scraping is private by default. Prefer authenticated
-  `/api/metrics` or expose `monitor.prometheus.path` only on a trusted listener;
-  set `monitor.prometheus.public: true` deliberately when an external scraper
-  needs direct access.
-- Before a public release, run `cheesewaf-corpus --mode gate` against the
-  deployed data and admin planes with sqlmap, XSStrike, nuclei, and ZAP
-  available locally or through Docker fallback, then archive the JSON/artifacts.
-  Use `--require-external` so missing scanner coverage fails the release gate.
-  CRS/Coraza or ModSecurity comparison remains a separate parity benchmark
-  before stronger claims. `--skip-external` is only for CI/unit-test replay and
-  must not be used as release evidence. Admin-surface route-level
-  authentication/RBAC tests are automated, but deployed dynamic scans should
-  still be repeated before tagging V0.1 beta.
-- Web attack, API security, Bot/CC, and threat-intel protection levels are wired
-  into runtime severity/confidence or score thresholds. The default `smart` mode
-  is tuned for lower false positives, but the exact thresholds still need
-  corpus-backed iteration before GA.
-- API auth checks now support configured JWT signature validation, audience
-  validation, endpoint-level issuer/audience/scope policies, and remote JWKS
-  refresh with SSRF-conscious HTTPS-only fetching plus cache-file fallback. They
-  still do not replace source application authentication, and CheeseWAF
-  intentionally does not fetch remote JWKS URLs in the proxy hot path.
-- City/district-level map precision depends on a valid GeoIP City `.mmdb` or
-  external threat-intel location feed. Without one, CheeseWAF intentionally
-  degrades to country/CIDR-level attribution rather than inventing coordinates.
-  The China-region focus view shows WAF geolocation points and reference anchors
-  without claiming to be a complete administrative boundary map; operators that
-  need boundary-level display must configure `console.map.china_boundary` with
-  an approved GeoJSON FeatureCollection and auditable source proof.
-- The web console now has route-level lazy loading, map-data slimming, and
-  stable vendor chunk grouping. The remaining large chunk is primarily the
-  on-demand Three.js 3D map dependency; measure cold start on low-end mobile
-  browsers before GA.
-- Browser-level visual regression now has a local Chrome Canary headless smoke
-  path with desktop/mobile screenshots and DOM-overflow assertions. Before
-  tagging V0.1 beta, repeat it against the deployed admin console and add a
-  tablet viewport.
+```bash
+docker compose -f deploy/docker/docker-compose.yml down
+```
+
+数据保存在 Compose 命名卷中，执行 `down` 不会删除这些卷。
+
+### 从源码运行
+
+仓库当前使用 Go 1.26.5。Docker 构建使用 Node.js 24.18.0；本地构建 Web 控制台时建议使用相同的大版本。
+
+```bash
+git clone https://github.com/LaokeQwQ/CheeseWAF.git
+cd CheeseWAF
+
+cd web
+npm ci
+npm run build
+cd ..
+
+go run ./cmd/cheesewaf serve
+```
+
+本地默认管理地址是 `http://127.0.0.1:9443/setup`。首次启动会在 `data/` 中创建运行配置、数据库和证书目录。
+
+## 配置
+
+本地首次启动会生成 `data/cheesewaf.yaml`。仓库中的 [示例配置](configs/cheesewaf.yaml) 列出了主要配置项：
+
+- `server`：数据平面和管理平面的监听地址与 TLS；
+- `sites`：域名、源站、检测策略、访问控制和重写规则；
+- `protection`：全局防护等级、IP、限流、Bot 和 API 安全策略；
+- `storage`、`logging` 和 `monitor`：数据库、日志后端、指标与告警。
+
+管理平面默认绑定 `127.0.0.1`。如需公开监听，必须同时启用 `server.admin_public` 和管理 TLS，并限制网络访问范围。
+
+## 开发与验证
+
+运行 Go 检查：
+
+```bash
+go test ./...
+go vet ./...
+```
+
+运行 Web 检查：
+
+```bash
+cd web
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
+
+运行内置语义样本：
+
+```bash
+go run ./cmd/cheesewaf-corpus --mode analyzer
+```
+
+也可以对已部署的数据平面回放样本：
+
+```bash
+go run ./cmd/cheesewaf-corpus \
+  --mode http \
+  --base-url http://127.0.0.1:8080
+```
+
+其他构建、测试和安全验证入口见 [Makefile](Makefile) 与 `scripts/ci/`。
+
+## 项目结构
+
+- `cmd/`：服务、语义样本工具和 Windows 控制器入口；
+- `internal/`：代理、防护、管理 API、存储、集群和调度代码；
+- `web/`：React 管理控制台；
+- `configs/`：配置示例；
+- `deploy/`：Docker、systemd 和 Windows 安装文件；
+- `scripts/ci/`：构建、打包和发行验证脚本。
+
+## 安全说明
+
+- CheeseWAF 不能替代源站自身的身份认证、授权和输入校验。
+- 默认 `smart` 策略偏向降低误报。生产部署前应使用真实业务流量和攻击样本调整策略。
+- 内置样本用于回归验证，不代表已经达到 ModSecurity、Coraza 或 OWASP CRS 的等价覆盖。
+- 请保护管理令牌、初始化令牌、私钥和日志。不要把这些内容提交到仓库。
+
+## 许可证
+
+CheeseWAF 使用 [Apache License 2.0](LICENSE)。

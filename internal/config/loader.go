@@ -109,7 +109,7 @@ func Default() Config {
 		CAPTCHAAssets: CAPTCHAAssetsConfig{
 			Backend: "local", Local: CAPTCHAAssetLocal{Path: "./data/captcha-assets"},
 			S3:     CAPTCHAAssetS3{Region: "us-east-1", UseTLS: true, RequestTimeout: 15 * time.Second},
-			Limits: CAPTCHAAssetLimits{MaxImageBytes: 8 << 20, MaxFontBytes: 16 << 20, MaxPixels: 16_000_000},
+			Limits: CAPTCHAAssetLimits{MaxImageBytes: 8 << 20, MaxFontBytes: 16 << 20, MaxPixels: 16_000_000, MaxAssets: 512, MaxTotalBytes: 512 << 20},
 		},
 		Sites: []SiteConfig{
 			{
@@ -121,8 +121,9 @@ func Default() Config {
 				LoadBalance: "round_robin",
 				Enabled:     true,
 				WAF: WAFConfig{
-					Enabled: true,
-					Mode:    "block",
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 2,
 					SemanticEngines: SemanticEngineSwitches{
 						SQL:   true,
 						XSS:   true,
@@ -157,8 +158,9 @@ func Default() Config {
 						UnhealthyThreshold: 2,
 					},
 					AccessControl: SiteAccessControlConfig{
-						DynamicGuard: true,
-						TrustedCIDRs: []string{},
+						DynamicGuard:          true,
+						TrustedCIDRs:          []string{},
+						TrustedProxyProviders: map[string][]string{},
 					},
 				},
 			},
@@ -332,7 +334,7 @@ func Default() Config {
 		},
 		Monitor: MonitorConfig{
 			Prometheus:  PrometheusConfig{Enabled: true, Path: "/metrics", Public: false},
-			RemoteWrite: RemoteWriteConfig{Enabled: false, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+			RemoteWrite: RemoteWriteConfig{Enabled: false, Interval: time.Minute, Timeout: 10 * time.Second},
 			Alerts: AlertEngineConfig{
 				Enabled: true,
 				Rules: []AlertRuleConfig{
@@ -363,6 +365,12 @@ func Default() Config {
 		},
 		BlockPage: BlockPageConfig{
 			TemplateID: "minimal",
+		},
+		Performance: PerformanceConfig{
+			// Zero-valued tuning fields mean "use the controller's own defaults",
+			// which are derived from detected hardware at startup rather than
+			// hardcoded here. Only Enabled needs an explicit default.
+			GC: GCTuningConfig{Enabled: true},
 		},
 	}
 }
@@ -623,6 +631,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.CAPTCHAAssets.Limits.MaxPixels == 0 {
 		cfg.CAPTCHAAssets.Limits.MaxPixels = def.CAPTCHAAssets.Limits.MaxPixels
+	}
+	if cfg.CAPTCHAAssets.Limits.MaxAssets == 0 {
+		cfg.CAPTCHAAssets.Limits.MaxAssets = def.CAPTCHAAssets.Limits.MaxAssets
+	}
+	if cfg.CAPTCHAAssets.Limits.MaxTotalBytes == 0 {
+		cfg.CAPTCHAAssets.Limits.MaxTotalBytes = def.CAPTCHAAssets.Limits.MaxTotalBytes
 	}
 	if cfg.Cluster.HAMode == "" {
 		cfg.Cluster.HAMode = def.Cluster.HAMode

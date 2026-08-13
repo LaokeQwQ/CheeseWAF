@@ -2,6 +2,8 @@ package apisec
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
@@ -28,6 +31,8 @@ var (
 type remoteJWKSSource struct {
 	url             string
 	cacheFile       string
+	cacheRoot       string
+	cacheRel        string
 	refreshInterval time.Duration
 	timeout         time.Duration
 	client          *http.Client
@@ -58,9 +63,16 @@ func newRemoteJWKSSource(cfg config.APIAuthConfig) (*remoteJWKSSource, error) {
 	if interval > 0 && interval < time.Minute {
 		return nil, fmt.Errorf("remote JWKS refresh interval must be at least 1m")
 	}
+	cacheFile := strings.TrimSpace(cfg.JWKSCacheFile)
+	cacheRoot, cacheRel, err := resolveJWKSCachePath(cacheFile, cfg.JWKSCacheRoot)
+	if err != nil {
+		return nil, err
+	}
 	return &remoteJWKSSource{
 		url:             rawURL,
-		cacheFile:       strings.TrimSpace(cfg.JWKSCacheFile),
+		cacheFile:       cacheFile,
+		cacheRoot:       cacheRoot,
+		cacheRel:        cacheRel,
 		refreshInterval: interval,
 		timeout:         defaultJWKSFetchTimeout,
 		client:          remoteJWKSClientFactory(defaultJWKSFetchTimeout),
@@ -90,12 +102,32 @@ func (s *remoteJWKSSource) LoadCache() error {
 	if s == nil || s.cacheFile == "" {
 		return nil
 	}
-	contents, err := os.ReadFile(s.cacheFile)
+	root, err := s.openCacheRoot(false)
+	if err != nil {
+		if os.IsNotExist(err) && s.HasURL() {
+			return nil
+		}
+		return fmt.Errorf("open JWKS cache root: %w", err)
+	}
+	defer root.Close()
+	info, err := root.Lstat(s.cacheRel)
+	if err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+		return fmt.Errorf("read JWKS cache file: target must be a regular non-symlink file")
+	}
+	file, err := root.Open(s.cacheRel)
 	if err != nil {
 		if os.IsNotExist(err) && s.HasURL() {
 			return nil
 		}
 		return fmt.Errorf("read JWKS cache file: %w", err)
+	}
+	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, maxRemoteJWKSBytes+1))
+	if err != nil {
+		return fmt.Errorf("read JWKS cache file: %w", err)
+	}
+	if len(contents) > maxRemoteJWKSBytes {
+		return fmt.Errorf("JWKS cache exceeds %d bytes", maxRemoteJWKSBytes)
 	}
 	keys, err := publicKeysFromJWKS(contents)
 	if err != nil {
@@ -168,7 +200,7 @@ func (s *remoteJWKSSource) refresh(ctx context.Context) error {
 		s.setError(err)
 		return fmt.Errorf("fetch remote JWKS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		err := fmt.Errorf("fetch remote JWKS: unexpected status %d", resp.StatusCode)
 		s.setError(err)
@@ -202,34 +234,137 @@ func (s *remoteJWKSSource) writeCache(contents []byte) error {
 	if s.cacheFile == "" {
 		return nil
 	}
-	dir := filepath.Dir(s.cacheFile)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create JWKS cache directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".jwks-cache-*")
+	root, err := s.openCacheRoot(true)
 	if err != nil {
-		return fmt.Errorf("create JWKS cache temp file: %w", err)
+		return fmt.Errorf("open JWKS cache root: %w", err)
 	}
-	tmpName := tmp.Name()
+	defer root.Close()
+	parent := filepath.Dir(s.cacheRel)
+	if parent != "." {
+		if err := root.MkdirAll(parent, 0o700); err != nil {
+			return fmt.Errorf("create JWKS cache directory: %w", err)
+		}
+		if err := rejectJWKSCacheSymlinkParents(root, parent); err != nil {
+			return err
+		}
+	}
+	if info, statErr := root.Lstat(s.cacheRel); statErr == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("replace JWKS cache file: target must be a regular non-symlink file")
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect JWKS cache file: %w", statErr)
+	}
+	tmpRel, tmp, err := createJWKSCacheTemp(root, parent)
+	if err != nil {
+		return err
+	}
 	_, writeErr := tmp.Write(contents)
+	syncErr := tmp.Sync()
 	closeErr := tmp.Close()
 	if writeErr != nil {
-		_ = os.Remove(tmpName)
+		_ = root.Remove(tmpRel)
 		return fmt.Errorf("write JWKS cache temp file: %w", writeErr)
 	}
+	if syncErr != nil {
+		_ = root.Remove(tmpRel)
+		return fmt.Errorf("sync JWKS cache temp file: %w", syncErr)
+	}
 	if closeErr != nil {
-		_ = os.Remove(tmpName)
+		_ = root.Remove(tmpRel)
 		return fmt.Errorf("close JWKS cache temp file: %w", closeErr)
 	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("chmod JWKS cache temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, s.cacheFile); err != nil {
-		_ = os.Remove(tmpName)
+	if err := root.Rename(tmpRel, s.cacheRel); err != nil {
+		_ = root.Remove(tmpRel)
 		return fmt.Errorf("replace JWKS cache file: %w", err)
 	}
 	return nil
+}
+
+func resolveJWKSCachePath(cacheFile, configuredRoot string) (string, string, error) {
+	if cacheFile == "" {
+		return "", "", nil
+	}
+	root := strings.TrimSpace(configuredRoot)
+	if root == "" {
+		root = filepath.Dir(cacheFile)
+	}
+	rootAbs, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return "", "", fmt.Errorf("resolve JWKS cache root: %w", err)
+	}
+	cachePath := filepath.Clean(cacheFile)
+	if !filepath.IsAbs(cachePath) {
+		candidateAbs, absErr := filepath.Abs(cachePath)
+		if absErr == nil {
+			if rel, relErr := filepath.Rel(rootAbs, candidateAbs); relErr == nil && filepath.IsLocal(rel) {
+				cachePath = candidateAbs
+			} else if filepath.IsLocal(cachePath) {
+				cachePath = filepath.Join(rootAbs, cachePath)
+			}
+		}
+	}
+	rel, err := fsguard.RelUnderRoot(rootAbs, cachePath)
+	if err != nil {
+		return "", "", fmt.Errorf("JWKS cache file is outside managed root: %w", err)
+	}
+	return rootAbs, rel, nil
+}
+
+func (s *remoteJWKSSource) openCacheRoot(create bool) (*os.Root, error) {
+	if create {
+		if err := os.MkdirAll(s.cacheRoot, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	info, err := os.Lstat(s.cacheRoot)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("JWKS cache root must be a non-symlink directory")
+	}
+	return os.OpenRoot(s.cacheRoot)
+}
+
+func rejectJWKSCacheSymlinkParents(root *os.Root, parent string) error {
+	current := ""
+	for _, part := range strings.FieldsFunc(parent, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if current == "" {
+			current = part
+		} else {
+			current = filepath.Join(current, part)
+		}
+		info, err := root.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("inspect JWKS cache directory: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("JWKS cache directory must not contain symlinks")
+		}
+	}
+	return nil
+}
+
+func createJWKSCacheTemp(root *os.Root, parent string) (string, *os.File, error) {
+	for attempts := 0; attempts < 8; attempts++ {
+		var random [12]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", nil, fmt.Errorf("create JWKS cache temp name: %w", err)
+		}
+		name := ".jwks-cache-" + hex.EncodeToString(random[:])
+		if parent != "." {
+			name = filepath.Join(parent, name)
+		}
+		file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			return name, file, nil
+		}
+		if !os.IsExist(err) {
+			return "", nil, fmt.Errorf("create JWKS cache temp file: %w", err)
+		}
+	}
+	return "", nil, fmt.Errorf("create JWKS cache temp file: exhausted unique names")
 }
 
 func (s *remoteJWKSSource) setKeys(keys []jwtKey, err error) {

@@ -2,6 +2,7 @@ package winctl
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -70,10 +71,7 @@ func withLocalOnly(c *Controller, next http.Handler) http.Handler {
 				return
 			}
 			token := strings.TrimSpace(r.Header.Get("X-CheeseWAF-Control-Token"))
-			if token == "" {
-				token = strings.TrimSpace(r.URL.Query().Get("token"))
-			}
-			if c == nil || c.controlToken == "" || token == "" || token != c.controlToken {
+			if c == nil || !validControlToken(c.controlToken, token) {
 				http.Error(w, "control token required", http.StatusUnauthorized)
 				return
 			}
@@ -84,6 +82,13 @@ func withLocalOnly(c *Controller, next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func validControlToken(expected, provided string) bool {
+	if expected == "" || provided == "" || len(expected) != len(provided) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) == 1
 }
 
 func isLoopbackHTTPOrigin(origin string) bool {
@@ -156,7 +161,10 @@ func (c *Controller) handleAutostart(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Enabled bool `json:"enabled"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid json"})
 			return
 		}
