@@ -170,21 +170,22 @@ type SessionStore interface {
 // Site represents a protected site configuration.
 // 受保护站点配置。
 type Site struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Domains     []string     `json:"domains"`   // 监听域名
-	Upstreams   []string     `json:"upstreams"` // 上游服务器
-	ListenPort  int          `json:"listen_port"`
-	LoadBalance string       `json:"loadbalance"`
-	EnableSSL   bool         `json:"enable_ssl"`
-	CertFile    string       `json:"cert_file,omitempty"`
-	KeyFile     string       `json:"key_file,omitempty"`
-	WAFEnabled  bool         `json:"waf_enabled"`
-	WAFMode     string       `json:"waf_mode"`
-	Advanced    SiteAdvanced `json:"advanced"`
-	Enabled     bool         `json:"enabled"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
+	ID            string       `json:"id"`
+	Name          string       `json:"name"`
+	Domains       []string     `json:"domains"`   // 监听域名
+	Upstreams     []string     `json:"upstreams"` // 上游服务器
+	ListenPort    int          `json:"listen_port"`
+	LoadBalance   string       `json:"loadbalance"`
+	EnableSSL     bool         `json:"enable_ssl"`
+	CertFile      string       `json:"cert_file,omitempty"`
+	KeyFile       string       `json:"key_file,omitempty"`
+	WAFEnabled    bool         `json:"waf_enabled"`
+	WAFMode       string       `json:"waf_mode"`
+	ParanoiaLevel int          `json:"paranoia_level"`
+	Advanced      SiteAdvanced `json:"advanced"`
+	Enabled       bool         `json:"enabled"`
+	CreatedAt     time.Time    `json:"created_at"`
+	UpdatedAt     time.Time    `json:"updated_at"`
 }
 
 type SiteAdvanced struct {

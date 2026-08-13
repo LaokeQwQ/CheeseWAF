@@ -10,6 +10,7 @@ export type Site = {
   key_file?: string;
   waf_enabled: boolean;
   waf_mode: 'block' | 'monitor' | 'off' | string;
+  paranoia_level: number;
   advanced: SiteAdvanced;
   enabled: boolean;
   created_at?: string;
