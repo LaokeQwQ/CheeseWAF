@@ -1,9 +1,14 @@
 package log_sink
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -35,5 +40,39 @@ func TestElasticsearchTotal(t *testing.T) {
 	}
 	if got := elasticsearchTotal(nil, 7); got != 7 {
 		t.Fatalf("unexpected fallback total %d", got)
+	}
+}
+
+func TestElasticsearchQueryRejectsRowsBeyondLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"hits":{"total":{"value":2},"hits":[{"_source":{"id":"1"}},{"_source":{"id":"2"}}]}}`))
+	}))
+	defer server.Close()
+
+	sink, err := NewElasticsearchSink(config.ElasticsearchConfig{Enabled: true, Endpoint: server.URL}, server.Client())
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	defer sink.Close()
+	if _, _, err := sink.Query(context.Background(), storage.LogFilter{Limit: 1}); err == nil || !strings.Contains(err.Error(), "exceeds 1 rows") {
+		t.Fatalf("expected bounded row error, got %v", err)
+	}
+}
+
+func TestElasticsearchQueryRejectsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"padding":"`))
+		_, _ = w.Write([]byte(strings.Repeat("x", int(maxLogQueryResponseBytes))))
+		_, _ = w.Write([]byte(`"}`))
+	}))
+	defer server.Close()
+
+	sink, err := NewElasticsearchSink(config.ElasticsearchConfig{Enabled: true, Endpoint: server.URL}, server.Client())
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	defer sink.Close()
+	if _, _, err := sink.Query(context.Background(), storage.LogFilter{Limit: 1}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected bounded response error, got %v", err)
 	}
 }

@@ -96,7 +96,7 @@ func (w *Webhook) Notify(ctx context.Context, alert monitor.Alert) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("notifier %q returned %s", w.cfg.ID, resp.Status)
 	}

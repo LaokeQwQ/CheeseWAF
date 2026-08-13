@@ -19,6 +19,8 @@ const tokenStorageKey = 'cheesewaf-token';
 const authFlagKey = 'cheesewaf-authed';
 const csrfCookieName = 'cheesewaf_csrf';
 const csrfHeaderName = 'X-CSRF-Token';
+const setupTokenStorageKey = 'cheesewaf-setup-token';
+const setupTokenHeaderName = 'X-CheeseWAF-Setup-Token';
 let refreshPromise: Promise<void> | null = null;
 let authRedirectScheduled = false;
 let authRedirectLocationForTest: AuthRedirectLocation | null = null;
@@ -70,6 +72,57 @@ export function isAuthenticatedFlag(): boolean {
   return sessionStorage.getItem(authFlagKey) === '1' || !!readCSRFCookie();
 }
 
+type SetupLocation = Pick<Location, 'hash' | 'pathname' | 'search'>;
+type SetupHistory = Pick<History, 'replaceState' | 'state'>;
+
+export function captureSetupTokenFromFragment(
+  locationRef: SetupLocation = window.location,
+  historyRef: SetupHistory = window.history,
+): string {
+  const rawFragment = locationRef.hash.startsWith('#') ? locationRef.hash.slice(1) : locationRef.hash;
+  const params = new URLSearchParams(rawFragment);
+  const token = (params.get('setup_token') ?? '').trim();
+  if (!token) {
+    return '';
+  }
+  try {
+    sessionStorage.setItem(setupTokenStorageKey, token);
+  } catch {
+    return '';
+  }
+  params.delete('setup_token');
+  const remaining = params.toString();
+  historyRef.replaceState(historyRef.state, '', `${locationRef.pathname}${locationRef.search}${remaining ? `#${remaining}` : ''}`);
+  return token;
+}
+
+function setupToken(): string {
+  try {
+    return sessionStorage.getItem(setupTokenStorageKey)?.trim() ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function clearSetupToken() {
+  try {
+    sessionStorage.removeItem(setupTokenStorageKey);
+  } catch {
+    /* ignore */
+  }
+}
+
+function isSetupMutation(method: string, requestURL: string): boolean {
+  let path: string;
+  try {
+    path = new URL(requestURL, 'https://cheesewaf.invalid').pathname.replace(/^\/api/, '');
+  } catch {
+    return false;
+  }
+  return (method === 'post' && (path === '/setup' || path === '/setup/probe'))
+    || (method === 'patch' && path === '/setup/draft');
+}
+
 function clearLegacyTokenStorage() {
   try {
     localStorage.removeItem(tokenStorageKey);
@@ -79,8 +132,15 @@ function clearLegacyTokenStorage() {
 }
 
 apiClient.interceptors.request.use(async (config) => {
-  const url = String(config.url ?? '');
-  const method = String(config.method ?? 'get').toLowerCase();
+	const url = String(config.url ?? '');
+	const method = String(config.method ?? 'get').toLowerCase();
+	if (isSetupMutation(method, url)) {
+		captureSetupTokenFromFragment();
+		const token = setupToken();
+		if (token) {
+			config.headers[setupTokenHeaderName] = token;
+		}
+	}
   // Cookie session: credentials already include HttpOnly JWT. Attach CSRF on mutations.
   if (['post', 'put', 'patch', 'delete'].includes(method) && !url.includes('/auth/login') && !url.includes('/setup') && !url.includes('/auth/captcha')) {
     const csrf = getCSRFToken();
@@ -98,7 +158,7 @@ apiClient.interceptors.request.use(async (config) => {
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (axios.isAxiosError(error) && error.response?.status === 401) {
+    if (isSessionInvalidAuthFailure(error)) {
       handleUnauthorizedAuthFailure();
     }
     return Promise.reject(error);
@@ -214,6 +274,36 @@ export class APIRequestError extends Error {
   }
 }
 
+const sessionInvalidErrorCodes = new Set(['UNAUTHORIZED', 'SESSION_EXPIRED', 'SESSION_INVALID']);
+
+function apiErrorCode(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') {
+    return undefined;
+  }
+  const value = payload as { code?: unknown; error?: unknown };
+  if (typeof value.code === 'string') {
+    return value.code;
+  }
+  if (typeof value.error === 'string') {
+    return value.error;
+  }
+  if (value.error && typeof value.error === 'object' && typeof (value.error as { code?: unknown }).code === 'string') {
+    return (value.error as { code: string }).code;
+  }
+  return undefined;
+}
+
+export function isSessionInvalidAuthFailure(error: unknown): boolean {
+  if (error instanceof APIRequestError) {
+    return error.status === 401 && Boolean(error.code && sessionInvalidErrorCodes.has(error.code));
+  }
+  if (!axios.isAxiosError(error) || error.response?.status !== 401) {
+    return false;
+  }
+  const code = apiErrorCode(error.response.data);
+  return Boolean(code && sessionInvalidErrorCodes.has(code));
+}
+
 export async function unwrapAPIResponse<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<T> {
   try {
     const response = await promise;
@@ -323,18 +413,17 @@ export async function login(username: string, password: string, totpCode?: strin
 }
 
 export async function logout() {
+  const result = await unwrap<{ revoked: boolean }>(apiClient.post('/auth/logout', {}));
+  // Only clear local state after server confirms logout success
+  markAuthenticated(false);
+  setCSRFToken('');
+  clearLegacyTokenStorage();
   try {
-    return await unwrap<{ revoked: boolean }>(apiClient.post('/auth/logout', {}));
-  } finally {
-    markAuthenticated(false);
-    setCSRFToken('');
-    clearLegacyTokenStorage();
-    try {
-      sessionStorage.removeItem('cheesewaf-account');
-    } catch {
-      /* ignore */
-    }
+    sessionStorage.removeItem('cheesewaf-account');
+  } catch {
+    /* ignore */
   }
+  return result;
 }
 
 export async function fetchSession() {
@@ -375,16 +464,18 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
   }
 }
 
-export function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
-  return unwrap<{ user: { username: string; role: string } }>(
-    apiClient.post('/setup', {
+export async function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
+	const result = await unwrap<{ user: { username: string; role: string } }>(
+		apiClient.post('/setup', {
       username,
       password,
       admin_listen: adminListen,
       admin_strategy: adminStrategy,
       admin_public: adminStrategy === 'public_tls',
-    }),
-  );
+		}),
+	);
+	clearSetupToken();
+	return result;
 }
 
 export function fetchSites() {
@@ -909,8 +1000,8 @@ export function updateBlockPageConfig(payload: BlockPageConfig) {
   return unwrap<BlockPageConfig>(apiClient.put('/block-pages/config', payload));
 }
 
-export function previewBlockPageConfig(payload: BlockPageConfig) {
-  return unwrap<BlockPagePreview>(apiClient.post('/block-pages/preview', payload));
+export function previewBlockPageConfig(payload: BlockPageConfig, signal?: AbortSignal) {
+  return unwrap<BlockPagePreview>(apiClient.post('/block-pages/preview', payload, { signal }));
 }
 
 export function uploadBlockPageHTML(file: File, templateID?: string) {
@@ -986,7 +1077,7 @@ export async function analyzeLogReferenceStream(
   const traceID = fetchResponseTraceID(response);
   if (!response.ok) {
     const errorBody = await readableFetchError(response);
-    throw new APIRequestError(errorBody.message, 'AI_ANALYSIS_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
+    throw new APIRequestError(errorBody.message, errorBody.code ?? 'AI_ANALYSIS_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
   }
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
@@ -1076,7 +1167,7 @@ export async function analyzeEventsStream(
   const traceID = fetchResponseTraceID(response);
   if (!response.ok) {
     const errorBody = await readableFetchError(response);
-    throw new APIRequestError(errorBody.message, 'AI_EVENTS_ANALYSIS_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
+    throw new APIRequestError(errorBody.message, errorBody.code ?? 'AI_EVENTS_ANALYSIS_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
   }
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
@@ -1178,7 +1269,7 @@ export async function askAIAssistantStream(
   const traceID = fetchResponseTraceID(response);
   if (!response.ok) {
     const errorBody = await readableFetchError(response);
-    throw new APIRequestError(errorBody.message, 'AI_ASSISTANT_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
+    throw new APIRequestError(errorBody.message, errorBody.code ?? 'AI_ASSISTANT_STREAM_FAILED', response.status, errorBody.traceID ?? traceID);
   }
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
@@ -1272,7 +1363,7 @@ export async function continueAIApprovalStream(
   const traceID = fetchResponseTraceID(response);
   if (!response.ok) {
     const errorBody = await readableFetchError(response);
-    throw new APIRequestError(errorBody.message, 'AI_APPROVAL_CONTINUE_FAILED', response.status, errorBody.traceID ?? traceID);
+    throw new APIRequestError(errorBody.message, errorBody.code ?? 'AI_APPROVAL_CONTINUE_FAILED', response.status, errorBody.traceID ?? traceID);
   }
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('application/json') || response.headers.get('x-cheesewaf-stream-fallback') === 'json') {
@@ -1376,7 +1467,15 @@ async function authenticatedFetch(input: RequestInfo | URL, requestURL: string, 
   }
   const response = await fetch(input, { ...init, headers, credentials: 'same-origin' });
   if (response.status === 401) {
-    handleUnauthorizedAuthFailure();
+    try {
+      const payload = await response.clone().json();
+      const code = apiErrorCode(payload);
+      if (code && sessionInvalidErrorCodes.has(code)) {
+        handleUnauthorizedAuthFailure();
+      }
+    } catch {
+      // A 401 without the canonical API error contract is not enough to destroy local session state.
+    }
   }
   return response;
 }
@@ -1422,14 +1521,18 @@ async function reconcileApprovalStreamFailure(approvalID: string, response: Resp
   }
 }
 
-async function readableFetchError(response: Response): Promise<{ message: string; traceID?: string }> {
+async function readableFetchError(response: Response): Promise<{ message: string; code?: string; traceID?: string }> {
   const text = await response.text().catch(() => '');
   if (!text) {
     return { message: `${response.status} ${response.statusText}`, traceID: fetchResponseTraceID(response) };
   }
   try {
     const parsed = JSON.parse(text) as Envelope<unknown>;
-    return { message: parsed.error?.message || text, traceID: parsed.error?.event_id ?? parsed.error?.trace_id ?? fetchResponseTraceID(response) };
+    return {
+      message: parsed.error?.message || text,
+      code: apiErrorCode(parsed),
+      traceID: parsed.error?.event_id ?? parsed.error?.trace_id ?? fetchResponseTraceID(response),
+    };
   } catch {
     return { message: text, traceID: fetchResponseTraceID(response) };
   }

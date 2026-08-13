@@ -46,7 +46,7 @@ func (w *RemoteWriter) Push(ctx context.Context, snapshot Snapshot) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("remote_write returned %s", resp.Status)
 	}

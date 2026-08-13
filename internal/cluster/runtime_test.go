@@ -40,6 +40,21 @@ func TestRuntimeHeartbeatUnlocksMinimumHAWhenMajorityIsOnline(t *testing.T) {
 	}
 }
 
+func TestHeartbeatRegistryRejectsUnboundedFields(t *testing.T) {
+	registry := NewHeartbeatRegistry(HeartbeatRegistryOptions{})
+	cases := []Heartbeat{
+		{NodeID: string(make([]byte, maxHeartbeatNodeID+1))},
+		{NodeID: "node", Role: string(make([]byte, maxHeartbeatRole+1))},
+		{NodeID: "node", AdvertiseAddr: string(make([]byte, maxHeartbeatAddress+1))},
+		{NodeID: "node", ConfigVersion: string(make([]byte, maxHeartbeatVersion+1))},
+	}
+	for index, input := range cases {
+		if _, err := registry.Record(input); err == nil {
+			t.Fatalf("case %d was accepted despite an oversized field", index)
+		}
+	}
+}
+
 func TestRuntimeHeartbeatTimeoutReturnsProtectionMode(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()
 	registry := NewHeartbeatRegistry(HeartbeatRegistryOptions{

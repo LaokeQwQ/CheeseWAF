@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -69,18 +71,29 @@ func TestSSHRunnerRejectsUnknownHostKeyByDefault(t *testing.T) {
 	}
 }
 
-func TestInstallBackupUsesChecksumPrefixNotTaskID(t *testing.T) {
+func TestInstallPublishesOnlyTheExactPreviousGenerationAfterVerification(t *testing.T) {
 	sum := strings.Repeat("a", 64)
 	command := installCommand(3, sum, "deploy-12345678-1234-1234-1234-123456789abc")
-	// Backup names use a hex prefix of the local binary checksum only — never operator task IDs.
-	if !strings.Contains(command, ".bak."+sum[:16]) {
-		t.Fatalf("backup must use checksum prefix: %s", command)
+	for _, want := range []string{
+		`previous="${target}.bak.previous"`,
+		`backup=$(mktemp "${target}.backup.pending.XXXXXX")`,
+		`mv -f "$candidate" "$target"`,
+		`mv -f "$backup" "$previous"`,
+		`cp -p "$backup" "$target"`,
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("install command missing %q: %s", want, command)
+		}
 	}
-	if strings.Contains(command, "deploy-12345678") {
-		t.Fatal("install backup must not embed operator task IDs into the remote shell")
+	for _, forbidden := range []string{"deploy-12345678", ".bak." + sum[:16], `"$target".bak.*`, "latest"} {
+		if strings.Contains(command, forbidden) {
+			t.Fatalf("install command must not contain %q: %s", forbidden, command)
+		}
 	}
-	if strings.Contains(command, "date -u +%Y%m%d%H%M%S") {
-		t.Fatal("install backup must not use a timestamp-only name")
+	targetVerification := strings.LastIndex(command, `"$target" --version`)
+	publishPrevious := strings.Index(command, `mv -f "$backup" "$previous"`)
+	if targetVerification < 0 || publishPrevious < 0 || publishPrevious < targetVerification {
+		t.Fatalf("previous generation must be published only after target verification: %s", command)
 	}
 }
 
@@ -164,13 +177,202 @@ func TestSSHRunnerExecutesFixedRollbackInstall(t *testing.T) {
 		t.Fatalf("rollback result=%+v", result)
 	}
 	exec := server.lastExec()
-	for _, want := range []string{`"$target".bak.*`, `install -m 0755 "$latest" "$target"`, `CheeseWAF restored from`} {
+	for _, want := range []string{
+		`previous="${target}.bak.previous"`,
+		`install -m 0755 "$previous" "$candidate"`,
+		`mv -f "$candidate" "$target"`,
+		`mv -f "$current" "$previous"`,
+		`cp -p "$current" "$target"`,
+		`CheeseWAF restored from "$previous"`,
+	} {
 		if !strings.Contains(exec.command, want) {
 			t.Fatalf("rollback command missing %q: %s", want, exec.command)
 		}
 	}
+	for _, forbidden := range []string{`"$target".bak.*`, "latest", "pre-rollback", "date -u"} {
+		if strings.Contains(exec.command, forbidden) {
+			t.Fatalf("rollback command must not contain %q: %s", forbidden, exec.command)
+		}
+	}
 	if len(exec.stdin) != 0 {
 		t.Fatalf("rollback action must not upload stdin, got %q", exec.stdin)
+	}
+}
+
+func TestInstallAndRollbackUseTheSameExactPreviousGeneration(t *testing.T) {
+	install := installCommand(3, strings.Repeat("b", 64))
+	rollback := rollbackInstallCommand()
+	const previous = `previous="${target}.bak.previous"`
+	for name, command := range map[string]string{"install": install, "rollback": rollback} {
+		if strings.Count(command, previous) != 1 {
+			t.Fatalf("%s command must declare one exact previous generation: %s", name, command)
+		}
+		if strings.Contains(command, `"$target".bak.*`) || strings.Contains(command, "latest") {
+			t.Fatalf("%s command must not discover backups by wildcard: %s", name, command)
+		}
+	}
+	targetVerification := strings.LastIndex(rollback, `"$target" --version`)
+	preserveCurrent := strings.Index(rollback, `mv -f "$current" "$previous"`)
+	if targetVerification < 0 || preserveCurrent < 0 || preserveCurrent < targetVerification {
+		t.Fatalf("rollback must preserve current as previous only after target verification: %s", rollback)
+	}
+	preview, err := remoteCommandPreviewForAction(actionRollbackInstall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(preview, defaultInstallTarget+".bak.previous") || strings.Contains(preview, "newest") || strings.Contains(preview, ".bak.*") {
+		t.Fatalf("rollback preview must name the exact previous generation: %q", preview)
+	}
+}
+
+func TestInstallAndRollbackExchangeTheExactPreviousGeneration(t *testing.T) {
+	shell := deploymentTestShell(t)
+	target := filepath.Join(t.TempDir(), "cheesewaf")
+	previous := target + ".bak.previous"
+	currentBinary := []byte("#!/bin/sh\nprintf 'current\\n'\n")
+	previousBinary := []byte("#!/bin/sh\nprintf 'previous\\n'\n")
+	replacementBinary := []byte("#!/bin/sh\nprintf 'replacement\\n'\n")
+	writeTestShellBinary(t, target, currentBinary)
+	writeTestShellBinary(t, previous, previousBinary)
+
+	if output, err := runDeploymentTestScript(shell, target, installCommand(int64(len(replacementBinary)), checksumHex(replacementBinary)), replacementBinary); err != nil {
+		t.Fatalf("install script failed: %v\n%s", err, output)
+	}
+	assertFileContent(t, target, replacementBinary)
+	assertFileContent(t, previous, currentBinary)
+	assertNoDeploymentTemps(t, target)
+
+	if output, err := runDeploymentTestScript(shell, target, rollbackInstallCommand(), nil); err != nil {
+		t.Fatalf("rollback script failed: %v\n%s", err, output)
+	}
+	assertFileContent(t, target, currentBinary)
+	assertFileContent(t, previous, replacementBinary)
+	assertNoDeploymentTemps(t, target)
+}
+
+func TestInstallVerificationFailureRestoresCurrentAndPreservesPrevious(t *testing.T) {
+	shell := deploymentTestShell(t)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "cheesewaf")
+	previous := target + ".bak.previous"
+	currentBinary := []byte("#!/bin/sh\nprintf 'current\\n'\n")
+	previousBinary := []byte("#!/bin/sh\nprintf 'previous\\n'\n")
+	writeTestShellBinary(t, target, currentBinary)
+	writeTestShellBinary(t, previous, previousBinary)
+	counter := filepath.Join(dir, "install-runs")
+	failingBinary := failOnThirdRunBinary(counter)
+
+	if output, err := runDeploymentTestScript(shell, target, installCommand(int64(len(failingBinary)), checksumHex(failingBinary)), failingBinary); err == nil {
+		t.Fatalf("install must fail when the installed target fails verification:\n%s", output)
+	}
+	assertFileContent(t, counter, []byte("3"))
+	assertFileContent(t, target, currentBinary)
+	assertFileContent(t, previous, previousBinary)
+	assertNoDeploymentTemps(t, target)
+}
+
+func TestRollbackVerificationFailureRestoresCurrentAndPreservesPrevious(t *testing.T) {
+	shell := deploymentTestShell(t)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "cheesewaf")
+	previous := target + ".bak.previous"
+	currentBinary := []byte("#!/bin/sh\nprintf 'current\\n'\n")
+	counter := filepath.Join(dir, "rollback-runs")
+	failingPrevious := failOnThirdRunBinary(counter)
+	writeTestShellBinary(t, target, currentBinary)
+	writeTestShellBinary(t, previous, failingPrevious)
+
+	if output, err := runDeploymentTestScript(shell, target, rollbackInstallCommand(), nil); err == nil {
+		t.Fatalf("rollback must fail when the restored target fails verification:\n%s", output)
+	}
+	assertFileContent(t, counter, []byte("3"))
+	assertFileContent(t, target, currentBinary)
+	assertFileContent(t, previous, failingPrevious)
+	assertNoDeploymentTemps(t, target)
+}
+
+func deploymentTestShell(t *testing.T) string {
+	t.Helper()
+	if shell, err := exec.LookPath("sh"); err == nil {
+		return shell
+	}
+	for _, shell := range []string{
+		filepath.Join(os.Getenv("ProgramFiles"), "Git", "usr", "bin", "sh.exe"),
+		filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe"),
+	} {
+		if info, err := os.Stat(shell); err == nil && !info.IsDir() {
+			return shell
+		}
+	}
+	t.Skip("POSIX shell unavailable")
+	return ""
+}
+
+func runDeploymentTestScript(shell, target, command string, input []byte) (string, error) {
+	targetAssignment := "target=" + shellSingleQuote(filepath.ToSlash(target))
+	command = strings.Replace(command, "target="+defaultInstallTarget, targetAssignment, 1)
+	cmd := exec.Command(shell, "-c", command)
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(shell)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func checksumHex(value []byte) string {
+	sum := sha256.Sum256(value)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func failOnThirdRunBinary(counterPath string) []byte {
+	return []byte("#!/bin/sh\n" +
+		"counter=" + shellSingleQuote(filepath.ToSlash(counterPath)) + "\n" +
+		"count=0\n" +
+		"if [ -f \"$counter\" ]; then count=$(cat \"$counter\"); fi\n" +
+		"count=$((count + 1))\n" +
+		"printf '%s' \"$count\" > \"$counter\"\n" +
+		"if [ \"$count\" -ge 3 ]; then exit 1; fi\n" +
+		"printf 'version ok\\n'\n")
+}
+
+func writeTestShellBinary(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertFileContent(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s content=%q, want %q", path, got, want)
+	}
+}
+
+func assertNoDeploymentTemps(t *testing.T, target string) {
+	t.Helper()
+	for _, pattern := range []string{
+		target + ".backup.pending.*",
+		target + ".install.pending.*",
+		target + ".rollback.pending.*",
+		target + ".rollback-current.*",
+	} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) != 0 {
+			t.Fatalf("deployment left temporary files matching %q: %v", pattern, matches)
+		}
 	}
 }
 
@@ -295,6 +497,9 @@ func TestSSHRunnerRollbackInstallCompensationIsNotApplicable(t *testing.T) {
 	plan := runner.CompensationPlan(SSHDeploymentRequest{Action: actionRollbackInstall})
 	if plan.Applicable || plan.Action != compensationNone {
 		t.Fatalf("rollback compensation plan=%+v, want not applicable none", plan)
+	}
+	if !strings.Contains(plan.Message, "exact previous generation") || strings.Contains(plan.Message, "newest") || strings.Contains(plan.Message, ".bak.*") {
+		t.Fatalf("rollback compensation message must describe the exact previous generation: %q", plan.Message)
 	}
 	result, err := runner.Compensate(context.Background(), SSHDeploymentRequest{Action: actionRollbackInstall}, fmt.Errorf("rollback failed"))
 	if err != nil {

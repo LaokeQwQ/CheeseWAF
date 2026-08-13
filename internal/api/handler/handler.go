@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -60,6 +61,8 @@ type Handler struct {
 	clusterRolling               *orchestrate.RollingManager
 	clusterTraffic               *traffic.Scheduler
 	clusterTrafficMu             sync.Mutex
+	clusterJoinLimiter           *simpleRateLimiter
+	clusterJoinLimiterMu         sync.Mutex
 	clusterConsensus             *consensus.Coordinator
 	clusterConsensusMu           sync.Mutex
 	ACMEIssuer                   acme.Issuer
@@ -86,6 +89,9 @@ type Handler struct {
 	userMutationMu               sync.Mutex
 	now                          func() time.Time
 	StartedAt                    time.Time
+	SetupToken                   string
+	SetupDrafts                  *setup.DraftStore
+	runSetupProbe                func(context.Context, string) setup.ProbeResult
 	geoipMu                      sync.Mutex
 	geoipCacheKey                string
 	geoipPolicy                  *protectionip.GeoIPPolicy
@@ -94,6 +100,7 @@ type Handler struct {
 	diskUsageMu                  sync.Mutex
 	diskUsageCache               map[string]cachedDirSize
 	OnSitesChanged               func([]config.SiteConfig) error
+	OnEdgeChanged                func(config.EdgeConfig) error
 	OnProtectionChanged          func(config.ProtectionConfig) error
 	OnAPISecChanged              func(config.APISecConfig) error
 	OnBlockPageChanged           func(config.BlockPageConfig) error
@@ -173,6 +180,111 @@ func (h *Handler) nowUTC() time.Time {
 	return time.Now().UTC()
 }
 
+type simpleRateLimiter struct {
+	mu       sync.Mutex
+	window   time.Duration
+	capacity int
+	maxKeys  int
+	buckets  map[string]*list.Element
+	order    *list.List
+}
+
+type rateLimitBucket struct {
+	key       string
+	tokens    int
+	updatedAt time.Time
+}
+
+func newSimpleRateLimiter(window time.Duration, capacity int) *simpleRateLimiter {
+	return &simpleRateLimiter{
+		window:   window,
+		capacity: capacity,
+		maxKeys:  4096,
+		buckets:  make(map[string]*list.Element),
+		order:    list.New(),
+	}
+}
+
+func (rl *simpleRateLimiter) Allow(key string, now time.Time) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if strings.TrimSpace(key) == "" {
+		return false
+	}
+	if rl.maxKeys <= 0 {
+		rl.maxKeys = 4096
+	}
+	rl.pruneOldBuckets(now)
+	element, exists := rl.buckets[key]
+	if !exists {
+		for len(rl.buckets) >= rl.maxKeys {
+			oldest := rl.order.Back()
+			if oldest == nil {
+				break
+			}
+			old := oldest.Value.(rateLimitBucket)
+			delete(rl.buckets, old.key)
+			rl.order.Remove(oldest)
+		}
+		bucket := rateLimitBucket{key: key, tokens: rl.capacity - 1, updatedAt: now}
+		rl.buckets[key] = rl.order.PushFront(bucket)
+		return true
+	}
+	bucket := element.Value.(rateLimitBucket)
+	elapsed := now.Sub(bucket.updatedAt)
+	if elapsed >= rl.window {
+		bucket.tokens = rl.capacity - 1
+		bucket.updatedAt = now
+		element.Value = bucket
+		rl.order.MoveToFront(element)
+		return true
+	}
+	if bucket.tokens > 0 {
+		bucket.tokens--
+		bucket.updatedAt = now
+		element.Value = bucket
+		rl.order.MoveToFront(element)
+		return true
+	}
+	return false
+}
+
+func (rl *simpleRateLimiter) pruneOldBuckets(now time.Time) {
+	cutoff := now.Add(-rl.window * 2)
+	for oldest := rl.order.Back(); oldest != nil; oldest = rl.order.Back() {
+		bucket := oldest.Value.(rateLimitBucket)
+		if !bucket.updatedAt.Before(cutoff) {
+			break
+		}
+		delete(rl.buckets, bucket.key)
+		rl.order.Remove(oldest)
+	}
+}
+
+func (h *Handler) clusterJoinRateLimiter() *simpleRateLimiter {
+	h.clusterJoinLimiterMu.Lock()
+	defer h.clusterJoinLimiterMu.Unlock()
+	if h.clusterJoinLimiter == nil {
+		h.clusterJoinLimiter = newSimpleRateLimiter(time.Minute, 10)
+	}
+	return h.clusterJoinLimiter
+}
+
+// extractInitiator returns the user identifier from the request context.
+// For session-authenticated requests, returns the user subject (username).
+// For management API token requests, returns "api-token:{token_id}".
+// Returns empty string if no authentication context is found.
+func (h *Handler) extractInitiator(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	claims, ok := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if ok && claims != nil && strings.TrimSpace(claims.Subject) != "" {
+		return strings.TrimSpace(claims.Subject)
+	}
+	return ""
+}
+
 type cachedDirSize struct {
 	value     int64
 	expiresAt time.Time
@@ -206,7 +318,11 @@ type Options struct {
 	ClusterHeartbeats   *cluster.HeartbeatRegistry
 	ACMEIssuer          acme.Issuer
 	TimeSync            TimeSyncService
+	SetupToken          string
+	SetupDrafts         *setup.DraftStore
+	RunSetupProbe       func(context.Context, string) setup.ProbeResult
 	OnSitesChanged      func([]config.SiteConfig) error
+	OnEdgeChanged       func(config.EdgeConfig) error
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error
@@ -235,6 +351,10 @@ func New(opts Options) *Handler {
 		clock = timekeeper.SystemClock{}
 	}
 	now := clock.Now
+	runSetupProbe := opts.RunSetupProbe
+	if runSetupProbe == nil {
+		runSetupProbe = setup.RunProbe
+	}
 	h := &Handler{
 		Config:                       opts.Config,
 		ConfigPath:                   opts.ConfigPath,
@@ -260,9 +380,13 @@ func New(opts Options) *Handler {
 		loginCAPTCHASecret:           loginSecret,
 		now:                          now,
 		StartedAt:                    now().UTC(),
+		SetupToken:                   strings.TrimSpace(opts.SetupToken),
+		SetupDrafts:                  opts.SetupDrafts,
+		runSetupProbe:                runSetupProbe,
 		managementTokenFlushInterval: time.Minute,
 		diskUsageCache:               map[string]cachedDirSize{},
 		OnSitesChanged:               opts.OnSitesChanged,
+		OnEdgeChanged:                opts.OnEdgeChanged,
 		OnProtectionChanged:          opts.OnProtectionChanged,
 		OnAPISecChanged:              opts.OnAPISecChanged,
 		OnBlockPageChanged:           opts.OnBlockPageChanged,
@@ -286,7 +410,7 @@ func initializeCAPTCHAAssets(cfg *config.Config, secret string, injected captcha
 	if cfg == nil {
 		return nil, refs, fmt.Errorf("captcha asset configuration is unavailable")
 	}
-	limits := captchaassets.Limits{MaxImageBytes: cfg.CAPTCHAAssets.Limits.MaxImageBytes, MaxFontBytes: cfg.CAPTCHAAssets.Limits.MaxFontBytes, MaxPixels: cfg.CAPTCHAAssets.Limits.MaxPixels}
+	limits := captchaassets.Limits{MaxImageBytes: cfg.CAPTCHAAssets.Limits.MaxImageBytes, MaxFontBytes: cfg.CAPTCHAAssets.Limits.MaxFontBytes, MaxPixels: cfg.CAPTCHAAssets.Limits.MaxPixels, MaxAssets: cfg.CAPTCHAAssets.Limits.MaxAssets, MaxTotalBytes: cfg.CAPTCHAAssets.Limits.MaxTotalBytes}
 	dataRoot := strings.TrimSpace(cfg.Setup.DataDir)
 	if strings.EqualFold(cfg.CAPTCHAAssets.Backend, "local") {
 		store, err := captchaassets.NewLocalStore(cfg.CAPTCHAAssets.Local.Path, limits, dataRoot)
@@ -373,11 +497,11 @@ func (h *Handler) notifyBlockPageConfigChanged(next config.BlockPageConfig) erro
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 	data := map[string]any{"status": "ok", "uptime_seconds": int(time.Since(h.StartedAt).Seconds())}
-	approvalHealthy, approvalErr := h.AssistantApprovals.PersistenceHealth()
+	approvalHealthy, _ := h.AssistantApprovals.PersistenceHealth()
 	if h.approvalStoreError != nil || !approvalHealthy {
 		data["status"] = "degraded"
 		data["warnings"] = []string{"AI approval persistence is unavailable; modification tools are disabled"}
-		data["ai_approval_persistence"] = map[string]any{"healthy": false, "error": fmt.Sprint(approvalErr)}
+		data["ai_approval_persistence"] = map[string]any{"healthy": false}
 	} else {
 		data["ai_approval_persistence"] = map[string]any{"healthy": true}
 	}
@@ -1098,11 +1222,11 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
 	}
+	middleware.ClearSessionCookies(w, r)
 	if err := h.Store.RevokeSession(r.Context(), claims.ID, claims.Subject); err != nil {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
-	middleware.ClearSessionCookies(w, r)
 	writeData(w, map[string]any{"revoked": true})
 }
 
@@ -1224,6 +1348,18 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.Config != nil {
 		h.Config = result.Config
+	}
+	if draftID := setupSessionID(r); draftID != "" {
+		h.setupDraftStore().Delete(draftID)
+		http.SetCookie(w, &http.Cookie{
+			Name:     setup.SetupSessionCookie,
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   -1,
+		})
 	}
 	writeData(w, map[string]any{"user": result.User, "setup_complete": true})
 }

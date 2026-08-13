@@ -231,13 +231,13 @@ func (r *SSHRunner) CompensationPlan(req SSHDeploymentRequest) CompensationPlan 
 		return CompensationPlan{
 			Applicable: false,
 			Action:     compensationNone,
-			Message:    "The install action performs inline backup and restore when possible; no separate compensation action is available after the SSH session ends",
+			Message:    "The install action preserves the current binary until the replacement is verified and publishes it as the exact previous generation; no separate compensation action is available after the SSH session ends",
 		}
 	case actionRollbackInstall:
 		return CompensationPlan{
 			Applicable: false,
 			Action:     compensationNone,
-			Message:    "The rollback action restores the newest binary backup directly; no separate compensation action is available after the SSH session ends",
+			Message:    "The rollback action restores the exact previous generation and preserves the current binary as the next previous generation; no separate compensation action is available after the SSH session ends",
 		}
 	default:
 		return CompensationPlan{
@@ -659,9 +659,9 @@ func remoteCommandPreviewForAction(action string) (string, error) {
 	case "", actionCheck:
 		return remoteCheckCommand(), nil
 	case actionInstall:
-		return "upload current CheeseWAF binary, backup existing binary, install to " + defaultInstallTarget + ", then verify version", nil
+		return "upload the CheeseWAF binary, preserve the current binary, install to " + defaultInstallTarget + ", verify version, then publish " + defaultInstallTarget + ".bak.previous", nil
 	case actionRollbackInstall:
-		return "restore the newest " + defaultInstallTarget + ".bak.* backup, then verify version", nil
+		return "restore the exact " + defaultInstallTarget + ".bak.previous generation, verify version, then preserve the replaced current binary as the next previous generation", nil
 	case actionRestartService:
 		return "systemctl restart cheesewaf", nil
 	default:
@@ -676,7 +676,8 @@ func remoteCheckCommand() string {
 		"command -v mktemp >/dev/null 2>&1",
 		"command -v chmod >/dev/null 2>&1",
 		"command -v cp >/dev/null 2>&1",
-		"command -v date >/dev/null 2>&1",
+		"command -v mv >/dev/null 2>&1",
+		"command -v rm >/dev/null 2>&1",
 		"command -v wc >/dev/null 2>&1",
 		"command -v tr >/dev/null 2>&1",
 		"command -v sha256sum >/dev/null 2>&1",
@@ -740,8 +741,7 @@ func openInstallBinary() (installBinarySource, error) {
 }
 
 func installCommand(size int64, checksum string, taskID ...string) string {
-	// taskID is intentionally not interpolated into the remote shell. Backup
-	// names use a prefix of the local binary checksum (hex-only) so no
+	// taskID is intentionally not interpolated into the remote shell so no
 	// operator-supplied token reaches session.Run.
 	_ = taskID
 	if size < 0 {
@@ -749,16 +749,17 @@ func installCommand(size int64, checksum string, taskID ...string) string {
 	}
 	sizeValue := strconv.FormatInt(size, 10)
 	checksum = sanitizeInstallChecksum(checksum)
-	backupID := checksum
-	if len(backupID) > 16 {
-		backupID = backupID[:16]
-	}
 	return strings.Join([]string{
 		"set -eu",
 		"target=" + defaultInstallTarget,
+		"previous=\"${target}.bak.previous\"",
+		"manifest=\"${target}.deploy.manifest\"",
 		"tmp=$(mktemp /tmp/cheesewaf-install.XXXXXX)",
 		"backup=\"\"",
-		"restore() { status=$?; if [ \"$status\" -ne 0 ] && [ -n \"$backup\" ] && [ -f \"$backup\" ]; then cp -p \"$backup\" \"$target\" >/dev/null 2>&1 || true; fi; rm -f \"$tmp\"; exit \"$status\"; }",
+		"candidate=\"\"",
+		"had_target=0",
+		"replaced=0",
+		"restore() { status=$?; if [ \"$status\" -ne 0 ] && [ \"$replaced\" -eq 1 ]; then if [ \"$had_target\" -eq 1 ]; then if [ -n \"$backup\" ] && [ -f \"$backup\" ]; then cp -p \"$backup\" \"$target\" >/dev/null 2>&1 || true; elif [ -f \"$previous\" ]; then cp -p \"$previous\" \"$target\" >/dev/null 2>&1 || true; fi; else rm -f \"$target\" >/dev/null 2>&1 || true; fi; fi; rm -f \"$tmp\" >/dev/null 2>&1 || true; if [ -n \"$candidate\" ]; then rm -f \"$candidate\" >/dev/null 2>&1 || true; fi; if [ -n \"$backup\" ]; then rm -f \"$backup\" >/dev/null 2>&1 || true; fi; exit \"$status\"; }",
 		"trap restore EXIT",
 		"cat > \"$tmp\"",
 		"actual_size=$(wc -c < \"$tmp\" | tr -d '[:space:]')",
@@ -767,13 +768,20 @@ func installCommand(size int64, checksum string, taskID ...string) string {
 		"if [ \"$actual_sha\" != \"" + checksum + "\" ]; then echo uploaded checksum mismatch >&2; exit 1; fi",
 		"chmod 0755 \"$tmp\"",
 		"\"$tmp\" --version",
-		"if [ -f \"$target\" ]; then backup=\"${target}.bak." + backupID + "\"; test ! -e \"$backup\"; cp -p \"$target\" \"$backup\"; fi",
-		"install -m 0755 \"$tmp\" \"$target\"",
+		"if [ -f \"$target\" ]; then backup=$(mktemp \"${target}.backup.pending.XXXXXX\"); cp -p \"$target\" \"$backup\"; had_target=1; fi",
+		"candidate=$(mktemp \"${target}.install.pending.XXXXXX\")",
+		"install -m 0755 \"$tmp\" \"$candidate\"",
+		"\"$candidate\" --version",
+		"replaced=1",
+		"mv -f \"$candidate\" \"$target\"",
+		"candidate=\"\"",
 		"\"$target\" --version",
-		"rm -f \"$tmp\"",
+		"if [ \"$had_target\" -eq 1 ]; then mv -f \"$backup\" \"$previous\"; backup=\"\"; current_sha=$(sha256sum \"$previous\" 2>/dev/null | awk '{print $1}' || echo none); printf 'previous_sha256=%s\\nprevious_path=%s\\n' \"$current_sha\" \"$previous\" > \"$manifest\"; else rm -f \"$previous\"; rm -f \"$manifest\"; fi",
+		"replaced=0",
 		"trap - EXIT",
+		"rm -f \"$tmp\" >/dev/null 2>&1 || true",
 		"echo CheeseWAF installed to \"$target\"",
-		"if [ -n \"$backup\" ]; then echo Previous binary backup: \"$backup\"; fi",
+		"if [ \"$had_target\" -eq 1 ]; then echo Previous binary generation: \"$previous\" checksum: \"$current_sha\"; fi",
 	}, "; ")
 }
 
@@ -892,16 +900,30 @@ func rollbackInstallCommand() string {
 	return strings.Join([]string{
 		"set -eu",
 		"target=" + defaultInstallTarget,
-		"latest=\"\"",
-		"for candidate in \"$target\".bak.*; do [ -f \"$candidate\" ] || continue; latest=\"$candidate\"; done",
-		"if [ -z \"$latest\" ]; then echo no CheeseWAF binary backup found >&2; exit 1; fi",
-		"\"$latest\" --version",
-		"current_backup=\"\"",
-		"if [ -f \"$target\" ]; then current_backup=\"${target}.pre-rollback.$(date -u +%Y%m%d%H%M%S)\"; cp -p \"$target\" \"$current_backup\"; fi",
-		"install -m 0755 \"$latest\" \"$target\"",
+		"previous=\"${target}.bak.previous\"",
+		"manifest=\"${target}.deploy.manifest\"",
+		"if [ ! -f \"$previous\" ]; then echo no CheeseWAF previous binary generation found >&2; exit 1; fi",
+		"if [ -f \"$manifest\" ]; then expected_sha=$(grep '^previous_sha256=' \"$manifest\" 2>/dev/null | cut -d= -f2 || echo none); actual_sha=$(sha256sum \"$previous\" 2>/dev/null | awk '{print $1}' || echo none); if [ \"$expected_sha\" != \"none\" ] && [ \"$actual_sha\" != \"$expected_sha\" ]; then echo previous binary checksum mismatch: expected \"$expected_sha\", got \"$actual_sha\" >&2; exit 1; fi; fi",
+		"\"$previous\" --version",
+		"current=\"\"",
+		"candidate=\"\"",
+		"had_target=0",
+		"replaced=0",
+		"restore() { status=$?; if [ \"$status\" -ne 0 ] && [ \"$replaced\" -eq 1 ]; then if [ \"$had_target\" -eq 1 ]; then if [ -n \"$current\" ] && [ -f \"$current\" ]; then cp -p \"$current\" \"$target\" >/dev/null 2>&1 || true; elif [ -f \"$previous\" ]; then cp -p \"$previous\" \"$target\" >/dev/null 2>&1 || true; fi; else rm -f \"$target\" >/dev/null 2>&1 || true; fi; fi; if [ -n \"$candidate\" ]; then rm -f \"$candidate\" >/dev/null 2>&1 || true; fi; if [ -n \"$current\" ]; then rm -f \"$current\" >/dev/null 2>&1 || true; fi; exit \"$status\"; }",
+		"trap restore EXIT",
+		"candidate=$(mktemp \"${target}.rollback.pending.XXXXXX\")",
+		"install -m 0755 \"$previous\" \"$candidate\"",
+		"\"$candidate\" --version",
+		"if [ -f \"$target\" ]; then current=$(mktemp \"${target}.rollback-current.XXXXXX\"); cp -p \"$target\" \"$current\"; had_target=1; fi",
+		"replaced=1",
+		"mv -f \"$candidate\" \"$target\"",
+		"candidate=\"\"",
 		"\"$target\" --version",
-		"echo CheeseWAF restored from \"$latest\"",
-		"if [ -n \"$current_backup\" ]; then echo Previous current binary backup: \"$current_backup\"; fi",
+		"if [ \"$had_target\" -eq 1 ]; then current_sha=$(sha256sum \"$current\" 2>/dev/null | awk '{print $1}' || echo none); mv -f \"$current\" \"$previous\"; printf 'previous_sha256=%s\\nprevious_path=%s\\n' \"$current_sha\" \"$previous\" > \"$manifest\"; current=\"\"; else rm -f \"$previous\"; rm -f \"$manifest\"; fi",
+		"replaced=0",
+		"trap - EXIT",
+		"echo CheeseWAF restored from \"$previous\"",
+		"if [ \"$had_target\" -eq 1 ]; then echo Replaced binary preserved as: \"$previous\" checksum: \"$current_sha\"; fi",
 	}, "; ")
 }
 

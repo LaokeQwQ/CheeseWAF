@@ -22,6 +22,11 @@ const (
 	RollingStepHealthy    = "healthy"
 	RollingStepFailed     = "failed"
 	RollingStepSkipped    = "skipped"
+
+	// Rolling job retention: jobs expire after 7 days to prevent unbounded memory growth
+	rollingJobTTL = 7 * 24 * time.Hour
+	// Maximum jobs retained: oldest jobs are pruned when limit is reached
+	maxRollingJobs = 500
 )
 
 // RollingTarget is one host in a rolling upgrade batch.
@@ -42,8 +47,9 @@ type RollingUpgradeRequest struct {
 	StopOnFailure  *bool           `json:"stop_on_failure,omitempty"`
 	RestartService *bool           `json:"restart_service,omitempty"`
 	// AutoRollback reinstalls previously succeeded targets in reverse order when a step fails.
-	AutoRollback    *bool  `json:"auto_rollback,omitempty"`
-	HealthURLSuffix string `json:"health_url_suffix,omitempty"`
+	AutoRollback *bool `json:"auto_rollback,omitempty"`
+	// InitiatedBy records the user/token that created this job (for audit and rollback authorization)
+	InitiatedBy string `json:"initiated_by,omitempty"`
 }
 
 // RollingStep is one target's progress.
@@ -79,6 +85,10 @@ type RollingJob struct {
 	PauseBetween time.Duration `json:"-"`
 	// targets retains credentials for rollback; never serialized to clients.
 	targets []RollingTarget `json:"-"`
+	// CreatedAt records when the job was created for TTL enforcement
+	CreatedAt time.Time `json:"created_at"`
+	// InitiatedBy records the user/token that created this job (for rollback authorization)
+	InitiatedBy string `json:"initiated_by,omitempty"`
 }
 
 // DeployStarter starts a single-host deploy task (install / rollback / restart).
@@ -164,6 +174,8 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 		Status:       RollingStatusPending,
 		StartedAt:    now,
 		UpdatedAt:    now,
+		CreatedAt:    now,
+		InitiatedBy:  req.InitiatedBy,
 		StopOnFail:   stopOnFail,
 		Restart:      restart,
 		AutoRollback: autoRollback,
@@ -183,6 +195,10 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 		})
 	}
 	m.mu.Lock()
+	m.pruneExpiredJobsLocked()
+	if len(m.jobs) >= maxRollingJobs {
+		m.pruneOldestJobsLocked()
+	}
 	m.jobs[job.ID] = job
 	m.mu.Unlock()
 
@@ -191,7 +207,7 @@ func (m *RollingManager) Start(ctx context.Context, req RollingUpgradeRequest) (
 }
 
 // StartRollback restores previously succeeded hosts from a finished job in reverse order.
-// Each host uses rollback-install (newest remote backup), not a fresh install of the new binary.
+// Each host uses rollback-install (the exact previous generation), not a fresh install of the new binary.
 func (m *RollingManager) StartRollback(ctx context.Context, jobID string) (*RollingJob, error) {
 	if m == nil {
 		return nil, fmt.Errorf("rolling upgrade manager is unavailable")
@@ -250,6 +266,8 @@ func (m *RollingManager) StartRollback(ctx context.Context, jobID string) (*Roll
 		Status:       RollingStatusPending,
 		StartedAt:    now,
 		UpdatedAt:    now,
+		CreatedAt:    now,
+		InitiatedBy:  stored.InitiatedBy,
 		StopOnFail:   stop,
 		Restart:      restart,
 		AutoRollback: auto,
@@ -402,6 +420,14 @@ func (m *RollingManager) run(ctx context.Context, jobID string, targets []Rollin
 		job.Message = "rolling upgrade completed"
 		job.UpdatedAt = now
 		job.FinishedAt = &now
+		// Keep the source job's credentials until its rollback window expires.
+		// A rollback job itself no longer needs them after successful completion.
+		if job.RollbackOf != "" {
+			clearRollingTargetCredentialsLocked(job)
+			if source, ok := m.jobs[job.RollbackOf]; ok {
+				clearRollingTargetCredentialsLocked(source)
+			}
+		}
 	})
 }
 
@@ -496,7 +522,22 @@ func (m *RollingManager) failJob(jobID, message string) {
 		job.Message = message
 		job.UpdatedAt = now
 		job.FinishedAt = &now
+		// A failed rollback may be retried while the source job is retained, so
+		// keep the source credentials but discard the failed rollback copy.
+		if job.RollbackOf != "" {
+			clearRollingTargetCredentialsLocked(job)
+		}
 	})
+}
+
+func clearRollingTargetCredentialsLocked(job *RollingJob) {
+	if job == nil {
+		return
+	}
+	for i := range job.targets {
+		job.targets[i].Password = ""
+		job.targets[i].PrivateKey = ""
+	}
 }
 
 func (m *RollingManager) updateJob(jobID string, fn func(*RollingJob)) {

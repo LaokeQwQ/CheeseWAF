@@ -350,7 +350,7 @@ monitor:
     enabled: false
     endpoint: ""
     allow_private_endpoint: false
-    interval: "30s"
+    interval: "1m"
     timeout: "10s"
   alerts:
     enabled: true
@@ -394,7 +394,7 @@ apisec:
     jwks_file: ""
     jwks_json: ""
     jwks_url: ""
-    jwks_cache_file: "./data/apisec-jwks-cache.json"
+    jwks_cache_file: "./data/apisec/jwks-cache.json"
     jwks_refresh_interval: "1h"
   rate_limits:
     - id: "login-api"

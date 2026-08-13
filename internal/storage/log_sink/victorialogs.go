@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
 type VictoriaLogsSink struct {
 	cfg    config.VictoriaLogsConfig
 	client *http.Client
+	async  *asyncLogWriter
 }
 
 func NewVictoriaLogsSink(cfg config.VictoriaLogsConfig, client *http.Client) (*VictoriaLogsSink, error) {
@@ -31,10 +33,22 @@ func NewVictoriaLogsSink(cfg config.VictoriaLogsConfig, client *http.Client) (*V
 	if client == nil {
 		client = guardedLogSinkHTTPClient(cfg.Timeout, "victorialogs endpoint", cfg.AllowPrivateEndpoint)
 	}
-	return &VictoriaLogsSink{cfg: cfg, client: client}, nil
+	sink := &VictoriaLogsSink{cfg: cfg, client: client}
+	sink.async = newAsyncLogWriter("victorialogs", sink.writeSync, nil, func() error {
+		sink.client.CloseIdleConnections()
+		return nil
+	}, asyncLogWriterOptions{})
+	return sink, nil
 }
 
 func (s *VictoriaLogsSink) Write(ctx context.Context, entry *storage.LogEntry) error {
+	if s.async == nil {
+		return s.writeSync(ctx, entry)
+	}
+	return s.async.Write(ctx, entry)
+}
+
+func (s *VictoriaLogsSink) writeSync(ctx context.Context, entry *storage.LogEntry) error {
 	if entry == nil {
 		return nil
 	}
@@ -55,7 +69,7 @@ func (s *VictoriaLogsSink) Write(ctx context.Context, entry *storage.LogEntry) e
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("victorialogs returned %s", resp.Status)
 	}
@@ -72,10 +86,7 @@ func (s *VictoriaLogsSink) Query(ctx context.Context, filter storage.LogFilter) 
 	if err != nil {
 		return nil, 0, fmt.Errorf("decode victorialogs count: %w", err)
 	}
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 100
-	}
+	limit := normalizedLimit(filter.Limit)
 	offset := filter.Offset
 	if offset < 0 {
 		offset = 0
@@ -84,19 +95,32 @@ func (s *VictoriaLogsSink) Query(ctx context.Context, filter storage.LogFilter) 
 	if err != nil {
 		return nil, 0, err
 	}
-	entries, err := decodeLogEntryJSONLines(itemBody)
+	entries, err := decodeLogEntryJSONLines(itemBody, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("decode victorialogs rows: %w", err)
 	}
 	return entries, total, nil
 }
 
-func (s *VictoriaLogsSink) Flush(context.Context) error {
-	return nil
+func (s *VictoriaLogsSink) Flush(ctx context.Context) error {
+	if s.async == nil {
+		return nil
+	}
+	return s.async.Flush(ctx)
 }
 
 func (s *VictoriaLogsSink) Close() error {
-	return nil
+	if s.async == nil {
+		return nil
+	}
+	return s.async.Close()
+}
+
+func (s *VictoriaLogsSink) AsyncStats() AsyncLogSinkStats {
+	if s.async == nil {
+		return AsyncLogSinkStats{}
+	}
+	return s.async.Stats()
 }
 
 func (s *VictoriaLogsSink) doQuery(ctx context.Context, query string, limit, offset int, filter storage.LogFilter) (io.ReadCloser, error) {
@@ -128,7 +152,7 @@ func (s *VictoriaLogsSink) doQuery(ctx context.Context, query string, limit, off
 		return nil, err
 	}
 	if resp.StatusCode >= 300 {
-		defer resp.Body.Close()
+		defer netguard.DrainAndClose(resp.Body)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("victorialogs returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}

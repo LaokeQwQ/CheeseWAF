@@ -146,6 +146,26 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 	}
 }
 
+func TestRouterReadonlyCannotExecutePaidAI(t *testing.T) {
+	router, _, readerToken := newAuthzTestRouter(t)
+	response := perform(router, http.MethodPost, "/api/ai/analyze", readerToken, []byte(`{}`))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("readonly user should not execute paid AI, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRouterExplicitAIUsePermissionPassesRBAC(t *testing.T) {
+	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.Permissions["ai_user"] = []string{"use:ai"}
+	})
+	createAuthzUser(t, store, "ai-user-id", "ai-user", "ai-user-password", "ai_user")
+	token := loginAuthzUser(t, router, "ai-user", "ai-user-password")
+	response := perform(router, http.MethodPost, "/api/ai/analyze", token, []byte(`{}`))
+	if response.Code == http.StatusForbidden || response.Code == http.StatusUnauthorized {
+		t.Fatalf("use:ai user should pass RBAC, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestRouterBotChallengeMetricsRequiresProtectionReadPermission(t *testing.T) {
 	router, _, readerToken := newAuthzTestRouter(t)
 	withoutToken := perform(router, http.MethodGet, "/api/protection/bot/metrics", "", nil)
@@ -628,6 +648,54 @@ func TestRouterManagementAPITokenAuditIncludesStableSubject(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected audit entry for %s on /api/system, got %+v", wantSubject, auditEnvelope.Data)
+}
+
+func TestRouterAuditRecordsAuthenticationAndAuthorizationFailures(t *testing.T) {
+	router, cfg, _, adminToken, readerToken := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.Audit.Enabled = true
+		cfg.APISec.Audit.Path = filepath.Join(filepath.Dir(cfg.Storage.SQLite.Path), "audit.log")
+	})
+
+	denied := perform(router, http.MethodPut, "/api/system", readerToken, []byte(`{}`))
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("readonly write status = %d, want 403: %s", denied.Code, denied.Body.String())
+	}
+	allowed := perform(router, http.MethodGet, "/api/system", readerToken, nil)
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("readonly read status = %d, want 200: %s", allowed.Code, allowed.Body.String())
+	}
+	unauthenticated := perform(router, http.MethodGet, "/api/system", "", nil)
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated read status = %d, want 401: %s", unauthenticated.Code, unauthenticated.Body.String())
+	}
+
+	audit := perform(router, http.MethodGet, "/api/audit", adminToken, nil)
+	if audit.Code != http.StatusOK {
+		t.Fatalf("read audit entries: %d %s", audit.Code, audit.Body.String())
+	}
+	var envelope struct {
+		Data []middleware.AuditEntry `json:"data"`
+	}
+	if err := json.NewDecoder(audit.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	var foundAllowed, foundForbidden, foundUnauthorized bool
+	for _, entry := range envelope.Data {
+		if entry.Path != "/api/system" {
+			continue
+		}
+		switch entry.Status {
+		case http.StatusOK:
+			foundAllowed = true
+		case http.StatusForbidden:
+			foundForbidden = true
+		case http.StatusUnauthorized:
+			foundUnauthorized = true
+		}
+	}
+	if !foundAllowed || !foundForbidden || !foundUnauthorized {
+		t.Fatalf("audit file %s missing expected outcomes (ok=%v forbidden=%v unauthorized=%v): %+v", cfg.APISec.Audit.Path, foundAllowed, foundForbidden, foundUnauthorized, envelope.Data)
+	}
 }
 
 func TestRouterManagementAPITokenLastUsedPersistsAcrossRestartAndIsThrottled(t *testing.T) {
@@ -1312,7 +1380,7 @@ func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
 
 func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_writer"] = []string{"write:ai"}
+		cfg.APISec.Permissions["ai_writer"] = []string{"use:ai"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
 	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "ai_writer")
@@ -1351,7 +1419,7 @@ func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 
 func TestRouterAIApprovalRecoveryPreservesObjectScope(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_writer"] = []string{"write:ai"}
+		cfg.APISec.Permissions["ai_writer"] = []string{"use:ai"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
 	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "ai_writer")

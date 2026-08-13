@@ -134,4 +134,28 @@ describe('BlockPagesPage query and write states', () => {
     await waitFor(() => expect(messageMocks.error).toHaveBeenCalledWith('custom save failed'));
     expect(messageMocks.success).not.toHaveBeenCalled();
   });
+
+  it('keeps preview drafts out of query cache and ignores stale responses', async () => {
+    const client = renderBlockPages();
+    await screen.findByText('blockPages.builtInActive');
+    await waitFor(() => expect(apiMocks.previewBlockPageConfig).toHaveBeenCalledTimes(1));
+
+    let resolveStale: ((value: { html: string; event_id: string; trace_id: string }) => void) | undefined;
+    apiMocks.previewBlockPageConfig
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStale = resolve; }))
+      .mockResolvedValueOnce({ html: '<html><body>Latest server preview</body></html>', event_id: 'event-latest', trace_id: 'trace-latest' });
+    const editor = screen.getByPlaceholderText('blockPages.editorPlaceholder');
+
+    fireEvent.change(editor, { target: { value: '<html><body>First draft</body></html>' } });
+    await waitFor(() => expect(apiMocks.previewBlockPageConfig).toHaveBeenCalledTimes(2));
+    fireEvent.change(editor, { target: { value: '<html><body>Latest draft</body></html>' } });
+    await waitFor(() => expect(apiMocks.previewBlockPageConfig).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect((screen.getByTitle('blockPages.preview') as HTMLIFrameElement).srcdoc).toContain('Latest server preview'));
+
+    resolveStale?.({ html: '<html><body>Stale server preview</body></html>', event_id: 'event-stale', trace_id: 'trace-stale' });
+    await Promise.resolve();
+
+    expect((screen.getByTitle('blockPages.preview') as HTMLIFrameElement).srcdoc).toContain('Latest server preview');
+    expect(client.getQueryCache().findAll({ queryKey: ['block-page-preview'] })).toHaveLength(0);
+  });
 });

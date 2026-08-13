@@ -294,10 +294,11 @@ type SiteRewriteRule struct {
 }
 
 type SiteAccessControl struct {
-	AuthEnabled  bool     `json:"auth_enabled"`
-	WaitingRoom  bool     `json:"waiting_room"`
-	DynamicGuard bool     `json:"dynamic_guard"`
-	TrustedCIDRs []string `json:"trusted_cidrs"`
+	AuthEnabled           bool                `json:"auth_enabled"`
+	WaitingRoom           bool                `json:"waiting_room"`
+	DynamicGuard          bool                `json:"dynamic_guard"`
+	TrustedCIDRs          []string            `json:"trusted_cidrs"`
+	TrustedProxyProviders map[string][]string `json:"trusted_proxy_providers,omitempty"`
 }
 
 // Rule represents a custom WAF rule.

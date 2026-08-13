@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,7 @@ type LocalStore struct {
 	root   string
 	limits Limits
 	fs     *localAssetFS
+	mu     sync.Mutex
 }
 
 // NewLocalStore opens a local captcha asset root. When allowedRoot is non-empty,
@@ -53,6 +55,8 @@ func (s *LocalStore) Close() error {
 	if s == nil || s.fs == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.fs.Close()
 }
 
@@ -70,6 +74,15 @@ func (s *LocalStore) Put(ctx context.Context, req PutRequest) (Asset, error) {
 	}
 	sum := sha256.Sum256(data)
 	a := Asset{ID: id, Kind: req.Kind, Name: safeDisplayName(req.Name), ContentType: ct, Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:]), CreatedAt: time.Now().UTC()}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count, totalBytes, err := s.usage(ctx)
+	if err != nil {
+		return Asset{}, err
+	}
+	if !s.limits.allows(count, totalBytes, a.Size) {
+		return Asset{}, ErrQuotaExceeded
+	}
 	if err = s.fs.ensureKind(req.Kind); err != nil {
 		return Asset{}, err
 	}
@@ -143,15 +156,17 @@ func (s *LocalStore) List(ctx context.Context, kind Kind) ([]Asset, error) {
 			if !validID(expectedID) || a.ID != expectedID || a.Kind != k {
 				continue
 			}
-			verified, body, openErr := s.Open(ctx, a.ID)
-			if openErr != nil {
-				if errors.Is(openErr, ErrInvalidAsset) || errors.Is(openErr, ErrNotFound) {
-					continue
-				}
-				return nil, openErr
+			if validateStoredMetadata(a, k, expectedID, s.limits) != nil {
+				continue
 			}
-			_ = body.Close()
-			out = append(out, verified)
+			size, sizeErr := s.storedSize(k, a.ID)
+			if sizeErr != nil || size != a.Size {
+				continue
+			}
+			if len(out) >= s.limits.MaxAssets {
+				return nil, ErrQuotaExceeded
+			}
+			out = append(out, a)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -164,6 +179,8 @@ func (s *LocalStore) Delete(ctx context.Context, id string) error {
 	if !validID(id) {
 		return ErrNotFound
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, kind, err := s.find(id)
 	if err != nil {
 		return err
@@ -177,6 +194,61 @@ func (s *LocalStore) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	return nil
+}
+
+func (s *LocalStore) usage(ctx context.Context) (int, int64, error) {
+	var count int
+	var totalBytes int64
+	for _, kind := range allKinds() {
+		entries, err := s.fs.readDir(kind)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, entry := range entries {
+			if err = ctx.Err(); err != nil {
+				return 0, 0, err
+			}
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".bin" {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name(), ".bin")
+			if !validID(id) {
+				continue
+			}
+			size, sizeErr := s.storedSize(kind, id)
+			if sizeErr != nil {
+				return 0, 0, sizeErr
+			}
+			count++
+			if size < 0 || totalBytes > int64(^uint64(0)>>1)-size {
+				return 0, 0, ErrQuotaExceeded
+			}
+			totalBytes += size
+			if count > s.limits.MaxAssets || totalBytes > s.limits.MaxTotalBytes {
+				return count, totalBytes, nil
+			}
+		}
+	}
+	return count, totalBytes, nil
+}
+
+func (s *LocalStore) storedSize(kind Kind, id string) (int64, error) {
+	file, err := s.fs.open(kind, id+".bin")
+	if err != nil {
+		return 0, err
+	}
+	info, statErr := file.Stat()
+	closeErr := file.Close()
+	if statErr != nil {
+		return 0, statErr
+	}
+	if closeErr != nil {
+		return 0, closeErr
+	}
+	return info.Size(), nil
 }
 func (s *LocalStore) find(id string) (Asset, Kind, error) {
 	for _, k := range allKinds() {

@@ -10,14 +10,14 @@ import (
 
 type LoadBalancer struct {
 	mu     sync.RWMutex
-	next   map[string]int
+	next   map[string]uint64
 	sites  []config.SiteConfig
 	byHost map[string]config.SiteConfig
 	health *HealthRegistry
 }
 
 func NewLoadBalancer(sites []config.SiteConfig) *LoadBalancer {
-	lb := &LoadBalancer{next: map[string]int{}, sites: sites}
+	lb := &LoadBalancer{next: map[string]uint64{}, sites: sites}
 	lb.rebuildHostIndexLocked()
 	return lb
 }
@@ -34,7 +34,7 @@ func (lb *LoadBalancer) UpdateSites(sites []config.SiteConfig, health *HealthReg
 	lb.mu.Lock()
 	lb.sites = append([]config.SiteConfig(nil), sites...)
 	lb.health = health
-	lb.next = map[string]int{}
+	lb.next = map[string]uint64{}
 	lb.rebuildHostIndexLocked()
 	lb.mu.Unlock()
 }
@@ -84,6 +84,26 @@ func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL,
 	index := 0
 	mode := strings.ToLower(strings.TrimSpace(site.LoadBalance))
 	switch mode {
+	case "weighted":
+		var total uint64
+		for _, candidate := range candidates {
+			total += normalizedWeight(candidate.Weight)
+		}
+		if total == 0 {
+			return nil, ErrNoUpstream
+		}
+		lb.mu.Lock()
+		cursor := lb.next[site.ID] % total
+		lb.next[site.ID] = cursor + 1
+		lb.mu.Unlock()
+		var cumulative uint64
+		for i, candidate := range candidates {
+			cumulative += normalizedWeight(candidate.Weight)
+			if cursor < cumulative {
+				index = i
+				break
+			}
+		}
 	case "ip_hash":
 		if clientIP != "" {
 			for _, r := range clientIP {
@@ -94,7 +114,7 @@ func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL,
 	case "least_conn":
 		// Approximate least-connections via rotating preference weighted by inverse of recent picks.
 		lb.mu.Lock()
-		index = lb.next[site.ID] % len(candidates)
+		index = int(lb.next[site.ID] % uint64(len(candidates)))
 		// Prefer lower slot under a simple expanding window.
 		if len(candidates) > 1 {
 			second := (index + 1) % len(candidates)
@@ -103,12 +123,12 @@ func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL,
 			}
 		}
 		lb.next[site.ID+":slot:"+candidates[index].Address]++
-		lb.next[site.ID] = index + 1
+		lb.next[site.ID] = uint64(index + 1)
 		lb.mu.Unlock()
 	default:
 		lb.mu.Lock()
-		index = lb.next[site.ID] % len(candidates)
-		lb.next[site.ID] = index + 1
+		index = int(lb.next[site.ID] % uint64(len(candidates)))
+		lb.next[site.ID] = uint64(index + 1)
 		lb.mu.Unlock()
 	}
 	target := candidates[index].Address
@@ -119,21 +139,25 @@ func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL,
 }
 
 func (lb *LoadBalancer) healthyUpstreams(site config.SiteConfig) []config.UpstreamConfig {
-	var out []config.UpstreamConfig
+	lb.mu.RLock()
+	health := lb.health
+	lb.mu.RUnlock()
+	out := make([]config.UpstreamConfig, 0, len(site.Upstreams))
 	for _, upstream := range site.Upstreams {
-		if lb.health != nil && !lb.health.Healthy(upstream.Address) {
+		if health != nil && !health.Healthy(upstream.Address) {
 			continue
 		}
-		weight := upstream.Weight
-		if weight <= 0 || site.LoadBalance != "weighted" {
-			weight = 1
-		}
-		for i := 0; i < weight; i++ {
-			out = append(out, upstream)
-		}
+		out = append(out, upstream)
 	}
 	if len(out) == 0 && len(site.Upstreams) > 0 {
 		out = append(out, site.Upstreams...)
 	}
 	return out
+}
+
+func normalizedWeight(weight int) uint64 {
+	if weight <= 0 {
+		return 1
+	}
+	return uint64(weight)
 }
