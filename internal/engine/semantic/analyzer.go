@@ -573,7 +573,7 @@ const (
 // most useful bounded window from an oversized value and promotes suspicious
 // inputs when a request exceeds the global candidate budget. Final decisions
 // still go through the category-specific syntax and semantic analyzers.
-var rawCoverageSignal = regexp.MustCompile(`(?i)(?:\$\{\s*jndi\s*:|<\?(?:php|=)|<!\s*(?:doctype|entity)|<\s*script\b|javascript\s*:|(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b|(?:union(?:\s|%20)+(?:all(?:\s|%20)+)?select|(?:or|and)(?:\s|%20)+\d+(?:\s|%20)*=(?:\s|%20)*\d+)|\.\.[/\\]|%2e%2e(?:%2f|/)|\{\{|\{%|%\{|<%|\$(?:where|function|eval|regex|ne|gt|gte|lt|lte)\b|https?://(?:127(?:\.\d+){3}|169\.254(?:\.\d+){2}|localhost\b)|\(\)\s*\{)`)
+var rawCoverageSignal = regexp.MustCompile(`(?i)(?:\$\{\s*jndi\s*:|\$\{\$\{|\$\{[^}]{0,40}(?::-|:-[^}]|date:)|<\?(?:php|=)|<!\s*(?:doctype|entity)|<\s*script\b|javascript\s*:|(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b|(?:union(?:\s|%20)+(?:all(?:\s|%20)+)?select|(?:or|and)(?:\s|%20)+\d+(?:\s|%20)*=(?:\s|%20)*\d+)|\.\.[/\\]|%2e%2e(?:%2f|/)|\{\{|\{%|%\{|<%|\$(?:where|function|eval|regex|ne|gt|gte|lt|lte)\b|https?://(?:127(?:\.\d+){3}|169\.254(?:\.\d+){2}|localhost\b)|\(\)\s*\{)`)
 
 func normalizePathAllowlist(paths []string) []string {
 	if len(paths) == 0 {
@@ -1851,7 +1851,7 @@ func guessCategories(raw string) []string {
 			sqlCompact := compactSQL(text)
 			if strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") ||
 				sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) ||
-				sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) ||
+				quotedOrPredicateInjection(text) || sqlOrderByInference.MatchString(text) ||
 				sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) ||
 				sqlMetadataObject.MatchString(text) || guardedMatchString2K(sqlSubquery, text) ||
 				guardedMatchString2K(sqlCaseWhen, text) || sqlFileData.MatchString(text) ||
@@ -1866,7 +1866,7 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintRCE != 0 {
-		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "downloadfile") || strings.Contains(text, "webclient") || strings.Contains(text, "tcpclient") || strings.Contains(text, "new-object") || strings.Contains(text, "<?php") || strings.Contains(text, "eval(") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || strings.Contains(text, "ld_preload") || strings.Contains(text, "child_process") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) || rceNetWebClientSideFx.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceLoaderPrimitive.MatchString(text) {
+		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "downloadfile") || strings.Contains(text, "webclient") || strings.Contains(text, "tcpclient") || strings.Contains(text, "new-object") || strings.Contains(text, "<?php") || strings.Contains(text, "eval(") || strings.Contains(text, "assert(") || strings.Contains(text, "getallheaders") || strings.Contains(text, "apache_request_headers") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || strings.Contains(text, "ld_preload") || strings.Contains(text, "child_process") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) || rceNetWebClientSideFx.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceLoaderPrimitive.MatchString(text) {
 			scores["rce"] += 2
 		}
 	}
@@ -1904,8 +1904,8 @@ func guessCategories(raw string) []string {
 	}
 	if hints&hintWebshell != 0 {
 		if (strings.Contains(text, "<?php") || strings.Contains(text, "<?=")) ||
-			(strings.Contains(text, "eval(") && (strings.Contains(text, "$_post") || strings.Contains(text, "$_get") || strings.Contains(text, "$_request"))) ||
-			rxPHPCallbackSuperglobal.MatchString(text) ||
+			phpGadgetText(text) ||
+			(strings.Contains(text, "eval(") && (strings.Contains(text, "$_post") || strings.Contains(text, "$_get") || strings.Contains(text, "$_request") || strings.Contains(text, "$_cookie"))) ||
 			strings.Contains(text, "base64_decode") || strings.Contains(text, "gzinflate") ||
 			strings.Contains(text, "runtime.getruntime()") || strings.Contains(text, "processbuilder") ||
 			strings.Contains(text, "system.diagnostics.process") ||
@@ -1987,6 +1987,8 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "downloadfile") || strings.Contains(lower, "webclient") ||
 		strings.Contains(lower, "tcpclient") || strings.Contains(lower, "invoke-expression") ||
 		strings.Contains(lower, "<?php") || strings.Contains(lower, "eval(") ||
+		strings.Contains(lower, "assert(") || strings.Contains(lower, "getallheaders") ||
+		strings.Contains(lower, "apache_request_headers") ||
 		strings.Contains(lower, "whoami") || strings.Contains(lower, "${ifs}") ||
 		strings.Contains(lower, "$ifs") || strings.Contains(lower, "/dev/tcp") ||
 		strings.Contains(lower, "/dev/udp") || strings.Contains(lower, "</dev/") ||
@@ -2090,9 +2092,11 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 var (
 	sqlBooleanTautology     = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
 	sqlEmptyStringTautology = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*(?:''|""|'[^']*'|"[^"]*"|['"])\s*=\s*(?:''|""|'[^']*'|"[^"]*"|['"])`)
-	// Quoted OR is injection when the right-hand side is a tautology, comparison,
-	// SQL function, or subquery — not English "foo" or "bar" alternatives.
-	sqlQuotedOrPredicate    = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']{0,64}'\s*(?:=|<>|!=|like\b)|"[^"]{0,64}"\s*(?:=|<>|!=|like\b)|\d+\s*(?:=|<>|!=|<|>)\s*\d+|\d+\b|true\b|false\b|null\b|\(|(?:sleep|benchmark|pg_sleep|waitfor|if|exists|ascii|substring|substr|ord|mid|concat|char|chr|updatexml|extractvalue|elt|user|version|database|schema|current_user)\b|[a-z_][a-z0-9_]*\s*(?:=|<>|!=|like\b))`)
+	sqlQuotedOrCompare      = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']{0,64}'\s*(?:=|<>|!=)|"[^"]{0,64}"\s*(?:=|<>|!=)|\d+\s*(?:=|<>|!=|<|>)\s*\d+|\d+\b|true\b|false\b|null\b)`)
+	sqlQuotedOrCall         = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:waitfor\b|(?:sleep|benchmark|pg_sleep|if|exists|ascii|substring|substr|ord|mid|concat|char|chr|updatexml|extractvalue|elt|user|version|database|schema|current_user)\s*\()`)
+	sqlQuotedOrSubq         = regexp.MustCompile(`(?i)(?:'|")\s*or\s*\(\s*(?:select|exists|if\s*\(|case\s+when|not\s+(?:\d|true|null|\()|\d+\s*=|'[^']*'\s*=)`)
+	sqlQuotedOrIdent        = regexp.MustCompile(`(?i)(?:'|")\s*or\s+[a-z_][a-z0-9_]*\s*(?:=|<>|!=|--|/\*|#(?:\s|$)|like\s*(?:'|\"|0x))`)
+	sqlQuotedOrNot          = regexp.MustCompile(`(?i)(?:'|")\s*or\s+not\s+(?:\d+\s*=|true\b|false\b|null\b|\()`)
 	sqlTimeFunction         = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
 	sqlDialectTimeFunction  = regexp.MustCompile(`(?i)\bdbms_(?:lock|session)\.sleep\s*\(`)
 	sqlComment              = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
@@ -2219,6 +2223,14 @@ func sqlCommentTruncationShape(text string) bool {
 	return false
 }
 
+func quotedOrPredicateInjection(text string) bool {
+	return sqlQuotedOrCompare.MatchString(text) ||
+		sqlQuotedOrCall.MatchString(text) ||
+		sqlQuotedOrSubq.MatchString(text) ||
+		sqlQuotedOrIdent.MatchString(text) ||
+		sqlQuotedOrNot.MatchString(text)
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -2292,7 +2304,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlEmptyStringTautology.MatchString(text) {
 		reasons["syntax: empty-string boolean tautology predicate"] = true
 	}
-	if sqlQuotedOrPredicate.MatchString(text) {
+	if quotedOrPredicateInjection(text) {
 		reasons["syntax: quoted OR predicate injection"] = true
 	}
 	if sqlTimeFunction.MatchString(text) {
@@ -2801,10 +2813,10 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 			reasons["semantics: language runtime command or include execution"] = true
 		}
 	}
-	// Query/URI eval(getallheaders()) / eval(apache_request_headers()) reads
-	// attacker-controlled request headers into eval. The same tokens in a body
-	// are usually a writeup, so this branch is request-target only.
-	if requestTargetSurface(candidate.input.Source) &&
+	// eval(getallheaders()) / eval(apache_request_headers()) reads attacker
+	// headers into eval. Same surface rules as delimiter-less PHP gadgets:
+	// query/form/json/cookie, not a raw advisory body.
+	if phpGadgetAllowed(candidate.input.Source, candidate.input.Name, candidate.text) &&
 		(strings.Contains(lower, "eval(") || strings.Contains(lower, "assert(")) &&
 		(strings.Contains(lower, "getallheaders") || strings.Contains(lower, "apache_request_headers")) {
 		reasons["syntax: PHP header-array evaluation"] = true

@@ -137,7 +137,8 @@ func hasLog4ShellLookup(normalized string) bool {
 	if !strings.Contains(normalized, "::-") &&
 		!strings.Contains(normalized, "lower:") &&
 		!strings.Contains(normalized, "upper:") &&
-		!strings.Contains(normalized, ":-") {
+		!strings.Contains(normalized, ":-") &&
+		!strings.Contains(normalized, "${date:") {
 		return false
 	}
 	return log4ShellJNDIToken(normalizeLog4Shell(normalized))
@@ -154,8 +155,8 @@ func log4ShellJNDIToken(s string) bool {
 }
 
 // peelLog4jLookups expands character-substitution lookups so a later JNDI match
-// sees ${jndi:ldap://...}. ${::-j}, ${lower:j}, and ${env:VAR:-j} become their
-// default or mapped value. Lookups without a default, including
+// sees ${jndi:ldap://...}. ${::-j}, ${:-j}, ${lower:j}, ${date:'j'}, and any
+// ${name:-j} default become that value. Lookups without a default, including
 // ${sys:java.version} used as a callback host, stay intact. ${jndi:...} itself
 // is not expanded.
 func peelLog4jLookups(s string) string {
@@ -178,23 +179,41 @@ func expandLog4jLookup(match string) string {
 	if strings.HasPrefix(inner, "::-") {
 		return inner[3:]
 	}
+	// ${:-j} is the empty-name default form; colon sits at index 0.
+	if strings.HasPrefix(inner, ":-") {
+		return inner[2:]
+	}
+	lowerInner := strings.ToLower(inner)
+	if strings.HasPrefix(lowerInner, "date:") {
+		rest := inner[len("date:"):]
+		if rest == "" {
+			return ""
+		}
+		if len(rest) >= 2 {
+			q := rest[0]
+			if (q == '\'' || q == '"') && rest[len(rest)-1] == q {
+				return rest[1 : len(rest)-1]
+			}
+		}
+	}
 	colon := strings.IndexByte(inner, ':')
 	if colon <= 0 {
 		return match
 	}
 	prefix := strings.ToLower(inner[:colon])
+	if prefix == "jndi" {
+		return match
+	}
+	// Defaults before case-fold: ${lower:-j} is lookup "lower" with default "j".
+	if i := strings.LastIndex(inner, ":-"); i >= 0 {
+		return inner[i+2:]
+	}
 	rest := inner[colon+1:]
 	switch prefix {
 	case "lower", "lowercase":
 		return strings.ToLower(rest)
 	case "upper", "uppercase":
 		return strings.ToUpper(rest)
-	}
-	if i := strings.LastIndex(rest, ":-"); i >= 0 {
-		switch prefix {
-		case "env", "sys", "java", "main", "ctx", "map", "sd", "marker", "date", "bundle", "log4j":
-			return rest[i+2:]
-		}
 	}
 	return match
 }
