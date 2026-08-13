@@ -2,7 +2,8 @@ package ip
 
 import (
 	"math"
-	"net"
+	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,45 +40,45 @@ type ThreatDecision struct {
 }
 
 type Intel struct {
-	items []indicatorMatcher
-	now   func() time.Time
-}
-
-type indicatorMatcher struct {
-	indicator Indicator
-	ip        net.IP
-	network   *net.IPNet
+	items    []Indicator
+	exact    map[netip.Addr][]int
+	networks prefixIndex[int]
+	now      func() time.Time
 }
 
 func NewIntel(configs []config.ThreatIntelConfig) (*Intel, error) {
-	intel := &Intel{now: time.Now}
+	intel := &Intel{now: time.Now, exact: make(map[netip.Addr][]int)}
 	for _, item := range configs {
 		if !item.Enabled || strings.TrimSpace(item.Value) == "" {
 			continue
 		}
-		matcher := indicatorMatcher{
-			indicator: Indicator{
-				ID:         item.ID,
-				Value:      strings.TrimSpace(item.Value),
-				Type:       empty(item.Type, "ip"),
-				Severity:   strings.ToLower(empty(item.Severity, "medium")),
-				Source:     item.Source,
-				Labels:     cloneStrings(item.Labels),
-				Action:     normalizeIndicatorAction(item.Action),
-				Confidence: normalizeConfidence(item.Confidence),
-				ExpiresAt:  item.ExpiresAt,
-			},
+		indicator := Indicator{
+			ID:         item.ID,
+			Value:      strings.TrimSpace(item.Value),
+			Type:       empty(item.Type, "ip"),
+			Severity:   strings.ToLower(empty(item.Severity, "medium")),
+			Source:     item.Source,
+			Labels:     cloneStrings(item.Labels),
+			Action:     normalizeIndicatorAction(item.Action),
+			Confidence: normalizeConfidence(item.Confidence),
+			ExpiresAt:  item.ExpiresAt,
 		}
+		index := len(intel.items)
 		if strings.Contains(item.Value, "/") {
-			_, network, err := net.ParseCIDR(item.Value)
+			prefix, err := netip.ParsePrefix(strings.TrimSpace(item.Value))
 			if err != nil {
 				return nil, err
 			}
-			matcher.network = network
-		} else if parsed := net.ParseIP(item.Value); parsed != nil {
-			matcher.ip = parsed
+			prefix, err = canonicalPrefix(prefix)
+			if err != nil {
+				return nil, err
+			}
+			intel.networks.add(prefix, index)
+		} else if parsed, err := netip.ParseAddr(strings.TrimSpace(item.Value)); err == nil {
+			addr := parsed.Unmap()
+			intel.exact[addr] = append(intel.exact[addr], index)
 		}
-		intel.items = append(intel.items, matcher)
+		intel.items = append(intel.items, indicator)
 	}
 	return intel, nil
 }
@@ -86,23 +87,22 @@ func (i *Intel) Match(raw string) []Indicator {
 	if i == nil {
 		return []Indicator{}
 	}
-	parsed := net.ParseIP(strings.TrimSpace(raw))
-	if parsed == nil {
+	parsed, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
 		return []Indicator{}
 	}
+	parsed = parsed.Unmap()
 	out := make([]Indicator, 0)
 	now := i.now().UTC()
-	for _, item := range i.items {
-		if !item.indicator.ExpiresAt.IsZero() && item.indicator.ExpiresAt.Before(now) {
+	indices := append([]int(nil), i.exact[parsed]...)
+	indices = append(indices, i.networks.match(parsed)...)
+	sort.Ints(indices)
+	for _, index := range indices {
+		item := i.items[index]
+		if !item.ExpiresAt.IsZero() && item.ExpiresAt.Before(now) {
 			continue
 		}
-		if item.ip != nil && item.ip.Equal(parsed) {
-			out = append(out, item.indicator)
-			continue
-		}
-		if item.network != nil && item.network.Contains(parsed) {
-			out = append(out, item.indicator)
-		}
+		out = append(out, item)
 	}
 	return out
 }
@@ -114,10 +114,10 @@ func (i *Intel) Values() []Indicator {
 	out := make([]Indicator, 0, len(i.items))
 	now := i.now().UTC()
 	for _, item := range i.items {
-		if !item.indicator.ExpiresAt.IsZero() && item.indicator.ExpiresAt.Before(now) {
+		if !item.ExpiresAt.IsZero() && item.ExpiresAt.Before(now) {
 			continue
 		}
-		out = append(out, item.indicator)
+		out = append(out, item)
 	}
 	return out
 }

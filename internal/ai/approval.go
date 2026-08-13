@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -58,6 +60,8 @@ type ApprovalStore struct {
 	requests  map[string]ApprovalRequest
 	now       func() time.Time
 	ttl       time.Duration
+	capacity  int
+	maxBytes  int64
 	path      string
 	healthErr error
 }
@@ -80,10 +84,22 @@ type ApprovalActor struct {
 
 type approvalActorContextKey struct{}
 
-const defaultApprovalTTL = 10 * time.Minute
+const (
+	defaultApprovalTTL          = 10 * time.Minute
+	defaultApprovalCapacity     = 2048
+	defaultApprovalMaxFileBytes = 16 << 20
+	maxApprovalArgsBytes        = 512 << 10
+	maxApprovalDiffBytes        = 256 << 10
+)
 
 func NewApprovalStore() *ApprovalStore {
-	return &ApprovalStore{requests: map[string]ApprovalRequest{}, now: time.Now, ttl: defaultApprovalTTL}
+	return &ApprovalStore{
+		requests: map[string]ApprovalRequest{},
+		now:      time.Now,
+		ttl:      defaultApprovalTTL,
+		capacity: defaultApprovalCapacity,
+		maxBytes: defaultApprovalMaxFileBytes,
+	}
 }
 
 func NewPersistentApprovalStore(path string) (*ApprovalStore, error) {
@@ -187,9 +203,15 @@ func (s *ApprovalStore) CreateFor(tool Tool, args map[string]any, diff string, a
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	removed := s.makeRoomLocked(now, 1)
+	if len(s.requests) >= s.approvalCapacity() {
+		s.restoreLocked(removed)
+		return ApprovalRequest{}, fmt.Errorf("approval store capacity is exhausted")
+	}
 	s.requests[request.ID] = request
 	if err := s.persistLocked(); err != nil {
 		delete(s.requests, request.ID)
+		s.restoreLocked(removed)
 		return ApprovalRequest{}, err
 	}
 	return cloneApprovalRequest(request), nil
@@ -412,12 +434,15 @@ func cloneArgValue(value any) any {
 
 func approvalArgsMatch(salt, expected string, args map[string]any) bool {
 	digest, ok := approvalArgsDigest(args, salt)
-	return ok && expected != "" && digest == expected
+	if !ok || expected == "" || len(digest) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(digest), []byte(expected)) == 1
 }
 
 func approvalArgsDigest(args map[string]any, salt string) (string, bool) {
 	normalized, ok := canonicalArgs(args)
-	if !ok || salt == "" {
+	if !ok || salt == "" || len(normalized) > maxApprovalArgsBytes {
 		return "", false
 	}
 	digest := sha256.Sum256([]byte(salt + "\x00" + normalized))
@@ -491,6 +516,9 @@ func isSensitiveApprovalKey(key string) bool {
 }
 
 func sanitizeApprovalDiff(diff string) (string, error) {
+	if len(diff) > maxApprovalDiffBytes {
+		return "", fmt.Errorf("approval diff exceeds %d bytes", maxApprovalDiffBytes)
+	}
 	trimmed := strings.TrimSpace(diff)
 	if trimmed == "" {
 		return "", nil
@@ -538,12 +566,24 @@ func (s *ApprovalStore) loadLocked() error {
 	if s.path == "" {
 		return nil
 	}
-	raw, err := os.ReadFile(s.path)
+	file, err := os.Open(s.path)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	maxBytes := s.approvalMaxBytes()
+	raw, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if int64(len(raw)) > maxBytes {
+		return fmt.Errorf("approval store exceeds %d bytes", maxBytes)
 	}
 	var disk approvalStoreDisk
 	if err := json.Unmarshal(raw, &disk); err != nil {
@@ -596,6 +636,14 @@ func (s *ApprovalStore) loadLocked() error {
 		next[request.ID] = cloneApprovalRequest(request)
 	}
 	s.requests = next
+	removed := s.makeRoomLocked(now, 0)
+	if len(s.requests) > s.approvalCapacity() {
+		s.restoreLocked(removed)
+		return fmt.Errorf("approval store contains too many active requests")
+	}
+	if len(removed) > 0 {
+		changed = true
+	}
 	if changed {
 		return s.persistLocked()
 	}
@@ -621,6 +669,11 @@ func (s *ApprovalStore) persistLocked() error {
 	}
 	raw, err := json.MarshalIndent(approvalStoreDisk{Requests: items}, "", "  ")
 	if err != nil {
+		s.healthErr = err
+		return err
+	}
+	if int64(len(raw)) > s.approvalMaxBytes() {
+		err := fmt.Errorf("approval store exceeds %d bytes", s.approvalMaxBytes())
 		s.healthErr = err
 		return err
 	}
@@ -662,6 +715,68 @@ func (s *ApprovalStore) persistLocked() error {
 	}
 	s.healthErr = nil
 	return nil
+}
+
+func (s *ApprovalStore) approvalCapacity() int {
+	if s == nil || s.capacity <= 0 {
+		return defaultApprovalCapacity
+	}
+	return s.capacity
+}
+
+func (s *ApprovalStore) approvalMaxBytes() int64 {
+	if s == nil || s.maxBytes <= 0 {
+		return defaultApprovalMaxFileBytes
+	}
+	return s.maxBytes
+}
+
+// makeRoomLocked removes expired actionable approvals first, then the oldest
+// completed records. Active work is never evicted before its expiry merely to
+// admit a new request; completed records remain an audit trail until capacity
+// pressure requires bounded retention.
+func (s *ApprovalStore) makeRoomLocked(now time.Time, reserve int) map[string]ApprovalRequest {
+	removed := map[string]ApprovalRequest{}
+	for id, request := range s.requests {
+		if approvalExpired(request, now) && (request.Status == ApprovalPending || request.Status == ApprovalApproved) {
+			removed[id] = request
+			delete(s.requests, id)
+		}
+	}
+	capacity := s.approvalCapacity()
+	if len(s.requests)+reserve <= capacity {
+		return removed
+	}
+	completed := make([]ApprovalRequest, 0, len(s.requests))
+	for _, request := range s.requests {
+		switch request.Status {
+		case ApprovalRejected, ApprovalExecuted, ApprovalFailed:
+			completed = append(completed, request)
+		}
+	}
+	slices.SortFunc(completed, func(left, right ApprovalRequest) int {
+		if left.CreatedAt.Equal(right.CreatedAt) {
+			return strings.Compare(left.ID, right.ID)
+		}
+		if left.CreatedAt.Before(right.CreatedAt) {
+			return -1
+		}
+		return 1
+	})
+	for _, request := range completed {
+		if len(s.requests)+reserve <= capacity {
+			break
+		}
+		removed[request.ID] = request
+		delete(s.requests, request.ID)
+	}
+	return removed
+}
+
+func (s *ApprovalStore) restoreLocked(removed map[string]ApprovalRequest) {
+	for id, request := range removed {
+		s.requests[id] = request
+	}
 }
 
 func approvalExpired(request ApprovalRequest, now time.Time) bool {

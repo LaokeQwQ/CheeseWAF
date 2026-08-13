@@ -31,6 +31,49 @@ type Config struct {
 	Monitor       MonitorConfig       `yaml:"monitor" json:"monitor"`
 	APISec        APISecConfig        `yaml:"apisec" json:"apisec"`
 	BlockPage     BlockPageConfig     `yaml:"block_page" json:"block_page"`
+	Performance   PerformanceConfig   `yaml:"performance" json:"performance"`
+}
+
+// PerformanceConfig holds runtime tuning that is independent of security policy.
+type PerformanceConfig struct {
+	GC GCTuningConfig `yaml:"gc" json:"gc"`
+}
+
+// GCTuningConfig configures the hardware-aware garbage collector controller.
+//
+// The defaults suit the WAF's allocation profile (many short-lived per-request
+// objects, almost nothing retained) and are derived at startup from the memory
+// the process is actually allowed to use, so the same config behaves sensibly on
+// a 512MiB container and a 64GiB host. Operators who set GOGC or GOMEMLIMIT in
+// the environment keep control: those pins are respected and the controller
+// leaves the corresponding knob alone.
+type GCTuningConfig struct {
+	// Enabled turns the controller on. When false the Go runtime defaults apply
+	// unchanged.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// MemoryLimitRatio is the fraction of detected usable memory used as
+	// GOMEMLIMIT. The remainder absorbs goroutine stacks, runtime metadata, and
+	// non-Go mappings. Must be in (0,1]; 0 selects the built-in default.
+	MemoryLimitRatio float64 `yaml:"memory_limit_ratio" json:"memory_limit_ratio"`
+
+	// MinGOGC and MaxGOGC clamp the controller's output. 0 selects the defaults.
+	MinGOGC int `yaml:"min_gogc" json:"min_gogc"`
+	MaxGOGC int `yaml:"max_gogc" json:"max_gogc"`
+
+	// BaseGOGC is the starting GOGC. 0 derives it from the detected memory
+	// budget, which is the recommended setting.
+	BaseGOGC int `yaml:"base_gogc" json:"base_gogc"`
+
+	// TargetGCCPUFraction is the GC CPU budget as a fraction of total process
+	// CPU. Exceeding it with heap headroom available raises GOGC. 0 selects the
+	// default.
+	TargetGCCPUFraction float64 `yaml:"target_gc_cpu_fraction" json:"target_gc_cpu_fraction"`
+
+	// Interval is the controller's sampling period. 0 selects the default.
+	// Values below one second are rejected: the CPU-fraction delta over a
+	// shorter window is mostly measurement noise.
+	Interval time.Duration `yaml:"interval" json:"interval"`
 }
 
 // UnmarshalYAML distinguishes an omitted time_sync.enabled field from an
@@ -97,6 +140,8 @@ type CAPTCHAAssetLimits struct {
 	MaxImageBytes int64 `yaml:"max_image_bytes" json:"max_image_bytes"`
 	MaxFontBytes  int64 `yaml:"max_font_bytes" json:"max_font_bytes"`
 	MaxPixels     int64 `yaml:"max_pixels" json:"max_pixels"`
+	MaxAssets     int   `yaml:"max_assets" json:"max_assets"`
+	MaxTotalBytes int64 `yaml:"max_total_bytes" json:"max_total_bytes"`
 }
 
 const MaxBlockPageHTMLBytes = 512 * 1024
@@ -331,7 +376,10 @@ type WAFConfig struct {
 	// AccessLogEnabled controls whether normal pass/cache/redirect traffic is written.
 	// Security events (block/challenge/log with detections) are always recorded.
 	// Nil means default on (preserve historical full-access logging).
-	AccessLogEnabled *bool                    `yaml:"access_log_enabled,omitempty" json:"access_log_enabled,omitempty"`
+	AccessLogEnabled *bool `yaml:"access_log_enabled,omitempty" json:"access_log_enabled,omitempty"`
+	// ParanoiaLevel controls blocking sensitivity (0=use default, 1=low, 2=default, 3=high, 4=paranoid).
+	// Disable semantic inspection with waf.mode or the per-category switches.
+	ParanoiaLevel    int                      `yaml:"paranoia_level" json:"paranoia_level"`
 	SemanticEngines  SemanticEngineSwitches   `yaml:"semantic_engines" json:"semantic_engines"`
 	SemanticPolicy   SemanticPolicyConfig     `yaml:"semantic_policy" json:"semantic_policy"`
 	ProtectionPolicy ProtectionPolicyConfig   `yaml:"protection_policy" json:"protection_policy"`
@@ -623,10 +671,11 @@ type HealthCheckConfig struct {
 }
 
 type SiteAccessControlConfig struct {
-	AuthEnabled  bool     `yaml:"auth_enabled" json:"auth_enabled"`
-	WaitingRoom  bool     `yaml:"waiting_room" json:"waiting_room"`
-	DynamicGuard bool     `yaml:"dynamic_guard" json:"dynamic_guard"`
-	TrustedCIDRs []string `yaml:"trusted_cidrs" json:"trusted_cidrs"`
+	AuthEnabled           bool                `yaml:"auth_enabled" json:"auth_enabled"`
+	WaitingRoom           bool                `yaml:"waiting_room" json:"waiting_room"`
+	DynamicGuard          bool                `yaml:"dynamic_guard" json:"dynamic_guard"`
+	TrustedCIDRs          []string            `yaml:"trusted_cidrs" json:"trusted_cidrs"`
+	TrustedProxyProviders map[string][]string `yaml:"trusted_proxy_providers,omitempty" json:"trusted_proxy_providers,omitempty"`
 }
 
 type EdgeConfig struct {
@@ -988,6 +1037,11 @@ type ManagementAPIConfig struct {
 	Tokens  []ManagementAPITokenConfig `yaml:"tokens" json:"tokens"`
 }
 
+const (
+	MaxManagementAPITokens       = 1024
+	MaxActiveManagementAPITokens = 128
+)
+
 type ManagementAPITokenConfig struct {
 	ID         string    `yaml:"id" json:"id"`
 	Name       string    `yaml:"name" json:"name"`
@@ -1040,6 +1094,9 @@ type APIAuthConfig struct {
 	JWKSURL          string                        `yaml:"jwks_url" json:"jwks_url"`
 	JWKSCacheFile    string                        `yaml:"jwks_cache_file" json:"jwks_cache_file"`
 	JWKSRefresh      time.Duration                 `yaml:"jwks_refresh_interval" json:"jwks_refresh_interval"`
+	// JWKSCacheRoot is runtime-only confinement supplied by the server after
+	// configuration validation. It is never accepted from YAML or the API.
+	JWKSCacheRoot string `yaml:"-" json:"-"`
 }
 
 type APIAuthEndpointPolicyConfig struct {

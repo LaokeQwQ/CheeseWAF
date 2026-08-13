@@ -105,6 +105,10 @@ grep -Fq 'CHEESEWAF_UID=10001' deploy/docker/Dockerfile ||
   fail "runtime image must pin CHEESEWAF_UID=10001 for tmpfs ownership"
 grep -Fq 'JavaScript asset returned unexpected MIME type' scripts/ci/docker-build.sh ||
   fail "container smoke must verify static asset MIME"
+grep -Fq 'CHEESEWAF_SETUP_TOKEN' scripts/ci/docker-build.sh ||
+  fail "container smoke must pin CHEESEWAF_SETUP_TOKEN"
+grep -Fq 'X-CheeseWAF-Setup-Token' scripts/ci/docker-build.sh ||
+  fail "container smoke must send the setup token header"
 
 if grep -Fq 'internal/cli.appVersion' .goreleaser.yaml; then
   fail "GoReleaser still targets removed internal/cli version variables"

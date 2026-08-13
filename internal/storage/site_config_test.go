@@ -120,3 +120,35 @@ func TestSiteConfigRoundTripPreservesACMECertificate(t *testing.T) {
 		t.Fatalf("expected TLS policy flags preserved: %+v", converted.Certificate)
 	}
 }
+
+func TestSiteConfigRoundTripPreservesTrustedProxyProviderBindings(t *testing.T) {
+	original := config.SiteConfig{
+		ID:        "site-proxy",
+		Name:      "site-proxy",
+		Enabled:   true,
+		Domains:   []string{"example.test"},
+		Upstreams: []config.UpstreamConfig{{Address: "127.0.0.1:9000", Weight: 1}},
+		WAF: config.WAFConfig{
+			Enabled: true,
+			Mode:    "block",
+			AccessControl: config.SiteAccessControlConfig{
+				TrustedCIDRs: []string{"10.0.0.0/8"},
+				TrustedProxyProviders: map[string][]string{
+					"cloudflare": {"198.51.100.0/24"},
+				},
+			},
+		},
+	}
+
+	site := SiteFromConfig(original)
+	original.WAF.AccessControl.TrustedProxyProviders["cloudflare"][0] = "192.0.2.0/24"
+	if got := site.Advanced.AccessControl.TrustedProxyProviders["cloudflare"][0]; got != "198.51.100.0/24" {
+		t.Fatalf("storage conversion must clone provider CIDRs, got %q", got)
+	}
+
+	converted := SiteToConfig(site)
+	site.Advanced.AccessControl.TrustedProxyProviders["cloudflare"][0] = "203.0.113.0/24"
+	if got := converted.WAF.AccessControl.TrustedProxyProviders["cloudflare"][0]; got != "198.51.100.0/24" {
+		t.Fatalf("config conversion must clone provider CIDRs, got %q", got)
+	}
+}

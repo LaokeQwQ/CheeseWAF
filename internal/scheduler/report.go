@@ -3,10 +3,14 @@ package scheduler
 import (
 	"bufio"
 	"bytes"
+	"container/heap"
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
+	"math"
+	"math/bits"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +20,14 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+)
+
+const (
+	reportLowCardinalityLimit = 64
+	reportTopKCapacity        = 1024
+	reportExactIPLimit        = 4096
+	reportHLLPrecision        = 10
+	reportRecentRiskLimit     = 10
 )
 
 var reportHTTPClient = netguard.NewHTTPClient(netguard.HTTPClientOptions{
@@ -62,6 +74,194 @@ type ReportEvent struct {
 	Message    string    `json:"message,omitempty"`
 }
 
+type reportCounterItem struct {
+	key   string
+	count int
+	index int
+}
+
+type reportCounterHeap []*reportCounterItem
+
+func (h reportCounterHeap) Len() int { return len(h) }
+func (h reportCounterHeap) Less(i, j int) bool {
+	if h[i].count == h[j].count {
+		return h[i].key > h[j].key
+	}
+	return h[i].count < h[j].count
+}
+func (h reportCounterHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+func (h *reportCounterHeap) Push(value any) {
+	item := value.(*reportCounterItem)
+	item.index = len(*h)
+	*h = append(*h, item)
+}
+func (h *reportCounterHeap) Pop() any {
+	old := *h
+	item := old[len(old)-1]
+	item.index = -1
+	*h = old[:len(old)-1]
+	return item
+}
+
+type boundedCounter struct {
+	limit int
+	items map[string]*reportCounterItem
+	heap  reportCounterHeap
+}
+
+func newBoundedCounter(limit int) *boundedCounter {
+	if limit <= 0 {
+		limit = 1
+	}
+	return &boundedCounter{limit: limit, items: make(map[string]*reportCounterItem, limit)}
+}
+
+func (c *boundedCounter) Add(raw string) {
+	key := boundedReportKey(raw, 512)
+	if key == "" {
+		return
+	}
+	if item := c.items[key]; item != nil {
+		item.count++
+		heap.Fix(&c.heap, item.index)
+		return
+	}
+	if len(c.items) < c.limit {
+		item := &reportCounterItem{key: key, count: 1}
+		c.items[key] = item
+		heap.Push(&c.heap, item)
+		return
+	}
+	minimum := c.heap[0]
+	delete(c.items, minimum.key)
+	minimum.key = key
+	minimum.count++
+	c.items[key] = minimum
+	heap.Fix(&c.heap, 0)
+}
+
+func (c *boundedCounter) Values() map[string]int {
+	values := make(map[string]int, len(c.items))
+	for key, item := range c.items {
+		values[key] = item.count
+	}
+	return values
+}
+
+type uniqueIPCounter struct {
+	exactLimit int
+	exact      map[string]struct{}
+	registers  []uint8
+}
+
+func newUniqueIPCounter(exactLimit int) *uniqueIPCounter {
+	if exactLimit <= 0 {
+		exactLimit = 1
+	}
+	return &uniqueIPCounter{exactLimit: exactLimit, exact: make(map[string]struct{}, exactLimit)}
+}
+
+func (c *uniqueIPCounter) Add(raw string) {
+	value := boundedReportKey(raw, 256)
+	if value == "" {
+		return
+	}
+	if c.exact != nil {
+		if _, exists := c.exact[value]; exists {
+			return
+		}
+		if len(c.exact) < c.exactLimit {
+			c.exact[value] = struct{}{}
+			return
+		}
+		c.registers = make([]uint8, 1<<reportHLLPrecision)
+		for existing := range c.exact {
+			c.addApproximate(existing)
+		}
+		c.exact = nil
+	}
+	c.addApproximate(value)
+}
+
+func (c *uniqueIPCounter) addApproximate(value string) {
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(value))
+	hash := hasher.Sum64()
+	index := int(hash >> (64 - reportHLLPrecision))
+	w := hash << reportHLLPrecision
+	rank := bits.LeadingZeros64(w) + 1
+	maxRank := 64 - reportHLLPrecision + 1
+	if rank > maxRank {
+		rank = maxRank
+	}
+	if uint8(rank) > c.registers[index] {
+		c.registers[index] = uint8(rank)
+	}
+}
+
+func (c *uniqueIPCounter) Count() int {
+	if c.exact != nil {
+		return len(c.exact)
+	}
+	m := float64(len(c.registers))
+	sum := 0.0
+	zeros := 0
+	for _, register := range c.registers {
+		sum += math.Pow(2, -float64(register))
+		if register == 0 {
+			zeros++
+		}
+	}
+	estimate := 0.7213 / (1 + 1.079/m) * m * m / sum
+	if zeros > 0 && estimate <= 2.5*m {
+		estimate = m * math.Log(m/float64(zeros))
+	}
+	if estimate < 0 {
+		return 0
+	}
+	return int(math.Round(estimate))
+}
+
+func boundedReportKey(value string, maxBytes int) string {
+	value = strings.TrimSpace(strings.ToValidUTF8(value, ""))
+	if len(value) <= maxBytes {
+		return value
+	}
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(value))
+	keep := maxBytes - 17
+	if keep < 0 {
+		keep = 0
+	}
+	for keep > 0 && keep < len(value) && value[keep]&0xc0 == 0x80 {
+		keep--
+	}
+	return fmt.Sprintf("%s#%016x", value[:keep], hasher.Sum64())
+}
+
+func addRecentHighRisk(events []ReportEvent, event ReportEvent, limit int) []ReportEvent {
+	if limit <= 0 {
+		return events[:0]
+	}
+	if len(events) < limit {
+		return append(events, event)
+	}
+	oldest := 0
+	for index := 1; index < len(events); index++ {
+		if events[index].Timestamp.Before(events[oldest].Timestamp) {
+			oldest = index
+		}
+	}
+	if event.Timestamp.After(events[oldest].Timestamp) {
+		events[oldest] = event
+	}
+	return events
+}
+
 func SecurityReport(logPath, dataDir string) TaskFunc {
 	return func(ctx context.Context, task Task) error {
 		if task.Period == "" {
@@ -79,11 +279,14 @@ func SecurityReport(logPath, dataDir string) TaskFunc {
 		if task.Recipient == "" {
 			task.Recipient = filepath.Join(dataDir, "reports")
 		}
-		summary, err := SummarizeSecurityLogs(logPath, task.Period, time.Now)
+		summary, err := SummarizeSecurityLogsContext(ctx, logPath, task.Period, time.Now)
 		if err != nil {
 			return err
 		}
 		report := RenderSecurityReport(summary, task.Format)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		switch task.Channel {
 		case "webhook":
 			return postReport(ctx, task.Recipient, task.Format, report)
@@ -94,6 +297,10 @@ func SecurityReport(logPath, dataDir string) TaskFunc {
 }
 
 func SummarizeSecurityLogs(logPath, period string, nowFn func() time.Time) (ReportSummary, error) {
+	return SummarizeSecurityLogsContext(context.Background(), logPath, period, nowFn)
+}
+
+func SummarizeSecurityLogsContext(ctx context.Context, logPath, period string, nowFn func() time.Time) (ReportSummary, error) {
 	now := nowFn().UTC()
 	since := now.Add(-24 * time.Hour)
 	if period == "weekly" {
@@ -125,8 +332,19 @@ func SummarizeSecurityLogs(logPath, period string, nowFn func() time.Time) (Repo
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	seenIPs := map[string]struct{}{}
+	uniqueIPs := newUniqueIPCounter(reportExactIPLimit)
+	byAction := newBoundedCounter(reportLowCardinalityLimit)
+	bySeverity := newBoundedCounter(reportLowCardinalityLimit)
+	byCategory := newBoundedCounter(reportTopKCapacity)
+	bySite := newBoundedCounter(reportTopKCapacity)
+	byCountry := newBoundedCounter(reportLowCardinalityLimit)
+	topIPs := newBoundedCounter(reportTopKCapacity)
+	topURIs := newBoundedCounter(reportTopKCapacity)
+	topDetectors := newBoundedCounter(reportTopKCapacity)
 	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return summary, ctx.Err()
+		}
 		var entry storage.LogEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
@@ -136,7 +354,7 @@ func SummarizeSecurityLogs(logPath, period string, nowFn func() time.Time) (Repo
 		}
 		summary.Total++
 		action := normalizedOr(entry.Action, "pass")
-		summary.ByAction[action]++
+		byAction.Add(action)
 		securityEvent := isSecurityReportEntry(entry, action)
 		if securityEvent {
 			summary.SecurityEvents++
@@ -153,40 +371,45 @@ func SummarizeSecurityLogs(logPath, period string, nowFn func() time.Time) (Repo
 		}
 		severity := normalizedOr(entry.Severity, "info")
 		if entry.ClientIP != "" {
-			seenIPs[entry.ClientIP] = struct{}{}
+			uniqueIPs.Add(entry.ClientIP)
 		}
 		if securityEvent {
-			summary.BySeverity[severity]++
+			bySeverity.Add(severity)
 			if category := normalizedOr(entry.Category, "uncategorized"); category != "" {
-				summary.ByCategory[category]++
+				byCategory.Add(category)
 			}
 			if entry.ClientIP != "" {
-				summary.TopIPs[entry.ClientIP]++
+				topIPs.Add(entry.ClientIP)
 			}
 			if entry.URI != "" {
-				summary.TopURIs[entry.URI]++
+				topURIs.Add(entry.URI)
 			}
 			if entry.SiteID != "" {
-				summary.BySite[entry.SiteID]++
+				bySite.Add(entry.SiteID)
 			}
 			if entry.Country != "" {
-				summary.ByCountry[strings.ToUpper(strings.TrimSpace(entry.Country))]++
+				byCountry.Add(strings.ToUpper(strings.TrimSpace(entry.Country)))
 			}
 			if entry.DetectorID != "" {
-				summary.TopDetectors[entry.DetectorID]++
+				topDetectors.Add(entry.DetectorID)
 			}
 		}
 		if isHighRiskReportEvent(action, severity) {
-			summary.RecentHighRisk = append(summary.RecentHighRisk, reportEventFromLog(entry, action, severity))
+			summary.RecentHighRisk = addRecentHighRisk(summary.RecentHighRisk, reportEventFromLog(entry, action, severity), reportRecentRiskLimit)
 		}
 	}
-	summary.UniqueIPs = len(seenIPs)
+	summary.UniqueIPs = uniqueIPs.Count()
+	summary.ByAction = byAction.Values()
+	summary.BySeverity = bySeverity.Values()
+	summary.ByCategory = byCategory.Values()
+	summary.BySite = bySite.Values()
+	summary.ByCountry = byCountry.Values()
+	summary.TopIPs = topIPs.Values()
+	summary.TopURIs = topURIs.Values()
+	summary.TopDetectors = topDetectors.Values()
 	sort.Slice(summary.RecentHighRisk, func(i, j int) bool {
 		return summary.RecentHighRisk[i].Timestamp.After(summary.RecentHighRisk[j].Timestamp)
 	})
-	if len(summary.RecentHighRisk) > 10 {
-		summary.RecentHighRisk = summary.RecentHighRisk[:10]
-	}
 	return summary, scanner.Err()
 }
 
@@ -302,7 +525,7 @@ func postReport(ctx context.Context, endpoint, format string, report []byte) err
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook returned %s", resp.Status)
 	}
@@ -351,18 +574,18 @@ func isSecurityReportEntry(entry storage.LogEntry, action string) bool {
 func reportEventFromLog(entry storage.LogEntry, action, severity string) ReportEvent {
 	return ReportEvent{
 		Timestamp:  entry.Timestamp.UTC(),
-		TraceID:    entry.TraceID,
-		SiteID:     entry.SiteID,
-		ClientIP:   entry.ClientIP,
-		Method:     entry.Method,
-		URI:        entry.URI,
+		TraceID:    trimReportField(entry.TraceID),
+		SiteID:     trimReportField(entry.SiteID),
+		ClientIP:   trimReportField(entry.ClientIP),
+		Method:     trimReportField(entry.Method),
+		URI:        trimReportField(entry.URI),
 		StatusCode: entry.StatusCode,
-		Action:     action,
-		DetectorID: entry.DetectorID,
-		Category:   normalizedOr(entry.Category, "uncategorized"),
-		Severity:   severity,
-		Country:    strings.ToUpper(strings.TrimSpace(entry.Country)),
-		Message:    entry.Message,
+		Action:     trimReportField(action),
+		DetectorID: trimReportField(entry.DetectorID),
+		Category:   trimReportField(normalizedOr(entry.Category, "uncategorized")),
+		Severity:   trimReportField(severity),
+		Country:    trimReportField(strings.ToUpper(strings.TrimSpace(entry.Country))),
+		Message:    trimReportField(entry.Message),
 	}
 }
 

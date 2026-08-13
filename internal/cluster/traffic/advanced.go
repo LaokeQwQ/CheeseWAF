@@ -12,6 +12,7 @@ const (
 	defaultCircuitFailures = 3
 	defaultCircuitOpenFor  = 30 * time.Second
 	defaultPressureLimit   = 32
+	maxCircuitMapSize      = 1000
 )
 
 type circuitState struct {
@@ -79,6 +80,9 @@ func (s *Scheduler) ReportFailure(nodeID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureAdvanced()
+	if len(s.circuits) >= maxCircuitMapSize {
+		s.pruneOldCircuits()
+	}
 	state := s.circuits[nodeID]
 	state.failures++
 	if state.failures >= s.circuitFailures {
@@ -136,6 +140,26 @@ func (s *Scheduler) FilterHealthy(peers []Peer) []Peer {
 		out = append(out, peer)
 	}
 	return out
+}
+
+func (s *Scheduler) pruneOldCircuits() {
+	if len(s.circuits) < maxCircuitMapSize {
+		return
+	}
+	now := s.now()
+	for nodeID, state := range s.circuits {
+		if !state.openedAt.IsZero() && now.Sub(state.openedAt) >= s.circuitOpenFor*2 {
+			delete(s.circuits, nodeID)
+		}
+	}
+	if len(s.circuits) >= maxCircuitMapSize {
+		for nodeID := range s.circuits {
+			delete(s.circuits, nodeID)
+			if len(s.circuits) < maxCircuitMapSize/2 {
+				break
+			}
+		}
+	}
 }
 
 // PickAdvanced applies circuit/pressure filters then standard pick modes including sticky.

@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"runtime/debug"
@@ -35,6 +36,10 @@ const (
 	// maxInflightGuards bounds detector Guard workers on timeout paths.
 	maxInflightGuards = 128
 )
+
+// ErrDetectionOverload reports that Guard could not start detector work
+// because every bounded worker slot was already occupied.
+var ErrDetectionOverload = errors.New("detection overload: too many in-flight guards")
 
 // regexMatchSlots holds a permit until the match goroutine finishes, even after
 // the caller timed out. That caps leaked workers under ReDoS load.
@@ -171,13 +176,12 @@ func DecodeSafe(raw string) decoder.Decoded {
 }
 
 // Guard runs a detection function with panic recovery and timeout protection.
-// Returns nil if the function panics, times out, or exceeds allocation limits.
 func Guard[T any](fn func() (T, error)) (result T, err error) {
 	var zero T
 	select {
 	case guardSlots <- struct{}{}:
 	default:
-		return zero, fmt.Errorf("detection overload: too many in-flight guards")
+		return zero, ErrDetectionOverload
 	}
 	done := make(chan struct {
 		res T

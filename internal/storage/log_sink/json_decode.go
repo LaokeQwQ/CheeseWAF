@@ -9,18 +9,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
-func decodeLogEntryJSONLines(body io.ReadCloser) ([]storage.LogEntry, error) {
-	defer body.Close()
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 4<<20)
-	var entries []storage.LogEntry
+const (
+	maxLogQueryResponseBytes int64 = 16 << 20
+	maxLogQueryLineBytes           = 4 << 20
+)
+
+func decodeLogEntryJSONLines(body io.ReadCloser, maxRows int) ([]storage.LogEntry, error) {
+	defer netguard.DrainAndClose(body)
+	if maxRows <= 0 {
+		maxRows = normalizedLimit(maxRows)
+	}
+	limited := &io.LimitedReader{R: body, N: maxLogQueryResponseBytes + 1}
+	scanner := bufio.NewScanner(limited)
+	scanner.Buffer(make([]byte, 64*1024), maxLogQueryLineBytes)
+	entries := make([]storage.LogEntry, 0, maxRows)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
+		}
+		if len(entries) >= maxRows {
+			return nil, fmt.Errorf("log query response exceeds %d rows", maxRows)
 		}
 		entry, err := decodeLogEntryJSON([]byte(line))
 		if err != nil {
@@ -28,7 +41,38 @@ func decodeLogEntryJSONLines(body io.ReadCloser) ([]storage.LogEntry, error) {
 		}
 		entries = append(entries, entry)
 	}
-	return entries, scanner.Err()
+	if limited.N == 0 {
+		return nil, fmt.Errorf("log query response exceeds %d bytes", maxLogQueryResponseBytes)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func decodeBoundedLogQueryJSON(body io.Reader, target any) error {
+	limited := &io.LimitedReader{R: body, N: maxLogQueryResponseBytes + 1}
+	decoder := json.NewDecoder(limited)
+	if err := decoder.Decode(target); err != nil {
+		if limited.N == 0 {
+			return fmt.Errorf("log query response exceeds %d bytes", maxLogQueryResponseBytes)
+		}
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if limited.N == 0 {
+			return fmt.Errorf("log query response exceeds %d bytes", maxLogQueryResponseBytes)
+		}
+		if err == nil {
+			return fmt.Errorf("log query response contains multiple JSON values")
+		}
+		return err
+	}
+	if limited.N == 0 {
+		return fmt.Errorf("log query response exceeds %d bytes", maxLogQueryResponseBytes)
+	}
+	return nil
 }
 
 func decodeLogEntryJSON(data []byte) (storage.LogEntry, error) {

@@ -189,6 +189,59 @@ func TestClusterHeartbeatRejectsMismatchedNodeCertificate(t *testing.T) {
 	}
 }
 
+func TestClusterHeartbeatRejectsBodyIdentityOverride(t *testing.T) {
+	cfg := minimumHAHandlerConfig()
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment := enrollTestClusterNode(t, identitySvc, cfg, "monitor-a")
+	h := New(Options{Config: &cfg, ClusterIdentity: identitySvc})
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "role", body: `{"role":"waf","advertise_addr":"10.0.0.3:9444"}`},
+		{name: "address", body: `{"role":"monitor","advertise_addr":"10.0.0.99:9444"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/monitor-a/heartbeat", strings.NewReader(test.body)), "id", "monitor-a")
+			attachClusterPeerCertificate(req, enrollment.Bundle.Certificate)
+			rec := httptest.NewRecorder()
+			h.ClusterNodeHeartbeat(rec, req)
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "CLUSTER_HEARTBEAT_IDENTITY_MISMATCH") {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if snapshot := h.clusterHeartbeatRegistry().Snapshot(); len(snapshot) != 0 {
+		t.Fatalf("rejected heartbeat changed runtime state: %+v", snapshot)
+	}
+}
+
+func TestClusterHeartbeatUsesEnrolledIdentityWhenBodyOmitsIt(t *testing.T) {
+	cfg := minimumHAHandlerConfig()
+	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment := enrollTestClusterNode(t, identitySvc, cfg, "monitor-a")
+	h := New(Options{Config: &cfg, ClusterIdentity: identitySvc})
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/monitor-a/heartbeat", strings.NewReader(`{"config_version":"v2"}`)), "id", "monitor-a")
+	attachClusterPeerCertificate(req, enrollment.Bundle.Certificate)
+	rec := httptest.NewRecorder()
+	h.ClusterNodeHeartbeat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	record := h.clusterHeartbeatRegistry().Snapshot()["monitor-a"]
+	if record.Role != "monitor" || record.AdvertiseAddr != "10.0.0.3:9444" || record.ConfigVersion != "v2" {
+		t.Fatalf("heartbeat did not use enrolled identity: %+v", record)
+	}
+}
+
 func TestClusterProtectionModeRejectsSystemConfigWrite(t *testing.T) {
 	cfg := minimumHAHandlerConfig()
 	cfg.Logging.Level = "info"
@@ -550,6 +603,29 @@ func TestClusterJoinWritesSafeAuditEntry(t *testing.T) {
 	}
 	if strings.Contains(entry.Message, token.Value) || strings.Contains(entry.Message, "monitor") {
 		t.Fatalf("join audit message leaked token state: %+v", entry)
+	}
+}
+
+func TestClusterJoinFailedAuditsAreNotSampled(t *testing.T) {
+	root := t.TempDir()
+	auditor := middleware.NewAuditor(filepath.Join(root, "audit.jsonl"))
+	h := New(Options{Auditor: auditor})
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster/join", nil)
+	req.RemoteAddr = "198.51.100.9:44321"
+	join := clusterJoinRequest{NodeID: "waf-sample", Role: "waf"}
+
+	const attempts = 20
+	for i := 0; i < attempts; i++ {
+		h.recordClusterJoinAudit(req, join, http.StatusUnauthorized, "invalid join token or join request", time.Millisecond)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != attempts {
+		t.Fatalf("expected %d failed-join audit lines, got %d in %q", attempts, len(lines), string(raw))
 	}
 }
 

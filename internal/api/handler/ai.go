@@ -509,6 +509,11 @@ func firstNonEmpty(values ...string) string {
 
 type logReferenceError string
 
+const (
+	aiEventsDefaultLimit = 20
+	aiEventsMaximumLimit = 20
+)
+
 func (e logReferenceError) Error() string { return string(e) }
 
 func errLogNotFound(reference string) error {
@@ -525,9 +530,9 @@ func (h *Handler) AnalyzeEvents(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	limit := req.Limit
-	if limit <= 0 || limit > 200 {
-		limit = 50
+	limit, ok := validateAIEventsLimit(w, req.Limit)
+	if !ok {
+		return
 	}
 	startTime, ok := parsePayloadTime(w, req.Start, "start")
 	if !ok {
@@ -565,9 +570,9 @@ func (h *Handler) AnalyzeEventsStream(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	limit := req.Limit
-	if limit <= 0 || limit > 200 {
-		limit = 50
+	limit, ok := validateAIEventsLimit(w, req.Limit)
+	if !ok {
+		return
 	}
 	startTime, ok := parsePayloadTime(w, req.Start, "start")
 	if !ok {
@@ -665,6 +670,17 @@ func (h *Handler) AnalyzeEventsStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = writeEvent("done", map[string]any{"items": analyses, "total": len(analyses)})
+}
+
+func validateAIEventsLimit(w http.ResponseWriter, requested int) (int, bool) {
+	if requested == 0 {
+		return aiEventsDefaultLimit, true
+	}
+	if requested < 0 || requested > aiEventsMaximumLimit {
+		writeError(w, http.StatusBadRequest, "AI_BATCH_LIMIT_EXCEEDED", "limit must be between 1 and 20")
+		return 0, false
+	}
+	return requested, true
 }
 
 func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {

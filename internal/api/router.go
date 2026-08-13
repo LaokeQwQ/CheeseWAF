@@ -8,6 +8,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	captchaassets "github.com/LaokeQwQ/CheeseWAF/internal/captcha/assets"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -22,7 +24,9 @@ type Options struct {
 	Sink                storage.LogSink
 	Hub                 *realtime.Hub
 	Secret              string
+	SetupToken          string
 	OnSitesChanged      func([]config.SiteConfig) error
+	OnEdgeChanged       func(config.EdgeConfig) error
 	OnProtectionChanged func(config.ProtectionConfig) error
 	OnAPISecChanged     func(config.APISecConfig) error
 	OnBlockPageChanged  func(config.BlockPageConfig) error
@@ -30,6 +34,8 @@ type Options struct {
 	ACMEIssuer          acme.Issuer
 	AuthState           *handler.AuthState
 	AssistantApprovals  *ai.ApprovalStore
+	ClusterIdentity     *identity.MemoryIdentityService
+	ClusterHeartbeats   *cluster.HeartbeatRegistry
 	CAPTCHAAssets       captchaassets.Store
 	Clock               timekeeper.Clock
 	TimeSync            handler.TimeSyncService
@@ -53,6 +59,10 @@ func NewRouter(opts Options) http.Handler {
 	require := func(permission string) func(http.Handler) http.Handler {
 		return middleware.RBAC(opts.Config.APISec.Permissions, permission)
 	}
+	requireAny := func(permissions ...string) func(http.Handler) http.Handler {
+		return middleware.RBACAny(opts.Config.APISec.Permissions, permissions...)
+	}
+	aiUseLimit := middleware.NewAIRequestLimiter(middleware.AIRequestLimitOptions{}).Middleware
 	h := handler.New(handler.Options{
 		Config:              opts.Config,
 		ConfigPath:          opts.ConfigPath,
@@ -60,10 +70,14 @@ func NewRouter(opts Options) http.Handler {
 		Sink:                opts.Sink,
 		Tokens:              tokens,
 		Secret:              opts.Secret,
+		SetupToken:          opts.SetupToken,
 		Auditor:             auditor,
 		AssistantApprovals:  approvals,
+		ClusterIdentity:     opts.ClusterIdentity,
+		ClusterHeartbeats:   opts.ClusterHeartbeats,
 		ACMEIssuer:          opts.ACMEIssuer,
 		OnSitesChanged:      opts.OnSitesChanged,
+		OnEdgeChanged:       opts.OnEdgeChanged,
 		OnProtectionChanged: opts.OnProtectionChanged,
 		OnAPISecChanged:     opts.OnAPISecChanged,
 		OnBlockPageChanged:  opts.OnBlockPageChanged,
@@ -112,11 +126,11 @@ func NewRouter(opts Options) http.Handler {
 		})
 
 		r.Group(func(r chi.Router) {
-			r.Use(managementAuth)
-			r.Use(middleware.CSRFMiddleware)
 			if opts.Config.APISec.Audit.Enabled {
 				r.Use(auditor.Middleware)
 			}
+			r.Use(managementAuth)
+			r.Use(middleware.CSRFMiddleware)
 			r.With(require("read:realtime")).Get("/realtime/events", hub.SSEHandler)
 			r.With(require("read:realtime")).Get("/realtime/ws", hub.WSHandler)
 			r.With(require("read:monitor")).Get("/stats", h.Stats)
@@ -217,22 +231,22 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:ai")).Get("/ai/config", h.AIConfig)
 			r.With(require("write:ai")).Put("/ai/config", h.UpdateAIConfig)
 			r.With(require("read:ai")).Get("/ai/models", h.AIModels)
-			r.With(require("write:ai")).Post("/ai/models", h.AIModels)
-			r.With(require("write:ai")).Post("/ai/test", h.TestAIConnection)
-			r.With(require("read:ai")).Post("/ai/analyze", h.AnalyzeLog)
-			r.With(require("read:ai")).Post("/ai/analyze/stream", h.AnalyzeLogStream)
-			r.With(require("read:ai")).Post("/ai/events/analyze", h.AnalyzeEvents)
-			r.With(require("read:ai")).Post("/ai/events/analyze/stream", h.AnalyzeEventsStream)
-			r.With(require("write:ai")).Post("/ai/self-learning/run", h.RunAISelfLearning)
-			r.With(require("read:ai")).Post("/ai/assistant", h.AIAssistant)
-			r.With(require("read:ai")).Post("/ai/assistant/stream", h.AIAssistantStream)
+			r.With(require("write:ai"), aiUseLimit).Post("/ai/models", h.AIModels)
+			r.With(require("write:ai"), aiUseLimit).Post("/ai/test", h.TestAIConnection)
+			r.With(require("use:ai"), aiUseLimit).Post("/ai/analyze", h.AnalyzeLog)
+			r.With(require("use:ai"), aiUseLimit).Post("/ai/analyze/stream", h.AnalyzeLogStream)
+			r.With(require("use:ai"), aiUseLimit).Post("/ai/events/analyze", h.AnalyzeEvents)
+			r.With(require("use:ai"), aiUseLimit).Post("/ai/events/analyze/stream", h.AnalyzeEventsStream)
+			r.With(require("write:ai"), aiUseLimit).Post("/ai/self-learning/run", h.RunAISelfLearning)
+			r.With(require("write:ai"), aiUseLimit).Post("/ai/assistant", h.AIAssistant)
+			r.With(require("write:ai"), aiUseLimit).Post("/ai/assistant/stream", h.AIAssistantStream)
 			r.With(require("read:ai")).Get("/ai/tools", h.AITools)
-			r.With(require("write:ai")).Post("/ai/tools/execute", h.ExecuteAITool)
-			r.With(middleware.RBACAny(opts.Config.APISec.Permissions, "read:ai", "write:ai", "approve:ai")).Get("/ai/tools/approvals", h.ListAIApprovals)
-			r.With(middleware.RBACAny(opts.Config.APISec.Permissions, "read:ai", "write:ai", "approve:ai")).Get("/ai/tools/approvals/{id}", h.GetAIApproval)
-			r.With(middleware.RBACAny(opts.Config.APISec.Permissions, "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/approve", h.ApproveAIApproval)
-			r.With(require("write:ai")).Post("/ai/tools/approvals/{id}/continue/stream", h.ContinueAIApprovalStream)
-			r.With(middleware.RBACAny(opts.Config.APISec.Permissions, "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/reject", h.RejectAIApproval)
+			r.With(require("use:ai"), aiUseLimit).Post("/ai/tools/execute", h.ExecuteAITool)
+			r.With(requireAny("read:ai", "use:ai", "write:ai", "approve:ai")).Get("/ai/tools/approvals", h.ListAIApprovals)
+			r.With(requireAny("read:ai", "use:ai", "write:ai", "approve:ai")).Get("/ai/tools/approvals/{id}", h.GetAIApproval)
+			r.With(requireAny("use:ai", "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/approve", h.ApproveAIApproval)
+			r.With(require("use:ai"), aiUseLimit).Post("/ai/tools/approvals/{id}/continue/stream", h.ContinueAIApprovalStream)
+			r.With(requireAny("use:ai", "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/reject", h.RejectAIApproval)
 			r.With(require("read:storage")).Get("/storage", h.StorageStats)
 			r.With(require("write:storage")).Post("/storage/cleanup", h.CleanupStorage)
 			r.With(require("write:system")).Post("/system/reclaim", h.ReclaimSystemResources)

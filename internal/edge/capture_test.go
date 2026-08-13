@@ -59,3 +59,20 @@ func TestAdaptiveCaptureWriterRetainsCommittedWriteError(t *testing.T) {
 		t.Fatalf("committed write error was not retained: committed=%v err=%v", writer.Committed(), writer.Err())
 	}
 }
+
+func TestAdaptiveCaptureWriterDisableBufferingCommitsOnHeaders(t *testing.T) {
+	destination := httptest.NewRecorder()
+	writer := NewAdaptiveCaptureWriter(destination, 8<<20)
+	writer.DisableBuffering()
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.WriteHeader(http.StatusOK)
+	if !writer.Committed() {
+		t.Fatal("disabled buffering must commit as soon as response headers are written")
+	}
+	if _, err := writer.Write([]byte("data: ready\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := destination.Body.String(); got != "data: ready\n\n" {
+		t.Fatalf("streamed body = %q", got)
+	}
+}

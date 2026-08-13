@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -316,8 +317,20 @@ func TestCAPTCHAAssetConfigMutationUsesLatestConfigUnderLock(t *testing.T) {
 
 func TestDefaultCAPTCHAAssetCandidateFixesZeroTimeout(t *testing.T) {
 	v := defaultCAPTCHAAssetCandidate(config.CAPTCHAAssetsConfig{})
-	if v.S3.RequestTimeout != config.Default().CAPTCHAAssets.S3.RequestTimeout {
+	defaults := config.Default().CAPTCHAAssets
+	if v.S3.RequestTimeout != defaults.S3.RequestTimeout {
 		t.Fatalf("unexpected timeout %s", v.S3.RequestTimeout)
+	}
+	if v.Limits != defaults.Limits {
+		t.Fatalf("unexpected default limits: got %+v want %+v", v.Limits, defaults.Limits)
+	}
+}
+
+func TestCAPTCHAAssetQuotaErrorMapping(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	new(Handler).writeCAPTCHAAssetError(recorder, fmt.Errorf("upload rejected: %w", captchaassets.ErrQuotaExceeded))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "CAPTCHA_ASSET_QUOTA_EXCEEDED") {
+		t.Fatalf("quota error response: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

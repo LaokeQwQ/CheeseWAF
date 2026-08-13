@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"nhooyr.io/websocket"
 )
 
 func TestServerRejectsKnownLengthBodyBeforeUpstream(t *testing.T) {
@@ -56,6 +58,126 @@ func assertOversizedRequestRejected(t *testing.T, chunked bool) {
 	}
 	if upstreamHits != 0 {
 		t.Fatalf("oversized request reached upstream %d times", upstreamHits)
+	}
+}
+
+func TestServerCapsUninspectedUnknownLengthBodies(t *testing.T) {
+	const limit = int64(8)
+	type upstreamRead struct {
+		bytes int64
+	}
+	reads := make(chan upstreamRead, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		reads <- upstreamRead{bytes: n}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Sites[0].WAF.Enabled = false
+	cfg.Sites[0].WAF.Mode = "off"
+	cfg.Sites[0].WAF.Performance.MaxBodyBytes = limit
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack: config.ProtectionLevelOff, APISecurity: config.ProtectionLevelOff,
+		BotCC: config.ProtectionLevelOff, ThreatIntel: config.ProtectionLevelOff,
+	}
+	cfg.APISec.Enabled = false
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		body       string
+		protoMajor int
+		wantStatus int
+		wantBytes  int64
+	}{
+		{name: "http1 exact limit", body: "12345678", protoMajor: 1, wantStatus: http.StatusNoContent, wantBytes: limit},
+		{name: "http2 unknown length over limit", body: "123456789", protoMajor: 2, wantStatus: http.StatusRequestEntityTooLarge, wantBytes: limit},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://localhost/upload", strings.NewReader(tc.body))
+			req.ContentLength = -1
+			req.ProtoMajor = tc.protoMajor
+			req.ProtoMinor = 1
+			if tc.protoMajor == 2 {
+				req.Proto = "HTTP/2.0"
+			}
+			if violation := engine.DetectProtocolViolations(req); violation != nil {
+				t.Fatalf("test request was rejected by protocol guard: %+v headers=%v transfer=%v", violation, req.Header, req.TransferEncoding)
+			}
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d body=%q, want %d", rec.Code, rec.Body.String(), tc.wantStatus)
+			}
+			select {
+			case got := <-reads:
+				if got.bytes > tc.wantBytes {
+					t.Fatalf("upstream read %d bytes, limit %d", got.bytes, tc.wantBytes)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("upstream did not receive the request")
+			}
+		})
+	}
+}
+
+func TestServerReleasesRuntimeLockDuringWebSocket(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frontend := httptest.NewServer(server.Handler())
+	defer frontend.Close()
+	wsURL := "ws" + strings.TrimPrefix(frontend.URL, "http") + "/"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	updatesDone := make(chan error, 1)
+	go func() {
+		if err := server.UpdateProtection(cfg.Protection); err != nil {
+			updatesDone <- err
+			return
+		}
+		if err := server.UpdateAPISec(cfg.APISec); err != nil {
+			updatesDone <- err
+			return
+		}
+		updatesDone <- server.UpdateBlockPage(cfg.BlockPage)
+	}()
+	select {
+	case err := <-updatesDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runtime updates blocked by a live WebSocket")
 	}
 }
 
@@ -162,6 +284,45 @@ func TestServerStreamsLargeCompressibleResponseWhenCaptureLimitExceeded(t *testi
 	}
 	if upstreamHits != 1 {
 		t.Fatalf("expected a single upstream request when capture spills to streaming, got %d upstream hits", upstreamHits)
+	}
+}
+
+func TestServerHotReloadsEdgeHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(r.Header.Get("X-Edge-Policy")))
+	}))
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Edge.Cache.Enabled = false
+	cfg.Edge.Headers.Enabled = true
+	cfg.Edge.Headers.Rules = []config.HeaderRuleConfig{{ID: "edge", Enabled: true, Operation: "set", Header: "X-Edge-Policy", Value: "before"}}
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	request := func() string {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("proxy returned %d: %s", recorder.Code, recorder.Body.String())
+		}
+		return recorder.Body.String()
+	}
+	if got := request(); got != "before" {
+		t.Fatalf("initial Edge policy = %q", got)
+	}
+	next := cfg.Edge
+	next.Headers.Rules = []config.HeaderRuleConfig{{ID: "edge", Enabled: true, Operation: "set", Header: "X-Edge-Policy", Value: "after"}}
+	if err := server.UpdateEdge(next); err != nil {
+		t.Fatal(err)
+	}
+	if got := request(); got != "after" {
+		t.Fatalf("hot-reloaded Edge policy = %q", got)
 	}
 }
 
@@ -294,7 +455,7 @@ func TestServerBlocksSemanticPostBodyPayloads(t *testing.T) {
 	cfg.Protection.RateLimit.Enabled = false
 
 	server, err := NewServer(&cfg, engine.NewPipeline(
-		semantic.NewAnalyzer("block", "nosqli", "ssti"),
+		semantic.NewAnalyzer("block", 2, "nosqli", "ssti"),
 	), &captureSink{})
 	if err != nil {
 		t.Fatal(err)
@@ -681,6 +842,68 @@ func TestServerScopedIPAccessRuleBlocksBeforeUpstream(t *testing.T) {
 	if len(sink.entries) != 1 || sink.entries[0].Category != "ip_access" || sink.entries[0].Action != "block" {
 		t.Fatalf("unexpected access rule log: %#v", sink.entries)
 	}
+}
+
+func TestServerRequiresProviderBindingForProviderClientIPHeader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	newConfig := func() config.Config {
+		cfg := config.Default()
+		cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+		cfg.Protection.IP.Whitelist = nil
+		cfg.Protection.IP.Blacklist = nil
+		cfg.Protection.IP.AccessRules = []config.IPAccessRuleConfig{{
+			ID:      "block-spoofed-ip",
+			Name:    "Block resolved client",
+			Action:  "block",
+			Scope:   "global",
+			Entries: []string{"203.0.113.10"},
+			Enabled: true,
+		}}
+		cfg.Protection.RateLimit.Enabled = false
+		return cfg
+	}
+
+	t.Run("generic proxy CIDR cannot supply nginx header", func(t *testing.T) {
+		cfg := newConfig()
+		cfg.Sites[0].WAF.AccessControl.TrustedCIDRs = []string{"192.0.2.1"}
+		server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+		req.Header.Set("X-Real-IP", "203.0.113.10")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("generic proxy header spoof should be ignored, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("explicit nginx binding enables nginx header", func(t *testing.T) {
+		cfg := newConfig()
+		cfg.Sites[0].WAF.AccessControl.TrustedProxyProviders = map[string][]string{
+			"nginx": {"192.0.2.1"},
+		}
+		server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+		req.Header.Set("X-Real-IP", "203.0.113.10")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("explicit provider header should resolve and hit access rule, code=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+	})
 }
 
 func TestServerNormalizesPathBeforeBotPolicy(t *testing.T) {
@@ -1331,7 +1554,9 @@ func newThreatIntelTestServer(t *testing.T, level string, intel []config.ThreatI
 	}))
 	cfg := config.Default()
 	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
-	cfg.Sites[0].WAF.AccessControl.TrustedCIDRs = []string{"192.0.2.1"}
+	cfg.Sites[0].WAF.AccessControl.TrustedProxyProviders = map[string][]string{
+		"nginx": {"192.0.2.1"},
+	}
 	cfg.Protection.Policy.ThreatIntel = level
 	cfg.Protection.IP.ThreatIntel = intel
 	cfg.Protection.IP.Whitelist = whitelist

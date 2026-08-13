@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"regexp"
 	"strings"
@@ -74,6 +75,9 @@ func (i *Inspector) InspectHTTP(resp *http.Response) (*Finding, error) {
 	if !i.Enabled() || resp == nil || resp.Body == nil {
 		return nil, nil
 	}
+	if IsStreamingContentType(resp.Header.Get("Content-Type")) {
+		return nil, nil
+	}
 	limit := i.maxBody
 	if limit <= 0 {
 		limit = 1 << 20
@@ -105,6 +109,20 @@ func (i *Inspector) InspectHTTP(resp *http.Response) (*Finding, error) {
 		inspectBody = inspectBody[:limit]
 	}
 	return i.Inspect(inspectBody), nil
+}
+
+// IsStreamingContentType identifies responses that must not be fully buffered.
+func IsStreamingContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	}
+	mediaType = strings.ToLower(mediaType)
+	return mediaType == "text/event-stream" ||
+		mediaType == "multipart/x-mixed-replace" ||
+		strings.HasPrefix(mediaType, "application/grpc") ||
+		strings.HasPrefix(mediaType, "audio/") ||
+		strings.HasPrefix(mediaType, "video/")
 }
 
 func decodeResponseContent(raw []byte, encoding string, maxPlain int64) ([]byte, error) {

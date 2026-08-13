@@ -984,7 +984,7 @@ function readAPIAuth(system: SystemConfig): APISecAuthConfig {
     jwks_file: stringValue(auth.jwks_file),
     jwks_json: stringValue(auth.jwks_json),
     jwks_url: stringValue(auth.jwks_url),
-    jwks_cache_file: stringValue(auth.jwks_cache_file) || './data/apisec-jwks-cache.json',
+    jwks_cache_file: stringValue(auth.jwks_cache_file) || './data/apisec/jwks-cache.json',
     jwks_refresh_interval: auth.jwks_refresh_interval ?? 60 * 60 * 1_000_000_000,
   };
 }
