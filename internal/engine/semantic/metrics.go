@@ -237,6 +237,8 @@ func (m *Metrics) ResetForTest() {
 	m.latOver1ms.Store(0)
 	m.cacheHits.Store(0)
 	m.cacheMisses.Store(0)
+	m.allowlistPathSkips.Store(0)
+	m.allowlistParamSkips.Store(0)
 	m.mu.Lock()
 	m.hitByCat = map[string]uint64{}
 	m.blockByCat = map[string]uint64{}

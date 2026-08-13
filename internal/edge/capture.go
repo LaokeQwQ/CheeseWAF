@@ -15,15 +15,17 @@ type CapturedResponse struct {
 }
 
 type CaptureWriter struct {
-	header      http.Header
-	status      int
-	body        []byte
-	maxBody     int64
-	writtenBody int64
-	tooLarge    bool
-	destination http.ResponseWriter
-	committed   bool
-	writeErr    error
+	header            http.Header
+	status            int
+	body              []byte
+	maxBody           int64
+	writtenBody       int64
+	tooLarge          bool
+	destination       http.ResponseWriter
+	committed         bool
+	headerWritten     bool
+	bufferingDisabled bool
+	writeErr          error
 }
 
 func NewCaptureWriter() *CaptureWriter {
@@ -54,6 +56,12 @@ func (w *CaptureWriter) WriteHeader(status int) {
 		return
 	}
 	w.status = status
+	w.headerWritten = true
+	if w.bufferingDisabled {
+		if err := w.commit(); err != nil {
+			w.writeErr = err
+		}
+	}
 }
 
 func (w *CaptureWriter) Write(body []byte) (int, error) {
@@ -61,6 +69,17 @@ func (w *CaptureWriter) Write(body []byte) (int, error) {
 		return 0, w.writeErr
 	}
 	if w.committed {
+		n, err := w.destination.Write(body)
+		if err != nil {
+			w.writeErr = err
+		}
+		return n, err
+	}
+	if w.bufferingDisabled {
+		if err := w.commit(); err != nil {
+			w.writeErr = err
+			return 0, err
+		}
 		n, err := w.destination.Write(body)
 		if err != nil {
 			w.writeErr = err
@@ -83,6 +102,20 @@ func (w *CaptureWriter) Write(body []byte) (int, error) {
 	w.body = append(w.body, body...)
 	w.writtenBody = next
 	return len(body), nil
+}
+
+// DisableBuffering switches the writer to pass-through mode. When called from
+// ReverseProxy.ModifyResponse, headers are committed as soon as WriteHeader runs.
+func (w *CaptureWriter) DisableBuffering() {
+	if w == nil || w.committed {
+		return
+	}
+	w.bufferingDisabled = true
+	if w.headerWritten {
+		if err := w.commit(); err != nil {
+			w.writeErr = err
+		}
+	}
 }
 
 func (w *CaptureWriter) Flush() {

@@ -103,6 +103,17 @@ func (c *Compressor) MayApplyRequest(r *http.Request) bool {
 	return c.negotiateEncoding(r.Header.Get("Accept-Encoding")) != ""
 }
 
+// MayApplyResponse reports whether buffering could produce a compressed response.
+func (c *Compressor) MayApplyResponse(r *http.Request, resp *http.Response) bool {
+	if !c.MayApplyRequest(r) || resp == nil {
+		return false
+	}
+	if resp.Header.Get("Content-Encoding") != "" || !c.allowedType(resp.Header.Get("Content-Type")) {
+		return false
+	}
+	return resp.ContentLength < 0 || resp.ContentLength >= c.min
+}
+
 func (c *Compressor) negotiateEncoding(acceptEncoding string) string {
 	if _, ok := c.algos["br"]; ok && acceptsEncoding(acceptEncoding, "br") {
 		return "br"

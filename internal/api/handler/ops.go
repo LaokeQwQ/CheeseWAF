@@ -232,9 +232,18 @@ func (h *Handler) UpdateEdgePolicy(w http.ResponseWriter, r *http.Request) {
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
 		candidate.Edge = req
 		return nil
-	}, nil)
+	}, func(candidate *config.Config) error {
+		if h.OnEdgeChanged == nil {
+			return nil
+		}
+		return h.OnEdgeChanged(candidate.Edge)
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
+		code := "CONFIG_SAVE_ERROR"
+		if strings.Contains(err.Error(), "apply runtime config:") {
+			code = "EDGE_RELOAD_ERROR"
+		}
+		writeError(w, http.StatusInternalServerError, code, err.Error())
 		return
 	}
 	writeData(w, committed.Edge)
@@ -250,7 +259,7 @@ func (h *Handler) StorageStats(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (h *Handler) CleanupStorage(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) CleanupStorage(w http.ResponseWriter, r *http.Request) {
 	task := storageCleanupTask(h.Config, h.nowUTC())
 	result, err := scheduler.CleanupOldFilesWithResult(scheduler.Task{
 		ID:     task.ID,

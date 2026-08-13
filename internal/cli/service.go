@@ -7,11 +7,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,6 +29,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
+	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/scheduler"
@@ -39,11 +42,61 @@ import (
 var readAdminEntryNonce = rand.Read
 var executablePath = os.Executable
 
+const (
+	minimumMonitorCollectionInterval = time.Minute
+	monitorDirectorySizeCacheTTL     = 5 * time.Minute
+)
+
+type directorySizeCacheEntry struct {
+	size       int64
+	measuredAt time.Time
+}
+
+type directorySizeCache struct {
+	ttl     time.Duration
+	entries map[string]directorySizeCacheEntry
+}
+
+func newDirectorySizeCache(ttl time.Duration) *directorySizeCache {
+	if ttl <= 0 {
+		ttl = monitorDirectorySizeCacheTTL
+	}
+	return &directorySizeCache{ttl: ttl, entries: make(map[string]directorySizeCacheEntry)}
+}
+
+func (c *directorySizeCache) size(root string, now time.Time) int64 {
+	if strings.TrimSpace(root) == "" {
+		return 0
+	}
+	key := filepath.Clean(root)
+	if cached, ok := c.entries[key]; ok {
+		age := now.Sub(cached.measuredAt)
+		if age >= 0 && age < c.ttl {
+			return cached.size
+		}
+	}
+	size := serviceDirSize(key)
+	c.entries[key] = directorySizeCacheEntry{size: size, measuredAt: now}
+	return size
+}
+
 func runServe(ctx context.Context) error {
 	cfg, loadedConfigPath, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	// Tune the collector before anything allocates in earnest. The controller
+	// measures the memory this process is actually allowed to use (container
+	// limit when present, physical RAM otherwise) and adjusts GOGC from live GC
+	// CPU and heap pressure. Operator-set GOGC/GOMEMLIMIT are respected.
+	gcTuner, err := gctune.Start(gcTuneConfigFromConfig(cfg.Performance.GC))
+	if err != nil {
+		// A rejected tuning config is a misconfiguration worth surfacing, not a
+		// reason to refuse to serve traffic: the runtime defaults are still safe.
+		fmt.Printf("gc tuning disabled: %v\n", err)
+	}
+	defer gcTuner.Stop()
+
 	timeSync, err := timekeeper.NewService(timekeeperConfigFromConfig(cfg.TimeSync), timekeeper.Dependencies{})
 	if err != nil {
 		return fmt.Errorf("configure application clock: %w", err)
@@ -56,6 +109,10 @@ func runServe(ctx context.Context) error {
 		cfg.Setup.DataDir = dataDir
 	}
 	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
+		return err
+	}
+	clusterIdentityService, clusterHeartbeats, err := initializeClusterRuntime(cfg, clock)
+	if err != nil {
 		return err
 	}
 	if err := writePID(cfg.Setup.RuntimeDir); err != nil {
@@ -74,11 +131,23 @@ func runServe(ctx context.Context) error {
 	if err := validateStartupUsers(ctx, cfg.Setup.DataDir, store); err != nil {
 		return err
 	}
+	setupToken := strings.TrimSpace(os.Getenv("CHEESEWAF_SETUP_TOKEN"))
+	setupPending := setup.NeedsSetup(cfg.Setup.DataDir)
+	// Every first-install mutation, including loopback requests, requires this token.
+	if setupPending {
+		if setupToken == "" {
+			token, err := setup.GenerateSetupToken()
+			if err != nil {
+				return fmt.Errorf("generate setup token: %w", err)
+			}
+			setupToken = token
+		}
+	}
 	if err := seedSites(ctx, store, cfg); err != nil {
 		return err
 	}
 
-	sink, err := logsink.NewFromConfig(cfg.Storage, cfg.Logging.Output.File.Path)
+	sink, err := logsink.NewFromConfigWithFile(cfg.Storage, cfg.Logging.Output.File)
 	if err != nil {
 		return err
 	}
@@ -92,6 +161,8 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer proxyServer.Close()
+	var healthChecker *proxy.HealthChecker
 	reloadSites := func(sites []config.SiteConfig) error {
 		next := *cfg
 		next.Sites = append([]config.SiteConfig(nil), sites...)
@@ -103,10 +174,20 @@ func runServe(ctx context.Context) error {
 			return err
 		}
 		proxyServer.UpdatePipeline(nextPipeline)
+		if healthChecker != nil {
+			healthChecker.UpdateSites(sites)
+		}
 		return nil
 	}
-	proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry()).Start(ctx)
-	startRemoteWrite(ctx, cfg, store, sink, time.Now())
+	healthChecker = proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry())
+	// Own the lifetime of every background component started by runServe. The
+	// command context is not necessarily cancelled when one listener fails, so
+	// using it directly would leave schedulers and monitoring goroutines running
+	// while deferred cleanup closes their stores and sinks.
+	runtimeCtx, stopRuntime := context.WithCancel(ctx)
+	defer stopRuntime()
+	healthChecker.Start(runtimeCtx)
+	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now())
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
 		schedulerAIClient = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
@@ -117,41 +198,53 @@ func runServe(ctx context.Context) error {
 		Store:    store,
 		Client:   schedulerAIClient,
 	}))
-	schedulerEngine.Start(ctx)
+	schedulerEngine.Start(runtimeCtx)
 	hub := realtime.NewHub()
 	authSecret, err := ensureAuthSecret(cfg.Setup.DataDir)
 	if err != nil {
 		return err
 	}
-	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS)
+	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS, cfg.Cluster.Interconnect)
 	if err != nil {
 		return err
 	}
+	if setupPending {
+		fmt.Printf("Complete first-install setup: %s\n", setupBrowserURL(adminScheme, cfg.Server.AdminListen, setupToken))
+	}
+	adminRouter := api.NewRouter(api.Options{
+		Config:              cfg,
+		ConfigPath:          loadedConfigPath,
+		Store:               store,
+		Sink:                sink,
+		Hub:                 hub,
+		Secret:              authSecret,
+		SetupToken:          setupToken,
+		Clock:               clock,
+		TimeSync:            timeSync,
+		ClusterIdentity:     clusterIdentityService,
+		ClusterHeartbeats:   clusterHeartbeats,
+		OnSitesChanged:      reloadSites,
+		OnEdgeChanged:       proxyServer.UpdateEdge,
+		OnProtectionChanged: proxyServer.UpdateProtection,
+		OnAPISecChanged:     proxyServer.UpdateAPISec,
+		OnBlockPageChanged:  proxyServer.UpdateBlockPage,
+		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
+			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
+		},
+	})
 	admin := &http.Server{
-		Addr: cfg.Server.AdminListen,
-		Handler: adminHandlerWithClock(cfg, api.NewRouter(api.Options{
-			Config:              cfg,
-			ConfigPath:          loadedConfigPath,
-			Store:               store,
-			Sink:                sink,
-			Hub:                 hub,
-			Secret:              authSecret,
-			Clock:               clock,
-			TimeSync:            timeSync,
-			OnSitesChanged:      reloadSites,
-			OnProtectionChanged: proxyServer.UpdateProtection,
-			OnAPISecChanged:     proxyServer.UpdateAPISec,
-			OnBlockPageChanged:  proxyServer.UpdateBlockPage,
-			OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
-				return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
-			},
-		}), authSecret, clock),
+		Addr:              cfg.Server.AdminListen,
+		Handler:           adminHandlerWithClock(cfg, adminRouter, authSecret, clock),
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
 		WriteTimeout:      cfg.Server.WriteTimeout,
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		MaxHeaderBytes:    1 << 20,
+	}
+	interconnect, err := newClusterInterconnectServer(cfg, adminRouter, clusterIdentityService)
+	if err != nil {
+		return err
 	}
 
 	http3Server, altSvc, err := proxyServer.HTTP3Server()
@@ -162,7 +255,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := timeSync.Start(ctx); err != nil {
+	if err := timeSync.Start(runtimeCtx); err != nil {
 		return fmt.Errorf("start application clock: %w", err)
 	}
 	defer timeSync.Stop()
@@ -175,19 +268,25 @@ func runServe(ctx context.Context) error {
 		fmt.Printf("CheeseWAF HTTP/3 proxy listening on %s\n", http3Server.Addr)
 	}
 	fmt.Printf("CheeseWAF admin API listening on %s://%s\n", adminScheme, cfg.Server.AdminListen)
+	if interconnect != nil {
+		fmt.Printf("CheeseWAF cluster interconnect listening on https://%s (mTLS)\n", interconnect.Addr)
+	}
 
+	proxyHTTP := proxyServer.HTTPServer()
+	serveCtx, stopServing := context.WithCancel(runtimeCtx)
+	defer stopServing()
 	var wg sync.WaitGroup
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 5)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := proxy.ListenAndServe(ctx, proxyServer.HTTPServer()); err != nil && !errors.Is(err, context.Canceled) {
+		if err := proxy.ListenAndServe(serveCtx, proxyHTTP); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- err
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if err := proxy.ListenAndServe(ctx, admin); err != nil && !errors.Is(err, context.Canceled) {
+		if err := proxy.ListenAndServe(serveCtx, admin); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- err
 		}
 	}()
@@ -195,7 +294,7 @@ func runServe(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := proxy.ListenAndServe(ctx, tlsServer); err != nil && !errors.Is(err, context.Canceled) {
+			if err := proxy.ListenAndServe(serveCtx, tlsServer); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
 		}()
@@ -204,19 +303,31 @@ func runServe(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := proxy.ListenAndServeHTTP3(ctx, http3Server); err != nil && !errors.Is(err, context.Canceled) {
+			if err := proxy.ListenAndServeHTTP3(serveCtx, http3Server); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
+	if interconnect != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := proxy.ListenAndServe(serveCtx, interconnect); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
 		}()
 	}
 
+	var serveErr error
 	select {
 	case <-ctx.Done():
-	case err := <-errCh:
-		return err
+	case serveErr = <-errCh:
 	}
+	stopRuntime()
+	stopServing()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	_ = proxyHTTP.Shutdown(shutdownCtx)
 	_ = admin.Shutdown(shutdownCtx)
 	if tlsServer != nil {
 		_ = tlsServer.Shutdown(shutdownCtx)
@@ -224,8 +335,22 @@ func runServe(ctx context.Context) error {
 	if http3Server != nil {
 		_ = http3Server.Shutdown(shutdownCtx)
 	}
+	if interconnect != nil {
+		_ = interconnect.Shutdown(shutdownCtx)
+	}
 	wg.Wait()
-	return nil
+	return serveErr
+}
+
+func setupBrowserURL(scheme, adminListen, token string) string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(adminListen))
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("%s://%s/setup#setup_token=%s", scheme, net.JoinHostPort(host, port), url.QueryEscape(token))
 }
 
 func validateStartupUsers(ctx context.Context, dataDir string, store storage.UserStore) error {
@@ -645,9 +770,10 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 	alerter := monitor.NewAlerter(cfg.Monitor.Alerts)
 	notifiers := monitornotify.NewManager(cfg.Monitor.Notifiers)
 	interval := cfg.Monitor.RemoteWrite.Interval
-	if interval <= 0 {
-		interval = 30 * time.Second
+	if interval < minimumMonitorCollectionInterval {
+		interval = minimumMonitorCollectionInterval
 	}
+	dirSizes := newDirectorySizeCache(monitorDirectorySizeCacheTTL)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -657,9 +783,10 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 				return
 			case <-ticker.C:
 				logs, _, _ := sink.Query(ctx, storage.LogFilter{Limit: 1000})
+				now := time.Now()
 				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
-					"data": serviceDirSize(cfg.Setup.DataDir),
-					"logs": serviceDirSize(filepath.Dir(cfg.Logging.Output.File.Path)),
+					"data": dirSizes.size(cfg.Setup.DataDir, now),
+					"logs": dirSizes.size(filepath.Dir(cfg.Logging.Output.File.Path), now),
 				})
 				_ = writer.Push(ctx, snapshot)
 				alerts := alerter.Evaluate(snapshot)
@@ -690,10 +817,10 @@ func serviceDirSize(root string) int64 {
 }
 
 func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
-	// Wire budget metrics once; safe to re-assign.
-	engine.OnDetectionBudgetExhausted = func() {
+	// Atomic registration is safe while site hot reloads rebuild the pipeline.
+	engine.SetDetectionBudgetExhaustedHook(func() {
 		semantic.ProcessMetrics().RecordBudgetExhausted()
-	}
+	})
 	var detectors []engine.Detector
 	if len(cfg.Sites) == 0 {
 		return engine.NewPipeline(), nil
@@ -720,6 +847,10 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 		}
 		if switches.RCE {
 			semanticCategories = append(semanticCategories, "rce")
+			// RCE is the production switch for the higher-confidence command
+			// execution families that share the same response action. Keep their
+			// categories distinct so telemetry and policy routing remain useful.
+			semanticCategories = append(semanticCategories, "webshell", "log4shell")
 		}
 		if switches.LFI {
 			semanticCategories = append(semanticCategories, "lfi")
@@ -737,8 +868,10 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			semanticCategories = append(semanticCategories, "ssti")
 		}
 		if len(semanticCategories) > 0 {
-			analyzer := semantic.NewAnalyzer(site.WAF.Mode, semanticCategories...)
+			paranoiaLevel := config.EffectiveParanoiaLevel(site.WAF.ParanoiaLevel)
+			analyzer := semantic.NewAnalyzer(site.WAF.Mode, paranoiaLevel, semanticCategories...)
 			analyzer.SetAllowlists(site.WAF.SemanticPolicy.PathAllowlist, site.WAF.SemanticPolicy.ParamAllowlist)
+			fmt.Printf("semantic analyzer initialized: site_id=%s paranoia_level=%d\n", site.ID, paranoiaLevel)
 			detectors = append(detectors, siteScopedDetector{
 				siteID:   site.ID,
 				detector: analyzer,
@@ -803,7 +936,7 @@ func loadConfig() (*config.Config, string, error) {
 	return cfg, bundle.Paths.ConfigFile, nil
 }
 
-func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
+func adminTLSConfig(cfg config.AdminTLSConfig, interconnect ...config.InterconnectConfig) (*tls.Config, string, error) {
 	if !cfg.Enabled {
 		return nil, "http", nil
 	}
@@ -811,10 +944,29 @@ func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("load admin TLS certificate: %w", err)
 	}
-	return &tls.Config{
+	tlsConfig := &tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{cert},
-	}, "https", nil
+	}
+	// Heartbeats can be posted to the admin listener. Request and verify a
+	// cluster client cert when present so handler VerifiedChains is populated;
+	// browsers without a client cert still connect.
+	if len(interconnect) > 0 && interconnect[0].MTLSRequired {
+		caPath := strings.TrimSpace(interconnect[0].CAFile)
+		if caPath != "" {
+			caPEM, err := os.ReadFile(caPath)
+			if err != nil {
+				return nil, "", fmt.Errorf("read cluster mTLS CA: %w", err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caPEM) {
+				return nil, "", fmt.Errorf("parse cluster mTLS CA %s", caPath)
+			}
+			tlsConfig.ClientCAs = pool
+			tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
+		}
+	}
+	return tlsConfig, "https", nil
 }
 
 func ensureAdminTLSCertificate(cfg *config.Config) error {

@@ -2,8 +2,10 @@ package log_sink
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,7 +60,10 @@ func TestNewFromConfigBlocksPrivateHTTPLogSinkByDefault(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sink.Close() })
 
-	err = sink.Write(context.Background(), &storage.LogEntry{ID: "private-sink-test"})
+	if err := sink.Write(context.Background(), &storage.LogEntry{ID: "private-sink-test"}); err != nil {
+		t.Fatalf("enqueue private sink write: %v", err)
+	}
+	err = sink.Flush(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "public") {
 		t.Fatalf("expected private log sink endpoint to be blocked, got %v", err)
 	}
@@ -87,7 +92,37 @@ func TestNewFromConfigAllowsExplicitPrivateHTTPLogSink(t *testing.T) {
 	if err := sink.Write(context.Background(), &storage.LogEntry{ID: "private-sink-allowed"}); err != nil {
 		t.Fatalf("expected explicit private log sink endpoint to write: %v", err)
 	}
+	if err := sink.Flush(context.Background()); err != nil {
+		t.Fatalf("flush explicit private log sink: %v", err)
+	}
 	if requests != 1 {
 		t.Fatalf("expected one remote write request, got %d", requests)
+	}
+}
+
+func TestNewFromConfigWithFileAppliesRotationSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.log")
+	sink, err := NewFromConfigWithFile(config.StorageConfig{}, config.FileLogConfig{
+		Path:       path,
+		MaxSize:    "1KiB",
+		MaxBackups: 1,
+	})
+	if err != nil {
+		t.Fatalf("new sink: %v", err)
+	}
+	defer sink.Close()
+	for i := 0; i < 3; i++ {
+		if err := sink.Write(context.Background(), &storage.LogEntry{
+			ID:      fmt.Sprintf("configured-%d", i),
+			Payload: strings.Repeat("x", 600),
+		}); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Fatalf("configured backup was not created: %v", err)
+	}
+	if _, err := os.Stat(path + ".2"); !os.IsNotExist(err) {
+		t.Fatalf("rotation exceeded configured backup count: %v", err)
 	}
 }

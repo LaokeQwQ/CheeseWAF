@@ -303,6 +303,21 @@ func defaultCAPTCHAAssetCandidate(v config.CAPTCHAAssetsConfig) config.CAPTCHAAs
 	if v.S3.RequestTimeout == 0 {
 		v.S3.RequestTimeout = d.S3.RequestTimeout
 	}
+	if v.Limits.MaxImageBytes == 0 {
+		v.Limits.MaxImageBytes = d.Limits.MaxImageBytes
+	}
+	if v.Limits.MaxFontBytes == 0 {
+		v.Limits.MaxFontBytes = d.Limits.MaxFontBytes
+	}
+	if v.Limits.MaxPixels == 0 {
+		v.Limits.MaxPixels = d.Limits.MaxPixels
+	}
+	if v.Limits.MaxAssets == 0 {
+		v.Limits.MaxAssets = d.Limits.MaxAssets
+	}
+	if v.Limits.MaxTotalBytes == 0 {
+		v.Limits.MaxTotalBytes = d.Limits.MaxTotalBytes
+	}
 	return v
 }
 func validateCAPTCHAAssetCandidate(v config.CAPTCHAAssetsConfig) error {
@@ -394,6 +409,8 @@ func (h *Handler) writeCAPTCHAAssetError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, captchaassets.ErrReferenceCapacity):
 		writeError(w, http.StatusServiceUnavailable, "CAPTCHA_ASSET_REFERENCE_CAPACITY", "captcha asset preview service is temporarily busy")
+	case errors.Is(err, captchaassets.ErrQuotaExceeded):
+		writeError(w, http.StatusConflict, "CAPTCHA_ASSET_QUOTA_EXCEEDED", "captcha asset storage quota has been reached")
 	case errors.Is(err, captchaassets.ErrNotFound):
 		writeError(w, http.StatusNotFound, "CAPTCHA_ASSET_NOT_FOUND", "captcha asset was not found")
 	case errors.Is(err, captchaassets.ErrInvalidAsset), errors.Is(err, captchaassets.ErrReferenceExpired), errors.Is(err, captchaassets.ErrReferenceUsed):

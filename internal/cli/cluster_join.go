@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/spf13/cobra"
 )
 
@@ -282,7 +283,7 @@ func requestClusterJoin(client *http.Client, controllerURL string, payload map[s
 	if err != nil {
 		return clusterJoinAPIResponse{}, fmt.Errorf("cluster join request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return clusterJoinAPIResponse{}, fmt.Errorf("read cluster join response: %w", err)

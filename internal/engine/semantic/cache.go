@@ -1,6 +1,8 @@
 package semantic
 
 import (
+	"encoding/binary"
+	"hash/maphash"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,8 +17,8 @@ const (
 
 // candidateCache is a pure-Go sharded TTL cache for per-field analysis results.
 // It is FP-safe when keyed by analyzer mode, enabled categories fingerprint,
-// and the exact candidate text: the same inputs always yield the same hits
-// under the same policy.
+// field source/name, and the exact candidate text: the same inputs always yield
+// the same hits under the same policy.
 //
 // Eviction is approximate (delete a batch of map keys when full) rather than
 // true LRU: under proxy load the O(n) order-list scans cost more than the
@@ -65,30 +67,41 @@ func newCandidateCache(maxSize int, ttl time.Duration) *candidateCache {
 	return c
 }
 
-// processCandidateCache is shared across Analyzer instances. Keys include mode
-// and enabled category fingerprint so configs never cross-contaminate.
+// processCandidateCache is shared across Analyzer instances. Keys include the
+// analyzer policy and field context so configs and parameter sinks never
+// cross-contaminate.
 var processCandidateCache = newCandidateCache(defaultCacheSize, defaultCacheTTL)
 
-// candidateCacheKey hashes mode + enabled-category fingerprint + text using
-// pure FNV-1a (no heap hash.Hash allocation on the hot path).
-func candidateCacheKey(mode string, catFP uint64, text string) uint64 {
-	h := uint64(14695981039346656037)
-	h = fnv64aAddString(h, mode)
-	h = fnv64aAddByte(h, 0)
-	// Mix precomputed category fingerprint without re-sorting every call.
-	h = fnv64aAddUint64(h, catFP)
-	h = fnv64aAddByte(h, 0)
-	if len(text) > maxInputRawBytes {
-		text = text[:maxInputRawBytes]
-	}
-	return fnv64aAddString(h, text)
+// A per-process seed prevents an attacker from manufacturing collisions in the
+// shared cache. Field source and name are part of the key because SSRF, RCE,
+// LFI, NoSQL and SSTI decisions depend on the parameter sink, not only its text.
+var candidateCacheSeed = maphash.MakeSeed()
+
+func candidateCacheKey(mode string, catFP uint64, source, name, text string) uint64 {
+	var h maphash.Hash
+	h.SetSeed(candidateCacheSeed)
+	writeCacheKeyString(&h, mode)
+	var encoded [8]byte
+	binary.LittleEndian.PutUint64(encoded[:], catFP)
+	_, _ = h.Write(encoded[:])
+	writeCacheKeyString(&h, source)
+	writeCacheKeyString(&h, name)
+	writeCacheKeyString(&h, text)
+	return h.Sum64()
+}
+
+func writeCacheKeyString(h *maphash.Hash, value string) {
+	var encoded [8]byte
+	binary.LittleEndian.PutUint64(encoded[:], uint64(len(value)))
+	_, _ = h.Write(encoded[:])
+	_, _ = h.WriteString(value)
 }
 
 // enabledCategoryFingerprint returns a stable FNV mix of enabled categories.
 // Order-independent: categories are mixed in fixed global order.
 func enabledCategoryFingerprint(enabled map[string]bool) uint64 {
 	// Fixed order matches detector priority; must stay stable across processes.
-	const order = "lfi\x00nosqli\x00rce\x00sqli\x00ssrf\x00ssti\x00xss\x00xxe"
+	const order = "lfi\x00log4shell\x00nosqli\x00rce\x00sqli\x00ssrf\x00ssti\x00webshell\x00xss\x00xxe"
 	h := uint64(14695981039346656037)
 	// Walk the fixed list by scanning null-separated names.
 	start := 0
@@ -118,15 +131,6 @@ func fnv64aAddString(h uint64, s string) uint64 {
 func fnv64aAddByte(h uint64, b byte) uint64 {
 	h ^= uint64(b)
 	h *= 1099511628211
-	return h
-}
-
-func fnv64aAddUint64(h, v uint64) uint64 {
-	for i := 0; i < 8; i++ {
-		h ^= uint64(byte(v))
-		h *= 1099511628211
-		v >>= 8
-	}
 	return h
 }
 

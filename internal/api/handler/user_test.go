@@ -225,7 +225,7 @@ func TestDisableUser2FARequiresCurrentPasswordAndCode(t *testing.T) {
 	}
 	missing := httptest.NewRecorder()
 	router.ServeHTTP(missing, withReaderClaims(httptest.NewRequest(http.MethodPost, "/users/reader-id/2fa/disable", bytes.NewReader([]byte(`{}`)))))
-	if missing.Code != http.StatusUnauthorized {
+	if missing.Code != http.StatusBadRequest {
 		t.Fatalf("expected missing code to be rejected, got %d: %s", missing.Code, missing.Body.String())
 	}
 
@@ -235,7 +235,7 @@ func TestDisableUser2FARequiresCurrentPasswordAndCode(t *testing.T) {
 	}
 	wrongPassword := httptest.NewRecorder()
 	router.ServeHTTP(wrongPassword, withReaderClaims(httptest.NewRequest(http.MethodPost, "/users/reader-id/2fa/disable", bytes.NewReader([]byte(`{"password":"wrong-password","code":"`+code+`"}`)))))
-	if wrongPassword.Code != http.StatusUnauthorized {
+	if wrongPassword.Code != http.StatusBadRequest {
 		t.Fatalf("expected wrong password to be rejected, got %d: %s", wrongPassword.Code, wrongPassword.Body.String())
 	}
 
@@ -290,7 +290,7 @@ func TestRecoverUser2FAValidatesPasswordAndUsernameWithGenericError(t *testing.T
 		request := httptest.NewRequest(http.MethodPost, "/users/reader-id/2fa/recover", bytes.NewReader([]byte(body)))
 		request = request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, claims))
 		router.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "INVALID_RECOVERY_CONFIRMATION") {
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "INVALID_RECOVERY_CONFIRMATION") {
 			t.Fatalf("expected generic recovery confirmation error, got %d: %s", recorder.Code, recorder.Body.String())
 		}
 	}

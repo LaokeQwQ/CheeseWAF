@@ -78,7 +78,7 @@ func (d *RCEDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (
 	for _, candidate := range candidates {
 		trimmed := strings.TrimSpace(candidate)
 		for _, pattern := range rcePatterns {
-			if pattern.MatchString(trimmed) {
+			if guardedMatchString2K(pattern, trimmed) {
 				return &engine.DetectionResult{
 					Detected:   true,
 					DetectorID: d.ID(),

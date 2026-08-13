@@ -64,7 +64,8 @@ func (h *Handler) ClusterNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "CLUSTER_IDENTITY_UNAVAILABLE", err.Error())
 		return
 	}
-	if ok, code, message := h.authorizeClusterHeartbeatCertificate(r, svc, nodeID); !ok {
+	registration, ok, code, message := h.authorizeClusterHeartbeatCertificate(r, svc, nodeID)
+	if !ok {
 		writeError(w, code, "CLUSTER_NODE_CERT_INVALID", message)
 		return
 	}
@@ -72,21 +73,26 @@ func (h *Handler) ClusterNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && !decodeOptional(w, r, &req, defaultJSONBodyLimit, "invalid heartbeat request") {
 		return
 	}
+	req.Role = strings.TrimSpace(req.Role)
+	req.AdvertiseAddr = strings.TrimSpace(req.AdvertiseAddr)
+	req.ConfigVersion = strings.TrimSpace(req.ConfigVersion)
+	if req.Role != "" && req.Role != registration.Role {
+		writeError(w, http.StatusForbidden, "CLUSTER_HEARTBEAT_IDENTITY_MISMATCH", "heartbeat role does not match the enrolled node")
+		return
+	}
+	if req.AdvertiseAddr != "" && req.AdvertiseAddr != registration.AdvertiseAddr {
+		writeError(w, http.StatusForbidden, "CLUSTER_HEARTBEAT_IDENTITY_MISMATCH", "heartbeat address does not match the enrolled node")
+		return
+	}
+	if len(req.ConfigVersion) > 256 {
+		writeError(w, http.StatusBadRequest, "CLUSTER_HEARTBEAT_INVALID", "config version is too long")
+		return
+	}
 	heartbeat := cluster.Heartbeat{
 		NodeID:        nodeID,
-		Role:          req.Role,
-		AdvertiseAddr: req.AdvertiseAddr,
+		Role:          registration.Role,
+		AdvertiseAddr: registration.AdvertiseAddr,
 		ConfigVersion: req.ConfigVersion,
-	}
-	if heartbeat.Role == "" || heartbeat.AdvertiseAddr == "" {
-		if node, ok := h.clusterNodeConfig(nodeID); ok {
-			if heartbeat.Role == "" {
-				heartbeat.Role = node.Role
-			}
-			if heartbeat.AdvertiseAddr == "" {
-				heartbeat.AdvertiseAddr = node.AdvertiseAddr
-			}
-		}
 	}
 	if req.CanReceiveTraffic != nil {
 		heartbeat.CanReceiveTraffic = *req.CanReceiveTraffic
@@ -446,35 +452,35 @@ func clusterAuditPathAction(method, path string) string {
 	}
 }
 
-func (h *Handler) authorizeClusterHeartbeatCertificate(r *http.Request, svc *identity.MemoryIdentityService, nodeID string) (bool, int, string) {
+func (h *Handler) authorizeClusterHeartbeatCertificate(r *http.Request, svc *identity.MemoryIdentityService, nodeID string) (identity.NodeRegistration, bool, int, string) {
 	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return false, http.StatusUnauthorized, "node heartbeat requires a verified mTLS client certificate"
+		return identity.NodeRegistration{}, false, http.StatusUnauthorized, "node heartbeat requires a verified mTLS client certificate"
 	}
 	if len(r.TLS.VerifiedChains) == 0 {
-		return false, http.StatusUnauthorized, "node client certificate was not verified by the cluster CA"
+		return identity.NodeRegistration{}, false, http.StatusUnauthorized, "node client certificate was not verified by the cluster CA"
 	}
 	cert := r.TLS.PeerCertificates[0]
 	if cert == nil {
-		return false, http.StatusUnauthorized, "node client certificate is empty"
+		return identity.NodeRegistration{}, false, http.StatusUnauthorized, "node client certificate is empty"
 	}
 	registration, ok := clusterRegistrationByID(svc, nodeID)
 	if !ok {
-		return false, http.StatusForbidden, "cluster node is not enrolled"
+		return identity.NodeRegistration{}, false, http.StatusForbidden, "cluster node is not enrolled"
 	}
 	if registration.Revoked {
-		return false, http.StatusForbidden, "cluster node is revoked"
+		return identity.NodeRegistration{}, false, http.StatusForbidden, "cluster node is revoked"
 	}
 	now := h.nowUTC()
 	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
-		return false, http.StatusForbidden, "node client certificate is expired or not yet valid"
+		return identity.NodeRegistration{}, false, http.StatusForbidden, "node client certificate is expired or not yet valid"
 	}
 	if strings.TrimSpace(registration.CertificateSerial) == "" || cert.SerialNumber == nil || cert.SerialNumber.String() != registration.CertificateSerial {
-		return false, http.StatusForbidden, "node client certificate serial does not match the enrolled node"
+		return identity.NodeRegistration{}, false, http.StatusForbidden, "node client certificate serial does not match the enrolled node"
 	}
 	if !clusterCertificateIdentifiesNode(cert, registration) {
-		return false, http.StatusForbidden, "node client certificate identity does not match the heartbeat node"
+		return identity.NodeRegistration{}, false, http.StatusForbidden, "node client certificate identity does not match the heartbeat node"
 	}
-	return true, http.StatusOK, ""
+	return registration, true, http.StatusOK, ""
 }
 
 func clusterRegistrationByID(svc *identity.MemoryIdentityService, nodeID string) (identity.NodeRegistration, bool) {
@@ -548,6 +554,7 @@ func (h *Handler) recordClusterJoinAudit(r *http.Request, req clusterJoinRequest
 	if h == nil || h.Auditor == nil {
 		return
 	}
+	// Always record join outcomes. Per-IP rate limiting bounds write volume.
 	nodeID := strings.TrimSpace(req.NodeID)
 	target := "cluster"
 	if nodeID != "" {
@@ -637,6 +644,12 @@ type clusterJoinCertificates struct {
 }
 
 func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
+	// Rate limit cluster join to prevent audit I/O amplification
+	limiterKey := "cluster:join:" + remoteIPFromRequest(r)
+	if !h.clusterJoinRateLimiter().Allow(limiterKey, h.nowUTC()) {
+		writeError(w, http.StatusTooManyRequests, "CLUSTER_JOIN_RATE_LIMITED", "too many join requests")
+		return
+	}
 	started := time.Now()
 	var req clusterJoinRequest
 	auditStatus := http.StatusBadRequest

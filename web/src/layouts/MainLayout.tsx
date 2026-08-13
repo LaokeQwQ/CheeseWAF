@@ -61,7 +61,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import i18n from '../i18n';
-import { clearNotifications, fetchAuditEntries, fetchHealth, fetchLogs, fetchNotifications, fetchUsers, fetchVersion, logout, markAllNotificationsRead as markAllNotificationsReadAPI, sanitizeInternalReturnPath, updateNotification } from '../api/client';
+import { clearNotifications, fetchAuditEntries, fetchHealth, fetchLogs, fetchNotifications, fetchUsers, fetchVersion, isSessionInvalidAuthFailure, logout, markAllNotificationsRead as markAllNotificationsReadAPI, sanitizeInternalReturnPath, updateNotification } from '../api/client';
 import AIAssistantEntry from '../components/AIAssistant/AIAssistantEntry';
 import BrandLogo from '../components/BrandLogo';
 import { useAppStore, type Language } from '../stores';
@@ -354,11 +354,15 @@ export default function MainLayout() {
   async function handleLogout() {
     try {
       await logout();
-    } catch {
-      // Local logout must still work if the session is already expired or the API is unreachable.
-    } finally {
       queryClient.clear();
       navigate('/login', { replace: true });
+    } catch (err) {
+      if (isSessionInvalidAuthFailure(err)) {
+        queryClient.clear();
+        navigate('/login', { replace: true });
+      } else {
+        toast.error(err instanceof Error ? err.message : t('common.requestFailed'));
+      }
     }
   }
 

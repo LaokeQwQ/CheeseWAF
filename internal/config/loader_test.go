@@ -176,6 +176,34 @@ sites:
 	}
 }
 
+func TestLoadTrustedProxyProviderBindings(t *testing.T) {
+	cfg := loadTempConfig(t, `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      mode: block
+      access_control:
+        trusted_cidrs: ["10.0.0.0/8"]
+        trusted_proxy_providers:
+          cloudflare: ["198.51.100.0/24"]
+`)
+
+	access := cfg.Sites[0].WAF.AccessControl
+	if len(access.TrustedCIDRs) != 1 || access.TrustedCIDRs[0] != "10.0.0.0/8" {
+		t.Fatalf("generic trusted CIDRs did not load: %+v", access)
+	}
+	if got := access.TrustedProxyProviders["cloudflare"]; len(got) != 1 || got[0] != "198.51.100.0/24" {
+		t.Fatalf("provider CIDR binding did not load: %+v", access.TrustedProxyProviders)
+	}
+}
+
 func TestValidateHTTP3RequiresCertificate(t *testing.T) {
 	cfg := Default()
 	cfg.Server.HTTP3.Enabled = true
@@ -252,8 +280,24 @@ func TestValidateRemoteWriteEndpointGuard(t *testing.T) {
 	cfg.Monitor.RemoteWrite.Enabled = true
 	cfg.Monitor.RemoteWrite.Endpoint = "http://127.0.0.1:8428/api/v1/write"
 	cfg.Monitor.RemoteWrite.AllowPrivateEndpoint = true
+	cfg.Monitor.RemoteWrite.Interval = 2 * time.Minute
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("expected explicitly allowed private remote_write endpoint to validate: %v", err)
+	}
+}
+
+func TestValidateMonitorCollectionIntervalForAlertsOnly(t *testing.T) {
+	cfg := Default()
+	cfg.Monitor.RemoteWrite.Enabled = false
+	cfg.Monitor.Alerts.Enabled = true
+	cfg.Monitor.RemoteWrite.Interval = 30 * time.Second
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("expected alerts-only monitoring below the collection interval floor to fail validation")
+	}
+
+	cfg.Monitor.RemoteWrite.Interval = time.Minute
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("expected one-minute alerts-only collection interval to validate: %v", err)
 	}
 }
 

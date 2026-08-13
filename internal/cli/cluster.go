@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	clusterobject "github.com/LaokeQwQ/CheeseWAF/internal/cluster/object"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -124,7 +126,8 @@ func runClusterMonitorNode(cmd *cobra.Command, opts clusterMonitorNodeOptions) e
 }
 
 func clusterHeartbeatHTTPClient(cfg *config.Config, insecure bool) (*http.Client, error) {
-	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}} //nolint:gosec // explicit lab flag
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure} //nolint:gosec // explicit lab flag
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
 	caFile := strings.TrimSpace(cfg.Cluster.Interconnect.CAFile)
 	certFile := strings.TrimSpace(cfg.Cluster.Interconnect.CertFile)
 	keyFile := strings.TrimSpace(cfg.Cluster.Interconnect.KeyFile)
@@ -136,8 +139,15 @@ func clusterHeartbeatHTTPClient(cfg *config.Config, insecure bool) (*http.Client
 		transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
 	}
 	if caFile != "" && !insecure {
-		// Optional: system roots used when CA file missing; operators pin via --insecure-skip-verify only in labs.
-		_ = caFile
+		caPEM, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read cluster CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("parse cluster CA %s", caFile)
+		}
+		tlsConfig.RootCAs = pool
 	}
 	return &http.Client{Timeout: 10 * time.Second, Transport: transport}, nil
 }
@@ -158,7 +168,7 @@ func postClusterHeartbeat(client *http.Client, controller, nodeID, role, adverti
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))

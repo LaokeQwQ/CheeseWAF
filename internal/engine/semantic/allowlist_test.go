@@ -10,7 +10,7 @@ import (
 )
 
 func TestAnalyzerPathAllowlistSkipsDetection(t *testing.T) {
-	a := NewAnalyzer("block")
+	a := NewAnalyzer("block", 2)
 	a.SetAllowlists([]string{"/health", "/static/*"}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "http://x/health?id=1'+OR+1=1--", nil)
@@ -39,7 +39,7 @@ func TestAnalyzerPathAllowlistSkipsDetection(t *testing.T) {
 }
 
 func TestAnalyzerParamAllowlistSkipsField(t *testing.T) {
-	a := NewAnalyzer("block")
+	a := NewAnalyzer("block", 2)
 	a.SetAllowlists(nil, []string{"content", "body"})
 
 	// Allowlisted param carries classic SQLi — must not block.

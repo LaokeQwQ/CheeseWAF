@@ -66,7 +66,11 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 }
 
 func sqlCandidateTexts(reqCtx *engine.RequestContext) []string {
-	seen := map[string]struct{}{}
+	// Dedup stays exact, but the map is only built once the candidate count makes
+	// hashing cheaper than the linear compare it replaces. Ordinary requests
+	// produce a handful of candidates and never allocate it, matching the
+	// dedupMapThreshold policy already used by the analyzer's candidate path.
+	var seen map[string]struct{}
 	candidates := make([]string, 0, 8)
 	addRaw := func(text string) {
 		if len(candidates) >= maxSQLCandidateTexts {
@@ -74,6 +78,22 @@ func sqlCandidateTexts(reqCtx *engine.RequestContext) []string {
 		}
 		text = strings.TrimSpace(text)
 		if text == "" {
+			return
+		}
+		if seen == nil {
+			for _, existing := range candidates {
+				if existing == text {
+					return
+				}
+			}
+			if len(candidates)+1 >= dedupMapThreshold {
+				seen = make(map[string]struct{}, 2*dedupMapThreshold)
+				for _, existing := range candidates {
+					seen[existing] = struct{}{}
+				}
+				seen[text] = struct{}{}
+			}
+			candidates = append(candidates, text)
 			return
 		}
 		if _, ok := seen[text]; ok {
@@ -149,21 +169,27 @@ func truncate(s string, max int) string {
 	return s[:max]
 }
 
+// sqlSignatures are matched verbatim against the executable SQL projection.
+// Hoisted to package scope so the slice header is static data rather than being
+// rebuilt per call. Do not front this with a containsAny pre-filter: the loop
+// below already short-circuits on the first hit, so a pre-filter costs a full
+// redundant scan on hits and saves nothing on misses.
+var sqlSignatures = []string{
+	"' or '1'='1",
+	"\" or \"1\"=\"1",
+	" union select ",
+	" union all select ",
+	" sleep(",
+	" benchmark(",
+	" pg_sleep(",
+	" information_schema",
+	" or 1=1",
+	" and 1=1",
+}
+
 func looksLikeSQLi(raw string) (bool, string) {
 	text := executableSQLText(raw)
-	signatures := []string{
-		"' or '1'='1",
-		"\" or \"1\"=\"1",
-		" union select ",
-		" union all select ",
-		" sleep(",
-		" benchmark(",
-		" pg_sleep(",
-		" information_schema",
-		" or 1=1",
-		" and 1=1",
-	}
-	for _, sig := range signatures {
+	for _, sig := range sqlSignatures {
 		if strings.Contains(text, sig) {
 			return true, "SQL injection signature matched: " + strings.TrimSpace(sig)
 		}
@@ -180,7 +206,7 @@ func looksLikeSQLi(raw string) (bool, string) {
 		return true, "destructive SQL keyword sequence matched"
 	}
 	compact := compactSQL(text)
-	if sqlComment.MatchString(normalize(raw)) && (contains(words, "or") || contains(words, "union") || contains(words, "select") || strings.Contains(compact, "or1=1") || strings.Contains(compact, "unionselect")) {
+	if sqlComment.MatchString(normalize(raw)) && (contains(words, "or") || contains(words, "union") || contains(words, "select") || containsAny(compact, []string{"or1=1", "unionselect"})) {
 		return true, "SQL comment sequence with executable query context matched"
 	}
 	if sqlOrderByInference.MatchString(text) {
@@ -189,7 +215,7 @@ func looksLikeSQLi(raw string) (bool, string) {
 	if sqlHavingInference.MatchString(text) {
 		return true, "SQL HAVING inference with comment matched"
 	}
-	if sqlRegexProbe.MatchString(text) && (contains(words, "and") || contains(words, "or") || strings.Contains(text, "database()") || strings.Contains(text, "version()") || strings.Contains(text, "user()")) {
+	if sqlRegexProbe.MatchString(text) && (contains(words, "and") || contains(words, "or") || containsAny(text, []string{"database()", "version()", "user()"})) {
 		return true, "SQL regex or LIKE inference probe matched"
 	}
 	if sqlProcedureAnalyse.MatchString(text) {
@@ -204,27 +230,17 @@ func looksLikeSQLi(raw string) (bool, string) {
 	if sqlDangerousFunc.MatchString(text) && sqlExecutionContext(text, compact) {
 		return true, "SQL dialect-specific command or network side effect matched"
 	}
-	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || strings.Contains(compact, "select")) {
+	if sqlErrorFunction.MatchString(text) && (contains(words, "select") || contains(words, "concat") || containsAny(compact, []string{"select"})) {
 		return true, "error-based SQL function with query composition matched"
 	}
-	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || strings.Contains(compact, "orchar") || strings.Contains(compact, "andchar")) {
+	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || containsAny(compact, []string{"orchar", "andchar"})) {
 		return true, "SQL function comparison inside boolean predicate matched"
 	}
 	return false, ""
 }
 
 func sqlExecutionContext(text, compact string) bool {
-	return strings.Contains(text, "'") ||
-		strings.Contains(text, ";") ||
-		strings.Contains(text, "--") ||
-		strings.Contains(text, "/*") ||
-		strings.Contains(text, " select ") ||
-		strings.Contains(text, " exec ") ||
-		strings.Contains(text, " execute ") ||
-		strings.Contains(text, " begin ") ||
-		strings.Contains(text, " declare ") ||
-		strings.Contains(compact, "unionselect") ||
-		strings.Contains(compact, "or1=1")
+	return containsAny(text, sqlCommonNeedles) || containsAny(compact, sqlCompactNeedles)
 }
 
 func requestText(reqCtx *engine.RequestContext) string {

@@ -8,24 +8,53 @@ import (
 )
 
 func MatchValue(rule Rule, reqCtx *engine.RequestContext) string {
+	return new(requestViews).match(rule, reqCtx)
+}
+
+type requestViews struct {
+	body         string
+	bodyReady    bool
+	headers      string
+	headersReady bool
+	cookies      string
+	cookiesReady bool
+}
+
+func (v *requestViews) match(rule Rule, reqCtx *engine.RequestContext) string {
 	if reqCtx == nil || reqCtx.Request == nil {
 		return ""
 	}
 	r := reqCtx.Request
 	switch rule.Location {
 	case "body":
-		return string(reqCtx.DecodedBody)
-	case "header":
-		return headersText(r.Header)
-	case "cookie":
-		var builder strings.Builder
-		for _, cookie := range r.Cookies() {
-			builder.WriteString(cookie.Name)
-			builder.WriteByte('=')
-			builder.WriteString(cookie.Value)
-			builder.WriteByte(';')
+		if !v.bodyReady {
+			body := reqCtx.DecodedBody
+			if len(body) > engine.MaxDecodedBytes {
+				body = body[:engine.MaxDecodedBytes]
+			}
+			v.body = string(body)
+			v.bodyReady = true
 		}
-		return builder.String()
+		return v.body
+	case "header":
+		if !v.headersReady {
+			v.headers = headersText(r.Header)
+			v.headersReady = true
+		}
+		return v.headers
+	case "cookie":
+		if !v.cookiesReady {
+			var builder strings.Builder
+			for _, cookie := range r.Cookies() {
+				builder.WriteString(cookie.Name)
+				builder.WriteByte('=')
+				builder.WriteString(cookie.Value)
+				builder.WriteByte(';')
+			}
+			v.cookies = builder.String()
+			v.cookiesReady = true
+		}
+		return v.cookies
 	case "method":
 		return r.Method
 	default:

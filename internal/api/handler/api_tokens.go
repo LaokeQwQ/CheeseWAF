@@ -19,6 +19,7 @@ import (
 var (
 	errManagementAPITokenConfigInvalid = errors.New("management api token config is invalid")
 	errManagementAPITokenNotFound      = errors.New("management api token not found")
+	errManagementAPITokenCapacity      = errors.New("management api token capacity is exhausted")
 )
 
 type managementAPITokenPayload struct {
@@ -56,20 +57,22 @@ func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*mid
 		return nil, nil, false
 	}
 	at = at.UTC()
-	// Hash under a shared lock so concurrent authentications can proceed in parallel.
-	// Holding the exclusive write lock across bcrypt serialized requests and hung Windows CI.
+	// Copy the small authentication snapshot while locked, then perform digest or
+	// legacy bcrypt verification without holding configuration locks.
 	h.configMutationMu.RLock()
-	claims, ok := middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
+	snapshot := cloneManagementAPIConfig(h.Config.APISec.ManagementAPI)
+	interval := h.managementTokenFlushInterval
+	h.configMutationMu.RUnlock()
+
+	claims, ok := middleware.VerifyManagementAPIToken(raw, snapshot, at)
 	if !ok {
-		h.configMutationMu.RUnlock()
 		return nil, nil, false
 	}
-	interval := h.managementTokenFlushInterval
 	if interval <= 0 {
 		interval = time.Minute
 	}
 	needsTouch := false
-	for _, token := range h.Config.APISec.ManagementAPI.Tokens {
+	for _, token := range snapshot.Tokens {
 		if token.ID != claims.ID {
 			continue
 		}
@@ -79,10 +82,9 @@ func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*mid
 		break
 	}
 	if !needsTouch {
-		return claims, h.configMutationMu.RUnlock, true
+		return claims, nil, true
 	}
 	tokenID := claims.ID
-	h.configMutationMu.RUnlock()
 
 	h.configMutationMu.Lock()
 	// Touch last-used by id without re-hashing; re-check revoke/enabled for the race window.
@@ -108,15 +110,24 @@ func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*mid
 		}
 		break
 	}
+	snapshot = cloneManagementAPIConfig(h.Config.APISec.ManagementAPI)
 	h.configMutationMu.Unlock()
 
-	h.configMutationMu.RLock()
-	claims, ok = middleware.VerifyManagementAPIToken(raw, h.Config.APISec.ManagementAPI, at)
+	claims, ok = middleware.VerifyManagementAPIToken(raw, snapshot, at)
 	if !ok {
-		h.configMutationMu.RUnlock()
 		return nil, nil, false
 	}
-	return claims, h.configMutationMu.RUnlock, true
+	return claims, nil, true
+}
+
+func cloneManagementAPIConfig(source config.ManagementAPIConfig) config.ManagementAPIConfig {
+	cloned := config.ManagementAPIConfig{Enabled: source.Enabled}
+	cloned.Tokens = make([]config.ManagementAPITokenConfig, len(source.Tokens))
+	for index, token := range source.Tokens {
+		cloned.Tokens[index] = token
+		cloned.Tokens[index].Scopes = append([]string(nil), token.Scopes...)
+	}
+	return cloned
 }
 
 func (h *Handler) persistManagementAPITokenUseLocked() error {
@@ -180,6 +191,18 @@ func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Reques
 	}
 
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
+		if len(candidate.APISec.ManagementAPI.Tokens) >= config.MaxManagementAPITokens {
+			return errManagementAPITokenCapacity
+		}
+		active := 0
+		for _, token := range candidate.APISec.ManagementAPI.Tokens {
+			if token.Enabled && token.RevokedAt.IsZero() && (token.ExpiresAt.IsZero() || token.ExpiresAt.After(now)) {
+				active++
+			}
+		}
+		if active >= config.MaxActiveManagementAPITokens {
+			return errManagementAPITokenCapacity
+		}
 		candidate.APISec.ManagementAPI.Tokens = append(candidate.APISec.ManagementAPI.Tokens, item)
 		if err := config.Validate(candidate); err != nil {
 			return fmt.Errorf("%w: %v", errManagementAPITokenConfigInvalid, err)
@@ -187,6 +210,10 @@ func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Reques
 		return nil
 	}, nil)
 	if err != nil {
+		if errors.Is(err, errManagementAPITokenCapacity) {
+			writeError(w, http.StatusConflict, "API_TOKEN_CAPACITY", err.Error())
+			return
+		}
 		if errors.Is(err, errManagementAPITokenConfigInvalid) {
 			writeError(w, http.StatusBadRequest, "API_TOKEN_INVALID", err.Error())
 			return

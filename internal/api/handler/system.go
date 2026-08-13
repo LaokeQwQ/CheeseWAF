@@ -16,6 +16,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
@@ -414,7 +415,7 @@ func (h *Handler) readRemoteMapBoundary(ctx context.Context, source string, boun
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("boundary source returned HTTP %d", resp.StatusCode)
 	}
@@ -531,17 +532,32 @@ func testStorageWithDataDir(ctx context.Context, backend string, storage config.
 	defer cancel()
 	switch backend {
 	case "sqlite":
-		path, err := safeSQLiteTestPath(storage.SQLite.Path, dataDir)
+		rootDir := strings.TrimSpace(dataDir)
+		if rootDir == "" {
+			rootDir = setup.DefaultDataDir
+		}
+		rawPath := strings.TrimSpace(storage.SQLite.Path)
+		if rawPath == "" {
+			return fmt.Errorf("sqlite path is required")
+		}
+		rel, err := fsguard.RelUnderRoot(rootDir, rawPath)
+		if err != nil {
+			return fmt.Errorf("sqlite path must stay under data directory: %w", err)
+		}
+		if err := os.MkdirAll(rootDir, 0o750); err != nil {
+			return err
+		}
+		root, err := fsguard.OpenRoot(rootDir)
 		if err != nil {
 			return err
 		}
-		if path == "" {
-			return fmt.Errorf("sqlite path is required")
+		defer root.Close()
+		if parent := filepath.Dir(rel); parent != "." && parent != "" {
+			if err := root.MkdirAll(parent, 0o750); err != nil {
+				return err
+			}
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-			return err
-		}
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o640)
+		file, err := root.OpenFile(rel, os.O_CREATE|os.O_RDWR, 0o640)
 		if err != nil {
 			return err
 		}
@@ -679,39 +695,6 @@ func postgresDialTarget(dsn string) (string, error) {
 	return net.JoinHostPort(host, port), nil
 }
 
-func safeSQLiteTestPath(rawPath, dataDir string) (string, error) {
-	path := strings.TrimSpace(rawPath)
-	if path == "" {
-		return "", nil
-	}
-	if dataDir == "" {
-		dataDir = setup.DefaultDataDir
-	}
-	allowedRoot, err := filepath.Abs(filepath.Clean(dataDir))
-	if err != nil {
-		return "", err
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(allowedRoot, path)
-	}
-	cleaned, err := filepath.Abs(filepath.Clean(path))
-	if err != nil {
-		return "", err
-	}
-	if cleaned == allowedRoot || !isPathWithin(cleaned, allowedRoot) {
-		return "", fmt.Errorf("sqlite path must stay under data directory %s", allowedRoot)
-	}
-	return cleaned, nil
-}
-
-func isPathWithin(path, root string) bool {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel != "." && rel != "" && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
-}
-
 func testHTTP(ctx context.Context, endpoint, username, password, apiKey string, allowPrivate bool, purpose string) error {
 	if endpoint == "" {
 		return fmt.Errorf("endpoint is required")
@@ -736,7 +719,7 @@ func testHTTP(ctx context.Context, endpoint, username, password, apiKey string, 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer netguard.DrainAndClose(resp.Body)
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("endpoint returned %s", resp.Status)
 	}

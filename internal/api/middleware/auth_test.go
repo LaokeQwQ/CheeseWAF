@@ -5,8 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type middlewareFakeClock struct {
@@ -148,6 +152,63 @@ func TestManagementAPIOrSessionMiddlewareWithClockSharesInjectedUTCClock(t *test
 	}
 	if !managementAt.Equal(want) || managementAt.Location() != time.UTC {
 		t.Fatalf("management authentication time = %s (%s), want %s (UTC)", managementAt, managementAt.Location(), want)
+	}
+}
+
+func TestManagementAPIAuthCleanupRunsBeforeBusinessHandler(t *testing.T) {
+	released := false
+	authenticate := func(string, time.Time) (*Claims, func(), bool) {
+		return &Claims{Subject: "api-token:fixture", ID: "fixture"}, func() { released = true }, true
+	}
+	handler := ManagementAPIOrSessionMiddleware(nil, nil, authenticate)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !released {
+			t.Fatal("authentication cleanup had not run before business handler")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/system", nil)
+	req.Header.Set("Authorization", "Bearer "+ManagementAPITokenPrefix+"fixture")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+}
+
+func TestManagementAPITokenUsesFastDigestAndRetainsPrefixedBcryptCompatibility(t *testing.T) {
+	raw := "cwapi_fixture_fast_digest"
+	hash := HashManagementAPIToken(raw)
+	if !strings.HasPrefix(hash, "sha256:") {
+		t.Fatalf("new token hash = %q, want sha256", hash)
+	}
+	now := time.Now().UTC()
+	claims, ok := VerifyManagementAPIToken(raw, config.ManagementAPIConfig{Enabled: true, Tokens: []config.ManagementAPITokenConfig{{
+		ID: "fast", Name: "fast", Prefix: "cwapi_fixt", Hash: hash, Scopes: []string{"read:system"}, Enabled: true,
+	}}}, now)
+	if !ok || claims == nil || claims.ID != "fast" {
+		t.Fatalf("fast token verification failed: claims=%+v ok=%v", claims, ok)
+	}
+
+	legacyRaw := "cwapi_legacy_bcrypt_token"
+	legacyHash, err := bcrypt.GenerateFromPassword([]byte(legacyRaw), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, ok = VerifyManagementAPIToken(legacyRaw, config.ManagementAPIConfig{Enabled: true, Tokens: []config.ManagementAPITokenConfig{{
+		ID: "legacy", Name: "legacy", Prefix: "cwapi_legac", Hash: "bcrypt:" + string(legacyHash), Scopes: []string{"read:system"}, Enabled: true,
+	}}}, now)
+	if !ok || claims == nil || claims.ID != "legacy" {
+		t.Fatalf("legacy token verification failed: claims=%+v ok=%v", claims, ok)
+	}
+}
+
+func TestManagementAPITokenRejectsHashMatchUnderWrongPrefix(t *testing.T) {
+	raw := "cwapi_expected_token"
+	claims, ok := VerifyManagementAPIToken(raw, config.ManagementAPIConfig{Enabled: true, Tokens: []config.ManagementAPITokenConfig{{
+		ID: "wrong-prefix", Name: "wrong", Prefix: "cwapi_other", Hash: HashManagementAPIToken(raw), Scopes: []string{"read:system"}, Enabled: true,
+	}}}, time.Now().UTC())
+	if ok || claims != nil {
+		t.Fatalf("token matched a record under the wrong lookup prefix: claims=%+v ok=%v", claims, ok)
 	}
 }
 

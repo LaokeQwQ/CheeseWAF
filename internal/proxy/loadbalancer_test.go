@@ -9,6 +9,46 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
+func TestWeightedLoadBalancerDoesNotExpandCandidates(t *testing.T) {
+	site := config.SiteConfig{
+		ID:          "weighted",
+		LoadBalance: "weighted",
+		Upstreams: []config.UpstreamConfig{
+			{Address: "http://127.0.0.1:8001", Weight: 3},
+			{Address: "http://127.0.0.1:8002", Weight: 1},
+		},
+	}
+	lb := NewLoadBalancer([]config.SiteConfig{site})
+	if got := len(lb.healthyUpstreams(site)); got != 2 {
+		t.Fatalf("weighted candidates expanded to %d entries", got)
+	}
+	counts := map[string]int{}
+	for range 8 {
+		target, err := lb.Next(site, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[target.Host]++
+	}
+	if counts["127.0.0.1:8001"] != 6 || counts["127.0.0.1:8002"] != 2 {
+		t.Fatalf("weighted distribution = %#v, want 6:2", counts)
+	}
+}
+
+func TestWeightedLoadBalancerLargeWeightKeepsBoundedCandidates(t *testing.T) {
+	site := config.SiteConfig{ID: "large", LoadBalance: "weighted", Upstreams: []config.UpstreamConfig{
+		{Address: "http://127.0.0.1:8001", Weight: 1_000_000_000},
+		{Address: "http://127.0.0.1:8002", Weight: 1},
+	}}
+	lb := NewLoadBalancer([]config.SiteConfig{site})
+	if got := len(lb.healthyUpstreams(site)); got != len(site.Upstreams) {
+		t.Fatalf("large weights allocated %d candidates", got)
+	}
+	if _, err := lb.Next(site, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSiteForHostDoesNotFallBackToFirstEnabledSite(t *testing.T) {
 	t.Parallel()
 	lb := NewLoadBalancer([]config.SiteConfig{

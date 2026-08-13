@@ -18,12 +18,16 @@ type CleanupResult struct {
 	Removed int    `json:"removed"`
 }
 
-func CleanupOldFiles(_ context.Context, task Task) error {
-	_, err := CleanupOldFilesWithResult(task)
+func CleanupOldFiles(ctx context.Context, task Task) error {
+	_, err := CleanupOldFilesWithResultContext(ctx, task)
 	return err
 }
 
 func CleanupOldFilesWithResult(task Task) (CleanupResult, error) {
+	return CleanupOldFilesWithResultContext(context.Background(), task)
+}
+
+func CleanupOldFilesWithResultContext(ctx context.Context, task Task) (CleanupResult, error) {
 	result := CleanupResult{Target: task.Target, Keep: task.Keep}
 	if task.Target == "" {
 		return result, errors.New("cleanup target is required")
@@ -37,12 +41,18 @@ func CleanupOldFilesWithResult(task Task) (CleanupResult, error) {
 	if err != nil {
 		return result, err
 	}
+	if ctx.Err() != nil {
+		return result, ctx.Err()
+	}
 	type fileInfo struct {
 		path string
 		mod  time.Time
 	}
 	var files []fileInfo
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
 		if entry.IsDir() || !isManagedCleanupFile(task.Type, entry.Name()) {
 			continue
 		}
@@ -65,6 +75,9 @@ func CleanupOldFilesWithResult(task Task) (CleanupResult, error) {
 		return result, nil
 	}
 	for _, file := range files[keep:] {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
 		if err := os.Remove(file.path); err != nil {
 			return result, err
 		}

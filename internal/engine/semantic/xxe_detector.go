@@ -20,7 +20,7 @@ func (d *XXEDetector) Name() string  { return "XXE Semantic Detector" }
 func (d *XXEDetector) Priority() int { return 360 }
 
 func (d *XXEDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
-	result, err := NewAnalyzer(d.mode, "xxe").Detect(ctx, reqCtx)
+	result, err := NewAnalyzer(d.mode, 2, "xxe").Detect(ctx, reqCtx)
 	if result != nil {
 		result.DetectorID = d.ID()
 	}
