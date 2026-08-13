@@ -200,7 +200,9 @@ describe('ProtectionPage bot form integrity', () => {
     fireEvent.click(aclToggle as Element);
 
     await waitFor(() => expect(apiMocks.updateACLProtection).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(apiMocks.fetchProtection.mock.calls.length).toBeGreaterThan(1));
+    // ACL save patches query cache and must not refetch the whole protection
+    // document (that would wipe unsaved bot/geo/rate drafts).
+    expect(apiMocks.fetchProtection).toHaveBeenCalledTimes(1);
     expect(within(botPanel).getAllByRole('switch')[0].getAttribute('data-state')).toBe('checked');
   });
 

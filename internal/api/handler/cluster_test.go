@@ -606,6 +606,29 @@ func TestClusterJoinWritesSafeAuditEntry(t *testing.T) {
 	}
 }
 
+func TestClusterJoinFailedAuditsAreNotSampled(t *testing.T) {
+	root := t.TempDir()
+	auditor := middleware.NewAuditor(filepath.Join(root, "audit.jsonl"))
+	h := New(Options{Auditor: auditor})
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster/join", nil)
+	req.RemoteAddr = "198.51.100.9:44321"
+	join := clusterJoinRequest{NodeID: "waf-sample", Role: "waf"}
+
+	const attempts = 20
+	for i := 0; i < attempts; i++ {
+		h.recordClusterJoinAudit(req, join, http.StatusUnauthorized, "invalid join token or join request", time.Millisecond)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != attempts {
+		t.Fatalf("expected %d failed-join audit lines, got %d in %q", attempts, len(lines), string(raw))
+	}
+}
+
 func TestClusterJoinTokenAPIStoresHashAndRevokes(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "identity.json")
 	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{

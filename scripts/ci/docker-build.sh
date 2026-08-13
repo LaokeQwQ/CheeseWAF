@@ -55,11 +55,15 @@ host_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 
 cheesewaf_uid=10001
 cheesewaf_gid=10001
 
+# First-install mutations require this header; pin it so smoke does not scrape logs.
+smoke_setup_token="CheeseWAF-CI-Setup-Token-2026"
+
 docker run --detach \
   --name "$container_name" \
   --read-only \
   --cap-drop ALL \
   --security-opt no-new-privileges \
+  --env "CHEESEWAF_SETUP_TOKEN=${smoke_setup_token}" \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
   --tmpfs "/var/lib/cheesewaf:rw,nosuid,nodev,size=64m,uid=${cheesewaf_uid},gid=${cheesewaf_gid},mode=0755" \
   --tmpfs "/var/log/cheesewaf:rw,noexec,nosuid,nodev,size=32m,uid=${cheesewaf_uid},gid=${cheesewaf_gid},mode=0755" \
@@ -107,6 +111,7 @@ done
 
 curl --fail --silent --show-error --insecure \
   --header 'Content-Type: application/json' \
+  --header "X-CheeseWAF-Setup-Token: ${smoke_setup_token}" \
   --data '{"username":"smoke-admin","password":"CheeseWAF-CI-Smoke-Only-2026!","admin_listen":"0.0.0.0:9443","admin_strategy":"public_tls"}' \
   "https://127.0.0.1:${host_port}/api/setup" >"$setup_response"
 grep -q '"setup_complete":true' "$setup_response" || {
