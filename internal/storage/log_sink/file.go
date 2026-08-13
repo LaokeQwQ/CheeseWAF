@@ -23,6 +23,8 @@ import (
 
 const (
 	defaultFileSinkRecentCache = 20000
+	defaultFileSinkCacheBytes  = 64 << 20
+	maxFileSinkCacheBytes      = 256 << 20
 	maxFileSinkQueryLimit      = 1000
 	maxFileSinkBackups         = 100
 	maxFileSinkWriteLineBytes  = 1 << 20
@@ -33,20 +35,23 @@ const (
 const truncatedLogValue = "[truncated]"
 
 type FileSink struct {
-	mu           sync.Mutex
-	path         string
-	file         *os.File
-	writer       *bufio.Writer
-	maxSizeBytes int64
-	maxBackups   int
-	currentSize  int64
-	recent       []storage.LogEntry
-	recentStart  int
-	recentCount  int
-	recentMax    int
-	total        int64
-	actionTotals map[string]int64
-	indexValid   bool
+	mu             sync.Mutex
+	path           string
+	file           *os.File
+	writer         *bufio.Writer
+	maxSizeBytes   int64
+	maxBackups     int
+	currentSize    int64
+	recent         []storage.LogEntry
+	recentSizes    []int
+	recentStart    int
+	recentCount    int
+	recentMax      int
+	recentBytes    int64
+	recentMaxBytes int64
+	total          int64
+	actionTotals   map[string]int64
+	indexValid     bool
 }
 
 func NewFileSink(path string) (*FileSink, error) {
@@ -73,11 +78,12 @@ func NewFileSinkWithRotation(path string, maxSizeBytes int64, maxBackups int) (*
 		}
 	}
 	sink := &FileSink{
-		path:         path,
-		maxSizeBytes: maxSizeBytes,
-		maxBackups:   maxBackups,
-		recentMax:    fileSinkRecentCacheLimit(),
-		actionTotals: map[string]int64{},
+		path:           path,
+		maxSizeBytes:   maxSizeBytes,
+		maxBackups:     maxBackups,
+		recentMax:      fileSinkRecentCacheLimit(),
+		recentMaxBytes: fileSinkRecentCacheByteLimit(),
+		actionTotals:   map[string]int64{},
 	}
 	if err := sink.openActiveLocked(); err != nil {
 		return nil, err
@@ -123,7 +129,7 @@ func (s *FileSink) Write(_ context.Context, entry *storage.LogEntry) error {
 	}
 	s.currentSize += recordSize
 	if s.indexValid {
-		s.indexEntryLocked(stored)
+		s.indexEntryLocked(stored, len(data))
 	}
 	return nil
 }
@@ -189,7 +195,7 @@ func (s *FileSink) scanQuery(ctx context.Context, paths []string, filter storage
 	matched := make(logQueryHeap, 0, min(window, maxFileSinkQueryLimit))
 	var total int64
 	var sequence int64
-	err := scanFileSinkSegments(ctx, paths, func(entry storage.LogEntry) {
+	err := scanFileSinkSegments(ctx, paths, func(entry storage.LogEntry, _ int) {
 		if !matches(entry, filter) {
 			return
 		}
@@ -265,39 +271,50 @@ func newerLogEntry(candidate, current retainedLogEntry) bool {
 func (s *FileSink) loadIndex() error {
 	recentMax := max(0, s.recentMax)
 	indexed := FileSink{
-		recentMax:    recentMax,
-		actionTotals: map[string]int64{},
+		recentMax:      recentMax,
+		recentMaxBytes: s.recentMaxBytes,
+		actionTotals:   map[string]int64{},
 	}
-	if err := scanFileSinkSegments(context.Background(), s.segmentPathsLocked(), func(entry storage.LogEntry) {
-		indexed.indexEntryLocked(entry)
+	if err := scanFileSinkSegments(context.Background(), s.segmentPathsLocked(), func(entry storage.LogEntry, size int) {
+		indexed.indexEntryLocked(entry, size)
 	}); err != nil {
 		s.indexValid = false
 		return err
 	}
 	s.recent = indexed.recent
+	s.recentSizes = indexed.recentSizes
 	s.recentStart = indexed.recentStart
 	s.recentCount = indexed.recentCount
 	s.recentMax = recentMax
+	s.recentBytes = indexed.recentBytes
 	s.total = indexed.total
 	s.actionTotals = indexed.actionTotals
 	s.indexValid = true
 	return nil
 }
 
-func (s *FileSink) indexEntryLocked(entry storage.LogEntry) {
+func (s *FileSink) indexEntryLocked(entry storage.LogEntry, size int) {
 	s.total++
 	s.actionTotals[entry.Action]++
-	if s.recentMax <= 0 {
+	if s.recentMax <= 0 || s.recentMaxBytes <= 0 {
 		return
 	}
-	if len(s.recent) < s.recentMax {
-		s.recent = append(s.recent, entry)
-		s.recentCount = len(s.recent)
+	if size <= 0 {
+		size = 1
+	}
+	if int64(size) > s.recentMaxBytes {
+		// The cache must remain a contiguous suffix of the log. Keeping older
+		// rows while omitting this row could make a time-range query incomplete.
+		s.clearRecentLocked()
 		return
 	}
-	s.recent[s.recentStart] = entry
-	s.recentStart = (s.recentStart + 1) % len(s.recent)
-	s.recentCount = len(s.recent)
+	for s.recentCount > 0 && (s.recentCount >= s.recentMax || s.recentBytes+int64(size) > s.recentMaxBytes) {
+		s.evictOldestRecentLocked()
+	}
+	s.recent = append(s.recent, entry)
+	s.recentSizes = append(s.recentSizes, size)
+	s.recentCount++
+	s.recentBytes += int64(size)
 }
 
 func (s *FileSink) recentSnapshotLocked() []storage.LogEntry {
@@ -305,10 +322,41 @@ func (s *FileSink) recentSnapshotLocked() []storage.LogEntry {
 		return nil
 	}
 	out := make([]storage.LogEntry, s.recentCount)
-	for i := 0; i < s.recentCount; i++ {
-		out[i] = s.recent[(s.recentStart+i)%len(s.recent)]
-	}
+	copy(out, s.recent[s.recentStart:s.recentStart+s.recentCount])
 	return out
+}
+
+func (s *FileSink) evictOldestRecentLocked() {
+	if s.recentCount <= 0 || s.recentStart >= len(s.recent) {
+		s.clearRecentLocked()
+		return
+	}
+	s.recentBytes -= int64(s.recentSizes[s.recentStart])
+	s.recent[s.recentStart] = storage.LogEntry{}
+	s.recentSizes[s.recentStart] = 0
+	s.recentStart++
+	s.recentCount--
+	if s.recentCount == 0 {
+		s.clearRecentLocked()
+		return
+	}
+	if s.recentStart >= 1024 && s.recentStart*2 >= len(s.recent) {
+		copy(s.recent, s.recent[s.recentStart:])
+		copy(s.recentSizes, s.recentSizes[s.recentStart:])
+		s.recent = s.recent[:s.recentCount]
+		s.recentSizes = s.recentSizes[:s.recentCount]
+		s.recentStart = 0
+	}
+}
+
+func (s *FileSink) clearRecentLocked() {
+	clear(s.recent)
+	clear(s.recentSizes)
+	s.recent = s.recent[:0]
+	s.recentSizes = s.recentSizes[:0]
+	s.recentStart = 0
+	s.recentCount = 0
+	s.recentBytes = 0
 }
 
 func (s *FileSink) Flush(context.Context) error {
@@ -450,6 +498,18 @@ func fileSinkRecentCacheLimit() int {
 		return defaultFileSinkRecentCache
 	}
 	return value
+}
+
+func fileSinkRecentCacheByteLimit() int64 {
+	raw := strings.TrimSpace(os.Getenv("CHEESEWAF_FILE_SINK_CACHE_BYTES"))
+	if raw == "" {
+		return defaultFileSinkCacheBytes
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return defaultFileSinkCacheBytes
+	}
+	return min(value, int64(maxFileSinkCacheBytes))
 }
 
 func normalizedLimit(limit int) int {
@@ -594,7 +654,7 @@ func pageLogs(matched []storage.LogEntry, total int64, offset, limit int) []stor
 
 func scanCount(ctx context.Context, paths []string, filter storage.LogFilter) (int64, error) {
 	var total int64
-	err := scanFileSinkSegments(ctx, paths, func(entry storage.LogEntry) {
+	err := scanFileSinkSegments(ctx, paths, func(entry storage.LogEntry, _ int) {
 		if matches(entry, filter) {
 			total++
 		}
@@ -602,7 +662,7 @@ func scanCount(ctx context.Context, paths []string, filter storage.LogFilter) (i
 	return total, err
 }
 
-func scanFileSinkSegments(ctx context.Context, paths []string, visit func(storage.LogEntry)) error {
+func scanFileSinkSegments(ctx context.Context, paths []string, visit func(storage.LogEntry, int)) error {
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -631,7 +691,7 @@ func scanFileSinkSegments(ctx context.Context, paths []string, visit func(storag
 			if err := json.Unmarshal(line, &entry); err != nil {
 				continue
 			}
-			visit(entry)
+			visit(entry, len(line))
 		}
 		closeErr := file.Close()
 		if closeErr != nil {

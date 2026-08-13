@@ -163,8 +163,8 @@ func TestCybersecBenignCorpus(t *testing.T) {
 	})
 	// Cap detail dump
 	limit := len(fps)
-	if limit > 30 {
-		limit = 30
+	if limit > 200 {
+		limit = 200
 	}
 	for _, rec := range fps[:limit] {
 		line, _ := json.Marshal(rec)

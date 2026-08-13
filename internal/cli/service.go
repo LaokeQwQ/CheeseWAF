@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -180,8 +179,14 @@ func runServe(ctx context.Context) error {
 		return nil
 	}
 	healthChecker = proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry())
-	healthChecker.Start(ctx)
-	startRemoteWrite(ctx, cfg, store, sink, time.Now())
+	// Own the lifetime of every background component started by runServe. The
+	// command context is not necessarily cancelled when one listener fails, so
+	// using it directly would leave schedulers and monitoring goroutines running
+	// while deferred cleanup closes their stores and sinks.
+	runtimeCtx, stopRuntime := context.WithCancel(ctx)
+	defer stopRuntime()
+	healthChecker.Start(runtimeCtx)
+	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now())
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
 		schedulerAIClient = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
@@ -192,13 +197,13 @@ func runServe(ctx context.Context) error {
 		Store:    store,
 		Client:   schedulerAIClient,
 	}))
-	schedulerEngine.Start(ctx)
+	schedulerEngine.Start(runtimeCtx)
 	hub := realtime.NewHub()
 	authSecret, err := ensureAuthSecret(cfg.Setup.DataDir)
 	if err != nil {
 		return err
 	}
-	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS, cfg.Cluster.Interconnect)
+	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS)
 	if err != nil {
 		return err
 	}
@@ -249,7 +254,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := timeSync.Start(ctx); err != nil {
+	if err := timeSync.Start(runtimeCtx); err != nil {
 		return fmt.Errorf("start application clock: %w", err)
 	}
 	defer timeSync.Stop()
@@ -266,18 +271,21 @@ func runServe(ctx context.Context) error {
 		fmt.Printf("CheeseWAF cluster interconnect listening on https://%s (mTLS)\n", interconnect.Addr)
 	}
 
+	proxyHTTP := proxyServer.HTTPServer()
+	serveCtx, stopServing := context.WithCancel(runtimeCtx)
+	defer stopServing()
 	var wg sync.WaitGroup
 	errCh := make(chan error, 5)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := proxy.ListenAndServe(ctx, proxyServer.HTTPServer()); err != nil && !errors.Is(err, context.Canceled) {
+		if err := proxy.ListenAndServe(serveCtx, proxyHTTP); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- err
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if err := proxy.ListenAndServe(ctx, admin); err != nil && !errors.Is(err, context.Canceled) {
+		if err := proxy.ListenAndServe(serveCtx, admin); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- err
 		}
 	}()
@@ -285,7 +293,7 @@ func runServe(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := proxy.ListenAndServe(ctx, tlsServer); err != nil && !errors.Is(err, context.Canceled) {
+			if err := proxy.ListenAndServe(serveCtx, tlsServer); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
 		}()
@@ -294,7 +302,7 @@ func runServe(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := proxy.ListenAndServeHTTP3(ctx, http3Server); err != nil && !errors.Is(err, context.Canceled) {
+			if err := proxy.ListenAndServeHTTP3(serveCtx, http3Server); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
 		}()
@@ -303,19 +311,22 @@ func runServe(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := proxy.ListenAndServe(ctx, interconnect); err != nil && !errors.Is(err, context.Canceled) {
+			if err := proxy.ListenAndServe(serveCtx, interconnect); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
 		}()
 	}
 
+	var serveErr error
 	select {
 	case <-ctx.Done():
-	case err := <-errCh:
-		return err
+	case serveErr = <-errCh:
 	}
+	stopRuntime()
+	stopServing()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	_ = proxyHTTP.Shutdown(shutdownCtx)
 	_ = admin.Shutdown(shutdownCtx)
 	if tlsServer != nil {
 		_ = tlsServer.Shutdown(shutdownCtx)
@@ -327,7 +338,7 @@ func runServe(ctx context.Context) error {
 		_ = interconnect.Shutdown(shutdownCtx)
 	}
 	wg.Wait()
-	return nil
+	return serveErr
 }
 
 func setupBrowserURL(scheme, adminListen, token string) string {
@@ -927,8 +938,7 @@ func loadConfig() (*config.Config, string, error) {
 	return cfg, bundle.Paths.ConfigFile, nil
 }
 
-func adminTLSConfig(cfg config.AdminTLSConfig, interconnect ...config.InterconnectConfig) (*tls.Config, string, error) {
-	clusterMTLS := len(interconnect) > 0 && interconnect[0].MTLSRequired
+func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
 	if !cfg.Enabled {
 		return nil, "http", nil
 	}
@@ -936,29 +946,10 @@ func adminTLSConfig(cfg config.AdminTLSConfig, interconnect ...config.Interconne
 	if err != nil {
 		return nil, "", fmt.Errorf("load admin TLS certificate: %w", err)
 	}
-	tlsConfig := &tls.Config{
+	return &tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{cert},
-	}
-	if clusterMTLS {
-		caPath := strings.TrimSpace(interconnect[0].CAFile)
-		if caPath != "" {
-			caPEM, err := os.ReadFile(caPath)
-			if err != nil {
-				return nil, "", fmt.Errorf("read cluster mTLS CA: %w", err)
-			}
-			pool := x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(caPEM) {
-				return nil, "", fmt.Errorf("parse cluster mTLS CA %s", caPath)
-			}
-			// Keep browser/admin clients usable while requesting and verifying node
-			// certificates. The heartbeat handler enforces that a verified, enrolled
-			// node certificate is present for the cluster endpoint.
-			tlsConfig.ClientCAs = pool
-			tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
-		}
-	}
-	return tlsConfig, "https", nil
+	}, "https", nil
 }
 
 func ensureAdminTLSCertificate(cfg *config.Config) error {

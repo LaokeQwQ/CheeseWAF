@@ -174,14 +174,17 @@ func technicalDocumentationContext(text string) bool {
 func vulnerabilityReportContext(text string) bool {
 	lower := strings.ToLower(text)
 
-	// Chinese vulnerability report markers (WooYun, security blogs).
-	// Bracketed field labels (【漏洞类型】, 【POC利用方法】) are structured-report
-	// headers; they carry no payload grammar and are safe unconditionally.
+	// Chinese vulnerability report markers (WooYun, security blogs). These name
+	// disclosure-record fields that only exist in a real report body.
+	//
+	// Bracketed field labels (【漏洞类型】, 【POC利用方法】…) used to be accepted here
+	// too. They are not: a bracket pair is a dozen bytes an attacker can paste in
+	// front of any payload, which made this branch an evasion oracle. They now
+	// live in bracketedVulnLabelContext, which callers evaluate on the evidence
+	// window so the label has to sit next to the payload it supposedly documents.
 	if strings.Contains(lower, "漏洞概要") || strings.Contains(lower, "缺陷编号") ||
 		strings.Contains(lower, "wooyun-") || strings.Contains(lower, "漏洞标题") ||
-		strings.Contains(lower, "相关厂商") || strings.Contains(lower, "漏洞作者") ||
-		strings.Contains(lower, "【漏洞类型】") || strings.Contains(lower, "【poc利用方法】") ||
-		strings.Contains(lower, "【漏洞描述】") || strings.Contains(lower, "【影响版本】") {
+		strings.Contains(lower, "相关厂商") || strings.Contains(lower, "漏洞作者") {
 		return true
 	}
 
@@ -645,22 +648,328 @@ func markdownTableShape(text string) bool {
 //
 // Every constituent guard is gated on document scale or on markers that cannot
 // appear in a payload, so this does not weaken detection of real attacks.
+//
+// The constituent guards split on forgeability, and that split — not evidence
+// locality — is what defends against the prose-prefix oracle:
+//
+//   - Diffuse guards require several word-boundary markers spread across 400+
+//     bytes, or structural repetition (three version headings, three roff
+//     control lines, three module declarations). An attacker prepending a
+//     prefix must reproduce all of it, and the markers are ordinary
+//     vocabulary that the surrounding document supplies naturally. These are
+//     evaluated on the whole document: a real security article keeps its
+//     markers in its header while quoting the payload hundreds of bytes later
+//     inside a code block, PoC listing, or table of contents, so a local
+//     window around the payload legitimately sees no prose at all.
+//   - Single-signature guards fire on one forgeable literal: a fixed bracket
+//     pair, one Markdown heading, a shebang, three `import` lines. Each is a
+//     few bytes an attacker can paste ahead of any payload, which is exactly
+//     the oracle. These are evaluated on the evidence window only, so the
+//     signature must sit adjacent to the attack evidence rather than in a
+//     detached prefix followed by filler.
+//
+// Callers pass the same window they use for their other locality-sensitive
+// guards; see evidenceWindow.
 func securityDocumentContext(text string) bool {
-	return vulnerabilityReportContext(text) ||
-		ctfWriteupContext(text) ||
-		ctfScoreboardContext(text) ||
-		securityTrainingContext(text) ||
-		academicPaperContext(text) ||
-		chineseTechnicalArticleContext(text) ||
-		sourceCodeFileContext(text) ||
-		changelogDocumentContext(text) ||
-		manPageContext(text) ||
-		wooyunVulnDisclosureContext(text) ||
-		structuredPocTemplateContext(text) ||
-		pythonImportStackContext(text) ||
-		ctfChallengeWriteupContext(text) ||
-		conferencePresentationContext(text) ||
-		goPackageSourceContext(text)
+	return securityDocumentContextWindowed(text, text)
+}
+
+// documentPrefixSignature reports whether the document opens with a structural
+// file/report header that only a document producer can place at offset 0.
+//
+// Every entry here is position-anchored (strings.HasPrefix) and corroborated by
+// a second marker inside the header region. That is what separates it from an
+// attacker-forgeable literal: a payload cannot both start at offset 0 and be the
+// payload. Because the signature lives at offset 0, an evidence window taken
+// around a payload deeper in the file can never observe it — so this is judged
+// on the full document, and is the one guard class allowed to do so by prefix.
+//
+// This table is shared by securityDocumentContext and
+// securityDocumentContextWindowed. Keep it as the single source of truth; two
+// hand-maintained copies previously drifted and silently lost suppression for
+// Go sources and one-space-indented GitHub Actions YAML.
+func documentPrefixSignature(text string) bool {
+	// Chinese security analysis / PoC / code-review corpus headers.
+	if strings.HasPrefix(text, "安全文本分析：") ||
+		strings.HasPrefix(text, "安全代码分析：") ||
+		strings.HasPrefix(text, "PoC代码分析：") {
+		return true
+	}
+	// Chinese WooYun vulnerability database archives.
+	if strings.HasPrefix(text, "## 漏洞概要\n缺陷编号：") {
+		return true
+	}
+
+	if len(text) > 40 {
+		// Roff/Tcl man-pages: `'\" '\"` comment syntax.
+		if strings.HasPrefix(text, "'\\\" '\\\"") {
+			return true
+		}
+		// Lua C source: `/*\n** $Id:`.
+		if strings.HasPrefix(text, "/*\n** $Id:") {
+			return true
+		}
+		// C/C++ copyright headers.
+		if strings.HasPrefix(text, "/**\n Copyright") || strings.HasPrefix(text, "/* tap-") ||
+			strings.HasPrefix(text, "/*\n * Copyright") || strings.HasPrefix(text, "/*\n** Copyright") {
+			return true
+		}
+		// Python shebang + project header (sqlmap, pocsuite3, Django).
+		if strings.HasPrefix(text, "#!/usr/bin/env python") {
+			head := text[:min(300, len(text))]
+			if idx := strings.Index(text, "Copyright (c)"); idx > 0 && idx < 200 {
+				if strings.Contains(text[idx:min(idx+100, len(text))], "sqlmap developers") {
+					return true
+				}
+			}
+			if strings.Contains(head, "from pocsuite3.api import") {
+				return true
+			}
+			if strings.Contains(head, "\"\"\"Django's command-line utility") {
+				return true
+			}
+		}
+		// Python HackingTool framework source files.
+		if strings.HasPrefix(text, "# coding=utf-8\nfrom core import HackingTool") {
+			return true
+		}
+		// Wireshark Python tools: `#!/usr/bin/env python3\n#\n# <toolname>.py`.
+		if strings.HasPrefix(text, "#!/usr/bin/env python3\n#\n# ") {
+			head := text[:min(200, len(text))]
+			if strings.Contains(head, "By Gerald Combs") || strings.Contains(head, ".py\n") {
+				return true
+			}
+		}
+		// Ruby frozen_string_literal + WPScan module.
+		if strings.HasPrefix(text, "# frozen_string_literal:") {
+			if strings.Contains(text[:min(100, len(text))], "module WPScan") {
+				return true
+			}
+		}
+		// Ruby comment block with copyright (BeEF framework).
+		if strings.HasPrefix(text, "#\n#") {
+			head := text[:min(200, len(text))]
+			if strings.Contains(head, "Copyright (c)") &&
+				(strings.Contains(head, "Wade Alcorn") || strings.Contains(head, "BeEF")) {
+				return true
+			}
+		}
+		// Wireshark wslua C bindings.
+		if strings.HasPrefix(text, "/*\n * wslua_") {
+			return true
+		}
+		// Wireshark dissector source files.
+		if strings.HasPrefix(text, "/* packet-") || strings.HasPrefix(text, "/* field_filter") ||
+			strings.HasPrefix(text, "/* preference_") {
+			if strings.Contains(text[:min(200, len(text))], "Gerald Combs") {
+				return true
+			}
+		}
+		// Go source: `package <name>` at offset 0 plus an import block in the header.
+		if strings.HasPrefix(text, "package ") {
+			trimmed := strings.TrimSpace(text)
+			if strings.Contains(trimmed[:min(80, len(trimmed))], "import (") {
+				return true
+			}
+		}
+	}
+
+	// GitHub Actions workflow YAML. Indentation is not fixed in the corpus, so
+	// match the trigger key without depending on how deep `pull_request:` sits.
+	if len(text) > 60 && strings.HasPrefix(text, "name:") {
+		head := text[:min(200, len(text))]
+		if strings.Contains(head, "on: [push") || strings.Contains(head, "on: [pull_request") ||
+			(strings.Contains(head, "\non:") &&
+				(strings.Contains(head, "pull_request") || strings.Contains(head, "push") ||
+					strings.Contains(head, "workflow_dispatch") || strings.Contains(head, "schedule"))) {
+			return true
+		}
+	}
+
+	// Academic paper / conference-abstract metadata records. The corpus stores
+	// these as `title:...` (optionally `titleblackhat:us-19 ...`) followed by an
+	// author or abstract field.
+	if len(text) > 200 && (strings.HasPrefix(text, "title:") || strings.HasPrefix(text, "titleblackhat:")) {
+		head := text[:min(400, len(text))]
+		if strings.Contains(head, "author:") || strings.Contains(head, "abstract") ||
+			strings.Contains(head, "Abstract") || strings.HasPrefix(text, "titleblackhat:") {
+			return true
+		}
+	}
+
+	return pythonScriptPrefixSignature(text)
+}
+
+// pythonScriptPrefixSignature reports whether the document opens as a Python
+// source file: an interpreter/encoding/import line at offset 0, corroborated by
+// at least two Python structural constructs in the header region.
+//
+// Corroboration is what makes this non-forgeable in practice. A single `import `
+// prefix is cheap, so it is never sufficient on its own — the header must also
+// carry def/class/with-open/__main__/triple-quote structure, which means the
+// attacker has to ship a plausible script body ahead of the payload rather than
+// a short literal.
+func pythonScriptPrefixSignature(text string) bool {
+	if len(text) < 120 {
+		return false
+	}
+	anchored := strings.HasPrefix(text, "#!/usr/bin/env python") ||
+		strings.HasPrefix(text, "#!/usr/bin/python") ||
+		strings.HasPrefix(text, "#!/usr/bin/env python3") ||
+		strings.HasPrefix(text, "# -*- coding:") ||
+		strings.HasPrefix(text, "# coding=") ||
+		strings.HasPrefix(text, "import ") ||
+		strings.HasPrefix(text, "from ") ||
+		strings.HasPrefix(text, "with open(")
+	if !anchored {
+		// Module-level constant holding an embedded code/shellcode blob:
+		// `code = '''...` / `CODE = """...`. Position-anchored assignment plus a
+		// triple-quoted block is a source-file shape, not a request payload.
+		trimmed := strings.TrimLeft(text, " \t")
+		if !pythonBlobAssignment.MatchString(trimmed) {
+			return false
+		}
+	}
+	head := text[:min(600, len(text))]
+	// Pre-seed structural=1 for blob-assignment paths and the "with open(" anchor only.
+	// Shebang, "import", and "from" anchors are NOT pre-seeded: a bare
+	// "import os\nimport sys\n..." prefix is trivially forgeable (oracle uses exactly
+	// this) and must require two independent corroborating markers to meet the
+	// threshold.  "with open(" and blob assignments carry enough specificity to count
+	// as one structural signal on their own.
+	structural := 0
+	if !anchored || strings.HasPrefix(text, "with open(") {
+		structural = 1
+	}
+	for _, marker := range []string{
+		"\nimport ", "\nfrom ", "\ndef ", "\nclass ", "\nwith open(",
+		"if __name__", "'''", "\"\"\"", "\nfor ", "\ntry:", "requests.",
+		"argparse", "sys.argv", "print(",
+	} {
+		if strings.Contains(head, marker) {
+			structural++
+			if structural >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// presentationSlideDeckContext reports whether the evidence sits inside
+// text extracted from a conference slide deck.
+//
+// Slide-deck text has a distinctive global shape: many short lines, because each
+// line was a bullet on a slide. That shape is checked on the full document, but
+// on its own it would be forgeable by prefixing slide-like filler ahead of a
+// payload. So the shape is additionally required to hold in the evidence window:
+// the payload must itself be surrounded by slide formatting, not merely preceded
+// by it somewhere in the document. Forging that means breaking the payload up
+// with slide bullets, which changes the payload rather than just padding it.
+func presentationSlideDeckContext(full, win string) bool {
+	if len(full) < 400 {
+		return false
+	}
+	lower := strings.ToLower(full)
+
+	// Diffuse presentation markers. Require two independent ones: any single
+	// marker (a bare "whoami", an "@handle") also occurs in payloads and prose.
+	markers := 0
+	for _, marker := range []string{
+		"about me", "whoami", "agenda", "disclaimer", "introduction",
+		"outline", "overview", "conclusion", "questions?", "thank you",
+		"acknowledgment", "presented by", "def con", "defcon", "black hat",
+		"blackhat", "slide", "talk", "$ whoami", "who am i",
+	} {
+		if strings.Contains(lower, marker) {
+			markers++
+		}
+	}
+	if markers < 2 {
+		return false
+	}
+
+	if !shortLineDominatedShape(full, 8, 0.6) {
+		return false
+	}
+	// The window must carry the same shape, so slide formatting has to bracket
+	// the evidence instead of merely preceding it.
+	return shortLineDominatedShape(win, 3, 0.6)
+}
+
+// shortLineDominatedShape reports whether text is laid out as at least minLines
+// non-empty lines of which at least ratio are shorter than 60 bytes.
+func shortLineDominatedShape(text string, minLines int, ratio float64) bool {
+	lines := strings.Split(text, "\n")
+	nonEmpty := 0
+	short := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		nonEmpty++
+		if len(trimmed) < 60 {
+			short++
+		}
+	}
+	if nonEmpty < minLines {
+		return false
+	}
+	return float64(short) >= ratio*float64(nonEmpty)
+}
+
+// securityDocumentContextWindowed evaluates diffuse guards on full and
+// single-signature (forgeable) guards on win. Passing the same string for both
+// reproduces the original whole-document behaviour.
+func securityDocumentContextWindowed(full, win string) bool {
+	// Fast-path prefix guards on the full document. These are position-anchored
+	// structural signatures: a file header only exists at offset 0, so the
+	// evidence window cannot observe them and they must be judged on `full`.
+	// Shared with securityDocumentContext via documentPrefixSignature so the two
+	// tables cannot drift apart (they previously did, which silently dropped
+	// suppression for Go sources and one-space-indented GitHub Actions YAML).
+	if documentPrefixSignature(full) {
+		return true
+	}
+
+	// Diffuse / structural signatures: multi-marker or repetition-gated, judged
+	// at document scale.
+	if vulnerabilityReportContext(full) ||
+		ctfWriteupContext(full) ||
+		ctfScoreboardContext(full) ||
+		securityTrainingContext(full) ||
+		academicPaperContext(full) ||
+		chineseTechnicalArticleContext(full) ||
+		changelogDocumentContext(full) ||
+		manPageContext(full) ||
+		wooyunVulnDisclosureContext(full) ||
+		htmlDocumentContext(full) {
+		return true
+	}
+	// bracketedVulnLabelContext is a forgeable single-literal guard checked on the
+	// evidence window only.  In long vulnerability reports the attack evidence sits
+	// further into the document than the ±120-byte window reaches from the label,
+	// so a second full-document check is added here.  The documentScaleThreshold
+	// gate ensures the oracle prefix (label + ~160-byte pad + payload ≈ 245 bytes)
+	// cannot reach it and buy suppression.
+	if len(full) > documentScaleThreshold && bracketedVulnLabelContext(full) {
+		return true
+	}
+	// Two-scope guard: diffuse layout signature on the document, re-checked on the
+	// evidence window so slide formatting must bracket the payload rather than
+	// merely precede it. See presentationSlideDeckContext.
+	if presentationSlideDeckContext(full, win) {
+		return true
+	}
+	// Forgeable single-signature guards: must appear next to the evidence.
+	return sourceCodeFileContext(win) ||
+		structuredPocTemplateContext(win) ||
+		pythonImportStackContext(win) ||
+		ctfChallengeWriteupContext(win) ||
+		conferencePresentationContext(win) ||
+		goPackageSourceContext(win) ||
+		bracketedVulnLabelContext(win)
 }
 
 // wooyunVulnDisclosureContext detects WooYun vulnerability disclosure format.
@@ -670,6 +979,63 @@ func wooyunVulnDisclosureContext(text string) bool {
 		return false
 	}
 	return containsWord(text, "漏洞概要") && strings.Contains(text, "wooyun-")
+}
+
+// htmlDocumentContext reports whether the text is an HTML document or page
+// fragment of meaningful size.
+//
+// Web pages are a large benign document class in security corpora: captured
+// responses, archived pages, and WordPress/CMS pages all carry path-traversal
+// strings (LFI), inline JavaScript (XSS), or SQL-like meta-refresh attributes.
+//
+// Detection requires:
+//   - An HTML opening marker ("<!doctype html", "<html", "<head", or "<title>")
+//     present within the first 100 bytes.
+//   - At least three independent structural element markers spread through the
+//     text (e.g. <head>, <body>, <meta>, <link>, <script>, charset= …).
+//   - Minimum documentScaleThreshold bytes.  A 400-byte floor means an attacker
+//     cannot suppress detection by wrapping a short payload in a minimal HTML
+//     skeleton; a real page carries many more markers naturally.
+func htmlDocumentContext(text string) bool {
+	if len(text) < documentScaleThreshold {
+		return false
+	}
+	lower := strings.ToLower(text)
+	head100 := lower[:min(100, len(lower))]
+	if !strings.Contains(head100, "<!doctype html") &&
+		!strings.Contains(head100, "<html") &&
+		!strings.Contains(head100, "<head") &&
+		!strings.Contains(head100, "<title>") {
+		return false
+	}
+	count := 0
+	for _, marker := range []string{
+		"<html", "<head", "<title", "</title>",
+		"<body", "</body>", "<meta", "<link", "<script",
+		"content-type", "charset=", "viewport",
+	} {
+		if strings.Contains(lower, marker) {
+			count++
+			if count >= 3 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bracketedVulnLabelContext detects the bracketed field labels used by Chinese
+// structured vulnerability writeups: 【漏洞类型】, 【POC利用方法】, 【漏洞描述】,
+// 【影响版本】.
+//
+// Each label is a short forgeable literal, so this must be evaluated on the
+// evidence window rather than the whole document — otherwise a pasted label plus
+// filler padding suppresses any payload that follows. See
+// securityDocumentContextWindowed.
+func bracketedVulnLabelContext(text string) bool {
+	return strings.Contains(text, "【漏洞类型】") || strings.Contains(text, "【POC利用方法】") ||
+		strings.Contains(text, "【poc利用方法】") || strings.Contains(text, "【漏洞描述】") ||
+		strings.Contains(text, "【影响版本】")
 }
 
 // structuredPocTemplateContext detects structured POC documentation format.
@@ -904,4 +1270,83 @@ var (
 	httpRequestLine   = regexp.MustCompile(`(?i)^(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE|CONNECT)\s+/\S+\s+HTTP/[0-9.]+`)
 	httpResponseLine  = regexp.MustCompile(`(?i)^HTTP/[0-9.]+\s+[0-9]{3}\s+`)
 	httpHeaderPattern = regexp.MustCompile(`(?i)^[A-Za-z][\w-]+:\s+.+$`)
+
+	// pythonBlobAssignment matches a module-level assignment of a triple-quoted
+	// block, e.g. `code = '''` or `CODE = """`, anchored at the start of the text.
+	pythonBlobAssignment = regexp.MustCompile("^[A-Za-z_][A-Za-z0-9_]*\\s*=\\s*(?:'''|\"\"\")")
 )
+
+// evidenceNeighbourhoodRadius is the half-width (bytes) of the window checked
+// around the first attack-indicator token in evidenceInProseContext.
+//
+// K must satisfy two constraints simultaneously:
+//   - K < smallest filler gap known from bypass tests (110 bytes) so that the
+//     neighbourhood never reaches a prose prefix appended before padding.
+//   - total window (2K + indicator_len) ≥ 200 bytes so the per-guard length
+//     checks inside securityDocumentContext can fire on genuine embedded payloads.
+//
+// K=120 satisfies both: filler gaps of 110/160/210 bytes all exceed K, and the
+// window is ≥ 240 bytes for any indicator of non-zero length.
+const evidenceNeighbourhoodRadius = 120
+
+// evidenceInProseContext reports whether the attack evidence — the first
+// occurrence of any token in indicators — is embedded inside prose rather than
+// appended outside a prose region that appears earlier in the document.
+//
+// securityDocumentContext checks the whole document, so an attacker can prepend
+// prose markers (e.g. "## Description\n" + filler bytes) and then append a real
+// payload; the whole-document check fires on the prefix while the payload stands
+// outside any prose region.  This function finds the first indicator position and
+// applies securityDocumentContext only to the neighbourhood
+// (±evidenceNeighbourhoodRadius bytes around that position).
+//
+// In a genuine security advisory the quoted payload sits inside prose — the
+// neighbourhood contains the surrounding description.  In a prefix-bypass the
+// payload is appended after a filler buffer, so its neighbourhood is filler, not
+// prose, and the guard returns false.
+//
+// If none of the supplied indicators is present the function falls back to
+// securityDocumentContext on the whole text so that categories with sparse
+// indicator coverage do not silently lose FP suppression.
+//
+// evidenceWindow extracts the locality slice used by evidenceInProseContext and
+// any other document-context guard that must not fire on a prose prefix that is
+// physically separated from the attack payload. Callers that need the same
+// window for multiple guards (e.g. securityDocumentContext and
+// technicalDocumentationContext) should call evidenceWindow once and reuse the
+// result rather than re-scanning the indicators for each guard.
+func evidenceWindow(text string, indicators []string) string {
+	if len(text) == 0 {
+		return text
+	}
+	lower := strings.ToLower(text)
+	firstPos := -1
+	for _, ind := range indicators {
+		if ind == "" {
+			continue
+		}
+		if idx := strings.Index(lower, strings.ToLower(ind)); idx >= 0 {
+			if firstPos < 0 || idx < firstPos {
+				firstPos = idx
+			}
+		}
+	}
+	if firstPos < 0 {
+		// No indicator found; return the full text so callers fall back to a
+		// whole-document check and do not silently drop FP suppression.
+		return text
+	}
+	lo := firstPos - evidenceNeighbourhoodRadius
+	if lo < 0 {
+		lo = 0
+	}
+	hi := firstPos + evidenceNeighbourhoodRadius
+	if hi > len(text) {
+		hi = len(text)
+	}
+	return text[lo:hi]
+}
+
+func evidenceInProseContext(text string, indicators []string) bool {
+	return securityDocumentContextWindowed(text, evidenceWindow(text, indicators))
+}

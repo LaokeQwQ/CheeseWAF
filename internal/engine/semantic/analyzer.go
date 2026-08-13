@@ -562,11 +562,11 @@ const (
 	// dedupMapThreshold is the candidate count at which the fingerprint map stops
 	// being more expensive than the linear exact compare it guards. Below it the
 	// map is never allocated; ordinary requests never reach it.
-	dedupMapThreshold = 12
-	maxDecodeVariants          = 8
-	maxJSONNodes               = 200
-	maxJSONDepth               = 8
-	maxJSONTreeDecodeBytes     = 256 << 10
+	dedupMapThreshold      = 12
+	maxDecodeVariants      = 8
+	maxJSONNodes           = 200
+	maxJSONDepth           = 8
+	maxJSONTreeDecodeBytes = 256 << 10
 )
 
 // rawCoverageSignal is not a detector or block decision. It only selects the
@@ -2395,10 +2395,21 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 
+	// Compute the attack-evidence window once; both securityDocumentContext and
+	// technicalDocumentationContext run on this window so that a prose prefix
+	// + filler padding separated from the payload cannot suppress detection
+	// via either guard.
+	sqlWin := evidenceWindow(doc, []string{
+		"xp_cmdshell", "exec master", "union select", "union all select",
+		"into outfile", "load_file", "information_schema", "sleep(",
+		"benchmark(", "waitfor delay", "pg_sleep", "1=1", "1=0",
+		"' or", "\" or", "or 1=", "and 1=",
+	})
+
 	// Security document context: vulnerability reports, CTF writeups, training
 	// material, academic papers, Chinese technical articles, and source files all
 	// quote SQL grammar verbatim without composing a query.
-	if securityDocumentContext(doc) {
+	if securityDocumentContextWindowed(doc, sqlWin) {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -2429,8 +2440,13 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 
-	// Technical documentation keyword guard: reduce confidence for educational content
-	if technicalDocumentationContext(doc) {
+	// Technical documentation keyword guard: AND-gate — full document must satisfy techdoc
+	// (captures document-level markers like 安全/分析 that appear far from the indicator)
+	// AND the local evidence window must also satisfy techdoc (ensures the attack example
+	// is surrounded by explanatory prose, not oracle filler padding).
+	// Oracle bypass: filler region near payload has no techdoc markers → window returns false.
+	// Legitimate doc: explanatory text around examples contains 示例/攻击/vulnerability/etc.
+	if technicalDocumentationContext(doc) && technicalDocumentationContext(sqlWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -2538,7 +2554,13 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 
 	// Security prose quotes MongoDB operators verbatim ("$regex", "$ne") when
 	// explaining NoSQL injection. A document-scale article is not a query.
-	if securityDocumentContext(text) {
+	// Use evidenceInProseContext so that a prose prefix + filler bypass cannot
+	// suppress detection of a real NoSQL injection operator.
+	if evidenceInProseContext(text, []string{
+		"$where", "$eval", "$function", "$or", "$and", "$regex",
+		"$ne", "$nin", "$gt", "$gte", "$lt", "$lte", "$not",
+		"mapreduce", "$accumulator", "$expr",
+	}) {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -2606,7 +2628,14 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 
 	// Template-expression syntax appears verbatim in webshell writeups, exploit
 	// sources, and SSTI tutorials. A document-scale article is not a template.
-	if securityDocumentContext(text) {
+	// Use evidenceInProseContext so that a prose prefix + filler bypass cannot
+	// suppress detection of a real template injection payload.
+	if evidenceInProseContext(text, []string{
+		"{{", "{%", "${", "<#", "#{", "[[",
+		"__class__", "__mro__", "__subclasses__", "__globals__",
+		"freemarker.template", "classloader", "processbuilder",
+		"objectspace", "java.lang.runtime",
+	}) {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -2673,8 +2702,17 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 
-	// Technical documentation keyword guard: reduce confidence for educational content
-	if technicalDocumentationContext(text) {
+	// Compute the attack-evidence window so that a prose prefix + filler padding
+	// separated from the payload cannot suppress detection via techdoc markers
+	// appearing only in the outer document, not adjacent to the XSS payload.
+	xssWin := evidenceWindow(text, []string{
+		"<script", "onerror=", "onload=", "javascript:", "alert(",
+		"prompt(", "confirm(", "document.cookie", "eval(", "<iframe",
+		"svg onload",
+	})
+
+	// Technical documentation keyword guard: AND-gate — full document AND local window.
+	if technicalDocumentationContext(text) && technicalDocumentationContext(xssWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -2799,10 +2837,23 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 
 	// Apply shape guards in order of specificity (most specific first)
 
+	// Compute the attack-evidence window once; securityDocumentContext and
+	// technicalDocumentationContext both run on this window so that a prose
+	// prefix + filler padding separated from the payload cannot suppress
+	// detection via either guard.
+	rceWin := evidenceWindow(text, []string{
+		";cat ", "|cat ", "| cat ", ";id", "|id", "| id",
+		"|bash", "| bash", "|sh ", "| sh ", "/bin/sh", "/bin/bash",
+		"/etc/passwd", "/etc/shadow", "whoami", "nc ", "netcat",
+		"wget ", "curl ", "<?php", "eval(", "system(", "passthru(",
+		"shell_exec(", "proc_open(", "popen(", "exec(",
+		"runtime.exec", "processbuilder", "() { :;};", "${jndi:",
+	})
+
 	// Security document context: vulnerability reports, CTF writeups, training
 	// material, academic papers, Chinese technical articles, and source files all
 	// quote shell commands verbatim without invoking them.
-	if securityDocumentContext(text) {
+	if securityDocumentContextWindowed(text, rceWin) {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -2841,8 +2892,8 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 
-	// Technical documentation keyword guard: reduce confidence for educational content
-	if technicalDocumentationContext(text) {
+	// Technical documentation keyword guard: AND-gate — full document AND local window.
+	if technicalDocumentationContext(text) && technicalDocumentationContext(rceWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -3036,9 +3087,22 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 
+	// Compute the attack-evidence window once; securityDocumentContext and
+	// technicalDocumentationContext both run on this window so that a prose
+	// prefix + filler padding separated from the payload cannot suppress
+	// detection via either guard.
+	lfiWin := evidenceWindow(text, []string{
+		"../", "....//", `..\/`, ".htaccess",
+		"/etc/passwd", "/etc/shadow", "/proc/self", "/root/",
+		"php://", "phar://", "zip://", "expect://", "data://",
+		".ssh/id_rsa", ".aws/credentials", ".git/config", ".env",
+		"web-inf/web.xml", "boot.ini", "win.ini", "wp-config",
+		"docker.sock", "/var/log/",
+	})
+
 	// Security document context: reports, writeups, papers, and source files
 	// quote paths like /etc/passwd and file:// URIs as subject matter.
-	if securityDocumentContext(text) {
+	if securityDocumentContextWindowed(text, lfiWin) {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -3061,8 +3125,8 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 
-	// Technical documentation keyword guard: reduce confidence for educational content
-	if technicalDocumentationContext(text) {
+	// Technical documentation keyword guard: AND-gate — full document AND local window.
+	if technicalDocumentationContext(text) && technicalDocumentationContext(lfiWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false

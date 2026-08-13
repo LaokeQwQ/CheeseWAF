@@ -398,6 +398,79 @@ func TestFileSinkRejectsUnboundedQueryOffset(t *testing.T) {
 	}
 }
 
+func TestFileSinkRecentCacheHonorsByteBudget(t *testing.T) {
+	t.Setenv("CHEESEWAF_FILE_SINK_CACHE_LIMIT", "100")
+	t.Setenv("CHEESEWAF_FILE_SINK_CACHE_BYTES", "900")
+	path := filepath.Join(t.TempDir(), "access.log")
+	sink, err := NewFileSink(path)
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	for index := 0; index < 6; index++ {
+		entry := &storage.LogEntry{
+			ID:        fmt.Sprintf("entry-%d", index),
+			Timestamp: time.Unix(int64(index+1), 0).UTC(),
+			Action:    "pass",
+			Payload:   strings.Repeat(string(rune('a'+index)), 300),
+		}
+		if err := sink.Write(context.Background(), entry); err != nil {
+			t.Fatalf("write %d: %v", index, err)
+		}
+		if sink.recentBytes > sink.recentMaxBytes {
+			t.Fatalf("cache exceeded byte budget: bytes=%d max=%d", sink.recentBytes, sink.recentMaxBytes)
+		}
+	}
+	if sink.recentCount >= 6 || sink.recentCount == 0 {
+		t.Fatalf("byte budget did not evict a bounded suffix: count=%d", sink.recentCount)
+	}
+	recent := sink.recentSnapshotLocked()
+	if got := recent[len(recent)-1].ID; got != "entry-5" {
+		t.Fatalf("cache is not a contiguous newest suffix: last=%q", got)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	reopened, err := NewFileSink(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	if reopened.recentBytes > reopened.recentMaxBytes || reopened.recentCount != sink.recentCount {
+		t.Fatalf("rebuilt cache violates budget: bytes=%d max=%d count=%d want_count=%d", reopened.recentBytes, reopened.recentMaxBytes, reopened.recentCount, sink.recentCount)
+	}
+	items, total, err := reopened.Query(context.Background(), storage.LogFilter{Limit: 6})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if total != 6 || fmt.Sprint(ids(items)) != "[entry-5 entry-4 entry-3 entry-2 entry-1 entry-0]" {
+		t.Fatalf("bounded cache changed query results: total=%d items=%v", total, ids(items))
+	}
+}
+
+func TestFileSinkOversizedCacheEntryInvalidatesRecentSuffix(t *testing.T) {
+	t.Setenv("CHEESEWAF_FILE_SINK_CACHE_LIMIT", "10")
+	t.Setenv("CHEESEWAF_FILE_SINK_CACHE_BYTES", "128")
+	sink, err := NewFileSink(filepath.Join(t.TempDir(), "access.log"))
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	defer sink.Close()
+	if err := sink.Write(context.Background(), &storage.LogEntry{ID: "large", Action: "block", Payload: strings.Repeat("x", 512)}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if sink.recentCount != 0 || sink.recentBytes != 0 {
+		t.Fatalf("oversized cache entry left an incomplete suffix: count=%d bytes=%d", sink.recentCount, sink.recentBytes)
+	}
+	items, total, err := sink.Query(context.Background(), storage.LogFilter{Limit: 1})
+	if err != nil {
+		t.Fatalf("query fallback: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].ID != "large" {
+		t.Fatalf("disk fallback lost oversized cache entry: total=%d items=%v", total, ids(items))
+	}
+}
+
 func TestFileSinkRotationFailureReopensActiveFileAndRebuildsIndex(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "access.log")
 	sink, err := NewFileSinkWithRotation(path, 512, 1)

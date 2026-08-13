@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
@@ -34,14 +37,26 @@ func TestAIConfigUsesProviderAndHidesHeader(t *testing.T) {
 	}
 	handler := New(Options{Config: &cfg, ConfigPath: configPath})
 
-	body := []byte(`{"enabled":true,"provider":"anthropic","api_base":"https://api.anthropic.com/v1","api_key":"","api_key_header":"x-api-key","model":"claude-3-5-haiku-latest","async":true}`)
+	// Use a vendor-neutral public host. Local fake-ip/proxy DNS can map real
+	// provider names onto 198.18.0.0/15 and trip the private-base guard.
+	const apiBase = "https://example.com/v1"
+	if host, err := url.Parse(apiBase); err == nil {
+		if ips, lookupErr := net.LookupIP(host.Hostname()); lookupErr == nil {
+			for _, ip := range ips {
+				if !netguard.IsPublicIP(ip) {
+					t.Skip("environment resolves the test API host to a non-public address (local fake-ip/proxy DNS)")
+				}
+			}
+		}
+	}
+	body := []byte(`{"enabled":true,"provider":"openai","api_base":"` + apiBase + `","api_key":"","api_key_header":"x-api-key","model":"local-model","async":true}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body))
 	handler.UpdateAIConfig(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected ai config update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if cfg.AI.Provider != "anthropic" || cfg.AI.APIKey != "existing-secret" {
+	if cfg.AI.Provider != "openai" || cfg.AI.APIKey != "existing-secret" || cfg.AI.APIBase != apiBase {
 		t.Fatalf("unexpected saved AI config: %+v", cfg.AI)
 	}
 
@@ -51,7 +66,7 @@ func TestAIConfigUsesProviderAndHidesHeader(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Data["provider"] != "anthropic" {
+	if response.Data["provider"] != "openai" {
 		t.Fatalf("expected provider in response, got %+v", response.Data)
 	}
 	if _, ok := response.Data["api_key_header"]; ok {
@@ -1168,6 +1183,17 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected self-approve forbidden, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	// A second login by the same user is still the same person and must not
+	// satisfy dual control, even when that role has approve:ai.
+	sameRequesterNewSession := *requester
+	sameRequesterNewSession.ID = "other-session-id"
+	recorder = httptest.NewRecorder()
+	request = withActor(&sameRequesterNewSession, httptest.NewRequest(http.MethodPost, "/approvals/"+first.Data.Approval.ID+"/approve", nil))
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected cross-session self-approve forbidden, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
