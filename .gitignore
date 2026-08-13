@@ -167,3 +167,8 @@ internal/engine/semantic/tmp/
 # Local toolchain / abandoned UI backup (never ship)
 .codex-gocache/
 .backup-appica-*/
+
+# Local-only large corpora (GitHub 100MB limit)
+internal/engine/semantic/testdata/openappsec_benign_clean.jsonl
+internal/engine/semantic/testdata/openappsec_attack_clean.jsonl
+internal/engine/semantic/testdata/modsec_attack_clean.jsonl
