@@ -220,8 +220,8 @@ func Validate(cfg *Config) error {
 		if site.WAF.Mode != "" && site.WAF.Mode != "block" && site.WAF.Mode != "monitor" && site.WAF.Mode != "off" {
 			return fmt.Errorf("site %q has invalid waf.mode %q", site.Name, site.WAF.Mode)
 		}
-		if site.WAF.ParanoiaLevel < 0 || site.WAF.ParanoiaLevel > 4 {
-			return fmt.Errorf("site %q waf.paranoia_level must be between 0 and 4", site.Name)
+		if site.WAF.ParanoiaLevel < 0 || site.WAF.ParanoiaLevel > 5 {
+			return fmt.Errorf("site %q waf.paranoia_level must be between 0 and 5", site.Name)
 		}
 		if site.WAF.Performance.MaxBodyBytes < 0 {
 			return fmt.Errorf("site %q waf.performance.max_body_bytes must be non-negative", site.Name)

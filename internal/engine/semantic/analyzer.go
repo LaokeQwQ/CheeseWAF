@@ -3448,49 +3448,23 @@ func hasSyntaxReason(reasons map[string]bool) bool {
 // weak single-signal hits must not block legitimate traffic.
 // Prefer miss over wrong block.
 func (a *Analyzer) blockableHit(h Hit) bool {
-	// Level 0 (Off): never block, only log
-	if a.paranoiaLevel == 0 {
+	// 0=record-only, 1=low: never block.
+	if a.paranoiaLevel <= 1 {
 		return false
 	}
 
 	if h.Category == "" || h.Payload == "" {
 		return false
 	}
-	// Embedded gadgets (prose around a payload) stay off the default block
-	// path. Current level 4 is the strictest shipped tier and still blocks them.
-	if h.Isolation == isolationEmbedded && a.paranoiaLevel < 4 {
+	// Embedded (gadget inside other text) blocks only at 5.
+	if h.Isolation == isolationEmbedded && a.paranoiaLevel < 5 {
 		return false
 	}
 	syntaxOK := h.Syntax != "" && !strings.HasSuffix(h.Syntax, "none") && !strings.Contains(h.Syntax, "attack grammar matched")
 	semanticsOK := h.Semantics != "" && !strings.HasSuffix(h.Semantics, "none") && !strings.Contains(h.Semantics, "malicious behavior inferred from context")
 
-	// Level 4 (Paranoid): block on any semantic evidence with confidence >= 0.5
-	if a.paranoiaLevel >= 4 {
-		return (syntaxOK || semanticsOK) && h.Confidence >= 0.5
-	}
-
-	// Level 3 (High): block on confidence >= 0.8 with High severity, or single evidence with Medium+
-	if a.paranoiaLevel == 3 {
-		if h.Confidence >= 0.8 && (h.Severity == engine.SeverityHigh || h.Severity == engine.SeverityCritical) {
-			return true
-		}
-		if (syntaxOK || semanticsOK) && h.Severity >= engine.SeverityMedium {
-			return true
-		}
-	}
-
-	// Level 1 (Low): require very high confidence (>=0.95) with Critical, or two evidence with High
-	if a.paranoiaLevel == 1 {
-		if h.Confidence >= 0.95 && h.Severity == engine.SeverityCritical {
-			return true
-		}
-		if syntaxOK && semanticsOK && h.Severity >= engine.SeverityHigh {
-			return true
-		}
-		return false
-	}
-
-	// Level 2 (Default): original logic - require two evidence types or specific single evidence
+	// Levels 2-5 share the same evidence bar. Isolation already decided
+	// whether an embedded gadget may block (5 only).
 	if syntaxOK && semanticsOK {
 		return true
 	}

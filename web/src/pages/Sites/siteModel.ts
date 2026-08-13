@@ -94,7 +94,7 @@ export const defaultSite: Site = {
   key_file: '',
   waf_enabled: true,
   waf_mode: 'block',
-  paranoia_level: 2,
+  paranoia_level: 3,
   advanced: defaultSiteAdvanced,
   enabled: true,
 };
@@ -163,8 +163,8 @@ function asArray<T>(value: T[] | null | undefined): T[] {
 
 export function normalizeParanoiaLevel(value: unknown): number {
   const level = Number(value);
-  if (!Number.isInteger(level) || level < 1 || level > 4) {
-    return 2;
+  if (!Number.isInteger(level) || level < 0 || level > 5) {
+    return 3;
   }
   return level;
 }

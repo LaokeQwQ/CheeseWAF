@@ -177,7 +177,7 @@ export default function SitesPage() {
       key_file: enableSSL && draft.certificateMode === 'file' ? draft.keyFile.trim() : '',
       waf_enabled: draft.wafEnabled,
       waf_mode: draft.wafMode,
-      paranoia_level: 2,
+      paranoia_level: 3,
       enabled: draft.enabled,
       advanced: {
         ...defaultSiteAdvanced,
