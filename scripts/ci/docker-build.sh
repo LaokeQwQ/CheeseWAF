@@ -3,11 +3,11 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 image_tag="${CHEESEWAF_DOCKER_TAG:-cheesewaf:ci}"
-pull_args=()
-build_args=()
+# Build the argv in one array. Bash 3.2 + set -u rejects "${empty[@]}".
+docker_build=(docker build)
 
 if [[ "${DOCKER_PULL:-1}" == "1" ]]; then
-  pull_args+=(--pull)
+  docker_build+=(--pull)
 fi
 
 for entry in \
@@ -17,16 +17,16 @@ for entry in \
   name="${entry%%:*}"
   value="${entry#*:}"
   if [[ -n "$value" ]]; then
-    build_args+=(--build-arg "${name}=${value}")
+    docker_build+=(--build-arg "${name}=${value}")
   fi
 done
 
-docker build \
-  "${pull_args[@]}" \
-  "${build_args[@]}" \
-  --file "${repo_root}/deploy/docker/Dockerfile" \
-  --tag "$image_tag" \
+docker_build+=(
+  --file "${repo_root}/deploy/docker/Dockerfile"
+  --tag "$image_tag"
   "$repo_root"
+)
+"${docker_build[@]}"
 
 container_name="cheesewaf-ci-smoke-$$"
 log_file="$(mktemp)"

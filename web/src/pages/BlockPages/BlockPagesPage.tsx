@@ -1,5 +1,6 @@
 import { Badge, Button, Empty, Textarea, toast } from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import DOMPurify from 'dompurify';
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2, Copy, Download, ExternalLink, FileCode2, FileUp, RotateCcw, Save } from 'lucide-react';
@@ -426,49 +427,17 @@ export function sanitizeBlockPreviewHTML(value: string) {
   if (!html) {
     return '';
   }
-  if (typeof DOMParser === 'undefined') {
+  if (typeof window === 'undefined') {
     return '';
   }
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script, iframe, object, embed, base, link[rel="import"], meta[http-equiv="refresh"]').forEach((node) => node.remove());
-  doc.querySelectorAll('*').forEach((element) => {
-    Array.from(element.attributes).forEach((attribute) => {
-      const name = attribute.name.toLowerCase();
-      if (name.startsWith('on')) {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      // Drop navigation/form targets that can escape the sandbox intent.
-      if (name === 'srcset' || name === 'action' || name === 'formaction' || name === 'form' || name === 'xlink:href') {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      if (isDangerousPreviewURLAttribute(name, attribute.value)) {
-        element.removeAttribute(attribute.name);
-      }
-    });
+  const clean = DOMPurify.sanitize(html, {
+    WHOLE_DOCUMENT: true,
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'base'],
+    FORBID_ATTR: ['srcset', 'action', 'formaction', 'form', 'xlink:href'],
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+    ADD_TAGS: ['html', 'head', 'body', 'meta', 'link', 'style', 'title'],
   });
-  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
-}
-
-function isDangerousPreviewURLAttribute(name: string, rawValue: string) {
-  if (!['href', 'src', 'poster', 'cite', 'data', 'background'].includes(name.toLowerCase())) {
-    return false;
-  }
-  const normalized = compactURLScheme(rawValue).toLowerCase();
-  return normalized.startsWith('javascript:') || normalized.startsWith('vbscript:') || normalized.startsWith('data:');
-}
-
-function compactURLScheme(value: string) {
-  let output = '';
-  for (const char of value.trim()) {
-    const code = char.charCodeAt(0);
-    if (code <= 0x20 || code === 0x7f) {
-      continue;
-    }
-    output += char;
-  }
-  return output;
+  return clean ? `<!doctype html>\n${clean}` : '';
 }
 
 function isBlockPageConfig(value: unknown): value is BlockPageConfig {
