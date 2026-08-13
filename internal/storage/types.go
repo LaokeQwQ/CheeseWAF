@@ -91,6 +91,58 @@ type Store interface {
 
 	// Notifications
 	NotificationStore
+
+	// Review items (detected but not blocked)
+	ReviewStore
+}
+
+// ReviewStore persists suspicious requests that were not blocked, for admin decision.
+type ReviewStore interface {
+	CreateReviewItem(ctx context.Context, item *ReviewItem) error
+	GetReviewItem(ctx context.Context, id string) (*ReviewItem, error)
+	ListReviewItems(ctx context.Context, filter ReviewFilter) ([]ReviewItem, int64, error)
+	DecideReviewItem(ctx context.Context, id string, decision ReviewDecision) (*ReviewItem, error)
+}
+
+type ReviewItem struct {
+	ID               string    `json:"id"`
+	TraceID          string    `json:"trace_id"`
+	SiteID           string    `json:"site_id"`
+	ClientIP         string    `json:"client_ip"`
+	Method           string    `json:"method"`
+	URI              string    `json:"uri"`
+	Category         string    `json:"category"`
+	Severity         string    `json:"severity"`
+	Payload          string    `json:"payload"`
+	ProtectionLevel  int       `json:"protection_level"`
+	Shape            string    `json:"shape"`
+	Status           string    `json:"status"`
+	AIVerdict        string    `json:"ai_verdict,omitempty"`
+	DecidedBySubject string    `json:"decided_by_subject,omitempty"`
+	DecidedByName    string    `json:"decided_by_name,omitempty"`
+	DecidedByRole    string    `json:"decided_by_role,omitempty"`
+	DecidedAt        time.Time `json:"decided_at,omitempty"`
+	Decision         string    `json:"decision,omitempty"`
+	AppliedRuleID    string    `json:"applied_rule_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type ReviewFilter struct {
+	SiteID   string
+	Category string
+	Status   string
+	Start    time.Time
+	End      time.Time
+	Offset   int
+	Limit    int
+}
+
+type ReviewDecision struct {
+	Decision         string
+	AppliedRuleID    string
+	DecidedBySubject string
+	DecidedByName    string
+	DecidedByRole    string
 }
 
 // NotificationStore manages persistent, user-scoped management notifications.
