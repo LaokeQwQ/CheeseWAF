@@ -102,6 +102,8 @@ sites:
     waf:
       enabled: true
       mode: "block"
+      # 1=low, 2=default, 3=high, 4=paranoid. Omitted or 0 uses 2.
+      paranoia_level: 2
       semantic_engines:
         sql: true
         xss: true

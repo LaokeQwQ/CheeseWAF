@@ -148,6 +148,15 @@ describe('SiteDetailPage save success', () => {
     expect(toastMocks.success).toHaveBeenCalledWith('sites.saved');
     expect(toastMocks.error).not.toHaveBeenCalled();
   });
+
+  it('shows the persisted semantic sensitivity on the protection tab', async () => {
+    apiMocks.fetchSite.mockResolvedValue(normalizeSite({ ...makeSite('initial-site'), paranoia_level: 3 }));
+    renderSiteDetail();
+    await screen.findByDisplayValue('initial-site');
+    fireEvent.click(screen.getByText('sites.stepProtection'));
+    expect(screen.getByText('sites.paranoiaLevel')).toBeTruthy();
+    expect(screen.getByText('sites.paranoiaHigh')).toBeTruthy();
+  });
 });
 
 describe('SiteDetailPage query states', () => {
