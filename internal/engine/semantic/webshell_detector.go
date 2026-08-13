@@ -84,6 +84,23 @@ func (d *WebshellDetector) Detect(_ context.Context, reqCtx *engine.RequestConte
 		}, nil
 	}
 
+	// Query/URI PHP gadgets: eval($_GET[...]) and $_GET[a]($_GET[b]) execute
+	// through an already-installed shell that evals a request parameter, so they
+	// carry no <?php delimiter. Matching the request target only keeps advisory
+	// bodies that quote the same tokens from firing.
+	if rxPHPEvalSuperglobal.MatchString(target) || rxPHPCallbackSuperglobal.MatchString(target) {
+		return &engine.DetectionResult{
+			Detected:   true,
+			DetectorID: d.ID(),
+			Category:   "webshell",
+			Severity:   engine.SeverityCritical,
+			Action:     actionForMode(d.mode),
+			Message:    "PHP request-parameter execution gadget detected",
+			Confidence: 0.93,
+			Payload:    truncateWebshell(surface, 200),
+		}, nil
+	}
+
 	// ---- Generic webshell path signature ----
 	// Common webshell filenames: shell.php / webshell.php / c99.php / r57.php / backdoor.php / cmd.php
 	//
@@ -244,6 +261,17 @@ func analyzeWebshell(candidate semanticCandidate) (Hit, bool) {
 		}), true
 	}
 
+	// Same query/URI gadgets as WebshellDetector.Detect: no <?php because the
+	// installed shell already evals the parameter. Body/header prose is not a
+	// request-target surface and must not fire.
+	if requestTargetSurface(candidate.input.Source) &&
+		(rxPHPEvalSuperglobal.MatchString(normalized) || rxPHPCallbackSuperglobal.MatchString(normalized)) {
+		return hit(candidate, "webshell", engine.SeverityCritical, 0.93, map[string]bool{
+			"syntax: PHP execution primitive or variable-function with superglobal input": true,
+			"semantics: attacker-controlled request parameter reaches code execution":     true,
+		}), true
+	}
+
 	return Hit{}, false
 }
 
@@ -254,6 +282,10 @@ var (
 	rxPHPObfuscate = regexp.MustCompile(`(?:base64_decode|gzinflate|str_rot13|gzuncompress|create_function)\s*\(`)
 	// PHP superglobals
 	rxPHPSuperglobal = regexp.MustCompile(`(?i)\$_(?:post|get|request|cookie)\s*\[`)
+	// eval($_GET[...]) / system($_POST[...]) without a surrounding <?php delimiter
+	rxPHPEvalSuperglobal = regexp.MustCompile(`(?i)(?:eval|assert|system|passthru|shell_exec|exec|proc_open|popen)\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[`)
+	// $_GET[a]($_GET[b]) variable-function callback
+	rxPHPCallbackSuperglobal = regexp.MustCompile(`(?i)\$_(?:GET|POST|REQUEST|COOKIE)\s*\[[^\]]+\]\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[`)
 	// Common webshell filenames
 	rxWebshellPath = regexp.MustCompile(`/(?:web)?shell\.php|/c(?:99|100)\.php|/r57\.php|/backdoor\.php|/cmd\.php|/[a-z0-9_-]*shell[a-z0-9_-]*\.(?:php|jsp|aspx)`)
 )

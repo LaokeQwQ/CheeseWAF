@@ -1905,6 +1905,7 @@ func guessCategories(raw string) []string {
 	if hints&hintWebshell != 0 {
 		if (strings.Contains(text, "<?php") || strings.Contains(text, "<?=")) ||
 			(strings.Contains(text, "eval(") && (strings.Contains(text, "$_post") || strings.Contains(text, "$_get") || strings.Contains(text, "$_request"))) ||
+			rxPHPCallbackSuperglobal.MatchString(text) ||
 			strings.Contains(text, "base64_decode") || strings.Contains(text, "gzinflate") ||
 			strings.Contains(text, "runtime.getruntime()") || strings.Contains(text, "processbuilder") ||
 			strings.Contains(text, "system.diagnostics.process") ||
@@ -1913,7 +1914,7 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintLog4Shell != 0 {
-		if strings.Contains(text, "${jndi:") || strings.Contains(text, "() { :;};") {
+		if hasLog4ShellLookup(text) || strings.Contains(text, "() { :;};") {
 			scores["log4shell"] += 2
 		}
 	}
@@ -2052,10 +2053,8 @@ func scanAttackHints(raw string) int {
 		(strings.Contains(lower, ".php") && (strings.Contains(lower, "action=") || strings.Contains(lower, "cmd=") || strings.Contains(lower, "exec="))) {
 		hints |= hintWebshell
 	}
-	// Log4Shell & Shellshock
-	if strings.Contains(lower, "${jndi:") || strings.Contains(lower, "() { :;};") ||
-		strings.Contains(lower, "jndi:ldap://") || strings.Contains(lower, "jndi:rmi://") ||
-		strings.Contains(lower, "jndi:dns://") {
+	// Log4Shell & Shellshock (including ${::-j} / ${lower:} wrappers)
+	if strings.Contains(lower, "() { :;};") || hasLog4ShellLookup(lower) {
 		hints |= hintLog4Shell
 	}
 	return hints
@@ -2091,7 +2090,9 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 var (
 	sqlBooleanTautology     = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
 	sqlEmptyStringTautology = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*(?:''|""|'[^']*'|"[^"]*"|['"])\s*=\s*(?:''|""|'[^']*'|"[^"]*"|['"])`)
-	sqlQuotedOrPredicate    = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']*'|"[^"]*"|[^\s]{1,64})`)
+	// Quoted OR is injection when the right-hand side is a tautology, comparison,
+	// SQL function, or subquery — not English "foo" or "bar" alternatives.
+	sqlQuotedOrPredicate    = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']{0,64}'\s*(?:=|<>|!=|like\b)|"[^"]{0,64}"\s*(?:=|<>|!=|like\b)|\d+\s*(?:=|<>|!=|<|>)\s*\d+|\d+\b|true\b|false\b|null\b|\(|(?:sleep|benchmark|pg_sleep|waitfor|if|exists|ascii|substring|substr|ord|mid|concat|char|chr|updatexml|extractvalue|elt|user|version|database|schema|current_user)\b|[a-z_][a-z0-9_]*\s*(?:=|<>|!=|like\b))`)
 	sqlTimeFunction         = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
 	sqlDialectTimeFunction  = regexp.MustCompile(`(?i)\bdbms_(?:lock|session)\.sleep\s*\(`)
 	sqlComment              = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
@@ -2799,6 +2800,15 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 		if sink || strings.Contains(lower, "cmd=") || strings.Contains(lower, "command=") || strings.Contains(lower, "exec=") || strings.Contains(candidate.input.Name, "cmd") {
 			reasons["semantics: language runtime command or include execution"] = true
 		}
+	}
+	// Query/URI eval(getallheaders()) / eval(apache_request_headers()) reads
+	// attacker-controlled request headers into eval. The same tokens in a body
+	// are usually a writeup, so this branch is request-target only.
+	if requestTargetSurface(candidate.input.Source) &&
+		(strings.Contains(lower, "eval(") || strings.Contains(lower, "assert(")) &&
+		(strings.Contains(lower, "getallheaders") || strings.Contains(lower, "apache_request_headers")) {
+		reasons["syntax: PHP header-array evaluation"] = true
+		reasons["semantics: language runtime command or include execution"] = true
 	}
 	if strings.Contains(lower, "{php}") || strings.Contains(lower, "{/php}") {
 		reasons["syntax: PHP template execution delimiter"] = true
