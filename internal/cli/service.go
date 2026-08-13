@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -203,7 +204,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS)
+	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS, cfg.Cluster.Interconnect)
 	if err != nil {
 		return err
 	}
@@ -938,7 +939,7 @@ func loadConfig() (*config.Config, string, error) {
 	return cfg, bundle.Paths.ConfigFile, nil
 }
 
-func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
+func adminTLSConfig(cfg config.AdminTLSConfig, interconnect ...config.InterconnectConfig) (*tls.Config, string, error) {
 	if !cfg.Enabled {
 		return nil, "http", nil
 	}
@@ -946,10 +947,29 @@ func adminTLSConfig(cfg config.AdminTLSConfig) (*tls.Config, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("load admin TLS certificate: %w", err)
 	}
-	return &tls.Config{
+	tlsConfig := &tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{cert},
-	}, "https", nil
+	}
+	// Heartbeats can be posted to the admin listener. Request and verify a
+	// cluster client cert when present so handler VerifiedChains is populated;
+	// browsers without a client cert still connect.
+	if len(interconnect) > 0 && interconnect[0].MTLSRequired {
+		caPath := strings.TrimSpace(interconnect[0].CAFile)
+		if caPath != "" {
+			caPEM, err := os.ReadFile(caPath)
+			if err != nil {
+				return nil, "", fmt.Errorf("read cluster mTLS CA: %w", err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caPEM) {
+				return nil, "", fmt.Errorf("parse cluster mTLS CA %s", caPath)
+			}
+			tlsConfig.ClientCAs = pool
+			tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
+		}
+	}
+	return tlsConfig, "https", nil
 }
 
 func ensureAdminTLSCertificate(cfg *config.Config) error {

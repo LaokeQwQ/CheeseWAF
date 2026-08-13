@@ -3,7 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -82,6 +89,61 @@ func TestEnsureAdminTLSCertificateGeneratesOnce(t *testing.T) {
 	keyAfter, _ := os.ReadFile(cfg.Server.AdminTLS.KeyFile)
 	if !bytes.Equal(certBefore, certAfter) || !bytes.Equal(keyBefore, keyAfter) {
 		t.Fatal("existing admin TLS material was unexpectedly rotated")
+	}
+}
+
+func TestAdminTLSConfigRequestsClusterClientCertWhenMTLSRequired(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Server.AdminTLS.Enabled = true
+	cfg.Server.AdminTLS.SelfSigned = true
+	cfg.Server.AdminTLS.CertFile = filepath.Join(root, "admin.crt")
+	cfg.Server.AdminTLS.KeyFile = filepath.Join(root, "admin.key")
+	if err := ensureAdminTLSCertificate(&cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caFile := filepath.Join(root, "ca.pem")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tlsConfig, scheme, err := adminTLSConfig(cfg.Server.AdminTLS, config.InterconnectConfig{
+		MTLSRequired: true,
+		CAFile:       caFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheme != "https" || tlsConfig == nil {
+		t.Fatalf("scheme=%s config=%v", scheme, tlsConfig)
+	}
+	if tlsConfig.ClientAuth != tls.VerifyClientCertIfGiven || tlsConfig.ClientCAs == nil {
+		t.Fatalf("admin TLS must verify presented cluster client certs: auth=%v cas=%v", tlsConfig.ClientAuth, tlsConfig.ClientCAs)
+	}
+
+	plain, _, err := adminTLSConfig(cfg.Server.AdminTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.ClientAuth != tls.NoClientCert {
+		t.Fatalf("admin TLS without interconnect mTLS must stay browser-usable, got %v", plain.ClientAuth)
 	}
 }
 
