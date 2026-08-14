@@ -51,6 +51,8 @@ type Server struct {
 	protectionPolicy config.ProtectionPolicyConfig
 	certs            *SiteCertificateStore
 	clock            timekeeper.Clock
+	reviews          ReviewQueue
+	promotes         *promoteTable
 }
 
 type edgeRuntime struct {
@@ -187,6 +189,7 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 		protectionPolicy: cfg.Protection.Policy,
 		certs:            certs,
 		clock:            clock,
+		promotes:         newPromoteTable(),
 	}
 	server.edgeRuntime.Store(newEdgeRuntime(cfg.Edge))
 	server.siteRuntimes.Store(siteRuntimes)
@@ -633,6 +636,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.proxyError(w, r, site, reqCtx, "proxy_error", "waf pipeline error", http.StatusInternalServerError, start, err)
 			return
+		}
+		if (result == nil || !result.Detected) && s.promotes.Active(site.ID, s.wallNow()) {
+			if promoted := detectionFromReviewCandidate(reqCtx); promoted != nil {
+				if reqCtx.Metadata == nil {
+					reqCtx.Metadata = map[string]any{}
+				}
+				reqCtx.Metadata["detection"] = promoted
+				s.blockDetection(w, reqCtx, promoted, http.StatusForbidden, start)
+				return
+			}
 		}
 		if result != nil && result.Detected {
 			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results)
@@ -1539,7 +1552,11 @@ func (s *Server) challengeThreatIntel(w http.ResponseWriter, r *http.Request, re
 }
 
 func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, action string, status int, start time.Time, extra *storage.LogEntry) {
-	if s.logSink == nil || reqCtx == nil || reqCtx.Request == nil {
+	if reqCtx == nil || reqCtx.Request == nil {
+		return
+	}
+	if s.logSink == nil {
+		s.enqueueReview(ctx, reqCtx, action)
 		return
 	}
 	s.attachBotRiskMetadata(reqCtx, action)
@@ -1625,9 +1642,11 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		entry.Action = "log"
 	}
 	if isPlainAccessLog(entry) && !s.siteAccessLogEnabled(reqCtx.SiteID) {
+		s.enqueueReview(ctx, reqCtx, action)
 		return
 	}
 	_ = s.logSink.Write(ctx, entry)
+	s.enqueueReview(ctx, reqCtx, action)
 }
 
 // attachBotRiskMetadata writes L1 risk_score/risk_band on every bot-enabled request

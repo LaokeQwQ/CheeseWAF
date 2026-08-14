@@ -70,6 +70,8 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				BudgetExhaustedPolicy: site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
 				PathAllowlist:         cloneStrings(site.WAF.SemanticPolicy.PathAllowlist),
 				ParamAllowlist:        cloneStrings(site.WAF.SemanticPolicy.ParamAllowlist),
+				PromoteSeconds:        site.WAF.SemanticPolicy.PromoteSeconds,
+				AutoAgree:             site.WAF.SemanticPolicy.AutoAgree,
 			},
 			Policy: SiteProtectionPolicy{
 				WebAttack:   site.WAF.ProtectionPolicy.WebAttack,
@@ -98,6 +100,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				TrustedProxyProviders: cloneStringSlicesMap(site.WAF.AccessControl.TrustedProxyProviders),
 			},
 			AccessLogEnabled: cloneBoolPtr(site.WAF.AccessLogEnabled),
+			CustomRules:      siteCustomRulesFromConfig(site.WAF.CustomRules),
 		},
 	}
 }
@@ -165,6 +168,8 @@ func SiteToConfig(site Site) config.SiteConfig {
 				BudgetExhaustedPolicy: site.Advanced.SemanticPolicy.BudgetExhaustedPolicy,
 				PathAllowlist:         cloneStrings(site.Advanced.SemanticPolicy.PathAllowlist),
 				ParamAllowlist:        cloneStrings(site.Advanced.SemanticPolicy.ParamAllowlist),
+				PromoteSeconds:        site.Advanced.SemanticPolicy.PromoteSeconds,
+				AutoAgree:             site.Advanced.SemanticPolicy.AutoAgree,
 			},
 			ProtectionPolicy: config.ProtectionPolicyConfig{
 				WebAttack:   site.Advanced.Policy.WebAttack,
@@ -190,7 +195,8 @@ func SiteToConfig(site Site) config.SiteConfig {
 				HealthyThreshold:   site.Advanced.HealthCheck.HealthyThreshold,
 				UnhealthyThreshold: site.Advanced.HealthCheck.UnhealthyThreshold,
 			},
-			Rewrite: siteRewriteToConfig(site.Advanced.Rewrite),
+			Rewrite:     siteRewriteToConfig(site.Advanced.Rewrite),
+			CustomRules: siteCustomRulesToConfig(site.Advanced.CustomRules),
 			AccessControl: config.SiteAccessControlConfig{
 				AuthEnabled:           site.Advanced.AccessControl.AuthEnabled,
 				WaitingRoom:           site.Advanced.AccessControl.WaitingRoom,
@@ -206,6 +212,40 @@ func SitesToConfig(sites []Site) []config.SiteConfig {
 	out := make([]config.SiteConfig, 0, len(sites))
 	for _, site := range sites {
 		out = append(out, SiteToConfig(site))
+	}
+	return out
+}
+
+func siteCustomRulesFromConfig(rules []config.CustomRuleConfig) []SiteCustomRule {
+	out := make([]SiteCustomRule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, SiteCustomRule{
+			ID:       rule.ID,
+			Name:     rule.Name,
+			Pattern:  rule.Pattern,
+			Location: rule.Location,
+			Action:   rule.Action,
+			Severity: rule.Severity,
+			Enabled:  rule.Enabled,
+			Priority: rule.Priority,
+		})
+	}
+	return out
+}
+
+func siteCustomRulesToConfig(rules []SiteCustomRule) []config.CustomRuleConfig {
+	out := make([]config.CustomRuleConfig, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, config.CustomRuleConfig{
+			ID:       rule.ID,
+			Name:     rule.Name,
+			Pattern:  rule.Pattern,
+			Location: rule.Location,
+			Action:   rule.Action,
+			Severity: rule.Severity,
+			Enabled:  rule.Enabled,
+			Priority: rule.Priority,
+		})
 	}
 	return out
 }

