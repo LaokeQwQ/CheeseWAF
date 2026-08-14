@@ -21,6 +21,12 @@ builds:
     goarch:
       - amd64
       - arm64
+      - loong64
+    ignore:
+      - goos: darwin
+        goarch: loong64
+      - goos: windows
+        goarch: loong64
     ldflags:
       - -s -w
       - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Version={{.Version}}
@@ -52,6 +58,8 @@ archives:
       - web/dist/*.png
       - web/dist/**/*
       - configs/*
+      - src: deploy/systemd/cheesewaf.service
+        dst: systemd/cheesewaf.service
       - README.md
       - README_CN.md
       - LICENSE

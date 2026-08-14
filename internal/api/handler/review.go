@@ -94,7 +94,11 @@ func (h *Handler) DecideReviewItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "review item not found")
 		return
 	}
-	if item.Status != "pending" {
+	if !reviewAllowsDecision(item.Status, decision) {
+		if item.Status == "blocked" {
+			writeError(w, http.StatusConflict, "REVIEW_ALREADY_DECIDED", "blocked items only accept a lasting intercept")
+			return
+		}
 		writeError(w, http.StatusConflict, "REVIEW_ALREADY_DECIDED", "review item is already decided")
 		return
 	}
@@ -363,6 +367,19 @@ func validReviewDecision(decision string) bool {
 	default:
 		return false
 	}
+}
+
+func reviewAllowsDecision(status, decision string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending":
+		return validReviewDecision(decision)
+	case "blocked":
+		switch decision {
+		case "block_payload", "block_uri", "block_ip", "block_fingerprint":
+			return true
+		}
+	}
+	return false
 }
 
 func reviewRuleLocation(source string) string {

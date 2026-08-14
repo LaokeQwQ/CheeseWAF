@@ -1,0 +1,14 @@
+# Repo override: org UI currently includes no paths, so every file is
+# "excluded by none and included by none" and reviews are skipped.
+language: en-US
+reviews:
+  profile: chill
+  high_level_summary: true
+  review_status: true
+  path_filters:
+    - "**"
+    - "!**/*.lock"
+    - "!**/go.sum"
+    - "!**/*.png"
+    - "!**/*.ico"
+    - "!**/*.icns"

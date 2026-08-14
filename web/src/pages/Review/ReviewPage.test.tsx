@@ -74,4 +74,44 @@ describe('ReviewPage', () => {
       expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_fingerprint');
     });
   });
+
+  it('converts a pending item to URL and IP blocks', async () => {
+    renderPage();
+    expect(await screen.findByText('/search?s=eval')).toBeTruthy();
+    fireEvent.click(screen.getByText('review.blockUri'));
+    await waitFor(() => {
+      expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_uri');
+    });
+    fireEvent.click(screen.getByText('review.blockIp'));
+    await waitFor(() => {
+      expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_ip');
+    });
+  });
+
+  it('allows a pending item and can add a whitelist', async () => {
+    renderPage();
+    expect(await screen.findByText('/search?s=eval')).toBeTruthy();
+    fireEvent.click(screen.getByText('review.allow'));
+    await waitFor(() => {
+      expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'allow');
+    });
+    fireEvent.click(screen.getByText('review.allowWhitelist'));
+    await waitFor(() => {
+      expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'allow_whitelist');
+    });
+  });
+
+  it('lets an already-blocked item add a lasting fingerprint block', async () => {
+    apiMocks.fetchReviewItems.mockResolvedValue({
+      items: [{ ...item, status: 'blocked', decision: 'block_now', protection_level: 5 }],
+      total: 1,
+    });
+    renderPage();
+    expect(await screen.findByText('aabbccddeeff0011')).toBeTruthy();
+    fireEvent.click(screen.getByText('review.blockFingerprint'));
+    await waitFor(() => {
+      expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_fingerprint');
+    });
+    expect(screen.queryByText('review.allow')).toBeNull();
+  });
 });

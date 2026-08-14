@@ -122,9 +122,9 @@ func (s *SQLiteStore) DecideReviewItem(ctx context.Context, id string, decision 
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET status=?, decision=?, applied_rule_id=?,
 		decided_by_subject=?, decided_by_name=?, decided_by_role=?, decided_at=?
-		WHERE id=? AND status='pending'`,
+		WHERE id=? AND (status='pending' OR (status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint')))`,
 		reviewStatusForDecision(decision.Decision), decision.Decision, decision.AppliedRuleID,
-		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id)
+		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id, decision.Decision)
 	if err != nil {
 		return nil, err
 	}
