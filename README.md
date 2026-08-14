@@ -37,7 +37,8 @@
 - [Deployment](#deployment)
   - [1. Linux Deployment (Systemd Production)](#1-linux-deployment-systemd-production)
   - [2. Docker Deployment (Docker Compose)](#2-docker-deployment-docker-compose)
-  - [3. Windows Deployment (Portable Zip & NSIS Installer)](#3-windows-deployment-portable-zip--nsis-installer)
+  - [3. Windows Deployment (CLI, Zip, NSIS)](#3-windows-deployment-cli-zip-nsis)
+  - [4. macOS Deployment (DMG)](#4-macos-deployment-dmg)
 - [Quick Start](#quick-start)
 - [Management Interfaces](#management-interfaces)
 - [Configuration Reference](#configuration-reference)
@@ -146,13 +147,27 @@ Recommended for Linux physical servers and virtual machines for direct execution
 
 #### Step 1: Download and Extract Release Archive
 
-Download the release package for your architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
+Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or the matching Actions artifact. Pick the file for your OS and CPU:
+
+| File | Platform |
+| --- | --- |
+| `cheesewaf-*-linux-amd64.tar.gz` | Linux x86_64 |
+| `cheesewaf-*-linux-arm64.tar.gz` | Linux ARM64 |
+| `cheesewaf-*-linux-loong64.tar.gz` | Linux LoongArch64 |
+| `cheesewaf-*-darwin-amd64.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-*-darwin-arm64.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-*-windows-amd64.exe` | Windows x86_64 single-file CLI |
+| `cheesewaf-*-windows-arm64.exe` | Windows ARM64 single-file CLI |
+| `cheesewaf-*-windows-amd64.zip` | Windows x86_64 portable folder |
+| `cheesewaf-*-windows-arm64.zip` | Windows ARM64 portable folder |
 
 ```bash
-# Example for Linux x86_64 (amd64)
+# Linux x86_64 example
 tar -xzf cheesewaf-*-linux-amd64.tar.gz
 cd cheesewaf-*
 ```
+
+Linux ARM64 and LoongArch64 use the same steps with `linux-arm64` or `linux-loong64`.
 
 #### Step 2: Install Executable and Configure Directories
 
@@ -172,28 +187,10 @@ sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/che
 
 #### Step 3: Configure Systemd Service
 
-Create `/etc/systemd/system/cheesewaf.service`:
+Linux archives include `systemd/cheesewaf.service`. Install that file:
 
-```ini
-[Unit]
-Description=CheeseWAF Service
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=cheesewaf
-Group=cheesewaf
-ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
-Restart=always
-RestartSec=3s
-LimitNOFILE=65535
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
 ```
 
 #### Step 4: Start and Verify Service
@@ -213,7 +210,7 @@ Navigate to `http://<SERVER_IP>:9443/setup` to complete initial setup.
 
 ### 2. Docker Deployment (Docker Compose)
 
-Recommended for containerized deployments. The container runs as a non-root user (UID `10001`) with a read-only root filesystem.
+Recommended for containerized deployments. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem.
 
 #### Step 1: Create Compose File
 
@@ -270,31 +267,39 @@ docker compose logs -f cheesewaf
 
 ---
 
-### 3. Windows Deployment (Portable Zip & NSIS Installer)
+### 3. Windows Deployment (CLI, Zip, NSIS)
 
-CheeseWAF provides portable binaries and an NSIS graphical installer for Windows environments:
+Three Windows shapes. The CLI is one `cheesewaf.exe`. The zip adds configs, the Web UI, and the local controller. NSIS is the graphical installer.
 
-#### Option A: Portable CLI Package (Zip)
+#### Option A: Single-file CLI
 
-1. Download `cheesewaf-*-windows-amd64.zip` and extract to a target directory (e.g., `D:\CheeseWAF`).
-2. Run the following in PowerShell:
+1. Download `cheesewaf-*-windows-amd64.exe` or `cheesewaf-*-windows-arm64.exe`.
+2. Run it as `cheesewaf.exe`:
 
 ```powershell
-# Start WAF process
+.\cheesewaf-*-windows-amd64.exe serve --config .\cheesewaf.yaml --data-dir .\data
+.\cheesewaf-*-windows-amd64.exe status
+.\cheesewaf-*-windows-amd64.exe stop
+```
+
+The data-plane binary does not need the installer. The admin UI is in the zip/DMG/tarball (`web/dist` next to the executable).
+
+#### Option B: Portable folder (Zip)
+
+1. Download `cheesewaf-*-windows-amd64.zip` or `cheesewaf-*-windows-arm64.zip` and extract it (for example `D:\CheeseWAF`).
+2. Run:
+
+```powershell
 .\cheesewaf.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
-
-# Check running status
 .\cheesewaf.exe status
-
-# Stop process
 .\cheesewaf.exe stop
 ```
 
-#### Option B: NSIS Graphical Installer
+#### Option C: NSIS graphical installer
 
-1. Run `CheeseWAF-Setup-<version>.exe`.
-2. Follow the setup wizard to complete the installation.
-3. The uninstaller preserves user configuration and databases under `data\` by default.
+1. Run `CheeseWAF-*-windows-amd64-setup.exe` or `CheeseWAF-*-windows-arm64-setup.exe`.
+2. Follow the setup wizard.
+3. Uninstall keeps `data\` by default.
 
 #### Local Service Controller (`cheesewaf-gui`)
 
@@ -303,6 +308,16 @@ Windows releases bundle a lightweight local GUI controller bound strictly to loo
 - Inspect process PID and operational status.
 - Open the Web management console or configuration directory directly.
 - Configure user-login autostart via the Windows Registry.
+
+---
+
+### 4. macOS Deployment (DMG)
+
+1. Download `cheesewaf-*-darwin-arm64.dmg` (Apple Silicon) or `cheesewaf-*-darwin-amd64.dmg` (Intel).
+2. Open the disk image and drag **CheeseWAF** into **Applications**.
+3. Open CheeseWAF from Launchpad or Applications. It starts the local controller (start / stop / open the Web console).
+
+Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*.tar.gz` if you only want the CLI.
 
 ---
 

@@ -123,6 +123,30 @@ grep -Fq 'web/dist/index.html' .goreleaser.yaml ||
   fail "GoReleaser archive must include the UI entrypoint"
 grep -Fq 'cp -R web/dist "${package_root}/web/dist"' scripts/ci/package-release.sh ||
   fail "branch release packages must distribute UI under web/dist"
+grep -Fq 'linux/loong64' scripts/ci/package-release.sh ||
+  fail "branch release packages must include linux/loong64"
+grep -Fq 'systemd/cheesewaf.service' scripts/ci/package-release.sh ||
+  fail "Linux packages must include the systemd unit"
+grep -Fq 'zip -qr' scripts/ci/package-release.sh ||
+  fail "Windows channel packages must be zip archives"
+grep -Fq 'windows-${goarch}.exe' scripts/ci/package-release.sh ||
+  fail "Windows channel packages must include a single-file CLI exe"
+grep -Fq 'hdiutil create' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS packaging must create UDZO disk images"
+grep -Fq 'CheeseWAF.app' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS DMG must ship a CheeseWAF.app bundle"
+grep -Fq '/Applications' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS DMG must include an Applications drop target"
+grep -Fq 'package-macos-dmg.sh' .github/workflows/ci.yml ||
+  fail "CI must build macOS DMG images on a macOS runner"
+grep -Fq 'Alpha-' scripts/ci/package-release.sh ||
+  fail "pre-release tags must use the Alpha- prefix"
+grep -Fq 'scripts/ci/publish-prerelease.sh' .github/workflows/ci.yml ||
+  fail "CI must publish Alpha- GitHub pre-releases"
+grep -Fq 'linux/amd64,linux/arm64' scripts/ci/docker-build.sh ||
+  fail "container CI must build linux/amd64 and linux/arm64"
+grep -Fq 'dst: systemd/cheesewaf.service' .goreleaser.yaml ||
+  fail "GoReleaser archive must include the systemd unit"
 grep -Fq 'cp -R "${repo_root}/web/scripts" "${work_web}/scripts"' scripts/ci/build-web.sh ||
   fail "isolated web build must include build verification scripts"
 grep -Fq 'scripts/ci/generate-release-metadata.sh' .goreleaser.yaml ||
@@ -140,5 +164,7 @@ done
 if grep -Fq 'format_overrides:' .goreleaser.yaml; then
   fail "all release targets must use the same tar.gz archive format"
 fi
+
+bash scripts/ci/generate-release-metadata_test.sh
 
 echo "CI static regression checks passed."
