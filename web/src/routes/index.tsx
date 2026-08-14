@@ -24,6 +24,7 @@ const LoginPage = lazy(() => import('../pages/Login/LoginPage'));
 const MonitorPage = lazy(() => import('../pages/Monitor/MonitorPage'));
 const OperationsPage = lazy(() => import('../pages/Operations/OperationsPage'));
 const ProtectionPage = lazy(() => import('../pages/Protection/ProtectionPage'));
+const ReviewPage = lazy(() => import('../pages/Review/ReviewPage'));
 const RulesPage = lazy(() => import('../pages/Rules/RulesPage'));
 const SetupPage = lazy(() => import('../pages/Setup/SetupPage'));
 const SiteDetailPage = lazy(() => import('../pages/Sites/SiteDetailPage'));
@@ -136,6 +137,7 @@ export default function AppRoutes() {
           <Route path="sites/:id" element={<Page><LazyPage><SiteDetailPage /></LazyPage></Page>} />
           <Route path="ssl" element={<Page><LazyPage><SSLPage /></LazyPage></Page>} />
           <Route path="rules" element={<Page><LazyPage><RulesPage /></LazyPage></Page>} />
+          <Route path="review" element={<Page><LazyPage><ReviewPage /></LazyPage></Page>} />
           <Route path="logs" element={<Page><LazyPage><LogsPage /></LazyPage></Page>} />
           <Route path="logs/:traceId" element={<Page><LazyPage><LogDetailPage /></LazyPage></Page>} />
           <Route path="ip" element={<Page><LazyPage><IPManagePage /></LazyPage></Page>} />

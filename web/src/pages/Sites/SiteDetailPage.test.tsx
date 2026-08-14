@@ -155,7 +155,7 @@ describe('SiteDetailPage save success', () => {
     await screen.findByDisplayValue('initial-site');
     fireEvent.click(screen.getByText('sites.stepProtection'));
     expect(screen.getByText('sites.paranoiaLevel')).toBeTruthy();
-    expect(screen.getByText('sites.paranoiaHigh')).toBeTruthy();
+    expect(screen.getByText('sites.paranoiaDefault')).toBeTruthy();
   });
 });
 

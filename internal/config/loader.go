@@ -123,7 +123,7 @@ func Default() Config {
 				WAF: WAFConfig{
 					Enabled:       true,
 					Mode:          "block",
-					ParanoiaLevel: 2,
+					ParanoiaLevel: 3,
 					SemanticEngines: SemanticEngineSwitches{
 						SQL:   true,
 						XSS:   true,
