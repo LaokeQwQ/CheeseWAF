@@ -34,7 +34,7 @@ YAML 省略 `paranoia_level` 时按 **3** 处理。写明 `0` 仍只记不拦。
 
 模型用站点已有的 AI 配置，不写死供应商。问模型不挡住这次请求。
 
-事后处理走 WAF：封同类内容、同类 URL、IP 或客户端指纹。不给对方 CMS 删稿。
+事后处理走 WAF：封同类内容、同类 URL、IP 或客户端指纹。
 
 客户端指纹是 `User-Agent` 加 `Accept-Language` 的 SHA-256 前 8 字节（16 位十六进制）。不是 JA3。
 
@@ -59,7 +59,6 @@ YAML 省略 `paranoia_level` 时按 **3** 处理。写明 `0` 仍只记不拦。
 
 ## 明确不做
 
-- 不给对方应用做删稿对接
 - 不用大模型当主检测器
 - 不为截断样本（`eval(impl`、`;ls`、裸 `cmd.exe` 路径）加规则刷召回
 - 不平行发展独立 `WebshellDetector` / `RCEDetector`；规则只改 Analyzer

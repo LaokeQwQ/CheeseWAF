@@ -63,7 +63,7 @@ Most WAFs stop at a rule hit. CheeseWAF treats that hit as the start of an autop
 4. Anything suspicious still goes to the review queue. The site’s own model writes a verdict in the background. It never stalls the request.
 5. An operator — or auto-agree, when you turn it on — turns that verdict into a lasting payload, URL, IP, or fingerprint rule.
 
-You bring the model endpoint. CheeseWAF does not hard-code a vendor. The model is not a CMS takedown bot. Lasting action stays inside the WAF.
+You bring the model endpoint. CheeseWAF does not hard-code a vendor.
 
 ## WEB + Control Panel + CLI
 
