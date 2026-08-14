@@ -4,6 +4,8 @@
 
 <h1 align="center">CheeseWAF</h1>
 
+<p align="center"><em>奶酪有洞，AI 来守。</em></p>
+
 <p align="center">
   <strong>ALAP</strong> · AI Large-Language-Model Auto Pilot<br>
   由大语言模型驱动的新一代自托管 WAF。<br>
@@ -12,7 +14,10 @@
 
 <p align="center">
   <a href="README.md">English</a> ·
-  <a href="README_CN.md">简体中文</a> ·
+  <a href="README_CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="LICENSE">Apache-2.0</a>
 </p>
 
