@@ -505,7 +505,7 @@ const enUS = {
   },
   review: {
     title: 'Review',
-    subtitle: 'Suspicious requests. Unblocked ones can become a lasting block or an allow. Level-5 requests that were already blocked still appear so you can read the model verdict.',
+    subtitle: 'Suspicious requests. Unblocked ones can become a lasting block or an allow. Level-5 requests that were already blocked still appear, and you can add a lasting payload, URL, IP, or fingerprint block.',
     site: 'Site',
     category: 'Category',
     status: 'Status',

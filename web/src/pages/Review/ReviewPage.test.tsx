@@ -74,4 +74,18 @@ describe('ReviewPage', () => {
       expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_fingerprint');
     });
   });
+
+  it('lets an already-blocked item add a lasting fingerprint block', async () => {
+    apiMocks.fetchReviewItems.mockResolvedValue({
+      items: [{ ...item, status: 'blocked', decision: 'block_now', protection_level: 5 }],
+      total: 1,
+    });
+    renderPage();
+    expect(await screen.findByText('aabbccddeeff0011')).toBeTruthy();
+    fireEvent.click(screen.getByText('review.blockFingerprint'));
+    await waitFor(() => {
+      expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_fingerprint');
+    });
+    expect(screen.queryByText('review.allow')).toBeNull();
+  });
 });

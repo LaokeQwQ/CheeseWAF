@@ -152,6 +152,7 @@ function ReviewCard({
   const { t } = useTranslation();
   const verdict = parseReviewVerdict(item.ai_verdict);
   const pending = item.status === 'pending';
+  const canLastingBlock = pending || item.status === 'blocked';
   return (
     <article className="rounded-lg border border-border p-4 mb-3 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -180,7 +181,7 @@ function ReviewCard({
           <div><span className="text-muted-foreground">{t('review.appliedRule')}: </span><code>{item.applied_rule_id}</code></div>
         )}
       </div>
-      {pending && (
+      {canLastingBlock && (
         <div className="flex flex-wrap gap-2">
           <Button size="sm" disabled={busy} onClick={() => onDecide('block_payload')}>{t('review.blockPayload')}</Button>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => onDecide('block_uri')}>{t('review.blockUri')}</Button>
@@ -188,10 +189,14 @@ function ReviewCard({
           <Button size="sm" variant="outline" disabled={busy || !item.fingerprint} onClick={() => onDecide('block_fingerprint')}>
             {t('review.blockFingerprint')}
           </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDecide('allow')}>{t('review.allow')}</Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDecide('allow_whitelist')}>
-            {t('review.allowWhitelist')}
-          </Button>
+          {pending && (
+            <>
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDecide('allow')}>{t('review.allow')}</Button>
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDecide('allow_whitelist')}>
+                {t('review.allowWhitelist')}
+              </Button>
+            </>
+          )}
         </div>
       )}
     </article>
