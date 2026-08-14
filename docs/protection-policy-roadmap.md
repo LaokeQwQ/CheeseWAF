@@ -38,6 +38,18 @@ YAML 省略 `paranoia_level` 时按 **3** 处理。写明 `0` 仍只记不拦。
 
 客户端指纹是 `User-Agent` 加 `Accept-Language` 的 SHA-256 前 8 字节（16 位十六进制）。不是 JA3。
 
+### 检测入口
+
+当场判定只走 Analyzer。站点配置的模型只在请求结束后异步写结论，不参与这次请求的拦放。
+
+语义规则只维护在 Analyzer。
+
+### 评测
+
+合入检测规则，以完整形状语料和 mined 散文上的结果为准。
+
+cybersec 截断语料只出报告，不作为加规则或合入的条件。例如 `eval(impl`、`;ls`、裸 `cmd.exe` 路径。
+
 ---
 
 ## 一期（已实现）
@@ -57,18 +69,8 @@ YAML 省略 `paranoia_level` 时按 **3** 处理。写明 `0` 仍只记不拦。
 
 ---
 
-## 明确不做
-
-- 不用大模型当主检测器
-- 不为截断样本（`eval(impl`、`;ls`、裸 `cmd.exe` 路径）加规则刷召回
-- 不平行发展独立 `WebshellDetector` / `RCEDetector`；规则只改 Analyzer
-
-评测：完整形状语料和 mined 散文当合并条件。cybersec 截断语料只出报告。
-
----
-
 ## 和代码的关系
 
-- 线上只挂 Analyzer，不要再往独立检测器加逻辑
-- 待确认在 `review_items`，不要和助手聊天记录混在一起
-- 一键转拦截写入站点 `custom_rules` 或 `fingerprint_deny`，不是未接入热路径的 `storage.Rule` 表
+- 线上检测入口是 Analyzer
+- 待确认写在 `review_items`，和助手聊天记录分开
+- 一键转拦截写入站点 `custom_rules` 或 `fingerprint_deny`。`storage.Rule` 表不在热路径上

@@ -268,7 +268,7 @@ Integration path: `feature/*` → `dev` → `canary` → `master`. Merge only af
 
 | Document | Topic |
 | --- | --- |
-| [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | Levels 0–5, review queue, what we will not do |
+| [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | Levels 0–5, review queue, scope and evaluation |
 | [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | How those levels are wired |
 | [docs/performance-optimization.md](docs/performance-optimization.md) | Runtime and analyzer notes |
 

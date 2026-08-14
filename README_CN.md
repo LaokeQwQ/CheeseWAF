@@ -274,7 +274,7 @@ go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | 0～5 档、待确认、不做的事 |
+| [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | 0～5 档、待确认、范围与评测 |
 | [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | 档位怎么接到代码 |
 | [docs/performance-optimization.md](docs/performance-optimization.md) | 运行时和分析器 |
 
