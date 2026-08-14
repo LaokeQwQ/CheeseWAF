@@ -176,3 +176,60 @@ func TestReviewBlockFingerprintAddsDeny(t *testing.T) {
 		t.Fatalf("expected fingerprint deny, got %+v", updated.Advanced.SemanticPolicy)
 	}
 }
+
+func TestReviewBlockedItemStillAcceptsLastingIntercept(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	item := &storage.ReviewItem{
+		SiteID:          site.ID,
+		URI:             "/search",
+		Category:        "webshell",
+		Payload:         "eval($_GET[cmd])",
+		Fingerprint:     "aabbccddeeff0011",
+		ProtectionLevel: 5,
+		Status:          "blocked",
+		Decision:        "block_now",
+	}
+	if err := store.CreateReviewItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Post("/review/{id}/decide", handler.DecideReviewItem)
+	decide := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/review/"+item.ID+"/decide", bytes.NewReader([]byte(`{"decision":"block_fingerprint"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserContextKey, &middleware.Claims{Username: "admin", Role: "admin"}))
+	router.ServeHTTP(decide, req)
+	if decide.Code != http.StatusOK {
+		t.Fatalf("blocked item must still accept fingerprint intercept: %d %s", decide.Code, decide.Body.String())
+	}
+	updated, err := store.GetSite(context.Background(), site.ID)
+	if err != nil || updated == nil {
+		t.Fatal(err)
+	}
+	if len(updated.Advanced.SemanticPolicy.FingerprintDeny) != 1 || updated.Advanced.SemanticPolicy.FingerprintDeny[0] != "aabbccddeeff0011" {
+		t.Fatalf("expected fingerprint deny, got %+v", updated.Advanced.SemanticPolicy)
+	}
+}
+
+func TestReviewBlockedItemRejectsAllow(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	item := &storage.ReviewItem{
+		SiteID:   site.ID,
+		URI:      "/search",
+		Category: "webshell",
+		Status:   "blocked",
+		Decision: "block_now",
+	}
+	if err := store.CreateReviewItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Post("/review/{id}/decide", handler.DecideReviewItem)
+	decide := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/review/"+item.ID+"/decide", bytes.NewReader([]byte(`{"decision":"allow"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(decide, req)
+	if decide.Code != http.StatusConflict {
+		t.Fatalf("blocked item must not accept allow, got %d %s", decide.Code, decide.Body.String())
+	}
+}
