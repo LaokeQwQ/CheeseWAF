@@ -495,6 +495,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.block(w, reqCtx, "ip_access", message, http.StatusForbidden, start)
 		return
 	}
+	fingerprint := clientFingerprint(r)
+	if fingerprint != "" {
+		if reqCtx.Metadata == nil {
+			reqCtx.Metadata = map[string]any{}
+		}
+		reqCtx.Metadata["client_fingerprint"] = fingerprint
+		if fingerprintDenied(site.WAF.SemanticPolicy.FingerprintDeny, fingerprint) {
+			s.block(w, reqCtx, "fingerprint", "client fingerprint is blocked", http.StatusForbidden, start)
+			return
+		}
+	}
 	if s.geoip.Blocked(reqCtx.ClientIP) && !ipAllowed {
 		s.block(w, reqCtx, "geoip", "GeoIP country is blocked", http.StatusForbidden, start)
 		return
@@ -1633,6 +1644,14 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 			if decision, ok := reqCtx.Metadata["api_security_policy_decision"].(apiSecurityPolicyDecision); ok && decision.Action == engine.ActionLog.String() && entry.Action == "pass" {
 				entry.Action = "log"
 			}
+		}
+	}
+	if skip, ok := reqCtx.Metadata["semantic_skipped"].(string); ok && strings.TrimSpace(skip) != "" && entry.Message == "" && allowlistSkipWorthLogging(reqCtx.Request) {
+		entry.Category = "semantic"
+		entry.DetectorID = "semantic.analyzer"
+		entry.Message = "allowlist: " + skip
+		if entry.Action == "pass" {
+			entry.Action = "log"
 		}
 	}
 	if finding, ok := reqCtx.Metadata["response_finding"].(*response.Finding); ok && finding != nil {

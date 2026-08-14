@@ -48,8 +48,9 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate sqlite columns: %w", err)
 	}
 	if err := s.ensureColumns(ctx, "review_items", map[string]string{
-		"source":     `ALTER TABLE review_items ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
-		"param_name": `ALTER TABLE review_items ADD COLUMN param_name TEXT NOT NULL DEFAULT ''`,
+		"source":      `ALTER TABLE review_items ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
+		"param_name":  `ALTER TABLE review_items ADD COLUMN param_name TEXT NOT NULL DEFAULT ''`,
+		"fingerprint": `ALTER TABLE review_items ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`,
 	}); err != nil {
 		return fmt.Errorf("migrate review columns: %w", err)
 	}

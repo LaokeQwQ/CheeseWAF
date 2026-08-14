@@ -142,3 +142,42 @@ func TestServerPromotesLevel4EmbeddedToTemporaryBlock(t *testing.T) {
 		t.Fatalf("blocked promote must not enqueue again, got %#v", items)
 	}
 }
+
+func TestServerEnqueuesLevel5BlockedForModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Sites[0].WAF.ParanoiaLevel = 5
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+
+	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewAnalyzer("block", 5)), &captureSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := &memoryReviewQueue{}
+	server.SetReviewQueue(queue)
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/search?s="+url.QueryEscape("eval($_GET['cmd'])"), nil)
+	req.Header.Set("User-Agent", "ReviewAgent/1.0")
+	req.Header.Set("Accept-Language", "zh-CN")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected block, code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	items := queue.snapshot()
+	if len(items) != 1 {
+		t.Fatalf("level 5 block must still enqueue for the model, got %#v", items)
+	}
+	if items[0].Status != "blocked" || items[0].Decision != "block_now" || items[0].ProtectionLevel != 5 {
+		t.Fatalf("unexpected level 5 review item: %+v", items[0])
+	}
+	if items[0].Fingerprint == "" {
+		t.Fatalf("level 5 review item must record fingerprint: %+v", items[0])
+	}
+}

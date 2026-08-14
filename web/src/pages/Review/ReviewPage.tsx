@@ -167,6 +167,9 @@ function ReviewCard({
         <div><span className="text-muted-foreground">{t('review.path')}: </span><code>{item.uri || '-'}</code></div>
         <div><span className="text-muted-foreground">{t('review.payload')}: </span><code className="break-all">{item.payload || '-'}</code></div>
         <div><span className="text-muted-foreground">{t('review.source')}: </span>{item.client_ip || '-'} {item.param_name ? `· ${item.param_name}` : ''}</div>
+        {item.fingerprint && (
+          <div><span className="text-muted-foreground">{t('review.fingerprint')}: </span><code>{item.fingerprint}</code></div>
+        )}
         {verdict.summary && (
           <div><span className="text-muted-foreground">{t('review.modelVerdict')}: </span>{verdict.summary}</div>
         )}
@@ -182,6 +185,9 @@ function ReviewCard({
           <Button size="sm" disabled={busy} onClick={() => onDecide('block_payload')}>{t('review.blockPayload')}</Button>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => onDecide('block_uri')}>{t('review.blockUri')}</Button>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => onDecide('block_ip')}>{t('review.blockIp')}</Button>
+          <Button size="sm" variant="outline" disabled={busy || !item.fingerprint} onClick={() => onDecide('block_fingerprint')}>
+            {t('review.blockFingerprint')}
+          </Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDecide('allow')}>{t('review.allow')}</Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDecide('allow_whitelist')}>
             {t('review.allowWhitelist')}
