@@ -32,10 +32,12 @@ describe('reviewLogic', () => {
       payload: 'eval($_GET[cmd])',
       protection_level: 3,
       shape: 'embedded',
+      fingerprint: 'aabbccddeeff0011',
       status: 'pending',
       created_at: '2026-08-14T00:00:00Z',
     };
     expect(reviewSearchMatch(item, 'eval')).toBe(true);
+    expect(reviewSearchMatch(item, 'aabbcc')).toBe(true);
     expect(reviewSearchMatch(item, 'nope')).toBe(false);
   });
 });

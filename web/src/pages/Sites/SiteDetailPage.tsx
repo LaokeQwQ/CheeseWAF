@@ -657,6 +657,15 @@ export default function SiteDetailPage() {
                   />
                   <em>{t('sites.autoAgreeHint')}</em>
                 </label>
+                <label className="wide-field">
+                  <span>{t('sites.fingerprintDeny')}</span>
+                  <Input
+                    value={asCSV(site.advanced.semantic_policy?.fingerprint_deny || [])}
+                    placeholder="a1b2c3d4e5f60718"
+                    onChange={(e) => updateAdvanced('semantic_policy', { fingerprint_deny: splitList(e.target.value) })}
+                  />
+                  <em>{t('sites.fingerprintDenyHint')}</em>
+                </label>
               </div>
             </section>
 

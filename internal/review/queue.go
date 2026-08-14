@@ -24,12 +24,12 @@ func (q *Queue) Enqueue(ctx context.Context, item *storage.ReviewItem) {
 	if q == nil || q.Store == nil || item == nil {
 		return
 	}
-	pending, err := q.Store.HasPendingReview(ctx, item.SiteID, item.Category, item.Payload, item.URI)
+	exists, err := q.Store.HasSimilarReview(ctx, item.SiteID, item.Category, item.Payload, item.URI)
 	if err != nil {
 		log.Printf("review pending check failed: %v", err)
 		return
 	}
-	if pending {
+	if exists {
 		return
 	}
 	if err := q.Store.CreateReviewItem(ctx, item); err != nil {

@@ -62,6 +62,7 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     param_allowlist: [],
     promote_seconds: 0,
     auto_agree: false,
+    fingerprint_deny: [],
   },
   policy: {
     web_attack: '',
@@ -133,6 +134,7 @@ export function normalizeSite(input?: Partial<Site>): Site {
         param_allowlist: asArray(advanced.semantic_policy?.param_allowlist),
         promote_seconds: normalizePromoteSeconds(advanced.semantic_policy?.promote_seconds),
         auto_agree: Boolean(advanced.semantic_policy?.auto_agree),
+        fingerprint_deny: asArray(advanced.semantic_policy?.fingerprint_deny),
       },
       policy: { ...defaultSiteAdvanced.policy, ...advanced.policy },
       response: {

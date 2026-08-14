@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS review_items (
   shape TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT '',
   param_name TEXT NOT NULL DEFAULT '',
+  fingerprint TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending',
   ai_verdict TEXT NOT NULL DEFAULT '',
   decided_by_subject TEXT NOT NULL DEFAULT '',
@@ -108,4 +109,9 @@ CREATE TABLE IF NOT EXISTS review_items (
 );
 CREATE INDEX IF NOT EXISTS idx_review_items_site_status ON review_items(site_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_review_items_category_time ON review_items(category, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS site_promotes (
+  site_id TEXT PRIMARY KEY,
+  until_at TEXT NOT NULL
+);
 `

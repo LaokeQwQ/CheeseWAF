@@ -94,6 +94,37 @@ func TestReviewItemPendingDedupAndAIVerdict(t *testing.T) {
 	}
 }
 
+func TestReviewItemFingerprintPersists(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	item := &ReviewItem{
+		SiteID:      "site-a",
+		URI:         "/search",
+		Category:    "webshell",
+		Payload:     "eval($_GET[cmd])",
+		Fingerprint: "aabbccddeeff0011",
+		Status:      "pending",
+	}
+	if err := store.CreateReviewItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetReviewItem(ctx, item.ID)
+	if err != nil || got == nil || got.Fingerprint != "aabbccddeeff0011" {
+		t.Fatalf("fingerprint persist: %+v err=%v", got, err)
+	}
+	similar, err := store.HasSimilarReview(ctx, "site-a", "webshell", "eval($_GET[cmd])", "/search")
+	if err != nil || !similar {
+		t.Fatalf("expected similar review, similar=%v err=%v", similar, err)
+	}
+}
+
 func TestSiteParanoiaLevelPersists(t *testing.T) {
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
 	if err != nil {

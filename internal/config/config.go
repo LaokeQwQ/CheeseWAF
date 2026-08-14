@@ -410,6 +410,25 @@ func EffectiveParanoiaLevel(level int) int {
 	return level
 }
 
+// UnmarshalYAML treats a missing paranoia_level as 3. An explicit 0 stays 0.
+func (w *WAFConfig) UnmarshalYAML(value *yaml.Node) error {
+	type raw WAFConfig
+	var decoded raw
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	*w = WAFConfig(decoded)
+	if value != nil && value.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			if value.Content[i].Value == "paranoia_level" {
+				return nil
+			}
+		}
+	}
+	w.ParanoiaLevel = DefaultParanoiaLevel
+	return nil
+}
+
 // SemanticPolicyConfig holds commercial operational knobs for the staged analyzer.
 // BudgetExhaustedPolicy defaults to "auto" (follow web_attack protection level).
 type SemanticPolicyConfig struct {
@@ -423,6 +442,8 @@ type SemanticPolicyConfig struct {
 	// AutoAgree applies a long-lived payload block when the model verdict
 	// is high-risk. Off means the pending item waits for an operator.
 	AutoAgree bool `yaml:"auto_agree" json:"auto_agree"`
+	// FingerprintDeny blocks requests whose client fingerprint matches.
+	FingerprintDeny []string `yaml:"fingerprint_deny" json:"fingerprint_deny"`
 }
 
 type SemanticEngineSwitches struct {
