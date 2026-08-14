@@ -21,6 +21,13 @@
 
 整支 review 后修了 JWT 空 kid 通配。未改：默认超载仍观察、不把 XSS/RCE 塞进隔离提取。
 
+## 2026-08-15 注释 / 语义类别 / i18n
+
+- 源码注释里没有 Claude / Grok / Gemini / Copilot 残留；清掉了 `ListForLLM` 注释里的 OpenAI 协议名，以及测试名里的 `kimi_i18n`。
+- 控制台类别展示补了 `xxe`、`protocol_enforcement`、`ip_access`、`fingerprint`、`api_security`、`request_too_large`。未知类别不再误显示成「自定义规则」。
+- 验证码资源配置写入改用请求的 `Accept-Language`，不再写死 `zh-CN`。
+- 无请求上下文的 `persistConfig` / `commitConfigMutation` 仍用默认语言（`zh-CN`），助手工具写配置同理。
+
 ---
 
 # Progress: pure shadcn / zero Arco

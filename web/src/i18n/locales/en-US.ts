@@ -77,6 +77,12 @@ const enUS = {
     xss: 'XSS',
     webshell: 'Web shell',
     log4shell: 'Log4j injection',
+    xxe: 'XXE',
+    protocolEnforcement: 'Protocol Violation',
+    ipAccess: 'IP Access',
+    fingerprint: 'Client Fingerprint',
+    apiSecurity: 'API Security',
+    requestTooLarge: 'Request Too Large',
   },
   securitySeverity: {
     info: 'Info',
