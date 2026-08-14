@@ -8,8 +8,8 @@
 
 <p align="center">
   <strong>ALAP</strong> · AI Large-Language-Model Auto Pilot<br>
-  A next-generation, self-hosted WAF driven by a large language model.<br>
-  WEB + Control Panel + CLI. Your origin stays yours.
+  Self-hosted WAF. WEB, Control Panel, and CLI in one binary.<br>
+  Your origin stays yours.
 </p>
 
 <p align="center">
@@ -38,11 +38,11 @@
   <img src="https://img.shields.io/github/languages/count/LaokeQwQ/CheeseWAF?style=flat-square" alt="Languages">
 </p>
 
-> Pre-release. CheeseWAF is an **ALAP** (AI Large-Language-Model Auto Pilot) WAF: the data plane decides in microseconds, then a site-configured model pilots review, auto-agree, and lasting rules. Config and APIs can still change.
+> Pre-release. Configuration and APIs may change.
 
 ## Menu
 
-- [Why ALAP](#why-alap)
+- [ALAP](#alap)
 - [WEB + Control Panel + CLI](#web--control-panel--cli)
 - [Traffic path](#traffic-path)
 - [Protection levels](#protection-levels)
@@ -53,33 +53,29 @@
 - [Documentation](#documentation)
 - [License](#license)
 
-## Why ALAP
+## ALAP
 
-Most WAFs stop at a rule hit. CheeseWAF treats that hit as the start of an autopilot loop.
+**ALAP** is **AI Large-Language-Model Auto Pilot**.
 
-1. A staged semantic engine reads **one decoded field**, not the whole HTTP message.
-2. Isolated gadgets (almost only attack bytes, thin wrappers like `@`, trailing `;`, `/{${...}}`) can block from level 2.
-3. The same bytes inside an article pass at levels 2–4. Only level 5 blocks them on the spot.
-4. Anything suspicious still goes to the review queue. The site’s own model writes a verdict in the background. It never stalls the request.
-5. An operator — or auto-agree, when you turn it on — turns that verdict into a lasting payload, URL, IP, or fingerprint rule.
+The in-process semantic analyzer makes the inline block-or-pass decision. The site supplies the chat endpoint; no vendor is hard-coded. The model writes a review verdict after the response has already been sent, and does not change that request’s decision. If auto-agree is on and the verdict is `high` or `critical`, the verdict can become a lasting payload, URL, IP, or fingerprint rule.
 
-You bring the model endpoint. CheeseWAF does not hard-code a vendor.
+Field scope, isolation, and levels are in [Protection levels](#protection-levels).
 
 ## WEB + Control Panel + CLI
 
-One admin API. Three doors in.
+One admin API. Three entry points.
 
-| Surface | What you get |
+| Surface | Scope |
 | --- | --- |
-| **WEB** | Browser UI. Desktop and phone share the same app. |
-| **Control Panel** | Sites, rules, review, logs, maps, cluster. Day-to-day ops. |
-| **CLI** | `waf-cli` on the release binary (`./waf-cli` → `./cheesewaf cli`) |
+| **WEB** | Browser UI. Desktop and mobile share the same app. |
+| **Control Panel** | Sites, rules, review, logs, maps, cluster. |
+| **CLI** | `waf-cli` on the release binary, equivalent to `cheesewaf cli`. |
 
 All three share RBAC, revocable sessions, and the audit log.
 
 ## Traffic path
 
-Every request walks this path. Dashed lines are ALAP: they run after the response is already on its way.
+Each request follows this path. Dashed lines run after the response has already been sent.
 
 ```mermaid
 flowchart TB
@@ -115,11 +111,17 @@ Default listeners after a local start:
 
 Site field: `waf.paranoia_level`. New sites default to **3**. An omitted YAML value is 3. An explicit `0` stays record-only.
 
-| Level | Isolated gadget | Embedded in prose |
+The analyzer reads **one decoded field**, not the whole HTTP message. Path and parameter names remain visible.
+
+**Isolated:** the value is almost only attack bytes. Thin wrappers are allowed: `@`, a trailing `;`, `/{${...}}`.
+
+**Embedded:** the same bytes appear inside an article, a long description, or other ordinary text.
+
+| Level | Isolated | Embedded |
 | --- | --- | --- |
 | 0–1 | record only | record only |
-| 2–4 | block | pass, ask the model, enqueue review |
-| 5 | block | block, still ask the model |
+| 2–4 | block | pass, enqueue review, ask the model asynchronously |
+| 5 | block | block, still enqueue review and ask the model |
 
 Level 4 can briefly promote the site to level 5 after an embedded hit (`promote_seconds`). That window lives in SQLite and survives restart.
 
@@ -269,7 +271,7 @@ Integration path: `feature/*` → `dev` → `canary` → `master`. Merge only af
 | Document | Topic |
 | --- | --- |
 | [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | Levels 0–5, review queue, scope and evaluation |
-| [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | How those levels are wired |
+| [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | How levels map onto code |
 | [docs/performance-optimization.md](docs/performance-optimization.md) | Runtime and analyzer notes |
 
 ## License

@@ -1,6 +1,6 @@
 # 防护等级 0～5
 
-现行口径见 [protection-policy-roadmap.md](protection-policy-roadmap.md)。本文说明仓库里怎么接。
+现行口径见 [protection-policy-roadmap.md](protection-policy-roadmap.md)。本文记录配置字段与代码入口。
 
 2026-08-09 旧文按「0～4 + 置信度门槛」写，已经作废。现在按**形状 + 档位**决定拦不拦。
 
@@ -19,14 +19,14 @@
 - `internal/cli/service.go`：按站点创建 Analyzer
 - 站点页：`paranoia_level` 下拉
 
-## 拦不拦
+## 当场判定
 
 `Analyzer.blockableHit`：
 
-- 0～1：永不拦
+- 0～1：不拦
 - 2～5：完整形状（isolated）可拦
 - 夹杂（embedded）只在 5 拦
-- 2～5 共用同一证据门槛（语法 + 语义）；形状已经决定夹杂能不能拦
+- 2～5 共用同一证据门槛（语法 + 语义）；形状决定夹杂是否可拦
 
 ## 待确认
 

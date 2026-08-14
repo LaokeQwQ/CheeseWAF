@@ -7,7 +7,8 @@
 <p align="center"><em>奶酪有洞，AI 来控。</em></p>
 
 <p align="center">
-  自托管 Web 应用防火墙。一个程序，带 WEB、控制面板和 CLI。
+  <strong>ALAP</strong> · AI Large-Language-Model Auto Pilot（大语言模型自动驾驶）<br>
+  自托管 Web 应用防火墙。一个程序提供 WEB、控制面板和 CLI。
 </p>
 
 <p align="center">
@@ -36,11 +37,11 @@
   <img src="https://img.shields.io/github/languages/count/LaokeQwQ/CheeseWAF?style=flat-square" alt="Languages">
 </p>
 
-> 项目还没正式对外。配置和接口以后可能改。
+> 尚未正式发布。配置和接口可能变更。
 
 ## Menu
 
-- [什么是 ALAP](#什么是-alap)
+- [ALAP](#alap)
 - [WEB + 控制面板 + CLI](#web--控制面板--cli)
 - [流量路径](#流量路径)
 - [防护等级](#防护等级)
@@ -51,40 +52,25 @@
 - [文档](#文档)
 - [许可证](#许可证)
 
-## 什么是 ALAP
+## ALAP
 
-CheeseWAF 把自己叫 **ALAP** 型 WAF。
+**ALAP** 是 **AI Large-Language-Model Auto Pilot** 的缩写，中文为「大语言模型自动驾驶」。
 
-**ALAP** 是 **AI Large-Language-Model Auto Pilot** 的缩写，中文是「大语言模型自动驾驶」。
+当场判定由进程内语义分析器完成。站点自行配置对话接口，文档不指定供应商。模型只在请求结束后异步写入待确认结论，不参与这次请求的拦放。打开自动同意，且模型判定为 high 或 critical 时，结论可写成长期拦截规则。
 
-| 部分 | 原文 | 意思 |
-| --- | --- | --- |
-| AI Large-Language-Model | 大语言模型 | 你在站点里配置的对话接口 |
-| Auto Pilot | 自动驾驶 | 后台写结论，并可按开关自动转成长期规则 |
-
-请求先走语义引擎，当场决定拦还是放。模型在后面看待确认，不挡住这次访问。接口地址你自己填，文档里不指定哪家。
-
-### 为什么要这样
-
-只靠规则命中，夹在文章里的同样字节很容易误杀。所以 CheeseWAF 先看形状，再决定要不要问模型。
-
-1. 引擎看的是单个参数解码后的值，不是整段 HTTP。
-2. 字段里几乎只有攻击内容（完整形状）时，2 档及以上会拦。允许很薄的包装，比如 `@`、末尾 `;`、`/{${...}}`。
-3. 同样内容夹在正常文字里，2～4 档放行，并写入待确认；只有 5 档当场拦。
-4. 5 档拦住之后，仍会把条目交给模型看。管理员还可以补长期规则：同类内容、URL、IP、指纹。已经拦住的条目不能改成放行。
-5. 打开自动同意，且模型判定风险高时，会写成长期拦截。
+检测对象、形状和档位见 [防护等级](#防护等级)。
 
 ## WEB + 控制面板 + CLI
 
-管理接口只有一套。外面三个入口：
+管理 API 只有一套，对外三个入口。
 
-| 入口 | 做什么 |
+| 入口 | 范围 |
 | --- | --- |
-| **WEB** | 用浏览器打开。电脑和手机是同一套页面。 |
-| **控制面板** | 改站点、规则、待确认、日志、地图、集群。 |
-| **CLI** | 发行包里的 `waf-cli`，实际调用 `cheesewaf cli`。 |
+| **WEB** | 浏览器界面。桌面与移动端共用同一套页面。 |
+| **控制面板** | 站点、规则、待确认、日志、地图、集群。 |
+| **CLI** | 发行包中的 `waf-cli`，等价于 `cheesewaf cli`。 |
 
-账号权限、会话和审计是共用的。
+三个入口共用账号权限、可吊销会话和审计日志。
 
 ## 流量路径
 
@@ -118,23 +104,31 @@ flowchart TB
 | 用途 | 地址 |
 | --- | --- |
 | 转发流量 | `http://127.0.0.1:8080` |
-| 管理初始化 | `http://127.0.0.1:9443/setup`。Docker 里一般是 `https://127.0.0.1:9443/setup` |
+| 管理初始化 | `http://127.0.0.1:9443/setup`。Docker 部署为 `https://127.0.0.1:9443/setup` |
 
 ## 防护等级
 
-站点字段是 `waf.paranoia_level`。新站默认 **3**。YAML 里不写也按 3。写明 `0` 就只记不拦。
+站点字段是 `waf.paranoia_level`。新站默认 **3**。YAML 省略时按 3。写明 `0` 只记不拦。
 
-| 档 | 完整形状 | 夹在文章里 |
+检测对象是单个参数解码后的值，不是整段 HTTP。路径和参数名始终可见。
+
+**完整形状（isolated）：** 该值几乎只有攻击内容。允许薄包装，例如 `@`、末尾 `;`、`/{${...}}`。
+
+**夹杂（embedded）：** 同一串字节出现在文章、长说明或其他正常文字中。
+
+| 档 | 完整形状 | 夹杂 |
 | --- | --- | --- |
 | 0～1 | 只记 | 只记 |
-| 2～4 | 当场拦 | 放行，问模型，进待确认 |
-| 5 | 当场拦 | 当场拦，仍问模型 |
+| 2～4 | 当场拦 | 放行，写入待确认，异步问模型 |
+| 5 | 当场拦 | 当场拦，仍写入待确认并问模型 |
 
-4 档碰到夹杂后，可以设 `promote_seconds`，短时间按 5 档拦。时间写在 SQLite 里，重启还在。
+4 档遇到夹杂后，可设 `promote_seconds`，在窗口内按 5 档拦夹杂。截止时间写在 SQLite，进程重启后仍有效。
 
-指纹是 `User-Agent` 加 `Accept-Language` 做 SHA-256，取前 8 字节，写成 16 位十六进制。不是 JA3。
+5 档已经拦住的待确认条目仍可加长期规则：同类内容、URL、IP、指纹。不能改为放行。
 
-更细的规则见 [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md)。
+客户端指纹为 `SHA-256(User-Agent + "\n" + Accept-Language)` 的前 8 字节，写成 16 位十六进制。不是 JA3。
+
+完整口径见 [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md)。
 
 ## 安装
 
@@ -172,15 +166,15 @@ sudo systemctl enable --now cheesewaf
 /usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml
 ```
 
-发行包里不一定带这份 unit。可以从仓库拷，也可以按上面的命令自己写。
+发行包不一定包含这份 unit。可从本仓库复制，也可按上面的 `ExecStart` 自行编写。
 
-然后打开初始化页，建管理员，把示例站点的上游改成你的源站。
+打开初始化页，创建管理员，将示例站点的上游改为源站地址。
 
 Windows 用 zip（`cheesewaf.exe serve`）或 NSIS 安装包。
 
 ### 2. Docker Compose（备选）
 
-适合先拉起一套完整环境，不是默认的上线方式。
+用于一次性部署完整实例，不是默认的上线方式。
 
 ```bash
 git clone https://github.com/LaokeQwQ/CheeseWAF.git
@@ -203,7 +197,7 @@ docker compose -f deploy/docker/docker-compose.yml down
 
 `POST /api/cluster/deploy/ansible`
 
-包里有 `inventory.ini`、`playbook.yml`、systemd 角色和配置模板。不含 SSH 密码和加入令牌。SSH 用你自己的 inventory 或 agent。
+包里有 `inventory.ini`、`playbook.yml`、systemd 角色和配置模板。不含 SSH 密码和加入令牌。SSH 通过 inventory 或 agent 提供。
 
 ```bash
 ansible-playbook -i inventory.ini playbook.yml
@@ -234,14 +228,14 @@ go run ./cmd/cheesewaf serve
 | `storage` / `logging` / `monitor` | 数据库、日志、指标和告警 |
 | `ai` | 站点模型。待确认、自动同意和控制台助手都用它 |
 
-管理口默认只听 `127.0.0.1`。要对外开，需要同时打开 `server.admin_public` 和管理 TLS。
+管理口默认只监听 `127.0.0.1`。若需对公网开放，须同时开启 `server.admin_public` 和管理 TLS。
 
 ## 技术栈
 
-| 层 | 用什么 |
+| 层 | 选型 |
 | --- | --- |
 | 转发和检测 | Go 1.26、`chi`、YAML v3、quic-go（HTTP/3）、进程内语义分析 |
-| 模型调用 | 站点自己配的对话接口（completions 或 messages），后台排队 |
+| 模型调用 | 站点配置的对话接口（completions 或 messages），后台排队 |
 | 存储 | 默认 SQLite（`modernc.org/sqlite`），日志可以接到 PostgreSQL 等 |
 | 管理接口 | 同一个程序，Bearer 会话，按角色授权 |
 | WEB / 控制面板 | React 18、TypeScript、Vite、Tailwind、shadcn/Radix、TanStack Query |
@@ -275,7 +269,7 @@ go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
 | 文档 | 内容 |
 | --- | --- |
 | [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | 0～5 档、待确认、范围与评测 |
-| [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | 档位怎么接到代码 |
+| [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | 档位与代码对应关系 |
 | [docs/performance-optimization.md](docs/performance-optimization.md) | 运行时和分析器 |
 
 ## 许可证
