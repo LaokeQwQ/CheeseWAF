@@ -92,18 +92,22 @@ type Store interface {
 	// Notifications
 	NotificationStore
 
-	// Review items (detected but not blocked)
+	// Review items (detected-but-not-blocked, plus level-5 blocks for a model verdict)
 	ReviewStore
 }
 
-// ReviewStore persists suspicious requests that were not blocked, for admin decision.
+// ReviewStore persists suspicious requests for admin decision and model review.
 type ReviewStore interface {
 	CreateReviewItem(ctx context.Context, item *ReviewItem) error
 	GetReviewItem(ctx context.Context, id string) (*ReviewItem, error)
 	ListReviewItems(ctx context.Context, filter ReviewFilter) ([]ReviewItem, int64, error)
 	HasPendingReview(ctx context.Context, siteID, category, payload, uri string) (bool, error)
+	HasSimilarReview(ctx context.Context, siteID, category, payload, uri string) (bool, error)
 	SetReviewAIVerdict(ctx context.Context, id, verdict string) error
 	DecideReviewItem(ctx context.Context, id string, decision ReviewDecision) (*ReviewItem, error)
+	UpsertSitePromote(ctx context.Context, siteID string, until time.Time) error
+	ListSitePromotes(ctx context.Context) (map[string]time.Time, error)
+	DeleteSitePromote(ctx context.Context, siteID string) error
 }
 
 type ReviewItem struct {
@@ -120,6 +124,7 @@ type ReviewItem struct {
 	Shape            string    `json:"shape"`
 	Source           string    `json:"source,omitempty"`
 	ParamName        string    `json:"param_name,omitempty"`
+	Fingerprint      string    `json:"fingerprint,omitempty"`
 	Status           string    `json:"status"`
 	AIVerdict        string    `json:"ai_verdict,omitempty"`
 	DecidedBySubject string    `json:"decided_by_subject,omitempty"`
@@ -267,6 +272,7 @@ type SiteSemanticPolicy struct {
 	ParamAllowlist        []string `json:"param_allowlist"`
 	PromoteSeconds        int      `json:"promote_seconds"`
 	AutoAgree             bool     `json:"auto_agree"`
+	FingerprintDeny       []string `json:"fingerprint_deny,omitempty"`
 }
 
 type CertificateConfig struct {

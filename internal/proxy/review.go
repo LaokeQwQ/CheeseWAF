@@ -9,7 +9,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
-// ReviewQueue receives detections that were not blocked.
+// ReviewQueue receives detections that were not blocked, and level-5
+// blocks that still need a model verdict.
 type ReviewQueue interface {
 	Enqueue(ctx context.Context, item *storage.ReviewItem)
 }
@@ -21,20 +22,33 @@ func (s *Server) SetReviewQueue(queue ReviewQueue) {
 	s.reviews = queue
 }
 
-func (s *Server) enqueueReview(ctx context.Context, reqCtx *engine.RequestContext, action string) {
-	if s == nil || s.reviews == nil || reqCtx == nil {
+func (s *Server) SetPromoteStore(store storage.Store) {
+	if s == nil || s.promotes == nil {
 		return
 	}
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "block", "challenge":
+	s.promotes.SetStore(store)
+}
+
+func (s *Server) enqueueReview(ctx context.Context, reqCtx *engine.RequestContext, action string) {
+	if s == nil || s.reviews == nil || reqCtx == nil {
 		return
 	}
 	item := reviewItemFromContext(reqCtx)
 	if item == nil {
 		return
 	}
+	blocked := false
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "block", "challenge":
+		blocked = true
+		if item.ProtectionLevel < 5 {
+			return
+		}
+		item.Status = "blocked"
+		item.Decision = "block_now"
+	}
 	s.reviews.Enqueue(ctx, item)
-	if item.ProtectionLevel == 4 && item.Shape == "embedded" {
+	if !blocked && item.ProtectionLevel == 4 && item.Shape == "embedded" {
 		s.promotes.Arm(item.SiteID, s.sitePromoteSeconds(item.SiteID), s.wallNow())
 	}
 }
@@ -107,6 +121,9 @@ func reviewItemFromContext(reqCtx *engine.RequestContext) *storage.ReviewItem {
 		item.Source = anyString(cand["source"])
 		item.ParamName = anyString(cand["name"])
 		item.ProtectionLevel = anyInt(cand["protection_level"])
+		if fp, ok := reqCtx.Metadata["client_fingerprint"].(string); ok {
+			item.Fingerprint = fp
+		}
 	} else if result, ok := reqCtx.Metadata["detection"].(*engine.DetectionResult); ok && result != nil && result.Detected {
 		item.Category = result.Category
 		item.Severity = result.Severity.String()
@@ -116,6 +133,9 @@ func reviewItemFromContext(reqCtx *engine.RequestContext) *storage.ReviewItem {
 	}
 	if !reviewableCategory(item.Category) {
 		return nil
+	}
+	if item.Fingerprint == "" {
+		item.Fingerprint = clientFingerprint(reqCtx.Request)
 	}
 	if item.Payload == "" && item.URI == "" {
 		return nil

@@ -40,6 +40,7 @@ export type SiteSemanticPolicy = {
   param_allowlist: string[];
   promote_seconds: number;
   auto_agree: boolean;
+  fingerprint_deny?: string[];
 };
 
 export type ProtectionLevel = 'off' | 'low' | 'smart' | 'high' | 'strict' | '';
@@ -623,7 +624,7 @@ export type LogResponse = {
 };
 
 export type ReviewStatus = 'pending' | 'blocked' | 'allowed' | string;
-export type ReviewDecision = 'block_payload' | 'block_uri' | 'block_ip' | 'allow' | 'allow_whitelist' | string;
+export type ReviewDecision = 'block_payload' | 'block_uri' | 'block_ip' | 'block_fingerprint' | 'allow' | 'allow_whitelist' | string;
 
 export type ReviewItem = {
   id: string;
@@ -639,6 +640,7 @@ export type ReviewItem = {
   shape: string;
   source?: string;
   param_name?: string;
+  fingerprint?: string;
   status: ReviewStatus;
   ai_verdict?: string;
   decided_by_subject?: string;

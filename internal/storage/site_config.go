@@ -72,6 +72,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				ParamAllowlist:        cloneStrings(site.WAF.SemanticPolicy.ParamAllowlist),
 				PromoteSeconds:        site.WAF.SemanticPolicy.PromoteSeconds,
 				AutoAgree:             site.WAF.SemanticPolicy.AutoAgree,
+				FingerprintDeny:       cloneStrings(site.WAF.SemanticPolicy.FingerprintDeny),
 			},
 			Policy: SiteProtectionPolicy{
 				WebAttack:   site.WAF.ProtectionPolicy.WebAttack,
@@ -170,6 +171,7 @@ func SiteToConfig(site Site) config.SiteConfig {
 				ParamAllowlist:        cloneStrings(site.Advanced.SemanticPolicy.ParamAllowlist),
 				PromoteSeconds:        site.Advanced.SemanticPolicy.PromoteSeconds,
 				AutoAgree:             site.Advanced.SemanticPolicy.AutoAgree,
+				FingerprintDeny:       cloneStrings(site.Advanced.SemanticPolicy.FingerprintDeny),
 			},
 			ProtectionPolicy: config.ProtectionPolicyConfig{
 				WebAttack:   site.Advanced.Policy.WebAttack,

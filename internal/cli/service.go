@@ -163,6 +163,7 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	defer proxyServer.Close()
+	proxyServer.SetPromoteStore(store)
 	var healthChecker *proxy.HealthChecker
 	reloadSites := func(sites []config.SiteConfig) error {
 		next := *cfg
