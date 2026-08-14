@@ -4,12 +4,12 @@
 
 <h1 align="center">CheeseWAF</h1>
 
-<p align="center"><em>Cheese has holes. AI keeps watch.</em></p>
+<p align="center"><em>AI on patrol. Cheese stays whole.</em></p>
 
 <p align="center">
   <strong>ALAP</strong> · AI Large-Language-Model Auto Pilot<br>
   A next-generation, self-hosted WAF driven by a large language model.<br>
-  One binary. Three consoles. Your origin stays yours.
+  WEB + Control Panel + CLI. Your origin stays yours.
 </p>
 
 <p align="center">
@@ -40,10 +40,10 @@
 
 > Pre-release. CheeseWAF is an **ALAP** (AI Large-Language-Model Auto Pilot) WAF: the data plane decides in microseconds, then a site-configured model pilots review, auto-agree, and lasting rules. Config and APIs can still change.
 
-## Contents
+## Menu
 
 - [Why ALAP](#why-alap)
-- [Three consoles](#three-consoles)
+- [WEB + Control Panel + CLI](#web--control-panel--cli)
 - [Traffic path](#traffic-path)
 - [Protection levels](#protection-levels)
 - [Install](#install)
@@ -65,17 +65,17 @@ Most WAFs stop at a rule hit. CheeseWAF treats that hit as the start of an autop
 
 You bring the model endpoint. CheeseWAF does not hard-code a vendor. The model is not a CMS takedown bot. Lasting action stays inside the WAF.
 
-## Three consoles
+## WEB + Control Panel + CLI
 
-One admin API. Three ways to run it.
+One admin API. Three doors in.
 
-| Console | Who it is for |
+| Surface | What you get |
 | --- | --- |
-| **Web** | Full desktop operations: sites, rules, review, logs, maps, cluster |
-| **Mobile browser** | The same console, laid out for a phone |
-| **`waf-cli` TUI** | Terminal operators on the release binary (`./waf-cli` wraps `./cheesewaf cli`) |
+| **WEB** | Browser UI. Desktop and phone share the same app. |
+| **Control Panel** | Sites, rules, review, logs, maps, cluster. Day-to-day ops. |
+| **CLI** | `waf-cli` on the release binary (`./waf-cli` → `./cheesewaf cli`) |
 
-Web, phone, and TUI share RBAC, revocable sessions, and the audit log.
+All three share RBAC, revocable sessions, and the audit log.
 
 ## Traffic path
 
