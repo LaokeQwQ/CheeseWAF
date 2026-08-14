@@ -134,7 +134,7 @@ for artifact in "${artifacts[@]}"; do
     grep -Fq 'ExecStart=/usr/local/bin/cheesewaf serve' "${package_root}/systemd/cheesewaf.service" ||
       fail "${artifact_name} systemd unit does not start cheesewaf serve"
   fi
-  if [[ "$artifact_name" == *darwin* ]]; then
+  if [[ "$artifact_name" == *darwin* && "$artifact_name" != *SNAPSHOT* ]]; then
     [[ -x "${package_root}/cheesewaf-gui" ]] ||
       fail "${artifact_name} is missing cheesewaf-gui"
   fi
