@@ -158,7 +158,8 @@ func (v *jwtVerifier) Verify(token parsedJWT) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("no JWT verification keys are loaded")
 	}
-	var sawCandidate bool
+	// Build candidates via alg/kid filters before any signature work.
+	var candidates []jwtKey
 	for _, key := range keys {
 		if token.kid != "" && key.kid != "" && token.kid != key.kid {
 			continue
@@ -169,13 +170,19 @@ func (v *jwtVerifier) Verify(token parsedJWT) error {
 		if !keySupportsAlg(key, token.alg) {
 			continue
 		}
-		sawCandidate = true
+		candidates = append(candidates, key)
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("no matching JWT verification key for alg %q kid %q", token.alg, token.kid)
+	}
+	// Multiple candidates without kid would try every key; require kid instead.
+	if token.kid == "" && len(candidates) > 1 {
+		return fmt.Errorf("JWT kid is required when multiple verification keys match alg %q", token.alg)
+	}
+	for _, key := range candidates {
 		if verifyJWTSignature(key, token.alg, token.signingInput, token.signature) == nil {
 			return nil
 		}
-	}
-	if !sawCandidate {
-		return fmt.Errorf("no matching JWT verification key for alg %q kid %q", token.alg, token.kid)
 	}
 	return fmt.Errorf("JWT signature verification failed")
 }

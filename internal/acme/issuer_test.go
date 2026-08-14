@@ -247,3 +247,43 @@ func fixedClock() func() time.Time {
 		return current
 	}
 }
+
+func TestRedactSensitiveOutputLineAndJSON(t *testing.T) {
+	// Existing line-style env assignment redaction.
+	got := redactSensitiveOutput("export TOKEN=abc CF_TOKEN=xyz")
+	if strings.Contains(got, "abc") || strings.Contains(got, "xyz") {
+		t.Fatalf("expected TOKEN values redacted, got %q", got)
+	}
+	if !strings.Contains(got, "******") {
+		t.Fatalf("expected redaction markers, got %q", got)
+	}
+
+	// Compact JSON secrets.
+	compact := `{"secret":"sk-abc","code":401,"message":"denied","api_key":"key-123"}`
+	got = redactSensitiveOutput(compact)
+	if strings.Contains(got, "sk-abc") || strings.Contains(got, "key-123") {
+		t.Fatalf("expected JSON secrets redacted, got %q", got)
+	}
+	if !strings.Contains(got, `"code":401`) && !strings.Contains(got, `"code": 401`) {
+		// Non-secret keys and numeric values must remain.
+		if !strings.Contains(got, "401") {
+			t.Fatalf("expected non-secret code value to remain, got %q", got)
+		}
+	}
+	if !strings.Contains(got, "denied") {
+		t.Fatalf("expected non-secret message to remain, got %q", got)
+	}
+	if !strings.Contains(got, "******") {
+		t.Fatalf("expected JSON values replaced with ******, got %q", got)
+	}
+
+	// Pretty-printed multi-line JSON.
+	pretty := "{\n  \"password\": \"p@ss\",\n  \"access_key\": \"AKIA\",\n  \"code\": 500,\n  \"message\": \"fail\"\n}"
+	got = redactSensitiveOutput(pretty)
+	if strings.Contains(got, "p@ss") || strings.Contains(got, "AKIA") {
+		t.Fatalf("expected pretty JSON secrets redacted, got %q", got)
+	}
+	if !strings.Contains(got, "500") || !strings.Contains(got, "fail") {
+		t.Fatalf("expected non-secret pretty JSON fields to remain, got %q", got)
+	}
+}
