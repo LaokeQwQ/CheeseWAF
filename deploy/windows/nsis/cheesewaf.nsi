@@ -21,12 +21,15 @@
 !ifndef SOURCE_DIR
   !define SOURCE_DIR "..\..\..\bin"
 !endif
+!ifndef OUTFILE
+  !define OUTFILE "..\..\..\dist\CheeseWAF-${VERSION}-setup.exe"
+!endif
 !ifndef PRODUCT_NAME
   !define PRODUCT_NAME "CheeseWAF"
 !endif
 
 Name "${PRODUCT_NAME} ${VERSION}"
-OutFile "..\..\..\dist\CheeseWAF-${VERSION}-setup.exe"
+OutFile "${OUTFILE}"
 InstallDir "$PROGRAMFILES64\CheeseWAF"
 RequestExecutionLevel admin
 Unicode true
@@ -52,14 +55,14 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   ; Core binaries (fail soft if a component is missing from SOURCE_DIR)
-  File /nonfatal "${SOURCE_DIR}\cheesewaf.exe"
-  File /nonfatal "${SOURCE_DIR}\cheesewaf-gui.exe"
-  File /nonfatal "${SOURCE_DIR}\waf-cli.exe"
+  File /nonfatal "${SOURCE_DIR}/cheesewaf.exe"
+  File /nonfatal "${SOURCE_DIR}/cheesewaf-gui.exe"
+  File /nonfatal "${SOURCE_DIR}/waf-cli.exe"
 
   ; Config template only — never secrets / private keys
   CreateDirectory "$INSTDIR\configs"
-  File /nonfatal "/oname=configs\cheesewaf.yaml" "${SOURCE_DIR}\configs\cheesewaf.yaml"
-  File /nonfatal "/oname=configs\cheesewaf.yaml" "${SOURCE_DIR}\cheesewaf.yaml"
+  File /nonfatal "/oname=configs\cheesewaf.yaml" "${SOURCE_DIR}/configs/cheesewaf.yaml"
+  File /nonfatal "/oname=configs\cheesewaf.yaml" "${SOURCE_DIR}/cheesewaf.yaml"
 
   CreateDirectory "$INSTDIR\data"
   CreateDirectory "$INSTDIR\logs"
