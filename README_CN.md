@@ -37,7 +37,8 @@
 - [部署方式](#部署方式)
   - [1. Linux 部署（Systemd 生产运行）](#1-linux-部署systemd-生产运行)
   - [2. Docker 部署（Docker Compose 容器化）](#2-docker-部署docker-compose-容器化)
-  - [3. Windows 部署（便携包与安装向导）](#3-windows-部署便携包与安装向导)
+  - [3. Windows 部署（单文件 CLI、Zip、NSIS）](#3-windows-部署单文件-clizipnsis)
+  - [4. macOS 部署（DMG）](#4-macos-部署dmg)
 - [快速上手](#快速上手)
 - [管理入口](#管理入口)
 - [配置说明](#配置说明)
@@ -146,13 +147,27 @@ CheeseWAF 针对不同基础设施环境提供三种独立的部署方式。
 
 #### 步骤 1：下载并解压发行包
 
-从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面下载对应系统架构的归档文件：
+从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载 **Alpha-** 预发布包，或从 Actions 产物里取同一套文件。按系统和 CPU 选：
+
+| 文件 | 平台 |
+| --- | --- |
+| `cheesewaf-*-linux-amd64.tar.gz` | Linux x86_64 |
+| `cheesewaf-*-linux-arm64.tar.gz` | Linux ARM64 |
+| `cheesewaf-*-linux-loong64.tar.gz` | Linux 龙芯 |
+| `cheesewaf-*-darwin-amd64.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-*-darwin-arm64.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-*-windows-amd64.exe` | Windows x86_64 单文件 CLI |
+| `cheesewaf-*-windows-arm64.exe` | Windows ARM64 单文件 CLI |
+| `cheesewaf-*-windows-amd64.zip` | Windows x86_64 便携目录 |
+| `cheesewaf-*-windows-arm64.zip` | Windows ARM64 便携目录 |
 
 ```bash
-# 以 Linux amd64 为例
+# Linux x86_64 示例
 tar -xzf cheesewaf-*-linux-amd64.tar.gz
 cd cheesewaf-*
 ```
+
+Linux ARM64、龙芯把文件名换成 `linux-arm64` 或 `linux-loong64`，步骤相同。
 
 #### 步骤 2：安装程序文件与目录授权
 
@@ -172,28 +187,10 @@ sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/che
 
 #### 步骤 3：配置 Systemd 服务
 
-创建服务单元文件 `/etc/systemd/system/cheesewaf.service`：
+Linux 包里带有 `systemd/cheesewaf.service`。拷到系统目录即可：
 
-```ini
-[Unit]
-Description=CheeseWAF Service
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=cheesewaf
-Group=cheesewaf
-ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
-Restart=always
-RestartSec=3s
-LimitNOFILE=65535
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
 ```
 
 #### 步骤 4：启动与状态检查
@@ -213,7 +210,7 @@ sudo systemctl status cheesewaf
 
 ### 2. Docker 部署（Docker Compose 容器化）
 
-适用于容器化基础设施与快速测试。镜像默认以非 root 用户（UID `10001`）运行，并启用只读根文件系统。
+适用于容器化基础设施与快速测试。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。
 
 #### 步骤 1：准备编排文件
 
@@ -270,31 +267,39 @@ docker compose logs -f cheesewaf
 
 ---
 
-### 3. Windows 部署（便携包与安装向导）
+### 3. Windows 部署（单文件 CLI、Zip、NSIS）
 
-针对 Windows 环境提供便携免安装包与 NSIS 图形安装器：
+三种形态：单文件 CLI 就是一个 `cheesewaf.exe`；zip 另带配置、管理界面和本地控制器；NSIS 是图形安装器。
 
-#### 方式 A：便携版（Zip 解压即用）
+#### 方式 A：单文件 CLI
 
-1. 下载 `cheesewaf-*-windows-amd64.zip` 并解压到目标目录（如 `D:\CheeseWAF`）。
-2. 在 PowerShell 中运行以下命令：
+1. 下载 `cheesewaf-*-windows-amd64.exe` 或 `cheesewaf-*-windows-arm64.exe`。
+2. 直接运行：
 
 ```powershell
-# 启动服务
+.\cheesewaf-*-windows-amd64.exe serve --config .\cheesewaf.yaml --data-dir .\data
+.\cheesewaf-*-windows-amd64.exe status
+.\cheesewaf-*-windows-amd64.exe stop
+```
+
+转发面不依赖安装器。管理界面在 zip / DMG / tar 包里，放在可执行文件旁边的 `web/dist`。
+
+#### 方式 B：便携目录（Zip）
+
+1. 下载 `cheesewaf-*-windows-amd64.zip` 或 `cheesewaf-*-windows-arm64.zip`，解压到目标目录（如 `D:\CheeseWAF`）。
+2. 运行：
+
+```powershell
 .\cheesewaf.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
-
-# 查看状态
 .\cheesewaf.exe status
-
-# 停止服务
 .\cheesewaf.exe stop
 ```
 
-#### 方式 B：NSIS 图形安装器
+#### 方式 C：NSIS 图形安装器
 
-1. 下载并执行安装包 `CheeseWAF-Setup-<version>.exe`。
-2. 按照向导选择安装路径完成安装，安装器会自动注册系统快捷方式。
-3. 卸载程序时会默认保留 `data\` 目录中的业务配置与数据库。
+1. 运行 `CheeseWAF-*-windows-amd64-setup.exe` 或 `CheeseWAF-*-windows-arm64-setup.exe`。
+2. 按向导安装。
+3. 卸载时默认保留 `data\`。
 
 #### 本地控制器（`cheesewaf-gui`）
 
@@ -303,6 +308,16 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 - 实时显示进程 PID 与运行状态。
 - 提供一键打开 Web 控制台与配置文件夹的快捷入口。
 - 支持配置当前用户登录时自动启动。
+
+---
+
+### 4. macOS 部署（DMG）
+
+1. 下载 `cheesewaf-*-darwin-arm64.dmg`（Apple Silicon）或 `cheesewaf-*-darwin-amd64.dmg`（Intel）。
+2. 打开镜像，把 **CheeseWAF** 拖进 **应用程序**。
+3. 从启动台或「应用程序」打开 CheeseWAF。会启动本地控制面板，用来启动、停止和打开 Web 控制台。
+
+运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*.tar.gz`。
 
 ---
 
