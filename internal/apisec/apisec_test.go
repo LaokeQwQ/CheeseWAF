@@ -548,6 +548,46 @@ func TestJWTVerifyRequiresKidWhenMultipleCandidateKeys(t *testing.T) {
 	}
 }
 
+func TestJWTVerifyRejectsGarbageKidWhenKeysHaveNoKid(t *testing.T) {
+	key1, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key2, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks, err := json.Marshal(map[string]any{
+		"keys": []map[string]any{
+			rsaPublicJWK(t, "", &key1.PublicKey),
+			rsaPublicJWK(t, "", &key2.PublicKey),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := newJWTVerifier(config.APIAuthConfig{
+		JWTAlgorithms: []string{"RS256"},
+		JWKSJSON:      string(jwks),
+	})
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
+	}
+
+	tokenStr := authTestRSAJWTWithKid(t, "RS256", "garbage", key1, map[string]any{"scope": "orders:read"})
+	parsed, err := parseJWT(tokenStr)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.kid != "garbage" {
+		t.Fatalf("expected garbage kid, got %q", parsed.kid)
+	}
+	err = verifier.Verify(parsed)
+	if err == nil {
+		t.Fatal("expected verification to fail; empty-kid keys must not be wildcards under a token kid")
+	}
+}
+
 func authTestRSAJWTWithKid(t *testing.T, alg, kid string, key *rsa.PrivateKey, claims map[string]any) string {
 	t.Helper()
 	signingInput := authTestSigningInput(t, map[string]string{"alg": alg, "typ": "JWT", "kid": kid}, authTestClaims(claims))

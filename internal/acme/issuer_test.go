@@ -286,4 +286,15 @@ func TestRedactSensitiveOutputLineAndJSON(t *testing.T) {
 	if !strings.Contains(got, "500") || !strings.Contains(got, "fail") {
 		t.Fatalf("expected non-secret pretty JSON fields to remain, got %q", got)
 	}
+
+	compound := `{"client_secret":"cs-1","refresh_token":"rt-1","access_token":"at-1","id_token":"id-1","private_key":"pk-1","code":200}`
+	got = redactSensitiveOutput(compound)
+	for _, leak := range []string{"cs-1", "rt-1", "at-1", "id-1", "pk-1"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("expected compound JSON secret %q redacted, got %q", leak, got)
+		}
+	}
+	if !strings.Contains(got, "200") {
+		t.Fatalf("expected non-secret code to remain, got %q", got)
+	}
 }

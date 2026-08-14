@@ -184,6 +184,8 @@ func (h *Handler) DisableUser2FA(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeUser2FA(w, r, user) {
 		return
 	}
+	var consumedCounter int64
+	var totpConsumed bool
 	if user.TwoFAEnabled {
 		var req twoFAPayload
 		if !decode(w, r, &req) {
@@ -197,14 +199,19 @@ func (h *Handler) DisableUser2FA(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "INVALID_CREDENTIALS", "invalid current password or two-factor code")
 			return
 		}
-		if !h.twoFATracker().consumeTOTP(user.ID, user.TwoFASecret, req.Code, h.nowUTC()) {
+		counter, ok := h.twoFATracker().consumeTOTPCounter(user.ID, user.TwoFASecret, req.Code, h.nowUTC())
+		if !ok {
 			writeError(w, http.StatusBadRequest, "INVALID_CREDENTIALS", "invalid current password or two-factor code")
 			return
 		}
+		consumedCounter, totpConsumed = counter, true
 	}
 	user.TwoFAEnabled = false
 	user.TwoFASecret = ""
 	if err := h.Store.UpdateUser(r.Context(), user); err != nil {
+		if totpConsumed {
+			h.twoFATracker().releaseConsumedTOTP(user.ID, consumedCounter)
+		}
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
@@ -519,12 +526,17 @@ func (h *Handler) callerHasPermission(claims *middleware.Claims, required string
 // consumeTOTP verifies code then marks the matching HOTP counter used for userID.
 // A second success with the same user and counter is rejected until the record expires.
 func (s *twoFAState) consumeTOTP(userID, secret, code string, now time.Time) bool {
+	_, ok := s.consumeTOTPCounter(userID, secret, code, now)
+	return ok
+}
+
+func (s *twoFAState) consumeTOTPCounter(userID, secret, code string, now time.Time) (int64, bool) {
 	if s == nil || userID == "" {
-		return false
+		return 0, false
 	}
 	counter, ok := matchingTOTPCounter(secret, code, now)
 	if !ok {
-		return false
+		return 0, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -534,10 +546,19 @@ func (s *twoFAState) consumeTOTP(userID, secret, code string, now time.Time) boo
 	s.pruneLocked(now)
 	key := totpConsumeKey(userID, counter)
 	if expiresAt, exists := s.consumed[key]; exists && expiresAt.After(now) {
-		return false
+		return 0, false
 	}
 	s.consumed[key] = now.Add(twoFAConsumedTOTPTTL)
-	return true
+	return counter, true
+}
+
+func (s *twoFAState) releaseConsumedTOTP(userID string, counter int64) {
+	if s == nil || userID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.consumed, totpConsumeKey(userID, counter))
 }
 
 func totpConsumeKey(userID string, counter int64) string {

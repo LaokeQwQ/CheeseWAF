@@ -100,3 +100,21 @@ func TestConsumeTOTPInvalidCodeDoesNotOccupySlot(t *testing.T) {
 		t.Fatal("valid code must still consume after a failed invalid attempt")
 	}
 }
+
+func TestConsumeTOTPReleaseAllowsReuse(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	now := time.Unix(1_700_000_000, 0).UTC()
+	code, err := hotp(secret, now.Unix()/totpPeriod)
+	if err != nil {
+		t.Fatalf("hotp: %v", err)
+	}
+	state := newTwoFAState()
+	counter, ok := state.consumeTOTPCounter("user-1", secret, code, now)
+	if !ok {
+		t.Fatal("first consume must succeed")
+	}
+	state.releaseConsumedTOTP("user-1", counter)
+	if !state.consumeTOTP("user-1", secret, code, now) {
+		t.Fatal("released consume slot must allow the same step again")
+	}
+}

@@ -2,6 +2,27 @@
 
 > 2026-08-14：防护档位已改为 0～5（默认 3），配置已接入。下文 2026-08-09 的「0～4 / 硬编码 2」是历史记录。现行说明见 `docs/protection-policy-roadmap.md`。
 
+## 2026-08-15 加固（gemini_found 复核后）
+
+审查结论：17 条里多数是线索，不是 P0 事故单。按「有价值就改」并行推进，**不**扩大 `extractPrimaryGadget`（避免长文前缀变成绕过）。
+
+| 项 | 状态 | 说明 |
+| :--- | :--- | :--- |
+| TOTP 按步数消费 | 已完成 | 登录/解绑同一窗口不能重放；会话写入失败会退回该步 |
+| 走私检测读 `TransferEncoding` | 已完成 | 同时读 `r.TransferEncoding` 与 Header |
+| 解码后再去掉空字节 | 已完成 | `\u0000` / `%00` / `&#0;` |
+| Schema 用已读 body 长度 | 已完成 | `ValidateWithBodySize`；站点 `MaxBytesReader` 仍是硬顶 |
+| JWT 无 kid 且多钥 | 已完成 | 多钥必须带 kid；空 kid 钥匙不能当通配 |
+| HMAC 长度前缀 | 已完成 | 换行不再当字段分隔 |
+| ACME JSON 脱敏 | 已完成 | 含 `client_secret` / `*_token` / `private_key` |
+| 限流 FNV / Timer / Payload 截断 | 已完成 | 热路径与日志体积 |
+| 超载策略 | 已完成 | 默认仍 observe；`closed` 出挑战（已有测试） |
+| README 隔离说明 | 已完成 | 和实现对齐，不扩大 gadget 列表 |
+
+整支 review 后修了 JWT 空 kid 通配。未改：默认超载仍观察、不把 XSS/RCE 塞进隔离提取。
+
+---
+
 # Progress: pure shadcn / zero Arco
 
 | Phase | Status | Evidence |

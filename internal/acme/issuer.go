@@ -32,7 +32,7 @@ var (
 		regexp.MustCompile(`(?i)((?:authorization|x-api-key|api-key)\s*[:=]\s*(?:bearer\s+)?)\S+`),
 	}
 	// Quoted JSON string values for secret-bearing keys (compact or pretty-printed).
-	sensitiveJSONValuePattern = regexp.MustCompile(`(?i)("(?:secret|password|token|api[_-]?key|access[_-]?key|authorization)"\s*:\s*")([^"\\]|\\.)*(")`)
+	sensitiveJSONValuePattern = regexp.MustCompile(`(?i)("(?:[a-z0-9_-]*(?:secret|password|token)|(?:api|access)[_-]?key|authorization|private[_-]?key)"\s*:\s*")([^"\\]|\\.)*(")`)
 
 	// Process-control / loader variables must never be accepted from caller-supplied DNS env.
 	blockedDNSEnvKeys = map[string]struct{}{
