@@ -41,10 +41,18 @@ case "$ref_name" in
 esac
 
 artifact_version="${version//+/-}"
+prerelease_tag="Alpha-${artifact_version}"
 module="$(go list -m)"
 ldflags="-s -w -X ${module}/internal/version.Version=${version} -X ${module}/internal/version.Commit=${commit} -X ${module}/internal/version.BuildTime=${build_time} -X ${module}/internal/version.Channel=${channel}"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 release_dir="${CHEESEWAF_RELEASE_DIR:-release}"
 work_dir="${CHEESEWAF_RELEASE_WORK_DIR:-tmp/release-packages}"
+if [[ "$release_dir" != /* ]]; then
+  release_dir="${repo_root}/${release_dir}"
+fi
+if [[ "$work_dir" != /* ]]; then
+  work_dir="${repo_root}/${work_dir}"
+fi
 
 echo "Packaging CheeseWAF ${version} (${channel}) from ${commit}"
 
@@ -53,11 +61,11 @@ mkdir -p "$release_dir" "$work_dir"
 
 metadata_dir="${work_dir}/release-metadata"
 bash scripts/ci/generate-release-metadata.sh \
-  "$metadata_dir" "$version" "$channel" "$ref_name" "$commit" "$build_time"
+  "$metadata_dir" "$version" "$channel" "$ref_name" "$commit" "$build_time" "$prerelease_tag"
 
 bash scripts/ci/build-web.sh
 
-read -r -a targets <<<"${CHEESEWAF_TARGETS:-linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64}"
+read -r -a targets <<<"${CHEESEWAF_TARGETS:-linux/amd64 linux/arm64 linux/loong64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64}"
 
 for target in "${targets[@]}"; do
   goos="${target%/*}"
@@ -79,6 +87,15 @@ for target in "${targets[@]}"; do
     chmod +x "${package_root}/waf-cli"
   else
     cp scripts/ci/waf-cli.cmd "${package_root}/waf-cli.cmd"
+    cp "${package_root}/cheesewaf.exe" "${package_root}/waf-cli.exe"
+    echo "building ${target} gui"
+    GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" \
+      -o "${package_root}/cheesewaf-gui.exe" ./cmd/cheesewaf-gui/
+  fi
+
+  if [[ "$goos" == "linux" ]]; then
+    mkdir -p "${package_root}/systemd"
+    cp "${repo_root}/deploy/systemd/cheesewaf.service" "${package_root}/systemd/cheesewaf.service"
   fi
 
   mkdir -p "${package_root}/web"
@@ -91,22 +108,42 @@ for target in "${targets[@]}"; do
   done
   cp "${metadata_dir}/VERSION" "${metadata_dir}/release.json" "$package_root/"
 
-  tar -C "$work_dir" -czf "${release_dir}/${package_name}.tar.gz" "$package_name"
+  if [[ "$goos" == "windows" ]]; then
+    (
+      cd "$work_dir"
+      zip -qr "${release_dir}/${package_name}.zip" "$package_name"
+    )
+    if command -v makensis >/dev/null 2>&1; then
+      nsis_out="${release_dir}/CheeseWAF-${artifact_version}-windows-${goarch}-setup.exe"
+      makensis -V2 \
+        -DVERSION="${artifact_version}" \
+        -DSOURCE_DIR="${package_root}" \
+        -DOUTFILE="${nsis_out}" \
+        "${repo_root}/deploy/windows/nsis/cheesewaf.nsi"
+    else
+      echo "makensis not installed; skipped NSIS installer for ${target}"
+    fi
+  else
+    tar -C "$work_dir" -czf "${release_dir}/${package_name}.tar.gz" "$package_name"
+  fi
 done
 
 pushd "$release_dir" >/dev/null
-sha256sum ./*.tar.gz > SHA256SUMS
-cat > release-manifest.txt <<EOF
+mapfile -t hashed < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt | sed 's#^\./##' | sort)
+sha256sum "${hashed[@]}" >SHA256SUMS
+cat >release-manifest.txt <<EOF
 CheeseWAF release artifacts
 version: ${version}
+prerelease_tag: ${prerelease_tag}
 channel: ${channel}
 branch: ${ref_name}
 commit: ${commit}
 build_time: ${build_time}
 
 Artifacts:
-$(ls -1 ./*.tar.gz | sed 's#^\./#- #')
+$(printf '%s\n' "${hashed[@]}" | sed 's/^/- /')
 EOF
 popd >/dev/null
 
 echo "Artifacts written to ${release_dir}/"
+echo "Pre-release tag: ${prerelease_tag}"

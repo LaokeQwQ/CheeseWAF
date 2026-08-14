@@ -7,8 +7,9 @@ channel="${3:?channel is required}"
 branch="${4:?branch is required}"
 commit="${5:?commit is required}"
 build_time="${6:?build time is required}"
+prerelease_tag="${7:-}"
 
-for value in "$version" "$channel" "$branch" "$commit" "$build_time"; do
+for value in "$version" "$channel" "$branch" "$commit" "$build_time" "$prerelease_tag"; do
   if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
     echo "::error::release metadata values must be single-line" >&2
     exit 1
@@ -20,21 +21,27 @@ json_escape() {
 }
 
 mkdir -p "$output_dir"
-cat >"${output_dir}/VERSION" <<EOF
-version=${version}
-channel=${channel}
-branch=${branch}
-commit=${commit}
-build_time=${build_time}
-EOF
-
-cat >"${output_dir}/release.json" <<EOF
 {
-  "name": "CheeseWAF",
-  "version": "$(json_escape "$version")",
-  "channel": "$(json_escape "$channel")",
-  "branch": "$(json_escape "$branch")",
-  "commit": "$(json_escape "$commit")",
-  "build_time": "$(json_escape "$build_time")"
-}
-EOF
+  printf 'version=%s\n' "$version"
+  printf 'channel=%s\n' "$channel"
+  printf 'branch=%s\n' "$branch"
+  printf 'commit=%s\n' "$commit"
+  printf 'build_time=%s\n' "$build_time"
+  if [[ -n "$prerelease_tag" ]]; then
+    printf 'prerelease_tag=%s\n' "$prerelease_tag"
+  fi
+} >"${output_dir}/VERSION"
+
+{
+  printf '{\n'
+  printf '  "name": "CheeseWAF",\n'
+  printf '  "version": "%s",\n' "$(json_escape "$version")"
+  printf '  "channel": "%s",\n' "$(json_escape "$channel")"
+  printf '  "branch": "%s",\n' "$(json_escape "$branch")"
+  printf '  "commit": "%s",\n' "$(json_escape "$commit")"
+  printf '  "build_time": "%s"' "$(json_escape "$build_time")"
+  if [[ -n "$prerelease_tag" ]]; then
+    printf ',\n  "prerelease_tag": "%s"' "$(json_escape "$prerelease_tag")"
+  fi
+  printf '\n}\n'
+} >"${output_dir}/release.json"

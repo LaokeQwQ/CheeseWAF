@@ -3,8 +3,15 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 image_tag="${CHEESEWAF_DOCKER_TAG:-cheesewaf:ci}"
+platforms="${CHEESEWAF_DOCKER_PLATFORMS:-linux/amd64,linux/arm64}"
 # Build the argv in one array. Bash 3.2 + set -u rejects "${empty[@]}".
-docker_build=(docker build)
+if docker buildx version >/dev/null 2>&1; then
+  docker_build=(docker buildx build)
+  use_buildx=1
+else
+  docker_build=(docker build)
+  use_buildx=0
+fi
 
 if [[ "${DOCKER_PULL:-1}" == "1" ]]; then
   docker_build+=(--pull)
@@ -24,9 +31,30 @@ done
 docker_build+=(
   --file "${repo_root}/deploy/docker/Dockerfile"
   --tag "$image_tag"
-  "$repo_root"
 )
-"${docker_build[@]}"
+
+if [[ "$use_buildx" -eq 1 ]]; then
+  if ! docker buildx inspect cheesewaf >/dev/null 2>&1; then
+    docker buildx create --name cheesewaf --driver docker-container --use >/dev/null
+  else
+    docker buildx use cheesewaf >/dev/null
+  fi
+  docker buildx inspect --bootstrap >/dev/null
+
+  host_os="$(docker version -f '{{.Server.Os}}')"
+  host_arch="$(docker version -f '{{.Server.Arch}}')"
+  host_platform="${host_os}/${host_arch}"
+
+  if [[ -n "$platforms" ]]; then
+    echo "building container platforms ${platforms}"
+    "${docker_build[@]}" --platform "$platforms" --output type=cacheonly "$repo_root"
+  fi
+
+  echo "loading host platform ${host_platform} as ${image_tag}"
+  "${docker_build[@]}" --platform "$host_platform" --load "$repo_root"
+else
+  "${docker_build[@]}" "$repo_root"
+fi
 
 container_name="cheesewaf-ci-smoke-$$"
 log_file="$(mktemp)"

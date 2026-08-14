@@ -2,17 +2,19 @@ ARG GO_IMAGE=golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422
 ARG NODE_IMAGE=node:24.18.0-bookworm@sha256:392e1e23f34da768d8d1f4e502b64f200d3be3465934d4b7930f57d7e2fc1989
 ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
 
-FROM ${GO_IMAGE} AS backend
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+ARG TARGETOS
+ARG TARGETARCH
 ARG VERSION=0.1.0-dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 ARG CHANNEL=container
-RUN CGO_ENABLED=0 go build -trimpath \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath \
   -ldflags="-s -w \
   -X github.com/LaokeQwQ/CheeseWAF/internal/version.Version=${VERSION} \
   -X github.com/LaokeQwQ/CheeseWAF/internal/version.Commit=${COMMIT} \
@@ -20,7 +22,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
   -X github.com/LaokeQwQ/CheeseWAF/internal/version.Channel=${CHANNEL}" \
   -o /out/cheesewaf ./cmd/cheesewaf
 
-FROM ${NODE_IMAGE} AS web
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 # Skip lifecycle scripts: @agent-eyes postinstall needs pnpm and is dev-only for source maps.

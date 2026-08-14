@@ -146,13 +146,25 @@ CheeseWAF 针对不同基础设施环境提供三种独立的部署方式。
 
 #### 步骤 1：下载并解压发行包
 
-从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面下载对应系统架构的归档文件：
+从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载 **Alpha-** 预发布包，或从 Actions 产物里取同一套文件。按系统和 CPU 选：
+
+| 文件 | 平台 |
+| --- | --- |
+| `cheesewaf-*-linux-amd64.tar.gz` | Linux x86_64 |
+| `cheesewaf-*-linux-arm64.tar.gz` | Linux ARM64 |
+| `cheesewaf-*-linux-loong64.tar.gz` | Linux 龙芯 |
+| `cheesewaf-*-darwin-amd64.tar.gz` | macOS Intel |
+| `cheesewaf-*-darwin-arm64.tar.gz` | macOS Apple Silicon |
+| `cheesewaf-*-windows-amd64.zip` | Windows x86_64 |
+| `cheesewaf-*-windows-arm64.zip` | Windows ARM64 |
 
 ```bash
-# 以 Linux amd64 为例
+# Linux x86_64 示例
 tar -xzf cheesewaf-*-linux-amd64.tar.gz
 cd cheesewaf-*
 ```
+
+Linux ARM64、龙芯把文件名换成 `linux-arm64` 或 `linux-loong64`，步骤相同。
 
 #### 步骤 2：安装程序文件与目录授权
 
@@ -172,28 +184,10 @@ sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/che
 
 #### 步骤 3：配置 Systemd 服务
 
-创建服务单元文件 `/etc/systemd/system/cheesewaf.service`：
+Linux 包里带有 `systemd/cheesewaf.service`。拷到系统目录即可：
 
-```ini
-[Unit]
-Description=CheeseWAF Service
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=cheesewaf
-Group=cheesewaf
-ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
-Restart=always
-RestartSec=3s
-LimitNOFILE=65535
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
 ```
 
 #### 步骤 4：启动与状态检查
@@ -213,7 +207,7 @@ sudo systemctl status cheesewaf
 
 ### 2. Docker 部署（Docker Compose 容器化）
 
-适用于容器化基础设施与快速测试。镜像默认以非 root 用户（UID `10001`）运行，并启用只读根文件系统。
+适用于容器化基础设施与快速测试。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。
 
 #### 步骤 1：准备编排文件
 
@@ -276,7 +270,7 @@ docker compose logs -f cheesewaf
 
 #### 方式 A：便携版（Zip 解压即用）
 
-1. 下载 `cheesewaf-*-windows-amd64.zip` 并解压到目标目录（如 `D:\CheeseWAF`）。
+1. 下载 `cheesewaf-*-windows-amd64.zip` 或 `cheesewaf-*-windows-arm64.zip`，解压到目标目录（如 `D:\CheeseWAF`）。
 2. 在 PowerShell 中运行以下命令：
 
 ```powershell
@@ -292,7 +286,7 @@ docker compose logs -f cheesewaf
 
 #### 方式 B：NSIS 图形安装器
 
-1. 下载并执行安装包 `CheeseWAF-Setup-<version>.exe`。
+1. 运行 `CheeseWAF-*-windows-amd64-setup.exe` 或 `CheeseWAF-*-windows-arm64-setup.exe`。
 2. 按照向导选择安装路径完成安装，安装器会自动注册系统快捷方式。
 3. 卸载程序时会默认保留 `data\` 目录中的业务配置与数据库。
 

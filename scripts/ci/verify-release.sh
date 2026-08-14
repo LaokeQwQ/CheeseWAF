@@ -128,6 +128,19 @@ for artifact in "${artifacts[@]}"; do
   grep -Eq '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "${package_root}/release.json" ||
     fail "${artifact_name} has invalid release.json metadata"
 
+  if [[ "$artifact_name" == *linux* ]]; then
+    [[ -f "${package_root}/systemd/cheesewaf.service" ]] ||
+      fail "${artifact_name} is missing systemd/cheesewaf.service"
+    grep -Fq 'ExecStart=/usr/local/bin/cheesewaf serve' "${package_root}/systemd/cheesewaf.service" ||
+      fail "${artifact_name} systemd unit does not start cheesewaf serve"
+  fi
+  if [[ "$artifact" == *.zip && "$artifact_name" == *windows* ]]; then
+    [[ -f "${package_root}/cheesewaf.exe" ]] ||
+      fail "${artifact_name} is missing cheesewaf.exe"
+    [[ -f "${package_root}/cheesewaf-gui.exe" ]] ||
+      fail "${artifact_name} is missing cheesewaf-gui.exe"
+  fi
+
   oversized="$(find "$extract_dir" -type f -size "+${max_member_bytes}c" -print -quit)"
   [[ -z "$oversized" ]] ||
     fail "${artifact_name} contains oversized member ${oversized#"$extract_dir"/}"

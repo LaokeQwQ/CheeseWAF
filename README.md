@@ -146,13 +146,25 @@ Recommended for Linux physical servers and virtual machines for direct execution
 
 #### Step 1: Download and Extract Release Archive
 
-Download the release package for your architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
+Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or the matching Actions artifact. Pick the file for your OS and CPU:
+
+| File | Platform |
+| --- | --- |
+| `cheesewaf-*-linux-amd64.tar.gz` | Linux x86_64 |
+| `cheesewaf-*-linux-arm64.tar.gz` | Linux ARM64 |
+| `cheesewaf-*-linux-loong64.tar.gz` | Linux LoongArch64 |
+| `cheesewaf-*-darwin-amd64.tar.gz` | macOS Intel |
+| `cheesewaf-*-darwin-arm64.tar.gz` | macOS Apple Silicon |
+| `cheesewaf-*-windows-amd64.zip` | Windows x86_64 |
+| `cheesewaf-*-windows-arm64.zip` | Windows ARM64 |
 
 ```bash
-# Example for Linux x86_64 (amd64)
+# Linux x86_64 example
 tar -xzf cheesewaf-*-linux-amd64.tar.gz
 cd cheesewaf-*
 ```
+
+Linux ARM64 and LoongArch64 use the same steps with `linux-arm64` or `linux-loong64`.
 
 #### Step 2: Install Executable and Configure Directories
 
@@ -172,28 +184,10 @@ sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/che
 
 #### Step 3: Configure Systemd Service
 
-Create `/etc/systemd/system/cheesewaf.service`:
+Linux archives include `systemd/cheesewaf.service`. Install that file:
 
-```ini
-[Unit]
-Description=CheeseWAF Service
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=cheesewaf
-Group=cheesewaf
-ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
-Restart=always
-RestartSec=3s
-LimitNOFILE=65535
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
 ```
 
 #### Step 4: Start and Verify Service
@@ -213,7 +207,7 @@ Navigate to `http://<SERVER_IP>:9443/setup` to complete initial setup.
 
 ### 2. Docker Deployment (Docker Compose)
 
-Recommended for containerized deployments. The container runs as a non-root user (UID `10001`) with a read-only root filesystem.
+Recommended for containerized deployments. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem.
 
 #### Step 1: Create Compose File
 
@@ -276,7 +270,7 @@ CheeseWAF provides portable binaries and an NSIS graphical installer for Windows
 
 #### Option A: Portable CLI Package (Zip)
 
-1. Download `cheesewaf-*-windows-amd64.zip` and extract to a target directory (e.g., `D:\CheeseWAF`).
+1. Download `cheesewaf-*-windows-amd64.zip` or `cheesewaf-*-windows-arm64.zip` and extract it (for example `D:\CheeseWAF`).
 2. Run the following in PowerShell:
 
 ```powershell
@@ -292,7 +286,7 @@ CheeseWAF provides portable binaries and an NSIS graphical installer for Windows
 
 #### Option B: NSIS Graphical Installer
 
-1. Run `CheeseWAF-Setup-<version>.exe`.
+1. Run `CheeseWAF-*-windows-amd64-setup.exe` or `CheeseWAF-*-windows-arm64-setup.exe`.
 2. Follow the setup wizard to complete the installation.
 3. The uninstaller preserves user configuration and databases under `data\` by default.
 

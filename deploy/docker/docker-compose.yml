@@ -3,6 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+    # Host CPU selects linux/amd64 or linux/arm64.
     image: cheesewaf:dev
     # Must match Dockerfile CHEESEWAF_UID/GID so volume seeds stay writable.
     user: "10001:10001"
