@@ -147,6 +147,8 @@ grep -Fq 'linux/amd64,linux/arm64' scripts/ci/docker-build.sh ||
   fail "container CI must build linux/amd64 and linux/arm64"
 grep -Fq 'dst: systemd/cheesewaf.service' .goreleaser.yaml ||
   fail "GoReleaser archive must include the systemd unit"
+grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml ||
+  fail "GoReleaser must build cheesewaf-gui for darwin archives"
 grep -Fq 'cp -R "${repo_root}/web/scripts" "${work_web}/scripts"' scripts/ci/build-web.sh ||
   fail "isolated web build must include build verification scripts"
 grep -Fq 'scripts/ci/generate-release-metadata.sh' .goreleaser.yaml ||

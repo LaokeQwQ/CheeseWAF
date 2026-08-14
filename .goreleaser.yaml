@@ -36,10 +36,30 @@ builds:
     flags:
       - -trimpath
 
+  - id: cheesewaf-gui
+    main: ./cmd/cheesewaf-gui/
+    binary: cheesewaf-gui
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Version={{.Version}}
+      - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Commit={{.Commit}}
+      - -X github.com/LaokeQwQ/CheeseWAF/internal/version.BuildTime={{.Date}}
+      - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Channel=release
+    flags:
+      - -trimpath
+
 archives:
   - id: cheesewaf-archive
     ids:
       - cheesewaf
+      - cheesewaf-gui
     name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     formats:
       - tar.gz
