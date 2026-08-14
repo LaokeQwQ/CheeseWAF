@@ -50,9 +50,11 @@ func (s *SQLiteStore) GetReviewItem(ctx context.Context, id string) (*ReviewItem
 }
 
 func (s *SQLiteStore) ListReviewItems(ctx context.Context, filter ReviewFilter) ([]ReviewItem, int64, error) {
-	if filter.Limit <= 0 || filter.Limit > 100 {
-		filter.Limit = 20
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
 	}
+	filter.Limit = limit
 	if filter.Offset < 0 {
 		filter.Offset = 0
 	}
@@ -61,7 +63,7 @@ func (s *SQLiteStore) ListReviewItems(ctx context.Context, filter ReviewFilter) 
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM review_items WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	queryArgs := append(append([]any(nil), args...), filter.Limit, filter.Offset)
+	queryArgs := append(append([]any(nil), args...), limit, filter.Offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT id,trace_id,site_id,client_ip,method,uri,category,severity,payload,
 		protection_level,shape,source,param_name,status,ai_verdict,decided_by_subject,decided_by_name,decided_by_role,
 		decided_at,decision,applied_rule_id,created_at FROM review_items WHERE `+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
@@ -69,7 +71,8 @@ func (s *SQLiteStore) ListReviewItems(ctx context.Context, filter ReviewFilter) 
 		return nil, 0, err
 	}
 	defer rows.Close()
-	items := make([]ReviewItem, 0, filter.Limit)
+	// Capacity is a fixed bound, not the request limit, so allocation size is not caller-controlled.
+	items := make([]ReviewItem, 0, 20)
 	for rows.Next() {
 		item, err := scanReviewItem(rows)
 		if err != nil {
