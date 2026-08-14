@@ -36,7 +36,7 @@ type Analyzer struct {
 	// paramAllowlist skips query/form/json/cookie fields by parameter name
 	// (case-insensitive). Does not skip path/uri or headers.
 	paramAllowlist map[string]struct{}
-	// paranoiaLevel controls block decision sensitivity (0=off, 1=low, 2=default, 3=high, 4=paranoid).
+	// paranoiaLevel is blocking sensitivity 0-5. 0-1 never block.
 	paranoiaLevel int
 }
 
@@ -144,9 +144,9 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		}
 		return nil, nil
 	}
+	reqCtx.Metadata["review_candidate"] = reviewCandidateMap(best, a.paranoiaLevel)
 	action := actionForMode(a.mode)
 	if a.mode == "block" && !a.blockableHit(best) {
-		reqCtx.Metadata["review_candidate"] = reviewCandidateMap(best, a.paranoiaLevel)
 		return nil, nil
 	}
 	if action == engine.ActionBlock {
@@ -899,6 +899,12 @@ func extractCandidatesWithAllowlist(reqCtx *engine.RequestContext, allow map[str
 		if len(candidates) >= maxCandidates || !progressed {
 			break
 		}
+	}
+	if allowSkipped > 0 {
+		if reqCtx.Metadata == nil {
+			reqCtx.Metadata = map[string]any{}
+		}
+		reqCtx.Metadata["semantic_skipped"] = "param_allowlist"
 	}
 	return candidates
 }

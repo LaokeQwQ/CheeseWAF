@@ -82,7 +82,7 @@ func (h *Handler) DecideReviewItem(w http.ResponseWriter, r *http.Request) {
 	}
 	decision := strings.ToLower(strings.TrimSpace(req.Decision))
 	if !validReviewDecision(decision) {
-		writeError(w, http.StatusBadRequest, "REVIEW_DECISION_INVALID", "decision must be block_payload, block_uri, block_ip, allow, or allow_whitelist")
+		writeError(w, http.StatusBadRequest, "REVIEW_DECISION_INVALID", "decision must be block_payload, block_uri, block_ip, block_fingerprint, allow, or allow_whitelist")
 		return
 	}
 	item, err := h.Store.GetReviewItem(r.Context(), chi.URLParam(r, "id"))
@@ -157,6 +157,8 @@ func (h *Handler) applyReviewDecision(r *http.Request, item *storage.ReviewItem,
 		})
 	case "block_ip":
 		return h.addIPBlockRule(r, item)
+	case "block_fingerprint":
+		return h.addFingerprintDeny(r, item)
 	case "allow_whitelist":
 		return h.addSiteAllowlist(r, item)
 	default:
@@ -204,6 +206,49 @@ func (h *Handler) addSiteCustomRule(r *http.Request, item *storage.ReviewItem, r
 		return "", err
 	}
 	return rule.ID, nil
+}
+
+func (h *Handler) addFingerprintDeny(r *http.Request, item *storage.ReviewItem) (string, error) {
+	if strings.TrimSpace(item.SiteID) == "" {
+		return "", fmt.Errorf("site_id is required")
+	}
+	fp := strings.TrimSpace(item.Fingerprint)
+	if fp == "" {
+		return "", fmt.Errorf("fingerprint is empty")
+	}
+	h.siteMutationMu.Lock()
+	defer h.siteMutationMu.Unlock()
+	site, err := h.Store.GetSite(r.Context(), item.SiteID)
+	if err != nil {
+		return "", err
+	}
+	if site == nil {
+		return "", fmt.Errorf("site not found")
+	}
+	existingDeny := append([]string(nil), site.Advanced.SemanticPolicy.FingerprintDeny...)
+	existing := *site
+	existing.Advanced.SemanticPolicy.FingerprintDeny = existingDeny
+	site.Advanced.SemanticPolicy.FingerprintDeny = appendUnique(existingDeny, fp)
+	if err := h.validateCandidateSites(r, func(sites []storage.Site) []storage.Site {
+		for index := range sites {
+			if sites[index].ID == site.ID {
+				sites[index] = *site
+				return sites
+			}
+		}
+		return append(sites, *site)
+	}); err != nil {
+		return "", err
+	}
+	if err := h.Store.UpdateSite(r.Context(), site); err != nil {
+		return "", err
+	}
+	if err := h.syncSitesOrRollback(r, func() error {
+		return h.Store.UpdateSite(r.Context(), &existing)
+	}); err != nil {
+		return "", err
+	}
+	return "fingerprint:" + fp, nil
 }
 
 func (h *Handler) addSiteAllowlist(r *http.Request, item *storage.ReviewItem) (string, error) {
@@ -313,7 +358,7 @@ func (h *Handler) writeReviewAudit(r *http.Request, claims *middleware.Claims, i
 
 func validReviewDecision(decision string) bool {
 	switch decision {
-	case "block_payload", "block_uri", "block_ip", "allow", "allow_whitelist":
+	case "block_payload", "block_uri", "block_ip", "block_fingerprint", "allow", "allow_whitelist":
 		return true
 	default:
 		return false

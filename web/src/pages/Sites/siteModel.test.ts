@@ -21,5 +21,6 @@ describe('normalizeSite', () => {
     const site = normalizeSite({ id: 's1' });
     expect(site.advanced.semantic_policy.promote_seconds).toBe(0);
     expect(site.advanced.semantic_policy.auto_agree).toBe(false);
+    expect(site.advanced.semantic_policy.fingerprint_deny).toEqual([]);
   });
 });

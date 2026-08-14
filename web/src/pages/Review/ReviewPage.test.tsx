@@ -31,6 +31,7 @@ const item = {
   payload: 'eval($_GET[cmd])',
   protection_level: 3,
   shape: 'embedded',
+  fingerprint: 'aabbccddeeff0011',
   status: 'pending',
   created_at: '2026-08-14T10:00:00Z',
 };
@@ -62,6 +63,15 @@ describe('ReviewPage', () => {
     fireEvent.click(screen.getByText('review.blockPayload'));
     await waitFor(() => {
       expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_payload');
+    });
+  });
+
+  it('converts a pending item to a fingerprint block', async () => {
+    renderPage();
+    expect(await screen.findByText('aabbccddeeff0011')).toBeTruthy();
+    fireEvent.click(screen.getByText('review.blockFingerprint'));
+    await waitFor(() => {
+      expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_fingerprint');
     });
   });
 });

@@ -66,5 +66,6 @@ export function reviewSearchMatch(item: ReviewItem, search: string) {
     item.category,
     item.site_id,
     item.param_name,
+    item.fingerprint,
   ].some((value) => String(value ?? '').toLowerCase().includes(needle));
 }
