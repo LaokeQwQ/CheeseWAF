@@ -4,7 +4,7 @@
 
 <h1 align="center">CheeseWAF</h1>
 
-<p align="center"><em>AI on patrol. Cheese stays whole.</em></p>
+<p align="center"><em>AI holds the keys. You keep the cheese.</em></p>
 
 <p align="center">
   <strong>ALAP</strong> · AI Large-Language-Model Auto Pilot<br>
