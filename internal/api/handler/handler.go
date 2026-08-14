@@ -717,7 +717,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "TWO_FA_REQUIRED", "two-factor code required")
 			return
 		}
-		if !verifyTOTP(user.TwoFASecret, req.TOTPCode, h.nowUTC()) {
+		if !h.twoFATracker().consumeTOTP(user.ID, user.TwoFASecret, req.TOTPCode, h.nowUTC()) {
 			tracker.recordLoginFailure(rateLimitKeys, now)
 			h.auditLoginFailure(r, req.Username, "bad_2fa")
 			writeError(w, http.StatusUnauthorized, "INVALID_TWO_FA_CODE", "invalid two-factor code")

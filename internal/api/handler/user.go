@@ -34,8 +34,9 @@ type twoFARecoveryPayload struct {
 }
 
 type twoFAState struct {
-	mu      sync.Mutex
-	pending map[string]twoFAPendingSecret
+	mu       sync.Mutex
+	pending  map[string]twoFAPendingSecret
+	consumed map[string]time.Time // key: userID:counter → expiresAt
 }
 
 type twoFAPendingSecret struct {
@@ -47,10 +48,15 @@ type twoFAPendingSecret struct {
 const (
 	twoFAPendingSecretTTL         = 10 * time.Minute
 	twoFAPendingSecretMaxAttempts = 5
+	// Consumed TOTP steps expire after ~two ±1 windows so replay is blocked without unbounded growth.
+	twoFAConsumedTOTPTTL = 120 * time.Second
 )
 
 func newTwoFAState() *twoFAState {
-	return &twoFAState{pending: map[string]twoFAPendingSecret{}}
+	return &twoFAState{
+		pending:  map[string]twoFAPendingSecret{},
+		consumed: map[string]time.Time{},
+	}
 }
 
 func (h *Handler) twoFATracker() *twoFAState {
@@ -191,7 +197,7 @@ func (h *Handler) DisableUser2FA(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "INVALID_CREDENTIALS", "invalid current password or two-factor code")
 			return
 		}
-		if !verifyTOTP(user.TwoFASecret, req.Code, h.nowUTC()) {
+		if !h.twoFATracker().consumeTOTP(user.ID, user.TwoFASecret, req.Code, h.nowUTC()) {
 			writeError(w, http.StatusBadRequest, "INVALID_CREDENTIALS", "invalid current password or two-factor code")
 			return
 		}
@@ -510,10 +516,43 @@ func (h *Handler) callerHasPermission(claims *middleware.Claims, required string
 	return false
 }
 
+// consumeTOTP verifies code then marks the matching HOTP counter used for userID.
+// A second success with the same user and counter is rejected until the record expires.
+func (s *twoFAState) consumeTOTP(userID, secret, code string, now time.Time) bool {
+	if s == nil || userID == "" {
+		return false
+	}
+	counter, ok := matchingTOTPCounter(secret, code, now)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.consumed == nil {
+		s.consumed = map[string]time.Time{}
+	}
+	s.pruneLocked(now)
+	key := totpConsumeKey(userID, counter)
+	if expiresAt, exists := s.consumed[key]; exists && expiresAt.After(now) {
+		return false
+	}
+	s.consumed[key] = now.Add(twoFAConsumedTOTPTTL)
+	return true
+}
+
+func totpConsumeKey(userID string, counter int64) string {
+	return fmt.Sprintf("%s:%d", userID, counter)
+}
+
 func (s *twoFAState) pruneLocked(now time.Time) {
 	for userID, pending := range s.pending {
 		if !pending.ExpiresAt.After(now) {
 			delete(s.pending, userID)
+		}
+	}
+	for key, expiresAt := range s.consumed {
+		if !expiresAt.After(now) {
+			delete(s.consumed, key)
 		}
 	}
 }
