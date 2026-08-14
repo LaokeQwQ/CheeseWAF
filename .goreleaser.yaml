@@ -42,10 +42,18 @@ builds:
     env:
       - CGO_ENABLED=0
     goos:
+      - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
+      - loong64
+    ignore:
+      - goos: darwin
+        goarch: loong64
+      - goos: windows
+        goarch: loong64
     ldflags:
       - -s -w
       - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Version={{.Version}}
