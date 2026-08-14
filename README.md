@@ -60,7 +60,7 @@ docker compose -f deploy/docker/docker-compose.yml down
 
 ### 从源码运行
 
-仓库当前使用 Go 1.26.5。Docker 构建使用 Node.js 24.18.0；本地构建 Web 控制台时建议使用相同的大版本。
+仓库当前使用 Go 1.26.6。Docker 构建使用 Node.js 24.18.0；本地构建 Web 控制台时建议使用相同的大版本。
 
 ```bash
 git clone https://github.com/LaokeQwQ/CheeseWAF.git
