@@ -84,6 +84,25 @@ func (d *WebshellDetector) Detect(_ context.Context, reqCtx *engine.RequestConte
 		}, nil
 	}
 
+	// Delimiter-less PHP gadgets: eval($_GET[...]) and $_GET[a]($_GET[b]).
+	// RequestURI covers query; form values cover POST parameter stagers.
+	// Raw advisory bodies are not parsed as form fields.
+	if phpGadgetText(target) {
+		return phpGadgetHit(d, surface), nil
+	}
+	if reqCtx != nil && reqCtx.Request != nil {
+		_ = reqCtx.Request.ParseForm()
+		if reqCtx.Request.Form != nil {
+			for _, values := range reqCtx.Request.Form {
+				for _, value := range values {
+					if len(value) <= phpGadgetMaxBytes && phpGadgetText(value) {
+						return phpGadgetHit(d, surface), nil
+					}
+				}
+			}
+		}
+	}
+
 	// ---- Generic webshell path signature ----
 	// Common webshell filenames: shell.php / webshell.php / c99.php / r57.php / backdoor.php / cmd.php
 	//
@@ -122,19 +141,68 @@ func hasExternalInput(normalized string) bool {
 	return rxPHPSuperglobal.MatchString(normalized)
 }
 
-// aspxServerCodeContext reports whether the text carries an ASP.NET server-side
-// code delimiter: an inline block (<% ... %>, covering the <%@ directive and
-// <%= output forms) or a WebForms server script block (<script runat="server">).
-//
-// This is the ASPX analogue of the <?php / <?= requirement the PHP branch
-// enforces, and it is a requirement to fire rather than a licence to suppress:
-// prose quoting a .NET primitive in a sentence carries no delimiter, while a
-// shell that drops the delimiter no longer executes.
-// requestTargetSurface reports whether a candidate's input source carries the
-// request target — the path or the query string. Sources named here must stay in
-// sync with the collectors in analyzer.go.
+// requestTargetSurface reports whether a candidate arrived on the path or query.
+// Names must stay in sync with the collectors in analyzer.go.
 func requestTargetSurface(source string) bool {
 	return source == "uri" || source == "query"
+}
+
+// phpGadgetSurface is where delimiter-less PHP eval/callback gadgets execute:
+// the request target, structured parameters, and cookies. body.raw is excluded
+// because an advisory quotes the same tokens as a live parameter value.
+func phpGadgetSurface(source string) bool {
+	switch source {
+	case "uri", "query", "body.form", "body.json", "body.multipart", "cookie":
+		return true
+	default:
+		return false
+	}
+}
+
+const phpGadgetMaxBytes = 512
+
+func phpGadgetAllowed(source, name, text string) bool {
+	if requestTargetSurface(source) {
+		return true
+	}
+	if !phpGadgetSurface(source) {
+		return false
+	}
+	if len(text) <= phpGadgetMaxBytes {
+		return true
+	}
+	return phpGadgetSinkName(name)
+}
+
+func phpGadgetSinkName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if i := strings.LastIndexAny(n, ".[/"); i >= 0 {
+		n = n[i+1:]
+	}
+	n = strings.Trim(n, "]\"'")
+	switch n {
+	case "s", "code", "cmd", "command", "payload", "pass", "passwd", "_", "x", "eval", "data", "z0", "z1", "callback", "exec":
+		return true
+	default:
+		return false
+	}
+}
+
+func phpGadgetText(normalized string) bool {
+	return rxPHPEvalSuperglobal.MatchString(normalized) || rxPHPCallbackSuperglobal.MatchString(normalized)
+}
+
+func phpGadgetHit(d *WebshellDetector, surface string) *engine.DetectionResult {
+	return &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: d.ID(),
+		Category:   "webshell",
+		Severity:   engine.SeverityCritical,
+		Action:     actionForMode(d.mode),
+		Message:    "PHP request-parameter execution gadget detected",
+		Confidence: 0.93,
+		Payload:    truncateWebshell(surface, 200),
+	}
 }
 
 // jspServerCodeContext reports whether the text carries a JSP server-side
@@ -150,6 +218,14 @@ func jspServerCodeContext(normalized string) bool {
 		strings.Contains(normalized, "${")
 }
 
+// aspxServerCodeContext reports whether the text carries an ASP.NET server-side
+// code delimiter: an inline block (<% ... %>, covering the <%@ directive and
+// <%= output forms) or a WebForms server script block (<script runat="server">).
+//
+// This is the ASPX analogue of the <?php / <?= requirement the PHP branch
+// enforces, and it is a requirement to fire rather than a licence to suppress:
+// prose quoting a .NET primitive in a sentence carries no delimiter, while a
+// shell that drops the delimiter no longer executes.
 func aspxServerCodeContext(normalized string) bool {
 	if strings.Contains(normalized, "<%") {
 		return true
@@ -244,6 +320,17 @@ func analyzeWebshell(candidate semanticCandidate) (Hit, bool) {
 		}), true
 	}
 
+	// Delimiter-less gadgets: the installed shell already evals the parameter.
+	// body.raw prose is not a gadget surface. Long JSON/form documents only
+	// fire when the field name is a known parameter sink.
+	if phpGadgetAllowed(candidate.input.Source, candidate.input.Name, candidate.text) &&
+		phpGadgetText(normalized) {
+		return hit(candidate, "webshell", engine.SeverityCritical, 0.93, map[string]bool{
+			"syntax: PHP execution primitive or variable-function with superglobal input": true,
+			"semantics: attacker-controlled request parameter reaches code execution":     true,
+		}), true
+	}
+
 	return Hit{}, false
 }
 
@@ -254,6 +341,10 @@ var (
 	rxPHPObfuscate = regexp.MustCompile(`(?:base64_decode|gzinflate|str_rot13|gzuncompress|create_function)\s*\(`)
 	// PHP superglobals
 	rxPHPSuperglobal = regexp.MustCompile(`(?i)\$_(?:post|get|request|cookie)\s*\[`)
+	// eval($_GET[...]) / eval(base64_decode($_POST[...])) without <?php
+	rxPHPEvalSuperglobal = regexp.MustCompile(`(?i)(?:eval|assert|system|passthru|shell_exec|exec|proc_open|popen)\s*\(\s*(?:(?:base64_decode|gzinflate|gzuncompress|str_rot13|trim|stripslashes|urldecode|end)\s*\(\s*)?\$_(?:GET|POST|REQUEST|COOKIE)\s*\[`)
+	// $_GET[a]($_GET[b]) variable-function callback
+	rxPHPCallbackSuperglobal = regexp.MustCompile(`(?i)\$_(?:GET|POST|REQUEST|COOKIE)\s*\[[^\]]+\]\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[`)
 	// Common webshell filenames
 	rxWebshellPath = regexp.MustCompile(`/(?:web)?shell\.php|/c(?:99|100)\.php|/r57\.php|/backdoor\.php|/cmd\.php|/[a-z0-9_-]*shell[a-z0-9_-]*\.(?:php|jsp|aspx)`)
 )

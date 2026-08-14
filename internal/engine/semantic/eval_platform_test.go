@@ -391,7 +391,7 @@ func outputReport(t *testing.T, report *EvaluationReport) {
 	// Paranoia level breakdown
 	if len(report.ByParanoiaLevel) > 0 {
 		fmt.Println("\n===BY_PARANOIA_LEVEL===")
-		for level := 0; level <= 4; level++ {
+		for level := 0; level <= 5; level++ {
 			levelKey := fmt.Sprintf("%d", level)
 			if m, ok := report.ByParanoiaLevel[levelKey]; ok {
 				fmt.Printf("Level %d: FPR=%.2f%% (%d/%d), TPR=%.2f%% (%d/%d)\n",
@@ -704,7 +704,7 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 
 	t.Logf("\n===Computing by-paranoia-level metrics===")
 
-	for level := 0; level <= 4; level++ {
+	for level := 0; level <= 5; level++ {
 		t.Logf("Evaluating paranoia level %d", level)
 
 		// Create analyzer with specific paranoia level

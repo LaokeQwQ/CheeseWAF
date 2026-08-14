@@ -36,7 +36,7 @@ type Analyzer struct {
 	// paramAllowlist skips query/form/json/cookie fields by parameter name
 	// (case-insensitive). Does not skip path/uri or headers.
 	paramAllowlist map[string]struct{}
-	// paranoiaLevel controls block decision sensitivity (0=off, 1=low, 2=default, 3=high, 4=paranoid).
+	// paranoiaLevel is blocking sensitivity 0-5. 0-1 never block.
 	paranoiaLevel int
 }
 
@@ -63,6 +63,7 @@ type Hit struct {
 	Severity   engine.Severity `json:"severity"`
 	Confidence float64         `json:"confidence"`
 	Payload    string          `json:"payload"`
+	Isolation  string          `json:"isolation,omitempty"`
 }
 
 type semanticCandidate struct {
@@ -138,8 +139,12 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		reqCtx.Metadata["semantic_analysis_incomplete"] = true
 	}
 	if !haveBest {
+		if review, ok := strongestHit(report.Hits); ok {
+			reqCtx.Metadata["review_candidate"] = reviewCandidateMap(review, a.paranoiaLevel)
+		}
 		return nil, nil
 	}
+	reqCtx.Metadata["review_candidate"] = reviewCandidateMap(best, a.paranoiaLevel)
 	action := actionForMode(a.mode)
 	if a.mode == "block" && !a.blockableHit(best) {
 		return nil, nil
@@ -186,6 +191,31 @@ func analyzerDetectorID(category string) string {
 		return id
 	}
 	return "semantic.analyzer." + category
+}
+
+func strongestHit(hits []Hit) (Hit, bool) {
+	var best Hit
+	found := false
+	for _, hit := range hits {
+		if !found || betterHit(hit, best) {
+			best = hit
+			found = true
+		}
+	}
+	return best, found
+}
+
+func reviewCandidateMap(hit Hit, level int) map[string]any {
+	return map[string]any{
+		"category":         hit.Category,
+		"severity":         hit.Severity.String(),
+		"payload":          hit.Payload,
+		"shape":            hit.Isolation,
+		"source":           hit.Source,
+		"name":             hit.Name,
+		"protection_level": level,
+		"confidence":       hit.Confidence,
+	}
 }
 
 // analyzeAllCandidates runs field analysis. Multi-field requests use a bounded
@@ -320,10 +350,12 @@ func (m *candidateMerge) add(mode string, a *Analyzer, hits []Hit) {
 				m.anomalyNotes = append(m.anomalyNotes, note)
 			}
 		}
+		// Keep every hit in the report so detected-but-not-blocked
+		// requests can enter the review queue. Blocking still uses haveBest.
+		m.report.Hits = append(m.report.Hits, next)
 		if mode == "block" && !a.blockableHit(next) {
 			continue
 		}
-		m.report.Hits = append(m.report.Hits, next)
 		if !m.haveBest || betterHit(next, m.best) {
 			m.best = next
 			m.haveBest = true
@@ -573,7 +605,7 @@ const (
 // most useful bounded window from an oversized value and promotes suspicious
 // inputs when a request exceeds the global candidate budget. Final decisions
 // still go through the category-specific syntax and semantic analyzers.
-var rawCoverageSignal = regexp.MustCompile(`(?i)(?:\$\{\s*jndi\s*:|<\?(?:php|=)|<!\s*(?:doctype|entity)|<\s*script\b|javascript\s*:|(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b|(?:union(?:\s|%20)+(?:all(?:\s|%20)+)?select|(?:or|and)(?:\s|%20)+\d+(?:\s|%20)*=(?:\s|%20)*\d+)|\.\.[/\\]|%2e%2e(?:%2f|/)|\{\{|\{%|%\{|<%|\$(?:where|function|eval|regex|ne|gt|gte|lt|lte)\b|https?://(?:127(?:\.\d+){3}|169\.254(?:\.\d+){2}|localhost\b)|\(\)\s*\{)`)
+var rawCoverageSignal = regexp.MustCompile(`(?i)(?:\$\{\s*jndi\s*:|\$\{\$\{|\$\{[^}]{0,40}(?::-|:-[^}]|date:)|<\?(?:php|=)|<!\s*(?:doctype|entity)|<\s*script\b|javascript\s*:|(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b|(?:union(?:\s|%20)+(?:all(?:\s|%20)+)?select|(?:or|and)(?:\s|%20)+\d+(?:\s|%20)*=(?:\s|%20)*\d+)|\.\.[/\\]|%2e%2e(?:%2f|/)|\{\{|\{%|%\{|<%|\$(?:where|function|eval|regex|ne|gt|gte|lt|lte)\b|https?://(?:127(?:\.\d+){3}|169\.254(?:\.\d+){2}|localhost\b)|\(\)\s*\{)`)
 
 func normalizePathAllowlist(paths []string) []string {
 	if len(paths) == 0 {
@@ -867,6 +899,12 @@ func extractCandidatesWithAllowlist(reqCtx *engine.RequestContext, allow map[str
 		if len(candidates) >= maxCandidates || !progressed {
 			break
 		}
+	}
+	if allowSkipped > 0 {
+		if reqCtx.Metadata == nil {
+			reqCtx.Metadata = map[string]any{}
+		}
+		reqCtx.Metadata["semantic_skipped"] = "param_allowlist"
 	}
 	return candidates
 }
@@ -1851,7 +1889,7 @@ func guessCategories(raw string) []string {
 			sqlCompact := compactSQL(text)
 			if strings.Contains(sqlCompact, "unionselect") || strings.Contains(sqlCompact, "or1=1") ||
 				sqlBooleanTautology.MatchString(text) || sqlEmptyStringTautology.MatchString(text) ||
-				sqlQuotedOrPredicate.MatchString(text) || sqlOrderByInference.MatchString(text) ||
+				quotedOrPredicateInjection(text) || sqlOrderByInference.MatchString(text) ||
 				sqlHavingInference.MatchString(text) || sqlRegexProbe.MatchString(text) ||
 				sqlMetadataObject.MatchString(text) || guardedMatchString2K(sqlSubquery, text) ||
 				guardedMatchString2K(sqlCaseWhen, text) || sqlFileData.MatchString(text) ||
@@ -1866,7 +1904,7 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintRCE != 0 {
-		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "downloadfile") || strings.Contains(text, "webclient") || strings.Contains(text, "tcpclient") || strings.Contains(text, "new-object") || strings.Contains(text, "<?php") || strings.Contains(text, "eval(") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || strings.Contains(text, "ld_preload") || strings.Contains(text, "child_process") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) || rceNetWebClientSideFx.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceLoaderPrimitive.MatchString(text) {
+		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "downloadfile") || strings.Contains(text, "webclient") || strings.Contains(text, "tcpclient") || strings.Contains(text, "new-object") || strings.Contains(text, "<?php") || strings.Contains(text, "eval(") || strings.Contains(text, "assert(") || strings.Contains(text, "getallheaders") || strings.Contains(text, "apache_request_headers") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || strings.Contains(text, "ld_preload") || strings.Contains(text, "child_process") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) || rceNetWebClientSideFx.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceLoaderPrimitive.MatchString(text) {
 			scores["rce"] += 2
 		}
 	}
@@ -1904,7 +1942,8 @@ func guessCategories(raw string) []string {
 	}
 	if hints&hintWebshell != 0 {
 		if (strings.Contains(text, "<?php") || strings.Contains(text, "<?=")) ||
-			(strings.Contains(text, "eval(") && (strings.Contains(text, "$_post") || strings.Contains(text, "$_get") || strings.Contains(text, "$_request"))) ||
+			phpGadgetText(text) ||
+			(strings.Contains(text, "eval(") && (strings.Contains(text, "$_post") || strings.Contains(text, "$_get") || strings.Contains(text, "$_request") || strings.Contains(text, "$_cookie"))) ||
 			strings.Contains(text, "base64_decode") || strings.Contains(text, "gzinflate") ||
 			strings.Contains(text, "runtime.getruntime()") || strings.Contains(text, "processbuilder") ||
 			strings.Contains(text, "system.diagnostics.process") ||
@@ -1913,7 +1952,7 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintLog4Shell != 0 {
-		if strings.Contains(text, "${jndi:") || strings.Contains(text, "() { :;};") {
+		if hasLog4ShellLookup(text) || strings.Contains(text, "() { :;};") {
 			scores["log4shell"] += 2
 		}
 	}
@@ -1986,6 +2025,8 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "downloadfile") || strings.Contains(lower, "webclient") ||
 		strings.Contains(lower, "tcpclient") || strings.Contains(lower, "invoke-expression") ||
 		strings.Contains(lower, "<?php") || strings.Contains(lower, "eval(") ||
+		strings.Contains(lower, "assert(") || strings.Contains(lower, "getallheaders") ||
+		strings.Contains(lower, "apache_request_headers") ||
 		strings.Contains(lower, "whoami") || strings.Contains(lower, "${ifs}") ||
 		strings.Contains(lower, "$ifs") || strings.Contains(lower, "/dev/tcp") ||
 		strings.Contains(lower, "/dev/udp") || strings.Contains(lower, "</dev/") ||
@@ -2052,10 +2093,8 @@ func scanAttackHints(raw string) int {
 		(strings.Contains(lower, ".php") && (strings.Contains(lower, "action=") || strings.Contains(lower, "cmd=") || strings.Contains(lower, "exec="))) {
 		hints |= hintWebshell
 	}
-	// Log4Shell & Shellshock
-	if strings.Contains(lower, "${jndi:") || strings.Contains(lower, "() { :;};") ||
-		strings.Contains(lower, "jndi:ldap://") || strings.Contains(lower, "jndi:rmi://") ||
-		strings.Contains(lower, "jndi:dns://") {
+	// Log4Shell & Shellshock (including ${::-j} / ${lower:} wrappers)
+	if strings.Contains(lower, "() { :;};") || hasLog4ShellLookup(lower) {
 		hints |= hintLog4Shell
 	}
 	return hints
@@ -2091,7 +2130,11 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 var (
 	sqlBooleanTautology     = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
 	sqlEmptyStringTautology = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*(?:''|""|'[^']*'|"[^"]*"|['"])\s*=\s*(?:''|""|'[^']*'|"[^"]*"|['"])`)
-	sqlQuotedOrPredicate    = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']*'|"[^"]*"|[^\s]{1,64})`)
+	sqlQuotedOrCompare      = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']{0,64}'\s*(?:=|<>|!=)|"[^"]{0,64}"\s*(?:=|<>|!=)|\d+\s*(?:=|<>|!=|<|>)\s*\d+|\d+\b|true\b|false\b|null\b)`)
+	sqlQuotedOrCall         = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:waitfor\b|(?:sleep|benchmark|pg_sleep|if|exists|ascii|substring|substr|ord|mid|concat|char|chr|updatexml|extractvalue|elt|user|version|database|schema|current_user)\s*\()`)
+	sqlQuotedOrSubq         = regexp.MustCompile(`(?i)(?:'|")\s*or\s*\(\s*(?:select|exists|if\s*\(|case\s+when|not\s+(?:\d|true|null|\()|\d+\s*=|'[^']*'\s*=)`)
+	sqlQuotedOrIdent        = regexp.MustCompile(`(?i)(?:'|")\s*or\s+[a-z_][a-z0-9_]*\s*(?:=|<>|!=|--|/\*|#(?:\s|$)|like\s*(?:'|\"|0x))`)
+	sqlQuotedOrNot          = regexp.MustCompile(`(?i)(?:'|")\s*or\s+not\s+(?:\d+\s*=|true\b|false\b|null\b|\()`)
 	sqlTimeFunction         = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
 	sqlDialectTimeFunction  = regexp.MustCompile(`(?i)\bdbms_(?:lock|session)\.sleep\s*\(`)
 	sqlComment              = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
@@ -2218,6 +2261,14 @@ func sqlCommentTruncationShape(text string) bool {
 	return false
 }
 
+func quotedOrPredicateInjection(text string) bool {
+	return sqlQuotedOrCompare.MatchString(text) ||
+		sqlQuotedOrCall.MatchString(text) ||
+		sqlQuotedOrSubq.MatchString(text) ||
+		sqlQuotedOrIdent.MatchString(text) ||
+		sqlQuotedOrNot.MatchString(text)
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -2291,7 +2342,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlEmptyStringTautology.MatchString(text) {
 		reasons["syntax: empty-string boolean tautology predicate"] = true
 	}
-	if sqlQuotedOrPredicate.MatchString(text) {
+	if quotedOrPredicateInjection(text) {
 		reasons["syntax: quoted OR predicate injection"] = true
 	}
 	if sqlTimeFunction.MatchString(text) {
@@ -2799,6 +2850,15 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 		if sink || strings.Contains(lower, "cmd=") || strings.Contains(lower, "command=") || strings.Contains(lower, "exec=") || strings.Contains(candidate.input.Name, "cmd") {
 			reasons["semantics: language runtime command or include execution"] = true
 		}
+	}
+	// eval(getallheaders()) / eval(apache_request_headers()) reads attacker
+	// headers into eval. Same surface rules as delimiter-less PHP gadgets:
+	// query/form/json/cookie, not a raw advisory body.
+	if phpGadgetAllowed(candidate.input.Source, candidate.input.Name, candidate.text) &&
+		(strings.Contains(lower, "eval(") || strings.Contains(lower, "assert(")) &&
+		(strings.Contains(lower, "getallheaders") || strings.Contains(lower, "apache_request_headers")) {
+		reasons["syntax: PHP header-array evaluation"] = true
+		reasons["semantics: language runtime command or include execution"] = true
 	}
 	if strings.Contains(lower, "{php}") || strings.Contains(lower, "{/php}") {
 		reasons["syntax: PHP template execution delimiter"] = true
@@ -3383,6 +3443,7 @@ func hit(candidate semanticCandidate, category string, severity engine.Severity,
 		Severity:   severity,
 		Confidence: confidence,
 		Payload:    strings.TrimSpace(candidate.text),
+		Isolation:  classifyPayloadIsolation(candidate.text),
 	}
 }
 
@@ -3424,44 +3485,23 @@ func hasSyntaxReason(reasons map[string]bool) bool {
 // weak single-signal hits must not block legitimate traffic.
 // Prefer miss over wrong block.
 func (a *Analyzer) blockableHit(h Hit) bool {
-	// Level 0 (Off): never block, only log
-	if a.paranoiaLevel == 0 {
+	// 0=record-only, 1=low: never block.
+	if a.paranoiaLevel <= 1 {
 		return false
 	}
 
 	if h.Category == "" || h.Payload == "" {
 		return false
 	}
+	// Embedded (gadget inside other text) blocks only at 5.
+	if h.Isolation == isolationEmbedded && a.paranoiaLevel < 5 {
+		return false
+	}
 	syntaxOK := h.Syntax != "" && !strings.HasSuffix(h.Syntax, "none") && !strings.Contains(h.Syntax, "attack grammar matched")
 	semanticsOK := h.Semantics != "" && !strings.HasSuffix(h.Semantics, "none") && !strings.Contains(h.Semantics, "malicious behavior inferred from context")
 
-	// Level 4 (Paranoid): block on any semantic evidence with confidence >= 0.5
-	if a.paranoiaLevel >= 4 {
-		return (syntaxOK || semanticsOK) && h.Confidence >= 0.5
-	}
-
-	// Level 3 (High): block on confidence >= 0.8 with High severity, or single evidence with Medium+
-	if a.paranoiaLevel == 3 {
-		if h.Confidence >= 0.8 && (h.Severity == engine.SeverityHigh || h.Severity == engine.SeverityCritical) {
-			return true
-		}
-		if (syntaxOK || semanticsOK) && h.Severity >= engine.SeverityMedium {
-			return true
-		}
-	}
-
-	// Level 1 (Low): require very high confidence (>=0.95) with Critical, or two evidence with High
-	if a.paranoiaLevel == 1 {
-		if h.Confidence >= 0.95 && h.Severity == engine.SeverityCritical {
-			return true
-		}
-		if syntaxOK && semanticsOK && h.Severity >= engine.SeverityHigh {
-			return true
-		}
-		return false
-	}
-
-	// Level 2 (Default): original logic - require two evidence types or specific single evidence
+	// Levels 2-5 share the same evidence bar. Isolation already decided
+	// whether an embedded gadget may block (5 only).
 	if syntaxOK && semanticsOK {
 		return true
 	}

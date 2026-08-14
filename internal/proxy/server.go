@@ -51,6 +51,8 @@ type Server struct {
 	protectionPolicy config.ProtectionPolicyConfig
 	certs            *SiteCertificateStore
 	clock            timekeeper.Clock
+	reviews          ReviewQueue
+	promotes         *promoteTable
 }
 
 type edgeRuntime struct {
@@ -187,6 +189,7 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 		protectionPolicy: cfg.Protection.Policy,
 		certs:            certs,
 		clock:            clock,
+		promotes:         newPromoteTable(),
 	}
 	server.edgeRuntime.Store(newEdgeRuntime(cfg.Edge))
 	server.siteRuntimes.Store(siteRuntimes)
@@ -492,6 +495,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.block(w, reqCtx, "ip_access", message, http.StatusForbidden, start)
 		return
 	}
+	fingerprint := clientFingerprint(r)
+	if fingerprint != "" {
+		if reqCtx.Metadata == nil {
+			reqCtx.Metadata = map[string]any{}
+		}
+		reqCtx.Metadata["client_fingerprint"] = fingerprint
+		if fingerprintDenied(site.WAF.SemanticPolicy.FingerprintDeny, fingerprint) {
+			s.block(w, reqCtx, "fingerprint", "client fingerprint is blocked", http.StatusForbidden, start)
+			return
+		}
+	}
 	if s.geoip.Blocked(reqCtx.ClientIP) && !ipAllowed {
 		s.block(w, reqCtx, "geoip", "GeoIP country is blocked", http.StatusForbidden, start)
 		return
@@ -633,6 +647,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.proxyError(w, r, site, reqCtx, "proxy_error", "waf pipeline error", http.StatusInternalServerError, start, err)
 			return
+		}
+		if (result == nil || !result.Detected) && s.promotes.Active(site.ID, s.wallNow()) {
+			if promoted := detectionFromReviewCandidate(reqCtx); promoted != nil {
+				if reqCtx.Metadata == nil {
+					reqCtx.Metadata = map[string]any{}
+				}
+				reqCtx.Metadata["detection"] = promoted
+				s.blockDetection(w, reqCtx, promoted, http.StatusForbidden, start)
+				return
+			}
 		}
 		if result != nil && result.Detected {
 			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results)
@@ -1539,7 +1563,11 @@ func (s *Server) challengeThreatIntel(w http.ResponseWriter, r *http.Request, re
 }
 
 func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, action string, status int, start time.Time, extra *storage.LogEntry) {
-	if s.logSink == nil || reqCtx == nil || reqCtx.Request == nil {
+	if reqCtx == nil || reqCtx.Request == nil {
+		return
+	}
+	if s.logSink == nil {
+		s.enqueueReview(ctx, reqCtx, action)
 		return
 	}
 	s.attachBotRiskMetadata(reqCtx, action)
@@ -1618,6 +1646,14 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 			}
 		}
 	}
+	if skip, ok := reqCtx.Metadata["semantic_skipped"].(string); ok && strings.TrimSpace(skip) != "" && entry.Message == "" && allowlistSkipWorthLogging(reqCtx.Request) {
+		entry.Category = "semantic"
+		entry.DetectorID = "semantic.analyzer"
+		entry.Message = "allowlist: " + skip
+		if entry.Action == "pass" {
+			entry.Action = "log"
+		}
+	}
 	if finding, ok := reqCtx.Metadata["response_finding"].(*response.Finding); ok && finding != nil {
 		entry.Category = "response"
 		entry.Message = finding.Message
@@ -1625,9 +1661,11 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		entry.Action = "log"
 	}
 	if isPlainAccessLog(entry) && !s.siteAccessLogEnabled(reqCtx.SiteID) {
+		s.enqueueReview(ctx, reqCtx, action)
 		return
 	}
 	_ = s.logSink.Write(ctx, entry)
+	s.enqueueReview(ctx, reqCtx, action)
 }
 
 // attachBotRiskMetadata writes L1 risk_score/risk_band on every bot-enabled request

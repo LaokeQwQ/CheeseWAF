@@ -11,6 +11,7 @@ const routeLoaders: Record<string, RouteLoader> = {
   '/sites': () => import('../pages/Sites/SitesPage'),
   '/ssl': () => import('../pages/SSL/SSLPage'),
   '/rules': () => import('../pages/Rules/RulesPage'),
+  '/review': () => import('../pages/Review/ReviewPage'),
   '/logs': () => import('../pages/Logs/LogsPage'),
   '/ip': () => import('../pages/IPManage/IPManagePage'),
   '/protection': () => import('../pages/Protection/ProtectionPage'),
