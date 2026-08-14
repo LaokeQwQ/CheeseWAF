@@ -120,6 +120,13 @@ The analyzer inspects **individual decoded parameter values** (paths and paramet
 - **Isolated Payload**: The inspected parameter value consists almost entirely of exploit syntax (e.g., `UNION SELECT 1,2,3`, allowing minimal wrappers like `@` or trailing semicolons).
 - **Embedded Payload**: The attack pattern appears inside ordinary text, user comments, articles, or descriptions.
 
+**Isolation classification scope (current):**
+- The isolation gadget list covers **PHP/JSP live shells**, **Log4j JNDI** lookups, and **short quoted/predicate SQL** (≤96 runes).
+- **XSS**, command/RCE, **SSTI**, **SSRF**, and **XXE** use document shape guards, not this gadget list.
+- Only hits labeled **embedded** skip blocking below paranoia level 5.
+- Hits that stay **unclassified** still go through `blockableHit` evidence rules; they are **not** auto-treated as embedded.
+- Technical articles and writeups are not guaranteed to always pass — isolation reduces false positives for covered gadgets, it is not a blanket content pass.
+
 ### Paranoia Level Matrix
 
 | Level | Name | Isolated Payload | Embedded Payload | Dynamic Elevation | Mechanism & Target Scenario |
