@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/public/cheesewaf-logo.png" alt="CheeseWAF logo" width="128">
+  <img src="web/public/cheesewaf-logo.png" alt="CheeseWAF Logo" width="128">
 </p>
 
 <h1 align="center">CheeseWAF</h1>
@@ -8,8 +8,8 @@
 
 <p align="center">
   <strong>ALAP</strong> · AI Large-Language-Model Auto Pilot<br>
-  Self-hosted WAF. WEB, Control Panel, and CLI in one binary.<br>
-  Your origin stays yours.
+  Self-hosted, lightweight, and high-concurrency intelligent WAF.<br>
+  Let AI take the helm so you can focus where it matters.
 </p>
 
 <p align="center">
@@ -18,262 +18,431 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE">Apache-2.0</a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/LaokeQwQ/CheeseWAF/stargazers"><img src="https://img.shields.io/github/stars/LaokeQwQ/CheeseWAF?style=flat-square&color=f5c542" alt="Stars"></a>
-  <a href="https://github.com/LaokeQwQ/CheeseWAF/network/members"><img src="https://img.shields.io/github/forks/LaokeQwQ/CheeseWAF?style=flat-square" alt="Forks"></a>
-  <a href="https://github.com/LaokeQwQ/CheeseWAF/watchers"><img src="https://img.shields.io/github/watchers/LaokeQwQ/CheeseWAF?style=flat-square" alt="Watchers"></a>
-  <a href="https://github.com/LaokeQwQ/CheeseWAF/issues"><img src="https://img.shields.io/github/issues/LaokeQwQ/CheeseWAF?style=flat-square" alt="Issues"></a>
-  <a href="https://github.com/LaokeQwQ/CheeseWAF/pulls"><img src="https://img.shields.io/github/issues-pr/LaokeQwQ/CheeseWAF?style=flat-square" alt="Pull requests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/LaokeQwQ/CheeseWAF?style=flat-square" alt="License"></a>
-  <br>
-  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/LaokeQwQ/CheeseWAF?style=flat-square&label=Go" alt="Go version"></a>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/LaokeQwQ/CheeseWAF?style=flat-square&label=Go" alt="Go Version"></a>
   <a href="https://github.com/LaokeQwQ/CheeseWAF/releases"><img src="https://img.shields.io/github/v/release/LaokeQwQ/CheeseWAF?include_prereleases&style=flat-square" alt="Release"></a>
-  <a href="https://github.com/LaokeQwQ/CheeseWAF/commits"><img src="https://img.shields.io/github/last-commit/LaokeQwQ/CheeseWAF?style=flat-square" alt="Last commit"></a>
   <a href="https://github.com/LaokeQwQ/CheeseWAF/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/LaokeQwQ/CheeseWAF/ci.yml?branch=master&style=flat-square&label=CI" alt="CI"></a>
-  <img src="https://img.shields.io/github/repo-size/LaokeQwQ/CheeseWAF?style=flat-square" alt="Repo size">
-  <img src="https://img.shields.io/github/languages/top/LaokeQwQ/CheeseWAF?style=flat-square" alt="Top language">
-  <img src="https://img.shields.io/github/languages/count/LaokeQwQ/CheeseWAF?style=flat-square" alt="Languages">
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/stargazers"><img src="https://img.shields.io/github/stars/LaokeQwQ/CheeseWAF?style=flat-square&color=f5c542" alt="Stars"></a>
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/issues"><img src="https://img.shields.io/github/issues/LaokeQwQ/CheeseWAF?style=flat-square" alt="Issues"></a>
 </p>
 
-> Pre-release. Configuration and APIs may change.
+---
 
-## Menu
+## Table of Contents
 
-- [ALAP](#alap)
-- [WEB + Control Panel + CLI](#web--control-panel--cli)
-- [Traffic path](#traffic-path)
-- [Protection levels](#protection-levels)
-- [Install](#install)
-- [Configuration](#configuration)
-- [Tech stack](#tech-stack)
-- [Development](#development)
+- [Core Mechanism](#core-mechanism)
+- [Features](#features)
+- [Request Processing Pipeline](#request-processing-pipeline)
+- [Paranoia Levels](#paranoia-levels)
+- [Deployment](#deployment)
+  - [1. Linux Deployment (Systemd Production)](#1-linux-deployment-systemd-production)
+  - [2. Docker Deployment (Docker Compose)](#2-docker-deployment-docker-compose)
+  - [3. Windows Deployment (Portable Zip & NSIS Installer)](#3-windows-deployment-portable-zip--nsis-installer)
+- [Quick Start](#quick-start)
+- [Management Interfaces](#management-interfaces)
+- [Configuration Reference](#configuration-reference)
+- [Tech Stack](#tech-stack)
+- [Development & Testing](#development--testing)
 - [Documentation](#documentation)
 - [License](#license)
 
-## ALAP
+---
 
-**ALAP** is **AI Large-Language-Model Auto Pilot**.
+## Core Mechanism
 
-The in-process semantic analyzer makes the inline block-or-pass decision. The site supplies the chat endpoint; no vendor is hard-coded. The model writes a review verdict after the response has already been sent, and does not change that request’s decision. If auto-agree is on and the verdict is `high` or `critical`, the verdict can become a lasting payload, URL, IP, or fingerprint rule.
+Traditional regex-based WAFs rely on large signature rule sets that require high maintenance and remain susceptible to false positives or evasion techniques. Conversely, invoking LLMs synchronously on every incoming request introduces substantial latency.
 
-Field scope, isolation, and levels are in [Protection levels](#protection-levels).
+CheeseWAF uses a decoupled pipeline:
 
-## WEB + Control Panel + CLI
+1. **Inline Mitigation (Data Plane):** An in-process semantic engine decodes parameters and performs Abstract Syntax Tree (AST) lexical analysis to block deterministic exploits in sub-millisecond time.
+2. **Asynchronous Review (ALAP Engine):** With **ALAP (AI Large-Language-Model Auto Pilot)**, ambiguous, borderline, or embedded payloads are dispatched to a background review queue for deeper LLM inspection after responses are served, providing autonomous oversight without adding proxy latency.
+3. **Dynamic Rule Synthesis:** High-confidence malicious findings (`high` or `critical`) generated by the model can be automatically promoted into persistent IP, fingerprint, or signature rules applied to the data plane.
 
-One admin API. Three entry points.
+The entire system ships as a standalone binary with embedded SQLite storage, an integrated Web console, a terminal TUI tool, and a RESTful administration API.
 
-| Surface | Scope |
-| --- | --- |
-| **WEB** | Browser UI. Desktop and mobile share the same app. |
-| **Control Panel** | Sites, rules, review, logs, maps, cluster. |
-| **CLI** | `waf-cli` on the release binary, equivalent to `cheesewaf cli`. |
+---
 
-All three share RBAC, revocable sessions, and the audit log.
+## Features
 
-## Traffic path
+- **Semantic Analysis**: Identifies SQL injection, XSS, and command injection attacks using multi-stage decoding and AST parsing instead of rigid regex patterns.
+- **ALAP Asynchronous Auditing**: Works with any OpenAI-compatible API or local LLM gateway in background worker queues without adding latency to live HTTP traffic.
+- **0–5 Paranoia Levels**: Per-site sensitivity controls that differentiate between isolated attack payloads and patterns embedded inside long text fields, with support for temporary elevation windows (`promote_seconds`).
+- **Access Control & Bot Mitigation**: Built-in IP allow/deny lists, GeoIP blocking, client soft fingerprinting, slider CAPTCHA challenges, token-bucket rate limiting, and waiting rooms.
+- **Unified Tri-Interface Management**: Responsive Web UI (desktop and mobile), interactive terminal interface (`waf-cli`), and RESTful API backed by a single RBAC and audit logging core.
+- **Zero External Dependencies**: Written in pure Go with an embedded CGO-free SQLite database (`modernc.org/sqlite`).
 
-Each request follows this path. Dashed lines run after the response has already been sent.
+---
+
+## Request Processing Pipeline
+
+Solid lines denote the inline millisecond data plane; dashed lines represent post-response asynchronous ALAP auditing and rule sync:
 
 ```mermaid
 flowchart TB
-  C[Client] --> L[Listen HTTP / TLS / HTTP3]
-  L --> IP{IP / Geo / fingerprint deny}
-  IP -->|block| BP[Block page]
-  IP -->|pass| BOT{Bot / rate limit / waiting room}
-  BOT -->|challenge| CH[CAPTCHA or queue]
-  CH -->|ok| SEM
-  BOT -->|pass| SEM[Semantic analyzer]
-  SEM --> SHAPE{Isolated or embedded}
-  SHAPE -->|isolated, level 2–5| BP
-  SHAPE -->|embedded, level 5| BP
-  SHAPE -->|embedded, level 2–4| PASS[Pass + enqueue review]
-  SHAPE -->|clean| ORIGIN[Origin]
-  PASS --> ORIGIN
-  PASS -.-> ALAP[ALAP queue]
-  SEM -.->|level 5 still asks the model| ALAP
-  ALAP --> LLM[Site-configured model]
-  LLM --> DEC{Operator or auto-agree}
-  DEC --> RULE[Lasting payload / URL / IP / fingerprint]
-  RULE --> IP
+  Client[Client Request] --> Ingress[HTTP / HTTPS / HTTP3 Listener]
+  Ingress --> IP{IP / Geo / Fingerprint Filter}
+  IP -->|Matched Blocklist| Block[Block & Return Security Response]
+  IP -->|Pass| Bot{Bot Defense / Rate Limit / Queue}
+  Bot -->|Threshold Exceeded| Challenge[CAPTCHA Challenge / Queue]
+  Challenge -->|Verified| Sem
+  Bot -->|Pass| Sem[Semantic Analyzer Engine]
+  Sem --> Shape{Payload Shape & Level Check}
+  Shape -->|Isolated Attack Level 2-5| Block
+  Shape -->|Embedded Payload Level 5| Block
+  Shape -->|Embedded Payload Level 2-4| Pass[Pass to Origin & Async Enqueue]
+  Shape -->|Clean Traffic| Origin[Forward to Upstream Origin]
+  Pass --> Origin
+  Pass -.->|Async Enqueue| Queue[ALAP Review Queue]
+  Sem -.->|Level 5 Blocked Sample| Queue
+  Queue --> LLM[Invoke Configured LLM]
+  LLM --> Review{Threat Review Decision}
+  Review -->|High / Critical| Rule[Auto-Generate Persistent Rules]
+  Review -->|Low Risk / FP| Dismiss[Archive or Add to Allowlist]
+  Rule -.->|Dynamic Rule Hot-Sync| IP
 ```
 
-Default listeners after a local start:
+### Default Network Listeners
 
-| Plane | Address |
-| --- | --- |
-| Data plane | `http://127.0.0.1:8080` |
-| Admin setup | `http://127.0.0.1:9443/setup` · Docker uses `https://127.0.0.1:9443/setup` |
+| Plane | Default Address | Description |
+| :--- | :--- | :--- |
+| **Data Plane** | `http://127.0.0.1:8080` | Ingress listener for incoming Web traffic and reverse proxying |
+| **Admin Plane** | `http://127.0.0.1:9443` | Web UI, RESTful API, and setup wizard (`https://` in Docker) |
+| **Cluster Plane** | `http://127.0.0.1:9444` | Node interconnect and state synchronization in cluster mode |
 
-## Protection levels
+---
 
-Site field: `waf.paranoia_level`. New sites default to **3**. An omitted YAML value is 3. An explicit `0` stays record-only.
+## Paranoia Levels
 
-The analyzer reads **one decoded field**, not the whole HTTP message. Path and parameter names remain visible.
+The paranoia level is configured per site via `waf.paranoia_level` (valid values: **0–5**, default: **3**).
 
-**Isolated:** the value is almost only attack bytes. Thin wrappers are allowed: `@`, a trailing `;`, `/{${...}}`.
+The analyzer inspects **individual decoded parameter values** (paths and parameter names remain visible) and categorizes detected attack signatures into two structural shapes:
+- **Isolated Payload**: The inspected parameter value consists almost entirely of exploit syntax (e.g., `UNION SELECT 1,2,3`, allowing minimal wrappers like `@` or trailing semicolons).
+- **Embedded Payload**: The attack pattern appears inside ordinary text, user comments, articles, or descriptions.
 
-**Embedded:** the same bytes appear inside an article, a long description, or other ordinary text.
+### Paranoia Level Matrix
 
-| Level | Isolated | Embedded |
-| --- | --- | --- |
-| 0–1 | record only | record only |
-| 2–4 | block | pass, enqueue review, ask the model asynchronously |
-| 5 | block | block, still enqueue review and ask the model |
+| Level | Name | Isolated Payload | Embedded Payload | Dynamic Elevation | Mechanism & Target Scenario |
+| :---: | :--- | :--- | :--- | :---: | :--- |
+| **0** | Record Only | Log only | Log only | No | Initial baseline profiling and traffic discovery. |
+| **1** | Low Monitoring | Log only | Log only | No | Staging environments, rule dry-runs, and false-positive auditing. |
+| **2** | Low-Medium | **Block immediately** | **Pass to origin**, async review | No | UGC platforms, forums, rich text editors with zero false positive tolerance. |
+| **3** | Standard (Default) | **Block immediately** | **Pass to origin**, async review | No | Standard production web apps and corporate portals. |
+| **4** | Medium-High | **Block immediately** | **Pass to origin**, async review | **Supported** (elevates to Level 5) | Critical systems under probing. Temporarily elevates to Level 5 via `promote_seconds`. |
+| **5** | Strict Mitigation | **Block immediately** | **Block immediately**, async review | N/A (Already highest) | Financial APIs, payment backends, and active emergency mitigation. |
 
-Level 4 can briefly promote the site to level 5 after an embedded hit (`promote_seconds`). That window lives in SQLite and survives restart.
+> **Notes:**
+> 1. **Dynamic Elevation (`promote_seconds`)**: Under Level 4, detecting embedded attack patterns can trigger a temporary elevation to Level 5 for a specified window (e.g., 300 seconds). The elevation deadline is persisted in SQLite across service restarts.
+> 2. **Level 5 Constraints**: Level 5 blocked samples are enqueued for audit with status `blocked` and cannot be retroactively allowed, but can be converted into permanent block rules (payloads, URLs, IPs, client fingerprints).
 
-A level-5 item that is already blocked can still receive a lasting payload, URL, IP, or fingerprint rule. Allow stays pending-only.
+---
 
-Client fingerprint is `SHA-256(User-Agent + "\n" + Accept-Language)`, first 8 bytes as 16 hex characters. It is not JA3.
+## Deployment
 
-Details: [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md).
+CheeseWAF provides three independent deployment methods. Choose the one that suits your infrastructure:
 
-## Install
+### 1. Linux Deployment (Systemd Production)
 
-Use the **release tarball + systemd** first. Compose is the one-box alternative. Multi-node uses a generated Ansible playbook.
+Recommended for Linux physical servers and virtual machines for direct execution and low resource consumption.
 
-### 1. Release package and systemd (recommended)
+#### Step 1: Download and Extract Release Archive
 
-CI publishes channel packages on `dev`, `canary`, and `master`:
-
-`cheesewaf-<version>-<os>-<arch>.tar.gz`
-
-Each archive is one folder: `cheesewaf`, `waf-cli`, embedded `web/dist`, example `configs/`, `VERSION`.
+Download the release package for your architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
 
 ```bash
+# Example for Linux x86_64 (amd64)
 tar -xzf cheesewaf-*-linux-amd64.tar.gz
 cd cheesewaf-*
+```
 
+#### Step 2: Install Executable and Configure Directories
+
+```bash
+# Install binary and create CLI symlink
 sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
 
+# Set up configuration and working directories
 sudo mkdir -p /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
-sudo cp deploy/systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
 
+# Create service user and set ownership
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+```
 
+#### Step 3: Configure Systemd Service
+
+Create `/etc/systemd/system/cheesewaf.service`:
+
+```ini
+[Unit]
+Description=CheeseWAF Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cheesewaf
+Group=cheesewaf
+ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
+Restart=always
+RestartSec=3s
+LimitNOFILE=65535
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### Step 4: Start and Verify Service
+
+```bash
+# Reload systemd and enable on boot
 sudo systemctl daemon-reload
 sudo systemctl enable --now cheesewaf
+
+# Check service status
+sudo systemctl status cheesewaf
 ```
 
-The unit in [deploy/systemd/cheesewaf.service](deploy/systemd/cheesewaf.service) runs:
+Navigate to `http://<SERVER_IP>:9443/setup` to complete initial setup.
 
-```text
-/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml
+---
+
+### 2. Docker Deployment (Docker Compose)
+
+Recommended for containerized deployments. The container runs as a non-root user (UID `10001`) with a read-only root filesystem.
+
+#### Step 1: Create Compose File
+
+Save the following as `docker-compose.yml`:
+
+```yaml
+services:
+  cheesewaf:
+    image: cheesewaf:latest
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    user: "10001:10001"
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    ports:
+      - "8080:8080"
+      - "9443:9443"
+    volumes:
+      - cheesewaf-data:/var/lib/cheesewaf
+      - cheesewaf-logs:/var/log/cheesewaf
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/cheesewaf-entrypoint", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  cheesewaf-data:
+  cheesewaf-logs:
 ```
 
-The release tarball may not include `deploy/systemd/`. Copy that unit from this repository, or write one with the `ExecStart` above.
-
-Then open the setup wizard, create the first admin, and point the sample site at your origin.
-
-Windows operators can use the zip (`cheesewaf.exe serve`) or the NSIS installer.
-
-### 2. Docker Compose (optional one-box)
-
-Use this when you want a disposable full instance, not as the default production shape.
+#### Step 2: Start Container
 
 ```bash
+# Start container in detached mode
+docker compose up -d
+
+# View logs and retrieve initial setup token
+docker compose logs -f cheesewaf
+```
+
+#### Step 3: Access Admin Interface
+
+- Open `https://<HOST_IP>:9443/setup` in your browser (admin uses HTTPS with a self-signed certificate in Docker).
+- Copy the temporary onboarding token from the container startup logs.
+- Data and logs persist in `cheesewaf-data` and `cheesewaf-logs` volumes across container restarts.
+
+---
+
+### 3. Windows Deployment (Portable Zip & NSIS Installer)
+
+CheeseWAF provides portable binaries and an NSIS graphical installer for Windows environments:
+
+#### Option A: Portable CLI Package (Zip)
+
+1. Download `cheesewaf-*-windows-amd64.zip` and extract to a target directory (e.g., `D:\CheeseWAF`).
+2. Run the following in PowerShell:
+
+```powershell
+# Start WAF process
+.\cheesewaf.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
+
+# Check running status
+.\cheesewaf.exe status
+
+# Stop process
+.\cheesewaf.exe stop
+```
+
+#### Option B: NSIS Graphical Installer
+
+1. Run `CheeseWAF-Setup-<version>.exe`.
+2. Follow the setup wizard to complete the installation.
+3. The uninstaller preserves user configuration and databases under `data\` by default.
+
+#### Local Service Controller (`cheesewaf-gui`)
+
+Windows releases bundle a lightweight local GUI controller bound strictly to loopback (`127.0.0.1:17943`):
+- Start, stop, and restart the backend WAF process.
+- Inspect process PID and operational status.
+- Open the Web management console or configuration directory directly.
+- Configure user-login autostart via the Windows Registry.
+
+---
+
+## Quick Start
+
+### 1. Initial Setup
+
+Open the setup URL after starting the service:
+- `http://127.0.0.1:9443/setup` (`https://127.0.0.1:9443/setup` in Docker)
+- Create your administrator account and save the system key.
+
+### 2. Add a Protected Site
+
+In the Web console, go to **Sites** -> **Add Site**:
+1. **Domain**: Enter your public domain (e.g., `example.com`).
+2. **Upstream**: Enter the internal IP and port of your origin application (e.g., `10.0.0.10:8000`).
+3. **Protection Level**: Select Paranoia Level 3 for standard deployments.
+4. **Save**: Configuration is applied immediately without restarting the service.
+
+### 3. Configure AI Autopilot (ALAP)
+
+In **AI Settings**:
+1. **Endpoint**: Enter your LLM provider endpoint (e.g., `https://api.openai.com/v1`).
+2. **API Key & Model**: Enter credentials and select the target model.
+3. **Auto-Agree**: Enable auto-commit for high-confidence threats if you want automated rule creation.
+
+---
+
+## Management Interfaces
+
+| Interface | Form Factor | Primary Usage |
+| :--- | :--- | :--- |
+| **Web Console** | Responsive Web application (desktop and mobile) | Site configuration, rule orchestration, threat dashboards, log analysis, AI review queue |
+| **Terminal CLI** | Interactive TUI & command tools (`waf-cli`) | Headless server management, configuration reloading, process status checks |
+| **RESTful API** | HTTP API with Bearer Token authentication | CI/CD pipelines, automated deployments, custom integrations |
+
+---
+
+## Configuration Reference
+
+A default `cheesewaf.yaml` file is generated upon first startup (reference template: [configs/cheesewaf.yaml](configs/cheesewaf.yaml)):
+
+```yaml
+server:
+  listen: "0.0.0.0:8080"         # Data plane ingress listener
+  admin_listen: "127.0.0.1:9443"   # Admin plane listener
+  admin_public: false            # Set true only with admin TLS configured
+
+sites:
+  - id: "site-demo"
+    name: "Demo Site"
+    domains: ["demo.example.com"]
+    upstreams:
+      - address: "192.168.1.100:8080"
+        weight: 1
+    waf:
+      paranoia_level: 3          # Paranoia Level (0–5)
+
+protection:
+  rate_limit:
+    enabled: true
+    requests_per_second: 100
+  ip_block:
+    enabled: true
+
+ai:
+  enabled: true
+  provider: "openai"
+  endpoint: "https://api.example.com/v1"
+  model: "gpt-4o-mini"
+  auto_agree: true               # Auto-commit high-confidence review verdicts
+```
+
+---
+
+## Tech Stack
+
+| Layer | Component |
+| :--- | :--- |
+| **Data Plane** | Go 1.26, `chi` routing, quic-go (HTTP/3 support) |
+| **Detection Core** | In-process AST semantic analyzer, dynamic fingerprinting, token-bucket rate limiter |
+| **Review Engine** | Asynchronous task queues, standard Chat Completions / Messages protocol adapters |
+| **Storage** | Embedded SQLite (`modernc.org/sqlite`, pure Go), optional PostgreSQL sink |
+| **Web Console** | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, TanStack Query |
+| **Terminal CLI** | Cobra CLI library, Bubble Tea TUI framework |
+
+---
+
+## Development & Testing
+
+### Requirements
+
+- Go `1.26` or higher
+- Node.js `24.x` and npm
+
+### Build Pipeline
+
+```bash
+# 1. Clone repository
 git clone https://github.com/LaokeQwQ/CheeseWAF.git
 cd CheeseWAF
-docker compose -f deploy/docker/docker-compose.yml up -d --build
-docker compose -f deploy/docker/docker-compose.yml logs -f cheesewaf
-```
 
-Open `https://127.0.0.1:9443/setup`. The image uses a self-signed admin certificate. The first-run token is only in the start log.
-
-```bash
-docker compose -f deploy/docker/docker-compose.yml down
-```
-
-Named volumes keep data. `down` does not delete them.
-
-### 3. Multi-node Ansible
-
-There is no checked-in `deploy/ansible/` tree. The admin plane **generates** a playbook from a cluster plan:
-
-`POST /api/cluster/deploy/ansible`
-
-The zip has `inventory.ini`, `playbook.yml`, a systemd role, and a config template. It does not embed SSH passwords or join tokens. You supply SSH through your own inventory or agent:
-
-```bash
-ansible-playbook -i inventory.ini playbook.yml
-```
-
-Two WAF nodes in that package are load balancing, not full HA.
-
-### From source (developers)
-
-Needs **Go 1.26.6** and **Node.js 24.18.0**.
-
-```bash
-git clone https://github.com/LaokeQwQ/CheeseWAF.git
-cd CheeseWAF
-cd web && npm ci && npm run build && cd ..
-go run ./cmd/cheesewaf serve
-```
-
-## Configuration
-
-A first start writes `data/cheesewaf.yaml`. The example is [configs/cheesewaf.yaml](configs/cheesewaf.yaml).
-
-| Section | Role |
-| --- | --- |
-| `server` | Data-plane and admin listen addresses and TLS |
-| `sites` | Domains, origins, detection policy, allowlists, rewrite |
-| `protection` | Global levels, IP, rate limit, bot, API security |
-| `storage` / `logging` / `monitor` | Database, log backends, metrics and alerts |
-| `ai` | Site model used by ALAP review, auto-agree, and the console |
-
-Admin binds `127.0.0.1` by default. A public bind needs both `server.admin_public: true` and admin TLS.
-
-## Tech stack
-
-| Layer | Choice |
-| --- | --- |
-| Data plane | Go 1.26, `chi`, YAML v3, quic-go (HTTP/3) |
-| Detection | In-process staged semantic analyzer, custom rules |
-| ALAP | Site-configured chat HTTP (completions or messages style), async review queue |
-| Storage | SQLite by default (`modernc.org/sqlite`), optional PostgreSQL log sink |
-| Admin API | Same binary, Bearer sessions, RBAC |
-| Web / mobile | React 18, TypeScript, Vite, Tailwind, shadcn/Radix, TanStack Query |
-| Terminal | Cobra + Bubble Tea (`waf-cli`) |
-| Ship | Single static binary, systemd, Docker, Windows zip / NSIS, generated Ansible |
-
-## Development
-
-```bash
-go test ./cmd/... ./internal/...
-go vet ./cmd/... ./internal/...
-
+# 2. Build Web frontend static assets
 cd web
 npm ci
-npm run typecheck
-npm test
 npm run build
+cd ..
+
+# 3. Build backend binary
+go build -o bin/cheesewaf ./cmd/cheesewaf
+
+# 4. Run
+./bin/cheesewaf serve --config ./configs/cheesewaf.yaml
 ```
 
-Replay built-in samples:
+### Verification & Corpus Tests
 
 ```bash
+# Run backend tests
+go test -v ./cmd/... ./internal/...
+go vet ./cmd/... ./internal/...
+
+# Frontend type checking and tests
+cd web && npm run typecheck && npm test && cd ..
+
+# Replay bundled security test corpus against the analyzer
 go run ./cmd/cheesewaf-corpus --mode analyzer
-go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
 ```
 
-Integration path: `feature/*` → `dev` → `canary` → `master`. Merge only after required checks are green.
+---
 
 ## Documentation
 
-| Document | Topic |
-| --- | --- |
-| [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | Levels 0–5, review queue, scope and evaluation |
-| [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | How levels map onto code |
-| [docs/performance-optimization.md](docs/performance-optimization.md) | Runtime and analyzer notes |
+- [Protection Policy & Roadmap](docs/protection-policy-roadmap.md)
+- [Paranoia Level Code Mapping](docs/paranoia-level-implementation.md)
+- [Performance Optimization Notes](docs/performance-optimization.md)
+- [Windows Packaging Guide](deploy/windows/README.md)
+
+---
 
 ## License
 
-[Apache License 2.0](LICENSE).
+This project is licensed under the [Apache License 2.0](LICENSE).
