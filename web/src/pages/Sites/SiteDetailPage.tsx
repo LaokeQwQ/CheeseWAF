@@ -526,15 +526,17 @@ export default function SiteDetailPage() {
                 <label>
                   <span>{t('sites.paranoiaLevel')}</span>
                   <Select
-                    value={String(site.paranoia_level || 2)}
+                    value={String(site.paranoia_level)}
                     onValueChange={(value) => updateField('paranoia_level', Number(value))}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="0">{t('sites.paranoiaRecord')}</SelectItem>
                       <SelectItem value="1">{t('sites.paranoiaLow')}</SelectItem>
-                      <SelectItem value="2">{t('sites.paranoiaDefault')}</SelectItem>
-                      <SelectItem value="3">{t('sites.paranoiaHigh')}</SelectItem>
-                      <SelectItem value="4">{t('sites.paranoiaStrict')}</SelectItem>
+                      <SelectItem value="2">{t('sites.paranoiaMidLow')}</SelectItem>
+                      <SelectItem value="3">{t('sites.paranoiaDefault')}</SelectItem>
+                      <SelectItem value="4">{t('sites.paranoiaHigh')}</SelectItem>
+                      <SelectItem value="5">{t('sites.paranoiaStrict')}</SelectItem>
                     </SelectContent>
                   </Select>
                 </label>
@@ -636,6 +638,24 @@ export default function SiteDetailPage() {
                     onChange={(e) => updateAdvanced('semantic_policy', { param_allowlist: splitList(e.target.value) })}
                   />
                   <em>{t('sites.paramAllowlistHint')}</em>
+                </label>
+                <label>
+                  <span>{t('sites.promoteSeconds')}</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={String(site.advanced.semantic_policy?.promote_seconds ?? 0)}
+                    onChange={(e) => updateAdvanced('semantic_policy', { promote_seconds: Number(e.target.value) || 0 })}
+                  />
+                  <em>{t('sites.promoteSecondsHint')}</em>
+                </label>
+                <label className="switch-line">
+                  <span>{t('sites.autoAgree')}</span>
+                  <Switch
+                    checked={Boolean(site.advanced.semantic_policy?.auto_agree)}
+                    onCheckedChange={(checked) => updateAdvanced('semantic_policy', { auto_agree: checked })}
+                  />
+                  <em>{t('sites.autoAgreeHint')}</em>
                 </label>
               </div>
             </section>

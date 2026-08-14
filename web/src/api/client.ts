@@ -1,7 +1,7 @@
 import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { TimeSyncStatus } from '../types/api';
 
 export const apiClient = axios.create({
@@ -521,6 +521,14 @@ export async function fetchHealth(): Promise<HealthStatus> {
 
 export function fetchLogs(params: LogQuery = {}) {
   return unwrap<LogResponse>(apiClient.get('/logs', { params }));
+}
+
+export function fetchReviewItems(params: ReviewQuery = {}) {
+  return unwrap<ReviewResponse>(apiClient.get('/review', { params }));
+}
+
+export function decideReviewItem(id: string, decision: ReviewDecision) {
+  return unwrap<ReviewItem>(apiClient.post(`/review/${encodeURIComponent(id)}/decide`, { decision }));
 }
 
 export async function fetchLogEvent(reference: string) {

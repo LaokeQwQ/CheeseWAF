@@ -8,9 +8,10 @@ func TestEffectiveParanoiaLevel(t *testing.T) {
 		in   int
 		want int
 	}{
-		{0, DefaultParanoiaLevel},
+		{0, 0},
 		{-1, DefaultParanoiaLevel},
-		{5, DefaultParanoiaLevel},
+		{5, 5},
+		{6, DefaultParanoiaLevel},
 		{1, 1},
 		{2, 2},
 		{3, 3},

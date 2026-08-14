@@ -63,6 +63,7 @@ type Hit struct {
 	Severity   engine.Severity `json:"severity"`
 	Confidence float64         `json:"confidence"`
 	Payload    string          `json:"payload"`
+	Isolation  string          `json:"isolation,omitempty"`
 }
 
 type semanticCandidate struct {
@@ -138,10 +139,14 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		reqCtx.Metadata["semantic_analysis_incomplete"] = true
 	}
 	if !haveBest {
+		if review, ok := strongestHit(report.Hits); ok {
+			reqCtx.Metadata["review_candidate"] = reviewCandidateMap(review, a.paranoiaLevel)
+		}
 		return nil, nil
 	}
 	action := actionForMode(a.mode)
 	if a.mode == "block" && !a.blockableHit(best) {
+		reqCtx.Metadata["review_candidate"] = reviewCandidateMap(best, a.paranoiaLevel)
 		return nil, nil
 	}
 	if action == engine.ActionBlock {
@@ -186,6 +191,31 @@ func analyzerDetectorID(category string) string {
 		return id
 	}
 	return "semantic.analyzer." + category
+}
+
+func strongestHit(hits []Hit) (Hit, bool) {
+	var best Hit
+	found := false
+	for _, hit := range hits {
+		if !found || betterHit(hit, best) {
+			best = hit
+			found = true
+		}
+	}
+	return best, found
+}
+
+func reviewCandidateMap(hit Hit, level int) map[string]any {
+	return map[string]any{
+		"category":         hit.Category,
+		"severity":         hit.Severity.String(),
+		"payload":          hit.Payload,
+		"shape":            hit.Isolation,
+		"source":           hit.Source,
+		"name":             hit.Name,
+		"protection_level": level,
+		"confidence":       hit.Confidence,
+	}
 }
 
 // analyzeAllCandidates runs field analysis. Multi-field requests use a bounded
@@ -320,10 +350,12 @@ func (m *candidateMerge) add(mode string, a *Analyzer, hits []Hit) {
 				m.anomalyNotes = append(m.anomalyNotes, note)
 			}
 		}
+		// Keep every hit in the report so detected-but-not-blocked
+		// requests can enter the review queue. Blocking still uses haveBest.
+		m.report.Hits = append(m.report.Hits, next)
 		if mode == "block" && !a.blockableHit(next) {
 			continue
 		}
-		m.report.Hits = append(m.report.Hits, next)
 		if !m.haveBest || betterHit(next, m.best) {
 			m.best = next
 			m.haveBest = true
@@ -3405,6 +3437,7 @@ func hit(candidate semanticCandidate, category string, severity engine.Severity,
 		Severity:   severity,
 		Confidence: confidence,
 		Payload:    strings.TrimSpace(candidate.text),
+		Isolation:  classifyPayloadIsolation(candidate.text),
 	}
 }
 
@@ -3446,44 +3479,23 @@ func hasSyntaxReason(reasons map[string]bool) bool {
 // weak single-signal hits must not block legitimate traffic.
 // Prefer miss over wrong block.
 func (a *Analyzer) blockableHit(h Hit) bool {
-	// Level 0 (Off): never block, only log
-	if a.paranoiaLevel == 0 {
+	// 0=record-only, 1=low: never block.
+	if a.paranoiaLevel <= 1 {
 		return false
 	}
 
 	if h.Category == "" || h.Payload == "" {
 		return false
 	}
+	// Embedded (gadget inside other text) blocks only at 5.
+	if h.Isolation == isolationEmbedded && a.paranoiaLevel < 5 {
+		return false
+	}
 	syntaxOK := h.Syntax != "" && !strings.HasSuffix(h.Syntax, "none") && !strings.Contains(h.Syntax, "attack grammar matched")
 	semanticsOK := h.Semantics != "" && !strings.HasSuffix(h.Semantics, "none") && !strings.Contains(h.Semantics, "malicious behavior inferred from context")
 
-	// Level 4 (Paranoid): block on any semantic evidence with confidence >= 0.5
-	if a.paranoiaLevel >= 4 {
-		return (syntaxOK || semanticsOK) && h.Confidence >= 0.5
-	}
-
-	// Level 3 (High): block on confidence >= 0.8 with High severity, or single evidence with Medium+
-	if a.paranoiaLevel == 3 {
-		if h.Confidence >= 0.8 && (h.Severity == engine.SeverityHigh || h.Severity == engine.SeverityCritical) {
-			return true
-		}
-		if (syntaxOK || semanticsOK) && h.Severity >= engine.SeverityMedium {
-			return true
-		}
-	}
-
-	// Level 1 (Low): require very high confidence (>=0.95) with Critical, or two evidence with High
-	if a.paranoiaLevel == 1 {
-		if h.Confidence >= 0.95 && h.Severity == engine.SeverityCritical {
-			return true
-		}
-		if syntaxOK && semanticsOK && h.Severity >= engine.SeverityHigh {
-			return true
-		}
-		return false
-	}
-
-	// Level 2 (Default): original logic - require two evidence types or specific single evidence
+	// Levels 2-5 share the same evidence bar. Isolation already decided
+	// whether an embedded gadget may block (5 only).
 	if syntaxOK && semanticsOK {
 		return true
 	}

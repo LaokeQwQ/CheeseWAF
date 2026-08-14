@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS sites (
   key_file TEXT NOT NULL DEFAULT '',
   waf_enabled INTEGER NOT NULL DEFAULT 1,
   waf_mode TEXT NOT NULL DEFAULT 'block',
+  paranoia_level INTEGER NOT NULL DEFAULT 3,
   advanced TEXT NOT NULL DEFAULT '{}',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
@@ -80,4 +81,31 @@ CREATE INDEX IF NOT EXISTS idx_admin_sessions_user_id ON admin_sessions(user_id)
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_order ON notifications(user_id, is_pinned DESC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);
+
+CREATE TABLE IF NOT EXISTS review_items (
+  id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  site_id TEXT NOT NULL DEFAULT '',
+  client_ip TEXT NOT NULL DEFAULT '',
+  method TEXT NOT NULL DEFAULT '',
+  uri TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  severity TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '',
+  protection_level INTEGER NOT NULL DEFAULT 0,
+  shape TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  param_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  ai_verdict TEXT NOT NULL DEFAULT '',
+  decided_by_subject TEXT NOT NULL DEFAULT '',
+  decided_by_name TEXT NOT NULL DEFAULT '',
+  decided_by_role TEXT NOT NULL DEFAULT '',
+  decided_at TEXT NOT NULL DEFAULT '',
+  decision TEXT NOT NULL DEFAULT '',
+  applied_rule_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_review_items_site_status ON review_items(site_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_review_items_category_time ON review_items(category, created_at DESC);
 `
