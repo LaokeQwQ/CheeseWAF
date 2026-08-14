@@ -5,8 +5,9 @@
 <h1 align="center">CheeseWAF</h1>
 
 <p align="center">
-  Self-hosted Web Application Firewall in Go.<br>
-  Reverse proxy in front of your origin, plus one admin API, web console, and terminal UI.
+  <strong>ALAP</strong> · AI Large-Language-Model Auto Pilot<br>
+  A next-generation, self-hosted WAF driven by a large language model.<br>
+  One binary. Three consoles. Your origin stays yours.
 </p>
 
 <p align="center">
@@ -15,43 +16,87 @@
   <a href="LICENSE">Apache-2.0</a>
 </p>
 
-> Pre-release. Config and APIs can still change. Try it in a controlled environment before you put production traffic through it.
+<p align="center">
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/stargazers"><img src="https://img.shields.io/github/stars/LaokeQwQ/CheeseWAF?style=flat-square&color=f5c542" alt="Stars"></a>
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/network/members"><img src="https://img.shields.io/github/forks/LaokeQwQ/CheeseWAF?style=flat-square" alt="Forks"></a>
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/watchers"><img src="https://img.shields.io/github/watchers/LaokeQwQ/CheeseWAF?style=flat-square" alt="Watchers"></a>
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/issues"><img src="https://img.shields.io/github/issues/LaokeQwQ/CheeseWAF?style=flat-square" alt="Issues"></a>
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/pulls"><img src="https://img.shields.io/github/issues-pr/LaokeQwQ/CheeseWAF?style=flat-square" alt="Pull requests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/LaokeQwQ/CheeseWAF?style=flat-square" alt="License"></a>
+  <br>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/LaokeQwQ/CheeseWAF?style=flat-square&label=Go" alt="Go version"></a>
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/releases"><img src="https://img.shields.io/github/v/release/LaokeQwQ/CheeseWAF?include_prereleases&style=flat-square" alt="Release"></a>
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/commits"><img src="https://img.shields.io/github/last-commit/LaokeQwQ/CheeseWAF?style=flat-square" alt="Last commit"></a>
+  <a href="https://github.com/LaokeQwQ/CheeseWAF/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/LaokeQwQ/CheeseWAF/ci.yml?branch=master&style=flat-square&label=CI" alt="CI"></a>
+  <img src="https://img.shields.io/github/repo-size/LaokeQwQ/CheeseWAF?style=flat-square" alt="Repo size">
+  <img src="https://img.shields.io/github/languages/top/LaokeQwQ/CheeseWAF?style=flat-square" alt="Top language">
+  <img src="https://img.shields.io/github/languages/count/LaokeQwQ/CheeseWAF?style=flat-square" alt="Languages">
+</p>
+
+> Pre-release. CheeseWAF is an **ALAP** (AI Large-Language-Model Auto Pilot) WAF: the data plane decides in microseconds, then a site-configured model pilots review, auto-agree, and lasting rules. Config and APIs can still change.
 
 ## Contents
 
-- [What it does](#what-it-does)
-- [How it fits](#how-it-fits)
+- [Why ALAP](#why-alap)
+- [Three consoles](#three-consoles)
+- [Traffic path](#traffic-path)
 - [Protection levels](#protection-levels)
-- [Quick start](#quick-start)
+- [Install](#install)
 - [Configuration](#configuration)
+- [Tech stack](#tech-stack)
 - [Development](#development)
-- [Repository layout](#repository-layout)
 - [Documentation](#documentation)
-- [Before a public release](#before-a-public-release)
 - [License](#license)
 
-## What it does
+## Why ALAP
 
-CheeseWAF sits between clients and your origin. The data plane inspects HTTP requests and responses. The admin plane (localhost by default) configures sites, rules, users, logs, and runtime state.
+Most WAFs stop at a rule hit. CheeseWAF treats that hit as the start of an autopilot loop.
 
-- **Web attacks.** Staged semantic analysis for SQL injection, XSS, RCE, LFI, XXE, SSRF, NoSQL injection, SSTI, and related families. Custom rules and optional response inspection.
-- **False-positive first blocking.** Isolated gadgets (almost only attack bytes in one decoded field) can block from level 2. Embedded gadgets inside prose pass at 2–4 and only block at level 5.
-- **Review queue.** Suspicious requests that were not blocked (and level-5 blocks) go to `/review`. An operator can add a lasting payload, URL, IP, or client-fingerprint block, or allow and whitelist. The configured site model is asked in the background and does not stall the request.
-- **Bot and traffic control.** Rate limits, JS proof-of-work, image CAPTCHA, slider CAPTCHA, and a waiting room.
-- **API security.** Request schema checks, endpoint rate limits, and JWT checks (HMAC, PEM, or JWKS).
-- **Access control.** Global, site, and path IP rules, reputation, GeoIP, and trusted-proxy bindings per vendor CIDR.
-- **Operations.** One data model for the web console, REST API, and `waf-cli`. RBAC, revocable sessions, audit log, Prometheus metrics, and several log backends.
-- **Deploy.** Docker Compose, systemd, and Windows packaging. Optional cluster join, certificate rotation, and rolling upgrade.
+1. A staged semantic engine reads **one decoded field**, not the whole HTTP message.
+2. Isolated gadgets (almost only attack bytes, thin wrappers like `@`, trailing `;`, `/{${...}}`) can block from level 2.
+3. The same bytes inside an article pass at levels 2–4. Only level 5 blocks them on the spot.
+4. Anything suspicious still goes to the review queue. The site’s own model writes a verdict in the background. It never stalls the request.
+5. An operator — or auto-agree, when you turn it on — turns that verdict into a lasting payload, URL, IP, or fingerprint rule.
 
-It does **not** replace origin authentication. It does **not** delete posts from a third-party CMS. It does **not** use a large language model as the primary detector.
+You bring the model endpoint. CheeseWAF does not hard-code a vendor. The model is not a CMS takedown bot. Lasting action stays inside the WAF.
 
-## How it fits
+## Three consoles
 
-```text
-Client  --->  CheeseWAF data plane  --->  origin
-                      |
-                      +-- Admin API / web console / waf-cli
-                      +-- Logs / metrics / reports
+One admin API. Three ways to run it.
+
+| Console | Who it is for |
+| --- | --- |
+| **Web** | Full desktop operations: sites, rules, review, logs, maps, cluster |
+| **Mobile browser** | The same console, laid out for a phone |
+| **`waf-cli` TUI** | Terminal operators on the release binary (`./waf-cli` wraps `./cheesewaf cli`) |
+
+Web, phone, and TUI share RBAC, revocable sessions, and the audit log.
+
+## Traffic path
+
+Every request walks this path. Dashed lines are ALAP: they run after the response is already on its way.
+
+```mermaid
+flowchart TB
+  C[Client] --> L[Listen HTTP / TLS / HTTP3]
+  L --> IP{IP / Geo / fingerprint deny}
+  IP -->|block| BP[Block page]
+  IP -->|pass| BOT{Bot / rate limit / waiting room}
+  BOT -->|challenge| CH[CAPTCHA or queue]
+  CH -->|ok| SEM
+  BOT -->|pass| SEM[Semantic analyzer]
+  SEM --> SHAPE{Isolated or embedded}
+  SHAPE -->|isolated, level 2–5| BP
+  SHAPE -->|embedded, level 5| BP
+  SHAPE -->|embedded, level 2–4| PASS[Pass + enqueue review]
+  SHAPE -->|clean| ORIGIN[Origin]
+  PASS --> ORIGIN
+  PASS -.-> ALAP[ALAP queue]
+  SEM -.->|level 5 still asks the model| ALAP
+  ALAP --> LLM[Site-configured model]
+  LLM --> DEC{Operator or auto-agree}
+  DEC --> RULE[Lasting payload / URL / IP / fingerprint]
+  RULE --> IP
 ```
 
 Default listeners after a local start:
@@ -59,7 +104,7 @@ Default listeners after a local start:
 | Plane | Address |
 | --- | --- |
 | Data plane | `http://127.0.0.1:8080` |
-| Admin (setup) | `http://127.0.0.1:9443/setup` or `https://127.0.0.1:9443/setup` in Docker |
+| Admin setup | `http://127.0.0.1:9443/setup` · Docker uses `https://127.0.0.1:9443/setup` |
 
 ## Protection levels
 
@@ -71,15 +116,59 @@ Site field: `waf.paranoia_level`. New sites default to **3**. An omitted YAML va
 | 2–4 | block | pass, ask the model, enqueue review |
 | 5 | block | block, still ask the model |
 
-Level 4 can briefly promote the site to level 5 after an embedded hit (`promote_seconds`). That window is stored in SQLite and survives restart.
+Level 4 can briefly promote the site to level 5 after an embedded hit (`promote_seconds`). That window lives in SQLite and survives restart.
 
-Client fingerprint for one-click deny is `SHA-256(User-Agent + "\n" + Accept-Language)`, first 8 bytes as 16 hex characters. It is not JA3.
+A level-5 item that is already blocked can still receive a lasting payload, URL, IP, or fingerprint rule. Allow stays pending-only.
+
+Client fingerprint is `SHA-256(User-Agent + "\n" + Accept-Language)`, first 8 bytes as 16 hex characters. It is not JA3.
 
 Details: [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md).
 
-## Quick start
+## Install
 
-### Docker Compose
+Use the **release tarball + systemd** first. Compose is the one-box alternative. Multi-node uses a generated Ansible playbook.
+
+### 1. Release package and systemd (recommended)
+
+CI publishes channel packages on `dev`, `canary`, and `master`:
+
+`cheesewaf-<version>-<os>-<arch>.tar.gz`
+
+Each archive is one folder: `cheesewaf`, `waf-cli`, embedded `web/dist`, example `configs/`, `VERSION`.
+
+```bash
+tar -xzf cheesewaf-*-linux-amd64.tar.gz
+cd cheesewaf-*
+
+sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
+sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
+
+sudo mkdir -p /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
+sudo cp deploy/systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
+
+sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
+sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now cheesewaf
+```
+
+The unit in [deploy/systemd/cheesewaf.service](deploy/systemd/cheesewaf.service) runs:
+
+```text
+/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml
+```
+
+The release tarball may not include `deploy/systemd/`. Copy that unit from this repository, or write one with the `ExecStart` above.
+
+Then open the setup wizard, create the first admin, and point the sample site at your origin.
+
+Windows operators can use the zip (`cheesewaf.exe serve`) or the NSIS installer.
+
+### 2. Docker Compose (optional one-box)
+
+Use this when you want a disposable full instance, not as the default production shape.
 
 ```bash
 git clone https://github.com/LaokeQwQ/CheeseWAF.git
@@ -88,35 +177,42 @@ docker compose -f deploy/docker/docker-compose.yml up -d --build
 docker compose -f deploy/docker/docker-compose.yml logs -f cheesewaf
 ```
 
-Then open `https://127.0.0.1:9443/setup`. The container uses a self-signed admin certificate. The first-run setup token is written only to the start log. After setup, change the sample site upstream to your real origin.
+Open `https://127.0.0.1:9443/setup`. The image uses a self-signed admin certificate. The first-run token is only in the start log.
 
 ```bash
 docker compose -f deploy/docker/docker-compose.yml down
 ```
 
-Data lives in Compose named volumes. `down` does not delete those volumes.
+Named volumes keep data. `down` does not delete them.
 
-### From source
+### 3. Multi-node Ansible
 
-Needs **Go 1.26.6** and **Node.js 24.18.0** (same major version is enough for the console).
+There is no checked-in `deploy/ansible/` tree. The admin plane **generates** a playbook from a cluster plan:
+
+`POST /api/cluster/deploy/ansible`
+
+The zip has `inventory.ini`, `playbook.yml`, a systemd role, and a config template. It does not embed SSH passwords or join tokens. You supply SSH through your own inventory or agent:
+
+```bash
+ansible-playbook -i inventory.ini playbook.yml
+```
+
+Two WAF nodes in that package are load balancing, not full HA.
+
+### From source (developers)
+
+Needs **Go 1.26.6** and **Node.js 24.18.0**.
 
 ```bash
 git clone https://github.com/LaokeQwQ/CheeseWAF.git
 cd CheeseWAF
-
-cd web
-npm ci
-npm run build
-cd ..
-
+cd web && npm ci && npm run build && cd ..
 go run ./cmd/cheesewaf serve
 ```
 
-First start creates runtime config, SQLite, and cert directories under `data/`. Open `http://127.0.0.1:9443/setup`.
-
 ## Configuration
 
-Local start writes `data/cheesewaf.yaml`. The checked-in example is [configs/cheesewaf.yaml](configs/cheesewaf.yaml).
+A first start writes `data/cheesewaf.yaml`. The example is [configs/cheesewaf.yaml](configs/cheesewaf.yaml).
 
 | Section | Role |
 | --- | --- |
@@ -124,9 +220,22 @@ Local start writes `data/cheesewaf.yaml`. The checked-in example is [configs/che
 | `sites` | Domains, origins, detection policy, allowlists, rewrite |
 | `protection` | Global levels, IP, rate limit, bot, API security |
 | `storage` / `logging` / `monitor` | Database, log backends, metrics and alerts |
-| `ai` | Optional site model used by the review queue and console |
+| `ai` | Site model used by ALAP review, auto-agree, and the console |
 
-The admin plane binds `127.0.0.1` by default. Public listen requires both `server.admin_public: true` and admin TLS.
+Admin binds `127.0.0.1` by default. A public bind needs both `server.admin_public: true` and admin TLS.
+
+## Tech stack
+
+| Layer | Choice |
+| --- | --- |
+| Data plane | Go 1.26, `chi`, YAML v3, quic-go (HTTP/3) |
+| Detection | In-process staged semantic analyzer, custom rules |
+| ALAP | Site-configured chat HTTP (completions or messages style), async review queue |
+| Storage | SQLite by default (`modernc.org/sqlite`), optional PostgreSQL log sink |
+| Admin API | Same binary, Bearer sessions, RBAC |
+| Web / mobile | React 18, TypeScript, Vite, Tailwind, shadcn/Radix, TanStack Query |
+| Terminal | Cobra + Bubble Tea (`waf-cli`) |
+| Ship | Single static binary, systemd, Docker, Windows zip / NSIS, generated Ansible |
 
 ## Development
 
@@ -141,7 +250,7 @@ npm test
 npm run build
 ```
 
-Replay built-in semantic samples:
+Replay built-in samples:
 
 ```bash
 go run ./cmd/cheesewaf-corpus --mode analyzer
@@ -150,18 +259,6 @@ go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
 
 Integration path: `feature/*` → `dev` → `canary` → `master`. Merge only after required checks are green.
 
-## Repository layout
-
-| Path | Contents |
-| --- | --- |
-| `cmd/` | Server, corpus runner, Windows controller |
-| `internal/` | Proxy, detection, admin API, storage, cluster |
-| `web/` | React admin console |
-| `configs/` | Example YAML |
-| `deploy/` | Docker, systemd, Windows |
-| `docs/` | Product and engine notes |
-| `scripts/ci/` | Build, package, and CI helpers |
-
 ## Documentation
 
 | Document | Topic |
@@ -169,14 +266,6 @@ Integration path: `feature/*` → `dev` → `canary` → `master`. Merge only af
 | [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | Levels 0–5, review queue, what we will not do |
 | [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | How those levels are wired |
 | [docs/performance-optimization.md](docs/performance-optimization.md) | Runtime and analyzer notes |
-
-## Before a public release
-
-- Keep the admin plane on TLS or a trusted reverse proxy. Do not expose browser tokens on plain HTTP.
-- Prometheus scrape is private by default. Use authenticated `/api/metrics`, or set `monitor.prometheus.public: true` on purpose.
-- Run `cheesewaf-corpus --mode gate` against a deployed data plane and admin plane before you call a build a release. `--skip-external` is for CI replay, not release evidence.
-- Default `smart` policy favors fewer false positives. Tune on real traffic and your own samples. Built-in corpora are regression tests, not a claim of ModSecurity / Coraza / OWASP CRS parity.
-- City-level maps need a GeoIP City database or an external location source. Without that, CheeseWAF stays at country / CIDR attribution.
 
 ## License
 
