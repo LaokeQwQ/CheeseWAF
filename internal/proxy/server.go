@@ -52,6 +52,7 @@ type Server struct {
 	certs            *SiteCertificateStore
 	clock            timekeeper.Clock
 	reviews          ReviewQueue
+	promotes         *promoteTable
 }
 
 type edgeRuntime struct {
@@ -188,6 +189,7 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 		protectionPolicy: cfg.Protection.Policy,
 		certs:            certs,
 		clock:            clock,
+		promotes:         newPromoteTable(),
 	}
 	server.edgeRuntime.Store(newEdgeRuntime(cfg.Edge))
 	server.siteRuntimes.Store(siteRuntimes)
@@ -634,6 +636,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.proxyError(w, r, site, reqCtx, "proxy_error", "waf pipeline error", http.StatusInternalServerError, start, err)
 			return
+		}
+		if (result == nil || !result.Detected) && s.promotes.Active(site.ID, s.wallNow()) {
+			if promoted := detectionFromReviewCandidate(reqCtx); promoted != nil {
+				if reqCtx.Metadata == nil {
+					reqCtx.Metadata = map[string]any{}
+				}
+				reqCtx.Metadata["detection"] = promoted
+				s.blockDetection(w, reqCtx, promoted, http.StatusForbidden, start)
+				return
+			}
 		}
 		if result != nil && result.Detected {
 			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results)

@@ -163,11 +163,6 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	defer proxyServer.Close()
-	var reviewAI *ai.Client
-	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
-		reviewAI = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
-	}
-	proxyServer.SetReviewQueue(&review.Queue{Store: store, Client: reviewAI})
 	var healthChecker *proxy.HealthChecker
 	reloadSites := func(sites []config.SiteConfig) error {
 		next := *cfg
@@ -185,6 +180,54 @@ func runServe(ctx context.Context) error {
 		}
 		return nil
 	}
+	var reviewAI *ai.Client
+	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
+		reviewAI = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
+	}
+	proxyServer.SetReviewQueue(&review.Queue{
+		Store:  store,
+		Client: reviewAI,
+		AutoAgree: func(siteID string) bool {
+			site, err := store.GetSite(context.Background(), siteID)
+			return err == nil && site != nil && site.Advanced.SemanticPolicy.AutoAgree
+		},
+		PromoteSeconds: func(siteID string) int {
+			site, err := store.GetSite(context.Background(), siteID)
+			if err != nil || site == nil {
+				return 0
+			}
+			return site.Advanced.SemanticPolicy.PromoteSeconds
+		},
+		ApplyBlock: func(ctx context.Context, item *storage.ReviewItem) (string, error) {
+			ruleID, err := review.AddPayloadRule(ctx, store, item)
+			if err != nil {
+				return "", err
+			}
+			sites, err := store.ListSites(ctx)
+			if err != nil {
+				return "", err
+			}
+			return ruleID, reloadSites(storage.SitesToConfig(sites))
+		},
+		Notify: func(ctx context.Context, title, message, target string) {
+			users, err := store.ListUsers(ctx)
+			if err != nil {
+				return
+			}
+			for _, user := range users {
+				if user.Role != "admin" {
+					continue
+				}
+				_ = store.CreateNotification(ctx, &storage.Notification{
+					UserID:  user.ID,
+					Type:    "warning",
+					Title:   title,
+					Message: message,
+					Target:  target,
+				})
+			}
+		},
+	})
 	healthChecker = proxy.NewHealthChecker(cfg.Sites, proxyServer.HealthRegistry())
 	// Own the lifetime of every background component started by runServe. The
 	// command context is not necessarily cancelled when one listener fails, so

@@ -34,6 +34,57 @@ func (s *Server) enqueueReview(ctx context.Context, reqCtx *engine.RequestContex
 		return
 	}
 	s.reviews.Enqueue(ctx, item)
+	if item.ProtectionLevel == 4 && item.Shape == "embedded" {
+		s.promotes.Arm(item.SiteID, s.sitePromoteSeconds(item.SiteID), s.wallNow())
+	}
+}
+
+func (s *Server) sitePromoteSeconds(siteID string) int {
+	if s == nil {
+		return 0
+	}
+	set := s.siteRuntimes.Load()
+	if set == nil || set.byID[siteID] == nil {
+		return 0
+	}
+	return set.byID[siteID].site.WAF.SemanticPolicy.PromoteSeconds
+}
+
+func detectionFromReviewCandidate(reqCtx *engine.RequestContext) *engine.DetectionResult {
+	if reqCtx == nil {
+		return nil
+	}
+	cand, ok := reqCtx.Metadata["review_candidate"].(map[string]any)
+	if !ok || cand == nil {
+		return nil
+	}
+	category := anyString(cand["category"])
+	if !reviewableCategory(category) {
+		return nil
+	}
+	return &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "semantic.analyzer." + category,
+		Category:   category,
+		Severity:   parseReviewSeverity(anyString(cand["severity"])),
+		Action:     engine.ActionBlock,
+		Message:    "promoted protection window",
+		Confidence: 0.9,
+		Payload:    anyString(cand["payload"]),
+	}
+}
+
+func parseReviewSeverity(value string) engine.Severity {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "critical":
+		return engine.SeverityCritical
+	case "medium":
+		return engine.SeverityMedium
+	case "low":
+		return engine.SeverityLow
+	default:
+		return engine.SeverityHigh
+	}
 }
 
 func reviewItemFromContext(reqCtx *engine.RequestContext) *storage.ReviewItem {

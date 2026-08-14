@@ -240,6 +240,9 @@ func Validate(cfg *Config) error {
 		if !IsBudgetExhaustedPolicy(site.WAF.SemanticPolicy.BudgetExhaustedPolicy) {
 			return fmt.Errorf("site %q has invalid waf.semantic_policy.budget_exhausted_policy %q", site.Name, site.WAF.SemanticPolicy.BudgetExhaustedPolicy)
 		}
+		if site.WAF.SemanticPolicy.PromoteSeconds < 0 {
+			return fmt.Errorf("site %q waf.semantic_policy.promote_seconds must be >= 0", site.Name)
+		}
 		for _, rule := range site.WAF.SemanticPolicy.PathAllowlist {
 			rule = strings.TrimSpace(rule)
 			if rule == "" {

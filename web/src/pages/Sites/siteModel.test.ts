@@ -16,4 +16,10 @@ describe('normalizeSite', () => {
   it('defaults a missing paranoia level to 3', () => {
     expect(normalizeSite({ id: 's1' }).paranoia_level).toBe(3);
   });
+
+  it('defaults promote-to-5 seconds to 0 and auto-agree off', () => {
+    const site = normalizeSite({ id: 's1' });
+    expect(site.advanced.semantic_policy.promote_seconds).toBe(0);
+    expect(site.advanced.semantic_policy.auto_agree).toBe(false);
+  });
 });

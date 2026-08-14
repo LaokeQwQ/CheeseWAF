@@ -60,6 +60,8 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     budget_exhausted_policy: 'auto',
     path_allowlist: [],
     param_allowlist: [],
+    promote_seconds: 0,
+    auto_agree: false,
   },
   policy: {
     web_attack: '',
@@ -129,6 +131,8 @@ export function normalizeSite(input?: Partial<Site>): Site {
         ...advanced.semantic_policy,
         path_allowlist: asArray(advanced.semantic_policy?.path_allowlist),
         param_allowlist: asArray(advanced.semantic_policy?.param_allowlist),
+        promote_seconds: normalizePromoteSeconds(advanced.semantic_policy?.promote_seconds),
+        auto_agree: Boolean(advanced.semantic_policy?.auto_agree),
       },
       policy: { ...defaultSiteAdvanced.policy, ...advanced.policy },
       response: {
@@ -169,4 +173,12 @@ export function normalizeParanoiaLevel(value: unknown): number {
     return 3;
   }
   return level;
+}
+
+export function normalizePromoteSeconds(value: unknown): number {
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < 0) {
+    return 0;
+  }
+  return seconds;
 }

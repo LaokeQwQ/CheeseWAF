@@ -265,6 +265,8 @@ type SiteSemanticPolicy struct {
 	BudgetExhaustedPolicy string   `json:"budget_exhausted_policy"`
 	PathAllowlist         []string `json:"path_allowlist"`
 	ParamAllowlist        []string `json:"param_allowlist"`
+	PromoteSeconds        int      `json:"promote_seconds"`
+	AutoAgree             bool     `json:"auto_agree"`
 }
 
 type CertificateConfig struct {

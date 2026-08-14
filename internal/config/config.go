@@ -417,6 +417,12 @@ type SemanticPolicyConfig struct {
 	BudgetExhaustedPolicy string   `yaml:"budget_exhausted_policy" json:"budget_exhausted_policy"`
 	PathAllowlist         []string `yaml:"path_allowlist" json:"path_allowlist"`
 	ParamAllowlist        []string `yaml:"param_allowlist" json:"param_allowlist"`
+	// PromoteSeconds, if >0, briefly treats the site as level 5 after a
+	// level-4 embedded hit so later embedded gadgets block until it expires.
+	PromoteSeconds int `yaml:"promote_seconds" json:"promote_seconds"`
+	// AutoAgree applies a long-lived payload block when the model verdict
+	// is high-risk. Off means the pending item waits for an operator.
+	AutoAgree bool `yaml:"auto_agree" json:"auto_agree"`
 }
 
 type SemanticEngineSwitches struct {

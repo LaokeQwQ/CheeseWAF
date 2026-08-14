@@ -38,6 +38,8 @@ export type SiteSemanticPolicy = {
   budget_exhausted_policy: BudgetExhaustedPolicy | string;
   path_allowlist: string[];
   param_allowlist: string[];
+  promote_seconds: number;
+  auto_agree: boolean;
 };
 
 export type ProtectionLevel = 'off' | 'low' | 'smart' | 'high' | 'strict' | '';

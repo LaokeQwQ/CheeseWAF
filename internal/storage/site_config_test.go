@@ -26,6 +26,8 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 				BudgetExhaustedPolicy: "closed",
 				PathAllowlist:         []string{"/health", "/static/*"},
 				ParamAllowlist:        []string{"content"},
+				PromoteSeconds:        45,
+				AutoAgree:             true,
 			},
 			CustomRules: []config.CustomRuleConfig{{
 				ID: "review-1", Name: "block payload", Pattern: `eval\(`, Location: "body", Action: "block", Severity: "high", Enabled: true, Priority: 10,
@@ -66,6 +68,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	}
 	if len(converted.WAF.CustomRules) != 1 || converted.WAF.CustomRules[0].ID != "review-1" {
 		t.Fatalf("expected custom rules round-trip: %+v", converted.WAF.CustomRules)
+	}
+	if converted.WAF.SemanticPolicy.PromoteSeconds != 45 || !converted.WAF.SemanticPolicy.AutoAgree {
+		t.Fatalf("expected promote/auto-agree round-trip: %+v", converted.WAF.SemanticPolicy)
 	}
 }
 

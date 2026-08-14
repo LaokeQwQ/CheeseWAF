@@ -70,6 +70,8 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				BudgetExhaustedPolicy: site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
 				PathAllowlist:         cloneStrings(site.WAF.SemanticPolicy.PathAllowlist),
 				ParamAllowlist:        cloneStrings(site.WAF.SemanticPolicy.ParamAllowlist),
+				PromoteSeconds:        site.WAF.SemanticPolicy.PromoteSeconds,
+				AutoAgree:             site.WAF.SemanticPolicy.AutoAgree,
 			},
 			Policy: SiteProtectionPolicy{
 				WebAttack:   site.WAF.ProtectionPolicy.WebAttack,
@@ -166,6 +168,8 @@ func SiteToConfig(site Site) config.SiteConfig {
 				BudgetExhaustedPolicy: site.Advanced.SemanticPolicy.BudgetExhaustedPolicy,
 				PathAllowlist:         cloneStrings(site.Advanced.SemanticPolicy.PathAllowlist),
 				ParamAllowlist:        cloneStrings(site.Advanced.SemanticPolicy.ParamAllowlist),
+				PromoteSeconds:        site.Advanced.SemanticPolicy.PromoteSeconds,
+				AutoAgree:             site.Advanced.SemanticPolicy.AutoAgree,
 			},
 			ProtectionPolicy: config.ProtectionPolicyConfig{
 				WebAttack:   site.Advanced.Policy.WebAttack,

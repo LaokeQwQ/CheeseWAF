@@ -639,6 +639,24 @@ export default function SiteDetailPage() {
                   />
                   <em>{t('sites.paramAllowlistHint')}</em>
                 </label>
+                <label>
+                  <span>{t('sites.promoteSeconds')}</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={String(site.advanced.semantic_policy?.promote_seconds ?? 0)}
+                    onChange={(e) => updateAdvanced('semantic_policy', { promote_seconds: Number(e.target.value) || 0 })}
+                  />
+                  <em>{t('sites.promoteSecondsHint')}</em>
+                </label>
+                <label className="switch-line">
+                  <span>{t('sites.autoAgree')}</span>
+                  <Switch
+                    checked={Boolean(site.advanced.semantic_policy?.auto_agree)}
+                    onCheckedChange={(checked) => updateAdvanced('semantic_policy', { auto_agree: checked })}
+                  />
+                  <em>{t('sites.autoAgreeHint')}</em>
+                </label>
               </div>
             </section>
 
