@@ -60,6 +60,9 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     budget_exhausted_policy: 'auto',
     path_allowlist: [],
     param_allowlist: [],
+    promote_seconds: 0,
+    auto_agree: false,
+    fingerprint_deny: [],
   },
   policy: {
     web_attack: '',
@@ -73,6 +76,7 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     sensitive_patterns: ['AKIA', 'password', 'secret', 'private key'],
   },
   rewrite: [],
+  custom_rules: [],
   access_control: {
     auth_enabled: false,
     waiting_room: false,
@@ -94,7 +98,7 @@ export const defaultSite: Site = {
   key_file: '',
   waf_enabled: true,
   waf_mode: 'block',
-  paranoia_level: 2,
+  paranoia_level: 3,
   advanced: defaultSiteAdvanced,
   enabled: true,
 };
@@ -128,6 +132,9 @@ export function normalizeSite(input?: Partial<Site>): Site {
         ...advanced.semantic_policy,
         path_allowlist: asArray(advanced.semantic_policy?.path_allowlist),
         param_allowlist: asArray(advanced.semantic_policy?.param_allowlist),
+        promote_seconds: normalizePromoteSeconds(advanced.semantic_policy?.promote_seconds),
+        auto_agree: Boolean(advanced.semantic_policy?.auto_agree),
+        fingerprint_deny: asArray(advanced.semantic_policy?.fingerprint_deny),
       },
       policy: { ...defaultSiteAdvanced.policy, ...advanced.policy },
       response: {
@@ -136,6 +143,7 @@ export function normalizeSite(input?: Partial<Site>): Site {
         sensitive_patterns: asArray(advanced.response?.sensitive_patterns),
       },
       rewrite: asArray(advanced.rewrite),
+      custom_rules: asArray(advanced.custom_rules),
       access_control: {
         ...defaultSiteAdvanced.access_control,
         ...advanced.access_control,
@@ -163,8 +171,16 @@ function asArray<T>(value: T[] | null | undefined): T[] {
 
 export function normalizeParanoiaLevel(value: unknown): number {
   const level = Number(value);
-  if (!Number.isInteger(level) || level < 1 || level > 4) {
-    return 2;
+  if (!Number.isInteger(level) || level < 0 || level > 5) {
+    return 3;
   }
   return level;
+}
+
+export function normalizePromoteSeconds(value: unknown): number {
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < 0) {
+    return 0;
+  }
+  return seconds;
 }

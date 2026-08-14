@@ -49,7 +49,7 @@ export default function PolicyDecisionCard({ metadata, compact = false }: Policy
         <div className="policy-decision-tags">
           <Badge variant={actionBadgeVariant(decision.action)}>{displayAction(decision.action, t)}</Badge>
           <Badge variant="secondary">{policyLevelLabel(decision.level, t)}</Badge>
-          {decision.paranoiaLevel ? <Badge variant="default">{t('logs.policyParanoiaLevel', { level: decision.paranoiaLevel })}</Badge> : null}
+          {Number.isInteger(decision.paranoiaLevel) ? <Badge variant="default">{t('logs.policyParanoiaLevel', { level: decision.paranoiaLevel })}</Badge> : null}
         </div>
       </header>
 

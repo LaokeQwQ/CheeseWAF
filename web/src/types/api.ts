@@ -26,6 +26,7 @@ export type SiteAdvanced = {
   policy: ProtectionPolicyConfig;
   response: SiteResponseConfig;
   rewrite: SiteRewriteRule[];
+  custom_rules?: SiteCustomRule[];
   access_control: SiteAccessControl;
   /** When true (default), write normal pass/cache/redirect access logs. Security events always log. */
   access_log_enabled?: boolean;
@@ -37,6 +38,9 @@ export type SiteSemanticPolicy = {
   budget_exhausted_policy: BudgetExhaustedPolicy | string;
   path_allowlist: string[];
   param_allowlist: string[];
+  promote_seconds: number;
+  auto_agree: boolean;
+  fingerprint_deny?: string[];
 };
 
 export type ProtectionLevel = 'off' | 'low' | 'smart' | 'high' | 'strict' | '';
@@ -180,6 +184,17 @@ export type SiteRewriteRule = {
   replacement: string;
   redirect_code: number;
   enabled: boolean;
+};
+
+export type SiteCustomRule = {
+  id: string;
+  name: string;
+  pattern: string;
+  location: string;
+  action: string;
+  severity: string;
+  enabled: boolean;
+  priority: number;
 };
 
 export type SiteAccessControl = {
@@ -605,6 +620,50 @@ export type LogQuery = {
 
 export type LogResponse = {
   items: LogEntry[];
+  total: number;
+};
+
+export type ReviewStatus = 'pending' | 'blocked' | 'allowed' | string;
+export type ReviewDecision = 'block_payload' | 'block_uri' | 'block_ip' | 'block_fingerprint' | 'allow' | 'allow_whitelist' | string;
+
+export type ReviewItem = {
+  id: string;
+  trace_id: string;
+  site_id: string;
+  client_ip: string;
+  method: string;
+  uri: string;
+  category: string;
+  severity: string;
+  payload: string;
+  protection_level: number;
+  shape: string;
+  source?: string;
+  param_name?: string;
+  fingerprint?: string;
+  status: ReviewStatus;
+  ai_verdict?: string;
+  decided_by_subject?: string;
+  decided_by_name?: string;
+  decided_by_role?: string;
+  decided_at?: string;
+  decision?: ReviewDecision;
+  applied_rule_id?: string;
+  created_at: string;
+};
+
+export type ReviewQuery = {
+  site_id?: string;
+  category?: string;
+  status?: string;
+  start?: string;
+  end?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type ReviewResponse = {
+  items: ReviewItem[];
   total: number;
 };
 

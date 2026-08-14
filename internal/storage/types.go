@@ -91,6 +91,67 @@ type Store interface {
 
 	// Notifications
 	NotificationStore
+
+	// Review items (detected-but-not-blocked, plus level-5 blocks for a model verdict)
+	ReviewStore
+}
+
+// ReviewStore persists suspicious requests for admin decision and model review.
+type ReviewStore interface {
+	CreateReviewItem(ctx context.Context, item *ReviewItem) error
+	GetReviewItem(ctx context.Context, id string) (*ReviewItem, error)
+	ListReviewItems(ctx context.Context, filter ReviewFilter) ([]ReviewItem, int64, error)
+	HasPendingReview(ctx context.Context, siteID, category, payload, uri string) (bool, error)
+	HasSimilarReview(ctx context.Context, siteID, category, payload, uri string) (bool, error)
+	SetReviewAIVerdict(ctx context.Context, id, verdict string) error
+	DecideReviewItem(ctx context.Context, id string, decision ReviewDecision) (*ReviewItem, error)
+	UpsertSitePromote(ctx context.Context, siteID string, until time.Time) error
+	ListSitePromotes(ctx context.Context) (map[string]time.Time, error)
+	DeleteSitePromote(ctx context.Context, siteID string) error
+}
+
+type ReviewItem struct {
+	ID               string    `json:"id"`
+	TraceID          string    `json:"trace_id"`
+	SiteID           string    `json:"site_id"`
+	ClientIP         string    `json:"client_ip"`
+	Method           string    `json:"method"`
+	URI              string    `json:"uri"`
+	Category         string    `json:"category"`
+	Severity         string    `json:"severity"`
+	Payload          string    `json:"payload"`
+	ProtectionLevel  int       `json:"protection_level"`
+	Shape            string    `json:"shape"`
+	Source           string    `json:"source,omitempty"`
+	ParamName        string    `json:"param_name,omitempty"`
+	Fingerprint      string    `json:"fingerprint,omitempty"`
+	Status           string    `json:"status"`
+	AIVerdict        string    `json:"ai_verdict,omitempty"`
+	DecidedBySubject string    `json:"decided_by_subject,omitempty"`
+	DecidedByName    string    `json:"decided_by_name,omitempty"`
+	DecidedByRole    string    `json:"decided_by_role,omitempty"`
+	DecidedAt        time.Time `json:"decided_at,omitempty"`
+	Decision         string    `json:"decision,omitempty"`
+	AppliedRuleID    string    `json:"applied_rule_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type ReviewFilter struct {
+	SiteID   string
+	Category string
+	Status   string
+	Start    time.Time
+	End      time.Time
+	Offset   int
+	Limit    int
+}
+
+type ReviewDecision struct {
+	Decision         string
+	AppliedRuleID    string
+	DecidedBySubject string
+	DecidedByName    string
+	DecidedByRole    string
 }
 
 // NotificationStore manages persistent, user-scoped management notifications.
@@ -197,6 +258,7 @@ type SiteAdvanced struct {
 	Policy         SiteProtectionPolicy  `json:"policy"`
 	Response       SiteResponseConfig    `json:"response"`
 	Rewrite        []SiteRewriteRule     `json:"rewrite"`
+	CustomRules    []SiteCustomRule      `json:"custom_rules,omitempty"`
 	AccessControl  SiteAccessControl     `json:"access_control"`
 	// AccessLogEnabled records normal pass/cache/redirect traffic. Security events always log.
 	// Omitted/nil defaults to true for backward compatibility.
@@ -208,6 +270,9 @@ type SiteSemanticPolicy struct {
 	BudgetExhaustedPolicy string   `json:"budget_exhausted_policy"`
 	PathAllowlist         []string `json:"path_allowlist"`
 	ParamAllowlist        []string `json:"param_allowlist"`
+	PromoteSeconds        int      `json:"promote_seconds"`
+	AutoAgree             bool     `json:"auto_agree"`
+	FingerprintDeny       []string `json:"fingerprint_deny,omitempty"`
 }
 
 type CertificateConfig struct {
@@ -292,6 +357,18 @@ type SiteRewriteRule struct {
 	Replacement  string `json:"replacement"`
 	RedirectCode int    `json:"redirect_code"`
 	Enabled      bool   `json:"enabled"`
+}
+
+// SiteCustomRule is a live site-scoped pattern applied by the request pipeline.
+type SiteCustomRule struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Pattern  string `json:"pattern"`
+	Location string `json:"location"`
+	Action   string `json:"action"`
+	Severity string `json:"severity"`
+	Enabled  bool   `json:"enabled"`
+	Priority int    `json:"priority"`
 }
 
 type SiteAccessControl struct {

@@ -39,12 +39,20 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate sqlite: %w", err)
 	}
 	if err := s.ensureColumns(ctx, "sites", map[string]string{
-		"loadbalance": `ALTER TABLE sites ADD COLUMN loadbalance TEXT NOT NULL DEFAULT 'round_robin'`,
-		"waf_enabled": `ALTER TABLE sites ADD COLUMN waf_enabled INTEGER NOT NULL DEFAULT 1`,
-		"waf_mode":    `ALTER TABLE sites ADD COLUMN waf_mode TEXT NOT NULL DEFAULT 'block'`,
-		"advanced":    `ALTER TABLE sites ADD COLUMN advanced TEXT NOT NULL DEFAULT '{}'`,
+		"loadbalance":    `ALTER TABLE sites ADD COLUMN loadbalance TEXT NOT NULL DEFAULT 'round_robin'`,
+		"waf_enabled":    `ALTER TABLE sites ADD COLUMN waf_enabled INTEGER NOT NULL DEFAULT 1`,
+		"waf_mode":       `ALTER TABLE sites ADD COLUMN waf_mode TEXT NOT NULL DEFAULT 'block'`,
+		"paranoia_level": `ALTER TABLE sites ADD COLUMN paranoia_level INTEGER NOT NULL DEFAULT 3`,
+		"advanced":       `ALTER TABLE sites ADD COLUMN advanced TEXT NOT NULL DEFAULT '{}'`,
 	}); err != nil {
 		return fmt.Errorf("migrate sqlite columns: %w", err)
+	}
+	if err := s.ensureColumns(ctx, "review_items", map[string]string{
+		"source":      `ALTER TABLE review_items ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
+		"param_name":  `ALTER TABLE review_items ADD COLUMN param_name TEXT NOT NULL DEFAULT ''`,
+		"fingerprint": `ALTER TABLE review_items ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`,
+	}); err != nil {
+		return fmt.Errorf("migrate review columns: %w", err)
 	}
 	return nil
 }
@@ -89,7 +97,7 @@ func (s *SQLiteStore) Close() error {
 }
 
 func (s *SQLiteStore) ListSites(ctx context.Context) ([]Site, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,advanced,enabled,created_at,updated_at FROM sites ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,paranoia_level,advanced,enabled,created_at,updated_at FROM sites ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +114,7 @@ func (s *SQLiteStore) ListSites(ctx context.Context) ([]Site, error) {
 }
 
 func (s *SQLiteStore) GetSite(ctx context.Context, id string) (*Site, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,advanced,enabled,created_at,updated_at FROM sites WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,paranoia_level,advanced,enabled,created_at,updated_at FROM sites WHERE id=?`, id)
 	site, err := scanSite(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -118,8 +126,8 @@ func (s *SQLiteStore) CreateSite(ctx context.Context, site *Site) error {
 	ensureSite(site)
 	domains, upstreams := encodeStrings(site.Domains), encodeStrings(site.Upstreams)
 	advanced := encodeJSON(site.Advanced)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sites(id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,advanced,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		site.ID, site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, advanced, boolInt(site.Enabled), formatTime(site.CreatedAt), formatTime(site.UpdatedAt))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sites(id,name,domains,upstreams,listen_port,loadbalance,enable_ssl,cert_file,key_file,waf_enabled,waf_mode,paranoia_level,advanced,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		site.ID, site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, site.ParanoiaLevel, advanced, boolInt(site.Enabled), formatTime(site.CreatedAt), formatTime(site.UpdatedAt))
 	return err
 }
 
@@ -136,8 +144,8 @@ func (s *SQLiteStore) UpdateSite(ctx context.Context, site *Site) error {
 	site.UpdatedAt = time.Now().UTC()
 	domains, upstreams := encodeStrings(site.Domains), encodeStrings(site.Upstreams)
 	advanced := encodeJSON(site.Advanced)
-	_, err := s.db.ExecContext(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,advanced=?,enabled=?,updated_at=? WHERE id=?`,
-		site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, advanced, boolInt(site.Enabled), formatTime(site.UpdatedAt), site.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,paranoia_level=?,advanced=?,enabled=?,updated_at=? WHERE id=?`,
+		site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, site.ParanoiaLevel, advanced, boolInt(site.Enabled), formatTime(site.UpdatedAt), site.ID)
 	return err
 }
 
@@ -149,8 +157,8 @@ func (s *SQLiteStore) RestoreSite(ctx context.Context, site *Site) error {
 	}
 	domains, upstreams := encodeStrings(site.Domains), encodeStrings(site.Upstreams)
 	advanced := encodeJSON(site.Advanced)
-	_, err := s.db.ExecContext(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,advanced=?,enabled=?,created_at=?,updated_at=? WHERE id=?`,
-		site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, advanced, boolInt(site.Enabled), formatTime(site.CreatedAt), formatTime(site.UpdatedAt), site.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,paranoia_level=?,advanced=?,enabled=?,created_at=?,updated_at=? WHERE id=?`,
+		site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, site.ParanoiaLevel, advanced, boolInt(site.Enabled), formatTime(site.CreatedAt), formatTime(site.UpdatedAt), site.ID)
 	return err
 }
 
@@ -354,7 +362,7 @@ func scanSite(row scanner) (*Site, error) {
 	var site Site
 	var domains, upstreams, advanced, createdAt, updatedAt string
 	var enableSSL, wafEnabled, enabled int
-	if err := row.Scan(&site.ID, &site.Name, &domains, &upstreams, &site.ListenPort, &site.LoadBalance, &enableSSL, &site.CertFile, &site.KeyFile, &wafEnabled, &site.WAFMode, &advanced, &enabled, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&site.ID, &site.Name, &domains, &upstreams, &site.ListenPort, &site.LoadBalance, &enableSSL, &site.CertFile, &site.KeyFile, &wafEnabled, &site.WAFMode, &site.ParanoiaLevel, &advanced, &enabled, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	site.Domains = decodeStrings(domains)

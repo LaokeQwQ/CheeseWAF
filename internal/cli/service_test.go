@@ -668,8 +668,9 @@ func TestBuildPipelineUsesSingleSemanticAnalyzerPath(t *testing.T) {
 				ID:      "default",
 				Enabled: true,
 				WAF: config.WAFConfig{
-					Enabled: true,
-					Mode:    "block",
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 3,
 					SemanticEngines: config.SemanticEngineSwitches{
 						SQL:  true,
 						XSS:  true,
@@ -711,8 +712,9 @@ func TestBuildPipelineWiresRCEUmbrellaCategories(t *testing.T) {
 				ID:      "default",
 				Enabled: true,
 				WAF: config.WAFConfig{
-					Enabled: true,
-					Mode:    "block",
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 3,
 					SemanticEngines: config.SemanticEngineSwitches{
 						RCE: true,
 					},
@@ -761,8 +763,9 @@ func TestBuildPipelineHonorsNoSQLSemanticSwitch(t *testing.T) {
 				ID:      "default",
 				Enabled: true,
 				WAF: config.WAFConfig{
-					Enabled: true,
-					Mode:    "block",
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 3,
 					SemanticEngines: config.SemanticEngineSwitches{
 						NoSQL: true,
 					},
@@ -796,8 +799,9 @@ func TestBuildPipelineHonorsSSTISemanticSwitch(t *testing.T) {
 				ID:      "default",
 				Enabled: true,
 				WAF: config.WAFConfig{
-					Enabled: true,
-					Mode:    "block",
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 3,
 					SemanticEngines: config.SemanticEngineSwitches{
 						SSTI: true,
 					},
@@ -831,8 +835,9 @@ func TestBuildPipelineScopesSemanticSwitchesPerSite(t *testing.T) {
 				ID:      "site-a",
 				Enabled: true,
 				WAF: config.WAFConfig{
-					Enabled: true,
-					Mode:    "block",
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 3,
 					SemanticEngines: config.SemanticEngineSwitches{
 						SQL: true,
 					},
@@ -842,8 +847,9 @@ func TestBuildPipelineScopesSemanticSwitchesPerSite(t *testing.T) {
 				ID:      "site-b",
 				Enabled: true,
 				WAF: config.WAFConfig{
-					Enabled: true,
-					Mode:    "block",
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 3,
 					SemanticEngines: config.SemanticEngineSwitches{
 						NoSQL: true,
 					},
