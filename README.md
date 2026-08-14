@@ -1,40 +1,85 @@
 <p align="center">
-  <img src="web/public/cheesewaf-logo.png" alt="CheeseWAF 标志" width="160">
+  <img src="web/public/cheesewaf-logo.png" alt="CheeseWAF logo" width="128">
 </p>
 
 <h1 align="center">CheeseWAF</h1>
 
-<p align="center">使用 Go 构建的自托管 Web 应用防火墙</p>
+<p align="center">
+  Self-hosted Web Application Firewall in Go.<br>
+  Reverse proxy in front of your origin, plus one admin API, web console, and terminal UI.
+</p>
 
-CheeseWAF 部署在客户端与源站之间。它通过反向代理检查请求和响应，并提供统一的管理 API、Web 控制台和终端管理入口。
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README_CN.md">简体中文</a> ·
+  <a href="LICENSE">Apache-2.0</a>
+</p>
 
-> 项目目前处于预发布阶段。配置格式和接口仍可能调整，请先在受控环境中验证，再用于生产流量。
+> Pre-release. Config and APIs can still change. Try it in a controlled environment before you put production traffic through it.
 
-## 核心能力
+## Contents
 
-- **Web 攻击防护**：检测 SQL 注入、XSS、RCE、LFI、XXE、SSRF、NoSQL 注入和 SSTI，并支持自定义规则与响应检查。
-- **Bot 与流量控制**：提供限流、JS 工作量证明、图片验证码、滑块验证码和排队室。
-- **API 安全**：支持请求结构校验、端点限流，以及基于 HMAC、PEM 或 JWKS 的 JWT 验证。
-- **访问控制**：支持全局、站点和路径级规则，以及 IP 信誉、GeoIP 和按供应商绑定 CIDR 的可信代理识别。
-- **统一管理**：同一套数据可供 Web 控制台、REST API 和 `waf-cli` TUI 使用，并带有 RBAC、会话撤销和审计日志。
-- **监控与分析**：提供 Prometheus 指标、多种日志后端、安全报告、攻击地图和可选的 LLM 辅助分析。
-- **部署与集群**：提供 Docker、systemd 和 Windows 构建文件，并包含节点加入、证书轮换和滚动升级能力。
-- **可重复验证**：内置语义攻击样本回放工具，可测试进程内检测器或已部署的数据平面。
+- [What it does](#what-it-does)
+- [How it fits](#how-it-fits)
+- [Protection levels](#protection-levels)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Development](#development)
+- [Repository layout](#repository-layout)
+- [Documentation](#documentation)
+- [Before a public release](#before-a-public-release)
+- [License](#license)
 
-## 工作方式
+## What it does
+
+CheeseWAF sits between clients and your origin. The data plane inspects HTTP requests and responses. The admin plane (localhost by default) configures sites, rules, users, logs, and runtime state.
+
+- **Web attacks.** Staged semantic analysis for SQL injection, XSS, RCE, LFI, XXE, SSRF, NoSQL injection, SSTI, and related families. Custom rules and optional response inspection.
+- **False-positive first blocking.** Isolated gadgets (almost only attack bytes in one decoded field) can block from level 2. Embedded gadgets inside prose pass at 2–4 and only block at level 5.
+- **Review queue.** Suspicious requests that were not blocked (and level-5 blocks) go to `/review`. An operator can add a lasting payload, URL, IP, or client-fingerprint block, or allow and whitelist. The configured site model is asked in the background and does not stall the request.
+- **Bot and traffic control.** Rate limits, JS proof-of-work, image CAPTCHA, slider CAPTCHA, and a waiting room.
+- **API security.** Request schema checks, endpoint rate limits, and JWT checks (HMAC, PEM, or JWKS).
+- **Access control.** Global, site, and path IP rules, reputation, GeoIP, and trusted-proxy bindings per vendor CIDR.
+- **Operations.** One data model for the web console, REST API, and `waf-cli`. RBAC, revocable sessions, audit log, Prometheus metrics, and several log backends.
+- **Deploy.** Docker Compose, systemd, and Windows packaging. Optional cluster join, certificate rotation, and rolling upgrade.
+
+It does **not** replace origin authentication. It does **not** delete posts from a third-party CMS. It does **not** use a large language model as the primary detector.
+
+## How it fits
 
 ```text
-客户端 ---> CheeseWAF 数据平面 ---> 源站
-                 |
-                 +-- 管理 API / Web 控制台 / waf-cli
-                 +-- 日志 / 指标 / 安全报告
+Client  --->  CheeseWAF data plane  --->  origin
+                      |
+                      +-- Admin API / web console / waf-cli
+                      +-- Logs / metrics / reports
 ```
 
-数据平面负责检测和转发流量。管理平面默认只监听本机，负责站点配置、规则、用户、日志和运行状态。
+Default listeners after a local start:
 
-## 快速开始
+| Plane | Address |
+| --- | --- |
+| Data plane | `http://127.0.0.1:8080` |
+| Admin (setup) | `http://127.0.0.1:9443/setup` or `https://127.0.0.1:9443/setup` in Docker |
 
-### 使用 Docker Compose
+## Protection levels
+
+Site field: `waf.paranoia_level`. New sites default to **3**. An omitted YAML value is 3. An explicit `0` stays record-only.
+
+| Level | Isolated gadget | Embedded in prose |
+| --- | --- | --- |
+| 0–1 | record only | record only |
+| 2–4 | block | pass, ask the model, enqueue review |
+| 5 | block | block, still ask the model |
+
+Level 4 can briefly promote the site to level 5 after an embedded hit (`promote_seconds`). That window is stored in SQLite and survives restart.
+
+Client fingerprint for one-click deny is `SHA-256(User-Agent + "\n" + Accept-Language)`, first 8 bytes as 16 hex characters. It is not JA3.
+
+Details: [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md).
+
+## Quick start
+
+### Docker Compose
 
 ```bash
 git clone https://github.com/LaokeQwQ/CheeseWAF.git
@@ -43,24 +88,17 @@ docker compose -f deploy/docker/docker-compose.yml up -d --build
 docker compose -f deploy/docker/docker-compose.yml logs -f cheesewaf
 ```
 
-启动后访问：
-
-- 管理向导：`https://127.0.0.1:9443/setup`
-- 数据平面：`http://127.0.0.1:8080`
-
-容器使用自签名管理证书。首次初始化令牌只会写入启动日志。完成初始化后，请先把示例站点的上游地址改成真实源站。
-
-停止服务：
+Then open `https://127.0.0.1:9443/setup`. The container uses a self-signed admin certificate. The first-run setup token is written only to the start log. After setup, change the sample site upstream to your real origin.
 
 ```bash
 docker compose -f deploy/docker/docker-compose.yml down
 ```
 
-数据保存在 Compose 命名卷中，执行 `down` 不会删除这些卷。
+Data lives in Compose named volumes. `down` does not delete those volumes.
 
-### 从源码运行
+### From source
 
-仓库当前使用 Go 1.26.6。Docker 构建使用 Node.js 24.18.0；本地构建 Web 控制台时建议使用相同的大版本。
+Needs **Go 1.26.6** and **Node.js 24.18.0** (same major version is enough for the console).
 
 ```bash
 git clone https://github.com/LaokeQwQ/CheeseWAF.git
@@ -74,31 +112,28 @@ cd ..
 go run ./cmd/cheesewaf serve
 ```
 
-本地默认管理地址是 `http://127.0.0.1:9443/setup`。首次启动会在 `data/` 中创建运行配置、数据库和证书目录。
+First start creates runtime config, SQLite, and cert directories under `data/`. Open `http://127.0.0.1:9443/setup`.
 
-## 配置
+## Configuration
 
-本地首次启动会生成 `data/cheesewaf.yaml`。仓库中的 [示例配置](configs/cheesewaf.yaml) 列出了主要配置项：
+Local start writes `data/cheesewaf.yaml`. The checked-in example is [configs/cheesewaf.yaml](configs/cheesewaf.yaml).
 
-- `server`：数据平面和管理平面的监听地址与 TLS；
-- `sites`：域名、源站、检测策略、访问控制和重写规则；
-- `protection`：全局防护等级、IP、限流、Bot 和 API 安全策略；
-- `storage`、`logging` 和 `monitor`：数据库、日志后端、指标与告警。
+| Section | Role |
+| --- | --- |
+| `server` | Data-plane and admin listen addresses and TLS |
+| `sites` | Domains, origins, detection policy, allowlists, rewrite |
+| `protection` | Global levels, IP, rate limit, bot, API security |
+| `storage` / `logging` / `monitor` | Database, log backends, metrics and alerts |
+| `ai` | Optional site model used by the review queue and console |
 
-管理平面默认绑定 `127.0.0.1`。如需公开监听，必须同时启用 `server.admin_public` 和管理 TLS，并限制网络访问范围。
+The admin plane binds `127.0.0.1` by default. Public listen requires both `server.admin_public: true` and admin TLS.
 
-## 开发与验证
-
-运行 Go 检查：
-
-```bash
-go test ./...
-go vet ./...
-```
-
-运行 Web 检查：
+## Development
 
 ```bash
+go test ./cmd/... ./internal/...
+go vet ./cmd/... ./internal/...
+
 cd web
 npm ci
 npm run typecheck
@@ -106,38 +141,43 @@ npm test
 npm run build
 ```
 
-运行内置语义样本：
+Replay built-in semantic samples:
 
 ```bash
 go run ./cmd/cheesewaf-corpus --mode analyzer
+go run ./cmd/cheesewaf-corpus --mode http --base-url http://127.0.0.1:8080
 ```
 
-也可以对已部署的数据平面回放样本：
+Integration path: `feature/*` → `dev` → `canary` → `master`. Merge only after required checks are green.
 
-```bash
-go run ./cmd/cheesewaf-corpus \
-  --mode http \
-  --base-url http://127.0.0.1:8080
-```
+## Repository layout
 
-其他构建、测试和安全验证入口见 [Makefile](Makefile) 与 `scripts/ci/`。
+| Path | Contents |
+| --- | --- |
+| `cmd/` | Server, corpus runner, Windows controller |
+| `internal/` | Proxy, detection, admin API, storage, cluster |
+| `web/` | React admin console |
+| `configs/` | Example YAML |
+| `deploy/` | Docker, systemd, Windows |
+| `docs/` | Product and engine notes |
+| `scripts/ci/` | Build, package, and CI helpers |
 
-## 项目结构
+## Documentation
 
-- `cmd/`：服务、语义样本工具和 Windows 控制器入口；
-- `internal/`：代理、防护、管理 API、存储、集群和调度代码；
-- `web/`：React 管理控制台；
-- `configs/`：配置示例；
-- `deploy/`：Docker、systemd 和 Windows 安装文件；
-- `scripts/ci/`：构建、打包和发行验证脚本。
+| Document | Topic |
+| --- | --- |
+| [docs/protection-policy-roadmap.md](docs/protection-policy-roadmap.md) | Levels 0–5, review queue, what we will not do |
+| [docs/paranoia-level-implementation.md](docs/paranoia-level-implementation.md) | How those levels are wired |
+| [docs/performance-optimization.md](docs/performance-optimization.md) | Runtime and analyzer notes |
 
-## 安全说明
+## Before a public release
 
-- CheeseWAF 不能替代源站自身的身份认证、授权和输入校验。
-- 默认 `smart` 策略偏向降低误报。生产部署前应使用真实业务流量和攻击样本调整策略。
-- 内置样本用于回归验证，不代表已经达到 ModSecurity、Coraza 或 OWASP CRS 的等价覆盖。
-- 请保护管理令牌、初始化令牌、私钥和日志。不要把这些内容提交到仓库。
+- Keep the admin plane on TLS or a trusted reverse proxy. Do not expose browser tokens on plain HTTP.
+- Prometheus scrape is private by default. Use authenticated `/api/metrics`, or set `monitor.prometheus.public: true` on purpose.
+- Run `cheesewaf-corpus --mode gate` against a deployed data plane and admin plane before you call a build a release. `--skip-external` is for CI replay, not release evidence.
+- Default `smart` policy favors fewer false positives. Tune on real traffic and your own samples. Built-in corpora are regression tests, not a claim of ModSecurity / Coraza / OWASP CRS parity.
+- City-level maps need a GeoIP City database or an external location source. Without that, CheeseWAF stays at country / CIDR attribution.
 
-## 许可证
+## License
 
-CheeseWAF 使用 [Apache License 2.0](LICENSE)。
+[Apache License 2.0](LICENSE).

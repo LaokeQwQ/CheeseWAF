@@ -55,6 +55,37 @@ func TestReviewItemCreateListDecide(t *testing.T) {
 	}
 }
 
+func TestReviewItemBlockedAcceptsLastingDecision(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	item := &ReviewItem{
+		SiteID:   "site-a",
+		URI:      "/search",
+		Category: "webshell",
+		Payload:  "eval($_GET[cmd])",
+		Status:   "blocked",
+		Decision: "block_now",
+	}
+	if err := store.CreateReviewItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.DecideReviewItem(ctx, item.ID, ReviewDecision{Decision: "block_fingerprint", AppliedRuleID: "fingerprint:aabb"})
+	if err != nil || got == nil || got.Decision != "block_fingerprint" || got.Status != "blocked" {
+		t.Fatalf("blocked item must accept lasting intercept: %+v err=%v", got, err)
+	}
+	denied, err := store.DecideReviewItem(ctx, item.ID, ReviewDecision{Decision: "allow"})
+	if err != nil || denied != nil {
+		t.Fatalf("blocked item must reject allow, got %+v err=%v", denied, err)
+	}
+}
+
 func TestReviewItemPendingDedupAndAIVerdict(t *testing.T) {
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
 	if err != nil {

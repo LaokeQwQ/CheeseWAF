@@ -1,3 +1,7 @@
+# Progress
+
+> 2026-08-14：防护档位已改为 0～5（默认 3），配置已接入。下文 2026-08-09 的「0～4 / 硬编码 2」是历史记录。现行说明见 `docs/protection-policy-roadmap.md`。
+
 # Progress: pure shadcn / zero Arco
 
 | Phase | Status | Evidence |
