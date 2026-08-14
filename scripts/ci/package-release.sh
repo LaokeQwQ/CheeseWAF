@@ -85,6 +85,12 @@ for target in "${targets[@]}"; do
     chmod +x "${package_root}/cheesewaf${ext}"
     cp scripts/ci/waf-cli "${package_root}/waf-cli"
     chmod +x "${package_root}/waf-cli"
+    if [[ "$goos" == "darwin" ]]; then
+      echo "building ${target} gui"
+      GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" \
+        -o "${package_root}/cheesewaf-gui" ./cmd/cheesewaf-gui/
+      chmod +x "${package_root}/cheesewaf-gui"
+    fi
   else
     cp scripts/ci/waf-cli.cmd "${package_root}/waf-cli.cmd"
     cp "${package_root}/cheesewaf.exe" "${package_root}/waf-cli.exe"
@@ -109,6 +115,7 @@ for target in "${targets[@]}"; do
   cp "${metadata_dir}/VERSION" "${metadata_dir}/release.json" "$package_root/"
 
   if [[ "$goos" == "windows" ]]; then
+    cp "${package_root}/cheesewaf.exe" "${release_dir}/cheesewaf-${artifact_version}-windows-${goarch}.exe"
     (
       cd "$work_dir"
       zip -qr "${release_dir}/${package_name}.zip" "$package_name"

@@ -129,6 +129,16 @@ grep -Fq 'systemd/cheesewaf.service' scripts/ci/package-release.sh ||
   fail "Linux packages must include the systemd unit"
 grep -Fq 'zip -qr' scripts/ci/package-release.sh ||
   fail "Windows channel packages must be zip archives"
+grep -Fq 'windows-${goarch}.exe' scripts/ci/package-release.sh ||
+  fail "Windows channel packages must include a single-file CLI exe"
+grep -Fq 'hdiutil create' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS packaging must create UDZO disk images"
+grep -Fq 'CheeseWAF.app' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS DMG must ship a CheeseWAF.app bundle"
+grep -Fq '/Applications' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS DMG must include an Applications drop target"
+grep -Fq 'package-macos-dmg.sh' .github/workflows/ci.yml ||
+  fail "CI must build macOS DMG images on a macOS runner"
 grep -Fq 'Alpha-' scripts/ci/package-release.sh ||
   fail "pre-release tags must use the Alpha- prefix"
 grep -Fq 'scripts/ci/publish-prerelease.sh' .github/workflows/ci.yml ||
