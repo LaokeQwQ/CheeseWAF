@@ -4,7 +4,7 @@
 
 <h1 align="center">CheeseWAF</h1>
 
-<p align="center"><em>奶酪有洞，AI 来守。</em></p>
+<p align="center"><em>奶酪有洞，AI 来控。</em></p>
 
 <p align="center">
   <strong>ALAP</strong> · AI Large-Language-Model Auto Pilot<br>
