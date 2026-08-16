@@ -158,23 +158,23 @@ Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/C
 
 | File | Platform |
 | --- | --- |
-| `cheesewaf-*-linux-amd64.tar.gz` | Linux x86_64 |
-| `cheesewaf-*-linux-arm64.tar.gz` | Linux ARM64 |
-| `cheesewaf-*-linux-loong64.tar.gz` | Linux LoongArch64 |
-| `cheesewaf-*-darwin-amd64.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-*-darwin-arm64.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-*-windows-amd64.exe` | Windows x86_64 single-file CLI |
-| `cheesewaf-*-windows-arm64.exe` | Windows ARM64 single-file CLI |
-| `cheesewaf-*-windows-amd64.zip` | Windows x86_64 portable folder |
-| `cheesewaf-*-windows-arm64.zip` | Windows ARM64 portable folder |
+| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux LoongArch64 |
+| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 single-file CLI |
+| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 single-file CLI |
+| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 portable folder |
+| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 portable folder |
 
 ```bash
 # Linux x86_64 example
-tar -xzf cheesewaf-*-linux-amd64.tar.gz
+tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
 cd cheesewaf-*
 ```
 
-Linux ARM64 and LoongArch64 use the same steps with `linux-arm64` or `linux-loong64`.
+Linux ARM64 and LoongArch64 use `cheesewaf-arm64-linux-*-PreTest.tar.gz` or `cheesewaf-loong64-linux-*-PreTest.tar.gz`.
 
 #### Step 2: Install Executable and Configure Directories
 
@@ -320,11 +320,17 @@ Windows releases bundle a lightweight local GUI controller bound strictly to loo
 
 ### 4. macOS Deployment (DMG)
 
-1. Download `cheesewaf-*-darwin-arm64.dmg` (Apple Silicon) or `cheesewaf-*-darwin-amd64.dmg` (Intel).
+1. Download `cheesewaf-arm64-darwin-*-PreTest.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*-PreTest.dmg` (Intel).
 2. Open the disk image and drag **CheeseWAF** into **Applications**.
 3. Open CheeseWAF from Launchpad or Applications. It starts the local controller (start / stop / open the Web console).
+4. If macOS says the app is damaged, that is Gatekeeper blocking an unsigned PreTest build. Run **Fix Gatekeeper.command** on the disk, or:
 
-Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*.tar.gz` if you only want the CLI.
+```bash
+xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
+open /Applications/CheeseWAF.app
+```
+
+Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*-PreTest.tar.gz` if you only want the CLI.
 
 ---
 

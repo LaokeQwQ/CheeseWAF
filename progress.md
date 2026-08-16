@@ -28,6 +28,12 @@
 - 验证码资源配置写入改用请求的 `Accept-Language`，不再写死 `zh-CN`。
 - 无请求上下文的 `persistConfig` / `commitConfigMutation` 仍用默认语言（`zh-CN`），助手工具写配置同理。
 
+## 2026-08-16 发行包命名与 macOS DMG
+
+- 文件名：`cheesewaf-{架构}-{系统}-{版本}-{后缀}.{扩展名}`，例如 `cheesewaf-arm64-darwin-0.1.0-PreTest.dmg`。
+- canary 渠道在包名和版本里改为 `PreTest`。Git 分支名仍是 `canary`。
+- DMG：临时签名、合法的数字 `CFBundleVersion`、安装盘背景和说明、Gatekeeper 修复脚本。
+
 ---
 
 # Progress: pure shadcn / zero Arco

@@ -129,14 +129,23 @@ grep -Fq 'systemd/cheesewaf.service' scripts/ci/package-release.sh ||
   fail "Linux packages must include the systemd unit"
 grep -Fq 'zip -qr' scripts/ci/package-release.sh ||
   fail "Windows channel packages must be zip archives"
-grep -Fq 'windows-${goarch}.exe' scripts/ci/package-release.sh ||
+grep -Fq '${package_name}.exe' scripts/ci/package-release.sh ||
   fail "Windows channel packages must include a single-file CLI exe"
+grep -Fq 'cheesewaf-${goarch}-${goos}-${version_prefix}' scripts/ci/package-release.sh ||
+  fail "branch packages must use cheesewaf-{arch}-{os}-{version}-{suffix} names"
 grep -Fq 'hdiutil create' scripts/ci/package-macos-dmg.sh ||
   fail "macOS packaging must create UDZO disk images"
 grep -Fq 'CheeseWAF.app' scripts/ci/package-macos-dmg.sh ||
   fail "macOS DMG must ship a CheeseWAF.app bundle"
 grep -Fq '/Applications' scripts/ci/package-macos-dmg.sh ||
   fail "macOS DMG must include an Applications drop target"
+grep -Fq 'codesign --force --sign - --timestamp=none' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS app bundle must be ad-hoc signed so Gatekeeper does not mark it damaged"
+grep -Fq 'APP_BUNDLE_VERSION' deploy/macos/Info.plist ||
+  fail "macOS Info.plist must keep a numeric CFBundleVersion placeholder"
+got_ver="$(bash scripts/ci/package-macos-dmg.sh --print-bundle-version '0.1.0-PreTest')"
+[[ "$got_ver" == "0.1.0" ]] ||
+  fail "macOS CFBundleVersion must strip PreTest labels (got ${got_ver})"
 grep -Fq 'package-macos-dmg.sh' .github/workflows/ci.yml ||
   fail "CI must build macOS DMG images on a macOS runner"
 grep -Fq 'Alpha-' scripts/ci/package-release.sh ||
@@ -156,7 +165,7 @@ grep -Fq 'scripts/ci/generate-release-metadata.sh' .goreleaser.yaml ||
   fail "GoReleaser must use the shared release metadata generator"
 grep -Fq 'scripts/ci/generate-release-metadata.sh' scripts/ci/package-release.sh ||
   fail "branch packaging must use the shared release metadata generator"
-grep -Fq 'name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"' .goreleaser.yaml ||
+grep -Fq 'name_template: "{{ .ProjectName }}-{{ .Arch }}-{{ .Os }}-{{ .Version }}"' .goreleaser.yaml ||
   fail "GoReleaser and branch packages must share the hyphenated archive naming contract"
 grep -Fq 'name_template: SHA256SUMS' .goreleaser.yaml ||
   fail "GoReleaser and branch packages must share the SHA256SUMS contract"

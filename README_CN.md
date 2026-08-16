@@ -158,23 +158,23 @@ CheeseWAF 针对不同基础设施环境提供三种独立的部署方式。
 
 | 文件 | 平台 |
 | --- | --- |
-| `cheesewaf-*-linux-amd64.tar.gz` | Linux x86_64 |
-| `cheesewaf-*-linux-arm64.tar.gz` | Linux ARM64 |
-| `cheesewaf-*-linux-loong64.tar.gz` | Linux 龙芯 |
-| `cheesewaf-*-darwin-amd64.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-*-darwin-arm64.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-*-windows-amd64.exe` | Windows x86_64 单文件 CLI |
-| `cheesewaf-*-windows-arm64.exe` | Windows ARM64 单文件 CLI |
-| `cheesewaf-*-windows-amd64.zip` | Windows x86_64 便携目录 |
-| `cheesewaf-*-windows-arm64.zip` | Windows ARM64 便携目录 |
+| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux 龙芯 |
+| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 单文件 CLI |
+| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 单文件 CLI |
+| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 便携目录 |
+| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 便携目录 |
 
 ```bash
 # Linux x86_64 示例
-tar -xzf cheesewaf-*-linux-amd64.tar.gz
+tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
 cd cheesewaf-*
 ```
 
-Linux ARM64、龙芯把文件名换成 `linux-arm64` 或 `linux-loong64`，步骤相同。
+Linux ARM64、龙芯用 `cheesewaf-arm64-linux-*-PreTest.tar.gz` 或 `cheesewaf-loong64-linux-*-PreTest.tar.gz`，步骤相同。
 
 #### 步骤 2：安装程序文件与目录授权
 
@@ -320,11 +320,17 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 
 ### 4. macOS 部署（DMG）
 
-1. 下载 `cheesewaf-*-darwin-arm64.dmg`（Apple Silicon）或 `cheesewaf-*-darwin-amd64.dmg`（Intel）。
-2. 打开镜像，把 **CheeseWAF** 拖进 **应用程序**。
+1. 下载 `cheesewaf-arm64-darwin-*-PreTest.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*-PreTest.dmg`（Intel）。
+2. 打开镜像，把 **CheeseWAF** 拖进「应用程序」。
 3. 从启动台或「应用程序」打开 CheeseWAF。会启动本地控制面板，用来启动、停止和打开 Web 控制台。
+4. 若系统提示已损坏，是拦截了未公证的 PreTest 包。双击盘里的 **Fix Gatekeeper.command**，或在终端执行：
 
-运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*.tar.gz`。
+```bash
+xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
+open /Applications/CheeseWAF.app
+```
+
+运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*-PreTest.tar.gz`。
 
 ---
 

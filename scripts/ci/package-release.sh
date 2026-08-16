@@ -21,14 +21,17 @@ build_time="${CHEESEWAF_BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 case "$ref_name" in
   master|main)
     channel="stable"
+    file_suffix="beta"
     version="${version_prefix}-beta.${run_number}+${short_commit}"
     ;;
   canary)
-    channel="canary"
-    version="${version_prefix}-canary.${run_number}+${short_commit}"
+    channel="PreTest"
+    file_suffix="PreTest"
+    version="${version_prefix}-PreTest.${run_number}+${short_commit}"
     ;;
   dev)
     channel="dev"
+    file_suffix="dev"
     version="${version_prefix}-dev.${run_number}+${short_commit}"
     ;;
   *)
@@ -36,6 +39,7 @@ case "$ref_name" in
     if [[ -z "$channel" ]]; then
       channel="custom"
     fi
+    file_suffix="$channel"
     version="${version_prefix}-${channel}.${run_number}+${short_commit}"
     ;;
 esac
@@ -75,7 +79,11 @@ for target in "${targets[@]}"; do
     ext=".exe"
   fi
 
-  package_name="cheesewaf-${artifact_version}-${goos}-${goarch}"
+  if [[ -n "$file_suffix" ]]; then
+    package_name="cheesewaf-${goarch}-${goos}-${version_prefix}-${file_suffix}"
+  else
+    package_name="cheesewaf-${goarch}-${goos}-${version_prefix}"
+  fi
   package_root="${work_dir}/${package_name}"
   mkdir -p "$package_root"
 
@@ -115,13 +123,13 @@ for target in "${targets[@]}"; do
   cp "${metadata_dir}/VERSION" "${metadata_dir}/release.json" "$package_root/"
 
   if [[ "$goos" == "windows" ]]; then
-    cp "${package_root}/cheesewaf.exe" "${release_dir}/cheesewaf-${artifact_version}-windows-${goarch}.exe"
+    cp "${package_root}/cheesewaf.exe" "${release_dir}/${package_name}.exe"
     (
       cd "$work_dir"
       zip -qr "${release_dir}/${package_name}.zip" "$package_name"
     )
     if command -v makensis >/dev/null 2>&1; then
-      nsis_out="${release_dir}/CheeseWAF-${artifact_version}-windows-${goarch}-setup.exe"
+      nsis_out="${release_dir}/${package_name}-setup.exe"
       makensis -V2 \
         -DVERSION="${artifact_version}" \
         -DSOURCE_DIR="${package_root}" \

@@ -40,7 +40,7 @@ archives:
   - id: cheesewaf-archive
     ids:
       - cheesewaf
-    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "{{ .ProjectName }}-{{ .Arch }}-{{ .Os }}-{{ .Version }}"
     formats:
       - tar.gz
     files:
@@ -66,6 +66,9 @@ archives:
 
 checksum:
   name_template: SHA256SUMS
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-PreTest"
 
 changelog:
   sort: asc
