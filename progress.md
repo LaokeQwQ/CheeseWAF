@@ -40,6 +40,7 @@
 - 管理界面打进二进制；只拷 `cheesewaf` 时 `/setup` 也能打开。Linux 包带 `install-linux.sh`，systemd 设置 `CHEESEWAF_WEB_DIR` 和工作目录。
 - Ansible 的 `ExecStart` 补上 `serve`，配置里写数据目录和管理口 TLS。`cheesewaf --config ...` 无子命令也会启动服务。
 - `GET /api/setup/status` 查询是否还要初始化。本机回环登录不要求验证码，远程仍要。
+- GoReleaser 快照版本改成固定的 `0.1.0-PreTest`。仓库里的 `Alpha-0.1.0-canary.*` 标签不是 semver，`incpatch` 会让 canary/master 的快照构建失败。
 
 ---
 
