@@ -206,7 +206,7 @@ func (h *Handler) UpdateCAPTCHAAssetConfig(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", "configuration writes are frozen: "+h.configFreezeReason)
 		return
 	}
-	if ok, reason := h.clusterConfigWritable("zh-CN"); !ok {
+	if ok, reason := h.clusterConfigWritable(requestLanguage(r)); !ok {
 		writeError(w, http.StatusConflict, "CONFIG_WRITE_PROTECTED", reason)
 		return
 	}

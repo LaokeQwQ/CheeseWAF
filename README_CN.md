@@ -120,6 +120,13 @@ flowchart TB
 - **独立特征（Isolated）**：输入值几乎全部由攻击载荷构成（允许 `@`、结尾分号、`/{${...}}` 等微弱包装）。例如搜索框中直接输入 `UNION SELECT 1,2,3`。
 - **夹杂特征（Embedded）**：攻击特征混杂在长篇文章、正常业务说明或技术讨论等大段普通文本中。例如在技术论坛中发帖讨论代码片段。
 
+**隔离分类当前范围：**
+- 隔离 gadget 列表覆盖 **PHP/JSP 活 shell**、**Log4j JNDI** 查找，以及**短引号/谓词 SQL**（≤96 个 rune）。
+- **XSS**、命令/RCE、**SSTI**、**SSRF**、**XXE** 走文档形态守卫，不在该 gadget 列表内。
+- 仅标记为 **embedded（夹杂）** 的命中在防护等级低于 5 时跳过阻断。
+- **未分类** 命中仍走 `blockableHit` 证据规则，**不会**自动按夹杂处理。
+- 不承诺「所有技术文章一定放行」——隔离降低已覆盖 gadget 的误报，不是全文通行证。
+
 ### 防护等级行为对照表
 
 | 防护等级 | 等级名称 | 独立特征（Isolated） | 夹杂特征（Embedded） | 动态升档支持 | 机制说明与适用场景 |
@@ -151,36 +158,39 @@ CheeseWAF 针对不同基础设施环境提供三种独立的部署方式。
 
 | 文件 | 平台 |
 | --- | --- |
-| `cheesewaf-*-linux-amd64.tar.gz` | Linux x86_64 |
-| `cheesewaf-*-linux-arm64.tar.gz` | Linux ARM64 |
-| `cheesewaf-*-linux-loong64.tar.gz` | Linux 龙芯 |
-| `cheesewaf-*-darwin-amd64.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-*-darwin-arm64.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-*-windows-amd64.exe` | Windows x86_64 单文件 CLI |
-| `cheesewaf-*-windows-arm64.exe` | Windows ARM64 单文件 CLI |
-| `cheesewaf-*-windows-amd64.zip` | Windows x86_64 便携目录 |
-| `cheesewaf-*-windows-arm64.zip` | Windows ARM64 便携目录 |
+| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux 龙芯 |
+| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 单文件 CLI |
+| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 单文件 CLI |
+| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 便携目录 |
+| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 便携目录 |
 
 ```bash
 # Linux x86_64 示例
-tar -xzf cheesewaf-*-linux-amd64.tar.gz
+tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
 cd cheesewaf-*
 ```
 
-Linux ARM64、龙芯把文件名换成 `linux-arm64` 或 `linux-loong64`，步骤相同。
+Linux ARM64、龙芯用 `cheesewaf-arm64-linux-*-PreTest.tar.gz` 或 `cheesewaf-loong64-linux-*-PreTest.tar.gz`，步骤相同。
 
 #### 步骤 2：安装程序文件与目录授权
 
 ```bash
-# 安装可执行文件并建立软链接
+# 在解压后的目录里执行（需要 cheesewaf 和 web/dist）：
+sudo ./install-linux.sh
+```
+
+也可以手动装。二进制和界面文件都要拷，只拷二进制的话 `/setup` 会 404：
+
+```bash
 sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
-
-# 创建配置与数据存储目录
-sudo mkdir -p /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
-
-# 创建系统运行用户并分配权限
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
@@ -204,7 +214,9 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-启动完成后，通过浏览器访问 `http://<服务器IP>:9443/setup` 进行初始化。
+默认管理口只听 `127.0.0.1:9443`。在本机打开 `http://127.0.0.1:9443/setup`，或走 SSH 隧道。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
+
+`GET /api/setup` 会返回 405。查是否还要初始化用 `GET /api/setup/status`。完成初始化是带 `X-CheeseWAF-Setup-Token` 的 `POST /api/setup`。从别的机器用 API 登录仍要过控制台验证码；本机回环地址不用。
 
 ---
 
@@ -313,11 +325,17 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 
 ### 4. macOS 部署（DMG）
 
-1. 下载 `cheesewaf-*-darwin-arm64.dmg`（Apple Silicon）或 `cheesewaf-*-darwin-amd64.dmg`（Intel）。
-2. 打开镜像，把 **CheeseWAF** 拖进 **应用程序**。
+1. 下载 `cheesewaf-arm64-darwin-*-PreTest.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*-PreTest.dmg`（Intel）。
+2. 打开镜像，把 **CheeseWAF** 拖进「应用程序」。
 3. 从启动台或「应用程序」打开 CheeseWAF。会启动本地控制面板，用来启动、停止和打开 Web 控制台。
+4. 若系统提示已损坏，是拦截了未公证的 PreTest 包。双击盘里的 **Fix Gatekeeper.command**，或在终端执行：
 
-运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*.tar.gz`。
+```bash
+xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
+open /Applications/CheeseWAF.app
+```
+
+运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*-PreTest.tar.gz`。
 
 ---
 

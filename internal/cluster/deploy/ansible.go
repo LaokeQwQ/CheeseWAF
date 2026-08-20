@@ -306,7 +306,9 @@ func tasks() string {
           [Service]
           User={{ cheesewaf_service_user }}
           Group={{ cheesewaf_service_user }}
-          ExecStart={{ cheesewaf_install_dir }}/cheesewaf --config {{ cheesewaf_config_dir }}/cheesewaf.yaml
+          WorkingDirectory={{ cheesewaf_data_dir }}
+          Environment=CHEESEWAF_WEB_DIR={{ cheesewaf_install_dir }}/web
+          ExecStart={{ cheesewaf_install_dir }}/cheesewaf serve --config {{ cheesewaf_config_dir }}/cheesewaf.yaml --data-dir {{ cheesewaf_data_dir }}
           Restart=on-failure
           NoNewPrivileges=true
           [Install]
@@ -417,7 +419,18 @@ func tasks() string {
 }
 
 func configTemplate() string {
-	return `deployment:
+	return `server:
+  listen: ":8080"
+  admin_listen: "127.0.0.1:9443"
+  admin_tls:
+    enabled: true
+    self_signed: true
+    cert_file: "{{ cheesewaf_data_dir }}/certs/admin.crt"
+    key_file: "{{ cheesewaf_data_dir }}/certs/admin.key"
+setup:
+  data_dir: "{{ cheesewaf_data_dir }}"
+  runtime_dir: "{{ cheesewaf_data_dir }}/run"
+deployment:
   mode: cluster
 cluster:
   enabled: true

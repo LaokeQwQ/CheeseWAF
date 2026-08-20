@@ -10,8 +10,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -426,4 +428,186 @@ func authTestSigningInput(t *testing.T, header map[string]string, claims map[str
 		t.Fatal(err)
 	}
 	return base64.RawURLEncoding.EncodeToString(headerJSON) + "." + base64.RawURLEncoding.EncodeToString(payloadJSON)
+}
+
+func TestValidateWithBodySizeUsesActualBytesWhenContentLengthUnknown(t *testing.T) {
+	validator, err := NewValidator(config.APIValidationConfig{
+		Enabled: true,
+		Schemas: []config.APIEndpointSchemaConfig{
+			{ID: "upload", Method: "POST", PathPattern: `^/api/upload$`, MaxBodyBytes: 10, Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("validator: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", nil)
+	req.ContentLength = -1
+
+	// Known oversized body despite chunked ContentLength.
+	findings := validator.ValidateWithBodySize(req, 64)
+	if len(findings) != 1 || findings[0].Field != "body" {
+		t.Fatalf("expected body finding for oversized known size, got %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "exceeds") {
+		t.Fatalf("expected exceeds message, got %+v", findings[0])
+	}
+
+	// Unknown actual size: ContentLength unknown and bodyBytes < 0 → no finding.
+	findings = validator.ValidateWithBodySize(req, -1)
+	if len(findings) != 0 {
+		t.Fatalf("expected no finding when body size is unknown, got %+v", findings)
+	}
+
+	// ContentLength still consulted when bodyBytes is unknown.
+	reqKnown := httptest.NewRequest(http.MethodPost, "/api/upload", nil)
+	reqKnown.ContentLength = 64
+	findings = validator.ValidateWithBodySize(reqKnown, -1)
+	if len(findings) != 1 || findings[0].Field != "body" {
+		t.Fatalf("expected ContentLength fallback finding, got %+v", findings)
+	}
+}
+
+func TestValidateWithBodySizeRequiredParamsStillWork(t *testing.T) {
+	validator, err := NewValidator(config.APIValidationConfig{
+		Enabled: true,
+		Schemas: []config.APIEndpointSchemaConfig{
+			{ID: "search", Method: "GET", PathPattern: `^/api/search$`, RequiredParams: []string{"q", "page"}, Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("validator: %v", err)
+	}
+	// Multiple required params: query is parsed once for the request path.
+	findings := validator.ValidateWithBodySize(httptest.NewRequest(http.MethodGet, "/api/search?page=1", nil), -1)
+	if len(findings) != 1 || findings[0].Field != "q" {
+		t.Fatalf("expected missing q finding only, got %+v", findings)
+	}
+	findings = validator.ValidateWithBodySize(httptest.NewRequest(http.MethodGet, "/api/search?q=hi&page=2", nil), -1)
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings when required params present, got %+v", findings)
+	}
+	// Validate keeps working for existing callers.
+	findings = validator.Validate(httptest.NewRequest(http.MethodGet, "/api/search", nil))
+	if len(findings) != 2 {
+		t.Fatalf("expected two missing-param findings via Validate, got %+v", findings)
+	}
+}
+
+func TestJWTVerifyRequiresKidWhenMultipleCandidateKeys(t *testing.T) {
+	key1, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key2, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks, err := json.Marshal(map[string]any{
+		"keys": []map[string]any{
+			rsaPublicJWK(t, "key-a", &key1.PublicKey),
+			rsaPublicJWK(t, "key-b", &key2.PublicKey),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := newJWTVerifier(config.APIAuthConfig{
+		JWTAlgorithms: []string{"RS256"},
+		JWKSJSON:      string(jwks),
+	})
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
+	}
+
+	// Token signed with key1 but no kid — must not brute-force across candidates.
+	tokenStr := authTestRSAJWT(t, "RS256", key1, map[string]any{"scope": "orders:read"})
+	parsed, err := parseJWT(tokenStr)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.kid != "" {
+		t.Fatalf("test token must omit kid, got %q", parsed.kid)
+	}
+	err = verifier.Verify(parsed)
+	if err == nil {
+		t.Fatal("expected verification to fail when kid is missing and multiple keys match")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "kid") {
+		t.Fatalf("expected kid-required error, got %v", err)
+	}
+
+	// Same token with correct kid succeeds against the matching key only.
+	tokenWithKid := authTestRSAJWTWithKid(t, "RS256", "key-a", key1, map[string]any{"scope": "orders:read"})
+	parsed, err = parseJWT(tokenWithKid)
+	if err != nil {
+		t.Fatalf("parse with kid: %v", err)
+	}
+	if err := verifier.Verify(parsed); err != nil {
+		t.Fatalf("expected kid-selected key to verify, got %v", err)
+	}
+}
+
+func TestJWTVerifyRejectsGarbageKidWhenKeysHaveNoKid(t *testing.T) {
+	key1, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key2, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks, err := json.Marshal(map[string]any{
+		"keys": []map[string]any{
+			rsaPublicJWK(t, "", &key1.PublicKey),
+			rsaPublicJWK(t, "", &key2.PublicKey),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := newJWTVerifier(config.APIAuthConfig{
+		JWTAlgorithms: []string{"RS256"},
+		JWKSJSON:      string(jwks),
+	})
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
+	}
+
+	tokenStr := authTestRSAJWTWithKid(t, "RS256", "garbage", key1, map[string]any{"scope": "orders:read"})
+	parsed, err := parseJWT(tokenStr)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.kid != "garbage" {
+		t.Fatalf("expected garbage kid, got %q", parsed.kid)
+	}
+	err = verifier.Verify(parsed)
+	if err == nil {
+		t.Fatal("expected verification to fail; empty-kid keys must not be wildcards under a token kid")
+	}
+}
+
+func authTestRSAJWTWithKid(t *testing.T, alg, kid string, key *rsa.PrivateKey, claims map[string]any) string {
+	t.Helper()
+	signingInput := authTestSigningInput(t, map[string]string{"alg": alg, "typ": "JWT", "kid": kid}, authTestClaims(claims))
+	sum := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func rsaPublicJWK(t *testing.T, kid string, pub *rsa.PublicKey) map[string]any {
+	t.Helper()
+	eBytes := big.NewInt(int64(pub.E)).Bytes()
+	return map[string]any{
+		"kty": "RSA",
+		"kid": kid,
+		"alg": "RS256",
+		"use": "sig",
+		"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(eBytes),
+	}
 }

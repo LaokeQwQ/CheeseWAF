@@ -275,6 +275,7 @@ func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 		want string
 	}{
 		{path: "/", want: "cheesewaf-ui"},
+		{path: "/setup", want: "cheesewaf-ui"},
 		{path: "/sites/default", want: "cheesewaf-ui"},
 		{path: "/assets/app.js", want: "console.log('cw')"},
 		{path: "/api/system", want: "api:/api/system"},
