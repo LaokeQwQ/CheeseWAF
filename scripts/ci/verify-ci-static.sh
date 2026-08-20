@@ -189,6 +189,12 @@ if grep -Fq 'format_overrides:' .goreleaser.yaml; then
   fail "all release targets must use the same tar.gz archive format"
 fi
 
+if grep -E '^[[:space:]]*version_template:.*incpatch' .goreleaser.yaml; then
+  fail "GoReleaser snapshot version must not use incpatch; Alpha- tags are not semver"
+fi
+grep -Fq 'version_template: "0.1.0-PreTest"' .goreleaser.yaml ||
+  fail "GoReleaser snapshot version must be a valid semver PreTest label"
+
 if grep -Fq '*SNAPSHOT*' scripts/ci/verify-release.sh; then
   fail "GoReleaser GUI skip must not depend on SNAPSHOT in the archive name"
 fi

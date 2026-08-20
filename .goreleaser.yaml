@@ -72,7 +72,7 @@ checksum:
   name_template: SHA256SUMS
 
 snapshot:
-  version_template: "{{ incpatch .Version }}-PreTest"
+  version_template: "0.1.0-PreTest"
 
 changelog:
   sort: asc
