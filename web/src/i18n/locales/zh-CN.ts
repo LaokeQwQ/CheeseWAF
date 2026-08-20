@@ -77,6 +77,12 @@ const zhCN = {
     xss: '跨站脚本',
     webshell: 'Web 木马',
     log4shell: 'Log4j 注入',
+    xxe: 'XML 外部实体',
+    protocolEnforcement: '协议违规',
+    ipAccess: 'IP 访问控制',
+    fingerprint: '客户端指纹',
+    apiSecurity: 'API 安全',
+    requestTooLarge: '请求体过大',
   },
   securitySeverity: {
     info: '信息',

@@ -46,6 +46,21 @@ func TestChallengeVerifiesSolvedPayload(t *testing.T) {
 	}
 }
 
+// Newline-joined HMAC fields collide when Purpose/ClientKey trade "\n" boundaries.
+func TestSignLengthPrefixRejectsNewlineFieldCollision(t *testing.T) {
+	const algorithm, challenge, salt = AlgorithmSHA256, "chal", "nonce:1"
+	a := Options{Secret: "test-secret", Purpose: "A\nB", ClientKey: "C", Path: "p"}
+	b := Options{Secret: "test-secret", Purpose: "A", ClientKey: "B\nC", Path: "p"}
+	sigA := sign(a, algorithm, challenge, salt)
+	sigB := sign(b, algorithm, challenge, salt)
+	if sigA == "" || sigB == "" {
+		t.Fatal("expected non-empty signatures")
+	}
+	if sigA == sigB {
+		t.Fatal("Purpose=A\\nB ClientKey=C must not collide with Purpose=A ClientKey=B\\nC")
+	}
+}
+
 func solveChallenge(t *testing.T, challenge Challenge) Payload {
 	t.Helper()
 	for i := 0; i <= challenge.MaxNumber; i++ {
