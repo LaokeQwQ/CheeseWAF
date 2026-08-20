@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,19 +54,7 @@ func New(opts Options) (*Controller, error) {
 		if err != nil {
 			return nil, err
 		}
-		dir := filepath.Dir(self)
-		name := "cheesewaf"
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		candidate := filepath.Join(dir, name)
-		if _, err := os.Stat(candidate); err != nil {
-			// Fall back to PATH lookup.
-			if p, lookErr := exec.LookPath(name); lookErr == nil {
-				candidate = p
-			}
-		}
-		opts.Binary = candidate
+		opts.Binary = defaultCheeseWAFBinary(self)
 	}
 	if opts.ConfigPath == "" {
 		opts.ConfigPath = filepath.Join(".", "data", "cheesewaf.yaml")
@@ -103,6 +92,29 @@ func New(opts Options) (*Controller, error) {
 	// Align CLI status/stop helpers with the same config/data dirs the GUI uses.
 	cli.ConfigurePaths(opts.ConfigPath, opts.DataDir)
 	return &Controller{opts: opts, controlToken: hex.EncodeToString(tokenBytes)}, nil
+}
+
+func defaultCheeseWAFBinary(self string) string {
+	name := "cheesewaf"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dir := filepath.Dir(self)
+	var candidates []string
+	// APFS is case-insensitive, so MacOS/cheesewaf can resolve to this GUI.
+	if strings.Contains(filepath.ToSlash(self), ".app/Contents/MacOS/") {
+		candidates = append(candidates, filepath.Join(dir, "..", "Resources", "bin", name))
+	}
+	candidates = append(candidates, filepath.Join(dir, name))
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return filepath.Join(dir, name)
 }
 
 // ControlToken returns the random token required for mutating control calls.

@@ -53,8 +53,9 @@ var decoderCorpus = []string{
 	"mixed 日本 %41 &amp; \\u0042 +plus",
 }
 
-// referenceDecode is the pre-optimization Decode, kept verbatim as the oracle.
-// Any divergence between this and Decode is a behavioural regression.
+// referenceDecode is the pre-optimization Decode, kept as the oracle for
+// transform layers. NUL strip is applied after those layers so equivalence
+// matches the public Decode sanitizer without changing the ungated primitives.
 func referenceDecode(raw string) Decoded {
 	text := raw
 	layers := []string{"raw"}
@@ -81,6 +82,7 @@ func referenceDecode(raw string) Decoded {
 		layers = append(layers, "unicode")
 	}
 	text = strings.TrimSpace(text)
+	text = strings.ReplaceAll(text, "\x00", "")
 	return Decoded{Raw: raw, Layers: layers, Text: text}
 }
 
@@ -95,7 +97,8 @@ func referenceDecodeAll(raw string) []Decoded {
 	for _, encoding := range base64Encodings {
 		decoded, err := encoding.DecodeString(strings.TrimSpace(deep.Text))
 		if err == nil && len(decoded) > 0 && printableRatio(string(decoded)) > 0.7 {
-			out = append(out, Decoded{Raw: deep.Text, Layers: append(deep.Layers, "base64"), Text: string(decoded)})
+			text := strings.ReplaceAll(string(decoded), "\x00", "")
+			out = append(out, Decoded{Raw: deep.Text, Layers: append(deep.Layers, "base64"), Text: text})
 			break
 		}
 	}

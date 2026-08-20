@@ -51,45 +51,93 @@ func DetectProtocolViolations(r *http.Request) *ProtocolViolation {
 	return nil
 }
 
-// CL.TE smuggling: attacker sends both Content-Length and Transfer-Encoding,
-// front-end uses CL, back-end uses TE → request body smuggling.
-func detectCLTESmuggling(r *http.Request) *ProtocolViolation {
-	cl := r.Header.Get("Content-Length")
-	te := r.Header.Get("Transfer-Encoding")
-	if cl == "" || te == "" {
+// transferEncodingValues reads TE from r.TransferEncoding (net/http canonical
+// field) first, then falls back to the raw Header map. net/http often moves TE
+// out of Header into TransferEncoding, so Header-only reads miss smuggling signals.
+func transferEncodingValues(r *http.Request) []string {
+	if r == nil {
 		return nil
 	}
-
-	clVal, err := strconv.Atoi(strings.TrimSpace(cl))
-	if err != nil {
-		return nil
+	if len(r.TransferEncoding) > 0 {
+		out := make([]string, len(r.TransferEncoding))
+		copy(out, r.TransferEncoding)
+		return out
 	}
-
-	te = strings.ToLower(strings.TrimSpace(te))
-	if strings.Contains(te, "chunked") && clVal > 0 {
-		return &ProtocolViolation{
-			Detected: true, Type: "smuggling", Severity: SeverityHigh, Confidence: 0.92,
-			Message: "HTTP request smuggling: Content-Length + Transfer-Encoding: chunked conflict (CL.TE attack)",
+	if vals := r.Header["Transfer-Encoding"]; len(vals) > 0 {
+		var out []string
+		for _, v := range vals {
+			for _, part := range strings.Split(v, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					out = append(out, part)
+				}
+			}
 		}
+		return out
+	}
+	if te := strings.TrimSpace(r.Header.Get("Transfer-Encoding")); te != "" {
+		return []string{te}
 	}
 	return nil
 }
 
-// TE.CL smuggling: Transfer-Encoding with trailing Content-Length in chunked body.
-func detectTECLSmuggling(r *http.Request) *ProtocolViolation {
-	te := r.Header.Get("Transfer-Encoding")
-	if te == "" {
+func transferEncodingJoined(r *http.Request) string {
+	vals := transferEncodingValues(r)
+	if len(vals) == 0 {
+		return ""
+	}
+	return strings.Join(vals, ", ")
+}
+
+func hasChunkedTransferEncoding(r *http.Request) bool {
+	for _, v := range transferEncodingValues(r) {
+		if strings.Contains(strings.ToLower(v), "chunked") {
+			return true
+		}
+	}
+	return false
+}
+
+// positiveContentLength reports a declared Content-Length > 0 from Header or the
+// parsed r.ContentLength field (which may remain set after Header mutation).
+func positiveContentLength(r *http.Request) bool {
+	if r.ContentLength > 0 {
+		return true
+	}
+	cl := strings.TrimSpace(r.Header.Get("Content-Length"))
+	if cl == "" {
+		return false
+	}
+	clVal, err := strconv.Atoi(cl)
+	return err == nil && clVal > 0
+}
+
+// CL.TE smuggling: attacker sends both Content-Length and Transfer-Encoding,
+// front-end uses CL, back-end uses TE → request body smuggling.
+func detectCLTESmuggling(r *http.Request) *ProtocolViolation {
+	if !positiveContentLength(r) || !hasChunkedTransferEncoding(r) {
 		return nil
 	}
-	te = strings.ToLower(strings.TrimSpace(te))
-	if !strings.Contains(te, "chunked") {
+	return &ProtocolViolation{
+		Detected: true, Type: "smuggling", Severity: SeverityHigh, Confidence: 0.92,
+		Message: "HTTP request smuggling: Content-Length + Transfer-Encoding: chunked conflict (CL.TE attack)",
+	}
+}
+
+// TE.CL smuggling: Transfer-Encoding with trailing Content-Length in chunked body.
+func detectTECLSmuggling(r *http.Request) *ProtocolViolation {
+	vals := transferEncodingValues(r)
+	if len(vals) == 0 {
+		return nil
+	}
+	joined := strings.ToLower(strings.Join(vals, ", "))
+	if !strings.Contains(joined, "chunked") {
 		return nil
 	}
 
 	// TE with multiple values (e.g., "chunked, identity")
-	values := strings.Split(te, ",")
-	for _, v := range values {
-		v = strings.TrimSpace(v)
+	for _, v := range vals {
+		v = strings.ToLower(strings.TrimSpace(v))
 		if v != "chunked" && v != "" {
 			return &ProtocolViolation{
 				Detected: true, Type: "smuggling", Severity: SeverityCritical, Confidence: 0.95,
@@ -99,8 +147,8 @@ func detectTECLSmuggling(r *http.Request) *ProtocolViolation {
 	}
 
 	// Check for TE header obfuscation (leading/trailing spaces, tab separators)
-	if strings.Contains(r.Header.Get("Transfer-Encoding"), "\x0b") ||
-		strings.Contains(r.Header.Get("Transfer-Encoding"), "\x00") {
+	rawTE := transferEncodingJoined(r)
+	if strings.Contains(rawTE, "\x0b") || strings.Contains(rawTE, "\x00") {
 		return &ProtocolViolation{
 			Detected: true, Type: "smuggling", Severity: SeverityCritical, Confidence: 0.98,
 			Message: "HTTP request smuggling: Transfer-Encoding header obfuscation (null/vertical-tab byte)",
@@ -111,8 +159,7 @@ func detectTECLSmuggling(r *http.Request) *ProtocolViolation {
 
 // Chunked encoding abuse: oversized chunks, malformed sizes, chunk size overflow.
 func detectChunkedAbuse(r *http.Request) *ProtocolViolation {
-	te := r.Header.Get("Transfer-Encoding")
-	if te == "" || !strings.Contains(strings.ToLower(te), "chunked") {
+	if !hasChunkedTransferEncoding(r) {
 		return nil
 	}
 
@@ -150,7 +197,8 @@ func detectUpgradeDowngradeAbuse(r *http.Request) *ProtocolViolation {
 				Message: "HTTP/2 request contains invalid TE header value: " + te,
 			}
 		}
-		if transferEncoding := r.Header.Get("Transfer-Encoding"); transferEncoding != "" {
+		// HTTP/2 forbids Transfer-Encoding; read both Header and TransferEncoding.
+		if len(transferEncodingValues(r)) > 0 {
 			return &ProtocolViolation{
 				Detected: true, Type: "smuggling", Severity: SeverityCritical, Confidence: 0.96,
 				Message: "HTTP/2 request contains forbidden Transfer-Encoding header",
