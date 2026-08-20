@@ -179,15 +179,18 @@ Linux ARM64、龙芯用 `cheesewaf-arm64-linux-*-PreTest.tar.gz` 或 `cheesewaf-
 #### 步骤 2：安装程序文件与目录授权
 
 ```bash
-# 安装可执行文件并建立软链接
+# 在解压后的目录里执行（需要 cheesewaf 和 web/dist）：
+sudo ./install-linux.sh
+```
+
+也可以手动装。二进制和界面文件都要拷，只拷二进制的话 `/setup` 会 404：
+
+```bash
 sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
-
-# 创建配置与数据存储目录
-sudo mkdir -p /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
-
-# 创建系统运行用户并分配权限
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
@@ -211,7 +214,9 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-启动完成后，通过浏览器访问 `http://<服务器IP>:9443/setup` 进行初始化。
+默认管理口只听 `127.0.0.1:9443`。在本机打开 `http://127.0.0.1:9443/setup`，或走 SSH 隧道。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
+
+`GET /api/setup` 会返回 405。查是否还要初始化用 `GET /api/setup/status`。完成初始化是带 `X-CheeseWAF-Setup-Token` 的 `POST /api/setup`。从别的机器用 API 登录仍要过控制台验证码；本机回环地址不用。
 
 ---
 

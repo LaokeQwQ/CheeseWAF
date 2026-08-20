@@ -35,6 +35,12 @@
 - DMG：临时签名、合法的数字 `CFBundleVersion`、安装盘背景和说明、Gatekeeper 修复脚本。
 - 验证脚本不再靠文件名里的 `SNAPSHOT` 判断是否要 GUI。GoReleaser 包看 `VERSION` 里的 `branch=goreleaser`；渠道包才要求 `cheesewaf-gui`。冒烟按 `cheesewaf-{架构}-{系统}-` 匹配本机。
 
+## 2026-08-20 安装全流程
+
+- 管理界面打进二进制；只拷 `cheesewaf` 时 `/setup` 也能打开。Linux 包带 `install-linux.sh`，systemd 设置 `CHEESEWAF_WEB_DIR` 和工作目录。
+- Ansible 的 `ExecStart` 补上 `serve`，配置里写数据目录和管理口 TLS。`cheesewaf --config ...` 无子命令也会启动服务。
+- `GET /api/setup/status` 查询是否还要初始化。本机回环登录不要求验证码，远程仍要。
+
 ---
 
 # Progress: pure shadcn / zero Arco

@@ -60,6 +60,10 @@ archives:
       - configs/*
       - src: deploy/systemd/cheesewaf.service
         dst: systemd/cheesewaf.service
+      - src: scripts/ci/install-linux.sh
+        dst: install-linux.sh
+        info:
+          mode: 0755
       - README.md
       - README_CN.md
       - LICENSE

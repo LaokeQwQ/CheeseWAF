@@ -156,6 +156,18 @@ grep -Fq 'linux/amd64,linux/arm64' scripts/ci/docker-build.sh ||
   fail "container CI must build linux/amd64 and linux/arm64"
 grep -Fq 'dst: systemd/cheesewaf.service' .goreleaser.yaml ||
   fail "GoReleaser archive must include the systemd unit"
+grep -Fq 'install-linux.sh' scripts/ci/package-release.sh ||
+  fail "Linux channel packages must ship install-linux.sh"
+grep -Fq 'dst: install-linux.sh' .goreleaser.yaml ||
+  fail "GoReleaser archive must include install-linux.sh"
+grep -Fq 'cheesewaf serve --config' internal/cluster/deploy/ansible.go ||
+  fail "Ansible unit must start cheesewaf serve"
+grep -Fq 'internal/webui/dist' scripts/ci/build-web.sh ||
+  fail "web build must copy UI files into the embedded dist directory"
+grep -Fq 'WorkingDirectory=/var/lib/cheesewaf' deploy/systemd/cheesewaf.service ||
+  fail "systemd unit must set WorkingDirectory so relative data paths stay under /var/lib/cheesewaf"
+grep -Fq 'CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web' deploy/systemd/cheesewaf.service ||
+  fail "systemd unit must point CHEESEWAF_WEB_DIR at the FHS UI path"
 if grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml; then
   fail "GoReleaser archives must keep one binary per platform; channel packages ship cheesewaf-gui"
 fi

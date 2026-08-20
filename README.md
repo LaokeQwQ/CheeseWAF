@@ -179,15 +179,18 @@ Linux ARM64 and LoongArch64 use `cheesewaf-arm64-linux-*-PreTest.tar.gz` or `che
 #### Step 2: Install Executable and Configure Directories
 
 ```bash
-# Install binary and create CLI symlink
+# From the extracted package directory (needs cheesewaf and web/dist):
+sudo ./install-linux.sh
+```
+
+Or install by hand. Copy the UI files as well as the binary, otherwise `/setup` returns 404:
+
+```bash
 sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
-
-# Set up configuration and working directories
-sudo mkdir -p /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
-
-# Create service user and set ownership
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
@@ -211,7 +214,9 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-Navigate to `http://<SERVER_IP>:9443/setup` to complete initial setup.
+The default admin listener is `127.0.0.1:9443`. Open `http://127.0.0.1:9443/setup` on the server (or an SSH tunnel). Remote `SERVER_IP:9443` stays closed until setup chooses a public admin strategy.
+
+`GET /api/setup` returns 405; first-install status is `GET /api/setup/status`. Completing setup is `POST /api/setup` with `X-CheeseWAF-Setup-Token`. Login from another host still needs the console captcha; loopback API login does not.
 
 ---
 

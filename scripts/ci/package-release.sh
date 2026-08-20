@@ -110,6 +110,8 @@ for target in "${targets[@]}"; do
   if [[ "$goos" == "linux" ]]; then
     mkdir -p "${package_root}/systemd"
     cp "${repo_root}/deploy/systemd/cheesewaf.service" "${package_root}/systemd/cheesewaf.service"
+    cp "${repo_root}/scripts/ci/install-linux.sh" "${package_root}/install-linux.sh"
+    chmod +x "${package_root}/install-linux.sh"
   fi
 
   mkdir -p "${package_root}/web"

@@ -806,6 +806,9 @@ func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayloa
 	if !login.CAPTCHA.Enabled {
 		return true
 	}
+	if loginCAPTCHASkippedForPeer(r) {
+		return true
+	}
 	if payload == nil {
 		return false
 	}
@@ -1181,6 +1184,11 @@ func loginRateLimitKeys(r *http.Request, username string) []string {
 		keys = append(keys, "account-source:"+loginCAPTCHAFingerprint(username, client))
 	}
 	return keys
+}
+
+func loginCAPTCHASkippedForPeer(r *http.Request) bool {
+	ip := net.ParseIP(socketPeerIP(r))
+	return ip != nil && ip.IsLoopback()
 }
 
 func socketPeerIP(r *http.Request) string {
