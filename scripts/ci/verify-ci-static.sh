@@ -177,6 +177,15 @@ if grep -Fq 'format_overrides:' .goreleaser.yaml; then
   fail "all release targets must use the same tar.gz archive format"
 fi
 
+if grep -Fq '*SNAPSHOT*' scripts/ci/verify-release.sh; then
+  fail "GoReleaser GUI skip must not depend on SNAPSHOT in the archive name"
+fi
+grep -Fq 'branch=goreleaser' scripts/ci/verify-release.sh ||
+  fail "GoReleaser archives must skip GUI checks via VERSION branch=goreleaser"
+grep -Fq 'artifact_matches_host' scripts/ci/verify-release.sh ||
+  fail "release smoke must match cheesewaf-{arch}-{os}- names without depending on field order"
+
 bash scripts/ci/generate-release-metadata_test.sh
+bash scripts/ci/verify-release_test.sh
 
 echo "CI static regression checks passed."

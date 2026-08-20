@@ -33,6 +33,7 @@
 - 文件名：`cheesewaf-{架构}-{系统}-{版本}-{后缀}.{扩展名}`，例如 `cheesewaf-arm64-darwin-0.1.0-PreTest.dmg`。
 - canary 渠道在包名和版本里改为 `PreTest`。Git 分支名仍是 `canary`。
 - DMG：临时签名、合法的数字 `CFBundleVersion`、安装盘背景和说明、Gatekeeper 修复脚本。
+- 验证脚本不再靠文件名里的 `SNAPSHOT` 判断是否要 GUI。GoReleaser 包看 `VERSION` 里的 `branch=goreleaser`；渠道包才要求 `cheesewaf-gui`。冒烟按 `cheesewaf-{架构}-{系统}-` 匹配本机。
 
 ---
 
