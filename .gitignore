@@ -114,6 +114,8 @@ cheesewaf-*-deploy.tar.gz
 node_modules/
 web/node_modules/
 web/dist/
+internal/webui/dist/**
+!internal/webui/dist/.keep
 web-dist.tar.gz
 web/.vite/
 web/coverage/
@@ -156,6 +158,7 @@ web/.code-inspector/
 
 # Local one-off notes
 ui_fixing.md
+gemini_found.md
 
 # Large corpus files (cleaned from external datasets, not committable)
 internal/engine/semantic/testdata/cybersec_benign_clean.jsonl

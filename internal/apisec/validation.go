@@ -42,6 +42,13 @@ func NewValidator(cfg config.APIValidationConfig) (*Validator, error) {
 }
 
 func (v *Validator) Validate(r *http.Request) []ValidationFinding {
+	// Negative bodyBytes falls back to ContentLength for existing callers.
+	return v.ValidateWithBodySize(r, -1)
+}
+
+// ValidateWithBodySize checks schemas; when bodyBytes >= 0 it is used for MaxBodyBytes,
+// otherwise ContentLength is used (unknown length yields no body finding).
+func (v *Validator) ValidateWithBodySize(r *http.Request, bodyBytes int64) []ValidationFinding {
 	if v == nil || !v.enabled || r == nil {
 		return nil
 	}
@@ -54,8 +61,9 @@ func (v *Validator) Validate(r *http.Request) []ValidationFinding {
 		if !item.pattern.MatchString(path) {
 			continue
 		}
+		query := r.URL.Query()
 		for _, name := range item.cfg.RequiredParams {
-			if r.URL.Query().Get(name) == "" {
+			if query.Get(name) == "" {
 				findings = append(findings, finding(item.cfg.ID, name, "required query parameter is missing"))
 			}
 		}
@@ -64,8 +72,17 @@ func (v *Validator) Validate(r *http.Request) []ValidationFinding {
 				findings = append(findings, finding(item.cfg.ID, name, "required header is missing"))
 			}
 		}
-		if item.cfg.MaxBodyBytes > 0 && r.Body != nil && r.ContentLength > item.cfg.MaxBodyBytes {
-			findings = append(findings, finding(item.cfg.ID, "body", fmt.Sprintf("body exceeds %d bytes", item.cfg.MaxBodyBytes)))
+		if item.cfg.MaxBodyBytes > 0 {
+			size := bodyBytes
+			if size < 0 {
+				if r.Body == nil {
+					continue
+				}
+				size = r.ContentLength
+			}
+			if size > item.cfg.MaxBodyBytes {
+				findings = append(findings, finding(item.cfg.ID, "body", fmt.Sprintf("body exceeds %d bytes", item.cfg.MaxBodyBytes)))
+			}
 		}
 	}
 	return findings

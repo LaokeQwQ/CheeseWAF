@@ -2,6 +2,47 @@
 
 > 2026-08-14：防护档位已改为 0～5（默认 3），配置已接入。下文 2026-08-09 的「0～4 / 硬编码 2」是历史记录。现行说明见 `docs/protection-policy-roadmap.md`。
 
+## 2026-08-15 加固（gemini_found 复核后）
+
+审查结论：17 条里多数是线索，不是 P0 事故单。按「有价值就改」并行推进，**不**扩大 `extractPrimaryGadget`（避免长文前缀变成绕过）。
+
+| 项 | 状态 | 说明 |
+| :--- | :--- | :--- |
+| TOTP 按步数消费 | 已完成 | 登录/解绑同一窗口不能重放；会话写入失败会退回该步 |
+| 走私检测读 `TransferEncoding` | 已完成 | 同时读 `r.TransferEncoding` 与 Header |
+| 解码后再去掉空字节 | 已完成 | `\u0000` / `%00` / `&#0;` |
+| Schema 用已读 body 长度 | 已完成 | `ValidateWithBodySize`；站点 `MaxBytesReader` 仍是硬顶 |
+| JWT 无 kid 且多钥 | 已完成 | 多钥必须带 kid；空 kid 钥匙不能当通配 |
+| HMAC 长度前缀 | 已完成 | 换行不再当字段分隔 |
+| ACME JSON 脱敏 | 已完成 | 含 `client_secret` / `*_token` / `private_key` |
+| 限流 FNV / Timer / Payload 截断 | 已完成 | 热路径与日志体积 |
+| 超载策略 | 已完成 | 默认仍 observe；`closed` 出挑战（已有测试） |
+| README 隔离说明 | 已完成 | 和实现对齐，不扩大 gadget 列表 |
+
+整支 review 后修了 JWT 空 kid 通配。未改：默认超载仍观察、不把 XSS/RCE 塞进隔离提取。
+
+## 2026-08-15 注释 / 语义类别 / i18n
+
+- 源码注释里没有 Claude / Grok / Gemini / Copilot 残留；清掉了 `ListForLLM` 注释里的 OpenAI 协议名，以及测试名里的 `kimi_i18n`。
+- 控制台类别展示补了 `xxe`、`protocol_enforcement`、`ip_access`、`fingerprint`、`api_security`、`request_too_large`。未知类别不再误显示成「自定义规则」。
+- 验证码资源配置写入改用请求的 `Accept-Language`，不再写死 `zh-CN`。
+- 无请求上下文的 `persistConfig` / `commitConfigMutation` 仍用默认语言（`zh-CN`），助手工具写配置同理。
+
+## 2026-08-16 发行包命名与 macOS DMG
+
+- 文件名：`cheesewaf-{架构}-{系统}-{版本}-{后缀}.{扩展名}`，例如 `cheesewaf-arm64-darwin-0.1.0-PreTest.dmg`。
+- canary 渠道在包名和版本里改为 `PreTest`。Git 分支名仍是 `canary`。
+- DMG：临时签名、合法的数字 `CFBundleVersion`、安装盘背景和说明、Gatekeeper 修复脚本。
+- 验证脚本不再靠文件名里的 `SNAPSHOT` 判断是否要 GUI。GoReleaser 包看 `VERSION` 里的 `branch=goreleaser`；渠道包才要求 `cheesewaf-gui`。冒烟按 `cheesewaf-{架构}-{系统}-` 匹配本机。
+
+## 2026-08-20 安装全流程
+
+- 管理界面打进二进制；只拷 `cheesewaf` 时 `/setup` 也能打开。Linux 包带 `install-linux.sh`，systemd 设置 `CHEESEWAF_WEB_DIR` 和工作目录。
+- Ansible 的 `ExecStart` 补上 `serve`，配置里写数据目录和管理口 TLS。`cheesewaf --config ...` 无子命令也会启动服务。
+- `GET /api/setup/status` 查询是否还要初始化。本机回环登录不要求验证码，远程仍要。
+
+---
+
 # Progress: pure shadcn / zero Arco
 
 | Phase | Status | Evidence |
