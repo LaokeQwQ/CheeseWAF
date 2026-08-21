@@ -2,7 +2,7 @@
 
 现行口径见 [protection-policy-roadmap.md](protection-policy-roadmap.md)。本文记录配置字段与代码入口。
 
-2026-08-09 旧文按「0～4 + 置信度门槛」写，已经作废。现在按**形状 + 档位**决定拦不拦。
+现在按**形状 + 档位**决定拦不拦。
 
 ## 配置
 
