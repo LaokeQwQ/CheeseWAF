@@ -145,8 +145,8 @@ grep -Fq 'zip -qr' scripts/ci/package-release.sh ||
   fail "Windows channel packages must be zip archives"
 grep -Fq '${package_name}.exe' scripts/ci/package-release.sh ||
   fail "Windows channel packages must include a single-file CLI exe"
-grep -Fq 'cheesewaf-${goarch}-${goos}-${version_prefix}' scripts/ci/package-release.sh ||
-  fail "branch packages must use cheesewaf-{arch}-{os}-{version}-{suffix} names"
+grep -Fq 'cheesewaf-${goarch}-${goos}-${artifact_version}' scripts/ci/package-release.sh ||
+  fail "branch packages must use cheesewaf-{arch}-{os}-{version} names"
 grep -Fq 'hdiutil create' scripts/ci/package-macos-dmg.sh ||
   fail "macOS packaging must create UDZO disk images"
 grep -Fq 'CheeseWAF.app' scripts/ci/package-macos-dmg.sh ||
@@ -164,7 +164,7 @@ grep -Fq 'scripts/ci/sign-windows.sh' scripts/ci/package-release.sh ||
 grep -Fq 'APP_BUNDLE_VERSION' deploy/macos/Info.plist ||
   fail "macOS Info.plist must keep a numeric CFBundleVersion placeholder"
 got_ver="$(bash scripts/ci/package-macos-dmg.sh --print-bundle-version '0.1.0-PreTest')"
-[[ "$got_ver" == "0.1.0" ]] ||
+[[ "$got_ver" == "$(cat scripts/ci/product-version)" ]] ||
   fail "macOS CFBundleVersion must strip PreTest labels (got ${got_ver})"
 grep -Fq 'package-macos-dmg.sh' .github/workflows/ci.yml ||
   fail "CI must build macOS DMG images on a macOS runner"
@@ -295,8 +295,12 @@ fi
 if grep -E '^[[:space:]]*version_template:.*incpatch' .goreleaser.yaml; then
   fail "GoReleaser snapshot version must not use incpatch; Alpha- tags are not semver"
 fi
-grep -Fq 'version_template: "0.1.0-PreTest"' .goreleaser.yaml ||
-  fail "GoReleaser snapshot version must be a valid semver PreTest label"
+grep -Fq '{{ .Env.CHEESEWAF_VERSION_PREFIX }}-PreTest' .goreleaser.yaml ||
+  fail "GoReleaser snapshot version must read the product-version env"
+grep -Fq 'export CHEESEWAF_VERSION_PREFIX="$(cat scripts/ci/product-version)"' .github/workflows/ci.yml ||
+  fail "GitHub Actions must export the product version before goreleaser"
+grep -Fq 'export CHEESEWAF_VERSION_PREFIX="$(cat scripts/ci/product-version)"' .forgejo/workflows/ci.yml ||
+  fail "Forgejo must export the product version before goreleaser"
 
 if grep -Fq '*SNAPSHOT*' scripts/ci/verify-release.sh; then
   fail "GoReleaser GUI skip must not depend on SNAPSHOT in the archive name"
@@ -305,6 +309,72 @@ grep -Fq 'branch=goreleaser' scripts/ci/verify-release.sh ||
   fail "GoReleaser archives must skip GUI checks via VERSION branch=goreleaser"
 grep -Fq 'artifact_matches_host' scripts/ci/verify-release.sh ||
   fail "release smoke must match cheesewaf-{arch}-{os}- names without depending on field order"
+
+# Single source of truth for the product version.
+product_version_file="scripts/ci/product-version"
+[[ -r "$product_version_file" ]] || fail "missing ${product_version_file}"
+product_version="$(cat "$product_version_file")"
+[[ "$product_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+  fail "product-version must be plain semver (got: ${product_version})"
+grep -Fq 'cat "${script_dir}/product-version"' scripts/ci/package-release.sh ||
+  fail "package-release.sh must read the single version source"
+grep -Fq 'CHEESEWAF_VERSION_PREFIX' scripts/ci/package-release.sh ||
+  fail "package-release.sh must preserve the CHEESEWAF_VERSION_PREFIX override"
+grep -Fq 'CHEESEWAF_VERSION_PREFIX' .goreleaser.yaml ||
+  fail "GoReleaser must use the CHEESEWAF_VERSION_PREFIX env override"
+
+# Local build naming/ldflags must match the release naming contract and inject
+# the same version/commit/build-time/channel metadata as package-release.sh.
+grep -Fq 'cheesewaf-${goarch}-${goos}-${FILENAME_VERSION}' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must use cheesewaf-{arch}-{os}-{version} names"
+grep -Fq 'internal/version.Version=' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must inject the Version ldflag"
+grep -Fq 'internal/version.Commit=' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must inject the Commit ldflag"
+grep -Fq 'internal/version.BuildTime=' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must inject the BuildTime ldflag"
+grep -Fq 'internal/version.Channel=' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must inject the Channel ldflag"
+grep -Fq 'bin/$(BINARY_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext' Makefile ||
+  fail "Makefile build-all must use cheesewaf-{arch}-{os}-{version} names"
+
+# Forgejo alignment: shared npm audit gate. actionlint only lints GitHub YAML;
+# Forgejo uses https://data.forgejo.org/... action URLs that actionlint cannot
+# parse, so Forgejo workflow correctness stays covered by the static checks above.
+grep -Fq 'node scripts/npm-audit-gate.mjs' .forgejo/workflows/ci.yml ||
+  fail "Forgejo web-audit must use the shared npm-audit-gate"
+
+# Coverage gates must stay aligned with actual observed coverage so CI is not
+# guaranteed to fail.
+grep -Fq -- '--coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10' .github/workflows/ci.yml ||
+  fail "GitHub Actions web-build coverage thresholds must be 20/20/20/10"
+grep -Fq -- '--coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10' .forgejo/workflows/ci.yml ||
+  fail "Forgejo web-build coverage thresholds must be 20/20/20/10"
+grep -Fq 'coverage_floor="${GO_COVERAGE_FLOOR:-50.0}"' scripts/ci/verify-go-quality.sh ||
+  fail "Go coverage floor must default to 50%"
+
+# Publish gating: GitHub environment, tag-to-commit, idempotent create, and
+# product-level SBOM.
+grep -Fq 'environment: publish-prerelease' .github/workflows/ci.yml ||
+  fail "publish-prerelease must run in the publish-prerelease environment"
+grep -Fq -- '--target "$commit"' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must create the release at the manifest commit"
+grep -Fq 'gh release view "$tag"' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must skip create when the release already exists"
+grep -Fq 'cheesewaf-artifacts.cdx.json' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must generate a product-level SBOM"
+grep -Fq 'artifacts.manifest.json' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must provide a minimal artifact manifest fallback"
+grep -Fq 'sign_blob "$product_sbom"' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must sign the product-level SBOM"
+
+# Optional release signing gate.
+grep -Fq 'CHEESEWAF_REQUIRE_SIGNING' scripts/ci/verify-release.sh ||
+  fail "verify-release.sh must support the optional signing gate"
+grep -Fq 'osslsigncode verify' scripts/ci/verify-release.sh ||
+  fail "optional signing gate must verify Windows Authenticode"
+grep -Fq 'codesign --verify' scripts/ci/verify-release.sh ||
+  fail "optional signing gate must verify macOS codesign"
 
 bash scripts/ci/generate-release-metadata_test.sh
 bash scripts/ci/verify-release_test.sh

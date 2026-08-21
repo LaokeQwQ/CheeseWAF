@@ -9,9 +9,11 @@ release_dir="${1:-release}"
 
 tag=""
 suffix=""
+commit=""
 if [[ -f "${release_dir}/release-manifest.txt" ]]; then
   tag="$(awk -F': ' '/^prerelease_tag:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
   suffix="$(awk -F': ' '/^file_suffix:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+  commit="$(awk -F': ' '/^commit:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
   if [[ -z "$suffix" ]]; then
     suffix="$(awk -F': ' '/^channel:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
   fi
@@ -24,6 +26,10 @@ fi
   echo "::error::pre-release tag must start with Alpha-: ${tag}" >&2
   exit 1
 }
+if [[ -z "$commit" ]]; then
+  echo "::error::commit is missing from release-manifest.txt" >&2
+  exit 1
+fi
 if [[ -z "$suffix" ]]; then
   suffix="PreTest"
 fi
@@ -40,7 +46,7 @@ rewrite_checksums() {
     while IFS= read -r f; do
       [[ -n "$f" ]] || continue
       files+=("$f")
-    done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt ! -name '*.bundle' ! -name '*.sig' | sed 's#^\./##' | sort)
+    done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt ! -name artifacts.manifest.json ! -name '*.bundle' ! -name '*.sig' | sed 's#^\./##' | sort)
     [[ ${#files[@]} -gt 0 ]] || {
       echo "::error::no files to checksum in ${dir}" >&2
       exit 1
@@ -78,6 +84,51 @@ syft scan "dir:${repo_root}" \
   exit 1
 }
 
+# Product-level SBOM: scan the release artifacts directory (tarballs, zips,
+# exes, dmg) in addition to the source tree. syft cannot always index opaque
+# tar.gz/exe payloads, so if the scan fails we fall back to a signed
+# artifacts.manifest.json parsed from SHA256SUMS (minimum viable SBOM).
+product_sbom="${release_dir}/cheesewaf-artifacts.cdx.json"
+artifacts_manifest="${release_dir}/artifacts.manifest.json"
+if ! syft scan "dir:${release_dir}" \
+    --source-name cheesewaf-artifacts \
+    --source-version "$tag" \
+    --exclude '**/.git/**' \
+    --exclude '**/node_modules/**' \
+    --exclude '**/tmp/**' \
+    --exclude '**/cheesewaf.cdx.json' \
+    --exclude '**/cheesewaf-artifacts.cdx.json' \
+    --exclude '**/artifacts.manifest.json' \
+    --exclude '**/SHA256SUMS.bundle' \
+    --exclude '**/*.sig' \
+    -o "cyclonedx-json=${product_sbom}" 2>/dev/null; then
+  echo "syft artifact scan failed; falling back to artifacts.manifest.json"
+  rm -f "$product_sbom"
+  {
+    printf '{\n  "name": "cheesewaf-artifacts",\n  "version": "%s",\n  "artifacts": [\n' "$tag"
+    first=1
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      sha="${line%% *}"
+      name="${line#*  }"
+      name="${name# }"
+      [[ -n "$sha" && -n "$name" ]] || continue
+      if [[ "$first" -eq 1 ]]; then
+        first=0
+      else
+        printf ',\n'
+      fi
+      printf '    { "sha256": "%s", "name": "%s" }' "$sha" "$name"
+    done < "${release_dir}/SHA256SUMS"
+    printf '\n  ]\n}\n'
+  } >"$artifacts_manifest"
+  product_sbom="$artifacts_manifest"
+fi
+[[ -s "$product_sbom" ]] || {
+  echo "::error::could not generate a product-level SBOM for ${release_dir}" >&2
+  exit 1
+}
+
 rewrite_checksums "$release_dir"
 
 sign_blob() {
@@ -92,6 +143,7 @@ sign_blob() {
 
 sign_blob "${release_dir}/SHA256SUMS"
 sign_blob "$sbom_file"
+sign_blob "$product_sbom"
 
 notes="$(mktemp)"
 trap 'rm -f "$notes"' EXIT
@@ -104,21 +156,21 @@ Download the archive that matches your OS and CPU:
 
 | File | Platform |
 | --- | --- |
-| \`cheesewaf-amd64-linux-*-${suffix}.tar.gz\` | Linux x86_64 |
-| \`cheesewaf-arm64-linux-*-${suffix}.tar.gz\` | Linux ARM64 |
-| \`cheesewaf-loong64-linux-*-${suffix}.tar.gz\` | Linux LoongArch64 |
-| \`cheesewaf-amd64-darwin-*-${suffix}.tar.gz\` / \`.dmg\` | macOS Intel |
-| \`cheesewaf-arm64-darwin-*-${suffix}.tar.gz\` / \`.dmg\` | macOS Apple Silicon |
-| \`cheesewaf-amd64-windows-*-${suffix}.exe\` | Windows x86_64 single-file CLI |
-| \`cheesewaf-arm64-windows-*-${suffix}.exe\` | Windows ARM64 single-file CLI |
-| \`cheesewaf-amd64-windows-*-${suffix}.zip\` | Windows x86_64 portable folder |
-| \`cheesewaf-arm64-windows-*-${suffix}.zip\` | Windows ARM64 portable folder |
-| \`cheesewaf-amd64-windows-*-${suffix}-setup.exe\` | Windows x86_64 GUI installer |
-| \`cheesewaf-arm64-windows-*-${suffix}-setup.exe\` | Windows ARM64 GUI installer |
+| \`cheesewaf-amd64-linux-*.tar.gz\` | Linux x86_64 |
+| \`cheesewaf-arm64-linux-*.tar.gz\` | Linux ARM64 |
+| \`cheesewaf-loong64-linux-*.tar.gz\` | Linux LoongArch64 |
+| \`cheesewaf-amd64-darwin-*.tar.gz\` / \`.dmg\` | macOS Intel |
+| \`cheesewaf-arm64-darwin-*.tar.gz\` / \`.dmg\` | macOS Apple Silicon |
+| \`cheesewaf-amd64-windows-*.exe\` | Windows x86_64 single-file CLI |
+| \`cheesewaf-arm64-windows-*.exe\` | Windows ARM64 single-file CLI |
+| \`cheesewaf-amd64-windows-*.zip\` | Windows x86_64 portable folder |
+| \`cheesewaf-arm64-windows-*.zip\` | Windows ARM64 portable folder |
+| \`cheesewaf-amd64-windows-*-setup.exe\` | Windows x86_64 GUI installer |
+| \`cheesewaf-arm64-windows-*-setup.exe\` | Windows ARM64 GUI installer |
 
 Linux archives include \`systemd/cheesewaf.service\`. Verify downloads with \`SHA256SUMS\`.
 
-A CycloneDX SBOM is attached as \`cheesewaf.cdx.json\`. \`SHA256SUMS\` and the SBOM are signed with Sigstore keyless identities from GitHub Actions. Verify:
+A source-tree CycloneDX SBOM is attached as \`cheesewaf.cdx.json\`, and a product-level SBOM for the release artifacts is attached as \`cheesewaf-artifacts.cdx.json\` (or \`artifacts.manifest.json\` when the artifact scan falls back). \`SHA256SUMS\` and the SBOM(s) are signed with Sigstore keyless identities from GitHub Actions. Verify:
 
 \`\`\`
 cosign verify-blob --bundle SHA256SUMS.bundle \\
@@ -145,6 +197,7 @@ if gh release view "$tag" >/dev/null 2>&1; then
 fi
 
 gh release create "$tag" \
+  --target "$commit" \
   --prerelease \
   --title "$tag" \
   --notes-file "$notes" \

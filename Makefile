@@ -102,14 +102,14 @@ build-all:
 			if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
 			echo "  → $$goos/$$goarch"; \
 			GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" \
-				-o bin/$(BINARY_NAME)-$$goos-$$goarch$$ext ./cmd/cheesewaf/; \
-			cp bin/$(BINARY_NAME)-$$goos-$$goarch$$ext bin/$(CLI_NAME)-$$goos-$$goarch$$ext; \
+			-o bin/$(BINARY_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext ./cmd/cheesewaf/; \
+			cp bin/$(BINARY_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext bin/$(CLI_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext; \
 		done; \
 	done
 	@echo "  → linux/loong64"
 	@GOOS=linux GOARCH=loong64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" \
-		-o bin/$(BINARY_NAME)-linux-loong64 ./cmd/cheesewaf/
-	@cp bin/$(BINARY_NAME)-linux-loong64 bin/$(CLI_NAME)-linux-loong64
+		-o bin/$(BINARY_NAME)-loong64-linux-$(subst +,-,$(VERSION)) ./cmd/cheesewaf/
+	@cp bin/$(BINARY_NAME)-loong64-linux-$(subst +,-,$(VERSION)) bin/$(CLI_NAME)-loong64-linux-$(subst +,-,$(VERSION))
 	@echo "Done! All binaries in bin/"
 
 ## run: Run cheesewaf serve
