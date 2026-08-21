@@ -165,4 +165,19 @@ content_type="$(curl --fail --silent --show-error --insecure --head "https://127
   exit 1
 }
 
-echo "Container smoke passed as ${runtime_user}; fresh setup, admin readiness, HTTPS, and JavaScript MIME are healthy."
+docker exec "$container_name" sh -c 'test -r /etc/ssl/certs/ca-certificates.crt && test -s /etc/ssl/certs/ca-certificates.crt' || {
+  docker logs "$container_name" >&2 || true
+  echo "::error::runtime image is missing a readable CA bundle at /etc/ssl/certs/ca-certificates.crt" >&2
+  exit 1
+}
+
+if [[ "${CHEESEWAF_SKIP_OUTBOUND_TLS:-0}" != "1" ]]; then
+  outbound_url="${CHEESEWAF_OUTBOUND_TLS_URL:-https://example.com}"
+  docker exec "$container_name" /usr/local/bin/cheesewaf-entrypoint healthcheck --outbound-tls "$outbound_url" >/dev/null || {
+    docker logs "$container_name" >&2 || true
+    echo "::error::container outbound HTTPS probe failed for ${outbound_url}" >&2
+    exit 1
+  }
+fi
+
+echo "Container smoke passed as ${runtime_user}; fresh setup, admin readiness, HTTPS, JavaScript MIME, and outbound TLS are healthy."

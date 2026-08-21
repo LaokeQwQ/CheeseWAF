@@ -1,0 +1,19 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  bin = "./tmp/cheesewaf"
+  cmd = "go build -o ./tmp/cheesewaf ./cmd/cheesewaf/"
+  args_bin = ["serve"]
+  delay = 1000
+  exclude_dir = ["bin", "dist", "tmp", "vendor", "web", "security-validation", "docs"]
+  exclude_regex = ["_test.go"]
+  include_ext = ["go", "yaml"]
+  send_interrupt = true
+  kill_delay = "2s"
+
+[log]
+  time = false
+
+[misc]
+  clean_on_exit = true
