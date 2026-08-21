@@ -75,6 +75,39 @@ export function isAuthenticatedFlag(): boolean {
 type SetupLocation = Pick<Location, 'hash' | 'pathname' | 'search'>;
 type SetupHistory = Pick<History, 'replaceState' | 'state'>;
 
+export async function hydrateSetupTokenFromStatus(
+  fetcher: typeof fetch = fetch,
+): Promise<string> {
+  const existing = setupToken() || captureSetupTokenFromFragment();
+  if (existing) {
+    return existing;
+  }
+  try {
+    const res = await fetcher('/api/setup/status', { credentials: 'same-origin' });
+    if (!res.ok) {
+      return '';
+    }
+    const body = (await res.json()) as { data?: { setup_url?: string } };
+    const page = (body.data?.setup_url ?? '').trim();
+    if (!page) {
+      return '';
+    }
+    const hash = page.includes('#') ? page.slice(page.indexOf('#') + 1) : '';
+    const token = (new URLSearchParams(hash).get('setup_token') ?? '').trim();
+    if (!token) {
+      return '';
+    }
+    try {
+      sessionStorage.setItem(setupTokenStorageKey, token);
+    } catch {
+      return token;
+    }
+    return token;
+  } catch {
+    return '';
+  }
+}
+
 export function captureSetupTokenFromFragment(
   locationRef: SetupLocation = window.location,
   historyRef: SetupHistory = window.history,
@@ -135,7 +168,7 @@ apiClient.interceptors.request.use(async (config) => {
 	const url = String(config.url ?? '');
 	const method = String(config.method ?? 'get').toLowerCase();
 	if (isSetupMutation(method, url)) {
-		captureSetupTokenFromFragment();
+		await hydrateSetupTokenFromStatus();
 		const token = setupToken();
 		if (token) {
 			config.headers[setupTokenHeaderName] = token;
