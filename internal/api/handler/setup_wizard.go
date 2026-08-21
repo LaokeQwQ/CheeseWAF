@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 )
 
@@ -105,7 +106,9 @@ func isLocalOrSameOrigin(origin string, r *http.Request) bool {
 }
 
 // SetupStatus reports whether first-install is still required. No setup token.
-func (h *Handler) SetupStatus(w http.ResponseWriter, _ *http.Request) {
+// Loopback clients also receive setup_url so the wizard can run without
+// scraping stdout or the URL fragment.
+func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	needs := true
 	if h != nil {
 		needs = setup.NeedsSetup(h.setupDataDir())
@@ -121,7 +124,21 @@ func (h *Handler) SetupStatus(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 	}
-	writeData(w, map[string]any{"needs_setup": needs})
+	payload := map[string]any{"needs_setup": needs}
+	if needs && h != nil && strings.TrimSpace(h.SetupToken) != "" && loginCAPTCHASkippedForPeer(r) {
+		scheme := "http"
+		if middleware.CookieSecure(r) {
+			scheme = "https"
+		}
+		listen := "127.0.0.1:9443"
+		if h.Config != nil && strings.TrimSpace(h.Config.Server.AdminListen) != "" {
+			listen = h.Config.Server.AdminListen
+		}
+		if page := setup.BrowserURL(scheme, listen, h.SetupToken); page != "" {
+			payload["setup_url"] = page
+		}
+	}
+	writeData(w, payload)
 }
 
 // SetupProbe runs the first-install performance probe (R0). Only meaningful when NeedsSetup.
@@ -136,7 +153,7 @@ func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 	store := h.setupDraftStore()
 	draft, cached, err := store.ReserveProbe(setupSessionID(r))
 	if cached {
-		h.writeSetupProbeResponse(w, draft, *draft.Probe)
+		h.writeSetupProbeResponse(w, r, draft, *draft.Probe)
 		return
 	}
 	if errors.Is(err, setup.ErrDraftStoreFull) {
@@ -157,16 +174,16 @@ func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "SETUP_DRAFT_EXPIRED", "setup session expired while probe was running")
 		return
 	}
-	h.writeSetupProbeResponse(w, draft, result)
+	h.writeSetupProbeResponse(w, r, draft, result)
 }
 
-func (h *Handler) writeSetupProbeResponse(w http.ResponseWriter, draft *setup.SetupDraft, result setup.ProbeResult) {
+func (h *Handler) writeSetupProbeResponse(w http.ResponseWriter, r *http.Request, draft *setup.SetupDraft, result setup.ProbeResult) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     setup.SetupSessionCookie,
 		Value:    draft.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   middleware.CookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(setup.DefaultDraftTTL.Seconds()),
 	})
