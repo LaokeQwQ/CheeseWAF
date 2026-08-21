@@ -450,3 +450,28 @@ describe('refresh session', () => {
     expect(adapter).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe('refresh session throttle', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    sessionStorage.clear();
+  });
+
+  it('skips refresh within 10 minutes after the last successful refresh', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { data: { user: { username: 'admin', role: 'admin' } } }, status: 200, statusText: 'OK', headers: {}, config: {} });
+    const adapter = vi.fn(async (config) => ({ data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config }));
+
+    await apiClient.get('/sites', { adapter });
+    expect(post).toHaveBeenCalledTimes(1);
+
+    post.mockClear();
+    await apiClient.get('/logs', { adapter });
+    expect(post).not.toHaveBeenCalled();
+  });
+});
