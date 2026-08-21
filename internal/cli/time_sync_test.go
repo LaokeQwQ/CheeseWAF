@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/tls"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -55,5 +57,40 @@ func TestAdminEntryCookieUsesInjectedClock(t *testing.T) {
 	request.AddCookie(cookies[0])
 	if !validAdminEntryCookie(request, "cw_entry", "test-secret", func() time.Time { return fixed.Add(time.Second) }) {
 		t.Fatal("cookie should validate against the injected clock")
+	}
+}
+
+func TestAdminEntryCookieSecureFollowsTLSAndForwardedProto(t *testing.T) {
+	now := func() time.Time { return time.Date(2026, time.August, 21, 12, 0, 0, 0, time.UTC) }
+
+	plain := httptest.NewRecorder()
+	if !issueAdminEntryCookieAt(plain, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/__cheesewaf-entry", nil), "cw_entry", "test-secret", now) {
+		t.Fatal("issue plain HTTP entry cookie")
+	}
+	plainCookies := plain.Result().Cookies()
+	if len(plainCookies) != 1 || plainCookies[0].Secure {
+		t.Fatalf("plain HTTP entry cookie must omit Secure, got %+v", plainCookies)
+	}
+
+	httpsReq := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:9443/__cheesewaf-entry", nil)
+	httpsReq.TLS = &tls.ConnectionState{}
+	secureRec := httptest.NewRecorder()
+	if !issueAdminEntryCookieAt(secureRec, httpsReq, "cw_entry", "test-secret", now) {
+		t.Fatal("issue TLS entry cookie")
+	}
+	secureCookies := secureRec.Result().Cookies()
+	if len(secureCookies) != 1 || !secureCookies[0].Secure {
+		t.Fatalf("TLS entry cookie must set Secure, got %+v", secureCookies)
+	}
+
+	proxied := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/__cheesewaf-entry", nil)
+	proxied.Header.Set("X-Forwarded-Proto", "https")
+	proxyRec := httptest.NewRecorder()
+	if !issueAdminEntryCookieAt(proxyRec, proxied, "cw_entry", "test-secret", now) {
+		t.Fatal("issue proxied HTTPS entry cookie")
+	}
+	proxyCookies := proxyRec.Result().Cookies()
+	if len(proxyCookies) != 1 || !proxyCookies[0].Secure {
+		t.Fatalf("X-Forwarded-Proto=https entry cookie must set Secure, got %+v", proxyCookies)
 	}
 }
