@@ -82,3 +82,50 @@ func TestURLReturnsErrorForMalformedEscape(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestDecodeStripsNULAfterURLEscape(t *testing.T) {
+	decoded := Decode("before%00after")
+	if strings.Contains(decoded.Text, "\x00") {
+		t.Fatalf("decoded Text still contains NUL: %q", decoded.Text)
+	}
+	if !strings.Contains(decoded.Text, "before") || !strings.Contains(decoded.Text, "after") {
+		t.Fatalf("surrounding payload lost: %q", decoded.Text)
+	}
+}
+
+func TestDecodeStripsNULAfterHTMLEntity(t *testing.T) {
+	for _, raw := range []string{"safe&#0;payload", "safe&#x00;payload", "safe&#x0;payload"} {
+		decoded := Decode(raw)
+		if strings.Contains(decoded.Text, "\x00") {
+			t.Fatalf("Decode(%q) Text still contains NUL: %q", raw, decoded.Text)
+		}
+		if !strings.Contains(decoded.Text, "safe") || !strings.Contains(decoded.Text, "payload") {
+			t.Fatalf("Decode(%q) lost surrounding text: %q", raw, decoded.Text)
+		}
+	}
+}
+
+func TestDecodeStripsNULAfterUnicodeEscape(t *testing.T) {
+	for _, raw := range []string{`pre\u0000post`, `pre\x00post`} {
+		decoded := Decode(raw)
+		if strings.Contains(decoded.Text, "\x00") {
+			t.Fatalf("Decode(%q) Text still contains NUL: %q", raw, decoded.Text)
+		}
+		if !strings.Contains(decoded.Text, "pre") || !strings.Contains(decoded.Text, "post") {
+			t.Fatalf("Decode(%q) lost surrounding text: %q", raw, decoded.Text)
+		}
+	}
+}
+
+func TestDeepDecodeAndDecodeAllStripNUL(t *testing.T) {
+	raw := "x%00y&#0;z\\u0000w"
+	deep := DeepDecode(raw)
+	if strings.Contains(deep.Text, "\x00") {
+		t.Fatalf("DeepDecode Text still contains NUL: %q", deep.Text)
+	}
+	for i, v := range DecodeAll(raw) {
+		if strings.Contains(v.Text, "\x00") {
+			t.Fatalf("DecodeAll[%d] Text still contains NUL: %q", i, v.Text)
+		}
+	}
+}

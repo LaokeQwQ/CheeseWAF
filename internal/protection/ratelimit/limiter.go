@@ -2,7 +2,6 @@
 package ratelimit
 
 import (
-	"hash/fnv"
 	"sync"
 	"time"
 
@@ -144,9 +143,17 @@ func (l *Limiter) KeyCount() int {
 }
 
 func (l *Limiter) shard(key string) *limiterShard {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(key))
-	return &l.shards[int(h.Sum32())%len(l.shards)]
+	// Inline FNV-1a (offset 2166136261, prime 16777619) — no heap hash.Hash.
+	const (
+		fnvOffset = 2166136261
+		fnvPrime  = 16777619
+	)
+	h := uint32(fnvOffset)
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= fnvPrime
+	}
+	return &l.shards[int(h)%len(l.shards)]
 }
 
 func (l *Limiter) perShardCap() int {

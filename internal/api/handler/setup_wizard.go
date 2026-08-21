@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 )
 
@@ -103,6 +105,42 @@ func isLocalOrSameOrigin(origin string, r *http.Request) bool {
 	return false
 }
 
+// SetupStatus reports whether first-install is still required. No setup token.
+// Loopback clients also receive setup_url so the wizard can run without
+// scraping stdout or the URL fragment.
+func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
+	needs := true
+	if h != nil {
+		needs = setup.NeedsSetup(h.setupDataDir())
+		if !needs {
+			writeData(w, map[string]any{"needs_setup": false})
+			return
+		}
+		if h.Store != nil {
+			users, err := h.Store.ListUsers(context.Background())
+			if err == nil && len(users) > 0 {
+				writeData(w, map[string]any{"needs_setup": false})
+				return
+			}
+		}
+	}
+	payload := map[string]any{"needs_setup": needs}
+	if needs && h != nil && strings.TrimSpace(h.SetupToken) != "" && loginCAPTCHASkippedForPeer(r) {
+		scheme := "http"
+		if middleware.CookieSecure(r) {
+			scheme = "https"
+		}
+		listen := "127.0.0.1:9443"
+		if h.Config != nil && strings.TrimSpace(h.Config.Server.AdminListen) != "" {
+			listen = h.Config.Server.AdminListen
+		}
+		if page := setup.BrowserURL(scheme, listen, h.SetupToken); page != "" {
+			payload["setup_url"] = page
+		}
+	}
+	writeData(w, payload)
+}
+
 // SetupProbe runs the first-install performance probe (R0). Only meaningful when NeedsSetup.
 func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 	if !h.allowSetupMutation(w, r) {
@@ -115,7 +153,7 @@ func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 	store := h.setupDraftStore()
 	draft, cached, err := store.ReserveProbe(setupSessionID(r))
 	if cached {
-		h.writeSetupProbeResponse(w, draft, *draft.Probe)
+		h.writeSetupProbeResponse(w, r, draft, *draft.Probe)
 		return
 	}
 	if errors.Is(err, setup.ErrDraftStoreFull) {
@@ -136,16 +174,15 @@ func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "SETUP_DRAFT_EXPIRED", "setup session expired while probe was running")
 		return
 	}
-	h.writeSetupProbeResponse(w, draft, result)
+	h.writeSetupProbeResponse(w, r, draft, result)
 }
 
-func (h *Handler) writeSetupProbeResponse(w http.ResponseWriter, draft *setup.SetupDraft, result setup.ProbeResult) {
-	http.SetCookie(w, &http.Cookie{
+func (h *Handler) writeSetupProbeResponse(w http.ResponseWriter, r *http.Request, draft *setup.SetupDraft, result setup.ProbeResult) {
+	middleware.WriteCookie(w, r, &http.Cookie{
 		Name:     setup.SetupSessionCookie,
 		Value:    draft.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(setup.DefaultDraftTTL.Seconds()),
 	})

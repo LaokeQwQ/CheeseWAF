@@ -12,6 +12,64 @@ fail() {
   exit 1
 }
 
+# Channel packages (package-release.sh) ship GUI binaries. GoReleaser archives
+# keep one engine binary; VERSION branch=goreleaser marks those archives.
+is_goreleaser_archive() {
+  grep -Eq '^branch=goreleaser$' "$1/VERSION"
+}
+
+# Names are cheesewaf-{arch}-{os}-{version}[...]; match arch and os independently.
+host_uname="$(uname -s)"
+host_arch="$(uname -m)"
+case "$host_uname" in
+  Linux | Darwin)
+    smoke_binary_name='cheesewaf'
+    ;;
+  MINGW* | MSYS* | CYGWIN*)
+    smoke_binary_name='cheesewaf.exe'
+    ;;
+  *)
+    smoke_binary_name=''
+    ;;
+esac
+
+artifact_matches_host() {
+  local name="$1"
+  local os_ok=0
+  local arch_ok=0
+  case "$host_uname" in
+    Linux)
+      [[ "$name" == *-linux-* ]] && os_ok=1
+      ;;
+    Darwin)
+      [[ "$name" == *-darwin-* ]] && os_ok=1
+      ;;
+    MINGW* | MSYS* | CYGWIN*)
+      [[ "$name" == *-windows-* ]] && os_ok=1
+      ;;
+  esac
+  case "$host_arch" in
+    x86_64 | amd64)
+      [[ "$name" == *-amd64-* || "$name" == *-x86_64-* ]] && arch_ok=1
+      ;;
+    aarch64 | arm64)
+      [[ "$name" == *-arm64-* || "$name" == *-aarch64-* ]] && arch_ok=1
+      ;;
+  esac
+  [[ "$os_ok" -eq 1 && "$arch_ok" -eq 1 ]]
+}
+
+if [[ "${1:-}" == --print-host-match ]]; then
+  shift
+  [[ $# -ge 1 ]] || fail "--print-host-match requires an archive name"
+  if artifact_matches_host "$1"; then
+    echo yes
+  else
+    echo no
+  fi
+  exit 0
+fi
+
 command -v curl >/dev/null 2>&1 || fail "curl is required for release smoke tests"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 [[ -d "$release_dir" ]] || fail "release directory not found: ${release_dir}"
@@ -49,37 +107,6 @@ fi
 
 tmp_dir="$(mktemp -d)"
 smoke_root=""
-host_uname="$(uname -s)"
-host_arch="$(uname -m)"
-case "$host_arch" in
-  x86_64 | amd64)
-    smoke_arch_regex='(amd64|x86_64)'
-    ;;
-  aarch64 | arm64)
-    smoke_arch_regex='(arm64|aarch64)'
-    ;;
-  *)
-    smoke_arch_regex=''
-    ;;
-esac
-case "$host_uname" in
-  Linux)
-    smoke_os_regex='[Ll]inux'
-    smoke_binary_name='cheesewaf'
-    ;;
-  Darwin)
-    smoke_os_regex='[Dd]arwin'
-    smoke_binary_name='cheesewaf'
-    ;;
-  MINGW* | MSYS* | CYGWIN*)
-    smoke_os_regex='[Ww]indows'
-    smoke_binary_name='cheesewaf.exe'
-    ;;
-  *)
-    smoke_os_regex=''
-    smoke_binary_name=''
-    ;;
-esac
 cleanup() {
   if [[ -n "${server_pid:-}" ]]; then
     kill "$server_pid" >/dev/null 2>&1 || true
@@ -128,6 +155,25 @@ for artifact in "${artifacts[@]}"; do
   grep -Eq '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "${package_root}/release.json" ||
     fail "${artifact_name} has invalid release.json metadata"
 
+  if [[ "$artifact_name" == *linux* ]]; then
+    [[ -f "${package_root}/systemd/cheesewaf.service" ]] ||
+      fail "${artifact_name} is missing systemd/cheesewaf.service"
+    grep -Fq 'ExecStart=/usr/local/bin/cheesewaf serve' "${package_root}/systemd/cheesewaf.service" ||
+      fail "${artifact_name} systemd unit does not start cheesewaf serve"
+  fi
+  if ! is_goreleaser_archive "$package_root"; then
+    if [[ "$artifact_name" == *darwin* ]]; then
+      [[ -x "${package_root}/cheesewaf-gui" ]] ||
+        fail "${artifact_name} is missing cheesewaf-gui"
+    fi
+    if [[ "$artifact" == *.zip && "$artifact_name" == *windows* ]]; then
+      [[ -f "${package_root}/cheesewaf.exe" ]] ||
+        fail "${artifact_name} is missing cheesewaf.exe"
+      [[ -f "${package_root}/cheesewaf-gui.exe" ]] ||
+        fail "${artifact_name} is missing cheesewaf-gui.exe"
+    fi
+  fi
+
   oversized="$(find "$extract_dir" -type f -size "+${max_member_bytes}c" -print -quit)"
   [[ -z "$oversized" ]] ||
     fail "${artifact_name} contains oversized member ${oversized#"$extract_dir"/}"
@@ -148,17 +194,20 @@ for artifact in "${artifacts[@]}"; do
       -print0
   )
 
-  if [[ -n "$smoke_os_regex" ]] &&
-    [[ -n "$smoke_arch_regex" ]] &&
-    [[ "$artifact_name" =~ $smoke_os_regex.*$smoke_arch_regex ]] &&
+  if [[ -n "$smoke_binary_name" ]] &&
+    artifact_matches_host "$artifact_name" &&
     [[ -z "$smoke_root" ]]; then
     smoke_root="$package_root"
   fi
 done
 
-if [[ -z "$smoke_root" ]]; then
+if [[ -z "$smoke_root" || "${VERIFY_RELEASE_STATIC_ONLY:-}" == "1" ]]; then
   echo "Release static verification passed: ${#artifacts[@]} archives, ${total_bytes} bytes."
-  echo "No archive matches host ${host_uname}/${host_arch}; startup and MIME smoke skipped."
+  if [[ "${VERIFY_RELEASE_STATIC_ONLY:-}" == "1" ]]; then
+    echo "Startup and MIME smoke skipped (VERIFY_RELEASE_STATIC_ONLY=1)."
+  else
+    echo "No archive matches host ${host_uname}/${host_arch}; startup and MIME smoke skipped."
+  fi
   exit 0
 fi
 

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,19 +54,7 @@ func New(opts Options) (*Controller, error) {
 		if err != nil {
 			return nil, err
 		}
-		dir := filepath.Dir(self)
-		name := "cheesewaf"
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		candidate := filepath.Join(dir, name)
-		if _, err := os.Stat(candidate); err != nil {
-			// Fall back to PATH lookup.
-			if p, lookErr := exec.LookPath(name); lookErr == nil {
-				candidate = p
-			}
-		}
-		opts.Binary = candidate
+		opts.Binary = defaultCheeseWAFBinary(self)
 	}
 	if opts.ConfigPath == "" {
 		opts.ConfigPath = filepath.Join(".", "data", "cheesewaf.yaml")
@@ -74,7 +63,7 @@ func New(opts Options) (*Controller, error) {
 		opts.DataDir = filepath.Join(".", "data")
 	}
 	if opts.AdminURL == "" {
-		opts.AdminURL = "https://127.0.0.1:9443/__cheesewaf-entry"
+		opts.AdminURL = "http://127.0.0.1:9443/setup"
 	}
 	if opts.Listen == "" {
 		opts.Listen = "127.0.0.1:17943"
@@ -105,6 +94,29 @@ func New(opts Options) (*Controller, error) {
 	return &Controller{opts: opts, controlToken: hex.EncodeToString(tokenBytes)}, nil
 }
 
+func defaultCheeseWAFBinary(self string) string {
+	name := "cheesewaf"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dir := filepath.Dir(self)
+	var candidates []string
+	// APFS is case-insensitive, so MacOS/cheesewaf can resolve to this GUI.
+	if strings.Contains(filepath.ToSlash(self), ".app/Contents/MacOS/") {
+		candidates = append(candidates, filepath.Join(dir, "..", "Resources", "bin", name))
+	}
+	candidates = append(candidates, filepath.Join(dir, name))
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return filepath.Join(dir, name)
+}
+
 // ControlToken returns the random token required for mutating control calls.
 func (c *Controller) ControlToken() string {
 	if c == nil {
@@ -129,24 +141,22 @@ func (c *Controller) Start() error {
 	if snap.Running {
 		return nil
 	}
-	args := []string{"serve", "--config", c.opts.ConfigPath, "--data-dir", c.opts.DataDir}
-	cmd := exec.Command(c.opts.Binary, args...)
-	cmd.Dir = filepath.Dir(c.opts.Binary)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd, logFile, err := c.serveCommand()
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
 	if err := configureDetached(cmd); err != nil {
 		return err
 	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", c.opts.Binary, err)
 	}
-	// Detach from parent lifetime.
 	if cmd.Process != nil {
 		_ = cmd.Process.Release()
 	}
 	c.cmd = cmd
-	// Brief wait so PID file can appear.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		s, err := cli.InspectServiceStatus()
 		if err == nil && s.Running {
@@ -154,7 +164,39 @@ func (c *Controller) Start() error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return nil
+	detail := strings.TrimSpace(lastLogSnippet(logFile.Name(), 2048))
+	if detail == "" {
+		detail = "service did not write a PID file"
+	}
+	return fmt.Errorf("start %s: %s", c.opts.Binary, detail)
+}
+
+func (c *Controller) serveCommand() (*exec.Cmd, *os.File, error) {
+	args := []string{"serve", "--config", c.opts.ConfigPath, "--data-dir", c.opts.DataDir}
+	cmd := exec.Command(c.opts.Binary, args...)
+	cmd.Dir = c.opts.DataDir
+	if err := os.MkdirAll(filepath.Join(c.opts.DataDir, "run"), 0o750); err != nil {
+		return nil, nil, err
+	}
+	logPath := filepath.Join(c.opts.DataDir, "run", "serve.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	return cmd, logFile, nil
+}
+
+func lastLogSnippet(path string, limit int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	if limit > 0 && len(raw) > limit {
+		raw = raw[len(raw)-limit:]
+	}
+	return string(raw)
 }
 
 // Stop stops a running process via CLI semantics.

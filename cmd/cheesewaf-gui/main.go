@@ -28,10 +28,15 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("cheesewaf-gui", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	configPath := fs.String("config", "./data/cheesewaf.yaml", "Path to cheesewaf.yaml")
-	dataDir := fs.String("data-dir", "./data", "Runtime data directory")
+	defaultConfig := "./data/cheesewaf.yaml"
+	defaultDataDir := "./data"
+	if exe, err := os.Executable(); err == nil && runningInsideMacApp(exe) {
+		defaultConfig, defaultDataDir = applyMacAppLaunchPaths(exe)
+	}
+	configPath := fs.String("config", defaultConfig, "Path to cheesewaf.yaml")
+	dataDir := fs.String("data-dir", defaultDataDir, "Runtime data directory")
 	binary := fs.String("binary", "", "Path to cheesewaf binary (default: sibling of this GUI)")
-	adminURL := fs.String("admin-url", "https://127.0.0.1:9443/__cheesewaf-entry", "Web console URL")
+	adminURL := fs.String("admin-url", "http://127.0.0.1:9443/setup", "Web console URL")
 	listen := fs.String("listen", "127.0.0.1:17943", "Loopback control UI listen address")
 
 	if err := fs.Parse(args); err != nil {

@@ -605,7 +605,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if findings := s.apiSchema.Validate(r); len(findings) > 0 {
+		if findings := s.apiSchema.ValidateWithBodySize(r, int64(len(reqCtx.DecodedBody))); len(findings) > 0 {
 			result := apiValidationDetection(findings[0])
 			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
 			decision.SchemaID = findings[0].SchemaID
@@ -831,7 +831,7 @@ func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request,
 		)
 	}
 	// Body was size-capped and rewound by EnsureBody on the verify path.
-	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, trustedProxyCIDRs(site.WAF.AccessControl)))
+	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID)
 }
 
 // isLocalURL reports whether raw is a same-origin relative URL safe for redirects.

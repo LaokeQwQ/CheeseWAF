@@ -21,6 +21,12 @@ builds:
     goarch:
       - amd64
       - arm64
+      - loong64
+    ignore:
+      - goos: darwin
+        goarch: loong64
+      - goos: windows
+        goarch: loong64
     ldflags:
       - -s -w
       - -X github.com/LaokeQwQ/CheeseWAF/internal/version.Version={{.Version}}
@@ -34,7 +40,7 @@ archives:
   - id: cheesewaf-archive
     ids:
       - cheesewaf
-    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "{{ .ProjectName }}-{{ .Arch }}-{{ .Os }}-{{ .Version }}"
     formats:
       - tar.gz
     files:
@@ -52,12 +58,21 @@ archives:
       - web/dist/*.png
       - web/dist/**/*
       - configs/*
+      - src: deploy/systemd/cheesewaf.service
+        dst: systemd/cheesewaf.service
+      - src: scripts/ci/install-linux.sh
+        dst: install-linux.sh
+        info:
+          mode: 0755
       - README.md
       - README_CN.md
       - LICENSE
 
 checksum:
   name_template: SHA256SUMS
+
+snapshot:
+  version_template: "0.1.0-PreTest"
 
 changelog:
   sort: asc
@@ -68,6 +83,10 @@ changelog:
       - "^chore:"
 
 release:
+  # Channel packages and Alpha- GitHub pre-releases are produced by
+  # scripts/ci/package-release.sh and publish-prerelease.sh. Do not let
+  # goreleaser publish a Latest GitHub Release from a semver tag.
+  disable: true
   github:
     owner: LaokeQwQ
     name: CheeseWAF

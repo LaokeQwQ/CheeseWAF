@@ -37,7 +37,8 @@
 - [部署方式](#部署方式)
   - [1. Linux 部署（Systemd 生产运行）](#1-linux-部署systemd-生产运行)
   - [2. Docker 部署（Docker Compose 容器化）](#2-docker-部署docker-compose-容器化)
-  - [3. Windows 部署（便携包与安装向导）](#3-windows-部署便携包与安装向导)
+  - [3. Windows 部署（单文件 CLI、Zip、NSIS）](#3-windows-部署单文件-clizipnsis)
+  - [4. macOS 部署（DMG）](#4-macos-部署dmg)
 - [快速上手](#快速上手)
 - [管理入口](#管理入口)
 - [配置说明](#配置说明)
@@ -119,6 +120,13 @@ flowchart TB
 - **独立特征（Isolated）**：输入值几乎全部由攻击载荷构成（允许 `@`、结尾分号、`/{${...}}` 等微弱包装）。例如搜索框中直接输入 `UNION SELECT 1,2,3`。
 - **夹杂特征（Embedded）**：攻击特征混杂在长篇文章、正常业务说明或技术讨论等大段普通文本中。例如在技术论坛中发帖讨论代码片段。
 
+**隔离分类当前范围：**
+- 隔离 gadget 列表覆盖 **PHP/JSP 活 shell**、**Log4j JNDI** 查找，以及**短引号/谓词 SQL**（≤96 个 rune）。
+- **XSS**、命令/RCE、**SSTI**、**SSRF**、**XXE** 走文档形态守卫，不在该 gadget 列表内。
+- 仅标记为 **embedded（夹杂）** 的命中在防护等级低于 5 时跳过阻断。
+- **未分类** 命中仍走 `blockableHit` 证据规则，**不会**自动按夹杂处理。
+- 不承诺「所有技术文章一定放行」——隔离降低已覆盖 gadget 的误报，不是全文通行证。
+
 ### 防护等级行为对照表
 
 | 防护等级 | 等级名称 | 独立特征（Isolated） | 夹杂特征（Embedded） | 动态升档支持 | 机制说明与适用场景 |
@@ -146,54 +154,53 @@ CheeseWAF 针对不同基础设施环境提供三种独立的部署方式。
 
 #### 步骤 1：下载并解压发行包
 
-从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面下载对应系统架构的归档文件：
+从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载 **Alpha-** 预发布包，或从 Actions 产物里取同一套文件。按系统和 CPU 选：
+
+| 文件 | 平台 |
+| --- | --- |
+| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux 龙芯 |
+| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 单文件 CLI |
+| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 单文件 CLI |
+| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 便携目录 |
+| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 便携目录 |
 
 ```bash
-# 以 Linux amd64 为例
-tar -xzf cheesewaf-*-linux-amd64.tar.gz
+# Linux x86_64 示例
+tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
 cd cheesewaf-*
 ```
+
+Linux ARM64、龙芯用 `cheesewaf-arm64-linux-*-PreTest.tar.gz` 或 `cheesewaf-loong64-linux-*-PreTest.tar.gz`，步骤相同。
 
 #### 步骤 2：安装程序文件与目录授权
 
 ```bash
-# 安装可执行文件并建立软链接
+# 在解压后的目录里执行（需要 cheesewaf 和 web/dist）：
+sudo ./install-linux.sh
+```
+
+也可以手动装。二进制和界面文件都要拷，只拷二进制的话 `/setup` 会 404：
+
+```bash
 sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
-
-# 创建配置与数据存储目录
-sudo mkdir -p /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
-
-# 创建系统运行用户并分配权限
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
 
 #### 步骤 3：配置 Systemd 服务
 
-创建服务单元文件 `/etc/systemd/system/cheesewaf.service`：
+Linux 包里带有 `systemd/cheesewaf.service`。拷到系统目录即可。服务以非 root 用户运行。单元里有 `CAP_NET_BIND_SERVICE`，可以监听 80 和 443：
 
-```ini
-[Unit]
-Description=CheeseWAF Service
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=cheesewaf
-Group=cheesewaf
-ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
-Restart=always
-RestartSec=3s
-LimitNOFILE=65535
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
 ```
 
 #### 步骤 4：启动与状态检查
@@ -207,13 +214,15 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-启动完成后，通过浏览器访问 `http://<服务器IP>:9443/setup` 进行初始化。
+默认管理口只听 `127.0.0.1:9443`。在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。本机打开时向导会自己拿到初始化令牌。从别的机器访问时，令牌在 `journalctl -u cheesewaf` 或 `/var/lib/cheesewaf/setup.url`。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
+
+`GET /api/setup` 会返回 405。查是否还要初始化用 `GET /api/setup/status`。完成初始化是带 `X-CheeseWAF-Setup-Token` 的 `POST /api/setup`。从别的机器用 API 登录仍要过控制台验证码；本机回环地址不用。
 
 ---
 
 ### 2. Docker 部署（Docker Compose 容器化）
 
-适用于容器化基础设施与快速测试。镜像默认以非 root 用户（UID `10001`）运行，并启用只读根文件系统。
+Docker 镜像要从 git 仓库里的 `deploy/docker/Dockerfile` 构建。发行 tar 包是给 systemd 用的，没有源码时不能直接 `docker compose`。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。运行时镜像装有系统 CA 证书，访问 HTTPS 源站时会校验证书。9443 只应暴露给可信网络；镜像里管理口监听全部接口，并开启管理 TLS。
 
 #### 步骤 1：准备编排文件
 
@@ -270,31 +279,39 @@ docker compose logs -f cheesewaf
 
 ---
 
-### 3. Windows 部署（便携包与安装向导）
+### 3. Windows 部署（单文件 CLI、Zip、NSIS）
 
-针对 Windows 环境提供便携免安装包与 NSIS 图形安装器：
+三种形态：单文件 CLI 就是一个 `cheesewaf.exe`；zip 另带配置、管理界面和本地控制器；NSIS 是图形安装器。
 
-#### 方式 A：便携版（Zip 解压即用）
+#### 方式 A：单文件 CLI
 
-1. 下载 `cheesewaf-*-windows-amd64.zip` 并解压到目标目录（如 `D:\CheeseWAF`）。
-2. 在 PowerShell 中运行以下命令：
+1. 下载 `cheesewaf-*-windows-amd64.exe` 或 `cheesewaf-*-windows-arm64.exe`。
+2. 直接运行：
 
 ```powershell
-# 启动服务
+.\cheesewaf-*-windows-amd64.exe serve --config .\cheesewaf.yaml --data-dir .\data
+.\cheesewaf-*-windows-amd64.exe status
+.\cheesewaf-*-windows-amd64.exe stop
+```
+
+转发面不依赖安装器。管理界面在 zip / DMG / tar 包里，放在可执行文件旁边的 `web/dist`。
+
+#### 方式 B：便携目录（Zip）
+
+1. 下载 `cheesewaf-*-windows-amd64.zip` 或 `cheesewaf-*-windows-arm64.zip`，解压到目标目录（如 `D:\CheeseWAF`）。
+2. 运行：
+
+```powershell
 .\cheesewaf.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
-
-# 查看状态
 .\cheesewaf.exe status
-
-# 停止服务
 .\cheesewaf.exe stop
 ```
 
-#### 方式 B：NSIS 图形安装器
+#### 方式 C：NSIS 图形安装器
 
-1. 下载并执行安装包 `CheeseWAF-Setup-<version>.exe`。
-2. 按照向导选择安装路径完成安装，安装器会自动注册系统快捷方式。
-3. 卸载程序时会默认保留 `data\` 目录中的业务配置与数据库。
+1. 运行 `CheeseWAF-*-windows-amd64-setup.exe` 或 `CheeseWAF-*-windows-arm64-setup.exe`。
+2. 按向导安装。安装器会注册 Windows 服务 `CheeseWAF`。`cheesewaf.exe serve` 会响应服务控制管理器的停止指令。
+3. 卸载时默认保留 `data\`。
 
 #### 本地控制器（`cheesewaf-gui`）
 
@@ -303,6 +320,22 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 - 实时显示进程 PID 与运行状态。
 - 提供一键打开 Web 控制台与配置文件夹的快捷入口。
 - 支持配置当前用户登录时自动启动。
+
+---
+
+### 4. macOS 部署（DMG）
+
+1. 下载 `cheesewaf-arm64-darwin-*-PreTest.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*-PreTest.dmg`（Intel）。
+2. 打开镜像，把 **CheeseWAF** 拖进「应用程序」。
+3. 从启动台或「应用程序」打开 CheeseWAF。会启动本地控制面板，用来启动、停止和打开 Web 控制台。
+4. 若系统提示已损坏，是拦截了未公证的 PreTest 包。双击盘里的 **Fix Gatekeeper.command**，或在终端执行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
+open /Applications/CheeseWAF.app
+```
+
+运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*-PreTest.tar.gz`。
 
 ---
 
@@ -373,9 +406,14 @@ protection:
 ai:
   enabled: true
   provider: "openai"
-  endpoint: "https://api.example.com/v1"
+  api_base: "https://api.example.com/v1"
   model: "gpt-4o-mini"
-  auto_agree: true               # 自动采纳高危研判结果
+
+sites:
+  - id: "site-demo"
+    waf:
+      semantic_policy:
+        auto_agree: true         # 自动采纳高危研判结果
 ```
 
 ---

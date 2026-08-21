@@ -239,3 +239,49 @@ func TestSetupProbeChecksDraftCapacityBeforeRunningProbe(t *testing.T) {
 		t.Fatalf("probe ran %d times after capacity was exhausted", probeCalls)
 	}
 }
+
+func TestSetupStatusReportsNeedsSetupWithoutToken(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Setup.DataDir = dataDir
+	h := New(Options{Config: &cfg})
+	rec := httptest.NewRecorder()
+	h.SetupStatus(rec, httptest.NewRequest(http.MethodGet, "/api/setup/status", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"needs_setup":true`) {
+		t.Fatalf("fresh install should need setup: %s", rec.Body.String())
+	}
+	if err := setup.MarkComplete(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	done := httptest.NewRecorder()
+	h.SetupStatus(done, httptest.NewRequest(http.MethodGet, "/api/setup/status", nil))
+	if !strings.Contains(done.Body.String(), `"needs_setup":false`) {
+		t.Fatalf("completed install should not need setup: %s", done.Body.String())
+	}
+}
+
+func TestSetupStatusExposesURLOnlyOnLoopback(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Setup.DataDir = dataDir
+	cfg.Server.AdminListen = "127.0.0.1:9443"
+	h := New(Options{Config: &cfg, SetupToken: "loop-token"})
+	loop := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
+	loop.RemoteAddr = "127.0.0.1:54321"
+	rec := httptest.NewRecorder()
+	h.SetupStatus(rec, loop)
+	body := rec.Body.String()
+	if !strings.Contains(body, `"setup_url"`) || !strings.Contains(body, "loop-token") {
+		t.Fatalf("loopback should include setup_url: %s", body)
+	}
+	remote := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
+	remote.RemoteAddr = "203.0.113.9:54321"
+	out := httptest.NewRecorder()
+	h.SetupStatus(out, remote)
+	if strings.Contains(out.Body.String(), "setup_url") {
+		t.Fatalf("non-loopback must not include setup_url: %s", out.Body.String())
+	}
+}

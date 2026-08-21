@@ -37,7 +37,8 @@
 - [Deployment](#deployment)
   - [1. Linux Deployment (Systemd Production)](#1-linux-deployment-systemd-production)
   - [2. Docker Deployment (Docker Compose)](#2-docker-deployment-docker-compose)
-  - [3. Windows Deployment (Portable Zip & NSIS Installer)](#3-windows-deployment-portable-zip--nsis-installer)
+  - [3. Windows Deployment (CLI, Zip, NSIS)](#3-windows-deployment-cli-zip-nsis)
+  - [4. macOS Deployment (DMG)](#4-macos-deployment-dmg)
 - [Quick Start](#quick-start)
 - [Management Interfaces](#management-interfaces)
 - [Configuration Reference](#configuration-reference)
@@ -119,6 +120,13 @@ The analyzer inspects **individual decoded parameter values** (paths and paramet
 - **Isolated Payload**: The inspected parameter value consists almost entirely of exploit syntax (e.g., `UNION SELECT 1,2,3`, allowing minimal wrappers like `@` or trailing semicolons).
 - **Embedded Payload**: The attack pattern appears inside ordinary text, user comments, articles, or descriptions.
 
+**Isolation classification scope (current):**
+- The isolation gadget list covers **PHP/JSP live shells**, **Log4j JNDI** lookups, and **short quoted/predicate SQL** (≤96 runes).
+- **XSS**, command/RCE, **SSTI**, **SSRF**, and **XXE** use document shape guards, not this gadget list.
+- Only hits labeled **embedded** skip blocking below paranoia level 5.
+- Hits that stay **unclassified** still go through `blockableHit` evidence rules; they are **not** auto-treated as embedded.
+- Technical articles and writeups are not guaranteed to always pass — isolation reduces false positives for covered gadgets, it is not a blanket content pass.
+
 ### Paranoia Level Matrix
 
 | Level | Name | Isolated Payload | Embedded Payload | Dynamic Elevation | Mechanism & Target Scenario |
@@ -146,54 +154,53 @@ Recommended for Linux physical servers and virtual machines for direct execution
 
 #### Step 1: Download and Extract Release Archive
 
-Download the release package for your architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
+Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or the matching Actions artifact. Pick the file for your OS and CPU:
+
+| File | Platform |
+| --- | --- |
+| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux LoongArch64 |
+| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 single-file CLI |
+| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 single-file CLI |
+| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 portable folder |
+| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 portable folder |
 
 ```bash
-# Example for Linux x86_64 (amd64)
-tar -xzf cheesewaf-*-linux-amd64.tar.gz
+# Linux x86_64 example
+tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
 cd cheesewaf-*
 ```
+
+Linux ARM64 and LoongArch64 use `cheesewaf-arm64-linux-*-PreTest.tar.gz` or `cheesewaf-loong64-linux-*-PreTest.tar.gz`.
 
 #### Step 2: Install Executable and Configure Directories
 
 ```bash
-# Install binary and create CLI symlink
+# From the extracted package directory (needs cheesewaf and web/dist):
+sudo ./install-linux.sh
+```
+
+Or install by hand. Copy the UI files as well as the binary, otherwise `/setup` returns 404:
+
+```bash
 sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
-
-# Set up configuration and working directories
-sudo mkdir -p /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
-
-# Create service user and set ownership
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
 
 #### Step 3: Configure Systemd Service
 
-Create `/etc/systemd/system/cheesewaf.service`:
+Linux archives include `systemd/cheesewaf.service`. Install that file. The unit grants `CAP_NET_BIND_SERVICE` so the non-root service can bind ports 80 and 443:
 
-```ini
-[Unit]
-Description=CheeseWAF Service
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=cheesewaf
-Group=cheesewaf
-ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
-Restart=always
-RestartSec=3s
-LimitNOFILE=65535
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
 ```
 
 #### Step 4: Start and Verify Service
@@ -207,13 +214,15 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-Navigate to `http://<SERVER_IP>:9443/setup` to complete initial setup.
+The default admin listener is `127.0.0.1:9443`. On the server (or over an SSH tunnel) open `http://127.0.0.1:9443/setup`. Loopback `/setup` can finish first-install without pasting a token. From another host, copy the URL from `journalctl -u cheesewaf` or `/var/lib/cheesewaf/setup.url`. Remote `SERVER_IP:9443` stays closed until setup chooses a public admin strategy.
+
+`GET /api/setup` returns 405; first-install status is `GET /api/setup/status`. Completing setup is `POST /api/setup` with `X-CheeseWAF-Setup-Token`. Login from another host still needs the console captcha; loopback API login does not.
 
 ---
 
 ### 2. Docker Deployment (Docker Compose)
 
-Recommended for containerized deployments. The container runs as a non-root user (UID `10001`) with a read-only root filesystem.
+Docker images are built from a git checkout (`deploy/docker/Dockerfile`). Release `.tar.gz` files are for systemd, not for `docker compose` without the repository. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem. The runtime image installs the distro CA bundle so outbound HTTPS to origins verifies certificates. Bind `9443` only on trusted networks; the image listens on all interfaces with admin TLS.
 
 #### Step 1: Create Compose File
 
@@ -270,31 +279,39 @@ docker compose logs -f cheesewaf
 
 ---
 
-### 3. Windows Deployment (Portable Zip & NSIS Installer)
+### 3. Windows Deployment (CLI, Zip, NSIS)
 
-CheeseWAF provides portable binaries and an NSIS graphical installer for Windows environments:
+Three Windows shapes. The CLI is one `cheesewaf.exe`. The zip adds configs, the Web UI, and the local controller. NSIS is the graphical installer.
 
-#### Option A: Portable CLI Package (Zip)
+#### Option A: Single-file CLI
 
-1. Download `cheesewaf-*-windows-amd64.zip` and extract to a target directory (e.g., `D:\CheeseWAF`).
-2. Run the following in PowerShell:
+1. Download `cheesewaf-*-windows-amd64.exe` or `cheesewaf-*-windows-arm64.exe`.
+2. Run it as `cheesewaf.exe`:
 
 ```powershell
-# Start WAF process
+.\cheesewaf-*-windows-amd64.exe serve --config .\cheesewaf.yaml --data-dir .\data
+.\cheesewaf-*-windows-amd64.exe status
+.\cheesewaf-*-windows-amd64.exe stop
+```
+
+The data-plane binary does not need the installer. The admin UI is in the zip/DMG/tarball (`web/dist` next to the executable).
+
+#### Option B: Portable folder (Zip)
+
+1. Download `cheesewaf-*-windows-amd64.zip` or `cheesewaf-*-windows-arm64.zip` and extract it (for example `D:\CheeseWAF`).
+2. Run:
+
+```powershell
 .\cheesewaf.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
-
-# Check running status
 .\cheesewaf.exe status
-
-# Stop process
 .\cheesewaf.exe stop
 ```
 
-#### Option B: NSIS Graphical Installer
+#### Option C: NSIS graphical installer
 
-1. Run `CheeseWAF-Setup-<version>.exe`.
-2. Follow the setup wizard to complete the installation.
-3. The uninstaller preserves user configuration and databases under `data\` by default.
+1. Run `CheeseWAF-*-windows-amd64-setup.exe` or `CheeseWAF-*-windows-arm64-setup.exe`.
+2. Follow the setup wizard. The installer registers Windows Service `CheeseWAF`; `cheesewaf.exe serve` answers Service Control Manager stop/shutdown.
+3. Uninstall keeps `data\` by default.
 
 #### Local Service Controller (`cheesewaf-gui`)
 
@@ -303,6 +320,22 @@ Windows releases bundle a lightweight local GUI controller bound strictly to loo
 - Inspect process PID and operational status.
 - Open the Web management console or configuration directory directly.
 - Configure user-login autostart via the Windows Registry.
+
+---
+
+### 4. macOS Deployment (DMG)
+
+1. Download `cheesewaf-arm64-darwin-*-PreTest.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*-PreTest.dmg` (Intel).
+2. Open the disk image and drag **CheeseWAF** into **Applications**.
+3. Open CheeseWAF from Launchpad or Applications. It starts the local controller (start / stop / open the Web console).
+4. If macOS says the app is damaged, that is Gatekeeper blocking an unsigned PreTest build. Run **Fix Gatekeeper.command** on the disk, or:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
+open /Applications/CheeseWAF.app
+```
+
+Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*-PreTest.tar.gz` if you only want the CLI.
 
 ---
 
@@ -371,9 +404,14 @@ protection:
 ai:
   enabled: true
   provider: "openai"
-  endpoint: "https://api.example.com/v1"
+  api_base: "https://api.example.com/v1"
   model: "gpt-4o-mini"
-  auto_agree: true               # Auto-commit high-confidence review verdicts
+
+sites:
+  - id: "site-demo"
+    waf:
+      semantic_policy:
+        auto_agree: true         # Auto-commit high-confidence review verdicts
 ```
 
 ---

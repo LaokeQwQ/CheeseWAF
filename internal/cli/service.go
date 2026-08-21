@@ -11,10 +11,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
@@ -38,6 +41,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	"github.com/LaokeQwQ/CheeseWAF/internal/webui"
 )
 
 var readAdminEntryNonce = rand.Read
@@ -86,6 +90,10 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ignoreServiceHangup()
+	if err := applyCLIDataDir(cfg, dataDir); err != nil {
+		return err
+	}
 	// Tune the collector before anything allocates in earnest. The controller
 	// measures the memory this process is actually allowed to use (container
 	// limit when present, physical RAM otherwise) and adjusts GOGC from live GC
@@ -103,13 +111,10 @@ func runServe(ctx context.Context) error {
 		return fmt.Errorf("configure application clock: %w", err)
 	}
 	clock := timeSync.Clock()
-	if err := ensureAdminTLSCertificate(cfg); err != nil {
+	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
 		return err
 	}
-	if cfg.Setup.DataDir == "" {
-		cfg.Setup.DataDir = dataDir
-	}
-	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
+	if err := ensureAdminTLSCertificate(cfg); err != nil {
 		return err
 	}
 	clusterIdentityService, clusterHeartbeats, err := initializeClusterRuntime(cfg, clock)
@@ -259,7 +264,11 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	if setupPending {
-		fmt.Printf("Complete first-install setup: %s\n", setupBrowserURL(adminScheme, cfg.Server.AdminListen, setupToken))
+		page := setupBrowserURL(adminScheme, cfg.Server.AdminListen, setupToken)
+		fmt.Printf("Complete first-install setup: %s\n", page)
+		if err := setup.WriteURL(cfg.Setup.DataDir, page); err != nil {
+			return err
+		}
 	}
 	adminRouter := api.NewRouter(api.Options{
 		Config:              cfg,
@@ -393,14 +402,7 @@ func runServe(ctx context.Context) error {
 }
 
 func setupBrowserURL(scheme, adminListen, token string) string {
-	host, port, err := net.SplitHostPort(strings.TrimSpace(adminListen))
-	if err != nil {
-		return ""
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	return fmt.Sprintf("%s://%s/setup#setup_token=%s", scheme, net.JoinHostPort(host, port), url.QueryEscape(token))
+	return setup.BrowserURL(scheme, adminListen, token)
 }
 
 func validateStartupUsers(ctx context.Context, dataDir string, store storage.UserStore) error {
@@ -427,11 +429,11 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
 	}
-	webDir := resolveWebDir()
-	if webDir == "" {
+	uiFS, _ := resolveAdminUIFS()
+	if uiFS == nil {
+		fmt.Printf("admin UI assets not found; /setup and static files return 404 (install web/dist or rebuild after scripts/ci/build-web.sh)\n")
 		return adminSecurityHeaders(adminEntranceGateWithClock(cfg, authSecret, apiHandler, clock))
 	}
-	spa := http.FileServer(http.Dir(webDir))
 	metricsPath := "/metrics"
 	metricsPublic := false
 	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
@@ -450,29 +452,45 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
-		path := strings.TrimPrefix(filepath.Clean("/"+strings.TrimPrefix(r.URL.Path, "/")), string(os.PathSeparator))
-		if path == "." {
-			path = "index.html"
+		name := strings.TrimPrefix(path.Clean("/"+strings.TrimPrefix(r.URL.Path, "/")), "/")
+		if name == "" || name == "." {
+			name = "index.html"
 		}
-		fullPath := filepath.Join(webDir, path)
-		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
-			setAdminStaticCacheHeaders(w, path)
-			spa.ServeHTTP(w, r)
+		if serveAdminStaticFile(w, r, uiFS, name) {
 			return
 		}
 		if isAdminStaticAssetPath(r.URL.Path) {
 			http.NotFound(w, r)
 			return
 		}
-		index := filepath.Join(webDir, "index.html")
-		if _, err := os.Stat(index); err == nil {
-			setAdminStaticCacheHeaders(w, "index.html")
-			http.ServeFile(w, r, index)
+		if serveAdminStaticFile(w, r, uiFS, "index.html") {
 			return
 		}
 		apiHandler.ServeHTTP(w, r)
 	})
 	return adminSecurityHeaders(adminGzip(handler, metricsPath))
+}
+
+func serveAdminStaticFile(w http.ResponseWriter, r *http.Request, ui fs.FS, name string) bool {
+	if ui == nil || name == "" || strings.Contains(name, "..") {
+		return false
+	}
+	file, err := ui.Open(name)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		return false
+	}
+	setAdminStaticCacheHeaders(w, name)
+	if seeker, ok := file.(io.ReadSeeker); ok {
+		http.ServeContent(w, r, info.Name(), info.ModTime(), seeker)
+		return true
+	}
+	_, _ = io.Copy(w, file)
+	return true
 }
 
 func isAdminStaticAssetPath(path string) bool {
@@ -617,15 +635,13 @@ func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secre
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	value := signedAdminEntryValue(secret, r.UserAgent(), expires.Unix(), nonce)
-	http.SetCookie(w, &http.Cookie{
+	middleware.WriteCookie(w, r, &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     "/",
 		Expires:  expires,
 		MaxAge:   int(config.AdminSessionTTL / time.Second),
 		HttpOnly: true,
-		// Admin entry cookies are always Secure; serve the console over HTTPS.
-		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 	return true
@@ -784,6 +800,16 @@ func isAdminAPIPath(path, metricsPath string) bool {
 	return false
 }
 
+func resolveAdminUIFS() (fs.FS, string) {
+	if dir := resolveWebDir(); dir != "" {
+		return os.DirFS(dir), dir
+	}
+	if embedded, ok := webui.FS(); ok {
+		return embedded, "embedded"
+	}
+	return nil, ""
+}
+
 func resolveWebDir() string {
 	candidates := []string{
 		os.Getenv("CHEESEWAF_WEB_DIR"),
@@ -795,8 +821,16 @@ func resolveWebDir() string {
 			filepath.Join(executableDir, "web"),
 		)
 	}
+	if strings.TrimSpace(configPath) != "" {
+		configDir := filepath.Dir(configPath)
+		candidates = append(candidates,
+			filepath.Join(configDir, "web", "dist"),
+			filepath.Join(configDir, "..", "web", "dist"),
+		)
+	}
 	candidates = append(candidates,
 		"/usr/share/cheesewaf/web",
+		"/opt/cheesewaf/web/dist",
 		filepath.Join("web", "dist"),
 		filepath.Join(".", "web", "dist"),
 	)
@@ -1295,6 +1329,9 @@ func resolveRuntimeDirForCLI() (string, error) {
 			if err != nil {
 				return "", err
 			}
+			if err := applyCLIDataDir(cfg, dataDir); err != nil {
+				return "", err
+			}
 			if cfg.Setup.RuntimeDir != "" {
 				return filepath.Clean(cfg.Setup.RuntimeDir), nil
 			}
@@ -1305,7 +1342,11 @@ func resolveRuntimeDirForCLI() (string, error) {
 			return "", err
 		}
 	}
-	return filepath.Join(dataDir, "run"), nil
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(abs, "run"), nil
 }
 
 func inspectServiceStatus() (serviceStatusSnapshot, error) {
