@@ -32,6 +32,7 @@ import {
   type ThreatLevel,
 } from './attackMapData';
 import type { GeoFeatureCollection } from './chinaBoundaries';
+import { threatLevels, threatShapeLabel, threatShapeClass } from './threatPalette';
 import OsmAttackMap, { type OsmAttackMapHandle } from './OsmAttackMap';
 import '../../styles/attack-map.css';
 
@@ -53,6 +54,17 @@ export default function AttackMapPage() {
   const osmMapRef = useRef<OsmAttackMapHandle | null>(null);
   const preferAdcodesRef = useRef<string[]>([]);
   const lastFlyKeyRef = useRef<string | null>(null);
+  const offlineAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    offlineAbortRef.current = controller;
+    return () => {
+      controller.abort();
+      if (offlineAbortRef.current === controller) {
+        offlineAbortRef.current = null;
+      }
+    };
+  }, [mode]);
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['attack-map-logs'],
     queryFn: () => fetchLogs({ limit: 1000 }),
@@ -88,7 +100,7 @@ export default function AttackMapPage() {
     queryFn: async () => {
       const collections = await Promise.all(chinaBoundaryAdcodes.map(async (adcode) => {
         const response = await fetchChinaMapBoundaryByCode(adcode);
-        return response.enabled && isFeatureCollection(response.geojson) ? response.geojson : null;
+        return response.enabled ? sanitizeExternalBoundary(response.geojson) : null;
       }));
       const features = collections.flatMap((collection) => collection?.features ?? []);
       return features.length > 0 ? { type: 'FeatureCollection', features } as GeoFeatureCollection : null;
@@ -101,8 +113,9 @@ export default function AttackMapPage() {
     // Stable key: full offline tree is identical regardless of prefer order.
     queryKey: OFFLINE_CHINA_BOUNDARY_QUERY_KEY,
     queryFn: () => chinaBoundaries!.loadOfflineChinaBoundaryTree({
-      includeDistricts: true,
+      includeDistricts: false,
       preferAdcodes: preferAdcodesRef.current,
+      signal: offlineAbortRef.current?.signal,
       onPartial: (partial) => {
         queryClient.setQueryData(OFFLINE_CHINA_BOUNDARY_QUERY_KEY, partial);
       },
@@ -119,13 +132,13 @@ export default function AttackMapPage() {
   );
   /** WGS84 GeoJSON overlay for MapLibre China mode (province + city + district offline pack). */
   const chinaMaplibreBoundary = useMemo<GeoFeatureCollection | null>(() => {
-    const features = [
-      ...(chinaAssets?.country.features ?? []),
-      ...(offlineChinaBoundary?.features ?? []),
-      ...(externalChinaBoundary?.features ?? []),
-    ];
-    return features.length > 0 ? { type: 'FeatureCollection', features } : null;
-  }, [chinaAssets, offlineChinaBoundary, externalChinaBoundary]);
+    const merged = chinaBoundaries?.mergeChinaBoundaries(
+      chinaAssets?.country ?? null,
+      offlineChinaBoundary ?? null,
+      externalChinaBoundary ?? null,
+    );
+    return merged && merged.collection.features.length > 0 ? merged.collection : null;
+  }, [chinaBoundaries, chinaAssets, offlineChinaBoundary, externalChinaBoundary]);
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
   const protectedTarget = useMemo(() => resolveProtectedTarget(data?.items ?? [], t), [data?.items, t]);
   const total = regions.reduce((sum, region) => sum + region.attacks, 0);
@@ -252,9 +265,12 @@ export default function AttackMapPage() {
             )}
             {mode !== 'china' && unmappedTotal > 0 && <small>{t('attackMap.unmapped', { count: unmappedTotal })}</small>}
           </div>
-          <div className="map-risk-legend" aria-hidden="true">
-            {(['low', 'medium', 'high', 'critical'] as ThreatLevel[]).map((level) => (
-              <span key={level} className={`map-risk-dot map-risk-${level}`}>{t(`attackMap.risk.${level}`)}</span>
+          <div className="map-risk-legend" role="list" aria-label={t('attackMap.riskLegend')}>
+            {threatLevels.map((level) => (
+              <span key={level} className={`map-risk-dot map-risk-${level}`} role="listitem">
+                <i className={`map-risk-shape map-risk-shape-${threatShapeClass[level]}`} aria-hidden="false">{threatShapeLabel[level]}</i>
+                {t(`attackMap.risk.${level}`)}
+              </span>
             ))}
           </div>
           <div className="attack-map-toolbar">
@@ -504,9 +520,14 @@ function AttackRegionTable({
   const pageStart = regions.length === 0 ? 0 : (page - 1) * REGION_PAGE_SIZE + 1;
   const pageEnd = Math.min(page * REGION_PAGE_SIZE, regions.length);
 
+  const regionsSignature = useMemo(
+    () => (regions.length === 0 ? '0' : `${regions.length}:${regions[0]?.key ?? ''}:${regions[regions.length - 1]?.key ?? ''}`),
+    [regions],
+  );
+
   useEffect(() => {
     setPage(1);
-  }, [regions]);
+  }, [regionsSignature]);
 
   useEffect(() => {
     if (page > totalPages) {
@@ -678,6 +699,8 @@ function renderGlobeFallback(regions: AttackRegion[], countryLevels: Map<string,
           <span
             key={region.key}
             className={`map-marker map-risk-${region.level}`}
+            role="img"
+            tabIndex={0}
             aria-label={`${region.locationName} · ${region.attacks}`}
             style={{ left: `${region.x}%`, top: `${region.y}%`, '--marker-size': `${region.size}px` } as CSSProperties}
           >
@@ -709,12 +732,71 @@ function parseMapMode(value: string | null): MapMode {
   return '2d';
 }
 
+const EXTERNAL_BOUNDARY_MAX_FEATURES = 2000;
+const EXTERNAL_BOUNDARY_MAX_BYTES = 5_000_000;
+
 function isFeatureCollection(value: unknown): value is GeoFeatureCollection {
   if (!value || typeof value !== 'object') {
     return false;
   }
   const record = value as Record<string, unknown>;
   return record.type === 'FeatureCollection' && Array.isArray(record.features);
+}
+
+/**
+ * Shallow-validate externally provided China boundary GeoJSON before it reaches
+ * the map / SVG layers. A crafted or malformed response is discarded and the
+ * UI falls back to offline boundaries.
+ */
+function sanitizeExternalBoundary(value: unknown): GeoFeatureCollection | null {
+  if (!isFeatureCollection(value)) {
+    return null;
+  }
+  const features = (value as GeoFeatureCollection).features;
+  if (features.length === 0) {
+    return value as GeoFeatureCollection;
+  }
+  if (features.length > EXTERNAL_BOUNDARY_MAX_FEATURES) {
+    return null;
+  }
+  if (JSON.stringify(value).length > EXTERNAL_BOUNDARY_MAX_BYTES) {
+    return null;
+  }
+  for (const feature of features) {
+    if (!validGeometryCoordinates(feature.geometry)) {
+      return null;
+    }
+  }
+  return value as GeoFeatureCollection;
+}
+
+function validGeometryCoordinates(geometry: unknown): boolean {
+  if (!geometry || typeof geometry !== 'object') {
+    return false;
+  }
+  const record = geometry as { type?: unknown; coordinates?: unknown };
+  if (record.type === 'Point') {
+    return isCoordinate(record.coordinates);
+  }
+  if (record.type === 'MultiPoint' || record.type === 'LineString') {
+    return Array.isArray(record.coordinates) && record.coordinates.every(isCoordinate);
+  }
+  if (record.type === 'MultiLineString' || record.type === 'Polygon') {
+    return Array.isArray(record.coordinates) && record.coordinates.every((ring: unknown) => Array.isArray(ring) && ring.every(isCoordinate));
+  }
+  if (record.type === 'MultiPolygon') {
+    return Array.isArray(record.coordinates) && record.coordinates.every((polygon: unknown) => Array.isArray(polygon) && polygon.every((ring: unknown) => Array.isArray(ring) && ring.every(isCoordinate)));
+  }
+  return false;
+}
+
+function isCoordinate(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length < 2) {
+    return false;
+  }
+  const lon = Number(value[0]);
+  const lat = Number(value[1]);
+  return Number.isFinite(lon) && Number.isFinite(lat) && lon >= -180 && lon <= 180 && lat >= -90 && lat <= 90;
 }
 
 function isChinaRegion(region: AttackRegion) {
