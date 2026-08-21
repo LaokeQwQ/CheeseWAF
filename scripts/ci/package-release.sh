@@ -153,6 +153,7 @@ CheeseWAF release artifacts
 version: ${version}
 prerelease_tag: ${prerelease_tag}
 channel: ${channel}
+file_suffix: ${file_suffix}
 branch: ${ref_name}
 commit: ${commit}
 build_time: ${build_time}

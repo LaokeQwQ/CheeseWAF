@@ -67,6 +67,7 @@ describe('first-install setup token', () => {
 		sessionStorage.clear();
 		window.history.replaceState({}, '', '/');
 		apiClient.defaults.adapter = originalAdapter;
+		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
 	});
 
@@ -84,6 +85,27 @@ describe('first-install setup token', () => {
 		expect(seenHeaders).toEqual(['fragment-secret', undefined]);
 		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBe('fragment-secret');
 		expect(window.location.hash).toBe('');
+	});
+
+	it('loads the setup token from loopback setup_url when the fragment is empty', async () => {
+		const fetchMock = vi.fn(async () => ({
+			ok: true,
+			json: async () => ({
+				data: { needs_setup: true, setup_url: 'http://127.0.0.1:9443/setup#setup_token=status-secret' },
+			}),
+		}));
+		vi.stubGlobal('fetch', fetchMock);
+		const seenHeaders: Array<string | undefined> = [];
+		const adapter = vi.fn(async (config) => {
+			seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
+			return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
+		});
+
+		await apiClient.post('/setup/probe', {}, { adapter });
+
+		expect(seenHeaders).toEqual(['status-secret']);
+		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBe('status-secret');
+		expect(fetchMock).toHaveBeenCalled();
 	});
 
 	it('clears the setup token only after setup completes successfully', async () => {
