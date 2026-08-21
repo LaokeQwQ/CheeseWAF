@@ -214,7 +214,7 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-The default admin listener is `127.0.0.1:9443`. Open `http://127.0.0.1:9443/setup` on the server (or an SSH tunnel). Remote `SERVER_IP:9443` stays closed until setup chooses a public admin strategy.
+The default admin listener is `127.0.0.1:9443`. On the server (or over an SSH tunnel) open `http://127.0.0.1:9443/setup`. Loopback `/setup` can finish first-install without pasting a token. From another host, copy the URL from `journalctl -u cheesewaf` or `/var/lib/cheesewaf/setup.url`. Remote `SERVER_IP:9443` stays closed until setup chooses a public admin strategy.
 
 `GET /api/setup` returns 405; first-install status is `GET /api/setup/status`. Completing setup is `POST /api/setup` with `X-CheeseWAF-Setup-Token`. Login from another host still needs the console captcha; loopback API login does not.
 
@@ -222,7 +222,7 @@ The default admin listener is `127.0.0.1:9443`. Open `http://127.0.0.1:9443/setu
 
 ### 2. Docker Deployment (Docker Compose)
 
-Recommended for containerized deployments. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem.
+Docker images are built from a git checkout (`deploy/docker/Dockerfile`). Release `.tar.gz` files are for systemd, not for `docker compose` without the repository. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem. Bind `9443` only on trusted networks; the image listens on all interfaces with admin TLS.
 
 #### Step 1: Create Compose File
 
@@ -404,9 +404,14 @@ protection:
 ai:
   enabled: true
   provider: "openai"
-  endpoint: "https://api.example.com/v1"
+  api_base: "https://api.example.com/v1"
   model: "gpt-4o-mini"
-  auto_agree: true               # Auto-commit high-confidence review verdicts
+
+sites:
+  - id: "site-demo"
+    waf:
+      semantic_policy:
+        auto_agree: true         # Auto-commit high-confidence review verdicts
 ```
 
 ---

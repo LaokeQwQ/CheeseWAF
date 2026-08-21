@@ -36,7 +36,7 @@ func run(args []string) int {
 	configPath := fs.String("config", defaultConfig, "Path to cheesewaf.yaml")
 	dataDir := fs.String("data-dir", defaultDataDir, "Runtime data directory")
 	binary := fs.String("binary", "", "Path to cheesewaf binary (default: sibling of this GUI)")
-	adminURL := fs.String("admin-url", "https://127.0.0.1:9443/__cheesewaf-entry", "Web console URL")
+	adminURL := fs.String("admin-url", "http://127.0.0.1:9443/setup", "Web console URL")
 	listen := fs.String("listen", "127.0.0.1:17943", "Loopback control UI listen address")
 
 	if err := fs.Parse(args); err != nil {
