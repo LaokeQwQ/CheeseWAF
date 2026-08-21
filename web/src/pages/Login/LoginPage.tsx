@@ -1261,7 +1261,7 @@ function cssURL(value: string) {
   if (/[);{}]/.test(trimmed)) {
     return '';
   }
-  if (!/^(https?:\/\/|\/|data:image\/)/i.test(trimmed)) {
+  if (!/^(https?:\/\/|\/|data:image\/(?:png|jpe?g|gif|webp|avif))/i.test(trimmed)) {
     return '';
   }
   return trimmed.replace(/["\\\n\r]/g, '');

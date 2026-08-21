@@ -1,5 +1,22 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTheme, loadThemeStyles, readInitialTheme } from './index';
+
+function stubMatchMedia(scheme: 'light' | 'dark') {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    configurable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: scheme === 'dark' ? query.includes('dark') : !query.includes('dark'),
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
 
 describe('theme bootstrap', () => {
   beforeEach(() => {
@@ -16,9 +33,24 @@ describe('theme bootstrap', () => {
     expect(readInitialTheme()).toBe('mikuGreen');
   });
 
-  it('falls back safely when persisted preferences are invalid', () => {
-    localStorage.setItem('cheesewaf-ui', '{invalid');
+  it('follows prefers-color-scheme when nothing is persisted', () => {
+    stubMatchMedia('dark');
+    expect(readInitialTheme()).toBe('dark');
+
+    stubMatchMedia('light');
     expect(readInitialTheme()).toBe('light');
+  });
+
+  it('lets a valid persisted choice win over the system scheme', () => {
+    stubMatchMedia('dark');
+    localStorage.setItem('cheesewaf-ui', JSON.stringify({ state: { theme: 'light' } }));
+    expect(readInitialTheme()).toBe('light');
+  });
+
+  it('falls back safely when persisted preferences are invalid', () => {
+    stubMatchMedia('dark');
+    localStorage.setItem('cheesewaf-ui', '{invalid');
+    expect(readInitialTheme()).toBe('dark');
   });
 
   it('applies document theme and color scheme', () => {

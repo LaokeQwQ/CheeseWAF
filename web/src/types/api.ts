@@ -271,6 +271,12 @@ export type ProtectionConfig = {
   };
   bot: {
     enabled: boolean;
+    risk_level?: number;
+    risk_low_threshold?: number;
+    risk_medium_threshold?: number;
+    risk_high_threshold?: number;
+    risk_block_threshold?: number;
+    risk_confidence_min?: number;
     js_challenge: boolean;
     captcha: boolean;
     captcha_type: ProtectionCaptchaType | string;
@@ -296,6 +302,13 @@ export type ProtectionConfig = {
     challenge_difficulty: number;
     altcha_max_number: number;
     altcha_header_name: string;
+    clearance_header_enabled?: boolean;
+    clearance_header_name?: string;
+    clearance_method_scope?: boolean;
+    clearance_state_capacity?: number;
+    pow_max_difficulty?: number;
+    pow_accept_legacy?: boolean;
+    clearance_accept_legacy?: boolean;
     waiting_room: boolean;
     waiting_room_max_active: number;
     waiting_room_ttl: number | string;
