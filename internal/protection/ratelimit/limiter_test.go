@@ -48,3 +48,22 @@ func TestLimiterExpiresOldWindows(t *testing.T) {
 		t.Fatal("after window should allow again")
 	}
 }
+
+func TestLimiterShardDistributesKeysAndAllowWorks(t *testing.T) {
+	limiter := New(config.RateLimitProfile{Requests: 10, Window: time.Minute, Burst: 0}, true)
+	shardSeen := map[*limiterShard]struct{}{}
+	for i := 0; i < 64; i++ {
+		key := "client-" + strconv.Itoa(i)
+		if !limiter.Allow(key) {
+			t.Fatalf("expected Allow(%q) to pass", key)
+		}
+		shardSeen[limiter.shard(key)] = struct{}{}
+	}
+	if len(shardSeen) < 2 {
+		t.Fatalf("expected keys to land on multiple shards, got %d", len(shardSeen))
+	}
+	// Same key must still share one bucket across calls.
+	if !limiter.Allow("client-0") {
+		t.Fatal("second Allow on same key should still pass under quota")
+	}
+}
