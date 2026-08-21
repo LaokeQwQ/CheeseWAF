@@ -1122,14 +1122,11 @@ func repairRuntimeConfig(path string, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if !changed || path == "" {
+	if !changed {
 		return nil
 	}
-	if err := config.Save(path, cfg); err == nil {
-		fmt.Printf("CheeseWAF rotated weak Bot challenge secret and saved %s\n", path)
-		return nil
-	} else if persistErr := writeRuntimeBotSecret(runtimeSecretPath, cfg.Protection.Bot.Secret); persistErr != nil {
-		return errors.Join(fmt.Errorf("save runtime config repair: %w", err), fmt.Errorf("persist runtime Bot challenge secret: %w", persistErr))
+	if err := writeRuntimeBotSecret(runtimeSecretPath, cfg.Protection.Bot.Secret); err != nil {
+		return fmt.Errorf("persist runtime Bot challenge secret: %w", err)
 	}
 	fmt.Printf("CheeseWAF rotated weak Bot challenge secret and stored it in the runtime directory\n")
 	return nil
@@ -1164,20 +1161,27 @@ func writeRuntimeBotSecret(path, secret string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".bot_secret-*")
 	if err != nil {
 		return err
 	}
-	_, writeErr := file.WriteString(secret + "\n")
-	if writeErr == nil {
-		writeErr = file.Sync()
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.WriteString(secret + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
 	}
-	closeErr := file.Close()
-	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(path)
-		return errors.Join(writeErr, closeErr)
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
 	}
-	return nil
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func seedSites(ctx context.Context, store storage.Store, cfg *config.Config) error {
