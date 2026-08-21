@@ -15,7 +15,6 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
@@ -90,6 +90,10 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ignoreServiceHangup()
+	if err := applyCLIDataDir(cfg, dataDir); err != nil {
+		return err
+	}
 	// Tune the collector before anything allocates in earnest. The controller
 	// measures the memory this process is actually allowed to use (container
 	// limit when present, physical RAM otherwise) and adjusts GOGC from live GC
@@ -107,13 +111,10 @@ func runServe(ctx context.Context) error {
 		return fmt.Errorf("configure application clock: %w", err)
 	}
 	clock := timeSync.Clock()
-	if err := ensureAdminTLSCertificate(cfg); err != nil {
+	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
 		return err
 	}
-	if cfg.Setup.DataDir == "" {
-		cfg.Setup.DataDir = dataDir
-	}
-	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
+	if err := ensureAdminTLSCertificate(cfg); err != nil {
 		return err
 	}
 	clusterIdentityService, clusterHeartbeats, err := initializeClusterRuntime(cfg, clock)
@@ -263,7 +264,11 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	if setupPending {
-		fmt.Printf("Complete first-install setup: %s\n", setupBrowserURL(adminScheme, cfg.Server.AdminListen, setupToken))
+		page := setupBrowserURL(adminScheme, cfg.Server.AdminListen, setupToken)
+		fmt.Printf("Complete first-install setup: %s\n", page)
+		if err := setup.WriteURL(cfg.Setup.DataDir, page); err != nil {
+			return err
+		}
 	}
 	adminRouter := api.NewRouter(api.Options{
 		Config:              cfg,
@@ -397,14 +402,7 @@ func runServe(ctx context.Context) error {
 }
 
 func setupBrowserURL(scheme, adminListen, token string) string {
-	host, port, err := net.SplitHostPort(strings.TrimSpace(adminListen))
-	if err != nil {
-		return ""
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	return fmt.Sprintf("%s://%s/setup#setup_token=%s", scheme, net.JoinHostPort(host, port), url.QueryEscape(token))
+	return setup.BrowserURL(scheme, adminListen, token)
 }
 
 func validateStartupUsers(ctx context.Context, dataDir string, store storage.UserStore) error {
@@ -644,8 +642,8 @@ func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secre
 		Expires:  expires,
 		MaxAge:   int(config.AdminSessionTTL / time.Second),
 		HttpOnly: true,
-		// Admin entry cookies are always Secure; serve the console over HTTPS.
-		Secure:   true,
+		// Same rule as session cookies: plain HTTP loopback must omit Secure.
+		Secure:   middleware.CookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	return true
@@ -1333,6 +1331,9 @@ func resolveRuntimeDirForCLI() (string, error) {
 			if err != nil {
 				return "", err
 			}
+			if err := applyCLIDataDir(cfg, dataDir); err != nil {
+				return "", err
+			}
 			if cfg.Setup.RuntimeDir != "" {
 				return filepath.Clean(cfg.Setup.RuntimeDir), nil
 			}
@@ -1343,7 +1344,11 @@ func resolveRuntimeDirForCLI() (string, error) {
 			return "", err
 		}
 	}
-	return filepath.Join(dataDir, "run"), nil
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(abs, "run"), nil
 }
 
 func inspectServiceStatus() (serviceStatusSnapshot, error) {
