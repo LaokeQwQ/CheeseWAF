@@ -25,6 +25,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
@@ -641,8 +642,8 @@ func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secre
 		Expires:  expires,
 		MaxAge:   int(config.AdminSessionTTL / time.Second),
 		HttpOnly: true,
-		// Admin entry cookies are always Secure; serve the console over HTTPS.
-		Secure:   true,
+		// Same rule as session cookies: plain HTTP loopback must omit Secure.
+		Secure:   middleware.CookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	return true
