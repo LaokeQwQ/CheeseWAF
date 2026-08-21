@@ -197,7 +197,7 @@ sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/che
 
 #### Step 3: Configure Systemd Service
 
-Linux archives include `systemd/cheesewaf.service`. Install that file:
+Linux archives include `systemd/cheesewaf.service`. Install that file. The unit grants `CAP_NET_BIND_SERVICE` so the non-root service can bind ports 80 and 443:
 
 ```bash
 sudo cp systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
@@ -222,7 +222,7 @@ The default admin listener is `127.0.0.1:9443`. On the server (or over an SSH tu
 
 ### 2. Docker Deployment (Docker Compose)
 
-Docker images are built from a git checkout (`deploy/docker/Dockerfile`). Release `.tar.gz` files are for systemd, not for `docker compose` without the repository. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem. Bind `9443` only on trusted networks; the image listens on all interfaces with admin TLS.
+Docker images are built from a git checkout (`deploy/docker/Dockerfile`). Release `.tar.gz` files are for systemd, not for `docker compose` without the repository. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem. The runtime image installs the distro CA bundle so outbound HTTPS to origins verifies certificates. Bind `9443` only on trusted networks; the image listens on all interfaces with admin TLS.
 
 #### Step 1: Create Compose File
 
@@ -310,7 +310,7 @@ The data-plane binary does not need the installer. The admin UI is in the zip/DM
 #### Option C: NSIS graphical installer
 
 1. Run `CheeseWAF-*-windows-amd64-setup.exe` or `CheeseWAF-*-windows-arm64-setup.exe`.
-2. Follow the setup wizard.
+2. Follow the setup wizard. The installer registers Windows Service `CheeseWAF`; `cheesewaf.exe serve` answers Service Control Manager stop/shutdown.
 3. Uninstall keeps `data\` by default.
 
 #### Local Service Controller (`cheesewaf-gui`)
