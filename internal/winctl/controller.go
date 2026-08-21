@@ -63,7 +63,7 @@ func New(opts Options) (*Controller, error) {
 		opts.DataDir = filepath.Join(".", "data")
 	}
 	if opts.AdminURL == "" {
-		opts.AdminURL = "https://127.0.0.1:9443/__cheesewaf-entry"
+		opts.AdminURL = "http://127.0.0.1:9443/setup"
 	}
 	if opts.Listen == "" {
 		opts.Listen = "127.0.0.1:17943"
@@ -141,24 +141,22 @@ func (c *Controller) Start() error {
 	if snap.Running {
 		return nil
 	}
-	args := []string{"serve", "--config", c.opts.ConfigPath, "--data-dir", c.opts.DataDir}
-	cmd := exec.Command(c.opts.Binary, args...)
-	cmd.Dir = filepath.Dir(c.opts.Binary)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd, logFile, err := c.serveCommand()
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
 	if err := configureDetached(cmd); err != nil {
 		return err
 	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", c.opts.Binary, err)
 	}
-	// Detach from parent lifetime.
 	if cmd.Process != nil {
 		_ = cmd.Process.Release()
 	}
 	c.cmd = cmd
-	// Brief wait so PID file can appear.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		s, err := cli.InspectServiceStatus()
 		if err == nil && s.Running {
@@ -166,7 +164,39 @@ func (c *Controller) Start() error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return nil
+	detail := strings.TrimSpace(lastLogSnippet(logFile.Name(), 2048))
+	if detail == "" {
+		detail = "service did not write a PID file"
+	}
+	return fmt.Errorf("start %s: %s", c.opts.Binary, detail)
+}
+
+func (c *Controller) serveCommand() (*exec.Cmd, *os.File, error) {
+	args := []string{"serve", "--config", c.opts.ConfigPath, "--data-dir", c.opts.DataDir}
+	cmd := exec.Command(c.opts.Binary, args...)
+	cmd.Dir = c.opts.DataDir
+	if err := os.MkdirAll(filepath.Join(c.opts.DataDir, "run"), 0o750); err != nil {
+		return nil, nil, err
+	}
+	logPath := filepath.Join(c.opts.DataDir, "run", "serve.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	return cmd, logFile, nil
+}
+
+func lastLogSnippet(path string, limit int) string {
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	if limit > 0 && len(raw) > limit {
+		raw = raw[len(raw)-limit:]
+	}
+	return string(raw)
 }
 
 // Stop stops a running process via CLI semantics.
