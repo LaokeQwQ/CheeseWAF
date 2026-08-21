@@ -83,6 +83,10 @@ changelog:
       - "^chore:"
 
 release:
+  # Channel packages and Alpha- GitHub pre-releases are produced by
+  # scripts/ci/package-release.sh and publish-prerelease.sh. Do not let
+  # goreleaser publish a Latest GitHub Release from a semver tag.
+  disable: true
   github:
     owner: LaokeQwQ
     name: CheeseWAF

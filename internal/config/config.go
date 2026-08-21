@@ -325,10 +325,13 @@ type MapBoundaryConfig struct {
 }
 
 type SiteConfig struct {
-	ID          string                `yaml:"id" json:"id"`
-	Name        string                `yaml:"name" json:"name"`
-	Domains     []string              `yaml:"domains" json:"domains"`
-	Upstreams   []UpstreamConfig      `yaml:"upstreams" json:"upstreams"`
+	ID        string           `yaml:"id" json:"id"`
+	Name      string           `yaml:"name" json:"name"`
+	Domains   []string         `yaml:"domains" json:"domains"`
+	Upstreams []UpstreamConfig `yaml:"upstreams" json:"upstreams"`
+	// ListenPort is stored for nginx import and the admin UI. The process
+	// binds Server.Listen (and ListenTLS / ListenHTTP3) only; requests are
+	// routed by Host / site domains, not by opening this port per site.
 	ListenPort  int                   `yaml:"listen_port" json:"listen_port"`
 	LoadBalance string                `yaml:"loadbalance" json:"loadbalance"`
 	EnableSSL   bool                  `yaml:"enable_ssl" json:"enable_ssl"`

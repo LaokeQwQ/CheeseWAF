@@ -125,6 +125,29 @@ func TestAnsibleDeploymentHasTransactionalRollbackAndCleanup(t *testing.T) {
 	}
 }
 
+func TestAnsibleUnitAllowsNonRootLowPortsAndHardensSandbox(t *testing.T) {
+	pkg, err := GenerateAnsiblePackage(Plan{ClusterID: "cw-test", Nodes: []Host{{Name: "waf-a", Address: "10.0.0.1", Role: "waf"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := string(pkg.File("roles/cheesewaf/tasks/main.yml"))
+	for _, want := range []string{
+		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+		"NoNewPrivileges=true",
+		"PrivateTmp=true",
+		"ProtectSystem=strict",
+		"ProtectHome=true",
+		"ReadWritePaths={{ cheesewaf_config_dir }} {{ cheesewaf_data_dir }}",
+		"LimitNOFILE=1048576",
+		"RestartSec=5s",
+	} {
+		if !strings.Contains(tasks, want) {
+			t.Fatalf("ansible unit missing %q", want)
+		}
+	}
+}
+
 func TestAnsibleUnitStartsServeWithDataDir(t *testing.T) {
 	pkg, err := GenerateAnsiblePackage(Plan{ClusterID: "cw-test", Nodes: []Host{{Name: "waf-a", Address: "10.0.0.1", Role: "waf"}}})
 	if err != nil {
