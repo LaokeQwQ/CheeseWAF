@@ -139,8 +139,14 @@ grep -Fq 'CheeseWAF.app' scripts/ci/package-macos-dmg.sh ||
   fail "macOS DMG must ship a CheeseWAF.app bundle"
 grep -Fq '/Applications' scripts/ci/package-macos-dmg.sh ||
   fail "macOS DMG must include an Applications drop target"
-grep -Fq 'codesign --force --sign - --timestamp=none' scripts/ci/package-macos-dmg.sh ||
-  fail "macOS app bundle must be ad-hoc signed so Gatekeeper does not mark it damaged"
+grep -Fq 'CODESIGN_IDENTITY' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS packaging must select a Developer ID when available"
+grep -Fq 'timestamp=none' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS packaging must keep ad-hoc signing as the fallback without a Developer ID"
+grep -Fq 'notarize_dmg' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS packaging must notarize when Apple API credentials are present"
+grep -Fq 'scripts/ci/sign-windows.sh' scripts/ci/package-release.sh ||
+  fail "Windows packages must Authenticode-sign when WINDOWS_CERT_P12 is present"
 grep -Fq 'APP_BUNDLE_VERSION' deploy/macos/Info.plist ||
   fail "macOS Info.plist must keep a numeric CFBundleVersion placeholder"
 got_ver="$(bash scripts/ci/package-macos-dmg.sh --print-bundle-version '0.1.0-PreTest')"
@@ -170,7 +176,7 @@ grep -Fq 'CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web' deploy/systemd/cheesewaf.s
   fail "systemd unit must point CHEESEWAF_WEB_DIR at the FHS UI path"
 grep -Fq 'func applyCLIDataDir' internal/cli/datadir.go ||
   fail "serve must rebase packaged relative ./data paths onto --data-dir"
-grep -Fq 'Secure:   middleware.CookieSecure(r)' internal/cli/service.go ||
+grep -Fq 'middleware.WriteCookie(w, r' internal/cli/service.go ||
   fail "admin entry cookies must follow request TLS like session cookies"
 if grep -Fq 'ExecReload=' deploy/systemd/cheesewaf.service; then
   fail "systemd must not advertise SIGHUP reload; the process ignores hangup"
@@ -179,6 +185,44 @@ grep -Fq 'rewrite_checksums' scripts/ci/publish-prerelease.sh ||
   fail "publish must rebuild SHA256SUMS after macOS DMG files land"
 grep -Fq 'github.ref_name == '\''canary'\''' .github/workflows/ci.yml ||
   fail "publish-prerelease must stay limited to canary and master"
+grep -Fq 'id-token: write' .github/workflows/ci.yml ||
+  fail "publish-prerelease must request an OIDC token for keyless cosign"
+grep -Fq 'sigstore/cosign-installer@' .github/workflows/ci.yml ||
+  fail "publish-prerelease must install a pinned cosign"
+grep -Fq "cosign-release: ${COSIGN_VERSION}" .github/workflows/ci.yml ||
+  fail "publish-prerelease must pin cosign ${COSIGN_VERSION}"
+grep -Fq 'scripts/ci/install-syft.sh' .github/workflows/ci.yml ||
+  fail "publish-prerelease must install a checksum-pinned syft"
+grep -Fq "syft_${SYFT_VERSION#v}_linux_amd64.tar.gz" scripts/ci/tool-checksums.txt ||
+  fail "syft ${SYFT_VERSION} linux-amd64 checksum is missing"
+grep -Fq 'cyclonedx-json' scripts/ci/publish-prerelease.sh ||
+  fail "publish must attach a CycloneDX SBOM"
+grep -Fq 'cosign sign-blob' scripts/ci/publish-prerelease.sh ||
+  fail "publish must sign SHA256SUMS with cosign"
+codeql_file=".github/workflows/codeql.yml"
+[[ -r "$codeql_file" ]] || fail "missing ${codeql_file}"
+init_sha="$(awk '/uses: github\/codeql-action\/init@/ { n=split($2, a, "@"); print a[n] }' "$codeql_file" | sort -u)"
+analyze_sha="$(awk '/uses: github\/codeql-action\/analyze@/ { n=split($2, a, "@"); print a[n] }' "$codeql_file" | sort -u)"
+if [[ -z "$init_sha" || "$init_sha" != "$analyze_sha" || "$init_sha" == *$'\n'* ]]; then
+  fail "CodeQL init and analyze must share a single action SHA (init=${init_sha} analyze=${analyze_sha})"
+fi
+grep -Fq '"maplibre-gl": "^6.' web/package.json ||
+  fail "dashboard maplibre-gl must track 6.x after the ESM migration"
+grep -Fq 'func writeChallengeCookie' internal/protection/bot/policy.go ||
+  fail "bot challenge cookies must go through writeChallengeCookie"
+grep -Fq 'cookie.Secure = cookieSecure(r)' internal/protection/bot/policy.go ||
+  fail "writeChallengeCookie must apply cookieSecure"
+if grep -nE 'http\.SetCookie' internal/protection/bot/policy.go; then
+  fail "bot cookies must not call http.SetCookie directly"
+fi
+if grep -nE 'Secure:[[:space:]]*(true|secure)' internal/protection/bot/policy.go; then
+  fail "bot cookies must not hard-code Secure or take a caller bool"
+fi
+grep -Fq 'func WriteCookie' internal/api/middleware/session_cookie.go ||
+  fail "admin cookies must go through middleware.WriteCookie"
+if grep -nE 'http\.SetCookie' internal/api/middleware/session_cookie.go internal/api/handler/handler.go internal/api/handler/setup_wizard.go internal/cli/service.go; then
+  fail "admin cookies must not call http.SetCookie directly"
+fi
 grep -Fq 'scripts/ci/channel-from-git.sh' Makefile ||
   fail "Makefile CHANNEL must not embed a case statement with closing parens"
 grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
