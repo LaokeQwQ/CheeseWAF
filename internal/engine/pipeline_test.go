@@ -362,20 +362,36 @@ func TestDetectionBudgetHookConcurrentRegistration(t *testing.T) {
 
 func saturateGuardSlots(t *testing.T) {
 	t.Helper()
-	if got := len(guardSlots); got != 0 {
-		t.Fatalf("guard slots not empty before saturation: %d", got)
-	}
+	waitGuardSlotsIdle(t)
 	if got := cap(guardSlots); got != maxInflightGuards {
 		t.Fatalf("guard slot capacity = %d, want %d", got, maxInflightGuards)
 	}
-	for i := 0; i < cap(guardSlots); i++ {
+	n := cap(guardSlots)
+	for i := 0; i < n; i++ {
 		guardSlots <- struct{}{}
 	}
 	t.Cleanup(func() {
-		for i := 0; i < cap(guardSlots); i++ {
-			<-guardSlots
+		for i := 0; i < n; i++ {
+			select {
+			case <-guardSlots:
+			case <-time.After(2 * time.Second):
+				t.Errorf("timed out draining guard slot %d/%d", i+1, n)
+				return
+			}
 		}
+		waitGuardSlotsIdle(t)
 	})
+}
+
+func waitGuardSlotsIdle(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(guardSlots) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("guard slots did not drain, leftover=%d", len(guardSlots))
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 type countingDetector struct {

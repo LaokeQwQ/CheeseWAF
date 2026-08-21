@@ -60,6 +60,23 @@ func TestCookieSecureFollowsTLSAndForwardedProto(t *testing.T) {
 	}
 }
 
+func TestWriteCookieFollowsTLSAndForwardedProto(t *testing.T) {
+	plain := httptest.NewRecorder()
+	WriteCookie(plain, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/", nil), &http.Cookie{Name: "n", Value: "v", Path: "/"})
+	got := plain.Result().Cookies()
+	if len(got) != 1 || got[0].Secure {
+		t.Fatalf("plain HTTP WriteCookie must omit Secure, got %+v", got)
+	}
+	httpsRec := httptest.NewRecorder()
+	httpsReq := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:9443/", nil)
+	httpsReq.TLS = &tls.ConnectionState{}
+	WriteCookie(httpsRec, httpsReq, &http.Cookie{Name: "n", Value: "v", Path: "/"})
+	got = httpsRec.Result().Cookies()
+	if len(got) != 1 || !got[0].Secure {
+		t.Fatalf("TLS WriteCookie must set Secure, got %+v", got)
+	}
+}
+
 func TestWriteSessionCookiesOmitsSecureOnPlainHTTP(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9443/api/auth/login", nil)

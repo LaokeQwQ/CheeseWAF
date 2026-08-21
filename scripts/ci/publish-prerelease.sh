@@ -40,7 +40,7 @@ rewrite_checksums() {
     while IFS= read -r f; do
       [[ -n "$f" ]] || continue
       files+=("$f")
-    done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt | sed 's#^\./##' | sort)
+    done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt ! -name '*.bundle' ! -name '*.sig' | sed 's#^\./##' | sort)
     [[ ${#files[@]} -gt 0 ]] || {
       echo "::error::no files to checksum in ${dir}" >&2
       exit 1
@@ -53,7 +53,45 @@ rewrite_checksums() {
   )
 }
 
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+command -v syft >/dev/null 2>&1 || {
+  echo "::error::syft is required to attach a CycloneDX SBOM" >&2
+  exit 1
+}
+command -v cosign >/dev/null 2>&1 || {
+  echo "::error::cosign is required to sign SHA256SUMS and the SBOM" >&2
+  exit 1
+}
+
+sbom_file="${release_dir}/cheesewaf.cdx.json"
+syft scan "dir:${repo_root}" \
+  --source-name cheesewaf \
+  --source-version "$tag" \
+  --exclude '**/.git/**' \
+  --exclude '**/node_modules/**' \
+  --exclude '**/.grok/**' \
+  --exclude '**/tmp/**' \
+  --exclude '**/release/**' \
+  -o "cyclonedx-json=${sbom_file}"
+[[ -s "$sbom_file" ]] || {
+  echo "::error::syft did not write ${sbom_file}" >&2
+  exit 1
+}
+
 rewrite_checksums "$release_dir"
+
+sign_blob() {
+  local file="$1"
+  COSIGN_YES=true cosign sign-blob --yes --bundle "${file}.bundle" "$file"
+  COSIGN_YES=true cosign verify-blob \
+    --bundle "${file}.bundle" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-identity-regexp '^https://github.com/LaokeQwQ/CheeseWAF/' \
+    "$file"
+}
+
+sign_blob "${release_dir}/SHA256SUMS"
+sign_blob "$sbom_file"
 
 notes="$(mktemp)"
 trap 'rm -f "$notes"' EXIT
@@ -79,6 +117,15 @@ Download the archive that matches your OS and CPU:
 | \`cheesewaf-arm64-windows-*-${suffix}-setup.exe\` | Windows ARM64 GUI installer |
 
 Linux archives include \`systemd/cheesewaf.service\`. Verify downloads with \`SHA256SUMS\`.
+
+A CycloneDX SBOM is attached as \`cheesewaf.cdx.json\`. \`SHA256SUMS\` and the SBOM are signed with Sigstore keyless identities from GitHub Actions. Verify:
+
+\`\`\`
+cosign verify-blob --bundle SHA256SUMS.bundle \\
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+  --certificate-identity-regexp '^https://github.com/LaokeQwQ/CheeseWAF/' \\
+  SHA256SUMS
+\`\`\`
 EOF
 
 assets=()

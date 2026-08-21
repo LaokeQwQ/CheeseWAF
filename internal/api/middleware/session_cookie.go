@@ -114,6 +114,18 @@ func CookieSecure(r *http.Request) bool {
 	return proto == "https"
 }
 
+// WriteCookie applies CookieSecure then writes Set-Cookie.
+// Callers must not set Secure themselves; plain HTTP loopback has to omit it.
+func WriteCookie(w http.ResponseWriter, r *http.Request, cookie *http.Cookie) {
+	if w == nil || cookie == nil {
+		return
+	}
+	cookie.Secure = CookieSecure(r)
+	if v := cookie.String(); v != "" {
+		w.Header().Add("Set-Cookie", v)
+	}
+}
+
 // WriteSessionCookies sets HttpOnly session JWT + non-HttpOnly CSRF cookies.
 func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csrf string, maxAge time.Duration) {
 	if w == nil {
@@ -122,23 +134,20 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 	if maxAge <= 0 {
 		maxAge = SessionCookieMaxAge
 	}
-	secure := CookieSecure(r)
-	http.SetCookie(w, &http.Cookie{
+	WriteCookie(w, r, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    sessionJWT,
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
 		HttpOnly: true,
-		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	})
-	http.SetCookie(w, &http.Cookie{
+	WriteCookie(w, r, &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    csrf,
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
 		HttpOnly: false, // JS must read for double-submit header
-		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	})
 }
@@ -149,13 +158,12 @@ func ClearSessionCookies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, name := range []string{SessionCookieName, CSRFCookieName} {
-		http.SetCookie(w, &http.Cookie{
+		WriteCookie(w, r, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: name == SessionCookieName,
-			Secure:   CookieSecure(r),
 			SameSite: http.SameSiteStrictMode,
 		})
 	}
