@@ -46,11 +46,6 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "English"
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
-Page directory
-Page instfiles
-UninstPage uninstConfirm
-UninstPage instfiles
-
 Section "Install"
   SetOutPath "$INSTDIR"
 
@@ -89,8 +84,7 @@ Section "Install"
     "$INSTDIR\cheesewaf-gui.exe" \
     '--config "$INSTDIR\configs\cheesewaf.yaml" --data-dir "$INSTDIR\data"'
 
-  ; Optional service registration (best-effort).
-  ; Users may still run zip/bin style without a service.
+  ; Register a Windows Service. cheesewaf.exe serve answers SCM stop/shutdown.
   ; Quoted binPath is required when paths contain spaces (Program Files).
   nsExec::ExecToLog 'sc.exe create CheeseWAF binPath= "\"$INSTDIR\cheesewaf.exe\" serve --config \"$INSTDIR\configs\cheesewaf.yaml\" --data-dir \"$INSTDIR\data\"" start= demand DisplayName= "CheeseWAF"'
   nsExec::ExecToLog 'sc.exe description CheeseWAF "CheeseWAF Web Application Firewall"'

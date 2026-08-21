@@ -91,6 +91,14 @@ grep -Eq '^ARG RUNTIME_IMAGE=.*@sha256:[0-9a-f]{64}$' deploy/docker/Dockerfile |
   fail "runtime base image must be digest-pinned"
 grep -Fq 'USER cheesewaf' deploy/docker/Dockerfile ||
   fail "runtime container must be non-root"
+grep -Fq 'ca-certificates' deploy/docker/Dockerfile ||
+  fail "runtime image must install ca-certificates for outbound HTTPS"
+awk '
+  /ca-certificates/ { ca = NR }
+  /^USER cheesewaf$/ { user = NR }
+  END { if (!ca || !user || ca >= user) exit 1 }
+' deploy/docker/Dockerfile ||
+  fail "ca-certificates must be installed before USER cheesewaf"
 grep -Fq 'WORKDIR /var/lib/cheesewaf' deploy/docker/Dockerfile ||
   fail "runtime container must use its writable data directory as WORKDIR"
 grep -Fq 'admin_listen: "0.0.0.0:9443"' deploy/docker/Dockerfile ||
@@ -105,6 +113,12 @@ grep -Fq 'CHEESEWAF_UID=10001' deploy/docker/Dockerfile ||
   fail "runtime image must pin CHEESEWAF_UID=10001 for tmpfs ownership"
 grep -Fq 'JavaScript asset returned unexpected MIME type' scripts/ci/docker-build.sh ||
   fail "container smoke must verify static asset MIME"
+grep -Fq '/etc/ssl/certs/ca-certificates.crt' scripts/ci/docker-build.sh ||
+  fail "container smoke must assert the runtime CA bundle is readable"
+grep -Fq -- '--outbound-tls' scripts/ci/docker-build.sh ||
+  fail "container smoke must probe outbound HTTPS with the system CA pool"
+grep -Fq 'healthcheck --outbound-tls' scripts/ci/docker-build.sh ||
+  fail "container smoke must invoke healthcheck --outbound-tls inside the container"
 grep -Fq 'CHEESEWAF_SETUP_TOKEN' scripts/ci/docker-build.sh ||
   fail "container smoke must pin CHEESEWAF_SETUP_TOKEN"
 grep -Fq 'X-CheeseWAF-Setup-Token' scripts/ci/docker-build.sh ||
@@ -162,6 +176,9 @@ grep -Fq 'linux/amd64,linux/arm64' scripts/ci/docker-build.sh ||
   fail "container CI must build linux/amd64 and linux/arm64"
 grep -Fq 'dst: systemd/cheesewaf.service' .goreleaser.yaml ||
   fail "GoReleaser archive must include the systemd unit"
+if ! grep -A5 '^release:' .goreleaser.yaml | grep -Fq 'disable: true'; then
+  fail "GoReleaser must not publish GitHub Latest releases; Alpha- packaging owns GitHub Releases"
+fi
 grep -Fq 'install-linux.sh' scripts/ci/package-release.sh ||
   fail "Linux channel packages must ship install-linux.sh"
 grep -Fq 'dst: install-linux.sh' .goreleaser.yaml ||
@@ -174,6 +191,33 @@ grep -Fq 'WorkingDirectory=/var/lib/cheesewaf' deploy/systemd/cheesewaf.service 
   fail "systemd unit must set WorkingDirectory so relative data paths stay under /var/lib/cheesewaf"
 grep -Fq 'CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web' deploy/systemd/cheesewaf.service ||
   fail "systemd unit must point CHEESEWAF_WEB_DIR at the FHS UI path"
+grep -Fq 'AmbientCapabilities=CAP_NET_BIND_SERVICE' deploy/systemd/cheesewaf.service ||
+  fail "systemd unit must grant CAP_NET_BIND_SERVICE so a non-root service can bind :80/:443"
+grep -Fq 'CapabilityBoundingSet=CAP_NET_BIND_SERVICE' deploy/systemd/cheesewaf.service ||
+  fail "systemd unit must bound capabilities to CAP_NET_BIND_SERVICE"
+grep -Fq 'ProtectSystem=strict' deploy/systemd/cheesewaf.service ||
+  fail "systemd unit must use ProtectSystem=strict"
+grep -Fq 'AmbientCapabilities=CAP_NET_BIND_SERVICE' internal/cluster/deploy/ansible.go ||
+  fail "Ansible unit must grant CAP_NET_BIND_SERVICE"
+grep -Fq 'ProtectSystem=strict' internal/cluster/deploy/ansible.go ||
+  fail "Ansible unit must use ProtectSystem=strict"
+grep -Fq 'windowsServiceName = "CheeseWAF"' internal/cli/serve_windows.go ||
+  fail "Windows SCM handler must use service name CheeseWAF"
+grep -Fq 'svc.IsWindowsService' internal/cli/serve_windows.go ||
+  fail "serve must detect Windows Service Control Manager"
+grep -Fq 'sc.exe create CheeseWAF' deploy/windows/nsis/cheesewaf.nsi ||
+  fail "NSIS must register the CheeseWAF Windows service"
+if grep -nE '^Page (directory|instfiles)' deploy/windows/nsis/cheesewaf.nsi; then
+  fail "NSIS must not mix classic Page with MUI pages"
+fi
+if grep -nE '^UninstPage ' deploy/windows/nsis/cheesewaf.nsi; then
+  fail "NSIS must not mix classic UninstPage with MUI unpages"
+fi
+[[ -f .air.toml ]] || fail "make dev requires .air.toml"
+grep -Fq 'web-test' Makefile ||
+  fail "make test must run frontend tests"
+grep -Fq 'npm test' Makefile ||
+  fail "make test must invoke npm test"
 grep -Fq 'func applyCLIDataDir' internal/cli/datadir.go ||
   fail "serve must rebase packaged relative ./data paths onto --data-dir"
 grep -Fq 'middleware.WriteCookie(w, r' internal/cli/service.go ||

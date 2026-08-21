@@ -15,7 +15,7 @@ GOFLAGS      := -trimpath
 GCFLAGS      := -l=4
 CGO_ENABLED  := 0
 
-.PHONY: all build build-cli run test test-go web-build security-corpus security-corpus-http security-gate lint clean dev help
+.PHONY: all build build-cli run test test-go web-test web-build security-corpus security-corpus-http security-gate lint clean dev help
 
 ## help: Show this help message
 help:
@@ -25,7 +25,7 @@ help:
 	@echo "  make build-cli   Build and create waf-cli symlink"
 	@echo "  make run         Run cheesewaf serve"
 	@echo "  make dev         Run with hot-reload (requires air)"
-	@echo "  make test        Run all tests"
+	@echo "  make test        Run Go and frontend tests"
 	@echo "  make web-build   Build the web dashboard"
 	@echo "  make security-corpus      Run curated semantic corpus against analyzer"
 	@echo "  make security-corpus-http Run curated corpus against deployed WAF (BASE_URL=...)"
@@ -121,11 +121,15 @@ dev:
 	air -c .air.toml
 
 ## test: Run all tests
-test: test-go web-build
+test: test-go web-test
 
 ## test-go: Run Go tests
 test-go:
 	$(GO) test -v -race -count=1 ./cmd/... ./internal/...
+
+## web-test: Run frontend unit tests
+web-test:
+	cd web && npm test
 
 ## web-build: Build the React dashboard
 web-build:
