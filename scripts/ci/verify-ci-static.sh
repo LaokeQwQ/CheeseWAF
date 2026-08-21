@@ -170,6 +170,8 @@ grep -Fq 'CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web' deploy/systemd/cheesewaf.s
   fail "systemd unit must point CHEESEWAF_WEB_DIR at the FHS UI path"
 grep -Fq 'func applyCLIDataDir' internal/cli/datadir.go ||
   fail "serve must rebase packaged relative ./data paths onto --data-dir"
+grep -Fq 'Secure:   middleware.CookieSecure(r)' internal/cli/service.go ||
+  fail "admin entry cookies must follow request TLS like session cookies"
 if grep -Fq 'ExecReload=' deploy/systemd/cheesewaf.service; then
   fail "systemd must not advertise SIGHUP reload; the process ignores hangup"
 fi
