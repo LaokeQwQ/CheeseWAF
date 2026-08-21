@@ -464,13 +464,12 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			http.Error(w, "bot clearance unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		// Clearance cookies are admin-facing and always Secure (HTTPS / TLS-terminated edge).
 		http.SetCookie(w, &http.Cookie{
 			Name:     p.cookieName,
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
-			Secure:   true,
+			Secure:   cookieSecure(r),
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -836,9 +835,7 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	p.behaviorPending.Finalize(jti)
 	p.failureTracker.Reset(key)
 	p.recordChallengeMetric(ChallengeMetricSuccess, site, string(pending.kind), clientIP)
-	// Always Secure; terminate TLS at the edge or serve HTTPS directly.
-	_ = secure
-	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `{"data":{"valid":true,"clearance":true}}`)
 }
@@ -858,8 +855,7 @@ func (p *Policy) behaviorOwner(r *http.Request, site string, issue, secure bool)
 		return "", nil, err
 	}
 	expires := p.now().Add(p.ttl)
-	_ = secure // call site may pass TLS intent; cookie Secure is always set.
-	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
+	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
 }
 func (p *Policy) signBehaviorOwner(owner, site string, expires time.Time) string {
 	payload := owner + "." + strconv.FormatInt(expires.Unix(), 10)
@@ -1254,7 +1250,7 @@ func (p *Policy) serveWaitingRoom(w http.ResponseWriter, r *http.Request, client
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
-			Secure:   true,
+			Secure:   cookieSecure(r),
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})

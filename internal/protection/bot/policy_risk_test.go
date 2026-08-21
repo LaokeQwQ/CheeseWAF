@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -293,26 +294,39 @@ func TestAllowedUserAgentUsesTokenMatchNotSubstring(t *testing.T) {
 	}
 }
 
-func TestBehaviorOwnerCookieAlwaysSecureHttpOnly(t *testing.T) {
+func TestBehaviorOwnerCookieSecureFollowsTLS(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{
 		Enabled: true, CAPTCHA: true, CAPTCHAType: "shape_slider", Secret: "test-secret", CookieName: "cw_clearance",
 	})
-	// Clearance cookies must set Secure:true as a constant.
-	// Production WAF challenges assume HTTPS or TLS-terminated reverse proxy.
-	for _, req := range []*http.Request{
-		httptest.NewRequest(http.MethodGet, "http://example.test/", nil),
-		func() *http.Request {
-			r := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
-			return r
-		}(),
-	} {
-		_, cookie, err := policy.behaviorOwner(req, "example.test", true, cookieSecure(req))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !cookie.Secure || !cookie.HttpOnly {
-			t.Fatalf("expected Secure HttpOnly owner cookie, got %#v", cookie)
-		}
+	plain := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	_, plainCookie, err := policy.behaviorOwner(plain, "example.test", true, cookieSecure(plain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainCookie.Secure || !plainCookie.HttpOnly {
+		t.Fatalf("plain HTTP owner cookie must be HttpOnly without Secure, got %#v", plainCookie)
+	}
+
+	httpsReq := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	httpsReq.TLS = &tls.ConnectionState{}
+	_, httpsCookie, err := policy.behaviorOwner(httpsReq, "example.test", true, cookieSecure(httpsReq))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !httpsCookie.Secure || !httpsCookie.HttpOnly {
+		t.Fatalf("TLS owner cookie must be Secure HttpOnly, got %#v", httpsCookie)
+	}
+
+	trusted := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	trusted.RemoteAddr = "10.0.0.2:443"
+	trusted.Header.Set("X-Forwarded-Proto", "https")
+	trusted = trusted.WithContext(ContextWithTrustedCIDRs(trusted.Context(), []string{"10.0.0.0/8"}))
+	_, trustedCookie, err := policy.behaviorOwner(trusted, "example.test", true, cookieSecure(trusted))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trustedCookie.Secure || !trustedCookie.HttpOnly {
+		t.Fatalf("trusted HTTPS proxy owner cookie must be Secure HttpOnly, got %#v", trustedCookie)
 	}
 }
 

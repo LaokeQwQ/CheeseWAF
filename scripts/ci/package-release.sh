@@ -125,6 +125,10 @@ for target in "${targets[@]}"; do
   cp "${metadata_dir}/VERSION" "${metadata_dir}/release.json" "$package_root/"
 
   if [[ "$goos" == "windows" ]]; then
+    bash "${repo_root}/scripts/ci/sign-windows.sh" \
+      "${package_root}/cheesewaf.exe" \
+      "${package_root}/cheesewaf-gui.exe" \
+      "${package_root}/waf-cli.exe"
     cp "${package_root}/cheesewaf.exe" "${release_dir}/${package_name}.exe"
     (
       cd "$work_dir"
@@ -137,6 +141,7 @@ for target in "${targets[@]}"; do
         -DSOURCE_DIR="${package_root}" \
         -DOUTFILE="${nsis_out}" \
         "${repo_root}/deploy/windows/nsis/cheesewaf.nsi"
+      bash "${repo_root}/scripts/ci/sign-windows.sh" "$nsis_out"
     else
       echo "makensis not installed; skipped NSIS installer for ${target}"
     fi
