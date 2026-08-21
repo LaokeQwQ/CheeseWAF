@@ -82,10 +82,14 @@ func (b *BoundedRegex) MatchString(s string) bool {
 		defer func() { <-regexMatchSlots }()
 		done <- b.re.MatchString(s)
 	}()
+	timer := time.NewTimer(MaxRegexMatchTime)
 	select {
 	case result := <-done:
+		if !timer.Stop() {
+			<-timer.C
+		}
 		return result
-	case <-time.After(MaxRegexMatchTime):
+	case <-timer.C:
 		return false // Treat timeout as no-match to prevent ReDoS
 	}
 }
@@ -108,10 +112,14 @@ func (b *BoundedRegex) Match(b2 []byte) bool {
 		defer func() { <-regexMatchSlots }()
 		done <- b.re.Match(b2)
 	}()
+	timer := time.NewTimer(MaxRegexMatchTime)
 	select {
 	case result := <-done:
+		if !timer.Stop() {
+			<-timer.C
+		}
 		return result
-	case <-time.After(MaxRegexMatchTime):
+	case <-timer.C:
 		return false
 	}
 }
@@ -208,10 +216,14 @@ func Guard[T any](fn func() (T, error)) (result T, err error) {
 		}{res, e}
 	}()
 
+	timer := time.NewTimer(2 * time.Second)
 	select {
 	case r := <-done:
+		if !timer.Stop() {
+			<-timer.C
+		}
 		return r.res, r.err
-	case <-time.After(2 * time.Second):
+	case <-timer.C:
 		return zero, fmt.Errorf("detection deadline exceeded (2s)")
 	}
 }

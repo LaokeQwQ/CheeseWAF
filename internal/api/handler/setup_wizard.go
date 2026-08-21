@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -101,6 +102,26 @@ func isLocalOrSameOrigin(origin string, r *http.Request) bool {
 		return strings.EqualFold(host, reqHost)
 	}
 	return false
+}
+
+// SetupStatus reports whether first-install is still required. No setup token.
+func (h *Handler) SetupStatus(w http.ResponseWriter, _ *http.Request) {
+	needs := true
+	if h != nil {
+		needs = setup.NeedsSetup(h.setupDataDir())
+		if !needs {
+			writeData(w, map[string]any{"needs_setup": false})
+			return
+		}
+		if h.Store != nil {
+			users, err := h.Store.ListUsers(context.Background())
+			if err == nil && len(users) > 0 {
+				writeData(w, map[string]any{"needs_setup": false})
+				return
+			}
+		}
+	}
+	writeData(w, map[string]any{"needs_setup": needs})
 }
 
 // SetupProbe runs the first-install performance probe (R0). Only meaningful when NeedsSetup.

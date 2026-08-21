@@ -59,6 +59,9 @@ func Decode(raw string) Decoded {
 		layers = append(layers, "unicode")
 	}
 	text = strings.TrimSpace(text)
+	// Strip NULs introduced by URL/HTML/unicode decoding so downstream
+	// matchers never see null-byte obfuscation in decoded Text.
+	text = strings.ReplaceAll(text, "\x00", "")
 	return Decoded{Raw: raw, Layers: layers, Text: text}
 }
 
@@ -188,7 +191,9 @@ func DecodeAll(raw string) []Decoded {
 			layers := make([]string, 0, len(deep.Layers)+1)
 			layers = append(layers, deep.Layers...)
 			layers = append(layers, "base64")
-			out = append(out, Decoded{Raw: deep.Text, Layers: layers, Text: string(decoded)})
+			// Strip NULs from base64-expanded text the same as Decode.
+			text := strings.ReplaceAll(string(decoded), "\x00", "")
+			out = append(out, Decoded{Raw: deep.Text, Layers: layers, Text: text})
 			break
 		}
 	}

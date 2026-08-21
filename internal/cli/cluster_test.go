@@ -22,6 +22,13 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
+func TestRootCommandDefaultsToServe(t *testing.T) {
+	cmd := newRootCommand()
+	if cmd.RunE == nil {
+		t.Fatal("root command must run serve when no subcommand is given")
+	}
+}
+
 func TestClusterStatusShowsStandaloneByDefault(t *testing.T) {
 	path := testClusterConfigPath(t)
 	oldConfigPath := configPath
