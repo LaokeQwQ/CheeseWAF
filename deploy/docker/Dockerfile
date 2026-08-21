@@ -38,7 +38,12 @@ FROM ${RUNTIME_IMAGE}
 # Pin UID/GID so CI tmpfs mounts and compose can match the non-root runtime user.
 ARG CHEESEWAF_UID=10001
 ARG CHEESEWAF_GID=10001
-RUN groupadd --system --gid "${CHEESEWAF_GID}" cheesewaf \
+# Install the distro CA bundle before dropping to the runtime user. Go verifies
+# outbound HTTPS with x509.SystemCertPool, which reads /etc/ssl/certs.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd --system --gid "${CHEESEWAF_GID}" cheesewaf \
   && useradd --system --uid "${CHEESEWAF_UID}" --gid cheesewaf --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf \
   && mkdir -p \
     /var/lib/cheesewaf/config \

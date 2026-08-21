@@ -96,6 +96,7 @@ sites:
     upstreams:
       - address: "127.0.0.1:9000"
         weight: 1
+    # Stored for import/UI. Routing uses domains (Host); this does not bind a port.
     listen_port: 80
     loadbalance: "round_robin"
     enabled: true
