@@ -168,6 +168,19 @@ grep -Fq 'WorkingDirectory=/var/lib/cheesewaf' deploy/systemd/cheesewaf.service 
   fail "systemd unit must set WorkingDirectory so relative data paths stay under /var/lib/cheesewaf"
 grep -Fq 'CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web' deploy/systemd/cheesewaf.service ||
   fail "systemd unit must point CHEESEWAF_WEB_DIR at the FHS UI path"
+grep -Fq 'func applyCLIDataDir' internal/cli/datadir.go ||
+  fail "serve must rebase packaged relative ./data paths onto --data-dir"
+if grep -Fq 'ExecReload=' deploy/systemd/cheesewaf.service; then
+  fail "systemd must not advertise SIGHUP reload; the process ignores hangup"
+fi
+grep -Fq 'rewrite_checksums' scripts/ci/publish-prerelease.sh ||
+  fail "publish must rebuild SHA256SUMS after macOS DMG files land"
+grep -Fq 'github.ref_name == '\''canary'\''' .github/workflows/ci.yml ||
+  fail "publish-prerelease must stay limited to canary and master"
+grep -Fq 'scripts/ci/channel-from-git.sh' Makefile ||
+  fail "Makefile CHANNEL must not embed a case statement with closing parens"
+grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
+  fail "make web-build must skip agent-eyes postinstall"
 if grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml; then
   fail "GoReleaser archives must keep one binary per platform; channel packages ship cheesewaf-gui"
 fi

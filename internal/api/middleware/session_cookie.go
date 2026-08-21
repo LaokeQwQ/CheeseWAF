@@ -97,8 +97,24 @@ func NewCSRFToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
+// CookieSecure is true for TLS requests or HTTPS reverse proxies.
+// Plain HTTP loopback (the default admin listener) must keep Secure=false
+// or browsers drop the session cookie.
+func CookieSecure(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")))
+	if i := strings.IndexByte(proto, ','); i >= 0 {
+		proto = strings.TrimSpace(proto[:i])
+	}
+	return proto == "https"
+}
+
 // WriteSessionCookies sets HttpOnly session JWT + non-HttpOnly CSRF cookies.
-// Secure is always true; serve the admin console over HTTPS or a TLS-terminated proxy.
 func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csrf string, maxAge time.Duration) {
 	if w == nil {
 		return
@@ -106,13 +122,14 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 	if maxAge <= 0 {
 		maxAge = SessionCookieMaxAge
 	}
+	secure := CookieSecure(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    sessionJWT,
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -121,7 +138,7 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
 		HttpOnly: false, // JS must read for double-submit header
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	})
 }
@@ -138,7 +155,7 @@ func ClearSessionCookies(w http.ResponseWriter, r *http.Request) {
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: name == SessionCookieName,
-			Secure:   true,
+			Secure:   CookieSecure(r),
 			SameSite: http.SameSiteStrictMode,
 		})
 	}
