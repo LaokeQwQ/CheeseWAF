@@ -31,17 +31,17 @@ Download the archive that matches your OS and CPU:
 
 | File | Platform |
 | --- | --- |
-| \`cheesewaf-*-linux-amd64.tar.gz\` | Linux x86_64 |
-| \`cheesewaf-*-linux-arm64.tar.gz\` | Linux ARM64 |
-| \`cheesewaf-*-linux-loong64.tar.gz\` | Linux LoongArch64 |
-| \`cheesewaf-*-darwin-amd64.tar.gz\` / \`.dmg\` | macOS Intel |
-| \`cheesewaf-*-darwin-arm64.tar.gz\` / \`.dmg\` | macOS Apple Silicon |
-| \`cheesewaf-*-windows-amd64.exe\` | Windows x86_64 single-file CLI |
-| \`cheesewaf-*-windows-arm64.exe\` | Windows ARM64 single-file CLI |
-| \`cheesewaf-*-windows-amd64.zip\` | Windows x86_64 portable folder |
-| \`cheesewaf-*-windows-arm64.zip\` | Windows ARM64 portable folder |
-| \`CheeseWAF-*-windows-amd64-setup.exe\` | Windows x86_64 GUI installer |
-| \`CheeseWAF-*-windows-arm64-setup.exe\` | Windows ARM64 GUI installer |
+| \`cheesewaf-amd64-linux-*-PreTest.tar.gz\` | Linux x86_64 |
+| \`cheesewaf-arm64-linux-*-PreTest.tar.gz\` | Linux ARM64 |
+| \`cheesewaf-loong64-linux-*-PreTest.tar.gz\` | Linux LoongArch64 |
+| \`cheesewaf-amd64-darwin-*-PreTest.tar.gz\` / \`.dmg\` | macOS Intel |
+| \`cheesewaf-arm64-darwin-*-PreTest.tar.gz\` / \`.dmg\` | macOS Apple Silicon |
+| \`cheesewaf-amd64-windows-*-PreTest.exe\` | Windows x86_64 single-file CLI |
+| \`cheesewaf-arm64-windows-*-PreTest.exe\` | Windows ARM64 single-file CLI |
+| \`cheesewaf-amd64-windows-*-PreTest.zip\` | Windows x86_64 portable folder |
+| \`cheesewaf-arm64-windows-*-PreTest.zip\` | Windows ARM64 portable folder |
+| \`cheesewaf-amd64-windows-*-PreTest-setup.exe\` | Windows x86_64 GUI installer |
+| \`cheesewaf-arm64-windows-*-PreTest-setup.exe\` | Windows ARM64 GUI installer |
 
 Linux archives include \`systemd/cheesewaf.service\`. Verify downloads with \`SHA256SUMS\`.
 EOF

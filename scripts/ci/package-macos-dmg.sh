@@ -1,8 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a drag-to-Applications DMG with CheeseWAF.app. Requires macOS hdiutil.
-# Opening the app starts the local GUI controller.
+# Build a signed-looking CheeseWAF.app and a Finder-styled UDZO DMG.
+# Requires macOS: hdiutil, codesign. osascript is used for icon layout.
+
+bundle_version_from_label() {
+  local raw="$1"
+  local numeric
+  numeric="$(printf '%s' "$raw" | sed -E 's/[^0-9.]+/./g; s/\.+/./g; s/^\.//; s/\.$//')"
+  if [[ -z "$numeric" ]]; then
+    numeric="0.0.0"
+  fi
+  printf '%s' "$numeric"
+}
+
+if [[ "${1:-}" == --print-bundle-version ]]; then
+  bundle_version_from_label "${2:-}"
+  echo
+  exit 0
+fi
 
 release_dir="${1:-release}"
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -11,6 +27,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 command -v hdiutil >/dev/null 2>&1 || {
   echo "::error::hdiutil is required" >&2
+  exit 1
+}
+command -v codesign >/dev/null 2>&1 || {
+  echo "::error::codesign is required" >&2
   exit 1
 }
 [[ -d "$release_dir" ]] || {
@@ -76,13 +96,25 @@ write_icon() {
   iconutil -c icns "$iconset" -o "$dest_icns" >/dev/null
 }
 
+sign_app() {
+  local app_root="$1"
+  xattr -cr "$app_root" 2>/dev/null || true
+  local bin
+  for bin in "${app_root}/Contents/MacOS"/*; do
+    [[ -f "$bin" ]] || continue
+    codesign --force --sign - --timestamp=none "$bin"
+  done
+  codesign --force --sign - --timestamp=none "$app_root"
+  codesign --verify "$app_root" >/dev/null
+}
+
 assemble_app() {
   local package_dir="$1"
-  local version="$2"
+  local version_label="$2"
   local app_root="$3"
   local macos="${app_root}/Contents/MacOS"
   local resources="${app_root}/Contents/Resources"
-  mkdir -p "$macos" "$resources/web" "$resources/configs"
+  mkdir -p "$macos" "$resources/web" "$resources/configs" "$resources/bin"
   local gui=""
   if [[ -x "${package_dir}/cheesewaf-gui" ]]; then
     gui="${package_dir}/cheesewaf-gui"
@@ -96,9 +128,9 @@ assemble_app() {
     echo "::error::darwin package is missing cheesewaf" >&2
     return 1
   }
-  cp "${package_dir}/cheesewaf" "${macos}/cheesewaf"
+  cp "${package_dir}/cheesewaf" "${resources}/bin/cheesewaf"
   cp "$gui" "${macos}/CheeseWAF"
-  chmod +x "${macos}/cheesewaf" "${macos}/CheeseWAF"
+  chmod +x "${resources}/bin/cheesewaf" "${macos}/CheeseWAF"
   if [[ -d "${package_dir}/web/dist" ]]; then
     cp -R "${package_dir}/web/dist/." "${resources}/web/"
   fi
@@ -110,14 +142,66 @@ assemble_app() {
     echo "::error::missing ${plist}" >&2
     return 1
   }
-  sed "s/APP_VERSION/${version}/g" "$plist" >"${app_root}/Contents/Info.plist"
+  local short_version="$version_label"
+  local bundle_version
+  bundle_version="$(bundle_version_from_label "$version_label")"
+  sed \
+    -e "s/APP_SHORT_VERSION/${short_version//\//\\/}/g" \
+    -e "s/APP_BUNDLE_VERSION/${bundle_version//\//\\/}/g" \
+    "$plist" >"${app_root}/Contents/Info.plist"
+  printf 'APPL????' >"${app_root}/Contents/PkgInfo"
   write_icon "${resources}/AppIcon.icns" "$package_dir" || true
+  sign_app "$app_root"
+}
+
+layout_dmg_window() {
+  local mount="$1"
+  command -v osascript >/dev/null 2>&1 || return 0
+  osascript <<EOF >/dev/null
+tell application "Finder"
+  tell disk "CheeseWAF"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set bounds of container window to {200, 120, 840, 560}
+    set theViewOptions to the icon view options of container window
+    set arrangement of theViewOptions to not arranged
+    set icon size of theViewOptions to 128
+    try
+      set background picture of theViewOptions to file ".background:background.png"
+    end try
+    try
+      set position of item "CheeseWAF.app" of container window to {170, 220}
+    end try
+    try
+      set position of item "Applications" of container window to {470, 220}
+    end try
+    try
+      set position of item "Fix Gatekeeper.command" of container window to {170, 390}
+    end try
+    try
+      set position of item "Read Me.txt" of container window to {470, 390}
+    end try
+    update without registering applications
+    delay 1
+    close
+    open
+    delay 1
+  end tell
+end tell
+EOF
 }
 
 for tarball in "${tarballs[@]}"; do
   name="$(basename "$tarball" .tar.gz)"
+  # cheesewaf-{arch}-{os}-{version}[-{suffix}]
   version="${name#cheesewaf-}"
-  version="${version%-darwin-*}"
+  version="${version#*-}"
+  version="${version#*-}"
+  if [[ -z "$version" || "$version" == "$name" ]]; then
+    version="0.0.0"
+  fi
   extract="${stage_root}/${name}"
   mkdir -p "$extract"
   tar -xzf "$tarball" -C "$extract"
@@ -128,19 +212,44 @@ for tarball in "${tarballs[@]}"; do
   }
 
   dmg_root="${stage_root}/dmg-${name}"
-  mkdir -p "$dmg_root"
+  mkdir -p "${dmg_root}/.background"
   assemble_app "$package_dir" "$version" "${dmg_root}/CheeseWAF.app"
   ln -s /Applications "${dmg_root}/Applications"
+  cp "${repo_root}/deploy/macos/first-open.txt" "${dmg_root}/Read Me.txt"
+  cp "${repo_root}/deploy/macos/fix-gatekeeper.command" "${dmg_root}/Fix Gatekeeper.command"
+  chmod +x "${dmg_root}/Fix Gatekeeper.command"
+  if [[ -f "${repo_root}/deploy/macos/dmg-background.png" ]]; then
+    cp "${repo_root}/deploy/macos/dmg-background.png" "${dmg_root}/.background/background.png"
+  fi
 
-  dmg_path="${abs_release}/${name}.dmg"
-  echo "creating ${dmg_path}"
-  rm -f "$dmg_path"
+  rw_dmg="${stage_root}/${name}.rw.dmg"
+  rm -f "$rw_dmg"
   hdiutil create \
     -volname "CheeseWAF" \
     -srcfolder "$dmg_root" \
     -ov \
-    -format UDZO \
-    "$dmg_path" >/dev/null
+    -fs HFS+ \
+    -format UDRW \
+    "$rw_dmg" >/dev/null
+
+  if [[ -d /Volumes/CheeseWAF ]]; then
+    hdiutil detach /Volumes/CheeseWAF -quiet || hdiutil detach /Volumes/CheeseWAF -force || true
+  fi
+  device="$(hdiutil attach -readwrite -noverify -noautoopen "$rw_dmg" | awk '/^\/dev\// { print $1; exit }')"
+  [[ -n "$device" && -d /Volumes/CheeseWAF ]] || {
+    echo "::error::failed to attach ${rw_dmg}" >&2
+    exit 1
+  }
+  layout_dmg_window /Volumes/CheeseWAF || true
+  sync
+  hdiutil detach "$device" -quiet || hdiutil detach "$device" -force || hdiutil detach /Volumes/CheeseWAF -force
+
+  dmg_path="${abs_release}/${name}.dmg"
+  echo "creating ${dmg_path}"
+  rm -f "$dmg_path"
+  hdiutil convert "$rw_dmg" -format UDZO -imagekey zlib-level=9 -o "$dmg_path" >/dev/null
+  xattr -cr "$dmg_path" 2>/dev/null || true
+  codesign --force --sign - --timestamp=none "$dmg_path" 2>/dev/null || true
   append_checksum "$dmg_path"
 done
 

@@ -107,6 +107,7 @@ func NewRouter(opts Options) http.Handler {
 		r.Post("/auth/captcha", h.LoginCAPTCHA)
 		r.Post("/auth/captcha/verify", h.VerifyLoginCAPTCHA)
 		r.Post("/auth/login", h.Login)
+		r.Get("/setup/status", h.SetupStatus)
 		r.Post("/setup", h.Setup)
 		r.Post("/setup/probe", h.SetupProbe)
 		r.Get("/setup/draft", h.SetupDraftGet)

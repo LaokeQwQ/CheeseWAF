@@ -38,23 +38,30 @@ func totpURL(username, secret string) string {
 }
 
 func verifyTOTP(secret, code string, now time.Time) bool {
+	_, ok := matchingTOTPCounter(secret, code, now)
+	return ok
+}
+
+// matchingTOTPCounter returns the HOTP step that matches code within the ±1 window.
+func matchingTOTPCounter(secret, code string, now time.Time) (int64, bool) {
 	code = strings.TrimSpace(code)
 	if len(code) != totpDigits {
-		return false
+		return 0, false
 	}
 	for _, char := range code {
 		if char < '0' || char > '9' {
-			return false
+			return 0, false
 		}
 	}
 	counter := now.Unix() / totpPeriod
 	for offset := int64(-1); offset <= 1; offset++ {
-		expected, err := hotp(secret, counter+offset)
+		step := counter + offset
+		expected, err := hotp(secret, step)
 		if err == nil && hmac.Equal([]byte(expected), []byte(code)) {
-			return true
+			return step, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 func hotp(secret string, counter int64) (string, error) {
