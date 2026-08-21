@@ -214,7 +214,7 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-默认管理口只听 `127.0.0.1:9443`。在本机打开 `http://127.0.0.1:9443/setup`，或走 SSH 隧道。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
+默认管理口只听 `127.0.0.1:9443`。在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。本机打开时向导会自己拿到初始化令牌。从别的机器访问时，令牌在 `journalctl -u cheesewaf` 或 `/var/lib/cheesewaf/setup.url`。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
 
 `GET /api/setup` 会返回 405。查是否还要初始化用 `GET /api/setup/status`。完成初始化是带 `X-CheeseWAF-Setup-Token` 的 `POST /api/setup`。从别的机器用 API 登录仍要过控制台验证码；本机回环地址不用。
 
@@ -222,7 +222,7 @@ sudo systemctl status cheesewaf
 
 ### 2. Docker 部署（Docker Compose 容器化）
 
-适用于容器化基础设施与快速测试。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。
+Docker 镜像要从 git 仓库里的 `deploy/docker/Dockerfile` 构建。发行 tar 包是给 systemd 用的，没有源码时不能直接 `docker compose`。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。9443 只应暴露给可信网络；镜像里管理口监听全部接口，并开启管理 TLS。
 
 #### 步骤 1：准备编排文件
 
@@ -406,9 +406,14 @@ protection:
 ai:
   enabled: true
   provider: "openai"
-  endpoint: "https://api.example.com/v1"
+  api_base: "https://api.example.com/v1"
   model: "gpt-4o-mini"
-  auto_agree: true               # 自动采纳高危研判结果
+
+sites:
+  - id: "site-demo"
+    waf:
+      semantic_policy:
+        auto_agree: true         # 自动采纳高危研判结果
 ```
 
 ---
