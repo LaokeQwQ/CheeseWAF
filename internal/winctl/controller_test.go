@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -15,6 +18,34 @@ func testController(t *testing.T) *Controller {
 		t.Fatal(err)
 	}
 	return c
+}
+
+func TestDefaultCheeseWAFBinaryPrefersAppResources(t *testing.T) {
+	root := t.TempDir()
+	macos := filepath.Join(root, "CheeseWAF.app", "Contents", "MacOS")
+	binDir := filepath.Join(root, "CheeseWAF.app", "Contents", "Resources", "bin")
+	if err := os.MkdirAll(macos, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gui := filepath.Join(macos, "CheeseWAF")
+	engineName := "cheesewaf"
+	if runtime.GOOS == "windows" {
+		engineName = "cheesewaf.exe"
+	}
+	engine := filepath.Join(binDir, engineName)
+	if err := os.WriteFile(gui, []byte("gui"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(engine, []byte("engine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := defaultCheeseWAFBinary(gui)
+	if got != engine {
+		t.Fatalf("binary = %q, want %q", got, engine)
+	}
 }
 
 func TestNewRejectsNonLoopbackListen(t *testing.T) {

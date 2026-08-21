@@ -68,6 +68,8 @@ Section "Install"
   CreateDirectory "$INSTDIR\logs"
   CreateDirectory "$INSTDIR\data\logs"
   CreateDirectory "$INSTDIR\data\run"
+  CreateDirectory "$INSTDIR\web"
+  File /nonfatal /r "${SOURCE_DIR}/web"
 
   ; Uninstaller
   WriteUninstaller "$INSTDIR\Uninstall.exe"
