@@ -208,8 +208,13 @@ if [[ -z "$init_sha" || "$init_sha" != "$analyze_sha" || "$init_sha" == *$'\n'* 
 fi
 grep -Fq '"maplibre-gl": "^6.' web/package.json ||
   fail "dashboard maplibre-gl must track 6.x after the ESM migration"
-grep -Fq 'Secure:   cookieSecure(r)' internal/protection/bot/policy.go ||
-  fail "bot challenge cookies must follow cookieSecure"
+grep -Fq 'func writeChallengeCookie' internal/protection/bot/policy.go ||
+  fail "bot challenge cookies must go through writeChallengeCookie"
+grep -Fq 'cookie.Secure = cookieSecure(r)' internal/protection/bot/policy.go ||
+  fail "writeChallengeCookie must apply cookieSecure"
+if grep -nE 'http\.SetCookie' internal/protection/bot/policy.go; then
+  fail "bot cookies must not call http.SetCookie directly"
+fi
 if grep -nE 'Secure:[[:space:]]*(true|secure)' internal/protection/bot/policy.go; then
   fail "bot cookies must not hard-code Secure or take a caller bool"
 fi

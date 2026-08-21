@@ -464,12 +464,11 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			http.Error(w, "bot clearance unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{
+		writeChallengeCookie(w, r, &http.Cookie{
 			Name:     p.cookieName,
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
-			Secure:   cookieSecure(r),
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -737,7 +736,7 @@ func (p *Policy) serveBehaviorChallenge(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if ownerCookie != nil {
-		http.SetCookie(w, ownerCookie)
+		writeChallengeCookie(w, r, ownerCookie)
 	}
 	setChallengeDocumentSecurityHeaders(w, nonce)
 	w.WriteHeader(http.StatusForbidden)
@@ -835,7 +834,7 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	p.behaviorPending.Finalize(jti)
 	p.failureTracker.Reset(key)
 	p.recordChallengeMetric(ChallengeMetricSuccess, site, string(pending.kind), clientIP)
-	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: cookieSecure(r), HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	writeChallengeCookie(w, r, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `{"data":{"valid":true,"clearance":true}}`)
 }
@@ -1245,12 +1244,11 @@ func (p *Policy) serveWaitingRoom(w http.ResponseWriter, r *http.Request, client
 	}
 	if admitted && value != "" {
 		// Set waiting-room ticket server-side (Secure/HttpOnly) — do not rely on document.cookie.
-		http.SetCookie(w, &http.Cookie{
+		writeChallengeCookie(w, r, &http.Cookie{
 			Name:     p.waitingCookieName,
 			Value:    value,
 			Path:     "/",
 			MaxAge:   maxAge,
-			Secure:   cookieSecure(r),
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -2302,6 +2300,17 @@ func TrustedCIDRsFromContext(ctx context.Context) []string {
 	}
 	cidrs, _ := ctx.Value(trustedCIDRsContextKey{}).([]string)
 	return cidrs
+}
+
+// writeChallengeCookie applies cookieSecure then writes Set-Cookie.
+func writeChallengeCookie(w http.ResponseWriter, r *http.Request, cookie *http.Cookie) {
+	if w == nil || cookie == nil {
+		return
+	}
+	cookie.Secure = cookieSecure(r)
+	if v := cookie.String(); v != "" {
+		w.Header().Add("Set-Cookie", v)
+	}
 }
 
 // cookieSecure reports whether cookies for this request should carry the Secure flag.
