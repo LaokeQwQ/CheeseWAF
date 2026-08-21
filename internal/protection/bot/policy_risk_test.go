@@ -299,7 +299,7 @@ func TestBehaviorOwnerCookieSecureFollowsTLS(t *testing.T) {
 		Enabled: true, CAPTCHA: true, CAPTCHAType: "shape_slider", Secret: "test-secret", CookieName: "cw_clearance",
 	})
 	plain := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
-	_, plainCookie, err := policy.behaviorOwner(plain, "example.test", true, cookieSecure(plain))
+	_, plainCookie, err := policy.behaviorOwner(plain, "example.test", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestBehaviorOwnerCookieSecureFollowsTLS(t *testing.T) {
 
 	httpsReq := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
 	httpsReq.TLS = &tls.ConnectionState{}
-	_, httpsCookie, err := policy.behaviorOwner(httpsReq, "example.test", true, cookieSecure(httpsReq))
+	_, httpsCookie, err := policy.behaviorOwner(httpsReq, "example.test", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestBehaviorOwnerCookieSecureFollowsTLS(t *testing.T) {
 	trusted.RemoteAddr = "10.0.0.2:443"
 	trusted.Header.Set("X-Forwarded-Proto", "https")
 	trusted = trusted.WithContext(ContextWithTrustedCIDRs(trusted.Context(), []string{"10.0.0.0/8"}))
-	_, trustedCookie, err := policy.behaviorOwner(trusted, "example.test", true, cookieSecure(trusted))
+	_, trustedCookie, err := policy.behaviorOwner(trusted, "example.test", true)
 	if err != nil {
 		t.Fatal(err)
 	}

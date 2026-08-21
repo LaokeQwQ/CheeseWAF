@@ -489,7 +489,7 @@ func (fx *fixture) serveWAF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == behaviorVerifyPath && r.Method == http.MethodPost {
-		fx.policy.VerifyBehaviorChallenge(w, r, fixtureClientIP, fixtureSite, false)
+		fx.policy.VerifyBehaviorChallenge(w, r, fixtureClientIP, fixtureSite)
 		return
 	}
 	if r.URL.Path != protectedPath || r.Method != http.MethodGet {

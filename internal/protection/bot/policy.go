@@ -664,7 +664,7 @@ func (p *Policy) serveBehaviorChallenge(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "verification temporarily unavailable", http.StatusTooManyRequests)
 		return
 	}
-	owner, ownerCookie, err := p.behaviorOwner(r, site, true, cookieSecure(r))
+	owner, ownerCookie, err := p.behaviorOwner(r, site, true)
 	if err != nil {
 		http.Error(w, "bot challenge unavailable", http.StatusInternalServerError)
 		return
@@ -751,7 +751,7 @@ func (p *Policy) serveBehaviorChallenge(w http.ResponseWriter, r *http.Request, 
 	p.recordChallengeMetric(ChallengeMetricIssued, site, string(challenge.Type), clientIP)
 }
 
-func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request, clientIP, site string, secure bool) {
+func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request, clientIP, site string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	site = strings.TrimSpace(site)
@@ -776,7 +776,7 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	jti := behaviorTokenJTI(response.Token)
-	owner, _, ownerErr := p.behaviorOwner(r, site, false, secure)
+	owner, _, ownerErr := p.behaviorOwner(r, site, false)
 	if ownerErr != nil {
 		writeBehaviorVerifyError(w, http.StatusUnauthorized)
 		return
@@ -835,12 +835,12 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	p.behaviorPending.Finalize(jti)
 	p.failureTracker.Reset(key)
 	p.recordChallengeMetric(ChallengeMetricSuccess, site, string(pending.kind), clientIP)
-	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: p.cookieName, Value: token, Path: "/", MaxAge: int(p.ttl.Seconds()), Secure: cookieSecure(r), HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `{"data":{"valid":true,"clearance":true}}`)
 }
 
-func (p *Policy) behaviorOwner(r *http.Request, site string, issue, secure bool) (string, *http.Cookie, error) {
+func (p *Policy) behaviorOwner(r *http.Request, site string, issue bool) (string, *http.Cookie, error) {
 	name := p.cookieName + behaviorOwnerCookieSuffix
 	if cookie, err := r.Cookie(name); err == nil {
 		if owner, ok := p.verifyBehaviorOwner(cookie.Value, site); ok {
@@ -855,7 +855,7 @@ func (p *Policy) behaviorOwner(r *http.Request, site string, issue, secure bool)
 		return "", nil, err
 	}
 	expires := p.now().Add(p.ttl)
-	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
+	return owner, &http.Cookie{Name: name, Value: p.signBehaviorOwner(owner, site, expires), Path: "/", Expires: expires, MaxAge: int(p.ttl.Seconds()), Secure: cookieSecure(r), HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
 }
 func (p *Policy) signBehaviorOwner(owner, site string, expires time.Time) string {
 	payload := owner + "." + strconv.FormatInt(expires.Unix(), 10)

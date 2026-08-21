@@ -210,8 +210,8 @@ grep -Fq '"maplibre-gl": "^6.' web/package.json ||
   fail "dashboard maplibre-gl must track 6.x after the ESM migration"
 grep -Fq 'Secure:   cookieSecure(r)' internal/protection/bot/policy.go ||
   fail "bot challenge cookies must follow cookieSecure"
-if grep -nE 'Secure:[[:space:]]*true' internal/protection/bot/policy.go; then
-  fail "bot cookies must not hard-code Secure: true"
+if grep -nE 'Secure:[[:space:]]*(true|secure)' internal/protection/bot/policy.go; then
+  fail "bot cookies must not hard-code Secure or take a caller bool"
 fi
 grep -Fq 'scripts/ci/channel-from-git.sh' Makefile ||
   fail "Makefile CHANNEL must not embed a case statement with closing parens"
