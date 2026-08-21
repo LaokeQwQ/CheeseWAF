@@ -48,6 +48,25 @@ func TestDefaultCheeseWAFBinaryPrefersAppResources(t *testing.T) {
 	}
 }
 
+func TestServeCommandUsesDataDirWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	c, err := New(Options{Binary: "cheesewaf", ConfigPath: filepath.Join(root, "c.yaml"), DataDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, logFile, err := c.serveCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+	if cmd.Dir != root {
+		t.Fatalf("cmd.Dir = %q, want data dir %q", cmd.Dir, root)
+	}
+	if cmd.Stdout == nil || cmd.Stderr == nil {
+		t.Fatal("serve stdout/stderr must be captured")
+	}
+}
+
 func TestNewRejectsNonLoopbackListen(t *testing.T) {
 	_, err := New(Options{Listen: "0.0.0.0:17943"})
 	if err == nil {

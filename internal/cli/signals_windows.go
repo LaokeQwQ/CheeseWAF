@@ -7,3 +7,5 @@ import "os"
 func serviceStopSignals() []os.Signal {
 	return []os.Signal{os.Interrupt}
 }
+
+func ignoreServiceHangup() {}

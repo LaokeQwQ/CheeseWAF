@@ -262,3 +262,26 @@ func TestSetupStatusReportsNeedsSetupWithoutToken(t *testing.T) {
 		t.Fatalf("completed install should not need setup: %s", done.Body.String())
 	}
 }
+
+func TestSetupStatusExposesURLOnlyOnLoopback(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Setup.DataDir = dataDir
+	cfg.Server.AdminListen = "127.0.0.1:9443"
+	h := New(Options{Config: &cfg, SetupToken: "loop-token"})
+	loop := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
+	loop.RemoteAddr = "127.0.0.1:54321"
+	rec := httptest.NewRecorder()
+	h.SetupStatus(rec, loop)
+	body := rec.Body.String()
+	if !strings.Contains(body, `"setup_url"`) || !strings.Contains(body, "loop-token") {
+		t.Fatalf("loopback should include setup_url: %s", body)
+	}
+	remote := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
+	remote.RemoteAddr = "203.0.113.9:54321"
+	out := httptest.NewRecorder()
+	h.SetupStatus(out, remote)
+	if strings.Contains(out.Body.String(), "setup_url") {
+		t.Fatalf("non-loopback must not include setup_url: %s", out.Body.String())
+	}
+}
