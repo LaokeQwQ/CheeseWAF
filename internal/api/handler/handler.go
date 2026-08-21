@@ -717,12 +717,39 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "TWO_FA_REQUIRED", "two-factor code required")
 			return
 		}
-		if !verifyTOTP(user.TwoFASecret, req.TOTPCode, h.nowUTC()) {
+		counter, ok := h.twoFATracker().consumeTOTPCounter(user.ID, user.TwoFASecret, req.TOTPCode, h.nowUTC())
+		if !ok {
 			tracker.recordLoginFailure(rateLimitKeys, now)
 			h.auditLoginFailure(r, req.Username, "bad_2fa")
 			writeError(w, http.StatusUnauthorized, "INVALID_TWO_FA_CODE", "invalid two-factor code")
 			return
 		}
+		sessionCommitted := false
+		defer func() {
+			if !sessionCommitted {
+				h.twoFATracker().releaseConsumedTOTP(user.ID, counter)
+			}
+		}()
+		token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
+			return
+		}
+		if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims)); err != nil {
+			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
+			return
+		}
+		sessionCommitted = true
+		csrf, err := middleware.NewCSRFToken()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
+			return
+		}
+		middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
+		tracker.clearLoginFailures(rateLimitKeys, now)
+		// token is still returned for non-browser clients; browser uses HttpOnly cookie and must not persist JWT.
+		writeData(w, map[string]any{"token": token, "csrf": csrf, "user": user, "session_cookie": true})
+		return
 	}
 	token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
 	if err != nil {
@@ -777,6 +804,9 @@ func (h *Handler) auditLoginFailure(r *http.Request, username, reason string) {
 func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayload) bool {
 	login := h.loginConfig()
 	if !login.CAPTCHA.Enabled {
+		return true
+	}
+	if loginCAPTCHASkippedForPeer(r) {
 		return true
 	}
 	if payload == nil {
@@ -1154,6 +1184,11 @@ func loginRateLimitKeys(r *http.Request, username string) []string {
 		keys = append(keys, "account-source:"+loginCAPTCHAFingerprint(username, client))
 	}
 	return keys
+}
+
+func loginCAPTCHASkippedForPeer(r *http.Request) bool {
+	ip := net.ParseIP(socketPeerIP(r))
+	return ip != nil && ip.IsLoopback()
 }
 
 func socketPeerIP(r *http.Request) string {
