@@ -7,6 +7,10 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
+// maxPayloadBytes caps DetectionResult.Payload so long body/header matches
+// cannot retain multi-KB request material in logs and alerts.
+const maxPayloadBytes = 512
+
 type Engine struct {
 	rules []Rule
 }
@@ -42,11 +46,61 @@ func (e *Engine) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*en
 				Action:     rule.Action,
 				Message:    "custom rule matched: " + rule.Name,
 				Confidence: 0.8,
-				Payload:    value,
+				Payload:    clipPayloadAroundMatch(value, rule),
 			}, nil
 		}
 	}
 	return nil, nil
+}
+
+// clipPayloadAroundMatch keeps at most maxPayloadBytes of value, preferring a
+// window around the first regex match (FindStringIndex).
+func clipPayloadAroundMatch(value string, rule Rule) string {
+	if len(value) <= maxPayloadBytes {
+		return value
+	}
+	matchStart, matchEnd := 0, 0
+	if rule.Pattern != nil {
+		if loc := rule.Pattern.FindStringIndex(value); loc != nil {
+			matchStart, matchEnd = loc[0], loc[1]
+		}
+	}
+	// Prefer ~256 bytes before the match, remainder after, clipped to budget.
+	const beforeBudget = 256
+	windowStart := matchStart - beforeBudget
+	if windowStart < 0 {
+		windowStart = 0
+	}
+	windowEnd := windowStart + maxPayloadBytes
+	if windowEnd > len(value) {
+		windowEnd = len(value)
+		windowStart = windowEnd - maxPayloadBytes
+		if windowStart < 0 {
+			windowStart = 0
+		}
+	}
+	// Shift window if needed so a match that fits the budget is fully retained.
+	if matchEnd-matchStart <= maxPayloadBytes {
+		if matchStart < windowStart {
+			windowStart = matchStart
+			windowEnd = windowStart + maxPayloadBytes
+			if windowEnd > len(value) {
+				windowEnd = len(value)
+				windowStart = windowEnd - maxPayloadBytes
+				if windowStart < 0 {
+					windowStart = 0
+				}
+			}
+		}
+		if matchEnd > windowEnd {
+			windowEnd = matchEnd
+			windowStart = windowEnd - maxPayloadBytes
+			if windowStart < 0 {
+				windowStart = 0
+			}
+		}
+	}
+	return value[windowStart:windowEnd]
 }
 
 func (e *Engine) Rules() []Rule {

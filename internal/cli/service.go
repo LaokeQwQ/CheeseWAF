@@ -11,10 +11,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,6 +41,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	"github.com/LaokeQwQ/CheeseWAF/internal/webui"
 )
 
 var readAdminEntryNonce = rand.Read
@@ -427,11 +431,11 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
 	}
-	webDir := resolveWebDir()
-	if webDir == "" {
+	uiFS, _ := resolveAdminUIFS()
+	if uiFS == nil {
+		fmt.Printf("admin UI assets not found; /setup and static files return 404 (install web/dist or rebuild after scripts/ci/build-web.sh)\n")
 		return adminSecurityHeaders(adminEntranceGateWithClock(cfg, authSecret, apiHandler, clock))
 	}
-	spa := http.FileServer(http.Dir(webDir))
 	metricsPath := "/metrics"
 	metricsPublic := false
 	if cfg != nil && cfg.Monitor.Prometheus.Path != "" {
@@ -450,29 +454,45 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
-		path := strings.TrimPrefix(filepath.Clean("/"+strings.TrimPrefix(r.URL.Path, "/")), string(os.PathSeparator))
-		if path == "." {
-			path = "index.html"
+		name := strings.TrimPrefix(path.Clean("/"+strings.TrimPrefix(r.URL.Path, "/")), "/")
+		if name == "" || name == "." {
+			name = "index.html"
 		}
-		fullPath := filepath.Join(webDir, path)
-		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
-			setAdminStaticCacheHeaders(w, path)
-			spa.ServeHTTP(w, r)
+		if serveAdminStaticFile(w, r, uiFS, name) {
 			return
 		}
 		if isAdminStaticAssetPath(r.URL.Path) {
 			http.NotFound(w, r)
 			return
 		}
-		index := filepath.Join(webDir, "index.html")
-		if _, err := os.Stat(index); err == nil {
-			setAdminStaticCacheHeaders(w, "index.html")
-			http.ServeFile(w, r, index)
+		if serveAdminStaticFile(w, r, uiFS, "index.html") {
 			return
 		}
 		apiHandler.ServeHTTP(w, r)
 	})
 	return adminSecurityHeaders(adminGzip(handler, metricsPath))
+}
+
+func serveAdminStaticFile(w http.ResponseWriter, r *http.Request, ui fs.FS, name string) bool {
+	if ui == nil || name == "" || strings.Contains(name, "..") {
+		return false
+	}
+	file, err := ui.Open(name)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		return false
+	}
+	setAdminStaticCacheHeaders(w, name)
+	if seeker, ok := file.(io.ReadSeeker); ok {
+		http.ServeContent(w, r, info.Name(), info.ModTime(), seeker)
+		return true
+	}
+	_, _ = io.Copy(w, file)
+	return true
 }
 
 func isAdminStaticAssetPath(path string) bool {
@@ -784,6 +804,16 @@ func isAdminAPIPath(path, metricsPath string) bool {
 	return false
 }
 
+func resolveAdminUIFS() (fs.FS, string) {
+	if dir := resolveWebDir(); dir != "" {
+		return os.DirFS(dir), dir
+	}
+	if embedded, ok := webui.FS(); ok {
+		return embedded, "embedded"
+	}
+	return nil, ""
+}
+
 func resolveWebDir() string {
 	candidates := []string{
 		os.Getenv("CHEESEWAF_WEB_DIR"),
@@ -795,8 +825,16 @@ func resolveWebDir() string {
 			filepath.Join(executableDir, "web"),
 		)
 	}
+	if strings.TrimSpace(configPath) != "" {
+		configDir := filepath.Dir(configPath)
+		candidates = append(candidates,
+			filepath.Join(configDir, "web", "dist"),
+			filepath.Join(configDir, "..", "web", "dist"),
+		)
+	}
 	candidates = append(candidates,
 		"/usr/share/cheesewaf/web",
+		"/opt/cheesewaf/web/dist",
 		filepath.Join("web", "dist"),
 		filepath.Join(".", "web", "dist"),
 	)

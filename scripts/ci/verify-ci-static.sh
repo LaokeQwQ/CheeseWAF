@@ -129,14 +129,23 @@ grep -Fq 'systemd/cheesewaf.service' scripts/ci/package-release.sh ||
   fail "Linux packages must include the systemd unit"
 grep -Fq 'zip -qr' scripts/ci/package-release.sh ||
   fail "Windows channel packages must be zip archives"
-grep -Fq 'windows-${goarch}.exe' scripts/ci/package-release.sh ||
+grep -Fq '${package_name}.exe' scripts/ci/package-release.sh ||
   fail "Windows channel packages must include a single-file CLI exe"
+grep -Fq 'cheesewaf-${goarch}-${goos}-${version_prefix}' scripts/ci/package-release.sh ||
+  fail "branch packages must use cheesewaf-{arch}-{os}-{version}-{suffix} names"
 grep -Fq 'hdiutil create' scripts/ci/package-macos-dmg.sh ||
   fail "macOS packaging must create UDZO disk images"
 grep -Fq 'CheeseWAF.app' scripts/ci/package-macos-dmg.sh ||
   fail "macOS DMG must ship a CheeseWAF.app bundle"
 grep -Fq '/Applications' scripts/ci/package-macos-dmg.sh ||
   fail "macOS DMG must include an Applications drop target"
+grep -Fq 'codesign --force --sign - --timestamp=none' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS app bundle must be ad-hoc signed so Gatekeeper does not mark it damaged"
+grep -Fq 'APP_BUNDLE_VERSION' deploy/macos/Info.plist ||
+  fail "macOS Info.plist must keep a numeric CFBundleVersion placeholder"
+got_ver="$(bash scripts/ci/package-macos-dmg.sh --print-bundle-version '0.1.0-PreTest')"
+[[ "$got_ver" == "0.1.0" ]] ||
+  fail "macOS CFBundleVersion must strip PreTest labels (got ${got_ver})"
 grep -Fq 'package-macos-dmg.sh' .github/workflows/ci.yml ||
   fail "CI must build macOS DMG images on a macOS runner"
 grep -Fq 'Alpha-' scripts/ci/package-release.sh ||
@@ -147,6 +156,18 @@ grep -Fq 'linux/amd64,linux/arm64' scripts/ci/docker-build.sh ||
   fail "container CI must build linux/amd64 and linux/arm64"
 grep -Fq 'dst: systemd/cheesewaf.service' .goreleaser.yaml ||
   fail "GoReleaser archive must include the systemd unit"
+grep -Fq 'install-linux.sh' scripts/ci/package-release.sh ||
+  fail "Linux channel packages must ship install-linux.sh"
+grep -Fq 'dst: install-linux.sh' .goreleaser.yaml ||
+  fail "GoReleaser archive must include install-linux.sh"
+grep -Fq 'cheesewaf serve --config' internal/cluster/deploy/ansible.go ||
+  fail "Ansible unit must start cheesewaf serve"
+grep -Fq 'internal/webui/dist' scripts/ci/build-web.sh ||
+  fail "web build must copy UI files into the embedded dist directory"
+grep -Fq 'WorkingDirectory=/var/lib/cheesewaf' deploy/systemd/cheesewaf.service ||
+  fail "systemd unit must set WorkingDirectory so relative data paths stay under /var/lib/cheesewaf"
+grep -Fq 'CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web' deploy/systemd/cheesewaf.service ||
+  fail "systemd unit must point CHEESEWAF_WEB_DIR at the FHS UI path"
 if grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml; then
   fail "GoReleaser archives must keep one binary per platform; channel packages ship cheesewaf-gui"
 fi
@@ -156,7 +177,7 @@ grep -Fq 'scripts/ci/generate-release-metadata.sh' .goreleaser.yaml ||
   fail "GoReleaser must use the shared release metadata generator"
 grep -Fq 'scripts/ci/generate-release-metadata.sh' scripts/ci/package-release.sh ||
   fail "branch packaging must use the shared release metadata generator"
-grep -Fq 'name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"' .goreleaser.yaml ||
+grep -Fq 'name_template: "{{ .ProjectName }}-{{ .Arch }}-{{ .Os }}-{{ .Version }}"' .goreleaser.yaml ||
   fail "GoReleaser and branch packages must share the hyphenated archive naming contract"
 grep -Fq 'name_template: SHA256SUMS' .goreleaser.yaml ||
   fail "GoReleaser and branch packages must share the SHA256SUMS contract"
@@ -168,6 +189,21 @@ if grep -Fq 'format_overrides:' .goreleaser.yaml; then
   fail "all release targets must use the same tar.gz archive format"
 fi
 
+if grep -E '^[[:space:]]*version_template:.*incpatch' .goreleaser.yaml; then
+  fail "GoReleaser snapshot version must not use incpatch; Alpha- tags are not semver"
+fi
+grep -Fq 'version_template: "0.1.0-PreTest"' .goreleaser.yaml ||
+  fail "GoReleaser snapshot version must be a valid semver PreTest label"
+
+if grep -Fq '*SNAPSHOT*' scripts/ci/verify-release.sh; then
+  fail "GoReleaser GUI skip must not depend on SNAPSHOT in the archive name"
+fi
+grep -Fq 'branch=goreleaser' scripts/ci/verify-release.sh ||
+  fail "GoReleaser archives must skip GUI checks via VERSION branch=goreleaser"
+grep -Fq 'artifact_matches_host' scripts/ci/verify-release.sh ||
+  fail "release smoke must match cheesewaf-{arch}-{os}- names without depending on field order"
+
 bash scripts/ci/generate-release-metadata_test.sh
+bash scripts/ci/verify-release_test.sh
 
 echo "CI static regression checks passed."

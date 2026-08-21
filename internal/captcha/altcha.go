@@ -166,9 +166,16 @@ func (opts Options) now() time.Time {
 
 func sign(opts Options, algorithm, challenge, salt string) string {
 	mac := hmac.New(sha256.New, []byte(opts.Secret))
+	// Length-prefix each field so embedded newlines cannot rewrite field boundaries.
+	var lenBuf [4]byte
 	for _, item := range []string{opts.Purpose, opts.ClientKey, opts.Path, algorithm, challenge, salt} {
+		n := uint32(len(item))
+		lenBuf[0] = byte(n >> 24)
+		lenBuf[1] = byte(n >> 16)
+		lenBuf[2] = byte(n >> 8)
+		lenBuf[3] = byte(n)
+		_, _ = mac.Write(lenBuf[:])
 		_, _ = mac.Write([]byte(item))
-		_, _ = mac.Write([]byte{'\n'})
 	}
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

@@ -125,6 +125,27 @@ func TestAnsibleDeploymentHasTransactionalRollbackAndCleanup(t *testing.T) {
 	}
 }
 
+func TestAnsibleUnitStartsServeWithDataDir(t *testing.T) {
+	pkg, err := GenerateAnsiblePackage(Plan{ClusterID: "cw-test", Nodes: []Host{{Name: "waf-a", Address: "10.0.0.1", Role: "waf"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := string(pkg.File("roles/cheesewaf/tasks/main.yml"))
+	for _, want := range []string{
+		"ExecStart={{ cheesewaf_install_dir }}/cheesewaf serve --config",
+		"--data-dir {{ cheesewaf_data_dir }}",
+		"WorkingDirectory={{ cheesewaf_data_dir }}",
+	} {
+		if !strings.Contains(tasks, want) {
+			t.Fatalf("ansible unit missing %q", want)
+		}
+	}
+	cfg := string(pkg.File("roles/cheesewaf/templates/cheesewaf.yaml.j2"))
+	if !strings.Contains(cfg, "admin_tls:") || !strings.Contains(cfg, `data_dir: "{{ cheesewaf_data_dir }}"`) {
+		t.Fatalf("cluster config template must set admin TLS and data dir")
+	}
+}
+
 func assertInOrder(t *testing.T, text string, parts ...string) {
 	t.Helper()
 	position := 0
