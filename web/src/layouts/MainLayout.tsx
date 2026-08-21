@@ -68,6 +68,7 @@ import BrandLogo from '../components/BrandLogo';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { usePageVisibility, usePollingVisibility } from '../hooks/usePollingVisibility';
 import type { AuditEntry, LogEntry, Notification, NotificationFilter, User } from '../types/api';
 import { displayAction } from '../utils/display';
 import { preloadRoute } from '../routes/preload';
@@ -126,19 +127,22 @@ export default function MainLayout() {
   const setLanguage = useAppStore((state) => state.setLanguage);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const queryClient = useQueryClient();
+  const recentLogsRefetchInterval = usePollingVisibility(30_000);
+  const auditEntriesRefetchInterval = usePollingVisibility(60_000);
   const { data: version } = useQuery({ queryKey: ['version'], queryFn: fetchVersion, staleTime: 5 * 60_000, retry: false });
-  const { data: recentLogs } = useQuery({ queryKey: ['recent-security-logs', 12], queryFn: () => fetchLogs({ limit: 12 }), refetchInterval: 30_000, staleTime: 20_000, retry: false });
-  const { data: auditEntries } = useQuery({ queryKey: ['shell-audit'], queryFn: fetchAuditEntries, staleTime: 30_000, refetchInterval: 60_000, retry: false });
+  const { data: recentLogs } = useQuery({ queryKey: ['recent-security-logs', 12], queryFn: () => fetchLogs({ limit: 12 }), refetchInterval: recentLogsRefetchInterval, staleTime: 20_000, retry: false });
+  const { data: auditEntries } = useQuery({ queryKey: ['shell-audit'], queryFn: fetchAuditEntries, staleTime: 30_000, refetchInterval: auditEntriesRefetchInterval, retry: false });
   const { data: users } = useQuery({ queryKey: ['shell-users'], queryFn: fetchUsers, staleTime: 60_000, retry: false });
   const [healthFailures, setHealthFailures] = useState(0);
   const [lastHeartbeatAt, setLastHeartbeatAt] = useState(Date.now());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const heartbeatRefetching = useRef(false);
+  const healthRefetchInterval = usePollingVisibility(healthFailures >= 5 ? false : healthFailures > 0 ? 10_000 : 15_000);
   const healthQuery = useQuery({
     queryKey: ['shell-health'],
     queryFn: fetchHealth,
     // Healthy consoles do not need 1s polling — keep light contact and back off on failures.
-    refetchInterval: healthFailures >= 5 ? false : healthFailures > 0 ? 10_000 : 15_000,
+    refetchInterval: healthRefetchInterval,
     retry: false,
   });
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -250,7 +254,11 @@ export default function MainLayout() {
   }, [healthQuery.isError, healthQuery.isSuccess, healthQuery.dataUpdatedAt, healthQuery.errorUpdatedAt]);
 
   const healthRefetch = healthQuery.refetch;
+  const pageVisible = usePageVisibility();
   useEffect(() => {
+    if (!pageVisible) {
+      return undefined;
+    }
     const timer = window.setInterval(() => {
       if (healthFailures >= 5 || heartbeatRefetching.current) {
         return;
@@ -266,7 +274,7 @@ export default function MainLayout() {
       });
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [healthFailures, healthRefetch, lastHeartbeatAt]);
+  }, [healthFailures, healthRefetch, lastHeartbeatAt, pageVisible]);
 
   const currentKey = allNavItems.find((item) => (
     item.key === '/'
@@ -279,10 +287,11 @@ export default function MainLayout() {
   const auditItems = useMemo(() => safeArray<AuditEntry>(auditEntries), [auditEntries]);
   const userItems = useMemo(() => safeArray<User>(users), [users]);
   const notificationLimit = 8;
+  const notificationsRefreshInterval = usePollingVisibility(15_000);
   const notificationQuery = useQuery({
     queryKey: ['notifications', notificationFilter, notificationPage],
     queryFn: () => fetchNotifications({ page: notificationPage, limit: notificationLimit, filter: notificationFilter }),
-    refetchInterval: 15_000,
+    refetchInterval: notificationsRefreshInterval,
     staleTime: 10_000,
     retry: false,
     placeholderData: (previous) => previous,

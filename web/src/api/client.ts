@@ -238,7 +238,8 @@ export function resetAuthRedirectStateForTest() {
 
 async function refreshSessionIfNeeded() {
   // Cookie sessions are refreshed on demand via /auth/refresh (HttpOnly cookie).
-  // Avoid hammering: only one in-flight refresh.
+  // Avoid hammering: only one in-flight refresh. Refresh failures are soft: the
+  // originating request still proceeds so the response interceptor can handle 401.
   if (refreshPromise) {
     try {
       await refreshPromise;
@@ -246,6 +247,11 @@ async function refreshSessionIfNeeded() {
       /* handled by caller path */
     }
     return;
+  }
+  try {
+    await refreshSession();
+  } catch {
+    // Best-effort: let the actual request run its course.
   }
 }
 

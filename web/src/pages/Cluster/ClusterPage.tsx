@@ -34,6 +34,7 @@ import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw,
 import { useTranslation } from 'react-i18next';
 import { createClusterBootstrapPlan, createClusterJoinToken, fetchClusterAudit, fetchClusterConsensus, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterRollingUpgrade, fetchClusterStatus, fetchClusterTrafficPeers, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask, startClusterRollingRollback, startClusterRollingUpgrade } from '../../api/client';
 import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterBootstrapPlan, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration, ClusterRollingJob, ClusterTrafficPeersResponse } from '../../types/api';
+import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 type ClusterDeployForm = {
   host?: string;
@@ -112,18 +113,23 @@ export default function ClusterPage() {
   const [bootstrapPlan, setBootstrapPlan] = useState<ClusterBootstrapPlan | null>(null);
   const [rollingJob, setRollingJob] = useState<ClusterRollingJob | null>(null);
   const [trafficPeers, setTrafficPeers] = useState<ClusterTrafficPeersResponse | null>(null);
+  const statusRefreshInterval = usePollingVisibility(15_000);
+  const tokensRefreshInterval = usePollingVisibility(15_000);
+  const nodesRefreshInterval = usePollingVisibility(15_000);
+  const deployTasksRefreshInterval = usePollingVisibility(3000);
+  const auditRefreshInterval = usePollingVisibility(12_000);
   const [auditPage, setAuditPage] = useState(0);
   const { data, isLoading, refetch, isFetching, isError: isStatusError, error: statusError } = useQuery({
     queryKey: ['cluster-status'],
     queryFn: fetchClusterStatus,
-    refetchInterval: 15_000,
+    refetchInterval: statusRefreshInterval,
     staleTime: 10_000,
     retry: false,
   });
   const { data: consensus } = useQuery({
     queryKey: ['cluster-consensus'],
     queryFn: fetchClusterConsensus,
-    refetchInterval: 15_000,
+    refetchInterval: statusRefreshInterval,
     staleTime: 10_000,
     retry: false,
   });
@@ -131,6 +137,7 @@ export default function ClusterPage() {
   const rollingNeedsPoll = Boolean(
     rollingJobID && (rollingJob?.status === 'pending' || rollingJob?.status === 'running' || rollingJob?.rollback_job_id),
   );
+  const rollingRefreshInterval = usePollingVisibility(rollingNeedsPoll ? 2000 : false);
   useQuery({
     queryKey: ['cluster-rolling-job', rollingJobID],
     queryFn: async () => {
@@ -149,31 +156,31 @@ export default function ClusterPage() {
       return job;
     },
     enabled: rollingNeedsPoll,
-    refetchInterval: rollingNeedsPoll ? 2000 : false,
+    refetchInterval: rollingRefreshInterval,
     retry: false,
   });
   const { data: tokens, isFetching: isFetchingTokens, isError: isTokensError, error: tokensError, refetch: refetchTokens } = useQuery({
     queryKey: ['cluster-join-tokens'],
     queryFn: fetchClusterJoinTokens,
-    refetchInterval: 15_000,
+    refetchInterval: tokensRefreshInterval,
     retry: false,
   });
   const { data: nodes, isFetching: isFetchingNodes, isError: isNodesError, error: nodesError, refetch: refetchNodes } = useQuery({
     queryKey: ['cluster-nodes'],
     queryFn: fetchClusterNodes,
-    refetchInterval: 15_000,
+    refetchInterval: nodesRefreshInterval,
     retry: false,
   });
   const { data: deployTasks, isFetching: isFetchingDeployTasks, refetch: refetchDeployTasks } = useQuery({
     queryKey: ['cluster-deploy-tasks'],
     queryFn: fetchClusterDeploymentTasks,
-    refetchInterval: 3000,
+    refetchInterval: deployTasksRefreshInterval,
     retry: false,
   });
   const { data: clusterAudit, isFetching: isFetchingAudit, isError: isAuditError, error: auditError, refetch: refetchAudit } = useQuery({
     queryKey: ['cluster-audit'],
     queryFn: fetchClusterAudit,
-    refetchInterval: 12_000,
+    refetchInterval: auditRefreshInterval,
     staleTime: 10_000,
     retry: false,
   });

@@ -1,8 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import * as React from 'react';
+import { cleanup, render, waitFor } from "@testing-library/react";
 import {
+  AppErrorBoundary,
   buildFreshModuleURL,
   extractFailedModuleURL,
 } from "./AppErrorBoundary";
+
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
+
+function Boom(): never {
+  throw new Error("boom");
+}
 
 describe("buildFreshModuleURL", () => {
   it("preserves the route state while replacing the cache-busting marker", () => {
@@ -34,5 +45,36 @@ describe("extractFailedModuleURL", () => {
         "Failed to fetch dynamically imported module: https://example.com/module.js",
       ),
     ).toBeNull();
+  });
+});
+
+describe("UI error reporting", () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    window.history.replaceState({}, "", "/");
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("reports the error path without the hash", async () => {
+    window.history.replaceState({}, "", "/ai?tab=models#reasoning");
+    sessionStorage.setItem("cheesewaf-authed", "1");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(
+      React.createElement(AppErrorBoundary, { resetKey: "r", children: React.createElement(Boom) }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    const payload = JSON.parse(request.body as string) as { path: string };
+    expect(payload.path).toBe("/ai?tab=models");
   });
 });

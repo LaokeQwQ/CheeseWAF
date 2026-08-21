@@ -99,6 +99,21 @@ describe('sanitizeBlockPreviewHTML', () => {
     expect(clean).not.toMatch(/onerror/i);
     expect(clean).not.toMatch(/data:text\/html/i);
   });
+  it('forbids cross-origin link and meta elements', () => {
+    const dirty = `
+      <!doctype html>
+      <html>
+        <head>
+          <link rel="stylesheet" href="https://evil.example/style.css">
+          <meta http-equiv="refresh" content="0;url=https://evil.example/steal">
+        </head>
+        <body></body>
+      </html>
+    `;
+    const clean = sanitizeBlockPreviewHTML(dirty);
+    expect(clean).not.toMatch(/<link/i);
+    expect(clean).not.toMatch(/<meta/i);
+  });
 });
 
 describe('BlockPagesPage query and write states', () => {

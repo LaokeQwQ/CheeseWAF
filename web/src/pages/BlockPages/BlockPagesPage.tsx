@@ -432,10 +432,10 @@ export function sanitizeBlockPreviewHTML(value: string) {
   }
   const clean = DOMPurify.sanitize(html, {
     WHOLE_DOCUMENT: true,
-    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'base'],
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'base', 'link', 'meta'],
     FORBID_ATTR: ['srcset', 'action', 'formaction', 'form', 'xlink:href'],
     ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
-    ADD_TAGS: ['html', 'head', 'body', 'meta', 'link', 'style', 'title'],
+    ADD_TAGS: ['html', 'head', 'body', 'style', 'title'],
   });
   return clean ? `<!doctype html>\n${clean}` : '';
 }

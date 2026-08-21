@@ -14,7 +14,11 @@ const loadedThemes = new Set<ThemeName>();
 function isThemeName(value: unknown): value is ThemeName {
   return themeOptions.some((option) => option.value === value);
 }
-
+function prefersDarkScheme(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
 export function readInitialTheme(): ThemeName {
   try {
     const persisted = JSON.parse(localStorage.getItem('cheesewaf-ui') ?? '{}') as {
@@ -27,7 +31,9 @@ export function readInitialTheme(): ThemeName {
   } catch {
     // Invalid local preferences must not prevent the login screen from loading.
   }
-  return 'light';
+  // No valid persisted choice yet: follow the OS color scheme. Once the user
+  // picks a theme it is persisted and takes precedence on later loads.
+  return prefersDarkScheme() ? 'dark' : 'light';
 }
 
 export async function loadThemeStyles(theme: ThemeName) {
