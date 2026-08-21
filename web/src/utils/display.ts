@@ -22,6 +22,12 @@ const categoryKeys: Record<string, string> = {
   xss: 'securityCategories.xss',
   webshell: 'securityCategories.webshell',
   log4shell: 'securityCategories.log4shell',
+  xxe: 'securityCategories.xxe',
+  protocol_enforcement: 'securityCategories.protocolEnforcement',
+  ip_access: 'securityCategories.ipAccess',
+  fingerprint: 'securityCategories.fingerprint',
+  api_security: 'securityCategories.apiSecurity',
+  request_too_large: 'securityCategories.requestTooLarge',
 };
 
 const severityKeys: Record<string, string> = {
@@ -121,7 +127,7 @@ const continentKeys: Record<string, string> = {
 
 export function displayCategory(value: string | undefined, t: Translator) {
   const key = normalizeToken(value);
-  return t(categoryKeys[key] ?? 'securityCategories.customRule');
+  return t(categoryKeys[key] ?? 'securityCategories.unknown');
 }
 
 export function displaySeverity(value: string | undefined, t: Translator) {

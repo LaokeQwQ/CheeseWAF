@@ -33,3 +33,9 @@ popd >/dev/null
 
 rm -rf "${repo_root}/web/dist"
 cp -R "${work_web}/dist" "${repo_root}/web/dist"
+
+embed_dir="${repo_root}/internal/webui/dist"
+rm -rf "$embed_dir"
+mkdir -p "$embed_dir"
+cp -R "${work_web}/dist/." "$embed_dir/"
+: >"${embed_dir}/.keep"
