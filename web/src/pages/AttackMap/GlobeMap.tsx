@@ -40,6 +40,7 @@ import { Vector3 } from 'three/src/math/Vector3.js';
 import { WebGLRenderer } from 'three/src/renderers/WebGLRenderer.js';
 import { useTranslation } from 'react-i18next';
 import { normalizeWorldId, type AttackRegion, type ProtectedTarget, type ThreatLevel, type WorldFeature } from './attackMapData';
+import { threatPaletteHex, threatPaletteRgb } from './threatPalette';
 import { displayCountry } from '../../utils/display';
 import { useAppStore } from '../../stores';
 import type { ThemeName } from '../../themes/tokens';
@@ -56,12 +57,7 @@ type GlobeMapProps = {
 
 type GlobeVisualTheme = 'light' | 'dark';
 
-const globeLevelColors: Record<ThreatLevel, number> = {
-  low: 0x2176d2,
-  medium: 0xd98912,
-  high: 0xf97316,
-  critical: 0xdd3b3b,
-};
+const globeLevelColors: Record<ThreatLevel, number> = threatPaletteRgb;
 
 const markerColorFallback = 0x2176d2;
 
@@ -481,9 +477,26 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     motionQuery.addEventListener('change', updatePause);
     requestFrame();
 
+    // Re-render when devicePixelRatio changes (e.g. browser zoom / monitor switch).
+    let dprQuery: MediaQueryList | null = null;
+    const applyDevicePixelRatio = () => {
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, prefersReducedData ? 1.12 : (isTouch ? 1.28 : 1.55)));
+      resize();
+    };
+    const bindDprQuery = () => {
+      dprQuery?.removeEventListener('change', onDprChange);
+      dprQuery = window.matchMedia('(resolution: ' + window.devicePixelRatio + 'dppx)');
+      dprQuery.addEventListener('change', onDprChange);
+    };
+    const onDprChange = () => {
+      bindDprQuery();
+      applyDevicePixelRatio();
+    };
+    bindDprQuery();
     return () => {
       cancelAnimationFrame(frame);
       document.removeEventListener('visibilitychange', updatePause);
+      dprQuery?.removeEventListener('change', onDprChange);
       motionQuery.removeEventListener('change', updatePause);
       observer.disconnect();
       window.clearTimeout(controlsIdleTimer);
@@ -938,32 +951,12 @@ function createCloudTexture() {
 }
 
 function globeFillForLevel(level: ThreatLevel | undefined, visualTheme: GlobeVisualTheme) {
-  if (visualTheme === 'light') {
-    switch (level) {
-      case 'critical':
-        return '#ef5353';
-      case 'high':
-        return '#fb923c';
-      case 'medium':
-        return '#f3c75e';
-      case 'low':
-        return '#66a9ee';
-      default:
-        return '#d7eadb';
-    }
+  // Fixed shared palette across light/dark: the same hex is used in the
+  // MapLibre world fill, the SVG fallback and this globe texture.
+  if (level) {
+    return threatPaletteHex[level];
   }
-  switch (level) {
-    case 'critical':
-      return '#f05252';
-    case 'high':
-      return '#fb923c';
-    case 'medium':
-      return '#f6c85f';
-    case 'low':
-      return '#60a5fa';
-    default:
-      return '#9ec8b9';
-  }
+  return visualTheme === 'light' ? '#d7eadb' : '#9ec8b9';
 }
 
 function globeShadowForLevel(level: ThreatLevel | undefined, visualTheme: GlobeVisualTheme) {
