@@ -1410,3 +1410,101 @@ func (s *filteringAISink) Close() error {
 func ptrConfig(cfg config.Config) *config.Config {
 	return &cfg
 }
+
+func TestRunAISelfLearningCannotDisableConfiguredDryRun(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.SelfLearning.Enabled = true
+	cfg.AI.SelfLearning.AutoApply = true
+	cfg.AI.SelfLearning.DryRun = true
+	h := New(Options{Config: &cfg, Sink: &filteringAISink{}})
+	body := []byte(`{"dry_run":false}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/self-learning", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.RunAISelfLearning(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data ai.SelfLearningReport `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Data.DryRun {
+		t.Fatalf("expected dry_run to stay true when the request tries to set it false, report=%+v", resp.Data)
+	}
+	if !cfg.AI.SelfLearning.DryRun {
+		t.Fatalf("configured dry_run was mutated by the request")
+	}
+}
+
+func TestUpdateAIConfigRequiresWriteSystemToEnableAutoApply(t *testing.T) {
+	cfg := config.Default()
+	h := New(Options{Config: &cfg})
+	body := []byte(`{"self_learning":{"auto_apply":true}}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserContextKey, &middleware.Claims{Role: "operator", Scopes: []string{"read:ai"}}))
+	rec := httptest.NewRecorder()
+	h.UpdateAIConfig(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if cfg.AI.SelfLearning.AutoApply {
+		t.Fatalf("auto_apply must not be enabled without write:system/admin")
+	}
+
+	// Admin may enable auto-apply.
+	cfg2 := config.Default()
+	h2 := New(Options{Config: &cfg2})
+	req2 := httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body))
+	req2 = req2.WithContext(context.WithValue(req2.Context(), middleware.UserContextKey, &middleware.Claims{Role: "admin"}))
+	rec2 := httptest.NewRecorder()
+	h2.UpdateAIConfig(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected admin 200, code=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+	if !cfg2.AI.SelfLearning.AutoApply {
+		t.Fatalf("admin should be able to enable auto_apply")
+	}
+}
+
+func TestSystemSummaryToolRedactsSiteIdentityAndAdminListener(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.AdminListen = "0.0.0.0:9443"
+	cfg.Sites = []config.SiteConfig{
+		{ID: "site-prod-1", WAF: config.WAFConfig{Mode: "block"}},
+		{ID: "site-prod-2", WAF: config.WAFConfig{Mode: "block"}},
+		{ID: "site-dev-1", WAF: config.WAFConfig{Mode: "observe"}},
+	}
+	result, err := (ai.SystemSummaryTool{Config: &cfg}).Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success")
+	}
+	var summary map[string]any
+	if err := json.Unmarshal([]byte(result.Output), &summary); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if _, ok := summary["admin_listener"]; ok {
+		t.Fatalf("admin_listener must not be exposed to the LLM: %+v", summary)
+	}
+	if v, ok := summary["sites"].(float64); !ok || v != 3 {
+		t.Fatalf("expected sites count 3, got %v", summary["sites"])
+	}
+	raw, _ := json.Marshal(summary)
+	if strings.Contains(string(raw), "site-prod-1") || strings.Contains(string(raw), "site-dev-1") || strings.Contains(string(raw), "0.0.0.0") {
+		t.Fatalf("summary leaked site id or admin listener: %s", raw)
+	}
+	modes, ok := summary["waf_modes"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected waf_modes as map, got %T", summary["waf_modes"])
+	}
+	if v, _ := modes["block"].(float64); v != 2 {
+		t.Fatalf("expected 2 sites in block mode, got %v", modes["block"])
+	}
+	if v, _ := modes["observe"].(float64); v != 1 {
+		t.Fatalf("expected 1 site in observe mode, got %v", modes["observe"])
+	}
+}

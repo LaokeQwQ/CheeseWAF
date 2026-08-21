@@ -147,10 +147,11 @@ func TestAdminTLSConfigRequestsClusterClientCertWhenMTLSRequired(t *testing.T) {
 	}
 }
 
-func TestRepairRuntimeConfigPersistsSecretWhenConfigIsReadOnly(t *testing.T) {
+func TestRepairRuntimeConfigPersistsSecretWithoutRewritingSourceConfig(t *testing.T) {
 	root := t.TempDir()
-	configTarget := filepath.Join(root, "config-target")
-	if err := os.Mkdir(configTarget, 0o700); err != nil {
+	configTarget := filepath.Join(root, "cheesewaf.yaml")
+	const original = "server:\n  listen: \":8080\"\n"
+	if err := os.WriteFile(configTarget, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
@@ -163,8 +164,21 @@ func TestRepairRuntimeConfigPersistsSecretWhenConfigIsReadOnly(t *testing.T) {
 	if config.IsWeakBotSecret(firstSecret) {
 		t.Fatal("runtime fallback retained a weak Bot challenge secret")
 	}
-	if _, err := os.Stat(filepath.Join(cfg.Setup.RuntimeDir, "bot_secret")); err != nil {
+	runtimePath := filepath.Join(cfg.Setup.RuntimeDir, "bot_secret")
+	raw, err := os.ReadFile(runtimePath)
+	if err != nil {
 		t.Fatalf("runtime secret was not persisted: %v", err)
+	}
+	if strings.TrimSpace(string(raw)) != firstSecret {
+		t.Fatalf("runtime secret did not match in-memory secret: %q", raw)
+	}
+	// The source config file must never be rewritten by the runtime repair.
+	raw, err = os.ReadFile(configTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != original {
+		t.Fatalf("source config was rewritten by runtime repair: %q", raw)
 	}
 
 	reloaded := config.Default()
@@ -175,6 +189,14 @@ func TestRepairRuntimeConfigPersistsSecretWhenConfigIsReadOnly(t *testing.T) {
 	}
 	if reloaded.Protection.Bot.Secret != firstSecret {
 		t.Fatal("runtime fallback secret was not stable across reload")
+	}
+	// The reload must also leave the source config untouched.
+	raw, err = os.ReadFile(configTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != original {
+		t.Fatalf("source config was rewritten after reload: %q", raw)
 	}
 }
 

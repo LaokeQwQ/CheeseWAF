@@ -147,9 +147,20 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		next.Assistant = mergeAIModelPayload(next.Assistant, legacyAIModelPayload(next))
 		next.Reasoning = mergeAIModelPayload(next.Reasoning, aiModelPayloadFromConfig(next.Assistant))
 		if req.SelfLearning != nil {
+			previousAutoApply := next.SelfLearning.AutoApply
 			selfLearning, parseErr := parseAISelfLearningConfig(req.SelfLearning, next.SelfLearning)
 			if parseErr != nil {
 				return parseErr
+			}
+			if selfLearning.AutoApply && !previousAutoApply {
+				claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+				permissions := config.Default().APISec.Permissions
+				if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
+					permissions = h.Config.APISec.Permissions
+				}
+				if !callerHasPermission(claims, permissions, "write:system") {
+					return fmt.Errorf("setting self_learning.auto_apply=true requires write:system or admin permission")
+				}
 			}
 			next.SelfLearning = selfLearning
 		}
@@ -163,6 +174,10 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}, nil)
 	if err != nil {
+		if strings.Contains(err.Error(), "auto_apply") {
+			writeError(w, http.StatusForbidden, "AI_AUTO_APPLY_FORBIDDEN", err.Error())
+			return
+		}
 		code := "CONFIG_SAVE_ERROR"
 		status := http.StatusInternalServerError
 		if isAIAPIBaseValidationError(err) {
@@ -696,8 +711,10 @@ func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := h.Config.AI.SelfLearning
-	if req.DryRun != nil {
-		cfg.DryRun = *req.DryRun
+	// A request may only make self-learning more conservative: it can force
+	// dry_run=true but can never turn off a configured dry-run.
+	if req.DryRun != nil && *req.DryRun {
+		cfg.DryRun = true
 	}
 	// Self-learning may CreateRule when AutoApply && !DryRun. Reuse the same
 	// freeze / cluster-writable guards as CreateRule; on freeze, force dry-run
