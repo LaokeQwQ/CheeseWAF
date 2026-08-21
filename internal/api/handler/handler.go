@@ -1115,14 +1115,13 @@ func (h *Handler) loginCaptchaQuotaIdentity(w http.ResponseWriter, r *http.Reque
 	if value == "" {
 		return "", peer, false
 	}
-	http.SetCookie(w, &http.Cookie{
+	middleware.WriteCookie(w, r, &http.Cookie{
 		Name:     loginCAPTCHAClientCookie,
 		Value:    value,
 		Path:     "/",
 		MaxAge:   int(loginCAPTCHAClientMaxAge / time.Second),
 		Expires:  h.nowUTC().Add(loginCAPTCHAClientMaxAge),
 		HttpOnly: true,
-		Secure:   middleware.CookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	return "client:" + loginCAPTCHAFingerprint(rawID), peer, true
@@ -1384,12 +1383,11 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 	if draftID := setupSessionID(r); draftID != "" {
 		h.setupDraftStore().Delete(draftID)
-		http.SetCookie(w, &http.Cookie{
+		middleware.WriteCookie(w, r, &http.Cookie{
 			Name:     setup.SetupSessionCookie,
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   middleware.CookieSecure(r),
 			SameSite: http.SameSiteStrictMode,
 			MaxAge:   -1,
 		})

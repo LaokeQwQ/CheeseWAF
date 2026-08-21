@@ -178,12 +178,11 @@ func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) writeSetupProbeResponse(w http.ResponseWriter, r *http.Request, draft *setup.SetupDraft, result setup.ProbeResult) {
-	http.SetCookie(w, &http.Cookie{
+	middleware.WriteCookie(w, r, &http.Cookie{
 		Name:     setup.SetupSessionCookie,
 		Value:    draft.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   middleware.CookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(setup.DefaultDraftTTL.Seconds()),
 	})

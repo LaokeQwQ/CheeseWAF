@@ -635,15 +635,13 @@ func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secre
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	value := signedAdminEntryValue(secret, r.UserAgent(), expires.Unix(), nonce)
-	http.SetCookie(w, &http.Cookie{
+	middleware.WriteCookie(w, r, &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     "/",
 		Expires:  expires,
 		MaxAge:   int(config.AdminSessionTTL / time.Second),
 		HttpOnly: true,
-		// Same rule as session cookies: plain HTTP loopback must omit Secure.
-		Secure:   middleware.CookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	return true

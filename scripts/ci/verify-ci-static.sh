@@ -176,7 +176,7 @@ grep -Fq 'CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web' deploy/systemd/cheesewaf.s
   fail "systemd unit must point CHEESEWAF_WEB_DIR at the FHS UI path"
 grep -Fq 'func applyCLIDataDir' internal/cli/datadir.go ||
   fail "serve must rebase packaged relative ./data paths onto --data-dir"
-grep -Fq 'Secure:   middleware.CookieSecure(r)' internal/cli/service.go ||
+grep -Fq 'middleware.WriteCookie(w, r' internal/cli/service.go ||
   fail "admin entry cookies must follow request TLS like session cookies"
 if grep -Fq 'ExecReload=' deploy/systemd/cheesewaf.service; then
   fail "systemd must not advertise SIGHUP reload; the process ignores hangup"
@@ -217,6 +217,11 @@ if grep -nE 'http\.SetCookie' internal/protection/bot/policy.go; then
 fi
 if grep -nE 'Secure:[[:space:]]*(true|secure)' internal/protection/bot/policy.go; then
   fail "bot cookies must not hard-code Secure or take a caller bool"
+fi
+grep -Fq 'func WriteCookie' internal/api/middleware/session_cookie.go ||
+  fail "admin cookies must go through middleware.WriteCookie"
+if grep -nE 'http\.SetCookie' internal/api/middleware/session_cookie.go internal/api/handler/handler.go internal/api/handler/setup_wizard.go internal/cli/service.go; then
+  fail "admin cookies must not call http.SetCookie directly"
 fi
 grep -Fq 'scripts/ci/channel-from-git.sh' Makefile ||
   fail "Makefile CHANNEL must not embed a case statement with closing parens"
