@@ -66,7 +66,7 @@ jobs:
         run: bash scripts/ci/verify-ci-static.sh
       - name: Validate GitHub-compatible workflows
         shell: bash
-        run: bash scripts/ci/go-env.sh go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= -pyflakes= -color .github/workflows/*.yml
+        run: bash scripts/ci/go-env.sh go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= -pyflakes= -color .github/workflows/*.yml .forgejo/workflows/*.yml
       - name: Verify Ansible syntax
         shell: bash
         run: bash scripts/ci/verify-ansible.sh
@@ -142,7 +142,7 @@ jobs:
       - name: Run dashboard tests with coverage
         working-directory: web
         shell: bash
-        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=5 --coverage.thresholds.functions=5 --coverage.thresholds.statements=5 --coverage.thresholds.branches=1
+        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10
       - name: Verify coverage output
         working-directory: web
         shell: bash
@@ -185,7 +185,7 @@ jobs:
       - name: Audit web dependencies
         working-directory: web
         shell: bash
-        run: npm audit --audit-level=high
+        run: node scripts/npm-audit-gate.mjs
 
   security-corpus:
     name: security-corpus
@@ -268,7 +268,9 @@ jobs:
         run: bash scripts/ci/setup-node-mirror.sh
       - name: Build GoReleaser snapshot
         shell: bash
-        run: bash scripts/ci/go-env.sh go run github.com/goreleaser/goreleaser/v2@v2.17.0 release --snapshot --clean
+        run: |
+          export CHEESEWAF_VERSION_PREFIX="$(cat scripts/ci/product-version)"
+          bash scripts/ci/go-env.sh go run github.com/goreleaser/goreleaser/v2@v2.17.0 release --snapshot --clean
       - name: Verify GoReleaser snapshot
         shell: bash
         run: bash scripts/ci/verify-release.sh dist
