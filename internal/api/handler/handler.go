@@ -1115,16 +1115,13 @@ func (h *Handler) loginCaptchaQuotaIdentity(w http.ResponseWriter, r *http.Reque
 	if value == "" {
 		return "", peer, false
 	}
-	// Secure is always true: login CAPTCHA client cookies are admin-console only
-	// and must not be sent on cleartext HTTP.
-	http.SetCookie(w, &http.Cookie{
+	middleware.WriteCookie(w, r, &http.Cookie{
 		Name:     loginCAPTCHAClientCookie,
 		Value:    value,
 		Path:     "/",
 		MaxAge:   int(loginCAPTCHAClientMaxAge / time.Second),
 		Expires:  h.nowUTC().Add(loginCAPTCHAClientMaxAge),
 		HttpOnly: true,
-		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	})
 	return "client:" + loginCAPTCHAFingerprint(rawID), peer, true
@@ -1386,16 +1383,16 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 	if draftID := setupSessionID(r); draftID != "" {
 		h.setupDraftStore().Delete(draftID)
-		http.SetCookie(w, &http.Cookie{
+		middleware.WriteCookie(w, r, &http.Cookie{
 			Name:     setup.SetupSessionCookie,
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   true,
 			SameSite: http.SameSiteStrictMode,
 			MaxAge:   -1,
 		})
 	}
+	_ = setup.RemoveURL(h.setupDataDir())
 	writeData(w, map[string]any{"user": result.User, "setup_complete": true})
 }
 

@@ -1,9 +1,11 @@
 package middleware
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestCSRFMiddlewareRequiresDoubleSubmitForCookieSession(t *testing.T) {
@@ -38,6 +40,55 @@ func TestSessionTokenPrefersCookie(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer from-header")
 	if got := SessionToken(req); got != "from-cookie" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCookieSecureFollowsTLSAndForwardedProto(t *testing.T) {
+	plain := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/api/auth/login", nil)
+	if CookieSecure(plain) {
+		t.Fatal("plain HTTP must not set Secure cookies")
+	}
+	httpsReq := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:9443/api/auth/login", nil)
+	httpsReq.TLS = &tls.ConnectionState{}
+	if !CookieSecure(httpsReq) {
+		t.Fatal("TLS requests must set Secure cookies")
+	}
+	proxied := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/api/auth/login", nil)
+	proxied.Header.Set("X-Forwarded-Proto", "https, http")
+	if !CookieSecure(proxied) {
+		t.Fatal("X-Forwarded-Proto=https must set Secure cookies")
+	}
+}
+
+func TestWriteCookieFollowsTLSAndForwardedProto(t *testing.T) {
+	plain := httptest.NewRecorder()
+	WriteCookie(plain, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/", nil), &http.Cookie{Name: "n", Value: "v", Path: "/"})
+	got := plain.Result().Cookies()
+	if len(got) != 1 || got[0].Secure {
+		t.Fatalf("plain HTTP WriteCookie must omit Secure, got %+v", got)
+	}
+	httpsRec := httptest.NewRecorder()
+	httpsReq := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:9443/", nil)
+	httpsReq.TLS = &tls.ConnectionState{}
+	WriteCookie(httpsRec, httpsReq, &http.Cookie{Name: "n", Value: "v", Path: "/"})
+	got = httpsRec.Result().Cookies()
+	if len(got) != 1 || !got[0].Secure {
+		t.Fatalf("TLS WriteCookie must set Secure, got %+v", got)
+	}
+}
+
+func TestWriteSessionCookiesOmitsSecureOnPlainHTTP(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9443/api/auth/login", nil)
+	WriteSessionCookies(rec, req, "jwt", "csrf", time.Hour)
+	got := rec.Result().Cookies()
+	if len(got) < 2 {
+		t.Fatalf("cookies = %d", len(got))
+	}
+	for _, c := range got {
+		if c.Secure {
+			t.Fatalf("%s unexpectedly Secure on HTTP", c.Name)
+		}
 	}
 }
 

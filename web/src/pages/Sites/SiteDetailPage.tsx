@@ -327,6 +327,7 @@ export default function SiteDetailPage() {
                     value={site.listen_port || ''}
                     onChange={(e) => updateField('listen_port', e.target.value === '' ? 0 : Number(e.target.value))}
                   />
+                  <em>{t('sites.listenHint')}</em>
                 </label>
                 <label>
                   <span>{t('sites.loadBalance')}</span>

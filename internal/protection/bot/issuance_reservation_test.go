@@ -266,7 +266,7 @@ func TestBehaviorGenerationAdmissionHappensBeforeWork(t *testing.T) {
 	policy := newBehaviorPolicy(t, nil)
 	request := httptest.NewRequest(http.MethodGet, "https://tenant.example/protected", nil)
 	request.Header.Set("User-Agent", "curl/8.0")
-	_, ownerCookie, err := policy.behaviorOwner(request, "site-a", true, cookieSecure(request))
+	_, ownerCookie, err := policy.behaviorOwner(request, "site-a", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestBehaviorGenerationFailureKeepsRateButReleasesCapacity(t *testing.T) {
 	policy.behaviorPending.rates.ownerLimit = 2
 	request := httptest.NewRequest(http.MethodGet, "https://tenant.example/protected", nil)
 	request.Header.Set("User-Agent", "curl/8.0")
-	_, ownerCookie, err := policy.behaviorOwner(request, "site-a", true, cookieSecure(request))
+	_, ownerCookie, err := policy.behaviorOwner(request, "site-a", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestCanceledBehaviorRequestRollsBackBeforeWork(t *testing.T) {
 	policy := newBehaviorPolicy(t, nil)
 	request := httptest.NewRequest(http.MethodGet, "https://tenant.example/protected", nil)
 	request.Header.Set("User-Agent", "curl/8.0")
-	_, ownerCookie, err := policy.behaviorOwner(request, "site-a", true, cookieSecure(request))
+	_, ownerCookie, err := policy.behaviorOwner(request, "site-a", true)
 	if err != nil {
 		t.Fatal(err)
 	}

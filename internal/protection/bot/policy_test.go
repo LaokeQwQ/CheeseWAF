@@ -2,6 +2,7 @@ package bot
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -460,6 +461,7 @@ func TestChallengeResponsesSetSecurityHeadersAndNonce(t *testing.T) {
 func TestWaitingRoomSetsSecurityHeadersAndNonce(t *testing.T) {
 	policy := NewPolicy(config.BotProtectionConfig{Enabled: true, WaitingRoom: true, WaitingRoomMaxActive: 1, WaitingRoomTTL: time.Minute, CookieName: "cw_clearance", Secret: "test-secret"})
 	req := httptest.NewRequest(http.MethodGet, "https://example.test/shop", nil)
+	req.TLS = &tls.ConnectionState{}
 	rec := httptest.NewRecorder()
 	policy.ServeChallenge(rec, req, "203.0.113.10")
 	if !strings.Contains(rec.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") || rec.Header().Get("Referrer-Policy") != "no-referrer" {
@@ -667,6 +669,53 @@ func TestValidChallengeFailsClosedWhenClearanceCapacityExhausted(t *testing.T) {
 	}
 	if location := rr.Header().Get("Location"); location != "" {
 		t.Fatalf("clearance failure must not redirect, got %q", location)
+	}
+}
+
+func TestWaitingRoomCookieOmitsSecureOnPlainHTTP(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{Enabled: true, WaitingRoom: true, WaitingRoomMaxActive: 1, WaitingRoomTTL: time.Minute, CookieName: "cw_clearance", Secret: "test-secret"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/shop", nil)
+	rec := httptest.NewRecorder()
+	policy.ServeChallenge(rec, req, "203.0.113.10")
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "cw_clearance_queue" || cookies[0].Secure || !cookies[0].HttpOnly {
+		t.Fatalf("plain HTTP waiting-room cookie must be HttpOnly without Secure, got %+v", cookies)
+	}
+}
+
+func TestChallengeClearanceCookieOmitsSecureOnPlainHTTP(t *testing.T) {
+	policy := NewPolicy(config.BotProtectionConfig{
+		Enabled:             true,
+		JSChallenge:         true,
+		ChallengeDifficulty: 2,
+		ChallengeTTL:        time.Minute,
+		CookieName:          "cw_clearance",
+		Secret:              "test-secret",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Header.Set("User-Agent", "curl/8.0")
+	ctx := PoWContext{Site: canonicalSite(req.Host), Policy: "bot", PolicyVersion: policy.policyVersion, Path: req.URL.Path, ClientKey: "203.0.113.10\n" + req.UserAgent()}
+	challenge, err := policy.powManager.Issue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := ""
+	for i := 0; ; i++ {
+		candidate := strconv.Itoa(i)
+		sum := sha256.Sum256([]byte(challenge.Token + "\x00" + candidate))
+		if hasLeadingZeroNibbles(sum[:], challenge.Work) {
+			answer = candidate
+			break
+		}
+	}
+	req = httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(url.Values{"cw_pow_token": {challenge.Token}, "cw_pow_answer": {answer}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "curl/8.0")
+	rr := httptest.NewRecorder()
+	policy.ServeChallenge(rr, req, "203.0.113.10")
+	cookies := rr.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Secure || !cookies[0].HttpOnly {
+		t.Fatalf("plain HTTP clearance cookie must be HttpOnly without Secure, got %+v", cookies)
 	}
 }
 

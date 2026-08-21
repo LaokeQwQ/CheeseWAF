@@ -8,8 +8,13 @@ release_dir="${1:-release}"
 }
 
 tag=""
+suffix=""
 if [[ -f "${release_dir}/release-manifest.txt" ]]; then
   tag="$(awk -F': ' '/^prerelease_tag:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+  suffix="$(awk -F': ' '/^file_suffix:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+  if [[ -z "$suffix" ]]; then
+    suffix="$(awk -F': ' '/^channel:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+  fi
 fi
 if [[ -z "$tag" ]]; then
   echo "::error::prerelease_tag is missing from release-manifest.txt" >&2
@@ -19,6 +24,74 @@ fi
   echo "::error::pre-release tag must start with Alpha-: ${tag}" >&2
   exit 1
 }
+if [[ -z "$suffix" ]]; then
+  suffix="PreTest"
+fi
+if [[ "$suffix" == "stable" ]]; then
+  suffix="beta"
+fi
+
+rewrite_checksums() {
+  local dir="$1"
+  (
+    cd "$dir"
+    rm -f SHA256SUMS
+    files=()
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      files+=("$f")
+    done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt ! -name '*.bundle' ! -name '*.sig' | sed 's#^\./##' | sort)
+    [[ ${#files[@]} -gt 0 ]] || {
+      echo "::error::no files to checksum in ${dir}" >&2
+      exit 1
+    }
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "${files[@]}" >SHA256SUMS
+    else
+      shasum -a 256 "${files[@]}" >SHA256SUMS
+    fi
+  )
+}
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+command -v syft >/dev/null 2>&1 || {
+  echo "::error::syft is required to attach a CycloneDX SBOM" >&2
+  exit 1
+}
+command -v cosign >/dev/null 2>&1 || {
+  echo "::error::cosign is required to sign SHA256SUMS and the SBOM" >&2
+  exit 1
+}
+
+sbom_file="${release_dir}/cheesewaf.cdx.json"
+syft scan "dir:${repo_root}" \
+  --source-name cheesewaf \
+  --source-version "$tag" \
+  --exclude '**/.git/**' \
+  --exclude '**/node_modules/**' \
+  --exclude '**/.grok/**' \
+  --exclude '**/tmp/**' \
+  --exclude '**/release/**' \
+  -o "cyclonedx-json=${sbom_file}"
+[[ -s "$sbom_file" ]] || {
+  echo "::error::syft did not write ${sbom_file}" >&2
+  exit 1
+}
+
+rewrite_checksums "$release_dir"
+
+sign_blob() {
+  local file="$1"
+  COSIGN_YES=true cosign sign-blob --yes --bundle "${file}.bundle" "$file"
+  COSIGN_YES=true cosign verify-blob \
+    --bundle "${file}.bundle" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-identity-regexp '^https://github.com/LaokeQwQ/CheeseWAF/' \
+    "$file"
+}
+
+sign_blob "${release_dir}/SHA256SUMS"
+sign_blob "$sbom_file"
 
 notes="$(mktemp)"
 trap 'rm -f "$notes"' EXIT
@@ -31,22 +104,35 @@ Download the archive that matches your OS and CPU:
 
 | File | Platform |
 | --- | --- |
-| \`cheesewaf-amd64-linux-*-PreTest.tar.gz\` | Linux x86_64 |
-| \`cheesewaf-arm64-linux-*-PreTest.tar.gz\` | Linux ARM64 |
-| \`cheesewaf-loong64-linux-*-PreTest.tar.gz\` | Linux LoongArch64 |
-| \`cheesewaf-amd64-darwin-*-PreTest.tar.gz\` / \`.dmg\` | macOS Intel |
-| \`cheesewaf-arm64-darwin-*-PreTest.tar.gz\` / \`.dmg\` | macOS Apple Silicon |
-| \`cheesewaf-amd64-windows-*-PreTest.exe\` | Windows x86_64 single-file CLI |
-| \`cheesewaf-arm64-windows-*-PreTest.exe\` | Windows ARM64 single-file CLI |
-| \`cheesewaf-amd64-windows-*-PreTest.zip\` | Windows x86_64 portable folder |
-| \`cheesewaf-arm64-windows-*-PreTest.zip\` | Windows ARM64 portable folder |
-| \`cheesewaf-amd64-windows-*-PreTest-setup.exe\` | Windows x86_64 GUI installer |
-| \`cheesewaf-arm64-windows-*-PreTest-setup.exe\` | Windows ARM64 GUI installer |
+| \`cheesewaf-amd64-linux-*-${suffix}.tar.gz\` | Linux x86_64 |
+| \`cheesewaf-arm64-linux-*-${suffix}.tar.gz\` | Linux ARM64 |
+| \`cheesewaf-loong64-linux-*-${suffix}.tar.gz\` | Linux LoongArch64 |
+| \`cheesewaf-amd64-darwin-*-${suffix}.tar.gz\` / \`.dmg\` | macOS Intel |
+| \`cheesewaf-arm64-darwin-*-${suffix}.tar.gz\` / \`.dmg\` | macOS Apple Silicon |
+| \`cheesewaf-amd64-windows-*-${suffix}.exe\` | Windows x86_64 single-file CLI |
+| \`cheesewaf-arm64-windows-*-${suffix}.exe\` | Windows ARM64 single-file CLI |
+| \`cheesewaf-amd64-windows-*-${suffix}.zip\` | Windows x86_64 portable folder |
+| \`cheesewaf-arm64-windows-*-${suffix}.zip\` | Windows ARM64 portable folder |
+| \`cheesewaf-amd64-windows-*-${suffix}-setup.exe\` | Windows x86_64 GUI installer |
+| \`cheesewaf-arm64-windows-*-${suffix}-setup.exe\` | Windows ARM64 GUI installer |
 
 Linux archives include \`systemd/cheesewaf.service\`. Verify downloads with \`SHA256SUMS\`.
+
+A CycloneDX SBOM is attached as \`cheesewaf.cdx.json\`. \`SHA256SUMS\` and the SBOM are signed with Sigstore keyless identities from GitHub Actions. Verify:
+
+\`\`\`
+cosign verify-blob --bundle SHA256SUMS.bundle \\
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+  --certificate-identity-regexp '^https://github.com/LaokeQwQ/CheeseWAF/' \\
+  SHA256SUMS
+\`\`\`
 EOF
 
-mapfile -t assets < <(find "$release_dir" -maxdepth 1 -type f ! -name release-manifest.txt | sort)
+assets=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  assets+=("$f")
+done < <(find "$release_dir" -maxdepth 1 -type f ! -name release-manifest.txt | sort)
 [[ "${#assets[@]}" -gt 0 ]] || {
   echo "::error::no files to publish in ${release_dir}" >&2
   exit 1

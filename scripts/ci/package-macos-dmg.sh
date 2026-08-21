@@ -53,6 +53,68 @@ fi
 stage_root="$(mktemp -d)"
 trap 'rm -rf "$stage_root"' EXIT
 
+CODESIGN_IDENTITY="-"
+CODESIGN_BIN_ARGS=(--timestamp=none)
+CODESIGN_DMG_ARGS=(--timestamp=none)
+NOTARIZE=0
+APPLE_KEY_FILE=""
+
+setup_macos_signing() {
+  if [[ -n "${MACOS_P12_BASE64:-}" ]]; then
+    local p12="${stage_root}/developer-id.p12"
+    local keychain="${stage_root}/codesign.keychain-db"
+    local kc_pass
+    printf '%s' "$MACOS_P12_BASE64" | base64 --decode >"$p12"
+    [[ -s "$p12" ]] || {
+      echo "::error::MACOS_P12_BASE64 did not decode to a PKCS#12 file" >&2
+      exit 1
+    }
+    kc_pass="$(openssl rand -base64 24)"
+    security create-keychain -p "$kc_pass" "$keychain"
+    security set-keychain-settings -lut 21600 "$keychain"
+    security unlock-keychain -p "$kc_pass" "$keychain"
+    security import "$p12" -k "$keychain" -P "${MACOS_P12_PASSWORD:-}" -T /usr/bin/codesign -T /usr/bin/security
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$keychain" >/dev/null
+    local user_keychains=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      user_keychains+=("${line//\"/}")
+    done < <(security list-keychain -d user)
+    security list-keychain -d user -s "$keychain" "${user_keychains[@]}"
+    CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+    if [[ -z "$CODESIGN_IDENTITY" ]]; then
+      CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/"/ {print $2; exit}')"
+    fi
+    [[ -n "$CODESIGN_IDENTITY" ]] || {
+      echo "::error::imported MACOS_P12_BASE64 but no codesigning identity was found" >&2
+      exit 1
+    }
+  elif [[ -n "${MACOS_CODESIGN_IDENTITY:-}" ]]; then
+    CODESIGN_IDENTITY="$MACOS_CODESIGN_IDENTITY"
+  else
+    local found
+    found="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+    if [[ -n "$found" ]]; then
+      CODESIGN_IDENTITY="$found"
+    fi
+  fi
+  if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+    CODESIGN_BIN_ARGS=(--timestamp --options runtime)
+    CODESIGN_DMG_ARGS=(--timestamp)
+    echo "codesign identity: ${CODESIGN_IDENTITY}"
+  else
+    echo "codesign identity: ad-hoc (no Developer ID available); Gatekeeper will still require the first-open helper"
+  fi
+  if [[ "$CODESIGN_IDENTITY" != "-" && -n "${APPLE_API_KEY:-}" && -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER:-}" ]]; then
+    APPLE_KEY_FILE="${stage_root}/AuthKey.p8"
+    printf '%s' "$APPLE_API_KEY" >"$APPLE_KEY_FILE"
+    NOTARIZE=1
+    echo "notarization: enabled"
+  fi
+}
+
+setup_macos_signing
+
 append_checksum() {
   local file="$1"
   local base
@@ -102,10 +164,21 @@ sign_app() {
   local bin
   for bin in "${app_root}/Contents/MacOS"/*; do
     [[ -f "$bin" ]] || continue
-    codesign --force --sign - --timestamp=none "$bin"
+    codesign --force --sign "$CODESIGN_IDENTITY" "${CODESIGN_BIN_ARGS[@]}" "$bin"
   done
-  codesign --force --sign - --timestamp=none "$app_root"
+  codesign --force --sign "$CODESIGN_IDENTITY" "${CODESIGN_BIN_ARGS[@]}" "$app_root"
   codesign --verify "$app_root" >/dev/null
+}
+
+notarize_dmg() {
+  local dmg_path="$1"
+  [[ "$NOTARIZE" == 1 ]] || return 0
+  xcrun notarytool submit "$dmg_path" \
+    --key "$APPLE_KEY_FILE" \
+    --key-id "$APPLE_API_KEY_ID" \
+    --issuer "$APPLE_API_ISSUER" \
+    --wait
+  xcrun stapler staple "$dmg_path"
 }
 
 assemble_app() {
@@ -249,7 +322,8 @@ for tarball in "${tarballs[@]}"; do
   rm -f "$dmg_path"
   hdiutil convert "$rw_dmg" -format UDZO -imagekey zlib-level=9 -o "$dmg_path" >/dev/null
   xattr -cr "$dmg_path" 2>/dev/null || true
-  codesign --force --sign - --timestamp=none "$dmg_path" 2>/dev/null || true
+  codesign --force --sign "$CODESIGN_IDENTITY" "${CODESIGN_DMG_ARGS[@]}" "$dmg_path" 2>/dev/null || true
+  notarize_dmg "$dmg_path"
   append_checksum "$dmg_path"
 done
 
