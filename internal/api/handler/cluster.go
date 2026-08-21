@@ -244,7 +244,23 @@ func (h *Handler) ClusterListDeployTasks(w http.ResponseWriter, r *http.Request)
 }
 
 func authorizationTarget(req deploy.SSHDeploymentRequest) deploy.AuthorizationTarget {
-	return deploy.AuthorizationTarget{Host: req.Host, User: req.User, Port: req.Port, HostKeySHA256: req.HostKeySHA256}
+	t := deploy.AuthorizationTarget{Host: req.Host, User: req.User, Port: req.Port, HostKeySHA256: req.HostKeySHA256}
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	// Only bind the intended deploy action when the caller explicitly names a
+	// non-check action. A check task authorization must remain usable for the
+	// follow-up deploy, which may legitimately use a different action.
+	if action != "" && action != "check" {
+		t.Action = action
+	}
+	if req.TaskID != "" {
+		t.TaskID = strings.TrimSpace(req.TaskID)
+	}
+	if action == "install" {
+		if digest, err := deploy.InstallBinarySHA256(); err == nil {
+			t.BinarySHA256 = digest
+		}
+	}
+	return t
 }
 func (h *Handler) consumeClusterDeployAuthorization(req clusterDeployRequest) error {
 	return h.clusterDeployAuthorizationStore().Consume(req.Authorization, authorizationTarget(req.SSHDeploymentRequest))

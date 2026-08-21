@@ -181,12 +181,18 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:users")).Get("/users", h.ListUsers)
 			r.With(require("write:users")).Post("/users", h.CreateUser)
 			r.With(require("write:users")).Put("/users/{id}", h.UpdateUser)
+			// 2FA enrollment/enable/disable stay behind the handler account-owner
+			// check (authorizeUser2FA). Do NOT add require("write:users") here or a
+			// write:users operator could act on arbitrary user ids.
 			r.Post("/users/{id}/2fa/setup", h.SetupUser2FA)
 			r.Post("/users/{id}/2fa/enable", h.EnableUser2FA)
 			r.Post("/users/{id}/2fa/disable", h.DisableUser2FA)
 			r.With(require("write:config")).Post("/captcha/lab/challenges", h.IssueCaptchaLabChallenge)
 			r.With(require("write:config")).Post("/captcha/lab/verify", h.VerifyCaptchaLabChallenge)
-			r.Post("/users/{id}/2fa/recover", h.RecoverUser2FA)
+			// Recover is a security-sensitive admin operation; require write:users
+			// at the route as defence-in-depth. The handler still enforces that the
+			// caller is an admin session and never the account owner.
+			r.With(require("write:users")).Post("/users/{id}/2fa/recover", h.RecoverUser2FA)
 			r.With(require("read:logs")).Get("/logs", h.ListLogs)
 			r.With(require("read:logs")).Get("/review", h.ListReviewItems)
 			r.With(require("read:logs")).Get("/review/{id}", h.GetReviewItem)

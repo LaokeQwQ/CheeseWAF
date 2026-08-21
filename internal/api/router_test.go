@@ -107,6 +107,7 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 		{name: "create user", method: http.MethodPost, path: "/api/users", body: []byte(`{"username":"next","password":"Correct-Horse-9x!","role":"readonly"}`)},
 		{name: "update user", method: http.MethodPut, path: "/api/users/admin-id", body: []byte(`{"role":"admin"}`)},
 		{name: "disable 2fa", method: http.MethodPost, path: "/api/users/admin-id/2fa/disable", body: []byte(`{}`)},
+		{name: "recover 2fa", method: http.MethodPost, path: "/api/users/admin-id/2fa/recover", body: []byte(`{}`)},
 		{name: "ip tags", method: http.MethodPut, path: "/api/ip/tags", body: []byte(`{"tags":{}}`)},
 		{name: "threat providers", method: http.MethodPut, path: "/api/ip/threat-intel/providers", body: []byte(`{"providers":[]}`)},
 		{name: "threat import", method: http.MethodPost, path: "/api/ip/threat-intel/import", body: []byte(`{"entries":[]}`)},
@@ -334,6 +335,20 @@ func TestRouterTwoFARecoveryAllowsAdminSessionAndRejectsAPIToken(t *testing.T) {
 	recovery := perform(router, http.MethodPost, "/api/users/reader-id/2fa/recover", adminToken, []byte(`{"password":"admin-password","confirm_username":"reader"}`))
 	if recovery.Code != http.StatusOK {
 		t.Fatalf("admin session should recover user 2fa, got %d: %s", recovery.Code, recovery.Body.String())
+	}
+}
+
+// Even a role with write:users passes the routes require("write:users") guard
+// but must still be rejected by the handler-admin check in RecoverUser2FA.
+func TestRouterTwoFARecoveryRejectsOperatorSessionEvenWithWriteUsers(t *testing.T) {
+	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.Permissions["operator"] = []string{"write:users"}
+	})
+	createAuthzUser(t, store, "operator-id", "operator", "operator-password", "operator")
+	operatorToken := loginAuthzUser(t, router, "operator", "operator-password")
+	recover := perform(router, http.MethodPost, "/api/users/reader-id/2fa/recover", operatorToken, []byte(`{"password":"operator-password","confirm_username":"reader"}`))
+	if recover.Code != http.StatusForbidden {
+		t.Fatalf("operator with write:users must not recover another user, got %d: %s", recover.Code, recover.Body.String())
 	}
 }
 

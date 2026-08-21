@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -33,10 +34,22 @@ type twoFARecoveryPayload struct {
 	ConfirmUsername string `json:"confirm_username"`
 }
 
+// totpConsumedPersist is the subset of storage.Store needed to persist burned
+// TOTP counters across restarts. It is satisfied by storage.Store; a nil value
+// keeps the in-memory behaviour used by unit tests.
+type totpConsumedPersist interface {
+	MarkTOTPConsumed(ctx context.Context, userID string, counter int64, expiresAt time.Time) error
+	IsTOTPConsumed(ctx context.Context, userID string, counter int64, now time.Time) (bool, error)
+	DeleteTOTPConsumed(ctx context.Context, userID string, counter int64) error
+	PruneTOTPConsumed(ctx context.Context, before time.Time) error
+}
+
 type twoFAState struct {
-	mu       sync.Mutex
-	pending  map[string]twoFAPendingSecret
-	consumed map[string]time.Time // key: userID:counter → expiresAt
+	mu          sync.Mutex
+	pending     map[string]twoFAPendingSecret
+	consumed    map[string]time.Time // key: userID:counter → expiresAt
+	store       totpConsumedPersist
+	consumedTTL time.Duration
 }
 
 type twoFAPendingSecret struct {
@@ -53,15 +66,21 @@ const (
 )
 
 func newTwoFAState() *twoFAState {
+	return newTwoFAStateWithStore(nil)
+}
+
+func newTwoFAStateWithStore(store totpConsumedPersist) *twoFAState {
 	return &twoFAState{
-		pending:  map[string]twoFAPendingSecret{},
-		consumed: map[string]time.Time{},
+		pending:     map[string]twoFAPendingSecret{},
+		consumed:    map[string]time.Time{},
+		store:       store,
+		consumedTTL: twoFAConsumedTOTPTTL,
 	}
 }
 
 func (h *Handler) twoFATracker() *twoFAState {
 	if h.TwoFAState == nil {
-		h.TwoFAState = newTwoFAState()
+		h.TwoFAState = newTwoFAStateWithStore(h.Store)
 	}
 	return h.TwoFAState
 }
@@ -490,6 +509,10 @@ func (s *twoFAState) verifyAndConsumePending(userID, secret, code string, now ti
 	return twoFAPendingConsumed
 }
 
+// authorizeUser2FA is the handler-level check that keeps setup/enable/disable
+// bound to the account owner. The router deliberately does NOT add
+// require("write:users") to those routes so a write:users operator cannot act
+// on arbitrary user ids. Do not remove this check when adding route RBAC.
 func (h *Handler) authorizeUser2FA(w http.ResponseWriter, r *http.Request, user *storage.User) bool {
 	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
 	if claims == nil {
@@ -548,7 +571,25 @@ func (s *twoFAState) consumeTOTPCounter(userID, secret, code string, now time.Ti
 	if expiresAt, exists := s.consumed[key]; exists && expiresAt.After(now) {
 		return 0, false
 	}
-	s.consumed[key] = now.Add(twoFAConsumedTOTPTTL)
+	ttl := s.consumedTTL
+	if ttl <= 0 {
+		ttl = twoFAConsumedTOTPTTL
+	}
+	expiresAt := now.Add(ttl)
+	if s.store != nil {
+		if consumed, err := s.store.IsTOTPConsumed(context.Background(), userID, counter, now); err != nil || consumed {
+			// Fail closed on persistence errors so a burned code cannot be reused
+			// while the backing store is unavailable.
+			return 0, false
+		}
+	}
+	s.consumed[key] = expiresAt
+	if s.store != nil {
+		if err := s.store.MarkTOTPConsumed(context.Background(), userID, counter, expiresAt); err != nil {
+			// Fail closed: memory keeps the mark and the use is rejected.
+			return 0, false
+		}
+	}
 	return counter, true
 }
 
@@ -559,6 +600,9 @@ func (s *twoFAState) releaseConsumedTOTP(userID string, counter int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.consumed, totpConsumeKey(userID, counter))
+	if s.store != nil {
+		_ = s.store.DeleteTOTPConsumed(context.Background(), userID, counter)
+	}
 }
 
 func totpConsumeKey(userID string, counter int64) string {
@@ -575,5 +619,8 @@ func (s *twoFAState) pruneLocked(now time.Time) {
 		if !expiresAt.After(now) {
 			delete(s.consumed, key)
 		}
+	}
+	if s.store != nil {
+		_ = s.store.PruneTOTPConsumed(context.Background(), now)
 	}
 }

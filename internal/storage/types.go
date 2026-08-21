@@ -94,6 +94,19 @@ type Store interface {
 
 	// Review items (detected-but-not-blocked, plus level-5 blocks for a model verdict)
 	ReviewStore
+
+	// TOTP consumed counters (persistent anti-replay).
+	TOTPStore
+}
+
+// TOTPStore persists one-time consumed TOTP counters so a burned code cannot be
+// replayed after a process restart. Expired rows are allowed to remain and are
+// ignored by IsTOTPConsumed, so a code can be reused again after its TTL.
+type TOTPStore interface {
+	MarkTOTPConsumed(ctx context.Context, userID string, counter int64, expiresAt time.Time) error
+	IsTOTPConsumed(ctx context.Context, userID string, counter int64, now time.Time) (bool, error)
+	DeleteTOTPConsumed(ctx context.Context, userID string, counter int64) error
+	PruneTOTPConsumed(ctx context.Context, before time.Time) error
 }
 
 // ReviewStore persists suspicious requests for admin decision and model review.
