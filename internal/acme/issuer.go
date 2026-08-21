@@ -31,6 +31,9 @@ var (
 		regexp.MustCompile(`(?i)([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASS|API[_-]?KEY|ACCESS[_-]?KEY)[A-Z0-9_]*\s*=\s*)[^\s'"]+`),
 		regexp.MustCompile(`(?i)((?:authorization|x-api-key|api-key)\s*[:=]\s*(?:bearer\s+)?)\S+`),
 	}
+	// Quoted JSON string values for secret-bearing keys (compact or pretty-printed).
+	sensitiveJSONValuePattern = regexp.MustCompile(`(?i)("(?:[a-z0-9_-]*(?:secret|password|token)|(?:api|access)[_-]?key|authorization|private[_-]?key)"\s*:\s*")([^"\\]|\\.)*(")`)
+
 	// Process-control / loader variables must never be accepted from caller-supplied DNS env.
 	blockedDNSEnvKeys = map[string]struct{}{
 		"PATH": {}, "PATHEXT": {}, "ComSpec": {}, "COMSPEC": {},
@@ -501,6 +504,7 @@ func redactSensitiveOutput(value string) string {
 	for _, pattern := range sensitiveOutputPatterns {
 		out = pattern.ReplaceAllString(out, "${1}******")
 	}
+	out = sensitiveJSONValuePattern.ReplaceAllString(out, `${1}******${3}`)
 	return out
 }
 

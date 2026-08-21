@@ -120,6 +120,13 @@ The analyzer inspects **individual decoded parameter values** (paths and paramet
 - **Isolated Payload**: The inspected parameter value consists almost entirely of exploit syntax (e.g., `UNION SELECT 1,2,3`, allowing minimal wrappers like `@` or trailing semicolons).
 - **Embedded Payload**: The attack pattern appears inside ordinary text, user comments, articles, or descriptions.
 
+**Isolation classification scope (current):**
+- The isolation gadget list covers **PHP/JSP live shells**, **Log4j JNDI** lookups, and **short quoted/predicate SQL** (≤96 runes).
+- **XSS**, command/RCE, **SSTI**, **SSRF**, and **XXE** use document shape guards, not this gadget list.
+- Only hits labeled **embedded** skip blocking below paranoia level 5.
+- Hits that stay **unclassified** still go through `blockableHit` evidence rules; they are **not** auto-treated as embedded.
+- Technical articles and writeups are not guaranteed to always pass — isolation reduces false positives for covered gadgets, it is not a blanket content pass.
+
 ### Paranoia Level Matrix
 
 | Level | Name | Isolated Payload | Embedded Payload | Dynamic Elevation | Mechanism & Target Scenario |
@@ -151,36 +158,39 @@ Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/C
 
 | File | Platform |
 | --- | --- |
-| `cheesewaf-*-linux-amd64.tar.gz` | Linux x86_64 |
-| `cheesewaf-*-linux-arm64.tar.gz` | Linux ARM64 |
-| `cheesewaf-*-linux-loong64.tar.gz` | Linux LoongArch64 |
-| `cheesewaf-*-darwin-amd64.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-*-darwin-arm64.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-*-windows-amd64.exe` | Windows x86_64 single-file CLI |
-| `cheesewaf-*-windows-arm64.exe` | Windows ARM64 single-file CLI |
-| `cheesewaf-*-windows-amd64.zip` | Windows x86_64 portable folder |
-| `cheesewaf-*-windows-arm64.zip` | Windows ARM64 portable folder |
+| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux LoongArch64 |
+| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 single-file CLI |
+| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 single-file CLI |
+| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 portable folder |
+| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 portable folder |
 
 ```bash
 # Linux x86_64 example
-tar -xzf cheesewaf-*-linux-amd64.tar.gz
+tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
 cd cheesewaf-*
 ```
 
-Linux ARM64 and LoongArch64 use the same steps with `linux-arm64` or `linux-loong64`.
+Linux ARM64 and LoongArch64 use `cheesewaf-arm64-linux-*-PreTest.tar.gz` or `cheesewaf-loong64-linux-*-PreTest.tar.gz`.
 
 #### Step 2: Install Executable and Configure Directories
 
 ```bash
-# Install binary and create CLI symlink
+# From the extracted package directory (needs cheesewaf and web/dist):
+sudo ./install-linux.sh
+```
+
+Or install by hand. Copy the UI files as well as the binary, otherwise `/setup` returns 404:
+
+```bash
 sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
-
-# Set up configuration and working directories
-sudo mkdir -p /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
-
-# Create service user and set ownership
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
@@ -204,7 +214,9 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-Navigate to `http://<SERVER_IP>:9443/setup` to complete initial setup.
+The default admin listener is `127.0.0.1:9443`. Open `http://127.0.0.1:9443/setup` on the server (or an SSH tunnel). Remote `SERVER_IP:9443` stays closed until setup chooses a public admin strategy.
+
+`GET /api/setup` returns 405; first-install status is `GET /api/setup/status`. Completing setup is `POST /api/setup` with `X-CheeseWAF-Setup-Token`. Login from another host still needs the console captcha; loopback API login does not.
 
 ---
 
@@ -313,11 +325,17 @@ Windows releases bundle a lightweight local GUI controller bound strictly to loo
 
 ### 4. macOS Deployment (DMG)
 
-1. Download `cheesewaf-*-darwin-arm64.dmg` (Apple Silicon) or `cheesewaf-*-darwin-amd64.dmg` (Intel).
+1. Download `cheesewaf-arm64-darwin-*-PreTest.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*-PreTest.dmg` (Intel).
 2. Open the disk image and drag **CheeseWAF** into **Applications**.
 3. Open CheeseWAF from Launchpad or Applications. It starts the local controller (start / stop / open the Web console).
+4. If macOS says the app is damaged, that is Gatekeeper blocking an unsigned PreTest build. Run **Fix Gatekeeper.command** on the disk, or:
 
-Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*.tar.gz` if you only want the CLI.
+```bash
+xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
+open /Applications/CheeseWAF.app
+```
+
+Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*-PreTest.tar.gz` if you only want the CLI.
 
 ---
 
