@@ -391,6 +391,7 @@ export default function SitesPage() {
                     value={draft.listenPort}
                     onChange={(e) => updateDraft('listenPort', Number(e.target.value || 80))}
                   />
+                  <em>{t('sites.listenHint')}</em>
                 </label>
                 <label>
                   <span>{t('sites.loadBalance')}</span>

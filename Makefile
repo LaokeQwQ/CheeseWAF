@@ -7,7 +7,7 @@ MODULE       := github.com/LaokeQwQ/CheeseWAF
 VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
 COMMIT       := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME   := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-CHANNEL      := $(shell branch=$$(git branch --show-current 2>/dev/null || echo dev-local); case "$$branch" in master|main) echo stable ;; canary) echo canary ;; dev) echo dev ;; *) echo dev-local ;; esac)
+CHANNEL      := $(shell sh scripts/ci/channel-from-git.sh)
 LDFLAGS      := -s -w -X '$(MODULE)/internal/version.Version=$(VERSION)' -X '$(MODULE)/internal/version.Commit=$(COMMIT)' -X '$(MODULE)/internal/version.BuildTime=$(BUILD_TIME)' -X '$(MODULE)/internal/version.Channel=$(CHANNEL)'
 
 GO           := go
@@ -15,7 +15,7 @@ GOFLAGS      := -trimpath
 GCFLAGS      := -l=4
 CGO_ENABLED  := 0
 
-.PHONY: all build build-cli run test test-go web-build security-corpus security-corpus-http security-gate lint clean dev help
+.PHONY: all build build-cli run test test-go web-test web-build security-corpus security-corpus-http security-gate lint clean dev help
 
 ## help: Show this help message
 help:
@@ -25,7 +25,7 @@ help:
 	@echo "  make build-cli   Build and create waf-cli symlink"
 	@echo "  make run         Run cheesewaf serve"
 	@echo "  make dev         Run with hot-reload (requires air)"
-	@echo "  make test        Run all tests"
+	@echo "  make test        Run Go and frontend tests"
 	@echo "  make web-build   Build the web dashboard"
 	@echo "  make security-corpus      Run curated semantic corpus against analyzer"
 	@echo "  make security-corpus-http Run curated corpus against deployed WAF (BASE_URL=...)"
@@ -59,22 +59,28 @@ ifeq ($(OS),Windows_NT)
 endif
 
 ## package-windows-cli: Stage a zip/bin-style Windows CLI payload directory
-package-windows-cli: build build-windows-gui
-	@mkdir -p dist/windows-cli/configs dist/windows-cli/data dist/windows-cli/logs
-	@cp -f bin/$(BINARY_NAME).exe dist/windows-cli/ 2>/dev/null || cp -f bin/$(BINARY_NAME) dist/windows-cli/ || true
-	@cp -f bin/$(BINARY_NAME)-gui.exe dist/windows-cli/cheesewaf-gui.exe 2>/dev/null || \
-		cp -f bin/$(BINARY_NAME)-gui-windows-amd64.exe dist/windows-cli/cheesewaf-gui.exe 2>/dev/null || true
-	@cp -f bin/$(BINARY_NAME).exe dist/windows-cli/waf-cli.exe 2>/dev/null || true
-	@cp -f configs/cheesewaf.yaml dist/windows-cli/configs/ 2>/dev/null || true
+package-windows-cli: build-windows-gui
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME).exe ./cmd/cheesewaf/
+	@mkdir -p dist/windows-cli/configs dist/windows-cli/data dist/windows-cli/logs dist/windows-cli/web
+	@test -f bin/$(BINARY_NAME).exe
+	@cp -f bin/$(BINARY_NAME).exe dist/windows-cli/
+	@cp -f bin/$(BINARY_NAME).exe dist/windows-cli/waf-cli.exe
+	@if [ -f bin/$(BINARY_NAME)-gui.exe ]; then cp -f bin/$(BINARY_NAME)-gui.exe dist/windows-cli/cheesewaf-gui.exe; \
+	elif [ -f bin/$(BINARY_NAME)-gui-windows-amd64.exe ]; then cp -f bin/$(BINARY_NAME)-gui-windows-amd64.exe dist/windows-cli/cheesewaf-gui.exe; \
+	else echo "missing cheesewaf-gui Windows binary" >&2; exit 1; fi
+	@cp -f configs/cheesewaf.yaml dist/windows-cli/configs/
+	@if [ -d web/dist ]; then cp -R web/dist dist/windows-cli/web/; fi
 	@echo "Staged dist/windows-cli — zip manually; do not embed secrets"
 
 ## package-windows-nsis-payload: Stage SOURCE_DIR for makensis (no secrets)
 package-windows-nsis-payload: package-windows-cli
 	@mkdir -p dist/windows-payload/configs
-	@cp -f dist/windows-cli/cheesewaf.exe dist/windows-payload/ 2>/dev/null || true
-	@cp -f dist/windows-cli/cheesewaf-gui.exe dist/windows-payload/ 2>/dev/null || true
-	@cp -f dist/windows-cli/waf-cli.exe dist/windows-payload/ 2>/dev/null || true
-	@cp -f dist/windows-cli/configs/cheesewaf.yaml dist/windows-payload/configs/ 2>/dev/null || true
+	@test -f dist/windows-cli/cheesewaf.exe
+	@cp -f dist/windows-cli/cheesewaf.exe dist/windows-payload/
+	@cp -f dist/windows-cli/cheesewaf-gui.exe dist/windows-payload/
+	@cp -f dist/windows-cli/waf-cli.exe dist/windows-payload/
+	@cp -f dist/windows-cli/configs/cheesewaf.yaml dist/windows-payload/configs/
+	@if [ -d dist/windows-cli/web ]; then cp -R dist/windows-cli/web dist/windows-payload/; fi
 	@echo "Staged dist/windows-payload for: makensis /DVERSION=... /DSOURCE_DIR=dist/windows-payload deploy/windows/nsis/cheesewaf.nsi"
 
 ## build-linux: Cross-compile for Linux amd64
@@ -115,15 +121,19 @@ dev:
 	air -c .air.toml
 
 ## test: Run all tests
-test: test-go web-build
+test: test-go web-test
 
 ## test-go: Run Go tests
 test-go:
 	$(GO) test -v -race -count=1 ./cmd/... ./internal/...
 
+## web-test: Run frontend unit tests
+web-test:
+	cd web && npm test
+
 ## web-build: Build the React dashboard
 web-build:
-	cd web && npm ci && npm run build
+	cd web && npm ci --no-audit --no-fund --ignore-scripts && npm run build
 
 ## security-corpus: Run curated attack/benign corpus against the semantic analyzer
 security-corpus:

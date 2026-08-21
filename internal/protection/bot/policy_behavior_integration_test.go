@@ -91,7 +91,7 @@ func verifyBehavior(t *testing.T, p *Policy, response captcha.BehaviorResponse, 
 		req.AddCookie(cookie)
 	}
 	rec := httptest.NewRecorder()
-	p.VerifyBehaviorChallenge(rec, req, clientIP, site, true)
+	p.VerifyBehaviorChallenge(rec, req, clientIP, site)
 	return rec
 }
 

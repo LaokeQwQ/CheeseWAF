@@ -38,3 +38,7 @@ updates:
       - dependencies
       - ci
     open-pull-requests-limit: 5
+    groups:
+      github-codeql:
+        patterns:
+          - github/codeql-action

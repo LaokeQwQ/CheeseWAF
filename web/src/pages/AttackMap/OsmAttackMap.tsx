@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, type MutableRefObject } from 'react';
-import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type StyleSpecification } from 'maplibre-gl';
+import {
+  Map as MapLibreMap,
+  NavigationControl,
+  Popup,
+  ScaleControl,
+  type GeoJSONSource,
+  type StyleSpecification,
+} from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { worldFeatures, type AttackRegion, type ThreatLevel } from './attackMapData';
 import type { GeoFeatureCollection } from './chinaBoundaries';
@@ -121,7 +128,7 @@ export default function OsmAttackMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<MapLibreMap | null>(null);
   const readyRef = useRef(false);
-  const popupRef = useRef<maplibregl.Popup | null>(null);
+  const popupRef = useRef<Popup | null>(null);
   const regionsRef = useRef(regions);
   const formatRef = useRef(formatTooltip);
   const onSelectRef = useRef(onSelectRegion);
@@ -145,7 +152,7 @@ export default function OsmAttackMap({
       return undefined;
     }
 
-    const map = new maplibregl.Map({
+    const map = new MapLibreMap({
       container: containerRef.current,
       style: buildOfflineStyle(),
       center: modeRef.current === 'china' ? [104.2, 35.9] : WORLD_CENTER,
@@ -160,10 +167,10 @@ export default function OsmAttackMap({
       localIdeographFontFamily: 'sans-serif',
     });
 
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-    map.addControl(new maplibregl.ScaleControl({ maxWidth: 120 }), 'bottom-left');
+    map.addControl(new NavigationControl({ showCompass: false }), 'top-right');
+    map.addControl(new ScaleControl({ maxWidth: 120 }), 'bottom-left');
 
-    popupRef.current = new maplibregl.Popup({
+    popupRef.current = new Popup({
       closeButton: false,
       closeOnClick: false,
       offset: 12,

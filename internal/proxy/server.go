@@ -831,7 +831,7 @@ func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request,
 		)
 	}
 	// Body was size-capped and rewound by EnsureBody on the verify path.
-	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID, requestIsHTTPS(r, trustedProxyCIDRs(site.WAF.AccessControl)))
+	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID)
 }
 
 // isLocalURL reports whether raw is a same-origin relative URL safe for redirects.
