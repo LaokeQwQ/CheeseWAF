@@ -158,24 +158,44 @@ func (v *jwtVerifier) Verify(token parsedJWT) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("no JWT verification keys are loaded")
 	}
-	var sawCandidate bool
+	var algKeys []jwtKey
 	for _, key := range keys {
-		if token.kid != "" && key.kid != "" && token.kid != key.kid {
-			continue
-		}
 		if key.alg != "" && token.alg != key.alg {
 			continue
 		}
 		if !keySupportsAlg(key, token.alg) {
 			continue
 		}
-		sawCandidate = true
+		algKeys = append(algKeys, key)
+	}
+	if len(algKeys) == 0 {
+		return fmt.Errorf("no matching JWT verification key for alg %q kid %q", token.alg, token.kid)
+	}
+	var candidates []jwtKey
+	if len(algKeys) == 1 {
+		key := algKeys[0]
+		if token.kid != "" && key.kid != "" && token.kid != key.kid {
+			return fmt.Errorf("no matching JWT verification key for alg %q kid %q", token.alg, token.kid)
+		}
+		candidates = algKeys
+	} else {
+		// Multiple keys: kid is required and empty key.kid is not a wildcard.
+		if token.kid == "" {
+			return fmt.Errorf("JWT kid is required when multiple verification keys match alg %q", token.alg)
+		}
+		for _, key := range algKeys {
+			if key.kid != "" && key.kid == token.kid {
+				candidates = append(candidates, key)
+			}
+		}
+		if len(candidates) == 0 {
+			return fmt.Errorf("no matching JWT verification key for alg %q kid %q", token.alg, token.kid)
+		}
+	}
+	for _, key := range candidates {
 		if verifyJWTSignature(key, token.alg, token.signingInput, token.signature) == nil {
 			return nil
 		}
-	}
-	if !sawCandidate {
-		return fmt.Errorf("no matching JWT verification key for alg %q kid %q", token.alg, token.kid)
 	}
 	return fmt.Errorf("JWT signature verification failed")
 }

@@ -87,8 +87,8 @@ type Tool interface {
 	// 返回工具名称。
 	Name() string
 
-	// Description returns a human-readable description (also used as LLM tool description).
-	// 返回人类可读描述（同时作为 LLM 的 tool description）。
+	// Description is shown to operators and sent to the model as the tool description.
+	// 给操作员看，同时作为模型侧的工具说明。
 	Description() string
 
 	// Sensitivity returns the tool's sensitivity level.
@@ -119,7 +119,7 @@ type ToolRegistry interface {
 	// 列出所有已注册工具。
 	List() []Tool
 
-	// ListForLLM returns tool definitions formatted for the LLM API (OpenAI function calling format).
-	// 返回格式化为 LLM API 的工具定义（OpenAI function calling 格式）。
+	// ListForLLM returns tool definitions in the model function-calling schema.
+	// 返回模型函数调用协议所用的工具定义。
 	ListForLLM() []map[string]any
 }

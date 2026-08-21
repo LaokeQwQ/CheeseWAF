@@ -19,6 +19,22 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
+func TestVerifyLoginCAPTCHAAllowsLoopbackWithoutPayload(t *testing.T) {
+	cfg := config.Default()
+	cfg.Console.Login.CAPTCHA.Enabled = true
+	h := &Handler{Config: &cfg}
+	loopback := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	loopback.RemoteAddr = "127.0.0.1:54321"
+	if !h.verifyLoginCAPTCHA(loopback, nil) {
+		t.Fatal("loopback login must not require captcha")
+	}
+	remote := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	remote.RemoteAddr = "198.51.100.10:54321"
+	if h.verifyLoginCAPTCHA(remote, nil) {
+		t.Fatal("remote login must still require captcha")
+	}
+}
+
 func TestLoginAttemptConcurrencyLimit(t *testing.T) {
 	state := newLoginCAPTCHAState()
 	for i := 0; i < loginMaxConcurrentAttempts; i++ {
