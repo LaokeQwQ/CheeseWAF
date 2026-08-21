@@ -112,6 +112,12 @@ const REQUIRED_KEYS = [
   'passwordPolicy.usernameRelated',
   'common.loadFailed',
   'common.home',
+  'securityCategories.xxe',
+  'securityCategories.protocolEnforcement',
+  'securityCategories.ipAccess',
+  'securityCategories.fingerprint',
+  'securityCategories.apiSecurity',
+  'securityCategories.requestTooLarge',
 ];
 
 function collectSourceFiles(dir: string, out: string[] = []): string[] {
@@ -156,7 +162,7 @@ describe('locale dictionaries', () => {
     }
   });
 
-  it('includes keys required by admin UI (kimi_i18n problem 1 + password policy)', () => {
+  it('includes keys required by admin UI and password policy', () => {
     const keys = new Set(leafKeys(enUS));
     for (const key of REQUIRED_KEYS) {
       expect(keys.has(key), `missing required key ${key}`).toBe(true);
