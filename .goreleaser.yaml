@@ -40,7 +40,7 @@ archives:
   - id: cheesewaf-archive
     ids:
       - cheesewaf
-    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "{{ .ProjectName }}-{{ .Arch }}-{{ .Os }}-{{ .Version }}"
     formats:
       - tar.gz
     files:
@@ -60,12 +60,19 @@ archives:
       - configs/*
       - src: deploy/systemd/cheesewaf.service
         dst: systemd/cheesewaf.service
+      - src: scripts/ci/install-linux.sh
+        dst: install-linux.sh
+        info:
+          mode: 0755
       - README.md
       - README_CN.md
       - LICENSE
 
 checksum:
   name_template: SHA256SUMS
+
+snapshot:
+  version_template: "0.1.0-PreTest"
 
 changelog:
   sort: asc

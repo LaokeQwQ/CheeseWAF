@@ -7,7 +7,9 @@ Wants=network-online.target
 Type=simple
 User=cheesewaf
 Group=cheesewaf
-ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml
+WorkingDirectory=/var/lib/cheesewaf
+Environment=CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web
+ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s

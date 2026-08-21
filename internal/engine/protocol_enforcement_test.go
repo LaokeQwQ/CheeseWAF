@@ -74,3 +74,28 @@ func TestDetectProtocolViolationsWebSocketUpgradeShape(t *testing.T) {
 		}
 	})
 }
+
+func TestDetectCLTESmugglingFromTransferEncodingField(t *testing.T) {
+	// net/http moves TE into r.TransferEncoding and may clear Header["Transfer-Encoding"].
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/", strings.NewReader("0123456789"))
+	req.Header.Set("Content-Length", "10")
+	req.ContentLength = 10
+	req.TransferEncoding = []string{"chunked"}
+	req.Header.Del("Transfer-Encoding")
+
+	got := DetectProtocolViolations(req)
+	if got == nil || !got.Detected || got.Type != "smuggling" {
+		t.Fatalf("expected CL.TE smuggling when TE lives only on TransferEncoding field, got %+v", got)
+	}
+}
+
+func TestDetectTECLSmugglingFromTransferEncodingExtraValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/", nil)
+	req.TransferEncoding = []string{"chunked", "identity"}
+	req.Header.Del("Transfer-Encoding")
+
+	got := DetectProtocolViolations(req)
+	if got == nil || !got.Detected || got.Type != "smuggling" || got.Severity != SeverityCritical {
+		t.Fatalf("expected TE.CL multi-value smuggling via TransferEncoding field, got %+v", got)
+	}
+}
