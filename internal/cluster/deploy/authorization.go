@@ -16,6 +16,9 @@ type AuthorizationTarget struct {
 	User          string
 	Port          int
 	HostKeySHA256 string
+	Action        string
+	TaskID        string
+	BinarySHA256  string
 }
 type Authorization struct {
 	Handle    string    `json:"handle"`
@@ -94,7 +97,7 @@ func (s *AuthorizationStore) Consume(h string, t AuthorizationTarget) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.records[strings.TrimSpace(h)]
-	if !ok || !s.now().UTC().Before(r.expiresAt) || r.target != NormalizeAuthorizationTarget(t) {
+	if !ok || !s.now().UTC().Before(r.expiresAt) || !authorizationTargetsMatch(r.target, NormalizeAuthorizationTarget(t)) {
 		return ErrAuthorizationInvalid
 	}
 	delete(s.records, h)
@@ -115,7 +118,31 @@ func NormalizeAuthorizationTarget(t AuthorizationTarget) AuthorizationTarget {
 	if len(t.HostKeySHA256) >= 7 && strings.EqualFold(t.HostKeySHA256[:7], "SHA256:") {
 		t.HostKeySHA256 = "SHA256:" + t.HostKeySHA256[7:]
 	}
+	t.Action = strings.ToLower(strings.TrimSpace(t.Action))
+	t.TaskID = strings.TrimSpace(t.TaskID)
+	t.BinarySHA256 = strings.ToLower(strings.TrimSpace(t.BinarySHA256))
 	return t
+}
+
+// authorizationTargetsMatch enforces the full request fingerprint. Host, User,
+// Port and HostKeySHA256 must always match exactly. Action, TaskID and
+// BinarySHA256 are bound only when the issued record carries a non-empty value;
+// an empty value means the issuer did not bind that dimension (e.g. a generic
+// connectivity check), so the consumer is not constrained for it.
+func authorizationTargetsMatch(issued, consumed AuthorizationTarget) bool {
+	if issued.Host != consumed.Host || issued.User != consumed.User || issued.Port != consumed.Port || issued.HostKeySHA256 != consumed.HostKeySHA256 {
+		return false
+	}
+	if issued.Action != "" && issued.Action != consumed.Action {
+		return false
+	}
+	if issued.TaskID != "" && issued.TaskID != consumed.TaskID {
+		return false
+	}
+	if issued.BinarySHA256 != "" && issued.BinarySHA256 != consumed.BinarySHA256 {
+		return false
+	}
+	return true
 }
 func randomAuthorizationToken() (string, error) {
 	var b [32]byte
