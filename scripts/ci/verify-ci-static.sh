@@ -338,11 +338,11 @@ grep -Fq 'internal/version.Channel=' scripts/build-all.sh ||
 grep -Fq 'bin/$(BINARY_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext' Makefile ||
   fail "Makefile build-all must use cheesewaf-{arch}-{os}-{version} names"
 
-# Forgejo alignment: shared npm audit gate and actionlint over Forgejo workflows.
+# Forgejo alignment: shared npm audit gate. actionlint only lints GitHub YAML;
+# Forgejo uses https://data.forgejo.org/... action URLs that actionlint cannot
+# parse, so Forgejo workflow correctness stays covered by the static checks above.
 grep -Fq 'node scripts/npm-audit-gate.mjs' .forgejo/workflows/ci.yml ||
   fail "Forgejo web-audit must use the shared npm-audit-gate"
-grep -Fq '.forgejo/workflows/*.yml' .forgejo/workflows/ci.yml ||
-  fail "Forgejo ci-static must run actionlint on .forgejo workflows"
 
 # Coverage gates must stay aligned with actual observed coverage so CI is not
 # guaranteed to fail.
