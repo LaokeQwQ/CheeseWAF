@@ -107,6 +107,7 @@ cheesewaf-*-deploy.tar.gz
 !docs/performance-optimization.md
 !docs/protection-policy-roadmap.md
 !docs/paranoia-level-implementation.md
+!docs/environment-variables.md
 *.private.md
 *.local.md
 
