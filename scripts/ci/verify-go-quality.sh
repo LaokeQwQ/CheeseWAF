@@ -5,7 +5,7 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
 
 mode="${1:-all}"
-coverage_floor="${GO_COVERAGE_FLOOR:-20.0}"
+coverage_floor="${GO_COVERAGE_FLOOR:-50.0}"
 
 verify_format() {
   mapfile -t unformatted < <(gofmt -l cmd internal)

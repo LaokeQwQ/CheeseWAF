@@ -208,4 +208,44 @@ func TestValidatorTrustedProxyProviderBindings(t *testing.T) {
 	}
 }
 
+func TestValidateAdminTLSRequiredWhenAdminPublic(t *testing.T) {
+	cfg := Default()
+	cfg.Server.AdminPublic = true
+	cfg.Server.AdminTLS.Enabled = false
+	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "admin_tls.enabled") {
+		t.Fatalf("expected admin_tls.enabled error when admin_public=true, got %v", err)
+	}
+}
+
+func TestValidateAdminTLSRequiredWhenNonLoopbackListen(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+	}{
+		{name: "wildcard", addr: "0.0.0.0:9443"},
+		{name: "private", addr: "10.0.0.5:9443"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.AdminListen = tt.addr
+			cfg.Server.AdminPublic = true
+			cfg.Server.AdminTLS.Enabled = false
+			if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "admin_tls.enabled") {
+				t.Fatalf("expected admin_tls.enabled error for %s, got %v", tt.addr, err)
+			}
+		})
+	}
+}
+
+func TestValidateAdminTLSAllowedOnLoopback(t *testing.T) {
+	cfg := Default()
+	cfg.Server.AdminListen = "127.0.0.1:9443"
+	cfg.Server.AdminPublic = false
+	cfg.Server.AdminTLS.Enabled = false
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("loopback admin without TLS should be valid: %v", err)
+	}
+}
+
 func idString(id int) string { return fmt.Sprintf("token-%d", id) }

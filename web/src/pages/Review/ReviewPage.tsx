@@ -8,6 +8,7 @@ import QueryErrorState from '../../components/QueryErrorState';
 import { displayCategory } from '../../utils/display';
 import type { ReviewDecision, ReviewItem } from '../../types/api';
 import { formatReviewTime, parseReviewVerdict, reviewSearchMatch, shapeLabelKey, statusLabelKey } from './reviewLogic';
+import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 const ALL = '__all__';
 const PAGE_SIZE = 8;
@@ -21,6 +22,7 @@ export default function ReviewPage() {
   const [category, setCategory] = useState<string>();
   const [status, setStatus] = useState<string>('pending');
   const [page, setPage] = useState(1);
+  const reviewRefetchInterval = usePollingVisibility(10_000);
   const { data: sites } = useQuery({ queryKey: ['sites'], queryFn: fetchSites, retry: false });
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['review', siteId, category, status],
@@ -31,7 +33,7 @@ export default function ReviewPage() {
       category,
       status: status || undefined,
     }),
-    refetchInterval: 10_000,
+    refetchInterval: reviewRefetchInterval,
     retry: false,
   });
   const decide = useMutation({

@@ -8,7 +8,8 @@ import {
   type StyleSpecification,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { worldFeatures, type AttackRegion, type ThreatLevel } from './attackMapData';
+import { normalizeWorldId, worldFeatures, type AttackRegion, type ThreatLevel } from './attackMapData';
+import { threatPaletteHex, threatPaletteNeutralHex } from './threatPalette';
 import type { GeoFeatureCollection } from './chinaBoundaries';
 
 /**
@@ -61,7 +62,10 @@ type OsmAttackMapProps = {
 const WORLD_CENTER: [number, number] = [12, 18];
 const WORLD_ZOOM = 1.25;
 const CHINA_BOUNDS: [[number, number], [number, number]] = [
-  [73.5, 18.1],
+  // Lower bound pulled to ~3.5N so the South China Sea islands (西沙/南沙/曾母暗沙)
+  // stay visible; if any fetched GeoJSON lacks those island features, the view
+  // still renders the mainland and degrades gracefully (no islands to show).
+  [73.5, 3.5],
   [135.1, 53.6],
 ];
 
@@ -80,11 +84,8 @@ const palette = {
 };
 
 const riskColor: Record<ThreatLevel | 'neutral', string> = {
-  low: '#2176d2',
-  medium: '#d98912',
-  high: '#f97316',
-  critical: '#dd3b3b',
-  neutral: '#94a3b8',
+  ...threatPaletteHex,
+  neutral: threatPaletteNeutralHex,
 };
 
 const WORLD_SOURCE = 'offline-world-land';
@@ -333,10 +334,10 @@ function ensureWorldLayers(map: MapLibreMap) {
       paint: {
         'fill-color': [
           'case',
-          ['==', ['get', 'risk'], 'critical'], '#fecaca',
-          ['==', ['get', 'risk'], 'high'], '#fed7aa',
-          ['==', ['get', 'risk'], 'medium'], '#fde68a',
-          ['==', ['get', 'risk'], 'low'], '#bfdbfe',
+          ['==', ['get', 'risk'], 'critical'], threatPaletteHex.critical,
+          ['==', ['get', 'risk'], 'high'], threatPaletteHex.high,
+          ['==', ['get', 'risk'], 'medium'], threatPaletteHex.medium,
+          ['==', ['get', 'risk'], 'low'], threatPaletteHex.low,
           palette.land,
         ],
         'fill-opacity': 0.95,
@@ -537,7 +538,7 @@ function worldLandGeoJSON(countryLevels?: Map<string, ThreatLevel>): FeatureColl
     features: worldFeatures
       .filter((feature) => feature.geometry)
       .map((feature, index) => {
-        const id = String(feature.id ?? index);
+        const id = normalizeWorldId(feature.id ?? index);
         const risk = countryLevels?.get(id) ?? 'neutral';
         return {
           type: 'Feature' as const,

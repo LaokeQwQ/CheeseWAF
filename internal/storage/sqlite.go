@@ -89,6 +89,40 @@ func (s *SQLiteStore) ensureColumns(ctx context.Context, table string, migration
 	return nil
 }
 
+func (s *SQLiteStore) MarkTOTPConsumed(ctx context.Context, userID string, counter int64, expiresAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO totp_consumed(user_id, counter, expires_at, created_at) VALUES(?, ?, ?, ?)
+		ON CONFLICT(user_id, counter) DO UPDATE SET expires_at = excluded.expires_at,
+		created_at = excluded.created_at`,
+		userID, counter, expiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *SQLiteStore) IsTOTPConsumed(ctx context.Context, userID string, counter int64, now time.Time) (bool, error) {
+	var expiresAt string
+	err := s.db.QueryRowContext(ctx, `SELECT expires_at FROM totp_consumed WHERE user_id=? AND counter=?`, userID, counter).Scan(&expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	expiry, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		return false, err
+	}
+	return expiry.After(now), nil
+}
+
+func (s *SQLiteStore) DeleteTOTPConsumed(ctx context.Context, userID string, counter int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM totp_consumed WHERE user_id=? AND counter=?`, userID, counter)
+	return err
+}
+
+func (s *SQLiteStore) PruneTOTPConsumed(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM totp_consumed WHERE expires_at <= ?`, before.UTC().Format(time.RFC3339Nano))
+	return err
+}
+
 func (s *SQLiteStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil

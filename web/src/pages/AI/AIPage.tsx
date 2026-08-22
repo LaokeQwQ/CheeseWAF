@@ -23,6 +23,7 @@ import PolicyDecisionCard from '../../components/PolicyDecisionCard';
 import SafeMarkdown from '../../components/SafeMarkdown';
 import type { AIAssistantTraceEvent, AIConfig, AIModelConfig, AIModelInfo, AISelfLearningReport, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
+import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 import '../../styles/ai-page.css';
 
 const analysisRanges = [
@@ -168,10 +169,11 @@ export default function AIPage() {
   const [maxEventsError, setMaxEventsError] = useState('');
   const configQuery = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
   const { data } = configQuery;
+  const aiEventsRefetchInterval = usePollingVisibility(5_000);
   const { data: logs, isLoading } = useQuery({
     queryKey: ['ai-events', analysisRange],
     queryFn: () => fetchLogs(buildAnalysisWindowQuery(analysisRange, 80)),
-    refetchInterval: 5_000,
+    refetchInterval: aiEventsRefetchInterval,
     retry: false,
   });
   const config = data ?? fallback;

@@ -154,68 +154,95 @@ export async function loadChinaMapAssets(): Promise<ChinaMapAssets> {
   };
 }
 
+export type MergedChinaBoundary = {
+  collection: GeoFeatureCollection;
+  sourceSummary: ChinaAdministrativeMap['sourceSummary'];
+};
+
+/**
+ * Merge builtin + offline + external China boundary layers into a single
+ * deduplicated GeoFeatureCollection. Priority: external > offline > builtin.
+ * Used by both the MapLibre overlay and the lightweight SVG sourceSummary path.
+ */
+export function mergeChinaBoundaries(
+  builtin: GeoFeatureCollection | null,
+  offline: GeoFeatureCollection | null,
+  external: GeoFeatureCollection | null,
+): MergedChinaBoundary {
+  const sources = [
+    { rank: 1, features: builtin?.features ?? [] },
+    { rank: 2, features: offline?.features ?? [] },
+    { rank: 3, features: external?.features ?? [] },
+  ];
+  const byCode = new Map<string, { rank: number; feature: WorldFeature }>();
+  const order: string[] = [];
+  const keyFor = (feature: WorldFeature): string => {
+    const props = feature.properties ?? {};
+    const code = normalizeChinaAdminCode(props.adcode ?? props.id ?? feature.id, String(props.name ?? props.fullname ?? ''), undefined);
+    return code || String(props.adcode ?? props.id ?? feature.id ?? '');
+  };
+  for (const source of sources) {
+    for (const feature of source.features) {
+      const key = keyFor(feature) || `idx-${byCode.size}`;
+      if (!byCode.has(key)) {
+        order.push(key);
+      }
+      const existing = byCode.get(key);
+      if (!existing || source.rank > existing.rank) {
+        byCode.set(key, { rank: source.rank, feature });
+      }
+    }
+  }
+  const features = order
+    .map((key) => byCode.get(key)!.feature)
+    .map(ensureFeatureAdminLevel);
+  const hasExternal = Boolean(external && external.features.length > 0);
+  const levels = new Set(features.map((feature) => inferAdminLevel(feature)));
+  let sourceSummary: ChinaAdministrativeMap['sourceSummary'];
+  if (hasExternal) {
+    sourceSummary = 'external';
+  } else if (levels.has('district') || levels.has('county')) {
+    sourceSummary = 'builtin-district';
+  } else if (levels.has('city')) {
+    sourceSummary = 'builtin-city';
+  } else {
+    sourceSummary = 'builtin-province';
+  }
+  return { collection: { type: 'FeatureCollection', features }, sourceSummary };
+}
+
 export function createChinaAdministrativeMap(
   assets: ChinaMapAssets,
   regions: AttackRegion[],
   customBoundary?: GeoFeatureCollection | null,
   builtinBoundary?: GeoFeatureCollection | null,
 ): ChinaAdministrativeMap {
-  const countryBoundary = assets.country.features.length > 0 ? assets.country : emptyFeatureCollection;
+  const merged = mergeChinaBoundaries(
+    assets.country.features.length > 0 ? assets.country : emptyFeatureCollection,
+    builtinBoundary ?? null,
+    customBoundary ?? null,
+  );
+  const countryBoundary = merged.collection;
   const projection = geoMercator().fitExtent(
     [[30, 24], [chinaMapWidth - 30, chinaMapHeight - 24]],
     countryBoundary as any,
   );
   const path = geoPath(projection);
-  const provinceIntensity = buildRegionIntensity(regions, 'province', assets.adminIndex);
-  const cityIntensity = buildRegionIntensity(regions, 'city', assets.adminIndex);
-  const districtIntensity = buildRegionIntensity(regions, 'district', assets.adminIndex);
-  const provinceLayers = countryBoundary.features
-    .map((feature, index) => toLayer(feature, index, provinceIntensity, 'builtin-province', path, assets.adminIndex))
-    .filter((item): item is ChinaBoundaryLayer => item !== null);
-  // Offline pack tags levels explicitly: province parents hold city (or municipality
-  // district) polygons; city parents hold district/county polygons.
-  const offlineFeatures = builtinBoundary?.features ?? [];
-  const cityLayers = offlineFeatures
-    .filter((featureItem) => readFeatureLevel(featureItem) === 'city')
-    .map((feature, index) => toLayer(feature, index, cityIntensity, 'builtin-city', path, assets.adminIndex))
-    .filter((item): item is ChinaBoundaryLayer => item !== null);
-  const districtLayers = offlineFeatures
-    .filter((featureItem) => {
-      const level = readFeatureLevel(featureItem);
-      return level === 'district' || level === 'county';
-    })
-    .map((feature, index) => toLayer(feature, index, districtIntensity, 'builtin-district', path, assets.adminIndex))
-    .filter((item): item is ChinaBoundaryLayer => item !== null);
-  const customLayers = customBoundary?.features
-    ?.map((feature, index) => toLayer(feature, index, districtIntensity, 'external', path, assets.adminIndex))
-    .filter((item): item is ChinaBoundaryLayer => item !== null) ?? [];
-
+  // The SVG layer chain is intentionally lightweight: only `sourceSummary`
+  // is consumed today, so we avoid projecting every feature for an unused
+  // layer list. Layers remain typed for future SVG rendering.
   return {
-    provinceLayers,
-    cityLayers,
-    districtLayers,
-    customLayers,
+    provinceLayers: [],
+    cityLayers: [],
+    districtLayers: [],
+    customLayers: [],
     projection,
     path,
     viewBox: chinaViewBox,
     width: chinaMapWidth,
     height: chinaMapHeight,
-    sourceSummary: customLayers.length > 0
-      ? 'external'
-      : districtLayers.length > 0
-        ? 'builtin-district'
-        : cityLayers.length > 0
-          ? 'builtin-city'
-          : 'builtin-province',
+    sourceSummary: merged.sourceSummary,
   };
-}
-
-export function projectChinaAdministrativePercent(map: ChinaAdministrativeMap, lon: number, lat: number) {
-  const point = map.projection([lon, lat]);
-  if (!point) {
-    return null;
-  }
-  return { x: (point[0] / chinaMapWidth) * 100, y: (point[1] / chinaMapHeight) * 100 };
 }
 
 export function normalizeChinaAdminName(value: string) {
@@ -282,11 +309,6 @@ export function boundaryAdcodesFromRegions(regions: AttackRegion[], adminIndex?:
   return Array.from(adcodes).slice(0, 12);
 }
 
-export async function loadBuiltinChinaBoundary(adcodes: string[]): Promise<GeoFeatureCollection | null> {
-  const collections = await mapPool(adcodes, 10, (adcode) => loadBuiltinFeatureCollectionCached(adcode));
-  const features = dedupeFeaturesByAdcode(collections.flatMap((collection) => collection?.features ?? []));
-  return features.length > 0 ? { type: 'FeatureCollection', features } : null;
-}
 
 /**
  * Offline China admin boundaries from local `china-map-echarts` (no network).
@@ -296,24 +318,27 @@ export async function loadBuiltinChinaBoundary(adcodes: string[]): Promise<GeoFe
  * Progressive load (avoids blocking china mode on ~300 city-parent files / ~26MB):
  * 1. Province parents always (city outlines)
  * 2. preferAdcodes city/district parents first (attack-relevant 区县)
- * 3. Remaining city parents in background when includeDistricts
+ * 3. Remaining city parents only when includeDistricts (default false)
  * `onPartial` receives cumulative FeatureCollections after each phase.
+ * `signal` aborts in-flight fetches when the page switches mode / unmounts.
  */
 export async function loadOfflineChinaBoundaryTree(options: {
   includeDistricts?: boolean;
   preferAdcodes?: string[];
   onPartial?: (collection: GeoFeatureCollection) => void;
+  signal?: AbortSignal;
 } = {}): Promise<GeoFeatureCollection> {
+  const includeDistricts = options.includeDistricts ?? false;
+  const signal = options.signal;
   const manifest = await loadBuiltinAdcodeManifest();
   const codes = Array.from(manifest).filter((code) => /^\d{6}$/.test(code));
   const codeSet = new Set(codes);
   const provinceParents = codes.filter((code) => code.endsWith('0000') && code !== '100000');
   const cityParents = codes.filter((code) => code.endsWith('00') && !code.endsWith('0000'));
   const cityParentSet = new Set(cityParents);
-
   const prefer = new Set<string>();
-  for (const raw of options.preferAdcodes ?? []) {
-    const code = String(raw);
+  for (const rawCode of options.preferAdcodes ?? []) {
+    const code = String(rawCode);
     if (!/^\d{6}$/.test(code)) {
       continue;
     }
@@ -347,7 +372,10 @@ export async function loadOfflineChinaBoundaryTree(options: {
     for (const code of pending) {
       loadedParents.add(code);
     }
-    const collections = await mapPool(pending, concurrency, (adcode) => loadBuiltinFeatureCollectionCached(adcode));
+    const collections = await mapPool(pending, concurrency, (adcode, abortSignal) => loadBuiltinFeatureCollectionCached(adcode, abortSignal), signal);
+    if (signal?.aborted) {
+      return;
+    }
     for (const collection of collections) {
       if (collection?.features?.length) {
         collected.push(...collection.features);
@@ -369,8 +397,8 @@ export async function loadOfflineChinaBoundaryTree(options: {
     result = emit();
   }
 
-  // Phase 3: remaining city parents → full district capability (lower concurrency)
-  if (options.includeDistricts) {
+  // Phase 3: remaining city parents only when explicitly requested
+  if (includeDistricts) {
     const remainingCityParents = cityParents.filter((code) => !loadedParents.has(code));
     if (remainingCityParents.length > 0) {
       await loadParents(remainingCityParents, 6);
@@ -383,27 +411,40 @@ export async function loadOfflineChinaBoundaryTree(options: {
 
 const offlineFeatureCache = new Map<string, Promise<GeoFeatureCollection | null>>();
 
-function loadBuiltinFeatureCollectionCached(adcode: string) {
+function loadBuiltinFeatureCollectionCached(adcode: string, signal?: AbortSignal) {
   let pending = offlineFeatureCache.get(adcode);
   if (!pending) {
-    pending = loadBuiltinFeatureCollection(adcode);
+    pending = loadBuiltinFeatureCollection(adcode, signal);
     offlineFeatureCache.set(adcode, pending);
   }
   return pending;
 }
 
-async function mapPool<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+async function mapPool<T, R>(items: T[], concurrency: number, worker: (item: T, signal?: AbortSignal) => Promise<R>, signal?: AbortSignal): Promise<R[]> {
   if (items.length === 0) {
+    return [];
+  }
+  if (signal?.aborted) {
     return [];
   }
   const limit = Math.max(1, Math.min(concurrency, items.length));
   const results = new Array<R>(items.length);
   let cursor = 0;
   async function run() {
-    while (cursor < items.length) {
+    while (cursor < items.length && !signal?.aborted) {
       const index = cursor;
       cursor += 1;
-      results[index] = await worker(items[index]);
+      if (signal?.aborted) {
+        return;
+      }
+      try {
+        results[index] = await worker(items[index], signal);
+      } catch (error) {
+        if (signal?.aborted || (error as { name?: string })?.name === 'AbortError') {
+          return;
+        }
+        throw error;
+      }
     }
   }
   await Promise.all(Array.from({ length: limit }, () => run()));
@@ -438,7 +479,7 @@ export function chinaBoundarySourceLabel(source: ChinaAdministrativeMap['sourceS
   }
 }
 
-async function loadBuiltinFeatureCollection(adcode: string) {
+async function loadBuiltinFeatureCollection(adcode: string, signal?: AbortSignal) {
   if (!/^\d{6}$/.test(adcode)) {
     return null;
   }
@@ -446,7 +487,10 @@ async function loadBuiltinFeatureCollection(adcode: string) {
   if (availableAdcodes.size > 0 && !availableAdcodes.has(adcode)) {
     return null;
   }
-  const collection = asNullableFeatureCollection(await fetchChinaMapJSON(adcode));
+  if (signal?.aborted) {
+    return null;
+  }
+  const collection = asNullableFeatureCollection(await fetchChinaMapJSON(adcode, signal));
   return collection ? rewindBuiltinFeatureCollection(collection) : null;
 }
 
@@ -476,16 +520,18 @@ async function loadChinaAdminIndex(): Promise<ChinaAdminIndex> {
   return { nameToCodes, codeToName };
 }
 
-async function fetchChinaMapJSON(adcode: string) {
+async function fetchChinaMapJSON(adcode: string, signal?: AbortSignal) {
   try {
     const response = await fetch(chinaMapAssetURL(adcode), {
       headers: { Accept: 'application/json' },
+      signal,
     });
     if (!response.ok) {
       return null;
     }
     return response.json();
   } catch {
+    // AbortError and network errors both degrade to null (caller treats as unavailable).
     return null;
   }
 }
@@ -748,7 +794,7 @@ function rewindBuiltinFeature(feature: WorldFeature): WorldFeature {
       ...feature,
       geometry: {
         ...record,
-        coordinates: reversePolygonRings(record.coordinates),
+        coordinates: orientPolygonRings(record.coordinates),
       },
     };
   }
@@ -757,25 +803,57 @@ function rewindBuiltinFeature(feature: WorldFeature): WorldFeature {
       ...feature,
       geometry: {
         ...record,
-        coordinates: reverseMultiPolygonRings(record.coordinates),
+        coordinates: orientMultiPolygon(record.coordinates),
       },
     };
   }
   return feature;
 }
 
-function reverseMultiPolygonRings(coordinates: unknown) {
+function orientMultiPolygon(coordinates: unknown) {
   return Array.isArray(coordinates)
-    ? coordinates.map((polygon) => reversePolygonRings(polygon))
+    ? coordinates.map((polygon) => orientPolygonRings(polygon))
     : coordinates;
 }
 
-function reversePolygonRings(coordinates: unknown) {
-  return Array.isArray(coordinates)
-    ? coordinates.map((ring) => reverseLinearRing(ring))
-    : coordinates;
+/**
+ * Normalise ring winding instead of unconditionally reversing every ring.
+ * GeoJSON RFC 7946 requires exterior rings counter-clockwise (positive planar
+ * signed area) and interior rings clockwise (negative). If a source polygon is
+ * already wound that way we leave it untouched; otherwise we flip it.
+ */
+function orientPolygonRings(coordinates: unknown) {
+  if (!Array.isArray(coordinates) || coordinates.length === 0) {
+    return coordinates;
+  }
+  const rings = coordinates;
+  const exteriorArea = signedRingArea(rings[0]);
+  const exterior = exteriorArea < 0 ? [...(rings[0] as unknown[])].reverse() : rings[0];
+  const wantHoleSign = -Math.sign(signedRingArea(exterior) || 1);
+  const out: unknown[] = [exterior];
+  for (let index = 1; index < rings.length; index += 1) {
+    const hole = rings[index];
+    const area = signedRingArea(hole);
+    out.push(Math.sign(area) !== wantHoleSign ? [...(hole as unknown[])].reverse() : hole);
+  }
+  return out;
 }
 
-function reverseLinearRing(ring: unknown) {
-  return Array.isArray(ring) ? [...ring].reverse() : ring;
+function signedRingArea(ring: unknown): number {
+  if (!Array.isArray(ring) || ring.length < 3) {
+    return 0;
+  }
+  let sum = 0;
+  for (let index = 0; index < ring.length; index += 1) {
+    const a = ring[index] as unknown[];
+    const b = ring[(index + 1) % ring.length] as unknown[];
+    const ax = Number(a?.[0]);
+    const ay = Number(a?.[1]);
+    const bx = Number(b?.[0]);
+    const by = Number(b?.[1]);
+    if (Number.isFinite(ax) && Number.isFinite(ay) && Number.isFinite(bx) && Number.isFinite(by)) {
+      sum += ax * by - bx * ay;
+    }
+  }
+  return sum / 2;
 }

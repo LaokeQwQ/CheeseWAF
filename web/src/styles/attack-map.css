@@ -4,6 +4,11 @@
   --attack-risk-high: var(--accent-warning);
   --attack-on-risk: var(--accent-contrast);
   --attack-highlight-white: var(--highlight-color);
+  --threat-color-low: #2176d2;
+  --threat-color-medium: #d98912;
+  --threat-color-high: #f97316;
+  --threat-color-critical: #dd3b3b;
+  --threat-color-neutral: #94a3b8;
 }
 
 .attack-map-page .attack-map-header {
@@ -367,6 +372,11 @@
   height: 100%;
 }
 
+.attack-map-page .globe-stage-fallback .flat-map-stage {
+  position: relative;
+  width: min(calc(100% - clamp(36px, 5vw, 60px)), 1220px);
+  aspect-ratio: 2 / 1;
+}
 .attack-map-page .map-ocean {
   fill: color-mix(in srgb, var(--accent-info) 6%, var(--surface));
   stroke: color-mix(in srgb, var(--accent-info) 20%, var(--border));
@@ -730,6 +740,22 @@
     color-mix(in srgb, var(--risk-color, var(--accent-info)) 14%, transparent);
 }
 
+.attack-map-page .map-risk-shape {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--risk-color, var(--accent-info));
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+  pointer-events: none;
+}
+
+.attack-map-page .map-risk-dot:has(.map-risk-shape)::before {
+  display: none;
+}
+
 :root[data-theme="dark"] .attack-map-page .map-mode-3d .map-legend,
 :root[data-theme="dark"] .attack-map-page .map-mode-3d .map-risk-legend,
 :root[data-theme="black-gold"] .attack-map-page .map-mode-3d .map-legend,
@@ -758,19 +784,16 @@
 }
 
 .attack-map-page .map-risk-low {
-  --risk-color: var(--accent-info);
+  --risk-color: var(--threat-color-low, var(--accent-info));
 }
-
 .attack-map-page .map-risk-medium {
-  --risk-color: var(--accent-warning);
+  --risk-color: var(--threat-color-medium, var(--accent-warning));
 }
-
 .attack-map-page .map-risk-high {
-  --risk-color: var(--attack-risk-high);
+  --risk-color: var(--threat-color-high, var(--attack-risk-high));
 }
-
 .attack-map-page .map-risk-critical {
-  --risk-color: var(--accent-danger);
+  --risk-color: var(--threat-color-critical, var(--accent-danger));
 }
 
 .attack-map-page .map-empty {

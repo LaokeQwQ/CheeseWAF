@@ -5,14 +5,14 @@
 ## Completed Work
 
 ### 1. Runtime GC Tuning ✅
-**Location**: `internal/gctune/gctune.go` (new package)
+**Location**: `internal/perf/gctune/gctune.go` (new package)
 **Strategy**: 
 - Adaptive GOMEMLIMIT = 75% of detected physical RAM
 - GOGC = 200 (2× heap growth before collection)
 - Platform-specific detection: Windows (GlobalMemoryStatusEx), Linux (cgroups)
 
 **Config Integration**:
-- `internal/config/config.go`: Added `Runtime.EnableGCTuning` (default: true)
+- `internal/config/config.go`: Added `PerformanceConfig.GC.Enabled` (default: true)
 - `internal/cli/service.go`: Wired into startup with structured logging
 - `internal/cli/gc_tuning.go`: Config mapping layer
 - `internal/cli/gc_tuning_test.go`: Config validation tests
@@ -147,8 +147,8 @@ BenchmarkFullPipeline-12                     153406 ns/op  13801 B/op  193 alloc
 
 ### New Files
 ```
-internal/gctune/gctune.go               - Adaptive GC tuner (305 lines)
-internal/gctune/gctune_test.go          - 32 test cases (252 lines)
+internal/perf/gctune/gctune.go               - Adaptive GC tuner (305 lines)
+internal/perf/gctune/gctune_test.go          - 32 test cases (252 lines)
 internal/cli/gc_tuning.go               - Config mapping (44 lines)
 internal/cli/gc_tuning_test.go          - Config validation (93 lines)
 internal/engine/semantic/fastpath.go    - Fast path primitives (65 lines)
@@ -161,7 +161,7 @@ docs/performance-optimization.md        - Complete optimization summary
 
 ### Modified Files
 ```
-internal/config/config.go               - Added Runtime.EnableGCTuning
+internal/config/config.go               - Added PerformanceConfig.GC.Enabled
 internal/cli/service.go                 - Wired GC tuner into startup
 internal/engine/semantic/analyzer.go    - Right-sized candidate slice
                                         - Lazy dedup map
@@ -222,17 +222,17 @@ bin/cheesewaf-linux-loong64             - LoongArch binary (30M)
 ## Files and Locations
 
 ### Core Optimization
-- `internal/engine/semantic/analyzer.go:565,787,800-810` - Right-sizing + lazy map
-- `internal/gctune/gctune.go` - Adaptive GC tuner
+- `internal/engine/semantic/analyzer.go:771,796,833,874-875` - Right-sizing + lazy map
+- `internal/perf/gctune/gctune.go` - Adaptive GC tuner
 
 ### Configuration
-- `internal/config/config.go:336` - Runtime.EnableGCTuning field
-- `internal/cli/service.go:740-746` - GC tuner startup integration
+- `internal/config/config.go:39,53` - PerformanceConfig.GC.Enabled field
+- `internal/cli/service.go:101-107` - GC tuner startup integration
 
 ### Tests and Verification
 - `internal/engine/semantic/dedup_sizing_test.go` - Correctness tests
 - `internal/cli/gc_tuning_test.go` - Config validation
-- `internal/gctune/gctune_test.go` - 32 GC tuner tests
+- `internal/perf/gctune/gctune_test.go` - 32 GC tuner tests
 
 ### Build and Documentation
 - `scripts/build-all.sh` - Multi-platform build

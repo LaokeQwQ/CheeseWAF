@@ -1,6 +1,8 @@
 import type { CaptchaPoint, CaptchaTrackPoint } from './protocol';
 export const COORDINATE_MAX = 10_000;
+// Mirrors internal/captcha/behavior.go `normalizeBehaviorOptions` (MaxTrackPoints) and captcha.handler (note: behaviorMaxTrackPoints=256 is only the hard cap).
 export const DEFAULT_TRACK_LIMIT = 128;
+export const DEFAULT_MIN_DURATION_MS = 120; // internal/captcha/behavior.go default MinDuration (120ms)
 export function clampCoordinate(value: number) { return Math.max(0, Math.min(COORDINATE_MAX, Math.round(value))); }
 export function normalizePoint(clientX: number, clientY: number, rect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>): CaptchaPoint { return { x: clampCoordinate(rect.width ? ((clientX - rect.left) / rect.width) * COORDINATE_MAX : 0), y: clampCoordinate(rect.height ? ((clientY - rect.top) / rect.height) * COORDINATE_MAX : 0) }; }
 export function trackPoint(point: CaptchaPoint, t: number, type?: string): CaptchaTrackPoint { return { ...point, t: Math.max(0, Math.round(t)), ...(type ? { type } : {}) }; }

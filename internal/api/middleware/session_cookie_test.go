@@ -54,10 +54,24 @@ func TestCookieSecureFollowsTLSAndForwardedProto(t *testing.T) {
 		t.Fatal("TLS requests must set Secure cookies")
 	}
 	proxied := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/api/auth/login", nil)
+	proxied.RemoteAddr = "127.0.0.1:54321"
 	proxied.Header.Set("X-Forwarded-Proto", "https, http")
 	if !CookieSecure(proxied) {
-		t.Fatal("X-Forwarded-Proto=https must set Secure cookies")
+		t.Fatal("X-Forwarded-Proto=https from a loopback peer must set Secure cookies")
 	}
+	privateProxied := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/api/auth/login", nil)
+	privateProxied.RemoteAddr = "10.0.0.5:54321"
+	privateProxied.Header.Set("X-Forwarded-Proto", "https")
+	if !CookieSecure(privateProxied) {
+		t.Fatal("X-Forwarded-Proto=https from a private peer must set Secure cookies")
+	}
+	publicProxied := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/api/auth/login", nil)
+	publicProxied.RemoteAddr = "198.51.100.7:54321"
+	publicProxied.Header.Set("X-Forwarded-Proto", "https")
+	if CookieSecure(publicProxied) {
+		t.Fatal("X-Forwarded-Proto=https must not be trusted from a public peer")
+	}
+
 }
 
 func TestWriteCookieFollowsTLSAndForwardedProto(t *testing.T) {
@@ -74,6 +88,15 @@ func TestWriteCookieFollowsTLSAndForwardedProto(t *testing.T) {
 	got = httpsRec.Result().Cookies()
 	if len(got) != 1 || !got[0].Secure {
 		t.Fatalf("TLS WriteCookie must set Secure, got %+v", got)
+	}
+	proxiedRec := httptest.NewRecorder()
+	proxiedReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/", nil)
+	proxiedReq.RemoteAddr = "127.0.0.1:54321"
+	proxiedReq.Header.Set("X-Forwarded-Proto", "https")
+	WriteCookie(proxiedRec, proxiedReq, &http.Cookie{Name: "n", Value: "v", Path: "/"})
+	got = proxiedRec.Result().Cookies()
+	if len(got) != 1 || !got[0].Secure {
+		t.Fatalf("forwarded-proto from loopback WriteCookie must set Secure, got %+v", got)
 	}
 }
 

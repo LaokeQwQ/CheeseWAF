@@ -692,8 +692,10 @@ func TestLoginCAPTCHAAnonymousClientCookieIsSignedAndHardened(t *testing.T) {
 func TestLoginCAPTCHAClientCookieSecureBehindForwardedProto(t *testing.T) {
 	h := &Handler{Secret: "test-secret", loginCAPTCHASecret: "test-secret"}
 	// Plain HTTP request terminated by TLS proxy: no r.TLS, but X-Forwarded-Proto: https.
+	// Plain HTTP request terminated by a loopback TLS proxy: no r.TLS, but
+	// X-Forwarded-Proto: https is trusted because the socket peer is loopback.
 	req := httptest.NewRequest(http.MethodPost, "http://console.example/api/auth/captcha", nil)
-	req.RemoteAddr = "192.0.2.41:41234"
+	req.RemoteAddr = "127.0.0.1:41234"
 	req.Header.Set("X-Forwarded-Proto", "https")
 	recorder := httptest.NewRecorder()
 	if _, _, ok := h.loginCaptchaQuotaIdentity(recorder, req); !ok {

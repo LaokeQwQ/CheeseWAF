@@ -155,7 +155,7 @@ jobs:
         run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.10
       - name: Run dashboard tests with coverage
         working-directory: web
-        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=5 --coverage.thresholds.functions=5 --coverage.thresholds.statements=5 --coverage.thresholds.branches=1
+        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10
       - name: Verify coverage output
         working-directory: web
         shell: bash
@@ -296,7 +296,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Build GoReleaser snapshot
         shell: bash
-        run: bash scripts/ci/go-env.sh go run github.com/goreleaser/goreleaser/v2@v2.17.0 release --snapshot --clean
+        run: |
+          export CHEESEWAF_VERSION_PREFIX="$(cat scripts/ci/product-version)"
+          bash scripts/ci/go-env.sh go run github.com/goreleaser/goreleaser/v2@v2.17.0 release --snapshot --clean
       - name: Verify GoReleaser snapshot
         shell: bash
         run: bash scripts/ci/verify-release.sh dist
@@ -425,6 +427,7 @@ jobs:
     name: publish-prerelease
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref_name == 'master' || github.ref_name == 'canary')
     runs-on: ubuntu-latest
+    environment: publish-prerelease
     needs:
       - release-artifacts
       - package-macos-dmg

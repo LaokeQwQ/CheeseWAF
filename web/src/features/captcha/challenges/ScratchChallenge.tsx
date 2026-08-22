@@ -6,8 +6,8 @@ import styles from "./ScratchChallenge.module.css";
 const SCRATCH_BRUSH_DIAMETER = 36;
 
 export interface ScratchChallengeProps { imageSrc: string; maskSrc: string; width?: number; height?: number; label: string; disabled?: boolean; startedAt: React.MutableRefObject<number>; onInteractionStart: () => void; onSubmit: (answer: Omit<CaptchaResponse, "token">) => void; }
-
-export function ScratchChallenge({ imageSrc, maskSrc, width = 400, height = 220, label, disabled, startedAt, onInteractionStart, onSubmit }: ScratchChallengeProps) {
+export interface ScratchChallengeProps { imageSrc: string; maskSrc: string; width?: number; height?: number; label: string; disabled?: boolean; startedAt: React.MutableRefObject<number>; minDurationMs?: number; onInteractionStart: () => void; onSubmit: (answer: Omit<CaptchaResponse, "token">) => void; }
+export function ScratchChallenge({ imageSrc, maskSrc, width = 400, height = 220, label, disabled, startedAt, minDurationMs, onInteractionStart, onSubmit }: ScratchChallengeProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const activePointer = useRef<number>();
   const trackRef = useRef<CaptchaTrackPoint[]>([]);
@@ -61,7 +61,7 @@ export function ScratchChallenge({ imageSrc, maskSrc, width = 400, height = 220,
     if (activePointer.current !== event.pointerId) return;
     const track = append(event, "up");
     activePointer.current = undefined;
-    onSubmit({ track, duration_ms: Math.round(performance.now() - startedAt.current) });
+    onSubmit({ track, duration_ms: Math.max(minDurationMs ?? 0, Math.round(performance.now() - startedAt.current)) });
   };
   const pointerCancel = (event: React.PointerEvent<HTMLDivElement>) => { if (activePointer.current === event.pointerId) { activePointer.current = undefined; trackRef.current = []; } };
   const keyboardTrackPoint = (type: "down" | "move" | "up") => {
@@ -93,7 +93,7 @@ export function ScratchChallenge({ imageSrc, maskSrc, width = 400, height = 220,
       event.preventDefault();
       keyboardActive.current = false;
       const track = keyboardTrackPoint("up");
-      onSubmit({ track, duration_ms: Math.round(performance.now() - startedAt.current) });
+      onSubmit({ track, duration_ms: Math.max(minDurationMs ?? 0, Math.round(performance.now() - startedAt.current)) });
     }
   };
   return <div role="application" tabIndex={disabled ? -1 : 0} aria-label={label} aria-disabled={disabled || !maskReady} data-testid="scratch-challenge" className={styles.surface} style={{ aspectRatio: `${width} / ${height}` }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerCancel} onKeyDown={keyDown}>
