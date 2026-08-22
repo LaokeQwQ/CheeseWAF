@@ -30,13 +30,20 @@ type Policy struct {
 func NewPolicy(cfg config.ACLProtectionConfig) *Policy {
 	policy := &Policy{enabled: cfg.Enabled}
 	for _, item := range cfg.Rules {
+		method := strings.ToUpper(strings.TrimSpace(item.Method))
+		pathPrefix := strings.TrimSpace(item.PathPrefix)
+		header := strings.TrimSpace(item.Header)
+		headerValue := strings.TrimSpace(item.HeaderValue)
+		if !item.Enabled || (method == "" && pathPrefix == "" && header == "") || (header == "" && headerValue != "") {
+			continue
+		}
 		policy.rules = append(policy.rules, Rule{
 			ID:          item.ID,
 			Name:        item.Name,
-			Method:      strings.ToUpper(item.Method),
-			PathPrefix:  item.PathPrefix,
-			Header:      item.Header,
-			HeaderValue: item.HeaderValue,
+			Method:      method,
+			PathPrefix:  pathPrefix,
+			Header:      header,
+			HeaderValue: headerValue,
 			Action:      rules.ParseAction(item.Action),
 			Severity:    rules.ParseSeverity(item.Severity),
 			Enabled:     item.Enabled,
@@ -75,11 +82,16 @@ func (r Rule) matches(req *http.Request) bool {
 		return false
 	}
 	if r.Header != "" {
-		value := req.Header.Get(r.Header)
-		if r.HeaderValue == "" {
-			return value != ""
+		for _, value := range req.Header.Values(r.Header) {
+			value = strings.TrimSpace(value)
+			if r.HeaderValue == "" && value != "" {
+				return true
+			}
+			if r.HeaderValue != "" && strings.EqualFold(value, r.HeaderValue) {
+				return true
+			}
 		}
-		return strings.Contains(strings.ToLower(value), strings.ToLower(r.HeaderValue))
+		return false
 	}
 	return true
 }

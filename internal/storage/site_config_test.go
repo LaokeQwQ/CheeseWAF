@@ -174,3 +174,34 @@ func TestSiteConfigRoundTripPreservesTrustedProxyProviderBindings(t *testing.T) 
 		t.Fatalf("config conversion must clone provider CIDRs, got %q", got)
 	}
 }
+
+func TestSiteConfigRoundTripPreservesTamperSnapshots(t *testing.T) {
+	capturedAt := time.Unix(100, 0).UTC()
+	original := config.SiteConfig{
+		ID: "site-tamper", Name: "site-tamper", Enabled: true,
+		Domains: []string{"example.test"}, Upstreams: []config.UpstreamConfig{{Address: "127.0.0.1:9000", Weight: 1}},
+		WAF: config.WAFConfig{
+			Enabled: true, Mode: "block",
+			Response: config.ResponseInspectionConfig{
+				Enabled: true, MaxBodyBytes: 1024, TamperKey: "01234567890123456789012345678901",
+				TamperSnapshots: []config.TamperSnapshotConfig{{
+					URL: "/index.html", MAC: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", Size: 5, CapturedAt: capturedAt,
+				}},
+			},
+		},
+	}
+
+	stored := SiteFromConfig(original)
+	original.WAF.Response.TamperSnapshots[0].URL = "/mutated"
+	if got := stored.Advanced.Response.TamperSnapshots[0].URL; got != "/index.html" {
+		t.Fatalf("storage conversion did not clone snapshots: %q", got)
+	}
+	converted := SiteToConfig(stored)
+	stored.Advanced.Response.TamperSnapshots[0].URL = "/changed-again"
+	if got := converted.WAF.Response.TamperSnapshots[0]; got.URL != "/index.html" || got.CapturedAt != capturedAt {
+		t.Fatalf("tamper snapshot did not round trip: %+v", got)
+	}
+	if converted.WAF.Response.TamperKey != original.WAF.Response.TamperKey {
+		t.Fatal("tamper key did not round trip")
+	}
+}

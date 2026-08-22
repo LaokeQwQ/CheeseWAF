@@ -33,6 +33,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
+	webshellprotect "github.com/LaokeQwQ/CheeseWAF/internal/protection/webshell"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/review"
@@ -934,7 +935,13 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			// RCE is the production switch for the higher-confidence command
 			// execution families that share the same response action. Keep their
 			// categories distinct so telemetry and policy routing remain useful.
-			semanticCategories = append(semanticCategories, "webshell", "log4shell")
+			semanticCategories = append(semanticCategories, "log4shell")
+			detectors = append(detectors, siteScopedDetector{
+				siteID: site.ID,
+				detector: webshellprotect.NewDetector(webshellprotect.DetectorConfig{
+					Mode: site.WAF.Mode,
+				}),
+			})
 		}
 		if switches.LFI {
 			semanticCategories = append(semanticCategories, "lfi")

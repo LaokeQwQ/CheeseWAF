@@ -359,9 +359,18 @@ type SiteProtectionPolicy struct {
 }
 
 type SiteResponseConfig struct {
-	Enabled           bool     `json:"enabled"`
-	MaxBodyBytes      int64    `json:"max_body_bytes"`
-	SensitivePatterns []string `json:"sensitive_patterns"`
+	Enabled           bool                 `json:"enabled"`
+	MaxBodyBytes      int64                `json:"max_body_bytes"`
+	SensitivePatterns []string             `json:"sensitive_patterns"`
+	TamperKey         string               `json:"tamper_key,omitempty"`
+	TamperSnapshots   []SiteTamperSnapshot `json:"tamper_snapshots,omitempty"`
+}
+
+type SiteTamperSnapshot struct {
+	URL        string    `json:"url"`
+	MAC        string    `json:"mac"`
+	Size       int       `json:"size"`
+	CapturedAt time.Time `json:"captured_at"`
 }
 
 type SiteRewriteRule struct {

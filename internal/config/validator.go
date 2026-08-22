@@ -16,6 +16,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
 )
 
@@ -231,6 +232,9 @@ func Validate(cfg *Config) error {
 		if site.WAF.Performance.MaxBodyBytes > maxBodyCeiling {
 			return fmt.Errorf("site %q waf.performance.max_body_bytes exceeds 1GiB ceiling", site.Name)
 		}
+		if err := validateResponseInspection(site.Name, site.WAF.Response); err != nil {
+			return err
+		}
 		if err := validateSiteCertificate(site); err != nil {
 			return err
 		}
@@ -365,8 +369,15 @@ func Validate(cfg *Config) error {
 		if !rule.Enabled {
 			continue
 		}
-		if rule.PathPrefix == "" && rule.Method == "" && rule.Header == "" {
+		method := strings.TrimSpace(rule.Method)
+		pathPrefix := strings.TrimSpace(rule.PathPrefix)
+		header := strings.TrimSpace(rule.Header)
+		headerValue := strings.TrimSpace(rule.HeaderValue)
+		if pathPrefix == "" && method == "" && header == "" {
 			return fmt.Errorf("acl rule %q must define a method, path_prefix, or header", rule.ID)
+		}
+		if header == "" && headerValue != "" {
+			return fmt.Errorf("acl rule %q defines header_value without header", rule.ID)
 		}
 		if rule.Action != "" && rule.Action != "block" && rule.Action != "log" && rule.Action != "challenge" {
 			return fmt.Errorf("acl rule %q has invalid action %q", rule.ID, rule.Action)
@@ -1614,7 +1625,7 @@ func validateMapBoundary(prefix string, boundary MapBoundaryConfig) error {
 func validateIPEntry(entry string) error {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
-		return nil
+		return fmt.Errorf("IP entry is empty")
 	}
 	if strings.Contains(entry, "/") {
 		if _, _, err := net.ParseCIDR(entry); err != nil {
@@ -1624,6 +1635,40 @@ func validateIPEntry(entry string) error {
 	}
 	if net.ParseIP(entry) == nil {
 		return fmt.Errorf("not an IP or CIDR")
+	}
+	return nil
+}
+
+func validateResponseInspection(siteName string, cfg ResponseInspectionConfig) error {
+	if cfg.MaxBodyBytes < 0 || cfg.MaxBodyBytes > 1<<30 {
+		return fmt.Errorf("site %q waf.response.max_body_bytes must be between 0 and 1 GiB", siteName)
+	}
+	for _, pattern := range cfg.SensitivePatterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("site %q has invalid response inspection pattern %q: %w", siteName, pattern, err)
+		}
+	}
+	if len(cfg.TamperSnapshots) == 0 {
+		return nil
+	}
+	if !cfg.Enabled {
+		return fmt.Errorf("site %q must enable waf.response when tamper snapshots are configured", siteName)
+	}
+	snapshots := make([]tamper.Snapshot, 0, len(cfg.TamperSnapshots))
+	limit := cfg.MaxBodyBytes
+	if limit <= 0 {
+		limit = 1 << 20
+	}
+	for _, snapshot := range cfg.TamperSnapshots {
+		if int64(snapshot.Size) > limit {
+			return fmt.Errorf("site %q tamper snapshot %q size exceeds response inspection limit", siteName, snapshot.URL)
+		}
+		snapshots = append(snapshots, tamper.Snapshot{
+			URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+		})
+	}
+	if _, err := tamper.NewVerifier([]byte(cfg.TamperKey), snapshots); err != nil {
+		return fmt.Errorf("site %q has invalid tamper snapshots: %w", siteName, err)
 	}
 	return nil
 }

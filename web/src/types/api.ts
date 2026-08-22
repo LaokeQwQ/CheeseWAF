@@ -176,6 +176,15 @@ export type SiteResponseConfig = {
   enabled: boolean;
   max_body_bytes: number;
   sensitive_patterns: string[];
+  tamper_key?: string;
+  tamper_snapshots?: SiteTamperSnapshot[];
+};
+
+export type SiteTamperSnapshot = {
+  url: string;
+  mac: string;
+  size: number;
+  captured_at: string;
 };
 
 export type SiteRewriteRule = {

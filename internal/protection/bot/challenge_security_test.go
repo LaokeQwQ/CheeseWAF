@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"strconv"
@@ -293,6 +294,32 @@ func TestPoWManagerBindingsReplayAndDifficultyCap(t *testing.T) {
 	}
 	if m.Verify(ch.Token, answer, x) == nil {
 		t.Fatal("replay accepted")
+	}
+}
+
+func TestPoWAEADBindsContextAndUsesNonceAsKDFSalt(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	nonceA := bytes.Repeat([]byte{1}, powNonceBytes)
+	nonceB := bytes.Repeat([]byte{2}, powNonceBytes)
+	aeadA, err := derivePoWAEAD(secret, nonceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aeadB, err := derivePoWAEAD(secret, nonceB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := PoWContext{Site: "site-a", Policy: "bot", PolicyVersion: "v1", Path: "/admin", ClientKey: "client-a"}
+	plain := []byte(`{"jti":"one"}`)
+	sealed := aeadA.Seal(nil, nonceA, plain, powAdditionalData(ctx))
+
+	other := ctx
+	other.Path = "/public"
+	if _, err := aeadA.Open(nil, nonceA, sealed, powAdditionalData(other)); err == nil {
+		t.Fatal("ciphertext opened with a different request context")
+	}
+	if _, err := aeadB.Open(nil, nonceA, sealed, powAdditionalData(ctx)); err == nil {
+		t.Fatal("ciphertext opened with a key derived from another nonce salt")
 	}
 }
 

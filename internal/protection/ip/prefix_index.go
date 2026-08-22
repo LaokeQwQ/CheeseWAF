@@ -19,8 +19,10 @@ func canonicalPrefix(prefix netip.Prefix) (netip.Prefix, error) {
 	addr := prefix.Addr()
 	bits := prefix.Bits()
 	if addr.Is4In6() {
-		if bits < 96 {
-			return netip.Prefix{}, fmt.Errorf("IPv4-mapped IPv6 prefix length %d must be at least 96", bits)
+		// /96 is the entire IPv4 address space after unmapping. Reject it and
+		// broader prefixes so mapped notation cannot silently become 0.0.0.0/0.
+		if bits <= 96 {
+			return netip.Prefix{}, fmt.Errorf("IPv4-mapped IPv6 prefix length %d must be greater than 96", bits)
 		}
 		return netip.PrefixFrom(addr.Unmap(), bits-96).Masked(), nil
 	}

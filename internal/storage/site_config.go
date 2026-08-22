@@ -83,7 +83,9 @@ func SiteFromConfig(site config.SiteConfig) Site {
 			Response: SiteResponseConfig{
 				Enabled:           site.WAF.Response.Enabled,
 				MaxBodyBytes:      site.WAF.Response.MaxBodyBytes,
-				SensitivePatterns: site.WAF.Response.SensitivePatterns,
+				SensitivePatterns: cloneStrings(site.WAF.Response.SensitivePatterns),
+				TamperKey:         site.WAF.Response.TamperKey,
+				TamperSnapshots:   siteTamperSnapshotsFromConfig(site.WAF.Response.TamperSnapshots),
 			},
 			HealthCheck: SiteHealthCheckConfig{
 				Enabled:            site.WAF.HealthCheck.Enabled,
@@ -187,7 +189,9 @@ func SiteToConfig(site Site) config.SiteConfig {
 			Response: config.ResponseInspectionConfig{
 				Enabled:           site.Advanced.Response.Enabled,
 				MaxBodyBytes:      site.Advanced.Response.MaxBodyBytes,
-				SensitivePatterns: site.Advanced.Response.SensitivePatterns,
+				SensitivePatterns: cloneStrings(site.Advanced.Response.SensitivePatterns),
+				TamperKey:         site.Advanced.Response.TamperKey,
+				TamperSnapshots:   siteTamperSnapshotsToConfig(site.Advanced.Response.TamperSnapshots),
 			},
 			HealthCheck: config.HealthCheckConfig{
 				Enabled:            site.Advanced.HealthCheck.Enabled,
@@ -214,6 +218,26 @@ func SitesToConfig(sites []Site) []config.SiteConfig {
 	out := make([]config.SiteConfig, 0, len(sites))
 	for _, site := range sites {
 		out = append(out, SiteToConfig(site))
+	}
+	return out
+}
+
+func siteTamperSnapshotsFromConfig(snapshots []config.TamperSnapshotConfig) []SiteTamperSnapshot {
+	out := make([]SiteTamperSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, SiteTamperSnapshot{
+			URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+		})
+	}
+	return out
+}
+
+func siteTamperSnapshotsToConfig(snapshots []SiteTamperSnapshot) []config.TamperSnapshotConfig {
+	out := make([]config.TamperSnapshotConfig, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, config.TamperSnapshotConfig{
+			URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+		})
 	}
 	return out
 }

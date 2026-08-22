@@ -470,6 +470,36 @@ func TestUpdateSitePreservesRedactedKeyAndACMEEnv(t *testing.T) {
 	}
 }
 
+func TestSiteResponsesRedactTamperKeyAndUpdatesPreserveIt(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	site.Advanced.Response.TamperKey = "01234567890123456789012345678901"
+	if err := store.UpdateSite(context.Background(), &site); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	view := siteView(site)
+	if view.Advanced.Response.TamperKey != "" {
+		t.Fatal("tamper key was exposed in site view")
+	}
+	payload, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Put("/sites/{id}", handler.UpdateSite)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/sites/"+site.ID, bytes.NewReader(payload)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, err := store.GetSite(context.Background(), site.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("get site: %v", err)
+	}
+	if stored.Advanced.Response.TamperKey != site.Advanced.Response.TamperKey {
+		t.Fatalf("tamper key wiped by redacted update: %q", stored.Advanced.Response.TamperKey)
+	}
+}
+
 func TestSiteResponsesRedactInlinePrivateKeyAndACMEEnv(t *testing.T) {
 	handler, store, site := newSiteTestHandler(t)
 	site.Advanced.Certificate.Mode = "inline"

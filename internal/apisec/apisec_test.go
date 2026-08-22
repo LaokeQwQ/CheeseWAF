@@ -31,6 +31,38 @@ func TestDiscoverNormalizesVariablePaths(t *testing.T) {
 	}
 }
 
+func TestDiscoverPreservesStableLongAndMixedIdentifierSegments(t *testing.T) {
+	now := time.Now()
+	endpoints := Discover([]storage.LogEntry{
+		{Timestamp: now, Method: "GET", URI: "/articles/introducing-cheesewaf", StatusCode: 200},
+		{Timestamp: now, Method: "GET", URI: "/products/AB12-CD34-EF56", StatusCode: 200},
+	}, config.APIDiscoveryConfig{Window: time.Hour}, now)
+	if len(endpoints) != 2 {
+		t.Fatalf("stable paths collapsed: %+v", endpoints)
+	}
+	paths := map[string]bool{}
+	for _, endpoint := range endpoints {
+		paths[endpoint.Path] = true
+	}
+	if !paths["/articles/introducing-cheesewaf"] || !paths["/products/AB12-CD34-EF56"] {
+		t.Fatalf("unexpected normalized paths: %+v", paths)
+	}
+}
+
+func TestDiscoverNormalizesUUIDAndRejectsInvalidStatusFamilies(t *testing.T) {
+	now := time.Now()
+	endpoints := Discover([]storage.LogEntry{
+		{Timestamp: now, Method: "GET", URI: "/users/550e8400-e29b-41d4-a716-446655440000", StatusCode: 1200},
+		{Timestamp: now, Method: "GET", URI: "/users/550e8400-e29b-41d4-a716-446655440001", StatusCode: 99},
+	}, config.APIDiscoveryConfig{Window: time.Hour}, now)
+	if len(endpoints) != 1 || endpoints[0].Path != "/users/{id}" {
+		t.Fatalf("UUID paths did not normalize: %+v", endpoints)
+	}
+	if endpoints[0].StatusFamily["unknown"] != 2 || len(endpoints[0].StatusFamily) != 1 {
+		t.Fatalf("invalid status codes produced a family: %+v", endpoints[0].StatusFamily)
+	}
+}
+
 func TestValidatorReportsMissingQueryParam(t *testing.T) {
 	validator, err := NewValidator(config.APIValidationConfig{
 		Enabled: true,
