@@ -11,9 +11,11 @@ import (
 
 // Browser session cookie names (HttpOnly JWT + readable CSRF double-submit).
 const (
-	SessionCookieName = "cheesewaf_session"
-	CSRFCookieName    = "cheesewaf_csrf"
-	CSRFHeaderName    = "X-CSRF-Token"
+	SessionCookieName       = "cheesewaf_session"
+	CSRFCookieName          = "cheesewaf_csrf"
+	SecureSessionCookieName = "__Host-cheesewaf_session"
+	SecureCSRFCookieName    = "__Host-cheesewaf_csrf"
+	CSRFHeaderName          = "X-CSRF-Token"
 )
 
 // SessionCookieMaxAge mirrors default admin session TTL (24h) when unset.
@@ -25,9 +27,11 @@ func SessionToken(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	if c, err := r.Cookie(SessionCookieName); err == nil {
-		if v := strings.TrimSpace(c.Value); v != "" {
-			return v
+	for _, name := range []string{SecureSessionCookieName, SessionCookieName} {
+		if c, err := r.Cookie(name); err == nil {
+			if v := strings.TrimSpace(c.Value); v != "" {
+				return v
+			}
 		}
 	}
 	return bearerToken(r)
@@ -39,8 +43,12 @@ func SessionFromCookie(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	c, err := r.Cookie(SessionCookieName)
-	return err == nil && strings.TrimSpace(c.Value) != ""
+	for _, name := range []string{SecureSessionCookieName, SessionCookieName} {
+		if c, err := r.Cookie(name); err == nil && strings.TrimSpace(c.Value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // CSRFTokenFromRequest returns the CSRF token from the double-submit header or form.
@@ -64,11 +72,14 @@ func CSRFTokenFromCookie(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	c, err := r.Cookie(CSRFCookieName)
-	if err != nil {
-		return ""
+	for _, name := range []string{SecureCSRFCookieName, CSRFCookieName} {
+		if c, err := r.Cookie(name); err == nil {
+			if value := strings.TrimSpace(c.Value); value != "" {
+				return value
+			}
+		}
 	}
-	return strings.TrimSpace(c.Value)
+	return ""
 }
 
 // ValidCSRFDoubleSubmit checks cookie CSRF matches header/form CSRF.
@@ -151,8 +162,9 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 	if maxAge <= 0 {
 		maxAge = SessionCookieMaxAge
 	}
+	sessionName, csrfName := browserSessionCookieNames(r)
 	WriteCookie(w, r, &http.Cookie{
-		Name:     SessionCookieName,
+		Name:     sessionName,
 		Value:    sessionJWT,
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
@@ -160,7 +172,7 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 		SameSite: http.SameSiteStrictMode,
 	})
 	WriteCookie(w, r, &http.Cookie{
-		Name:     CSRFCookieName,
+		Name:     csrfName,
 		Value:    csrf,
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
@@ -174,16 +186,27 @@ func ClearSessionCookies(w http.ResponseWriter, r *http.Request) {
 	if w == nil {
 		return
 	}
-	for _, name := range []string{SessionCookieName, CSRFCookieName} {
+	names := []string{SessionCookieName, CSRFCookieName}
+	if CookieSecure(r) {
+		names = append(names, SecureSessionCookieName, SecureCSRFCookieName)
+	}
+	for _, name := range names {
 		WriteCookie(w, r, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
-			HttpOnly: name == SessionCookieName,
+			HttpOnly: name == SessionCookieName || name == SecureSessionCookieName,
 			SameSite: http.SameSiteStrictMode,
 		})
 	}
+}
+
+func browserSessionCookieNames(r *http.Request) (string, string) {
+	if CookieSecure(r) {
+		return SecureSessionCookieName, SecureCSRFCookieName
+	}
+	return SessionCookieName, CSRFCookieName
 }
 
 // RequiresCSRF reports whether the method mutates state and needs CSRF for cookie sessions.

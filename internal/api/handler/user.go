@@ -45,11 +45,13 @@ type totpConsumedPersist interface {
 }
 
 type twoFAState struct {
-	mu          sync.Mutex
-	pending     map[string]twoFAPendingSecret
-	consumed    map[string]time.Time // key: userID:counter → expiresAt
-	store       totpConsumedPersist
-	consumedTTL time.Duration
+	mu                  sync.Mutex
+	persistMu           sync.Mutex
+	pending             map[string]twoFAPendingSecret
+	consumed            map[string]time.Time // key: userID:counter → expiresAt
+	store               totpConsumedPersist
+	consumedTTL         time.Duration
+	nextPersistentPrune time.Time
 }
 
 type twoFAPendingSecret struct {
@@ -302,6 +304,20 @@ func (h *Handler) verifyCurrentCallerPassword(r *http.Request, password string) 
 
 func (h *Handler) userByID(w http.ResponseWriter, r *http.Request) (*storage.User, bool) {
 	id := chi.URLParam(r, "id")
+	if getter, ok := h.Store.(interface {
+		GetUserByID(context.Context, string) (*storage.User, error)
+	}); ok {
+		user, err := getter.GetUserByID(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+			return nil, false
+		}
+		if user == nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "user not found")
+			return nil, false
+		}
+		return user, true
+	}
 	users, err := h.Store.ListUsers(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
@@ -391,8 +407,8 @@ func (h *Handler) validateUserRole(role string) error {
 		return fmt.Errorf("role must be a configured role name, not a permission expression")
 	}
 	permissions := config.Default().APISec.Permissions
-	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
-		permissions = h.Config.APISec.Permissions
+	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+		permissions = h.currentConfig().APISec.Permissions
 	}
 	if _, ok := permissions[role]; ok {
 		return nil
@@ -434,8 +450,8 @@ func (h *Handler) validateRoleGrant(r *http.Request, role string) error {
 
 func (h *Handler) rolePermissions(role string) []string {
 	permissions := config.Default().APISec.Permissions
-	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
-		permissions = h.Config.APISec.Permissions
+	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+		permissions = h.currentConfig().APISec.Permissions
 	}
 	return append([]string(nil), permissions[strings.TrimSpace(role)]...)
 }
@@ -535,8 +551,8 @@ func (h *Handler) callerHasPermission(claims *middleware.Claims, required string
 		return false
 	}
 	configured := config.Default().APISec.Permissions
-	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
-		configured = h.Config.APISec.Permissions
+	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+		configured = h.currentConfig().APISec.Permissions
 	}
 	for _, permission := range append(append([]string(nil), claims.Scopes...), configured[claims.Role]...) {
 		if permission == "*" || permission == required || (strings.HasSuffix(permission, "*") && strings.HasPrefix(required, strings.TrimSuffix(permission, "*"))) {
@@ -562,13 +578,13 @@ func (s *twoFAState) consumeTOTPCounter(userID, secret, code string, now time.Ti
 		return 0, false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.consumed == nil {
 		s.consumed = map[string]time.Time{}
 	}
 	s.pruneLocked(now)
 	key := totpConsumeKey(userID, counter)
 	if expiresAt, exists := s.consumed[key]; exists && expiresAt.After(now) {
+		s.mu.Unlock()
 		return 0, false
 	}
 	ttl := s.consumedTTL
@@ -576,19 +592,24 @@ func (s *twoFAState) consumeTOTPCounter(userID, secret, code string, now time.Ti
 		ttl = twoFAConsumedTOTPTTL
 	}
 	expiresAt := now.Add(ttl)
-	if s.store != nil {
-		if consumed, err := s.store.IsTOTPConsumed(context.Background(), userID, counter, now); err != nil || consumed {
-			// Fail closed on persistence errors so a burned code cannot be reused
-			// while the backing store is unavailable.
-			return 0, false
-		}
-	}
+	store := s.store
 	s.consumed[key] = expiresAt
-	if s.store != nil {
-		if err := s.store.MarkTOTPConsumed(context.Background(), userID, counter, expiresAt); err != nil {
-			// Fail closed: memory keeps the mark and the use is rejected.
-			return 0, false
-		}
+	s.mu.Unlock()
+	if store == nil {
+		return counter, true
+	}
+	s.persistMu.Lock()
+	consumed, err := store.IsTOTPConsumed(context.Background(), userID, counter, now)
+	if err == nil && !consumed {
+		err = store.MarkTOTPConsumed(context.Background(), userID, counter, expiresAt)
+	}
+	s.maybePrunePersistedLocked(store, now)
+	s.persistMu.Unlock()
+	if err != nil || consumed {
+		// Keep the in-memory burn on persistence errors or an already-consumed
+		// database counter. Authentication fails closed and cannot immediately
+		// replay the same TOTP while storage is unavailable.
+		return 0, false
 	}
 	return counter, true
 }
@@ -598,10 +619,13 @@ func (s *twoFAState) releaseConsumedTOTP(userID string, counter int64) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.consumed, totpConsumeKey(userID, counter))
-	if s.store != nil {
-		_ = s.store.DeleteTOTPConsumed(context.Background(), userID, counter)
+	store := s.store
+	s.mu.Unlock()
+	if store != nil {
+		s.persistMu.Lock()
+		_ = store.DeleteTOTPConsumed(context.Background(), userID, counter)
+		s.persistMu.Unlock()
 	}
 }
 
@@ -620,7 +644,12 @@ func (s *twoFAState) pruneLocked(now time.Time) {
 			delete(s.consumed, key)
 		}
 	}
-	if s.store != nil {
-		_ = s.store.PruneTOTPConsumed(context.Background(), now)
+}
+
+func (s *twoFAState) maybePrunePersistedLocked(store totpConsumedPersist, now time.Time) {
+	if store == nil || s.nextPersistentPrune.After(now) {
+		return
 	}
+	s.nextPersistentPrune = now.Add(time.Minute)
+	_ = store.PruneTOTPConsumed(context.Background(), now)
 }

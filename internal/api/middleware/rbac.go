@@ -6,18 +6,31 @@ import (
 )
 
 type PermissionMap map[string][]string
+type PermissionProvider func() PermissionMap
 
 func RBAC(permissions PermissionMap, required string) func(http.Handler) http.Handler {
 	return RBACAny(permissions, required)
 }
 
 func RBACAny(permissions PermissionMap, required ...string) func(http.Handler) http.Handler {
+	return RBACAnyProvider(func() PermissionMap { return permissions }, required...)
+}
+
+func RBACProvider(provider PermissionProvider, required string) func(http.Handler) http.Handler {
+	return RBACAnyProvider(provider, required)
+}
+
+func RBACAnyProvider(provider PermissionProvider, required ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims, _ := r.Context().Value(UserContextKey).(*Claims)
 			if claims == nil {
 				writeUnauthorized(w)
 				return
+			}
+			permissions := PermissionMap(nil)
+			if provider != nil {
+				permissions = provider()
 			}
 			for _, permission := range required {
 				if allowed(claims, permissions, permission) {

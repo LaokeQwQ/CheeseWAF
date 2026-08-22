@@ -81,8 +81,8 @@ func (h *Handler) canDecideAIApproval(r *http.Request, id string) bool {
 	actor := h.aiApprovalActor(r)
 	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
 	permissions := config.Default().APISec.Permissions
-	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
-		permissions = h.Config.APISec.Permissions
+	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+		permissions = h.currentConfig().APISec.Permissions
 	}
 	// Dual control is person-bound, not session-bound. Treat a second login by
 	// the requester as self-approval too; otherwise a user with approve:ai could
@@ -260,9 +260,9 @@ func (h *Handler) aiAssistant() *ai.Assistant {
 }
 
 func (h *Handler) aiAssistantRegistry() *ai.Registry {
-	registry := ai.NewDefaultRegistry(h.Config)
+	registry := ai.NewDefaultRegistry(h.currentConfig())
 	registry.Register(recentSecurityEventsTool{Sink: h.Sink})
-	registry.Register(knowledgeBaseTool{Config: h.Config})
+	registry.Register(knowledgeBaseTool{Handler: h})
 	registry.Register(setBotChallengeTool{Handler: h})
 	registry.Register(setProtectionLevelTool{Handler: h})
 	return registry
@@ -400,9 +400,7 @@ func (t recentSecurityEventsTool) Execute(ctx context.Context, args map[string]a
 	return &ai.ToolResult{Success: true, Output: string(raw)}, nil
 }
 
-type knowledgeBaseTool struct {
-	Config *config.Config
-}
+type knowledgeBaseTool struct{ Handler *Handler }
 
 func (knowledgeBaseTool) Name() string {
 	return "knowledge_base"
@@ -429,8 +427,8 @@ func (knowledgeBaseTool) Parameters() map[string]any {
 
 func (t knowledgeBaseTool) Execute(_ context.Context, args map[string]any) (*ai.ToolResult, error) {
 	cfg := config.Default().AI.Knowledge
-	if t.Config != nil {
-		cfg = t.Config.AI.Knowledge
+	if t.Handler != nil && t.Handler.currentConfig() != nil {
+		cfg = t.Handler.currentConfig().AI.Knowledge
 	}
 	query, _ := stringArg(args, "query")
 	limit := boundedIntArg(args, "limit", cfg.MaxSnippets, 1, 10)
@@ -480,13 +478,13 @@ func (t setBotChallengeTool) Execute(_ context.Context, args map[string]any) (*a
 	if err != nil {
 		return nil, err
 	}
-	if t.Handler == nil || t.Handler.Config == nil {
+	if t.Handler == nil || t.Handler.currentConfig() == nil {
 		return nil, fmt.Errorf("handler config is nil")
 	}
 	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
 		return nil, err
 	}
-	next := t.Handler.Config.Protection
+	next := t.Handler.currentConfig().Protection
 	next.Bot = after
 	if err := t.Handler.commitProtectionConfig(next); err != nil {
 		return nil, err
@@ -496,10 +494,10 @@ func (t setBotChallengeTool) Execute(_ context.Context, args map[string]any) (*a
 }
 
 func (t setBotChallengeTool) nextBotConfig(args map[string]any) (config.BotProtectionConfig, config.BotProtectionConfig, error) {
-	if t.Handler == nil || t.Handler.Config == nil {
+	if t.Handler == nil || t.Handler.currentConfig() == nil {
 		return config.BotProtectionConfig{}, config.BotProtectionConfig{}, fmt.Errorf("handler config is nil")
 	}
-	before := t.Handler.Config.Protection.Bot
+	before := t.Handler.currentConfig().Protection.Bot
 	after := before
 	if value, ok := boolArg(args, "enabled"); ok {
 		after.Enabled = value
@@ -566,7 +564,7 @@ func (t setProtectionLevelTool) Execute(_ context.Context, args map[string]any) 
 	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
 		return nil, err
 	}
-	next := t.Handler.Config.Protection
+	next := t.Handler.currentConfig().Protection
 	next.Policy = after
 	if err := t.Handler.commitProtectionConfig(next); err != nil {
 		return nil, err
@@ -576,7 +574,7 @@ func (t setProtectionLevelTool) Execute(_ context.Context, args map[string]any) 
 }
 
 func (h *Handler) commitProtectionConfig(next config.ProtectionConfig) error {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return fmt.Errorf("handler config is nil")
 	}
 	_, err := h.commitConfigMutation(
@@ -601,7 +599,7 @@ func (h *Handler) commitProtectionConfig(next config.ProtectionConfig) error {
 }
 
 func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.ProtectionPolicyConfig, config.ProtectionPolicyConfig, error) {
-	if t.Handler == nil || t.Handler.Config == nil {
+	if t.Handler == nil || t.Handler.currentConfig() == nil {
 		return config.ProtectionPolicyConfig{}, config.ProtectionPolicyConfig{}, fmt.Errorf("handler config is nil")
 	}
 	area, ok := stringArg(args, "area")
@@ -617,7 +615,7 @@ func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.Protecti
 	if !config.IsProtectionLevel(level) || level == "" {
 		return config.ProtectionPolicyConfig{}, config.ProtectionPolicyConfig{}, fmt.Errorf("invalid protection level %q", level)
 	}
-	before := t.Handler.Config.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
+	before := t.Handler.currentConfig().Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
 	after := before
 	switch area {
 	case "web_attack":
@@ -635,7 +633,7 @@ func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.Protecti
 }
 
 func ensureAssistantConfigWritable(h *Handler) error {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return fmt.Errorf("handler config is nil")
 	}
 	// Align with commitConfigMutation: local freeze blocks writes too.

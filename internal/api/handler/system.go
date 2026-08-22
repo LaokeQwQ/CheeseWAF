@@ -36,7 +36,7 @@ var systemHTTPClient = func(policy netguard.URLPolicy) *http.Client {
 }
 
 func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
-	view := systemConfigView(h.Config)
+	view := systemConfigView(h.currentConfig())
 	view["version"] = version.Current()
 	writeData(w, view)
 }
@@ -269,7 +269,7 @@ func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config
 }
 
 func (h *Handler) ChinaMapBoundary(w http.ResponseWriter, r *http.Request) {
-	boundary := h.Config.Console.Map.ChinaBoundary
+	boundary := h.currentConfig().Console.Map.ChinaBoundary
 	if !boundary.Enabled {
 		writeData(w, map[string]any{
 			"enabled": false,
@@ -308,7 +308,7 @@ func (h *Handler) ChinaMapBoundaryByCode(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "MAP_BOUNDARY_BAD_ADCODE", "adcode must be a 6 digit administrative code")
 		return
 	}
-	boundary := h.Config.Console.Map.ChinaBoundary
+	boundary := h.currentConfig().Console.Map.ChinaBoundary
 	if !boundary.Enabled {
 		writeData(w, map[string]any{
 			"enabled": false,
@@ -513,8 +513,8 @@ func (h *Handler) TestStorageBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dataDir := ""
-	if h.Config != nil {
-		dataDir = h.Config.Setup.DataDir
+	if h.currentConfig() != nil {
+		dataDir = h.currentConfig().Setup.DataDir
 	}
 	if err := testStorageWithDataDir(r.Context(), strings.ToLower(req.Backend), req.Storage, dataDir); err != nil {
 		writeError(w, http.StatusBadRequest, "STORAGE_TEST_FAILED", err.Error())

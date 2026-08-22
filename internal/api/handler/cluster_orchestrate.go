@@ -196,7 +196,7 @@ func (h *Handler) ClusterListRollingUpgrades(w http.ResponseWriter, r *http.Requ
 
 // ClusterTrafficPeers returns mesh peers eligible for M4 traffic scheduling.
 func (h *Handler) ClusterTrafficPeers(w http.ResponseWriter, r *http.Request) {
-	nodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r))
+	nodes := cluster.RuntimeNodes(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r))
 	peers := traffic.EligiblePeers(nodes)
 	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
 	if mode == "" {
@@ -216,7 +216,7 @@ func (h *Handler) ClusterTrafficPeers(w http.ResponseWriter, r *http.Request) {
 		"healthy":  healthy,
 		"selected": selected,
 		"ok":       ok,
-		"status":   cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)),
+		"status":   cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r)),
 	})
 }
 
@@ -266,8 +266,8 @@ func (h *Handler) isRegisteredNode(ctx context.Context, nodeID string) bool {
 // ClusterConsensusStatus returns the built-in coordinator view (leader, role, freeze).
 func (h *Handler) ClusterConsensusStatus(w http.ResponseWriter, r *http.Request) {
 	lang := requestLanguage(r)
-	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
-	nodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	status := cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
+	nodes := cluster.RuntimeNodes(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
 	snap := h.clusterConsensusCoordinator().Evaluate(status, nodes)
 	writeData(w, snap)
 }
@@ -287,8 +287,8 @@ func (h *Handler) ClusterProposeConfigVersion(w http.ResponseWriter, r *http.Req
 		return
 	}
 	lang := requestLanguage(r)
-	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
-	nodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	status := cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
+	nodes := cluster.RuntimeNodes(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
 	rec, err := h.clusterConsensusCoordinator().ProposeConfigVersion(req.Version, req.Message, status, nodes)
 	if err != nil {
 		writeError(w, http.StatusConflict, "CLUSTER_CONSENSUS_REJECTED", err.Error())
@@ -343,10 +343,10 @@ func (h *Handler) clusterConsensusCoordinator() *consensus.Coordinator {
 		provider := "builtin"
 		var etcd []string
 		localID := ""
-		if h.Config != nil {
-			provider = strings.TrimSpace(h.Config.Cluster.Consensus.Provider)
-			etcd = append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...)
-			localID = strings.TrimSpace(h.Config.Cluster.NodeID)
+		if h.currentConfig() != nil {
+			provider = strings.TrimSpace(h.currentConfig().Cluster.Consensus.Provider)
+			etcd = append([]string(nil), h.currentConfig().Cluster.Consensus.EtcdEndpoints...)
+			localID = strings.TrimSpace(h.currentConfig().Cluster.NodeID)
 		}
 		h.clusterConsensus = consensus.NewCoordinator(consensus.Options{
 			Provider:      provider,

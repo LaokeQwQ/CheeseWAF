@@ -301,6 +301,14 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
+func (s *SQLiteStore) GetUserByID(ctx context.Context, id string) (*User, error) {
+	user, err := scanUser(s.db.QueryRowContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at FROM users WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return user, err
+}
+
 func (s *SQLiteStore) CreateSession(ctx context.Context, session *Session) error {
 	ensureSession(session)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_sessions(id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,

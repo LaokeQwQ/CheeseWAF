@@ -1508,3 +1508,52 @@ func TestSystemSummaryToolRedactsSiteIdentityAndAdminListener(t *testing.T) {
 		t.Fatalf("expected 1 site in observe mode, got %v", modes["observe"])
 	}
 }
+
+func TestValidateAIAPIBaseFailsClosedOnDNSLookupError(t *testing.T) {
+	previous := lookupAIAPIBaseIP
+	lookupAIAPIBaseIP = func(string) ([]net.IP, error) {
+		return nil, errors.New("resolver unavailable")
+	}
+	t.Cleanup(func() { lookupAIAPIBaseIP = previous })
+
+	err := validateAIAPIBase("https://model.example.test/v1", false)
+	if err == nil || !strings.Contains(err.Error(), "lookup") {
+		t.Fatalf("DNS lookup failure was not rejected: %v", err)
+	}
+}
+
+func TestAssistantSensitiveToolsRequireExplicitCommands(t *testing.T) {
+	h := &Handler{}
+	for _, message := range []string{
+		"How would disabling captcha affect false positives?",
+		"文档里提到开启验证码会增加一步验证",
+		"Why does setting the protection level to high increase false positives?",
+		"如果把防护等级设置为高，会发生什么？",
+	} {
+		for _, intent := range h.assistantToolIntents(message) {
+			if intent.Name == "set_bot_challenge" || intent.Name == "set_protection_level" {
+				t.Fatalf("informational message %q produced sensitive intent %+v", message, intent)
+			}
+		}
+	}
+
+	tests := []struct {
+		message string
+		name    string
+	}{
+		{message: "Please enable slider captcha", name: "set_bot_challenge"},
+		{message: "请关闭验证码", name: "set_bot_challenge"},
+		{message: "Set the web protection level to high", name: "set_protection_level"},
+		{message: "请把 API 防护等级设置为严格", name: "set_protection_level"},
+	}
+	for _, test := range tests {
+		intents := h.assistantToolIntents(test.message)
+		found := false
+		for _, intent := range intents {
+			found = found || intent.Name == test.name
+		}
+		if !found {
+			t.Fatalf("explicit command %q did not produce %s: %+v", test.message, test.name, intents)
+		}
+	}
+}

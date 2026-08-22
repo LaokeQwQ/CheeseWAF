@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,48 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
+
+func TestConfigReplacementIsSynchronizedAndDeepCloned(t *testing.T) {
+	h, _, _ := newSiteTestHandler(t)
+	initial, err := config.Clone(h.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.configCurrent.Store(initial)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 100; i++ {
+				snapshot := h.currentConfig()
+				if snapshot == nil || len(snapshot.Sites) != 1 || len(snapshot.Sites[0].Domains) != 1 {
+					t.Errorf("invalid atomic snapshot: %+v", snapshot)
+					return
+				}
+				_ = snapshot.Sites[0].Domains[0]
+			}
+		}()
+	}
+	close(start)
+	for i := 0; i < 100; i++ {
+		committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
+			candidate.Sites[0].Domains = []string{fmt.Sprintf("site-%d.example.test", i)}
+			return nil
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		committed.Sites[0].Domains[0] = "mutated-after-publish.example.test"
+	}
+	wg.Wait()
+	if h.currentConfig().Sites[0].Domains[0] == "mutated-after-publish.example.test" ||
+		h.Config.Sites[0].Domains[0] == "mutated-after-publish.example.test" {
+		t.Fatal("published config aliases the returned mutation candidate")
+	}
+}
 
 func TestSiteMutationStoreFailuresDoNotReturnSuccess(t *testing.T) {
 	tests := []string{"create", "update", "delete"}
