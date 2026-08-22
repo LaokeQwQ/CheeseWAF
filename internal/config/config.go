@@ -695,6 +695,17 @@ type ResponseInspectionConfig struct {
 	Enabled           bool     `yaml:"enabled" json:"enabled"`
 	MaxBodyBytes      int64    `yaml:"max_body_bytes" json:"max_body_bytes"`
 	SensitivePatterns []string `yaml:"sensitive_patterns" json:"sensitive_patterns"`
+	// TamperKey authenticates exact-URL response baselines. It must contain at
+	// least 32 bytes whenever TamperSnapshots is non-empty.
+	TamperKey       string                 `yaml:"tamper_key,omitempty" json:"tamper_key,omitempty"`
+	TamperSnapshots []TamperSnapshotConfig `yaml:"tamper_snapshots,omitempty" json:"tamper_snapshots,omitempty"`
+}
+
+type TamperSnapshotConfig struct {
+	URL        string    `yaml:"url" json:"url"`
+	MAC        string    `yaml:"mac" json:"mac"`
+	Size       int       `yaml:"size" json:"size"`
+	CapturedAt time.Time `yaml:"captured_at" json:"captured_at"`
 }
 
 type RewriteRuleConfig struct {

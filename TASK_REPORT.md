@@ -1,46 +1,41 @@
-# CheeseWAF R2 Consolidated Task Report
+# R2-4 Protection Task Report
 
-Updated: 2026-08-23
-Integration branch: `fix/audit-round2`
+Status: `DONE_WITH_CONCERNS`
 
-Individual R2 reports are retained on their worker branches. This report tracks
-integration and final verification evidence.
+Implementation commit: `1832ecd`
 
-## Status
+## Finding Disposition
 
-| Workflow | Scope | Status | Integration commit(s) |
-| --- | --- | --- | --- |
-| R2-1 | cluster consensus boundary | integrated | `f300187` |
-| R2-2 | realtime event delivery | integrated | `57deb7c` |
-| R2-3 | web auth and realtime client | integrated | `11c6f1b` |
-| R2-4 | protection pipeline and policy hardening | pending | `fix/r2-protection` |
-| R2-5 | engine detection hardening | integrating | current merge |
-| R2-6 | API and operations | pending | `fix/r2-apiops` |
-| R2-7 | proxy, cluster, and storage | pending | `fix/r2-proxycluster` |
-| R2-8 | release, CI, and docs | pending | `fix/r2-release` |
-| R2-9 | attack map and keyset pagination | integrated | `931de19` |
+1. Webshell scanning is now wired into the production request pipeline. The
+   detector bounds candidate bytes, concurrent scans, decode variants, and
+   wall-clock time, and returns a bounded evidence payload.
+2. Response tamper snapshots now use an HMAC bound to the canonical public URL,
+   body length, and body bytes. Response inspection verifies the baseline inline,
+   including cache hits, and fails closed when a configured snapshot cannot be
+   fully inspected.
+3. IP access decisions select the most specific matching rule regardless of
+   action, IPv4-mapped prefixes cannot widen to `0.0.0.0/0`, and malformed
+   blacklist entries are rejected.
+4. ACL matching rejects empty/ambiguous rules and compares header values
+   explicitly. API discovery normalizes variable paths and status families.
+5. PoW AEAD keys are HKDF-derived per challenge and context is included in AAD.
+   The obsolete reversible `protection/crypto` package was removed; the
+   remaining presentation helpers are explicitly documented as non-security
+   transforms.
 
-## Current Evidence
+## Verification
 
-- R2-1: `go test ./internal/config ./internal/cluster/... ./internal/cli
-  ./internal/api/handler -short -count=1` exited 0 after integration.
-- R2-2 and R2-3 were verified before their prior merges, including R2-2 race
-  coverage and R2-3 web tests/typecheck/build.
-- R2-5 worker verification passed: engine/config/CLI affected-package suites,
-  plus focused decoder, SQL, XSS, and RCE regressions.
-- R2-9 API/storage and web verification passed before integration.
+`env GOCACHE=/private/tmp/cw-r2-protection-gocache go test ./internal/protection/... ./internal/apisec/... ./internal/engine/response ./internal/proxy/... ./internal/proxytrust ./internal/storage ./internal/config ./internal/api/handler ./internal/cli -short -count=1`
 
-## Final Gates
+Exit `0`; all affected Go packages passed.
 
-Run fresh commands only after all R2 workflows merge:
+`git diff --check` was clean before commit. No remaining Go imports reference
+`internal/protection/crypto`.
 
-```text
-go test ./... -short
-go vet ./...
-go build ./cmd/...
-cd web && npm test -- --run && npm run typecheck && npm run build
-bash scripts/ci/verify-ci-static.sh
-```
+## Concerns
 
-Remote CI and the final `verification-before-completion` gate are required
-before declaring the audit complete.
+- No external service is required for the focused checks; live deployment and
+  response-cache integration remain CI/integration concerns.
+- Tamper snapshots require operators to provision a strong key and valid
+  authenticated baselines; invalid configuration is rejected rather than
+  silently disabled.
