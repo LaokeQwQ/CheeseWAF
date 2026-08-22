@@ -38,6 +38,12 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 		}
 		// Deep tokenization first (fast, high precision; libinjection-compatible)
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate); detected {
+			// EXEC/Ef fingerprints are useful for real stored-procedure payloads,
+			// but the short token window also appears in SQL Server documentation.
+			// Keep the same statement-boundary guard used by the staged analyzer.
+			if (strings.Contains(fp, "Ew") || strings.Contains(fp, "Ef")) && !hasSQLExecFingerprintContext(candidate) {
+				continue
+			}
 			return &engine.DetectionResult{
 				Detected:   true,
 				DetectorID: d.ID(),
