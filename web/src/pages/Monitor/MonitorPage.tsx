@@ -7,13 +7,15 @@ import { fetchMonitorSummary } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import type { Alert } from '../../types/api';
 import { displaySeverity } from '../../utils/display';
+import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 export default function MonitorPage() {
   const { t } = useTranslation();
+  const monitorRefetchInterval = usePollingVisibility(15_000);
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['monitor'],
     queryFn: fetchMonitorSummary,
-    refetchInterval: 15_000,
+    refetchInterval: monitorRefetchInterval,
     retry: false,
   });
   const snapshot = data?.snapshot;

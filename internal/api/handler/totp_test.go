@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -116,5 +118,87 @@ func TestConsumeTOTPReleaseAllowsReuse(t *testing.T) {
 	state.releaseConsumedTOTP("user-1", counter)
 	if !state.consumeTOTP("user-1", secret, code, now) {
 		t.Fatal("released consume slot must allow the same step again")
+	}
+}
+
+type fakeTOTPStore struct {
+	mu       sync.Mutex
+	consumed map[string]time.Time
+}
+
+func (f *fakeTOTPStore) MarkTOTPConsumed(_ context.Context, userID string, counter int64, expiresAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.consumed == nil {
+		f.consumed = map[string]time.Time{}
+	}
+	f.consumed[totpConsumeKey(userID, counter)] = expiresAt
+	return nil
+}
+
+func (f *fakeTOTPStore) IsTOTPConsumed(_ context.Context, userID string, counter int64, now time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	expiresAt, ok := f.consumed[totpConsumeKey(userID, counter)]
+	return ok && expiresAt.After(now), nil
+}
+
+func (f *fakeTOTPStore) DeleteTOTPConsumed(_ context.Context, userID string, counter int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.consumed, totpConsumeKey(userID, counter))
+	return nil
+}
+
+func (f *fakeTOTPStore) PruneTOTPConsumed(_ context.Context, before time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for key, expiresAt := range f.consumed {
+		if !expiresAt.After(before) {
+			delete(f.consumed, key)
+		}
+	}
+	return nil
+}
+
+func TestConsumeTOTPRefusesReplayAfterRestart(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	now := time.Unix(1_700_000_000, 0).UTC()
+	code, err := hotp(secret, now.Unix()/totpPeriod)
+	if err != nil {
+		t.Fatalf("hotp: %v", err)
+	}
+	store := &fakeTOTPStore{}
+	first := newTwoFAStateWithStore(store)
+	if !first.consumeTOTP("user-1", secret, code, now) {
+		t.Fatal("first consume of a valid code must succeed")
+	}
+	// Simulate a process restart: a brand new twoFAState shares the same
+	// persisted consumed-counters store, so the burned code must be rejected.
+	second := newTwoFAStateWithStore(store)
+	if second.consumeTOTP("user-1", secret, code, now) {
+		t.Fatal("same code must be rejected after restart replay")
+	}
+}
+
+func TestConsumeTOTPAllowsReuseAfterTTL(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	now := time.Unix(1_700_000_000, 0).UTC()
+	code, err := hotp(secret, now.Unix()/totpPeriod)
+	if err != nil {
+		t.Fatalf("hotp: %v", err)
+	}
+	store := &fakeTOTPStore{}
+	state := newTwoFAStateWithStore(store)
+	// Use a short TTL equal to one TOTP period so we can validate that an
+	// expired consumed record no longer blocks the same code while it is still
+	// inside the ±1 window.
+	state.consumedTTL = time.Duration(totpPeriod) * time.Second
+	if !state.consumeTOTP("user-1", secret, code, now) {
+		t.Fatal("first consume must succeed")
+	}
+	later := now.Add(time.Duration(totpPeriod)*time.Second + time.Second)
+	if !state.consumeTOTP("user-1", secret, code, later) {
+		t.Fatal("expected expired consumed record to allow same code reuse")
 	}
 }

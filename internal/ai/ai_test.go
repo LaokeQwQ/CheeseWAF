@@ -454,6 +454,43 @@ func TestClientUsesOpenAIStandardBearerAuth(t *testing.T) {
 	}
 }
 
+func TestClientUsesConfiguredAPIKeyHeader(t *testing.T) {
+	var gotPath, gotXAPIKey, gotAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotXAPIKey = r.Header.Get("x-api-key")
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AIConfig{
+		Enabled:      true,
+		Provider:     "openai",
+		APIBase:      server.URL,
+		APIKey:       "test-secret-key",
+		APIKeyHeader: "x-api-key",
+		Model:        "gpt-4o-mini",
+	}, server.Client())
+	result, err := client.CompleteWithUsage(context.Background(), []Message{{Role: "user", Content: "ping"}})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if gotPath != "/chat/completions" {
+		t.Fatalf("unexpected OpenAI path: %q", gotPath)
+	}
+	if gotXAPIKey != "test-secret-key" {
+		t.Fatalf("expected configured x-api-key header, got %q", gotXAPIKey)
+	}
+	if gotAuthorization != "" {
+		t.Fatalf("default Authorization header should be suppressed when a custom API key header is configured, got %q", gotAuthorization)
+	}
+	if result.Content != "ok" {
+		t.Fatalf("unexpected OpenAI result: %+v", result)
+	}
+}
+
 func TestClientParsesOpenAINativeToolCalls(t *testing.T) {
 	var parsed struct {
 		Tools []map[string]any `json:"tools"`

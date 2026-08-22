@@ -114,4 +114,13 @@ CREATE TABLE IF NOT EXISTS site_promotes (
   site_id TEXT PRIMARY KEY,
   until_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS totp_consumed (
+  user_id TEXT NOT NULL,
+  counter INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, counter)
+);
+CREATE INDEX IF NOT EXISTS idx_totp_consumed_expires ON totp_consumed(expires_at);
 `

@@ -23,6 +23,7 @@ import { fetchLogs, fetchMonitorSummary, fetchSites, reclaimSystemResources } fr
 import QueryErrorState from '../../components/QueryErrorState';
 import type { LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
+import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 const threatColors = ['var(--accent-danger)', 'var(--accent-warning)', 'var(--accent-purple)', 'var(--accent-info)'];
 const realtimeWindowSeconds = 60;
@@ -59,6 +60,9 @@ export default function DashboardPage() {
   /** 1 = full period; lower = wheel-zoom into the latest segment. */
   const [chartWindowRatio, setChartWindowRatio] = useState(1);
   const totalsChartRef = useRef<HTMLDivElement | null>(null);
+  const liveRefreshInterval = usePollingVisibility(refreshMs);
+  const totalsRefreshInterval = usePollingVisibility(totalsRefreshMs);
+  const sitesRefreshInterval = usePollingVisibility(60_000);
 
   useEffect(() => {
     const el = totalsChartRef.current;
@@ -82,28 +86,28 @@ export default function DashboardPage() {
   const { data: monitor, isLoading: loadingMonitor, isFetching: fetchingMonitor, isError: monitorError, refetch: refetchMonitor } = useQuery({
     queryKey: ['monitor-summary'],
     queryFn: fetchMonitorSummary,
-    refetchInterval: refreshMs,
+    refetchInterval: liveRefreshInterval,
     retry: false,
     staleTime: Math.max(1000, Math.floor(refreshMs * 0.8)),
   });
   const { data: periodLogs, isLoading: loadingPeriod, isFetching: fetchingPeriod, isError: periodLogsError, dataUpdatedAt: periodUpdatedAt, refetch: refetchPeriodLogs } = useQuery({
     queryKey: ['dashboard-period-logs', statsRange, customRange],
     queryFn: () => fetchLogs(buildStatsQuery(statsRange, customRange, statsRange === customStatsRangeValue ? 2500 : 1500)),
-    refetchInterval: totalsRefreshMs,
+    refetchInterval: totalsRefreshInterval,
     retry: false,
     staleTime: 20_000,
   });
   const { data: liveLogs, isLoading: loadingLive, isFetching: fetchingLive, isError: liveLogsError, refetch: refetchLiveLogs } = useQuery({
     queryKey: ['dashboard-live-logs'],
     queryFn: () => fetchLogs(buildWindowQuery(realtimeWindowSeconds, 180)),
-    refetchInterval: refreshMs,
+    refetchInterval: liveRefreshInterval,
     retry: false,
     staleTime: Math.max(1000, Math.floor(refreshMs * 0.8)),
   });
   const { data: sites, refetch: refetchSites } = useQuery({
     queryKey: ['sites'],
     queryFn: fetchSites,
-    refetchInterval: 60_000,
+    refetchInterval: sitesRefreshInterval,
     retry: false,
     staleTime: 60_000,
   });

@@ -8,6 +8,7 @@ import { fetchLogs } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
 import { filterLogs, paginate, type LogViewMode } from './logsLogic';
+import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 const PAGE_SIZE = 8;
 const ALL = '__all__';
@@ -21,10 +22,11 @@ export default function LogsPage() {
   const [action, setAction] = useState<string>();
   const [viewMode, setViewMode] = useState<LogViewMode>('security');
   const [page, setPage] = useState(1);
+  const logsRefetchInterval = usePollingVisibility(8_000);
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['logs', category, action],
     queryFn: () => fetchLogs({ limit: 500, category, action }),
-    refetchInterval: 8_000,
+    refetchInterval: logsRefetchInterval,
     retry: false,
   });
   const logs = useMemo(

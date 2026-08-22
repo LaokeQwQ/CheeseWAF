@@ -125,7 +125,7 @@ func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	payload := map[string]any{"needs_setup": needs}
-	if needs && h != nil && strings.TrimSpace(h.SetupToken) != "" && loginCAPTCHASkippedForPeer(r) {
+	if needs && h != nil && strings.TrimSpace(h.SetupToken) != "" && loginCAPTCHASkippedForPeer(r, h.adminPublic()) {
 		scheme := "http"
 		if middleware.CookieSecure(r) {
 			scheme = "https"

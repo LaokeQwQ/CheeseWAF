@@ -3,6 +3,7 @@ package middleware
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -97,9 +98,10 @@ func NewCSRFToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// CookieSecure is true for TLS requests or HTTPS reverse proxies.
-// Plain HTTP loopback (the default admin listener) must keep Secure=false
-// or browsers drop the session cookie.
+// CookieSecure is true for TLS requests, or for HTTPS declared by a trusted
+// reverse proxy. X-Forwarded-Proto is only trusted when the socket peer is
+// loopback or a private network (RFC1918 / IPv6 ULA); public peers must not
+// be able to flip Secure on by supplying a header.
 func CookieSecure(r *http.Request) bool {
 	if r == nil {
 		return false
@@ -107,11 +109,26 @@ func CookieSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
+	if !peerIsLoopbackOrPrivate(r) {
+		return false
+	}
 	proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")))
 	if i := strings.IndexByte(proto, ','); i >= 0 {
 		proto = strings.TrimSpace(proto[:i])
 	}
 	return proto == "https"
+}
+
+func peerIsLoopbackOrPrivate(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	host := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
 }
 
 // WriteCookie applies CookieSecure then writes Set-Cookie.

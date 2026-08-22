@@ -384,3 +384,94 @@ describe('notification API', () => {
     request.mockRestore();
   });
 });
+
+describe('refresh session', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    sessionStorage.clear();
+  });
+
+  it('refreshes the session on authenticated requests', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { data: { user: { username: 'admin', role: 'admin' } } }, status: 200, statusText: 'OK', headers: {}, config: {} });
+    const adapter = vi.fn(async (config) => ({ data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config }));
+
+    await apiClient.get('/sites', { adapter });
+
+    expect(post).toHaveBeenCalledWith('/auth/refresh', {});
+    expect(adapter).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refresh on login, refresh, logout, setup, or session paths', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    const post = vi.spyOn(apiClient, 'post');
+    const adapter = vi.fn(async (config) => ({ data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config }));
+
+    await apiClient.get('/auth/session', { adapter });
+    await apiClient.get('/auth/login', { adapter });
+    await apiClient.get('/auth/logout', { adapter });
+    await apiClient.get('/auth/refresh', { adapter });
+    await apiClient.get('/setup', { adapter });
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('keeps the refresh single-flight across concurrent requests', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    let resolveRefresh: ((value: unknown) => void) | undefined;
+    const post = vi.spyOn(apiClient, 'post').mockImplementation(() => new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    const adapter = vi.fn(async (config) => ({ data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config }));
+
+    const first = apiClient.get('/sites', { adapter });
+    const second = apiClient.get('/logs', { adapter });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(post).toHaveBeenCalledTimes(1);
+
+    resolveRefresh?.({ data: { data: { user: { username: 'admin', role: 'admin' } } }, status: 200, statusText: 'OK', headers: {}, config: {} });
+    await Promise.all([first, second]);
+
+    expect(adapter).toHaveBeenCalledTimes(2);
+  });
+
+  it('swallows refresh failures so the original request still proceeds', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    vi.spyOn(apiClient, 'post').mockRejectedValue(new Error('refresh failed'));
+    const adapter = vi.fn(async (config) => ({ data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config }));
+
+    await expect(apiClient.get('/sites', { adapter })).resolves.toBeTruthy();
+    expect(adapter).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('refresh session throttle', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    sessionStorage.clear();
+  });
+
+  it('skips refresh within 10 minutes after the last successful refresh', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { data: { user: { username: 'admin', role: 'admin' } } }, status: 200, statusText: 'OK', headers: {}, config: {} });
+    const adapter = vi.fn(async (config) => ({ data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config }));
+
+    await apiClient.get('/sites', { adapter });
+    expect(post).toHaveBeenCalledTimes(1);
+
+    post.mockClear();
+    await apiClient.get('/logs', { adapter });
+    expect(post).not.toHaveBeenCalled();
+  });
+});

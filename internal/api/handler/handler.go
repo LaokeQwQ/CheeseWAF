@@ -687,7 +687,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.nowUTC()
-	rateLimitKeys := loginRateLimitKeys(r, req.Username)
+	rateLimitKeys := loginRateLimitKeys(r, req.Username, h.adminPublic())
 	if !tracker.loginAttemptAllowed(rateLimitKeys, now) {
 		h.auditLoginFailure(r, req.Username, "rate_limited")
 		writeError(w, http.StatusTooManyRequests, "LOGIN_RATE_LIMITED", "too many failed login attempts")
@@ -806,7 +806,7 @@ func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayloa
 	if !login.CAPTCHA.Enabled {
 		return true
 	}
-	if loginCAPTCHASkippedForPeer(r) {
+	if loginCAPTCHASkippedForPeer(r, h.adminPublic()) {
 		return true
 	}
 	if payload == nil {
@@ -1166,9 +1166,9 @@ func (h *Handler) verifyLoginCaptchaClientID(value string) (string, bool) {
 	return rawID, hmac.Equal([]byte(expected), []byte(value))
 }
 
-func loginRateLimitKeys(r *http.Request, username string) []string {
+func loginRateLimitKeys(r *http.Request, username string, adminPublic bool) []string {
 	peer := socketPeerIP(r)
-	client := trustedLoginClientIP(r, peer)
+	client := trustedLoginClientIP(r, peer, adminPublic)
 	if client == "" {
 		client = peer
 	}
@@ -1183,7 +1183,14 @@ func loginRateLimitKeys(r *http.Request, username string) []string {
 	return keys
 }
 
-func loginCAPTCHASkippedForPeer(r *http.Request) bool {
+func (h *Handler) adminPublic() bool {
+	return h != nil && h.Config != nil && h.Config.Server.AdminPublic
+}
+
+func loginCAPTCHASkippedForPeer(r *http.Request, adminPublic bool) bool {
+	if adminPublic {
+		return false
+	}
 	ip := net.ParseIP(socketPeerIP(r))
 	return ip != nil && ip.IsLoopback()
 }
@@ -1202,10 +1209,14 @@ func socketPeerIP(r *http.Request) string {
 	return host
 }
 
-func trustedLoginClientIP(r *http.Request, peer string) string {
-	// Only honor X-Forwarded-For when the socket peer is loopback (local reverse
-	// proxy on the same host). Private non-loopback peers can spoof XFF on LAN
-	// or cloud VPCs, so ignore XFF and rate-limit by peer alone.
+func trustedLoginClientIP(r *http.Request, peer string, adminPublic bool) string {
+	// Only honor X-Forwarded-For when the admin console is not public AND the
+	// socket peer is loopback (local reverse proxy on the same host). Private
+	// non-loopback peers and public deployments can spoof XFF on LAN/VPC or
+	// from the internet, so ignore XFF and rate-limit by peer alone.
+	if adminPublic {
+		return ""
+	}
 	peerIP := net.ParseIP(peer)
 	if r == nil || peerIP == nil || !peerIP.IsLoopback() {
 		return ""

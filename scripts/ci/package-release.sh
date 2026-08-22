@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version_prefix="${CHEESEWAF_VERSION_PREFIX:-0.1.0}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+version_prefix="${CHEESEWAF_VERSION_PREFIX:-$(cat "${script_dir}/product-version")}"
 ref_name="${CHEESEWAF_REF_NAME:-${GITHUB_REF_NAME:-}}"
 if [[ -z "$ref_name" ]]; then
   ref_name="$(git branch --show-current 2>/dev/null || true)"
@@ -79,11 +80,7 @@ for target in "${targets[@]}"; do
     ext=".exe"
   fi
 
-  if [[ -n "$file_suffix" ]]; then
-    package_name="cheesewaf-${goarch}-${goos}-${version_prefix}-${file_suffix}"
-  else
-    package_name="cheesewaf-${goarch}-${goos}-${version_prefix}"
-  fi
+  package_name="cheesewaf-${goarch}-${goos}-${artifact_version}"
   package_root="${work_dir}/${package_name}"
   mkdir -p "$package_root"
 

@@ -3,12 +3,12 @@
 ## Completed Optimizations
 
 ### 1. Runtime GC Tuning (✅ Complete)
-- **Implementation**: `internal/gctune/gctune.go`
+- **Implementation**: `internal/perf/gctune/gctune.go`
 - **Strategy**: Adaptive GOMEMLIMIT = 75% of detected RAM, GOGC = 200
 - **Platform support**: Windows (GlobalMemoryStatusEx), Linux (cgroups)
 - **Tests**: 32/32 pass
 - **Detection**: 15.9 GiB RAM → 11.9 GiB GOMEMLIMIT on test system
-- **Config**: `runtime.enable_gc_tuning` (default: true)
+- **Config**: `performance.gc.enabled` (default: true)
 
 ### 2. Semantic Analyzer Memory Optimization (✅ Complete)
 - **Root cause**: Unconditional `maxCandidates=64` sizing consumed 88.7% of allocations

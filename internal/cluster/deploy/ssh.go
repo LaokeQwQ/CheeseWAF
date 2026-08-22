@@ -740,6 +740,19 @@ func openInstallBinary() (installBinarySource, error) {
 	}, nil
 }
 
+// InstallBinarySHA256 returns the SHA256 of the install source binary that
+// Deploy will push for an install action. It is used to bind an SSH precheck
+// authorization to the exact artefact, so a captured token cannot be replayed
+// against a different binary.
+func InstallBinarySHA256() (string, error) {
+	src, err := openInstallBinary()
+	if err != nil {
+		return "", err
+	}
+	defer src.file.Close()
+	return src.sha256, nil
+}
+
 func installCommand(size int64, checksum string, taskID ...string) string {
 	// taskID is intentionally not interpolated into the remote shell so no
 	// operator-supplied token reaches session.Run.

@@ -43,8 +43,8 @@ func Validate(cfg *Config) error {
 	if adminPublic && !cfg.Server.AdminPublic {
 		return fmt.Errorf("server.admin_listen %q is public; bind admin to localhost/private access or set server.admin_public with server.admin_tls enabled", cfg.Server.AdminListen)
 	}
-	if cfg.Server.AdminPublic && adminPublic && !cfg.Server.AdminTLS.Enabled {
-		return fmt.Errorf("server.admin_tls.enabled is required when admin listener is public")
+	if (cfg.Server.AdminPublic || adminPublic) && !cfg.Server.AdminTLS.Enabled {
+		return fmt.Errorf("server.admin_tls.enabled is required when admin_listen is not loopback or admin_public is set")
 	}
 	if cfg.Server.AdminTLS.Enabled && (strings.TrimSpace(cfg.Server.AdminTLS.CertFile) == "" || strings.TrimSpace(cfg.Server.AdminTLS.KeyFile) == "") {
 		return fmt.Errorf("server.admin_tls.cert_file and server.admin_tls.key_file are required when admin TLS is enabled")

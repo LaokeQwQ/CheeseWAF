@@ -20,6 +20,8 @@ const authFlagKey = 'cheesewaf-authed';
 const csrfCookieName = 'cheesewaf_csrf';
 const csrfHeaderName = 'X-CSRF-Token';
 const setupTokenStorageKey = 'cheesewaf-setup-token';
+const sessionRefreshThrottleKey = 'cheesewaf-last-refresh';
+const sessionRefreshThrottleMs = 10 * 60_000;
 const setupTokenHeaderName = 'X-CheeseWAF-Setup-Token';
 let refreshPromise: Promise<void> | null = null;
 let authRedirectScheduled = false;
@@ -236,9 +238,32 @@ export function resetAuthRedirectStateForTest() {
   authRedirectLocationForTest = null;
 }
 
+function isSessionRefreshDue(): boolean {
+  try {
+    const raw = sessionStorage.getItem(sessionRefreshThrottleKey);
+    if (!raw) {
+      return true;
+    }
+    const at = Number(raw);
+    return Number.isFinite(at) && (Date.now() - at) > sessionRefreshThrottleMs;
+  } catch {
+    return true;
+  }
+}
+
+function markSessionRefresh() {
+  try {
+    sessionStorage.setItem(sessionRefreshThrottleKey, String(Date.now()));
+  } catch {
+    /* ignore */
+  }
+}
+
 async function refreshSessionIfNeeded() {
-  // Cookie sessions are refreshed on demand via /auth/refresh (HttpOnly cookie).
-  // Avoid hammering: only one in-flight refresh.
+  // Cookie sessions are refreshed at most every 10 minutes via /auth/refresh
+  // (HttpOnly cookie). Avoid hammering: only one in-flight refresh, and skip
+  // entirely when a recent refresh already ran. Refresh failures are soft: the
+  // originating request still proceeds so the response interceptor can handle 401.
   if (refreshPromise) {
     try {
       await refreshPromise;
@@ -246,6 +271,14 @@ async function refreshSessionIfNeeded() {
       /* handled by caller path */
     }
     return;
+  }
+  if (!isSessionRefreshDue()) {
+    return;
+  }
+  try {
+    await refreshSession();
+  } catch {
+    // Best-effort: let the actual request run its course.
   }
 }
 
@@ -266,6 +299,7 @@ export async function refreshSession() {
           setCSRFToken(response.data.data.csrf);
         }
         markAuthenticated(true);
+        markSessionRefresh();
         clearLegacyTokenStorage();
       })
       .finally(() => {

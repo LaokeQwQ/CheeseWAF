@@ -141,7 +141,7 @@ function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
     message: error.message,
     stack: truncateForReport(error.stack ?? ""),
     component_stack: truncateForReport(info.componentStack),
-    path: `${window.location.pathname}${window.location.search}${window.location.hash}`,
+    path: `${window.location.pathname}${window.location.search}`,
     user_agent: navigator.userAgent,
     language: navigator.language,
     viewport: {

@@ -93,6 +93,58 @@ done
   sha256sum -c "$(basename "$checksum_file")"
 )
 
+# Optional release signing gate. Enabled only when CHEESEWAF_REQUIRE_SIGNING=1.
+# Without the env var this block is a no-op so CI stays green when no
+# code-signing certificates are available (e.g. GitHub Actions fork runs).
+if [[ "${CHEESEWAF_REQUIRE_SIGNING:-}" == "1" ]]; then
+  # --- Windows Authenticode (PE executables at the top level of the release dir) ---
+  if command -v osslsigncode >/dev/null 2>&1; then
+    mapfile -t pe_files < <(find "$release_dir" -maxdepth 1 -type f -iname '*.exe' | sort)
+    if [[ "${#pe_files[@]}" -gt 0 ]]; then
+      for pe in "${pe_files[@]}"; do
+        out="$(osslsigncode verify "$pe" 2>&1 || true)"
+        if ! grep -qiE 'signature verification.*ok|signature.*valid|signing certificate chain.*ok' <<<"$out"; then
+          fail "Authenticode verification failed for $(basename "$pe"): ${out}"
+        fi
+      done
+      echo "Authenticode verification passed for ${#pe_files[@]} Windows executable(s)."
+    else
+      echo "CHEESEWAF_REQUIRE_SIGNING=1 but no .exe artifacts found; Windows signing gate skipped."
+    fi
+  else
+    fail "CHEESEWAF_REQUIRE_SIGNING=1 requires osslsigncode to verify Windows Authenticode"
+  fi
+
+  # --- macOS Developer ID / notarization (mount any .dmg and assess the .app) ---
+  mapfile -t dmg_files < <(find "$release_dir" -maxdepth 1 -type f -iname '*.dmg' | sort)
+  if [[ "${#dmg_files[@]}" -gt 0 ]]; then
+    command -v hdiutil >/dev/null 2>&1 || fail "CHEESEWAF_REQUIRE_SIGNING=1 with .dmg artifacts requires hdiutil"
+    command -v codesign >/dev/null 2>&1 || fail "CHEESEWAF_REQUIRE_SIGNING=1 with .dmg artifacts requires codesign"
+    command -v spctl >/dev/null 2>&1 || fail "CHEESEWAF_REQUIRE_SIGNING=1 with .dmg artifacts requires spctl"
+    for dmg in "${dmg_files[@]}"; do
+      vol="$(mktemp -d)"
+      hdiutil attach -nobrowse -readonly -mountpoint "$vol" "$dmg" >/dev/null 2>&1 || fail "could not mount ${dmg}"
+      app="$(find "$vol" -maxdepth 2 -type d -name '*.app' -print -quit)"
+      if [[ -z "$app" ]]; then
+        hdiutil detach "$vol" >/dev/null 2>&1 || true
+        fail "no .app bundle found in ${dmg}"
+      fi
+      codesign_out="$(codesign --verify --deep --strict "$app" 2>&1 || true)"
+      spctl_out="$(spctl --assess --type execute --verbose=4 "$app" 2>&1 || true)"
+      hdiutil detach "$vol" >/dev/null 2>&1 || true
+      if [[ -n "$codesign_out" ]]; then
+        fail "macOS codesign verification failed for ${app}: ${codesign_out}"
+      fi
+      if ! grep -qiE 'accepted|source=Notarized Developer ID' <<<"$spctl_out"; then
+        fail "macOS notarization assessment failed for ${app}: ${spctl_out}"
+      fi
+    done
+    echo "macOS codesign/notarization verification passed for ${#dmg_files[@]} disk image(s)."
+  else
+    echo "CHEESEWAF_REQUIRE_SIGNING=1 but no .dmg artifacts found; macOS signature gate skipped."
+  fi
+fi
+
 total_bytes=0
 for artifact in "${artifacts[@]}"; do
   size="$(wc -c <"$artifact")"
@@ -231,7 +283,6 @@ sed \
   -e "s/127.0.0.1:8080/127.0.0.1:${proxy_port}/g" \
   -e "s/127.0.0.1:9443/127.0.0.1:${admin_port}/g" \
   -e "s/127.0.0.1:9444/127.0.0.1:${cluster_port}/g" \
-  -e 's/^  admin_public: false$/  admin_public: true/' \
   "${smoke_root}/configs/cheesewaf.yaml" >"$config"
 
 (
