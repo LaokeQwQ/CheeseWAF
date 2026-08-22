@@ -38,6 +38,7 @@ type Analyzer struct {
 	paramAllowlist map[string]struct{}
 	// paranoiaLevel is blocking sensitivity 0-5. 0-1 never block.
 	paranoiaLevel int
+	decodeDepth   int
 }
 
 type InputPoint struct {
@@ -88,7 +89,21 @@ func NewAnalyzer(mode string, paranoiaLevel int, categories ...string) *Analyzer
 			}
 		}
 	}
-	return &Analyzer{mode: mode, enabled: enabled, catFP: enabledCategoryFingerprint(enabled), paranoiaLevel: paranoiaLevel}
+	return &Analyzer{mode: mode, enabled: enabled, catFP: enabledCategoryFingerprint(enabled), paranoiaLevel: paranoiaLevel, decodeDepth: decoder.DefaultDecodeDepth}
+}
+
+// SetDecodeDepth configures bounded nested decoding for this site analyzer.
+func (a *Analyzer) SetDecodeDepth(depth int) {
+	if a == nil {
+		return
+	}
+	if depth <= 0 {
+		depth = decoder.DefaultDecodeDepth
+	}
+	if depth > decoder.MaxDecodeDepth {
+		depth = decoder.MaxDecodeDepth
+	}
+	a.decodeDepth = depth
 }
 
 // SetAllowlists configures commercial path/param skip lists. Safe to call once
@@ -124,7 +139,7 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		return nil, nil
 	}
 
-	candidates := extractCandidatesWithAllowlist(reqCtx, a.paramAllowlist)
+	candidates := extractCandidatesWithOptions(reqCtx, a.paramAllowlist, a.decodeDepth)
 	report, best, haveBest, incomplete := a.analyzeAllCandidates(ctx, candidates)
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
@@ -719,13 +734,17 @@ func paramAllowlisted(source, name string, allow map[string]struct{}) bool {
 }
 
 func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
-	return extractCandidatesWithAllowlist(reqCtx, nil)
+	return extractCandidatesWithOptions(reqCtx, nil, decoder.DefaultDecodeDepth)
 }
 
 // extractCandidatesWithAllowlist applies parameter exclusions before the
 // bounded candidate budget. Filtering after truncation lets an attacker fill
 // the budget with allowlisted fields and hide a later unallowlisted payload.
 func extractCandidatesWithAllowlist(reqCtx *engine.RequestContext, allow map[string]struct{}) []semanticCandidate {
+	return extractCandidatesWithOptions(reqCtx, allow, decoder.DefaultDecodeDepth)
+}
+
+func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[string]struct{}, decodeDepth int) []semanticCandidate {
 	if reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
@@ -858,7 +877,7 @@ func extractCandidatesWithAllowlist(reqCtx *engine.RequestContext, allow map[str
 				continue
 			}
 			progressed = true
-			variants := decodeVariantsInto(variantScratch[:0], input.Raw)
+			variants := decodeVariantsInto(variantScratch[:0], input.Raw, decodeDepth)
 			for _, variant := range variants {
 				if len(candidates) >= maxCandidates {
 					break
@@ -1591,7 +1610,7 @@ var rawLayersOnly = []string{"raw"}
 // decodeVariantsInto appends decode variants for raw into dst and returns the
 // result. Callers pass a stack-resident scratch array so the common
 // single-variant case costs zero allocations.
-func decodeVariantsInto(dst []decodedVariant, raw string) []decodedVariant {
+func decodeVariantsInto(dst []decodedVariant, raw string, decodeDepth int) []decodedVariant {
 	// UTF-16 LE/BE BOM payloads (XXE evasion). Expand once into UTF-8 text.
 	if utf8FromUTF16, ok := decodeUTF16Payload(raw); ok && utf8FromUTF16 != raw {
 		raw = utf8FromUTF16
@@ -1600,13 +1619,13 @@ func decodeVariantsInto(dst []decodedVariant, raw string) []decodedVariant {
 	if !needsDeepDecode(raw) {
 		return append(dst, decodedVariant{text: raw, layers: rawLayersOnly})
 	}
-	return decodeVariantsDeep(dst, raw)
+	return decodeVariantsDeep(dst, raw, decodeDepth)
 }
 
 // decodeVariantsDeep runs the bounded multi-layer expansion queue. Split out of
 // decodeVariantsInto so the hot single-variant path stays inlinable and its
 // queue/map allocations never appear on ordinary traffic.
-func decodeVariantsDeep(dst []decodedVariant, raw string) []decodedVariant {
+func decodeVariantsDeep(dst []decodedVariant, raw string, decodeDepth int) []decodedVariant {
 	queue := []decodedVariant{{text: raw, layers: rawLayersOnly}}
 	out := dst
 	base := len(dst) // keep the maxDecodeVariants bound relative to what we add
@@ -1622,7 +1641,7 @@ func decodeVariantsDeep(dst []decodedVariant, raw string) []decodedVariant {
 		if len(item.layers) >= 4 {
 			continue
 		}
-		if next := decoder.Decode(item.text); next.Text != item.text {
+		if next := decoder.DecodeWithDepth(item.text, decodeDepth); next.Text != item.text {
 			queue = append(queue, decodedVariant{text: next.Text, layers: appendLayers(item.layers, next.Layers[1:]...)})
 		}
 		if unescaped := html.UnescapeString(item.text); unescaped != item.text {

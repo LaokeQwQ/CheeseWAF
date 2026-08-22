@@ -29,3 +29,15 @@ func TestResolveBudgetExhaustedPolicy(t *testing.T) {
 		t.Fatalf("empty+low: got %q", got)
 	}
 }
+
+func TestResolveDecodeDepth(t *testing.T) {
+	if got := ResolveDecodeDepth(0); got != DefaultDecodeDepth {
+		t.Fatalf("omitted depth=%d, want %d", got, DefaultDecodeDepth)
+	}
+	if got := ResolveDecodeDepth(3); got != 3 {
+		t.Fatalf("explicit depth=%d, want 3", got)
+	}
+	if got := ResolveDecodeDepth(MaxDecodeDepth + 1); got != MaxDecodeDepth {
+		t.Fatalf("clamped depth=%d, want %d", got, MaxDecodeDepth)
+	}
+}

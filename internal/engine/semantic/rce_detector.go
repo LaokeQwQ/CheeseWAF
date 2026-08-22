@@ -43,11 +43,6 @@ var rcePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\$\{?ifs\}?(?:\s*\(?\s*(?:cat|id|whoami|ls|dir|curl|wget|bash|sh)\b)`),
 	// File descriptor manipulation
 	regexp.MustCompile(`(?i)(?:>&\s*(?:[0-9]|/dev|/proc)|(?:[0-9]|/dev/(?:tcp|udp))\s*>\s*(?:[0-9]|&))`),
-	// Shell arithmetic expansion obfuscation (attacker psychology: bypass simple string matching)
-	// $((69+52)) evaluates to a char code, used to construct command names dynamically
-	regexp.MustCompile(`(?i)(?:\$\(\s*\(\s*\d+\s*[\+\-\*/%]\s*\d+\s*\)\s*\))`),
-	// Backtick / $() with arithmetic and common probes
-	regexp.MustCompile(`(?i)(?:\x60|[\\$]\().*(?:\d+\s*[\+\-\*/%]\s*\d+|id|whoami|ls|pwd|cat|curl|wget|uname|hostname|ifconfig|ipconfig)`),
 	// Advanced PowerShell obfuscation techniques
 	regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)\b[^\r\n]{0,160}(?:-no(?:p|profile|-logo|-exit)|-w(?:in)?\s*(?:hidden|0)|-window\s*(?:hidden|style)|-noni|-noninteractive|-noprofile))`),
 	regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)\b[^\r\n]{0,200}(?:\]\s*\+\s*\[|Join\(|\.Replace\(|\.ToChar|FromBase64CharArray|\[Convert\]::))`),

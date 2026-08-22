@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -263,6 +264,38 @@ func TestPipelineSemanticGroupConcurrentMerge(t *testing.T) {
 	}
 	if len(reqCtx.Results) != 2 {
 		t.Fatalf("expected 2 results, got %#v", reqCtx.Results)
+	}
+}
+
+func TestPipelineReusesSharedSemanticWorkers(t *testing.T) {
+	workers := runtime.GOMAXPROCS(0)
+	if workers > 8 {
+		workers = 8
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	_ = semanticJobs()
+	deadline := time.Now().Add(time.Second)
+	for sharedSemanticWorkers.started.Load() != int64(workers) && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	started := sharedSemanticWorkers.started.Load()
+	if started != int64(workers) {
+		t.Fatalf("started workers=%d, want %d", started, workers)
+	}
+
+	pipeline := NewPipeline(
+		staticPipelineDetector{id: "one", priority: 290},
+		staticPipelineDetector{id: "two", priority: 291},
+	)
+	for range 20 {
+		if _, err := pipeline.Detect(context.Background(), &RequestContext{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := sharedSemanticWorkers.started.Load(); got != started {
+		t.Fatalf("per-request workers started: before=%d after=%d", started, got)
 	}
 }
 

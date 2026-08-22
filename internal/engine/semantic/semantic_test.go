@@ -480,6 +480,25 @@ func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
 	}
 }
 
+func TestXSSDetectorBlocksSMILAnimationHref(t *testing.T) {
+	payload := `<svg><animate attributeName="href" values="javascript:alert(1)" /></svg>`
+	if !executableXSSContext(normalize(payload)) {
+		t.Fatal("SMIL javascript href was not recognized as executable XSS context")
+	}
+	req, _ := http.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(payload), nil)
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewAnalyzer("block", 5, "xss").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "xss" {
+		t.Fatalf("expected SMIL XSS detection, got %+v", result)
+	}
+}
+
 func TestXSSDetectorKeepsBenignDocumentationClean(t *testing.T) {
 	cases := []string{
 		`{"text":"This page explains why javascript: URLs are dangerous, but includes no tag attribute."}`,
@@ -620,6 +639,7 @@ func TestRCEDetectorKeepsBenignCommandDocumentationClean(t *testing.T) {
 	cases := []string{
 		`{"text":"PowerShell EncodedCommand and cmd /c are documented for defenders, without a runnable payload."}`,
 		`{"text":"Use curl https://example.com/install.sh to download an installer, then review it manually."}`,
+		`{"expression":"$((12 + 30))"}`,
 	}
 	for _, body := range cases {
 		t.Run(body, func(t *testing.T) {
@@ -637,5 +657,46 @@ func TestRCEDetectorKeepsBenignCommandDocumentationClean(t *testing.T) {
 				t.Fatalf("expected benign RCE documentation to pass, got %+v", result)
 			}
 		})
+	}
+}
+
+func TestSQLDetectorCapsDetectionPayload(t *testing.T) {
+	target := "/search?q=" + url.QueryEscape("1 UNION ALL SELECT password FROM users "+strings.Repeat("x", 2048))
+	req, _ := http.NewRequest(http.MethodGet, target, nil)
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected {
+		t.Fatalf("expected SQL detection, got %+v", result)
+	}
+	if len(result.Payload) > 512 {
+		t.Fatalf("payload length=%d, want <=512", len(result.Payload))
+	}
+}
+
+func TestDecodeVariantsHonorConfiguredDepth(t *testing.T) {
+	raw := "<script>alert(1)</script>"
+	for range 7 {
+		raw = url.QueryEscape(raw)
+	}
+	var scratch [maxDecodeVariants]decodedVariant
+	shallow := decodeVariantsInto(scratch[:0], raw, 6)
+	for _, variant := range shallow {
+		if variant.text == "<script>alert(1)</script>" {
+			t.Fatal("depth 6 unexpectedly decoded seven layers")
+		}
+	}
+	deep := decodeVariantsInto(scratch[:0], raw, 8)
+	found := false
+	for _, variant := range deep {
+		found = found || variant.text == "<script>alert(1)</script>"
+	}
+	if !found {
+		t.Fatalf("depth 8 did not reveal payload: %+v", deep)
 	}
 }

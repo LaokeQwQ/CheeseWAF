@@ -13,6 +13,7 @@ const (
 	maxSQLCandidateTexts = 2048
 	maxSQLCandidateBytes = 8192
 	sqlCandidateOverlap  = 256
+	maxSQLPayloadBytes   = 512
 )
 
 type SQLDetector struct {
@@ -45,7 +46,7 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 				Action:     actionForMode(d.mode),
 				Message:    "SQL injection token fingerprint matched: " + truncate(fp, 40),
 				Confidence: 0.92,
-				Payload:    candidate,
+				Payload:    truncate(candidate, maxSQLPayloadBytes),
 			}, nil
 		}
 		// Fallback to signature-based detection
@@ -58,7 +59,7 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 				Action:     actionForMode(d.mode),
 				Message:    reason,
 				Confidence: 0.88,
-				Payload:    candidate,
+				Payload:    truncate(candidate, maxSQLPayloadBytes),
 			}, nil
 		}
 	}

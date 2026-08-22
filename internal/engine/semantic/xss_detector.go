@@ -35,28 +35,30 @@ var xssCSSInjectionPattern = regexp.MustCompile(`(?i)<\s*style\b[^>]*>|\bstyle\s
 
 // Modern XSS vectors from HTML5sec and PayloadsAllTheThings
 var xssModernPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)<\s*button\b[^>]*\bformaction\s*=\s*['"]?\s*javascript\s*:`),                          // button formaction XSS
-	regexp.MustCompile(`(?i)<\s*video\b[^>]*\bposter\s*=\s*['"]?\s*javascript\s*:`),                               // video poster XSS
-	regexp.MustCompile(`(?i)<\s*(?:audio|source|track)\b[^>]*\bsrc\s*=\s*['"]?\s*javascript\s*:`),                 // audio/source XSS
-	regexp.MustCompile(`(?i)<\s*svg\b[^>]*\bonload\s*=`),                                                          // SVG onload XSS
-	regexp.MustCompile(`(?i)<\?xml-stylesheet\b[^>]*\bhref\s*=\s*['"]?\s*javascript\s*:`),                         // XML stylesheet XSS
-	regexp.MustCompile(`(?i)charset\s*=\s*['"]x-imap4-modified-utf7['"]`),                                         // UTF-7 charset XSS
-	regexp.MustCompile(`(?i)x-mac-farsi`),                                                                         // Mac Farsi charset XSS
-	regexp.MustCompile(`(?i)crypto\.generateCRMFRequest\s*\(`),                                                    // Browser crypto API XSS
-	regexp.MustCompile(`(?i)<\s*body\b[^>]*\bonscroll\s*=.*alert`),                                                // scroll-based XSS
-	regexp.MustCompile(`(?i)<\s*input\b[^>]*\bonfocus\s*=\s*(?:write|eval)`),                                      // input onfocus XSS
-	regexp.MustCompile(`(?i)<\s*input\b[^>]*\bpattern\s*=\s*['"].*\(\(a\+\?\.\)a\)\+\$`),                          // ReDoS via pattern attr
-	regexp.MustCompile(`(?i)(?:\\x[0-9a-f]{2}|&#x[0-9a-f]+;){3,}\s*(?:alert|eval|write|prompt|confirm)\s*\(`),     // multi-hex-encoded function call
-	regexp.MustCompile(`(?i)style\s*=\s*['"]-o-link(-source)?\s*:\s*['"]?javascript`),                             // Opera CSS link XSS
-	regexp.MustCompile(`(?i)<\s*x\b[^>]*\brepeat\s*=`),                                                            // template repeat DoS/XSS
-	regexp.MustCompile(`(?i)(?:importScripts|postMessage)\s*\(\s*['"]\s*(?:data|javascript):`),                    // Worker-based XSS
-	regexp.MustCompile(`(?i)set\s*\(\s*['"]?(?:innerHTML|outerHTML)\s*['"]?\s*,\s*`),                              // DOM manipulation XSS
-	regexp.MustCompile(`(?i)(?:\{\s*\}\s*=\s*alert|_\s*=\s*alert|call\s*\(\s*alert\s*\))`),                        // JS shorthand execution
-	regexp.MustCompile(`(?i)(?:\/\*\*\/|\\u[0-9a-f]{4}\\u[0-9a-f]{4})`),                                           // JS comment/unicode obfuscation
-	regexp.MustCompile(`(?i)<\s*[a-z0-9]+\b[^>]*\bxlink:href\s*=\s*['"]?data\s*:\s*text\/html`),                   // SVG xlink data URI XSS
-	regexp.MustCompile(`(?i)<\s*(?:frame|iframe)\b[^>]*\bsrc\s*=\s*['"]?\s*(?:javascript|data):`),                 // frame/iframe XSS
-	regexp.MustCompile(`(?i)\b(?:\\u[0-9a-f]{4}|\\x[0-9a-f]{2}){2,}\b(?:alert|eval|prompt|confirm|write|open)\b`), // unicode-encoded function name
-	regexp.MustCompile(`(?i)(?:&#\d{2,3};){4,}`),                                                                  // decimal HTML entity encoding chain
+	regexp.MustCompile(`(?i)<\s*(?:animate|set)\b[^>]*\battributename\s*=\s*['"]?(?:xlink:)?href['"]?[^>]*\bvalues?\s*=\s*['"]?\s*javascript\s*:`), // SVG SMIL href animation
+	regexp.MustCompile(`(?i)<\s*(?:animate|set)\b[^>]*\bvalues?\s*=\s*['"]?\s*javascript\s*:[^>]*\battributename\s*=\s*['"]?(?:xlink:)?href`),      // reversed SMIL attributes
+	regexp.MustCompile(`(?i)<\s*button\b[^>]*\bformaction\s*=\s*['"]?\s*javascript\s*:`),                                                           // button formaction XSS
+	regexp.MustCompile(`(?i)<\s*video\b[^>]*\bposter\s*=\s*['"]?\s*javascript\s*:`),                                                                // video poster XSS
+	regexp.MustCompile(`(?i)<\s*(?:audio|source|track)\b[^>]*\bsrc\s*=\s*['"]?\s*javascript\s*:`),                                                  // audio/source XSS
+	regexp.MustCompile(`(?i)<\s*svg\b[^>]*\bonload\s*=`),                                                                                           // SVG onload XSS
+	regexp.MustCompile(`(?i)<\?xml-stylesheet\b[^>]*\bhref\s*=\s*['"]?\s*javascript\s*:`),                                                          // XML stylesheet XSS
+	regexp.MustCompile(`(?i)charset\s*=\s*['"]x-imap4-modified-utf7['"]`),                                                                          // UTF-7 charset XSS
+	regexp.MustCompile(`(?i)x-mac-farsi`),                                                                                                          // Mac Farsi charset XSS
+	regexp.MustCompile(`(?i)crypto\.generateCRMFRequest\s*\(`),                                                                                     // Browser crypto API XSS
+	regexp.MustCompile(`(?i)<\s*body\b[^>]*\bonscroll\s*=.*alert`),                                                                                 // scroll-based XSS
+	regexp.MustCompile(`(?i)<\s*input\b[^>]*\bonfocus\s*=\s*(?:write|eval)`),                                                                       // input onfocus XSS
+	regexp.MustCompile(`(?i)<\s*input\b[^>]*\bpattern\s*=\s*['"].*\(\(a\+\?\.\)a\)\+\$`),                                                           // ReDoS via pattern attr
+	regexp.MustCompile(`(?i)(?:\\x[0-9a-f]{2}|&#x[0-9a-f]+;){3,}\s*(?:alert|eval|write|prompt|confirm)\s*\(`),                                      // multi-hex-encoded function call
+	regexp.MustCompile(`(?i)style\s*=\s*['"]-o-link(-source)?\s*:\s*['"]?javascript`),                                                              // Opera CSS link XSS
+	regexp.MustCompile(`(?i)<\s*x\b[^>]*\brepeat\s*=`),                                                                                             // template repeat DoS/XSS
+	regexp.MustCompile(`(?i)(?:importScripts|postMessage)\s*\(\s*['"]\s*(?:data|javascript):`),                                                     // Worker-based XSS
+	regexp.MustCompile(`(?i)set\s*\(\s*['"]?(?:innerHTML|outerHTML)\s*['"]?\s*,\s*`),                                                               // DOM manipulation XSS
+	regexp.MustCompile(`(?i)(?:\{\s*\}\s*=\s*alert|_\s*=\s*alert|call\s*\(\s*alert\s*\))`),                                                         // JS shorthand execution
+	regexp.MustCompile(`(?i)(?:\/\*\*\/|\\u[0-9a-f]{4}\\u[0-9a-f]{4})`),                                                                            // JS comment/unicode obfuscation
+	regexp.MustCompile(`(?i)<\s*[a-z0-9]+\b[^>]*\bxlink:href\s*=\s*['"]?data\s*:\s*text\/html`),                                                    // SVG xlink data URI XSS
+	regexp.MustCompile(`(?i)<\s*(?:frame|iframe)\b[^>]*\bsrc\s*=\s*['"]?\s*(?:javascript|data):`),                                                  // frame/iframe XSS
+	regexp.MustCompile(`(?i)\b(?:\\u[0-9a-f]{4}|\\x[0-9a-f]{2}){2,}\b(?:alert|eval|prompt|confirm|write|open)\b`),                                  // unicode-encoded function name
+	regexp.MustCompile(`(?i)(?:&#\d{2,3};){4,}`),                                                                                                   // decimal HTML entity encoding chain
 }
 
 type XSSDetector struct {

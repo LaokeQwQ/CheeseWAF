@@ -104,6 +104,23 @@ func TestValidatorUpstreamWeightLimits(t *testing.T) {
 	}
 }
 
+func TestValidatorDecodeDepthBounds(t *testing.T) {
+	for _, depth := range []int{0, 1, DefaultDecodeDepth, MaxDecodeDepth} {
+		cfg := Default()
+		cfg.Sites[0].WAF.SemanticPolicy.DecodeDepth = depth
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("depth %d rejected: %v", depth, err)
+		}
+	}
+	for _, depth := range []int{-1, MaxDecodeDepth + 1} {
+		cfg := Default()
+		cfg.Sites[0].WAF.SemanticPolicy.DecodeDepth = depth
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "decode_depth") {
+			t.Fatalf("depth %d error=%v, want decode_depth validation", depth, err)
+		}
+	}
+}
+
 func TestValidatorBoundsManagementAPITokensAndRequiresUniquePrefixes(t *testing.T) {
 	validToken := func(id int, prefix string) ManagementAPITokenConfig {
 		return ManagementAPITokenConfig{

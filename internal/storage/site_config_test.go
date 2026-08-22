@@ -24,6 +24,7 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 			},
 			SemanticPolicy: config.SemanticPolicyConfig{
 				BudgetExhaustedPolicy: "closed",
+				DecodeDepth:           8,
 				PathAllowlist:         []string{"/health", "/static/*"},
 				ParamAllowlist:        []string{"content"},
 				PromoteSeconds:        45,
@@ -48,6 +49,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	if site.Advanced.SemanticPolicy.BudgetExhaustedPolicy != "closed" {
 		t.Fatalf("expected budget policy closed, got %+v", site.Advanced.SemanticPolicy)
 	}
+	if site.Advanced.SemanticPolicy.DecodeDepth != 8 {
+		t.Fatalf("expected decode depth 8, got %+v", site.Advanced.SemanticPolicy)
+	}
 	if len(site.Advanced.SemanticPolicy.PathAllowlist) != 2 || site.Advanced.SemanticPolicy.ParamAllowlist[0] != "content" {
 		t.Fatalf("expected allowlists preserved: %+v", site.Advanced.SemanticPolicy)
 	}
@@ -63,6 +67,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	}
 	if converted.WAF.SemanticPolicy.BudgetExhaustedPolicy != "closed" {
 		t.Fatalf("expected semantic policy round-trip: %+v", converted.WAF.SemanticPolicy)
+	}
+	if converted.WAF.SemanticPolicy.DecodeDepth != 8 {
+		t.Fatalf("expected decode depth round-trip: %+v", converted.WAF.SemanticPolicy)
 	}
 	if len(converted.WAF.SemanticPolicy.PathAllowlist) != 2 {
 		t.Fatalf("expected path allowlist round-trip: %+v", converted.WAF.SemanticPolicy)
