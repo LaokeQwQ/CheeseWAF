@@ -2,6 +2,7 @@ package decoder
 
 import (
 	"encoding/base64"
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -17,6 +18,49 @@ func TestDeepDecodeRevealsNestedBase64AndURLPayload(t *testing.T) {
 	if !reflect.DeepEqual(decoded.Layers, []string{"raw", "base64", "url"}) {
 		t.Fatalf("layers = %v", decoded.Layers)
 	}
+}
+
+func TestDeepDecodeRevealsSevenURLLayers(t *testing.T) {
+	raw := "<script>alert(1)</script>"
+	for range 7 {
+		raw = url.QueryEscape(raw)
+	}
+	decoded := DeepDecode(raw)
+	if decoded.Text != "<script>alert(1)</script>" {
+		t.Fatalf("text = %q", decoded.Text)
+	}
+	urlLayers := 0
+	for _, layer := range decoded.Layers {
+		if layer == "url" {
+			urlLayers++
+		}
+	}
+	if urlLayers != 7 {
+		t.Fatalf("URL layers = %d, want 7 (%v)", urlLayers, decoded.Layers)
+	}
+}
+
+func TestDecodeWithDepthUsesDefaultAndHardCeiling(t *testing.T) {
+	raw := "<script>"
+	for range MaxDecodeDepth + 1 {
+		raw = url.QueryEscape(raw)
+	}
+	if got := DecodeWithDepth(raw, MaxDecodeDepth+100); countLayerNamed(got.Layers, "url") != MaxDecodeDepth {
+		t.Fatalf("ceiling layers=%v", got.Layers)
+	}
+	if got := DecodeWithDepth(raw, 0); countLayerNamed(got.Layers, "url") != DefaultDecodeDepth {
+		t.Fatalf("default layers=%v", got.Layers)
+	}
+}
+
+func countLayerNamed(layers []string, name string) int {
+	count := 0
+	for _, layer := range layers {
+		if layer == name {
+			count++
+		}
+	}
+	return count
 }
 
 func TestDecodeHandlesUnicodeAndMalformedEscapes(t *testing.T) {

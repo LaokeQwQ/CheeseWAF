@@ -3,36 +3,36 @@
 Updated: 2026-08-23
 Integration branch: `fix/audit-round2`
 
-This file consolidates the individual R2 worktree reports. Detailed evidence
-remains in each worker branch until the integration branch is complete.
+Individual R2 reports are retained on their worker branches. This report tracks
+integration and final verification evidence.
 
 ## Status
 
-| Workflow | Scope | Status | Integrated commit(s) |
+| Workflow | Scope | Status | Integration commit(s) |
 | --- | --- | --- | --- |
-| R2-1 | cluster consensus boundary | in progress | `fix/r2-consensus` pending merge |
-| R2-2 | realtime event delivery | complete | `57deb7c` |
-| R2-3 | web auth and realtime client | complete | `11c6f1b` |
-| R2-4 | protection pipeline and policy hardening | pending | `fix/r2-protection` pending merge |
-| R2-5 | engine detection hardening | pending | `fix/r2-engine` pending merge |
-| R2-6 | API and operations | pending | `fix/r2-apiops` pending merge |
-| R2-7 | proxy, cluster, and storage | pending | `fix/r2-proxycluster` pending merge |
-| R2-8 | release, CI, and docs | pending | `fix/r2-release` pending merge |
-| R2-9 | attack map and keyset pagination | complete | `931de19` |
+| R2-1 | cluster consensus boundary | integrated | `f300187` |
+| R2-2 | realtime event delivery | integrated | `57deb7c` |
+| R2-3 | web auth and realtime client | integrated | `11c6f1b` |
+| R2-4 | protection pipeline and policy hardening | pending | `fix/r2-protection` |
+| R2-5 | engine detection hardening | integrating | current merge |
+| R2-6 | API and operations | pending | `fix/r2-apiops` |
+| R2-7 | proxy, cluster, and storage | pending | `fix/r2-proxycluster` |
+| R2-8 | release, CI, and docs | pending | `fix/r2-release` |
+| R2-9 | attack map and keyset pagination | integrated | `931de19` |
 
-## Completed Evidence
+## Current Evidence
 
-- R2-2 focused and race suites passed before integration; Hub lifecycle,
-  bounded queues, scoped approval invalidations, and publishing log sinks are
-  covered.
-- R2-3 web full tests, typecheck, and build passed before integration.
-- R2-9 API/storage Go suites and web tests, typecheck, and build passed before
-  integration. External remote log services were not available locally.
+- R2-1: `go test ./internal/config ./internal/cluster/... ./internal/cli
+  ./internal/api/handler -short -count=1` exited 0 after integration.
+- R2-2 and R2-3 were verified before their prior merges, including R2-2 race
+  coverage and R2-3 web tests/typecheck/build.
+- R2-5 worker verification passed: engine/config/CLI affected-package suites,
+  plus focused decoder, SQL, XSS, and RCE regressions.
+- R2-9 API/storage and web verification passed before integration.
 
-## Integration Gates
+## Final Gates
 
-The remaining workflow branches must be merged and re-tested on this branch.
-Required final commands are:
+Run fresh commands only after all R2 workflows merge:
 
 ```text
 go test ./... -short
@@ -42,5 +42,5 @@ cd web && npm test -- --run && npm run typecheck && npm run build
 bash scripts/ci/verify-ci-static.sh
 ```
 
-Do not mark the audit complete until these commands, the remote CI checks, and
-the final `verification-before-completion` gate have fresh exit-zero evidence.
+Remote CI and the final `verification-before-completion` gate are required
+before declaring the audit complete.

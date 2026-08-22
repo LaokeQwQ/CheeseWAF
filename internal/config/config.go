@@ -436,9 +436,12 @@ func (w *WAFConfig) UnmarshalYAML(value *yaml.Node) error {
 // BudgetExhaustedPolicy defaults to "auto" (follow web_attack protection level).
 type SemanticPolicyConfig struct {
 	// BudgetExhaustedPolicy: auto|open|observe|closed. Empty/auto derives from web_attack.
-	BudgetExhaustedPolicy string   `yaml:"budget_exhausted_policy" json:"budget_exhausted_policy"`
-	PathAllowlist         []string `yaml:"path_allowlist" json:"path_allowlist"`
-	ParamAllowlist        []string `yaml:"param_allowlist" json:"param_allowlist"`
+	BudgetExhaustedPolicy string `yaml:"budget_exhausted_policy" json:"budget_exhausted_policy"`
+	// DecodeDepth is the bounded number of nested encoding transformations (1-8).
+	// Zero uses DefaultDecodeDepth.
+	DecodeDepth    int      `yaml:"decode_depth" json:"decode_depth"`
+	PathAllowlist  []string `yaml:"path_allowlist" json:"path_allowlist"`
+	ParamAllowlist []string `yaml:"param_allowlist" json:"param_allowlist"`
 	// PromoteSeconds, if >0, briefly treats the site as level 5 after a
 	// level-4 embedded hit so later embedded gadgets block until it expires.
 	PromoteSeconds int `yaml:"promote_seconds" json:"promote_seconds"`

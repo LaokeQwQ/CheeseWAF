@@ -240,6 +240,9 @@ func Validate(cfg *Config) error {
 		if !IsBudgetExhaustedPolicy(site.WAF.SemanticPolicy.BudgetExhaustedPolicy) {
 			return fmt.Errorf("site %q has invalid waf.semantic_policy.budget_exhausted_policy %q", site.Name, site.WAF.SemanticPolicy.BudgetExhaustedPolicy)
 		}
+		if depth := site.WAF.SemanticPolicy.DecodeDepth; depth < 0 || depth > MaxDecodeDepth {
+			return fmt.Errorf("site %q waf.semantic_policy.decode_depth must be between 1 and %d, or 0 for default", site.Name, MaxDecodeDepth)
+		}
 		if site.WAF.SemanticPolicy.PromoteSeconds < 0 {
 			return fmt.Errorf("site %q waf.semantic_policy.promote_seconds must be >= 0", site.Name)
 		}

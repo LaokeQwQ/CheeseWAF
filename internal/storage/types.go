@@ -298,6 +298,7 @@ type SiteAdvanced struct {
 // SiteSemanticPolicy is commercial ops config for the staged analyzer.
 type SiteSemanticPolicy struct {
 	BudgetExhaustedPolicy string   `json:"budget_exhausted_policy"`
+	DecodeDepth           int      `json:"decode_depth"`
 	PathAllowlist         []string `json:"path_allowlist"`
 	ParamAllowlist        []string `json:"param_allowlist"`
 	PromoteSeconds        int      `json:"promote_seconds"`

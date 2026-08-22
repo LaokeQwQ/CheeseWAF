@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -776,6 +777,54 @@ func TestBuildPipelineUsesSingleSemanticAnalyzerPath(t *testing.T) {
 	}
 	if !strings.HasPrefix(result.DetectorID, "semantic.analyzer") {
 		t.Fatalf("expected single analyzer detector id, got %q", result.DetectorID)
+	}
+}
+
+func TestBuildPipelineHonorsConfiguredDecodeDepth(t *testing.T) {
+	payload := "<script>alert(1)</script>"
+	for range 7 {
+		payload = url.QueryEscape(payload)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		depth        int
+		wantDetected bool
+	}{
+		{name: "depth six", depth: 6},
+		{name: "depth eight", depth: 8, wantDetected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Sites: []config.SiteConfig{{
+				ID:      "default",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 5,
+					SemanticEngines: config.SemanticEngineSwitches{
+						XSS: true,
+					},
+					SemanticPolicy: config.SemanticPolicyConfig{DecodeDepth: tc.depth},
+				},
+			}}}
+			pipeline, err := buildPipeline(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, _ := http.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(payload), nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := pipeline.Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := result != nil && result.Detected; got != tc.wantDetected {
+				t.Fatalf("depth %d detected=%v, want %v; result=%+v", tc.depth, got, tc.wantDetected, result)
+			}
+		})
 	}
 }
 

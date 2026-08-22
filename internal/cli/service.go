@@ -971,6 +971,7 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			paranoiaLevel := config.EffectiveParanoiaLevel(site.WAF.ParanoiaLevel)
 			analyzer := semantic.NewAnalyzer(site.WAF.Mode, paranoiaLevel, semanticCategories...)
 			analyzer.SetAllowlists(site.WAF.SemanticPolicy.PathAllowlist, site.WAF.SemanticPolicy.ParamAllowlist)
+			analyzer.SetDecodeDepth(config.ResolveDecodeDepth(site.WAF.SemanticPolicy.DecodeDepth))
 			fmt.Printf("semantic analyzer initialized: site_id=%s paranoia_level=%d\n", site.ID, paranoiaLevel)
 			detectors = append(detectors, siteScopedDetector{
 				siteID:   site.ID,
