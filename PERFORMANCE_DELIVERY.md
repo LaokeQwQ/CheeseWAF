@@ -57,10 +57,10 @@ if seen == nil && len(candidates) >= dedupMapThreshold {
 **Fix**: Sort query keys and header names before iteration (`analyzer.go:612, 637`)
 **Verification**: 60/60 detections stable despite randomness (not exploitable in practice)
 
-### 4. Compiler Optimizations ✅
-**Flags**: `-gcflags "-l=4"` (aggressive inlining) + `-ldflags "-s -w"` (strip debug)
-**Measurement**: No measurable performance difference (regex/decoder bottleneck dominates)
-**Binary Size**: 31M baseline → 31M optimized (no regression)
+### 4. Compiler Settings ✅
+**Flags**: Go's default optimizer and inliner + `-ldflags "-s -w"` (strip debug)
+**Correction**: `-gcflags "-l=4"` disables inlining; it was removed from normal and PGO builds.
+**Measurement**: The old disabled-inlining build showed no benefit because regex/decoder work dominates.
 
 ### 5. Fast Path Primitives ✅
 **Location**: `internal/engine/semantic/fastpath.go` (new file)
@@ -169,11 +169,15 @@ internal/engine/semantic/analyzer.go    - Right-sized candidate slice
 .gitignore                              - Added *.prof, *.pgo, default.pgo
 ```
 
-### Build Artifacts (Ready)
+### Expected Build Outputs (generated locally; not committed)
 ```
-bin/cheesewaf.exe                       - Native Windows binary (31M)
-bin/cheesewaf-linux-amd64               - Linux x86-64 binary (30M)
-bin/cheesewaf-linux-loong64             - LoongArch binary (30M)
+bin/cheesewaf-amd64-linux-*             - Linux x86-64
+bin/cheesewaf-arm64-linux-*             - Linux ARM64
+bin/cheesewaf-loong64-linux-*           - Linux LoongArch64
+bin/cheesewaf-amd64-darwin-*            - macOS Intel
+bin/cheesewaf-arm64-darwin-*            - macOS Apple Silicon
+bin/cheesewaf-amd64-windows-*.exe       - Windows x86-64
+bin/cheesewaf-arm64-windows-*.exe       - Windows ARM64
 ```
 
 ---

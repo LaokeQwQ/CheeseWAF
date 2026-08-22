@@ -38,7 +38,6 @@ for target in "${TARGETS[@]}"; do
     echo "Building $goos/$goarch -> ${output} (version ${VERSION}, channel ${CHANNEL})..."
     CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
         -trimpath \
-        -gcflags "-l=4" \
         -ldflags "$LDFLAGS" \
         -o "$output" \
         ./cmd/cheesewaf/

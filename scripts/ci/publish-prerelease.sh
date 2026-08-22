@@ -69,6 +69,10 @@ command -v cosign >/dev/null 2>&1 || {
   exit 1
 }
 
+# Rebuild the manifest after the macOS job has added/replaced DMGs. The
+# artifact SBOM/fallback below must never consume the pre-DMG manifest.
+rewrite_checksums "$release_dir"
+
 sbom_file="${release_dir}/cheesewaf.cdx.json"
 syft scan "dir:${repo_root}" \
   --source-name cheesewaf \
@@ -191,8 +195,19 @@ done < <(find "$release_dir" -maxdepth 1 -type f ! -name release-manifest.txt | 
 }
 
 if gh release view "$tag" >/dev/null 2>&1; then
-  echo "release ${tag} already exists; uploading missing assets"
-  gh release upload "$tag" "${assets[@]}" --clobber
+  existing_assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+  missing_assets=()
+  for asset in "${assets[@]}"; do
+    asset_name="$(basename "$asset")"
+    if grep -Fxq "$asset_name" <<<"$existing_assets"; then
+      echo "release ${tag} already contains immutable asset ${asset_name}; keeping it"
+    else
+      missing_assets+=("$asset")
+    fi
+  done
+  if [[ "${#missing_assets[@]}" -gt 0 ]]; then
+    gh release upload "$tag" "${missing_assets[@]}"
+  fi
   exit 0
 fi
 

@@ -71,6 +71,11 @@ RUN sed -i \
   -e 's#target: "./logs"#target: "/var/log/cheesewaf"#' \
   -e 's#path: "./logs/audit.log"#path: "/var/log/cheesewaf/audit.log"#' \
   /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'listen: "0.0.0.0:8080"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'admin_listen: "0.0.0.0:9443"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'admin_public: true' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'cert_file: "/var/lib/cheesewaf/certs/admin.crt"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'data_dir: "/var/lib/cheesewaf"' /usr/share/cheesewaf/config/cheesewaf.yaml \
   && chmod 0555 /usr/local/bin/cheesewaf-entrypoint
 ENV CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web
 ENV CHEESEWAF_CONFIG=/var/lib/cheesewaf/config/cheesewaf.yaml

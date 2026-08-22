@@ -50,20 +50,19 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   File "${SOURCE_DIR}/cheesewaf.exe"
-  File /nonfatal "${SOURCE_DIR}/cheesewaf-gui.exe"
-  File /nonfatal "${SOURCE_DIR}/waf-cli.exe"
+  File "${SOURCE_DIR}/cheesewaf-gui.exe"
+  File "${SOURCE_DIR}/waf-cli.exe"
 
   ; Config template only — never secrets / private keys
   CreateDirectory "$INSTDIR\configs"
-  File /nonfatal "/oname=configs\cheesewaf.yaml" "${SOURCE_DIR}/configs/cheesewaf.yaml"
-  File /nonfatal "/oname=configs\cheesewaf.yaml" "${SOURCE_DIR}/cheesewaf.yaml"
+  File "/oname=configs\cheesewaf.yaml" "${SOURCE_DIR}/configs/cheesewaf.yaml"
 
   CreateDirectory "$INSTDIR\data"
   CreateDirectory "$INSTDIR\logs"
   CreateDirectory "$INSTDIR\data\logs"
   CreateDirectory "$INSTDIR\data\run"
   CreateDirectory "$INSTDIR\web"
-  File /nonfatal /r "${SOURCE_DIR}/web"
+  File /r "${SOURCE_DIR}/web"
 
   ; Uninstaller
   WriteUninstaller "$INSTDIR\Uninstall.exe"
