@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -256,6 +257,43 @@ func TestSSETransportSerializesConcurrentSend(t *testing.T) {
 	sends.Wait()
 	if writer.overlap.Load() {
 		t.Fatal("SSE transport wrote concurrently")
+	}
+}
+
+func TestSSEHandlerReturnsWhenHubRemovesTransport(t *testing.T) {
+	hub := newHub(1, time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/realtime/sse", nil).WithContext(ctx)
+	writer := httptest.NewRecorder()
+	handlerDone := make(chan struct{})
+	go func() {
+		hub.SSEHandler(writer, req)
+		close(handlerDone)
+	}()
+
+	var transport Transport
+	deadline := time.Now().Add(time.Second)
+	for transport == nil && time.Now().Before(deadline) {
+		hub.mu.RLock()
+		for candidate := range hub.clients {
+			transport = candidate
+			break
+		}
+		hub.mu.RUnlock()
+		if transport == nil {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if transport == nil {
+		t.Fatal("SSE handler did not register its transport")
+	}
+
+	hub.Remove(transport)
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("SSE handler remained blocked after the hub removed its transport")
 	}
 }
 
