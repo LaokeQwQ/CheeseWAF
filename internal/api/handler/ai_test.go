@@ -21,6 +21,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
@@ -1352,6 +1353,45 @@ func TestContinueAIApprovalDoesNotAutoApprovePendingRequest(t *testing.T) {
 		t.Fatalf("policy changed before explicit approval: %+v", cfg.Protection.Policy)
 	}
 }
+
+func TestExecuteAssistantToolPublishesPendingApproval(t *testing.T) {
+	cfg := config.Default()
+	hub := realtime.NewHub()
+	messages := make(chan *realtime.Message, 1)
+	transport := &handlerRealtimeTransport{messages: messages}
+	hub.Add(transport)
+	t.Cleanup(func() { hub.Remove(transport) })
+	handler := New(Options{Config: &cfg, Realtime: hub})
+
+	call, err := handler.executeAssistantTool(context.Background(), "set_protection_level", map[string]any{"area": "bot_cc", "level": "high"}, "")
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	select {
+	case msg := <-messages:
+		if msg.Type != realtime.MsgApproval || msg.Payload != call.Approval {
+			t.Fatalf("unexpected realtime approval message: %+v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending approval was not published")
+	}
+}
+
+type handlerRealtimeTransport struct {
+	messages chan *realtime.Message
+}
+
+func (t *handlerRealtimeTransport) Send(_ context.Context, msg *realtime.Message) error {
+	t.messages <- msg
+	return nil
+}
+
+func (*handlerRealtimeTransport) Receive(context.Context) (*realtime.Message, error) {
+	return nil, errors.New("receive unsupported")
+}
+
+func (*handlerRealtimeTransport) Close() error { return nil }
+func (*handlerRealtimeTransport) Type() string { return "test" }
 
 type recordingAISink struct {
 	items  []storage.LogEntry

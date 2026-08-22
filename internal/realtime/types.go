@@ -33,6 +33,8 @@ type Message struct {
 // 实时通信通道接口，WebSocket 和 SSE 都实现此接口。
 type Transport interface {
 	// Send sends a message to the client.
+	// Implementations must honor context cancellation so the hub can disconnect
+	// slow clients without leaking a sender goroutine.
 	// 向客户端发送消息。
 	Send(ctx context.Context, msg *Message) error
 

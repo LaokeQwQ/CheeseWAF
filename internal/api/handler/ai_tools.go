@@ -13,6 +13,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
@@ -293,6 +294,9 @@ func (h *Handler) executeAssistantTool(ctx context.Context, name string, args ma
 	if execution != nil {
 		call.Result = execution.Result
 		call.Approval = execution.Approval
+		if execution.Approval != nil && execution.Approval.Status == ai.ApprovalPending && h.Realtime != nil {
+			h.Realtime.Broadcast(context.WithoutCancel(ctx), &realtime.Message{Type: realtime.MsgApproval, Payload: execution.Approval})
+		}
 	}
 	return call, nil
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
+	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
@@ -52,6 +53,7 @@ type Handler struct {
 	Secret                       string
 	Auditor                      *middleware.Auditor
 	AssistantApprovals           *ai.ApprovalStore
+	Realtime                     *realtime.Hub
 	approvalStoreError           error
 	TwoFAState                   *twoFAState
 	ClusterIdentity              *identity.MemoryIdentityService
@@ -312,6 +314,7 @@ type Options struct {
 	Secret              string
 	Auditor             *middleware.Auditor
 	AssistantApprovals  *ai.ApprovalStore
+	Realtime            *realtime.Hub
 	ClusterIdentity     *identity.MemoryIdentityService
 	ClusterDeployTasks  *deploy.TaskManager
 	ClusterDeployAuth   *deploy.AuthorizationStore
@@ -364,6 +367,7 @@ func New(opts Options) *Handler {
 		Secret:                       opts.Secret,
 		Auditor:                      opts.Auditor,
 		AssistantApprovals:           approvals,
+		Realtime:                     opts.Realtime,
 		approvalStoreError:           approvalStoreError,
 		TwoFAState:                   newTwoFAState(),
 		ClusterIdentity:              opts.ClusterIdentity,

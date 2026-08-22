@@ -15,15 +15,66 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
+	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
+
+func TestPublishMonitorEventsPublishesStatsAndAlerts(t *testing.T) {
+	hub := realtime.NewHub()
+	messages := make(chan *realtime.Message, 2)
+	transport := &cliRealtimeTransport{messages: messages}
+	hub.Add(transport)
+	t.Cleanup(func() { hub.Remove(transport) })
+	snapshot := monitor.Snapshot{Sites: 3, Requests: 17}
+	alert := monitor.Alert{RuleID: "high-block-rate", Severity: "high"}
+
+	publishMonitorEvents(context.Background(), hub, snapshot, []monitor.Alert{alert})
+
+	first := waitForRealtimeMessage(t, messages)
+	second := waitForRealtimeMessage(t, messages)
+	if first.Type != realtime.MsgStats || !reflect.DeepEqual(first.Payload, snapshot) {
+		t.Fatalf("unexpected stats message: %+v", first)
+	}
+	if second.Type != realtime.MsgAlert || second.Payload != alert {
+		t.Fatalf("unexpected alert message: %+v", second)
+	}
+}
+
+func waitForRealtimeMessage(t *testing.T, messages <-chan *realtime.Message) *realtime.Message {
+	t.Helper()
+	select {
+	case message := <-messages:
+		return message
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for realtime message")
+		return nil
+	}
+}
+
+type cliRealtimeTransport struct {
+	messages chan *realtime.Message
+}
+
+func (t *cliRealtimeTransport) Send(_ context.Context, msg *realtime.Message) error {
+	t.messages <- msg
+	return nil
+}
+
+func (*cliRealtimeTransport) Receive(context.Context) (*realtime.Message, error) {
+	return nil, errors.New("receive unsupported")
+}
+
+func (*cliRealtimeTransport) Close() error { return nil }
+func (*cliRealtimeTransport) Type() string { return "test" }
 
 func TestDirectorySizeCacheAvoidsRepeatedWalksUntilExpiry(t *testing.T) {
 	root := t.TempDir()
