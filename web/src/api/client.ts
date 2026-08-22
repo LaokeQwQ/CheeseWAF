@@ -3,6 +3,7 @@ import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResul
 import { queryClient } from '../queryClient';
 import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { TimeSyncStatus } from '../types/api';
+import { cacheAccount, clearAccount } from '../authProfile';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -19,7 +20,7 @@ const tokenStorageKey = 'cheesewaf-token';
 const authFlagKey = 'cheesewaf-authed';
 const csrfCookieName = 'cheesewaf_csrf';
 const csrfHeaderName = 'X-CSRF-Token';
-const setupTokenStorageKey = 'cheesewaf-setup-token';
+const legacySetupTokenStorageKey = 'cheesewaf-setup-token';
 const sessionRefreshThrottleKey = 'cheesewaf-last-refresh';
 const sessionRefreshThrottleMs = 10 * 60_000;
 const setupTokenHeaderName = 'X-CheeseWAF-Setup-Token';
@@ -27,12 +28,13 @@ let refreshPromise: Promise<void> | null = null;
 let authRedirectScheduled = false;
 let authRedirectLocationForTest: AuthRedirectLocation | null = null;
 let cachedCSRF = '';
+let setupTokenValue = '';
 
 type AuthResponse = {
   token?: string;
   csrf?: string;
   session_cookie?: boolean;
-  user: { username: string; role: string };
+  user: { id?: string; subject?: string; username: string; role: string; scopes?: string[] };
 };
 type AuthRedirectLocation = Pick<Location, 'pathname' | 'assign'> & Partial<Pick<Location, 'search' | 'hash'>>;
 
@@ -80,6 +82,7 @@ type SetupHistory = Pick<History, 'replaceState' | 'state'>;
 export async function hydrateSetupTokenFromStatus(
   fetcher: typeof fetch = fetch,
 ): Promise<string> {
+  clearLegacySetupTokenStorage();
   const existing = setupToken() || captureSetupTokenFromFragment();
   if (existing) {
     return existing;
@@ -99,11 +102,7 @@ export async function hydrateSetupTokenFromStatus(
     if (!token) {
       return '';
     }
-    try {
-      sessionStorage.setItem(setupTokenStorageKey, token);
-    } catch {
-      return token;
-    }
+    setupTokenValue = token;
     return token;
   } catch {
     return '';
@@ -114,17 +113,14 @@ export function captureSetupTokenFromFragment(
   locationRef: SetupLocation = window.location,
   historyRef: SetupHistory = window.history,
 ): string {
+  clearLegacySetupTokenStorage();
   const rawFragment = locationRef.hash.startsWith('#') ? locationRef.hash.slice(1) : locationRef.hash;
   const params = new URLSearchParams(rawFragment);
   const token = (params.get('setup_token') ?? '').trim();
   if (!token) {
     return '';
   }
-  try {
-    sessionStorage.setItem(setupTokenStorageKey, token);
-  } catch {
-    return '';
-  }
+  setupTokenValue = token;
   params.delete('setup_token');
   const remaining = params.toString();
   historyRef.replaceState(historyRef.state, '', `${locationRef.pathname}${locationRef.search}${remaining ? `#${remaining}` : ''}`);
@@ -132,28 +128,28 @@ export function captureSetupTokenFromFragment(
 }
 
 function setupToken(): string {
-  try {
-    return sessionStorage.getItem(setupTokenStorageKey)?.trim() ?? '';
-  } catch {
-    return '';
-  }
+  return setupTokenValue;
 }
 
 function clearSetupToken() {
+  setupTokenValue = '';
+  clearLegacySetupTokenStorage();
+}
+
+export function resetSetupTokenForTest() {
+  clearSetupToken();
+}
+
+function clearLegacySetupTokenStorage() {
   try {
-    sessionStorage.removeItem(setupTokenStorageKey);
+    sessionStorage.removeItem(legacySetupTokenStorageKey);
   } catch {
-    /* ignore */
+    // Browser storage may be unavailable; the active token remains memory-only.
   }
 }
 
 function isSetupMutation(method: string, requestURL: string): boolean {
-  let path: string;
-  try {
-    path = new URL(requestURL, 'https://cheesewaf.invalid').pathname.replace(/^\/api/, '');
-  } catch {
-    return false;
-  }
+  const path = requestPath(requestURL);
   return (method === 'post' && (path === '/setup' || path === '/setup/probe'))
     || (method === 'patch' && path === '/setup/draft');
 }
@@ -167,24 +163,25 @@ function clearLegacyTokenStorage() {
 }
 
 apiClient.interceptors.request.use(async (config) => {
-	const url = String(config.url ?? '');
-	const method = String(config.method ?? 'get').toLowerCase();
-	if (isSetupMutation(method, url)) {
-		await hydrateSetupTokenFromStatus();
-		const token = setupToken();
-		if (token) {
-			config.headers[setupTokenHeaderName] = token;
-		}
-	}
+  const url = String(config.url ?? '');
+  const method = String(config.method ?? 'get').toLowerCase();
+  if (isSetupMutation(method, url)) {
+    await hydrateSetupTokenFromStatus();
+    const token = setupToken();
+    if (token) {
+      config.headers[setupTokenHeaderName] = token;
+    }
+  }
   // Cookie session: credentials already include HttpOnly JWT. Attach CSRF on mutations.
-  if (['post', 'put', 'patch', 'delete'].includes(method) && !url.includes('/auth/login') && !url.includes('/setup') && !url.includes('/auth/captcha')) {
+  const path = requestPath(url);
+  if (['post', 'put', 'patch', 'delete'].includes(method) && !isCSRFExemptPath(path)) {
     const csrf = getCSRFToken();
     if (csrf) {
       config.headers[csrfHeaderName] = csrf;
     }
   }
   // Soft refresh via cookie when SPA is authed (no JWT in localStorage).
-  if (isAuthenticatedFlag() && !url.includes('/auth/login') && !url.includes('/auth/refresh') && !url.includes('/auth/logout') && !url.includes('/setup') && !url.includes('/auth/session')) {
+  if (isAuthenticatedFlag() && !isRefreshExemptPath(path)) {
     await refreshSessionIfNeeded();
   }
   return config;
@@ -203,6 +200,7 @@ apiClient.interceptors.response.use(
 export function handleUnauthorizedAuthFailure(locationRef: AuthRedirectLocation = authRedirectLocationForTest ?? window.location) {
   clearLegacyTokenStorage();
   markAuthenticated(false);
+  clearAccount();
   setCSRFToken('');
   queryClient.clear();
   const path = locationRef.pathname;
@@ -301,6 +299,7 @@ export async function refreshSession() {
         markAuthenticated(true);
         markSessionRefresh();
         clearLegacyTokenStorage();
+        cacheAccount(response.data.data.user);
       })
       .finally(() => {
         refreshPromise = null;
@@ -469,13 +468,7 @@ export async function login(username: string, password: string, totpCode?: strin
   }
   markAuthenticated(true);
   clearLegacyTokenStorage();
-  try {
-    if (result.user) {
-      sessionStorage.setItem('cheesewaf-account', JSON.stringify({ username: result.user.username, role: result.user.role }));
-    }
-  } catch {
-    /* ignore */
-  }
+  cacheAccount(result.user);
   return result;
 }
 
@@ -485,11 +478,7 @@ export async function logout() {
   markAuthenticated(false);
   setCSRFToken('');
   clearLegacyTokenStorage();
-  try {
-    sessionStorage.removeItem('cheesewaf-account');
-  } catch {
-    /* ignore */
-  }
+  clearAccount();
   return result;
 }
 
@@ -500,6 +489,7 @@ export async function fetchSession() {
   }
   markAuthenticated(true);
   clearLegacyTokenStorage();
+  cacheAccount(result.user);
   return result;
 }
 
@@ -523,6 +513,7 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
       setCSRFToken(response.data.data.csrf);
     }
     markAuthenticated(true);
+    cacheAccount(response.data.data.user);
     clearLegacyTokenStorage();
     return true;
   } catch {
@@ -532,17 +523,17 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
 }
 
 export async function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
-	const result = await unwrap<{ user: { username: string; role: string } }>(
-		apiClient.post('/setup', {
+  const result = await unwrap<{ user: { username: string; role: string } }>(
+    apiClient.post('/setup', {
       username,
       password,
       admin_listen: adminListen,
       admin_strategy: adminStrategy,
       admin_public: adminStrategy === 'public_tls',
-		}),
-	);
-	clearSetupToken();
-	return result;
+    }),
+  );
+  clearSetupToken();
+  return result;
 }
 
 export function fetchSites() {
@@ -550,7 +541,7 @@ export function fetchSites() {
 }
 
 export function fetchSite(id: string) {
-  return unwrap<Site>(apiClient.get(`/sites/${id}`));
+  return unwrap<Site>(apiClient.get(`/sites/${encodeURIComponent(id)}`));
 }
 
 export function createSite(site: Partial<Site>) {
@@ -558,11 +549,11 @@ export function createSite(site: Partial<Site>) {
 }
 
 export function updateSite(id: string, site: Partial<Site>) {
-  return unwrap<Site>(apiClient.put(`/sites/${id}`, site));
+  return unwrap<Site>(apiClient.put(`/sites/${encodeURIComponent(id)}`, site));
 }
 
 export function deleteSite(id: string) {
-  return unwrap<{ deleted: boolean }>(apiClient.delete(`/sites/${id}`));
+  return unwrap<{ deleted: boolean }>(apiClient.delete(`/sites/${encodeURIComponent(id)}`));
 }
 
 export function fetchACMEProviders() {
@@ -570,7 +561,7 @@ export function fetchACMEProviders() {
 }
 
 export function issueSiteACMECertificate(siteId: string, payload: ACMEIssueRequest) {
-  return unwrap<ACMEIssueResponse>(apiClient.post(`/sites/${siteId}/acme/issue`, payload, { timeout: 180_000 }));
+  return unwrap<ACMEIssueResponse>(apiClient.post(`/sites/${encodeURIComponent(siteId)}/acme/issue`, payload, { timeout: 180_000 }));
 }
 
 export function fetchStats() {
@@ -752,23 +743,23 @@ export function createUser(user: Partial<User> & { password?: string }) {
 }
 
 export function updateUser(id: string, user: Partial<User> & { password?: string }) {
-  return unwrap<User>(apiClient.put(`/users/${id}`, user));
+  return unwrap<User>(apiClient.put(`/users/${encodeURIComponent(id)}`, user));
 }
 
 export function setupUser2FA(id: string) {
-  return unwrap<TOTPSetup>(apiClient.post(`/users/${id}/2fa/setup`));
+  return unwrap<TOTPSetup>(apiClient.post(`/users/${encodeURIComponent(id)}/2fa/setup`));
 }
 
 export function enableUser2FA(id: string, secret: string, code: string) {
-  return unwrap<User>(apiClient.post(`/users/${id}/2fa/enable`, { secret, code }));
+  return unwrap<User>(apiClient.post(`/users/${encodeURIComponent(id)}/2fa/enable`, { secret, code }));
 }
 
 export function disableUser2FA(id: string, password: string, code: string) {
-	return unwrap<User>(apiClient.post(`/users/${id}/2fa/disable`, { password, code }));
+  return unwrap<User>(apiClient.post(`/users/${encodeURIComponent(id)}/2fa/disable`, { password, code }));
 }
 
 export function recoverUser2FA(id: string, password: string, confirmUsername: string) {
-	return unwrap<User>(apiClient.post(`/users/${id}/2fa/recover`, { password, confirm_username: confirmUsername }));
+  return unwrap<User>(apiClient.post(`/users/${encodeURIComponent(id)}/2fa/recover`, { password, confirm_username: confirmUsername }));
 }
 
 export function fetchSystemConfig() {
@@ -828,11 +819,11 @@ export function createRule(rule: Partial<Rule>) {
 }
 
 export function updateRule(id: string, rule: Partial<Rule>) {
-  return unwrap<Rule>(apiClient.put(`/rules/${id}`, rule));
+  return unwrap<Rule>(apiClient.put(`/rules/${encodeURIComponent(id)}`, rule));
 }
 
 export function deleteRule(id: string) {
-  return unwrap<{ deleted: boolean }>(apiClient.delete(`/rules/${id}`));
+  return unwrap<{ deleted: boolean }>(apiClient.delete(`/rules/${encodeURIComponent(id)}`));
 }
 
 export function fetchProtection() {
@@ -1559,7 +1550,7 @@ async function authenticatedFetch(input: RequestInfo | URL, requestURL: string, 
   return response;
 }
 
-function parseSSEBlock(block: string) {
+export function parseSSEBlock(block: string) {
   const lines = block.split(/\r?\n/);
   let event = 'message';
   const data: string[] = [];
@@ -1573,7 +1564,30 @@ function parseSSEBlock(block: string) {
   if (data.length === 0) {
     return null;
   }
-  return { event, data: JSON.parse(data.join('\n')) as unknown };
+  try {
+    return { event, data: JSON.parse(data.join('\n')) as unknown };
+  } catch {
+    return null;
+  }
+}
+
+function requestPath(requestURL: string): string {
+  try {
+    return new URL(requestURL, 'https://cheesewaf.invalid').pathname.replace(/^\/api(?=\/|$)/, '') || '/';
+  } catch {
+    return '';
+  }
+}
+
+function isCSRFExemptPath(path: string): boolean {
+  return path === '/auth/login' || path === '/auth/captcha' || path === '/auth/captcha/verify'
+    || path === '/setup' || path === '/setup/probe' || path === '/setup/draft';
+}
+
+function isRefreshExemptPath(path: string): boolean {
+  return path === '/auth/login' || path === '/auth/refresh' || path === '/auth/logout'
+    || path === '/auth/session' || path === '/setup' || path === '/setup/status'
+    || path === '/setup/probe' || path === '/setup/draft';
 }
 
 async function reconcileApprovalStreamFailure(approvalID: string, response: Response, traceID: string | undefined, cause: unknown) {

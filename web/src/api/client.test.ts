@@ -8,6 +8,8 @@ import {
   fetchAIApprovals,
   analyzeEventsStream,
   analyzeLogReferenceStream,
+  bootstrapSessionFromLegacyToken,
+  captureSetupTokenFromFragment,
   getCSRFToken,
   handleUnauthorizedAuthFailure,
   isSessionInvalidAuthFailure,
@@ -19,11 +21,27 @@ import {
   syncTimeNow,
   verifyCaptchaLabChallenge,
   clearNotifications,
-	setupAdmin,
+  deleteRule,
+  deleteSite,
+  disableUser2FA,
+  enableUser2FA,
+  fetchSession,
+  fetchSite,
+  issueSiteACMECertificate,
+  login,
+  parseSSEBlock,
+  recoverUser2FA,
+  refreshSession,
+  resetAuthRedirectStateForTest,
+  resetSetupTokenForTest,
+  setupAdmin,
+  setupUser2FA,
+  updateRule,
+  updateSite,
+  updateUser,
   fetchNotifications,
   markAllNotificationsRead,
   logout,
-  resetAuthRedirectStateForTest,
   sanitizeInternalReturnPath,
   setCSRFToken,
   setAuthRedirectLocationForTest,
@@ -71,74 +89,203 @@ describe('CAPTCHA Lab API cancellation', () => {
 });
 
 describe('first-install setup token', () => {
-	let originalAdapter: typeof apiClient.defaults.adapter;
+  let originalAdapter: typeof apiClient.defaults.adapter;
 
-	beforeEach(() => {
-		sessionStorage.clear();
-		window.history.replaceState({}, '', '/setup');
-		originalAdapter = apiClient.defaults.adapter;
-	});
+  beforeEach(() => {
+    sessionStorage.clear();
+    window.history.replaceState({}, '', '/setup');
+    originalAdapter = apiClient.defaults.adapter;
+  });
 
-	afterEach(() => {
-		sessionStorage.clear();
-		window.history.replaceState({}, '', '/');
-		apiClient.defaults.adapter = originalAdapter;
-		vi.unstubAllGlobals();
-		vi.restoreAllMocks();
-	});
+  afterEach(() => {
+    resetSetupTokenForTest();
+    sessionStorage.clear();
+    window.history.replaceState({}, '', '/');
+    apiClient.defaults.adapter = originalAdapter;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
-	it('moves the fragment token into session storage and sends it only on setup mutations', async () => {
-		window.history.replaceState({}, '', '/setup#setup_token=fragment-secret');
-		const seenHeaders: Array<string | undefined> = [];
-		const adapter = vi.fn(async (config) => {
-			seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
-			return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
-		});
+  it('keeps the fragment token in memory and sends it only on setup mutations', async () => {
+    window.history.replaceState({}, '', '/setup#setup_token=fragment-secret');
+    sessionStorage.setItem('cheesewaf-setup-token', 'stale-persisted-secret');
+    const seenHeaders: Array<string | undefined> = [];
+    const adapter = vi.fn(async (config) => {
+      seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
+      return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
+    });
 
-		await apiClient.post('/setup/probe', {}, { adapter });
-		await apiClient.post('/users/user-1/2fa/setup', {}, { adapter });
+    await apiClient.post('/setup/probe', {}, { adapter });
+    await apiClient.post('/users/user-1/2fa/setup', {}, { adapter });
 
-		expect(seenHeaders).toEqual(['fragment-secret', undefined]);
-		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBe('fragment-secret');
-		expect(window.location.hash).toBe('');
-	});
+    expect(seenHeaders).toEqual(['fragment-secret', undefined]);
+    expect(sessionStorage.getItem('cheesewaf-setup-token')).toBeNull();
+    expect(window.location.hash).toBe('');
+  });
 
-	it('loads the setup token from loopback setup_url when the fragment is empty', async () => {
-		const fetchMock = vi.fn(async () => ({
-			ok: true,
-			json: async () => ({
-				data: { needs_setup: true, setup_url: 'http://127.0.0.1:9443/setup#setup_token=status-secret' },
-			}),
-		}));
-		vi.stubGlobal('fetch', fetchMock);
-		const seenHeaders: Array<string | undefined> = [];
-		const adapter = vi.fn(async (config) => {
-			seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
-			return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
-		});
+  it('loads the setup token from loopback setup_url when the fragment is empty', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        data: { needs_setup: true, setup_url: 'http://127.0.0.1:9443/setup#setup_token=status-secret' },
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const seenHeaders: Array<string | undefined> = [];
+    const adapter = vi.fn(async (config) => {
+      seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
+      return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
+    });
 
-		await apiClient.post('/setup/probe', {}, { adapter });
+    await apiClient.post('/setup/probe', {}, { adapter });
 
-		expect(seenHeaders).toEqual(['status-secret']);
-		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBe('status-secret');
-		expect(fetchMock).toHaveBeenCalled();
-	});
+    expect(seenHeaders).toEqual(['status-secret']);
+    expect(sessionStorage.getItem('cheesewaf-setup-token')).toBeNull();
+    expect(fetchMock).toHaveBeenCalled();
+  });
 
-	it('clears the setup token only after setup completes successfully', async () => {
-		window.history.replaceState({}, '', '/setup#setup_token=one-time-secret');
-		const adapter = vi.fn(async (config) => ({
-			data: { data: { user: { username: 'admin', role: 'admin' } } },
-			status: 200,
-			statusText: 'OK',
-			headers: {},
-			config,
-		}));
-		apiClient.defaults.adapter = adapter;
+  it('clears the in-memory setup token only after setup completes successfully', async () => {
+    window.history.replaceState({}, '', '/setup#setup_token=one-time-secret');
+    const seenHeaders: Array<string | undefined> = [];
+    const adapter = vi.fn(async (config) => {
+      seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
+      return {
+        data: { data: { user: { username: 'admin', role: 'admin' } } },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      };
+    });
+    apiClient.defaults.adapter = adapter;
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false })));
 
-		await setupAdmin('admin', 'Correct-Horse-9x!', '127.0.0.1:9443');
+    await setupAdmin('admin', 'Correct-Horse-9x!', '127.0.0.1:9443');
+    await apiClient.post('/setup/probe', {}, { adapter });
 
-		expect(sessionStorage.getItem('cheesewaf-setup-token')).toBeNull();
-	});
+    expect(seenHeaders).toEqual(['one-time-secret', undefined]);
+    expect(sessionStorage.getItem('cheesewaf-setup-token')).toBeNull();
+  });
+
+  it('retains the in-memory token when setup fails so a retry can reuse it', async () => {
+    window.history.replaceState({}, '', '/setup#setup_token=retry-secret');
+    captureSetupTokenFromFragment();
+    const post = vi.spyOn(apiClient, 'post').mockRejectedValueOnce(new Error('setup unavailable'));
+
+    await expect(setupAdmin('admin', 'Correct-Horse-9x!', '127.0.0.1:9443')).rejects.toThrow('setup unavailable');
+    post.mockRestore();
+
+    const seenHeaders: Array<string | undefined> = [];
+    const adapter = vi.fn(async (config) => {
+      seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
+      return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    await apiClient.post('/setup/probe', {}, { adapter });
+
+    expect(seenHeaders).toEqual(['retry-secret']);
+  });
+});
+
+describe('authenticated account cache and request paths', () => {
+  let originalAdapter: typeof apiClient.defaults.adapter;
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+    originalAdapter = apiClient.defaults.adapter;
+  });
+
+  afterEach(() => {
+    apiClient.defaults.adapter = originalAdapter;
+    resetSetupTokenForTest();
+    sessionStorage.clear();
+    localStorage.clear();
+    window.history.replaceState({}, '', '/');
+    setCSRFToken('');
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('caches the authenticated subject from login and session responses', async () => {
+    const adapter = vi.fn(async (config) => ({
+      data: { data: { csrf: 'csrf-token', user: { id: 'account-1', username: 'admin', role: 'admin', scopes: ['read:users'] } } },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }));
+    apiClient.defaults.adapter = adapter;
+
+    await login('admin', 'correct-password');
+    expect(sessionStorage.getItem('cheesewaf-account')).toBe(JSON.stringify({ subject: 'account-1', username: 'admin', role: 'admin', scopes: ['read:users'] }));
+
+    await fetchSession();
+    expect(sessionStorage.getItem('cheesewaf-account')).toBe(JSON.stringify({ subject: 'account-1', username: 'admin', role: 'admin', scopes: ['read:users'] }));
+  });
+
+  it('updates the account cache after refresh and legacy bootstrap responses', async () => {
+    const post = vi.spyOn(apiClient, 'post')
+      .mockResolvedValueOnce({ data: { data: { user: { id: 'refresh-id', username: 'refreshed', role: 'readonly' } } }, status: 200 })
+      .mockResolvedValueOnce({ data: { data: { user: { id: 'bootstrap-id', username: 'migrated', role: 'admin' } } }, status: 200 });
+
+    await refreshSession();
+    expect(sessionStorage.getItem('cheesewaf-account')).toBe(JSON.stringify({ subject: 'refresh-id', username: 'refreshed', role: 'readonly', scopes: [] }));
+
+    localStorage.setItem('cheesewaf-token', 'legacy-token');
+    await expect(bootstrapSessionFromLegacyToken()).resolves.toBe(true);
+    expect(sessionStorage.getItem('cheesewaf-account')).toBe(JSON.stringify({ subject: 'bootstrap-id', username: 'migrated', role: 'admin', scopes: [] }));
+    expect(post).toHaveBeenLastCalledWith('/auth/session/bootstrap', {}, { headers: { Authorization: 'Bearer legacy-token' } });
+  });
+
+  it('uses exact setup and auth paths when deciding whether to add CSRF', async () => {
+    setCSRFToken('csrf-token');
+    window.history.replaceState({}, '', '/setup#setup_token=csrf-test-secret');
+    captureSetupTokenFromFragment();
+    const seenHeaders: Array<string | undefined> = [];
+    const adapter = vi.fn(async (config) => {
+      seenHeaders.push(config.headers.get('X-CSRF-Token')?.toString());
+      return { data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config };
+    });
+
+    await apiClient.post('/auth/login', {}, { adapter });
+    await apiClient.post('/setup/probe', {}, { adapter });
+    await apiClient.post('/auth/login-audit', {}, { adapter });
+    await apiClient.post('/setup-notes', {}, { adapter });
+    expect(seenHeaders).toEqual([undefined, undefined, 'csrf-token', 'csrf-token']);
+  });
+
+  it('encodes every changed client path parameter', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { data: {} } });
+    const put = vi.spyOn(apiClient, 'put').mockResolvedValue({ data: { data: {} } });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { data: {} } });
+    const del = vi.spyOn(apiClient, 'delete').mockResolvedValue({ data: { data: {} } });
+    const id = 'a/b?c#d';
+
+    await Promise.all([
+      fetchSite(id), updateSite(id, {}), deleteSite(id), issueSiteACMECertificate(id, { provider_id: 'provider', dns_api: 'dns', dns_env: {}, account_email: 'ops@example.test', server: 'production', key_type: 'rsa', auto_renew: true, notify: false }),
+      updateUser(id, {}), setupUser2FA(id), enableUser2FA(id, 'secret', '654321'), disableUser2FA(id, 'password', '123456'), recoverUser2FA(id, 'password', 'admin'),
+      updateRule(id, {}), deleteRule(id),
+    ]);
+
+    expect(get).toHaveBeenCalledWith('/sites/a%2Fb%3Fc%23d');
+    expect(put).toHaveBeenCalledWith('/sites/a%2Fb%3Fc%23d', {});
+    expect(del).toHaveBeenCalledWith('/sites/a%2Fb%3Fc%23d');
+    expect(post).toHaveBeenCalledWith('/sites/a%2Fb%3Fc%23d/acme/issue', expect.anything(), { timeout: 180_000 });
+    expect(put).toHaveBeenCalledWith('/users/a%2Fb%3Fc%23d', {});
+    expect(post).toHaveBeenCalledWith('/users/a%2Fb%3Fc%23d/2fa/setup');
+    expect(post).toHaveBeenCalledWith('/users/a%2Fb%3Fc%23d/2fa/enable', { secret: 'secret', code: '654321' });
+    expect(post).toHaveBeenCalledWith('/users/a%2Fb%3Fc%23d/2fa/disable', { password: 'password', code: '123456' });
+    expect(post).toHaveBeenCalledWith('/users/a%2Fb%3Fc%23d/2fa/recover', { password: 'password', confirm_username: 'admin' });
+    expect(put).toHaveBeenCalledWith('/rules/a%2Fb%3Fc%23d', {});
+    expect(del).toHaveBeenCalledWith('/rules/a%2Fb%3Fc%23d');
+  });
+});
+
+describe('SSE frame parsing', () => {
+  it('skips malformed JSON frames without preventing later events', () => {
+    expect(parseSSEBlock('event: trace\ndata: {broken')).toBeNull();
+    expect(parseSSEBlock('event: done\ndata: {"answer":"complete"}')).toEqual({ event: 'done', data: { answer: 'complete' } });
+  });
 });
 
 describe('time synchronization API', () => {
@@ -221,6 +368,7 @@ describe('authenticated fetch 401 handling', () => {
   it('clears legacy token, React Query cache, and schedules only one login redirect', () => {
     localStorage.setItem('cheesewaf-token', 'token');
     sessionStorage.setItem('cheesewaf-authed', '1');
+    sessionStorage.setItem('cheesewaf-account', '{"subject":"admin-id","username":"admin","role":"admin","scopes":[]}');
     queryClient.setQueryData(['sites'], [{ id: 'site-1' }]);
     expect(queryClient.getQueryData(['sites'])).toEqual([{ id: 'site-1' }]);
 
@@ -229,6 +377,7 @@ describe('authenticated fetch 401 handling', () => {
 
     expect(localStorage.getItem('cheesewaf-token')).toBeNull();
     expect(sessionStorage.getItem('cheesewaf-authed')).toBeNull();
+    expect(sessionStorage.getItem('cheesewaf-account')).toBeNull();
     expect(queryClient.getQueryData(['sites'])).toBeUndefined();
     expect(assign).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledWith('/login?returnTo=%2Fai%3Ftab%3Dmodels%23reasoning');
@@ -352,6 +501,19 @@ describe('AI approval streaming and recovery', () => {
     await expect(askAIAssistantStream('test')).resolves.toMatchObject({ answer: '中文と日本語' });
   });
 
+  it('continues an assistant stream after a malformed SSE frame', async () => {
+    const reply = { answer: 'complete', ai_used: true, log_ids: [], events: 0, blocked: 0, challenge: 0 };
+    const bytes = new TextEncoder().encode(`event: trace\ndata: {broken\n\nevent: done\ndata: ${JSON.stringify(reply)}\n\n`);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })));
+
+    await expect(askAIAssistantStream('test')).resolves.toEqual(reply);
+  });
+
   it('lists and gets recoverable approvals from the server', async () => {
     const get = vi.spyOn(apiClient, 'get')
       .mockResolvedValueOnce({ data: { data: [{ id: 'approval-1', status: 'pending' }] } })
@@ -432,8 +594,20 @@ describe('refresh session', () => {
     await apiClient.get('/auth/logout', { adapter });
     await apiClient.get('/auth/refresh', { adapter });
     await apiClient.get('/setup', { adapter });
+    await apiClient.get('/setup/status', { adapter });
 
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it('refreshes on paths that merely contain an exempt path name', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { data: { user: { id: 'admin-id', username: 'admin', role: 'admin' } } }, status: 200, statusText: 'OK', headers: {}, config: {} });
+    const adapter = vi.fn(async (config) => ({ data: { data: {} }, status: 200, statusText: 'OK', headers: {}, config }));
+
+    await apiClient.get('/setup-notes', { adapter });
+
+    expect(post).toHaveBeenCalledWith('/auth/refresh', {});
+    expect(adapter).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the refresh single-flight across concurrent requests', async () => {
