@@ -20,6 +20,15 @@ func (*realtimeSink) Query(context.Context, storage.LogFilter) ([]storage.LogEnt
 func (*realtimeSink) Flush(context.Context) error { return nil }
 func (*realtimeSink) Close() error                { return nil }
 
+type countingRealtimeSink struct {
+	realtimeSink
+	count int64
+}
+
+func (s *countingRealtimeSink) Count(context.Context, storage.LogFilter) (int64, bool, error) {
+	return s.count, true, nil
+}
+
 func TestPublishingLogSinkPublishesSuccessfulWrites(t *testing.T) {
 	hub := newHub(4, time.Second)
 	messages := make(chan *Message, 1)
@@ -62,5 +71,22 @@ func TestPublishingLogSinkDoesNotPublishFailedWrites(t *testing.T) {
 	case msg := <-messages:
 		t.Fatalf("failed log write was published: %+v", msg)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestPublishingLogSinkPreservesCountCapability(t *testing.T) {
+	sink := NewPublishingLogSink(&countingRealtimeSink{count: 42}, NewHub())
+	counter, ok := sink.(interface {
+		Count(context.Context, storage.LogFilter) (int64, bool, error)
+	})
+	if !ok {
+		t.Fatal("publishing sink discarded the underlying Count capability")
+	}
+	count, supported, err := counter.Count(context.Background(), storage.LogFilter{Action: "block"})
+	if err != nil {
+		t.Fatalf("count logs: %v", err)
+	}
+	if !supported || count != 42 {
+		t.Fatalf("count = %d, supported = %v; want 42, true", count, supported)
 	}
 }

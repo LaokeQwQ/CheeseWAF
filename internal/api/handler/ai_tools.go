@@ -295,7 +295,12 @@ func (h *Handler) executeAssistantTool(ctx context.Context, name string, args ma
 		call.Result = execution.Result
 		call.Approval = execution.Approval
 		if execution.Approval != nil && execution.Approval.Status == ai.ApprovalPending && h.Realtime != nil {
-			h.Realtime.Broadcast(context.WithoutCancel(ctx), &realtime.Message{Type: realtime.MsgApproval, Payload: execution.Approval})
+			h.Realtime.Broadcast(context.WithoutCancel(ctx), &realtime.Message{
+				Type: realtime.MsgApproval,
+				Payload: realtime.ApprovalEvent{
+					Status: string(execution.Approval.Status),
+				},
+			})
 		}
 	}
 	return call, nil

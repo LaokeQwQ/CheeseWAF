@@ -95,6 +95,84 @@ func TestHubSlowClientCannotBlockHealthyClient(t *testing.T) {
 	}
 }
 
+func TestHubSendTimeoutClosesTransportThatIgnoresContext(t *testing.T) {
+	hub := newHub(1, 30*time.Millisecond)
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	closed := make(chan struct{})
+	var startOnce sync.Once
+	var closeOnce sync.Once
+	forceClose := func() {
+		closeOnce.Do(func() {
+			close(closed)
+			close(releaseSend)
+		})
+	}
+	transport := &testTransport{
+		send: func(context.Context, *Message) error {
+			startOnce.Do(func() { close(sendStarted) })
+			<-releaseSend
+			return errors.New("transport closed")
+		},
+		close: func() error {
+			forceClose()
+			return nil
+		},
+	}
+	hub.Add(transport)
+	t.Cleanup(func() {
+		forceClose()
+		hub.Remove(transport)
+	})
+
+	hub.Broadcast(context.Background(), &Message{Type: MsgLog})
+	select {
+	case <-sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("transport did not begin sending")
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		forceClose()
+		t.Fatal("send timeout did not close a transport that ignored context cancellation")
+	}
+}
+
+func TestHubShutdownClosesClientsAndRejectsNewClients(t *testing.T) {
+	hub := newHub(1, time.Second)
+	closed := make(chan struct{})
+	var closeOnce sync.Once
+	transport := &testTransport{close: func() error {
+		closeOnce.Do(func() { close(closed) })
+		return nil
+	}}
+	hub.Add(transport)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := hub.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown hub: %v", err)
+	}
+	select {
+	case <-closed:
+	default:
+		t.Fatal("hub shutdown did not close an existing client")
+	}
+
+	lateClosed := make(chan struct{})
+	late := &testTransport{close: func() error {
+		close(lateClosed)
+		return nil
+	}}
+	hub.Add(late)
+	select {
+	case <-lateClosed:
+	case <-time.After(time.Second):
+		t.Fatal("closed hub accepted a new client")
+	}
+}
+
 func TestHubDisconnectsClientWhenQueueIsFull(t *testing.T) {
 	hub := newHub(1, time.Second)
 	sendStarted := make(chan struct{})
@@ -132,6 +210,62 @@ func TestHubDisconnectsClientWhenQueueIsFull(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("client with a full queue was not disconnected")
 	}
+}
+
+func TestHubBlockingCloseCannotBlockBroadcast(t *testing.T) {
+	hub := newHub(1, time.Second)
+	sendStarted := make(chan struct{})
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	var sendOnce sync.Once
+	var closeOnce sync.Once
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+	transport := &testTransport{
+		send: func(ctx context.Context, _ *Message) error {
+			sendOnce.Do(func() { close(sendStarted) })
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		close: func() error {
+			closeOnce.Do(func() { close(closeStarted) })
+			<-releaseClose
+			return nil
+		},
+	}
+	hub.Add(transport)
+	t.Cleanup(func() {
+		release()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = hub.Shutdown(ctx)
+	})
+	hub.Broadcast(context.Background(), &Message{Type: MsgLog, Payload: "active"})
+	select {
+	case <-sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("client did not begin sending")
+	}
+	hub.Broadcast(context.Background(), &Message{Type: MsgLog, Payload: "queued"})
+
+	returned := make(chan struct{})
+	go func() {
+		hub.Broadcast(context.Background(), &Message{Type: MsgLog, Payload: "overflow"})
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(100 * time.Millisecond):
+		release()
+		<-returned
+		t.Fatal("broadcast blocked while closing an evicted client")
+	}
+	select {
+	case <-closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("evicted client was not closed")
+	}
+	release()
 }
 
 func TestHubBrokenClientCannotBlockHealthyClient(t *testing.T) {
@@ -347,5 +481,71 @@ func TestSSETransportAppliesWriteDeadline(t *testing.T) {
 		close(writer.release)
 		<-result
 		t.Fatal("SSE send ignored its context deadline")
+	}
+}
+
+type closeDeadlineResponseWriter struct {
+	header       http.Header
+	writeStarted chan struct{}
+	interrupted  chan struct{}
+	startOnce    sync.Once
+	closeOnce    sync.Once
+}
+
+func (w *closeDeadlineResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (*closeDeadlineResponseWriter) WriteHeader(int) {}
+
+func (w *closeDeadlineResponseWriter) Write([]byte) (int, error) {
+	w.startOnce.Do(func() { close(w.writeStarted) })
+	<-w.interrupted
+	return 0, errors.New("write interrupted")
+}
+
+func (*closeDeadlineResponseWriter) Flush() {}
+
+func (w *closeDeadlineResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() && time.Until(deadline) < time.Second {
+		w.closeOnce.Do(func() { close(w.interrupted) })
+	}
+	return nil
+}
+
+func TestSSETransportCloseInterruptsBlockedWrite(t *testing.T) {
+	writer := &closeDeadlineResponseWriter{
+		writeStarted: make(chan struct{}),
+		interrupted:  make(chan struct{}),
+	}
+	transport := &SSETransport{
+		w:       writer,
+		flusher: writer,
+		closed:  make(chan struct{}),
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- transport.Send(context.Background(), &Message{Type: MsgStats})
+	}()
+	select {
+	case <-writer.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("SSE write did not start")
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close SSE transport: %v", err)
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("expected interrupted SSE write to fail")
+		}
+	case <-time.After(time.Second):
+		writer.closeOnce.Do(func() { close(writer.interrupted) })
+		<-result
+		t.Fatal("closing SSE transport did not interrupt its blocked write")
 	}
 }

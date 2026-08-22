@@ -34,6 +34,16 @@ func (s *publishingLogSink) Query(ctx context.Context, filter storage.LogFilter)
 	return s.sink.Query(ctx, filter)
 }
 
+func (s *publishingLogSink) Count(ctx context.Context, filter storage.LogFilter) (int64, bool, error) {
+	counter, ok := s.sink.(interface {
+		Count(context.Context, storage.LogFilter) (int64, bool, error)
+	})
+	if !ok {
+		return 0, false, nil
+	}
+	return counter.Count(ctx, filter)
+}
+
 func (s *publishingLogSink) Flush(ctx context.Context) error {
 	return s.sink.Flush(ctx)
 }

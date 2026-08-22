@@ -1363,14 +1363,26 @@ func TestExecuteAssistantToolPublishesPendingApproval(t *testing.T) {
 	t.Cleanup(func() { hub.Remove(transport) })
 	handler := New(Options{Config: &cfg, Realtime: hub})
 
-	call, err := handler.executeAssistantTool(context.Background(), "set_protection_level", map[string]any{"area": "bot_cc", "level": "high"}, "")
+	requester := &middleware.Claims{Subject: "requester-id", ID: "requester-session", Username: "requester", Role: "admin"}
+	ctx := context.WithValue(context.Background(), middleware.UserContextKey, requester)
+	call, err := handler.executeAssistantTool(ctx, "set_protection_level", map[string]any{"area": "bot_cc", "level": "high"}, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
 	select {
 	case msg := <-messages:
-		if msg.Type != realtime.MsgApproval || msg.Payload != call.Approval {
+		payload, ok := msg.Payload.(realtime.ApprovalEvent)
+		if msg.Type != realtime.MsgApproval || !ok || payload.Status != string(ai.ApprovalPending) {
 			t.Fatalf("unexpected realtime approval message: %+v", msg)
+		}
+		encoded, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal realtime approval message: %v", err)
+		}
+		for _, protected := range []string{call.Approval.ID, call.Approval.RequesterSubject, "bot_cc", "high"} {
+			if protected != "" && bytes.Contains(encoded, []byte(protected)) {
+				t.Fatalf("realtime approval event exposed object-scoped value %q: %s", protected, encoded)
+			}
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pending approval was not published")

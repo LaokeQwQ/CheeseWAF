@@ -28,6 +28,12 @@ type Message struct {
 	Payload any         `json:"payload"`
 }
 
+// ApprovalEvent invalidates clients' authorized approval views without
+// exposing one request's object-scoped details on the shared realtime stream.
+type ApprovalEvent struct {
+	Status string `json:"status"`
+}
+
 // Transport is the interface for real-time communication channels.
 // WebSocket and SSE both implement this interface.
 // 实时通信通道接口，WebSocket 和 SSE 都实现此接口。

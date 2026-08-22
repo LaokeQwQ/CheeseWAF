@@ -17,6 +17,7 @@ type SSETransport struct {
 	closed    chan struct{}
 	mu        sync.Mutex
 	closeOnce sync.Once
+	closeErr  error
 }
 
 func (h *Hub) SSEHandler(w http.ResponseWriter, r *http.Request) {
@@ -91,11 +92,17 @@ func (t *SSETransport) Receive(context.Context) (*Message, error) {
 
 func (t *SSETransport) Close() error {
 	t.closeOnce.Do(func() {
+		if t.w != nil {
+			err := http.NewResponseController(t.w).SetWriteDeadline(time.Now())
+			if err != nil && !errors.Is(err, http.ErrNotSupported) {
+				t.closeErr = err
+			}
+		}
 		if t.closed != nil {
 			close(t.closed)
 		}
 	})
-	return nil
+	return t.closeErr
 }
 
 func (t *SSETransport) Type() string { return "sse" }

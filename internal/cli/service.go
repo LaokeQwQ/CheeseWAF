@@ -387,6 +387,7 @@ func runServe(ctx context.Context) error {
 	stopServing()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	_ = hub.Shutdown(shutdownCtx)
 	_ = proxyHTTP.Shutdown(shutdownCtx)
 	_ = admin.Shutdown(shutdownCtx)
 	if tlsServer != nil {
