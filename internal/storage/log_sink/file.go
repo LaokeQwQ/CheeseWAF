@@ -192,7 +192,10 @@ func (s *FileSink) snapshot(ctx context.Context) ([]string, []storage.LogEntry, 
 
 func (s *FileSink) scanQuery(ctx context.Context, paths []string, filter storage.LogFilter, limit int) ([]storage.LogEntry, int64, error) {
 	window := requiredRows(filter.Offset, limit)
-	matched := make(logQueryHeap, 0, min(window, maxFileSinkQueryLimit))
+	matched := &logQueryHeap{
+		entries:   make([]retainedLogEntry, 0, min(window, maxFileSinkQueryLimit)),
+		ascending: filter.Ascending,
+	}
 	var total int64
 	var sequence int64
 	err := scanFileSinkSegments(ctx, paths, func(entry storage.LogEntry, _ int) {
@@ -202,25 +205,26 @@ func (s *FileSink) scanQuery(ctx context.Context, paths []string, filter storage
 		total++
 		candidate := retainedLogEntry{entry: entry, sequence: sequence}
 		sequence++
-		if len(matched) < window {
-			heap.Push(&matched, candidate)
-		} else if window > 0 && newerLogEntry(candidate, matched[0]) {
-			heap.Pop(&matched)
-			heap.Push(&matched, candidate)
+		if matched.Len() < window {
+			heap.Push(matched, candidate)
+		} else if window > 0 && preferableLogEntry(candidate, matched.entries[0], filter.Ascending) {
+			heap.Pop(matched)
+			heap.Push(matched, candidate)
 		}
 	})
 	if err != nil {
 		return nil, total, err
 	}
-	sort.SliceStable(matched, func(i, j int) bool {
-		if matched[i].entry.Timestamp.Equal(matched[j].entry.Timestamp) {
-			return matched[i].sequence < matched[j].sequence
+	sort.SliceStable(matched.entries, func(i, j int) bool {
+		comparison := compareRetainedLogEntries(matched.entries[i], matched.entries[j])
+		if filter.Ascending {
+			return comparison < 0
 		}
-		return matched[i].entry.Timestamp.After(matched[j].entry.Timestamp)
+		return comparison > 0
 	})
-	page := make([]storage.LogEntry, len(matched))
-	for i := range matched {
-		page[i] = matched[i].entry
+	page := make([]storage.LogEntry, len(matched.entries))
+	for i := range matched.entries {
+		page[i] = matched.entries[i].entry
 	}
 	return pageLogs(page, total, filter.Offset, limit), total, nil
 }
@@ -228,44 +232,75 @@ func (s *FileSink) scanQuery(ctx context.Context, paths []string, filter storage
 // logQueryHeap retains only the newest offset+limit matches while scanQuery
 // still counts every match. The root is the least desirable retained row so a
 // newer row can replace it in O(log(offset+limit)) time.
-type logQueryHeap []retainedLogEntry
+type logQueryHeap struct {
+	entries   []retainedLogEntry
+	ascending bool
+}
 
 type retainedLogEntry struct {
 	entry    storage.LogEntry
 	sequence int64
 }
 
-func (h logQueryHeap) Len() int { return len(h) }
+func (h logQueryHeap) Len() int { return len(h.entries) }
 
 func (h logQueryHeap) Less(i, j int) bool {
-	if h[i].entry.Timestamp.Equal(h[j].entry.Timestamp) {
-		// Stable newest-first sorting keeps the earlier file row first, so a
-		// later equal-timestamp row is the first one evicted from the window.
-		return h[i].sequence > h[j].sequence
+	comparison := compareRetainedLogEntries(h.entries[i], h.entries[j])
+	if h.ascending {
+		// An ascending query retains the oldest rows, so its newest row is
+		// the least desirable item and stays at the root.
+		return comparison > 0
 	}
-	return h[i].entry.Timestamp.Before(h[j].entry.Timestamp)
+	// A descending query retains the newest rows, so its oldest row is
+	// the least desirable item and stays at the root.
+	return comparison < 0
 }
 
-func (h logQueryHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h logQueryHeap) Swap(i, j int) { h.entries[i], h.entries[j] = h.entries[j], h.entries[i] }
 
 func (h *logQueryHeap) Push(value any) {
-	*h = append(*h, value.(retainedLogEntry))
+	h.entries = append(h.entries, value.(retainedLogEntry))
 }
 
 func (h *logQueryHeap) Pop() any {
-	old := *h
+	old := h.entries
 	last := len(old) - 1
 	value := old[last]
 	old[last] = retainedLogEntry{}
-	*h = old[:last]
+	h.entries = old[:last]
 	return value
 }
 
-func newerLogEntry(candidate, current retainedLogEntry) bool {
-	if candidate.entry.Timestamp.Equal(current.entry.Timestamp) {
-		return candidate.sequence < current.sequence
+func preferableLogEntry(candidate, current retainedLogEntry, ascending bool) bool {
+	comparison := compareRetainedLogEntries(candidate, current)
+	if ascending {
+		return comparison < 0
 	}
-	return candidate.entry.Timestamp.After(current.entry.Timestamp)
+	return comparison > 0
+}
+
+func compareRetainedLogEntries(left, right retainedLogEntry) int {
+	if left.entry.Timestamp.Before(right.entry.Timestamp) {
+		return -1
+	}
+	if left.entry.Timestamp.After(right.entry.Timestamp) {
+		return 1
+	}
+	leftID := logEntryKeyID(left.entry)
+	rightID := logEntryKeyID(right.entry)
+	if leftID < rightID {
+		return -1
+	}
+	if leftID > rightID {
+		return 1
+	}
+	if left.sequence > right.sequence {
+		return -1
+	}
+	if left.sequence < right.sequence {
+		return 1
+	}
+	return 0
 }
 
 func (s *FileSink) loadIndex() error {
@@ -561,7 +596,7 @@ func canUseRecent(filter storage.LogFilter, recent []storage.LogEntry, total int
 	if timeRangeCoveredByRecent(filter, recent, total) {
 		return true
 	}
-	if hasTimeFilter(filter) || filter.TraceID != "" || filter.SiteID != "" || filter.ClientIP != "" || filter.Category != "" || len(filter.Tags) > 0 {
+	if hasTimeFilter(filter) || hasKeysetFilter(filter) || filter.ID != "" || filter.TraceID != "" || filter.SiteID != "" || filter.ClientIP != "" || filter.Category != "" || filter.Search != "" || filter.Kind != "" || len(filter.Tags) > 0 {
 		return false
 	}
 	if !simpleCountFilter(filter) {
@@ -589,11 +624,21 @@ func simpleCountFilter(filter storage.LogFilter) bool {
 		filter.ClientIP == "" &&
 		filter.Category == "" &&
 		filter.TraceID == "" &&
+		filter.ID == "" &&
+		filter.Search == "" &&
+		filter.Kind == "" &&
+		!hasKeysetFilter(filter) &&
 		len(filter.Tags) == 0
 }
 
 func hasTimeFilter(filter storage.LogFilter) bool {
 	return !filter.StartTime.IsZero() || !filter.EndTime.IsZero()
+}
+
+func hasKeysetFilter(filter storage.LogFilter) bool {
+	return !filter.WatermarkTime.IsZero() || filter.WatermarkID != "" ||
+		!filter.BeforeTime.IsZero() || filter.BeforeID != "" ||
+		!filter.AfterTime.IsZero() || filter.AfterID != ""
 }
 
 func requiredRows(offset, limit int) int {
@@ -628,12 +673,18 @@ func boundedQueryWindow(offset, limit int) (int, error) {
 
 func filterRecent(recent []storage.LogEntry, filter storage.LogFilter) []storage.LogEntry {
 	matched := make([]storage.LogEntry, 0, min(len(recent), normalizedLimit(filter.Limit)))
-	for i := len(recent) - 1; i >= 0; i-- {
-		entry := recent[i]
+	for _, entry := range recent {
 		if matches(entry, filter) {
 			matched = append(matched, entry)
 		}
 	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		comparison := compareLogEntries(matched[i], matched[j])
+		if filter.Ascending {
+			return comparison < 0
+		}
+		return comparison > 0
+	})
 	return matched
 }
 
@@ -954,6 +1005,9 @@ func truncateUTF8(value string, limit int) string {
 }
 
 func matches(entry storage.LogEntry, filter storage.LogFilter) bool {
+	if filter.ID != "" && logEntryKeyID(entry) != filter.ID {
+		return false
+	}
 	if filter.SiteID != "" && entry.SiteID != filter.SiteID {
 		return false
 	}
@@ -975,12 +1029,133 @@ func matches(entry storage.LogEntry, filter storage.LogFilter) bool {
 	if !filter.EndTime.IsZero() && entry.Timestamp.After(filter.EndTime) {
 		return false
 	}
+	if !withinLogKeyset(entry, filter) {
+		return false
+	}
+	if !matchesLogKind(entry, filter.Kind) {
+		return false
+	}
+	if filter.Search != "" && !matchesLogSearch(entry, filter.Search) {
+		return false
+	}
 	for _, tag := range filter.Tags {
 		if !hasTag(entry.Tags, tag) {
 			return false
 		}
 	}
 	return true
+}
+
+func withinLogKeyset(entry storage.LogEntry, filter storage.LogFilter) bool {
+	if !filter.WatermarkTime.IsZero() || filter.WatermarkID != "" {
+		comparison := compareLogFilterKey(entry, filter.WatermarkTime, filter.WatermarkID)
+		if filter.Ascending {
+			if comparison <= 0 {
+				return false
+			}
+		} else if comparison >= 0 {
+			return false
+		}
+	}
+	if (!filter.BeforeTime.IsZero() || filter.BeforeID != "") && compareLogFilterKey(entry, filter.BeforeTime, filter.BeforeID) >= 0 {
+		return false
+	}
+	if (!filter.AfterTime.IsZero() || filter.AfterID != "") && compareLogFilterKey(entry, filter.AfterTime, filter.AfterID) <= 0 {
+		return false
+	}
+	return true
+}
+
+func compareLogFilterKey(entry storage.LogEntry, timestamp time.Time, id string) int {
+	if timestamp.IsZero() {
+		entryID := logEntryKeyID(entry)
+		if entryID < id {
+			return -1
+		}
+		if entryID > id {
+			return 1
+		}
+		return 0
+	}
+	return compareLogEntryKey(entry, timestamp, id)
+}
+
+func compareLogEntries(left, right storage.LogEntry) int {
+	return compareLogEntryKey(left, right.Timestamp, logEntryKeyID(right))
+}
+
+func compareLogEntryKey(entry storage.LogEntry, timestamp time.Time, id string) int {
+	if entry.Timestamp.Before(timestamp) {
+		return -1
+	}
+	if entry.Timestamp.After(timestamp) {
+		return 1
+	}
+	entryID := logEntryKeyID(entry)
+	if entryID < id {
+		return -1
+	}
+	if entryID > id {
+		return 1
+	}
+	return 0
+}
+
+func logEntryKeyID(entry storage.LogEntry) string {
+	if entry.ID != "" {
+		return entry.ID
+	}
+	return entry.TraceID
+}
+
+func matchesLogKind(entry storage.LogEntry, kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", "all":
+		return true
+	case "security":
+		return isSecurityLogEntry(entry)
+	case "access":
+		return isAccessLogEntry(entry)
+	default:
+		return false
+	}
+}
+
+func isSecurityLogEntry(entry storage.LogEntry) bool {
+	action := strings.ToLower(strings.TrimSpace(entry.Action))
+	return entry.Category != "" || entry.DetectorID != "" || entry.Severity != "" ||
+		action == "block" || action == "challenge" || action == "log" || action == "monitor" ||
+		entry.StatusCode == 403 || entry.StatusCode == 429
+}
+
+func isAccessLogEntry(entry storage.LogEntry) bool {
+	if isSecurityLogEntry(entry) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(entry.Action)) {
+	case "", "pass", "cache_hit", "redirect":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchesLogSearch(entry storage.LogEntry, search string) bool {
+	search = strings.ToLower(strings.TrimSpace(search))
+	if search == "" {
+		return true
+	}
+	fields := [...]string{
+		logEntryKeyID(entry), entry.TraceID, entry.SiteID, entry.ClientIP, entry.Method,
+		entry.URI, entry.Action, entry.DetectorID, entry.Category, entry.Severity,
+		entry.Message, entry.Payload, entry.UserAgent, entry.Country,
+	}
+	for _, field := range fields {
+		if strings.Contains(strings.ToLower(field), search) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasTag(tags []string, want string) bool {

@@ -12,6 +12,7 @@ import {
   handleUnauthorizedAuthFailure,
   isSessionInvalidAuthFailure,
   fetchHealth,
+  fetchLogEvent,
   fetchTimeSyncStatus,
   issueCaptchaLabChallenge,
   reselectTimeSync,
@@ -30,6 +31,21 @@ import {
 } from './client';
 import { apiClient } from './client';
 import { queryClient } from '../queryClient';
+
+describe('log event lookup', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('falls back to an exact id query instead of a bounded recent scan', async () => {
+    const event = { id: 'old-event', trace_id: 'trace-old', timestamp: '2026-01-01T00:00:00Z' };
+    const get = vi.spyOn(apiClient, 'get')
+      .mockResolvedValueOnce({ data: { data: { items: [], total: 0 } } })
+      .mockResolvedValueOnce({ data: { data: { items: [event], total: 1 } } });
+
+    await expect(fetchLogEvent('old-event')).resolves.toMatchObject(event);
+    expect(get).toHaveBeenNthCalledWith(1, '/logs', { params: { limit: 10, trace_id: 'old-event' } });
+    expect(get).toHaveBeenNthCalledWith(2, '/logs', { params: { limit: 1, id: 'old-event' } });
+  });
+});
 
 describe('CAPTCHA Lab API cancellation', () => {
   afterEach(() => vi.restoreAllMocks());

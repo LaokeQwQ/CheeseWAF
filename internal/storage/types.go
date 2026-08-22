@@ -54,16 +54,26 @@ type LogSink interface {
 // LogFilter defines query filters for log entries.
 // 日志查询过滤条件。
 type LogFilter struct {
-	SiteID    string    `json:"site_id,omitempty"`
-	ClientIP  string    `json:"client_ip,omitempty"`
-	Category  string    `json:"category,omitempty"`
-	Action    string    `json:"action,omitempty"`
-	TraceID   string    `json:"trace_id,omitempty"`
-	Tags      []string  `json:"tags,omitempty"`
-	StartTime time.Time `json:"start_time,omitempty"`
-	EndTime   time.Time `json:"end_time,omitempty"`
-	Offset    int       `json:"offset,omitempty"`
-	Limit     int       `json:"limit,omitempty"`
+	ID            string    `json:"id,omitempty"`
+	SiteID        string    `json:"site_id,omitempty"`
+	ClientIP      string    `json:"client_ip,omitempty"`
+	Category      string    `json:"category,omitempty"`
+	Action        string    `json:"action,omitempty"`
+	TraceID       string    `json:"trace_id,omitempty"`
+	Search        string    `json:"search,omitempty"`
+	Kind          string    `json:"kind,omitempty"`
+	Tags          []string  `json:"tags,omitempty"`
+	StartTime     time.Time `json:"start_time,omitempty"`
+	EndTime       time.Time `json:"end_time,omitempty"`
+	WatermarkTime time.Time `json:"watermark_time,omitempty"`
+	WatermarkID   string    `json:"watermark_id,omitempty"`
+	BeforeTime    time.Time `json:"before_time,omitempty"`
+	BeforeID      string    `json:"before_id,omitempty"`
+	AfterTime     time.Time `json:"after_time,omitempty"`
+	AfterID       string    `json:"after_id,omitempty"`
+	Ascending     bool      `json:"ascending,omitempty"`
+	Offset        int       `json:"offset,omitempty"`
+	Limit         int       `json:"limit,omitempty"`
 }
 
 // Store is the interface for configuration data persistence (SQLite).
@@ -150,13 +160,20 @@ type ReviewItem struct {
 }
 
 type ReviewFilter struct {
-	SiteID   string
-	Category string
-	Status   string
-	Start    time.Time
-	End      time.Time
-	Offset   int
-	Limit    int
+	SiteID        string
+	Category      string
+	Status        string
+	Search        string
+	Start         time.Time
+	End           time.Time
+	WatermarkTime time.Time
+	WatermarkID   string
+	BeforeTime    time.Time
+	BeforeID      string
+	AfterTime     time.Time
+	AfterID       string
+	Offset        int
+	Limit         int
 }
 
 type ReviewDecision struct {

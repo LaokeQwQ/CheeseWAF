@@ -58,6 +58,29 @@ func TestPostgreSQLWhere(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLWhereBuildsLiteralSearchAndStableKeyset(t *testing.T) {
+	stamp := time.Date(2026, 8, 22, 8, 0, 0, 123, time.UTC)
+	where, args, err := postgresqlWhere(storage.LogFilter{
+		Search:        `100%_literal`,
+		Kind:          "security",
+		WatermarkTime: stamp.Add(time.Minute),
+		WatermarkID:   "z",
+		BeforeTime:    stamp,
+		BeforeID:      "b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ILIKE $1 ESCAPE", "detector_id", "severity", "'log','monitor'", "timestamp < $2", "id < $4", "timestamp < $5", "id < $7"} {
+		if !strings.Contains(where, want) {
+			t.Fatalf("where clause %q missing %q", where, want)
+		}
+	}
+	if len(args) != 7 || args[0] != `%100\%\_literal%` || args[3] != "z" || args[6] != "b" {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
 func TestPostgreSQLIndexName(t *testing.T) {
 	if got := indexName(`"public"."cheesewaf_logs"`, "timestamp"); got != `"public_cheesewaf_logs_timestamp_idx"` {
 		t.Fatalf("unexpected index name %q", got)

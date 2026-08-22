@@ -1,7 +1,7 @@
 import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { TimeSyncStatus } from '../types/api';
 
 export const apiClient = axios.create({
@@ -590,6 +590,10 @@ export function fetchLogs(params: LogQuery = {}) {
   return unwrap<LogResponse>(apiClient.get('/logs', { params }));
 }
 
+export function fetchAttackMapAggregate(params: AttackMapAggregateQuery = {}) {
+  return unwrap<AttackMapAggregateResponse>(apiClient.get('/attack-map/aggregate', { params }));
+}
+
 export function fetchReviewItems(params: ReviewQuery = {}) {
   return unwrap<ReviewResponse>(apiClient.get('/review', { params }));
 }
@@ -604,8 +608,8 @@ export async function fetchLogEvent(reference: string) {
   if (direct) {
     return direct;
   }
-  const recent = await fetchLogs({ limit: 250 });
-  const fallback = recent.items.find((entry) => entry.trace_id === reference || entry.id === reference);
+  const byID = await fetchLogs({ limit: 1, id: reference });
+  const fallback = byID.items.find((entry) => entry.id === reference || entry.trace_id === reference) ?? byID.items[0];
   if (!fallback) {
     throw new APIRequestError('Log event not found', 'LOG_NOT_FOUND', 404);
   }

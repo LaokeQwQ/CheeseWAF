@@ -30,15 +30,44 @@ func (h *Handler) ListLogs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	afterTime, ok := parseLogTimeQuery(w, r, "after")
+	if !ok {
+		return
+	}
+	beforeTime, ok := parseLogTimeQuery(w, r, "before")
+	if !ok {
+		return
+	}
+	watermarkTime, ok := parseLogTimeQuery(w, r, "watermark")
+	if !ok {
+		return
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	filter := storage.LogFilter{
-		SiteID:    r.URL.Query().Get("site_id"),
-		ClientIP:  r.URL.Query().Get("client_ip"),
-		Category:  r.URL.Query().Get("category"),
-		Action:    r.URL.Query().Get("action"),
-		TraceID:   r.URL.Query().Get("trace_id"),
-		StartTime: startTime,
-		EndTime:   endTime,
-		Limit:     limit,
+		ID:            r.URL.Query().Get("id"),
+		SiteID:        r.URL.Query().Get("site_id"),
+		ClientIP:      r.URL.Query().Get("client_ip"),
+		Category:      r.URL.Query().Get("category"),
+		Action:        r.URL.Query().Get("action"),
+		TraceID:       r.URL.Query().Get("trace_id"),
+		Search:        r.URL.Query().Get("search"),
+		Kind:          r.URL.Query().Get("kind"),
+		StartTime:     startTime,
+		EndTime:       endTime,
+		AfterTime:     afterTime,
+		AfterID:       r.URL.Query().Get("after_id"),
+		BeforeTime:    beforeTime,
+		BeforeID:      r.URL.Query().Get("before_id"),
+		WatermarkTime: watermarkTime,
+		WatermarkID:   r.URL.Query().Get("watermark_id"),
+		Ascending:     parseBoolQuery(r.URL.Query().Get("ascending")),
+		Offset:        offset,
+		Limit:         limit,
+	}
+	for _, tag := range r.URL.Query()["tag"] {
+		if strings.TrimSpace(tag) != "" {
+			filter.Tags = append(filter.Tags, strings.TrimSpace(tag))
+		}
 	}
 	if h.Sink == nil {
 		writeData(w, map[string]any{"items": []storage.LogEntry{}, "total": 0})
@@ -51,6 +80,15 @@ func (h *Handler) ListLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	h.enrichLogGeo(entries)
 	writeData(w, map[string]any{"items": entries, "total": total})
+}
+
+func parseBoolQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Handler) enrichLogGeo(entries []storage.LogEntry) {

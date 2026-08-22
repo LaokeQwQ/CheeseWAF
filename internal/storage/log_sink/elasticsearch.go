@@ -183,8 +183,45 @@ func elasticsearchQuery(filter storage.LogFilter) map[string]any {
 	addTerm("category.keyword", filter.Category)
 	addTerm("action.keyword", filter.Action)
 	addTerm("trace_id.keyword", filter.TraceID)
+	addTerm("id.keyword", filter.ID)
 	for _, tag := range filter.Tags {
 		addTerm("tags.keyword", tag)
+	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		filters = append(filters, map[string]any{"multi_match": map[string]any{
+			"query":   search,
+			"type":    "phrase_prefix",
+			"lenient": true,
+			"fields":  []string{"id", "trace_id", "site_id", "client_ip", "method", "uri", "action", "detector_id", "category", "severity", "message", "payload", "user_agent", "country"},
+		}})
+	}
+	nonEmptyKeyword := func(field string) map[string]any {
+		return map[string]any{"wildcard": map[string]any{field: map[string]any{"value": "?*"}}}
+	}
+	switch strings.ToLower(strings.TrimSpace(filter.Kind)) {
+	case "security":
+		filters = append(filters, map[string]any{"bool": map[string]any{"should": []map[string]any{
+			nonEmptyKeyword("category.keyword"),
+			nonEmptyKeyword("detector_id.keyword"),
+			nonEmptyKeyword("severity.keyword"),
+			{"terms": map[string]any{"action.keyword": []string{"block", "challenge", "log", "monitor"}}},
+			{"terms": map[string]any{"status_code": []int{403, 429}}},
+		}, "minimum_should_match": 1}})
+	case "access":
+		filters = append(filters, map[string]any{"bool": map[string]any{
+			"filter": []map[string]any{
+				{"terms": map[string]any{"action.keyword": []string{"", "pass", "cache_hit", "redirect"}}},
+			},
+			"must_not": []map[string]any{
+				nonEmptyKeyword("category.keyword"),
+				nonEmptyKeyword("detector_id.keyword"),
+				nonEmptyKeyword("severity.keyword"),
+				{"terms": map[string]any{"status_code": []int{403, 429}}},
+			},
+		}})
+	case "", "all":
+	default:
+		filters = append(filters, map[string]any{"term": map[string]any{"_id": "__no_such_kind__"}})
 	}
 	if !filter.StartTime.IsZero() || !filter.EndTime.IsZero() {
 		bounds := map[string]any{}
@@ -196,15 +233,46 @@ func elasticsearchQuery(filter storage.LogFilter) map[string]any {
 		}
 		filters = append(filters, map[string]any{"range": map[string]any{"timestamp": bounds}})
 	}
+	addCursor := func(timestamp time.Time, id, op string) {
+		if timestamp.IsZero() && id == "" {
+			return
+		}
+		if timestamp.IsZero() {
+			filters = append(filters, map[string]any{"range": map[string]any{"id.keyword": map[string]any{op: id}}})
+			return
+		}
+		if id == "" {
+			filters = append(filters, map[string]any{"range": map[string]any{"timestamp": map[string]any{op: timestamp}}})
+			return
+		}
+		filters = append(filters, map[string]any{"bool": map[string]any{"should": []map[string]any{
+			{"range": map[string]any{"timestamp": map[string]any{op: timestamp}}},
+			{"bool": map[string]any{"must": []map[string]any{
+				{"term": map[string]any{"timestamp": timestamp}},
+				{"range": map[string]any{"id.keyword": map[string]any{op: id}}},
+			}}},
+		}, "minimum_should_match": 1}})
+	}
+	if filter.Ascending {
+		addCursor(filter.WatermarkTime, filter.WatermarkID, "gt")
+	} else {
+		addCursor(filter.WatermarkTime, filter.WatermarkID, "lt")
+	}
+	addCursor(filter.BeforeTime, filter.BeforeID, "lt")
+	addCursor(filter.AfterTime, filter.AfterID, "gt")
 	query := map[string]any{"match_all": map[string]any{}}
 	if len(filters) > 0 {
 		query = map[string]any{"bool": map[string]any{"filter": filters}}
+	}
+	sortOrder := "desc"
+	if filter.Ascending {
+		sortOrder = "asc"
 	}
 	return map[string]any{
 		"from":  offset,
 		"size":  limit,
 		"query": query,
-		"sort":  []map[string]any{{"timestamp": map[string]string{"order": "desc"}}},
+		"sort":  []map[string]any{{"timestamp": map[string]string{"order": sortOrder}}, {"id.keyword": map[string]string{"order": sortOrder}}},
 	}
 }
 
