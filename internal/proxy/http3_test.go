@@ -83,7 +83,7 @@ func TestHTTP3ServerBuildsQUICConfig(t *testing.T) {
 	if h3.QUICConfig == nil || !h3.QUICConfig.Allow0RTT {
 		t.Fatal("expected 0-RTT to be enabled")
 	}
-	if h3.MaxHeaderBytes != 2048 {
+	if h3.MaxHeaderBytes != http.DefaultMaxHeaderBytes {
 		t.Fatalf("unexpected max header bytes %d", h3.MaxHeaderBytes)
 	}
 }

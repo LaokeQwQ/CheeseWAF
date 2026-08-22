@@ -155,21 +155,34 @@ func (p *Policy) ClientIP(r *http.Request) string {
 	if !ok || !p.isTrusted(remoteAddr) {
 		return remote
 	}
-	if ip := p.forwardedFor(strings.Join(r.Header.Values("X-Forwarded-For"), ",")); ip != "" {
-		return ip
-	}
-	if ip := p.forwardedFor(strings.Join(forwardedHeaderValues(strings.Join(r.Header.Values("Forwarded"), ",")), ",")); ip != "" {
-		return ip
-	}
 	for _, provider := range providerPolicies {
 		cidrs, configured := p.providers[provider.name]
 		if !configured || !containsAny(cidrs, remoteAddr) {
 			continue
 		}
 		for _, header := range provider.headers {
-			if ip := firstHeaderIP(strings.Join(r.Header.Values(header), ",")); ip != "" {
+			value, present := joinedHeaderValue(r.Header, header)
+			if !present {
+				continue
+			}
+			if ip := firstHeaderIP(value); ip != "" {
 				return ip
 			}
+			return remote
+		}
+	}
+	if value, present := joinedHeaderValue(r.Header, "X-Forwarded-For"); present {
+		if ip, malformed := p.forwardedFor(value); ip != "" {
+			return ip
+		} else if malformed {
+			return remote
+		}
+	}
+	if value, present := joinedHeaderValue(r.Header, "Forwarded"); present {
+		if ip, malformed := p.forwardedForValues(forwardedHeaderValues(value)); ip != "" {
+			return ip
+		} else if malformed {
+			return remote
 		}
 	}
 	return remote
@@ -179,21 +192,24 @@ func (p *Policy) isTrusted(addr netip.Addr) bool {
 	return containsAny(p.all, addr)
 }
 
-func (p *Policy) forwardedFor(value string) string {
-	parts := splitHeaderList(value, ',')
-	var first string
+func (p *Policy) forwardedFor(value string) (string, bool) {
+	return p.forwardedForValues(splitHeaderList(value, ','))
+}
+
+func (p *Policy) forwardedForValues(parts []string) (string, bool) {
+	var nearest string
 	for i := len(parts) - 1; i >= 0; i-- {
 		ip := parseHeaderIP(parts[i])
 		if ip == "" {
-			continue
+			return nearest, true
 		}
-		first = ip
+		nearest = ip
 		addr, err := netip.ParseAddr(ip)
 		if err != nil || !p.isTrusted(addr) {
-			return ip
+			return ip, false
 		}
 	}
-	return first
+	return nearest, false
 }
 
 func containsAny(prefixes []netip.Prefix, addr netip.Addr) bool {
@@ -255,13 +271,20 @@ func remoteAddrIP(r *http.Request) string {
 	return strings.TrimSpace(r.RemoteAddr)
 }
 
-func firstHeaderIP(value string) string {
-	for _, part := range splitHeaderList(value, ',') {
-		if ip := parseHeaderIP(part); ip != "" {
-			return ip
-		}
+func joinedHeaderValue(header http.Header, name string) (string, bool) {
+	values, ok := header[http.CanonicalHeaderKey(name)]
+	if !ok {
+		return "", false
 	}
-	return ""
+	return strings.Join(values, ","), true
+}
+
+func firstHeaderIP(value string) string {
+	parts := splitHeaderList(value, ',')
+	if len(parts) == 0 {
+		return ""
+	}
+	return parseHeaderIP(parts[0])
 }
 
 func parseHeaderIP(raw string) string {
@@ -284,13 +307,28 @@ func parseHeaderIP(raw string) string {
 func forwardedHeaderValues(raw string) []string {
 	values := make([]string, 0)
 	for _, item := range splitHeaderList(raw, ',') {
+		forValue := ""
+		valid := true
 		for _, part := range splitHeaderList(item, ';') {
-			key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-			if !ok || !strings.EqualFold(strings.TrimSpace(key), "for") {
+			key, rawValue, ok := strings.Cut(strings.TrimSpace(part), "=")
+			if !ok {
+				valid = false
+				break
+			}
+			if !strings.EqualFold(strings.TrimSpace(key), "for") {
 				continue
 			}
-			values = append(values, strings.TrimSpace(value))
+			if rawValue == "" {
+				valid = false
+				break
+			}
+			forValue = strings.TrimSpace(rawValue)
 		}
+		if !valid || forValue == "" {
+			values = append(values, "")
+			continue
+		}
+		values = append(values, forValue)
 	}
 	return values
 }

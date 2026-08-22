@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,10 @@ const (
 	minFileLogSizeBytes   = 1 << 10
 	maxFileLogSizeBytes   = 1 << 40
 	maxFileLogBackupCount = 100
+	maxRewriteRulesPerSite = 128
+	maxRewritePatternBytes = 4096
+	maxRewriteReplaceBytes = 4096
+	maxRewriteProgramInsts = 4096
 )
 
 func Validate(cfg *Config) error {
@@ -235,6 +240,9 @@ func Validate(cfg *Config) error {
 		if err := validateResponseInspection(site.Name, site.WAF.Response); err != nil {
 			return err
 		}
+		if site.WAF.Performance.MaxHeaderBytes < 0 || site.WAF.Performance.MaxHeaderBytes > http.DefaultMaxHeaderBytes {
+			return fmt.Errorf("site %q waf.performance.max_header_bytes must be between 0 and %d", site.Name, http.DefaultMaxHeaderBytes)
+		}
 		if err := validateSiteCertificate(site); err != nil {
 			return err
 		}
@@ -271,12 +279,32 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("site %q has invalid custom rule %q: %w", site.Name, rule.Name, err)
 			}
 		}
+		if len(site.WAF.Rewrite) > maxRewriteRulesPerSite {
+			return fmt.Errorf("site %q has %d rewrite rules; maximum is %d", site.Name, len(site.WAF.Rewrite), maxRewriteRulesPerSite)
+		}
 		for _, rewrite := range site.WAF.Rewrite {
+			if len(rewrite.Pattern) > maxRewritePatternBytes {
+				return fmt.Errorf("site %q rewrite rule %q pattern exceeds %d bytes", site.Name, rewrite.ID, maxRewritePatternBytes)
+			}
+			if len(rewrite.Replacement) > maxRewriteReplaceBytes {
+				return fmt.Errorf("site %q rewrite rule %q replacement exceeds %d bytes", site.Name, rewrite.ID, maxRewriteReplaceBytes)
+			}
 			if !rewrite.Enabled {
 				continue
 			}
 			if _, err := regexp.Compile(rewrite.Pattern); err != nil {
 				return fmt.Errorf("site %q has invalid rewrite rule %q: %w", site.Name, rewrite.ID, err)
+			}
+			parsed, err := syntax.Parse(rewrite.Pattern, syntax.Perl)
+			if err != nil {
+				return fmt.Errorf("site %q has invalid rewrite rule %q: %w", site.Name, rewrite.ID, err)
+			}
+			program, err := syntax.Compile(parsed.Simplify())
+			if err != nil {
+				return fmt.Errorf("site %q has invalid rewrite rule %q: %w", site.Name, rewrite.ID, err)
+			}
+			if len(program.Inst) > maxRewriteProgramInsts {
+				return fmt.Errorf("site %q rewrite rule %q compiled program exceeds %d instructions", site.Name, rewrite.ID, maxRewriteProgramInsts)
 			}
 		}
 		trustedProxyCount := len(site.WAF.AccessControl.TrustedCIDRs)

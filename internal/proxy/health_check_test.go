@@ -87,6 +87,43 @@ func TestHealthCheckerDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
+func TestHealthCheckerUsesStatusAndConfiguredThresholds(t *testing.T) {
+	site := config.Default().Sites[0]
+	site.Upstreams = []config.UpstreamConfig{{Address: "http://health.test"}}
+	site.WAF.HealthCheck.HealthyThreshold = 2
+	site.WAF.HealthCheck.UnhealthyThreshold = 2
+	registry := NewHealthRegistry([]config.SiteConfig{site})
+	checker := NewHealthChecker([]config.SiteConfig{site}, registry)
+	status := http.StatusInternalServerError
+	checker.client.Transport = healthCheckRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: status, Body: http.NoBody, Header: make(http.Header)}, nil
+	})
+
+	checker.check(site)
+	if !registry.Healthy(site.Upstreams[0].Address) {
+		t.Fatal("one failure must not cross unhealthy threshold")
+	}
+	checker.check(site)
+	if registry.Healthy(site.Upstreams[0].Address) {
+		t.Fatal("5xx must become unhealthy at configured threshold")
+	}
+	status = http.StatusNotFound
+	checker.check(site)
+	checker.check(site)
+	if registry.Healthy(site.Upstreams[0].Address) {
+		t.Fatal("4xx must remain an unhealthy observation")
+	}
+	status = http.StatusFound
+	checker.check(site)
+	if registry.Healthy(site.Upstreams[0].Address) {
+		t.Fatal("one success must not cross healthy threshold")
+	}
+	checker.check(site)
+	if !registry.Healthy(site.Upstreams[0].Address) {
+		t.Fatal("3xx must become healthy at configured threshold")
+	}
+}
+
 func TestHealthRegistryUpdateSitesPreservesKnownStateAndDropsRemoved(t *testing.T) {
 	first := config.SiteConfig{Upstreams: []config.UpstreamConfig{{Address: "http://127.0.0.1:8001"}}}
 	registry := NewHealthRegistry([]config.SiteConfig{first})

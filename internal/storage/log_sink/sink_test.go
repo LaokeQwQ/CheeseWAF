@@ -20,6 +20,17 @@ type queryOnlySink struct {
 	err   error
 }
 
+type countedQuerySink struct {
+	queryOnlySink
+	count     int64
+	supported bool
+	countErr  error
+}
+
+func (s countedQuerySink) Count(context.Context, storage.LogFilter) (int64, bool, error) {
+	return s.count, s.supported, s.countErr
+}
+
 func (s queryOnlySink) Write(context.Context, *storage.LogEntry) error { return nil }
 func (s queryOnlySink) Query(context.Context, storage.LogFilter) ([]storage.LogEntry, int64, error) {
 	return s.items, s.total, s.err
@@ -38,6 +49,50 @@ func TestMultiSinkQueryFallsBackWhenFirstSinkIsEmpty(t *testing.T) {
 	}
 	if total != 1 || len(items) != 1 || items[0].ID != "external" {
 		t.Fatalf("unexpected fallback result total=%d items=%+v", total, items)
+	}
+}
+
+func TestMultiSinkQueryPrefersRemoteOverNonemptyLocalFile(t *testing.T) {
+	local, err := NewFileSink(filepath.Join(t.TempDir(), "access.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	if err := local.Write(context.Background(), &storage.LogEntry{ID: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &MultiSink{sinks: []storage.LogSink{
+		local,
+		queryOnlySink{items: []storage.LogEntry{{ID: "remote"}}, total: 1},
+	}}
+	items, total, err := sink.Query(context.Background(), storage.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(items) != 1 || items[0].ID != "remote" {
+		t.Fatalf("local results shadowed remote query: total=%d items=%+v", total, items)
+	}
+}
+
+func TestMultiSinkCountPrefersRemoteOverLocalFile(t *testing.T) {
+	local, err := NewFileSink(filepath.Join(t.TempDir(), "access.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	if err := local.Write(context.Background(), &storage.LogEntry{ID: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &MultiSink{sinks: []storage.LogSink{
+		local,
+		countedQuerySink{count: 7, supported: true},
+	}}
+	total, supported, err := sink.Count(context.Background(), storage.LogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !supported || total != 7 {
+		t.Fatalf("remote count was shadowed: total=%d supported=%v", total, supported)
 	}
 }
 
