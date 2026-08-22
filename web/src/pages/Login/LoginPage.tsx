@@ -19,6 +19,7 @@ import {
   toast,
 } from '@/components/ui';
 import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login, sanitizeInternalReturnPath, verifyLoginCaptcha } from '../../api/client';
+import { safeImageDataUri } from '../../features/captcha/protocol';
 import BrandLogo from '../../components/BrandLogo';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
@@ -44,8 +45,10 @@ type CAPTCHAState = 'loading' | 'ready' | 'solving' | 'checking' | 'verified' | 
 type LoginCAPTCHAMode = 'slider' | 'pow';
 const LOGIN_USERNAME_MIN_LENGTH = 3;
 const CAPTCHA_USERNAME_DEBOUNCE_MS = 300;
-// TODO(captcha): parallel workstream owns LoginPage retry UX; align to exponential backoff (1s->2s->4s, stop after 4) like BehaviorCaptcha.
 const CAPTCHA_RETRY_DELAY_MS = 1000;
+const CAPTCHA_RETRY_MAX_FAILURES = 4;
+const CAPTCHA_RETRY_MAX_DELAY_MS = 4000;
+let captchaRetryFailures = 0;
 
 export default function LoginPage() {
   const { t } = useTranslation();
@@ -187,6 +190,7 @@ export default function LoginPage() {
     setPowPayload(null);
     setSlider(response.slider ?? null);
     resetSlider();
+    captchaRetryFailures = 0;
     setCaptchaState('ready');
   }, [resetSlider, t]);
 
@@ -641,11 +645,19 @@ export default function LoginPage() {
   function scheduleCaptchaRefresh() {
     if (captchaRefreshTimerRef.current != null) {
       window.clearTimeout(captchaRefreshTimerRef.current);
+      captchaRefreshTimerRef.current = null;
     }
+    if (captchaRetryFailures >= CAPTCHA_RETRY_MAX_FAILURES) {
+      setCaptchaState('error');
+      setError(localizedLoginText(t, 'login.captchaUnavailable', 'Verification is unavailable. Please try again.'));
+      return;
+    }
+    const delay = Math.min(CAPTCHA_RETRY_DELAY_MS * (1 << captchaRetryFailures), CAPTCHA_RETRY_MAX_DELAY_MS);
+    captchaRetryFailures += 1;
     captchaRefreshTimerRef.current = window.setTimeout(() => {
       captchaRefreshTimerRef.current = null;
       void refreshCaptcha();
-    }, CAPTCHA_RETRY_DELAY_MS);
+    }, delay);
   }
 
   const closeCaptchaModal = useCallback(() => {
@@ -880,11 +892,11 @@ export default function LoginPage() {
             ) : sliderMode && slider ? (
               <div className={sliderClass} style={{ '--slider-width': `${slider.width}px` } as CSSProperties}>
                 <div className="auth-slider-stage" aria-label={t('login.sliderImage')} role="img" style={{ aspectRatio: `${slider.width} / ${slider.height}` }}>
-                  <img ref={sliderImageRef} className="auth-slider-image" src={slider.image} width={slider.width} height={slider.height} alt="" draggable={false} />
+                  <img ref={sliderImageRef} className="auth-slider-image" src={safeCaptchaImageSource(slider.image) || undefined} width={slider.width} height={slider.height} alt="" draggable={false} />
                   {slider.piece && (
                     <img
                       className="auth-slider-piece"
-                      src={slider.piece}
+                      src={safeCaptchaImageSource(slider.piece) || undefined}
                       width={slider.piece_size}
                       height={slider.piece_size}
                       alt={t('login.sliderPiece')}
@@ -1338,8 +1350,16 @@ function localizedLoginText(t: TFunction, key: string, fallback: string) {
   return value === key ? fallback : value;
 }
 
+function safeCaptchaImageSource(value: string | undefined | null): string {
+  if (!value) {
+    return '';
+  }
+  return safeImageDataUri(value) || '';
+}
+
 async function preloadCaptchaImages(slider: LoginSliderCAPTCHAChallenge, signal?: AbortSignal) {
-  await Promise.all([slider.image, slider.piece].filter((source): source is string => Boolean(source)).map((source) => preloadImage(source, signal)));
+  const sources = [slider.image, slider.piece].map(safeCaptchaImageSource).filter((source): source is string => Boolean(source));
+  await Promise.all(sources.map((source) => preloadImage(source, signal)));
 }
 
 function preloadImage(source: string, signal?: AbortSignal) {
