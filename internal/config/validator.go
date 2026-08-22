@@ -272,10 +272,7 @@ func Validate(cfg *Config) error {
 			}
 		}
 		for _, rule := range site.WAF.CustomRules {
-			if strings.TrimSpace(rule.Pattern) == "" {
-				return fmt.Errorf("site %q has custom rule %q with empty pattern", site.Name, rule.Name)
-			}
-			if _, err := regexp.Compile(rule.Pattern); err != nil {
+			if err := ValidateCustomRule(rule); err != nil {
 				return fmt.Errorf("site %q has invalid custom rule %q: %w", site.Name, rule.Name, err)
 			}
 		}
@@ -515,6 +512,12 @@ func Validate(cfg *Config) error {
 		case ">", ">=", "<", "<=", "==", "!=":
 		default:
 			return fmt.Errorf("alert rule %q has invalid operator %q", rule.ID, rule.Operator)
+		}
+		if rule.For < 0 || rule.For > 30*24*time.Hour {
+			return fmt.Errorf("alert rule %q has invalid for duration", rule.ID)
+		}
+		if rule.Cooldown < 0 || rule.Cooldown > 30*24*time.Hour {
+			return fmt.Errorf("alert rule %q has invalid cooldown duration", rule.ID)
 		}
 	}
 	for _, notifier := range cfg.Monitor.Notifiers {
@@ -1212,9 +1215,9 @@ func validateAIAPIBaseHost(raw string, allowPrivate bool) error {
 		}
 		return nil
 	}
-	ips, err := net.LookupIP(host)
+	ips, err := lookupAIAPIBaseIP(host)
 	if err != nil {
-		return nil
+		return fmt.Errorf("ai.api_base host lookup failed: %w", err)
 	}
 	for _, ip := range ips {
 		if isUnsafeAIAPIBaseIP(ip) {
@@ -1225,6 +1228,9 @@ func validateAIAPIBaseHost(raw string, allowPrivate bool) error {
 }
 
 func validateAIModelConfig(prefix string, model AIModelConfig, enabled bool) error {
+	if model.MaxTokens < 0 || model.MaxTokens > 200000 {
+		return fmt.Errorf("%s.max_tokens must be between 1 and 200000 when set", prefix)
+	}
 	switch strings.ToLower(strings.TrimSpace(model.Provider)) {
 	case "", "openai", "anthropic":
 	default:
@@ -1244,6 +1250,43 @@ func validateAIModelConfig(prefix string, model AIModelConfig, enabled bool) err
 	}
 	if strings.TrimSpace(model.Model) == "" {
 		return fmt.Errorf("%s.model is required when ai is enabled", prefix)
+	}
+	return nil
+}
+
+var lookupAIAPIBaseIP = net.LookupIP
+
+const maxCustomRulePatternBytes = 16 << 10
+
+// ValidateCustomRule is the single validation contract for configured and API-created rules.
+func ValidateCustomRule(rule CustomRuleConfig) error {
+	pattern := strings.TrimSpace(rule.Pattern)
+	if pattern == "" {
+		return fmt.Errorf("pattern is required")
+	}
+	if len(pattern) > maxCustomRulePatternBytes {
+		return fmt.Errorf("pattern exceeds %d bytes", maxCustomRulePatternBytes)
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("pattern is invalid: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.Location)) {
+	case "uri", "header", "body", "cookie":
+	default:
+		return fmt.Errorf("location must be uri, header, body, or cookie")
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.Action)) {
+	case "block", "log", "challenge":
+	default:
+		return fmt.Errorf("action must be block, log, or challenge")
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.Severity)) {
+	case "", "low", "medium", "high", "critical":
+	default:
+		return fmt.Errorf("severity must be low, medium, high, or critical")
+	}
+	if rule.Priority < -1_000_000 || rule.Priority > 1_000_000 {
+		return fmt.Errorf("priority must be between -1000000 and 1000000")
 	}
 	return nil
 }

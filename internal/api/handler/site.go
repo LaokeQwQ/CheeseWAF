@@ -194,7 +194,7 @@ func (h *Handler) syncSites(r *http.Request) error {
 }
 
 func (h *Handler) validateCandidateSites(r *http.Request, mutate func([]storage.Site) []storage.Site) error {
-	if h == nil || h.Store == nil || h.Config == nil {
+	if h == nil || h.Store == nil || h.currentConfig() == nil {
 		return nil
 	}
 	current, err := h.Store.ListSites(r.Context())
@@ -205,7 +205,7 @@ func (h *Handler) validateCandidateSites(r *http.Request, mutate func([]storage.
 	if len(candidate) == 0 {
 		return fmt.Errorf("at least one site is required")
 	}
-	next := *h.Config
+	next := *h.currentConfig()
 	next.Sites = storage.SitesToConfig(candidate)
 	if err := config.Validate(&next); err != nil {
 		return err
@@ -213,8 +213,17 @@ func (h *Handler) validateCandidateSites(r *http.Request, mutate func([]storage.
 	return nil
 }
 
+// ConfigReadMiddleware is retained as a routing compatibility hook. Request
+// handlers read immutable atomic snapshots, so long-lived GETs such as SSE and
+// WebSocket connections must not hold the mutation lock for their lifetime.
+func (h *Handler) ConfigReadMiddleware(next http.Handler) http.Handler {
+	return next
+}
+
 func (h *Handler) persistConfig() error {
 	if h != nil {
+		h.configPersistMu.Lock()
+		defer h.configPersistMu.Unlock()
 		h.configMutationMu.Lock()
 		defer h.configMutationMu.Unlock()
 		if ok, reason := h.clusterConfigWritable("zh-CN"); !ok {
@@ -228,10 +237,10 @@ func (h *Handler) persistConfig() error {
 }
 
 func (h *Handler) persistConfigLocked() error {
-	if h == nil || h.Config == nil || h.ConfigPath == "" {
+	if h == nil || h.currentConfig() == nil || h.ConfigPath == "" {
 		return nil
 	}
-	return h.persistConfigCandidateLocked(h.Config)
+	return h.persistConfigCandidateLocked(h.currentConfig())
 }
 
 func (h *Handler) persistConfigCandidateLocked(candidate *config.Config) error {
@@ -314,6 +323,8 @@ func (h *Handler) freezeConfigWritesLocked(reason string) {
 }
 
 func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyRuntime func(*config.Config) error) (*config.Config, error) {
+	h.configPersistMu.Lock()
+	defer h.configPersistMu.Unlock()
 	h.configMutationMu.Lock()
 	defer h.configMutationMu.Unlock()
 	if h.configWriteFrozen {
@@ -322,13 +333,13 @@ func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyR
 	if ok, reason := h.clusterConfigWritable("zh-CN"); !ok {
 		return nil, fmt.Errorf("cluster protection mode: %s", reason)
 	}
-	// Keep an independent previous snapshot for rollback; do not rely on h.Config
+	// Keep an independent previous snapshot for rollback; do not rely on h.currentConfig()
 	// after applyRuntime may have mutated shared nested pointers.
-	previous, err := config.Clone(h.Config)
+	previous, err := config.Clone(h.currentConfig())
 	if err != nil {
 		return nil, err
 	}
-	candidate, err := config.Clone(h.Config)
+	candidate, err := config.Clone(h.currentConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -359,6 +370,8 @@ func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyR
 		}
 		return nil, err
 	}
-	*h.Config = *candidate
+	if err := h.publishConfig(candidate); err != nil {
+		return nil, err
+	}
 	return candidate, nil
 }

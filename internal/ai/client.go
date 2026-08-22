@@ -54,15 +54,17 @@ type Client struct {
 	apiKey       string
 	apiKeyHeader string
 	model        string
+	maxTokens    int
 	allowPrivate bool
 	http         *http.Client
 	openai       openaisdk.Client
 }
 
 const (
-	defaultAIHTTPTimeout     = 5 * time.Minute
-	maxAIJSONResponseBytes   = 4 << 20
-	maxAIStreamResponseBytes = 16 << 20
+	defaultAIHTTPTimeout      = 5 * time.Minute
+	maxAIJSONResponseBytes    = 4 << 20
+	maxAIStreamResponseBytes  = 16 << 20
+	defaultAnthropicMaxTokens = 4096
 )
 
 var errAIResponseTooLarge = errors.New("AI API response exceeds byte limit")
@@ -79,6 +81,7 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 		apiKey:       cfg.APIKey,
 		apiKeyHeader: strings.TrimSpace(cfg.APIKeyHeader),
 		model:        cfg.Model,
+		maxTokens:    normalizedMaxTokens(cfg.MaxTokens),
 		allowPrivate: cfg.AllowPrivateAPIBase,
 		http:         httpClient,
 	}
@@ -86,6 +89,16 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 		client.openai = newOpenAISDKClient(client.apiBase, client.apiKey, client.apiKeyHeader, httpClient)
 	}
 	return client
+}
+
+func normalizedMaxTokens(value int) int {
+	if value <= 0 {
+		return defaultAnthropicMaxTokens
+	}
+	if value > 200000 {
+		return 200000
+	}
+	return value
 }
 
 func (c *Client) setAPIKeyHeader(req *http.Request, fallback string) {
@@ -561,7 +574,7 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*Co
 		Model:       c.model,
 		System:      system,
 		Messages:    conversation,
-		MaxTokens:   1024,
+		MaxTokens:   c.maxTokens,
 		Temperature: 0.2,
 	}
 	body, err := json.Marshal(payload)
@@ -631,7 +644,7 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 		Model:       c.model,
 		System:      system,
 		Messages:    conversation,
-		MaxTokens:   1024,
+		MaxTokens:   c.maxTokens,
 		Temperature: 0.2,
 		Tools:       anthropicTools(tools),
 	}
@@ -809,7 +822,7 @@ func (c *Client) anthropicPayload(messages []Message, tools []map[string]any) an
 		Model:       c.model,
 		System:      system,
 		Messages:    conversation,
-		MaxTokens:   1024,
+		MaxTokens:   c.maxTokens,
 		Temperature: 0.2,
 	}
 	if len(tools) > 0 {

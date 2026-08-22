@@ -45,7 +45,7 @@ func (h *Handler) SyncTimeNow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) runTimeSyncOperation(w http.ResponseWriter, r *http.Request, reselect bool) {
-	if h == nil || h.Config == nil || !h.Config.TimeSync.Enabled {
+	if h == nil || h.currentConfig() == nil || !h.currentConfig().TimeSync.Enabled {
 		writeError(w, http.StatusConflict, "TIME_SYNC_DISABLED", "time synchronization is disabled")
 		return
 	}
@@ -80,7 +80,7 @@ func (h *Handler) runTimeSyncOperation(w http.ResponseWriter, r *http.Request, r
 }
 
 func (h *Handler) timeSyncStatus() timeSyncStatusResponse {
-	enabled := h != nil && h.Config != nil && h.Config.TimeSync.Enabled
+	enabled := h != nil && h.currentConfig() != nil && h.currentConfig().TimeSync.Enabled
 	response := timeSyncStatusResponse{
 		Enabled:     enabled,
 		State:       "disabled",

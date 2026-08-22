@@ -669,6 +669,7 @@ func TestClientUsesAnthropicMessagesAPI(t *testing.T) {
 		APIBase:             server.URL,
 		APIKey:              "test-secret",
 		Model:               "claude-3-5-haiku-latest",
+		MaxTokens:           8192,
 		AllowPrivateAPIBase: true,
 	}, server.Client())
 	result, err := client.CompleteWithUsage(context.Background(), []Message{
@@ -689,6 +690,9 @@ func TestClientUsesAnthropicMessagesAPI(t *testing.T) {
 	}
 	if len(parsed.Messages) != 1 || parsed.Messages[0].Role != "user" || parsed.Messages[0].Content != "ping" {
 		t.Fatalf("unexpected anthropic messages: %+v", parsed.Messages)
+	}
+	if parsed.MaxTokens != 8192 {
+		t.Fatalf("Anthropic max_tokens = %d, want 8192", parsed.MaxTokens)
 	}
 	if result.Provider != "anthropic" || result.Model != "claude-3-5-haiku-latest" || result.Usage.InputTokens != 17 || result.Usage.OutputTokens != 4 || result.Usage.TotalTokens != 21 {
 		t.Fatalf("unexpected Anthropic result: %+v", result)

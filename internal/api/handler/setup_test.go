@@ -263,7 +263,7 @@ func TestSetupStatusReportsNeedsSetupWithoutToken(t *testing.T) {
 	}
 }
 
-func TestSetupStatusExposesURLOnlyOnLoopback(t *testing.T) {
+func TestSetupStatusNeverExposesSetupTokenInResponse(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := config.Default()
 	cfg.Setup.DataDir = dataDir
@@ -274,8 +274,8 @@ func TestSetupStatusExposesURLOnlyOnLoopback(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.SetupStatus(rec, loop)
 	body := rec.Body.String()
-	if !strings.Contains(body, `"setup_url"`) || !strings.Contains(body, "loop-token") {
-		t.Fatalf("loopback should include setup_url: %s", body)
+	if strings.Contains(body, `"setup_url"`) || strings.Contains(body, "loop-token") {
+		t.Fatalf("loopback setup status leaked setup token: %s", body)
 	}
 	remote := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
 	remote.RemoteAddr = "203.0.113.9:54321"

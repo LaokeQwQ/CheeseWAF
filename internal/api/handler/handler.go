@@ -46,6 +46,7 @@ import (
 
 type Handler struct {
 	Config                       *config.Config
+	configCurrent                atomic.Pointer[config.Config]
 	ConfigPath                   string
 	Store                        storage.Store
 	Sink                         storage.LogSink
@@ -84,6 +85,7 @@ type Handler struct {
 	clusterDeployPending         map[string]deploy.AuthorizationTarget
 	clusterHeartbeatsMu          sync.Mutex
 	configMutationMu             sync.RWMutex
+	configPersistMu              sync.Mutex
 	siteMutationMu               sync.Mutex
 	managementTokenFlushInterval time.Duration
 	configWriteFrozen            bool
@@ -101,6 +103,11 @@ type Handler struct {
 	geoipRetryAfter              time.Time
 	diskUsageMu                  sync.Mutex
 	diskUsageCache               map[string]cachedDirSize
+	memoryStatsMu                sync.Mutex
+	memoryAlloc                  uint64
+	memoryStatsAt                time.Time
+	sessionPruneMu               sync.Mutex
+	nextSessionPrune             time.Time
 	OnSitesChanged               func([]config.SiteConfig) error
 	OnEdgeChanged                func(config.EdgeConfig) error
 	OnProtectionChanged          func(config.ProtectionConfig) error
@@ -307,6 +314,7 @@ const (
 
 type Options struct {
 	Config              *config.Config
+	ConfigSnapshot      *config.Config
 	ConfigPath          string
 	Store               storage.Store
 	Sink                storage.LogSink
@@ -396,10 +404,60 @@ func New(opts Options) *Handler {
 		OnBlockPageChanged:           opts.OnBlockPageChanged,
 		OnTimeSyncChanged:            opts.OnTimeSyncChanged,
 	}
+	if opts.ConfigSnapshot != nil {
+		h.configCurrent.Store(opts.ConfigSnapshot)
+	}
 	if assetStore != nil && assetRefs != nil && opts.Config != nil {
 		h.captchaAssetRuntime.Store(&captchaAssetRuntime{store: assetStore, references: assetRefs, limits: opts.Config.CAPTCHAAssets.Limits, config: opts.Config.CAPTCHAAssets})
 	}
 	return h
+}
+
+// currentConfig returns the immutable configuration snapshot published for
+// request handlers. Callers must never mutate the returned value.
+func (h *Handler) currentConfig() *config.Config {
+	if h == nil {
+		return nil
+	}
+	if current := h.configCurrent.Load(); current != nil {
+		return current
+	}
+	return h.Config
+}
+
+// publishConfig atomically replaces the request-facing snapshot. A separate
+// compatibility copy updates Config for package callers that inspect the
+// historical public field; neither copy aliases the mutation candidate.
+func (h *Handler) publishConfig(candidate *config.Config) error {
+	if h == nil || candidate == nil {
+		return fmt.Errorf("configuration is unavailable")
+	}
+	published, err := config.Clone(candidate)
+	if err != nil {
+		return err
+	}
+	compatibility, err := config.Clone(candidate)
+	if err != nil {
+		return err
+	}
+	// Publish the immutable request snapshot before updating the compatibility
+	// view. New readers cannot retain the object that is updated below.
+	h.configCurrent.Store(published)
+	if h.Config == nil {
+		h.Config = compatibility
+	} else {
+		*h.Config = *compatibility
+	}
+	return nil
+}
+
+func (h *Handler) CurrentPermissions() middleware.PermissionMap {
+	cfg := h.currentConfig()
+	if cfg == nil || len(cfg.APISec.Permissions) == 0 {
+		defaults := config.Default()
+		return middleware.PermissionMap(defaults.APISec.Permissions)
+	}
+	return middleware.PermissionMap(cfg.APISec.Permissions)
 }
 
 func initializeCAPTCHAAssets(cfg *config.Config, secret string, injected captchaassets.Store) (captchaassets.Store, *captchaassets.ReferenceManager, error) {
@@ -458,10 +516,10 @@ func defaultApprovalStorePath(cfg *config.Config) string {
 }
 
 func (h *Handler) notifyProtectionChanged() error {
-	if h == nil || h.OnProtectionChanged == nil || h.Config == nil {
+	if h == nil || h.OnProtectionChanged == nil || h.currentConfig() == nil {
 		return nil
 	}
-	return h.OnProtectionChanged(h.Config.Protection)
+	return h.OnProtectionChanged(h.currentConfig().Protection)
 }
 
 func (h *Handler) notifyProtectionConfigChanged(next config.ProtectionConfig) error {
@@ -472,10 +530,10 @@ func (h *Handler) notifyProtectionConfigChanged(next config.ProtectionConfig) er
 }
 
 func (h *Handler) notifyAPISecChanged() error {
-	if h == nil || h.OnAPISecChanged == nil || h.Config == nil {
+	if h == nil || h.OnAPISecChanged == nil || h.currentConfig() == nil {
 		return nil
 	}
-	return h.OnAPISecChanged(h.Config.APISec)
+	return h.OnAPISecChanged(h.currentConfig().APISec)
 }
 
 func (h *Handler) notifyAPISecConfigChanged(next config.APISecConfig) error {
@@ -486,10 +544,10 @@ func (h *Handler) notifyAPISecConfigChanged(next config.APISecConfig) error {
 }
 
 func (h *Handler) notifyBlockPageChanged() error {
-	if h == nil || h.OnBlockPageChanged == nil || h.Config == nil {
+	if h == nil || h.OnBlockPageChanged == nil || h.currentConfig() == nil {
 		return nil
 	}
-	return h.OnBlockPageChanged(h.Config.BlockPage)
+	return h.OnBlockPageChanged(h.currentConfig().BlockPage)
 }
 
 func (h *Handler) notifyBlockPageConfigChanged(next config.BlockPageConfig) error {
@@ -751,8 +809,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
 		tracker.clearLoginFailures(rateLimitKeys, now)
-		// token is still returned for non-browser clients; browser uses HttpOnly cookie and must not persist JWT.
-		writeData(w, map[string]any{"token": token, "csrf": csrf, "user": user, "session_cookie": true})
+		writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 		return
 	}
 	token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
@@ -771,8 +828,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
 	tracker.clearLoginFailures(rateLimitKeys, now)
-	// token is still returned for non-browser clients; browser uses HttpOnly cookie and must not persist JWT.
-	writeData(w, map[string]any{"token": token, "csrf": csrf, "user": user, "session_cookie": true})
+	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 }
 
 // auditLoginFailure records a failed login attempt. Username is truncated; reason is a short code
@@ -957,10 +1013,10 @@ func (h *Handler) loginCAPTCHAReceiptOptions(clientKey string, ttl time.Duration
 }
 
 func (h *Handler) loginConfig() config.ConsoleLoginConfig {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return config.Default().Console.Login
 	}
-	login := h.Config.Console.Login
+	login := h.currentConfig().Console.Login
 	def := config.Default().Console.Login
 	if login.CAPTCHA.MaxNumber <= 0 {
 		login.CAPTCHA.MaxNumber = def.CAPTCHA.MaxNumber
@@ -1068,7 +1124,7 @@ func (h *Handler) loginCaptchaSecret() string {
 	h.loginCAPTCHASecretMu.Lock()
 	defer h.loginCAPTCHASecretMu.Unlock()
 	if h.loginCAPTCHASecret == "" {
-		h.loginCAPTCHASecret = resolveLoginCAPTCHASecret(h.Secret, h.Config)
+		h.loginCAPTCHASecret = resolveLoginCAPTCHASecret(h.Secret, h.currentConfig())
 	}
 	return h.loginCAPTCHASecret
 }
@@ -1188,7 +1244,7 @@ func loginRateLimitKeys(r *http.Request, username string, adminPublic bool) []st
 }
 
 func (h *Handler) adminPublic() bool {
-	return h != nil && h.Config != nil && h.Config.Server.AdminPublic
+	return h != nil && h.currentConfig() != nil && h.currentConfig().Server.AdminPublic
 }
 
 func loginCAPTCHASkippedForPeer(r *http.Request, adminPublic bool) bool {
@@ -1260,7 +1316,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
-	writeData(w, map[string]any{"token": token, "csrf": csrf, "user": user, "session_cookie": true})
+	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -1339,8 +1395,20 @@ func (h *Handler) pruneExpiredSessions(r *http.Request) {
 	if h == nil || h.Store == nil {
 		return
 	}
-	cutoff := h.nowUTC().Add(-24 * time.Hour)
-	_, _ = h.Store.PruneSessions(r.Context(), cutoff)
+	now := h.nowUTC()
+	h.sessionPruneMu.Lock()
+	if h.nextSessionPrune.After(now) {
+		h.sessionPruneMu.Unlock()
+		return
+	}
+	h.nextSessionPrune = now.Add(time.Minute)
+	h.sessionPruneMu.Unlock()
+	store := h.Store
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = store.PruneSessions(ctx, now.Add(-24*time.Hour))
+	}()
 }
 
 func sessionFromClaims(claims *middleware.Claims) *storage.Session {
@@ -1366,11 +1434,16 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defaultAdminListen := setup.DefaultAdminListen
-	if h.Config != nil && h.Config.Server.AdminListen != "" {
-		defaultAdminListen = h.Config.Server.AdminListen
+	if h.currentConfig() != nil && h.currentConfig().Server.AdminListen != "" {
+		defaultAdminListen = h.currentConfig().Server.AdminListen
+	}
+	setupCandidate, err := config.Clone(h.currentConfig())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_CLONE_ERROR", "unable to prepare setup configuration")
+		return
 	}
 	result, err := setup.CompleteSetup(r.Context(), setup.CompleteOptions{
-		Config:             h.Config,
+		Config:             setupCandidate,
 		ConfigPath:         h.ConfigPath,
 		Store:              h.Store,
 		DefaultAdminListen: defaultAdminListen,
@@ -1394,7 +1467,10 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if result.Config != nil {
-		h.Config = result.Config
+		if err := h.publishConfig(result.Config); err != nil {
+			writeError(w, http.StatusInternalServerError, "CONFIG_PUBLISH_ERROR", err.Error())
+			return
+		}
 	}
 	if draftID := setupSessionID(r); draftID != "" {
 		h.setupDraftStore().Delete(draftID)

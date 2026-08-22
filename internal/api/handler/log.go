@@ -92,7 +92,7 @@ func parseBoolQuery(value string) bool {
 }
 
 func (h *Handler) enrichLogGeo(entries []storage.LogEntry) {
-	if h == nil || h.Config == nil || len(entries) == 0 {
+	if h == nil || h.currentConfig() == nil || len(entries) == 0 {
 		return
 	}
 	h.geoipMu.Lock()
@@ -122,7 +122,7 @@ func (h *Handler) enrichLogGeo(entries []storage.LogEntry) {
 }
 
 func (h *Handler) logGeoIPPolicyLocked() (*protectionip.GeoIPPolicy, error) {
-	raw, _ := json.Marshal(h.Config.Protection.IP.GeoIP)
+	raw, _ := json.Marshal(h.currentConfig().Protection.IP.GeoIP)
 	key := string(raw)
 	if h.geoipPolicy != nil && h.geoipCacheKey == key {
 		return h.geoipPolicy, nil
@@ -134,7 +134,7 @@ func (h *Handler) logGeoIPPolicyLocked() (*protectionip.GeoIPPolicy, error) {
 		_ = h.geoipPolicy.Close()
 		h.geoipPolicy = nil
 	}
-	policy, err := protectionip.NewGeoIPPolicy(h.Config.Protection.IP.GeoIP)
+	policy, err := protectionip.NewGeoIPPolicy(h.currentConfig().Protection.IP.GeoIP)
 	if err != nil {
 		h.geoipErrorKey = key
 		h.geoipRetryAfter = time.Now().Add(30 * time.Second)

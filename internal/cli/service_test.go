@@ -27,6 +27,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
 func TestPublishMonitorEventsPublishesStatsAndAlerts(t *testing.T) {
@@ -97,6 +98,22 @@ func TestDirectorySizeCacheAvoidsRepeatedWalksUntilExpiry(t *testing.T) {
 	}
 	if got := cache.size(root, now.Add(2*time.Hour)); got != 9 {
 		t.Fatalf("refreshed size = %d, want 9", got)
+	}
+}
+
+func TestAdminHandlerRecoversPanicsWithStableAPIError(t *testing.T) {
+	cfg := config.Default()
+	cfg.APISec.Audit.Enabled = false
+	panicHandler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("private detail") })
+	h := adminHandlerWithClock(&cfg, panicHandler, "admin-secret", timekeeper.SystemClock{})
+	req := httptest.NewRequest(http.MethodGet, "/api/panic", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "private detail") || !strings.Contains(rec.Body.String(), "trace_id") {
+		t.Fatalf("unstable or leaky panic response: %s", rec.Body.String())
 	}
 }
 

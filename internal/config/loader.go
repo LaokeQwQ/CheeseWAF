@@ -300,6 +300,7 @@ func Default() Config {
 			APIBase:             "https://api.openai.com/v1",
 			APIKeyHeader:        "authorization",
 			Model:               "gpt-4o-mini",
+			MaxTokens:           4096,
 			Async:               true,
 			AllowPrivateAPIBase: false,
 			Assistant:           AIModelConfig{},
@@ -434,6 +435,11 @@ func Clone(cfg *Config) (*Config, error) {
 	if err := yaml.Unmarshal(contents, &cloned); err != nil {
 		return nil, fmt.Errorf("unmarshal config clone: %w", err)
 	}
+	// Runtime-only fields are intentionally excluded from YAML persistence but
+	// remain part of an in-memory configuration snapshot.
+	cloned.AI.Assistant.AllowPrivateAPIBaseSet = cfg.AI.Assistant.AllowPrivateAPIBaseSet
+	cloned.AI.Reasoning.AllowPrivateAPIBaseSet = cfg.AI.Reasoning.AllowPrivateAPIBaseSet
+	cloned.APISec.Auth.JWKSCacheRoot = cfg.APISec.Auth.JWKSCacheRoot
 	return &cloned, nil
 }
 
@@ -765,6 +771,9 @@ func applyDefaults(cfg *Config) {
 			cfg.AI.Model = def.AI.Model
 		}
 	}
+	if cfg.AI.MaxTokens == 0 {
+		cfg.AI.MaxTokens = def.AI.MaxTokens
+	}
 	applyAIModelDefaults(&cfg.AI.Assistant, cfg.AI.RuntimeModelConfig())
 	assistantRuntime := cfg.AI.AssistantRuntimeConfig().RuntimeModelConfig()
 	applyAIModelDefaults(&cfg.AI.Reasoning, assistantRuntime)
@@ -1054,6 +1063,9 @@ func applyAIModelDefaults(model *AIModelConfig, fallback AIModelConfig) {
 	}
 	if model.Model == "" {
 		model.Model = fallback.Model
+	}
+	if model.MaxTokens == 0 {
+		model.MaxTokens = fallback.MaxTokens
 	}
 	model.AllowPrivateAPIBase = model.AllowPrivateAPIBase || fallback.AllowPrivateAPIBase
 }

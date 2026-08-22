@@ -181,6 +181,20 @@ func TestLocalOnlyRejectsControlTokenInQuery(t *testing.T) {
 	}
 }
 
+func TestControllerHomeDoesNotRenderControlToken(t *testing.T) {
+	c := testController(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+	rec := httptest.NewRecorder()
+	withLocalOnly(c, http.HandlerFunc(c.handleUI)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), c.ControlToken()) || strings.Contains(rec.Body.String(), "__CONTROL_TOKEN__") {
+		t.Fatal("controller token was rendered into unauthenticated HTML")
+	}
+}
+
 func TestAutostartRejectsOversizedJSONBody(t *testing.T) {
 	c := testController(t)
 	payload := `{"enabled":true,"padding":"` + strings.Repeat("x", 8<<10) + `"}`

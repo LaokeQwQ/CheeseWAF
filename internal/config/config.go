@@ -871,6 +871,7 @@ type AIConfig struct {
 	APIKey              string               `yaml:"api_key" json:"api_key"`
 	APIKeyHeader        string               `yaml:"api_key_header" json:"api_key_header"`
 	Model               string               `yaml:"model" json:"model"`
+	MaxTokens           int                  `yaml:"max_tokens" json:"max_tokens"`
 	Async               bool                 `yaml:"async" json:"async"`
 	AllowPrivateAPIBase bool                 `yaml:"allow_private_api_base" json:"allow_private_api_base"`
 	Assistant           AIModelConfig        `yaml:"assistant" json:"assistant"`
@@ -885,6 +886,7 @@ type AIModelConfig struct {
 	APIKey                 string `yaml:"api_key" json:"api_key"`
 	APIKeyHeader           string `yaml:"api_key_header" json:"api_key_header"`
 	Model                  string `yaml:"model" json:"model"`
+	MaxTokens              int    `yaml:"max_tokens" json:"max_tokens"`
 	AllowPrivateAPIBase    bool   `yaml:"allow_private_api_base" json:"allow_private_api_base"`
 	AllowPrivateAPIBaseSet bool   `yaml:"-" json:"-"`
 }
@@ -927,6 +929,7 @@ func (cfg AIConfig) legacyModelConfig() AIModelConfig {
 		APIKey:              cfg.APIKey,
 		APIKeyHeader:        cfg.APIKeyHeader,
 		Model:               cfg.Model,
+		MaxTokens:           cfg.MaxTokens,
 		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
 	}
 }
@@ -951,6 +954,9 @@ func (cfg AIConfig) runtimeConfig(model AIModelConfig, fallback AIModelConfig) A
 	if strings.TrimSpace(model.Model) == "" {
 		model.Model = fallback.Model
 	}
+	if model.MaxTokens == 0 {
+		model.MaxTokens = fallback.MaxTokens
+	}
 	if !model.AllowPrivateAPIBaseSet {
 		model.AllowPrivateAPIBase = fallback.AllowPrivateAPIBase
 	}
@@ -960,6 +966,7 @@ func (cfg AIConfig) runtimeConfig(model AIModelConfig, fallback AIModelConfig) A
 	next.APIKey = model.APIKey
 	next.APIKeyHeader = model.APIKeyHeader
 	next.Model = model.Model
+	next.MaxTokens = model.MaxTokens
 	next.AllowPrivateAPIBase = model.AllowPrivateAPIBase
 	return next
 }
@@ -970,7 +977,8 @@ func (model AIModelConfig) isZero() bool {
 		strings.TrimSpace(model.APIKey) == "" &&
 		strings.TrimSpace(model.APIKeyHeader) == "" &&
 		strings.TrimSpace(model.Model) == "" &&
-		!model.AllowPrivateAPIBase
+		!model.AllowPrivateAPIBase &&
+		model.MaxTokens == 0
 }
 
 type UpdateConfig struct {
@@ -1060,6 +1068,7 @@ type AlertRuleConfig struct {
 	Operator  string        `yaml:"operator" json:"operator"`
 	Threshold float64       `yaml:"threshold" json:"threshold"`
 	For       time.Duration `yaml:"for" json:"for"`
+	Cooldown  time.Duration `yaml:"cooldown" json:"cooldown"`
 	Severity  string        `yaml:"severity" json:"severity"`
 	Enabled   bool          `yaml:"enabled" json:"enabled"`
 }

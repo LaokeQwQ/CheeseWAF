@@ -73,3 +73,26 @@ func TestImageChallengeVerifiesAnswerAndRendersAudio(t *testing.T) {
 		t.Fatalf("expected expired audio token to fail, ok=%v err=%v", ok, err)
 	}
 }
+
+func TestImageAudioIsBoundToItsChallengeContext(t *testing.T) {
+	base := ImageOptions{
+		Secret: "audio-context-secret", Purpose: "waf-bot-image", ClientKey: "client-a", Path: "/login",
+		Length: 4, Now: func() time.Time { return time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC) },
+	}
+	challenge, err := NewImageChallenge(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, altered := range map[string]ImageOptions{
+		"purpose": func() ImageOptions { next := base; next.Purpose = "other"; return next }(),
+		"client":  func() ImageOptions { next := base; next.ClientKey = "client-b"; return next }(),
+		"path":    func() ImageOptions { next := base; next.Path = "/other"; return next }(),
+		"secret":  func() ImageOptions { next := base; next.Secret = "different-secret"; return next }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if audio, ok, err := RenderImageAudio(altered, challenge.Token); err != nil || ok || audio != nil {
+				t.Fatalf("challenge audio escaped context: len=%d ok=%v err=%v", len(audio), ok, err)
+			}
+		})
+	}
+}
