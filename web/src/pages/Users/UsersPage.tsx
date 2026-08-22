@@ -28,6 +28,8 @@ import { ChevronLeft, ChevronRight, Search, ShieldCheck, UserCog, UserPlus, User
 import { createUser, disableUser2FA, enableUser2FA, fetchAuditEntries, fetchUsers, recoverUser2FA, setupUser2FA, updateUser } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import type { AuditEntry, TOTPSetup, User } from '../../types/api';
+import { currentAccount } from '../../authProfile';
+import type { AccountProfile } from '../../authProfile';
 import { passwordPolicyErrorKey } from '../../utils/passwordPolicy';
 
 type UserDraft = {
@@ -64,6 +66,18 @@ const auditPageSizeOptions = [10, 20, 50];
 export function pageItems<T>(items: readonly T[], page: number, pageSize: number) {
   const safePage = Math.max(1, page);
   return items.slice((safePage - 1) * pageSize, safePage * pageSize);
+}
+
+export function canSetupUser2FA(user: User, account: AccountProfile) {
+  return !user.two_fa_enabled && user.id === account.subject;
+}
+
+export function canDisableUser2FA(user: User, account: AccountProfile) {
+  return user.two_fa_enabled && user.id === account.subject;
+}
+
+export function canRecoverUser2FA(user: User, account: AccountProfile) {
+  return user.two_fa_enabled && account.role === 'admin' && user.id !== account.subject;
 }
 
 export function withStableAuditKeys(entries: readonly AuditEntry[]): KeyedAuditEntry[] {
@@ -443,15 +457,15 @@ export default function UsersPage() {
                           <TableCell>
                             <div className="table-action-group">
                               <Button size="sm" variant="outline" onClick={() => openEditUser(record)}>{t('common.edit')}</Button>
-                              {record.two_fa_enabled && record.id === account.subject ? (
+                              {canDisableUser2FA(record, account) ? (
                                 <Button size="sm" variant="secondary" loading={twoFADisableMutation.isPending} onClick={() => openDisable2FA(record)}>
                                   {t('users.disable2FA')}
                                 </Button>
-                              ) : record.two_fa_enabled && account.role === 'admin' && record.id !== account.subject ? (
+                              ) : canRecoverUser2FA(record, account) ? (
                                 <Button size="sm" variant="secondary" loading={twoFARecoveryMutation.isPending} onClick={() => openRecovery2FA(record)}>
                                   {t('users.recover2FA')}
                                 </Button>
-                              ) : !record.two_fa_enabled && record.id === account.subject ? (
+                              ) : canSetupUser2FA(record, account) ? (
                                 <Button
                                   size="sm"
                                   variant="outline"
@@ -489,9 +503,9 @@ export default function UsersPage() {
                   locale={locale}
                   onEdit={() => openEditUser(user)}
                   onSetup2FA={() => open2FASetup(user)}
-                  canSetup2FA={!user.two_fa_enabled && user.id === account.subject}
-                  canDisable2FA={user.two_fa_enabled && user.id === account.subject}
-                  canRecover2FA={user.two_fa_enabled && account.role === 'admin' && user.id !== account.subject}
+                  canSetup2FA={canSetupUser2FA(user, account)}
+                  canDisable2FA={canDisableUser2FA(user, account)}
+                  canRecover2FA={canRecoverUser2FA(user, account)}
                   onDisable2FA={() => openDisable2FA(user)}
                   onRecover2FA={() => openRecovery2FA(user)}
                 />
@@ -979,24 +993,6 @@ function formatDate(value?: string, locale?: string) {
     return value;
   }
   return date.toLocaleString(locale);
-}
-
-function currentAccount() {
-  const fallback = { subject: '', username: '', role: '' };
-  try {
-    const cached = sessionStorage.getItem('cheesewaf-account');
-    if (cached) {
-      const parsed = JSON.parse(cached) as { subject?: string; username?: string; role?: string };
-      return {
-        subject: parsed.subject ?? '',
-        username: parsed.username ?? '',
-        role: parsed.role ?? '',
-      };
-    }
-  } catch {
-    /* fall through */
-  }
-  return fallback;
 }
 
 function TwoFASecretReveal({ secret, label, revealLabel }: { secret: string; label: string; revealLabel: string }) {

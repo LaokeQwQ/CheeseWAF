@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuditEntry, Notification } from '../types/api';
-import { buildSearchResults, NotificationPanel, withStableNotificationKeys } from './MainLayout';
+import { buildSearchResults, navigationForAccount, NotificationPanel, realtimeQueryKeys, shellCapabilities, withStableNotificationKeys } from './MainLayout';
 
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
@@ -123,5 +123,40 @@ describe('buildSearchResults', () => {
     expect(first.map((item) => item.key)).toEqual(second.map((item) => item.key));
     expect(first[0].key).not.toMatch(/^\d+$/);
     expect(first[1].key).toContain(':duplicate:1');
+  });
+});
+
+describe('shell authorization and realtime invalidation', () => {
+  it('shows only navigation backed by the account scopes and uses router-aligned system scopes', () => {
+    const account = { subject: 'operator-1', username: 'operator', role: 'operator', scopes: ['read:logs', 'read:system'] };
+    const keys = navigationForAccount(account).flatMap((group) => group.items.map((item) => item.key));
+
+    expect(keys).toEqual(expect.arrayContaining(['/attack-map', '/logs', '/ssl', '/block-pages', '/updates', '/system']));
+    expect(keys).not.toContain('/users');
+    expect(keys).not.toContain('/monitor');
+  });
+
+  it('gates each shell query and realtime subscription independently', () => {
+    const account = { subject: 'auditor-1', username: 'auditor', role: 'custom', scopes: ['read:audit', 'read:users'] };
+
+    expect(shellCapabilities(account)).toEqual({
+      version: false,
+      recentLogs: false,
+      audit: true,
+      users: true,
+      notifications: false,
+      realtime: false,
+    });
+  });
+
+  it('maps realtime messages to the queries that consume each payload type', () => {
+    expect(realtimeQueryKeys('log')).toEqual(expect.arrayContaining([
+      ['recent-security-logs'],
+      ['dashboard-live-logs'],
+      ['attack-map-logs'],
+    ]));
+    expect(realtimeQueryKeys('alert')).toEqual([['notifications']]);
+    expect(realtimeQueryKeys('stats')).toContainEqual(['monitor-summary']);
+    expect(realtimeQueryKeys('unknown')).toEqual([]);
   });
 });
