@@ -89,7 +89,7 @@ func applyConsensusSafety(status *Status, cfg *config.Config, mode, lang string)
 		return
 	}
 	provider := configuredConsensusProvider(cfg.Cluster.Consensus.Provider)
-	sharedConfiguration := mode != "single-node" || len(cfg.Cluster.Nodes) > 1
+	sharedConfiguration := mode != "single-node" || status.NodeCount > 1
 	switch {
 	case provider == "builtin" && sharedConfiguration:
 		status.MajorityConfirmed = false
@@ -99,6 +99,10 @@ func applyConsensusSafety(status *Status, cfg *config.Config, mode, lang string)
 		status.MajorityConfirmed = false
 		status.CanWriteConfig = false
 		status.ProtectionModeReason = label(lang, "已选择 etcd 共识，但未配置有效端点", "etcd consensus is selected but no valid endpoints are configured")
+	case provider == "etcd" && sharedConfiguration:
+		status.MajorityConfirmed = false
+		status.CanWriteConfig = false
+		status.ProtectionModeReason = label(lang, "etcd 共识提供程序尚未接入；拒绝回退到内置心跳选主", "etcd consensus requires an etcd-backed coordinator; refusing builtin heartbeat election")
 	case provider != "builtin" && provider != "etcd":
 		status.MajorityConfirmed = false
 		status.CanWriteConfig = false

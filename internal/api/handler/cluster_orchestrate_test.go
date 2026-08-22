@@ -21,9 +21,12 @@ func TestClusterBootstrapPlanReturnsJoinCommand(t *testing.T) {
 	cfg.Deployment.Mode = "cluster"
 	cfg.Cluster.ClusterID = "mesh-1"
 	cfg.Cluster.NodeID = "waf-a"
-	cfg.Cluster.HAMode = "minimum-ha"
+	cfg.Cluster.HAMode = "single-node"
 	cfg.Cluster.Consensus.Provider = "etcd"
 	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
+		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+	}
 	cfg.APISec.Audit.Enabled = false
 	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "mesh-1"})
 	if err != nil {

@@ -77,6 +77,7 @@ func TestClusterConsensusRequiresEtcdForSharedConfiguration(t *testing.T) {
 	tests := []struct {
 		name   string
 		haMode string
+		nodeID string
 		nodes  []ClusterNodeConfig
 	}{
 		{
@@ -96,6 +97,14 @@ func TestClusterConsensusRequiresEtcdForSharedConfiguration(t *testing.T) {
 				{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
 			},
 		},
+		{
+			name:   "local node omitted from configured nodes",
+			haMode: "single-node",
+			nodeID: "waf-local",
+			nodes: []ClusterNodeConfig{
+				{ID: "waf-remote", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -103,6 +112,7 @@ func TestClusterConsensusRequiresEtcdForSharedConfiguration(t *testing.T) {
 			cfg.Deployment.Mode = "cluster"
 			cfg.Cluster.Enabled = true
 			cfg.Cluster.HAMode = tt.haMode
+			cfg.Cluster.NodeID = tt.nodeID
 			cfg.Cluster.Consensus.Provider = "builtin"
 			cfg.Cluster.Nodes = tt.nodes
 			err := Validate(&cfg)
@@ -118,6 +128,7 @@ func TestClusterConsensusAcceptsBuiltinForOneLocalNode(t *testing.T) {
 	cfg.Deployment.Mode = "cluster"
 	cfg.Cluster.Enabled = true
 	cfg.Cluster.HAMode = "single-node"
+	cfg.Cluster.NodeID = "waf-local"
 	cfg.Cluster.Consensus.Provider = "builtin"
 	cfg.Cluster.Nodes = []ClusterNodeConfig{
 		{ID: "waf-local", Role: "waf", AdvertiseAddr: "127.0.0.1:9444"},

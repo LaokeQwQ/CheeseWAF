@@ -86,6 +86,9 @@ func TestClusterInitWritesSingleNodeClusterConfig(t *testing.T) {
 	if len(cfg.Cluster.Nodes) != 1 || cfg.Cluster.Nodes[0].Role != "waf" {
 		t.Fatalf("expected one WAF node, got %+v", cfg.Cluster.Nodes)
 	}
+	if !strings.Contains(buf.String(), "cluster.consensus.provider=etcd") || !strings.Contains(buf.String(), "cluster.consensus.etcd_endpoints") {
+		t.Fatalf("cluster init output did not explain the etcd expansion prerequisite: %s", buf.String())
+	}
 }
 
 func TestClusterExportOutputsDeclarativeObjects(t *testing.T) {

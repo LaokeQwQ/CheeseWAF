@@ -1124,7 +1124,21 @@ func ValidateClusterConsensus(cfg *Config) error {
 	}
 
 	haMode := strings.TrimSpace(cfg.Cluster.HAMode)
-	sharedConfiguration := (haMode != "" && haMode != "single-node") || len(cfg.Cluster.Nodes) > 1
+	configuredNodeCount := len(cfg.Cluster.Nodes)
+	localNodeID := strings.TrimSpace(cfg.Cluster.NodeID)
+	if localNodeID != "" {
+		localNodeConfigured := false
+		for _, node := range cfg.Cluster.Nodes {
+			if strings.TrimSpace(node.ID) == localNodeID {
+				localNodeConfigured = true
+				break
+			}
+		}
+		if !localNodeConfigured {
+			configuredNodeCount++
+		}
+	}
+	sharedConfiguration := (haMode != "" && haMode != "single-node") || configuredNodeCount > 1
 	if sharedConfiguration && provider != "etcd" {
 		return fmt.Errorf("multi-node or shared-configuration cluster requires cluster.consensus.provider=etcd; builtin is valid only for a single-node local deployment")
 	}

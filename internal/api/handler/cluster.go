@@ -676,6 +676,11 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		h.recordClusterJoinAudit(r, req, auditStatus, auditMessage, time.Since(started))
 	}()
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		auditStatus = http.StatusLocked
+		auditMessage = "cluster configuration writes are unavailable"
+		return
+	}
 	if !decode(w, r, &req) {
 		return
 	}

@@ -51,6 +51,43 @@ func TestClusterStatusStandalone(t *testing.T) {
 	}
 }
 
+func TestClusterConfigWritableRejectsConfiguredEtcdWithoutBackend(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.NodeID = "waf-a"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
+		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+	}
+	h := New(Options{Config: &cfg})
+	writable, reason := h.clusterConfigWritable("en-US")
+	if writable || !strings.Contains(reason, "etcd-backed coordinator") {
+		t.Fatalf("configured etcd without a backend must freeze config writes: writable=%v reason=%q", writable, reason)
+	}
+}
+
+func TestClusterJoinRejectsSharedEtcdWithoutBackend(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.NodeID = "waf-a"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
+		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+	}
+	h := New(Options{Config: &cfg})
+	rec := httptest.NewRecorder()
+	h.ClusterJoin(rec, httptest.NewRequest(http.MethodPost, "/api/cluster/join", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusLocked || !strings.Contains(rec.Body.String(), "etcd") {
+		t.Fatalf("shared etcd join was not frozen: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestClusterHeartbeatUpdatesStatusAndNodeList(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()
 	cfg := minimumHAHandlerConfig()
@@ -102,8 +139,8 @@ func TestClusterHeartbeatUpdatesStatusAndNodeList(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &after); err != nil {
 		t.Fatal(err)
 	}
-	if !after.Data.MajorityConfirmed || !after.Data.CanWriteConfig || after.Data.OnlineVotingCount != 2 {
-		t.Fatalf("monitor heartbeat should confirm majority: %+v", after.Data)
+	if after.Data.MajorityConfirmed || after.Data.CanWriteConfig || after.Data.OnlineVotingCount != 2 {
+		t.Fatalf("monitor heartbeat must not replace the unavailable etcd coordinator: %+v", after.Data)
 	}
 
 	rec = httptest.NewRecorder()
@@ -881,7 +918,7 @@ func TestClusterJoinRejectsDuplicateNodeBeforeConsumingToken(t *testing.T) {
 	cfg.Deployment.Mode = "cluster"
 	cfg.Cluster.Enabled = true
 	cfg.Cluster.ClusterID = "cw-test"
-	cfg.Cluster.NodeID = "waf-controller"
+	cfg.Cluster.NodeID = "waf-b"
 	cfg.Cluster.Interconnect.Listen = "127.0.0.1:9444"
 	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
 	cfg.Cluster.Nodes = []config.ClusterNodeConfig{{
