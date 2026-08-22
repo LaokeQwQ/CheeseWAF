@@ -28,13 +28,13 @@
 - **Fix**: Sort query keys and header names before iteration
 - **Verification**: Not exploitable in practice (60/60 detections)
 
-### 4. Compiler Optimizations (✅ Complete)
+### 4. Compiler Settings (✅ Corrected)
 - **Makefile updates**:
-  - Added `-gcflags "-l=4"` (aggressive inlining) to all build targets
+  - Use Go's default optimizer/inliner; `-l=4` was removed because it disables inlining
   - Added LoongArch (loong64) to `build-all` and `build-linux`
 - **Platforms**: linux/darwin/windows × amd64/arm64 + linux/loong64
 - **Binary size**: No regression (31M baseline vs 31M optimized)
-- **Benchmark**: No measurable difference from -l=4 alone (regex/decoder bottleneck)
+- **Benchmark**: The old disabled-inlining build had no measurable benefit (regex/decoder bottleneck)
 
 ### 5. Fast Path Helpers (✅ Complete)
 - **File**: `internal/engine/semantic/fastpath.go`

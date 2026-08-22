@@ -120,7 +120,17 @@ grep -Fq -- '--outbound-tls' scripts/ci/docker-build.sh ||
 grep -Fq 'healthcheck --outbound-tls' scripts/ci/docker-build.sh ||
   fail "container smoke must invoke healthcheck --outbound-tls inside the container"
 grep -Fq 'CHEESEWAF_SETUP_TOKEN' scripts/ci/docker-build.sh ||
-  fail "container smoke must pin CHEESEWAF_SETUP_TOKEN"
+  fail "container smoke must inject CHEESEWAF_SETUP_TOKEN"
+grep -Fq 'secrets.token_urlsafe' scripts/ci/docker-build.sh ||
+  fail "container smoke must generate one-run setup credentials"
+grep -Fq -- '--env-file "$secret_env_file"' scripts/ci/docker-build.sh ||
+  fail "container smoke must keep its setup token out of argv"
+grep -Fq -- '--header "@${setup_header}"' scripts/ci/docker-build.sh ||
+  fail "container smoke must keep its setup header out of argv"
+if grep -Fq 'CheeseWAF-CI-Setup-Token' scripts/ci/docker-build.sh ||
+  grep -Fq 'CheeseWAF-CI-Smoke-Only' scripts/ci/docker-build.sh; then
+  fail "container smoke must not hard-code setup credentials"
+fi
 grep -Fq 'X-CheeseWAF-Setup-Token' scripts/ci/docker-build.sh ||
   fail "container smoke must send the setup token header"
 
@@ -225,8 +235,11 @@ grep -Fq 'middleware.WriteCookie(w, r' internal/cli/service.go ||
 if grep -Fq 'ExecReload=' deploy/systemd/cheesewaf.service; then
   fail "systemd must not advertise SIGHUP reload; the process ignores hangup"
 fi
-grep -Fq 'rewrite_checksums' scripts/ci/publish-prerelease.sh ||
+grep -Fq 'rewrite-release-checksums.sh' scripts/ci/publish-prerelease.sh ||
   fail "publish must rebuild SHA256SUMS after macOS DMG files land"
+if grep -Fq -- '--clobber' scripts/ci/publish-prerelease.sh; then
+  fail "published release assets must be immutable"
+fi
 grep -Fq 'github.ref_name == '\''canary'\''' .github/workflows/ci.yml ||
   fail "publish-prerelease must stay limited to canary and master"
 grep -Fq 'id-token: write' .github/workflows/ci.yml ||
@@ -269,6 +282,8 @@ if grep -nE 'http\.SetCookie' internal/api/middleware/session_cookie.go internal
 fi
 grep -Fq 'scripts/ci/channel-from-git.sh' Makefile ||
   fail "Makefile CHANNEL must not embed a case statement with closing parens"
+grep -A1 'canary)' scripts/ci/channel-from-git.sh | grep -Fq 'echo PreTest' ||
+  fail "local canary channel must match package-release PreTest metadata"
 grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
   fail "make web-build must skip agent-eyes postinstall"
 if grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml; then
@@ -375,8 +390,95 @@ grep -Fq 'osslsigncode verify' scripts/ci/verify-release.sh ||
   fail "optional signing gate must verify Windows Authenticode"
 grep -Fq 'codesign --verify' scripts/ci/verify-release.sh ||
   fail "optional signing gate must verify macOS codesign"
+grep -Fq 'signing_mode=1' .github/workflows/ci.yml ||
+  fail "GitHub release CI must explicitly force signing when credentials exist"
+grep -Fq 'CHEESEWAF_REQUIRE_SIGNING="$signing_mode"' .github/workflows/ci.yml ||
+  fail "GitHub release CI must pass its explicit signing mode"
+grep -Fq 'CHEESEWAF_REQUIRE_SIGNING="$signing_mode"' .forgejo/workflows/ci.yml ||
+  fail "Forgejo release CI must pass its explicit signing mode"
+grep -Fq 'CHEESEWAF_SIGNING_SCOPE=windows' .github/workflows/ci.yml ||
+  fail "GitHub Windows release verification must use the Windows signing scope"
+grep -Fq 'CHEESEWAF_SIGNING_SCOPE=macos' .github/workflows/ci.yml ||
+  fail "GitHub macOS release verification must use the macOS signing scope"
+grep -Fq 'WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}' .forgejo/workflows/ci.yml ||
+  fail "Forgejo packaging must receive the Windows signing secret"
+grep -Fq 'apt-get install -y --no-install-recommends nsis zip osslsigncode' .forgejo/workflows/ci.yml ||
+  fail "Forgejo release packaging must install its signing and archive tools"
+grep -Fq 'run_with_timeout 900 xcrun notarytool' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS notarization must have a bounded wait"
+grep -Fq 'security delete-keychain "$signing_keychain"' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS packaging must remove its temporary signing keychain"
+grep -Fq -- '-readpass "$pass_file"' scripts/ci/sign-windows.sh ||
+  fail "Windows certificate password must be read from a protected file"
+if grep -Fq -- '-pass "$WINDOWS_CERT_PASSWORD"' scripts/ci/sign-windows.sh ||
+  grep -Fq -- '-P "${MACOS_P12_PASSWORD' scripts/ci/package-macos-dmg.sh; then
+  fail "code-signing passwords must not be exposed in argv"
+fi
+if grep -Fq 'mapfile' scripts/ci/package-release.sh scripts/ci/verify-release.sh; then
+  fail "release verification and packaging must run on stock macOS Bash 3.2"
+fi
+if grep -Fq 'seq ' scripts/ci/verify-release.sh; then
+  fail "release verification must not depend on non-stock macOS seq"
+fi
+if grep -n -- '-l=4' Makefile scripts/build-all.sh scripts/build-pgo.sh; then
+  fail "release builds must not disable compiler inlining with -l=4"
+fi
+if grep -Fi 'aggressive inlining' PERFORMANCE_DELIVERY.md docs/performance-optimization.md; then
+  fail "performance docs must not misdescribe -l=4 as aggressive inlining"
+fi
+if grep -Fq '/nonfatal' deploy/windows/nsis/cheesewaf.nsi; then
+  fail "NSIS must fail when a required payload file is missing"
+fi
+grep -Fq 'test -s web/dist/index.html' Makefile ||
+  fail "Windows packaging must assert the built UI exists"
+grep -Fq 'assert_managed_output_dir' scripts/ci/package-release.sh ||
+  fail "package-release must guard recursive cleanup targets"
+grep -Fq 'must not traverse a symbolic link' scripts/ci/package-release.sh ||
+  fail "package-release must reject symlinked cleanup paths"
+grep -Fq 'must not be nested inside' scripts/ci/package-release.sh ||
+  fail "package-release must keep release and work outputs disjoint"
+CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-work \
+  bash scripts/ci/package-release.sh >/dev/null
+if CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-release/work \
+  bash scripts/ci/package-release.sh >/dev/null 2>&1; then
+  fail "package-release accepted a work directory nested inside release output"
+fi
+if CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-work/release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-work \
+  bash scripts/ci/package-release.sh >/dev/null 2>&1; then
+  fail "package-release accepted release output nested inside its work directory"
+fi
+grep -Fq 'unsafe archive path' scripts/ci/verify-release.sh ||
+  fail "release verification must reject path-traversal archive members"
+for release_script in package-release.sh package-macos-dmg.sh publish-prerelease.sh; do
+  grep -Fq 'rewrite-release-checksums.sh' "scripts/ci/${release_script}" ||
+    fail "${release_script} must use the shared atomic checksum rewrite"
+done
+for replacement in \
+  'runtime_dir: "/var/lib/cheesewaf/run"' \
+  'path: "/var/lib/cheesewaf/cheesewaf.db"' \
+  'path: "/var/log/cheesewaf/access.log"' \
+  'target: "/var/log/cheesewaf"' \
+  'path: "/var/log/cheesewaf/audit.log"'; do
+  [[ "$(grep -Fc "$replacement" deploy/docker/Dockerfile)" -ge 2 ]] ||
+    fail "Dockerfile must assert config rewrite: ${replacement}"
+done
+grep -Fq "before 06:00 on tuesday" renovate.json ||
+  fail "Renovate must not overlap Dependabot's Monday maintenance window"
+grep -A2 '"enabledManagers"' renovate.json | grep -Fq '"dockerfile"' ||
+  fail "Renovate must leave Go, npm, and GitHub Actions updates to Dependabot"
+if grep -E 'rate_limit:|requests_per_second:|ip_block:' README.md README_CN.md; then
+  fail "README configuration examples contain obsolete keys"
+fi
 
 bash scripts/ci/generate-release-metadata_test.sh
+bash scripts/ci/rewrite-release-checksums_test.sh
+bash scripts/ci/publish-prerelease_test.sh
 bash scripts/ci/verify-release_test.sh
 
 echo "CI static regression checks passed."

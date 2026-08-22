@@ -13,6 +13,9 @@
   "baseBranches": [
     "dev"
   ],
+  "enabledManagers": [
+    "dockerfile"
+  ],
   "rangeStrategy": "bump",
   "prConcurrentLimit": 5,
   "vulnerabilityAlerts": {
@@ -25,8 +28,7 @@
   "packageRules": [
     {
       "matchManagers": [
-        "gomod",
-        "npm"
+        "dockerfile"
       ],
       "matchUpdateTypes": [
         "minor",
@@ -35,35 +37,9 @@
         "digest"
       ],
       "automerge": false
-    },
-    {
-      "matchManagers": [
-        "github-actions"
-      ],
-      "matchUpdateTypes": [
-        "digest",
-        "patch",
-        "minor"
-      ],
-      "automerge": false
-    },
-    {
-      "matchPackageNames": [
-        "golang.org/x/**",
-        "github.com/quic-go/quic-go",
-        "nhooyr.io/websocket",
-        "github.com/openai/openai-go",
-        "modernc.org/sqlite",
-        "vite",
-        "@vitejs/plugin-react"
-      ],
-      "labels": [
-        "dependencies",
-        "security-sensitive"
-      ]
     }
   ],
   "schedule": [
-    "before 06:00 on monday"
+    "before 06:00 on tuesday"
   ]
 }

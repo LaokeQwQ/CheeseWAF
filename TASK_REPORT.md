@@ -1,41 +1,46 @@
-# R2-6 API and Operations Task Report
+# CheeseWAF R2 Consolidated Task Report
 
-Status: `DONE_WITH_CONCERNS`
+Updated: 2026-08-23
+Integration branch: `fix/audit-round2`
 
-Implementation commit: `613121e`
+Individual R2 reports are retained on their worker branches. This report tracks
+integration and fresh verification evidence.
 
-## Finding Disposition
+## Status
 
-1. Rule create/update paths reuse bounded custom-rule validation.
-2. Management API and admin handlers use stable panic recovery responses with
-   trace/event IDs and optional audit records. Login, refresh, and bootstrap
-   responses no longer return raw JWTs in JSON bodies.
-3. Configuration mutations use cloned immutable snapshots, serialized
-   persistence, and rollback/freeze behavior. Site hot updates therefore do not
-   mutate a shared nested configuration graph in place.
-4. Service startup uses an exclusive PID lease with identity records; stop
-   validates process identity and escalates from interrupt to terminate/kill.
-   Restart starts a detached service and waits for its lease.
-5. Remote-write, alert persistence, and notifier errors are logged. Review AI
-   analysis uses a bounded worker queue, timeout, deduplication, and per-site
-   quota. Auth secrets use safe file creation, mode and size checks, and
-   symlink rejection.
-6. AI model max tokens are configurable and validated; captcha receipt
-   eviction is oldest-first; winctl no longer exposes its control token in the
-   unauthenticated landing response.
+| Workflow | Scope | Status | Integration commit(s) |
+| --- | --- | --- | --- |
+| R2-1 | cluster consensus boundary | integrated | `f300187` |
+| R2-2 | realtime event delivery | integrated | `57deb7c` |
+| R2-3 | web auth and realtime client | integrated | `11c6f1b` |
+| R2-4 | protection pipeline and policy hardening | integrated | `3f1c48e` |
+| R2-5 | engine detection hardening | integrated | `b7389fd` |
+| R2-6 | API and operations | integrated | `4edd4a7` |
+| R2-7 | proxy, cluster, and storage | integrated | `2ecb695` |
+| R2-8 | release, CI, and docs | integrating | current merge |
+| R2-9 | attack map and keyset pagination | integrated | `931de19` |
 
-## Verification
+## Current Evidence
 
-`env GOCACHE=/private/tmp/cw-r2-apiops-gocache go test ./internal/api/... ./internal/ai/... ./internal/captcha/... ./internal/cli/... ./internal/config/... ./internal/monitor/... ./internal/review/... ./internal/storage/... ./internal/winctl/... -short -count=1`
+- R2-1, R2-4, R2-5, R2-6, and R2-7 affected-package suites exited 0 after
+  integration. R2-7's malformed `Forwarded` regression was fixed and rerun.
+- R2-2 and R2-3 were verified before their prior merges, including R2-2 race
+  coverage and R2-3 web tests/typecheck/build.
+- R2-8 shell syntax, release verifier, static CI, checksum rewrite, and
+  prerelease regression tests exited 0 before integration.
+- R2-9 API/storage and web verification passed before integration.
 
-Exit `0`; all affected packages passed.
+## Final Gates
 
-`git diff --check` was clean before commit. The new rule, recovery, PID lease,
-and review queue regression tests are included in the implementation commit.
+Run fresh commands only after this merge is complete:
 
-## Concerns
+```text
+go test ./... -short
+go vet ./...
+go build ./cmd/...
+cd web && npm test -- --run && npm run typecheck && npm run build
+bash scripts/ci/verify-ci-static.sh
+```
 
-- Detached restart and process identity behavior is platform-specific and
-  should receive native Windows CI coverage.
-- Remote monitoring integrations were verified through error-path tests and
-  logging; live external endpoints were not available locally.
+Remote CI and the final `verification-before-completion` gate are required
+before declaring the audit complete.
