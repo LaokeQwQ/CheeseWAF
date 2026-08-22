@@ -19,7 +19,7 @@ import {
   toast,
 } from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cloud, Eye, FileImage, HardDrive, RefreshCw, Save, ShieldAlert, ShieldX, Trash2, Upload } from 'lucide-react';
+import { Cloud, Copy, Eye, FileImage, HardDrive, RefreshCw, Save, ShieldAlert, ShieldX, Trash2, Upload } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { APIRequestError } from '../../api/client';
@@ -29,6 +29,8 @@ import styles from './CaptchaAssetsPanel.module.css';
 
 const KINDS: CAPTCHAAssetKind[] = ['background', 'font', 'icon', 'logo'];
 const NANOSECONDS_PER_SECOND = 1_000_000_000;
+const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png'] as const;
+const FONT_MIME_TYPES = ['font/otf', 'font/ttf', 'font/collection'] as const;
 
 export default function CaptchaAssetsPanel() {
   const { t, i18n } = useTranslation();
@@ -40,9 +42,19 @@ export default function CaptchaAssetsPanel() {
   const [uploadKind, setUploadKind] = useState<CAPTCHAAssetKind>('background');
   const [preview, setPreview] = useState<{ asset: CAPTCHAAsset; url: string }>();
   const [deleteTarget, setDeleteTarget] = useState<CAPTCHAAsset | null>(null);
+  const [expandedSha, setExpandedSha] = useState<string>();
   const [config, setConfig] = useState<CAPTCHAAssetConfigUpdate>();
   const [credentialConfigured, setCredentialConfigured] = useState(false);
   const [metadataKeyConfigured, setMetadataKeyConfigured] = useState(false);
+  const copySha256 = async (value: string) => {
+    try {
+      if (!navigator.clipboard) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(value);
+      toast.success(t('botChallenge.captchaAssets.shaCopied'));
+    } catch {
+      toast.error(t('botChallenge.captchaAssets.shaCopyFailed'));
+    }
+  };
   const assetsQuery = useQuery({ queryKey: ['captcha-assets', kind], queryFn: () => fetchCAPTCHAAssets(kind === 'all' ? undefined : kind), retry: false });
   const configQuery = useQuery({ queryKey: ['captcha-assets-config'], queryFn: fetchCAPTCHAAssetConfig, retry: false });
 
@@ -114,11 +126,11 @@ export default function CaptchaAssetsPanel() {
               {KINDS.map((item) => <SelectItem key={item} value={item}>{t(`botChallenge.captchaAssets.kinds.${item}`)}</SelectItem>)}
             </SelectContent>
           </Select>
-          <input ref={fileRef} className={styles.fileInput} type="file" accept="image/*,.woff,.woff2,.ttf,.otf" onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadMutation.mutate(file); event.target.value = ''; }}/>
+          <input ref={fileRef} className={styles.fileInput} type="file" accept="image/jpeg,image/png,.ttf,.otf" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (!file) return; const limits = configQuery.data?.limits; const maxBytes = uploadKind === 'font' ? limits?.max_font_bytes : limits?.max_image_bytes; const allowedMime = uploadKind === 'font' ? FONT_MIME_TYPES : IMAGE_MIME_TYPES; if (maxBytes !== undefined && file.size > maxBytes) { toast.error(t('botChallenge.captchaAssets.uploadTooLarge')); return; } if (!(allowedMime as readonly string[]).includes(file.type)) { toast.error(t('botChallenge.captchaAssets.uploadUnsupportedType')); return; } uploadMutation.mutate(file); }}/>
           <Button loading={uploadMutation.isPending} onClick={() => fileRef.current?.click()}><Upload size={16}/>{t('botChallenge.captchaAssets.upload')}</Button>
         </div>
       </div>
-      {assetsQuery.isLoading ? <AssetSkeleton/> : assetsQuery.isError ? <State icon={<ShieldX/>} title={t('botChallenge.captchaAssets.loadFailed')} hint={errorMessage(assetsQuery.error, '')} action={<Button variant="outline" onClick={() => void assetsQuery.refetch()}><RefreshCw size={16}/>{t('common.retry')}</Button>}/> : assetsQuery.data?.items.length ? <div className={styles.assetGrid}>{assetsQuery.data.items.map((asset) => <article className={styles.assetItem} key={asset.id}><div className={styles.assetIcon}><FileImage size={22}/></div><div className={styles.assetInfo}><div><strong title={asset.name}>{asset.name}</strong><Badge variant="secondary">{t(`botChallenge.captchaAssets.kinds.${asset.kind}`)}</Badge></div><span>{formatBytes(asset.size)} · {new Date(asset.created_at).toLocaleString(i18n.resolvedLanguage)}</span><code title={asset.sha256}>{asset.sha256.slice(0, 16)}</code></div><div className={styles.itemActions}>{asset.kind !== 'font' && <Button variant="outline" loading={previewMutation.isPending && previewMutation.variables?.id === asset.id} onClick={() => previewMutation.mutate(asset)}><Eye size={16}/>{t('botChallenge.captchaAssets.preview')}</Button>}<Button variant="destructive" loading={deleteMutation.isPending && deleteMutation.variables === asset.id} onClick={() => setDeleteTarget(asset)}><Trash2 size={16}/>{t('common.delete')}</Button></div></article>)}</div> : <Empty description={t('botChallenge.captchaAssets.empty')}/>}
+      {assetsQuery.isLoading ? <AssetSkeleton/> : assetsQuery.isError ? <State icon={<ShieldX/>} title={t('botChallenge.captchaAssets.loadFailed')} hint={errorMessage(assetsQuery.error, '')} action={<Button variant="outline" onClick={() => void assetsQuery.refetch()}><RefreshCw size={16}/>{t('common.retry')}</Button>}/> : assetsQuery.data?.items.length ? <div className={styles.assetGrid}>{assetsQuery.data.items.map((asset) => <article className={styles.assetItem} key={asset.id}><div className={styles.assetIcon}><FileImage size={22}/></div><div className={styles.assetInfo}><div><strong title={asset.name}>{asset.name}</strong><Badge variant="secondary">{t(`botChallenge.captchaAssets.kinds.${asset.kind}`)}</Badge></div><span>{formatBytes(asset.size)} · {new Date(asset.created_at).toLocaleString(i18n.resolvedLanguage)}</span><span className={styles.assetHashRow}><code className={styles.shaHash} title={asset.sha256} onClick={() => setExpandedSha(expandedSha === asset.id ? undefined : asset.id)}>{asset.sha256.slice(0, 16)}</code><Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={t('botChallenge.captchaAssets.copySha256')} onClick={() => void copySha256(asset.sha256)}><Copy size={14}/></Button></span>{expandedSha === asset.id && <code className={styles.shaFull}>{asset.sha256}</code>}</div><div className={styles.itemActions}>{asset.kind !== 'font' && <Button variant="outline" loading={previewMutation.isPending && previewMutation.variables?.id === asset.id} onClick={() => previewMutation.mutate(asset)}><Eye size={16}/>{t('botChallenge.captchaAssets.preview')}</Button>}<Button variant="destructive" loading={deleteMutation.isPending && deleteMutation.variables === asset.id} onClick={() => setDeleteTarget(asset)}><Trash2 size={16}/>{t('common.delete')}</Button></div></article>)}</div> : <Empty description={t('botChallenge.captchaAssets.empty')}/>}
     </> : configQuery.isLoading ? <AssetSkeleton/> : configQuery.isError ? <State icon={<ShieldX/>} title={t('botChallenge.captchaAssets.configLoadFailed')} hint={errorMessage(configQuery.error, '')} action={<Button variant="outline" onClick={() => void configQuery.refetch()}>{t('common.retry')}</Button>}/> : !config ? <Empty description={t('botChallenge.captchaAssets.empty')}/> : <ConfigEditor config={config} setConfig={setConfig} credentialConfigured={credentialConfigured} metadataKeyConfigured={metadataKeyConfigured} saving={saveMutation.isPending} testing={testMutation.isPending} onSave={() => saveMutation.mutate(config)} onTest={() => testMutation.mutate(config)}/>}
 
     <Dialog open={Boolean(preview)} onOpenChange={(open) => {

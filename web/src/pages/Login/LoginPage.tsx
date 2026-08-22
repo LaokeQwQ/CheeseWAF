@@ -44,6 +44,7 @@ type CAPTCHAState = 'loading' | 'ready' | 'solving' | 'checking' | 'verified' | 
 type LoginCAPTCHAMode = 'slider' | 'pow';
 const LOGIN_USERNAME_MIN_LENGTH = 3;
 const CAPTCHA_USERNAME_DEBOUNCE_MS = 300;
+// TODO(captcha): parallel workstream owns LoginPage retry UX; align to exponential backoff (1s->2s->4s, stop after 4) like BehaviorCaptcha.
 const CAPTCHA_RETRY_DELAY_MS = 1000;
 
 export default function LoginPage() {

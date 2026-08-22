@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { appendTrack, normalizePoint, trackPoint } from '../interaction';
+import { DEFAULT_TRACK_LIMIT, appendTrack, normalizePoint, trackPoint } from '../interaction';
 import type { CaptchaResponse, CaptchaTrackPoint } from '../protocol';
 import styles from './CurveDrawChallenge.module.css';
 
@@ -9,6 +9,7 @@ export interface CurveDrawChallengeProps {
   className?: string;
   alt?: string;
   label?: string;
+  minDurationMs?: number;
   onInteractionStart?: () => void;
   onSubmit: (response: Omit<CaptchaResponse, 'token'>) => void | Promise<void>;
 }
@@ -22,6 +23,7 @@ export function CurveDrawChallenge({
   alt = '',
   label,
   onInteractionStart,
+  minDurationMs,
   onSubmit,
 }: CurveDrawChallengeProps) {
   const [displayPoints, setDisplayPoints] = useState<DisplayPoint[]>([]);
@@ -36,8 +38,8 @@ export function CurveDrawChallenge({
     const rect = event.currentTarget.getBoundingClientRect();
     const point = normalizePoint(event.clientX, event.clientY, rect);
     const elapsed = Math.max(0, performance.now() - startedAt.current);
-    track.current = appendTrack(track.current, trackPoint(point, elapsed, type), 256);
-    setDisplayPoints((current) => [...current, { x: point.x / 100, y: point.y / 100 }].slice(-256));
+    track.current = appendTrack(track.current, trackPoint(point, elapsed, type), DEFAULT_TRACK_LIMIT);
+    setDisplayPoints((current) => [...current, { x: point.x / 100, y: point.y / 100 }].slice(-DEFAULT_TRACK_LIMIT));
   }, []);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -59,7 +61,7 @@ export function CurveDrawChallenge({
   const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (activePointer.current !== event.pointerId) return;
     capture(event, 'up');
-    const duration = Math.max(0, Math.round(performance.now() - startedAt.current));
+    const duration = Math.max(minDurationMs ?? 0, Math.round(performance.now() - startedAt.current));
     const answer = { track: track.current, duration_ms: duration };
     activePointer.current = null;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
@@ -76,8 +78,8 @@ export function CurveDrawChallenge({
 
   const keyboardTrackPoint = (type: 'down' | 'move' | 'up') => {
     const elapsed = Math.max(0, performance.now() - startedAt.current);
-    track.current = appendTrack(track.current, trackPoint(keyboardPoint.current, elapsed, type), 256);
-    setDisplayPoints((current) => [...current, { x: keyboardPoint.current.x / 100, y: keyboardPoint.current.y / 100 }].slice(-256));
+    track.current = appendTrack(track.current, trackPoint(keyboardPoint.current, elapsed, type), DEFAULT_TRACK_LIMIT);
+    setDisplayPoints((current) => [...current, { x: keyboardPoint.current.x / 100, y: keyboardPoint.current.y / 100 }].slice(-DEFAULT_TRACK_LIMIT));
     return track.current;
   };
 
@@ -119,7 +121,7 @@ export function CurveDrawChallenge({
       keyboardActive.current = false;
       const next = keyboardTrackPoint('up');
       if (next.length >= 2) {
-        void onSubmit({ track: next, duration_ms: Math.round(performance.now() - startedAt.current) });
+        void onSubmit({ track: next, duration_ms: Math.max(minDurationMs ?? 0, Math.round(performance.now() - startedAt.current)) });
       }
     }
   };
