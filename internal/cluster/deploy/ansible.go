@@ -183,6 +183,7 @@ cheesewaf_data_dir: "/var/lib/cheesewaf"
 cheesewaf_service_user: "cheesewaf"
 cheesewaf_interconnect_port: 9444
 cheesewaf_join_requires_approval: true
+cheesewaf_etcd_endpoints: []
 `, plan)
 }
 
@@ -205,6 +206,12 @@ func tasks() string {
       - cheesewaf_binary_sha256 | length == 64
       - cheesewaf_binary_sha256 is match('^[A-Fa-f0-9]{64}$')
     fail_msg: "A verified CheeseWAF binary URL and SHA-256 are required; deployment was not performed."
+
+- name: Require etcd endpoints for shared cluster configuration
+  ansible.builtin.assert:
+    that:
+      - groups['cheesewaf'] | length <= 1 or cheesewaf_etcd_endpoints | length > 0
+    fail_msg: "Multi-node CheeseWAF deployments require one or more cheesewaf_etcd_endpoints; deployment was not performed."
 
 - name: Deploy CheeseWAF transactionally
   block:
@@ -463,7 +470,8 @@ cluster:
     advertise_addr: "{{ ansible_host }}:{{ cheesewaf_interconnect_port }}"
     mtls_required: true
   consensus:
-    provider: builtin
+    provider: "{% if groups['cheesewaf'] | length > 1 %}etcd{% else %}builtin{% endif %}"
+    etcd_endpoints: {{ cheesewaf_etcd_endpoints | to_json }}
   join:
     require_approval: "{{ cheesewaf_join_requires_approval }}"
     token_ttl: 15m
@@ -497,7 +505,7 @@ Run:
 ansible-playbook -i inventory.ini playbook.yml
 ` + "```" + `
 
-Two WAF nodes are deployed as load balancing, not full high availability. Minimum HA requires two WAF nodes plus one monitor node. Multi-node HA requires three or more WAF nodes and the later majority-confirmation runtime.
+Before deploying more than one node, set ` + "`cheesewaf_etcd_endpoints`" + ` in ` + "`group_vars/all.yml`" + `. Multi-node and shared-configuration clusters require external etcd; the playbook fails before changing a host when endpoints are missing. Two WAF nodes are deployed as load balancing, not full high availability. Minimum HA requires two WAF nodes plus one monitor node. Multi-node HA requires three or more WAF nodes.
 `
 }
 

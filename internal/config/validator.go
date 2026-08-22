@@ -1008,8 +1008,8 @@ func validateCluster(cfg *Config) error {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Deployment.Mode))
 	if mode == "" {
 		mode = "standalone"
-		cfg.Deployment.Mode = mode
 	}
+	cfg.Deployment.Mode = mode
 	switch mode {
 	case "standalone", "cluster":
 	default:
@@ -1023,17 +1023,6 @@ func validateCluster(cfg *Config) error {
 	}
 	if !cfg.Cluster.Enabled {
 		return fmt.Errorf("deployment.mode=cluster requires cluster.enabled=true")
-	}
-	if cfg.Cluster.Consensus.Provider == "" {
-		cfg.Cluster.Consensus.Provider = "builtin"
-	}
-	switch cfg.Cluster.Consensus.Provider {
-	case "builtin", "etcd":
-	default:
-		return fmt.Errorf("cluster.consensus.provider must be builtin or etcd")
-	}
-	if cfg.Cluster.Consensus.Provider == "etcd" && len(cfg.Cluster.Consensus.EtcdEndpoints) == 0 {
-		return fmt.Errorf("cluster.consensus.etcd_endpoints is required when provider is etcd")
 	}
 	if cfg.Cluster.Join.TokenTTL <= 0 || cfg.Cluster.Join.TokenTTL > 24*time.Hour {
 		return fmt.Errorf("cluster.join.token_ttl must be between 1s and 24h")
@@ -1084,7 +1073,6 @@ func validateCluster(cfg *Config) error {
 	}
 	switch strings.TrimSpace(cfg.Cluster.HAMode) {
 	case "", "single-node":
-		return nil
 	case "dual-node-load-balancing":
 		if wafNodes < 2 {
 			return fmt.Errorf("dual-node-load-balancing requires at least two WAF nodes")
@@ -1099,6 +1087,60 @@ func validateCluster(cfg *Config) error {
 		}
 	default:
 		return fmt.Errorf("unknown cluster.ha_mode %q", cfg.Cluster.HAMode)
+	}
+	return ValidateClusterConsensus(cfg)
+}
+
+// ValidateClusterConsensus enforces the consensus boundary independently of
+// full config validation so startup paths cannot bypass it with a constructed config.
+func ValidateClusterConsensus(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if !cfg.Cluster.Enabled || strings.ToLower(strings.TrimSpace(cfg.Deployment.Mode)) != "cluster" {
+		return nil
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(cfg.Cluster.Consensus.Provider))
+	if provider == "" {
+		provider = "builtin"
+	}
+	cfg.Cluster.Consensus.Provider = provider
+	switch provider {
+	case "builtin", "etcd":
+	default:
+		return fmt.Errorf("cluster.consensus.provider must be builtin or etcd")
+	}
+
+	for index, endpoint := range cfg.Cluster.Consensus.EtcdEndpoints {
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" {
+			return fmt.Errorf("cluster.consensus.etcd_endpoints must not contain blank values")
+		}
+		cfg.Cluster.Consensus.EtcdEndpoints[index] = endpoint
+	}
+	if provider == "etcd" && len(cfg.Cluster.Consensus.EtcdEndpoints) == 0 {
+		return fmt.Errorf("cluster.consensus.etcd_endpoints is required when provider is etcd")
+	}
+
+	haMode := strings.TrimSpace(cfg.Cluster.HAMode)
+	configuredNodeCount := len(cfg.Cluster.Nodes)
+	localNodeID := strings.TrimSpace(cfg.Cluster.NodeID)
+	if localNodeID != "" {
+		localNodeConfigured := false
+		for _, node := range cfg.Cluster.Nodes {
+			if strings.TrimSpace(node.ID) == localNodeID {
+				localNodeConfigured = true
+				break
+			}
+		}
+		if !localNodeConfigured {
+			configuredNodeCount++
+		}
+	}
+	sharedConfiguration := (haMode != "" && haMode != "single-node") || configuredNodeCount > 1
+	if sharedConfiguration && provider != "etcd" {
+		return fmt.Errorf("multi-node or shared-configuration cluster requires cluster.consensus.provider=etcd; builtin is valid only for a single-node local deployment")
 	}
 	return nil
 }

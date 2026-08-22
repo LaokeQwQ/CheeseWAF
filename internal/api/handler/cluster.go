@@ -639,6 +639,9 @@ type clusterJoinResponse struct {
 	Role          string                      `json:"role"`
 	AdvertiseAddr string                      `json:"advertise_addr"`
 	Listen        string                      `json:"listen"`
+	HAMode        string                      `json:"ha_mode"`
+	Consensus     config.ConsensusConfig      `json:"consensus"`
+	Nodes         []config.ClusterNodeConfig  `json:"nodes"`
 	Interconnect  configInterconnectBootstrap `json:"interconnect"`
 	Certificates  clusterJoinCertificates     `json:"certificates"`
 	Node          identity.NodeRegistration   `json:"node"`
@@ -673,6 +676,11 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		h.recordClusterJoinAudit(r, req, auditStatus, auditMessage, time.Since(started))
 	}()
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		auditStatus = http.StatusLocked
+		auditMessage = "cluster configuration writes are unavailable"
+		return
+	}
 	if !decode(w, r, &req) {
 		return
 	}
@@ -744,12 +752,16 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "CLUSTER_JOIN_CONFIG_SAVE_FAILED", err.Error())
 		return
 	}
+	haMode, consensusConfig, clusterNodes := h.clusterJoinTopology()
 	resp := clusterJoinResponse{
 		ClusterID:     clusterID,
 		NodeID:        enrollment.Node.NodeID,
 		Role:          enrollment.Node.Role,
 		AdvertiseAddr: enrollment.Node.AdvertiseAddr,
 		Listen:        req.Listen,
+		HAMode:        haMode,
+		Consensus:     consensusConfig,
+		Nodes:         clusterNodes,
 		Interconnect: configInterconnectBootstrap{
 			Listen:        req.Listen,
 			AdvertiseAddr: enrollment.Node.AdvertiseAddr,
@@ -764,6 +776,18 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	auditStatus = http.StatusOK
 	auditMessage = "node enrolled"
 	writeData(w, resp)
+}
+
+func (h *Handler) clusterJoinTopology() (string, config.ConsensusConfig, []config.ClusterNodeConfig) {
+	if h == nil || h.Config == nil {
+		return "", config.ConsensusConfig{}, nil
+	}
+	h.configMutationMu.Lock()
+	defer h.configMutationMu.Unlock()
+	return h.Config.Cluster.HAMode, config.ConsensusConfig{
+		Provider:      h.Config.Cluster.Consensus.Provider,
+		EtcdEndpoints: append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...),
+	}, append([]config.ClusterNodeConfig(nil), h.Config.Cluster.Nodes...)
 }
 
 func writeClusterJoinRejected(w http.ResponseWriter) {
@@ -1034,6 +1058,9 @@ func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*conf
 			continue
 		}
 		return nil, fmt.Errorf("cluster node %q already exists; revoke or rotate it before rejoining", node.NodeID)
+	}
+	if strings.ToLower(strings.TrimSpace(next.Cluster.Consensus.Provider)) != "etcd" {
+		return nil, fmt.Errorf("joining an additional node requires cluster.consensus.provider=etcd; builtin is valid only for a single-node local deployment")
 	}
 	next.Cluster.Nodes = append(append([]config.ClusterNodeConfig(nil), next.Cluster.Nodes...), config.ClusterNodeConfig{
 		ID:            node.NodeID,

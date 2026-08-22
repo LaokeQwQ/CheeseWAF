@@ -45,6 +45,7 @@ cluster:
     cert_file: ""
     key_file: ""
   consensus:
+    # builtin is restricted to a single-node local deployment. Shared clusters require etcd.
     provider: "builtin"
     etcd_endpoints: []
   join:

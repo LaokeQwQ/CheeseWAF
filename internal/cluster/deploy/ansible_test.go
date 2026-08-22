@@ -49,6 +49,33 @@ func TestGenerateAnsiblePackageIncludesInventoryAndNoSecrets(t *testing.T) {
 	}
 }
 
+func TestAnsiblePackageRequiresEtcdForMultiNodeConfiguration(t *testing.T) {
+	pkg, err := GenerateAnsiblePackage(Plan{
+		ClusterID: "cw-test",
+		Nodes: []Host{
+			{Name: "waf-a", Address: "10.0.0.1", Role: "waf"},
+			{Name: "waf-b", Address: "10.0.0.2", Role: "waf"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars := string(pkg.File("group_vars/all.yml"))
+	config := string(pkg.File("roles/cheesewaf/templates/cheesewaf.yaml.j2"))
+	tasks := string(pkg.File("roles/cheesewaf/tasks/main.yml"))
+	if !strings.Contains(vars, "cheesewaf_etcd_endpoints: []") {
+		t.Fatalf("group vars missing explicit etcd endpoint setting:\n%s", vars)
+	}
+	if !strings.Contains(config, "groups['cheesewaf'] | length > 1 %}etcd") ||
+		!strings.Contains(config, "etcd_endpoints: {{ cheesewaf_etcd_endpoints | to_json }}") {
+		t.Fatalf("multi-node template does not select etcd explicitly:\n%s", config)
+	}
+	if !strings.Contains(tasks, "Require etcd endpoints for shared cluster configuration") ||
+		!strings.Contains(tasks, "groups['cheesewaf'] | length <= 1 or cheesewaf_etcd_endpoints | length > 0") {
+		t.Fatalf("deployment preflight does not fail closed without etcd endpoints:\n%s", tasks)
+	}
+}
+
 func TestGenerateAnsiblePackageRejectsInvalidInputs(t *testing.T) {
 	tests := []struct {
 		name string
