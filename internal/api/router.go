@@ -194,6 +194,7 @@ func NewRouter(opts Options) http.Handler {
 			// caller is an admin session and never the account owner.
 			r.With(require("write:users")).Post("/users/{id}/2fa/recover", h.RecoverUser2FA)
 			r.With(require("read:logs")).Get("/logs", h.ListLogs)
+			r.With(require("read:logs")).Get("/attack-map/aggregate", h.AttackMapAggregate)
 			r.With(require("read:logs")).Get("/review", h.ListReviewItems)
 			r.With(require("read:logs")).Get("/review/{id}", h.GetReviewItem)
 			r.With(require("write:protection")).Post("/review/{id}/decide", h.DecideReviewItem)

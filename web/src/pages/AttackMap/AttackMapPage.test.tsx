@@ -6,7 +6,7 @@ import type { LogEntry } from '../../types/api';
 import { forwardRef } from 'react';
 
 const apiMocks = vi.hoisted(() => ({
-  fetchLogs: vi.fn(),
+  fetchAttackMapAggregate: vi.fn(),
   fetchChinaMapBoundaryByCode: vi.fn(),
 }));
 
@@ -78,14 +78,17 @@ function renderPage(path = '/attack-map') {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  apiMocks.fetchLogs.mockResolvedValue({
-    items: [
+  apiMocks.fetchAttackMapAggregate.mockResolvedValue({
+    events: [
       entry({ id: '1', country: 'CN', severity: 'critical', category: 'sqli' }),
       entry({ id: '2', country: 'CN', severity: 'high', category: 'xss', client_ip: '203.0.113.11' }),
       entry({ id: '3', country: 'US', severity: 'medium', category: 'bot', client_ip: '8.8.8.8', metadata: { lat: 37.7, lon: -122.4 } }),
       entry({ id: '4', action: 'pass', status_code: 200, country: 'JP', severity: '', category: '' }),
     ],
-    total: 4,
+    items: [
+      { key: 'CN|Shanghai', country_code: 'CN', country: 'CN', location_name: 'Shanghai', lat: 31.2, lon: 121.5, mappable: true, attacks: 2, blocked: 2, severity: 'critical', severity_rank: 4, top_category: 'sqli', categories: { sqli: 1, xss: 1 } },
+      { key: 'US|New York', country_code: 'US', country: 'US', location_name: 'New York', lat: 37.7, lon: -122.4, mappable: true, attacks: 1, blocked: 1, severity: 'medium', severity_rank: 2, top_category: 'bot', categories: { bot: 1 } },
+    ], total: 4, has_more: false, next: { time: '2026-07-17T12:00:00Z', id: '4' }, generated_at: '2026-07-17T12:00:00Z',
   });
   apiMocks.fetchChinaMapBoundaryByCode.mockResolvedValue({ enabled: false, geojson: null });
 });
@@ -97,7 +100,7 @@ afterEach(() => {
 describe('AttackMapPage', () => {
   it('loads attack logs and shows aggregated attack totals', async () => {
     renderPage();
-    await waitFor(() => expect(apiMocks.fetchLogs).toHaveBeenCalledWith({ limit: 1000 }));
+    await waitFor(() => expect(apiMocks.fetchAttackMapAggregate).toHaveBeenCalledWith({ limit: 1000, after: undefined, after_id: undefined }));
     expect(await screen.findByText('attackMap.title')).toBeTruthy();
     // legend strong shows total attack count = 3 (pass ignored)
     const legend = document.querySelector('.map-legend strong');
@@ -110,9 +113,9 @@ describe('AttackMapPage', () => {
     renderPage();
     await screen.findByText('attackMap.title');
     expect(screen.getByText('attackMap.risk.low')).toBeTruthy();
-    expect(screen.getByText('attackMap.risk.medium')).toBeTruthy();
-    expect(screen.getByText('attackMap.risk.high')).toBeTruthy();
-    expect(screen.getByText('attackMap.risk.critical')).toBeTruthy();
+    expect(screen.getAllByText('attackMap.risk.medium').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('attackMap.risk.high').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('attackMap.risk.critical').length).toBeGreaterThan(0);
   });
 
   it('switches map mode to 3d and preloads globe', async () => {
@@ -124,7 +127,7 @@ describe('AttackMapPage', () => {
 
   it('honors mode=china query param on mount', async () => {
     renderPage('/attack-map?mode=china');
-    await waitFor(() => expect(apiMocks.fetchLogs).toHaveBeenCalled());
+    await waitFor(() => expect(apiMocks.fetchAttackMapAggregate).toHaveBeenCalled());
     expect(await screen.findByText('attackMap.modeChina')).toBeTruthy();
     await waitFor(() => {
       expect(screen.getByText(/attackMap\.chinaRegionMapped/)).toBeTruthy();
@@ -132,9 +135,9 @@ describe('AttackMapPage', () => {
   });
 
   it('shows empty aggregation when logs API returns no attacks', async () => {
-    apiMocks.fetchLogs.mockResolvedValue({ items: [], total: 0 });
+    apiMocks.fetchAttackMapAggregate.mockResolvedValue({ items: [], events: [], total: 0, has_more: false, generated_at: '2026-07-17T12:00:00Z' });
     renderPage();
-    await waitFor(() => expect(apiMocks.fetchLogs).toHaveBeenCalled());
+    await waitFor(() => expect(apiMocks.fetchAttackMapAggregate).toHaveBeenCalled());
     expect(await screen.findByText('attackMap.title')).toBeTruthy();
     const legend = document.querySelector('.map-legend strong');
     expect(legend?.textContent).toBe('0');

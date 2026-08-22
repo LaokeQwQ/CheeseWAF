@@ -140,13 +140,17 @@ func (s *PostgreSQLSink) Query(ctx context.Context, filter storage.LogFilter) ([
 		offset = 0
 	}
 	queryArgs := append(append([]any{}, args...), limit, offset)
+	order := "DESC"
+	if filter.Ascending {
+		order = "ASC"
+	}
 	query := fmt.Sprintf(`SELECT
 		id, timestamp, trace_id, site_id, client_ip, method, uri, status_code,
 		action, detector_id, category, severity, message, payload, user_agent,
 		country, latency_ms, tags, metadata
 		FROM %s%s
-		ORDER BY timestamp DESC
-		LIMIT $%d OFFSET $%d`, s.table, where, len(queryArgs)-1, len(queryArgs))
+		ORDER BY timestamp %s, id %s
+		LIMIT $%d OFFSET $%d`, s.table, where, order, order, len(queryArgs)-1, len(queryArgs))
 	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, 0, err
@@ -241,6 +245,9 @@ func postgresqlWhere(filter storage.LogFilter) (string, []any, error) {
 		args = append(args, value)
 		clauses = append(clauses, fmt.Sprintf(sql, len(args)))
 	}
+	if filter.ID != "" {
+		add("id = $%d", filter.ID)
+	}
 	if filter.SiteID != "" {
 		add("site_id = $%d", filter.SiteID)
 	}
@@ -256,12 +263,49 @@ func postgresqlWhere(filter storage.LogFilter) (string, []any, error) {
 	if filter.TraceID != "" {
 		add("trace_id = $%d", filter.TraceID)
 	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		add(`concat_ws(' ', id, trace_id, site_id, client_ip, method, uri, action, detector_id, category, severity, message, payload, user_agent, country) ILIKE $%d ESCAPE '\'`, "%"+escapeSQLLike(search)+"%")
+	}
+	switch strings.ToLower(strings.TrimSpace(filter.Kind)) {
+	case "security":
+		clauses = append(clauses, `(coalesce(category,'') <> '' OR coalesce(detector_id,'') <> '' OR coalesce(severity,'') <> '' OR lower(coalesce(action,'')) IN ('block','challenge','log','monitor') OR status_code IN (403,429))`)
+	case "access":
+		clauses = append(clauses, `(coalesce(category,'') = '' AND coalesce(detector_id,'') = '' AND coalesce(severity,'') = '' AND lower(coalesce(action,'')) IN ('','pass','cache_hit','redirect') AND status_code NOT IN (403,429))`)
+	case "", "all":
+	default:
+		clauses = append(clauses, "FALSE")
+	}
 	if !filter.StartTime.IsZero() {
 		add("timestamp >= $%d", filter.StartTime)
 	}
 	if !filter.EndTime.IsZero() {
 		add("timestamp <= $%d", filter.EndTime)
 	}
+	addKeyset := func(timestamp time.Time, id string, direction string) {
+		if timestamp.IsZero() && id == "" {
+			return
+		}
+		if timestamp.IsZero() {
+			clauses = append(clauses, fmt.Sprintf("id %s $%d", direction, len(args)+1))
+			args = append(args, id)
+			return
+		}
+		if id == "" {
+			clauses = append(clauses, fmt.Sprintf("timestamp %s $%d", direction, len(args)+1))
+			args = append(args, timestamp)
+			return
+		}
+		args = append(args, timestamp, timestamp, id)
+		first, second, third := len(args)-2, len(args)-1, len(args)
+		clauses = append(clauses, fmt.Sprintf("(timestamp %s $%d OR (timestamp = $%d AND id %s $%d))", direction, first, second, direction, third))
+	}
+	if filter.Ascending {
+		addKeyset(filter.WatermarkTime, filter.WatermarkID, ">")
+	} else {
+		addKeyset(filter.WatermarkTime, filter.WatermarkID, "<")
+	}
+	addKeyset(filter.BeforeTime, filter.BeforeID, "<")
+	addKeyset(filter.AfterTime, filter.AfterID, ">")
 	for _, tag := range filter.Tags {
 		raw, err := json.Marshal([]string{tag})
 		if err != nil {
@@ -273,6 +317,13 @@ func postgresqlWhere(filter storage.LogFilter) (string, []any, error) {
 		return "", args, nil
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args, nil
+}
+
+func escapeSQLLike(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, "%", `\%`)
+	value = strings.ReplaceAll(value, "_", `\_`)
+	return value
 }
 
 func quoteIdentifierPath(value string) (string, error) {

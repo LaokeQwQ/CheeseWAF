@@ -90,6 +90,28 @@ func TestVictoriaLogsWriteAddsEventTime(t *testing.T) {
 	}
 }
 
+func TestVictoriaLogsQueryBuildsLiteralSearchAndStableKeyset(t *testing.T) {
+	stamp := time.Date(2026, 8, 22, 8, 0, 0, 123, time.UTC)
+	query := victoriaLogsQuery(storage.LogFilter{
+		Search:    `trace.(foo|bar)`,
+		Kind:      "security",
+		AfterTime: stamp,
+		AfterID:   "event-10",
+		Ascending: true,
+	})
+	for _, want := range []string{
+		`trace_id:~"(?i)trace\\.\\(foo\\|bar\\)"`, `detector_id:!=""`, `severity:!=""`,
+		`action:="monitor"`, `_time:>"2026-08-22T08:00:00.000000123Z"`, `id:>"event-10"`, `| sort by (_time, id)`,
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query %q missing %q", query, want)
+		}
+	}
+	if strings.Contains(query, "sort by (_time asc") {
+		t.Fatalf("query uses unsupported per-field sort direction: %q", query)
+	}
+}
+
 func TestVictoriaLogsQueryRejectsRowsBeyondLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {

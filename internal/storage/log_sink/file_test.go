@@ -58,6 +58,102 @@ func TestFileSinkQueryReturnsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestFileSinkQueryUsesStableKeysetBoundaries(t *testing.T) {
+	sink, err := NewFileSink(filepath.Join(t.TempDir(), "access.log"))
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	defer sink.Close()
+	base := time.Date(2026, 8, 22, 8, 0, 0, 0, time.UTC)
+	for _, item := range []storage.LogEntry{
+		{ID: "a", Timestamp: base, Action: "block", Category: "sqli"},
+		{ID: "c", Timestamp: base, Action: "block", Category: "sqli"},
+		{ID: "b", Timestamp: base, Action: "block", Category: "sqli"},
+		{ID: "d", Timestamp: base.Add(time.Second), Action: "block", Category: "sqli"},
+	} {
+		item := item
+		if err := sink.Write(context.Background(), &item); err != nil {
+			t.Fatalf("write %s: %v", item.ID, err)
+		}
+	}
+
+	first, total, err := sink.Query(context.Background(), storage.LogFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if total != 4 || fmt.Sprint(ids(first)) != "[d c]" {
+		t.Fatalf("first page total=%d ids=%v", total, ids(first))
+	}
+
+	next, _, err := sink.Query(context.Background(), storage.LogFilter{
+		WatermarkTime: first[0].Timestamp,
+		WatermarkID:   first[0].ID,
+		BeforeTime:    first[1].Timestamp,
+		BeforeID:      first[1].ID,
+		Limit:         2,
+	})
+	if err != nil {
+		t.Fatalf("next page: %v", err)
+	}
+	if fmt.Sprint(ids(next)) != "[b a]" {
+		t.Fatalf("next page crossed or duplicated the boundary: %v", ids(next))
+	}
+
+	increment, _, err := sink.Query(context.Background(), storage.LogFilter{
+		AfterTime: base,
+		AfterID:   "a",
+		Ascending: true,
+		Limit:     3,
+	})
+	if err != nil {
+		t.Fatalf("incremental page: %v", err)
+	}
+	if fmt.Sprint(ids(increment)) != "[b c d]" {
+		t.Fatalf("incremental page is not strict ascending keyset order: %v", ids(increment))
+	}
+}
+
+func TestFileSinkQuerySearchKindAndExactID(t *testing.T) {
+	sink, err := NewFileSink(filepath.Join(t.TempDir(), "access.log"))
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	defer sink.Close()
+	base := time.Date(2026, 8, 22, 8, 0, 0, 0, time.UTC)
+	entries := []storage.LogEntry{
+		{ID: "security", Timestamp: base, TraceID: "trace-needle", ClientIP: "203.0.113.8", URI: "/login", Action: "block", Category: "sqli", Message: "union select"},
+		{ID: "access", Timestamp: base.Add(time.Second), TraceID: "trace-static", ClientIP: "198.51.100.9", URI: "/assets/app.js", Action: "pass", StatusCode: 200},
+		{ID: "monitor", Timestamp: base.Add(2 * time.Second), TraceID: "trace-monitor", URI: "/watch", Action: "monitor", StatusCode: 200},
+		{ID: "proxy-error", Timestamp: base.Add(3 * time.Second), TraceID: "trace-error", URI: "/upstream", Action: "proxy_error", StatusCode: 502},
+	}
+	for index := range entries {
+		if err := sink.Write(context.Background(), &entries[index]); err != nil {
+			t.Fatalf("write %s: %v", entries[index].ID, err)
+		}
+	}
+
+	security, total, err := sink.Query(context.Background(), storage.LogFilter{Search: "UNION", Kind: "security", Limit: 10})
+	if err != nil || total != 1 || fmt.Sprint(ids(security)) != "[security]" {
+		t.Fatalf("security search total=%d ids=%v err=%v", total, ids(security), err)
+	}
+	access, total, err := sink.Query(context.Background(), storage.LogFilter{Search: "app.js", Kind: "access", Limit: 10})
+	if err != nil || total != 1 || fmt.Sprint(ids(access)) != "[access]" {
+		t.Fatalf("access search total=%d ids=%v err=%v", total, ids(access), err)
+	}
+	accessKinds, total, err := sink.Query(context.Background(), storage.LogFilter{Kind: "access", Limit: 10})
+	if err != nil || total != 1 || fmt.Sprint(ids(accessKinds)) != "[access]" {
+		t.Fatalf("access kinds total=%d ids=%v err=%v", total, ids(accessKinds), err)
+	}
+	securityKinds, total, err := sink.Query(context.Background(), storage.LogFilter{Kind: "security", Limit: 10})
+	if err != nil || total != 2 || fmt.Sprint(ids(securityKinds)) != "[monitor security]" {
+		t.Fatalf("security kinds total=%d ids=%v err=%v", total, ids(securityKinds), err)
+	}
+	exact, total, err := sink.Query(context.Background(), storage.LogFilter{ID: "security", Limit: 10})
+	if err != nil || total != 1 || fmt.Sprint(ids(exact)) != "[security]" {
+		t.Fatalf("exact id total=%d ids=%v err=%v", total, ids(exact), err)
+	}
+}
+
 func TestFileSinkQueryClampsLargeLimit(t *testing.T) {
 	sink, err := NewFileSink(filepath.Join(t.TempDir(), "access.log"))
 	if err != nil {
@@ -187,24 +283,24 @@ func TestFileSinkFullScanKeepsOnlyRequestedWindow(t *testing.T) {
 
 func TestLogQueryHeapPreservesStableTimestampOrder(t *testing.T) {
 	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	h := logQueryHeap{}
+	h := logQueryHeap{ascending: false}
 	for i := 0; i < 5; i++ {
 		candidate := retainedLogEntry{
 			entry:    storage.LogEntry{ID: fmt.Sprintf("entry-%d", i), Timestamp: base},
 			sequence: int64(i),
 		}
-		if len(h) < 2 {
+		if h.Len() < 2 {
 			heap.Push(&h, candidate)
-		} else if newerLogEntry(candidate, h[0]) {
+		} else if preferableLogEntry(candidate, h.entries[0], false) {
 			heap.Pop(&h)
 			heap.Push(&h, candidate)
 		}
 	}
-	if len(h) != 2 {
-		t.Fatalf("heap retained %d rows, want 2", len(h))
+	if h.Len() != 2 {
+		t.Fatalf("heap retained %d rows, want 2", h.Len())
 	}
-	kept := map[string]bool{h[0].entry.ID: true, h[1].entry.ID: true}
-	if !kept["entry-0"] || !kept["entry-1"] {
+	kept := map[string]bool{h.entries[0].entry.ID: true, h.entries[1].entry.ID: true}
+	if !kept["entry-3"] || !kept["entry-4"] {
 		t.Fatalf("stable window retained wrong rows: %+v", h)
 	}
 }

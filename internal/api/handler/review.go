@@ -35,14 +35,33 @@ func (h *Handler) ListReviewItems(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	afterTime, ok := parseLogTimeQuery(w, r, "after")
+	if !ok {
+		return
+	}
+	beforeTime, ok := parseLogTimeQuery(w, r, "before")
+	if !ok {
+		return
+	}
+	watermarkTime, ok := parseLogTimeQuery(w, r, "watermark")
+	if !ok {
+		return
+	}
 	items, total, err := h.Store.ListReviewItems(r.Context(), storage.ReviewFilter{
-		SiteID:   r.URL.Query().Get("site_id"),
-		Category: r.URL.Query().Get("category"),
-		Status:   r.URL.Query().Get("status"),
-		Start:    startTime,
-		End:      endTime,
-		Limit:    limit,
-		Offset:   offset,
+		SiteID:        r.URL.Query().Get("site_id"),
+		Category:      r.URL.Query().Get("category"),
+		Status:        r.URL.Query().Get("status"),
+		Search:        r.URL.Query().Get("search"),
+		Start:         startTime,
+		End:           endTime,
+		AfterTime:     afterTime,
+		AfterID:       r.URL.Query().Get("after_id"),
+		BeforeTime:    beforeTime,
+		BeforeID:      r.URL.Query().Get("before_id"),
+		WatermarkTime: watermarkTime,
+		WatermarkID:   r.URL.Query().Get("watermark_id"),
+		Limit:         limit,
+		Offset:        offset,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "REVIEW_QUERY_ERROR", err.Error())

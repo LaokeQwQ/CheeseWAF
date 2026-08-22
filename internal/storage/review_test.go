@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestReviewItemCreateListDecide(t *testing.T) {
@@ -52,6 +54,126 @@ func TestReviewItemCreateListDecide(t *testing.T) {
 	}
 	if again != nil {
 		t.Fatalf("second decide should be a no-op, got %+v", again)
+	}
+}
+
+func TestReviewListUsesSearchAndStableKeysetBoundaries(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, 8, 22, 8, 0, 0, 0, time.UTC)
+	for _, id := range []string{"a", "c", "b"} {
+		item := &ReviewItem{
+			ID:          id,
+			TraceID:     "trace-" + id,
+			SiteID:      "site-a",
+			ClientIP:    "203.0.113." + fmt.Sprint(len(id)),
+			URI:         "/search/" + id,
+			Category:    "webshell",
+			Payload:     "needle-" + id,
+			ParamName:   "parameter-" + id,
+			Fingerprint: "fingerprint-" + id,
+			Status:      "pending",
+			CreatedAt:   createdAt,
+		}
+		if err := store.CreateReviewItem(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+
+	first, total, err := store.ListReviewItems(ctx, ReviewFilter{Search: "needle", Limit: 2})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if total != 3 || len(first) != 2 || first[0].ID != "c" || first[1].ID != "b" {
+		t.Fatalf("first page total=%d items=%+v", total, first)
+	}
+	next, _, err := store.ListReviewItems(ctx, ReviewFilter{
+		Search:        "needle",
+		WatermarkTime: first[0].CreatedAt,
+		WatermarkID:   first[0].ID,
+		BeforeTime:    first[1].CreatedAt,
+		BeforeID:      first[1].ID,
+		Limit:         2,
+	})
+	if err != nil {
+		t.Fatalf("next page: %v", err)
+	}
+	if len(next) != 1 || next[0].ID != "a" {
+		t.Fatalf("next page crossed or duplicated keyset boundary: %+v", next)
+	}
+	fingerprint, total, err := store.ListReviewItems(ctx, ReviewFilter{Search: "fingerprint-a", Limit: 2})
+	if err != nil || total != 1 || len(fingerprint) != 1 || fingerprint[0].ID != "a" {
+		t.Fatalf("fingerprint search total=%d items=%+v err=%v", total, fingerprint, err)
+	}
+}
+
+func TestReviewListKeysetNormalizesRFC3339FractionalPrecision(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 8, 22, 8, 0, 0, 0, time.UTC)
+	for _, item := range []ReviewItem{
+		{ID: "zero", Status: "pending", CreatedAt: base},
+		{ID: "tenth", Status: "pending", CreatedAt: base.Add(100 * time.Millisecond)},
+		{ID: "eleven", Status: "pending", CreatedAt: base.Add(110 * time.Millisecond)},
+	} {
+		item := item
+		if err := store.CreateReviewItem(ctx, &item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+	first, total, err := store.ListReviewItems(ctx, ReviewFilter{Limit: 2})
+	if err != nil || total != 3 || len(first) != 2 || first[0].ID != "eleven" || first[1].ID != "tenth" {
+		t.Fatalf("fractional first page total=%d items=%+v err=%v", total, first, err)
+	}
+	next, _, err := store.ListReviewItems(ctx, ReviewFilter{
+		WatermarkTime: first[0].CreatedAt,
+		WatermarkID:   first[0].ID,
+		BeforeTime:    first[1].CreatedAt,
+		BeforeID:      first[1].ID,
+		Limit:         2,
+	})
+	if err != nil || len(next) != 1 || next[0].ID != "zero" {
+		t.Fatalf("fractional next page items=%+v err=%v", next, err)
+	}
+}
+
+func TestReviewListKeysetSupportsIDOnlyCursors(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		item := &ReviewItem{ID: id, Status: "pending", CreatedAt: time.Date(2026, 8, 22, 8, 0, 0, 0, time.UTC)}
+		if err := store.CreateReviewItem(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	items, _, err := store.ListReviewItems(ctx, ReviewFilter{BeforeID: "c", Limit: 10})
+	if err != nil || len(items) != 2 || items[0].ID != "b" || items[1].ID != "a" {
+		t.Fatalf("before id-only cursor items=%+v err=%v", items, err)
+	}
+	items, _, err = store.ListReviewItems(ctx, ReviewFilter{AfterID: "a", Limit: 10})
+	if err != nil || len(items) != 2 || items[0].ID != "c" || items[1].ID != "b" {
+		t.Fatalf("after id-only cursor items=%+v err=%v", items, err)
 	}
 }
 
