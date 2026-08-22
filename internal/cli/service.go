@@ -153,10 +153,12 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 
+	hub := realtime.NewHub()
 	sink, err := logsink.NewFromConfigWithFile(cfg.Storage, cfg.Logging.Output.File)
 	if err != nil {
 		return err
 	}
+	sink = realtime.NewPublishingLogSink(sink, hub)
 	defer sink.Close()
 
 	pipeline, err := buildPipeline(cfg)
@@ -242,7 +244,7 @@ func runServe(ctx context.Context) error {
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
 	defer stopRuntime()
 	healthChecker.Start(runtimeCtx)
-	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now())
+	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now(), hub)
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
 		schedulerAIClient = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
@@ -254,7 +256,6 @@ func runServe(ctx context.Context) error {
 		Client:   schedulerAIClient,
 	}))
 	schedulerEngine.Start(runtimeCtx)
-	hub := realtime.NewHub()
 	authSecret, err := ensureAuthSecret(cfg.Setup.DataDir)
 	if err != nil {
 		return err
@@ -386,6 +387,7 @@ func runServe(ctx context.Context) error {
 	stopServing()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	_ = hub.Shutdown(shutdownCtx)
 	_ = proxyHTTP.Shutdown(shutdownCtx)
 	_ = admin.Shutdown(shutdownCtx)
 	if tlsServer != nil {
@@ -846,8 +848,8 @@ func resolveWebDir() string {
 	return ""
 }
 
-func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time) {
-	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
+func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time, hub *realtime.Hub) {
+	if cfg == nil || (hub == nil && !cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
 		return
 	}
 	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
@@ -866,19 +868,33 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				logs, _, _ := sink.Query(ctx, storage.LogFilter{Limit: 1000})
+				var logs []storage.LogEntry
+				if sink != nil {
+					logs, _, _ = sink.Query(ctx, storage.LogFilter{Limit: 1000})
+				}
 				now := time.Now()
 				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
 					"data": dirSizes.size(cfg.Setup.DataDir, now),
 					"logs": dirSizes.size(filepath.Dir(cfg.Logging.Output.File.Path), now),
 				})
-				_ = writer.Push(ctx, snapshot)
 				alerts := alerter.Evaluate(snapshot)
+				publishMonitorEvents(ctx, hub, snapshot, alerts)
+				_ = writer.Push(ctx, snapshot)
 				_ = monitornotify.PersistAlerts(ctx, store, alerts)
 				_ = notifiers.Notify(ctx, alerts)
 			}
 		}
 	}()
+}
+
+func publishMonitorEvents(ctx context.Context, hub *realtime.Hub, snapshot monitor.Snapshot, alerts []monitor.Alert) {
+	if hub == nil {
+		return
+	}
+	hub.Broadcast(ctx, &realtime.Message{Type: realtime.MsgStats, Payload: snapshot})
+	for index := range alerts {
+		hub.Broadcast(ctx, &realtime.Message{Type: realtime.MsgAlert, Payload: alerts[index]})
+	}
 }
 
 func serviceDirSize(root string) int64 {

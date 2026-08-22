@@ -63,6 +63,10 @@ func NewRouter(opts Options) http.Handler {
 		return middleware.RBACAny(opts.Config.APISec.Permissions, permissions...)
 	}
 	aiUseLimit := middleware.NewAIRequestLimiter(middleware.AIRequestLimitOptions{}).Middleware
+	hub := opts.Hub
+	if hub == nil {
+		hub = realtime.NewHub()
+	}
 	h := handler.New(handler.Options{
 		Config:              opts.Config,
 		ConfigPath:          opts.ConfigPath,
@@ -73,6 +77,7 @@ func NewRouter(opts Options) http.Handler {
 		SetupToken:          opts.SetupToken,
 		Auditor:             auditor,
 		AssistantApprovals:  approvals,
+		Realtime:            hub,
 		ClusterIdentity:     opts.ClusterIdentity,
 		ClusterHeartbeats:   opts.ClusterHeartbeats,
 		ACMEIssuer:          opts.ACMEIssuer,
@@ -90,10 +95,6 @@ func NewRouter(opts Options) http.Handler {
 		handler.ApplyAuthState(h, opts.AuthState)
 	}
 	managementAuth := middleware.ManagementAPIOrSessionMiddlewareWithClock(tokens, opts.Store, h.AuthenticateManagementAPIToken, clock)
-	hub := opts.Hub
-	if hub == nil {
-		hub = realtime.NewHub()
-	}
 
 	r.Get("/health", h.Health)
 	r.Get("/health/live", h.Health)
