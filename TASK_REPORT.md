@@ -2,10 +2,19 @@
 
 Status: DONE
 
-Base implementation: `0a7aac617b588c39afd5675a65b679556ba20163`
-Follow-up: `fix(realtime): close evicted SSE handlers`
+Independent review worktree: `/private/tmp/cw-r2-realtime`
+Branch: `fix/r2-realtime`
+Baseline: `9ccb5eeaa450fefad792dadeebff653b95de8827`
+Reviewed implementation commits: `0a7aac617b588c39afd5675a65b679556ba20163`, `8cdfe07a21602a7b2ab2d664a15cc2a667a1d4f4`
+Independent review fix: `a395804243470313f0d2e2232619ce107404a22e`
 
-## Changed Files
+## Independent Findings
+
+1. FIXED: Hub send timeouts depended on `Transport.Send` voluntarily honoring context cancellation. A stuck send could retain its sender goroutine forever, and there was no Hub shutdown path to close long-lived SSE/WebSocket clients when the service stopped.
+2. FIXED: `MsgApproval` broadcast the complete object-scoped approval request to every `read:realtime` subscriber. The event is now a generic pending-status invalidation; clients must refetch through the existing requester/approver-scoped API.
+3. FIXED: `NewPublishingLogSink` hid the underlying optional `Count` capability used by monitor endpoints, forcing less efficient query fallback behavior.
+
+## Changed Files Since Baseline
 
 - `internal/realtime/hub.go`
 - `internal/realtime/hub_test.go`
@@ -20,38 +29,33 @@ Follow-up: `fix(realtime): close evicted SSE handlers`
 - `internal/api/handler/ai_test.go`
 - `internal/cli/service.go`
 - `internal/cli/service_test.go`
+- `TASK_REPORT.md`
+
+No other R2 worktree and no `deepseek_822_tasks.md` content was changed.
 
 ## Requirement Disposition
 
-- `MsgStats`: DONE. The production monitor collection loop publishes every collected `monitor.Snapshot` through the shared Hub, independently of remote-write enablement.
-- `MsgAlert`: DONE. Alerts emitted by the production `monitor.Alerter` are published through the shared Hub before external remote-write/notifier I/O.
-- `MsgLog`: DONE. The production log sink is wrapped once at service startup; successful writes publish a cloned `storage.LogEntry`, while failed and nil writes do not publish.
-- `MsgApproval`: DONE. Successfully persisted pending AI tool approval requests publish from the central assistant-tool execution path through the same Hub used by the realtime routes.
-- Shared Hub wiring: DONE. Service startup creates one Hub before sink/proxy/API construction and passes it to all four producer paths and both transports.
-- SSE hardening: DONE. Sends are mutex-serialized, bounded by response write deadlines, cancellation-aware, and flush errors are surfaced. Initial connection writes complete before Hub registration.
-- Hub concurrency/backpressure: DONE. Each client has one sender goroutine and a bounded queue. Broadcast only enqueues; full queues, send timeouts, send errors, and disconnects remove the affected client without blocking unrelated clients.
-- WebSocket enhancement: DONE. WebSocket writes retain a five-second timeout and Hub serialization; disconnect uses immediate `CloseNow` so cleanup cannot wait on a close handshake.
-- Goroutine lifecycle: DONE. Removing a client cancels its sender context, transports must honor cancellation, and the sender owns final transport close. `SSETransport.Close` now also signals the handler, so Hub eviction cannot leave the HTTP handler blocked on only the request context. Runtime shutdown still cancels HTTP request contexts and the monitoring loop.
-- Authorization: DONE. Existing management authentication, CSRF middleware, and `read:realtime` RBAC guards on both `/api/realtime/events` and `/api/realtime/ws` are unchanged.
-- Focused regressions: DONE. Coverage proves all four producers, per-client write serialization, SSE write serialization/deadline use, timeout/error disconnects, bounded-queue backpressure, and healthy-client isolation.
-- Forbidden file: DONE. `deepseek_822_tasks.md` was not edited.
+- `MsgStats`: production monitor snapshots publish through the shared Hub even when remote write is disabled.
+- `MsgAlert`: production alerter results publish before external persistence/notifier I/O.
+- `MsgLog`: successful production sink writes publish a defensive log-entry copy; failed/nil writes do not publish, and optional count support is preserved.
+- `MsgApproval`: persisted pending requests publish a non-sensitive invalidation through the same Hub while object details remain behind the scoped approval API.
+- Shared Hub: service startup passes one Hub to producers, API handlers, SSE, and WebSocket routes.
+- Concurrency/backpressure: per-client bounded queues and one sender serialize writes; queue eviction, send failure, timeout, and even blocking close behavior cannot stall unrelated clients.
+- Lifecycle: timeout cancellation independently closes transports, SSE close interrupts blocked writes, Hub shutdown drains senders and rejects late clients, and service shutdown invokes it before server teardown.
+- Authorization: management authentication and `read:realtime` route guards remain; approval payloads no longer bypass requester/approver object scope.
+- Frontend reconnect/fallback remains assigned to R2-3.
 
-## Commands And Results
+## Fresh Verification
 
-- `env GOCACHE=/private/tmp/cw-r2-realtime/.gocache go test ./internal/realtime ./internal/api/handler ./internal/cli -run 'Test(Hub|SSETransport|PublishingLogSink|ExecuteAssistantToolPublishesPendingApproval|PublishMonitorEvents)' -count=1` -> exit 1, expected TDD red compile failure for the not-yet-implemented Hub constructor and producer hooks.
-- `env GOCACHE=/private/tmp/cw-r2-realtime/.gocache go test -race ./internal/realtime ./internal/api/handler ./internal/cli -run 'Test(Hub|SSETransport|PublishingLogSink|ExecuteAssistantToolPublishesPendingApproval|PublishMonitorEvents)' -count=1` -> exit 0; all focused regressions passed under the race detector.
-- `env GOCACHE=/private/tmp/cw-r2-realtime/.gocache go test ./internal/realtime/... ./internal/api/... ./internal/cli/... -short` -> exit 1 inside the restricted sandbox because existing `httptest` cases could not bind loopback sockets (`operation not permitted`).
-- `env GOCACHE=/private/tmp/cw-r2-realtime/.gocache go test ./internal/realtime/... ./internal/api/... ./internal/cli/... -short` -> exit 0 with local-listener permission; all requested packages passed.
-- `env GOCACHE=/private/tmp/cw-r2-realtime/.gocache go test ./internal/realtime/... ./internal/api/... ./internal/cli/... -short -count=1` -> exit 0 with local-listener permission; fresh uncached full-suite result passed.
-- `go test ./internal/realtime -run '^TestSSEHandlerReturnsWhenHubRemovesTransport$' -count=1` on the base implementation -> exit 1 after 1 second; this reproduced the handler leak before the follow-up fix.
-- `go test ./internal/realtime -run '^TestSSEHandlerReturnsWhenHubRemovesTransport$' -count=1` after the follow-up fix -> exit 0.
-- `go test -race ./internal/realtime -count=1` -> exit 0; all realtime tests passed under the race detector.
-- `go test ./internal/api/... ./internal/cli/... -short -count=1` -> exit 0; all affected API and CLI packages passed fresh.
-- `git diff --check` -> exit 0 before commit.
-- `git diff --name-only -- deepseek_822_tasks.md` -> exit 0 with no output.
-- `git show --stat --oneline --decorate HEAD` -> exit 0; commit `0a7aac6`, 13 files, 728 insertions, 25 deletions.
+- `go test ./internal/realtime -run 'Test(HubSendTimeoutClosesTransportThatIgnoresContext|HubShutdownClosesClientsAndRejectsNewClients|SSETransportCloseInterruptsBlockedWrite|PublishingLogSinkPreservesCountCapability)' -count=1` -> exit 1 before the repair (`Hub.Shutdown` missing), establishing the focused regression.
+- `go test ./internal/realtime ./internal/api/handler ./internal/api ./internal/cli -run 'Test(Hub|SSETransport|PublishingLogSink|ExecuteAssistantToolPublishesPendingApproval|RouterAIApprovalRecoveryPreservesObjectScope|PublishMonitorEvents)' -count=1` -> exit 0.
+- `go test -race ./internal/realtime ./internal/api/handler ./internal/api ./internal/cli -run 'Test(Hub|SSETransport|PublishingLogSink|ExecuteAssistantToolPublishesPendingApproval|RouterAIApprovalRecoveryPreservesObjectScope|PublishMonitorEvents)' -count=1` -> exit 0.
+- `go test -race ./internal/realtime -count=1` -> exit 0.
+- `go test ./internal/realtime/... ./internal/api/... ./internal/cli/... -short -count=1` -> exit 0.
+- `git diff --check 9ccb5ee` -> exit 0.
+- `git diff --name-only 9ccb5ee -- deepseek_822_tasks.md` -> exit 0 with no output.
 
 ## Concerns
 
-- Frontend reconnect, fallback, and consumption are intentionally unchanged because the brief assigns them to R2-3.
-- Per-client queue capacity (32) and send timeout (5 seconds) are fixed backend defaults rather than operator-configurable settings.
+- The fixed queue capacity (32) and send timeout (5 seconds) remain backend defaults rather than operator-configurable settings.
+- `MsgApproval` consumers must treat the event as an invalidation and reload approvals through the authorized API.
