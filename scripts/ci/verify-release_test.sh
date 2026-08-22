@@ -154,6 +154,69 @@ chmod +x "${signing_ok}/tools/osslsigncode"
 PATH="${signing_ok}/tools:${PATH}" CHEESEWAF_REQUIRE_SIGNING=1 run_static "$signing_ok" ||
   fail "anchored successful Authenticode result must pass"
 
+mac_signing="${tmp}/mac-signing"
+mkdir -p "${mac_signing}/pkg" "${mac_signing}/tools"
+make_package "${mac_signing}/pkg" goreleaser release no
+pack_and_sum "$mac_signing" 'cheesewaf-sparc-other-0.1.0-PreTest.tar.gz'
+: >"${mac_signing}/cheesewaf.dmg"
+rewrite_sums "$mac_signing"
+cat >"${mac_signing}/tools/hdiutil" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+shift || true
+case "$action" in
+  attach)
+    mountpoint=""
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == "-mountpoint" ]]; then
+        shift
+        mountpoint="${1:-}"
+      fi
+      shift || true
+    done
+    [[ -n "$mountpoint" ]] || exit 2
+    mkdir -p "${mountpoint}/CheeseWAF.app"
+    printf '/dev/disk-test Apple_HFS %s\n' "$mountpoint"
+    ;;
+  detach) ;;
+  *) exit 2 ;;
+esac
+EOF
+cat >"${mac_signing}/tools/codesign" <<'EOF'
+#!/usr/bin/env bash
+exit "${FAKE_CODESIGN_EXIT:-0}"
+EOF
+cat >"${mac_signing}/tools/spctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_SPCTL_OUTPUT:-/tmp/CheeseWAF.app: accepted}"
+exit "${FAKE_SPCTL_EXIT:-0}"
+EOF
+chmod +x "${mac_signing}/tools/hdiutil" "${mac_signing}/tools/codesign" "${mac_signing}/tools/spctl"
+
+run_macos_signing_static() {
+  PATH="${mac_signing}/tools:${PATH}" \
+    CHEESEWAF_REQUIRE_SIGNING=1 \
+    CHEESEWAF_SIGNING_SCOPE=macos \
+    run_static "$mac_signing"
+}
+
+if FAKE_CODESIGN_EXIT=1 run_macos_signing_static; then
+  fail "non-zero codesign verification must fail"
+fi
+if FAKE_SPCTL_EXIT=1 \
+  FAKE_SPCTL_OUTPUT=$'/tmp/CheeseWAF.app: accepted\nsource=Notarized Developer ID' \
+  run_macos_signing_static; then
+  fail "non-zero spctl assessment must fail"
+fi
+if FAKE_SPCTL_OUTPUT=$'/tmp/CheeseWAF.app: not accepted\nsource=Notarized Developer ID' \
+  run_macos_signing_static; then
+  fail "spctl not-accepted text must not satisfy the anchored success check"
+fi
+FAKE_SPCTL_OUTPUT=$'/tmp/CheeseWAF.app: accepted\nsource=Notarized Developer ID' \
+  run_macos_signing_static || fail "anchored successful macOS assessment must pass"
+
 if CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=windows run_static "$channel_ok"; then
   fail "strict Windows signing scope must reject a release without top-level PE artifacts"
 fi

@@ -235,7 +235,7 @@ grep -Fq 'middleware.WriteCookie(w, r' internal/cli/service.go ||
 if grep -Fq 'ExecReload=' deploy/systemd/cheesewaf.service; then
   fail "systemd must not advertise SIGHUP reload; the process ignores hangup"
 fi
-grep -Fq 'rewrite_checksums' scripts/ci/publish-prerelease.sh ||
+grep -Fq 'rewrite-release-checksums.sh' scripts/ci/publish-prerelease.sh ||
   fail "publish must rebuild SHA256SUMS after macOS DMG files land"
 if grep -Fq -- '--clobber' scripts/ci/publish-prerelease.sh; then
   fail "published release assets must be immutable"
@@ -402,6 +402,8 @@ grep -Fq 'CHEESEWAF_SIGNING_SCOPE=macos' .github/workflows/ci.yml ||
   fail "GitHub macOS release verification must use the macOS signing scope"
 grep -Fq 'WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}' .forgejo/workflows/ci.yml ||
   fail "Forgejo packaging must receive the Windows signing secret"
+grep -Fq 'apt-get install -y --no-install-recommends nsis zip osslsigncode' .forgejo/workflows/ci.yml ||
+  fail "Forgejo release packaging must install its signing and archive tools"
 grep -Fq 'run_with_timeout 900 xcrun notarytool' scripts/ci/package-macos-dmg.sh ||
   fail "macOS notarization must have a bounded wait"
 grep -Fq 'security delete-keychain "$signing_keychain"' scripts/ci/package-macos-dmg.sh ||
@@ -433,8 +435,39 @@ grep -Fq 'assert_managed_output_dir' scripts/ci/package-release.sh ||
   fail "package-release must guard recursive cleanup targets"
 grep -Fq 'must not traverse a symbolic link' scripts/ci/package-release.sh ||
   fail "package-release must reject symlinked cleanup paths"
+grep -Fq 'must not be nested inside' scripts/ci/package-release.sh ||
+  fail "package-release must keep release and work outputs disjoint"
+CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-work \
+  bash scripts/ci/package-release.sh >/dev/null
+if CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-release/work \
+  bash scripts/ci/package-release.sh >/dev/null 2>&1; then
+  fail "package-release accepted a work directory nested inside release output"
+fi
+if CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-work/release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-work \
+  bash scripts/ci/package-release.sh >/dev/null 2>&1; then
+  fail "package-release accepted release output nested inside its work directory"
+fi
 grep -Fq 'unsafe archive path' scripts/ci/verify-release.sh ||
   fail "release verification must reject path-traversal archive members"
+for release_script in package-release.sh package-macos-dmg.sh publish-prerelease.sh; do
+  grep -Fq 'rewrite-release-checksums.sh' "scripts/ci/${release_script}" ||
+    fail "${release_script} must use the shared atomic checksum rewrite"
+done
+for replacement in \
+  'runtime_dir: "/var/lib/cheesewaf/run"' \
+  'path: "/var/lib/cheesewaf/cheesewaf.db"' \
+  'path: "/var/log/cheesewaf/access.log"' \
+  'target: "/var/log/cheesewaf"' \
+  'path: "/var/log/cheesewaf/audit.log"'; do
+  [[ "$(grep -Fc "$replacement" deploy/docker/Dockerfile)" -ge 2 ]] ||
+    fail "Dockerfile must assert config rewrite: ${replacement}"
+done
 grep -Fq "before 06:00 on tuesday" renovate.json ||
   fail "Renovate must not overlap Dependabot's Monday maintenance window"
 grep -A2 '"enabledManagers"' renovate.json | grep -Fq '"dockerfile"' ||
@@ -444,6 +477,8 @@ if grep -E 'rate_limit:|requests_per_second:|ip_block:' README.md README_CN.md; 
 fi
 
 bash scripts/ci/generate-release-metadata_test.sh
+bash scripts/ci/rewrite-release-checksums_test.sh
+bash scripts/ci/publish-prerelease_test.sh
 bash scripts/ci/verify-release_test.sh
 
 echo "CI static regression checks passed."

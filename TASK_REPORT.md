@@ -2,7 +2,7 @@
 
 Status: `DONE_WITH_CONCERNS`
 
-Implementation commit: `6fa8369`
+Implementation commits: `6fa8369`, `8027308`, `59f84d7`
 
 ## Finding Disposition
 
@@ -49,6 +49,10 @@ Implementation commit: `6fa8369`
 - `scripts/ci/verify-ci-static.sh`
 - `scripts/ci/verify-release.sh`
 - `scripts/ci/verify-release_test.sh`
+
+The final commit adds the shared atomic checksum rewrite integration, release/work
+directory nesting guards, Forgejo packaging tool assertions, Docker replacement
+assertions, and macOS signing fixtures.
 
 ## Verification Evidence
 

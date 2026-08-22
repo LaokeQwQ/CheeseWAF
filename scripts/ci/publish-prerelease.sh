@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 release_dir="${1:-release}"
 [[ -d "$release_dir" ]] || {
   echo "::error::release directory not found: ${release_dir}" >&2
@@ -37,28 +38,6 @@ if [[ "$suffix" == "stable" ]]; then
   suffix="beta"
 fi
 
-rewrite_checksums() {
-  local dir="$1"
-  (
-    cd "$dir"
-    rm -f SHA256SUMS
-    files=()
-    while IFS= read -r f; do
-      [[ -n "$f" ]] || continue
-      files+=("$f")
-    done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt ! -name artifacts.manifest.json ! -name '*.bundle' ! -name '*.sig' | sed 's#^\./##' | sort)
-    [[ ${#files[@]} -gt 0 ]] || {
-      echo "::error::no files to checksum in ${dir}" >&2
-      exit 1
-    }
-    if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum "${files[@]}" >SHA256SUMS
-    else
-      shasum -a 256 "${files[@]}" >SHA256SUMS
-    fi
-  )
-}
-
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 command -v syft >/dev/null 2>&1 || {
   echo "::error::syft is required to attach a CycloneDX SBOM" >&2
@@ -69,11 +48,21 @@ command -v cosign >/dev/null 2>&1 || {
   exit 1
 }
 
+sbom_file="${release_dir}/cheesewaf.cdx.json"
+product_sbom="${release_dir}/cheesewaf-artifacts.cdx.json"
+artifacts_manifest="${release_dir}/artifacts.manifest.json"
+
+# A rerun must not feed stale generated metadata into the artifact scan or
+# publish a sidecar for an SBOM variant that is no longer current.
+for generated in "$sbom_file" "$product_sbom" "$artifacts_manifest"; do
+  rm -f "$generated" "${generated}.bundle"
+done
+rm -f "${release_dir}/SHA256SUMS.bundle"
+
 # Rebuild the manifest after the macOS job has added/replaced DMGs. The
 # artifact SBOM/fallback below must never consume the pre-DMG manifest.
-rewrite_checksums "$release_dir"
+bash "${script_dir}/rewrite-release-checksums.sh" "$release_dir"
 
-sbom_file="${release_dir}/cheesewaf.cdx.json"
 syft scan "dir:${repo_root}" \
   --source-name cheesewaf \
   --source-version "$tag" \
@@ -92,8 +81,6 @@ syft scan "dir:${repo_root}" \
 # exes, dmg) in addition to the source tree. syft cannot always index opaque
 # tar.gz/exe payloads, so if the scan fails we fall back to a signed
 # artifacts.manifest.json parsed from SHA256SUMS (minimum viable SBOM).
-product_sbom="${release_dir}/cheesewaf-artifacts.cdx.json"
-artifacts_manifest="${release_dir}/artifacts.manifest.json"
 if ! syft scan "dir:${release_dir}" \
     --source-name cheesewaf-artifacts \
     --source-version "$tag" \
@@ -133,7 +120,7 @@ fi
   exit 1
 }
 
-rewrite_checksums "$release_dir"
+bash "${script_dir}/rewrite-release-checksums.sh" "$release_dir"
 
 sign_blob() {
   local file="$1"

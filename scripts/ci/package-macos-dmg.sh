@@ -5,6 +5,7 @@ set -euo pipefail
 # Requires macOS: hdiutil, codesign. osascript is used for icon layout.
 
 umask 077
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 run_with_timeout() {
   local seconds="$1"
@@ -165,27 +166,6 @@ setup_macos_signing() {
 
 setup_macos_signing
 
-rewrite_checksums() {
-  (
-    cd "$abs_release"
-    files=()
-    while IFS= read -r file; do
-      [[ -n "$file" ]] || continue
-      files+=("$file")
-    done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt | sed 's#^\./##' | sort)
-    [[ "${#files[@]}" -gt 0 ]] || {
-      echo "::error::no release files available for SHA256SUMS" >&2
-      exit 1
-    }
-    if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum "${files[@]}"
-    else
-      shasum -a 256 "${files[@]}"
-    fi
-  ) >"${abs_release}/SHA256SUMS.tmp"
-  mv "${abs_release}/SHA256SUMS.tmp" "${abs_release}/SHA256SUMS"
-}
-
 write_icon() {
   local dest_icns="$1"
   local logo=""
@@ -287,7 +267,7 @@ assemble_app() {
 layout_dmg_window() {
   local mount="$1"
   command -v osascript >/dev/null 2>&1 || return 0
-  osascript <<EOF >/dev/null
+  run_with_timeout 30 osascript <<EOF >/dev/null
 tell application "Finder"
   tell disk "CheeseWAF"
     open
@@ -362,20 +342,25 @@ for tarball in "${tarballs[@]}"; do
     -format UDRW \
     "$rw_dmg" >/dev/null
 
-  if [[ -d /Volumes/CheeseWAF ]]; then
-    run_with_timeout 30 hdiutil detach /Volumes/CheeseWAF -quiet ||
-      run_with_timeout 30 hdiutil detach /Volumes/CheeseWAF -force || true
+  mount_point="${stage_root}/mount-${name}"
+  mkdir -p "$mount_point"
+  device="$mount_point"
+  if ! attach_output="$(run_with_timeout 60 hdiutil attach \
+      -readwrite -noverify -noautoopen -mountpoint "$mount_point" "$rw_dmg")"; then
+    echo "::error::failed to attach ${rw_dmg}" >&2
+    exit 1
   fi
-  device="$(run_with_timeout 60 hdiutil attach -readwrite -noverify -noautoopen "$rw_dmg" | awk '/^\/dev\// { print $1; exit }')"
-  [[ -n "$device" && -d /Volumes/CheeseWAF ]] || {
+  attached_device="$(printf '%s\n' "$attach_output" | awk '/^\/dev\// { print $1; exit }')"
+  [[ -n "$attached_device" && -d "$mount_point" ]] || {
     echo "::error::failed to attach ${rw_dmg}" >&2
     exit 1
   }
-  layout_dmg_window /Volumes/CheeseWAF || true
+  device="$attached_device"
+  layout_dmg_window "$mount_point" || true
   sync
   run_with_timeout 30 hdiutil detach "$device" -quiet ||
     run_with_timeout 30 hdiutil detach "$device" -force ||
-    run_with_timeout 30 hdiutil detach /Volumes/CheeseWAF -force
+    run_with_timeout 30 hdiutil detach "$mount_point" -force
   device=""
 
   dmg_path="${abs_release}/${name}.dmg"
@@ -387,7 +372,7 @@ for tarball in "${tarballs[@]}"; do
   notarize_dmg "$dmg_path"
 done
 
-rewrite_checksums
+bash "${script_dir}/rewrite-release-checksums.sh" "$abs_release"
 
 if [[ -f "${abs_release}/release-manifest.txt" ]]; then
   {

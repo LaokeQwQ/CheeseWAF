@@ -106,20 +106,28 @@ assert_managed_output_dir() {
   done
 }
 
-sha256_files() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$@"
-  else
-    shasum -a 256 "$@"
-  fi
-}
-
 assert_managed_output_dir "$release_dir" CHEESEWAF_RELEASE_DIR
 assert_managed_output_dir "$work_dir" CHEESEWAF_RELEASE_WORK_DIR
 [[ "$release_dir" != "$work_dir" ]] || {
   echo "::error::release and work directories must be different" >&2
   exit 1
 }
+case "${release_dir}/" in
+  "${work_dir}/"*)
+    echo "::error::release directory must not be nested inside the work directory" >&2
+    exit 1
+    ;;
+esac
+case "${work_dir}/" in
+  "${release_dir}/"*)
+    echo "::error::work directory must not be nested inside the release directory" >&2
+    exit 1
+    ;;
+esac
+if [[ "${CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY:-0}" == "1" ]]; then
+  echo "Release output directories are safe and disjoint."
+  exit 0
+fi
 
 echo "Packaging CheeseWAF ${version} (${channel}) from ${commit}"
 
@@ -219,7 +227,6 @@ done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.
   echo "::error::no release artifacts were produced" >&2
   exit 1
 }
-sha256_files "${hashed[@]}" >SHA256SUMS
 cat >release-manifest.txt <<EOF
 CheeseWAF release artifacts
 version: ${version}
@@ -234,6 +241,8 @@ Artifacts:
 $(printf '%s\n' "${hashed[@]}" | sed 's/^/- /')
 EOF
 popd >/dev/null
+
+bash "${script_dir}/rewrite-release-checksums.sh" "$release_dir"
 
 echo "Artifacts written to ${release_dir}/"
 echo "Pre-release tag: ${prerelease_tag}"
