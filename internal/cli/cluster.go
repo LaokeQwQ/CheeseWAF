@@ -456,7 +456,7 @@ func clusterObjectsFromConfig(cfg *config.Config) ([]any, error) {
 		},
 		Spec: clusterobject.ClusterPolicySpec{
 			HAMode:             valueOrDefault(cfg.Cluster.HAMode, "single-node"),
-			ConsensusProvider:  valueOrDefault(cfg.Cluster.Consensus.Provider, "builtin"),
+			ConsensusProvider:  status.ConsensusProvider,
 			AutoApprovalPolicy: "manual",
 		},
 		Status: clusterobject.ClusterPolicyStatus{

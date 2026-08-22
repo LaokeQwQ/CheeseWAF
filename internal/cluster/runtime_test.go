@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -120,6 +121,8 @@ func TestRuntimeDualNodeLoadBalancingDoesNotRequireMajority(t *testing.T) {
 	cfg.Cluster.ClusterID = "cw-test"
 	cfg.Cluster.NodeID = "waf-a"
 	cfg.Cluster.HAMode = "dual-node-load-balancing"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
 		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
 		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
@@ -134,6 +137,36 @@ func TestRuntimeDualNodeLoadBalancingDoesNotRequireMajority(t *testing.T) {
 	}
 }
 
+func TestClusterStatusDoesNotDefaultMissingConsensusToBuiltin(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.Consensus.Provider = ""
+	status := FromConfig(&cfg, "en-US")
+	if status.ConsensusProvider != "unconfigured" {
+		t.Fatalf("consensus provider=%q, want unconfigured", status.ConsensusProvider)
+	}
+	if status.CanWriteConfig || status.MajorityConfirmed {
+		t.Fatalf("unconfigured cluster consensus must fail closed: %+v", status)
+	}
+}
+
+func TestClusterStatusFailsClosedForBuiltinSharedCluster(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.HAMode = "single-node"
+	cfg.Cluster.Consensus.Provider = "builtin"
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
+		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+	}
+	status := FromConfig(&cfg, "en-US")
+	if status.CanWriteConfig || status.MajorityConfirmed || !strings.Contains(status.ProtectionModeReason, "require etcd") {
+		t.Fatalf("builtin shared-cluster status did not fail closed: %+v", status)
+	}
+}
+
 func minimumHATestConfig() config.Config {
 	cfg := config.Default()
 	cfg.Deployment.Mode = "cluster"
@@ -141,6 +174,8 @@ func minimumHATestConfig() config.Config {
 	cfg.Cluster.ClusterID = "cw-test"
 	cfg.Cluster.NodeID = "waf-a"
 	cfg.Cluster.HAMode = "minimum-ha"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.Cluster.Protection.FreezeWritesWithoutMajority = true
 	cfg.Cluster.Protection.AllowTrafficInProtectionMode = true
 	cfg.Cluster.Nodes = []config.ClusterNodeConfig{

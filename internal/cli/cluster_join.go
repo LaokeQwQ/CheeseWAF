@@ -45,11 +45,14 @@ type clusterJoinLocalIdentity struct {
 }
 
 type clusterJoinAPIResponse struct {
-	ClusterID     string `json:"cluster_id"`
-	NodeID        string `json:"node_id"`
-	Role          string `json:"role"`
-	AdvertiseAddr string `json:"advertise_addr"`
-	Listen        string `json:"listen"`
+	ClusterID     string                     `json:"cluster_id"`
+	NodeID        string                     `json:"node_id"`
+	Role          string                     `json:"role"`
+	AdvertiseAddr string                     `json:"advertise_addr"`
+	Listen        string                     `json:"listen"`
+	HAMode        string                     `json:"ha_mode"`
+	Consensus     config.ConsensusConfig     `json:"consensus"`
+	Nodes         []config.ClusterNodeConfig `json:"nodes"`
 	Interconnect  struct {
 		Listen        string `json:"listen"`
 		AdvertiseAddr string `json:"advertise_addr"`
@@ -508,7 +511,9 @@ func applyClusterJoinConfig(result clusterJoinAPIResponse, paths clusterJoinPath
 	cfg.Cluster.Enabled = true
 	cfg.Cluster.ClusterID = result.ClusterID
 	cfg.Cluster.NodeID = result.NodeID
-	if cfg.Cluster.HAMode == "" {
+	if strings.TrimSpace(result.HAMode) != "" {
+		cfg.Cluster.HAMode = result.HAMode
+	} else if cfg.Cluster.HAMode == "" {
 		cfg.Cluster.HAMode = "single-node"
 	}
 	listen := result.Listen
@@ -524,11 +529,20 @@ func applyClusterJoinConfig(result clusterJoinAPIResponse, paths clusterJoinPath
 	cfg.Cluster.Interconnect.CAFile = filepath.ToSlash(paths.CAFile)
 	cfg.Cluster.Interconnect.CertFile = filepath.ToSlash(paths.CertFile)
 	cfg.Cluster.Interconnect.KeyFile = filepath.ToSlash(paths.KeyFile)
-	if cfg.Cluster.Consensus.Provider == "" {
-		cfg.Cluster.Consensus.Provider = "builtin"
+	provider := strings.ToLower(strings.TrimSpace(result.Consensus.Provider))
+	if provider == "" {
+		return fmt.Errorf("cluster join response is missing consensus configuration; refusing to default a shared cluster to builtin")
 	}
+	if provider != "etcd" {
+		return fmt.Errorf("cluster join response selected %q consensus; shared clusters require etcd", provider)
+	}
+	cfg.Cluster.Consensus.Provider = provider
+	cfg.Cluster.Consensus.EtcdEndpoints = append([]string(nil), result.Consensus.EtcdEndpoints...)
 	if cfg.Cluster.Join.TokenTTL == 0 {
 		cfg.Cluster.Join.TokenTTL = config.Default().Cluster.Join.TokenTTL
+	}
+	if len(result.Nodes) > 0 {
+		cfg.Cluster.Nodes = append([]config.ClusterNodeConfig(nil), result.Nodes...)
 	}
 	found := false
 	for idx := range cfg.Cluster.Nodes {

@@ -729,6 +729,8 @@ func TestClusterJoinEnrollsNodeAndDoesNotLeakToken(t *testing.T) {
 	cfg.Cluster.NodeID = "waf-controller"
 	cfg.Cluster.Interconnect.Listen = "127.0.0.1:9444"
 	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.Cluster.Nodes = []config.ClusterNodeConfig{{
 		ID:            "waf-controller",
 		Role:          "waf",
@@ -763,8 +765,9 @@ func TestClusterJoinEnrollsNodeAndDoesNotLeakToken(t *testing.T) {
 	}
 	var envelope struct {
 		Data struct {
-			ClusterID    string `json:"cluster_id"`
-			NodeID       string `json:"node_id"`
+			ClusterID    string                 `json:"cluster_id"`
+			NodeID       string                 `json:"node_id"`
+			Consensus    config.ConsensusConfig `json:"consensus"`
 			Certificates struct {
 				CA   string `json:"ca"`
 				Cert string `json:"cert"`
@@ -777,6 +780,9 @@ func TestClusterJoinEnrollsNodeAndDoesNotLeakToken(t *testing.T) {
 	}
 	if envelope.Data.ClusterID != "cw-test" || envelope.Data.NodeID != "waf-b" {
 		t.Fatalf("unexpected join response: %+v", envelope.Data)
+	}
+	if envelope.Data.Consensus.Provider != "etcd" || len(envelope.Data.Consensus.EtcdEndpoints) != 1 {
+		t.Fatalf("join response did not include consensus topology: %+v", envelope.Data.Consensus)
 	}
 	if envelope.Data.Certificates.CA == "" || envelope.Data.Certificates.Cert == "" {
 		t.Fatal("join response must include CA and certificate material")
@@ -845,6 +851,27 @@ func TestClusterJoinRejectedDoesNotExposeTokenState(t *testing.T) {
 	}
 }
 
+func TestJoinedClusterNodeConfigRejectsBuiltinConsensus(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.NodeID = "waf-controller"
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{{
+		ID:            "waf-controller",
+		Role:          "waf",
+		AdvertiseAddr: "127.0.0.1:9444",
+	}}
+	h := New(Options{Config: &cfg})
+	_, err := h.joinedClusterNodeConfig(identity.NodeRegistration{
+		NodeID:        "waf-b",
+		Role:          "waf",
+		AdvertiseAddr: "10.0.0.2:9444",
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires cluster.consensus.provider=etcd") {
+		t.Fatalf("expected builtin join rejection, got %v", err)
+	}
+}
+
 func TestClusterJoinRejectsDuplicateNodeBeforeConsumingToken(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "cheesewaf.yaml")
@@ -906,6 +933,8 @@ func TestClusterJoinRollsBackEnrollmentWhenConfigSaveFails(t *testing.T) {
 	cfg.Cluster.NodeID = "waf-controller"
 	cfg.Cluster.Interconnect.Listen = "127.0.0.1:9444"
 	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{
 		Clock:     identity.NewFakeClock(time.Unix(1000, 0)),
 		ClusterID: "cw-test",
@@ -1101,6 +1130,8 @@ func minimumHAHandlerConfig() config.Config {
 	cfg.Cluster.ClusterID = "cw-test"
 	cfg.Cluster.NodeID = "waf-a"
 	cfg.Cluster.HAMode = "minimum-ha"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.Cluster.Protection.FreezeWritesWithoutMajority = true
 	cfg.Cluster.Protection.AllowTrafficInProtectionMode = true
 	cfg.Cluster.Nodes = []config.ClusterNodeConfig{

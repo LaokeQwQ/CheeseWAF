@@ -263,7 +263,7 @@ func (h *Handler) isRegisteredNode(ctx context.Context, nodeID string) bool {
 	return exists
 }
 
-// ClusterConsensusStatus returns the built-in coordinator view (leader, role, freeze).
+// ClusterConsensusStatus returns the configured coordinator view (leader, role, freeze).
 func (h *Handler) ClusterConsensusStatus(w http.ResponseWriter, r *http.Request) {
 	lang := requestLanguage(r)
 	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
@@ -339,21 +339,23 @@ func (h *Handler) clusterTrafficScheduler() *traffic.Scheduler {
 func (h *Handler) clusterConsensusCoordinator() *consensus.Coordinator {
 	h.clusterConsensusMu.Lock()
 	defer h.clusterConsensusMu.Unlock()
+	provider := ""
+	var etcd []string
+	localID := ""
+	if h.Config != nil {
+		provider = strings.TrimSpace(h.Config.Cluster.Consensus.Provider)
+		etcd = append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...)
+		localID = strings.TrimSpace(h.Config.Cluster.NodeID)
+	}
 	if h.clusterConsensus == nil {
-		provider := "builtin"
-		var etcd []string
-		localID := ""
-		if h.Config != nil {
-			provider = strings.TrimSpace(h.Config.Cluster.Consensus.Provider)
-			etcd = append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...)
-			localID = strings.TrimSpace(h.Config.Cluster.NodeID)
-		}
 		h.clusterConsensus = consensus.NewCoordinator(consensus.Options{
 			Provider:      provider,
 			LocalNodeID:   localID,
 			EtcdEndpoints: etcd,
 			Now:           h.nowUTC,
 		})
+	} else {
+		h.clusterConsensus.SetProvider(provider, etcd)
 	}
 	return h.clusterConsensus
 }

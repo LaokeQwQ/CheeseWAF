@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
@@ -21,6 +22,8 @@ func TestClusterBootstrapPlanReturnsJoinCommand(t *testing.T) {
 	cfg.Cluster.ClusterID = "mesh-1"
 	cfg.Cluster.NodeID = "waf-a"
 	cfg.Cluster.HAMode = "minimum-ha"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.APISec.Audit.Enabled = false
 	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: "mesh-1"})
 	if err != nil {
@@ -62,5 +65,24 @@ func TestClusterBootstrapPlanReturnsJoinCommand(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(envelope.Data.JoinCommand), []byte("cluster join")) {
 		t.Fatalf("join command missing: %s", envelope.Data.JoinCommand)
+	}
+}
+
+func TestClusterConsensusCoordinatorRefreshesConfiguredProvider(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.NodeID = "waf-a"
+	h := &Handler{Config: &cfg}
+	status := cluster.Status{Mode: "single-node", MajorityConfirmed: true, CanWriteConfig: true}
+	if got := h.clusterConsensusCoordinator().Evaluate(status, nil).Provider; got != "builtin" {
+		t.Fatalf("initial provider=%q, want builtin", got)
+	}
+
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
+	snap := h.clusterConsensusCoordinator().Evaluate(status, nil)
+	if snap.Provider != "etcd" || !snap.EtcdConfigured || snap.CanWriteConfig {
+		t.Fatalf("coordinator did not refresh to fail-closed etcd selection: %+v", snap)
 	}
 }

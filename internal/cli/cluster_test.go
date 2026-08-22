@@ -233,6 +233,15 @@ func TestClusterJoinWritesCertificatesAndConfig(t *testing.T) {
 			"role":           "waf",
 			"advertise_addr": "127.0.0.1:9444",
 			"listen":         "127.0.0.1:9444",
+			"ha_mode":        "dual-node-load-balancing",
+			"consensus": map[string]any{
+				"provider":       "etcd",
+				"etcd_endpoints": []string{"https://etcd-a.internal:2379"},
+			},
+			"nodes": []map[string]any{
+				{"id": "waf-a", "role": "waf", "advertise_addr": "127.0.0.1:9445"},
+				{"id": "waf-b", "role": "waf", "advertise_addr": "127.0.0.1:9444"},
+			},
 			"interconnect": map[string]any{
 				"listen":         "127.0.0.1:9444",
 				"advertise_addr": "127.0.0.1:9444",
@@ -282,6 +291,9 @@ func TestClusterJoinWritesCertificatesAndConfig(t *testing.T) {
 	}
 	if cfg.Deployment.Mode != "cluster" || !cfg.Cluster.Enabled || cfg.Cluster.ClusterID != "cw-test" || cfg.Cluster.NodeID != "waf-b" {
 		t.Fatalf("cluster join did not write local identity: %+v", cfg.Cluster)
+	}
+	if cfg.Cluster.Consensus.Provider != "etcd" || len(cfg.Cluster.Consensus.EtcdEndpoints) != 1 || len(cfg.Cluster.Nodes) != 2 {
+		t.Fatalf("cluster join did not preserve controller consensus topology: %+v", cfg.Cluster)
 	}
 	if cfg.Cluster.Interconnect.CAFile == "" || cfg.Cluster.Interconnect.CertFile == "" || cfg.Cluster.Interconnect.KeyFile == "" {
 		t.Fatalf("cluster join did not write mTLS material paths: %+v", cfg.Cluster.Interconnect)
@@ -435,6 +447,41 @@ func TestClusterJoinConfigFailureMentionsControllerCompensation(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("expected message to contain %q, got %q", want, message)
 		}
+	}
+}
+
+func TestApplyClusterJoinConfigRejectsMissingConsensusTopology(t *testing.T) {
+	path := testClusterConfigPath(t)
+	oldConfigPath := configPath
+	t.Cleanup(func() { configPath = oldConfigPath })
+	configPath = path
+
+	err := applyClusterJoinConfig(clusterJoinAPIResponse{
+		ClusterID:     "cw-test",
+		NodeID:        "waf-b",
+		Role:          "waf",
+		AdvertiseAddr: "127.0.0.1:9444",
+	}, clusterJoinPaths{})
+	if err == nil || !strings.Contains(err.Error(), "missing consensus configuration") {
+		t.Fatalf("expected missing consensus topology rejection, got %v", err)
+	}
+}
+
+func TestApplyClusterJoinConfigRejectsBuiltinConsensusTopology(t *testing.T) {
+	path := testClusterConfigPath(t)
+	oldConfigPath := configPath
+	t.Cleanup(func() { configPath = oldConfigPath })
+	configPath = path
+
+	err := applyClusterJoinConfig(clusterJoinAPIResponse{
+		ClusterID:     "cw-test",
+		NodeID:        "waf-b",
+		Role:          "waf",
+		AdvertiseAddr: "127.0.0.1:9444",
+		Consensus:     config.ConsensusConfig{Provider: "builtin"},
+	}, clusterJoinPaths{})
+	if err == nil || !strings.Contains(err.Error(), "shared clusters require etcd") {
+		t.Fatalf("expected builtin consensus topology rejection, got %v", err)
 	}
 }
 
