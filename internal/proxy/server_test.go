@@ -1489,6 +1489,18 @@ func TestWriteLogSkipsPlainAccessWhenSiteDisabled(t *testing.T) {
 	}
 }
 
+func TestSiteAccessLogEnabledDefaultsOnForEmptySiteID(t *testing.T) {
+	off := false
+	set := &siteRuntimeSet{byID: map[string]*siteRuntime{
+		"disabled": {site: config.SiteConfig{ID: "disabled", WAF: config.WAFConfig{AccessLogEnabled: &off}}},
+	}}
+	server := &Server{}
+	server.siteRuntimes.Store(set)
+	if !server.siteAccessLogEnabled("") {
+		t.Fatal("empty site id must deterministically default access logging on")
+	}
+}
+
 type captureSink struct {
 	entries []*storage.LogEntry
 }

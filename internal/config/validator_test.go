@@ -249,3 +249,30 @@ func TestValidateAdminTLSAllowedOnLoopback(t *testing.T) {
 }
 
 func idString(id int) string { return fmt.Sprintf("token-%d", id) }
+
+func TestValidateBoundsSiteHeaderAndRewriteComplexity(t *testing.T) {
+	t.Run("header ceiling", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Performance.MaxHeaderBytes = 2 << 20
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "max_header_bytes") {
+			t.Fatalf("expected max_header_bytes ceiling error, got %v", err)
+		}
+	})
+	t.Run("rewrite count", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Rewrite = make([]RewriteRuleConfig, 129)
+		for i := range cfg.Sites[0].WAF.Rewrite {
+			cfg.Sites[0].WAF.Rewrite[i] = RewriteRuleConfig{ID: fmt.Sprint(i), Pattern: "^/old$", Replacement: "/new", Enabled: true}
+		}
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "rewrite") {
+			t.Fatalf("expected rewrite count error, got %v", err)
+		}
+	})
+	t.Run("rewrite pattern length", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Rewrite = []RewriteRuleConfig{{ID: "long", Pattern: strings.Repeat("a", 5000), Replacement: "/new", Enabled: true}}
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "pattern") {
+			t.Fatalf("expected rewrite pattern bound error, got %v", err)
+		}
+	})
+}

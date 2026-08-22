@@ -1720,11 +1720,6 @@ func (s *Server) siteAccessLogEnabled(siteID string) bool {
 	if runtime := set.byID[siteID]; runtime != nil {
 		return runtime.site.WAF.AccessLogOn()
 	}
-	if siteID == "" {
-		for _, runtime := range set.byID {
-			return runtime.site.WAF.AccessLogOn()
-		}
-	}
 	// Unknown site id: default on so we do not silently drop security-adjacent traffic logs.
 	return true
 }

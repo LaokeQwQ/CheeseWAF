@@ -18,6 +18,7 @@ const (
 type circuitState struct {
 	failures int
 	openedAt time.Time
+	probeAt  time.Time
 }
 
 // AdvancedOptions tunes stickiness, circuit breaking, and pressure demotion.
@@ -87,6 +88,7 @@ func (s *Scheduler) ReportFailure(nodeID string) {
 	state.failures++
 	if state.failures >= s.circuitFailures {
 		state.openedAt = s.now()
+		state.probeAt = time.Time{}
 	}
 	s.circuits[nodeID] = state
 }
@@ -119,8 +121,11 @@ func (s *Scheduler) FilterHealthy(peers []Peer) []Peer {
 			continue
 		}
 		if open && !state.openedAt.IsZero() && now.Sub(state.openedAt) >= s.circuitOpenFor {
-			// Half-open: allow one probe by clearing open timestamp but keeping failure count.
-			state.openedAt = time.Time{}
+			if !state.probeAt.IsZero() && now.Sub(state.probeAt) < s.circuitOpenFor {
+				continue
+			}
+			// Reserve one half-open probe. A missing report expires after one open interval.
+			state.probeAt = now
 			s.circuits[peer.NodeID] = state
 		}
 		w := peer.Weight
