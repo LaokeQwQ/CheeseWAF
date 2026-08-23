@@ -180,3 +180,4 @@ internal/engine/semantic/reports/
 internal/engine/semantic/testdata/openappsec_benign_clean.jsonl
 internal/engine/semantic/testdata/openappsec_attack_clean.jsonl
 internal/engine/semantic/testdata/modsec_attack_clean.jsonl
+.dsh_better_edit/

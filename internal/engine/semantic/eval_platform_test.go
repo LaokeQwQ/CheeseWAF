@@ -3,6 +3,7 @@ package semantic
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -174,7 +175,7 @@ type FailedCase struct {
 }
 
 func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string, required bool, report *EvaluationReport) {
-	f, err := os.Open(path)
+	f, err := openCorpusFile(path)
 	if err != nil {
 		if required {
 			t.Fatalf("Failed to open required data source %s: %v", sourceName, err)
@@ -468,7 +469,7 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 
 	// Process benign samples
 	if benignPath != "" {
-		f, err := os.Open(benignPath)
+		f, err := openCorpusFile(benignPath)
 		if err != nil {
 			if required {
 				t.Fatalf("Failed to open required benign file %s: %v", benignPath, err)
@@ -491,7 +492,7 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 
 	// Process attack samples
 	if attackPath != "" {
-		f, err := os.Open(attackPath)
+		f, err := openCorpusFile(attackPath)
 		if err != nil {
 			if required {
 				t.Fatalf("Failed to open required attack file %s: %v", attackPath, err)
@@ -761,7 +762,7 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 			processCybersecLevels(t, ds, "attack", ds.attackPath, shards, shard, &totals)
 			continue
 		}
-		f, err := os.Open(ds.benignPath)
+		f, err := openCorpusFile(ds.benignPath)
 		if err != nil {
 			if ds.required {
 				t.Fatalf("Failed to open required benign file %s: %v", ds.benignPath, err)
@@ -825,7 +826,7 @@ func processCybersecLevels(t *testing.T, ds struct {
 	required   bool
 	skipShort  bool
 }, label, path string, shards, shard int, totals *[6]evalLevelTotals) {
-	f, err := os.Open(path)
+	f, err := openCorpusFile(path)
 	if err != nil {
 		if ds.required {
 			t.Fatalf("Failed to open required file %s: %v", path, err)
@@ -959,4 +960,35 @@ func caseInShard(tc securitytest.Case) bool {
 		return true
 	}
 	return securitytest.ShardIndexFor(tc.Name, shards) == evalShardIndex(shards)
+}
+
+type gzipCorpusFile struct {
+	io.Reader
+	closers []io.Closer
+}
+
+func (g *gzipCorpusFile) Close() error {
+	var err error
+	for _, c := range g.closers {
+		if e := c.Close(); err == nil {
+			err = e
+		}
+	}
+	return err
+}
+
+func openCorpusFile(path string) (io.ReadCloser, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasSuffix(strings.ToLower(path), ".gz") {
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		return &gzipCorpusFile{Reader: gz, closers: []io.Closer{gz, f}}, nil
+	}
+	return f, nil
 }
