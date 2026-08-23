@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -359,6 +362,85 @@ func TestDockerImageUsesEnvOverride(t *testing.T) {
 	got := dockerImage("CHEESEWAF_TEST_SCANNER_IMAGE", "default:latest")
 	if got != "registry.local/scanner@sha256:abc" {
 		t.Fatalf("expected docker image env override, got %q", got)
+	}
+}
+
+func TestRunStreamModeWritesNDJSONAndSummary(t *testing.T) {
+	corpus := filepath.Join(t.TempDir(), "corpus.jsonl")
+	raw := []byte(`{"name":"attack","source_family":"unit","label":"attack","category":"sqli","method":"GET","target":"/?q=1%20or%201=1--"}` + "\n" +
+		`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}` + "\n")
+	if err := os.WriteFile(corpus, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outDir := t.TempDir()
+	ndjson := filepath.Join(outDir, "results.jsonl")
+
+	if err := run(options{
+		Mode:       "analyzer",
+		CorpusPath: corpus,
+		Timeout:    time.Second,
+		OutputPath: ndjson,
+		Stream:     true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(ndjson)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 NDJSON result lines, got %d", len(lines))
+	}
+	for i, line := range lines {
+		var res result
+		if err := json.Unmarshal([]byte(line), &res); err != nil {
+			t.Fatalf("line %d is not valid JSON: %v", i, err)
+		}
+		if res.Name == "" || res.Label == "" {
+			t.Fatalf("line %d missing result fields: %s", i, line)
+		}
+	}
+
+	rep := readSummary(t, ndjson+".summary.json")
+	if rep.Mode != "analyzer" {
+		t.Fatalf("unexpected mode %q", rep.Mode)
+	}
+	if rep.Total != 2 || rep.Failures != 0 {
+		t.Fatalf("expected passing streamed corpus, got total=%d failures=%d", rep.Total, rep.Failures)
+	}
+	if rep.AttackDetected != 1 || rep.BenignClean != 1 {
+		t.Fatalf("unexpected counters: attack_detected=%d benign_clean=%d", rep.AttackDetected, rep.BenignClean)
+	}
+}
+
+func TestRunAnalyzerModeReadsGzipCorpus(t *testing.T) {
+	dir := t.TempDir()
+	corpus := filepath.Join(dir, "corpus.jsonl.gz")
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := fmt.Fprint(gz, `{"name":"attack","source_family":"unit","label":"attack","category":"sqli","method":"GET","target":"/?q=1%20or%201=1--"}`+"\n"+`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corpus, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(dir, "report.json")
+	if err := run(options{
+		Mode:       "analyzer",
+		CorpusPath: corpus,
+		Timeout:    time.Second,
+		OutputPath: output,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rep := readSummary(t, output)
+	if rep.Total != 2 || rep.Failures != 0 {
+		t.Fatalf("expected passing gzip corpus, got total=%d failures=%d", rep.Total, rep.Failures)
 	}
 }
 

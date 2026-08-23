@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -96,30 +98,12 @@ func StrictCategory(source string) bool {
 }
 
 func LoadJSONL(r io.Reader) ([]Case, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-
 	var cases []Case
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var tc Case
-		if err := json.Unmarshal(line, &tc); err != nil {
-			return nil, fmt.Errorf("line %d: %w", lineNo, err)
-		}
-		if err := ValidateCase(tc); err != nil {
-			return nil, fmt.Errorf("line %d: %w", lineNo, err)
-		}
+	err := ForEachJSONL(r, 1, 0, func(tc Case) error {
 		cases = append(cases, tc)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return cases, nil
+		return nil
+	})
+	return cases, err
 }
 
 func ValidateCase(tc Case) error {
@@ -171,31 +155,59 @@ func ShardIndexForRaw(line []byte, shards int) int {
 // the whole corpus as []Case, which is the dominant memory cost for the large
 // external benign corpus.
 func ForEachJSONL(r io.Reader, shards, shard int, fn func(Case) error) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		if shards > 1 && ShardIndexForRaw(line, shards) != shard {
-			continue
-		}
-		var tc Case
-		if err := json.Unmarshal(line, &tc); err != nil {
-			return fmt.Errorf("line %d: %w", lineNo, err)
-		}
-		if err := ValidateCase(tc); err != nil {
-			return fmt.Errorf("line %d: %w", lineNo, err)
-		}
-		if err := fn(tc); err != nil {
-			return err
+	maxLine := 2 * 1024 * 1024 // bytes
+	if raw := strings.TrimSpace(os.Getenv("CHEESEWAF_CORPUS_MAX_LINE_BYTES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			maxLine = n
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return err
+	reader := bufio.NewReaderSize(r, 64*1024)
+	lineNo := 0
+	skipped := 0
+	for {
+		rawLine, readErr := reader.ReadBytes('\n')
+		if len(rawLine) > 0 {
+			lineNo++
+			line := bytes.TrimSpace(rawLine)
+			if len(line) == 0 {
+				if readErr != nil {
+					break
+				}
+				continue
+			}
+			if len(line) > maxLine {
+				skipped++
+				if readErr != nil {
+					break
+				}
+				continue
+			}
+			if shards > 1 && ShardIndexForRaw(line, shards) != shard {
+				if readErr != nil {
+					break
+				}
+				continue
+			}
+			var tc Case
+			if err := json.Unmarshal(line, &tc); err != nil {
+				return fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			if err := ValidateCase(tc); err != nil {
+				return fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			if err := fn(tc); err != nil {
+				return err
+			}
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				return readErr
+			}
+			break
+		}
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "corpus: skipped %d over-long line(s)\n", skipped)
 	}
 	return nil
 }

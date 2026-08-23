@@ -1,12 +1,14 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -81,6 +83,8 @@ type options struct {
 	Workers         int
 	Shards          int
 	Shard           int
+	Stream          bool
+	Progress        bool
 }
 
 func main() {
@@ -100,6 +104,8 @@ func main() {
 		workers         = flag.Int("workers", 0, "concurrent workers for analyzer/http replay (0 = GOMAXPROCS)")
 		shards          = flag.Int("shards", 1, "number of corpus shards (1 = no sharding)")
 		shard           = flag.Int("shard", 0, "shard index to process (0-based; requires -shards > 1)")
+		stream          = flag.Bool("stream", false, "stream per-case results as JSON lines instead of collecting the full report")
+		progress        = flag.Bool("progress", false, "print per-case progress lines to stderr")
 	)
 	flag.Parse()
 
@@ -119,6 +125,8 @@ func main() {
 		Workers:         *workers,
 		Shards:          *shards,
 		Shard:           *shard,
+		Stream:          *stream,
+		Progress:        *progress,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -132,7 +140,21 @@ func run(opts options) error {
 	}
 	defer file.Close()
 
-	cases, err := securitytest.LoadJSONL(file)
+	var reader io.Reader = file
+	if strings.HasSuffix(strings.ToLower(opts.CorpusPath), ".gz") {
+		gz, err := gzip.NewReader(file)
+		if err != nil {
+			return err
+		}
+		defer gz.Close()
+		reader = gz
+	}
+
+	if opts.Stream {
+		return runStream(opts, reader)
+	}
+
+	cases, err := securitytest.LoadJSONL(reader)
 	if err != nil {
 		return err
 	}
@@ -162,7 +184,7 @@ func run(opts options) error {
 		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
 			return validateAnalyzer(analyzer, tc)
 		}) {
-			report.add(res)
+			report.addReport(res, opts.Progress)
 		}
 	case "http":
 		if strings.TrimSpace(opts.BaseURL) == "" {
@@ -176,7 +198,7 @@ func run(opts options) error {
 		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
 			return validateHTTP(client, opts.BaseURL, statuses, tc)
 		}) {
-			report.add(res)
+			report.addReport(res, opts.Progress)
 		}
 	case "gate":
 		if strings.TrimSpace(opts.BaseURL) == "" {
@@ -190,12 +212,12 @@ func run(opts options) error {
 		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
 			return validateAnalyzer(analyzer, tc)
 		}) {
-			report.add(res)
+			report.addReport(res, opts.Progress)
 		}
 		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
 			return validateHTTP(client, opts.BaseURL, statuses, tc)
 		}) {
-			report.add(res)
+			report.addReport(res, opts.Progress)
 		}
 		if err := runGateSuites(&report, opts); err != nil {
 			return err
@@ -235,6 +257,179 @@ func run(opts options) error {
 		return fmt.Errorf("security corpus validation failed: %d/%d cases failed", report.Failures, report.Total)
 	}
 	return nil
+}
+
+func runStream(opts options, reader io.Reader) error {
+	switch opts.Mode {
+	case "analyzer", "http", "gate":
+	default:
+		return fmt.Errorf("unsupported mode %q", opts.Mode)
+	}
+	if (opts.Mode == "http" || opts.Mode == "gate") && strings.TrimSpace(opts.BaseURL) == "" {
+		return errors.New("--base-url is required in http and gate modes")
+	}
+
+	started := time.Now().UTC()
+	report := summary{
+		Mode:      opts.Mode,
+		Corpus:    opts.CorpusPath,
+		BaseURL:   opts.BaseURL,
+		StartedAt: started,
+		Results:   make([]result, 0),
+	}
+
+	analyzer := semantic.NewAnalyzer("block", 2)
+	var client *http.Client
+	var statuses map[int]struct{}
+	if opts.Mode == "http" || opts.Mode == "gate" {
+		var err error
+		statuses, err = parseBlockStatuses(opts.BlockStatuses)
+		if err != nil {
+			return err
+		}
+		client = httpClient(opts.Timeout, opts.Insecure)
+	}
+
+	process := func(tc securitytest.Case) []result {
+		switch opts.Mode {
+		case "analyzer":
+			return []result{validateAnalyzer(analyzer, tc)}
+		case "http":
+			return []result{validateHTTP(client, opts.BaseURL, statuses, tc)}
+		case "gate":
+			return []result{validateAnalyzer(analyzer, tc), validateHTTP(client, opts.BaseURL, statuses, tc)}
+		default:
+			return []result{}
+		}
+	}
+
+	workers := opts.Workers
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	var out io.Writer = os.Stdout
+	var outFile *os.File
+	if opts.OutputPath != "" {
+		f, err := os.Create(opts.OutputPath)
+		if err != nil {
+			return err
+		}
+		outFile = f
+		out = f
+		defer func() {
+			if outFile != nil {
+				_ = outFile.Close()
+			}
+		}()
+	}
+
+	cases := make(chan securitytest.Case, workers*2)
+	results := make(chan result, workers*2)
+	var workersWG sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		workersWG.Add(1)
+		go func() {
+			defer workersWG.Done()
+			for tc := range cases {
+				for _, res := range process(tc) {
+					results <- res
+				}
+			}
+		}()
+	}
+
+	loadErr := make(chan error, 1)
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		defer close(cases)
+		if err := securitytest.ForEachJSONL(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
+			cases <- tc
+			return nil
+		}); err != nil {
+			loadErr <- err
+		}
+	}()
+
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- writeStreamResults(opts, out, results, &report)
+	}()
+
+	<-producerDone
+	workersWG.Wait()
+	close(results)
+	if err := <-writerDone; err != nil {
+		return err
+	}
+	select {
+	case err := <-loadErr:
+		if err != nil {
+			return err
+		}
+	default:
+	}
+
+	if opts.Mode == "gate" {
+		if err := runGateSuites(&report, opts); err != nil {
+			return err
+		}
+	}
+
+	report.DurationMS = durationMS(time.Since(started))
+	if report.AttackTotal > 0 {
+		report.DetectionRate = float64(report.AttackDetected) / float64(report.AttackTotal)
+	}
+	if report.BenignTotal > 0 {
+		report.FalsePositiveRate = float64(report.FalsePositive) / float64(report.BenignTotal)
+	}
+	sort.Slice(report.ExternalSuites, func(i, j int) bool {
+		return report.ExternalSuites[i].Name < report.ExternalSuites[j].Name
+	})
+
+	return writeStreamSummary(opts, &report)
+}
+
+func writeStreamResults(opts options, out io.Writer, results <-chan result, report *summary) error {
+	seq := 0
+	var writeErr error
+	for res := range results {
+		seq++
+		report.count(res)
+		if opts.Progress {
+			fmt.Fprintf(os.Stderr, "[progress] %d %s (%s) passed=%t detected=%t\n", seq, res.Name, res.Label, res.Passed, res.Detected)
+		}
+		if writeErr != nil {
+			continue
+		}
+		encoded, err := json.Marshal(res)
+		if err != nil {
+			writeErr = err
+			continue
+		}
+		encoded = append(encoded, '\n')
+		if _, err := out.Write(encoded); err != nil {
+			writeErr = err
+		}
+	}
+	return writeErr
+}
+
+func writeStreamSummary(opts options, report *summary) error {
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if opts.OutputPath == "" {
+		_, err = os.Stderr.Write(encoded)
+		return err
+	}
+	return os.WriteFile(opts.OutputPath+".summary.json", encoded, 0o644)
 }
 
 func runConcurrent(cases []securitytest.Case, workers int, fn func(securitytest.Case) result) []result {
@@ -439,8 +634,7 @@ func resolveTarget(baseURL, target string) (string, error) {
 	return base.ResolveReference(parsedTarget).String(), nil
 }
 
-func (s *summary) add(res result) {
-	s.Results = append(s.Results, res)
+func (s *summary) count(res result) {
 	s.Total++
 	if res.Warning {
 		s.Warnings++
@@ -465,6 +659,18 @@ func (s *summary) add(res result) {
 		}
 	default:
 		s.Failures++
+	}
+}
+
+func (s *summary) add(res result) {
+	s.Results = append(s.Results, res)
+	s.count(res)
+}
+
+func (s *summary) addReport(res result, progress bool) {
+	s.add(res)
+	if progress {
+		fmt.Fprintf(os.Stderr, "[progress] %s (%s) passed=%t detected=%t\n", res.Name, res.Label, res.Passed, res.Detected)
 	}
 }
 

@@ -82,3 +82,24 @@ func TestFilterShardKeepsOnlyMatchingAndPartitions(t *testing.T) {
 		t.Fatalf("shards must partition all cases; got total %d, want %d", total, len(cases))
 	}
 }
+
+func TestForEachJSONLSkipsOverLongLines(t *testing.T) {
+	t.Setenv("CHEESEWAF_CORPUS_MAX_LINE_BYTES", "128")
+	long := `{"name":"` + strings.Repeat("x", 400) + `","source_family":"unit","label":"benign","method":"GET","target":"/long"}`
+	raw := strings.Join([]string{
+		`{"name":"ok-one","source_family":"unit","label":"benign","method":"GET","target":"/a"}`,
+		long,
+		`{"name":"ok-two","source_family":"unit","label":"benign","method":"GET","target":"/b"}`,
+	}, "\n")
+	var got []Case
+	err := ForEachJSONL(strings.NewReader(raw), 1, 0, func(tc Case) error {
+		got = append(got, tc)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 readable cases, got %d", len(got))
+	}
+}
