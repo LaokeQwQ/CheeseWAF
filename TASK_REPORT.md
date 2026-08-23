@@ -163,3 +163,17 @@ commit. The unrelated non-required `package-macos-dmg` failure on an earlier
   merge so the mirror can fetch the resulting `dev` commit.
 - The nine R2 worktrees, temporary local branches, GitHub temporary branches,
   and Forgejo mirror branch have been removed. The local worktree is clean.
+
+
+## Corpus Pipeline Follow-up (fix/corpus-pipeline)
+
+- internal/securitytest/corpus.go: stable FNV shard index by case name (ShardIndexFor) and FilterShard partition helper.
+- cmd/cheesewaf-corpus/main.go: -shards / -shard / -workers flags; analyzer/http/gate modes now use a bounded worker pool (default GOMAXPROCS).
+- internal/engine/semantic/eval_platform_test.go: SEMANTIC_EVAL_SHARDS and SEMANTIC_EVAL_SHARD_INDEX support; all detection loops and the paranoia sweep filter by shard.
+- scripts/ci/run-semantic-eval-shards.sh + Makefile eval-shards: run N parallel full-corpus shards with a 20m per-shard timeout and Bash 3.2 compatibility.
+- internal/securitytest/corpus_test.go: shard stability, coverage, and partitioning unit tests.
+
+Verification:
+- Full 4-shard experiment (no -short, paranoia 0..5): all shards passed; each shard ~348s wall. Previous single-process full run exceeded the 10-minute Go test limit.
+- go test ./... -short -count=1, go vet ./..., go build ./..., and focused -race corpus tests passed.
+- Short-mode shard 0 sample: curated 4799 benign / 8401 attack (approximately half of the 11594/17034 totals), FPR 0.0000%, TPR 100.0000%.
