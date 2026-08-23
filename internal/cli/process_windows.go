@@ -20,7 +20,7 @@ var (
 func processRunning(pid int) (bool, error) {
 	// Windows OpenProcess takes a DWORD (uint32). Reject non-positive values and
 	// anything that would truncate on the architecture-dependent int → uint32 cast.
-	if pid <= 0 || uint64(pid) > 0xffffffff {
+	if pid <= 0 || int64(pid) > 4294967295 {
 		return false, nil
 	}
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
@@ -42,7 +42,7 @@ func processRunning(pid int) (bool, error) {
 }
 
 func processIdentityMatches(pid int, expected string) (bool, error) {
-	if pid <= 0 || uint64(pid) > 0xffffffff {
+	if pid <= 0 || int64(pid) > 4294967295 {
 		return false, nil
 	}
 	if strings.TrimSpace(expected) == "" {
@@ -66,7 +66,7 @@ func processIdentityMatches(pid int, expected string) (bool, error) {
 }
 
 func stopProcess(pid int, expected ...string) error {
-	if pid <= 0 || uint64(pid) > 0xffffffff {
+	if pid <= 0 || int64(pid) > 4294967295 {
 		return fmt.Errorf("invalid process pid %d", pid)
 	}
 	identity := ""
