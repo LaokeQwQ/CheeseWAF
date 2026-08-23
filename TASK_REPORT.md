@@ -151,8 +151,15 @@ commit. The unrelated non-required `package-macos-dmg` failure on an earlier
   protected Windows DACL for the current user, LocalSystem, and Administrators,
   while Unix keeps the exact `0600` check.
 
-Remaining delivery steps: push the integration branch, create a PR to `dev`,
-wait for required remote CI, merge, synchronize `dev`, and remove the temporary
-R2 worktrees and branches. Remote CI and the final
-`verification-before-completion` gate remain required before declaring the
-audit complete.
+## Final Delivery
+
+- PR #386 merged into GitHub `dev` at `012fbab` from final head `8f2420c`.
+- The final PR run passed CodeQL, `go-quality`, all three Go test jobs,
+  `cross-build`, Docker, Web, vulnerability, static, GoReleaser, and release
+  smoke checks. Release publication jobs were skipped because this was a pull
+  request, as expected.
+- Local `dev` now points to GitHub `origin/dev` at `012fbab`. Forgejo `dev`
+  still needs the same merge commit pushed before the repository is fully
+  synchronized.
+- Temporary R2 worktrees and branches remain until the final synchronization
+  and cleanup commands complete.
