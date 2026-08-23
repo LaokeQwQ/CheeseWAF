@@ -158,8 +158,7 @@ commit. The unrelated non-required `package-macos-dmg` failure on an earlier
   `cross-build`, Docker, Web, vulnerability, static, GoReleaser, and release
   smoke checks. Release publication jobs were skipped because this was a pull
   request, as expected.
-- Local `dev` now points to GitHub `origin/dev` at `012fbab`. Forgejo `dev`
-  still needs the same merge commit pushed before the repository is fully
-  synchronized.
-- Temporary R2 worktrees and branches remain until the final synchronization
-  and cleanup commands complete.
+- Local `dev`, GitHub `origin/dev`, and the Forgejo mirror `dev` now point to
+  `a03fee0`; the mirror synchronized automatically after the GitHub merge.
+- The nine R2 worktrees, temporary local branches, GitHub temporary branches,
+  and Forgejo mirror branch have been removed. The local worktree is clean.
