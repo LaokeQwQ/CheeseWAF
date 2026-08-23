@@ -138,8 +138,9 @@ commit. The unrelated non-required `package-macos-dmg` failure on an earlier
   new remote run before merge.
 - 2026-08-23: A portability review found that comparing an `int` PID directly
   with `math.MaxUint32` fails to compile for `GOARCH=386`. The Windows PID
-  guards now compare through `int64`; fresh Windows `386`, `amd64`, and
-  `arm64` test binaries all compile.
+  guards now widen to `uint64` and compare with the constant `0xffffffff`,
+  which CodeQL can verify; fresh Windows `386`, `amd64`, and `arm64` test
+  binaries all compile.
 
 Remaining delivery steps: push the integration branch, create a PR to `dev`,
 wait for required remote CI, merge, synchronize `dev`, and remove the temporary
