@@ -1356,7 +1356,7 @@ func ensureAuthSecret(baseDir string) (string, error) {
 		}
 		return "", err
 	}
-	if err := file.Chmod(0o600); err != nil {
+	if err := protectAuthSecretFile(path); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
 		return "", err
@@ -1412,8 +1412,8 @@ func readAuthSecret(path string) (string, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return "", fmt.Errorf("auth secret is not a regular file")
 	}
-	if info.Mode().Perm() != 0o600 {
-		return "", fmt.Errorf("auth secret must have mode 0600, got %o", info.Mode().Perm())
+	if err := validateAuthSecretFilePermissions(path, info); err != nil {
+		return "", err
 	}
 	if info.Size() < 32 || info.Size() > 256 {
 		return "", fmt.Errorf("auth secret has invalid size %d", info.Size())

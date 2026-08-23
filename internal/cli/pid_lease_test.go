@@ -57,8 +57,11 @@ func TestEnsureAuthSecretRejectsUnsafeExistingFilesAndRacesCreation(t *testing.T
 		t.Fatalf("generated secret too short: %d", len(secret))
 	}
 	info, err := os.Lstat(authSecretPath(base))
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("generated auth.key mode = %v err=%v", info.Mode(), err)
+	if err != nil {
+		t.Fatalf("stat generated auth.key: %v", err)
+	}
+	if err := validateAuthSecretFilePermissions(authSecretPath(base), info); err != nil {
+		t.Fatalf("generated auth.key permissions: %v", err)
 	}
 	if got, err := ensureAuthSecret(base); err != nil || got != secret {
 		t.Fatalf("stable auth secret = %q err=%v", got, err)

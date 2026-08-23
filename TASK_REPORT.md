@@ -145,6 +145,11 @@ commit. The unrelated non-required `package-macos-dmg` failure on an earlier
   result through the Windows process helpers. The legacy parser now uses
   `strconv.ParseInt` with a 32-bit size, as recommended by the CodeQL rule;
   the focused CLI tests and Windows cross-compiles remain green.
+- 2026-08-23: The first Windows rerun after CodeQL passed exposed a separate
+  auth-secret permission bug: NTFS reports POSIX mode bits as `0666`, so the
+  Unix-only `0600` assertion was invalid on Windows. Auth secrets now use a
+  protected Windows DACL for the current user, LocalSystem, and Administrators,
+  while Unix keeps the exact `0600` check.
 
 Remaining delivery steps: push the integration branch, create a PR to `dev`,
 wait for required remote CI, merge, synchronize `dev`, and remove the temporary
