@@ -37,6 +37,8 @@ import (
 func TestEvaluationPlatform(t *testing.T) {
 	ProcessMetrics().ResetForTest()
 	ResetProcessCacheForTest()
+	_ = os.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
+	defer func() { _ = os.Unsetenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA") }()
 
 	analyzer := NewAnalyzer("block", 2)
 

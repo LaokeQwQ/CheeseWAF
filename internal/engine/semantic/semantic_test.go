@@ -147,6 +147,7 @@ func TestSQLDetectorKeepsBenignDocumentationClean(t *testing.T) {
 }
 
 func TestAnalyzerFollowsStagedSemanticFlow(t *testing.T) {
+	t.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
 	req, _ := http.NewRequest(http.MethodPost, "/api/search", bytes.NewBufferString(`{"filter":"JTI3JTIwb3IlMjAxJTNEMQ=="}`))
 	req.Header.Set("Content-Type", "application/json")
 	reqCtx, err := engine.NewRequestContext(req, "default")
@@ -170,6 +171,7 @@ func TestAnalyzerFollowsStagedSemanticFlow(t *testing.T) {
 }
 
 func TestAnalyzerDetectsNoSQLOperatorInjectionWithEvidence(t *testing.T) {
+	t.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
 	req, _ := http.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(`{"username":{"$ne":null},"password":{"$ne":null}}`))
 	req.Header.Set("Content-Type", "application/json")
 	reqCtx, err := engine.NewRequestContext(req, "default")
@@ -193,6 +195,7 @@ func TestAnalyzerDetectsNoSQLOperatorInjectionWithEvidence(t *testing.T) {
 }
 
 func TestAnalyzerDetectsSSTIWithEvidence(t *testing.T) {
+	t.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
 	req, _ := http.NewRequest(http.MethodPost, "/profile", bytes.NewBufferString(`display_name={{config.__class__.__init__.__globals__['os'].popen('id').read()}}`))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	reqCtx, err := engine.NewRequestContext(req, "default")
@@ -321,6 +324,7 @@ func TestXXEDetectorUsesAnalyzerGate(t *testing.T) {
 }
 
 func TestAnalyzerUsesHeaderAndBodyInputs(t *testing.T) {
+	t.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
 	req, _ := http.NewRequest(http.MethodPost, "/submit", bytes.NewBufferString("name=alice&comment=%3Csvg%20onload%3Dalert(1)%3E"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Forwarded-Host", "http://169.254.169.254/latest/meta-data")

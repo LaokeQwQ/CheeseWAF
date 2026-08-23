@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"runtime"
 	"sort"
@@ -144,7 +145,13 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
 	}
-	reqCtx.Metadata["semantic_analysis"] = report
+	if os.Getenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA") == "1" {
+		reqCtx.Metadata["semantic_analysis"] = report
+	} else {
+		reqCtx.Metadata["semantic_analysis_summary"] = map[string]any{
+			"inputs": len(report.Inputs), "hits": len(report.Hits), "anomaly_score": report.AnomalyScore,
+		}
+	}
 	if report.AnomalyScore > 0 {
 		reqCtx.Metadata["semantic_anomaly_score"] = report.AnomalyScore
 	}
@@ -305,11 +312,13 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 	// Atomic work-stealing index avoids per-request channel alloc/scheduling.
 	var next atomic.Int64
 	var skipped atomic.Bool
+	var abort atomic.Bool
+	fastAbort := os.Getenv("CHEESEWAF_SEMANTIC_FAST_ABORT") == "1"
 	var wg sync.WaitGroup
 	scan := func() {
 		for {
 			i := int(next.Add(1) - 1)
-			if i >= len(candidates) {
+			if i >= len(candidates) || abort.Load() {
 				return
 			}
 			if ctx.Err() != nil {
@@ -318,6 +327,14 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 				continue
 			}
 			hits := a.analyzeCandidate(candidates[i])
+			if fastAbort {
+				for _, h := range hits {
+					if h.Severity >= engine.SeverityCritical && h.Confidence >= 0.92 {
+						abort.Store(true)
+						break
+					}
+				}
+			}
 			outs[i] = fieldOut{input: candidates[i].input, hits: hits}
 		}
 	}
