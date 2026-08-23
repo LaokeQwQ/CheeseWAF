@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +197,9 @@ func processDataSource(t *testing.T, analyzer *semantic.Analyzer, sourceName, pa
 	report.Sources[sourceName] = srcMetrics
 
 	for _, tc := range cases {
+		if !caseInShard(tc) {
+			continue
+		}
 		method := tc.Method
 		if method == "" {
 			method = http.MethodGet
@@ -486,6 +490,9 @@ func processDataSourceSplit(t *testing.T, analyzer *semantic.Analyzer, sourceNam
 			}
 
 			for _, tc := range cases {
+				if !caseInShard(tc) {
+					continue
+				}
 				srcMetrics.BenignTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "benign") {
 					srcMetrics.BenignFP++
@@ -510,6 +517,9 @@ func processDataSourceSplit(t *testing.T, analyzer *semantic.Analyzer, sourceNam
 			}
 
 			for _, tc := range cases {
+				if !caseInShard(tc) {
+					continue
+				}
 				srcMetrics.AttackTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "attack") {
 					srcMetrics.AttackHit++
@@ -738,6 +748,9 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 						// Filter to benign only
 						benignCases := make([]securitytest.Case, 0)
 						for _, tc := range cases {
+							if !caseInShard(tc) {
+								continue
+							}
 							if tc.Label == "benign" {
 								benignCases = append(benignCases, tc)
 							}
@@ -752,6 +765,9 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 				}
 
 				for _, tc := range cases {
+					if !caseInShard(tc) {
+						continue
+					}
 					totalBenign++
 					if detectSampleQuiet(analyzer, &tc) {
 						totalBenignFP++
@@ -777,6 +793,9 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 				}
 
 				for _, tc := range cases {
+					if !caseInShard(tc) {
+						continue
+					}
 					totalAttack++
 					if detectSampleQuiet(analyzer, &tc) {
 						totalAttackHit++
@@ -797,6 +816,9 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 				}
 
 				for _, tc := range cases {
+					if !caseInShard(tc) {
+						continue
+					}
 					if tc.Label == "attack" {
 						totalAttack++
 						if detectSampleQuiet(analyzer, &tc) {
@@ -863,4 +885,36 @@ func detectSampleQuiet(analyzer *semantic.Analyzer, tc *securitytest.Case) bool 
 	}
 
 	return res != nil && res.Detected
+}
+
+func evalShardTotal() int {
+	v := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_SHARDS"))
+	if v == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+func evalShardIndex(shards int) int {
+	v := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_SHARD_INDEX"))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || n >= shards {
+		return 0
+	}
+	return n
+}
+
+func caseInShard(tc securitytest.Case) bool {
+	shards := evalShardTotal()
+	if shards <= 1 {
+		return true
+	}
+	return securitytest.ShardIndexFor(tc.Name, shards) == evalShardIndex(shards)
 }

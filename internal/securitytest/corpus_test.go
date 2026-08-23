@@ -43,3 +43,42 @@ func TestLoadJSONLRejectsInvalidCorpusCases(t *testing.T) {
 		})
 	}
 }
+
+func TestShardIndexForIsStableAndCoversAllShards(t *testing.T) {
+	names := []string{"attack-1", "benign-1", "payload-x", "foo", "bar", "baz"}
+	const shards = 4
+	seen := make(map[int]bool)
+	for _, name := range names {
+		idx := ShardIndexFor(name, shards)
+		if idx < 0 || idx >= shards {
+			t.Fatalf("ShardIndexFor(%q) = %d, want 0..%d", name, idx, shards-1)
+		}
+		seen[idx] = true
+		if ShardIndexFor(name, shards) != idx {
+			t.Fatalf("ShardIndexFor(%q) is unstable", name)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("no shard was assigned")
+	}
+}
+
+func TestFilterShardKeepsOnlyMatchingAndPartitions(t *testing.T) {
+	cases := []Case{
+		{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}, {Name: "delta"},
+	}
+	const shards = 2
+	total := 0
+	for i := 0; i < shards; i++ {
+		got := FilterShard(cases, shards, i)
+		total += len(got)
+		for _, tc := range got {
+			if ShardIndexFor(tc.Name, shards) != i {
+				t.Fatalf("case %q assigned to shard %d, not %d", tc.Name, ShardIndexFor(tc.Name, shards), i)
+			}
+		}
+	}
+	if total != len(cases) {
+		t.Fatalf("shards must partition all cases; got total %d, want %d", total, len(cases))
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"strings"
 )
@@ -138,4 +139,34 @@ func ValidateCase(tc Case) error {
 		return fmt.Errorf("case %q requires target", tc.Name)
 	}
 	return nil
+}
+
+// ShardIndexFor returns a stable 0..shards-1 shard index for a corpus case
+// based on its name. The same name always maps to the same shard so shards can
+// be run in parallel processes and merged deterministically.
+func ShardIndexFor(name string, shards int) int {
+	if shards <= 0 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.ToLower(strings.TrimSpace(name))))
+	return int(h.Sum32() % uint32(shards))
+}
+
+// FilterShard returns only the cases belonging to the requested shard.
+// shards<=1 returns the input unchanged for backwards compatibility.
+func FilterShard(cases []Case, shards, shard int) []Case {
+	if shards <= 1 {
+		return cases
+	}
+	if shard < 0 || shard >= shards {
+		return []Case{}
+	}
+	out := make([]Case, 0, len(cases)/shards+16)
+	for _, tc := range cases {
+		if ShardIndexFor(tc.Name, shards) == shard {
+			out = append(out, tc)
+		}
+	}
+	return out
 }

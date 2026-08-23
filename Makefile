@@ -142,6 +142,10 @@ web-build:
 security-corpus:
 	$(GO) run ./cmd/cheesewaf-corpus --mode analyzer
 
+## eval-shards: Run semantic evaluation corpus in parallel shards (env SEMANTIC_EVAL_SHARDS)
+eval-shards:
+	bash scripts/ci/run-semantic-eval-shards.sh
+
 ## security-corpus-http: Run curated attack/benign corpus against a deployed WAF (BASE_URL=http://127.0.0.1:8080)
 security-corpus-http:
 	@if [ -z "$(BASE_URL)" ]; then echo "BASE_URL is required"; exit 1; fi
