@@ -22,8 +22,8 @@ This report tracks integration and fresh verification evidence.
 ## Current Evidence
 
 - The integration branch contains the nine R2 merge commits above, the
-  PostgreSQL log-sink follow-up, and the current PR #386 repair set based on
-  `00e0dab`; `origin/dev` / `9ccb5ee` is its ancestor.
+  PostgreSQL log-sink follow-up, and the current PR #386 repair set;
+  `origin/dev` / `9ccb5ee` is its ancestor.
 - Fresh full Go verification completed with exit code 0:
   `go test ./... -short -count=1`, `go vet ./...`, and `go build ./cmd/...`.
 - Fresh focused storage verification completed with exit code 0:
@@ -136,6 +136,10 @@ commit. The unrelated non-required `package-macos-dmg` failure on an earlier
   Fresh `/bin/bash` syntax, CI static, release regression, format, Windows
   cross-compile, and focused Go checks passed. The repaired PR still needs a
   new remote run before merge.
+- 2026-08-23: A portability review found that comparing an `int` PID directly
+  with `math.MaxUint32` fails to compile for `GOARCH=386`. The Windows PID
+  guards now compare through `int64`; fresh Windows `386`, `amd64`, and
+  `arm64` test binaries all compile.
 
 Remaining delivery steps: push the integration branch, create a PR to `dev`,
 wait for required remote CI, merge, synchronize `dev`, and remove the temporary
