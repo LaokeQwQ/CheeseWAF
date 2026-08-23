@@ -5,7 +5,8 @@
 # normally report-only and skipped by -short. Running it as one process exceeds
 # the Go test 10-minute limit when the paranoia sweep (0..5) re-scans every
 # sample. This script shards deterministically by case name via
-# internal/securitytest.ShardIndexFor so shards can be merged/aggregated.
+# internal/securitytest.ShardIndexFor, writes each shard's JSON report via
+# EVAL_REPORT_PATH, and merges them with merge-semantic-eval-shards.py.
 #
 # Usage:
 #   SEMANTIC_EVAL_SHARDS=8 bash scripts/ci/run-semantic-eval-shards.sh
@@ -20,9 +21,6 @@ if ! [[ "$shards" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::SEMANTIC_EVAL_SHARDS must be a positive integer (got '${shards}')" >&2
   exit 1
 fi
-if [[ "$shards" -eq 1 ]]; then
-  echo "Single-shard run; using a single process."
-fi
 
 log_dir="${SEMANTIC_EVAL_LOG_DIR:-/tmp/semantic-eval-shards}"
 mkdir -p "$log_dir"
@@ -35,6 +33,7 @@ for (( i = 0; i < shards; i++ )); do
     cd "$repo_root"
     SEMANTIC_EVAL_SHARDS="$shards" \
     SEMANTIC_EVAL_SHARD_INDEX="$i" \
+    EVAL_REPORT_PATH="${log_dir}/report-shard-${i}.json" \
       go test -run TestEvaluationPlatform -count=1 -timeout "$timeout" ./internal/engine/semantic/ >"$log" 2>&1
   ) &
   pids="$pids $!"
@@ -57,4 +56,9 @@ if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
-echo "All ${shards} semantic eval shards passed; logs: ${log_dir}/shard-*.log"
+if command -v python3 >/dev/null 2>&1; then
+  python3 "${repo_root}/scripts/ci/merge-semantic-eval-shards.py" "${log_dir}"/report-shard-*.json > "${log_dir}/merged-report.json"
+  echo "All ${shards} semantic eval shards passed; merged report: ${log_dir}/merged-report.json"
+else
+  echo "All ${shards} semantic eval shards passed; reports: ${log_dir}/report-shard-*.json (python3 required to merge)"
+fi

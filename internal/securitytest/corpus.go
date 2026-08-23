@@ -153,6 +153,65 @@ func ShardIndexFor(name string, shards int) int {
 	return int(h.Sum32() % uint32(shards))
 }
 
+// ShardIndexForRaw returns a stable 0..shards-1 shard index for a raw JSONL
+// line. Unlike ShardIndexFor it does not require JSON parsing, so streaming
+// loaders can skip non-shard lines before allocating the Case struct.
+func ShardIndexForRaw(line []byte, shards int) int {
+	if shards <= 0 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write(bytes.TrimSpace(line))
+	return int(h.Sum32() % uint32(shards))
+}
+
+// ForEachJSONL streams a JSONL corpus line by line and invokes fn only for
+// lines belonging to the requested shard (raw-line prefilter). shards<=1 keeps
+// every line for backwards compatibility. The callback form avoids materializing
+// the whole corpus as []Case, which is the dominant memory cost for the large
+// external benign corpus.
+func ForEachJSONL(r io.Reader, shards, shard int, fn func(Case) error) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		if shards > 1 && ShardIndexForRaw(line, shards) != shard {
+			continue
+		}
+		var tc Case
+		if err := json.Unmarshal(line, &tc); err != nil {
+			return fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		if err := ValidateCase(tc); err != nil {
+			return fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		if err := fn(tc); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// LoadJSONLFiltered is a convenience wrapper over ForEachJSONL for callers that
+// still need a slice (CLI, tests). It keeps shard semantics identical to the
+// streaming path.
+func LoadJSONLFiltered(r io.Reader, shards, shard int) ([]Case, error) {
+	var cases []Case
+	err := ForEachJSONL(r, shards, shard, func(tc Case) error {
+		cases = append(cases, tc)
+		return nil
+	})
+	return cases, err
+}
+
 // FilterShard returns only the cases belonging to the requested shard.
 // shards<=1 returns the input unchanged for backwards compatibility.
 func FilterShard(cases []Case, shards, shard int) []Case {

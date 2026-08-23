@@ -199,6 +199,10 @@ jobs:
       - name: Run curated semantic corpus
         shell: bash
         run: bash scripts/ci/go-env.sh go run ./cmd/cheesewaf-corpus --mode analyzer
+      - name: Run semantic evaluation gates (short)
+        shell: bash
+        run: |
+          FPR_GATE=0.1 TPR_GATE=99.0 bash scripts/ci/go-env.sh go test -run TestEvaluationPlatform -short -count=1 ./internal/engine/semantic/
 
   cross-build:
     name: cross-build

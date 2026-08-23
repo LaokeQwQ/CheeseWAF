@@ -155,9 +155,13 @@ func run(opts options) error {
 		Results:   make([]result, 0, len(cases)),
 	}
 
+	analyzer := semantic.NewAnalyzer("block", 2)
+
 	switch opts.Mode {
 	case "analyzer":
-		for _, res := range runConcurrent(cases, opts.Workers, validateAnalyzer) {
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+			return validateAnalyzer(analyzer, tc)
+		}) {
 			report.add(res)
 		}
 	case "http":
@@ -183,7 +187,9 @@ func run(opts options) error {
 			return err
 		}
 		client := httpClient(opts.Timeout, opts.Insecure)
-		for _, res := range runConcurrent(cases, opts.Workers, validateAnalyzer) {
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+			return validateAnalyzer(analyzer, tc)
+		}) {
 			report.add(res)
 		}
 		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
@@ -267,7 +273,7 @@ func runConcurrent(cases []securitytest.Case, workers int, fn func(securitytest.
 	return out
 }
 
-func validateAnalyzer(tc securitytest.Case) result {
+func validateAnalyzer(analyzer *semantic.Analyzer, tc securitytest.Case) result {
 	res := baseResult("analyzer", tc)
 	start := time.Now()
 
@@ -287,7 +293,7 @@ func validateAnalyzer(tc securitytest.Case) result {
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
-	detection, err := semantic.NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
+	detection, err := analyzer.Detect(context.Background(), reqCtx)
 	if err != nil {
 		res.Error = err.Error()
 		res.LatencyMS = durationMS(time.Since(start))
