@@ -22,6 +22,38 @@ func TestAccessPolicyAllowOverridesBlock(t *testing.T) {
 	}
 }
 
+func TestAccessPolicyMoreSpecificBlockOverridesGlobalAllow(t *testing.T) {
+	policy, err := NewAccessPolicy(config.IPProtectionConfig{
+		Whitelist: []string{"203.0.113.10"},
+		AccessRules: []config.IPAccessRuleConfig{
+			{ID: "block-admin", Action: "block", Scope: "path", SiteID: "site-a", PathPrefix: "/admin", Entries: []string{"203.0.113.10"}, Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	decision := policy.Evaluate("203.0.113.10", "site-a", "/admin/users")
+	if !decision.Matched || decision.Action != AccessActionBlock || decision.RuleID != "block-admin" {
+		t.Fatalf("expected path-specific block, got %+v", decision)
+	}
+}
+
+func TestAccessPolicyExactIPOverridesBroaderSameScopeRule(t *testing.T) {
+	policy, err := NewAccessPolicy(config.IPProtectionConfig{
+		AccessRules: []config.IPAccessRuleConfig{
+			{ID: "allow-range", Action: "allow", Scope: "global", Entries: []string{"203.0.113.0/24"}, Enabled: true},
+			{ID: "block-exact", Action: "block", Scope: "global", Entries: []string{"203.0.113.10"}, Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	decision := policy.Evaluate("203.0.113.10", "site-a", "/")
+	if decision.Action != AccessActionBlock || decision.RuleID != "block-exact" {
+		t.Fatalf("expected exact IP rule, got %+v", decision)
+	}
+}
+
 func TestAccessPolicyPathScope(t *testing.T) {
 	policy, err := NewAccessPolicy(config.IPProtectionConfig{
 		AccessRules: []config.IPAccessRuleConfig{

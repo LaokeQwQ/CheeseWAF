@@ -14,12 +14,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui';
-import { fetchChinaMapBoundaryByCode, fetchLogs } from '../../api/client';
+import { fetchChinaMapBoundaryByCode } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import { preloadAttackScreenPage, preloadGlobeMap } from '../../routes/preload';
 import { displayAction, displayCategory, displayCountry, displayGeoPlace, displaySeverity, isSameGeoCountry } from '../../utils/display';
 import {
-  aggregateRegions,
   buildCountryLevelMap,
   graticulePath,
   resolveProtectedTarget,
@@ -35,6 +34,8 @@ import type { GeoFeatureCollection } from './chinaBoundaries';
 import { threatLevels, threatShapeLabel, threatShapeClass } from './threatPalette';
 import OsmAttackMap, { type OsmAttackMapHandle } from './OsmAttackMap';
 import '../../styles/attack-map.css';
+import { useAttackMapFeed } from './useAttackMapFeed';
+import { regionsFromAttackMapAggregates } from './attackMapFeed';
 
 const OFFLINE_CHINA_BOUNDARY_QUERY_KEY = ['attack-map-china-boundary-offline'] as const;
 
@@ -65,13 +66,8 @@ export default function AttackMapPage() {
       }
     };
   }, [mode]);
-  const { data, isLoading, isError, isFetching, refetch } = useQuery({
-    queryKey: ['attack-map-logs'],
-    queryFn: () => fetchLogs({ limit: 1000 }),
-    refetchInterval: 5_000,
-    retry: false,
-  });
-  const regions = useMemo(() => aggregateRegions(data?.items ?? []), [data?.items]);
+  const { entries, aggregates, isLoading, isError, isFetching, refetch } = useAttackMapFeed('attack-map-feed', 5_000);
+  const regions = useMemo(() => regionsFromAttackMapAggregates(aggregates), [aggregates]);
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
   const chinaRegions = useMemo(() => mappedRegions.filter(isChinaRegion), [mappedRegions]);
   const { data: chinaBoundaries, isLoading: isChinaModuleLoading, isError: isChinaModuleError } = useQuery<ChinaBoundariesModule>({
@@ -140,7 +136,7 @@ export default function AttackMapPage() {
     return merged && merged.collection.features.length > 0 ? merged.collection : null;
   }, [chinaBoundaries, chinaAssets, offlineChinaBoundary, externalChinaBoundary]);
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
-  const protectedTarget = useMemo(() => resolveProtectedTarget(data?.items ?? [], t), [data?.items, t]);
+  const protectedTarget = useMemo(() => resolveProtectedTarget(entries, t), [entries, t]);
   const total = regions.reduce((sum, region) => sum + region.attacks, 0);
   const mappedTotal = mappedRegions.reduce((sum, region) => sum + region.attacks, 0);
   const chinaTotal = chinaRegions.reduce((sum, region) => sum + region.attacks, 0);
@@ -239,14 +235,14 @@ export default function AttackMapPage() {
         </div>
       </header>
 
-      {isError && !data && (
+      {isError && entries.length === 0 && (
         <QueryErrorState onRetry={() => void refetch()} retrying={isFetching} />
       )}
 
       <section className="map-workbench">
         <div className="map-workbench-header">
           <div className="map-legend">
-            <strong>{isError && !data ? '—' : mapTotal}</strong>
+            <strong>{isError && entries.length === 0 ? '—' : mapTotal}</strong>
             <span>{t('attackMap.attacks')}</span>
             <small>{mode === 'china' ? t('attackMap.chinaRegionMapped', { count: mapMappedTotal }) : t('attackMap.mapped', { count: mapMappedTotal })}</small>
             {mode === 'china' && total > chinaTotal && <small>{t('attackMap.otherRegions', { count: total - chinaTotal })}</small>}

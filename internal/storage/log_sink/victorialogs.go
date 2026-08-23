@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -78,7 +79,7 @@ func (s *VictoriaLogsSink) writeSync(ctx context.Context, entry *storage.LogEntr
 
 func (s *VictoriaLogsSink) Query(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
 	query := victoriaLogsQuery(filter)
-	countBody, err := s.doQuery(ctx, query+" | stats count() total", 1, 0, filter)
+	countBody, err := s.doQuery(ctx, victoriaLogsFilter(filter)+" | stats count() total", 1, 0, filter)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -172,6 +173,14 @@ func victoriaLogsQueryEndpoint(endpoint string) (string, error) {
 }
 
 func victoriaLogsQuery(filter storage.LogFilter) string {
+	query := victoriaLogsFilter(filter) + " | sort by (_time, id)"
+	if !filter.Ascending {
+		query += " desc"
+	}
+	return query
+}
+
+func victoriaLogsFilter(filter storage.LogFilter) string {
 	var parts []string
 	add := func(field, value string) {
 		if value != "" {
@@ -183,11 +192,52 @@ func victoriaLogsQuery(filter storage.LogFilter) string {
 	add("category", filter.Category)
 	add("action", filter.Action)
 	add("trace_id", filter.TraceID)
+	add("id", filter.ID)
 	for _, tag := range filter.Tags {
 		if tag != "" {
 			parts = append(parts, "tags:="+victoriaLogsQuote(tag))
 		}
 	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		pattern := victoriaLogsQuote("(?i)" + regexp.QuoteMeta(search))
+		fields := []string{"id", "trace_id", "site_id", "client_ip", "method", "uri", "action", "detector_id", "category", "severity", "_msg", "payload", "user_agent", "country"}
+		matches := make([]string, 0, len(fields))
+		for _, field := range fields {
+			matches = append(matches, field+":~"+pattern)
+		}
+		parts = append(parts, "("+strings.Join(matches, " OR ")+")")
+	}
+	switch strings.ToLower(strings.TrimSpace(filter.Kind)) {
+	case "security":
+		parts = append(parts, `(category:!="" OR detector_id:!="" OR severity:!="" OR action:="block" OR action:="challenge" OR action:="log" OR action:="monitor" OR status_code:="403" OR status_code:="429")`)
+	case "access":
+		parts = append(parts, `(category:="" AND detector_id:="" AND severity:="" AND (action:="" OR action:="pass" OR action:="cache_hit" OR action:="redirect") AND status_code:!="403" AND status_code:!="429")`)
+	case "", "all":
+	default:
+		parts = append(parts, `id:="__no_such_kind__"`)
+	}
+	addCursor := func(timestamp time.Time, id, op string) {
+		if timestamp.IsZero() && id == "" {
+			return
+		}
+		stamp := timestamp.UTC().Format(time.RFC3339Nano)
+		if timestamp.IsZero() {
+			parts = append(parts, "id:"+op+victoriaLogsQuote(id))
+			return
+		}
+		if id == "" {
+			parts = append(parts, "_time:"+op+victoriaLogsQuote(stamp))
+			return
+		}
+		parts = append(parts, "(_time:"+op+victoriaLogsQuote(stamp)+" OR (_time:="+victoriaLogsQuote(stamp)+" AND id:"+op+victoriaLogsQuote(id)+"))")
+	}
+	if filter.Ascending {
+		addCursor(filter.WatermarkTime, filter.WatermarkID, ">")
+	} else {
+		addCursor(filter.WatermarkTime, filter.WatermarkID, "<")
+	}
+	addCursor(filter.BeforeTime, filter.BeforeID, "<")
+	addCursor(filter.AfterTime, filter.AfterID, ">")
 	if len(parts) == 0 {
 		return "*"
 	}

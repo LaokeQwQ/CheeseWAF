@@ -112,10 +112,10 @@ func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) validateSchedulerTasks(tasks []config.ScheduledTaskConfig) error {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
-	candidate := *h.Config
+	candidate := *h.currentConfig()
 	candidate.Scheduler.Tasks = tasks
 	return config.Validate(&candidate)
 }
@@ -218,7 +218,7 @@ func (h *Handler) TaskHistory(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) EdgePolicy(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, h.Config.Edge)
+	writeData(w, h.currentConfig().Edge)
 }
 
 func (h *Handler) UpdateEdgePolicy(w http.ResponseWriter, r *http.Request) {
@@ -250,17 +250,17 @@ func (h *Handler) UpdateEdgePolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) StorageStats(w http.ResponseWriter, _ *http.Request) {
-	logDir := filepath.Dir(h.Config.Logging.Output.File.Path)
+	logDir := filepath.Dir(h.currentConfig().Logging.Output.File.Path)
 	writeData(w, map[string]any{
-		"data_dir": h.Config.Setup.DataDir,
+		"data_dir": h.currentConfig().Setup.DataDir,
 		"log_dir":  logDir,
-		"data":     h.cachedDirSize(h.Config.Setup.DataDir),
+		"data":     h.cachedDirSize(h.currentConfig().Setup.DataDir),
 		"logs":     h.cachedDirSize(logDir),
 	})
 }
 
 func (h *Handler) CleanupStorage(w http.ResponseWriter, r *http.Request) {
-	task := storageCleanupTask(h.Config, h.nowUTC())
+	task := storageCleanupTask(h.currentConfig(), h.nowUTC())
 	result, err := scheduler.CleanupOldFilesWithResult(scheduler.Task{
 		ID:     task.ID,
 		Name:   task.Name,
@@ -376,11 +376,11 @@ func normalizeScheduledTask(task *config.ScheduledTaskConfig, now time.Time) {
 }
 
 func (h *Handler) normalizedTaskConfigs() []config.ScheduledTaskConfig {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
-	tasks := make([]config.ScheduledTaskConfig, len(h.Config.Scheduler.Tasks))
-	copy(tasks, h.Config.Scheduler.Tasks)
+	tasks := make([]config.ScheduledTaskConfig, len(h.currentConfig().Scheduler.Tasks))
+	copy(tasks, h.currentConfig().Scheduler.Tasks)
 	now := h.nowUTC()
 	for index := range tasks {
 		normalizeScheduledTask(&tasks[index], now)
@@ -543,7 +543,7 @@ func (h *Handler) BlockPageTemplates(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) BlockPageConfig(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, h.Config.BlockPage)
+	writeData(w, h.currentConfig().BlockPage)
 }
 
 func (h *Handler) PreviewBlockPageConfig(w http.ResponseWriter, r *http.Request) {
@@ -552,7 +552,7 @@ func (h *Handler) PreviewBlockPageConfig(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if req.TemplateID == "" {
-		req.TemplateID = h.Config.BlockPage.TemplateID
+		req.TemplateID = h.currentConfig().BlockPage.TemplateID
 		if req.TemplateID == "" {
 			req.TemplateID = config.Default().BlockPage.TemplateID
 		}
@@ -591,7 +591,7 @@ func (h *Handler) UpdateBlockPageConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if req.TemplateID == "" {
-		req.TemplateID = h.Config.BlockPage.TemplateID
+		req.TemplateID = h.currentConfig().BlockPage.TemplateID
 		if req.TemplateID == "" {
 			req.TemplateID = config.Default().BlockPage.TemplateID
 		}
@@ -602,7 +602,7 @@ func (h *Handler) UpdateBlockPageConfig(w http.ResponseWriter, r *http.Request) 
 	if !h.applyBlockPageConfig(w, req) {
 		return
 	}
-	writeData(w, h.Config.BlockPage)
+	writeData(w, h.currentConfig().BlockPage)
 }
 
 func (h *Handler) UploadBlockPageHTML(w http.ResponseWriter, r *http.Request) {
@@ -637,7 +637,7 @@ func (h *Handler) UploadBlockPageHTML(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_UPLOAD_NOT_HTML", "upload a .html or .htm file containing an HTML document or fragment")
 		return
 	}
-	next := h.Config.BlockPage
+	next := h.currentConfig().BlockPage
 	if templateID := strings.TrimSpace(r.FormValue("template_id")); templateID != "" {
 		next.TemplateID = templateID
 	}
@@ -649,7 +649,7 @@ func (h *Handler) UploadBlockPageHTML(w http.ResponseWriter, r *http.Request) {
 	if !h.applyBlockPageConfig(w, next) {
 		return
 	}
-	writeData(w, map[string]any{"config": h.Config.BlockPage, "filename": header.Filename, "bytes": len(body)})
+	writeData(w, map[string]any{"config": h.currentConfig().BlockPage, "filename": header.Filename, "bytes": len(body)})
 }
 
 func validBlockPageHTMLUpload(filename string, body []byte) bool {
@@ -680,7 +680,7 @@ func (h *Handler) DeleteCustomBlockPage(w http.ResponseWriter, r *http.Request) 
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
 	}
-	next := h.Config.BlockPage
+	next := h.currentConfig().BlockPage
 	next.CustomEnabled = false
 	next.CustomHTML = ""
 	if next.TemplateID == "" {
@@ -689,7 +689,7 @@ func (h *Handler) DeleteCustomBlockPage(w http.ResponseWriter, r *http.Request) 
 	if !h.applyBlockPageConfig(w, next) {
 		return
 	}
-	writeData(w, h.Config.BlockPage)
+	writeData(w, h.currentConfig().BlockPage)
 }
 
 func (h *Handler) applyBlockPageConfig(w http.ResponseWriter, next config.BlockPageConfig) bool {

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LogEntry } from '../../types/api';
 
 const apiMocks = vi.hoisted(() => ({
-  fetchLogs: vi.fn(),
+  fetchAttackMapAggregate: vi.fn(),
   fetchMonitorSummary: vi.fn(),
 }));
 
@@ -71,14 +71,17 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  apiMocks.fetchLogs.mockResolvedValue({
-    items: [
+  apiMocks.fetchAttackMapAggregate.mockResolvedValue({
+    events: [
       entry({ id: 'a1', category: 'sqli', severity: 'critical', country: 'CN' }),
       entry({ id: 'a2', category: 'xss', severity: 'high', country: 'CN', client_ip: '203.0.113.11' }),
       entry({ id: 'a3', category: 'bot', severity: 'medium', country: 'US', client_ip: '8.8.8.8', metadata: { lat: 40, lon: -74 } }),
       entry({ id: 'p1', action: 'pass', status_code: 200, severity: '', category: '', country: 'JP' }),
     ],
-    total: 4,
+    items: [
+      { key: 'CN|Shanghai', country_code: 'CN', country: 'CN', location_name: 'Shanghai', lat: 31.2, lon: 121.5, mappable: true, attacks: 2, blocked: 2, severity: 'critical', severity_rank: 4, top_category: 'sqli', categories: { sqli: 1, xss: 1 } },
+      { key: 'US|New York', country_code: 'US', country: 'US', location_name: 'New York', lat: 40, lon: -74, mappable: true, attacks: 1, blocked: 1, severity: 'medium', severity_rank: 2, top_category: 'bot', categories: { bot: 1 } },
+    ], total: 4, has_more: false, next: { time: new Date().toISOString(), id: 'p1' }, generated_at: new Date().toISOString(),
   });
   apiMocks.fetchMonitorSummary.mockResolvedValue({
     snapshot: { requests: 100, blocked: 3, process_count: 1, memory_alloc: 1 },
@@ -93,7 +96,7 @@ afterEach(() => {
 describe('AttackScreenPage', () => {
   it('loads logs + monitor and shows live attack metrics', async () => {
     renderPage();
-    await waitFor(() => expect(apiMocks.fetchLogs).toHaveBeenCalledWith({ limit: 1000 }));
+    await waitFor(() => expect(apiMocks.fetchAttackMapAggregate).toHaveBeenCalledWith({ limit: 1000, after: undefined, after_id: undefined }));
     await waitFor(() => expect(apiMocks.fetchMonitorSummary).toHaveBeenCalled());
 
     expect(await screen.findByText('attackMap.globalThreatMap')).toBeTruthy();
@@ -111,7 +114,7 @@ describe('AttackScreenPage', () => {
 
   it('shows threat level panel and timeline control', async () => {
     renderPage();
-    await waitFor(() => expect(apiMocks.fetchLogs).toHaveBeenCalled());
+    await waitFor(() => expect(apiMocks.fetchAttackMapAggregate).toHaveBeenCalled());
     expect(await screen.findByText('attackMap.threatLevel')).toBeTruthy();
     expect(screen.getByText('attackMap.timeline')).toBeTruthy();
     const slider = screen.getByLabelText('attackMap.timelineRangeAria') as HTMLInputElement;
@@ -123,7 +126,7 @@ describe('AttackScreenPage', () => {
 
   it('exposes an enabled refresh control after the first load', async () => {
     renderPage();
-    await waitFor(() => expect(apiMocks.fetchLogs).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(apiMocks.fetchAttackMapAggregate).toHaveBeenCalledTimes(1));
     const refresh = await screen.findByRole('button', { name: /attackMap\.refresh/i });
     await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(refresh);
@@ -136,10 +139,13 @@ describe('AttackScreenPage', () => {
 
   it('shows loading placeholders while first log fetch is pending', async () => {
     let resolve!: (value: unknown) => void;
-    apiMocks.fetchLogs.mockReturnValue(new Promise((ok) => { resolve = ok; }));
+    apiMocks.fetchAttackMapAggregate.mockReturnValue(new Promise((ok) => { resolve = ok; }));
     renderPage();
     expect(screen.getAllByText('common.loading').length).toBeGreaterThan(0);
-    resolve({ items: [entry({ id: 'late' })], total: 1 });
+    resolve({
+      items: [{ key: 'CN|late', country_code: 'CN', country: 'CN', lat: 31.2, lon: 121.5, mappable: true, attacks: 1, blocked: 1, severity: 'critical', severity_rank: 4, top_category: 'sqli' }],
+      events: [entry({ id: 'late' })], total: 1, has_more: false, generated_at: new Date().toISOString(),
+    });
     await waitFor(() => expect(screen.queryByText('common.loading')).toBeNull());
     const attackMetric = Array.from(document.querySelectorAll('.attack-screen-stats span'))
       .find((el) => el.textContent === 'attackMap.attacks');

@@ -77,6 +77,7 @@ type loginCAPTCHAProofState struct {
 type loginCAPTCHAReceiptState struct {
 	Owner   string
 	Peer    string
+	Created time.Time
 	Expires time.Time
 }
 
@@ -586,13 +587,19 @@ func (s *loginCAPTCHAState) storeReceiptForClient(owner, peer, receipt string, e
 	defer s.mu.Unlock()
 	s.maybePruneLocked(now)
 	ownerCount := 0
+	oldestKey := ""
+	var oldestCreated time.Time
 	for key, state := range s.receipts {
 		if state.Owner == owner {
 			ownerCount++
-			if ownerCount >= loginCAPTCHAReceiptPerClient {
-				delete(s.receipts, key)
+			if oldestKey == "" || state.Created.Before(oldestCreated) {
+				oldestKey = key
+				oldestCreated = state.Created
 			}
 		}
+	}
+	if ownerCount >= loginCAPTCHAReceiptPerClient && oldestKey != "" {
+		delete(s.receipts, oldestKey)
 	}
 	peerCount := 0
 	for _, state := range s.receipts {
@@ -609,7 +616,7 @@ func (s *loginCAPTCHAState) storeReceiptForClient(owner, peer, receipt string, e
 			return false
 		}
 	}
-	s.receipts[loginCAPTCHAFingerprint(receipt)] = loginCAPTCHAReceiptState{Owner: owner, Peer: peer, Expires: expires}
+	s.receipts[loginCAPTCHAFingerprint(receipt)] = loginCAPTCHAReceiptState{Owner: owner, Peer: peer, Created: now, Expires: expires}
 	return true
 }
 

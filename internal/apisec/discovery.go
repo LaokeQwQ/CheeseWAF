@@ -9,6 +9,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/google/uuid"
 )
 
 type Endpoint struct {
@@ -87,16 +88,21 @@ func normalizePath(uri string) string {
 }
 
 func looksVariable(part string) bool {
-	if len(part) >= 16 {
-		return true
+	if part == "" {
+		return false
 	}
-	digits := 0
+	allDigits := true
 	for _, r := range part {
-		if r >= '0' && r <= '9' {
-			digits++
+		if r < '0' || r > '9' {
+			allDigits = false
+			break
 		}
 	}
-	return digits > 0 && digits*2 >= len(part)
+	if allDigits {
+		return true
+	}
+	_, err := uuid.Parse(part)
+	return err == nil
 }
 
 func ignored(path string, prefixes []string) bool {
@@ -109,7 +115,7 @@ func ignored(path string, prefixes []string) bool {
 }
 
 func statusFamily(code int) string {
-	if code == 0 {
+	if code < 100 || code > 599 {
 		return "unknown"
 	}
 	return string(rune('0'+(code/100))) + "xx"

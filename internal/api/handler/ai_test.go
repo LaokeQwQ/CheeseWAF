@@ -21,6 +21,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
@@ -1353,6 +1354,57 @@ func TestContinueAIApprovalDoesNotAutoApprovePendingRequest(t *testing.T) {
 	}
 }
 
+func TestExecuteAssistantToolPublishesPendingApproval(t *testing.T) {
+	cfg := config.Default()
+	hub := realtime.NewHub()
+	messages := make(chan *realtime.Message, 1)
+	transport := &handlerRealtimeTransport{messages: messages}
+	hub.Add(transport)
+	t.Cleanup(func() { hub.Remove(transport) })
+	handler := New(Options{Config: &cfg, Realtime: hub})
+
+	requester := &middleware.Claims{Subject: "requester-id", ID: "requester-session", Username: "requester", Role: "admin"}
+	ctx := context.WithValue(context.Background(), middleware.UserContextKey, requester)
+	call, err := handler.executeAssistantTool(ctx, "set_protection_level", map[string]any{"area": "bot_cc", "level": "high"}, "")
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	select {
+	case msg := <-messages:
+		payload, ok := msg.Payload.(realtime.ApprovalEvent)
+		if msg.Type != realtime.MsgApproval || !ok || payload.Status != string(ai.ApprovalPending) {
+			t.Fatalf("unexpected realtime approval message: %+v", msg)
+		}
+		encoded, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal realtime approval message: %v", err)
+		}
+		for _, protected := range []string{call.Approval.ID, call.Approval.RequesterSubject, "bot_cc", "high"} {
+			if protected != "" && bytes.Contains(encoded, []byte(protected)) {
+				t.Fatalf("realtime approval event exposed object-scoped value %q: %s", protected, encoded)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending approval was not published")
+	}
+}
+
+type handlerRealtimeTransport struct {
+	messages chan *realtime.Message
+}
+
+func (t *handlerRealtimeTransport) Send(_ context.Context, msg *realtime.Message) error {
+	t.messages <- msg
+	return nil
+}
+
+func (*handlerRealtimeTransport) Receive(context.Context) (*realtime.Message, error) {
+	return nil, errors.New("receive unsupported")
+}
+
+func (*handlerRealtimeTransport) Close() error { return nil }
+func (*handlerRealtimeTransport) Type() string { return "test" }
+
 type recordingAISink struct {
 	items  []storage.LogEntry
 	filter storage.LogFilter
@@ -1506,5 +1558,54 @@ func TestSystemSummaryToolRedactsSiteIdentityAndAdminListener(t *testing.T) {
 	}
 	if v, _ := modes["observe"].(float64); v != 1 {
 		t.Fatalf("expected 1 site in observe mode, got %v", modes["observe"])
+	}
+}
+
+func TestValidateAIAPIBaseFailsClosedOnDNSLookupError(t *testing.T) {
+	previous := lookupAIAPIBaseIP
+	lookupAIAPIBaseIP = func(string) ([]net.IP, error) {
+		return nil, errors.New("resolver unavailable")
+	}
+	t.Cleanup(func() { lookupAIAPIBaseIP = previous })
+
+	err := validateAIAPIBase("https://model.example.test/v1", false)
+	if err == nil || !strings.Contains(err.Error(), "lookup") {
+		t.Fatalf("DNS lookup failure was not rejected: %v", err)
+	}
+}
+
+func TestAssistantSensitiveToolsRequireExplicitCommands(t *testing.T) {
+	h := &Handler{}
+	for _, message := range []string{
+		"How would disabling captcha affect false positives?",
+		"文档里提到开启验证码会增加一步验证",
+		"Why does setting the protection level to high increase false positives?",
+		"如果把防护等级设置为高，会发生什么？",
+	} {
+		for _, intent := range h.assistantToolIntents(message) {
+			if intent.Name == "set_bot_challenge" || intent.Name == "set_protection_level" {
+				t.Fatalf("informational message %q produced sensitive intent %+v", message, intent)
+			}
+		}
+	}
+
+	tests := []struct {
+		message string
+		name    string
+	}{
+		{message: "Please enable slider captcha", name: "set_bot_challenge"},
+		{message: "请关闭验证码", name: "set_bot_challenge"},
+		{message: "Set the web protection level to high", name: "set_protection_level"},
+		{message: "请把 API 防护等级设置为严格", name: "set_protection_level"},
+	}
+	for _, test := range tests {
+		intents := h.assistantToolIntents(test.message)
+		found := false
+		for _, intent := range intents {
+			found = found || intent.Name == test.name
+		}
+		if !found {
+			t.Fatalf("explicit command %q did not produce %s: %+v", test.message, test.name, intents)
+		}
 	}
 }

@@ -125,6 +125,7 @@ func TestSQLDetectorKeepsBenignDocumentationClean(t *testing.T) {
 		`{"text":"The char() and concat() SQL functions are documented here."}`,
 		`{"text":"SQL tutorials may show /* block comments */ and -- line comments without executable user input."}`,
 		`{"text":"Oracle DBMS_LOCK.SLEEP and SQL Server OPENROWSET are hardening topics in this article."}`,
+		`{"text":"SQL Server EXEC sp_configure is documented here; this page does not execute user input."}`,
 	}
 	for _, body := range cases {
 		t.Run(body, func(t *testing.T) {
@@ -480,6 +481,34 @@ func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
 	}
 }
 
+func TestXSSDetectorBlocksSMILAnimationHref(t *testing.T) {
+	payloads := []string{
+		`<svg><animate attributeName="href" values="javascript:alert(1)" /></svg>`,
+		`<svg><animate values="javascript:alert(1)" attributeName="xlink:href" /></svg>`,
+		`<svg><set attributeName="href" value="javascript:alert(1)" /></svg>`,
+		`<svg><set value="javascript:alert(1)" attributeName="xlink:href" /></svg>`,
+	}
+	for _, payload := range payloads {
+		t.Run(payload, func(t *testing.T) {
+			if !executableXSSContext(normalize(payload)) {
+				t.Fatal("SMIL javascript href was not recognized as executable XSS context")
+			}
+			req, _ := http.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(payload), nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewAnalyzer("block", 5, "xss").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected || result.Category != "xss" {
+				t.Fatalf("expected SMIL XSS detection, got %+v", result)
+			}
+		})
+	}
+}
+
 func TestXSSDetectorKeepsBenignDocumentationClean(t *testing.T) {
 	cases := []string{
 		`{"text":"This page explains why javascript: URLs are dangerous, but includes no tag attribute."}`,
@@ -620,6 +649,7 @@ func TestRCEDetectorKeepsBenignCommandDocumentationClean(t *testing.T) {
 	cases := []string{
 		`{"text":"PowerShell EncodedCommand and cmd /c are documented for defenders, without a runnable payload."}`,
 		`{"text":"Use curl https://example.com/install.sh to download an installer, then review it manually."}`,
+		`{"expression":"$((12 + 30))"}`,
 	}
 	for _, body := range cases {
 		t.Run(body, func(t *testing.T) {
@@ -637,5 +667,157 @@ func TestRCEDetectorKeepsBenignCommandDocumentationClean(t *testing.T) {
 				t.Fatalf("expected benign RCE documentation to pass, got %+v", result)
 			}
 		})
+	}
+}
+
+func TestRCEDetectorsKeepPureArithmeticExpansionClean(t *testing.T) {
+	for name, detector := range map[string]engine.Detector{
+		"standalone": NewRCEDetector("block"),
+		"analyzer":   NewAnalyzer("block", 5, "rce"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "/run?cmd="+url.QueryEscape("$((12 + 30))"), nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := detector.Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result != nil {
+				t.Fatalf("expected pure arithmetic expansion to pass, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestRCEDetectorsStillBlockCommandSubstitution(t *testing.T) {
+	for name, detector := range map[string]engine.Detector{
+		"standalone": NewRCEDetector("block"),
+		"analyzer":   NewAnalyzer("block", 5, "rce"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "/run?cmd="+url.QueryEscape("$(id)"), nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := detector.Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected || result.Category != "rce" {
+				t.Fatalf("expected command substitution detection, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestSQLDetectorCapsDetectionPayload(t *testing.T) {
+	target := "/search?q=" + url.QueryEscape("1 UNION ALL SELECT password FROM users "+strings.Repeat("x", 2048))
+	for name, detector := range map[string]engine.Detector{
+		"standalone": NewSQLDetector("block"),
+		"analyzer":   NewAnalyzer("block", 5, "sqli"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, target, nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := detector.Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected {
+				t.Fatalf("expected SQL detection, got %+v", result)
+			}
+			if len(result.Payload) > maxSQLPayloadBytes {
+				t.Fatalf("payload length=%d, want <=%d", len(result.Payload), maxSQLPayloadBytes)
+			}
+		})
+	}
+}
+
+func TestAnalyzerConsumesReviewedSQLFingerprints(t *testing.T) {
+	payloads := []string{
+		"SELECT/**/password",
+		"1 OR 1=2-- trailing",
+		"UNION ALL SELECT",
+		"ORDER BY 9",
+		"WAITFOR DELAY '00:00:05'",
+		"EXEC sp_configure",
+		"||(SELECT secret FROM users)",
+	}
+	for _, payload := range payloads {
+		t.Run(payload, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(payload), nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewAnalyzer("block", 5, "sqli").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected || result.Category != "sqli" {
+				t.Fatalf("expected reviewed SQL fingerprint detection, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestReviewedExecFingerprintRequiresSQLContext(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{name: "leading whitespace", payload: "  EXEC sp_configure", want: true},
+		{name: "statement delimiter with whitespace", payload: "1 ;   EXECUTE sp_configure", want: true},
+		{name: "quoted statement delimiter", payload: "1'\" EXEC sp_configure", want: true},
+		{name: "ordinary prose", payload: "the documentation says execute this command", want: false},
+		{name: "method call", payload: "$stmt->execute([$id])", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsReviewedSQLFingerprint("Ew", tc.payload); got != tc.want {
+				t.Fatalf("payload %q accepted=%v, want %v", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeVariantsHonorConfiguredDepth(t *testing.T) {
+	threeLayers := "<script>alert(1)</script>"
+	for range 3 {
+		threeLayers = url.QueryEscape(threeLayers)
+	}
+	var scratch [maxDecodeVariants]decodedVariant
+	depthOne := decodeVariantsInto(scratch[:0], threeLayers, 1)
+	for _, variant := range depthOne {
+		if variant.text == "<script>alert(1)</script>" {
+			t.Fatal("depth 1 decoded more than one transformation")
+		}
+	}
+
+	raw := "<script>alert(1)</script>"
+	for range 7 {
+		raw = url.QueryEscape(raw)
+	}
+	shallow := decodeVariantsInto(scratch[:0], raw, 6)
+	for _, variant := range shallow {
+		if variant.text == "<script>alert(1)</script>" {
+			t.Fatal("depth 6 unexpectedly decoded seven layers")
+		}
+	}
+	deep := decodeVariantsInto(scratch[:0], raw, 8)
+	found := false
+	for _, variant := range deep {
+		found = found || variant.text == "<script>alert(1)</script>"
+	}
+	if !found {
+		t.Fatalf("depth 8 did not reveal payload: %+v", deep)
 	}
 }

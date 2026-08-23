@@ -154,27 +154,27 @@ CheeseWAF 针对不同基础设施环境提供三种独立的部署方式。
 
 #### 步骤 1：下载并解压发行包
 
-从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载 **Alpha-** 预发布包，或从 Actions 产物里取同一套文件。按系统和 CPU 选：
+从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载 **Alpha-** 预发布包，或从 Actions 产物里取同一套文件。版本字段在 `master` 为 `beta`、`canary` 为 `PreTest`、`dev` 为 `dev`；下列通配符覆盖全部渠道：
 
 | 文件 | 平台 |
 | --- | --- |
-| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
-| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
-| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux 龙芯 |
-| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 单文件 CLI |
-| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 单文件 CLI |
-| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 便携目录 |
-| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 便携目录 |
+| `cheesewaf-amd64-linux-*.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*.tar.gz` | Linux 龙芯 |
+| `cheesewaf-amd64-darwin-*.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*.exe` | Windows x86_64 单文件 CLI |
+| `cheesewaf-arm64-windows-*.exe` | Windows ARM64 单文件 CLI |
+| `cheesewaf-amd64-windows-*.zip` | Windows x86_64 便携目录 |
+| `cheesewaf-arm64-windows-*.zip` | Windows ARM64 便携目录 |
 
 ```bash
 # Linux x86_64 示例
-tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
+tar -xzf cheesewaf-amd64-linux-*.tar.gz
 cd cheesewaf-*
 ```
 
-Linux ARM64、龙芯用 `cheesewaf-arm64-linux-*-PreTest.tar.gz` 或 `cheesewaf-loong64-linux-*-PreTest.tar.gz`，步骤相同。
+Linux ARM64、龙芯用 `cheesewaf-arm64-linux-*.tar.gz` 或 `cheesewaf-loong64-linux-*.tar.gz`，步骤相同。
 
 #### 步骤 2：安装程序文件与目录授权
 
@@ -325,7 +325,7 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 
 ### 4. macOS 部署（DMG）
 
-1. 下载 `cheesewaf-arm64-darwin-*-PreTest.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*-PreTest.dmg`（Intel）。
+1. 下载 `cheesewaf-arm64-darwin-*.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*.dmg`（Intel）。
 2. 打开镜像，把 **CheeseWAF** 拖进「应用程序」。
 3. 从启动台或「应用程序」打开 CheeseWAF。会启动本地控制面板，用来启动、停止和打开 Web 控制台。
 4. 若系统提示已损坏，是拦截了未公证的 PreTest 包。双击盘里的 **Fix Gatekeeper.command**，或在终端执行：
@@ -335,7 +335,7 @@ xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
 open /Applications/CheeseWAF.app
 ```
 
-运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*-PreTest.tar.gz`。
+运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*.tar.gz`。
 
 ---
 
@@ -382,9 +382,9 @@ CheeseWAF 提供三种互通的管理方式：
 
 ```yaml
 server:
-  listen: "0.0.0.0:8080"         # 业务转发流量监听地址
-  admin_listen: "127.0.0.1:9443"   # 管理后台监听地址
-  admin_public: false            # 是否对公网开放管理端（开启需同时配置 TLS）
+  listen: "127.0.0.1:8080"       # 安全的本机默认值；仅在明确需要时对外监听
+  admin_listen: "127.0.0.1:9443" # 管理后台监听地址
+  admin_public: false             # 对公网开放管理端时还必须配置 TLS
 
 sites:
   - id: "site-demo"
@@ -394,26 +394,28 @@ sites:
       - address: "192.168.1.100:8080"
         weight: 1
     waf:
+      enabled: true
+      mode: "block"
       paranoia_level: 3          # 防护等级（0～5）
+      semantic_policy:
+        auto_agree: true         # 自动采纳高危研判结果
 
 protection:
-  rate_limit:
+  ratelimit:
     enabled: true
-    requests_per_second: 100
-  ip_block:
-    enabled: true
+    default:
+      requests: 100
+      window: 60s
+      burst: 20
+  ip:
+    blacklist: []
+    whitelist: ["127.0.0.1", "::1"]
 
 ai:
   enabled: true
   provider: "openai"
   api_base: "https://api.example.com/v1"
   model: "gpt-4o-mini"
-
-sites:
-  - id: "site-demo"
-    waf:
-      semantic_policy:
-        auto_agree: true         # 自动采纳高危研判结果
 ```
 
 ---

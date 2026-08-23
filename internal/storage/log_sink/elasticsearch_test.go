@@ -2,6 +2,7 @@ package log_sink
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +32,30 @@ func TestElasticsearchQueryBuildsFilters(t *testing.T) {
 	filters, ok := boolQuery["filter"].([]map[string]any)
 	if !ok || len(filters) < 5 {
 		t.Fatalf("expected filters, got %+v", boolQuery["filter"])
+	}
+}
+
+func TestElasticsearchQueryUsesLiteralSearchAndNonEmptySecurityCategory(t *testing.T) {
+	query := elasticsearchQuery(storage.LogFilter{
+		Search:    `trace:(foo OR *)`,
+		Kind:      "security",
+		AfterTime: time.Date(2026, 8, 22, 8, 0, 0, 0, time.UTC),
+		AfterID:   "event-10",
+		Ascending: true,
+		Limit:     25,
+	})
+	raw, err := json.Marshal(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{`"multi_match"`, `"phrase_prefix"`, `trace:(foo OR *)`, `"wildcard"`, `"?*"`, `detector_id.keyword`, `severity.keyword`, `monitor`, `"gt"`, `"order":"asc"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("query missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, `"query_string"`) || strings.Contains(text, `"exists"`) {
+		t.Fatalf("query interprets search syntax or treats empty categories as security: %s", text)
 	}
 }
 

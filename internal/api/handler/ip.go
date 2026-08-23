@@ -65,12 +65,12 @@ func (h *Handler) ListIPRules(w http.ResponseWriter, r *http.Request) {
 			logs = items
 		}
 	}
-	profiles, err := ipprotect.BuildReputationProfiles(h.Config.Protection.IP, logs)
+	profiles, err := ipprotect.BuildReputationProfiles(h.currentConfig().Protection.IP, logs)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "IP_POLICY_ERROR", err.Error())
 		return
 	}
-	view := protectionConfigView(h.Config.Protection)
+	view := protectionConfigView(h.currentConfig().Protection)
 	writeData(w, map[string]any{
 		"whitelist":            view.IP.Whitelist,
 		"blacklist":            view.IP.Blacklist,
@@ -85,7 +85,7 @@ func (h *Handler) ListIPRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Protection(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, protectionConfigView(h.Config.Protection))
+	writeData(w, protectionConfigView(h.currentConfig().Protection))
 }
 
 func (h *Handler) commitProtectionMutation(w http.ResponseWriter, mutate func(*config.ProtectionConfig) error) (*config.Config, bool) {
@@ -266,7 +266,7 @@ func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
 	if !decodeOptional(w, r, &req, defaultJSONBodyLimit, "invalid threat intelligence sync request") {
 		return
 	}
-	providers := selectedProviders(h.Config.Protection.IP.Providers, req.ProviderID)
+	providers := selectedProviders(h.currentConfig().Protection.IP.Providers, req.ProviderID)
 	var total int
 	var merged []config.ThreatIntelConfig
 	results := make([]map[string]any, 0, len(providers))
@@ -285,7 +285,7 @@ func (h *Handler) SyncThreatIntel(w http.ResponseWriter, r *http.Request) {
 		result["imported"] = len(imported)
 		results = append(results, result)
 	}
-	finalTotal := len(h.Config.Protection.IP.ThreatIntel)
+	finalTotal := len(h.currentConfig().Protection.IP.ThreatIntel)
 	if total > 0 {
 		committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
 			next.IP.ThreatIntel = ipprotect.MergeThreatIntel(next.IP.ThreatIntel, merged)
@@ -304,7 +304,7 @@ func (h *Handler) TestThreatIntelProvider(w http.ResponseWriter, r *http.Request
 	if !decode(w, r, &req) {
 		return
 	}
-	provider := resolveThreatIntelProviderForTest(h.Config.Protection.IP.Providers, req.ThreatIntelProviderConfig, req.ProviderID)
+	provider := resolveThreatIntelProviderForTest(h.currentConfig().Protection.IP.Providers, req.ThreatIntelProviderConfig, req.ProviderID)
 	if strings.TrimSpace(provider.Endpoint) == "" && strings.TrimSpace(req.ProviderID) != "" {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "provider not found")
 		return
@@ -325,7 +325,7 @@ func (h *Handler) LookupThreatIntel(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	providers := selectedProviders(h.Config.Protection.IP.Providers, req.ProviderID)
+	providers := selectedProviders(h.currentConfig().Protection.IP.Providers, req.ProviderID)
 	if len(providers) == 0 {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "provider not found")
 		return
@@ -352,7 +352,7 @@ func (h *Handler) LookupThreatIntel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ExportThreatIntel(w http.ResponseWriter, r *http.Request) {
-	profiles, err := ipprotect.BuildReputationProfiles(h.Config.Protection.IP, nil)
+	profiles, err := ipprotect.BuildReputationProfiles(h.currentConfig().Protection.IP, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "IP_POLICY_ERROR", err.Error())
 		return

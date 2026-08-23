@@ -84,8 +84,8 @@ func (h *Handler) VerifyCaptchaLabChallenge(w http.ResponseWriter, r *http.Reque
 
 func (h *Handler) captchaLabOptions(claims *middleware.Claims, kind captcha.BehaviorType, version int) captcha.BehaviorOptions {
 	ttl := 2 * time.Minute
-	if h != nil && h.Config != nil && h.Config.Protection.Bot.CAPTCHAChallengeTTL > 0 {
-		ttl = h.Config.Protection.Bot.CAPTCHAChallengeTTL
+	if h != nil && h.currentConfig() != nil && h.currentConfig().Protection.Bot.CAPTCHAChallengeTTL > 0 {
+		ttl = h.currentConfig().Protection.Bot.CAPTCHAChallengeTTL
 	}
 	return captcha.BehaviorOptions{
 		Secret:         h.loginCaptchaSecret(),

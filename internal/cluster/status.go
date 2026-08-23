@@ -34,9 +34,7 @@ func FromConfigWithRuntime(cfg *config.Config, registry *HeartbeatRegistry, lang
 		return standaloneStatus(lang)
 	}
 	if !cfg.Cluster.Enabled || cfg.Deployment.Mode != "cluster" {
-		status := standaloneStatus(lang)
-		status.ConsensusProvider = defaultConsensusProvider(cfg.Cluster.Consensus.Provider)
-		return status
+		return standaloneStatus(lang)
 	}
 	mode := strings.TrimSpace(cfg.Cluster.HAMode)
 	if mode == "" {
@@ -50,7 +48,7 @@ func FromConfigWithRuntime(cfg *config.Config, registry *HeartbeatRegistry, lang
 		CanWriteConfig:    true,
 		CanReceiveTraffic: true,
 		NodeCount:         len(cfg.Cluster.Nodes),
-		ConsensusProvider: defaultConsensusProvider(cfg.Cluster.Consensus.Provider),
+		ConsensusProvider: configuredConsensusProvider(cfg.Cluster.Consensus.Provider),
 	}
 	for _, node := range cfg.Cluster.Nodes {
 		switch node.Role {
@@ -81,8 +79,47 @@ func FromConfigWithRuntime(cfg *config.Config, registry *HeartbeatRegistry, lang
 			status.ProtectionModeReason = label(lang, "等待多数节点心跳确认后允许配置变更", "Waiting for majority node heartbeats before allowing configuration writes")
 		}
 	}
+	applyConsensusSafety(&status, cfg, mode, lang)
 	status.ProductModeLabel = ModeLabel(mode, lang)
 	return status
+}
+
+func applyConsensusSafety(status *Status, cfg *config.Config, mode, lang string) {
+	if status == nil || cfg == nil {
+		return
+	}
+	provider := configuredConsensusProvider(cfg.Cluster.Consensus.Provider)
+	sharedConfiguration := mode != "single-node" || status.NodeCount > 1
+	switch {
+	case provider == "builtin" && sharedConfiguration:
+		status.MajorityConfirmed = false
+		status.CanWriteConfig = false
+		status.ProtectionModeReason = label(lang, "多节点或共享配置集群必须使用 etcd；内置共识仅限单节点", "Multi-node or shared-configuration clusters require etcd; builtin consensus is single-node only")
+	case provider == "etcd" && !usableEtcdEndpoints(cfg.Cluster.Consensus.EtcdEndpoints):
+		status.MajorityConfirmed = false
+		status.CanWriteConfig = false
+		status.ProtectionModeReason = label(lang, "已选择 etcd 共识，但未配置有效端点", "etcd consensus is selected but no valid endpoints are configured")
+	case provider == "etcd" && sharedConfiguration:
+		status.MajorityConfirmed = false
+		status.CanWriteConfig = false
+		status.ProtectionModeReason = label(lang, "etcd 共识提供程序尚未接入；拒绝回退到内置心跳选主", "etcd consensus requires an etcd-backed coordinator; refusing builtin heartbeat election")
+	case provider != "builtin" && provider != "etcd":
+		status.MajorityConfirmed = false
+		status.CanWriteConfig = false
+		status.ProtectionModeReason = label(lang, "集群共识提供程序未配置或不受支持", "Cluster consensus provider is not configured or unsupported")
+	}
+}
+
+func usableEtcdEndpoints(endpoints []string) bool {
+	if len(endpoints) == 0 {
+		return false
+	}
+	for _, endpoint := range endpoints {
+		if strings.TrimSpace(endpoint) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func ModeLabel(mode, lang string) string {
@@ -115,9 +152,10 @@ func standaloneStatus(lang string) Status {
 	}
 }
 
-func defaultConsensusProvider(provider string) string {
-	if strings.TrimSpace(provider) == "" {
-		return "builtin"
+func configuredConsensusProvider(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return "unconfigured"
 	}
 	return provider
 }

@@ -1,26 +1,25 @@
 package consensus
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 )
 
-func TestEvaluateElectsLowestOnlineVoter(t *testing.T) {
-	c := NewCoordinator(Options{LocalNodeID: "waf-b", Provider: ProviderBuiltin})
+func TestEvaluateElectsOnlyLocalBuiltinNode(t *testing.T) {
+	c := NewCoordinator(Options{LocalNodeID: "waf-a", Provider: ProviderBuiltin})
 	nodes := []cluster.RuntimeNodeStatus{
-		{NodeID: "waf-b", Role: "waf", State: cluster.NodeStateOnline, CanWriteConfig: true},
 		{NodeID: "waf-a", Role: "waf", State: cluster.NodeStateOnline, CanWriteConfig: true},
-		{NodeID: "mon-z", Role: "monitor", State: cluster.NodeStateStale, CanWriteConfig: true},
 	}
-	status := cluster.Status{MajorityConfirmed: true, CanWriteConfig: true, OnlineVotingCount: 2, VotingNodeCount: 2}
+	status := cluster.Status{Mode: "single-node", MajorityConfirmed: true, CanWriteConfig: true, OnlineVotingCount: 1, VotingNodeCount: 1}
 	snap := c.Evaluate(status, nodes)
 	if snap.LeaderID != "waf-a" {
 		t.Fatalf("leader=%q want waf-a", snap.LeaderID)
 	}
-	if snap.LocalRole != RoleFollower {
-		t.Fatalf("local role=%q want follower", snap.LocalRole)
+	if snap.LocalRole != RoleLeader {
+		t.Fatalf("local role=%q want leader", snap.LocalRole)
 	}
 }
 
@@ -31,7 +30,7 @@ func TestProposeConfigVersionRequiresWritableLeader(t *testing.T) {
 	nodes := []cluster.RuntimeNodeStatus{
 		{NodeID: "waf-a", Role: "waf", State: cluster.NodeStateOnline, CanWriteConfig: true},
 	}
-	status := cluster.Status{MajorityConfirmed: true, CanWriteConfig: true, OnlineVotingCount: 1, VotingNodeCount: 1}
+	status := cluster.Status{Mode: "single-node", MajorityConfirmed: true, CanWriteConfig: true, OnlineVotingCount: 1, VotingNodeCount: 1}
 	rec, err := c.ProposeConfigVersion("v2", "sites updated", status, nodes)
 	if err != nil {
 		t.Fatal(err)
@@ -46,34 +45,47 @@ func TestProposeConfigVersionRequiresWritableLeader(t *testing.T) {
 	}
 }
 
-func TestFollowerCannotPropose(t *testing.T) {
-	c := NewCoordinator(Options{LocalNodeID: "waf-b", Provider: ProviderBuiltin})
+func TestBuiltinCoordinatorRejectsSharedCluster(t *testing.T) {
+	c := NewCoordinator(Options{LocalNodeID: "waf-a", Provider: ProviderBuiltin})
 	nodes := []cluster.RuntimeNodeStatus{
 		{NodeID: "waf-a", Role: "waf", State: cluster.NodeStateOnline, CanWriteConfig: true},
 		{NodeID: "waf-b", Role: "waf", State: cluster.NodeStateOnline, CanWriteConfig: true},
 	}
-	status := cluster.Status{MajorityConfirmed: true, CanWriteConfig: true, OnlineVotingCount: 2, VotingNodeCount: 2}
-	if _, err := c.ProposeConfigVersion("v9", "from follower", status, nodes); err == nil {
-		t.Fatal("expected follower propose to fail")
+	status := cluster.Status{Mode: "single-node", MajorityConfirmed: true, CanWriteConfig: true, OnlineVotingCount: 2, VotingNodeCount: 2}
+	snap := c.Evaluate(status, nodes)
+	if snap.CanWriteConfig || snap.MajorityConfirmed || snap.LeaderID != "" {
+		t.Fatalf("builtin coordinator did not fail closed for shared cluster: %+v", snap)
+	}
+	if !strings.Contains(snap.Reason, "requires etcd") {
+		t.Fatalf("reason=%q, want clear etcd requirement", snap.Reason)
+	}
+	if _, err := c.ProposeConfigVersion("v2", "unsafe", status, nodes); err == nil || !strings.Contains(err.Error(), "requires etcd") {
+		t.Fatalf("expected shared-cluster proposal rejection, got %v", err)
 	}
 }
 
-func TestMonitorIsObserverNotLeaderUnlessOnlyVoter(t *testing.T) {
-	c := NewCoordinator(Options{LocalNodeID: "mon-a", Provider: ProviderBuiltin})
+func TestEtcdSelectionNeverUsesBuiltinHeartbeatElection(t *testing.T) {
+	c := NewCoordinator(Options{
+		LocalNodeID:   "waf-a",
+		Provider:      ProviderEtcd,
+		EtcdEndpoints: []string{"https://etcd-a.internal:2379"},
+	})
 	nodes := []cluster.RuntimeNodeStatus{
 		{NodeID: "waf-a", Role: "waf", State: cluster.NodeStateOnline, CanWriteConfig: true},
-		{NodeID: "mon-a", Role: "monitor", State: cluster.NodeStateOnline, CanWriteConfig: true},
+		{NodeID: "waf-b", Role: "waf", State: cluster.NodeStateOnline, CanWriteConfig: true},
 	}
-	status := cluster.Status{MajorityConfirmed: true, CanWriteConfig: true, OnlineVotingCount: 2, VotingNodeCount: 2}
+	status := cluster.Status{Mode: "minimum-ha", MajorityConfirmed: true, CanWriteConfig: true, OnlineVotingCount: 2, VotingNodeCount: 2}
 	snap := c.Evaluate(status, nodes)
-	if snap.LeaderID != "mon-a" && snap.LeaderID != "waf-a" {
-		// Lowest ID wins; mon-a < waf-a lexicographically? "mon-a" vs "waf-a" — mon-a is lower.
-		t.Fatalf("leader=%q", snap.LeaderID)
+	if snap.Provider != ProviderEtcd || !snap.EtcdConfigured {
+		t.Fatalf("unexpected etcd snapshot metadata: %+v", snap)
 	}
-	if snap.LeaderID == "mon-a" && snap.LocalRole != RoleLeader {
-		t.Fatalf("local role=%q", snap.LocalRole)
+	if snap.CanWriteConfig || snap.MajorityConfirmed || snap.LeaderID != "" || snap.LocalRole != RoleObserver {
+		t.Fatalf("etcd selection fell back to builtin election: %+v", snap)
 	}
-	if snap.LeaderID == "waf-a" && snap.LocalRole != RoleFollower {
-		t.Fatalf("local role=%q want follower", snap.LocalRole)
+	if !strings.Contains(snap.Reason, "etcd-backed coordinator") {
+		t.Fatalf("reason=%q, want unavailable etcd coordinator explanation", snap.Reason)
+	}
+	if _, err := c.ProposeConfigVersion("v2", "unsafe", status, nodes); err == nil || !strings.Contains(err.Error(), "etcd-backed coordinator") {
+		t.Fatalf("expected etcd proposal rejection, got %v", err)
 	}
 }

@@ -1,7 +1,6 @@
-// Package consensus implements a lightweight built-in coordinator for M3.
-// It is not a full Raft/etcd replica set: leadership is derived from live
-// heartbeats and a stable node ordering so protection mode and config freezes
-// have a single writable coordinator.
+// Package consensus implements the single-node built-in coordinator for M3.
+// Shared clusters must use a real external consensus backend; heartbeat state
+// is never treated as an etcd substitute.
 package consensus
 
 import (
@@ -17,6 +16,7 @@ import (
 const (
 	ProviderBuiltin = "builtin"
 	ProviderEtcd    = "etcd"
+	ProviderUnknown = "unconfigured"
 
 	RoleLeader   = "leader"
 	RoleFollower = "follower"
@@ -71,7 +71,7 @@ type Options struct {
 func NewCoordinator(opts Options) *Coordinator {
 	provider := strings.TrimSpace(strings.ToLower(opts.Provider))
 	if provider == "" {
-		provider = ProviderBuiltin
+		provider = ProviderUnknown
 	}
 	maxLog := opts.MaxLog
 	if maxLog <= 0 {
@@ -93,7 +93,11 @@ func NewCoordinator(opts Options) *Coordinator {
 // Evaluate derives leadership from online voting nodes (lowest node ID wins).
 func (c *Coordinator) Evaluate(status cluster.Status, nodes []cluster.RuntimeNodeStatus) Snapshot {
 	if c == nil {
-		return Snapshot{Provider: ProviderBuiltin, MajorityConfirmed: true, CanWriteConfig: true}
+		return Snapshot{
+			Provider:  ProviderUnknown,
+			LocalRole: RoleObserver,
+			Reason:    "consensus coordinator unavailable",
+		}
 	}
 	c.mu.RLock()
 	provider := c.provider
@@ -111,10 +115,33 @@ func (c *Coordinator) Evaluate(status cluster.Status, nodes []cluster.RuntimeNod
 		CanWriteConfig:    status.CanWriteConfig,
 		OnlineVoters:      status.OnlineVotingCount,
 		VotingNodes:       status.VotingNodeCount,
-		EtcdConfigured:    provider == ProviderEtcd && len(etcd) > 0,
+		EtcdConfigured:    provider == ProviderEtcd && usableEtcdEndpoints(etcd),
 		EtcdEndpoints:     etcd,
 		RecentVersions:    logCopy,
 		Reason:            status.ProtectionModeReason,
+	}
+	if provider != ProviderBuiltin {
+		snap.MajorityConfirmed = false
+		snap.CanWriteConfig = false
+		snap.LocalRole = RoleObserver
+		switch {
+		case provider == ProviderEtcd && !snap.EtcdConfigured:
+			snap.Reason = "etcd consensus provider selected but no endpoints are configured"
+		case provider == ProviderEtcd:
+			snap.Reason = "etcd consensus provider requires an etcd-backed coordinator; refusing builtin heartbeat election"
+		case provider == ProviderUnknown:
+			snap.Reason = "consensus provider is not configured"
+		default:
+			snap.Reason = fmt.Sprintf("unsupported consensus provider %q", provider)
+		}
+		return snap
+	}
+	if builtinSharedConfiguration(status, nodes) {
+		snap.MajorityConfirmed = false
+		snap.CanWriteConfig = false
+		snap.LocalRole = RoleObserver
+		snap.Reason = "multi-node or shared-configuration cluster requires etcd; builtin consensus is single-node only"
+		return snap
 	}
 
 	voters := onlineVotingIDs(nodes)
@@ -140,9 +167,6 @@ func (c *Coordinator) Evaluate(status cluster.Status, nodes []cluster.RuntimeNod
 		} else {
 			snap.LocalRole = RoleObserver
 		}
-	}
-	if provider == ProviderEtcd && !snap.EtcdConfigured {
-		snap.Reason = "etcd provider selected but no endpoints configured; operating on builtin heartbeat majority only"
 	}
 	return snap
 }
@@ -194,10 +218,30 @@ func (c *Coordinator) SetProvider(provider string, etcd []string) {
 	defer c.mu.Unlock()
 	provider = strings.TrimSpace(strings.ToLower(provider))
 	if provider == "" {
-		provider = ProviderBuiltin
+		provider = ProviderUnknown
 	}
 	c.provider = provider
 	c.etcd = append([]string(nil), etcd...)
+}
+
+func usableEtcdEndpoints(endpoints []string) bool {
+	if len(endpoints) == 0 {
+		return false
+	}
+	for _, endpoint := range endpoints {
+		if strings.TrimSpace(endpoint) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func builtinSharedConfiguration(status cluster.Status, nodes []cluster.RuntimeNodeStatus) bool {
+	mode := strings.TrimSpace(status.Mode)
+	if mode != "" && mode != "standalone" && mode != "single-node" {
+		return true
+	}
+	return status.VotingNodeCount > 1 || len(nodes) > 1
 }
 
 func onlineVotingIDs(nodes []cluster.RuntimeNodeStatus) []string {

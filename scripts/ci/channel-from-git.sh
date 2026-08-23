@@ -6,7 +6,7 @@ case "$branch" in
     echo stable
     ;;
   canary)
-    echo canary
+    echo PreTest
     ;;
   dev)
     echo dev

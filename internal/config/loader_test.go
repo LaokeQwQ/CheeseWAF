@@ -860,3 +860,32 @@ func TestApplyDefaultsMigratesDeprecatedBehaviorCAPTCHATypes(t *testing.T) {
 		}
 	})
 }
+
+func TestCloneDeepCopiesNestedStateAndPreservesRuntimeFields(t *testing.T) {
+	cfg := Default()
+	cfg.Sites[0].Domains = []string{"original.example.test"}
+	cfg.ACME.DNSProviders = []ACMEDNSProviderConfig{{
+		ID:  "dns",
+		Env: map[string]string{"TOKEN": "secret"},
+	}}
+	cfg.AI.Assistant.AllowPrivateAPIBaseSet = true
+	cfg.AI.Reasoning.AllowPrivateAPIBaseSet = true
+	cfg.APISec.Auth.JWKSCacheRoot = "/runtime/jwks"
+
+	cloned, err := Clone(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned.Sites[0].Domains[0] = "changed.example.test"
+	cloned.ACME.DNSProviders[0].Env["TOKEN"] = "changed"
+
+	if cfg.Sites[0].Domains[0] != "original.example.test" || cfg.ACME.DNSProviders[0].Env["TOKEN"] != "secret" {
+		t.Fatal("clone aliases nested slices or maps")
+	}
+	if !cloned.AI.Assistant.AllowPrivateAPIBaseSet || !cloned.AI.Reasoning.AllowPrivateAPIBaseSet {
+		t.Fatal("clone dropped AI runtime presence flags")
+	}
+	if cloned.APISec.Auth.JWKSCacheRoot != "/runtime/jwks" {
+		t.Fatalf("clone dropped JWKS cache root: %q", cloned.APISec.Auth.JWKSCacheRoot)
+	}
+}

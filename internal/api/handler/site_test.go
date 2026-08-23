@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,48 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
+
+func TestConfigReplacementIsSynchronizedAndDeepCloned(t *testing.T) {
+	h, _, _ := newSiteTestHandler(t)
+	initial, err := config.Clone(h.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.configCurrent.Store(initial)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 100; i++ {
+				snapshot := h.currentConfig()
+				if snapshot == nil || len(snapshot.Sites) != 1 || len(snapshot.Sites[0].Domains) != 1 {
+					t.Errorf("invalid atomic snapshot: %+v", snapshot)
+					return
+				}
+				_ = snapshot.Sites[0].Domains[0]
+			}
+		}()
+	}
+	close(start)
+	for i := 0; i < 100; i++ {
+		committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
+			candidate.Sites[0].Domains = []string{fmt.Sprintf("site-%d.example.test", i)}
+			return nil
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		committed.Sites[0].Domains[0] = "mutated-after-publish.example.test"
+	}
+	wg.Wait()
+	if h.currentConfig().Sites[0].Domains[0] == "mutated-after-publish.example.test" ||
+		h.Config.Sites[0].Domains[0] == "mutated-after-publish.example.test" {
+		t.Fatal("published config aliases the returned mutation candidate")
+	}
+}
 
 func TestSiteMutationStoreFailuresDoNotReturnSuccess(t *testing.T) {
 	tests := []string{"create", "update", "delete"}
@@ -467,6 +511,36 @@ func TestUpdateSitePreservesRedactedKeyAndACMEEnv(t *testing.T) {
 	}
 	if stored.Advanced.Certificate.ACME.Env["CF_TOKEN"] != "site-acme-secret" {
 		t.Fatalf("acme env wiped: %+v", stored.Advanced.Certificate.ACME.Env)
+	}
+}
+
+func TestSiteResponsesRedactTamperKeyAndUpdatesPreserveIt(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	site.Advanced.Response.TamperKey = "01234567890123456789012345678901"
+	if err := store.UpdateSite(context.Background(), &site); err != nil {
+		t.Fatalf("seed site: %v", err)
+	}
+	view := siteView(site)
+	if view.Advanced.Response.TamperKey != "" {
+		t.Fatal("tamper key was exposed in site view")
+	}
+	payload, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Put("/sites/{id}", handler.UpdateSite)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/sites/"+site.ID, bytes.NewReader(payload)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, err := store.GetSite(context.Background(), site.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("get site: %v", err)
+	}
+	if stored.Advanced.Response.TamperKey != site.Advanced.Response.TamperKey {
+		t.Fatalf("tamper key wiped by redacted update: %q", stored.Advanced.Response.TamperKey)
 	}
 }
 

@@ -1,8 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a signed-looking CheeseWAF.app and a Finder-styled UDZO DMG.
+# Build a signed or explicitly ad-hoc CheeseWAF.app and a Finder-styled UDZO DMG.
 # Requires macOS: hdiutil, codesign. osascript is used for icon layout.
+
+umask 077
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  "$@" &
+  local command_pid=$!
+  (
+    sleep "$seconds"
+    kill -TERM "$command_pid" >/dev/null 2>&1 || exit 0
+    sleep 2
+    kill -KILL "$command_pid" >/dev/null 2>&1 || true
+  ) >/dev/null 2>&1 &
+  local watchdog_pid=$!
+  local status=0
+  wait "$command_pid" || status=$?
+  kill "$watchdog_pid" >/dev/null 2>&1 || true
+  wait "$watchdog_pid" >/dev/null 2>&1 || true
+  return "$status"
+}
 
 bundle_version_from_label() {
   local raw="$1"
@@ -51,7 +73,22 @@ if [[ ${#tarballs[@]} -eq 0 ]]; then
 fi
 
 stage_root="$(mktemp -d)"
-trap 'rm -rf "$stage_root"' EXIT
+device=""
+signing_keychain=""
+original_user_keychains=()
+cleanup() {
+  if [[ -n "$device" ]]; then
+    run_with_timeout 30 hdiutil detach "$device" -force >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$signing_keychain" ]]; then
+    if [[ "${#original_user_keychains[@]}" -gt 0 ]]; then
+      security list-keychain -d user -s "${original_user_keychains[@]}" >/dev/null 2>&1 || true
+    fi
+    security delete-keychain "$signing_keychain" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$stage_root"
+}
+trap cleanup EXIT
 
 CODESIGN_IDENTITY="-"
 CODESIGN_BIN_ARGS=(--timestamp=none)
@@ -62,9 +99,19 @@ APPLE_KEY_FILE=""
 setup_macos_signing() {
   if [[ -n "${MACOS_P12_BASE64:-}" ]]; then
     local p12="${stage_root}/developer-id.p12"
+    local pem="${stage_root}/developer-id.pem"
+    local pass_file="${stage_root}/developer-id.pass"
     local keychain="${stage_root}/codesign.keychain-db"
     local kc_pass
-    printf '%s' "$MACOS_P12_BASE64" | base64 --decode >"$p12"
+    command -v openssl >/dev/null 2>&1 || {
+      echo "::error::openssl is required to import MACOS_P12_BASE64 without exposing its password" >&2
+      exit 1
+    }
+    if printf '%s' "$MACOS_P12_BASE64" | base64 --decode >"$p12" 2>/dev/null; then
+      :
+    else
+      printf '%s' "$MACOS_P12_BASE64" | base64 -D >"$p12"
+    fi
     [[ -s "$p12" ]] || {
       echo "::error::MACOS_P12_BASE64 did not decode to a PKCS#12 file" >&2
       exit 1
@@ -73,14 +120,22 @@ setup_macos_signing() {
     security create-keychain -p "$kc_pass" "$keychain"
     security set-keychain-settings -lut 21600 "$keychain"
     security unlock-keychain -p "$kc_pass" "$keychain"
-    security import "$p12" -k "$keychain" -P "${MACOS_P12_PASSWORD:-}" -T /usr/bin/codesign -T /usr/bin/security
+    printf '%s' "${MACOS_P12_PASSWORD:-}" >"$pass_file"
+    openssl pkcs12 -in "$p12" -passin "file:${pass_file}" -nodes -out "$pem"
+    security import "$pem" -k "$keychain" -T /usr/bin/codesign -T /usr/bin/security
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$keychain" >/dev/null
-    local user_keychains=()
+    local keychain_path
     while IFS= read -r line; do
-      [[ -n "$line" ]] || continue
-      user_keychains+=("${line//\"/}")
+      keychain_path="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')"
+      [[ -n "$keychain_path" ]] || continue
+      original_user_keychains+=("$keychain_path")
     done < <(security list-keychain -d user)
-    security list-keychain -d user -s "$keychain" "${user_keychains[@]}"
+    signing_keychain="$keychain"
+    keychain_args=("$keychain")
+    if [[ "${#original_user_keychains[@]}" -gt 0 ]]; then
+      keychain_args+=("${original_user_keychains[@]}")
+    fi
+    security list-keychain -d user -s "${keychain_args[@]}"
     CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
     if [[ -z "$CODESIGN_IDENTITY" ]]; then
       CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/"/ {print $2; exit}')"
@@ -103,7 +158,7 @@ setup_macos_signing() {
     CODESIGN_DMG_ARGS=(--timestamp)
     echo "codesign identity: ${CODESIGN_IDENTITY}"
   else
-    echo "codesign identity: ad-hoc (no Developer ID available); Gatekeeper will still require the first-open helper"
+    echo "::warning::no Developer ID identity is available; macOS artifacts will use ad-hoc signing and will not be notarized"
   fi
   if [[ "$CODESIGN_IDENTITY" != "-" && -n "${APPLE_API_KEY:-}" && -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER:-}" ]]; then
     APPLE_KEY_FILE="${stage_root}/AuthKey.p8"
@@ -114,20 +169,6 @@ setup_macos_signing() {
 }
 
 setup_macos_signing
-
-append_checksum() {
-  local file="$1"
-  local base
-  base="$(basename "$file")"
-  (
-    cd "$abs_release"
-    if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum "$base"
-    else
-      shasum -a 256 "$base"
-    fi
-  ) >>"${abs_release}/SHA256SUMS"
-}
 
 write_icon() {
   local dest_icns="$1"
@@ -173,12 +214,12 @@ sign_app() {
 notarize_dmg() {
   local dmg_path="$1"
   [[ "$NOTARIZE" == 1 ]] || return 0
-  xcrun notarytool submit "$dmg_path" \
+  run_with_timeout 900 xcrun notarytool submit "$dmg_path" \
     --key "$APPLE_KEY_FILE" \
     --key-id "$APPLE_API_KEY_ID" \
     --issuer "$APPLE_API_ISSUER" \
     --wait
-  xcrun stapler staple "$dmg_path"
+  run_with_timeout 120 xcrun stapler staple "$dmg_path"
 }
 
 assemble_app() {
@@ -230,7 +271,7 @@ assemble_app() {
 layout_dmg_window() {
   local mount="$1"
   command -v osascript >/dev/null 2>&1 || return 0
-  osascript <<EOF >/dev/null
+  run_with_timeout 30 osascript <<EOF >/dev/null
 tell application "Finder"
   tell disk "CheeseWAF"
     open
@@ -297,7 +338,7 @@ for tarball in "${tarballs[@]}"; do
 
   rw_dmg="${stage_root}/${name}.rw.dmg"
   rm -f "$rw_dmg"
-  hdiutil create \
+  run_with_timeout 180 hdiutil create \
     -volname "CheeseWAF" \
     -srcfolder "$dmg_root" \
     -ov \
@@ -305,27 +346,37 @@ for tarball in "${tarballs[@]}"; do
     -format UDRW \
     "$rw_dmg" >/dev/null
 
-  if [[ -d /Volumes/CheeseWAF ]]; then
-    hdiutil detach /Volumes/CheeseWAF -quiet || hdiutil detach /Volumes/CheeseWAF -force || true
+  mount_point="${stage_root}/mount-${name}"
+  mkdir -p "$mount_point"
+  device="$mount_point"
+  if ! attach_output="$(run_with_timeout 60 hdiutil attach \
+      -readwrite -noverify -noautoopen -mountpoint "$mount_point" "$rw_dmg")"; then
+    echo "::error::failed to attach ${rw_dmg}" >&2
+    exit 1
   fi
-  device="$(hdiutil attach -readwrite -noverify -noautoopen "$rw_dmg" | awk '/^\/dev\// { print $1; exit }')"
-  [[ -n "$device" && -d /Volumes/CheeseWAF ]] || {
+  attached_device="$(printf '%s\n' "$attach_output" | awk '/^\/dev\// { print $1; exit }')"
+  [[ -n "$attached_device" && -d "$mount_point" ]] || {
     echo "::error::failed to attach ${rw_dmg}" >&2
     exit 1
   }
-  layout_dmg_window /Volumes/CheeseWAF || true
+  device="$attached_device"
+  layout_dmg_window "$mount_point" || true
   sync
-  hdiutil detach "$device" -quiet || hdiutil detach "$device" -force || hdiutil detach /Volumes/CheeseWAF -force
+  run_with_timeout 30 hdiutil detach "$device" -quiet ||
+    run_with_timeout 30 hdiutil detach "$device" -force ||
+    run_with_timeout 30 hdiutil detach "$mount_point" -force
+  device=""
 
   dmg_path="${abs_release}/${name}.dmg"
   echo "creating ${dmg_path}"
   rm -f "$dmg_path"
-  hdiutil convert "$rw_dmg" -format UDZO -imagekey zlib-level=9 -o "$dmg_path" >/dev/null
+  run_with_timeout 180 hdiutil convert "$rw_dmg" -format UDZO -imagekey zlib-level=9 -o "$dmg_path" >/dev/null
   xattr -cr "$dmg_path" 2>/dev/null || true
-  codesign --force --sign "$CODESIGN_IDENTITY" "${CODESIGN_DMG_ARGS[@]}" "$dmg_path" 2>/dev/null || true
+  codesign --force --sign "$CODESIGN_IDENTITY" "${CODESIGN_DMG_ARGS[@]}" "$dmg_path"
   notarize_dmg "$dmg_path"
-  append_checksum "$dmg_path"
 done
+
+bash "${script_dir}/rewrite-release-checksums.sh" "$abs_release"
 
 if [[ -f "${abs_release}/release-manifest.txt" ]]; then
   {

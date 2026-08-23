@@ -119,12 +119,8 @@ func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
 	if p == nil {
 		return AccessDecision{Action: "none"}
 	}
-	var allow AccessDecision
-	var allowScore int
-	var block AccessDecision
-	var blockScore int
-	var monitor AccessDecision
-	var monitorScore int
+	var best AccessDecision
+	var bestScore int
 	addr, err := netip.ParseAddr(strings.TrimSpace(clientIP))
 	if err != nil {
 		return AccessDecision{Action: "none"}
@@ -143,34 +139,14 @@ func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
 		if !rule.appliesScope(siteID, path) {
 			continue
 		}
-		decision := rule.decision()
-		score := rule.specificity()
-		switch rule.action {
-		case AccessActionAllow:
-			if !allow.Matched || score > allowScore {
-				allow = decision
-				allowScore = score
-			}
-		case AccessActionBlock:
-			if !block.Matched || score > blockScore {
-				block = decision
-				blockScore = score
-			}
-		case AccessActionMonitor:
-			if !monitor.Matched || score > monitorScore {
-				monitor = decision
-				monitorScore = score
-			}
+		score := rule.specificity(addr)
+		if !best.Matched || score > bestScore {
+			best = rule.decision()
+			bestScore = score
 		}
 	}
-	if allow.Matched {
-		return allow
-	}
-	if block.Matched {
-		return block
-	}
-	if monitor.Matched {
-		return monitor
+	if best.Matched {
+		return best
 	}
 	return AccessDecision{Action: "none"}
 }
@@ -206,14 +182,23 @@ func (r accessRule) decision() AccessDecision {
 	}
 }
 
-func (r accessRule) specificity() int {
+func (r accessRule) specificity(addr netip.Addr) int {
+	addressScore := 0
+	if _, exact := r.matcher.ips[addr]; exact {
+		addressScore = addr.BitLen()
+	}
+	for _, prefix := range r.matcher.prefixes {
+		if prefix.Contains(addr) && prefix.Bits() > addressScore {
+			addressScore = prefix.Bits()
+		}
+	}
 	switch r.scope {
 	case "path":
-		return 3000 + len(r.pathPrefix)
+		return 3000 + len(r.pathPrefix) + addressScore
 	case "site":
-		return 2000
+		return 2000 + addressScore
 	default:
-		return 1000
+		return 1000 + addressScore
 	}
 }
 

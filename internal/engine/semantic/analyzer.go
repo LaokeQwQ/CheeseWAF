@@ -38,6 +38,7 @@ type Analyzer struct {
 	paramAllowlist map[string]struct{}
 	// paranoiaLevel is blocking sensitivity 0-5. 0-1 never block.
 	paranoiaLevel int
+	decodeDepth   int
 }
 
 type InputPoint struct {
@@ -88,7 +89,21 @@ func NewAnalyzer(mode string, paranoiaLevel int, categories ...string) *Analyzer
 			}
 		}
 	}
-	return &Analyzer{mode: mode, enabled: enabled, catFP: enabledCategoryFingerprint(enabled), paranoiaLevel: paranoiaLevel}
+	return &Analyzer{mode: mode, enabled: enabled, catFP: enabledCategoryFingerprint(enabled), paranoiaLevel: paranoiaLevel, decodeDepth: decoder.DefaultDecodeDepth}
+}
+
+// SetDecodeDepth configures bounded nested decoding for this site analyzer.
+func (a *Analyzer) SetDecodeDepth(depth int) {
+	if a == nil {
+		return
+	}
+	if depth <= 0 {
+		depth = decoder.DefaultDecodeDepth
+	}
+	if depth > decoder.MaxDecodeDepth {
+		depth = decoder.MaxDecodeDepth
+	}
+	a.decodeDepth = depth
 }
 
 // SetAllowlists configures commercial path/param skip lists. Safe to call once
@@ -124,7 +139,7 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		return nil, nil
 	}
 
-	candidates := extractCandidatesWithAllowlist(reqCtx, a.paramAllowlist)
+	candidates := extractCandidatesWithOptions(reqCtx, a.paramAllowlist, a.decodeDepth)
 	report, best, haveBest, incomplete := a.analyzeAllCandidates(ctx, candidates)
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
@@ -719,13 +734,17 @@ func paramAllowlisted(source, name string, allow map[string]struct{}) bool {
 }
 
 func extractCandidates(reqCtx *engine.RequestContext) []semanticCandidate {
-	return extractCandidatesWithAllowlist(reqCtx, nil)
+	return extractCandidatesWithOptions(reqCtx, nil, decoder.DefaultDecodeDepth)
 }
 
 // extractCandidatesWithAllowlist applies parameter exclusions before the
 // bounded candidate budget. Filtering after truncation lets an attacker fill
 // the budget with allowlisted fields and hide a later unallowlisted payload.
 func extractCandidatesWithAllowlist(reqCtx *engine.RequestContext, allow map[string]struct{}) []semanticCandidate {
+	return extractCandidatesWithOptions(reqCtx, allow, decoder.DefaultDecodeDepth)
+}
+
+func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[string]struct{}, decodeDepth int) []semanticCandidate {
 	if reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
@@ -858,7 +877,7 @@ func extractCandidatesWithAllowlist(reqCtx *engine.RequestContext, allow map[str
 				continue
 			}
 			progressed = true
-			variants := decodeVariantsInto(variantScratch[:0], input.Raw)
+			variants := decodeVariantsInto(variantScratch[:0], input.Raw, decodeDepth)
 			for _, variant := range variants {
 				if len(candidates) >= maxCandidates {
 					break
@@ -1591,7 +1610,7 @@ var rawLayersOnly = []string{"raw"}
 // decodeVariantsInto appends decode variants for raw into dst and returns the
 // result. Callers pass a stack-resident scratch array so the common
 // single-variant case costs zero allocations.
-func decodeVariantsInto(dst []decodedVariant, raw string) []decodedVariant {
+func decodeVariantsInto(dst []decodedVariant, raw string, decodeDepth int) []decodedVariant {
 	// UTF-16 LE/BE BOM payloads (XXE evasion). Expand once into UTF-8 text.
 	if utf8FromUTF16, ok := decodeUTF16Payload(raw); ok && utf8FromUTF16 != raw {
 		raw = utf8FromUTF16
@@ -1600,13 +1619,19 @@ func decodeVariantsInto(dst []decodedVariant, raw string) []decodedVariant {
 	if !needsDeepDecode(raw) {
 		return append(dst, decodedVariant{text: raw, layers: rawLayersOnly})
 	}
-	return decodeVariantsDeep(dst, raw)
+	return decodeVariantsDeep(dst, raw, decodeDepth)
 }
 
 // decodeVariantsDeep runs the bounded multi-layer expansion queue. Split out of
 // decodeVariantsInto so the hot single-variant path stays inlinable and its
 // queue/map allocations never appear on ordinary traffic.
-func decodeVariantsDeep(dst []decodedVariant, raw string) []decodedVariant {
+func decodeVariantsDeep(dst []decodedVariant, raw string, decodeDepth int) []decodedVariant {
+	if decodeDepth <= 0 {
+		decodeDepth = decoder.DefaultDecodeDepth
+	}
+	if decodeDepth > decoder.MaxDecodeDepth {
+		decodeDepth = decoder.MaxDecodeDepth
+	}
 	queue := []decodedVariant{{text: raw, layers: rawLayersOnly}}
 	out := dst
 	base := len(dst) // keep the maxDecodeVariants bound relative to what we add
@@ -1619,10 +1644,11 @@ func decodeVariantsDeep(dst []decodedVariant, raw string) []decodedVariant {
 		}
 		seen[item.text] = struct{}{}
 		out = append(out, item)
-		if len(item.layers) >= 4 {
+		usedDepth := len(item.layers) - len(rawLayersOnly)
+		if usedDepth >= decodeDepth {
 			continue
 		}
-		if next := decoder.Decode(item.text); next.Text != item.text {
+		if next := decoder.DecodeWithDepth(item.text, decodeDepth-usedDepth); next.Text != item.text {
 			queue = append(queue, decodedVariant{text: next.Text, layers: appendLayers(item.layers, next.Layers[1:]...)})
 		}
 		if unescaped := html.UnescapeString(item.text); unescaped != item.text {
@@ -1879,6 +1905,9 @@ func guessCategories(raw string) []string {
 			strings.Contains(text, "pg_sleep(") || strings.Contains(text, "waitfor") ||
 			strings.Contains(text, "information_schema") || strings.Contains(text, "drop table") ||
 			strings.Contains(text, "delete from") || strings.Contains(text, "xp_cmdshell") ||
+			strings.Contains(text, "order by") || strings.Contains(text, "group by") ||
+			strings.Contains(text, "having ") || strings.Contains(text, "exec ") ||
+			strings.Contains(text, "execute ") ||
 			strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") ||
 			strings.Contains(text, "procedure analyse") || strings.Contains(text, "dbms_lock.sleep") ||
 			strings.Contains(text, "sp_oacreate") || strings.Contains(text, "openrowset") ||
@@ -2002,7 +2031,8 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "load_file") || strings.Contains(lower, "openrowset") ||
 		strings.Contains(lower, "dbms_") || strings.Contains(lower, "extractvalue") ||
 		strings.Contains(lower, "updatexml") || strings.Contains(lower, "='") ||
-		strings.Contains(lower, "=\"") {
+		strings.Contains(lower, "=\"") || strings.Contains(lower, "exec ") ||
+		strings.Contains(lower, "execute ") {
 		hints |= hintSQL
 	}
 	// XSS
@@ -2177,6 +2207,7 @@ var (
 	sqlBlockComment               = regexp.MustCompile(`(?is)/\*.*?\*/`)
 	sqlLineComment                = regexp.MustCompile(`(?m)--[^\r\n]*`)
 	rceShellControl               = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
+	rcePureArithmeticExpansion    = regexp.MustCompile(`\$\(\(\s*[-+]?\d(?:\d|[ \t\r\n+*/%-])*\s*\)\)`)
 	rceWhitespaceEvasion          = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
 	rcePowerShellSideFx           = regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|downloadfile|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b)|(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|(?:download(?:file|string)|invoke-expression|iex)\s*\()`)
 	rceEncodedPowerShell          = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,160}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{12,}`)
@@ -2415,6 +2446,11 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || strings.Contains(compact, "orchar") || strings.Contains(compact, "andchar")) {
 		reasons["syntax: SQL function comparison inside boolean predicate"] = true
 	}
+	if !sqlReasonsBlockable(reasons) {
+		if fp, detected := engine.SQLLibinjectionFingerprint(candidate.text); detected && containsReviewedSQLFingerprint(fp, candidate.text) {
+			reasons["syntax: SQL token fingerprint matched"] = true
+		}
+	}
 	if len(reasons) == 0 || !sqlReasonsBlockable(reasons) {
 		return Hit{}, false
 	}
@@ -2505,6 +2541,65 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	return hit(candidate, "sqli", severity, confidence, reasons), true
+}
+
+var reviewedSQLFingerprintWindows = [...]string{"kc", "nc", "Uwk", "Bn", "fws", "Ew", "Ef", "o("}
+
+func containsReviewedSQLFingerprint(fingerprint, raw string) bool {
+	for _, window := range reviewedSQLFingerprintWindows {
+		if !strings.Contains(fingerprint, window) {
+			continue
+		}
+		if (window == "Ew" || window == "Ef") && !hasSQLExecFingerprintContext(raw) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func hasSQLExecFingerprintContext(raw string) bool {
+	lower := strings.ToLower(raw)
+	for offset := 0; offset < len(lower); {
+		relative := strings.Index(lower[offset:], "exec")
+		if relative < 0 {
+			return false
+		}
+		start := offset + relative
+		if start > 0 {
+			boundary := start - 1
+			for boundary >= 0 && isSQLWhitespace(lower[boundary]) {
+				boundary--
+			}
+			if boundary >= 0 {
+				before := lower[boundary]
+				if before != ';' && before != '\'' && before != '"' {
+					offset = start + 4
+					continue
+				}
+			}
+		}
+		end := start + 4
+		if strings.HasPrefix(lower[end:], "ute") {
+			end += 3
+		}
+		if end >= len(lower) || !isSQLWhitespace(lower[end]) {
+			offset = end
+			continue
+		}
+		for end < len(lower) && isSQLWhitespace(lower[end]) {
+			end++
+		}
+		if end < len(lower) && ((lower[end] >= 'a' && lower[end] <= 'z') || lower[end] == '_') {
+			return true
+		}
+		offset = end
+	}
+	return false
+}
+
+func isSQLWhitespace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
 }
 
 func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
@@ -2791,7 +2886,11 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 	// Bare English ";" must not count outside execution sinks (major FP source in docs).
-	if sink && guardedMatchString2K(rceShellControl, text) {
+	shellControlText := text
+	if strings.Contains(shellControlText, "$((") {
+		shellControlText = rcePureArithmeticExpansion.ReplaceAllString(shellControlText, "")
+	}
+	if sink && guardedMatchString2K(rceShellControl, shellControlText) {
 		reasons["syntax: shell control operator or command substitution"] = true
 	} else if !sink && !tableMarkup && rceShellControlEvidence(lower) {
 		reasons["syntax: shell control operator or command substitution"] = true
@@ -2979,6 +3078,9 @@ var rceCommandNames = map[string]bool{
 }
 
 func rceShellControlEvidence(lower string) bool {
+	if strings.Contains(lower, "$((") {
+		lower = rcePureArithmeticExpansion.ReplaceAllString(lower, "")
+	}
 	if strings.Contains(lower, "$(") || strings.Contains(lower, "&&") || strings.Contains(lower, "||") {
 		return true
 	}
@@ -3434,6 +3536,10 @@ func hit(candidate semanticCandidate, category string, severity engine.Severity,
 	if confidence > 0.99 {
 		confidence = 0.99
 	}
+	payload := strings.TrimSpace(candidate.text)
+	if category == "sqli" {
+		payload = truncate(payload, maxSQLPayloadBytes)
+	}
 	return Hit{
 		Category:   category,
 		Source:     candidate.input.Source,
@@ -3442,7 +3548,7 @@ func hit(candidate semanticCandidate, category string, severity engine.Severity,
 		Semantics:  semanticsText,
 		Severity:   severity,
 		Confidence: confidence,
-		Payload:    strings.TrimSpace(candidate.text),
+		Payload:    payload,
 		Isolation:  classifyPayloadIsolation(candidate.text),
 	}
 }
@@ -3525,6 +3631,7 @@ func (a *Analyzer) blockableHit(h Hit) bool {
 		return strings.Contains(h.Syntax, "UNION") ||
 			strings.Contains(h.Syntax, "tautology") ||
 			strings.Contains(h.Syntax, "comment") ||
+			strings.Contains(h.Syntax, "token fingerprint") ||
 			strings.Contains(h.Syntax, "OR predicate") ||
 			strings.Contains(h.Syntax, "ORDER/GROUP") ||
 			strings.Contains(h.Syntax, "HAVING") ||
@@ -3562,6 +3669,7 @@ func sqlReasonsBlockable(reasons map[string]bool) bool {
 		if strings.Contains(reason, "UNION") ||
 			strings.Contains(reason, "tautology") ||
 			strings.Contains(reason, "comment") ||
+			strings.Contains(reason, "token fingerprint") ||
 			strings.Contains(reason, "OR predicate") ||
 			strings.Contains(reason, "ORDER/GROUP") ||
 			strings.Contains(reason, "HAVING") ||

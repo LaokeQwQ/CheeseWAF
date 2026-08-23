@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 )
 
 func TestValidatorUpstreamWeightLimits(t *testing.T) {
@@ -101,6 +104,83 @@ func TestValidatorUpstreamWeightLimits(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidatorDecodeDepthBounds(t *testing.T) {
+	for _, depth := range []int{0, 1, DefaultDecodeDepth, MaxDecodeDepth} {
+		cfg := Default()
+		cfg.Sites[0].WAF.SemanticPolicy.DecodeDepth = depth
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("depth %d rejected: %v", depth, err)
+		}
+	}
+	for _, depth := range []int{-1, MaxDecodeDepth + 1} {
+		cfg := Default()
+		cfg.Sites[0].WAF.SemanticPolicy.DecodeDepth = depth
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "decode_depth") {
+			t.Fatalf("depth %d error=%v, want decode_depth validation", depth, err)
+		}
+	}
+}
+
+func TestValidatorRejectsAmbiguousACLAndIPEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "whitespace-only ACL selector",
+			mutate: func(cfg *Config) {
+				cfg.Protection.ACL.Rules = []ACLRuleConfig{{ID: "empty", Method: " ", PathPrefix: "\t", Enabled: true}}
+			},
+			wantErr: "must define a method",
+		},
+		{
+			name: "header value without header",
+			mutate: func(cfg *Config) {
+				cfg.Protection.ACL.Rules = []ACLRuleConfig{{ID: "ambiguous", Method: "GET", HeaderValue: "secret", Enabled: true}}
+			},
+			wantErr: "header_value without header",
+		},
+		{
+			name: "empty blacklist entry",
+			mutate: func(cfg *Config) {
+				cfg.Protection.IP.Blacklist = []string{"198.51.100.7", " "}
+			},
+			wantErr: "invalid blacklist entry",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.mutate(&cfg)
+			if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidatorAcceptsAuthenticatedTamperSnapshot(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	snapshot, err := tamper.Capture(key, "/assets/app.js", []byte("clean"), time.Unix(100, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.Sites[0].WAF.Response.TamperKey = string(key)
+	cfg.Sites[0].WAF.Response.TamperSnapshots = []TamperSnapshotConfig{{
+		URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+	}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() rejected authenticated snapshot: %v", err)
+	}
+
+	cfg.Sites[0].WAF.Response.TamperKey = "short"
+	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "tamper MAC key") {
+		t.Fatalf("Validate() weak-key error = %v", err)
 	}
 }
 
@@ -249,3 +329,30 @@ func TestValidateAdminTLSAllowedOnLoopback(t *testing.T) {
 }
 
 func idString(id int) string { return fmt.Sprintf("token-%d", id) }
+
+func TestValidateBoundsSiteHeaderAndRewriteComplexity(t *testing.T) {
+	t.Run("header ceiling", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Performance.MaxHeaderBytes = 2 << 20
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "max_header_bytes") {
+			t.Fatalf("expected max_header_bytes ceiling error, got %v", err)
+		}
+	})
+	t.Run("rewrite count", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Rewrite = make([]RewriteRuleConfig, 129)
+		for i := range cfg.Sites[0].WAF.Rewrite {
+			cfg.Sites[0].WAF.Rewrite[i] = RewriteRuleConfig{ID: fmt.Sprint(i), Pattern: "^/old$", Replacement: "/new", Enabled: true}
+		}
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "rewrite") {
+			t.Fatalf("expected rewrite count error, got %v", err)
+		}
+	})
+	t.Run("rewrite pattern length", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Rewrite = []RewriteRuleConfig{{ID: "long", Pattern: strings.Repeat("a", 5000), Replacement: "/new", Enabled: true}}
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "pattern") {
+			t.Fatalf("expected rewrite pattern bound error, got %v", err)
+		}
+	})
+}

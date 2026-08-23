@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -43,7 +44,7 @@ func (lb *LoadBalancer) UpdateSites(sites []config.SiteConfig, health *HealthReg
 // When no site matches, it returns an empty SiteConfig (ID == "") so callers can
 // reject the request instead of falling back to another tenant's site.
 func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
-	host = strings.Split(strings.ToLower(host), ":")[0]
+	host = normalizeRequestHost(host)
 	if lb == nil {
 		return config.SiteConfig{}
 	}
@@ -56,6 +57,17 @@ func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
 	return config.SiteConfig{}
 }
 
+func normalizeRequestHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		return strings.TrimSpace(parsed)
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		return strings.TrimSpace(host[1 : len(host)-1])
+	}
+	return host
+}
+
 func (lb *LoadBalancer) rebuildHostIndexLocked() {
 	index := make(map[string]config.SiteConfig, len(lb.sites)*2)
 	for _, site := range lb.sites {
@@ -63,7 +75,7 @@ func (lb *LoadBalancer) rebuildHostIndexLocked() {
 			continue
 		}
 		for _, domain := range site.Domains {
-			key := strings.ToLower(strings.TrimSpace(domain))
+			key := normalizeRequestHost(domain)
 			if key == "" {
 				continue
 			}

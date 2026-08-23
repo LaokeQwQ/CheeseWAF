@@ -13,6 +13,7 @@ const (
 	maxSQLCandidateTexts = 2048
 	maxSQLCandidateBytes = 8192
 	sqlCandidateOverlap  = 256
+	maxSQLPayloadBytes   = 512
 )
 
 type SQLDetector struct {
@@ -37,6 +38,12 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 		}
 		// Deep tokenization first (fast, high precision; libinjection-compatible)
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate); detected {
+			// EXEC/Ef fingerprints are useful for real stored-procedure payloads,
+			// but the short token window also appears in SQL Server documentation.
+			// Keep the same statement-boundary guard used by the staged analyzer.
+			if (strings.Contains(fp, "Ew") || strings.Contains(fp, "Ef")) && !hasSQLExecFingerprintContext(candidate) {
+				continue
+			}
 			return &engine.DetectionResult{
 				Detected:   true,
 				DetectorID: d.ID(),
@@ -45,7 +52,7 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 				Action:     actionForMode(d.mode),
 				Message:    "SQL injection token fingerprint matched: " + truncate(fp, 40),
 				Confidence: 0.92,
-				Payload:    candidate,
+				Payload:    truncate(candidate, maxSQLPayloadBytes),
 			}, nil
 		}
 		// Fallback to signature-based detection
@@ -58,7 +65,7 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 				Action:     actionForMode(d.mode),
 				Message:    reason,
 				Confidence: 0.88,
-				Payload:    candidate,
+				Payload:    truncate(candidate, maxSQLPayloadBytes),
 			}, nil
 		}
 	}

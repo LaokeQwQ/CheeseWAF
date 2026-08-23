@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -33,6 +34,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
+	webshellprotect "github.com/LaokeQwQ/CheeseWAF/internal/protection/webshell"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/review"
@@ -94,6 +96,18 @@ func runServe(ctx context.Context) error {
 	if err := applyCLIDataDir(cfg, dataDir); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
+		return err
+	}
+	lease, err := acquirePIDLease(cfg.Setup.RuntimeDir)
+	if err != nil {
+		return err
+	}
+	if err := lease.Write(os.Getpid()); err != nil {
+		_ = lease.Close()
+		return err
+	}
+	defer lease.Close()
 	// Tune the collector before anything allocates in earnest. The controller
 	// measures the memory this process is actually allowed to use (container
 	// limit when present, physical RAM otherwise) and adjusts GOGC from live GC
@@ -111,9 +125,6 @@ func runServe(ctx context.Context) error {
 		return fmt.Errorf("configure application clock: %w", err)
 	}
 	clock := timeSync.Clock()
-	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
-		return err
-	}
 	if err := ensureAdminTLSCertificate(cfg); err != nil {
 		return err
 	}
@@ -121,11 +132,6 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := writePID(cfg.Setup.RuntimeDir); err != nil {
-		return err
-	}
-	defer removePID(cfg.Setup.RuntimeDir)
-
 	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
 	if err != nil {
 		return err
@@ -153,10 +159,12 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 
+	hub := realtime.NewHub()
 	sink, err := logsink.NewFromConfigWithFile(cfg.Storage, cfg.Logging.Output.File)
 	if err != nil {
 		return err
 	}
+	sink = realtime.NewPublishingLogSink(sink, hub)
 	defer sink.Close()
 
 	pipeline, err := buildPipeline(cfg)
@@ -242,7 +250,7 @@ func runServe(ctx context.Context) error {
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
 	defer stopRuntime()
 	healthChecker.Start(runtimeCtx)
-	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now())
+	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now(), hub)
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
 		schedulerAIClient = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
@@ -254,7 +262,6 @@ func runServe(ctx context.Context) error {
 		Client:   schedulerAIClient,
 	}))
 	schedulerEngine.Start(runtimeCtx)
-	hub := realtime.NewHub()
 	authSecret, err := ensureAuthSecret(cfg.Setup.DataDir)
 	if err != nil {
 		return err
@@ -272,6 +279,7 @@ func runServe(ctx context.Context) error {
 	}
 	adminRouter := api.NewRouter(api.Options{
 		Config:              cfg,
+		IsolateConfig:       true,
 		ConfigPath:          loadedConfigPath,
 		Store:               store,
 		Sink:                sink,
@@ -386,6 +394,7 @@ func runServe(ctx context.Context) error {
 	stopServing()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	_ = hub.Shutdown(shutdownCtx)
 	_ = proxyHTTP.Shutdown(shutdownCtx)
 	_ = admin.Shutdown(shutdownCtx)
 	if tlsServer != nil {
@@ -429,10 +438,17 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
 	}
+	var panicAuditor *middleware.Auditor
+	if cfg != nil && cfg.APISec.Audit.Enabled {
+		panicAuditor = middleware.NewAuditorWithClock(cfg.APISec.Audit.Path, clock)
+	}
+	withRecovery := func(next http.Handler) http.Handler {
+		return middleware.Recovery(panicAuditor)(next)
+	}
 	uiFS, _ := resolveAdminUIFS()
 	if uiFS == nil {
 		fmt.Printf("admin UI assets not found; /setup and static files return 404 (install web/dist or rebuild after scripts/ci/build-web.sh)\n")
-		return adminSecurityHeaders(adminEntranceGateWithClock(cfg, authSecret, apiHandler, clock))
+		return adminSecurityHeaders(withRecovery(adminEntranceGateWithClock(cfg, authSecret, apiHandler, clock)))
 	}
 	metricsPath := "/metrics"
 	metricsPublic := false
@@ -468,7 +484,7 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 		}
 		apiHandler.ServeHTTP(w, r)
 	})
-	return adminSecurityHeaders(adminGzip(handler, metricsPath))
+	return adminSecurityHeaders(withRecovery(adminGzip(handler, metricsPath)))
 }
 
 func serveAdminStaticFile(w http.ResponseWriter, r *http.Request, ui fs.FS, name string) bool {
@@ -846,8 +862,8 @@ func resolveWebDir() string {
 	return ""
 }
 
-func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time) {
-	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
+func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time, hub *realtime.Hub) {
+	if cfg == nil || (hub == nil && !cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
 		return
 	}
 	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
@@ -866,19 +882,43 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				logs, _, _ := sink.Query(ctx, storage.LogFilter{Limit: 1000})
+				var logs []storage.LogEntry
+				if sink == nil {
+					log.Printf("monitor collection: log sink is unavailable")
+				} else if queried, _, err := sink.Query(ctx, storage.LogFilter{Limit: 1000}); err != nil {
+					log.Printf("monitor collection: log sink query failed: %v", err)
+				} else {
+					logs = queried
+				}
 				now := time.Now()
 				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
 					"data": dirSizes.size(cfg.Setup.DataDir, now),
 					"logs": dirSizes.size(filepath.Dir(cfg.Logging.Output.File.Path), now),
 				})
-				_ = writer.Push(ctx, snapshot)
+				if err := writer.Push(ctx, snapshot); err != nil {
+					log.Printf("monitor collection: remote write failed: %v", err)
+				}
 				alerts := alerter.Evaluate(snapshot)
-				_ = monitornotify.PersistAlerts(ctx, store, alerts)
-				_ = notifiers.Notify(ctx, alerts)
+				publishMonitorEvents(ctx, hub, snapshot, alerts)
+				if err := monitornotify.PersistAlerts(ctx, store, alerts); err != nil {
+					log.Printf("monitor collection: alert persistence failed: %v", err)
+				}
+				if err := notifiers.Notify(ctx, alerts); err != nil {
+					log.Printf("monitor collection: notifier delivery failed: %v", err)
+				}
 			}
 		}
 	}()
+}
+
+func publishMonitorEvents(ctx context.Context, hub *realtime.Hub, snapshot monitor.Snapshot, alerts []monitor.Alert) {
+	if hub == nil {
+		return
+	}
+	hub.Broadcast(ctx, &realtime.Message{Type: realtime.MsgStats, Payload: snapshot})
+	for index := range alerts {
+		hub.Broadcast(ctx, &realtime.Message{Type: realtime.MsgAlert, Payload: alerts[index]})
+	}
 }
 
 func serviceDirSize(root string) int64 {
@@ -934,7 +974,13 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			// RCE is the production switch for the higher-confidence command
 			// execution families that share the same response action. Keep their
 			// categories distinct so telemetry and policy routing remain useful.
-			semanticCategories = append(semanticCategories, "webshell", "log4shell")
+			semanticCategories = append(semanticCategories, "log4shell")
+			detectors = append(detectors, siteScopedDetector{
+				siteID: site.ID,
+				detector: webshellprotect.NewDetector(webshellprotect.DetectorConfig{
+					Mode: site.WAF.Mode,
+				}),
+			})
 		}
 		if switches.LFI {
 			semanticCategories = append(semanticCategories, "lfi")
@@ -955,6 +1001,7 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			paranoiaLevel := config.EffectiveParanoiaLevel(site.WAF.ParanoiaLevel)
 			analyzer := semantic.NewAnalyzer(site.WAF.Mode, paranoiaLevel, semanticCategories...)
 			analyzer.SetAllowlists(site.WAF.SemanticPolicy.PathAllowlist, site.WAF.SemanticPolicy.ParamAllowlist)
+			analyzer.SetDecodeDepth(config.ResolveDecodeDepth(site.WAF.SemanticPolicy.DecodeDepth))
 			fmt.Printf("semantic analyzer initialized: site_id=%s paranoia_level=%d\n", site.ID, paranoiaLevel)
 			detectors = append(detectors, siteScopedDetector{
 				siteID:   site.ID,
@@ -1213,13 +1260,6 @@ func pidPath(runtimeDir string) string {
 	return filepath.Join(runtimeDir, "cheesewaf.pid")
 }
 
-func writePID(runtimeDir string) error {
-	if err := os.MkdirAll(runtimeDir, 0o750); err != nil {
-		return err
-	}
-	return os.WriteFile(pidPath(runtimeDir), []byte(strconv.Itoa(os.Getpid())), 0o640)
-}
-
 func removePID(runtimeDir string) {
 	_ = os.Remove(pidPath(runtimeDir))
 }
@@ -1266,16 +1306,24 @@ func StopRunningService() (ServiceStatusSnapshot, error) {
 		return snapshot, nil
 	}
 	if snapshot.Stale {
-		removePID(snapshot.RuntimeDir)
+		_ = removePIDIfMatches(snapshot.RuntimeDir, snapshot.PID)
 		snapshot.HasPIDFile = false
 		snapshot.Stale = false
 		snapshot.Running = false
 		snapshot.PID = 0
 		return snapshot, nil
 	}
-	if err := stopProcess(snapshot.PID); err != nil {
+	record, err := readPIDRecord(snapshot.RuntimeDir)
+	if err != nil {
 		return snapshot, err
 	}
+	if err := stopProcess(snapshot.PID, record.Executable); err != nil {
+		return snapshot, err
+	}
+	_ = removePIDIfMatches(snapshot.RuntimeDir, snapshot.PID)
+	snapshot.HasPIDFile = false
+	snapshot.Running = false
+	snapshot.PID = 0
 	return snapshot, nil
 }
 
@@ -1288,11 +1336,8 @@ func authSecretPath(baseDir string) string {
 
 func ensureAuthSecret(baseDir string) (string, error) {
 	path := authSecretPath(baseDir)
-	if raw, err := os.ReadFile(path); err == nil {
-		secret := string(raw)
-		if secret != "" {
-			return secret, nil
-		}
+	if secret, err := readAuthSecretEventually(path); err == nil {
+		return secret, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
@@ -1304,8 +1349,82 @@ func ensureAuthSecret(baseDir string) (string, error) {
 		return "", err
 	}
 	secret := base64.RawURLEncoding.EncodeToString(buf)
-	if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return readAuthSecretEventually(path)
+		}
 		return "", err
+	}
+	if err := protectAuthSecretFile(path); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if _, err := file.WriteString(secret); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	return secret, nil
+}
+
+func readAuthSecretEventually(path string) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < 1000; attempt++ {
+		secret, err := readAuthSecret(path)
+		if err == nil {
+			return secret, nil
+		}
+		lastErr = err
+		if !authSecretMayStillBeWritten(path, err) {
+			return "", err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return "", lastErr
+}
+
+func authSecretMayStillBeWritten(path string, readErr error) bool {
+	if errors.Is(readErr, os.ErrNotExist) {
+		return false
+	}
+	if strings.Contains(readErr.Error(), "invalid size 0") {
+		return true
+	}
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() == 0
+}
+
+func readAuthSecret(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("auth secret is not a regular file")
+	}
+	if err := validateAuthSecretFilePermissions(path, info); err != nil {
+		return "", err
+	}
+	if info.Size() < 32 || info.Size() > 256 {
+		return "", fmt.Errorf("auth secret has invalid size %d", info.Size())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	secret := strings.TrimSpace(string(raw))
+	if len(secret) < 32 || len(secret) > 256 || secret == "" {
+		return "", fmt.Errorf("auth secret has invalid contents")
 	}
 	return secret, nil
 }
@@ -1319,11 +1438,11 @@ func readPID() (int, error) {
 }
 
 func readPIDFromRuntimeDir(runtimeDir string) (int, error) {
-	raw, err := os.ReadFile(pidPath(runtimeDir))
+	record, err := readPIDRecord(runtimeDir)
 	if err != nil {
 		return 0, err
 	}
-	return strconv.Atoi(string(raw))
+	return record.PID, nil
 }
 
 func resolveRuntimeDirForCLI() (string, error) {
@@ -1362,7 +1481,7 @@ func inspectServiceStatus() (serviceStatusSnapshot, error) {
 		RuntimeDir: runtimeDir,
 		PIDPath:    pidPath(runtimeDir),
 	}
-	pid, err := readPIDFromRuntimeDir(runtimeDir)
+	record, err := readPIDRecord(runtimeDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return snapshot, nil
@@ -1370,10 +1489,19 @@ func inspectServiceStatus() (serviceStatusSnapshot, error) {
 		return snapshot, err
 	}
 	snapshot.HasPIDFile = true
-	snapshot.PID = pid
-	running, err := processRunning(pid)
+	snapshot.PID = record.PID
+	running, err := processRunning(record.PID)
 	if err != nil {
 		return snapshot, err
+	}
+	if running && record.Executable != "" {
+		matches, identityErr := processIdentityMatches(record.PID, record.Executable)
+		if identityErr != nil {
+			return snapshot, identityErr
+		}
+		if !matches {
+			running = false
+		}
 	}
 	snapshot.Running = running
 	snapshot.Stale = !running

@@ -45,6 +45,7 @@ cluster:
     cert_file: ""
     key_file: ""
   consensus:
+    # builtin is restricted to a single-node local deployment. Shared clusters require etcd.
     provider: "builtin"
     etcd_endpoints: []
   join:
@@ -117,6 +118,7 @@ sites:
       # Commercial ops knobs: budget fail-mode follows web_attack when "auto".
       semantic_policy:
         budget_exhausted_policy: auto
+        decode_depth: 6
         path_allowlist: []
         param_allowlist: []
       protection_policy:

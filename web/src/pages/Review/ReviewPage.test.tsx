@@ -48,7 +48,10 @@ function renderPage() {
 beforeEach(() => {
   vi.clearAllMocks();
   apiMocks.fetchSites.mockResolvedValue([{ id: 'site-a', name: 'Site A' }]);
-  apiMocks.fetchReviewItems.mockResolvedValue({ items: [item], total: 1 });
+  apiMocks.fetchReviewItems.mockImplementation((params: { search?: string }) => {
+    const matches = !params.search || Object.values(item).some((value) => String(value ?? '').toLowerCase().includes(params.search!.toLowerCase()));
+    return Promise.resolve({ items: matches ? [item] : [], total: matches ? 1 : 0 });
+  });
   apiMocks.decideReviewItem.mockResolvedValue({ ...item, status: 'blocked', decision: 'block_payload' });
 });
 
@@ -113,5 +116,55 @@ describe('ReviewPage', () => {
       expect(apiMocks.decideReviewItem).toHaveBeenCalledWith('rev-1', 'block_fingerprint');
     });
     expect(screen.queryByText('review.allow')).toBeNull();
+  });
+
+  it('sends review search to the server', async () => {
+    renderPage();
+    await screen.findByText('/search?s=eval');
+    fireEvent.change(screen.getByPlaceholderText('common.search'), { target: { value: 'aabbcc' } });
+    await waitFor(() => expect(apiMocks.fetchReviewItems).toHaveBeenCalledWith(expect.objectContaining({ search: 'aabbcc', limit: 8 })));
+    expect(await screen.findByText('aabbccddeeff0011')).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText('common.search'), { target: { value: 'not-found' } });
+    await waitFor(() => expect(apiMocks.fetchReviewItems).toHaveBeenCalledWith(expect.objectContaining({ search: 'not-found' })));
+    await waitFor(() => expect(screen.queryByText('/search?s=eval')).toBeNull());
+  });
+
+  it('uses a fixed watermark and stable before cursor for the next page', async () => {
+    const pageItems = Array.from({ length: 9 }, (_, index) => ({
+      ...item,
+      id: `review-${index + 1}`,
+      uri: `/review/page/${index + 1}`,
+      created_at: `2026-08-14T10:${String(20 - index).padStart(2, '0')}:00Z`,
+    }));
+    apiMocks.fetchReviewItems.mockImplementation((params: { before?: string }) => Promise.resolve(
+      params.before
+        ? { items: [pageItems[8]], total: 1 }
+        : { items: pageItems.slice(0, 8), total: 9 },
+    ));
+    renderPage();
+    expect(await screen.findByText('/review/page/8')).toBeTruthy();
+    fireEvent.click(await screen.findByText('common.next'));
+    await waitFor(() => expect(apiMocks.fetchReviewItems).toHaveBeenCalledWith(expect.objectContaining({
+      before: pageItems[7].created_at,
+      before_id: pageItems[7].id,
+      watermark: pageItems[0].created_at,
+      watermark_id: pageItems[0].id,
+    })));
+    expect(await screen.findByText('/review/page/9')).toBeTruthy();
+  });
+
+  it('does not advance until the first page has a valid watermark', async () => {
+    const pageItems = Array.from({ length: 8 }, (_, index) => ({
+      ...item,
+      id: `review-${index + 1}`,
+      uri: `/review/page/${index + 1}`,
+      created_at: index === 0 ? '' : `2026-08-14T10:${String(20 - index).padStart(2, '0')}:00Z`,
+    }));
+    apiMocks.fetchReviewItems.mockResolvedValue({ items: pageItems, total: 9 });
+
+    renderPage();
+
+    expect(await screen.findByText('/review/page/8')).toBeTruthy();
+    expect((screen.getByText('common.next') as HTMLButtonElement).disabled).toBe(true);
   });
 });

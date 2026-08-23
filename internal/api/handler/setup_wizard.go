@@ -105,9 +105,8 @@ func isLocalOrSameOrigin(origin string, r *http.Request) bool {
 	return false
 }
 
-// SetupStatus reports whether first-install is still required. No setup token.
-// Loopback clients also receive setup_url so the wizard can run without
-// scraping stdout or the URL fragment.
+// SetupStatus reports whether first-install is still required. Setup credentials
+// are delivered only through the serve process's stdout/runtime URL file.
 func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	needs := true
 	if h != nil {
@@ -125,19 +124,6 @@ func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	payload := map[string]any{"needs_setup": needs}
-	if needs && h != nil && strings.TrimSpace(h.SetupToken) != "" && loginCAPTCHASkippedForPeer(r, h.adminPublic()) {
-		scheme := "http"
-		if middleware.CookieSecure(r) {
-			scheme = "https"
-		}
-		listen := "127.0.0.1:9443"
-		if h.Config != nil && strings.TrimSpace(h.Config.Server.AdminListen) != "" {
-			listen = h.Config.Server.AdminListen
-		}
-		if page := setup.BrowserURL(scheme, listen, h.SetupToken); page != "" {
-			payload["setup_url"] = page
-		}
-	}
 	writeData(w, payload)
 }
 
@@ -146,7 +132,7 @@ func (h *Handler) SetupProbe(w http.ResponseWriter, r *http.Request) {
 	if !h.allowSetupMutation(w, r) {
 		return
 	}
-	if h.Config == nil {
+	if h.currentConfig() == nil {
 		writeError(w, http.StatusServiceUnavailable, "SETUP_UNAVAILABLE", "setup is unavailable")
 		return
 	}
@@ -282,8 +268,8 @@ func setupSessionID(r *http.Request) string {
 }
 
 func (h *Handler) setupDataDir() string {
-	if h != nil && h.Config != nil && h.Config.Setup.DataDir != "" {
-		return h.Config.Setup.DataDir
+	if h != nil && h.currentConfig() != nil && h.currentConfig().Setup.DataDir != "" {
+		return h.currentConfig().Setup.DataDir
 	}
 	return setup.DefaultDataDir
 }
