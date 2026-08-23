@@ -15,15 +15,15 @@ This report tracks integration and fresh verification evidence.
 | R2-4 | protection pipeline and policy hardening | integrated | `3f1c48e` |
 | R2-5 | engine detection hardening | integrated | `b7389fd` |
 | R2-6 | API and operations | integrated | `4edd4a7` |
-| R2-7 | proxy, cluster, and storage | integrated + PostgreSQL follow-up verified locally | `2ecb695` + pending hardening commit |
+| R2-7 | proxy, cluster, and storage | integrated + PostgreSQL follow-up verified locally | `2ecb695`, `085c54f` |
 | R2-8 | release, CI, and docs | integrated | `c45ab3a` |
 | R2-9 | attack map and keyset pagination | integrated | `931de19` |
 
 ## Current Evidence
 
-- The integration branch contains the nine R2 merge commits above and the
-  PostgreSQL log-sink follow-up now under review; `origin/dev` / `9ccb5ee` is
-  its ancestor and `git diff --check origin/dev...HEAD` remains clean.
+- The integration branch HEAD is `085c54f`, containing the nine R2 merge
+  commits above and the PostgreSQL log-sink follow-up; `origin/dev` / `9ccb5ee`
+  is its ancestor and `git diff --check origin/dev...HEAD` remains clean.
 - Fresh full Go verification completed with exit code 0:
   `go test ./... -short -count=1`, `go vet ./...`, and `go build ./cmd/...`.
 - Fresh focused storage verification completed with exit code 0:
@@ -44,17 +44,24 @@ This report tracks integration and fresh verification evidence.
 
 ## Final Gates
 
-The local gates were run fresh after all R2 implementation merges. The focused
-PostgreSQL follow-up has also passed its package and race gates; the full gates
-below must be rerun after the follow-up commit before delivery claims:
+The focused PostgreSQL follow-up and full local gates passed fresh against
+`085c54f`:
 
 ```text
-go test ./... -short
+go test ./... -short -count=1
 go vet ./...
 go build ./cmd/...
-cd web && npm test -- --run && npm run typecheck && npm run build
+cd web && npm test -- --run
+cd web && npm run typecheck
+cd web && npm run build
 bash scripts/ci/verify-ci-static.sh
+bash scripts/ci/verify-release_test.sh
+bash -n scripts/ci/*.sh scripts/build-all.sh scripts/build-pgo.sh
+sh -n scripts/ci/channel-from-git.sh
 ```
+
+The Web test gate reported 63 files and 338 tests, all passing. The build
+completed with only the existing Vite native-config and large-chunk warnings.
 
 The latest remote `dev` run also has a non-required `package-macos-dmg`
 failure caused by a busy `hdiutil` disk image; required branch-protection
