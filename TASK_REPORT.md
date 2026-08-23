@@ -76,6 +76,10 @@ local PostgreSQL regression.
   1024-entry/64 MiB queue and parameterized multi-row INSERTs of at most 64
   rows while preserving all 19 columns and `ON CONFLICT (id) DO UPDATE`.
   Added timeout, batch/barrier, alert, and SQL-builder regression tests.
+- 2026-08-23: Follow-up concurrency review closed overlapping Flush barrier
+  failure re-reporting, severed processed barrier predecessor references, and
+  moved alert delivery to a bounded dispatcher so re-entrant or slow alert
+  callbacks cannot block the backend worker.
 
 Remaining delivery steps: push the integration branch, create a PR to `dev`,
 wait for required remote CI, merge, synchronize `dev`, and remove the temporary

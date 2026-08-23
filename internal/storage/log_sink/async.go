@@ -37,6 +37,12 @@ type AsyncLogSinkStats struct {
 
 type asyncLogSinkAlert func(kind string, stats AsyncLogSinkStats, err error)
 
+type asyncLogAlertEvent struct {
+	kind  string
+	stats AsyncLogSinkStats
+	err   error
+}
+
 type asyncLogWriterOptions struct {
 	queueSize        int
 	queueBytes       int64
@@ -116,6 +122,9 @@ type asyncLogWriter struct {
 	alert            asyncLogSinkAlert
 	alertCooldown    time.Duration
 	lastAlertAt      map[string]time.Time
+	alertQueue       chan asyncLogAlertEvent
+	alertStop        chan struct{}
+	alertStopOnce    sync.Once
 	closeTimeoutErr  error
 	closeErr         error
 	closeFinished    bool
@@ -162,6 +171,11 @@ func newAsyncLogWriter(
 		alert:            options.alert,
 		alertCooldown:    options.alertCooldown,
 		lastAlertAt:      make(map[string]time.Time),
+	}
+	if writer.alert != nil {
+		writer.alertQueue = make(chan asyncLogAlertEvent, 32)
+		writer.alertStop = make(chan struct{})
+		go writer.runAlerts()
 	}
 	go writer.run()
 	return writer
@@ -400,6 +414,7 @@ func (w *asyncLogWriter) statsLocked() AsyncLogSinkStats {
 func (w *asyncLogWriter) run() {
 	defer func() {
 		w.cancel()
+		w.stopAlerts()
 		close(w.workerDone)
 	}()
 	for {
@@ -541,6 +556,7 @@ func (w *asyncLogWriter) runFlush(barrier *asyncLogBarrier) {
 	barrier.baseFailed = baseFailed
 	barrier.failedAtTarget = w.failed
 	barrier.writeErr = w.writeErrorRangeLocked(baseFailed, barrier.failedAtTarget)
+	barrier.predecessor = nil
 	w.mu.Unlock()
 	var flushErr error
 	if w.flush != nil {
@@ -604,15 +620,38 @@ func (w *asyncLogWriter) emitAlert(kind string, err error) {
 	}
 	w.lastAlertAt[kind] = now
 	stats := w.statsLocked()
-	alert := w.alert
+	alertQueue := w.alertQueue
 	w.mu.Unlock()
-	// Alert sinks are operational extensions. Run them outside the worker so a
-	// slow or re-entrant callback cannot block backend progress; a faulty
-	// callback must not turn a backend failure into a process panic.
-	go func(alert asyncLogSinkAlert, kind string, stats AsyncLogSinkStats, err error) {
-		defer func() { _ = recover() }()
-		alert(kind, stats, err)
-	}(alert, kind, stats, err)
+	if alertQueue == nil {
+		return
+	}
+	// Keep alert delivery bounded. A slow alert sink cannot block backend
+	// progress, and a saturated alert queue drops telemetry rather than logs.
+	select {
+	case alertQueue <- asyncLogAlertEvent{kind: kind, stats: stats, err: err}:
+	default:
+	}
+}
+
+func (w *asyncLogWriter) runAlerts() {
+	for {
+		select {
+		case event := <-w.alertQueue:
+			func() {
+				defer func() { _ = recover() }()
+				w.alert(event.kind, event.stats, event.err)
+			}()
+		case <-w.alertStop:
+			return
+		}
+	}
+}
+
+func (w *asyncLogWriter) stopAlerts() {
+	if w.alertStop == nil {
+		return
+	}
+	w.alertStopOnce.Do(func() { close(w.alertStop) })
 }
 
 func (w *asyncLogWriter) writeErrorRangeLocked(baseFailed, failedAtTarget uint64) error {
