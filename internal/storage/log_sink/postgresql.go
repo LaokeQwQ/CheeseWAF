@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -19,6 +21,14 @@ type PostgreSQLSink struct {
 	table string
 	async *asyncLogWriter
 }
+
+const (
+	postgresqlLogBatchSize  = 64
+	postgresqlLogQueueSize  = 1024
+	postgresqlLogQueueBytes = 64 << 20
+)
+
+var postgresqlGeneratedID atomic.Uint64
 
 func NewPostgreSQLSink(cfg config.PostgreSQLConfig) (*PostgreSQLSink, error) {
 	if !cfg.Enabled {
@@ -56,7 +66,18 @@ func NewPostgreSQLSink(cfg config.PostgreSQLConfig) (*PostgreSQLSink, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	sink.async = newAsyncLogWriter("postgresql", sink.writeSync, nil, sink.db.Close, asyncLogWriterOptions{})
+	sink.async = newAsyncLogWriter("postgresql", sink.writeSync, nil, sink.db.Close, asyncLogWriterOptions{
+		queueSize:        postgresqlLogQueueSize,
+		queueBytes:       postgresqlLogQueueBytes,
+		operationTimeout: cfg.Timeout,
+		batchSize:        postgresqlLogBatchSize,
+		writeBatch:       sink.writeBatchSync,
+		alertCooldown:    time.Minute,
+		alert: func(kind string, stats AsyncLogSinkStats, err error) {
+			log.Printf("postgresql log sink %s: %v (pending=%d queue_depth=%d dropped=%d failed=%d)",
+				kind, err, stats.Pending, stats.QueueDepth, stats.Dropped, stats.Failed)
+		},
+	})
 	return sink, nil
 }
 
@@ -68,35 +89,64 @@ func (s *PostgreSQLSink) Write(ctx context.Context, entry *storage.LogEntry) err
 }
 
 func (s *PostgreSQLSink) writeSync(ctx context.Context, entry *storage.LogEntry) error {
-	if entry == nil {
+	return s.writeBatchSync(ctx, []*storage.LogEntry{entry})
+}
+
+func (s *PostgreSQLSink) writeBatchSync(ctx context.Context, entries []*storage.LogEntry) error {
+	if len(entries) == 0 {
 		return nil
 	}
-	id := entry.ID
-	if id == "" {
-		id = entry.TraceID
+	for start := 0; start < len(entries); start += postgresqlLogBatchSize {
+		end := start + postgresqlLogBatchSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+
+		rows := make([][]any, 0, end-start)
+		positions := make(map[string]int, end-start)
+		for _, entry := range entries[start:end] {
+			row, err := postgresqlLogEntryValues(entry)
+			if err != nil {
+				return err
+			}
+			if row == nil {
+				continue
+			}
+			// PostgreSQL rejects two rows in one INSERT that target the same
+			// ON CONFLICT key. Keep the last update, matching sequential writes.
+			id := row[0].(string)
+			if position, ok := positions[id]; ok {
+				rows[position] = row
+				continue
+			}
+			positions[id] = len(rows)
+			rows = append(rows, row)
+		}
+		if len(rows) == 0 {
+			continue
+		}
+
+		query, err := postgresqlInsertQuery(s.table, len(rows))
+		if err != nil {
+			return err
+		}
+		args := make([]any, 0, len(rows)*postgresqlLogColumnCount)
+		for _, row := range rows {
+			args = append(args, row...)
+		}
+		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+			return err
+		}
 	}
-	if id == "" {
-		id = fmt.Sprintf("log-%d", time.Now().UnixNano())
-	}
-	tags, err := json.Marshal(entry.Tags)
-	if err != nil {
-		return err
-	}
-	metadata, err := json.Marshal(entry.Metadata)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (
-		id, timestamp, trace_id, site_id, client_ip, method, uri, status_code,
-		action, detector_id, category, severity, message, payload, user_agent,
-		country, latency_ms, tags, metadata
-	) VALUES (
-		$1, $2, $3, $4, $5, $6, $7, $8,
-		$9, $10, $11, $12, $13, $14, $15,
-		$16, $17, $18::jsonb, $19::jsonb
-	)
-	ON CONFLICT (id) DO UPDATE SET
-		timestamp = EXCLUDED.timestamp,
+	return nil
+}
+
+const (
+	postgresqlLogColumnCount = 19
+	postgresqlLogColumns     = `id, timestamp, trace_id, site_id, client_ip, method, uri, status_code,
+	action, detector_id, category, severity, message, payload, user_agent,
+	country, latency_ms, tags, metadata`
+	postgresqlLogConflictUpdate = `timestamp = EXCLUDED.timestamp,
 		trace_id = EXCLUDED.trace_id,
 		site_id = EXCLUDED.site_id,
 		client_ip = EXCLUDED.client_ip,
@@ -113,12 +163,52 @@ func (s *PostgreSQLSink) writeSync(ctx context.Context, entry *storage.LogEntry)
 		country = EXCLUDED.country,
 		latency_ms = EXCLUDED.latency_ms,
 		tags = EXCLUDED.tags,
-		metadata = EXCLUDED.metadata`, s.table),
+		metadata = EXCLUDED.metadata`
+)
+
+func postgresqlLogEntryValues(entry *storage.LogEntry) ([]any, error) {
+	if entry == nil {
+		return nil, nil
+	}
+	id := entry.ID
+	if id == "" {
+		id = entry.TraceID
+	}
+	if id == "" {
+		id = fmt.Sprintf("log-%d-%d", time.Now().UnixNano(), postgresqlGeneratedID.Add(1))
+	}
+	tags, err := json.Marshal(entry.Tags)
+	if err != nil {
+		return nil, err
+	}
+	metadata, err := json.Marshal(entry.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	return []any{
 		id, entry.Timestamp, entry.TraceID, entry.SiteID, entry.ClientIP, entry.Method, entry.URI, entry.StatusCode,
 		entry.Action, entry.DetectorID, entry.Category, entry.Severity, entry.Message, entry.Payload, entry.UserAgent,
-		entry.Country, float64(entry.Latency)/float64(time.Millisecond), string(tags), string(metadata),
-	)
-	return err
+		entry.Country, float64(entry.Latency) / float64(time.Millisecond), string(tags), string(metadata),
+	}, nil
+}
+
+func postgresqlInsertQuery(table string, rowCount int) (string, error) {
+	if rowCount <= 0 || rowCount > postgresqlLogBatchSize {
+		return "", fmt.Errorf("postgresql log batch row count %d is outside 1..%d", rowCount, postgresqlLogBatchSize)
+	}
+	values := make([]string, rowCount)
+	for row := 0; row < rowCount; row++ {
+		placeholders := make([]string, postgresqlLogColumnCount)
+		for column := range placeholders {
+			placeholder := fmt.Sprintf("$%d", row*postgresqlLogColumnCount+column+1)
+			if column >= 17 {
+				placeholder += "::jsonb"
+			}
+			placeholders[column] = placeholder
+		}
+		values[row] = "(" + strings.Join(placeholders, ", ") + ")"
+	}
+	return fmt.Sprintf("INSERT INTO %s (\n\t%s\n) VALUES\n\t%s\nON CONFLICT (id) DO UPDATE SET\n\t%s", table, postgresqlLogColumns, strings.Join(values, ",\n\t"), postgresqlLogConflictUpdate), nil
 }
 
 func (s *PostgreSQLSink) Query(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {

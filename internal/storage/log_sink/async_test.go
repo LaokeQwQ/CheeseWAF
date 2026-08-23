@@ -94,6 +94,7 @@ func TestAsyncLogWriterDoesNotBlockAndDeepCopiesEntry(t *testing.T) {
 func TestAsyncLogWriterQueueFullReturnsSentinelAndCountsDrop(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
+	alerts := make(chan string, 1)
 	var once sync.Once
 	writer := newAsyncLogWriter("full", func(ctx context.Context, _ *storage.LogEntry) error {
 		once.Do(func() { close(started) })
@@ -103,7 +104,14 @@ func TestAsyncLogWriterQueueFullReturnsSentinelAndCountsDrop(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-	}, nil, nil, asyncLogWriterOptions{queueSize: 1, closeTimeout: time.Second})
+	}, nil, nil, asyncLogWriterOptions{
+		queueSize:    1,
+		closeTimeout: time.Second,
+		alert: func(kind string, _ AsyncLogSinkStats, _ error) {
+			alerts <- kind
+		},
+		alertCooldown: time.Hour,
+	})
 	defer writer.Close()
 
 	if err := writer.Write(context.Background(), &storage.LogEntry{ID: "active"}); err != nil {
@@ -121,6 +129,14 @@ func TestAsyncLogWriterQueueFullReturnsSentinelAndCountsDrop(t *testing.T) {
 	if !errors.Is(err, ErrLogSinkQueueFull) {
 		t.Fatalf("expected queue-full sentinel, got %v", err)
 	}
+	select {
+	case kind := <-alerts:
+		if kind != "queue_full" {
+			t.Fatalf("unexpected alert kind %q", kind)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queue-full alert was not emitted")
+	}
 	stats := writer.Stats()
 	if stats.Dropped != 1 || stats.Pending != 2 || stats.QueueDepth != 1 {
 		t.Fatalf("unexpected queue stats: %+v", stats)
@@ -128,6 +144,93 @@ func TestAsyncLogWriterQueueFullReturnsSentinelAndCountsDrop(t *testing.T) {
 	close(release)
 	if err := writer.Flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
+	}
+}
+
+func TestAsyncLogWriterOperationTimeoutBoundsBackendWrite(t *testing.T) {
+	started := make(chan struct{})
+	var once sync.Once
+	writer := newAsyncLogWriter("operation-timeout", func(ctx context.Context, _ *storage.LogEntry) error {
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		return ctx.Err()
+	}, nil, nil, asyncLogWriterOptions{
+		operationTimeout: 30 * time.Millisecond,
+		closeTimeout:     time.Second,
+	})
+	defer writer.Close()
+
+	if err := writer.Write(context.Background(), &storage.LogEntry{ID: "deadline"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("backend write did not start")
+	}
+	start := time.Now()
+	err := writer.Flush(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected operation deadline in Flush error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("operation timeout did not bound backend write: %s", elapsed)
+	}
+	if stats := writer.Stats(); stats.Failed != 1 || stats.Pending != 0 {
+		t.Fatalf("unexpected timeout stats: %+v", stats)
+	}
+}
+
+func TestAsyncLogWriterTakesBoundedWriteBatchBeforeBarrier(t *testing.T) {
+	writer := &asyncLogWriter{
+		batchSize: 2,
+		operations: []asyncLogOperation{
+			{kind: asyncLogWriteOperation, seq: 1},
+			{kind: asyncLogWriteOperation, seq: 2},
+			{kind: asyncLogWriteOperation, seq: 3},
+			{kind: asyncLogFlushOperation, seq: 3},
+		},
+		queuedWrites: 3,
+	}
+
+	first := writer.nextOperation()
+	batch := writer.takeWriteBatch(first)
+	if len(batch) != 2 || batch[0].seq != 1 || batch[1].seq != 2 {
+		t.Fatalf("unexpected first batch: %+v", batch)
+	}
+	second := writer.nextOperation()
+	if second.kind != asyncLogWriteOperation || second.seq != 3 {
+		t.Fatalf("unexpected second operation: %+v", second)
+	}
+	barrier := writer.nextOperation()
+	if barrier.kind != asyncLogFlushOperation || barrier.seq != 3 {
+		t.Fatalf("batch crossed flush barrier: %+v", barrier)
+	}
+}
+
+func TestAsyncLogWriterRunWriteBatchInvokesCallbackAndReleasesCounters(t *testing.T) {
+	var got []*storage.LogEntry
+	writer := &asyncLogWriter{
+		name:      "batch-callback",
+		workerCtx: context.Background(),
+		writeBatch: func(_ context.Context, entries []*storage.LogEntry) error {
+			got = append(got, entries...)
+			return nil
+		},
+		pending:      2,
+		pendingBytes: 8,
+	}
+	first := &storage.LogEntry{ID: "first"}
+	second := &storage.LogEntry{ID: "second"}
+	writer.runWriteBatch([]asyncLogOperation{
+		{kind: asyncLogWriteOperation, entry: first, size: 4},
+		{kind: asyncLogWriteOperation, entry: second, size: 4},
+	})
+	if len(got) != 2 || got[0] != first || got[1] != second {
+		t.Fatalf("batch callback received unexpected entries: %+v", got)
+	}
+	if stats := writer.Stats(); stats.Pending != 0 || stats.PendingBytes != 0 || stats.Failed != 0 {
+		t.Fatalf("batch counters were not released: %+v", stats)
 	}
 }
 
@@ -498,6 +601,72 @@ func TestAsyncLogWriterConcurrentFlushesWaitAndShareWriteError(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("flush %d did not complete", index+1)
 		}
+	}
+}
+
+func TestAsyncLogWriterOverlappingFlushBarriersDoNotRepeatAcknowledgedFailure(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var firstOnce sync.Once
+	writer := newAsyncLogWriter("overlapping-flush", func(ctx context.Context, entry *storage.LogEntry) error {
+		switch entry.ID {
+		case "first":
+			firstOnce.Do(func() { close(firstStarted) })
+			select {
+			case <-releaseFirst:
+				return errors.New("first overlapping failure")
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		default:
+			return nil
+		}
+	}, nil, nil, asyncLogWriterOptions{queueSize: 4, closeTimeout: time.Second})
+	defer func() {
+		select {
+		case <-releaseFirst:
+		default:
+			close(releaseFirst)
+		}
+		_ = writer.Close()
+	}()
+
+	if err := writer.Write(context.Background(), &storage.LogEntry{ID: "first"}); err != nil {
+		t.Fatalf("enqueue first: %v", err)
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first write did not start")
+	}
+	firstFlush := make(chan error, 1)
+	go func() { firstFlush <- writer.Flush(context.Background()) }()
+	waitForAsyncBarrierWaiters(t, writer, 1)
+	if err := writer.Write(context.Background(), &storage.LogEntry{ID: "second"}); err != nil {
+		t.Fatalf("enqueue second: %v", err)
+	}
+	secondFlush := make(chan error, 1)
+	go func() { secondFlush <- writer.Flush(context.Background()) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		writer.mu.Lock()
+		barrier := writer.latestBarrier
+		sealed := barrier != nil && barrier.target == 2 && barrier.waiters == 1
+		writer.mu.Unlock()
+		if sealed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second Flush did not seal its target")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseFirst)
+	if err := <-firstFlush; !containsError(err, "first overlapping failure") {
+		t.Fatalf("first Flush lost its write failure: %v", err)
+	}
+	if err := <-secondFlush; err != nil {
+		t.Fatalf("second Flush repeated an acknowledged failure: %v", err)
 	}
 }
 

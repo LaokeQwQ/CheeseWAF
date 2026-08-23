@@ -35,10 +35,19 @@ type AsyncLogSinkStats struct {
 	Failed       uint64
 }
 
+type asyncLogSinkAlert func(kind string, stats AsyncLogSinkStats, err error)
+
 type asyncLogWriterOptions struct {
-	queueSize    int
-	queueBytes   int64
-	closeTimeout time.Duration
+	queueSize        int
+	queueBytes       int64
+	closeTimeout     time.Duration
+	operationTimeout time.Duration
+	batchSize        int
+	// writeBatch is accounted as all-or-nothing: an error marks every entry in
+	// the submitted batch failed. Backends must preserve that contract.
+	writeBatch    func(context.Context, []*storage.LogEntry) error
+	alert         asyncLogSinkAlert
+	alertCooldown time.Duration
 }
 
 type asyncLogOperationKind uint8
@@ -65,6 +74,7 @@ type asyncLogBarrier struct {
 	target         uint64
 	baseFailed     uint64
 	failedAtTarget uint64
+	predecessor    *asyncLogBarrier
 	done           chan struct{}
 	writeErr       error
 	flushErr       error
@@ -73,10 +83,11 @@ type asyncLogBarrier struct {
 }
 
 type asyncLogWriter struct {
-	name  string
-	write func(context.Context, *storage.LogEntry) error
-	flush func(context.Context) error
-	close func() error
+	name       string
+	write      func(context.Context, *storage.LogEntry) error
+	writeBatch func(context.Context, []*storage.LogEntry) error
+	flush      func(context.Context) error
+	close      func() error
 
 	workerCtx  context.Context
 	cancel     context.CancelFunc
@@ -87,22 +98,27 @@ type asyncLogWriter struct {
 	operations []asyncLogOperation
 	queueHead  int
 
-	queueSize       int
-	queueBytes      int64
-	queuedWrites    int
-	pending         int
-	pendingBytes    int64
-	acceptedSeq     uint64
-	latestBarrier   *asyncLogBarrier
-	ackedFailures   uint64
-	latestFailure   error
-	dropped         uint64
-	failed          uint64
-	closing         bool
-	closeTimeout    time.Duration
-	closeTimeoutErr error
-	closeErr        error
-	closeFinished   bool
+	queueSize        int
+	queueBytes       int64
+	queuedWrites     int
+	pending          int
+	pendingBytes     int64
+	acceptedSeq      uint64
+	latestBarrier    *asyncLogBarrier
+	ackedFailures    uint64
+	latestFailure    error
+	dropped          uint64
+	failed           uint64
+	closing          bool
+	closeTimeout     time.Duration
+	operationTimeout time.Duration
+	batchSize        int
+	alert            asyncLogSinkAlert
+	alertCooldown    time.Duration
+	lastAlertAt      map[string]time.Time
+	closeTimeoutErr  error
+	closeErr         error
+	closeFinished    bool
 }
 
 func newAsyncLogWriter(
@@ -121,19 +137,31 @@ func newAsyncLogWriter(
 	if options.closeTimeout <= 0 {
 		options.closeTimeout = defaultAsyncLogSinkCloseTimeout
 	}
+	if options.batchSize <= 0 {
+		options.batchSize = 1
+	}
+	if options.alert != nil && options.alertCooldown <= 0 {
+		options.alertCooldown = time.Minute
+	}
 	workerCtx, cancel := context.WithCancel(context.Background())
 	writer := &asyncLogWriter{
-		name:         name,
-		write:        write,
-		flush:        flush,
-		close:        closeFn,
-		workerCtx:    workerCtx,
-		cancel:       cancel,
-		workerDone:   make(chan struct{}),
-		wakeWorker:   make(chan struct{}, 1),
-		queueSize:    options.queueSize,
-		queueBytes:   options.queueBytes,
-		closeTimeout: options.closeTimeout,
+		name:             name,
+		write:            write,
+		writeBatch:       options.writeBatch,
+		flush:            flush,
+		close:            closeFn,
+		workerCtx:        workerCtx,
+		cancel:           cancel,
+		workerDone:       make(chan struct{}),
+		wakeWorker:       make(chan struct{}, 1),
+		queueSize:        options.queueSize,
+		queueBytes:       options.queueBytes,
+		closeTimeout:     options.closeTimeout,
+		operationTimeout: options.operationTimeout,
+		batchSize:        options.batchSize,
+		alert:            options.alert,
+		alertCooldown:    options.alertCooldown,
+		lastAlertAt:      make(map[string]time.Time),
 	}
 	go writer.run()
 	return writer
@@ -178,15 +206,19 @@ func (w *asyncLogWriter) Write(ctx context.Context, entry *storage.LogEntry) err
 		return fmt.Errorf("%w: %s", ErrLogSinkClosed, w.name)
 	}
 	if w.queuedWrites >= w.queueSize {
+		err := fmt.Errorf("%w: %s capacity=%d", ErrLogSinkQueueFull, w.name, w.queueSize)
 		w.dropped++
 		w.mu.Unlock()
-		return fmt.Errorf("%w: %s capacity=%d", ErrLogSinkQueueFull, w.name, w.queueSize)
+		w.emitAlert("queue_full", err)
+		return err
 	}
 	entryBytes := int64(len(data))
 	if entryBytes > w.queueBytes || entryBytes > w.queueBytes-w.pendingBytes {
+		err := fmt.Errorf("%w: %s byte_capacity=%d", ErrLogSinkQueueFull, w.name, w.queueBytes)
 		w.dropped++
 		w.mu.Unlock()
-		return fmt.Errorf("%w: %s byte_capacity=%d", ErrLogSinkQueueFull, w.name, w.queueBytes)
+		w.emitAlert("queue_full", err)
+		return err
 	}
 	w.acceptedSeq++
 	w.operations = append(w.operations, asyncLogOperation{
@@ -205,18 +237,25 @@ func (w *asyncLogWriter) Write(ctx context.Context, entry *storage.LogEntry) err
 
 func (w *asyncLogWriter) preflightWrite() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.closing {
+		w.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrLogSinkClosed, w.name)
 	}
 	if w.queuedWrites >= w.queueSize {
+		err := fmt.Errorf("%w: %s capacity=%d", ErrLogSinkQueueFull, w.name, w.queueSize)
 		w.dropped++
-		return fmt.Errorf("%w: %s capacity=%d", ErrLogSinkQueueFull, w.name, w.queueSize)
+		w.mu.Unlock()
+		w.emitAlert("queue_full", err)
+		return err
 	}
 	if w.pendingBytes >= w.queueBytes {
+		err := fmt.Errorf("%w: %s byte_capacity=%d", ErrLogSinkQueueFull, w.name, w.queueBytes)
 		w.dropped++
-		return fmt.Errorf("%w: %s byte_capacity=%d", ErrLogSinkQueueFull, w.name, w.queueBytes)
+		w.mu.Unlock()
+		w.emitAlert("queue_full", err)
+		return err
 	}
+	w.mu.Unlock()
 	return nil
 }
 
@@ -237,10 +276,12 @@ func (w *asyncLogWriter) Flush(ctx context.Context) error {
 	barrier := w.latestBarrier
 	created := barrier == nil || barrier.target != target || barrier.acknowledged
 	if created {
+		predecessor := barrier
 		barrier = &asyncLogBarrier{
-			target:     target,
-			baseFailed: w.ackedFailures,
-			done:       make(chan struct{}),
+			target:      target,
+			baseFailed:  w.ackedFailures,
+			predecessor: predecessor,
+			done:        make(chan struct{}),
 		}
 		w.latestBarrier = barrier
 		w.operations = append(w.operations, asyncLogOperation{
@@ -318,16 +359,19 @@ func (w *asyncLogWriter) Close() error {
 
 	timeoutErr := fmt.Errorf("close %s log sink timed out after %s", w.name, closeTimeout)
 	w.mu.Lock()
+	if w.closeFinished {
+		closeErr := w.closeErr
+		w.mu.Unlock()
+		return closeErr
+	}
 	if w.closeTimeoutErr == nil {
 		w.closeTimeoutErr = timeoutErr
-	}
-	if w.closeFinished {
-		w.closeErr = errors.Join(w.closeErr, w.closeTimeoutErr)
 	}
 	writeErr := w.unacknowledgedWriteErrorLocked(w.failed)
 	w.mu.Unlock()
 	w.cancel()
 	w.signalWorker()
+	w.emitAlert("close_timeout", timeoutErr)
 	return errors.Join(timeoutErr, writeErr)
 }
 
@@ -340,6 +384,10 @@ func (w *asyncLogWriter) closedResult() error {
 func (w *asyncLogWriter) Stats() AsyncLogSinkStats {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.statsLocked()
+}
+
+func (w *asyncLogWriter) statsLocked() AsyncLogSinkStats {
 	return AsyncLogSinkStats{
 		QueueDepth:   w.queuedWrites,
 		Pending:      w.pending,
@@ -358,7 +406,7 @@ func (w *asyncLogWriter) run() {
 		operation := w.nextOperation()
 		switch operation.kind {
 		case asyncLogWriteOperation:
-			w.runWrite(operation)
+			w.runWriteBatch(w.takeWriteBatch(operation))
 		case asyncLogFlushOperation:
 			w.runFlush(operation.barrier)
 		case asyncLogCloseOperation:
@@ -366,6 +414,28 @@ func (w *asyncLogWriter) run() {
 			return
 		}
 	}
+}
+
+func (w *asyncLogWriter) takeWriteBatch(first asyncLogOperation) []asyncLogOperation {
+	batch := []asyncLogOperation{first}
+	if w.batchSize <= 1 {
+		return batch
+	}
+
+	w.mu.Lock()
+	for len(batch) < w.batchSize && w.queueHead < len(w.operations) {
+		operation := w.operations[w.queueHead]
+		if operation.kind != asyncLogWriteOperation {
+			break
+		}
+		w.operations[w.queueHead] = asyncLogOperation{}
+		w.queueHead++
+		w.queuedWrites--
+		batch = append(batch, operation)
+	}
+	w.compactOperationsLocked()
+	w.mu.Unlock()
+	return batch
 }
 
 func (w *asyncLogWriter) nextOperation() asyncLogOperation {
@@ -404,18 +474,57 @@ func (w *asyncLogWriter) compactOperationsLocked() {
 }
 
 func (w *asyncLogWriter) runWrite(operation asyncLogOperation) {
-	err := w.workerCtx.Err()
-	if err == nil && w.write != nil {
-		err = w.write(w.workerCtx, operation.entry)
+	w.runWriteBatch([]asyncLogOperation{operation})
+}
+
+func (w *asyncLogWriter) runWriteBatch(batch []asyncLogOperation) {
+	if len(batch) == 0 {
+		return
 	}
+	if w.writeBatch != nil {
+		entries := make([]*storage.LogEntry, 0, len(batch))
+		for _, operation := range batch {
+			entries = append(entries, operation.entry)
+		}
+		err := w.workerCtx.Err()
+		if err == nil {
+			operationCtx, cancel := w.operationContext()
+			err = w.writeBatch(operationCtx, entries)
+			cancel()
+		}
+		w.finishWriteBatch(batch, err)
+		return
+	}
+	for _, operation := range batch {
+		err := w.workerCtx.Err()
+		if err == nil && w.write != nil {
+			operationCtx, cancel := w.operationContext()
+			err = w.write(operationCtx, operation.entry)
+			cancel()
+		}
+		w.finishWriteBatch([]asyncLogOperation{operation}, err)
+	}
+}
+
+func (w *asyncLogWriter) finishWriteBatch(batch []asyncLogOperation, err error) {
+	var alertErr error
 	w.mu.Lock()
 	if err != nil {
-		w.failed++
-		w.latestFailure = fmt.Errorf("%s asynchronous write failed: %w", w.name, err)
+		alertErr = fmt.Errorf("%s asynchronous write failed: %w", w.name, err)
+		w.failed += uint64(len(batch))
+		w.latestFailure = alertErr
 	}
-	w.pending--
-	w.pendingBytes -= int64(operation.size)
+	for _, operation := range batch {
+		w.pending--
+		w.pendingBytes -= int64(operation.size)
+	}
+	if w.pendingBytes < 0 {
+		w.pendingBytes = 0
+	}
 	w.mu.Unlock()
+	if alertErr != nil {
+		w.emitAlert("write_failure", alertErr)
+	}
 }
 
 func (w *asyncLogWriter) runFlush(barrier *asyncLogBarrier) {
@@ -423,13 +532,30 @@ func (w *asyncLogWriter) runFlush(barrier *asyncLogBarrier) {
 		return
 	}
 	w.mu.Lock()
-	barrier.failedAtTarget = w.failed
-	barrier.writeErr = w.writeErrorRangeLocked(barrier.baseFailed, barrier.failedAtTarget)
-	w.mu.Unlock()
-	if w.flush != nil {
-		barrier.flushErr = w.flush(w.workerCtx)
+	baseFailed := barrier.baseFailed
+	if predecessor := barrier.predecessor; predecessor != nil &&
+		(predecessor.acknowledged || predecessor.waiters > 0) &&
+		predecessor.failedAtTarget > baseFailed {
+		baseFailed = predecessor.failedAtTarget
 	}
+	barrier.baseFailed = baseFailed
+	barrier.failedAtTarget = w.failed
+	barrier.writeErr = w.writeErrorRangeLocked(baseFailed, barrier.failedAtTarget)
+	w.mu.Unlock()
+	var flushErr error
+	if w.flush != nil {
+		operationCtx, cancel := w.operationContext()
+		flushErr = w.flush(operationCtx)
+		cancel()
+	}
+	barrier.flushErr = flushErr
 	close(barrier.done)
+	if barrier.writeErr != nil {
+		w.emitAlert("write_failure", barrier.writeErr)
+	}
+	if flushErr != nil {
+		w.emitAlert("flush_failure", flushErr)
+	}
 }
 
 func (w *asyncLogWriter) runClose() {
@@ -438,7 +564,9 @@ func (w *asyncLogWriter) runClose() {
 		// This is the final backend operation before close. It runs in the same
 		// worker as writes and explicit Flush barriers, so no write or flush can
 		// ever begin after close returns or even after close begins.
-		flushErr = w.flush(w.workerCtx)
+		operationCtx, cancel := w.operationContext()
+		flushErr = w.flush(operationCtx)
+		cancel()
 	}
 	var backendCloseErr error
 	if w.close != nil {
@@ -449,6 +577,42 @@ func (w *asyncLogWriter) runClose() {
 	w.closeErr = errors.Join(w.closeTimeoutErr, writeErr, flushErr, backendCloseErr)
 	w.closeFinished = true
 	w.mu.Unlock()
+	if flushErr != nil {
+		w.emitAlert("flush_failure", flushErr)
+	}
+	if backendCloseErr != nil {
+		w.emitAlert("close_failure", backendCloseErr)
+	}
+}
+
+func (w *asyncLogWriter) operationContext() (context.Context, context.CancelFunc) {
+	if w.operationTimeout <= 0 {
+		return w.workerCtx, func() {}
+	}
+	return context.WithTimeout(w.workerCtx, w.operationTimeout)
+}
+
+func (w *asyncLogWriter) emitAlert(kind string, err error) {
+	if w.alert == nil {
+		return
+	}
+	now := time.Now()
+	w.mu.Lock()
+	if last, ok := w.lastAlertAt[kind]; ok && now.Sub(last) < w.alertCooldown {
+		w.mu.Unlock()
+		return
+	}
+	w.lastAlertAt[kind] = now
+	stats := w.statsLocked()
+	alert := w.alert
+	w.mu.Unlock()
+	// Alert sinks are operational extensions. Run them outside the worker so a
+	// slow or re-entrant callback cannot block backend progress; a faulty
+	// callback must not turn a backend failure into a process panic.
+	go func(alert asyncLogSinkAlert, kind string, stats AsyncLogSinkStats, err error) {
+		defer func() { _ = recover() }()
+		alert(kind, stats, err)
+	}(alert, kind, stats, err)
 }
 
 func (w *asyncLogWriter) writeErrorRangeLocked(baseFailed, failedAtTarget uint64) error {
