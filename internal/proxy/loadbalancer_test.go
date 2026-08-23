@@ -128,3 +128,13 @@ func TestServerRejectsUnmatchedHostWithMisdirectedRequest(t *testing.T) {
 		t.Fatalf("matched host must not get 421, got %d body=%q", okRec.Code, okRec.Body.String())
 	}
 }
+
+func TestLoadBalancerMatchesIPv6LiteralHosts(t *testing.T) {
+	site := config.SiteConfig{ID: "ipv6", Enabled: true, Domains: []string{"::1"}}
+	lb := NewLoadBalancer([]config.SiteConfig{site})
+	for _, host := range []string{"[::1]:8080", "[::1]", "::1"} {
+		if got := lb.SiteForHost(host); got.ID != site.ID {
+			t.Fatalf("SiteForHost(%q)=%q, want %q", host, got.ID, site.ID)
+		}
+	}
+}

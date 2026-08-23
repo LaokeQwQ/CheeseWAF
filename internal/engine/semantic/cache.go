@@ -3,6 +3,7 @@ package semantic
 import (
 	"encoding/binary"
 	"hash/maphash"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -170,6 +171,9 @@ func (c *candidateCache) put(key uint64, hits []Hit) {
 		return
 	}
 	expires := time.Now().Add(c.ttl).UnixNano()
+	if jitter := int64(c.ttl) / 8; jitter > 0 {
+		expires = time.Now().Add(c.ttl - time.Duration(rand.Int63n(2*jitter+1))).UnixNano()
+	}
 	stored := cloneHits(hits)
 	s := c.shard(key)
 	s.mu.Lock()

@@ -59,7 +59,10 @@ fi
 container_name="cheesewaf-ci-smoke-$$"
 log_file="$(mktemp)"
 setup_response="$(mktemp)"
-trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true; rm -f "$log_file" "$setup_response"' EXIT
+setup_payload="$(mktemp)"
+setup_header="$(mktemp)"
+secret_env_file="$(mktemp)"
+trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true; rm -f "$log_file" "$setup_response" "$setup_payload" "$setup_header" "$secret_env_file"' EXIT
 
 runtime_user="$(docker image inspect --format '{{.Config.User}}' "$image_tag")"
 [[ -n "$runtime_user" && "$runtime_user" != "0" && "$runtime_user" != "root" ]] || {
@@ -83,15 +86,22 @@ host_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 
 cheesewaf_uid=10001
 cheesewaf_gid=10001
 
-# First-install mutations require this header; pin it so smoke does not scrape logs.
-smoke_setup_token="CheeseWAF-CI-Setup-Token-2026"
+# Generate one-run credentials and pass them through files so neither value is
+# committed nor exposed in the docker/curl argument list.
+smoke_setup_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+smoke_admin_password="Cw1!$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')Aa"
+printf 'CHEESEWAF_SETUP_TOKEN=%s\n' "$smoke_setup_token" >"$secret_env_file"
+printf 'X-CheeseWAF-Setup-Token: %s\n' "$smoke_setup_token" >"$setup_header"
+printf '{"username":"smoke-admin","password":"%s","admin_listen":"0.0.0.0:9443","admin_strategy":"public_tls"}\n' \
+  "$smoke_admin_password" >"$setup_payload"
+chmod 0600 "$secret_env_file" "$setup_header" "$setup_payload"
 
 docker run --detach \
   --name "$container_name" \
   --read-only \
   --cap-drop ALL \
   --security-opt no-new-privileges \
-  --env "CHEESEWAF_SETUP_TOKEN=${smoke_setup_token}" \
+  --env-file "$secret_env_file" \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
   --tmpfs "/var/lib/cheesewaf:rw,nosuid,nodev,size=64m,uid=${cheesewaf_uid},gid=${cheesewaf_gid},mode=0755" \
   --tmpfs "/var/log/cheesewaf:rw,noexec,nosuid,nodev,size=32m,uid=${cheesewaf_uid},gid=${cheesewaf_gid},mode=0755" \
@@ -139,8 +149,8 @@ done
 
 curl --fail --silent --show-error --insecure \
   --header 'Content-Type: application/json' \
-  --header "X-CheeseWAF-Setup-Token: ${smoke_setup_token}" \
-  --data '{"username":"smoke-admin","password":"CheeseWAF-CI-Smoke-Only-2026!","admin_listen":"0.0.0.0:9443","admin_strategy":"public_tls"}' \
+  --header "@${setup_header}" \
+  --data-binary "@${setup_payload}" \
   "https://127.0.0.1:${host_port}/api/setup" >"$setup_response"
 grep -q '"setup_complete":true' "$setup_response" || {
   cat "$setup_response" >&2

@@ -111,14 +111,5 @@ func withAltSvc(next http.Handler, value string) http.Handler {
 }
 
 func maxHeaderBytes(cfg *config.Config) int {
-	maxHeaderBytes := 0
-	for _, site := range cfg.Sites {
-		if site.WAF.Performance.MaxHeaderBytes > maxHeaderBytes {
-			maxHeaderBytes = site.WAF.Performance.MaxHeaderBytes
-		}
-	}
-	if maxHeaderBytes <= 0 {
-		return 1 << 20
-	}
-	return maxHeaderBytes
+	return http.DefaultMaxHeaderBytes
 }

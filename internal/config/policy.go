@@ -12,7 +12,22 @@ const (
 	BudgetPolicyOpen    = "open"    // pass + metrics (availability first)
 	BudgetPolicyObserve = "observe" // log (and optional challenge path) without hard block
 	BudgetPolicyClosed  = "closed"  // challenge (preferred) / strict enforcement when budget runs out
+
+	DefaultDecodeDepth = 6
+	MaxDecodeDepth     = 8
 )
+
+// ResolveDecodeDepth applies the default for omitted values and clamps callers
+// to the validator's bounded maximum.
+func ResolveDecodeDepth(value int) int {
+	if value <= 0 {
+		return DefaultDecodeDepth
+	}
+	if value > MaxDecodeDepth {
+		return MaxDecodeDepth
+	}
+	return value
+}
 
 func DefaultProtectionPolicy() ProtectionPolicyConfig {
 	return ProtectionPolicyConfig{

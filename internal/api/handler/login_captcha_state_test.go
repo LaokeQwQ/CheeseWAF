@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -515,6 +516,29 @@ func TestLoginCAPTCHAProofCapacityIsBounded(t *testing.T) {
 	}
 	if got := len(state.proofs); got != loginCAPTCHAProofCapacity {
 		t.Fatalf("proof state exceeded capacity: %d", got)
+	}
+}
+
+func TestLoginCAPTCHAReceiptEvictsOldestForOwner(t *testing.T) {
+	state := newLoginCAPTCHAState()
+	now := time.Date(2026, time.August, 22, 10, 0, 0, 0, time.UTC)
+	owner, peer := "owner", "peer"
+	for i := 0; i < loginCAPTCHAReceiptPerClient; i++ {
+		at := now.Add(time.Duration(i) * time.Second)
+		if !state.storeReceiptForClient(owner, peer, "receipt-"+strconv.Itoa(i), at.Add(time.Hour), at) {
+			t.Fatalf("store receipt %d", i)
+		}
+	}
+	if !state.storeReceiptForClient(owner, peer, "replacement", now.Add(time.Hour), now.Add(time.Minute)) {
+		t.Fatal("store replacement receipt")
+	}
+	if state.consumeReceiptForClient(owner, peer, "receipt-0", now.Add(2*time.Minute)) {
+		t.Fatal("oldest receipt was not evicted")
+	}
+	for i := 1; i < loginCAPTCHAReceiptPerClient; i++ {
+		if !state.consumeReceiptForClient(owner, peer, "receipt-"+strconv.Itoa(i), now.Add(2*time.Minute)) {
+			t.Fatalf("newer receipt %d was evicted", i)
+		}
 	}
 }
 

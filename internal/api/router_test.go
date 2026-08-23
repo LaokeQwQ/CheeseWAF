@@ -1326,8 +1326,7 @@ func TestRouterRefreshesBearerToken(t *testing.T) {
 	}
 	var envelope struct {
 		Data struct {
-			Token string `json:"token"`
-			User  struct {
+			User struct {
 				Username string `json:"username"`
 				Role     string `json:"role"`
 			} `json:"user"`
@@ -1336,17 +1335,21 @@ func TestRouterRefreshesBearerToken(t *testing.T) {
 	if err := json.NewDecoder(refreshed.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode refresh response: %v", err)
 	}
-	if envelope.Data.Token == "" {
-		t.Fatal("refresh response did not include token")
+	if strings.Contains(refreshed.Body.String(), `"token"`) {
+		t.Fatalf("refresh response leaked JWT: %s", refreshed.Body.String())
 	}
-	if envelope.Data.Token == adminToken {
+	refreshedToken := responseCookieValue(refreshed, middleware.SessionCookieName)
+	if refreshedToken == "" {
+		t.Fatal("refresh response did not set session cookie")
+	}
+	if refreshedToken == adminToken {
 		t.Fatal("refresh returned the same token; expected a rotated token id")
 	}
 	if envelope.Data.User.Username != "admin" || envelope.Data.User.Role != "admin" {
 		t.Fatalf("unexpected refresh user: %+v", envelope.Data.User)
 	}
 
-	system := perform(router, http.MethodGet, "/api/system", envelope.Data.Token, nil)
+	system := perform(router, http.MethodGet, "/api/system", refreshedToken, nil)
 	if system.Code != http.StatusOK {
 		t.Fatalf("refreshed token should access protected API, got %d: %s", system.Code, system.Body.String())
 	}
@@ -1354,6 +1357,20 @@ func TestRouterRefreshesBearerToken(t *testing.T) {
 	oldToken := perform(router, http.MethodGet, "/api/system", adminToken, nil)
 	if oldToken.Code != http.StatusUnauthorized {
 		t.Fatalf("old token should be revoked after refresh, got %d: %s", oldToken.Code, oldToken.Body.String())
+	}
+}
+
+func TestRouterBootstrapDoesNotReturnJWTInResponseBody(t *testing.T) {
+	router, _, _, adminToken, _ := newAuthzTestRouterState(t, nil)
+	recorder := perform(router, http.MethodPost, "/api/auth/session/bootstrap", adminToken, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), `"token"`) || strings.Contains(recorder.Body.String(), adminToken) {
+		t.Fatalf("bootstrap response leaked bearer JWT: %s", recorder.Body.String())
+	}
+	if got := responseCookieValue(recorder, middleware.SessionCookieName); got == "" {
+		t.Fatal("bootstrap did not issue an HTTP session cookie")
 	}
 }
 
@@ -1670,18 +1687,26 @@ func loginAuthzUser(t *testing.T, router http.Handler, username, password string
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("login %s returned %d: %s", username, recorder.Code, recorder.Body.String())
 	}
-	var envelope struct {
-		Data struct {
-			Token string `json:"token"`
-		} `json:"data"`
+	if strings.Contains(recorder.Body.String(), `"token"`) {
+		t.Fatalf("login response leaked JWT: %s", recorder.Body.String())
 	}
-	if err := json.NewDecoder(recorder.Body).Decode(&envelope); err != nil {
-		t.Fatalf("decode login response: %v", err)
+	token := responseCookieValue(recorder, middleware.SessionCookieName)
+	if token == "" {
+		t.Fatal("login response did not set session cookie")
 	}
-	if envelope.Data.Token == "" {
-		t.Fatal("login response did not include token")
+	return token
+}
+
+func responseCookieValue(recorder *httptest.ResponseRecorder, name string) string {
+	if recorder == nil {
+		return ""
 	}
-	return envelope.Data.Token
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == name {
+			return cookie.Value
+		}
+	}
+	return ""
 }
 
 type loginCAPTCHATestClient struct {

@@ -15,6 +15,15 @@ type Decoded struct {
 	Text   string
 }
 
+const (
+	// DefaultDecodeDepth handles routinely observed nested encodings without
+	// giving an attacker an unbounded decode loop.
+	DefaultDecodeDepth = 6
+	// MaxDecodeDepth is the hard ceiling accepted by DecodeWithDepth and the
+	// depth used by DeepDecode.
+	MaxDecodeDepth = 8
+)
+
 // queryUnescapeReference and htmlUnescapeReference are the ungated primitives.
 // Decode calls them behind cheap byte gates; the equivalence test calls them
 // directly as the oracle, and also pins that the gates are exact.
@@ -22,41 +31,56 @@ func queryUnescapeReference(text string) (string, error) { return url.QueryUnesc
 func htmlUnescapeReference(text string) string           { return html.UnescapeString(text) }
 
 func Decode(raw string) Decoded {
+	return DecodeWithDepth(raw, DefaultDecodeDepth)
+}
+
+// DecodeWithDepth applies at most maxDepth transforming decode layers. Values
+// outside the supported range are normalized to the safe default/ceiling.
+func DecodeWithDepth(raw string, maxDepth int) Decoded {
+	if maxDepth <= 0 {
+		maxDepth = DefaultDecodeDepth
+	}
+	if maxDepth > MaxDecodeDepth {
+		maxDepth = MaxDecodeDepth
+	}
 	text := raw
 	layers := []string{"raw"}
-	for i := 0; i < 3; i++ {
+	for len(layers)-1 < maxDepth {
 		// QueryUnescape can only transform '%' escapes and '+'. Without either
 		// byte it returns (text, nil) unchanged, so the loop would break on the
 		// next == text check anyway. Skipping the call avoids net/url.unescape,
 		// which profiled as the single hottest leaf in the analyzer benchmark.
-		if !strings.ContainsAny(text, "%+") {
-			break
+		if strings.ContainsAny(text, "%+") {
+			next, err := url.QueryUnescape(text)
+			if err == nil && next != text {
+				text = next
+				layers = append(layers, "url")
+				continue
+			}
 		}
-		next, err := url.QueryUnescape(text)
-		if err != nil || next == text {
-			break
+		// Every HTML entity begins with '&', so without one UnescapeString is a
+		// no-op. It opens with the same IndexByte scan internally, so this gate saves
+		// the call and the comparison rather than the scan.
+		if strings.IndexByte(text, '&') >= 0 {
+			if unescaped := html.UnescapeString(text); unescaped != text {
+				text = unescaped
+				layers = append(layers, "html")
+				continue
+			}
 		}
-		text = next
-		layers = append(layers, "url")
-	}
-	// Every HTML entity begins with '&', so without one UnescapeString is a
-	// no-op. It opens with the same IndexByte scan internally, so this gate saves
-	// the call and the comparison rather than the scan.
-	if strings.IndexByte(text, '&') >= 0 {
-		if unescaped := html.UnescapeString(text); unescaped != text {
+		if looksLikeEncodedPayload(text) {
+			if b64, ok := TryBase64(strings.TrimSpace(text)); ok && printableRatio(b64) > 0.65 {
+				text = b64
+				layers = append(layers, "base64")
+				continue
+			}
+		}
+		if unescaped, changed := unescapeUnicode(text); changed {
 			text = unescaped
-			layers = append(layers, "html")
+			layers = append(layers, "unicode")
+			continue
 		}
-	}
-	if looksLikeEncodedPayload(text) {
-		if b64, ok := TryBase64(strings.TrimSpace(text)); ok && printableRatio(b64) > 0.65 {
-			text = b64
-			layers = append(layers, "base64")
-		}
-	}
-	if unescaped, changed := unescapeUnicode(text); changed {
-		text = unescaped
-		layers = append(layers, "unicode")
+		break
 	}
 	text = strings.TrimSpace(text)
 	// Strip NULs introduced by URL/HTML/unicode decoding so downstream
@@ -67,15 +91,16 @@ func Decode(raw string) Decoded {
 
 // DeepDecode performs aggressive multi-layer decoding to reveal obfuscated payloads.
 func DeepDecode(raw string) Decoded {
-	return deepDecodeFrom(Decode(raw))
+	return DecodeWithDepth(raw, MaxDecodeDepth)
 }
 
 // deepDecodeFrom is DeepDecode's second pass over an already-computed first
 // pass. DecodeAll needs both the shallow and deep result, and previously got
 // them by decoding raw twice; this lets it decode once and share.
 func deepDecodeFrom(result Decoded) Decoded {
-	if len(result.Layers) > 1 {
-		second := Decode(result.Text)
+	remaining := MaxDecodeDepth - (len(result.Layers) - 1)
+	if len(result.Layers) > 1 && remaining > 0 {
+		second := DecodeWithDepth(result.Text, remaining)
 		if len(second.Layers) > 1 {
 			// Layers is shared with the caller's copy of the shallow result, so
 			// append must not write into its backing array.

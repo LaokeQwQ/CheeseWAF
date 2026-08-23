@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/edge"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"nhooyr.io/websocket"
 )
@@ -1422,6 +1424,101 @@ func TestServerPhase2Protections(t *testing.T) {
 	}
 }
 
+func TestServerBlocksTamperedUpstreamResponseInline(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		_, _ = w.Write([]byte("changed"))
+	}))
+	defer upstream.Close()
+
+	cfg := tamperServerConfig(t, upstream.URL, "/protected", []byte("clean"))
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/protected", nil))
+	if recorder.Code != http.StatusForbidden || upstreamHits != 1 {
+		t.Fatalf("tampered response code=%d upstreamHits=%d body=%q", recorder.Code, upstreamHits, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 || sink.entries[0].DetectorID != "protection.tamper" || sink.entries[0].Action != "block" {
+		t.Fatalf("tamper event was not logged as a block: %+v", sink.entries)
+	}
+}
+
+func TestServerTamperSnapshotUsesPublicURLAcrossRewrite(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/new/item" {
+			t.Errorf("upstream path = %q, want /new/item", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("changed"))
+	}))
+	defer upstream.Close()
+
+	cfg := tamperServerConfig(t, upstream.URL, "/old/item", []byte("clean"))
+	cfg.Sites[0].WAF.Rewrite = []config.RewriteRuleConfig{{
+		ID: "public-to-upstream", Pattern: "^/old/(.*)$", Replacement: "/new/$1", Enabled: true,
+	}}
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/old/item", nil))
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("rewritten tampered response code=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServerChecksTamperSnapshotOnCacheHit(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		_, _ = w.Write([]byte("upstream"))
+	}))
+	defer upstream.Close()
+
+	cfg := tamperServerConfig(t, upstream.URL, "/assets/app.js", []byte("clean"))
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRequest := httptest.NewRequest(http.MethodGet, "http://localhost/assets/app.js", nil)
+	server.edgeRuntime.Load().cache.Store(seedRequest, edge.CapturedResponse{
+		Status: http.StatusOK, Header: make(http.Header), Body: []byte("changed"),
+	})
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/assets/app.js", nil))
+	if recorder.Code != http.StatusForbidden || upstreamHits != 0 {
+		t.Fatalf("cached tamper code=%d upstreamHits=%d body=%q", recorder.Code, upstreamHits, recorder.Body.String())
+	}
+}
+
+func tamperServerConfig(t *testing.T, upstreamURL, resourceURL string, cleanBody []byte) config.Config {
+	t.Helper()
+	key := []byte("01234567890123456789012345678901")
+	snapshot, err := tamper.Capture(key, resourceURL, cleanBody, time.Unix(100, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstreamURL, Weight: 1}}
+	cfg.Sites[0].WAF.Response.Enabled = true
+	cfg.Sites[0].WAF.Response.MaxBodyBytes = 1 << 20
+	cfg.Sites[0].WAF.Response.SensitivePatterns = []string{"DO-NOT-MATCH"}
+	cfg.Sites[0].WAF.Response.TamperKey = string(key)
+	cfg.Sites[0].WAF.Response.TamperSnapshots = []config.TamperSnapshotConfig{{
+		URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+	}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	return cfg
+}
+
 type noopSink struct{}
 
 func (noopSink) Write(context.Context, *storage.LogEntry) error { return nil }
@@ -1486,6 +1583,18 @@ func TestWriteLogSkipsPlainAccessWhenSiteDisabled(t *testing.T) {
 	})
 	if len(sink.entries) != 1 || sink.entries[0].Action != "block" {
 		t.Fatalf("expected block log kept, got %+v", sink.entries)
+	}
+}
+
+func TestSiteAccessLogEnabledDefaultsOnForEmptySiteID(t *testing.T) {
+	off := false
+	set := &siteRuntimeSet{byID: map[string]*siteRuntime{
+		"disabled": {site: config.SiteConfig{ID: "disabled", WAF: config.WAFConfig{AccessLogEnabled: &off}}},
+	}}
+	server := &Server{}
+	server.siteRuntimes.Store(set)
+	if !server.siteAccessLogEnabled("") {
+		t.Fatal("empty site id must deterministically default access logging on")
 	}
 }
 

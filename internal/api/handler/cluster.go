@@ -23,11 +23,11 @@ import (
 )
 
 func (h *Handler) ClusterStatus(w http.ResponseWriter, r *http.Request) {
-	writeData(w, cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)))
+	writeData(w, cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r)))
 }
 
 func (h *Handler) ClusterHealth(w http.ResponseWriter, r *http.Request) {
-	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r))
+	status := cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r))
 	code := http.StatusOK
 	if status.Enabled && !status.CanReceiveTraffic {
 		code = http.StatusServiceUnavailable
@@ -110,7 +110,7 @@ func (h *Handler) ClusterNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]any{
 		"ok":        true,
 		"heartbeat": record,
-		"status":    cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)),
+		"status":    cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r)),
 	})
 }
 
@@ -639,6 +639,9 @@ type clusterJoinResponse struct {
 	Role          string                      `json:"role"`
 	AdvertiseAddr string                      `json:"advertise_addr"`
 	Listen        string                      `json:"listen"`
+	HAMode        string                      `json:"ha_mode"`
+	Consensus     config.ConsensusConfig      `json:"consensus"`
+	Nodes         []config.ClusterNodeConfig  `json:"nodes"`
 	Interconnect  configInterconnectBootstrap `json:"interconnect"`
 	Certificates  clusterJoinCertificates     `json:"certificates"`
 	Node          identity.NodeRegistration   `json:"node"`
@@ -673,6 +676,11 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		h.recordClusterJoinAudit(r, req, auditStatus, auditMessage, time.Since(started))
 	}()
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		auditStatus = http.StatusLocked
+		auditMessage = "cluster configuration writes are unavailable"
+		return
+	}
 	if !decode(w, r, &req) {
 		return
 	}
@@ -696,8 +704,8 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		req.Listen = req.AdvertiseAddr
 	}
 	clusterID := "cheesewaf-local"
-	if h.Config != nil && strings.TrimSpace(h.Config.Cluster.ClusterID) != "" {
-		clusterID = h.Config.Cluster.ClusterID
+	if h.currentConfig() != nil && strings.TrimSpace(h.currentConfig().Cluster.ClusterID) != "" {
+		clusterID = h.currentConfig().Cluster.ClusterID
 	}
 	svc, err := h.clusterIdentityService()
 	if err != nil {
@@ -744,12 +752,16 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "CLUSTER_JOIN_CONFIG_SAVE_FAILED", err.Error())
 		return
 	}
+	haMode, consensusConfig, clusterNodes := h.clusterJoinTopology()
 	resp := clusterJoinResponse{
 		ClusterID:     clusterID,
 		NodeID:        enrollment.Node.NodeID,
 		Role:          enrollment.Node.Role,
 		AdvertiseAddr: enrollment.Node.AdvertiseAddr,
 		Listen:        req.Listen,
+		HAMode:        haMode,
+		Consensus:     consensusConfig,
+		Nodes:         clusterNodes,
 		Interconnect: configInterconnectBootstrap{
 			Listen:        req.Listen,
 			AdvertiseAddr: enrollment.Node.AdvertiseAddr,
@@ -764,6 +776,18 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	auditStatus = http.StatusOK
 	auditMessage = "node enrolled"
 	writeData(w, resp)
+}
+
+func (h *Handler) clusterJoinTopology() (string, config.ConsensusConfig, []config.ClusterNodeConfig) {
+	if h == nil || h.Config == nil {
+		return "", config.ConsensusConfig{}, nil
+	}
+	h.configMutationMu.Lock()
+	defer h.configMutationMu.Unlock()
+	return h.Config.Cluster.HAMode, config.ConsensusConfig{
+		Provider:      h.Config.Cluster.Consensus.Provider,
+		EtcdEndpoints: append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...),
+	}, append([]config.ClusterNodeConfig(nil), h.Config.Cluster.Nodes...)
 }
 
 func writeClusterJoinRejected(w http.ResponseWriter) {
@@ -875,7 +899,7 @@ func clusterJoinTokenViewFromToken(token identity.JoinToken) clusterJoinTokenVie
 }
 
 func (h *Handler) clusterNodeViews(registrations []identity.NodeRegistration, lang string) []clusterNodeView {
-	runtimeNodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	runtimeNodes := cluster.RuntimeNodes(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
 	runtimeByID := make(map[string]cluster.RuntimeNodeStatus, len(runtimeNodes))
 	for _, node := range runtimeNodes {
 		runtimeByID[node.NodeID] = node
@@ -891,7 +915,7 @@ func (h *Handler) clusterNodeViews(registrations []identity.NodeRegistration, la
 		registrationByID[node.NodeID] = identity.NodeRegistration{
 			NodeID:        node.NodeID,
 			Role:          node.Role,
-			ClusterID:     clusterIDFromConfig(h.Config),
+			ClusterID:     clusterIDFromConfig(h.currentConfig()),
 			AdvertiseAddr: node.AdvertiseAddr,
 		}
 	}
@@ -979,30 +1003,36 @@ func (h *Handler) ClusterRotateNodeCertificate(w http.ResponseWriter, r *http.Re
 }
 
 func (h *Handler) recordJoinedClusterNode(node identity.NodeRegistration) error {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
+	h.configPersistMu.Lock()
+	defer h.configPersistMu.Unlock()
 	h.configMutationMu.Lock()
 	defer h.configMutationMu.Unlock()
 	next, err := h.joinedClusterNodeConfig(node)
 	if err != nil {
 		return err
 	}
-	// Preserve process-wide pointer identity: other subsystems hold *h.Config.
-	previous, err := config.Clone(h.Config)
+	previous, err := config.Clone(h.currentConfig())
 	if err != nil {
 		return err
 	}
-	*h.Config = *next
-	if err := h.persistConfigLocked(); err != nil {
-		*h.Config = *previous
+	if err := h.persistConfigCandidateLocked(next); err != nil {
 		return err
+	}
+	if err := h.publishConfig(next); err != nil {
+		if rollbackErr := h.persistConfigCandidateLocked(previous); rollbackErr != nil {
+			h.freezeConfigWritesLocked(fmt.Sprintf("config publish failed: %v; rollback failed: %v", err, rollbackErr))
+			return fmt.Errorf("publish config: %w; rollback config: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("publish config: %w", err)
 	}
 	return nil
 }
 
 func (h *Handler) validateJoinedClusterNodeConfig(node identity.NodeRegistration) error {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
 	_, err := h.joinedClusterNodeConfig(node)
@@ -1010,12 +1040,12 @@ func (h *Handler) validateJoinedClusterNodeConfig(node identity.NodeRegistration
 }
 
 func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*config.Config, error) {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil, nil
 	}
 	// Full clone so validation/join never mutates the live config graph
 	// (shallow struct copy + append can write into the live Nodes backing array).
-	cloned, err := config.Clone(h.Config)
+	cloned, err := config.Clone(h.currentConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -1034,6 +1064,9 @@ func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*conf
 			continue
 		}
 		return nil, fmt.Errorf("cluster node %q already exists; revoke or rotate it before rejoining", node.NodeID)
+	}
+	if strings.ToLower(strings.TrimSpace(next.Cluster.Consensus.Provider)) != "etcd" {
+		return nil, fmt.Errorf("joining an additional node requires cluster.consensus.provider=etcd; builtin is valid only for a single-node local deployment")
 	}
 	next.Cluster.Nodes = append(append([]config.ClusterNodeConfig(nil), next.Cluster.Nodes...), config.ClusterNodeConfig{
 		ID:            node.NodeID,
@@ -1060,11 +1093,11 @@ func (h *Handler) clusterIdentityService() (*identity.MemoryIdentityService, err
 	}
 	clusterID := "cheesewaf-local"
 	statePath := ""
-	if h.Config != nil && strings.TrimSpace(h.Config.Cluster.ClusterID) != "" {
-		clusterID = h.Config.Cluster.ClusterID
+	if h.currentConfig() != nil && strings.TrimSpace(h.currentConfig().Cluster.ClusterID) != "" {
+		clusterID = h.currentConfig().Cluster.ClusterID
 	}
-	if h.Config != nil && strings.TrimSpace(h.Config.Setup.DataDir) != "" {
-		statePath = filepath.Join(h.Config.Setup.DataDir, "cluster", "identity.json")
+	if h.currentConfig() != nil && strings.TrimSpace(h.currentConfig().Setup.DataDir) != "" {
+		statePath = filepath.Join(h.currentConfig().Setup.DataDir, "cluster", "identity.json")
 	}
 	svc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: clusterID, StatePath: statePath, Clock: clusterIdentityClock(h.nowUTC)})
 	if err != nil {
@@ -1099,27 +1132,27 @@ func (h *Handler) clusterNodeConfigured(nodeID string) bool {
 
 func (h *Handler) clusterNodeConfig(nodeID string) (config.ClusterNodeConfig, bool) {
 	nodeID = strings.TrimSpace(nodeID)
-	if nodeID == "" || h == nil || h.Config == nil {
+	if nodeID == "" || h == nil || h.currentConfig() == nil {
 		return config.ClusterNodeConfig{}, false
 	}
-	for _, node := range h.Config.Cluster.Nodes {
+	for _, node := range h.currentConfig().Cluster.Nodes {
 		if strings.TrimSpace(node.ID) == nodeID {
 			return node, true
 		}
 	}
-	if strings.TrimSpace(h.Config.Cluster.NodeID) == nodeID {
+	if strings.TrimSpace(h.currentConfig().Cluster.NodeID) == nodeID {
 		return config.ClusterNodeConfig{
 			ID:            nodeID,
 			Role:          "waf",
-			AdvertiseAddr: h.Config.Cluster.Interconnect.AdvertiseAddr,
+			AdvertiseAddr: h.currentConfig().Cluster.Interconnect.AdvertiseAddr,
 		}, true
 	}
 	return config.ClusterNodeConfig{}, false
 }
 
 func (h *Handler) defaultJoinTokenTTL() time.Duration {
-	if h != nil && h.Config != nil && h.Config.Cluster.Join.TokenTTL > 0 {
-		return h.Config.Cluster.Join.TokenTTL
+	if h != nil && h.currentConfig() != nil && h.currentConfig().Cluster.Join.TokenTTL > 0 {
+		return h.currentConfig().Cluster.Join.TokenTTL
 	}
 	return 15 * time.Minute
 }
@@ -1132,10 +1165,10 @@ func clusterIDFromConfig(cfg *config.Config) string {
 }
 
 func (h *Handler) clusterConfigWritable(lang string) (bool, string) {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return true, ""
 	}
-	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
+	status := cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
 	if !status.Enabled || status.CanWriteConfig {
 		return true, ""
 	}

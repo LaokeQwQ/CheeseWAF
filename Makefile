@@ -12,7 +12,6 @@ LDFLAGS      := -s -w -X '$(MODULE)/internal/version.Version=$(VERSION)' -X '$(M
 
 GO           := go
 GOFLAGS      := -trimpath
-GCFLAGS      := -l=4
 CGO_ENABLED  := 0
 
 .PHONY: all build build-cli run test test-go web-test web-build security-corpus security-corpus-http security-gate lint clean dev help
@@ -40,7 +39,7 @@ all: build build-cli
 
 ## build: Build the cheesewaf binary
 build:
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/cheesewaf/
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/cheesewaf/
 
 ## build-cli: Build and create waf-cli symlink/copy
 build-cli: build
@@ -69,7 +68,9 @@ package-windows-cli: build-windows-gui
 	elif [ -f bin/$(BINARY_NAME)-gui-windows-amd64.exe ]; then cp -f bin/$(BINARY_NAME)-gui-windows-amd64.exe dist/windows-cli/cheesewaf-gui.exe; \
 	else echo "missing cheesewaf-gui Windows binary" >&2; exit 1; fi
 	@cp -f configs/cheesewaf.yaml dist/windows-cli/configs/
-	@if [ -d web/dist ]; then cp -R web/dist dist/windows-cli/web/; fi
+	@test -s web/dist/index.html || { echo "missing web/dist/index.html; run make web-build first" >&2; exit 1; }
+	@cp -R web/dist dist/windows-cli/web/
+	@test -s dist/windows-cli/web/dist/index.html
 	@echo "Staged dist/windows-cli — zip manually; do not embed secrets"
 
 ## package-windows-nsis-payload: Stage SOURCE_DIR for makensis (no secrets)
@@ -80,17 +81,19 @@ package-windows-nsis-payload: package-windows-cli
 	@cp -f dist/windows-cli/cheesewaf-gui.exe dist/windows-payload/
 	@cp -f dist/windows-cli/waf-cli.exe dist/windows-payload/
 	@cp -f dist/windows-cli/configs/cheesewaf.yaml dist/windows-payload/configs/
-	@if [ -d dist/windows-cli/web ]; then cp -R dist/windows-cli/web dist/windows-payload/; fi
+	@test -s dist/windows-cli/web/dist/index.html
+	@cp -R dist/windows-cli/web dist/windows-payload/
+	@test -s dist/windows-payload/web/dist/index.html
 	@echo "Staged dist/windows-payload for: makensis /DVERSION=... /DSOURCE_DIR=dist/windows-payload deploy/windows/nsis/cheesewaf.nsi"
 
 ## build-linux: Cross-compile for Linux amd64
 build-linux:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/cheesewaf/
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/cheesewaf/
 	@cp bin/$(BINARY_NAME)-linux-amd64 bin/$(CLI_NAME)-linux-amd64
 
 ## build-darwin: Cross-compile for macOS arm64 (Apple Silicon)
 build-darwin:
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-darwin-arm64 ./cmd/cheesewaf/
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME)-darwin-arm64 ./cmd/cheesewaf/
 	@cp bin/$(BINARY_NAME)-darwin-arm64 bin/$(CLI_NAME)-darwin-arm64
 
 ## build-all: Build for all platforms (Linux amd64/arm64, macOS amd64/arm64, Windows amd64/arm64, LoongArch)
@@ -101,13 +104,13 @@ build-all:
 			ext=""; \
 			if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
 			echo "  → $$goos/$$goarch"; \
-			GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" \
+			GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" \
 			-o bin/$(BINARY_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext ./cmd/cheesewaf/; \
 			cp bin/$(BINARY_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext bin/$(CLI_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext; \
 		done; \
 	done
 	@echo "  → linux/loong64"
-	@GOOS=linux GOARCH=loong64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" \
+	@GOOS=linux GOARCH=loong64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" \
 		-o bin/$(BINARY_NAME)-loong64-linux-$(subst +,-,$(VERSION)) ./cmd/cheesewaf/
 	@cp bin/$(BINARY_NAME)-loong64-linux-$(subst +,-,$(VERSION)) bin/$(CLI_NAME)-loong64-linux-$(subst +,-,$(VERSION))
 	@echo "Done! All binaries in bin/"
@@ -138,6 +141,10 @@ web-build:
 ## security-corpus: Run curated attack/benign corpus against the semantic analyzer
 security-corpus:
 	$(GO) run ./cmd/cheesewaf-corpus --mode analyzer
+
+## eval-shards: Run semantic evaluation corpus in parallel shards (env SEMANTIC_EVAL_SHARDS)
+eval-shards:
+	bash scripts/ci/run-semantic-eval-shards.sh
 
 ## security-corpus-http: Run curated attack/benign corpus against a deployed WAF (BASE_URL=http://127.0.0.1:8080)
 security-corpus-http:

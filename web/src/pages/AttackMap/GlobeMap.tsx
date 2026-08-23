@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { geoEquirectangular, geoGraticule10, geoPath } from 'd3-geo';
+import { geoEquirectangular, geoGraticule10, geoPath, type GeoPermissibleObjects } from 'd3-geo';
 import {
   ACESFilmicToneMapping,
   AdditiveBlending,
@@ -13,6 +13,7 @@ import {
 import { AmbientLight } from 'three/src/lights/AmbientLight.js';
 import { BufferAttribute } from 'three/src/core/BufferAttribute.js';
 import { BufferGeometry } from 'three/src/core/BufferGeometry.js';
+import { Object3D } from 'three/src/core/Object3D.js';
 import { CanvasTexture } from 'three/src/textures/CanvasTexture.js';
 import { CatmullRomCurve3 } from 'three/src/extras/curves/CatmullRomCurve3.js';
 import { Color } from 'three/src/math/Color.js';
@@ -57,22 +58,42 @@ type GlobeMapProps = {
 
 type GlobeVisualTheme = 'light' | 'dark';
 
+type ThreeBufferGeometry = InstanceType<typeof BufferGeometry>;
+type ThreeCanvasTexture = InstanceType<typeof CanvasTexture>;
+type ThreeCatmullRomCurve = InstanceType<typeof CatmullRomCurve3>;
+type ThreeGroup = InstanceType<typeof Group>;
+type ThreeLineBasicMaterial = InstanceType<typeof LineBasicMaterial>;
+type ThreeMaterial = InstanceType<typeof Material>;
+type ThreeMeshBasicMaterial = InstanceType<typeof MeshBasicMaterial>;
+type ThreeMeshPhysicalMaterial = InstanceType<typeof MeshPhysicalMaterial>;
+type ThreeObject3D = InstanceType<typeof Object3D>;
+type ThreePerspectiveCamera = InstanceType<typeof PerspectiveCamera>;
+type ThreeScene = InstanceType<typeof Scene>;
+type ThreeVector3 = InstanceType<typeof Vector3>;
+type ThreeWebGLRenderer = InstanceType<typeof WebGLRenderer>;
+
+type GlobeMarkerData = (AttackRegion & { isTarget?: false }) | {
+  locationName: string;
+  attacks: string;
+  isTarget: true;
+};
+
 const globeLevelColors: Record<ThreatLevel, number> = threatPaletteRgb;
 
 const markerColorFallback = 0x2176d2;
 
 type GlobeRuntime = {
-  renderer: any;
-  scene: any;
-  camera: any;
+  renderer: ThreeWebGLRenderer;
+  scene: ThreeScene;
+  camera: ThreePerspectiveCamera;
   tooltip: HTMLDivElement;
-  markerGroup: any;
-  markerMeshes: any[];
-  regionObjects: Map<string, any[]>;
-  pulseRings: Array<{ mesh: any; material: any; phase: number }>;
-  flowArcs: Array<{ material: any; head: any; headMaterial: any; curve: any; phase: number }>;
-  globeMaterial: any;
-  worldTexture: any;
+  markerGroup: ThreeGroup;
+  markerMeshes: ThreeObject3D[];
+  regionObjects: Map<string, ThreeObject3D[]>;
+  pulseRings: Array<{ mesh: ThreeObject3D; material: ThreeMeshBasicMaterial; phase: number }>;
+  flowArcs: Array<{ material: ThreeMeshBasicMaterial; head: ThreeObject3D; headMaterial: ThreeMeshBasicMaterial; curve: ThreeCatmullRomCurve; phase: number }>;
+  globeMaterial: ThreeMeshPhysicalMaterial;
+  worldTexture: ThreeCanvasTexture | null;
   protectedTarget: ProtectedTarget;
   render: () => void;
 };
@@ -134,7 +155,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const camera = new PerspectiveCamera(42, 1, 0.1, 100);
     camera.position.set(0, 0.08, 3.45 / zoomRef.current);
     const isDarkGlobe = visualTheme === 'dark';
-    let renderer: any;
+    let renderer: ThreeWebGLRenderer;
     try {
       renderer = new WebGLRenderer({
         antialias: true,
@@ -174,7 +195,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const cloudTexture = createCloudTexture();
     if (cloudTexture) {
       cloudTexture.wrapS = RepeatWrapping;
-      cloudTexture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy?.() ?? 1);
+      cloudTexture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
     }
     const gridSphere = createGridSphere(1.006, visualTheme);
     const globe = new Mesh(
@@ -191,7 +212,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     );
     earthGroup.add(globe);
     earthGroup.add(gridSphere);
-    const globeMaterial = globe.material as any;
+    const globeMaterial = globe.material;
 
     const clouds = new Mesh(
       cloudGeometry,
@@ -370,7 +391,11 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
         tooltip.classList.remove('globe-tooltip-visible');
         return;
       }
-      const region = hit.object.userData.region as AttackRegion & { isTarget?: boolean };
+      const region = hit.object.userData.region as GlobeMarkerData | undefined;
+      if (!region) {
+        tooltip.classList.remove('globe-tooltip-visible');
+        return;
+      }
       tooltip.textContent = region.isTarget
         ? `${runtime.protectedTarget.label} · ${tRef.current('attackMap.protectedTarget')}`
         : `${formatGlobeRegionLocation(region, tRef.current)} · ${region.attacks}`;
@@ -560,7 +585,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
 function updateGlobeTexture(runtime: GlobeRuntime, countryLevels: Map<string, ThreatLevel>, worldFeatures: WorldFeature[], visualTheme: GlobeVisualTheme) {
   const texture = createWorldTexture(countryLevels, worldFeatures, visualTheme);
   if (texture) {
-    texture.anisotropy = Math.min(8, runtime.renderer.capabilities.getMaxAnisotropy?.() ?? 1);
+    texture.anisotropy = Math.min(8, runtime.renderer.capabilities.getMaxAnisotropy());
     texture.minFilter = LinearMipmapLinearFilter;
     texture.magFilter = LinearFilter;
   }
@@ -663,7 +688,7 @@ function rebuildGlobeMarkers(
       });
       const head = new Mesh(new SphereGeometry(0.014, 14, 14), headMaterial);
       head.position.copy(arc.curve.getPoint(0.12));
-      runtime.markerGroup.add(arc);
+      runtime.markerGroup.add(arc.mesh);
       runtime.markerGroup.add(head);
       runtime.flowArcs.push({ material: arcMaterial, head, headMaterial, curve: arc.curve, phase: index * 0.31 });
     }
@@ -680,7 +705,8 @@ function updateGlobeMarkerData(
   const protectedTarget = target ?? { lat: 35.9, lon: 104.2, label: t('attackMap.protectedTarget'), source: 'fallback' as const };
   runtime.protectedTarget = protectedTarget;
   for (const mesh of runtime.markerMeshes) {
-    if (mesh.userData.region?.isTarget) {
+    const marker = mesh.userData.region as GlobeMarkerData | undefined;
+    if (marker?.isTarget) {
       mesh.userData.region = { locationName: protectedTarget.label, attacks: t('attackMap.protectedTarget'), isTarget: true };
     }
   }
@@ -695,7 +721,7 @@ function updateGlobeMarkerData(
   }
 }
 
-function clearObjectGroup(group: any) {
+function clearObjectGroup(group: ThreeGroup) {
   const children = [...group.children];
   for (const child of children) {
     group.remove(child);
@@ -711,7 +737,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function orientNormal(object: any, normal: any) {
+function orientNormal(object: ThreeObject3D, normal: ThreeVector3) {
   object.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), normal);
 }
 
@@ -723,12 +749,11 @@ function formatGlobeRegionLocation(region: AttackRegion, t: (key: string, option
   return country;
 }
 
-function createArcMesh(start: any, end: any, material: any) {
+function createArcMesh(start: ThreeVector3, end: ThreeVector3, material: ThreeMeshBasicMaterial) {
   const midpoint = start.clone().add(end).normalize().multiplyScalar(1.28 + Math.min(0.26, start.distanceTo(end) * 0.09));
   const curve = new CatmullRomCurve3([start, midpoint, end]);
-  const mesh = new Mesh(new TubeGeometry(curve, 58, 0.0032, 8, false), material) as any;
-  mesh.curve = curve;
-  return mesh;
+  const mesh = new Mesh(new TubeGeometry(curve, 58, 0.0032, 8, false), material);
+  return { mesh, curve };
 }
 
 function createGridSphere(radius: number, visualTheme: GlobeVisualTheme) {
@@ -759,24 +784,24 @@ function createGridSphere(radius: number, visualTheme: GlobeVisualTheme) {
   return group;
 }
 
-function createGeoLine(points: Array<{ lat: number; lon: number }>, radius: number, material: any) {
+function createGeoLine(points: Array<{ lat: number; lon: number }>, radius: number, material: ThreeLineBasicMaterial) {
   const geometry = new BufferGeometry().setFromPoints(points.map((point) => latLonToVector(point.lat, point.lon, radius)));
   return new Line(geometry, material);
 }
 
-function disposeObjectTree(...objects: any[]) {
-  const geometries = new Set<any>();
-  const materials = new Set<any>();
+function disposeObjectTree(...objects: ThreeObject3D[]) {
+  const geometries = new Set<ThreeBufferGeometry>();
+  const materials = new Set<ThreeMaterial>();
   objects.forEach((object) => {
-    object.traverse((child: any) => {
-      if (child.geometry instanceof BufferGeometry) {
+    object.traverse((child: ThreeObject3D) => {
+      if (child instanceof Mesh || child instanceof Line || child instanceof Points) {
         geometries.add(child.geometry);
-      }
-      const material = child.material;
-      if (Array.isArray(material)) {
-        material.forEach((item) => item instanceof Material && materials.add(item));
-      } else if (material instanceof Material) {
-        materials.add(material);
+        const material = child.material;
+        if (Array.isArray(material)) {
+          material.forEach((item) => materials.add(item));
+        } else {
+          materials.add(material);
+        }
       }
     });
   });
@@ -872,7 +897,7 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
   const texturePath = geoPath(textureProjection, ctx);
 
   ctx.beginPath();
-  texturePath(geoGraticule10() as any);
+  texturePath(asGeoPathObject(geoGraticule10()));
   ctx.strokeStyle = isDarkGlobe ? 'rgba(130,226,239,0.08)' : 'rgba(35,97,124,0.12)';
   ctx.lineWidth = 0.9;
   ctx.stroke();
@@ -882,7 +907,7 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
   for (const item of worldFeatures) {
     const level = countryLevels.get(normalizeWorldId(item.id ?? ''));
     ctx.beginPath();
-    texturePath(item as any);
+    texturePath(asGeoPathObject(item));
     ctx.shadowColor = globeShadowForLevel(level, visualTheme);
     ctx.shadowBlur = level ? (isDarkGlobe ? 18 : 10) : (isDarkGlobe ? 3 : 1);
     ctx.fillStyle = globeFillForLevel(level, visualTheme);
@@ -893,7 +918,7 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
   for (const item of worldFeatures) {
     const level = countryLevels.get(normalizeWorldId(item.id ?? ''));
     ctx.beginPath();
-    texturePath(item as any);
+    texturePath(asGeoPathObject(item));
     ctx.strokeStyle = level
       ? (isDarkGlobe ? 'rgba(255,241,224,0.86)' : 'rgba(255,255,255,0.86)')
       : (isDarkGlobe ? 'rgba(196,239,226,0.42)' : 'rgba(49,92,112,0.34)');
@@ -912,6 +937,10 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
   texture.colorSpace = SRGBColorSpace;
   texture.wrapS = RepeatWrapping;
   return texture;
+}
+
+function asGeoPathObject(value: WorldFeature | ReturnType<typeof geoGraticule10>): GeoPermissibleObjects {
+  return value as GeoPermissibleObjects;
 }
 
 function createCloudTexture() {

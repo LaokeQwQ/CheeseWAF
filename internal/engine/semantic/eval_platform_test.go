@@ -1,4 +1,4 @@
-package semantic_test
+package semantic
 
 import (
 	"bufio"
@@ -10,12 +10,12 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
-	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
 )
 
@@ -35,10 +35,12 @@ import (
 // FPR_GATE / TPR_GATE remain real quality gates. Do NOT add a top-level
 // t.Skip here: it silently turns the CI gate into a no-op.
 func TestEvaluationPlatform(t *testing.T) {
-	semantic.ProcessMetrics().ResetForTest()
-	semantic.ResetProcessCacheForTest()
+	ProcessMetrics().ResetForTest()
+	ResetProcessCacheForTest()
+	_ = os.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
+	defer func() { _ = os.Unsetenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA") }()
 
-	analyzer := semantic.NewAnalyzer("block", 2)
+	analyzer := NewAnalyzer("block", 2)
 
 	// Data sources configuration
 	dataSources := []struct {
@@ -91,7 +93,7 @@ func TestEvaluationPlatform(t *testing.T) {
 
 	// Add performance metrics from semantic engine
 	report.Performance = &PerformanceMetrics{
-		ProcessMetrics: semantic.ProcessMetrics().Snapshot(),
+		ProcessMetrics: ProcessMetrics().Snapshot(),
 	}
 
 	// Output JSON report
@@ -121,7 +123,7 @@ type EvaluationReport struct {
 	Timestamp       string                      `json:"timestamp"`
 	Sources         map[string]*SourceMetrics   `json:"sources"`
 	ByCategory      map[string]*CategoryMetrics `json:"by_category"`
-	Overall         Metrics                     `json:"overall"`
+	Overall         EvalMetrics                 `json:"overall"`
 	ByParanoiaLevel map[string]*ParanoiaMetrics `json:"by_paranoia_level"`
 	Performance     *PerformanceMetrics         `json:"performance,omitempty"`
 	FailedCases     []FailedCase                `json:"failed_cases"`
@@ -137,11 +139,11 @@ type ParanoiaMetrics struct {
 }
 
 type SourceMetrics struct {
-	BenignTotal int     `json:"benign_total"`
-	BenignFP    int     `json:"benign_fp"`
-	AttackTotal int     `json:"attack_total"`
-	AttackHit   int     `json:"attack_hit"`
-	Metrics     Metrics `json:"metrics"`
+	BenignTotal int         `json:"benign_total"`
+	BenignFP    int         `json:"benign_fp"`
+	AttackTotal int         `json:"attack_total"`
+	AttackHit   int         `json:"attack_hit"`
+	EvalMetrics EvalMetrics `json:"metrics"`
 }
 
 type CategoryMetrics struct {
@@ -150,7 +152,7 @@ type CategoryMetrics struct {
 	TPR         float64 `json:"tpr_percent"`
 }
 
-type Metrics struct {
+type EvalMetrics struct {
 	FPR       float64 `json:"fpr_percent"`
 	TPR       float64 `json:"tpr_percent"`
 	Precision float64 `json:"precision_percent"`
@@ -158,7 +160,7 @@ type Metrics struct {
 }
 
 type PerformanceMetrics struct {
-	ProcessMetrics semantic.Snapshot `json:"process_metrics"`
+	ProcessMetrics Snapshot `json:"process_metrics"`
 }
 
 type FailedCase struct {
@@ -171,7 +173,7 @@ type FailedCase struct {
 	Payload  string `json:"payload,omitempty"`
 }
 
-func processDataSource(t *testing.T, analyzer *semantic.Analyzer, sourceName, path string, required bool, report *EvaluationReport) {
+func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string, required bool, report *EvaluationReport) {
 	f, err := os.Open(path)
 	if err != nil {
 		if required {
@@ -182,111 +184,19 @@ func processDataSource(t *testing.T, analyzer *semantic.Analyzer, sourceName, pa
 	}
 	defer f.Close()
 
-	cases, err := securitytest.LoadJSONL(f)
-	if err != nil {
-		t.Fatalf("Failed to load %s: %v", sourceName, err)
-	}
-
-	if len(cases) == 0 {
-		t.Logf("Data source %s is empty", sourceName)
-		return
-	}
-
 	srcMetrics := &SourceMetrics{}
 	report.Sources[sourceName] = srcMetrics
 
-	for _, tc := range cases {
-		method := tc.Method
-		if method == "" {
-			method = http.MethodGet
-		}
-
-		req, err := http.NewRequest(method, tc.Target, strings.NewReader(tc.Body))
-		if err != nil {
-			continue
-		}
-
-		if tc.ContentType != "" {
-			req.Header.Set("Content-Type", tc.ContentType)
-		}
-		for k, v := range tc.Header {
-			req.Header.Set(k, v)
-		}
-
-		reqCtx, err := engine.NewRequestContext(req, "default")
-		if err != nil {
-			continue
-		}
-
-		res, err := analyzer.Detect(context.Background(), reqCtx)
-		if err != nil {
-			t.Errorf("Detection error on %s: %v", tc.Name, err)
-			continue
-		}
-
-		detected := res != nil && res.Detected
-
-		switch tc.Label {
-		case "benign":
-			srcMetrics.BenignTotal++
-			if detected {
-				srcMetrics.BenignFP++
-				// Record FP for debugging (limit to avoid excessive output)
-				if len(report.FailedCases) < 100 {
-					payload := tc.Body
-					if len(payload) > 200 {
-						payload = payload[:200] + "..."
-					}
-					report.FailedCases = append(report.FailedCases, FailedCase{
-						Source:   sourceName,
-						Type:     "FP",
-						Name:     tc.Name,
-						Category: res.Category,
-						Expected: "benign",
-						Got:      fmt.Sprintf("%s (conf=%.2f)", res.Category, res.Confidence),
-						Payload:  payload,
-					})
-				}
-			}
-
-		case "attack":
-			srcMetrics.AttackTotal++
-			if detected {
-				srcMetrics.AttackHit++
-				// Update category-specific metrics
-				if report.ByCategory[tc.Category] == nil {
-					report.ByCategory[tc.Category] = &CategoryMetrics{}
-				}
-				report.ByCategory[tc.Category].AttackTotal++
-				report.ByCategory[tc.Category].AttackHit++
-			} else {
-				// Record false negative (miss)
-				if len(report.FailedCases) < 100 {
-					payload := tc.Body
-					if len(payload) > 200 {
-						payload = payload[:200] + "..."
-					}
-					report.FailedCases = append(report.FailedCases, FailedCase{
-						Source:   sourceName,
-						Type:     "FN",
-						Name:     tc.Name,
-						Category: tc.Category,
-						Expected: tc.Category,
-						Got:      "not_detected",
-						Payload:  payload,
-					})
-				}
-				// Still count total for category
-				if report.ByCategory[tc.Category] == nil {
-					report.ByCategory[tc.Category] = &CategoryMetrics{}
-				}
-				report.ByCategory[tc.Category].AttackTotal++
-			}
-		}
+	err = securitytest.ForEachJSONL(f, evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
+		processOneSourceCase(t, analyzer, tc, sourceName, report, srcMetrics)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to load/stream %s: %v", sourceName, err)
 	}
 
 	// Compute metrics for this source
-	srcMetrics.Metrics = computeMetrics(
+	srcMetrics.EvalMetrics = computeMetrics(
 		srcMetrics.BenignTotal,
 		srcMetrics.BenignFP,
 		srcMetrics.AttackTotal,
@@ -302,8 +212,94 @@ func processDataSource(t *testing.T, analyzer *semantic.Analyzer, sourceName, pa
 	)
 }
 
-func computeMetrics(benignTotal, benignFP, attackTotal, attackHit int) Metrics {
-	m := Metrics{}
+func processOneSourceCase(t *testing.T, analyzer *Analyzer, tc securitytest.Case, sourceName string, report *EvaluationReport, srcMetrics *SourceMetrics) {
+	method := tc.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+
+	req, err := http.NewRequest(method, tc.Target, strings.NewReader(tc.Body))
+	if err != nil {
+		return
+	}
+
+	if tc.ContentType != "" {
+		req.Header.Set("Content-Type", tc.ContentType)
+	}
+	for k, v := range tc.Header {
+		req.Header.Set(k, v)
+	}
+
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		return
+	}
+
+	res, err := analyzer.Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Errorf("Detection error on %s: %v", tc.Name, err)
+		return
+	}
+
+	detected := res != nil && res.Detected
+
+	switch tc.Label {
+	case "benign":
+		srcMetrics.BenignTotal++
+		if detected {
+			srcMetrics.BenignFP++
+			if len(report.FailedCases) < 100 {
+				payload := tc.Body
+				if len(payload) > 200 {
+					payload = payload[:200] + "..."
+				}
+				report.FailedCases = append(report.FailedCases, FailedCase{
+					Source:   sourceName,
+					Type:     "FP",
+					Name:     tc.Name,
+					Category: res.Category,
+					Expected: "benign",
+					Got:      fmt.Sprintf("%s (conf=%.2f)", res.Category, res.Confidence),
+					Payload:  payload,
+				})
+			}
+		}
+
+	case "attack":
+		srcMetrics.AttackTotal++
+		if detected {
+			srcMetrics.AttackHit++
+			if report.ByCategory[tc.Category] == nil {
+				report.ByCategory[tc.Category] = &CategoryMetrics{}
+			}
+			report.ByCategory[tc.Category].AttackTotal++
+			report.ByCategory[tc.Category].AttackHit++
+		} else {
+			if len(report.FailedCases) < 100 {
+				payload := tc.Body
+				if len(payload) > 200 {
+					payload = payload[:200] + "..."
+				}
+				report.FailedCases = append(report.FailedCases, FailedCase{
+					Source:   sourceName,
+					Type:     "FN",
+					Name:     tc.Name,
+					Category: tc.Category,
+					Expected: tc.Category,
+					Got:      "not_detected",
+					Payload:  payload,
+				})
+			}
+			if report.ByCategory[tc.Category] == nil {
+				report.ByCategory[tc.Category] = &CategoryMetrics{}
+			}
+			report.ByCategory[tc.Category].AttackTotal++
+		}
+	}
+}
+
+func computeMetrics(benignTotal, benignFP, attackTotal, attackHit int) EvalMetrics {
+	m := EvalMetrics{}
 
 	// FPR: false positives / total benign
 	if benignTotal > 0 {
@@ -466,7 +462,7 @@ func sumAttackHit(sources map[string]*SourceMetrics) int {
 	return total
 }
 
-func processDataSourceSplit(t *testing.T, analyzer *semantic.Analyzer, sourceName, benignPath, attackPath string, required bool, report *EvaluationReport) {
+func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benignPath, attackPath string, required bool, report *EvaluationReport) {
 	srcMetrics := &SourceMetrics{}
 	report.Sources[sourceName] = srcMetrics
 
@@ -480,16 +476,15 @@ func processDataSourceSplit(t *testing.T, analyzer *semantic.Analyzer, sourceNam
 			t.Logf("Skipping optional benign file %s: %v", benignPath, err)
 		} else {
 			defer f.Close()
-			cases, err := loadCybersecJSONL(f, "benign")
-			if err != nil {
-				t.Fatalf("Failed to load benign samples from %s: %v", benignPath, err)
-			}
-
-			for _, tc := range cases {
+			err = forEachCybersecJSONL(f, "benign", evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
 				srcMetrics.BenignTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "benign") {
 					srcMetrics.BenignFP++
 				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("Failed to stream benign samples from %s: %v", benignPath, err)
 			}
 		}
 	}
@@ -504,34 +499,31 @@ func processDataSourceSplit(t *testing.T, analyzer *semantic.Analyzer, sourceNam
 			t.Logf("Skipping optional attack file %s: %v", attackPath, err)
 		} else {
 			defer f.Close()
-			cases, err := loadCybersecJSONL(f, "attack")
-			if err != nil {
-				t.Fatalf("Failed to load attack samples from %s: %v", attackPath, err)
-			}
-
-			for _, tc := range cases {
+			err = forEachCybersecJSONL(f, "attack", evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
 				srcMetrics.AttackTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "attack") {
 					srcMetrics.AttackHit++
-					// Update category-specific metrics
 					if report.ByCategory[tc.Category] == nil {
 						report.ByCategory[tc.Category] = &CategoryMetrics{}
 					}
 					report.ByCategory[tc.Category].AttackTotal++
 					report.ByCategory[tc.Category].AttackHit++
 				} else {
-					// Still count total for category
 					if report.ByCategory[tc.Category] == nil {
 						report.ByCategory[tc.Category] = &CategoryMetrics{}
 					}
 					report.ByCategory[tc.Category].AttackTotal++
 				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("Failed to stream attack samples from %s: %v", attackPath, err)
 			}
 		}
 	}
 
 	// Compute metrics for this source
-	srcMetrics.Metrics = computeMetrics(
+	srcMetrics.EvalMetrics = computeMetrics(
 		srcMetrics.BenignTotal,
 		srcMetrics.BenignFP,
 		srcMetrics.AttackTotal,
@@ -545,6 +537,50 @@ func processDataSourceSplit(t *testing.T, analyzer *semantic.Analyzer, sourceNam
 		srcMetrics.AttackTotal,
 		srcMetrics.AttackHit,
 	)
+}
+
+func forEachCybersecJSONL(r io.Reader, expectedLabel string, shards, shard int, fn func(securitytest.Case) error) error {
+	type cybersecEntry struct {
+		Payload string `json:"payload"`
+		Label   string `json:"label"`
+		Source  string `json:"source"`
+		Note    string `json:"note"`
+	}
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		if shards > 1 && securitytest.ShardIndexForRaw(line, shards) != shard {
+			continue
+		}
+		var entry cybersecEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		category := ""
+		if expectedLabel == "attack" {
+			category = mapLabelToCategory(entry.Label)
+		}
+		tc := securitytest.Case{
+			Name:         fmt.Sprintf("cybersec-%d", lineNo),
+			SourceFamily: entry.Source,
+			Label:        expectedLabel,
+			Category:     category,
+			Method:       "POST",
+			Target:       "/api/test",
+			ContentType:  "application/json",
+			Body:         entry.Payload,
+		}
+		if err := fn(tc); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
 
 // loadCybersecJSONL loads Cybersecurity-Dataset format (payload/label/source/note)
@@ -624,7 +660,7 @@ func mapLabelToCategory(label string) string {
 	}
 }
 
-func detectSample(t *testing.T, analyzer *semantic.Analyzer, tc *securitytest.Case, report *EvaluationReport, sourceName, expectedLabel string) bool {
+func detectSample(t *testing.T, analyzer *Analyzer, tc *securitytest.Case, report *EvaluationReport, sourceName, expectedLabel string) bool {
 	method := tc.Method
 	if method == "" {
 		method = http.MethodGet
@@ -693,7 +729,17 @@ func detectSample(t *testing.T, analyzer *semantic.Analyzer, tc *securitytest.Ca
 	return detected
 }
 
-// computeByParanoiaLevel evaluates detection metrics across paranoia levels 0-4
+// computeByParanoiaLevel evaluates detection metrics across paranoia levels 0-5
+// in a single detection pass: each sample is analyzed once (mode log) and the
+// collected Hits are re-graded offline with blockableHit per level. This avoids
+// the previous 6x re-Detect cost (one analyzer per level).
+type evalLevelTotals struct {
+	benignTotal int
+	benignFP    int
+	attackTotal int
+	attackHit   int
+}
+
 func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 	name       string
 	benignPath string
@@ -701,140 +747,158 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 	required   bool
 	skipShort  bool
 }, report *EvaluationReport) {
+	t.Logf("\n===Computing by-paranoia-level metrics (single-pass + offline grading)===")
+	var totals [6]evalLevelTotals
+	shards := evalShardTotal()
+	shard := evalShardIndex(shards)
 
-	t.Logf("\n===Computing by-paranoia-level metrics===")
-
-	for level := 0; level <= 5; level++ {
-		t.Logf("Evaluating paranoia level %d", level)
-
-		// Create analyzer with specific paranoia level
-		analyzer := semantic.NewAnalyzer("block", level)
-
-		var totalBenign, totalBenignFP, totalAttack, totalAttackHit int
-
-		for _, ds := range dataSources {
-			if testing.Short() && ds.skipShort {
+	for _, ds := range dataSources {
+		if testing.Short() && ds.skipShort {
+			continue
+		}
+		if ds.attackPath != "" {
+			processCybersecLevels(t, ds, "benign", ds.benignPath, shards, shard, &totals)
+			processCybersecLevels(t, ds, "attack", ds.attackPath, shards, shard, &totals)
+			continue
+		}
+		f, err := os.Open(ds.benignPath)
+		if err != nil {
+			if ds.required {
+				t.Fatalf("Failed to open required benign file %s: %v", ds.benignPath, err)
+			}
+			continue
+		}
+		cases, err := securitytest.LoadJSONL(f)
+		f.Close()
+		if err != nil {
+			continue
+		}
+		for _, tc := range cases {
+			if !caseInShard(tc) {
 				continue
 			}
-
-			// Process benign samples
-			if ds.benignPath != "" {
-				f, err := os.Open(ds.benignPath)
-				if err != nil {
-					if ds.required {
-						t.Fatalf("Failed to open required benign file %s: %v", ds.benignPath, err)
+			hits := detectHitsOnce(t, &tc)
+			for level := 0; level <= 5; level++ {
+				if tc.Label == "benign" {
+					totals[level].benignTotal++
+					if hitsBlockableAny(hits, level) {
+						totals[level].benignFP++
 					}
-					continue
-				}
-
-				var cases []securitytest.Case
-				if ds.attackPath != "" {
-					// Cybersec format
-					cases, err = loadCybersecJSONL(f, "benign")
-				} else {
-					// Standard JSONL format
-					cases, err = securitytest.LoadJSONL(f)
-					if err == nil {
-						// Filter to benign only
-						benignCases := make([]securitytest.Case, 0)
-						for _, tc := range cases {
-							if tc.Label == "benign" {
-								benignCases = append(benignCases, tc)
-							}
-						}
-						cases = benignCases
-					}
-				}
-				f.Close()
-
-				if err != nil {
-					continue
-				}
-
-				for _, tc := range cases {
-					totalBenign++
-					if detectSampleQuiet(analyzer, &tc) {
-						totalBenignFP++
-					}
-				}
-			}
-
-			// Process attack samples
-			if ds.attackPath != "" {
-				f, err := os.Open(ds.attackPath)
-				if err != nil {
-					if ds.required {
-						t.Fatalf("Failed to open required attack file %s: %v", ds.attackPath, err)
-					}
-					continue
-				}
-
-				cases, err := loadCybersecJSONL(f, "attack")
-				f.Close()
-
-				if err != nil {
-					continue
-				}
-
-				for _, tc := range cases {
-					totalAttack++
-					if detectSampleQuiet(analyzer, &tc) {
-						totalAttackHit++
-					}
-				}
-			} else {
-				// Mixed format - process attack samples
-				f, err := os.Open(ds.benignPath)
-				if err != nil {
-					continue
-				}
-
-				cases, err := securitytest.LoadJSONL(f)
-				f.Close()
-
-				if err != nil {
-					continue
-				}
-
-				for _, tc := range cases {
-					if tc.Label == "attack" {
-						totalAttack++
-						if detectSampleQuiet(analyzer, &tc) {
-							totalAttackHit++
-						}
+				} else if tc.Label == "attack" {
+					totals[level].attackTotal++
+					if hitsBlockableAny(hits, level) {
+						totals[level].attackHit++
 					}
 				}
 			}
 		}
+	}
 
-		// Compute FPR/TPR for this level
+	for level := 0; level <= 5; level++ {
 		fpr := 0.0
-		if totalBenign > 0 {
-			fpr = float64(totalBenignFP) / float64(totalBenign) * 100
+		if totals[level].benignTotal > 0 {
+			fpr = float64(totals[level].benignFP) / float64(totals[level].benignTotal) * 100
 		}
-
 		tpr := 0.0
-		if totalAttack > 0 {
-			tpr = float64(totalAttackHit) / float64(totalAttack) * 100
+		if totals[level].attackTotal > 0 {
+			tpr = float64(totals[level].attackHit) / float64(totals[level].attackTotal) * 100
 		}
-
 		levelKey := fmt.Sprintf("%d", level)
 		report.ByParanoiaLevel[levelKey] = &ParanoiaMetrics{
-			BenignTotal: totalBenign,
-			BenignFP:    totalBenignFP,
-			AttackTotal: totalAttack,
-			AttackHit:   totalAttackHit,
+			BenignTotal: totals[level].benignTotal,
+			BenignFP:    totals[level].benignFP,
+			AttackTotal: totals[level].attackTotal,
+			AttackHit:   totals[level].attackHit,
 			FPR:         fpr,
 			TPR:         tpr,
 		}
-
 		t.Logf("Level %d: FPR=%.2f%% (%d/%d), TPR=%.2f%% (%d/%d)",
-			level, fpr, totalBenignFP, totalBenign, tpr, totalAttackHit, totalAttack)
+			level, fpr, totals[level].benignFP, totals[level].benignTotal,
+			tpr, totals[level].attackHit, totals[level].attackTotal)
 	}
 }
 
+func processCybersecLevels(t *testing.T, ds struct {
+	name       string
+	benignPath string
+	attackPath string
+	required   bool
+	skipShort  bool
+}, label, path string, shards, shard int, totals *[6]evalLevelTotals) {
+	f, err := os.Open(path)
+	if err != nil {
+		if ds.required {
+			t.Fatalf("Failed to open required file %s: %v", path, err)
+		}
+		return
+	}
+	cases, err := loadCybersecJSONL(f, label)
+	f.Close()
+	if err != nil {
+		return
+	}
+	for _, tc := range cases {
+		if !caseInShard(tc) {
+			continue
+		}
+		hits := detectHitsOnce(t, &tc)
+		for level := 0; level <= 5; level++ {
+			if label == "benign" {
+				totals[level].benignTotal++
+				if hitsBlockableAny(hits, level) {
+					totals[level].benignFP++
+				}
+			} else {
+				totals[level].attackTotal++
+				if hitsBlockableAny(hits, level) {
+					totals[level].attackHit++
+				}
+			}
+		}
+	}
+}
+
+func detectHitsOnce(t *testing.T, tc *securitytest.Case) []Hit {
+	method := tc.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequest(method, tc.Target, strings.NewReader(tc.Body))
+	if err != nil {
+		return nil
+	}
+	if tc.ContentType != "" {
+		req.Header.Set("Content-Type", tc.ContentType)
+	}
+	for k, v := range tc.Header {
+		req.Header.Set(k, v)
+	}
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		return nil
+	}
+	analyzer := NewAnalyzer("log", 2)
+	_, _ = analyzer.Detect(context.Background(), reqCtx)
+	if meta, ok := reqCtx.Metadata["semantic_analysis"]; ok {
+		if report, ok := meta.(AnalysisReport); ok {
+			return report.Hits
+		}
+	}
+	return nil
+}
+
+func hitsBlockableAny(hits []Hit, level int) bool {
+	analyzer := &Analyzer{paranoiaLevel: level}
+	for _, h := range hits {
+		if analyzer.blockableHit(h) {
+			return true
+		}
+	}
+	return false
+}
+
 // detectSampleQuiet runs detection without recording failures (for paranoia-level sweep)
-func detectSampleQuiet(analyzer *semantic.Analyzer, tc *securitytest.Case) bool {
+func detectSampleQuiet(analyzer *Analyzer, tc *securitytest.Case) bool {
 	method := tc.Method
 	if method == "" {
 		method = http.MethodGet
@@ -863,4 +927,36 @@ func detectSampleQuiet(analyzer *semantic.Analyzer, tc *securitytest.Case) bool 
 	}
 
 	return res != nil && res.Detected
+}
+
+func evalShardTotal() int {
+	v := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_SHARDS"))
+	if v == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+func evalShardIndex(shards int) int {
+	v := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_SHARD_INDEX"))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || n >= shards {
+		return 0
+	}
+	return n
+}
+
+func caseInShard(tc securitytest.Case) bool {
+	shards := evalShardTotal()
+	if shards <= 1 {
+		return true
+	}
+	return securitytest.ShardIndexFor(tc.Name, shards) == evalShardIndex(shards)
 }

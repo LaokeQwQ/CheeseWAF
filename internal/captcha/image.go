@@ -107,6 +107,10 @@ func NewImageChallenge(opts ImageOptions) (ImageChallenge, error) {
 }
 
 func RenderImageAudio(opts ImageOptions, token string) ([]byte, bool, error) {
+	// Audio is an accessibility fallback, not an independent anti-automation
+	// channel: the same sealed, context-bound challenge token and caller-side
+	// rate/replay controls still gate it. The deliberately simple tone format
+	// is an explicit usability/security tradeoff documented in the R2 report.
 	opts = normalizeImageOptions(opts)
 	if strings.TrimSpace(opts.Secret) == "" {
 		return nil, false, nil

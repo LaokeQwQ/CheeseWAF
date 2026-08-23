@@ -80,10 +80,11 @@ func (s *MultiSink) Write(ctx context.Context, entry *storage.LogEntry) error {
 }
 
 func (s *MultiSink) Query(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
+	ordered := remoteFirstLogSinks(s.sinks)
 	var firstItems []storage.LogEntry
 	var firstTotal int64
 	var firstOK bool
-	for _, sink := range s.sinks {
+	for _, sink := range ordered {
 		items, total, err := sink.Query(ctx, filter)
 		if err != nil {
 			continue
@@ -104,7 +105,7 @@ func (s *MultiSink) Query(ctx context.Context, filter storage.LogFilter) ([]stor
 }
 
 func (s *MultiSink) Count(ctx context.Context, filter storage.LogFilter) (int64, bool, error) {
-	for _, sink := range s.sinks {
+	for _, sink := range remoteFirstLogSinks(s.sinks) {
 		counter, ok := sink.(interface {
 			Count(context.Context, storage.LogFilter) (int64, bool, error)
 		})
@@ -118,6 +119,19 @@ func (s *MultiSink) Count(ctx context.Context, filter storage.LogFilter) (int64,
 		return total, true, nil
 	}
 	return 0, false, nil
+}
+
+func remoteFirstLogSinks(sinks []storage.LogSink) []storage.LogSink {
+	ordered := make([]storage.LogSink, 0, len(sinks))
+	local := make([]storage.LogSink, 0, 1)
+	for _, sink := range sinks {
+		if _, ok := sink.(*FileSink); ok {
+			local = append(local, sink)
+			continue
+		}
+		ordered = append(ordered, sink)
+	}
+	return append(ordered, local...)
 }
 
 func (s *MultiSink) Flush(ctx context.Context) error {

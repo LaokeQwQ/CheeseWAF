@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -7,11 +7,13 @@ import { Badge, Button, Empty, Input, Select, SelectContent, SelectItem, SelectT
 import { fetchLogs } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import { displayAction, displayCategory, formatLogLocation } from '../../utils/display';
-import { filterLogs, paginate, type LogViewMode } from './logsLogic';
+import type { LogEntry } from '../../types/api';
+import type { LogViewMode } from './logsLogic';
 import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 const PAGE_SIZE = 8;
 const ALL = '__all__';
+type PageCursor = { time: string; id: string };
 
 export default function LogsPage() {
   const { t, i18n } = useTranslation();
@@ -22,18 +24,35 @@ export default function LogsPage() {
   const [action, setAction] = useState<string>();
   const [viewMode, setViewMode] = useState<LogViewMode>('security');
   const [page, setPage] = useState(1);
+  const [beforeByPage, setBeforeByPage] = useState<Record<number, PageCursor>>({});
+  const [watermark, setWatermark] = useState<PageCursor>();
+  const [snapshotTotal, setSnapshotTotal] = useState(0);
+  const deferredSearch = useDeferredValue(search.trim());
+  const before = beforeByPage[page];
   const logsRefetchInterval = usePollingVisibility(8_000);
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
-    queryKey: ['logs', category, action],
-    queryFn: () => fetchLogs({ limit: 500, category, action }),
-    refetchInterval: logsRefetchInterval,
+    queryKey: ['logs', viewMode, category, action, deferredSearch, page, before?.time, before?.id, page > 1 ? watermark?.time : undefined, page > 1 ? watermark?.id : undefined],
+    queryFn: () => fetchLogs({
+      limit: PAGE_SIZE,
+      category,
+      action,
+      search: deferredSearch || undefined,
+      kind: viewMode,
+      before: before?.time,
+      before_id: before?.id,
+      watermark: page > 1 ? watermark?.time : undefined,
+      watermark_id: page > 1 ? watermark?.id : undefined,
+    }),
+    refetchInterval: page === 1 ? logsRefetchInterval : false,
     retry: false,
   });
-  const logs = useMemo(
-    () => filterLogs(data?.items, { search, viewMode, formatLocation: (entry) => formatLogLocation(entry, t) }),
-    [data?.items, search, t, viewMode],
-  );
-  const { totalPages, pageItems, pageStart, pageEnd } = paginate(logs, page, PAGE_SIZE);
+  const logs = data?.items ?? [];
+  const total = page === 1 ? (data?.total ?? snapshotTotal) : snapshotTotal;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageStart = total === 0 || logs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const pageEnd = pageStart === 0 ? 0 : pageStart + logs.length - 1;
+  const nextCursor = cursorForLog(logs.at(-1));
+  const canNext = Boolean(watermark && nextCursor) && page < totalPages;
   const title = viewMode === 'access' ? t('logs.accessTitle') : t('logs.title');
   const subtitle = viewMode === 'access'
     ? t('logs.accessSubtitle')
@@ -48,13 +67,31 @@ export default function LogsPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, category, action, viewMode]);
+    setBeforeByPage({});
+    setWatermark(undefined);
+    setSnapshotTotal(0);
+  }, [deferredSearch, category, action, viewMode]);
 
   useEffect(() => {
-    if (page > totalPages) {
-      setPage(totalPages);
+    if (page !== 1 || !data) {
+      return;
     }
-  }, [page, totalPages]);
+    setSnapshotTotal(data.total);
+    setWatermark(cursorForLog(data.items[0]));
+    setBeforeByPage({});
+  }, [data, page]);
+
+  const goToNextPage = () => {
+    if (!nextCursor || !canNext) {
+      return;
+    }
+    setBeforeByPage((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([key]) => Number(key) <= page));
+      next[page + 1] = nextCursor;
+      return next;
+    });
+    setPage((current) => current + 1);
+  };
 
   return (
     <section className="page-surface">
@@ -142,8 +179,8 @@ export default function LogsPage() {
           {!isLoading && isError && (
             <QueryErrorState onRetry={() => void refetch()} retrying={isFetching} />
           )}
-          {!isLoading && !isError && pageItems.length === 0 && <Empty description={t('common.noData')} />}
-          {!isLoading && !isError && pageItems.map((entry) => (
+          {!isLoading && !isError && logs.length === 0 && <Empty description={t('common.noData')} />}
+          {!isLoading && !isError && logs.map((entry) => (
             <article className="security-event-row" key={entry.id || entry.trace_id}>
               <div className="security-event-cell security-event-trace" data-label={t('logs.trace')}>
                 <code title={entry.trace_id || entry.id}>{entry.trace_id || entry.id || '-'}</code>
@@ -179,9 +216,9 @@ export default function LogsPage() {
             </article>
           ))}
         </div>
-        {!isLoading && !isError && logs.length > PAGE_SIZE && (
+        {!isLoading && !isError && total > PAGE_SIZE && (
           <footer className="security-events-pagination">
-            <span>{pageStart}-{pageEnd} / {logs.length}</span>
+            <span>{pageStart}-{pageEnd} / {total}</span>
             <div>
               <Button
                 size="icon"
@@ -197,8 +234,8 @@ export default function LogsPage() {
                 size="icon"
                 variant="outline"
                 aria-label={t('common.next')}
-                disabled={page >= totalPages}
-                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                disabled={!canNext}
+                onClick={goToNextPage}
               >
                 <ChevronRight size={15} />
               </Button>
@@ -208,6 +245,14 @@ export default function LogsPage() {
       </section>
     </section>
   );
+}
+
+function cursorForLog(entry: LogEntry | undefined): PageCursor | undefined {
+  const id = entry?.id || entry?.trace_id;
+  if (!entry?.timestamp || !id) {
+    return undefined;
+  }
+  return { time: entry.timestamp, id };
 }
 
 function formatTime(value: string, locale?: string) {

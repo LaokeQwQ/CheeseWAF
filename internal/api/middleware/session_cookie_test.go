@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -112,6 +113,27 @@ func TestWriteSessionCookiesOmitsSecureOnPlainHTTP(t *testing.T) {
 		if c.Secure {
 			t.Fatalf("%s unexpectedly Secure on HTTP", c.Name)
 		}
+	}
+}
+
+func TestWriteSessionCookiesUsesHostPrefixOnHTTPS(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "https://admin.example.test/api/auth/login", nil)
+	req.TLS = &tls.ConnectionState{}
+	WriteSessionCookies(rec, req, "jwt", "csrf", time.Hour)
+
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 2 {
+		t.Fatalf("cookies = %d, want 2", len(cookies))
+	}
+	for _, cookie := range cookies {
+		if !strings.HasPrefix(cookie.Name, "__Host-") || !cookie.Secure || cookie.Path != "/" || cookie.Domain != "" {
+			t.Fatalf("HTTPS cookie does not satisfy __Host- requirements: %+v", cookie)
+		}
+	}
+	req.AddCookie(cookies[0])
+	if got := SessionToken(req); got != "jwt" {
+		t.Fatalf("SessionToken() = %q, want secure cookie token", got)
 	}
 }
 

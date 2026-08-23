@@ -27,6 +27,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
+var errResponseTamperDetected = errors.New("authenticated response tamper detected")
+
 type Server struct {
 	config           *config.Config
 	runtimeMu        sync.RWMutex
@@ -451,6 +453,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}, "protocol_enforcement", violation.Message, http.StatusBadRequest, start)
 		return
 	}
+	// Rewrites mutate r.URL before the upstream call. Keep the public request
+	// identity for exact tamper snapshots and response telemetry.
+	publicRequest := r.Clone(r.Context())
 
 	maxRequestBody := site.WAF.Performance.MaxBodyBytes
 	if maxRequestBody <= 0 {
@@ -674,6 +679,22 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	edgeRT.headers.Apply(r)
 	if cached, ok := edgeRT.cache.Get(r); ok {
+		if siteRT.inspector.Enabled() {
+			inspectionRequest := responseInspectionRequest(publicRequest, siteRT.trustedProxyCIDRs)
+			finding, inspectErr := siteRT.inspector.InspectCaptured(inspectionRequest, cached.Header, cached.Body)
+			if inspectErr != nil {
+				s.proxyError(w, r, site, reqCtx, "proxy_error", "response inspection failed", http.StatusBadGateway, start, inspectErr)
+				return
+			}
+			if finding != nil {
+				cached.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
+				result := recordResponseFinding(reqCtx, finding, site.WAF.Mode)
+				if result != nil && result.Action == engine.ActionBlock {
+					s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
+					return
+				}
+			}
+		}
 		edgeRT.compress.Apply(r, &cached)
 		edge.WriteCaptured(w, cached)
 		s.writeLog(r.Context(), reqCtx, "cache_hit", cached.Status, start, nil)
@@ -717,15 +738,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		if siteRT.inspector.Enabled() {
 			rp.ModifyResponse = func(resp *http.Response) error {
-				finding, err := siteRT.inspector.InspectHTTP(resp)
-				if err != nil {
-					return err
-				}
-				if finding != nil {
-					resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
-					reqCtx.Metadata["response_finding"] = finding
-				}
-				return nil
+				return inspectUpstreamResponse(site, siteRT, publicRequest, reqCtx, resp)
 			}
 		}
 		recorder := &proxyStatusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -733,6 +746,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		rp.ServeHTTP(recorder, r)
 		lockRuntime()
 		if proxyErr != nil {
+			if s.blockTamperedResponse(w, reqCtx, proxyErr, start) {
+				return
+			}
 			status := http.StatusBadGateway
 			category, message := "proxy_error", "upstream proxy error"
 			if requestBodyTooLarge(proxyErr) {
@@ -756,17 +772,26 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		streaming := response.IsStreamingContentType(resp.Header.Get("Content-Type"))
 		cacheResponseCandidate := cacheCandidate && edgeRT.cache.MayStoreResponse(resp)
 		compressResponseCandidate := compressCandidate && edgeRT.compress.MayApplyResponse(r, resp)
-		if streaming || (captureLimit > 0 && resp.ContentLength > captureLimit) || (!cacheResponseCandidate && !compressResponseCandidate) {
+		tamperTarget := siteRT.inspector.HasTamperSnapshot(responseInspectionRequest(publicRequest, siteRT.trustedProxyCIDRs))
+		if streaming && !tamperTarget ||
+			(captureLimit > 0 && resp.ContentLength > captureLimit && !tamperTarget) ||
+			(!cacheResponseCandidate && !compressResponseCandidate && !tamperTarget) {
 			capture.DisableBuffering()
 		}
-		if siteRT.inspector.Enabled() && !streaming {
-			finding, err := siteRT.inspector.InspectHTTP(resp)
-			if err != nil {
+		if siteRT.inspector.Enabled() {
+			if err := inspectUpstreamResponse(site, siteRT, publicRequest, reqCtx, resp); err != nil {
 				return err
 			}
-			if finding != nil {
-				resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
-				reqCtx.Metadata["response_finding"] = finding
+			if tamperTarget && tamperFindingRecorded(reqCtx) {
+				// Monitor mode must not retain an unbounded body after reporting
+				// an unverifiable target (for example a stream or size overflow).
+				capture.DisableBuffering()
+			} else if tamperTarget && (streaming || captureLimit <= 0 ||
+				(!cacheResponseCandidate && !compressResponseCandidate) ||
+				(captureLimit > 0 && resp.ContentLength > captureLimit)) {
+				// Verification has completed. Stream when no bounded edge stage
+				// still needs the captured body.
+				capture.DisableBuffering()
 			}
 		}
 		return nil
@@ -780,6 +805,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				err = capture.Err()
 			}
+			if s.blockTamperedResponse(w, reqCtx, err, start) {
+				return
+			}
 			s.writeLog(r.Context(), reqCtx, "proxy_error", capture.Response().Status, start, &storage.LogEntry{
 				Category: "proxy_error",
 				Severity: engine.SeverityHigh.String(),
@@ -791,6 +819,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if proxyErr != nil {
+		if s.blockTamperedResponse(w, reqCtx, proxyErr, start) {
+			return
+		}
 		status := http.StatusBadGateway
 		category, message := "proxy_error", "upstream proxy error"
 		if requestBodyTooLarge(proxyErr) {
@@ -832,6 +863,82 @@ func (s *Server) handleBotBehaviorVerify(w http.ResponseWriter, r *http.Request,
 	}
 	// Body was size-capped and rewound by EnsureBody on the verify path.
 	s.bot.VerifyBehaviorChallenge(w, r, clientIP, site.ID)
+}
+
+func inspectUpstreamResponse(site config.SiteConfig, siteRT *siteRuntime, request *http.Request, reqCtx *engine.RequestContext, resp *http.Response) error {
+	inspectionRequest := responseInspectionRequest(request, siteRT.trustedProxyCIDRs)
+	finding, err := siteRT.inspector.InspectHTTPForRequest(resp, inspectionRequest)
+	if err != nil {
+		return err
+	}
+	if finding == nil {
+		return nil
+	}
+	resp.Header.Set("X-CheeseWAF-Response-Finding", finding.Message)
+	result := recordResponseFinding(reqCtx, finding, site.WAF.Mode)
+	if result != nil && result.Action == engine.ActionBlock {
+		return errResponseTamperDetected
+	}
+	return nil
+}
+
+func responseInspectionRequest(request *http.Request, trustedCIDRs []string) *http.Request {
+	if request == nil || request.URL == nil || request.URL.Scheme != "" {
+		return request
+	}
+	clone := request.Clone(request.Context())
+	clonedURL := *request.URL
+	clonedURL.Scheme = "http"
+	if requestIsHTTPS(request, trustedCIDRs) {
+		clonedURL.Scheme = "https"
+	}
+	clone.URL = &clonedURL
+	return clone
+}
+
+func recordResponseFinding(reqCtx *engine.RequestContext, finding *response.Finding, wafMode string) *engine.DetectionResult {
+	if reqCtx == nil || finding == nil {
+		return nil
+	}
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = map[string]any{}
+	}
+	reqCtx.Metadata["response_finding"] = finding
+	if finding.Category != "tamper" {
+		return nil
+	}
+	action := engine.ActionLog
+	if strings.EqualFold(strings.TrimSpace(wafMode), "block") {
+		action = engine.ActionBlock
+	}
+	result := &engine.DetectionResult{
+		Detected: true, DetectorID: finding.DetectorID, Category: finding.Category,
+		Severity: parseSeverity(finding.Severity), Action: action,
+		Message: finding.Message, Confidence: 0.99, Payload: finding.Pattern,
+	}
+	reqCtx.Results = append(reqCtx.Results, *result)
+	reqCtx.Metadata["detection"] = result
+	return result
+}
+
+func tamperFindingRecorded(reqCtx *engine.RequestContext) bool {
+	if reqCtx == nil || reqCtx.Metadata == nil {
+		return false
+	}
+	finding, _ := reqCtx.Metadata["response_finding"].(*response.Finding)
+	return finding != nil && finding.Category == "tamper"
+}
+
+func (s *Server) blockTamperedResponse(w http.ResponseWriter, reqCtx *engine.RequestContext, err error, start time.Time) bool {
+	if !errors.Is(err, errResponseTamperDetected) || reqCtx == nil || reqCtx.Metadata == nil {
+		return false
+	}
+	result, _ := reqCtx.Metadata["detection"].(*engine.DetectionResult)
+	if result == nil || result.DetectorID != "protection.tamper" {
+		return false
+	}
+	s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
+	return true
 }
 
 // isLocalURL reports whether raw is a same-origin relative URL safe for redirects.
@@ -1655,10 +1762,25 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		}
 	}
 	if finding, ok := reqCtx.Metadata["response_finding"].(*response.Finding); ok && finding != nil {
-		entry.Category = "response"
+		entry.Category = finding.Category
+		if entry.Category == "" {
+			entry.Category = "response"
+		}
+		entry.Severity = finding.Severity
 		entry.Message = finding.Message
-		entry.DetectorID = "response.inspector"
-		entry.Action = "log"
+		entry.DetectorID = finding.DetectorID
+		if entry.DetectorID == "" {
+			entry.DetectorID = "response.inspector"
+		}
+		if entry.Action == "pass" {
+			entry.Action = "log"
+		}
+		if finding.Reason != "" {
+			if entry.Metadata == nil {
+				entry.Metadata = map[string]any{}
+			}
+			entry.Metadata["response_finding_reason"] = finding.Reason
+		}
 	}
 	if isPlainAccessLog(entry) && !s.siteAccessLogEnabled(reqCtx.SiteID) {
 		s.enqueueReview(ctx, reqCtx, action)
@@ -1719,11 +1841,6 @@ func (s *Server) siteAccessLogEnabled(siteID string) bool {
 	}
 	if runtime := set.byID[siteID]; runtime != nil {
 		return runtime.site.WAF.AccessLogOn()
-	}
-	if siteID == "" {
-		for _, runtime := range set.byID {
-			return runtime.site.WAF.AccessLogOn()
-		}
 	}
 	// Unknown site id: default on so we do not silently drop security-adjacent traffic logs.
 	return true

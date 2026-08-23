@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -76,6 +78,9 @@ type options struct {
 	NucleiTemplates string
 	RequireExternal bool
 	SkipExternal    bool
+	Workers         int
+	Shards          int
+	Shard           int
 }
 
 func main() {
@@ -92,6 +97,9 @@ func main() {
 		nucleiTemplates = flag.String("nuclei-templates", "security-validation/nuclei", "nuclei template directory for gate mode")
 		requireExternal = flag.Bool("require-external", false, "fail gate mode when an external scanner is missing instead of skipping")
 		skipExternal    = flag.Bool("skip-external", false, "skip external scanner wrappers in gate mode and run only analyzer/http replay")
+		workers         = flag.Int("workers", 0, "concurrent workers for analyzer/http replay (0 = GOMAXPROCS)")
+		shards          = flag.Int("shards", 1, "number of corpus shards (1 = no sharding)")
+		shard           = flag.Int("shard", 0, "shard index to process (0-based; requires -shards > 1)")
 	)
 	flag.Parse()
 
@@ -108,6 +116,9 @@ func main() {
 		NucleiTemplates: *nucleiTemplates,
 		RequireExternal: *requireExternal,
 		SkipExternal:    *skipExternal,
+		Workers:         *workers,
+		Shards:          *shards,
+		Shard:           *shard,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -128,6 +139,12 @@ func run(opts options) error {
 	if len(cases) == 0 {
 		return errors.New("corpus is empty")
 	}
+	if opts.Shards > 1 {
+		cases = securitytest.FilterShard(cases, opts.Shards, opts.Shard)
+		if len(cases) == 0 {
+			return errors.New("corpus shard is empty")
+		}
+	}
 
 	started := time.Now().UTC()
 	report := summary{
@@ -138,10 +155,14 @@ func run(opts options) error {
 		Results:   make([]result, 0, len(cases)),
 	}
 
+	analyzer := semantic.NewAnalyzer("block", 2)
+
 	switch opts.Mode {
 	case "analyzer":
-		for _, tc := range cases {
-			report.add(validateAnalyzer(tc))
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+			return validateAnalyzer(analyzer, tc)
+		}) {
+			report.add(res)
 		}
 	case "http":
 		if strings.TrimSpace(opts.BaseURL) == "" {
@@ -152,8 +173,10 @@ func run(opts options) error {
 			return err
 		}
 		client := httpClient(opts.Timeout, opts.Insecure)
-		for _, tc := range cases {
-			report.add(validateHTTP(client, opts.BaseURL, statuses, tc))
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+			return validateHTTP(client, opts.BaseURL, statuses, tc)
+		}) {
+			report.add(res)
 		}
 	case "gate":
 		if strings.TrimSpace(opts.BaseURL) == "" {
@@ -164,11 +187,15 @@ func run(opts options) error {
 			return err
 		}
 		client := httpClient(opts.Timeout, opts.Insecure)
-		for _, tc := range cases {
-			report.add(validateAnalyzer(tc))
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+			return validateAnalyzer(analyzer, tc)
+		}) {
+			report.add(res)
 		}
-		for _, tc := range cases {
-			report.add(validateHTTP(client, opts.BaseURL, statuses, tc))
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+			return validateHTTP(client, opts.BaseURL, statuses, tc)
+		}) {
+			report.add(res)
 		}
 		if err := runGateSuites(&report, opts); err != nil {
 			return err
@@ -210,7 +237,43 @@ func run(opts options) error {
 	return nil
 }
 
-func validateAnalyzer(tc securitytest.Case) result {
+func runConcurrent(cases []securitytest.Case, workers int, fn func(securitytest.Case) result) []result {
+	if len(cases) == 0 {
+		return nil
+	}
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	if workers > len(cases) {
+		workers = len(cases)
+	}
+	out := make([]result, len(cases))
+	if workers <= 1 {
+		for i, tc := range cases {
+			out[i] = fn(tc)
+		}
+		return out
+	}
+	idx := make(chan int, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range idx {
+				out[i] = fn(cases[i])
+			}
+		}()
+	}
+	for i := range cases {
+		idx <- i
+	}
+	close(idx)
+	wg.Wait()
+	return out
+}
+
+func validateAnalyzer(analyzer *semantic.Analyzer, tc securitytest.Case) result {
 	res := baseResult("analyzer", tc)
 	start := time.Now()
 
@@ -230,7 +293,7 @@ func validateAnalyzer(tc securitytest.Case) result {
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
-	detection, err := semantic.NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
+	detection, err := analyzer.Detect(context.Background(), reqCtx)
 	if err != nil {
 		res.Error = err.Error()
 		res.LatencyMS = durationMS(time.Since(start))

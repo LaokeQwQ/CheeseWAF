@@ -154,27 +154,27 @@ Recommended for Linux physical servers and virtual machines for direct execution
 
 #### Step 1: Download and Extract Release Archive
 
-Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or the matching Actions artifact. Pick the file for your OS and CPU:
+Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or the matching Actions artifact. The version portion is `beta` on `master`, `PreTest` on `canary`, and `dev` on `dev`; these wildcard patterns cover every channel:
 
 | File | Platform |
 | --- | --- |
-| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
-| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
-| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux LoongArch64 |
-| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 single-file CLI |
-| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 single-file CLI |
-| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 portable folder |
-| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 portable folder |
+| `cheesewaf-amd64-linux-*.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*.tar.gz` | Linux LoongArch64 |
+| `cheesewaf-amd64-darwin-*.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*.exe` | Windows x86_64 single-file CLI |
+| `cheesewaf-arm64-windows-*.exe` | Windows ARM64 single-file CLI |
+| `cheesewaf-amd64-windows-*.zip` | Windows x86_64 portable folder |
+| `cheesewaf-arm64-windows-*.zip` | Windows ARM64 portable folder |
 
 ```bash
 # Linux x86_64 example
-tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
+tar -xzf cheesewaf-amd64-linux-*.tar.gz
 cd cheesewaf-*
 ```
 
-Linux ARM64 and LoongArch64 use `cheesewaf-arm64-linux-*-PreTest.tar.gz` or `cheesewaf-loong64-linux-*-PreTest.tar.gz`.
+Linux ARM64 and LoongArch64 use `cheesewaf-arm64-linux-*.tar.gz` or `cheesewaf-loong64-linux-*.tar.gz`.
 
 #### Step 2: Install Executable and Configure Directories
 
@@ -325,7 +325,7 @@ Windows releases bundle a lightweight local GUI controller bound strictly to loo
 
 ### 4. macOS Deployment (DMG)
 
-1. Download `cheesewaf-arm64-darwin-*-PreTest.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*-PreTest.dmg` (Intel).
+1. Download `cheesewaf-arm64-darwin-*.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*.dmg` (Intel).
 2. Open the disk image and drag **CheeseWAF** into **Applications**.
 3. Open CheeseWAF from Launchpad or Applications. It starts the local controller (start / stop / open the Web console).
 4. If macOS says the app is damaged, that is Gatekeeper blocking an unsigned PreTest build. Run **Fix Gatekeeper.command** on the disk, or:
@@ -335,7 +335,7 @@ xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
 open /Applications/CheeseWAF.app
 ```
 
-Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*-PreTest.tar.gz` if you only want the CLI.
+Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*.tar.gz` if you only want the CLI.
 
 ---
 
@@ -380,9 +380,9 @@ A default `cheesewaf.yaml` file is generated upon first startup (reference templ
 
 ```yaml
 server:
-  listen: "0.0.0.0:8080"         # Data plane ingress listener
-  admin_listen: "127.0.0.1:9443"   # Admin plane listener
-  admin_public: false            # Set true only with admin TLS configured
+  listen: "127.0.0.1:8080"       # Safe local default; expose intentionally
+  admin_listen: "127.0.0.1:9443" # Admin plane listener
+  admin_public: false             # Set true only with admin TLS configured
 
 sites:
   - id: "site-demo"
@@ -392,26 +392,28 @@ sites:
       - address: "192.168.1.100:8080"
         weight: 1
     waf:
+      enabled: true
+      mode: "block"
       paranoia_level: 3          # Paranoia Level (0–5)
+      semantic_policy:
+        auto_agree: true         # Auto-commit high-confidence review verdicts
 
 protection:
-  rate_limit:
+  ratelimit:
     enabled: true
-    requests_per_second: 100
-  ip_block:
-    enabled: true
+    default:
+      requests: 100
+      window: 60s
+      burst: 20
+  ip:
+    blacklist: []
+    whitelist: ["127.0.0.1", "::1"]
 
 ai:
   enabled: true
   provider: "openai"
   api_base: "https://api.example.com/v1"
   model: "gpt-4o-mini"
-
-sites:
-  - id: "site-demo"
-    waf:
-      semantic_policy:
-        auto_agree: true         # Auto-commit high-confidence review verdicts
 ```
 
 ---

@@ -149,6 +149,7 @@ func siteView(site storage.Site) storage.Site {
 	out := site
 	out.Advanced.Certificate.KeyPEM = ""
 	out.Advanced.Certificate.ACME.Env = redactStringMap(out.Advanced.Certificate.ACME.Env)
+	out.Advanced.Response.TamperKey = ""
 	return out
 }
 
@@ -164,6 +165,9 @@ func preserveSiteSecrets(existing *storage.Site, next *storage.Site) {
 		existing.Advanced.Certificate.ACME.Env,
 		next.Advanced.Certificate.ACME.Env,
 	)
+	if strings.TrimSpace(next.Advanced.Response.TamperKey) == "" {
+		next.Advanced.Response.TamperKey = existing.Advanced.Response.TamperKey
+	}
 	// Site form does not edit live review-generated rules; keep them unless the client sent some.
 	if len(next.Advanced.CustomRules) == 0 && len(existing.Advanced.CustomRules) > 0 {
 		next.Advanced.CustomRules = append([]storage.SiteCustomRule(nil), existing.Advanced.CustomRules...)

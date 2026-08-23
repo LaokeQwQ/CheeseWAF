@@ -45,6 +45,8 @@ func TestClusterAcceptsTwoWAFNodesWithMonitorNode(t *testing.T) {
 	cfg.Deployment.Mode = "cluster"
 	cfg.Cluster.Enabled = true
 	cfg.Cluster.HAMode = "minimum-ha"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.Cluster.Nodes = []ClusterNodeConfig{
 		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
 		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
@@ -60,11 +62,95 @@ func TestClusterAcceptsDualNodeLoadBalancingWithoutHAClaim(t *testing.T) {
 	cfg.Deployment.Mode = "cluster"
 	cfg.Cluster.Enabled = true
 	cfg.Cluster.HAMode = "dual-node-load-balancing"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.Cluster.Nodes = []ClusterNodeConfig{
 		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
 		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
 	}
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("dual-node load balancing should validate without HA claim: %v", err)
+	}
+}
+
+func TestClusterConsensusRequiresEtcdForSharedConfiguration(t *testing.T) {
+	tests := []struct {
+		name   string
+		haMode string
+		nodeID string
+		nodes  []ClusterNodeConfig
+	}{
+		{
+			name:   "multi-node mode",
+			haMode: "minimum-ha",
+			nodes: []ClusterNodeConfig{
+				{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+				{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+				{ID: "monitor-a", Role: "monitor", AdvertiseAddr: "10.0.0.3:9444"},
+			},
+		},
+		{
+			name:   "single-node label with shared nodes",
+			haMode: "single-node",
+			nodes: []ClusterNodeConfig{
+				{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+				{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+			},
+		},
+		{
+			name:   "local node omitted from configured nodes",
+			haMode: "single-node",
+			nodeID: "waf-local",
+			nodes: []ClusterNodeConfig{
+				{ID: "waf-remote", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Deployment.Mode = "cluster"
+			cfg.Cluster.Enabled = true
+			cfg.Cluster.HAMode = tt.haMode
+			cfg.Cluster.NodeID = tt.nodeID
+			cfg.Cluster.Consensus.Provider = "builtin"
+			cfg.Cluster.Nodes = tt.nodes
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "requires cluster.consensus.provider=etcd") {
+				t.Fatalf("expected shared cluster consensus error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestClusterConsensusAcceptsBuiltinForOneLocalNode(t *testing.T) {
+	cfg := Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.HAMode = "single-node"
+	cfg.Cluster.NodeID = "waf-local"
+	cfg.Cluster.Consensus.Provider = "builtin"
+	cfg.Cluster.Nodes = []ClusterNodeConfig{
+		{ID: "waf-local", Role: "waf", AdvertiseAddr: "127.0.0.1:9444"},
+	}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("single local node with builtin consensus rejected: %v", err)
+	}
+}
+
+func TestClusterConsensusRejectsBlankEtcdEndpoint(t *testing.T) {
+	cfg := Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.HAMode = "minimum-ha"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"  "}
+	cfg.Cluster.Nodes = []ClusterNodeConfig{
+		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+		{ID: "monitor-a", Role: "monitor", AdvertiseAddr: "10.0.0.3:9444"},
+	}
+	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "must not contain blank values") {
+		t.Fatalf("expected blank etcd endpoint error, got %v", err)
 	}
 }

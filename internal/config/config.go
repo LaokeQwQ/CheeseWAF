@@ -436,9 +436,12 @@ func (w *WAFConfig) UnmarshalYAML(value *yaml.Node) error {
 // BudgetExhaustedPolicy defaults to "auto" (follow web_attack protection level).
 type SemanticPolicyConfig struct {
 	// BudgetExhaustedPolicy: auto|open|observe|closed. Empty/auto derives from web_attack.
-	BudgetExhaustedPolicy string   `yaml:"budget_exhausted_policy" json:"budget_exhausted_policy"`
-	PathAllowlist         []string `yaml:"path_allowlist" json:"path_allowlist"`
-	ParamAllowlist        []string `yaml:"param_allowlist" json:"param_allowlist"`
+	BudgetExhaustedPolicy string `yaml:"budget_exhausted_policy" json:"budget_exhausted_policy"`
+	// DecodeDepth is the bounded number of nested encoding transformations (1-8).
+	// Zero uses DefaultDecodeDepth.
+	DecodeDepth    int      `yaml:"decode_depth" json:"decode_depth"`
+	PathAllowlist  []string `yaml:"path_allowlist" json:"path_allowlist"`
+	ParamAllowlist []string `yaml:"param_allowlist" json:"param_allowlist"`
 	// PromoteSeconds, if >0, briefly treats the site as level 5 after a
 	// level-4 embedded hit so later embedded gadgets block until it expires.
 	PromoteSeconds int `yaml:"promote_seconds" json:"promote_seconds"`
@@ -692,6 +695,17 @@ type ResponseInspectionConfig struct {
 	Enabled           bool     `yaml:"enabled" json:"enabled"`
 	MaxBodyBytes      int64    `yaml:"max_body_bytes" json:"max_body_bytes"`
 	SensitivePatterns []string `yaml:"sensitive_patterns" json:"sensitive_patterns"`
+	// TamperKey authenticates exact-URL response baselines. It must contain at
+	// least 32 bytes whenever TamperSnapshots is non-empty.
+	TamperKey       string                 `yaml:"tamper_key,omitempty" json:"tamper_key,omitempty"`
+	TamperSnapshots []TamperSnapshotConfig `yaml:"tamper_snapshots,omitempty" json:"tamper_snapshots,omitempty"`
+}
+
+type TamperSnapshotConfig struct {
+	URL        string    `yaml:"url" json:"url"`
+	MAC        string    `yaml:"mac" json:"mac"`
+	Size       int       `yaml:"size" json:"size"`
+	CapturedAt time.Time `yaml:"captured_at" json:"captured_at"`
 }
 
 type RewriteRuleConfig struct {
@@ -857,6 +871,7 @@ type AIConfig struct {
 	APIKey              string               `yaml:"api_key" json:"api_key"`
 	APIKeyHeader        string               `yaml:"api_key_header" json:"api_key_header"`
 	Model               string               `yaml:"model" json:"model"`
+	MaxTokens           int                  `yaml:"max_tokens" json:"max_tokens"`
 	Async               bool                 `yaml:"async" json:"async"`
 	AllowPrivateAPIBase bool                 `yaml:"allow_private_api_base" json:"allow_private_api_base"`
 	Assistant           AIModelConfig        `yaml:"assistant" json:"assistant"`
@@ -871,6 +886,7 @@ type AIModelConfig struct {
 	APIKey                 string `yaml:"api_key" json:"api_key"`
 	APIKeyHeader           string `yaml:"api_key_header" json:"api_key_header"`
 	Model                  string `yaml:"model" json:"model"`
+	MaxTokens              int    `yaml:"max_tokens" json:"max_tokens"`
 	AllowPrivateAPIBase    bool   `yaml:"allow_private_api_base" json:"allow_private_api_base"`
 	AllowPrivateAPIBaseSet bool   `yaml:"-" json:"-"`
 }
@@ -913,6 +929,7 @@ func (cfg AIConfig) legacyModelConfig() AIModelConfig {
 		APIKey:              cfg.APIKey,
 		APIKeyHeader:        cfg.APIKeyHeader,
 		Model:               cfg.Model,
+		MaxTokens:           cfg.MaxTokens,
 		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
 	}
 }
@@ -937,6 +954,9 @@ func (cfg AIConfig) runtimeConfig(model AIModelConfig, fallback AIModelConfig) A
 	if strings.TrimSpace(model.Model) == "" {
 		model.Model = fallback.Model
 	}
+	if model.MaxTokens == 0 {
+		model.MaxTokens = fallback.MaxTokens
+	}
 	if !model.AllowPrivateAPIBaseSet {
 		model.AllowPrivateAPIBase = fallback.AllowPrivateAPIBase
 	}
@@ -946,6 +966,7 @@ func (cfg AIConfig) runtimeConfig(model AIModelConfig, fallback AIModelConfig) A
 	next.APIKey = model.APIKey
 	next.APIKeyHeader = model.APIKeyHeader
 	next.Model = model.Model
+	next.MaxTokens = model.MaxTokens
 	next.AllowPrivateAPIBase = model.AllowPrivateAPIBase
 	return next
 }
@@ -956,7 +977,8 @@ func (model AIModelConfig) isZero() bool {
 		strings.TrimSpace(model.APIKey) == "" &&
 		strings.TrimSpace(model.APIKeyHeader) == "" &&
 		strings.TrimSpace(model.Model) == "" &&
-		!model.AllowPrivateAPIBase
+		!model.AllowPrivateAPIBase &&
+		model.MaxTokens == 0
 }
 
 type UpdateConfig struct {
@@ -1046,6 +1068,7 @@ type AlertRuleConfig struct {
 	Operator  string        `yaml:"operator" json:"operator"`
 	Threshold float64       `yaml:"threshold" json:"threshold"`
 	For       time.Duration `yaml:"for" json:"for"`
+	Cooldown  time.Duration `yaml:"cooldown" json:"cooldown"`
 	Severity  string        `yaml:"severity" json:"severity"`
 	Enabled   bool          `yaml:"enabled" json:"enabled"`
 }

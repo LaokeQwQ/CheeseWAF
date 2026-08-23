@@ -1,5 +1,5 @@
-// Package engine provides deep tokenization for SQL and XSS detection (libinjection-compatible).
-// Pure Go reimplementation — no CGO dependency. Based on libinjection's token fingerprint approach.
+// Package engine provides SQL token fingerprints and contextual XSS detection.
+// The SQL path is a pure Go approximation of libinjection's fingerprint approach.
 package engine
 
 import (
@@ -41,8 +41,9 @@ var sqliFingerprints = map[string]bool{
 	"sc": true, "sns": true, "nsc": true,
 	// Number-or-string concatenation
 	"snf": true, "snsf": true, "wnf": true,
-	// Stacked queries
-	"s;U": true, "s;E": true, "s;k": true,
+	// Reviewed patterns reachable under this tokenizer's alphabet.
+	"kc": true, "nc": true, "Uwk": true, "Bn": true,
+	"fws": true, "Ew": true, "Ef": true, "o(": true, "&t": true,
 	// Procedure/function attacks
 	"f(": true, "f(n": true, "f(s": true,
 	// Keyword-from patterns (SELECT ... FROM, EXEC ... FROM)
@@ -68,8 +69,8 @@ func SQLLibinjectionFingerprint(input string) (string, bool) {
 	if len(fp) < 2 {
 		return fp, false
 	}
-	// Scan every 5-char window for known attack fingerprints
-	for i := 0; i < len(fp)-2; i++ {
+	// Scan every 2-to-6-token window for known attack fingerprints.
+	for i := 0; i <= len(fp)-2; i++ {
 		for j := i + 2; j <= i+6 && j <= len(fp); j++ {
 			window := string(fp[i:j])
 			if sqliFingerprints[window] {
@@ -87,6 +88,11 @@ func tokenizeSQL(input string) string {
 		// Skip whitespace
 		if input[i] == ' ' || input[i] == '\t' || input[i] == '\n' || input[i] == '\r' {
 			i++
+			continue
+		}
+		if consumed := consumeTautology(input[i:]); consumed > 0 {
+			tokens.WriteByte(tkSQLTautology)
+			i += consumed
 			continue
 		}
 		token, consumed := nextToken(input[i:])
@@ -134,6 +140,16 @@ func nextToken(s string) (byte, int) {
 	case s[0] == ')':
 		return tkSQLClose, 1
 
+	// Prepared-statement placeholders and named variables.
+	case s[0] == '?':
+		return tkSQLVariable, 1
+	case s[0] == '$' && len(s) > 1 && s[1] >= '0' && s[1] <= '9':
+		return tkSQLVariable, 1 + consumeWhile(s[1:], unicode.IsDigit)
+	case s[0] == ':' && len(s) > 1 && (unicode.IsLetter(rune(s[1])) || s[1] == '_'):
+		return tkSQLVariable, 1 + consumeWhile(s[1:], func(r rune) bool {
+			return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+		})
+
 	// Operators and comparisons
 	case len(s) >= 2 && (s[:2] == "<>" || s[:2] == "!=" || s[:2] == "<=" || s[:2] == ">=" || s[:2] == "||"):
 		return tkSQLOperator, 2
@@ -175,25 +191,90 @@ func nextToken(s string) (byte, int) {
 	if wordLen > 0 {
 		word := strings.ToUpper(s[:wordLen])
 		switch word {
-		case "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "EXEC", "EXECUTE":
+		case "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "FROM", "WHERE", "TABLE_NAME", "NULL", "INFORMATION_SCHEMA":
 			return tkSQLKeyword, wordLen
+		case "EXEC", "EXECUTE":
+			return tkSQLExpr, wordLen
 		case "UNION":
 			return tkSQLUnion, wordLen
 		case "GROUP", "ORDER", "HAVING":
+			if word != "HAVING" {
+				if phraseLen := consumeFollowingWord(s, wordLen, "BY"); phraseLen > wordLen {
+					return tkSQLGroup, phraseLen
+				}
+			}
 			return tkSQLGroup, wordLen
 		case "AND", "OR", "NOT":
 			return tkSQLLogic, wordLen
-		case "SLEEP", "BENCHMARK", "WAITFOR", "PG_SLEEP":
+		case "SLEEP", "BENCHMARK", "WAITFOR", "PG_SLEEP", "LOAD_FILE", "XP_CMDSHELL", "DBMS_SQL", "CHAR", "UNHEX", "HEX", "SQLCODE":
 			return tkSQLFunction, wordLen
 		case "LIKE", "IN", "BETWEEN", "REGEXP", "RLIKE":
 			return tkSQLOperator, wordLen
-		case "INFORMATION_SCHEMA":
-			return tkSQLKeyword, wordLen
 		}
 		return tkBareWord, wordLen
 	}
 
 	return 0, 1 // skip unknown single char
+}
+
+func consumeFollowingWord(s string, offset int, want string) int {
+	i := offset
+	for i < len(s) && unicode.IsSpace(rune(s[i])) {
+		i++
+	}
+	start := i
+	for i < len(s) && unicode.IsLetter(rune(s[i])) {
+		i++
+	}
+	if strings.EqualFold(s[start:i], want) {
+		return i
+	}
+	return offset
+}
+
+func consumeTautology(s string) int {
+	left, consumed, ok := consumeSQLLiteral(s)
+	if !ok {
+		return 0
+	}
+	i := consumed
+	for i < len(s) && unicode.IsSpace(rune(s[i])) {
+		i++
+	}
+	if i >= len(s) || s[i] != '=' {
+		return 0
+	}
+	i++
+	if i < len(s) && s[i] == '=' {
+		i++
+	}
+	for i < len(s) && unicode.IsSpace(rune(s[i])) {
+		i++
+	}
+	right, rightLen, ok := consumeSQLLiteral(s[i:])
+	if !ok || left != right {
+		return 0
+	}
+	return i + rightLen
+}
+
+func consumeSQLLiteral(s string) (string, int, bool) {
+	if len(s) == 0 {
+		return "", 0, false
+	}
+	if s[0] >= '0' && s[0] <= '9' {
+		n := consumeWhile(s, unicode.IsDigit)
+		return s[:n], n, true
+	}
+	if s[0] != '\'' && s[0] != '"' {
+		return "", 0, false
+	}
+	quote := s[0]
+	end := strings.IndexByte(s[1:], quote)
+	if end < 0 {
+		return "", 0, false
+	}
+	return s[1 : end+1], end + 2, true
 }
 
 func consumeWhile(s string, fn func(rune) bool) int {
@@ -205,10 +286,12 @@ func consumeWhile(s string, fn func(rune) bool) int {
 }
 
 func fingerprint(tokens string) string {
-	// Collapse adjacent identical tokens
+	// Collapse adjacent identical tokens except bare words. Keeping bare-word
+	// runs distinguishes compact SQL grammar (SELECT a FROM b => kwkw) from
+	// ordinary prose ("select a theme from the menu" => kwwkww).
 	var fp strings.Builder
 	for i := 0; i < len(tokens); i++ {
-		if i > 0 && tokens[i] == tokens[i-1] {
+		if i > 0 && tokens[i] == tokens[i-1] && tokens[i] != tkBareWord {
 			continue // collapse duplicates
 		}
 		fp.WriteByte(tokens[i])
@@ -216,24 +299,8 @@ func fingerprint(tokens string) string {
 	return fp.String()
 }
 
-// === XSS tokenizer (libinjection-compatible) ===
-
-const (
-	tkXSSNone     = 0
-	tkXSSTagOpen  = '<'  // <
-	tkXSSTagClose = '>'  // >
-	tkXSSQuoteD   = '"'  // "
-	tkXSSQuoteS   = '\'' // '
-	tkXSSEquals   = '='  // =
-	tkXSSText     = 'T'  // text content
-	tkXSSScript   = 'J'  // javascript: URL
-	tkXSSData     = 'D'  // data: URL
-	tkXSSEvent    = 'E'  // event handler like onerror, onload
-	tkXSSFunc     = 'F'  // function call alert(), eval()
-	tkXSSSlash    = '/'  // /
-)
-
-// XSSLibinjectionFingerprint detects XSS patterns using token-based analysis
+// XSSLibinjectionFingerprint retains the historical API name but performs
+// context-aware substring matching; it is not a token fingerprint implementation.
 func XSSLibinjectionFingerprint(input string) bool {
 	lower := strings.ToLower(input)
 	if strings.Contains(lower, "<script") ||

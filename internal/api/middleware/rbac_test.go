@@ -31,3 +31,27 @@ func TestRBACAnyAcceptsOneMatchingPermission(t *testing.T) {
 		t.Fatal("RBACAny rejected a caller with one matching permission")
 	}
 }
+
+func TestRBACProviderReadsPermissionsForEveryRequest(t *testing.T) {
+	claims := &Claims{Role: "operator"}
+	permissions := PermissionMap{"operator": []string{"read:logs"}}
+	called := 0
+	handler := RBACProvider(func() PermissionMap { return permissions }, "write:sites")(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called++
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request = request.WithContext(context.WithValue(request.Context(), UserContextKey, claims))
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, request)
+	if first.Code != http.StatusForbidden {
+		t.Fatalf("initial status = %d, want 403", first.Code)
+	}
+
+	permissions = PermissionMap{"operator": []string{"write:sites"}}
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, request)
+	if second.Code != http.StatusOK || called != 1 {
+		t.Fatalf("updated status = %d, calls = %d", second.Code, called)
+	}
+}

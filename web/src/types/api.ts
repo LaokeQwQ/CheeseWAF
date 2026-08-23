@@ -176,6 +176,15 @@ export type SiteResponseConfig = {
   enabled: boolean;
   max_body_bytes: number;
   sensitive_patterns: string[];
+  tamper_key?: string;
+  tamper_snapshots?: SiteTamperSnapshot[];
+};
+
+export type SiteTamperSnapshot = {
+  url: string;
+  mac: string;
+  size: number;
+  captured_at: string;
 };
 
 export type SiteRewriteRule = {
@@ -622,18 +631,83 @@ export type LogEntry = {
 
 export type LogQuery = {
   limit?: number;
+  offset?: number;
+  id?: string;
   site_id?: string;
   client_ip?: string;
   category?: string;
   action?: string;
   trace_id?: string;
+  search?: string;
+  kind?: 'security' | 'access' | 'all';
+  tag?: string[];
   start?: string;
   end?: string;
+  after?: string;
+  after_id?: string;
+  before?: string;
+  before_id?: string;
+  watermark?: string;
+  watermark_id?: string;
+  ascending?: boolean;
 };
 
 export type LogResponse = {
   items: LogEntry[];
   total: number;
+};
+
+export type AttackMapEvent = {
+  id: string;
+  timestamp: string;
+  trace_id?: string;
+  client_ip?: string;
+  method?: string;
+  uri?: string;
+  action?: string;
+  category?: string;
+  severity?: string;
+  status_code?: number;
+  country?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type AttackMapAggregate = {
+  key: string;
+  country_code: string;
+  country: string;
+  continent?: string;
+  location_name?: string;
+  admin_code?: string;
+  precision?: string;
+  location_source?: string;
+  accuracy_radius_km?: number;
+  lat?: number;
+  lon?: number;
+  mappable: boolean;
+  attacks: number;
+  blocked: number;
+  severity: string;
+  severity_rank: number;
+  top_category?: string;
+  categories?: Record<string, number>;
+  source_prefixes?: Record<string, number>;
+  events?: AttackMapEvent[];
+};
+
+export type AttackMapAggregateResponse = {
+  items: AttackMapAggregate[];
+  events: AttackMapEvent[];
+  total: number;
+  has_more: boolean;
+  next?: { time: string; id: string };
+  generated_at: string;
+};
+
+export type AttackMapAggregateQuery = {
+  limit?: number;
+  after?: string;
+  after_id?: string;
 };
 
 export type ReviewStatus = 'pending' | 'blocked' | 'allowed' | string;
@@ -669,8 +743,15 @@ export type ReviewQuery = {
   site_id?: string;
   category?: string;
   status?: string;
+  search?: string;
   start?: string;
   end?: string;
+  after?: string;
+  after_id?: string;
+  before?: string;
+  before_id?: string;
+  watermark?: string;
+  watermark_id?: string;
   limit?: number;
   offset?: number;
 };

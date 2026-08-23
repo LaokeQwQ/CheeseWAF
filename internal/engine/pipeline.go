@@ -18,6 +18,57 @@ type Pipeline struct {
 
 type detectionBudgetExhaustedHook func()
 
+type semanticJobOut struct {
+	index  int
+	result *DetectionResult
+	fork   *RequestContext
+	err    error
+}
+
+type semanticJob struct {
+	ctx      context.Context
+	detector Detector
+	reqCtx   *RequestContext
+	index    int
+	done     chan<- semanticJobOut
+}
+
+var sharedSemanticWorkers struct {
+	once    sync.Once
+	jobs    chan semanticJob
+	started atomic.Int64
+}
+
+func semanticJobs() chan semanticJob {
+	sharedSemanticWorkers.once.Do(func() {
+		workers := runtime.GOMAXPROCS(0)
+		if workers > 8 {
+			workers = 8
+		}
+		if workers < 1 {
+			workers = 1
+		}
+		sharedSemanticWorkers.jobs = make(chan semanticJob, maxInflightGuards)
+		for range workers {
+			go func() {
+				sharedSemanticWorkers.started.Add(1)
+				for job := range sharedSemanticWorkers.jobs {
+					if err := job.ctx.Err(); err != nil {
+						job.done <- semanticJobOut{index: job.index, err: err}
+						continue
+					}
+					fork := forkRequestContext(job.reqCtx)
+					result, err := Guard(func() (*DetectionResult, error) {
+						return job.detector.Detect(job.ctx, fork)
+					})
+					job.done <- semanticJobOut{index: job.index, result: result, fork: fork, err: err}
+				}
+			}()
+		}
+	})
+	return sharedSemanticWorkers.jobs
+}
+
 // detectionBudgetHook is atomically replaceable because service hot reloads
 // can rebuild a pipeline while requests are recording exhausted budgets.
 var detectionBudgetHook atomic.Pointer[detectionBudgetExhaustedHook]
@@ -138,44 +189,23 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 			return finalizeBudgetExhausted(reqCtx, firstDetected), nil
 		}
 	} else if len(semanticGroup) > 1 {
-		type jobOut struct {
-			index  int
-			result *DetectionResult
-			fork   *RequestContext
-			err    error
+		outs := make([]semanticJobOut, len(semanticGroup))
+		done := make(chan semanticJobOut, len(semanticGroup))
+		jobs := semanticJobs()
+		submitted := 0
+		for i, detector := range semanticGroup {
+			job := semanticJob{ctx: ctx, detector: detector, reqCtx: reqCtx, index: i, done: done}
+			select {
+			case jobs <- job:
+				submitted++
+			case <-ctx.Done():
+				outs[i] = semanticJobOut{index: i, err: ctx.Err()}
+			}
 		}
-		outs := make([]jobOut, len(semanticGroup))
-		workers := len(semanticGroup)
-		if max := runtime.GOMAXPROCS(0); workers > max {
-			workers = max
+		for range submitted {
+			out := <-done
+			outs[out.index] = out
 		}
-		if workers < 1 {
-			workers = 1
-		}
-		jobs := make(chan int, len(semanticGroup))
-		var wg sync.WaitGroup
-		for w := 0; w < workers; w++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for i := range jobs {
-					if ctx.Err() != nil {
-						outs[i] = jobOut{index: i, err: ctx.Err()}
-						continue
-					}
-					fork := forkRequestContext(reqCtx)
-					res, err := Guard(func() (*DetectionResult, error) {
-						return semanticGroup[i].Detect(ctx, fork)
-					})
-					outs[i] = jobOut{index: i, result: res, fork: fork, err: err}
-				}
-			}()
-		}
-		for i := range semanticGroup {
-			jobs <- i
-		}
-		close(jobs)
-		wg.Wait()
 
 		// Merge in priority order for stable Results / Metadata.
 		var detectErr error
