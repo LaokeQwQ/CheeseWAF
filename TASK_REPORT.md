@@ -141,6 +141,10 @@ commit. The unrelated non-required `package-macos-dmg` failure on an earlier
   guards now widen to `int64` and compare with the direct constant
   `4294967295`, which CodeQL can verify; fresh Windows `386`, `amd64`, and
   `arm64` test binaries all compile.
+- 2026-08-23: CodeQL continued to trace the legacy PID file's `strconv.Atoi`
+  result through the Windows process helpers. The legacy parser now uses
+  `strconv.ParseInt` with a 32-bit size, as recommended by the CodeQL rule;
+  the focused CLI tests and Windows cross-compiles remain green.
 
 Remaining delivery steps: push the integration branch, create a PR to `dev`,
 wait for required remote CI, merge, synchronize `dev`, and remove the temporary

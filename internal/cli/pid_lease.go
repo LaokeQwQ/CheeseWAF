@@ -121,11 +121,11 @@ func readPIDRecord(runtimeDir string) (servicePIDRecord, error) {
 	}
 	// Accept the old numeric format so upgrades can cleanly recognize a stale
 	// file instead of treating it as an unreadable service state.
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	pid, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 32)
 	if err != nil || pid <= 0 {
 		return servicePIDRecord{}, fmt.Errorf("invalid service pid file: %w", err)
 	}
-	return servicePIDRecord{PID: pid}, nil
+	return servicePIDRecord{PID: int(pid)}, nil
 }
 
 func writePIDRecordAtomic(path string, contents []byte) error {
