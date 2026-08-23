@@ -158,7 +158,8 @@ commit. The unrelated non-required `package-macos-dmg` failure on an earlier
   `cross-build`, Docker, Web, vulnerability, static, GoReleaser, and release
   smoke checks. Release publication jobs were skipped because this was a pull
   request, as expected.
-- Local `dev`, GitHub `origin/dev`, and the Forgejo mirror `dev` now point to
-  `a03fee0`; the mirror synchronized automatically after the GitHub merge.
+- Local `dev` tracks GitHub `origin/dev`. Forgejo is a read-only, hourly pull
+  mirror of GitHub; the final reference check runs after this documentation
+  merge so the mirror can fetch the resulting `dev` commit.
 - The nine R2 worktrees, temporary local branches, GitHub temporary branches,
   and Forgejo mirror branch have been removed. The local worktree is clean.
