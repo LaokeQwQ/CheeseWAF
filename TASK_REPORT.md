@@ -21,9 +21,9 @@ This report tracks integration and fresh verification evidence.
 
 ## Current Evidence
 
-- The integration branch HEAD is `085c54f`, containing the nine R2 merge
-  commits above and the PostgreSQL log-sink follow-up; `origin/dev` / `9ccb5ee`
-  is its ancestor and `git diff --check origin/dev...HEAD` remains clean.
+- The integration branch contains the nine R2 merge commits above, the
+  PostgreSQL log-sink follow-up, and the current PR #386 repair set based on
+  `00e0dab`; `origin/dev` / `9ccb5ee` is its ancestor.
 - Fresh full Go verification completed with exit code 0:
   `go test ./... -short -count=1`, `go vet ./...`, and `go build ./cmd/...`.
 - Fresh focused storage verification completed with exit code 0:
@@ -41,11 +41,40 @@ This report tracks integration and fresh verification evidence.
 - R2-7's malformed `Forwarded` regression was corrected before final
   integration; R2-8's signing and Docker assertions require final remote CI
   for the real credentials and Docker daemon environments.
+- The first PR #386 run for `00e0dab` was not a final green result. Its
+  `go-quality` failure identified two pre-existing formatting mismatches and
+  the macOS Bash 3.2-only `mapfile` use in `verify-go-quality.sh`; the working
+  tree now contains the gofmt corrections and the Bash 3.2-compatible
+  `while read` replacement.
+- That same run exposed two platform/security failures which are now addressed:
+  Windows `go-test` crashed in `TestPIDLeaseIsExclusiveAndPublishesIdentityRecord`
+  because `LockFileEx`/`UnlockFileEx` received a nil `OVERLAPPED` pointer, and
+  CodeQL reported an unchecked integer narrowing in `process_windows.go` plus
+  an allocation-size multiplication in `postgresql.go`. The fixes are covered
+  by local CLI/storage tests, Windows cross-compilation, and the Go quality
+  format/vet checks; a fresh GitHub run is still required for Windows and
+  CodeQL confirmation.
+- Fresh Go coverage verification now exits 0 at `70.3%`, above the `50.0%`
+  floor. The coverage command uses `-short` so the report-only, 107 MiB
+  semantic benign corpus is not run under atomic instrumentation; the ordinary
+  full test command remains the corpus regression gate.
+- The async writer follow-up now waits for each Flush result to be acknowledged
+  before a later operation can overtake it, so a canceled waiter cannot silently
+  acknowledge a write failure. Alert dispatch drains admitted events during
+  shutdown, rejects new events after stopping, and starts cooldown only when an
+  event is actually queued.
+- The local unshortened `go test ./... -count=1` run reached every package but
+  timed out at the Go test binary's 10-minute limit in
+  `TestEvaluationPlatform` while scanning the locally ignored 107 MiB external
+  corpus; its stack remained in regex analysis. The CI workflows now explicitly
+  pass `-short`, which is the test's documented CI mode and still runs the
+  curated quality gate. This local full-corpus timeout is retained as an
+  environment-bound verification gap, not recorded as a pass.
 
 ## Final Gates
 
-The focused PostgreSQL follow-up and full local gates passed fresh against
-`085c54f`:
+The focused PostgreSQL follow-up and local gates passed fresh before the
+current remote rerun:
 
 ```text
 go test ./... -short -count=1
@@ -58,15 +87,18 @@ bash scripts/ci/verify-ci-static.sh
 bash scripts/ci/verify-release_test.sh
 bash -n scripts/ci/*.sh scripts/build-all.sh scripts/build-pgo.sh
 sh -n scripts/ci/channel-from-git.sh
+go test -race ./internal/storage/log_sink -count=1
+bash scripts/ci/verify-go-quality.sh coverage
 ```
 
 The Web test gate reported 63 files and 338 tests, all passing. The build
 completed with only the existing Vite native-config and large-chunk warnings.
 
-The latest remote `dev` run also has a non-required `package-macos-dmg`
-failure caused by a busy `hdiutil` disk image; required branch-protection
-checks for PR #385 passed. This remains a remote-environment follow-up, not a
-local PostgreSQL regression.
+The latest remote PR #386 run had passed all release, web, static, Linux and
+macOS checks, but remained blocked by `go-quality`, Windows `go-test`, and
+CodeQL. Those failures are recorded above and must be rechecked on the new
+commit. The unrelated non-required `package-macos-dmg` failure on an earlier
+`dev` run was caused by a busy `hdiutil` disk image.
 
 ## Progress Log
 
@@ -80,6 +112,30 @@ local PostgreSQL regression.
   failure re-reporting, severed processed barrier predecessor references, and
   moved alert delivery to a bounded dispatcher so re-entrant or slow alert
   callbacks cannot block the backend worker.
+- 2026-08-23: Investigated PR #386's failed remote checks. Fixed the Windows
+  PID lease crash by supplying a valid `OVERLAPPED`, added the Windows PID
+  upper-bound guard required by CodeQL, removed the PostgreSQL allocation
+  multiplication flagged by CodeQL, corrected two gofmt mismatches, and made
+  `verify-go-quality.sh` work on Bash 3.2. Fresh targeted verification and the
+  local coverage gate passed; remote Windows/CodeQL confirmation remains open
+  until the new commit runs.
+- 2026-08-23: Completed a fresh coverage gate after making its scope explicit:
+  `bash scripts/ci/verify-go-quality.sh coverage` passed with `70.3%` against
+  the `50.0%` floor. The gate now passes `-short` because the large semantic
+  corpus is report-only and otherwise exceeds the instrumentation budget.
+- 2026-08-23: Closed the async writer acknowledgement and alert-shutdown
+  races, added focused cancellation/drain regression tests, and aligned the
+  GitHub/Forgejo cross-platform Go test commands with the documented `-short`
+  CI scope. Targeted normal/race/vet checks passed; the local unshortened
+  external-corpus run timed out at 10 minutes as recorded above.
+- 2026-08-23: Fixed the remaining stock Bash 3.2 portability findings in
+  `verify-ansible.sh` and `codeql-go-extract.sh`, and made the macOS keychain
+  and Windows signing argument arrays safe under `set -u`. The static check
+  now scans every `scripts/ci/*.sh` file for `mapfile` and `readarray`.
+  GitHub Go test and macOS release steps now declare `shell: bash` explicitly.
+  Fresh `/bin/bash` syntax, CI static, release regression, format, Windows
+  cross-compile, and focused Go checks passed. The repaired PR still needs a
+  new remote run before merge.
 
 Remaining delivery steps: push the integration branch, create a PR to `dev`,
 wait for required remote CI, merge, synchronize `dev`, and remove the temporary

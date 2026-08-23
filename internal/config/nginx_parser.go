@@ -89,11 +89,11 @@ func ParseNginxServerBlock(contents []byte) ([]SiteConfig, error) {
 				}
 			}
 			rewrites = append(rewrites, RewriteRuleConfig{
-				ID:          fmt.Sprintf("nginx-rewrite-%d", len(rewrites)+1),
-				Pattern:     match[1],
-				Replacement: match[2],
+				ID:           fmt.Sprintf("nginx-rewrite-%d", len(rewrites)+1),
+				Pattern:      match[1],
+				Replacement:  match[2],
 				RedirectCode: redirectCode,
-				Enabled:     true,
+				Enabled:      true,
 			})
 		}
 	}

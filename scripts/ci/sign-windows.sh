@@ -31,13 +31,18 @@ fi
   exit 1
 }
 
-pass_args=()
+sign_args=(osslsigncode sign -pkcs12 "$p12")
 if [[ -n "${WINDOWS_CERT_PASSWORD:-}" ]]; then
   pass_file="${work}/cert.pass"
   printf '%s' "$WINDOWS_CERT_PASSWORD" >"$pass_file"
   chmod 0600 "$pass_file"
-  pass_args=(-readpass "$pass_file")
+  sign_args+=(-readpass "$pass_file")
 fi
+sign_args+=(
+  -n "CheeseWAF"
+  -i "https://github.com/LaokeQwQ/CheeseWAF"
+  -t http://timestamp.digicert.com
+)
 
 for file in "$@"; do
   [[ -f "$file" ]] || {
@@ -45,14 +50,7 @@ for file in "$@"; do
     exit 1
   }
   signed="${work}/$(basename "$file").signed"
-  osslsigncode sign \
-    -pkcs12 "$p12" \
-    "${pass_args[@]}" \
-    -n "CheeseWAF" \
-    -i "https://github.com/LaokeQwQ/CheeseWAF" \
-    -t http://timestamp.digicert.com \
-    -in "$file" \
-    -out "$signed"
+  "${sign_args[@]}" -in "$file" -out "$signed"
   mv "$signed" "$file"
   echo "signed ${file}"
 done

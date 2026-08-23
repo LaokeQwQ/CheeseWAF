@@ -43,8 +43,11 @@ func processRunning(pid int) (bool, error) {
 }
 
 func processIdentityMatches(pid int, expected string) (bool, error) {
-	if pid <= 0 || strings.TrimSpace(expected) == "" {
-		return pid > 0, nil
+	if pid <= 0 || pid > math.MaxUint32 {
+		return false, nil
+	}
+	if strings.TrimSpace(expected) == "" {
+		return true, nil
 	}
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {

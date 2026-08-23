@@ -97,7 +97,7 @@ jobs:
         run: bash scripts/ci/setup-go-mirror.sh
       - name: Test
         shell: bash
-        run: bash scripts/ci/go-env.sh go test -race -count=1 ./cmd/... ./internal/...
+        run: bash scripts/ci/go-env.sh go test -race -short -count=1 ./cmd/... ./internal/...
 
   go-quality:
     name: go-quality

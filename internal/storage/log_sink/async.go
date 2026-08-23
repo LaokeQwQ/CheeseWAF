@@ -82,9 +82,11 @@ type asyncLogBarrier struct {
 	failedAtTarget uint64
 	predecessor    *asyncLogBarrier
 	done           chan struct{}
+	ackDone        chan struct{}
 	writeErr       error
 	flushErr       error
 	acknowledged   bool
+	settled        bool
 	waiters        int
 }
 
@@ -93,7 +95,10 @@ type asyncLogWriter struct {
 	write      func(context.Context, *storage.LogEntry) error
 	writeBatch func(context.Context, []*storage.LogEntry) error
 	flush      func(context.Context) error
-	close      func() error
+	// close is the final worker operation. Because the callback has no context,
+	// Close can report its timeout while a non-cooperative callback is still
+	// running; callers must eventually let that callback return.
+	close func() error
 
 	workerCtx  context.Context
 	cancel     context.CancelFunc
@@ -124,7 +129,9 @@ type asyncLogWriter struct {
 	lastAlertAt      map[string]time.Time
 	alertQueue       chan asyncLogAlertEvent
 	alertStop        chan struct{}
+	alertDone        chan struct{}
 	alertStopOnce    sync.Once
+	alertsStopping   bool
 	closeTimeoutErr  error
 	closeErr         error
 	closeFinished    bool
@@ -175,6 +182,7 @@ func newAsyncLogWriter(
 	if writer.alert != nil {
 		writer.alertQueue = make(chan asyncLogAlertEvent, 32)
 		writer.alertStop = make(chan struct{})
+		writer.alertDone = make(chan struct{})
 		go writer.runAlerts()
 	}
 	go writer.run()
@@ -288,7 +296,7 @@ func (w *asyncLogWriter) Flush(ctx context.Context) error {
 	}
 	target := w.acceptedSeq
 	barrier := w.latestBarrier
-	created := barrier == nil || barrier.target != target || barrier.acknowledged
+	created := barrier == nil || barrier.target != target || barrier.acknowledged || barrier.settled
 	if created {
 		predecessor := barrier
 		barrier = &asyncLogBarrier{
@@ -296,6 +304,7 @@ func (w *asyncLogWriter) Flush(ctx context.Context) error {
 			baseFailed:  w.ackedFailures,
 			predecessor: predecessor,
 			done:        make(chan struct{}),
+			ackDone:     make(chan struct{}),
 		}
 		w.latestBarrier = barrier
 		w.operations = append(w.operations, asyncLogOperation{
@@ -319,6 +328,10 @@ func (w *asyncLogWriter) Flush(ctx context.Context) error {
 			if barrier.failedAtTarget > w.ackedFailures {
 				w.ackedFailures = barrier.failedAtTarget
 			}
+		}
+		if barrier.waiters == 0 && !barrier.settled {
+			barrier.settled = true
+			close(barrier.ackDone)
 		}
 		w.mu.Unlock()
 	}()
@@ -548,8 +561,7 @@ func (w *asyncLogWriter) runFlush(barrier *asyncLogBarrier) {
 	}
 	w.mu.Lock()
 	baseFailed := barrier.baseFailed
-	if predecessor := barrier.predecessor; predecessor != nil &&
-		(predecessor.acknowledged || predecessor.waiters > 0) &&
+	if predecessor := barrier.predecessor; predecessor != nil && predecessor.acknowledged &&
 		predecessor.failedAtTarget > baseFailed {
 		baseFailed = predecessor.failedAtTarget
 	}
@@ -571,6 +583,13 @@ func (w *asyncLogWriter) runFlush(barrier *asyncLogBarrier) {
 	}
 	if flushErr != nil {
 		w.emitAlert("flush_failure", flushErr)
+	}
+	// Do not let a following write or barrier overtake a Flush result that no
+	// caller has acknowledged. A canceled waiter still runs the defer above,
+	// so this wait is bounded by the caller's own context and closes the
+	// cancellation race without blocking backend I/O.
+	if barrier.ackDone != nil {
+		<-barrier.ackDone
 	}
 }
 
@@ -614,43 +633,72 @@ func (w *asyncLogWriter) emitAlert(kind string, err error) {
 	}
 	now := time.Now()
 	w.mu.Lock()
+	if w.alertsStopping {
+		w.mu.Unlock()
+		return
+	}
 	if last, ok := w.lastAlertAt[kind]; ok && now.Sub(last) < w.alertCooldown {
 		w.mu.Unlock()
 		return
 	}
-	w.lastAlertAt[kind] = now
 	stats := w.statsLocked()
 	alertQueue := w.alertQueue
-	w.mu.Unlock()
 	if alertQueue == nil {
+		w.mu.Unlock()
 		return
 	}
 	// Keep alert delivery bounded. A slow alert sink cannot block backend
 	// progress, and a saturated alert queue drops telemetry rather than logs.
 	select {
 	case alertQueue <- asyncLogAlertEvent{kind: kind, stats: stats, err: err}:
+		// Cooldown starts only after the event is admitted. A full dispatcher
+		// queue must not suppress the next observable alert.
+		w.lastAlertAt[kind] = now
 	default:
 	}
+	w.mu.Unlock()
 }
 
 func (w *asyncLogWriter) runAlerts() {
+	defer close(w.alertDone)
 	for {
 		select {
 		case event := <-w.alertQueue:
-			func() {
-				defer func() { _ = recover() }()
-				w.alert(event.kind, event.stats, event.err)
-			}()
+			w.deliverAlert(event)
 		case <-w.alertStop:
-			return
+			// Drain events admitted before shutdown. Delivery remains detached
+			// from the backend worker, so a re-entrant callback cannot deadlock
+			// Close; a callback that never returns remains best-effort telemetry.
+			for {
+				select {
+				case event := <-w.alertQueue:
+					w.deliverAlert(event)
+				default:
+					return
+				}
+			}
 		}
 	}
+}
+
+func (w *asyncLogWriter) deliverAlert(event asyncLogAlertEvent) {
+	func() {
+		defer func() { _ = recover() }()
+		w.alert(event.kind, event.stats, event.err)
+	}()
 }
 
 func (w *asyncLogWriter) stopAlerts() {
 	if w.alertStop == nil {
 		return
 	}
+	w.mu.Lock()
+	if w.alertsStopping {
+		w.mu.Unlock()
+		return
+	}
+	w.alertsStopping = true
+	w.mu.Unlock()
 	w.alertStopOnce.Do(func() { close(w.alertStop) })
 }
 

@@ -130,7 +130,7 @@ func (s *PostgreSQLSink) writeBatchSync(ctx context.Context, entries []*storage.
 		if err != nil {
 			return err
 		}
-		args := make([]any, 0, len(rows)*postgresqlLogColumnCount)
+		args := make([]any, 0, len(rows))
 		for _, row := range rows {
 			args = append(args, row...)
 		}

@@ -131,7 +131,11 @@ setup_macos_signing() {
       original_user_keychains+=("$keychain_path")
     done < <(security list-keychain -d user)
     signing_keychain="$keychain"
-    security list-keychain -d user -s "$keychain" "${original_user_keychains[@]}"
+    keychain_args=("$keychain")
+    if [[ "${#original_user_keychains[@]}" -gt 0 ]]; then
+      keychain_args+=("${original_user_keychains[@]}")
+    fi
+    security list-keychain -d user -s "${keychain_args[@]}"
     CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
     if [[ -z "$CODESIGN_IDENTITY" ]]; then
       CODESIGN_IDENTITY="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/"/ {print $2; exit}')"

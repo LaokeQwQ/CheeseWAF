@@ -414,9 +414,12 @@ if grep -Fq -- '-pass "$WINDOWS_CERT_PASSWORD"' scripts/ci/sign-windows.sh ||
   grep -Fq -- '-P "${MACOS_P12_PASSWORD' scripts/ci/package-macos-dmg.sh; then
   fail "code-signing passwords must not be exposed in argv"
 fi
-if grep -Fq 'mapfile' scripts/ci/package-release.sh scripts/ci/verify-release.sh; then
-  fail "release verification and packaging must run on stock macOS Bash 3.2"
-fi
+for ci_script in scripts/ci/*.sh; do
+  [[ "$ci_script" == scripts/ci/verify-ci-static.sh ]] && continue
+  if grep -nE '(^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$)' "$ci_script"; then
+    fail "${ci_script} must run on stock macOS Bash 3.2"
+  fi
+done
 if grep -Fq 'seq ' scripts/ci/verify-release.sh; then
   fail "release verification must not depend on non-stock macOS seq"
 fi

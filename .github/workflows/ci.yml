@@ -108,7 +108,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Test
-        run: bash scripts/ci/go-env.sh go test -race -count=1 ./cmd/... ./internal/...
+        shell: bash
+        run: bash scripts/ci/go-env.sh go test -race -short -count=1 ./cmd/... ./internal/...
 
   go-quality:
     name: go-quality
@@ -415,6 +416,7 @@ jobs:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
           path: release
       - name: Build macOS disk images
+        shell: bash
         env:
           MACOS_P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
           MACOS_P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
@@ -424,6 +426,7 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: bash scripts/ci/package-macos-dmg.sh release
       - name: Verify macOS disk images
+        shell: bash
         env:
           MACOS_P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
           MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}

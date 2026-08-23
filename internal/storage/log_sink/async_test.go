@@ -706,6 +706,87 @@ func TestAsyncLogWriterFlushRetryAfterTimeoutReportsEarlierFailure(t *testing.T)
 	}
 }
 
+func TestAsyncLogWriterCanceledFlushDoesNotAcknowledgeWriteFailure(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	writer := newAsyncLogWriter("canceled-flush", func(context.Context, *storage.LogEntry) error {
+		once.Do(func() { close(started) })
+		<-release
+		return errors.New("failure after canceled flush")
+	}, nil, nil, asyncLogWriterOptions{queueSize: 2, closeTimeout: time.Second})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		_ = writer.Close()
+	}()
+
+	if err := writer.Write(context.Background(), &storage.LogEntry{ID: "failure"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("backend write did not start")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- writer.Flush(ctx) }()
+	waitForAsyncBarrierWaiters(t, writer, 1)
+	cancel()
+	select {
+	case err := <-flushDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected canceled Flush, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled Flush did not return")
+	}
+	close(release)
+	if err := writer.Flush(context.Background()); !containsError(err, "failure after canceled flush") {
+		t.Fatalf("canceled Flush incorrectly acknowledged the write failure: %v", err)
+	}
+}
+
+func TestAsyncLogWriterDrainsQueuedAlertsBeforeWorkerStops(t *testing.T) {
+	received := make(chan string, 4)
+	writer := newAsyncLogWriter("alert-drain", func(context.Context, *storage.LogEntry) error {
+		return errors.New("alert drain failure")
+	}, nil, nil, asyncLogWriterOptions{
+		queueSize:    1,
+		closeTimeout: time.Second,
+		alert: func(kind string, _ AsyncLogSinkStats, _ error) {
+			received <- kind
+		},
+		alertCooldown: time.Hour,
+	})
+	if err := writer.Write(context.Background(), &storage.LogEntry{ID: "failure"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := writer.Flush(context.Background()); !containsError(err, "alert drain failure") {
+		t.Fatalf("expected write failure, got %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case <-writer.alertDone:
+	case <-time.After(time.Second):
+		t.Fatal("alert dispatcher did not stop")
+	}
+	select {
+	case kind := <-received:
+		if kind != "write_failure" {
+			t.Fatalf("unexpected drained alert kind %q", kind)
+		}
+	default:
+		t.Fatal("queued alert was lost during writer shutdown")
+	}
+}
+
 func TestAsyncLogWriterAcknowledgedFailureIsNotRepeated(t *testing.T) {
 	writer := newAsyncLogWriter("acknowledged", func(context.Context, *storage.LogEntry) error {
 		return errors.New("reported once")

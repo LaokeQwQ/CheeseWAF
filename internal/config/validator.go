@@ -22,10 +22,10 @@ import (
 )
 
 const (
-	maxTrustedProxyCIDRs  = 1024
-	minFileLogSizeBytes   = 1 << 10
-	maxFileLogSizeBytes   = 1 << 40
-	maxFileLogBackupCount = 100
+	maxTrustedProxyCIDRs   = 1024
+	minFileLogSizeBytes    = 1 << 10
+	maxFileLogSizeBytes    = 1 << 40
+	maxFileLogBackupCount  = 100
 	maxRewriteRulesPerSite = 128
 	maxRewritePatternBytes = 4096
 	maxRewriteReplaceBytes = 4096
