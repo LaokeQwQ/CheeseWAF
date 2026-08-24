@@ -1328,11 +1328,11 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
 	}
-	middleware.ClearSessionCookies(w, r)
 	if err := h.Store.RevokeSession(r.Context(), claims.ID, claims.Subject); err != nil {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
+	middleware.ClearSessionCookies(w, r)
 	writeData(w, map[string]any{"revoked": true})
 }
 

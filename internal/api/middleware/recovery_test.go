@@ -1,10 +1,13 @@
 package middleware
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +50,41 @@ func TestRecoveryReturnsTraceAndWritesPanicAudit(t *testing.T) {
 	}
 	if entries[0].Message != "trace_id="+body.Error.TraceID {
 		t.Fatalf("panic audit trace mismatch: %+v", entries[0])
+	}
+}
+
+func TestRecoveryQuotesControlCharactersAndOmitsStack(t *testing.T) {
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	})
+
+	h := Recovery(nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom\r\nforged_entry=true")
+	}))
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/api/%0d%0aforged_path=true", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	logged := logs.String()
+	if strings.Count(logged, "\n") != 1 || strings.Contains(logged, "\r") {
+		t.Fatalf("recovery log contains injected line breaks: %q", logged)
+	}
+	for _, want := range []string{`trace_id=`, `method="POST"`, `path="/api/\r\nforged_path=true"`, `panic="boom\r\nforged_entry=true"`} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("recovery log %q does not contain %q", logged, want)
+		}
+	}
+	if strings.Contains(logged, "goroutine ") {
+		t.Fatalf("recovery log exposed a debug stack: %q", logged)
 	}
 }

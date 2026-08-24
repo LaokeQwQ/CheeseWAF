@@ -3,9 +3,10 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
-	"runtime/debug"
+	"strconv"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
@@ -18,7 +19,7 @@ func Recovery(auditor *Auditor) func(http.Handler) http.Handler {
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					traceID := blockpage.NewTraceID()
-					log.Printf("api panic trace_id=%s method=%s path=%s panic=%v\n%s", traceID, r.Method, r.URL.Path, recovered, debug.Stack())
+					log.Printf("api panic trace_id=%s method=%s path=%s panic=%s", traceID, quoteRecoveryLogValue(r.Method), quoteRecoveryLogValue(r.URL.Path), recoveryPanicValue(recovered))
 					w.Header().Set("Content-Type", "application/json")
 					w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
 					w.Header().Set("X-CheeseWAF-Event-ID", traceID)
@@ -29,7 +30,7 @@ func Recovery(auditor *Auditor) func(http.Handler) http.Handler {
 					if auditor != nil {
 						entry := AuditEntry{Timestamp: time.Now().UTC(), Method: r.Method, Path: r.URL.Path, Status: http.StatusInternalServerError, RemoteIP: r.RemoteAddr, Target: "panic", Message: "trace_id=" + traceID}
 						if err := auditor.Write(context.WithoutCancel(r.Context()), entry); err != nil {
-							log.Printf("audit panic trace_id=%s: %v", traceID, err)
+							log.Printf("audit panic trace_id=%s error=%s", traceID, quoteRecoveryLogValue(err.Error()))
 						}
 					}
 				}
@@ -37,4 +38,32 @@ func Recovery(auditor *Auditor) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+const maxRecoveryLogValueBytes = 2048
+
+func quoteRecoveryLogValue(value string) string {
+	if len(value) > maxRecoveryLogValueBytes {
+		value = value[:maxRecoveryLogValueBytes] + "...(truncated)"
+	}
+	return strconv.QuoteToASCII(value)
+}
+
+func recoveryPanicValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return quoteRecoveryLogValue(typed)
+	case error:
+		return quoteRecoveryLogValue(safeRecoveryErrorText(typed))
+	default:
+		return quoteRecoveryLogValue(fmt.Sprintf("<%T>", value))
+	}
+}
+
+func safeRecoveryErrorText(err error) (text string) {
+	text = fmt.Sprintf("<%T>", err)
+	defer func() {
+		_ = recover()
+	}()
+	return err.Error()
 }
