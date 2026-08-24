@@ -31,13 +31,14 @@ const (
 
 // RollingTarget is one host in a rolling upgrade batch.
 type RollingTarget struct {
-	NodeID        string `json:"node_id,omitempty"`
-	Host          string `json:"host"`
-	User          string `json:"user"`
-	Port          int    `json:"port,omitempty"`
-	Password      string `json:"password,omitempty"`
-	PrivateKey    string `json:"private_key,omitempty"`
-	HostKeySHA256 string `json:"host_key_sha256,omitempty"`
+	NodeID        string   `json:"node_id,omitempty"`
+	Host          string   `json:"host"`
+	User          string   `json:"user"`
+	Port          int      `json:"port,omitempty"`
+	Password      string   `json:"password,omitempty"`
+	PrivateKey    string   `json:"private_key,omitempty"`
+	HostKeySHA256 string   `json:"host_key_sha256,omitempty"`
+	ResolvedIPs   []string `json:"-"`
 }
 
 // RollingUpgradeRequest starts a sequential multi-node binary upgrade.

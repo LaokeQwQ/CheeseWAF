@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestSampleConfigLoadsBotProtection(t *testing.T) {
 	cfg, err := Load("../../configs/cheesewaf.yaml")
@@ -12,5 +16,18 @@ func TestSampleConfigLoadsBotProtection(t *testing.T) {
 	}
 	if cfg.Protection.Bot.AltchaHeaderName != "X-CheeseWAF-Altcha" {
 		t.Fatalf("unexpected altcha header %q", cfg.Protection.Bot.AltchaHeaderName)
+	}
+}
+
+func TestSampleConfigDocumentsPrivateSSHDeploymentOptIn(t *testing.T) {
+	data, err := os.ReadFile("../../configs/cheesewaf.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(data)
+	if !strings.Contains(contents, "allow_private_targets: false") ||
+		!strings.Contains(contents, "RFC1918") ||
+		!strings.Contains(contents, "IPv6 ULA") {
+		t.Fatalf("sample config must document the narrow private SSH target opt-in")
 	}
 }

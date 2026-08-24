@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,19 +31,21 @@ type SSHDeploymentRequest struct {
 	PrivateKey     string `json:"private_key,omitempty"`
 	HostKeySHA256  string `json:"host_key_sha256,omitempty"`
 	identityFile   string
-	SaveCredential bool   `json:"save_credential"`
-	Action         string `json:"action,omitempty"`
-	TaskID         string `json:"-"`
+	SaveCredential bool     `json:"save_credential"`
+	Action         string   `json:"action,omitempty"`
+	TaskID         string   `json:"-"`
+	ResolvedIPs    []string `json:"-"`
 }
 
 type CheckResult struct {
-	OK        bool      `json:"ok"`
-	Host      string    `json:"host"`
-	User      string    `json:"user"`
-	Port      int       `json:"port"`
-	Command   []string  `json:"command"`
-	Message   string    `json:"message,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	OK          bool      `json:"ok"`
+	Host        string    `json:"host"`
+	User        string    `json:"user"`
+	Port        int       `json:"port"`
+	Command     []string  `json:"command"`
+	Message     string    `json:"message,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
+	ResolvedIPs []string  `json:"resolved_ips,omitempty"`
 }
 
 type DeployResult struct {
@@ -112,18 +116,28 @@ func (r *MemoryAuditRecorder) Contains(needle string) bool {
 }
 
 type SSHRunnerOptions struct {
-	Audit       AuditRecorder
-	Timeout     time.Duration
-	OutputLimit int
-	KnownHosts  string
+	Audit               AuditRecorder
+	Timeout             time.Duration
+	OutputLimit         int
+	KnownHosts          string
+	Resolver            TargetResolver
+	AllowPrivateTargets bool
+	DialContext         func(context.Context, string, string) (net.Conn, error)
+}
+
+type TargetResolver interface {
+	LookupNetIP(context.Context, string, string) ([]netip.Addr, error)
 }
 
 type SSHRunner struct {
-	audit             AuditRecorder
-	timeout           time.Duration
-	outputLimit       int
-	knownHostsPath    string
-	storedCredentials map[string]string
+	audit               AuditRecorder
+	timeout             time.Duration
+	outputLimit         int
+	knownHostsPath      string
+	resolver            TargetResolver
+	allowPrivateTargets bool
+	dialContext         func(context.Context, string, string) (net.Conn, error)
+	storedCredentials   map[string]string
 }
 
 func NewSSHRunner(opts SSHRunnerOptions) *SSHRunner {
@@ -135,7 +149,109 @@ func NewSSHRunner(opts SSHRunnerOptions) *SSHRunner {
 	if outputLimit <= 0 {
 		outputLimit = 64 * 1024
 	}
-	return &SSHRunner{audit: opts.Audit, timeout: timeout, outputLimit: outputLimit, knownHostsPath: strings.TrimSpace(opts.KnownHosts), storedCredentials: map[string]string{}}
+	resolver := opts.Resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	dialContext := opts.DialContext
+	if dialContext == nil {
+		dialer := &net.Dialer{}
+		dialContext = dialer.DialContext
+	}
+	return &SSHRunner{
+		audit:               opts.Audit,
+		timeout:             timeout,
+		outputLimit:         outputLimit,
+		knownHostsPath:      strings.TrimSpace(opts.KnownHosts),
+		resolver:            resolver,
+		allowPrivateTargets: opts.AllowPrivateTargets,
+		dialContext:         dialContext,
+		storedCredentials:   map[string]string{},
+	}
+}
+
+var deniedPublicTargetPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.31.196.0/24"),
+	netip.MustParsePrefix("192.52.193.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("192.175.48.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3fff::/20"),
+	netip.MustParsePrefix("5f00::/16"),
+}
+
+func (r *SSHRunner) resolveTarget(ctx context.Context, host string) ([]string, error) {
+	host = strings.TrimSpace(host)
+	if err := validateHostAddress(host); err != nil {
+		return nil, fmt.Errorf("ssh host invalid: %w", err)
+	}
+	var addresses []netip.Addr
+	if literal, err := netip.ParseAddr(host); err == nil {
+		addresses = []netip.Addr{literal}
+	} else {
+		lookupHost := strings.TrimSuffix(strings.ToLower(host), ".")
+		resolved, err := r.resolver.LookupNetIP(ctx, "ip", lookupHost)
+		if err != nil {
+			return nil, fmt.Errorf("resolve ssh host %s: %w", host, err)
+		}
+		addresses = resolved
+	}
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("resolve ssh host %s: no addresses returned", host)
+	}
+
+	unique := make(map[string]struct{}, len(addresses))
+	for _, address := range addresses {
+		address = address.Unmap()
+		if err := validateTargetIP(address, r.allowPrivateTargets); err != nil {
+			return nil, fmt.Errorf("ssh target %s resolved to %s, which is not permitted: %w", host, address, err)
+		}
+		unique[address.String()] = struct{}{}
+	}
+	normalized := make([]string, 0, len(unique))
+	for address := range unique {
+		normalized = append(normalized, address)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		left := netip.MustParseAddr(normalized[i])
+		right := netip.MustParseAddr(normalized[j])
+		return left.Compare(right) < 0
+	})
+	return normalized, nil
+}
+
+func validateTargetIP(address netip.Addr, allowPrivate bool) error {
+	if !address.IsValid() || address.Zone() != "" {
+		return fmt.Errorf("invalid numeric address")
+	}
+	address = address.Unmap()
+	if address.IsPrivate() {
+		if allowPrivate {
+			return nil
+		}
+		return fmt.Errorf("private addresses require cluster.ssh.allow_private_targets=true")
+	}
+	if !address.IsGlobalUnicast() || address.IsUnspecified() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsMulticast() {
+		return fmt.Errorf("non-public address class")
+	}
+	for _, prefix := range deniedPublicTargetPrefixes {
+		if prefix.Contains(address) {
+			return fmt.Errorf("special-use or reserved address range")
+		}
+	}
+	return nil
 }
 
 func (r *SSHRunner) Prepare(_ context.Context, req SSHDeploymentRequest) error {
@@ -156,6 +272,11 @@ func (r *SSHRunner) Check(ctx context.Context, req SSHDeploymentRequest) (CheckR
 	if err != nil {
 		return CheckResult{}, err
 	}
+	resolvedIPs, err := r.resolveTarget(ctx, prepared.Host)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	prepared.ResolvedIPs = resolvedIPs
 	args, err := r.BuildSSHArgs(prepared)
 	if err != nil {
 		return CheckResult{}, err
@@ -170,23 +291,25 @@ func (r *SSHRunner) Check(ctx context.Context, req SSHDeploymentRequest) (CheckR
 	message := sanitizeTaskText(outputStatusMessage(output, truncated), prepared)
 	if err != nil {
 		return CheckResult{
-			OK:        false,
-			Host:      strings.TrimSpace(prepared.Host),
-			User:      strings.TrimSpace(prepared.User),
-			Port:      normalizedSSHPort(prepared.Port),
-			Command:   append([]string{"ssh"}, redactedSSHArgs(args)...),
-			Message:   message,
-			CheckedAt: started,
+			OK:          false,
+			Host:        strings.TrimSpace(prepared.Host),
+			User:        strings.TrimSpace(prepared.User),
+			Port:        normalizedSSHPort(prepared.Port),
+			Command:     append([]string{"ssh"}, redactedSSHArgs(args)...),
+			Message:     message,
+			CheckedAt:   started,
+			ResolvedIPs: append([]string(nil), prepared.ResolvedIPs...),
 		}, sanitizeSSHError(err, prepared)
 	}
 	return CheckResult{
-		OK:        true,
-		Host:      strings.TrimSpace(prepared.Host),
-		User:      strings.TrimSpace(prepared.User),
-		Port:      normalizedSSHPort(prepared.Port),
-		Command:   append([]string{"ssh"}, redactedSSHArgs(args)...),
-		Message:   message,
-		CheckedAt: started,
+		OK:          true,
+		Host:        strings.TrimSpace(prepared.Host),
+		User:        strings.TrimSpace(prepared.User),
+		Port:        normalizedSSHPort(prepared.Port),
+		Command:     append([]string{"ssh"}, redactedSSHArgs(args)...),
+		Message:     message,
+		CheckedAt:   started,
+		ResolvedIPs: append([]string(nil), prepared.ResolvedIPs...),
 	}, nil
 }
 
@@ -196,6 +319,9 @@ func (r *SSHRunner) Deploy(ctx context.Context, req SSHDeploymentRequest) (Deplo
 	}
 	prepared, err := r.prepareRequest(ctx, req)
 	if err != nil {
+		return DeployResult{}, err
+	}
+	if err := r.validateResolvedTargets(prepared.ResolvedIPs); err != nil {
 		return DeployResult{}, err
 	}
 	started := time.Now().UTC()
@@ -265,6 +391,15 @@ func (r *SSHRunner) Compensate(ctx context.Context, req SSHDeploymentRequest, ca
 			Status:    CompensationStatusFailed,
 			Action:    plan.Action,
 			Message:   "Compensation could not start because the original SSH request is no longer valid",
+			Error:     sanitizeTaskText(err.Error(), req),
+		}, err
+	}
+	if err := r.validateResolvedTargets(prepared.ResolvedIPs); err != nil {
+		return CompensationResult{
+			Attempted: false,
+			Status:    CompensationStatusFailed,
+			Action:    plan.Action,
+			Message:   "Compensation could not start because the SSH precheck binding is unavailable",
 			Error:     sanitizeTaskText(err.Error(), req),
 		}, err
 	}
@@ -352,6 +487,7 @@ func (r *SSHRunner) prepareRequest(_ context.Context, req SSHDeploymentRequest) 
 	req.PrivateKey = strings.TrimSpace(req.PrivateKey)
 	req.HostKeySHA256 = normalizeHostKeyFingerprint(req.HostKeySHA256)
 	req.Action = strings.TrimSpace(req.Action)
+	req.ResolvedIPs = normalizeAuthorizationBinding(req.ResolvedIPs)
 	if _, err := r.BuildSSHArgs(req); err != nil {
 		return SSHDeploymentRequest{}, err
 	}
@@ -435,20 +571,44 @@ func (r *SSHRunner) connect(ctx context.Context, req SSHDeploymentRequest) (*ssh
 	if err != nil {
 		return nil, err
 	}
-	host := strings.TrimSpace(req.Host)
 	port := normalizedSSHPort(req.Port)
-	address := net.JoinHostPort(host, strconv.Itoa(port))
-	dialer := &net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", address)
-	if err != nil {
-		return nil, fmt.Errorf("connect ssh %s: %w", address, err)
+	if err := r.validateResolvedTargets(req.ResolvedIPs); err != nil {
+		return nil, err
 	}
-	clientConn, chans, reqs, err := ssh.NewClientConn(conn, address, config)
-	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("authenticate ssh %s: %w", address, err)
+	authority := net.JoinHostPort(strings.TrimSpace(req.Host), strconv.Itoa(port))
+	var lastErr error
+	for _, numericIP := range req.ResolvedIPs {
+		address := net.JoinHostPort(numericIP, strconv.Itoa(port))
+		conn, err := r.dialContext(ctx, "tcp", address)
+		if err != nil {
+			lastErr = fmt.Errorf("connect ssh %s: %w", address, err)
+			continue
+		}
+		clientConn, chans, reqs, err := ssh.NewClientConn(conn, authority, config)
+		if err != nil {
+			_ = conn.Close()
+			lastErr = fmt.Errorf("authenticate ssh %s: %w", authority, err)
+			continue
+		}
+		return ssh.NewClient(clientConn, chans, reqs), nil
 	}
-	return ssh.NewClient(clientConn, chans, reqs), nil
+	return nil, lastErr
+}
+
+func (r *SSHRunner) validateResolvedTargets(addresses []string) error {
+	if len(addresses) == 0 {
+		return fmt.Errorf("ssh precheck address binding is required")
+	}
+	for _, value := range addresses {
+		address, err := netip.ParseAddr(value)
+		if err != nil || address.Zone() != "" {
+			return fmt.Errorf("ssh precheck address binding contains an invalid numeric address")
+		}
+		if err := validateTargetIP(address, r.allowPrivateTargets); err != nil {
+			return fmt.Errorf("bound ssh target %s is not permitted: %w", value, err)
+		}
+	}
+	return nil
 }
 
 func (r *SSHRunner) clientConfig(req SSHDeploymentRequest) (*ssh.ClientConfig, error) {

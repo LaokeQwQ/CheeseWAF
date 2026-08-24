@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -71,6 +72,7 @@ func (s *handlerDeployStarter) start(_ context.Context, target orchestrate.Rolli
 		PrivateKey:    target.PrivateKey,
 		HostKeySHA256: target.HostKeySHA256,
 		Action:        action,
+		ResolvedIPs:   append([]string(nil), target.ResolvedIPs...),
 	}
 	task, err := s.h.clusterDeployTaskManager().Start(context.Background(), req)
 	if err != nil {
@@ -169,6 +171,14 @@ func (h *Handler) ClusterStartRollingUpgrade(w http.ResponseWriter, r *http.Requ
 	// Extract initiator from session/token for audit and rollback authorization
 	initiator := h.extractInitiator(r)
 	req.InitiatedBy = initiator
+	if err := h.precheckRollingTargets(r.Context(), &req); err != nil {
+		if errors.Is(err, deploy.ErrAuthorizationInvalid) {
+			writeError(w, http.StatusForbidden, "CLUSTER_SSH_PRECHECK_REQUIRED", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "CLUSTER_ROLLING_PRECHECK_FAILED", err.Error())
+		return
+	}
 	job, err := h.clusterRollingManager().Start(r.Context(), req.RollingUpgradeRequest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "CLUSTER_ROLLING_INVALID", err.Error())
@@ -177,6 +187,48 @@ func (h *Handler) ClusterStartRollingUpgrade(w http.ResponseWriter, r *http.Requ
 	// Never echo SSH secrets in the response.
 	sanitized := *job
 	writeData(w, sanitized)
+}
+
+func (h *Handler) precheckRollingTargets(ctx context.Context, req *clusterRollingUpgradeHTTPRequest) error {
+	if req == nil {
+		return fmt.Errorf("rolling upgrade request is required")
+	}
+	for i := range req.Targets {
+		target := &req.Targets[i]
+		sshRequest := deploy.SSHDeploymentRequest{
+			Host:          target.Host,
+			User:          target.User,
+			Port:          target.Port,
+			Password:      target.Password,
+			PrivateKey:    target.PrivateKey,
+			HostKeySHA256: target.HostKeySHA256,
+		}
+		if len(req.Targets) == 1 && strings.TrimSpace(req.Authorization) != "" {
+			bound, err := h.clusterDeployAuthorizationStore().ConsumeBound(req.Authorization, authorizationTarget(sshRequest))
+			if err != nil {
+				return fmt.Errorf("target %d authorization: %w", i, err)
+			}
+			target.ResolvedIPs = append([]string(nil), bound.ResolvedIPs...)
+			continue
+		}
+
+		result, err := h.clusterDeployRunner().Check(ctx, sshRequest)
+		if err != nil {
+			return fmt.Errorf("target %d SSH precheck failed: %w", i, err)
+		}
+		authorizationTarget := authorizationTarget(sshRequest)
+		authorizationTarget.ResolvedIPs = append([]string(nil), result.ResolvedIPs...)
+		auth, err := h.clusterDeployAuthorizationStore().IssueBound("", authorizationTarget)
+		if err != nil {
+			return fmt.Errorf("target %d SSH precheck authorization failed: %w", i, err)
+		}
+		bound, err := h.clusterDeployAuthorizationStore().ConsumeBound(auth.Handle, authorizationTarget)
+		if err != nil {
+			return fmt.Errorf("target %d SSH precheck authorization: %w", i, err)
+		}
+		target.ResolvedIPs = append([]string(nil), bound.ResolvedIPs...)
+	}
+	return nil
 }
 
 func (h *Handler) ClusterGetRollingUpgrade(w http.ResponseWriter, r *http.Request) {

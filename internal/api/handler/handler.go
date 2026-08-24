@@ -60,6 +60,7 @@ type Handler struct {
 	ClusterIdentity              *identity.MemoryIdentityService
 	ClusterDeployTasks           *deploy.TaskManager
 	ClusterDeployAuth            *deploy.AuthorizationStore
+	ClusterDeployRunner          deploy.TaskRunner
 	ClusterHeartbeats            *cluster.HeartbeatRegistry
 	clusterRolling               *orchestrate.RollingManager
 	clusterTraffic               *traffic.Scheduler
@@ -326,6 +327,7 @@ type Options struct {
 	ClusterIdentity     *identity.MemoryIdentityService
 	ClusterDeployTasks  *deploy.TaskManager
 	ClusterDeployAuth   *deploy.AuthorizationStore
+	ClusterDeployRunner deploy.TaskRunner
 	ClusterHeartbeats   *cluster.HeartbeatRegistry
 	ACMEIssuer          acme.Issuer
 	TimeSync            TimeSyncService
@@ -381,6 +383,7 @@ func New(opts Options) *Handler {
 		ClusterIdentity:              opts.ClusterIdentity,
 		ClusterDeployTasks:           opts.ClusterDeployTasks,
 		ClusterDeployAuth:            opts.ClusterDeployAuth,
+		ClusterDeployRunner:          opts.ClusterDeployRunner,
 		clusterDeployPending:         map[string]deploy.AuthorizationTarget{},
 		ClusterHeartbeats:            opts.ClusterHeartbeats,
 		ACMEIssuer:                   opts.ACMEIssuer,
