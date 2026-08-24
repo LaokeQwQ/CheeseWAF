@@ -503,6 +503,47 @@ func TestRunStreamModeRejectsEmptyCorpus(t *testing.T) {
 	}
 }
 
+func TestRunStreamModeDistinguishesEmptyCorpusFromEmptyShard(t *testing.T) {
+	corpus := writeCorpus(t, "\n\t\n")
+	err := run(options{Mode: "analyzer", CorpusPath: corpus, Shards: 2, Shard: 1, Stream: true})
+	if err == nil || err.Error() != "corpus is empty" {
+		t.Fatalf("expected corpus is empty error, got %v", err)
+	}
+}
+
+func TestRunNonStreamUsesRawLineShardMembership(t *testing.T) {
+	const shards = 2
+	var raw []byte
+	var selectedShard int
+	for i := 0; i < 100; i++ {
+		candidate := []byte(fmt.Sprintf(`{"name":"raw-shard-%d","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`, i))
+		byRaw := securitytest.ShardIndexForRaw(candidate, shards)
+		byName := securitytest.ShardIndexFor(fmt.Sprintf("raw-shard-%d", i), shards)
+		if byRaw != byName {
+			raw = candidate
+			selectedShard = byRaw
+			break
+		}
+	}
+	if len(raw) == 0 {
+		t.Fatal("failed to construct raw/name shard mismatch")
+	}
+	corpus := writeCorpus(t, string(raw)+"\n")
+	output := filepath.Join(t.TempDir(), "report.json")
+	if err := run(options{
+		Mode:       "analyzer",
+		CorpusPath: corpus,
+		OutputPath: output,
+		Shards:     shards,
+		Shard:      selectedShard,
+	}); err != nil {
+		t.Fatalf("raw-line selected shard must run in non-stream mode: %v", err)
+	}
+	if report := readSummary(t, output); report.Total != 1 {
+		t.Fatalf("non-stream raw shard report = %+v, want one selected case", report)
+	}
+}
+
 func TestRunStreamModeRejectsInvalidShardParameters(t *testing.T) {
 	corpus := writeCorpus(t, `{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n")
 	for _, tc := range []struct {

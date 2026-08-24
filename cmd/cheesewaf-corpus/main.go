@@ -134,6 +134,12 @@ func main() {
 }
 
 func run(opts options) error {
+	if opts.Shards == 0 && !opts.Stream {
+		opts.Shards = 1
+	}
+	if err := securitytest.ValidateShard(opts.Shards, opts.Shard); err != nil {
+		return err
+	}
 	file, err := os.Open(opts.CorpusPath)
 	if err != nil {
 		return err
@@ -154,18 +160,19 @@ func run(opts options) error {
 		return runStream(opts, reader)
 	}
 
-	cases, err := securitytest.LoadJSONL(reader)
+	cases := make([]securitytest.Case, 0)
+	corpusStats, err := securitytest.ForEachJSONLWithStats(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
+		cases = append(cases, tc)
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	if len(cases) == 0 {
+	if corpusStats.TotalCases == 0 {
 		return errors.New("corpus is empty")
 	}
-	if opts.Shards > 1 {
-		cases = securitytest.FilterShard(cases, opts.Shards, opts.Shard)
-		if len(cases) == 0 {
-			return errors.New("corpus shard is empty")
-		}
+	if corpusStats.SelectedCases == 0 {
+		return errors.New("corpus shard is empty")
 	}
 
 	started := time.Now().UTC()
@@ -345,19 +352,18 @@ func runStream(opts options, reader io.Reader) error {
 		}()
 	}
 
-	loadErr := make(chan error, 1)
-	producerDone := make(chan struct{})
-	selectedCases := 0
+	type corpusLoadResult struct {
+		stats securitytest.JSONLStats
+		err   error
+	}
+	loadResult := make(chan corpusLoadResult, 1)
 	go func() {
-		defer close(producerDone)
-		defer close(cases)
-		if err := securitytest.ForEachJSONL(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
-			selectedCases++
+		stats, err := securitytest.ForEachJSONLWithStats(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
 			cases <- tc
 			return nil
-		}); err != nil {
-			loadErr <- err
-		}
+		})
+		close(cases)
+		loadResult <- corpusLoadResult{stats: stats, err: err}
 	}()
 
 	writerDone := make(chan error, 1)
@@ -365,24 +371,20 @@ func runStream(opts options, reader io.Reader) error {
 		writerDone <- writeStreamResults(opts, out, results, &report)
 	}()
 
-	<-producerDone
+	loaded := <-loadResult
 	workersWG.Wait()
 	close(results)
 	if err := <-writerDone; err != nil {
 		return err
 	}
-	select {
-	case err := <-loadErr:
-		if err != nil {
-			return err
-		}
-	default:
+	if loaded.err != nil {
+		return loaded.err
 	}
-	if selectedCases == 0 {
-		if opts.Shards > 1 {
-			return errors.New("corpus shard is empty")
-		}
+	if loaded.stats.TotalCases == 0 {
 		return errors.New("corpus is empty")
+	}
+	if loaded.stats.SelectedCases == 0 {
+		return errors.New("corpus shard is empty")
 	}
 
 	if opts.Mode == "gate" {
@@ -412,13 +414,7 @@ func runStream(opts options, reader io.Reader) error {
 }
 
 func validateStreamShardOptions(shards, shard int) error {
-	if shards < 1 {
-		return errors.New("--shards must be at least 1")
-	}
-	if shard < 0 || shard >= shards {
-		return fmt.Errorf("--shard must be between 0 and %d for --shards=%d", shards-1, shards)
-	}
-	return nil
+	return securitytest.ValidateShard(shards, shard)
 }
 
 func writeStreamResults(opts options, out io.Writer, results <-chan result, report *summary) error {

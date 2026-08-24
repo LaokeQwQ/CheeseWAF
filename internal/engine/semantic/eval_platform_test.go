@@ -1,8 +1,6 @@
 package semantic
 
 import (
-	"bufio"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -10,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -477,15 +476,18 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 			t.Logf("Skipping optional benign file %s: %v", benignPath, err)
 		} else {
 			defer f.Close()
-			err = forEachCybersecJSONL(f, "benign", evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
+			stats, streamErr := forEachCybersecJSONL(f, "benign", evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
 				srcMetrics.BenignTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "benign") {
 					srcMetrics.BenignFP++
 				}
 				return nil
 			})
-			if err != nil {
-				t.Fatalf("Failed to stream benign samples from %s: %v", benignPath, err)
+			if streamErr != nil {
+				t.Fatalf("Failed to stream benign samples from %s: %v", benignPath, streamErr)
+			}
+			if stats.SkippedOverlong > 0 {
+				t.Logf("Skipped %d overlong benign record(s) from %s", stats.SkippedOverlong, benignPath)
 			}
 		}
 	}
@@ -500,7 +502,7 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 			t.Logf("Skipping optional attack file %s: %v", attackPath, err)
 		} else {
 			defer f.Close()
-			err = forEachCybersecJSONL(f, "attack", evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
+			stats, streamErr := forEachCybersecJSONL(f, "attack", evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
 				srcMetrics.AttackTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "attack") {
 					srcMetrics.AttackHit++
@@ -517,8 +519,11 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 				}
 				return nil
 			})
-			if err != nil {
-				t.Fatalf("Failed to stream attack samples from %s: %v", attackPath, err)
+			if streamErr != nil {
+				t.Fatalf("Failed to stream attack samples from %s: %v", attackPath, streamErr)
+			}
+			if stats.SkippedOverlong > 0 {
+				t.Logf("Skipped %d overlong attack record(s) from %s", stats.SkippedOverlong, attackPath)
 			}
 		}
 	}
@@ -540,29 +545,22 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 	)
 }
 
-func forEachCybersecJSONL(r io.Reader, expectedLabel string, shards, shard int, fn func(securitytest.Case) error) error {
-	type cybersecEntry struct {
-		Payload string `json:"payload"`
-		Label   string `json:"label"`
-		Source  string `json:"source"`
-		Note    string `json:"note"`
-	}
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		if shards > 1 && securitytest.ShardIndexForRaw(line, shards) != shard {
-			continue
-		}
+type cybersecEntry struct {
+	Payload string `json:"payload"`
+	Label   string `json:"label"`
+	Source  string `json:"source"`
+	Note    string `json:"note"`
+}
+
+func forEachCybersecJSONL(r io.Reader, expectedLabel string, shards, shard int, fn func(securitytest.Case) error) (securitytest.JSONLStats, error) {
+	return securitytest.ForEachJSONLRaw(r, shards, shard, func(line []byte, lineNo int, selected bool) error {
 		var entry cybersecEntry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			return fmt.Errorf("line %d: %w", lineNo, err)
 		}
+		if !selected {
+			return nil
+		}
 		category := ""
 		if expectedLabel == "attack" {
 			category = mapLabelToCategory(entry.Label)
@@ -577,62 +575,75 @@ func forEachCybersecJSONL(r io.Reader, expectedLabel string, shards, shard int, 
 			ContentType:  "application/json",
 			Body:         entry.Payload,
 		}
-		if err := fn(tc); err != nil {
-			return err
+		if fn == nil {
+			return nil
 		}
-	}
-	return scanner.Err()
+		return fn(tc)
+	})
 }
 
-// loadCybersecJSONL loads Cybersecurity-Dataset format (payload/label/source/note)
-// and converts to securitytest.Case format
-func loadCybersecJSONL(r io.Reader, expectedLabel string) ([]securitytest.Case, error) {
-	type cybersecEntry struct {
-		Payload string `json:"payload"`
-		Label   string `json:"label"`
-		Source  string `json:"source"`
-		Note    string `json:"note"`
+func TestForEachCybersecJSONLSkipsOverlongRecordAndKeepsFollowingCase(t *testing.T) {
+	t.Setenv("CHEESEWAF_CORPUS_MAX_LINE_BYTES", "128")
+	long := `{"payload":"` + strings.Repeat("x", 512) + `","label":"sqli","source":"oversized"}`
+	valid := `{"payload":"1 UNION SELECT password FROM users--","label":"sqli","source":"unit"}`
+	var got []securitytest.Case
+	stats, err := forEachCybersecJSONL(strings.NewReader(long+"\n"+valid+"\n"), "attack", 1, 0, func(tc securitytest.Case) error {
+		got = append(got, tc)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if stats.SkippedOverlong != 1 || len(got) != 1 || got[0].SourceFamily != "unit" {
+		t.Fatalf("stats=%+v cases=%+v, want one skipped record and one valid case", stats, got)
+	}
+}
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-
-	var cases []securitytest.Case
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var entry cybersecEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			return nil, fmt.Errorf("line %d: %w", lineNo, err)
-		}
-
-		// Map label to category for attack samples
-		category := ""
-		if expectedLabel == "attack" {
-			category = mapLabelToCategory(entry.Label)
-		}
-
+func TestParanoiaSweepUsesRawLineShardMembership(t *testing.T) {
+	const shards = 2
+	var corpusLine []byte
+	for i := 0; i < 100; i++ {
 		tc := securitytest.Case{
-			Name:         fmt.Sprintf("cybersec-%d", lineNo),
-			SourceFamily: entry.Source,
-			Label:        expectedLabel,
-			Category:     category,
-			Method:       "POST",
-			Target:       "/api/test",
-			ContentType:  "application/json",
-			Body:         entry.Payload,
+			Name:   fmt.Sprintf("paranoia-raw-shard-%d", i),
+			Label:  "benign",
+			Method: http.MethodGet,
+			Target: "/health",
 		}
+		line, err := json.Marshal(tc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if securitytest.ShardIndexForRaw(line, shards) == 0 && securitytest.ShardIndexFor(tc.Name, shards) != 0 {
+			corpusLine = append(line, '\n')
+			break
+		}
+	}
+	if len(corpusLine) == 0 {
+		t.Fatal("failed to construct deterministic raw/name shard mismatch")
+	}
+	path := filepath.Join(t.TempDir(), "raw-shard.jsonl")
+	if err := os.WriteFile(path, corpusLine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SEMANTIC_EVAL_SHARDS", "2")
+	t.Setenv("SEMANTIC_EVAL_SHARD_INDEX", "0")
+	t.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
+	report := &EvaluationReport{ByParanoiaLevel: make(map[string]*ParanoiaMetrics)}
+	dataSources := []struct {
+		name       string
+		benignPath string
+		attackPath string
+		required   bool
+		skipShort  bool
+	}{{name: "raw_shard", benignPath: path, required: true}}
 
-		cases = append(cases, tc)
+	computeByParanoiaLevel(t, dataSources, report)
+	for level := 0; level <= 5; level++ {
+		metrics := report.ByParanoiaLevel[strconv.Itoa(level)]
+		if metrics == nil || metrics.BenignTotal != 1 {
+			t.Fatalf("level %d metrics=%+v, want one raw-line selected sample", level, metrics)
+		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return cases, nil
 }
 
 // mapLabelToCategory maps cybersec dataset labels to CheeseWAF categories
@@ -769,29 +780,19 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 			}
 			continue
 		}
-		cases, err := securitytest.LoadJSONL(f)
-		f.Close()
-		if err != nil {
-			continue
+		stats, streamErr := securitytest.ForEachJSONLWithStats(f, shards, shard, func(tc securitytest.Case) error {
+			accumulateParanoiaTotals(t, tc, tc.Label, &totals)
+			return nil
+		})
+		closeErr := f.Close()
+		if streamErr != nil {
+			t.Fatalf("Failed to stream paranoia samples from %s: %v", ds.benignPath, streamErr)
 		}
-		for _, tc := range cases {
-			if !caseInShard(tc) {
-				continue
-			}
-			hits := detectHitsOnce(t, &tc)
-			for level := 0; level <= 5; level++ {
-				if tc.Label == "benign" {
-					totals[level].benignTotal++
-					if hitsBlockableAny(hits, level) {
-						totals[level].benignFP++
-					}
-				} else if tc.Label == "attack" {
-					totals[level].attackTotal++
-					if hitsBlockableAny(hits, level) {
-						totals[level].attackHit++
-					}
-				}
-			}
+		if closeErr != nil {
+			t.Fatalf("Failed to close paranoia source %s: %v", ds.benignPath, closeErr)
+		}
+		if stats.SkippedOverlong > 0 {
+			t.Logf("Skipped %d overlong paranoia record(s) from %s", stats.SkippedOverlong, ds.benignPath)
 		}
 	}
 
@@ -833,27 +834,35 @@ func processCybersecLevels(t *testing.T, ds struct {
 		}
 		return
 	}
-	cases, err := loadCybersecJSONL(f, label)
-	f.Close()
-	if err != nil {
-		return
+	stats, streamErr := forEachCybersecJSONL(f, label, shards, shard, func(tc securitytest.Case) error {
+		accumulateParanoiaTotals(t, tc, label, totals)
+		return nil
+	})
+	closeErr := f.Close()
+	if streamErr != nil {
+		t.Fatalf("Failed to stream paranoia samples from %s: %v", path, streamErr)
 	}
-	for _, tc := range cases {
-		if !caseInShard(tc) {
-			continue
-		}
-		hits := detectHitsOnce(t, &tc)
-		for level := 0; level <= 5; level++ {
-			if label == "benign" {
-				totals[level].benignTotal++
-				if hitsBlockableAny(hits, level) {
-					totals[level].benignFP++
-				}
-			} else {
-				totals[level].attackTotal++
-				if hitsBlockableAny(hits, level) {
-					totals[level].attackHit++
-				}
+	if closeErr != nil {
+		t.Fatalf("Failed to close paranoia source %s: %v", path, closeErr)
+	}
+	if stats.SkippedOverlong > 0 {
+		t.Logf("Skipped %d overlong paranoia record(s) from %s", stats.SkippedOverlong, path)
+	}
+}
+
+func accumulateParanoiaTotals(t *testing.T, tc securitytest.Case, label string, totals *[6]evalLevelTotals) {
+	t.Helper()
+	hits := detectHitsOnce(t, &tc)
+	for level := 0; level <= 5; level++ {
+		if label == "benign" {
+			totals[level].benignTotal++
+			if hitsBlockableAny(hits, level) {
+				totals[level].benignFP++
+			}
+		} else if label == "attack" {
+			totals[level].attackTotal++
+			if hitsBlockableAny(hits, level) {
+				totals[level].attackHit++
 			}
 		}
 	}
@@ -952,14 +961,6 @@ func evalShardIndex(shards int) int {
 		return 0
 	}
 	return n
-}
-
-func caseInShard(tc securitytest.Case) bool {
-	shards := evalShardTotal()
-	if shards <= 1 {
-		return true
-	}
-	return securitytest.ShardIndexFor(tc.Name, shards) == evalShardIndex(shards)
 }
 
 type gzipCorpusFile struct {
