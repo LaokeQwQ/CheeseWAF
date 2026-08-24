@@ -52,7 +52,7 @@ func TestIssuerRunsACMESHPipeline(t *testing.T) {
 		ACMESHPath:   "/usr/local/bin/acme.sh",
 		Home:         t.TempDir(),
 		CertDir:      t.TempDir(),
-		ReloadCmd:    "/usr/bin/systemctl reload cheesewaf",
+		ReloadCmd:    config.ACMEReloadProfileSystemdRestart,
 		AutoRenew:    true,
 		Notify:       true,
 	})
@@ -74,7 +74,7 @@ func TestIssuerRunsACMESHPipeline(t *testing.T) {
 		ACMESHPath:   "/usr/local/bin/acme.sh",
 		Home:         t.TempDir(),
 		CertDir:      t.TempDir(),
-		ReloadCmd:    "/usr/bin/systemctl reload cheesewaf",
+		ReloadCmd:    config.ACMEReloadProfileSystemdRestart,
 		AutoRenew:    true,
 		Notify:       true,
 	})
@@ -86,7 +86,7 @@ func TestIssuerRunsACMESHPipeline(t *testing.T) {
 	}
 	assertArgs(t, runner.commands[0].args, "--register-account", "-m", "ops@example.com", "--server", "zerossl")
 	assertArgs(t, runner.commands[1].args, "--issue", "--dns", "dns_cf", "--server", "zerossl", "--keylength", "ec-384", "-d", "example.com", "-d", "www.example.com")
-	assertArgs(t, runner.commands[2].args, "--install-cert", "-d", "example.com", "--key-file", result.KeyFile, "--fullchain-file", result.Fullchain, "--reloadcmd", "/usr/bin/systemctl reload cheesewaf")
+	assertArgs(t, runner.commands[2].args, "--install-cert", "-d", "example.com", "--key-file", result.KeyFile, "--fullchain-file", result.Fullchain, "--reloadcmd", config.ACMEReloadSystemdRestartCommand)
 	if !containsString(runner.commands[1].env, "CF_TOKEN=secret-token") {
 		t.Fatalf("dns env was not passed to acme.sh: %+v", runner.commands[1].env)
 	}
@@ -98,6 +98,62 @@ func TestIssuerRunsACMESHPipeline(t *testing.T) {
 	}
 	if !hasEvent(result.Events, "dns_cleanup", StepSucceeded) {
 		t.Fatalf("expected dns cleanup event: %+v", result.Events)
+	}
+}
+
+func TestIssuerRejectsUnapprovedReloadCommandsBeforeExecution(t *testing.T) {
+	values := []string{
+		"/bin/sh -c 'id'",
+		"/usr/bin/env /usr/bin/systemctl restart cheesewaf.service",
+		`"/usr/bin/systemctl restart cheesewaf.service"`,
+		"$(id)",
+		"reload() { id; }",
+		"/usr/bin/systemctl restart cheesewaf.service; id",
+		"/usr/bin/systemctl restart cheesewaf.service --no-block",
+		"/tmp/reload-cheesewaf",
+	}
+
+	for _, value := range values {
+		t.Run(value, func(t *testing.T) {
+			runner := &fakeRunner{}
+			issuer := NewIssuer(IssuerOptions{Runner: runner, Now: fixedClock()})
+			_, err := issuer.Issue(context.Background(), IssueRequest{
+				Domains:    []string{"example.com"},
+				DNSAPI:     "dns_cf",
+				ACMESHPath: "/usr/local/bin/acme.sh",
+				Home:       t.TempDir(),
+				CertDir:    t.TempDir(),
+				ReloadCmd:  value,
+			})
+			if err == nil || !strings.Contains(err.Error(), "reload_command") {
+				t.Fatalf("expected reload command %q to fail validation, got %v", value, err)
+			}
+			if len(runner.commands) != 0 {
+				t.Fatalf("invalid reload command launched acme.sh: %+v", runner.commands)
+			}
+		})
+	}
+}
+
+func TestIssuerOmitsReloadArgumentForDisabledProfile(t *testing.T) {
+	runner := &fakeRunner{}
+	issuer := NewIssuer(IssuerOptions{Runner: runner, Now: fixedClock()})
+	_, err := issuer.Issue(context.Background(), IssueRequest{
+		Domains:    []string{"example.com"},
+		DNSAPI:     "dns_cf",
+		ACMESHPath: "/usr/local/bin/acme.sh",
+		Home:       t.TempDir(),
+		CertDir:    t.TempDir(),
+		ReloadCmd:  config.ACMEReloadProfileDisabled,
+	})
+	if err != nil {
+		t.Fatalf("issue with disabled reload profile: %v", err)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected issue and install commands, got %+v", runner.commands)
+	}
+	if containsArg(runner.commands[1].args, "--reloadcmd") {
+		t.Fatalf("disabled profile must not pass --reloadcmd: %+v", runner.commands[1].args)
 	}
 }
 

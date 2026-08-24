@@ -18,6 +18,44 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+func TestUpdateSystemValidatesACMEReloadProfile(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	t.Run("rejects arbitrary command while disabled", func(t *testing.T) {
+		next := cfg.ACME
+		next.Enabled = false
+		next.ReloadCommand = "/bin/sh -c 'id'"
+		raw, _ := json.Marshal(map[string]any{"acme": next})
+		recorder := httptest.NewRecorder()
+		handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("expected invalid reload command to return 400, code=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if cfg.ACME.ReloadCommand != "" {
+			t.Fatalf("rejected reload command mutated config: %q", cfg.ACME.ReloadCommand)
+		}
+	})
+
+	t.Run("accepts documented profile", func(t *testing.T) {
+		next := cfg.ACME
+		next.ReloadCommand = config.ACMEReloadProfileSystemdRestart
+		raw, _ := json.Marshal(map[string]any{"acme": next})
+		recorder := httptest.NewRecorder()
+		handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected documented reload profile to save, code=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if cfg.ACME.ReloadCommand != config.ACMEReloadProfileSystemdRestart {
+			t.Fatalf("saved reload profile = %q", cfg.ACME.ReloadCommand)
+		}
+	})
+}
+
 func TestUpdateSystemNotifiesAPISecReload(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")

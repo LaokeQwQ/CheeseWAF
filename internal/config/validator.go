@@ -1973,6 +1973,9 @@ func hasAnyTLSCertificate(cfg *Config) bool {
 }
 
 func validateACME(cfg ACMEConfig) error {
+	if _, err := ResolveACMEReloadCommand(cfg.ReloadCommand); err != nil {
+		return fmt.Errorf("acme.reload_command is invalid: %w", err)
+	}
 	if !cfg.Enabled {
 		return nil
 	}
@@ -1987,9 +1990,6 @@ func validateACME(cfg ACMEConfig) error {
 	}
 	if err := validateACMEServer(cfg.Server); err != nil {
 		return fmt.Errorf("acme.server is invalid: %w", err)
-	}
-	if err := validateACMEReloadCommand(cfg.ReloadCommand); err != nil {
-		return fmt.Errorf("acme.reload_command is invalid: %w", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.KeyType)) {
 	case "", "ec-256", "ec-384", "2048", "3072", "4096":
@@ -2030,31 +2030,6 @@ func validateACMEServer(value string) error {
 		AllowedSchemes: []string{"https"},
 	})
 	return err
-}
-
-func validateACMEReloadCommand(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	if strings.ContainsAny(value, "\x00\r\n") {
-		return fmt.Errorf("must not contain control characters")
-	}
-	// Reject shell metacharacters and require an absolute executable path.
-	// acme.sh executes --reloadcmd through a shell, so free-form strings are RCE.
-	if strings.ContainsAny(value, ";|&<>$`\\!*?\n\r") {
-		return fmt.Errorf("must not contain shell metacharacters")
-	}
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return fmt.Errorf("must not be empty")
-	}
-	exe := fields[0]
-	// Accept Unix absolute paths even when validating on Windows.
-	if !filepath.IsAbs(exe) && !strings.HasPrefix(exe, "/") {
-		return fmt.Errorf("executable must be an absolute path")
-	}
-	return nil
 }
 
 func validateSiteCertificate(site SiteConfig) error {

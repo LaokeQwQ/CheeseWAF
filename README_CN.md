@@ -478,6 +478,7 @@ go run ./cmd/cheesewaf-corpus --mode analyzer
 
 ## 相关文档
 
+- [ACME 证书重载方案（英文）](docs/acme.md)
 - [防护策略与技术路线](docs/protection-policy-roadmap.md)
 - [防护等级代码实现映射](docs/paranoia-level-implementation.md)
 - [性能优化与基准测试](docs/performance-optimization.md)

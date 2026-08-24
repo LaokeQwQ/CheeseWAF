@@ -60,6 +60,16 @@ afterEach(() => {
 });
 
 describe('SSLPage', () => {
+  it('uses a closed reload profile selector instead of a command input', async () => {
+    renderPage();
+    await screen.findByDisplayValue('ops@example.com');
+    const label = screen.getByText('system.acmeReloadProfile').closest('label');
+    expect(label?.querySelector('[role="combobox"]')).not.toBeNull();
+    expect(label?.querySelector('input')).toBeNull();
+    expect(label?.textContent).toContain('system.acmeReloadDisabled');
+    expect(screen.queryByPlaceholderText('systemctl reload cheesewaf')).toBeNull();
+  });
+
   it('loads ACME settings and saves email changes', async () => {
     renderPage();
     const email = await screen.findByDisplayValue('ops@example.com');
