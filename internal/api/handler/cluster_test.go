@@ -489,6 +489,9 @@ func TestClusterSuccessfulCheckTaskIssuesBoundAuthorization(t *testing.T) {
 	if err := json.Unmarshal(get.Body.Bytes(), &checked); err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(get.Body.String(), "8.8.8.8") {
+		t.Fatalf("internal resolved address leaked through deploy task API: %s", get.Body.String())
+	}
 	if checked.Data.Authorization == nil || checked.Data.Authorization.Handle == "" {
 		t.Fatalf("successful check did not return authorization: %s", get.Body.String())
 	}
@@ -502,6 +505,50 @@ func TestClusterSuccessfulCheckTaskIssuesBoundAuthorization(t *testing.T) {
 	_ = waitClusterDeployTask(t, h, "bound-deploy-task", deploy.TaskStatusSucceeded)
 	if got := runner.lastDeployRequest().ResolvedIPs; len(got) != 1 || got[0] != "8.8.8.8" {
 		t.Fatalf("check result address binding was not forwarded: %v", got)
+	}
+}
+
+func TestClusterRollingRollbackPerformsFreshBoundPrecheck(t *testing.T) {
+	runner := &fakeClusterDeployRunner{
+		checkResult:  deploy.CheckResult{OK: true, ResolvedIPs: []string{"8.8.8.8"}},
+		deployResult: deploy.DeployResult{OK: true},
+	}
+	h := New(Options{
+		Config:              ptrClusterConfig(config.Default()),
+		ClusterDeployRunner: runner,
+		ClusterDeployTasks:  deploy.NewTaskManager(deploy.TaskManagerOptions{Runner: runner}),
+	})
+	body, _ := json.Marshal(map[string]any{
+		"targets":       []map[string]any{{"host": "node.example.com", "user": "root", "port": 22, "host_key_sha256": "SHA256:abc"}},
+		"pause_between": "0s",
+	})
+	start := httptest.NewRecorder()
+	h.ClusterStartRollingUpgrade(start, httptest.NewRequest(http.MethodPost, "/api/cluster/orchestrate/rolling-upgrade", bytes.NewReader(body)))
+	if start.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", start.Code, start.Body.String())
+	}
+	var started struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.Data.ID == "" {
+		t.Fatalf("missing rolling job id: %s", start.Body.String())
+	}
+	waitRollingHandlerStatus(t, h, started.Data.ID, "succeeded")
+
+	before := len(runner.checkRequests())
+	rollbackReq := withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/orchestrate/rolling-upgrade/"+started.Data.ID+"/rollback", nil), "id", started.Data.ID)
+	rollback := httptest.NewRecorder()
+	h.ClusterStartRollingRollback(rollback, rollbackReq)
+	if rollback.Code != http.StatusOK {
+		t.Fatalf("rollback status=%d body=%s", rollback.Code, rollback.Body.String())
+	}
+	if got := len(runner.checkRequests()); got <= before {
+		t.Fatalf("rollback did not perform a fresh SSH precheck: before=%d after=%d", before, got)
 	}
 }
 
@@ -1272,6 +1319,34 @@ func waitClusterDeployTask(t *testing.T, h *Handler, id string, want string) dep
 	}
 	t.Fatalf("task %s did not reach status %s", id, want)
 	return deploy.Task{}
+}
+
+func waitRollingHandlerStatus(t *testing.T, h *Handler, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		h.ClusterGetRollingUpgrade(rec, withURLParam(httptest.NewRequest(http.MethodGet, "/api/cluster/orchestrate/rolling-upgrade/"+id, nil), "id", id))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("rolling status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var envelope struct {
+			Data struct {
+				Status string `json:"status"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Data.Status == want {
+			return
+		}
+		if envelope.Data.Status == "failed" {
+			t.Fatalf("rolling job failed: %s", rec.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for rolling status %q", want)
 }
 
 func ptrClusterConfig(cfg config.Config) *config.Config {

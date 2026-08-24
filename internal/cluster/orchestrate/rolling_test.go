@@ -14,6 +14,10 @@ type fakeDeployStarter struct {
 	fail  map[string]bool
 }
 
+func (f *fakeDeployStarter) Precheck(_ context.Context, target RollingTarget) (RollingTarget, error) {
+	return target, nil
+}
+
 func (f *fakeDeployStarter) StartInstall(_ context.Context, target RollingTarget) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

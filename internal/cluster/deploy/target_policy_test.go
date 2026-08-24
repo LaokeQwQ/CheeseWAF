@@ -65,6 +65,7 @@ func TestSSHRunnerRejectsUnsafeLiteralTargetsByDefault(t *testing.T) {
 		{name: "IPv6 multicast", host: "ff02::1"},
 		{name: "documentation IPv6", host: "2001:db8::1"},
 		{name: "IPv6 local translation", host: "64:ff9b:1::1"},
+		{name: "NAT64 well-known prefix with private IPv4 payload", host: "64:ff9b::a00:1"},
 		{name: "IPv6 6to4", host: "2002::1"},
 	}
 

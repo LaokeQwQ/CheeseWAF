@@ -1540,7 +1540,6 @@ export type ClusterDeploymentCheckResult = {
   command: string[];
   message?: string;
   checked_at: string;
-  resolved_ips?: string[];
 };
 
 export type ClusterDeploymentCheckResponse = {

@@ -45,7 +45,7 @@ type CheckResult struct {
 	Command     []string  `json:"command"`
 	Message     string    `json:"message,omitempty"`
 	CheckedAt   time.Time `json:"checked_at"`
-	ResolvedIPs []string  `json:"resolved_ips,omitempty"`
+	ResolvedIPs []string  `json:"-"`
 }
 
 type DeployResult struct {
@@ -184,6 +184,7 @@ var deniedPublicTargetPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("240.0.0.0/4"),
 	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("64:ff9b::/96"),
 	netip.MustParsePrefix("64:ff9b:1::/48"),
 	netip.MustParsePrefix("2001::/23"),
 	netip.MustParsePrefix("2001:db8::/32"),
@@ -216,7 +217,7 @@ func (r *SSHRunner) resolveTarget(ctx context.Context, host string) ([]string, e
 	for _, address := range addresses {
 		address = address.Unmap()
 		if err := validateTargetIP(address, r.allowPrivateTargets); err != nil {
-			return nil, fmt.Errorf("ssh target %s resolved to %s, which is not permitted: %w", host, address, err)
+			return nil, fmt.Errorf("ssh target resolved to an address that is not permitted: %w", err)
 		}
 		unique[address.String()] = struct{}{}
 	}
@@ -581,7 +582,7 @@ func (r *SSHRunner) connect(ctx context.Context, req SSHDeploymentRequest) (*ssh
 		address := net.JoinHostPort(numericIP, strconv.Itoa(port))
 		conn, err := r.dialContext(ctx, "tcp", address)
 		if err != nil {
-			lastErr = fmt.Errorf("connect ssh %s: %w", address, err)
+			lastErr = fmt.Errorf("connect ssh target: %w", err)
 			continue
 		}
 		clientConn, chans, reqs, err := ssh.NewClientConn(conn, authority, config)
@@ -605,7 +606,7 @@ func (r *SSHRunner) validateResolvedTargets(addresses []string) error {
 			return fmt.Errorf("ssh precheck address binding contains an invalid numeric address")
 		}
 		if err := validateTargetIP(address, r.allowPrivateTargets); err != nil {
-			return fmt.Errorf("bound ssh target %s is not permitted: %w", value, err)
+			return fmt.Errorf("bound ssh target is not permitted: %w", err)
 		}
 	}
 	return nil

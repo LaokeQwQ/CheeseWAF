@@ -48,6 +48,39 @@ type handlerDeployStarter struct {
 	h *Handler
 }
 
+func (s *handlerDeployStarter) Precheck(ctx context.Context, target orchestrate.RollingTarget) (orchestrate.RollingTarget, error) {
+	if s == nil || s.h == nil {
+		return orchestrate.RollingTarget{}, fmt.Errorf("handler unavailable")
+	}
+	request := deploy.SSHDeploymentRequest{
+		Host:          target.Host,
+		User:          target.User,
+		Port:          target.Port,
+		Password:      target.Password,
+		PrivateKey:    target.PrivateKey,
+		HostKeySHA256: target.HostKeySHA256,
+	}
+	result, err := s.h.clusterDeployRunner().Check(ctx, request)
+	if err != nil {
+		return orchestrate.RollingTarget{}, err
+	}
+	if !result.OK {
+		return orchestrate.RollingTarget{}, fmt.Errorf("ssh precheck did not succeed")
+	}
+	authTarget := authorizationTarget(request)
+	authTarget.ResolvedIPs = append([]string(nil), result.ResolvedIPs...)
+	auth, err := s.h.clusterDeployAuthorizationStore().IssueBound("", authTarget)
+	if err != nil {
+		return orchestrate.RollingTarget{}, err
+	}
+	bound, err := s.h.clusterDeployAuthorizationStore().ConsumeBound(auth.Handle, authTarget)
+	if err != nil {
+		return orchestrate.RollingTarget{}, err
+	}
+	target.ResolvedIPs = append([]string(nil), bound.ResolvedIPs...)
+	return target, nil
+}
+
 func (s *handlerDeployStarter) StartInstall(ctx context.Context, target orchestrate.RollingTarget) (string, error) {
 	return s.start(ctx, target, "install")
 }
