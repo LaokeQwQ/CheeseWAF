@@ -20,6 +20,9 @@ func TestValidateURLRejectsUnsafeEndpoints(t *testing.T) {
 		{name: "credentials", raw: "https://user:pass@example.test/feed", want: "credentials in provider URL are not allowed"},
 		{name: "fragment", raw: "https://example.test/feed#token", want: "fragments in provider URL are not allowed"},
 		{name: "scheme", raw: "file:///etc/passwd", want: "only http and https provider URLs are allowed"},
+		{name: "short IPv4", raw: "http://127.1/feed.json", want: "non-canonical numeric IP host"},
+		{name: "decimal IPv4", raw: "http://2130706433/feed.json", want: "non-canonical numeric IP host"},
+		{name: "hex IPv4", raw: "http://0x7f000001/feed.json", want: "non-canonical numeric IP host"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
