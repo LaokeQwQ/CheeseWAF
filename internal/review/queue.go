@@ -29,6 +29,8 @@ type Queue struct {
 	Workers      int
 	MaxQueued    int
 	PerSiteQuota int
+	Now          func() time.Time
+	AutoAgreeTTL time.Duration
 
 	initOnce      sync.Once
 	mu            sync.Mutex
@@ -44,6 +46,7 @@ const (
 	defaultReviewQueue     = 128
 	defaultReviewSiteQuota = 16
 	defaultReviewTimeout   = 5 * time.Minute
+	defaultAutoAgreeTTL    = 15 * time.Minute
 )
 
 func (q *Queue) Enqueue(ctx context.Context, item *storage.ReviewItem) {
@@ -192,6 +195,20 @@ func (q *Queue) maybeAutoAgree(ctx context.Context, item *storage.ReviewItem, an
 	latest, err := q.Store.GetReviewItem(ctx, item.ID)
 	if err != nil || latest == nil || latest.Status != "pending" {
 		return
+	}
+	maxAge := q.AutoAgreeTTL
+	if maxAge <= 0 {
+		maxAge = defaultAutoAgreeTTL
+	}
+	if !latest.CreatedAt.IsZero() {
+		now := time.Now().UTC()
+		if q.Now != nil {
+			now = q.Now().UTC()
+		}
+		if now.Before(latest.CreatedAt) || now.Sub(latest.CreatedAt) > maxAge {
+			log.Printf("review auto-agree skipped stale item id=%s", item.ID)
+			return
+		}
 	}
 	ruleID, err := q.ApplyBlock(ctx, latest)
 	if err != nil {
