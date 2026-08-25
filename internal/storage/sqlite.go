@@ -43,62 +43,6 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 	return &SQLiteStore{db: db}, nil
 }
 
-func (s *SQLiteStore) Migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, schemaSQL)
-	if err != nil {
-		return fmt.Errorf("migrate sqlite: %w", err)
-	}
-	if err := s.ensureColumns(ctx, "sites", map[string]string{
-		"loadbalance":    `ALTER TABLE sites ADD COLUMN loadbalance TEXT NOT NULL DEFAULT 'round_robin'`,
-		"waf_enabled":    `ALTER TABLE sites ADD COLUMN waf_enabled INTEGER NOT NULL DEFAULT 1`,
-		"waf_mode":       `ALTER TABLE sites ADD COLUMN waf_mode TEXT NOT NULL DEFAULT 'block'`,
-		"paranoia_level": `ALTER TABLE sites ADD COLUMN paranoia_level INTEGER NOT NULL DEFAULT 3`,
-		"advanced":       `ALTER TABLE sites ADD COLUMN advanced TEXT NOT NULL DEFAULT '{}'`,
-	}); err != nil {
-		return fmt.Errorf("migrate sqlite columns: %w", err)
-	}
-	if err := s.ensureColumns(ctx, "review_items", map[string]string{
-		"source":      `ALTER TABLE review_items ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
-		"param_name":  `ALTER TABLE review_items ADD COLUMN param_name TEXT NOT NULL DEFAULT ''`,
-		"fingerprint": `ALTER TABLE review_items ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`,
-	}); err != nil {
-		return fmt.Errorf("migrate review columns: %w", err)
-	}
-	return nil
-}
-
-func (s *SQLiteStore) ensureColumns(ctx context.Context, table string, migrations map[string]string) error {
-	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	existing := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull int
-		var defaultValue any
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return err
-		}
-		existing[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for column, statement := range migrations {
-		if existing[column] {
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *SQLiteStore) MarkTOTPConsumed(ctx context.Context, userID string, counter int64, expiresAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO totp_consumed(user_id, counter, expires_at, created_at) VALUES(?, ?, ?, ?)
 		ON CONFLICT(user_id, counter) DO UPDATE SET expires_at = excluded.expires_at,

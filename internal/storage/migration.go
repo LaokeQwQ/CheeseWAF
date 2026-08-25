@@ -1,9 +1,161 @@
 package storage
 
-const schemaSQL = `
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+)
 
+// ErrSQLiteSchemaTooNew means the database was written by a newer CheeseWAF
+// version and must not be opened by this binary.
+var ErrSQLiteSchemaTooNew = errors.New("newer SQLite schema version")
+
+const sqliteSchemaVersion = 1
+
+type sqliteMigration struct {
+	version int
+	name    string
+	apply   func(context.Context, *sql.Tx) error
+}
+
+var sqliteMigrations = []sqliteMigration{
+	{
+		version: 1,
+		name:    "initial schema",
+		apply:   migrateSQLiteInitialSchema,
+	},
+}
+
+type sqliteContextExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *SQLiteStore) Migrate(ctx context.Context) error {
+	// journal_mode cannot be changed inside a transaction. Keep connection
+	// setup outside the versioned migration transaction.
+	if _, err := s.db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
+		return fmt.Errorf("configure SQLite journal mode: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("configure SQLite foreign keys: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite migration: %w", err)
+	}
+	rollback := func(cause error) error {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			return fmt.Errorf("%w (rollback failed: %v)", cause, rollbackErr)
+		}
+		return cause
+	}
+
+	version, err := readSQLiteSchemaVersion(ctx, tx)
+	if err != nil {
+		return rollback(fmt.Errorf("read SQLite schema version: %w", err))
+	}
+	if version > sqliteSchemaVersion {
+		return rollback(fmt.Errorf("%w: database=%d supported=%d", ErrSQLiteSchemaTooNew, version, sqliteSchemaVersion))
+	}
+
+	for _, migration := range sqliteMigrations {
+		if migration.version <= version {
+			continue
+		}
+		if err := migration.apply(ctx, tx); err != nil {
+			return rollback(fmt.Errorf("apply SQLite migration %d (%s): %w", migration.version, migration.name, err))
+		}
+		if err := setSQLiteSchemaVersion(ctx, tx, migration.version); err != nil {
+			return rollback(fmt.Errorf("record SQLite migration %d (%s): %w", migration.version, migration.name, err))
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite migration: %w", err)
+	}
+	return nil
+}
+
+func readSQLiteSchemaVersion(ctx context.Context, db sqliteContextExecutor) (int, error) {
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return 0, err
+	}
+	return version, nil
+}
+
+func setSQLiteSchemaVersion(ctx context.Context, db sqliteContextExecutor, version int) error {
+	if version < 0 {
+		return fmt.Errorf("invalid SQLite schema version %d", version)
+	}
+	_, err := db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, version))
+	return err
+}
+
+func migrateSQLiteInitialSchema(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
+		return err
+	}
+	if err := ensureColumns(ctx, tx, "sites", []sqliteColumnMigration{
+		{column: "loadbalance", statement: `ALTER TABLE sites ADD COLUMN loadbalance TEXT NOT NULL DEFAULT 'round_robin'`},
+		{column: "waf_enabled", statement: `ALTER TABLE sites ADD COLUMN waf_enabled INTEGER NOT NULL DEFAULT 1`},
+		{column: "waf_mode", statement: `ALTER TABLE sites ADD COLUMN waf_mode TEXT NOT NULL DEFAULT 'block'`},
+		{column: "paranoia_level", statement: `ALTER TABLE sites ADD COLUMN paranoia_level INTEGER NOT NULL DEFAULT 3`},
+		{column: "advanced", statement: `ALTER TABLE sites ADD COLUMN advanced TEXT NOT NULL DEFAULT '{}'`},
+	}); err != nil {
+		return fmt.Errorf("upgrade sites columns: %w", err)
+	}
+	return ensureColumns(ctx, tx, "review_items", []sqliteColumnMigration{
+		{column: "source", statement: `ALTER TABLE review_items ADD COLUMN source TEXT NOT NULL DEFAULT ''`},
+		{column: "param_name", statement: `ALTER TABLE review_items ADD COLUMN param_name TEXT NOT NULL DEFAULT ''`},
+		{column: "fingerprint", statement: `ALTER TABLE review_items ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`},
+	})
+}
+
+type sqliteColumnMigration struct {
+	column    string
+	statement string
+}
+
+func ensureColumns(ctx context.Context, db sqliteContextExecutor, table string, migrations []sqliteColumnMigration) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, migration := range migrations {
+		if existing[migration.column] {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, migration.statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// schemaSQL is the immutable baseline for schema version 1. Future schema
+// changes must be added as a new ordered migration above, not edited here.
+const schemaSQL = `
 CREATE TABLE IF NOT EXISTS sites (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
