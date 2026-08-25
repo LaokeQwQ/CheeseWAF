@@ -21,6 +21,7 @@ describe('updates availability state', () => {
       capabilities: {
         ota_updates: { available: false, reason: 'NOT_IMPLEMENTED' },
         vulnerability_feeds: { available: false, reason: 'NOT_IMPLEMENTED' },
+        bot_challenge_redis: { available: false, reason: 'NOT_IMPLEMENTED' },
       },
     });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

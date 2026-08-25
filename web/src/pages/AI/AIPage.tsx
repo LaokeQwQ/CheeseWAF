@@ -152,6 +152,7 @@ export default function AIPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const singleAnalysisAbortRef = useRef<{ key: string; controller: AbortController } | null>(null);
+  const formDirtyRef = useRef(false);
   const [selectedId, setSelectedId] = useState('');
   const [analysisRange, setAnalysisRange] = useState('24h');
   const [eventPage, setEventPage] = useState(1);
@@ -199,6 +200,9 @@ export default function AIPage() {
   }, [events, selectedId]);
 
   useEffect(() => {
+    if (formDirtyRef.current) {
+      return;
+    }
     setFormValues(formValuesFromConfig(config, assistantConfig, reasoningConfig));
     setMaxEventsError('');
   }, [
@@ -246,12 +250,14 @@ export default function AIPage() {
   }, []);
 
   const setField = <K extends keyof AIFormValues>(key: K, value: AIFormValues[K]) => {
+    formDirtyRef.current = true;
     setFormValues((current) => ({ ...current, [key]: value }));
   };
 
   const updateMutation = useMutation({
     mutationFn: updateAIConfig,
     onSuccess: () => {
+      formDirtyRef.current = false;
       queryClient.invalidateQueries({ queryKey: ['ai-config'] });
       toast.success(t('system.saved'));
     },
