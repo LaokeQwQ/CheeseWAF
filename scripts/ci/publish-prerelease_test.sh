@@ -58,6 +58,9 @@ set -euo pipefail
 
 printf '%s\n' "$*" >>"$FAKE_GH_LOG"
 if [[ "${1:-}" == "release" && "${2:-}" == "view" ]]; then
+  if [[ "${FAKE_GH_STABLE_NEW:-0}" == "1" ]]; then
+    exit 1
+  fi
   for arg in "$@"; do
     if [[ "$arg" == "--json" ]]; then
       find "$FAKE_RELEASE_DIR" -maxdepth 1 -type f -exec basename {} \; | sort
@@ -127,6 +130,18 @@ run_publish() {
     bash scripts/ci/publish-prerelease.sh "$dir"
 }
 
+run_stable_publish() {
+  local dir="$1"
+  local log="$2"
+  PATH="${fake_bin}:${PATH}" \
+    FAKE_RELEASE_DIR="$dir" \
+    FAKE_REMOTE_DIR="$dir" \
+    FAKE_SYFT_ARTIFACT_MODE=success \
+    FAKE_GH_STABLE_NEW=1 \
+    FAKE_GH_LOG="$log" \
+    bash scripts/ci/publish-release.sh "$dir"
+}
+
 mismatch_dir="${tmp}/mismatch"
 mismatch_remote_dir="${tmp}/mismatch-remote"
 mismatch_log="${tmp}/mismatch-gh.log"
@@ -176,6 +191,24 @@ run_publish "$success_dir" success "$success_log"
 grep -Fq 'cheesewaf-artifacts.cdx.json' "${success_dir}/SHA256SUMS" ||
   fail "product SBOM must be present in the final checksums"
 verify_sums "$success_dir"
+
+stable_dir="${tmp}/stable"
+stable_log="${tmp}/stable-gh.log"
+mkdir -p "$stable_dir"
+cat >"${stable_dir}/release-manifest.txt" <<'EOF'
+CheeseWAF release artifacts
+release_tag: v1.2.3
+release_kind: stable
+file_suffix: stable
+commit: abc123
+EOF
+printf 'archive\n' >"${stable_dir}/cheesewaf-amd64-linux-stable.tar.gz"
+run_stable_publish "$stable_dir" "$stable_log"
+grep -Fq 'release create v1.2.3' "$stable_log" ||
+  fail "stable publish must create the version tag release"
+if grep -Fq -- '--prerelease' "$stable_log"; then
+  fail "stable publish must not mark the release as a pre-release"
+fi
 
 if grep -Fq -- '--clobber' "$fallback_log" "$success_log"; then
   fail "publish regression test observed a mutable asset upload"

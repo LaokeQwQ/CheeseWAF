@@ -20,6 +20,17 @@ run_number="${CHEESEWAF_RUN_NUMBER:-${GITHUB_RUN_NUMBER:-0}}"
 build_time="${CHEESEWAF_BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 
 case "$ref_name" in
+  v[0-9]*.[0-9]*.[0-9]*)
+    if [[ ! "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "::error::stable release tag must use vMAJOR.MINOR.PATCH: ${ref_name}" >&2
+      exit 1
+    fi
+    channel="stable"
+    file_suffix="stable"
+    version="${ref_name#v}"
+    release_tag="$ref_name"
+    release_kind="stable"
+    ;;
   master|main)
     channel="stable"
     file_suffix="beta"
@@ -46,7 +57,10 @@ case "$ref_name" in
 esac
 
 artifact_version="${version//+/-}"
-prerelease_tag="Alpha-${artifact_version}"
+if [[ -z "${release_tag:-}" ]]; then
+  release_tag="Alpha-${artifact_version}"
+  release_kind="prerelease"
+fi
 module="$(go list -m)"
 ldflags="-s -w -X ${module}/internal/version.Version=${version} -X ${module}/internal/version.Commit=${commit} -X ${module}/internal/version.BuildTime=${build_time} -X ${module}/internal/version.Channel=${channel}"
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -136,7 +150,7 @@ mkdir -p "$release_dir" "$work_dir"
 
 metadata_dir="${work_dir}/release-metadata"
 bash scripts/ci/generate-release-metadata.sh \
-  "$metadata_dir" "$version" "$channel" "$ref_name" "$commit" "$build_time" "$prerelease_tag"
+  "$metadata_dir" "$version" "$channel" "$ref_name" "$commit" "$build_time" "$release_tag"
 
 bash scripts/ci/build-web.sh
 
@@ -230,7 +244,8 @@ done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.
 cat >release-manifest.txt <<EOF
 CheeseWAF release artifacts
 version: ${version}
-prerelease_tag: ${prerelease_tag}
+release_tag: ${release_tag}
+release_kind: ${release_kind}
 channel: ${channel}
 file_suffix: ${file_suffix}
 branch: ${ref_name}
@@ -245,4 +260,4 @@ popd >/dev/null
 bash "${script_dir}/rewrite-release-checksums.sh" "$release_dir"
 
 echo "Artifacts written to ${release_dir}/"
-echo "Pre-release tag: ${prerelease_tag}"
+echo "Release tag: ${release_tag} (${release_kind})"

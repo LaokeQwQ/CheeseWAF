@@ -182,6 +182,10 @@ grep -Fq 'Alpha-' scripts/ci/package-release.sh ||
   fail "pre-release tags must use the Alpha- prefix"
 grep -Fq 'scripts/ci/publish-prerelease.sh' .github/workflows/ci.yml ||
   fail "CI must publish Alpha- GitHub pre-releases"
+grep -Fq 'scripts/ci/publish-release.sh' .github/workflows/ci.yml ||
+  fail "CI must publish stable vMAJOR.MINOR.PATCH releases"
+grep -Fq -- "- 'v*'" .github/workflows/ci.yml ||
+  fail "CI must run on stable version tags"
 grep -Fq 'linux/amd64,linux/arm64' scripts/ci/docker-build.sh ||
   fail "container CI must build linux/amd64 and linux/arm64"
 grep -Fq 'dst: systemd/cheesewaf.service' .goreleaser.yaml ||

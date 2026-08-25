@@ -11,8 +11,15 @@ release_dir="${1:-release}"
 tag=""
 suffix=""
 commit=""
+release_kind="${CHEESEWAF_RELEASE_KIND:-}"
 if [[ -f "${release_dir}/release-manifest.txt" ]]; then
-  tag="$(awk -F': ' '/^prerelease_tag:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+	tag="$(awk -F': ' '/^release_tag:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+	if [[ -z "$tag" ]]; then
+		tag="$(awk -F': ' '/^prerelease_tag:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+	fi
+	if [[ -z "$release_kind" ]]; then
+		release_kind="$(awk -F': ' '/^release_kind:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+	fi
   suffix="$(awk -F': ' '/^file_suffix:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
   commit="$(awk -F': ' '/^commit:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
   if [[ -z "$suffix" ]]; then
@@ -20,13 +27,28 @@ if [[ -f "${release_dir}/release-manifest.txt" ]]; then
   fi
 fi
 if [[ -z "$tag" ]]; then
-  echo "::error::prerelease_tag is missing from release-manifest.txt" >&2
-  exit 1
+	echo "::error::release_tag is missing from release-manifest.txt" >&2
+	exit 1
 fi
-[[ "$tag" == Alpha-* ]] || {
-  echo "::error::pre-release tag must start with Alpha-: ${tag}" >&2
-  exit 1
-}
+release_kind="${release_kind:-prerelease}"
+case "$release_kind" in
+  prerelease)
+    [[ "$tag" == Alpha-* ]] || {
+      echo "::error::pre-release tag must start with Alpha-: ${tag}" >&2
+      exit 1
+    }
+    ;;
+  stable)
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+      echo "::error::stable release tag must use vMAJOR.MINOR.PATCH: ${tag}" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "::error::release_kind must be prerelease or stable" >&2
+    exit 1
+    ;;
+esac
 if [[ -z "$commit" ]]; then
   echo "::error::commit is missing from release-manifest.txt" >&2
   exit 1
@@ -151,10 +173,16 @@ sign_blob "$product_sbom"
 notes="$(mktemp)"
 existing_asset_dir="$(mktemp -d)"
 trap 'rm -f "$notes"; rm -rf "$existing_asset_dir"' EXIT
+release_label="stable release"
+release_notice="This is a stable release. Review the upgrade and rollback instructions before deployment."
+if [[ "$release_kind" == "prerelease" ]]; then
+  release_label="pre-release"
+  release_notice="This is an alpha build, not a stable release. Configuration and APIs may change."
+fi
 cat >"$notes" <<EOF
-CheeseWAF pre-release \`${tag}\`.
+CheeseWAF ${release_label} \`${tag}\`.
 
-This is an alpha build, not a stable release. Configuration and APIs may change.
+${release_notice}
 
 Download the archive that matches your OS and CPU:
 
@@ -239,9 +267,17 @@ if gh release view "$tag" >/dev/null 2>&1; then
   exit 0
 fi
 
-gh release create "$tag" \
-  --target "$commit" \
-  --prerelease \
-  --title "$tag" \
-  --notes-file "$notes" \
-  "${assets[@]}"
+if [[ "$release_kind" == "prerelease" ]]; then
+  gh release create "$tag" \
+    --target "$commit" \
+    --prerelease \
+    --title "$tag" \
+    --notes-file "$notes" \
+    "${assets[@]}"
+else
+  gh release create "$tag" \
+    --target "$commit" \
+    --title "$tag" \
+    --notes-file "$notes" \
+    "${assets[@]}"
+fi
