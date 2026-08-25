@@ -278,6 +278,46 @@ func TestReviewItemFingerprintPersists(t *testing.T) {
 	}
 }
 
+func TestPruneReviewItemsKeepsPendingAndRecentRowsWithBatchCap(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	items := []ReviewItem{
+		{ID: "old-allowed", Status: "allowed", CreatedAt: now.Add(-40 * 24 * time.Hour)},
+		{ID: "old-blocked", Status: "blocked", CreatedAt: now.Add(-39 * 24 * time.Hour)},
+		{ID: "old-pending", Status: "pending", CreatedAt: now.Add(-38 * 24 * time.Hour)},
+		{ID: "recent-blocked", Status: "blocked", CreatedAt: now.Add(-2 * 24 * time.Hour)},
+	}
+	for i := range items {
+		if err := store.CreateReviewItem(ctx, &items[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pruned, err := store.PruneReviewItems(ctx, now.Add(-30*24*time.Hour), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 {
+		t.Fatalf("expected one row per bounded batch, got %d", pruned)
+	}
+	if item, err := store.GetReviewItem(ctx, "old-allowed"); err != nil || item != nil {
+		t.Fatalf("oldest decided row should be pruned: item=%+v err=%v", item, err)
+	}
+	for _, id := range []string{"old-blocked", "old-pending", "recent-blocked"} {
+		item, err := store.GetReviewItem(ctx, id)
+		if err != nil || item == nil {
+			t.Fatalf("row %s should remain: item=%+v err=%v", id, item, err)
+		}
+	}
+}
+
 func TestSiteParanoiaLevelPersists(t *testing.T) {
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
 	if err != nil {

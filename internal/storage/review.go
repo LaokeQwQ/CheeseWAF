@@ -96,6 +96,22 @@ func (s *SQLiteStore) HasSimilarReview(ctx context.Context, siteID, category, pa
 	return s.hasReview(ctx, siteID, category, payload, uri, false)
 }
 
+// PruneReviewItems removes only old, terminal review items. Pending items are
+// retained regardless of age so a delayed operator or model can still inspect
+// them. The batch limit keeps each maintenance transaction short.
+func (s *SQLiteStore) PruneReviewItems(ctx context.Context, before time.Time, batchSize int) (int64, error) {
+	if batchSize <= 0 || batchSize > defaultReviewPruneBatch {
+		batchSize = defaultReviewPruneBatch
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM review_items WHERE id IN (
+		SELECT id FROM review_items WHERE status <> 'pending' AND created_at < ? ORDER BY created_at LIMIT ?
+	)`, formatTime(before.UTC()), batchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *SQLiteStore) hasReview(ctx context.Context, siteID, category, payload, uri string, pendingOnly bool) (bool, error) {
 	query := `SELECT COUNT(1) FROM review_items WHERE site_id=? AND category=? AND payload=? AND uri=?`
 	if pendingOnly {
