@@ -825,9 +825,9 @@ export default function SystemPage() {
                     </Table>
                     {apiTokens.length > tokenPageSize && (
                       <div className="flex items-center justify-end gap-2 py-2">
-                        <Button size="sm" variant="outline" disabled={apiTokenPage <= 0} onClick={() => setAPITokenPage((p) => p - 1)}>{t('common.prev', { defaultValue: 'Prev' })}</Button>
+                        <Button size="sm" variant="outline" disabled={apiTokenPage <= 0} onClick={() => setAPITokenPage((p) => p - 1)}>{t('common.prev')}</Button>
                         <span className="text-sm text-muted-foreground">{apiTokenPage + 1}/{tokenPageCount}</span>
-                        <Button size="sm" variant="outline" disabled={apiTokenPage >= tokenPageCount - 1} onClick={() => setAPITokenPage((p) => p + 1)}>{t('common.next', { defaultValue: 'Next' })}</Button>
+                        <Button size="sm" variant="outline" disabled={apiTokenPage >= tokenPageCount - 1} onClick={() => setAPITokenPage((p) => p + 1)}>{t('common.next')}</Button>
                       </div>
                     )}
                   </div>

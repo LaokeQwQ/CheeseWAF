@@ -42,7 +42,7 @@ vi.mock('../../api/client', async (importOriginal) => {
   return { ...actual, ...apiMocks };
 });
 
-import ClusterPage from './ClusterPage';
+import ClusterPage, { fetchRollingJob } from './ClusterPage';
 
 function renderPage() {
   const client = new QueryClient({
@@ -108,6 +108,14 @@ afterEach(() => {
 });
 
 describe('ClusterPage', () => {
+  it('returns the rolling job fetched for a polling query', async () => {
+    const rollingJob = { id: 'rolling-1', status: 'running', steps: [] };
+    apiMocks.fetchClusterRollingUpgrade.mockResolvedValue(rollingJob);
+
+    await expect(fetchRollingJob('rolling-1')).resolves.toEqual(rollingJob);
+    expect(apiMocks.fetchClusterRollingUpgrade).toHaveBeenCalledWith('rolling-1');
+  });
+
   it('loads cluster status, tokens, and nodes with business metrics', async () => {
     renderPage();
     await waitFor(() => expect(apiMocks.fetchClusterStatus).toHaveBeenCalled());

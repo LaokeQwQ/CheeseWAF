@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fallbackSystem } from '../System/systemModel';
 
@@ -90,5 +90,37 @@ describe('SSLPage', () => {
     expect(Array.isArray(providers)).toBe(true);
     expect(providers.length).toBe(1);
     expect(providers[0].api).toBe('dns_cf');
+  });
+
+  it('keeps the last provider editor attached to its provider when deleting the middle provider', async () => {
+    apiMocks.fetchSystemConfig.mockReset();
+    apiMocks.fetchSystemConfig.mockResolvedValue({
+      ...fallbackSystem,
+      acme: {
+        ...fallbackSystem.acme,
+        enabled: true,
+        account_email: 'ops@example.com',
+        dns_providers: [
+          { id: 'provider-first', name: 'First', api: 'dns_cf', enabled: true, env: { FIRST_TOKEN: 'first' } },
+          { id: 'provider-middle', name: 'Middle', api: 'dns_cf', enabled: true, env: { MIDDLE_TOKEN: 'middle' } },
+          { id: 'provider-last', name: 'Last', api: 'dns_cf', enabled: true, env: { LAST_TOKEN: 'last' } },
+        ],
+      },
+    });
+    renderPage();
+
+    await screen.findByDisplayValue('FIRST_TOKEN');
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('.acme-provider-card'));
+    expect(cards).toHaveLength(3);
+    fireEvent.click(within(cards[1]).getByRole('button', { name: 'common.add' }));
+    const middleRows = cards[1].querySelectorAll<HTMLElement>('.acme-env-row');
+    const incompleteValue = middleRows[1]?.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(incompleteValue).toBeTruthy();
+    fireEvent.change(incompleteValue!, { target: { value: 'MIDDLE_EDITED' } });
+    fireEvent.click(within(cards[1]).getAllByRole('button', { name: 'common.delete' })[0]);
+
+    await waitFor(() => expect(screen.getByDisplayValue('LAST_TOKEN')).toBeTruthy());
+    expect(screen.getByDisplayValue('FIRST_TOKEN')).toBeTruthy();
+    expect(screen.queryByDisplayValue('MIDDLE_EDITED')).toBeNull();
   });
 });
