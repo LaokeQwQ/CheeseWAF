@@ -22,6 +22,10 @@ const fallbackAPIAuth: APISecAuthConfig = {
 };
 
 export const fallbackSystem: SystemConfig = {
+  capabilities: {
+    ota_updates: { available: false, reason: 'NOT_IMPLEMENTED' },
+    vulnerability_feeds: { available: false, reason: 'NOT_IMPLEMENTED' },
+  },
   console: {
     login: {
       captcha: {
@@ -114,6 +118,10 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
   return {
     ...fallbackSystem,
     ...next,
+    capabilities: {
+      ...fallbackSystem.capabilities,
+      ...next.capabilities,
+    },
     console: {
       ...fallbackSystem.console,
       ...next.console,

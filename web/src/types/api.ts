@@ -1094,6 +1094,10 @@ export type TimeSyncStatus = {
 };
 
 export type SystemConfig = {
+	capabilities: {
+		ota_updates: SystemCapability;
+		vulnerability_feeds: SystemCapability;
+	};
   console: {
     login: {
       captcha: LoginCAPTCHAConfig;
@@ -1229,6 +1233,11 @@ export type SystemConfig = {
   apisec: APISecSystemConfig;
   block_page: BlockPageConfig;
   version?: VersionInfo;
+};
+
+export type SystemCapability = {
+	available: boolean;
+	reason: string;
 };
 
 export type VersionInfo = {
