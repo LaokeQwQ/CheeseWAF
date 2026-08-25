@@ -132,12 +132,25 @@ sign_blob() {
     "$file"
 }
 
+sha256_file() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    echo "::error::sha256sum or shasum is required to verify existing release assets" >&2
+    return 1
+  fi
+}
+
 sign_blob "${release_dir}/SHA256SUMS"
 sign_blob "$sbom_file"
 sign_blob "$product_sbom"
 
 notes="$(mktemp)"
-trap 'rm -f "$notes"' EXIT
+existing_asset_dir="$(mktemp -d)"
+trap 'rm -f "$notes"; rm -rf "$existing_asset_dir"' EXIT
 cat >"$notes" <<EOF
 CheeseWAF pre-release \`${tag}\`.
 
@@ -187,7 +200,35 @@ if gh release view "$tag" >/dev/null 2>&1; then
   for asset in "${assets[@]}"; do
     asset_name="$(basename "$asset")"
     if grep -Fxq "$asset_name" <<<"$existing_assets"; then
-      echo "release ${tag} already contains immutable asset ${asset_name}; keeping it"
+      expected_sha="$(awk -v name="$asset_name" '$2 == name { print $1; found++ } END { exit found > 1 ? 1 : 0 }' "${release_dir}/SHA256SUMS")" || {
+        echo "::error::SHA256SUMS contains duplicate entries for existing asset ${asset_name}" >&2
+        exit 1
+      }
+      if [[ -z "$expected_sha" ]]; then
+        expected_sha="$(sha256_file "$asset")" || exit 1
+      fi
+      [[ "$expected_sha" =~ ^[[:xdigit:]]{64}$ ]] || {
+        echo "::error::invalid SHA-256 for existing asset ${asset_name}" >&2
+        exit 1
+      }
+      rm -f "${existing_asset_dir}/${asset_name}"
+      gh release download "$tag" \
+        --pattern "$asset_name" \
+        --dir "$existing_asset_dir" || {
+          echo "::error::could not download existing release asset ${asset_name} for verification" >&2
+          exit 1
+        }
+      remote_asset="${existing_asset_dir}/${asset_name}"
+      [[ -f "$remote_asset" ]] || {
+        echo "::error::downloaded release asset is missing: ${asset_name}" >&2
+        exit 1
+      }
+      actual_sha="$(sha256_file "$remote_asset")" || exit 1
+      [[ "$actual_sha" == "$expected_sha" ]] || {
+        echo "::error::existing release asset ${asset_name} does not match its local SHA256SUMS entry" >&2
+        exit 1
+      }
+      echo "release ${tag} already contains verified immutable asset ${asset_name}; keeping it"
     else
       missing_assets+=("$asset")
     fi

@@ -214,6 +214,8 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
+systemd 单元只读取 `/etc/cheesewaf/cheesewaf.yaml`，可写目录只有 `/var/lib/cheesewaf` 和 `/var/log/cheesewaf`。如果旧部署曾依赖服务进程写配置，现在请由 root（或配置管理系统）修改配置文件，然后执行 `sudo systemctl restart cheesewaf`。
+
 默认管理口只听 `127.0.0.1:9443`。在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。本机打开时向导会自己拿到初始化令牌。从别的机器访问时，令牌在 `journalctl -u cheesewaf` 或 `/var/lib/cheesewaf/setup.url`。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
 
 `GET /api/setup` 会返回 405。查是否还要初始化用 `GET /api/setup/status`。完成初始化是带 `X-CheeseWAF-Setup-Token` 的 `POST /api/setup`。从别的机器用 API 登录仍要过控制台验证码；本机回环地址不用。
@@ -222,7 +224,7 @@ sudo systemctl status cheesewaf
 
 ### 2. Docker 部署（Docker Compose 容器化）
 
-Docker 镜像要从 git 仓库里的 `deploy/docker/Dockerfile` 构建。发行 tar 包是给 systemd 用的，没有源码时不能直接 `docker compose`。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。运行时镜像装有系统 CA 证书，访问 HTTPS 源站时会校验证书。9443 只应暴露给可信网络；镜像里管理口监听全部接口，并开启管理 TLS。
+Docker 镜像要从 git 仓库里的 `deploy/docker/Dockerfile` 构建。发行 tar 包是给 systemd 用的，没有源码时不能直接 `docker compose`。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。运行时镜像装有系统 CA 证书，访问 HTTPS 源站时会校验证书。Compose 会把管理 TLS 映射到宿主机回环地址（`127.0.0.1:9443`）；如果需要远程访问，请另行配置经过加固的反向代理或 SSH 隧道。
 
 #### 步骤 1：准备编排文件
 
@@ -328,12 +330,7 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 1. 下载 `cheesewaf-arm64-darwin-*.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*.dmg`（Intel）。
 2. 打开镜像，把 **CheeseWAF** 拖进「应用程序」。
 3. 从启动台或「应用程序」打开 CheeseWAF。会启动本地控制面板，用来启动、停止和打开 Web 控制台。
-4. 若系统提示已损坏，是拦截了未公证的 PreTest 包。双击盘里的 **Fix Gatekeeper.command**，或在终端执行：
-
-```bash
-xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
-open /Applications/CheeseWAF.app
-```
+4. 已签名并完成公证的发行包可以直接打开。只有本地 ad-hoc PreTest 开发包被系统拦截时，才在「应用程序」中对应用点按右键，选择「打开」并确认一次性提示。
 
 运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*.tar.gz`。
 

@@ -383,6 +383,50 @@ grep -Fq 'artifacts.manifest.json' scripts/ci/publish-prerelease.sh ||
 grep -Fq 'sign_blob "$product_sbom"' scripts/ci/publish-prerelease.sh ||
   fail "publish-prerelease must sign the product-level SBOM"
 
+# Platform signing gate: ordinary branch builds remain available, but signing
+# inputs may only resolve for a tag-triggered package.
+grep -Fq -- "- 'Alpha-*'" .github/workflows/ci.yml ||
+  fail "GitHub CI must trigger tagged release packaging for signed artifacts"
+for signing_secret in \
+  WINDOWS_CERT_P12 \
+  WINDOWS_CERT_PASSWORD \
+  MACOS_P12_BASE64 \
+  MACOS_P12_PASSWORD \
+  MACOS_CODESIGN_IDENTITY \
+  APPLE_API_KEY \
+  APPLE_API_KEY_ID \
+  APPLE_API_ISSUER; do
+  grep -Fq "github.ref_type == 'tag' && secrets.${signing_secret}" .github/workflows/ci.yml ||
+    fail "${signing_secret} must only be resolved for tag-triggered signing"
+done
+grep -Fq "github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'" .github/workflows/ci.yml ||
+  fail "ordinary branch release artifacts must remain enabled"
+grep -Fq 'Upload branch release artifacts' .github/workflows/ci.yml ||
+  fail "ordinary branch release artifacts must still be uploaded"
+
+# Deployment exposure and macOS release guidance.
+grep -Fq '"127.0.0.1:9443:9443"' deploy/docker/docker-compose.yml ||
+  fail "Docker admin TLS must bind to host loopback only"
+if grep -Fq '"9443:9443"' deploy/docker/docker-compose.yml; then
+  fail "Docker admin TLS must not bind to all host interfaces"
+fi
+grep -Fq 'ReadWritePaths=/var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
+  fail "systemd runtime writes must stay under data and log directories"
+if grep -E '^ReadWritePaths=.*(/etc/cheesewaf|/etc/)' deploy/systemd/cheesewaf.service; then
+  fail "systemd must not make /etc/cheesewaf writable"
+fi
+if [[ -e deploy/macos/fix-gatekeeper.command ]]; then
+  fail "signed macOS release media must not ship a Gatekeeper quarantine helper"
+fi
+if grep -Fq 'fix-gatekeeper.command' scripts/ci/package-macos-dmg.sh; then
+  fail "macOS packaging must not include a Gatekeeper quarantine helper"
+fi
+for macos_guidance in README.md README_CN.md deploy/macos/first-open.txt; do
+  if grep -Fq 'xattr -dr com.apple.quarantine' "$macos_guidance"; then
+    fail "${macos_guidance} must not tell release users to recursively clear quarantine"
+  fi
+done
+
 # Optional release signing gate.
 grep -Fq 'CHEESEWAF_REQUIRE_SIGNING' scripts/ci/verify-release.sh ||
   fail "verify-release.sh must support the optional signing gate"

@@ -64,6 +64,27 @@ if [[ "${1:-}" == "release" && "${2:-}" == "view" ]]; then
       break
     fi
   done
+elif [[ "${1:-}" == "release" && "${2:-}" == "download" ]]; then
+  pattern=""
+  download_dir=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pattern)
+        shift
+        pattern="${1:-}"
+        ;;
+      --dir)
+        shift
+        download_dir="${1:-}"
+        ;;
+    esac
+    shift || true
+  done
+  [[ -n "$pattern" && -n "$download_dir" ]] || exit 2
+  source="${FAKE_REMOTE_DIR}/${pattern}"
+  [[ -f "$source" ]] || source="${FAKE_RELEASE_DIR}/${pattern}"
+  mkdir -p "$download_dir"
+  cp "$source" "${download_dir}/${pattern}"
 fi
 EOF
 
@@ -97,12 +118,26 @@ run_publish() {
   local dir="$1"
   local mode="$2"
   local log="$3"
+  local remote_dir="${4:-${dir}}"
   PATH="${fake_bin}:${PATH}" \
     FAKE_RELEASE_DIR="$dir" \
+    FAKE_REMOTE_DIR="$remote_dir" \
     FAKE_SYFT_ARTIFACT_MODE="$mode" \
     FAKE_GH_LOG="$log" \
     bash scripts/ci/publish-prerelease.sh "$dir"
 }
+
+mismatch_dir="${tmp}/mismatch"
+mismatch_remote_dir="${tmp}/mismatch-remote"
+mismatch_log="${tmp}/mismatch-gh.log"
+make_release "$mismatch_dir"
+mkdir -p "$mismatch_remote_dir"
+printf 'remote stale archive\n' >"${mismatch_remote_dir}/cheesewaf-amd64-linux-test.tar.gz"
+if run_publish "$mismatch_dir" success "$mismatch_log" "$mismatch_remote_dir"; then
+  fail "publish must reject an existing asset whose remote SHA-256 differs"
+fi
+grep -Fq 'release download' "$mismatch_log" ||
+  fail "publish must download existing assets before accepting them"
 
 fallback_dir="${tmp}/fallback"
 fallback_log="${tmp}/fallback-gh.log"
