@@ -630,7 +630,10 @@ type RateLimitProfile struct {
 }
 
 type BotProtectionConfig struct {
-	Enabled                    bool          `yaml:"enabled" json:"enabled"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// ChallengeBackend is currently memory-only. Redis is intentionally not
+	// exposed until the shared challenge lifecycle is wired into Policy.
+	ChallengeBackend           string        `yaml:"challenge_backend" json:"challenge_backend"`
 	RiskLevel                  int           `yaml:"risk_level" json:"risk_level"`
 	RiskLowThreshold           int           `yaml:"risk_low_threshold" json:"risk_low_threshold"`
 	RiskMediumThreshold        int           `yaml:"risk_medium_threshold" json:"risk_medium_threshold"`

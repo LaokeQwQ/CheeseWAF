@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"net"
@@ -20,6 +21,21 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
 )
+
+var ErrBotRedisBackendUnavailable = errors.New("bot Redis challenge backend is not wired into the runtime; use challenge_backend=memory")
+
+// ValidateBotChallengeBackend keeps the public configuration contract honest:
+// Policy currently owns an in-process challenge lifecycle only.
+func ValidateBotChallengeBackend(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "memory":
+		return nil
+	case "redis":
+		return ErrBotRedisBackendUnavailable
+	default:
+		return fmt.Errorf("protection.bot.challenge_backend must be memory (got %q)", value)
+	}
+}
 
 const (
 	maxTrustedProxyCIDRs   = 1024
@@ -68,6 +84,20 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
+	}
+	if cfg.Storage.Redis.Enabled {
+		address := strings.TrimSpace(cfg.Storage.Redis.Address)
+		if address == "" {
+			return fmt.Errorf("storage.redis.address is required when Redis storage is enabled")
+		}
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return fmt.Errorf("storage.redis.address must be host:port")
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return fmt.Errorf("storage.redis.address port must be between 1 and 65535")
+		}
 	}
 	if err := validateTimeSync(cfg.TimeSync); err != nil {
 		return err
@@ -1538,6 +1568,9 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 }
 
 func validateBotProtection(bot BotProtectionConfig) error {
+	if err := ValidateBotChallengeBackend(bot.ChallengeBackend); err != nil {
+		return err
+	}
 	if bot.RiskLevel < 1 || bot.RiskLevel > 5 {
 		return fmt.Errorf("protection.bot.risk_level must be between 1 and 5")
 	}

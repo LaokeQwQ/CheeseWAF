@@ -2,11 +2,14 @@ package bot
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
-// ChallengeBackend is the optional shared challenge/clearance store (R2).
-// Default in-process ChallengeStore remains the production path; Redis is opt-in.
+// ChallengeBackend is an internal extension point for a future shared
+// challenge store. Policy currently uses its in-process stores directly.
 type ChallengeBackend interface {
 	// Add stores a jti until exp. Empty owner is allowed.
 	Add(ctx context.Context, jti, owner string, exp time.Time) error
@@ -59,20 +62,18 @@ type BackendConfig struct {
 	KeyPrefix string
 }
 
-// NewChallengeBackend builds the configured backend. Unknown drivers fall back to memory.
-func NewChallengeBackend(cfg BackendConfig, memory *ChallengeStore) ChallengeBackend {
-	switch cfg.Driver {
+var ErrRedisBackendUnavailable = errors.New("bot Redis challenge backend is not wired into Policy")
+
+// NewChallengeBackend never silently downgrades a requested backend. It is
+// retained for future wiring, but Redis must not appear active while Policy is
+// still using its in-process challenge lifecycle.
+func NewChallengeBackend(cfg BackendConfig, memory *ChallengeStore) (ChallengeBackend, error) {
+	switch strings.ToLower(strings.TrimSpace(cfg.Driver)) {
+	case "", "memory":
+		return NewMemoryBackend(memory), nil
 	case "redis":
-		if cfg.RedisURL == "" {
-			return NewMemoryBackend(memory)
-		}
-		rb, err := NewRedisBackend(cfg)
-		if err != nil {
-			// Construction failure → memory with note via fail-open memory.
-			return NewMemoryBackend(memory)
-		}
-		return rb
+		return nil, fmt.Errorf("%w: use memory", ErrRedisBackendUnavailable)
 	default:
-		return NewMemoryBackend(memory)
+		return nil, fmt.Errorf("unsupported bot challenge backend %q", cfg.Driver)
 	}
 }

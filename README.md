@@ -475,6 +475,7 @@ go run ./cmd/cheesewaf-corpus --mode analyzer
 
 - [ACME Certificate Reload Profiles](docs/acme.md)
 - [Semantic Evaluation Platform](docs/evaluation-platform.md)
+- [Release, Upgrade and Rollback](docs/release.md)
 - [Protection Policy & Roadmap](docs/protection-policy-roadmap.md)
 - [Paranoia Level Code Mapping](docs/paranoia-level-implementation.md)
 - [Performance Optimization Notes](docs/performance-optimization.md)

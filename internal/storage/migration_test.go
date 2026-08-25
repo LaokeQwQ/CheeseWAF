@@ -24,8 +24,8 @@ func TestSQLiteMigrateRecordsCurrentSchemaVersion(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 {
-		t.Fatalf("schema version = %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("schema version = %d, want 2", version)
 	}
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatalf("re-running migration: %v", err)
@@ -74,8 +74,8 @@ VALUES('legacy-site', 'legacy', '["legacy.test"]', '["127.0.0.1:9000"]', '2026-0
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 {
-		t.Fatalf("schema version = %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("schema version = %d, want 2", version)
 	}
 }
 

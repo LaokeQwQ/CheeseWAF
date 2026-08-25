@@ -649,6 +649,7 @@ export default function SystemPage() {
 
                 <StoragePanel title="Redis" enabled={system.storage.redis.enabled} onToggle={(enabled) => patchStorage('redis', { enabled })} action={() => storageTestMutation.mutate('redis')} loading={storageTestMutation.isPending}>
                   <label><span>{t('system.address')}</span><Input value={system.storage.redis.address} onChange={(e) => patchStorage('redis', { address: e.target.value })} /></label>
+                  <p className="text-sm text-muted-foreground">{t('system.redisBotUnavailable')}</p>
                 </StoragePanel>
 
                 <StoragePanel title="PostgreSQL" enabled={system.storage.postgresql.enabled} onToggle={(enabled) => patchStorage('postgresql', { enabled })} action={() => storageTestMutation.mutate('postgresql')} loading={storageTestMutation.isPending}>

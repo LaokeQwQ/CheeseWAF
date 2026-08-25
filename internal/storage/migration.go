@@ -11,7 +11,7 @@ import (
 // version and must not be opened by this binary.
 var ErrSQLiteSchemaTooNew = errors.New("newer SQLite schema version")
 
-const sqliteSchemaVersion = 1
+const sqliteSchemaVersion = 2
 
 type sqliteMigration struct {
 	version int
@@ -24,6 +24,11 @@ var sqliteMigrations = []sqliteMigration{
 		version: 1,
 		name:    "initial schema",
 		apply:   migrateSQLiteInitialSchema,
+	},
+	{
+		version: 2,
+		name:    "review decision claims",
+		apply:   migrateSQLiteReviewDecisionClaims,
 	},
 }
 
@@ -113,6 +118,12 @@ func migrateSQLiteInitialSchema(ctx context.Context, tx *sql.Tx) error {
 		{column: "source", statement: `ALTER TABLE review_items ADD COLUMN source TEXT NOT NULL DEFAULT ''`},
 		{column: "param_name", statement: `ALTER TABLE review_items ADD COLUMN param_name TEXT NOT NULL DEFAULT ''`},
 		{column: "fingerprint", statement: `ALTER TABLE review_items ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`},
+	})
+}
+
+func migrateSQLiteReviewDecisionClaims(ctx context.Context, tx *sql.Tx) error {
+	return ensureColumns(ctx, tx, "review_items", []sqliteColumnMigration{
+		{column: "decision_claim", statement: `ALTER TABLE review_items ADD COLUMN decision_claim TEXT NOT NULL DEFAULT ''`},
 	})
 }
 
@@ -257,6 +268,7 @@ CREATE TABLE IF NOT EXISTS review_items (
   decided_at TEXT NOT NULL DEFAULT '',
   decision TEXT NOT NULL DEFAULT '',
   applied_rule_id TEXT NOT NULL DEFAULT '',
+  decision_claim TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_review_items_site_status ON review_items(site_id, status, created_at DESC);

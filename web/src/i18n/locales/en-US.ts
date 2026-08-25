@@ -1853,6 +1853,7 @@ const enUS = {
     mapBoundaryAllowInsecure: 'Allow HTTP Source',
     mapBoundaryAllowPrivate: 'Allow Private/Internal Source',
     storage: 'Storage Backends',
+    redisBotUnavailable: 'This Redis setting is not the bot challenge backend. Bot challenge state remains process-local memory; Redis sharing is unavailable.',
     path: 'Path',
     address: 'Address',
     dsn: 'DSN',

@@ -1853,6 +1853,7 @@ const zhCN = {
     mapBoundaryAllowInsecure: '允许 HTTP 来源',
     mapBoundaryAllowPrivate: '允许私有/内网来源',
     storage: '存储后端',
+    redisBotUnavailable: '此 Redis 设置不是 Bot Challenge 后端。Bot Challenge 状态仍保存在进程内存中，Redis 共享暂不可用。',
     path: '路径',
     address: '地址',
     dsn: '连接串（DSN）',

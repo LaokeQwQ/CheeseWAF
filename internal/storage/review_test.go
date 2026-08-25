@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -54,6 +55,70 @@ func TestReviewItemCreateListDecide(t *testing.T) {
 	}
 	if again != nil {
 		t.Fatalf("second decide should be a no-op, got %+v", again)
+	}
+}
+
+func TestReviewDecisionClaimIsExclusiveAndReleasable(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	item := &ReviewItem{SiteID: "site-a", URI: "/search", Payload: "eval", Status: "pending"}
+	if err := store.CreateReviewItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = 8
+	claims := make(chan *ReviewDecisionClaim, attempts)
+	errs := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			claim, err := store.ClaimReviewItem(ctx, item.ID, "block_payload")
+			claims <- claim
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(claims)
+	close(errs)
+	var winner *ReviewDecisionClaim
+	for claim := range claims {
+		if claim != nil {
+			if winner != nil {
+				t.Fatal("more than one request claimed the review item")
+			}
+			winner = claim
+		}
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if winner == nil || winner.Token == "" {
+		t.Fatal("one request should claim the review item")
+	}
+	if decided, err := store.DecideReviewItem(ctx, item.ID, ReviewDecision{Decision: "allow"}); err != nil || decided != nil {
+		t.Fatalf("legacy decision must not bypass a claim: item=%+v err=%v", decided, err)
+	}
+	if err := store.ReleaseReviewItem(ctx, item.ID, winner.Token); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := store.ClaimReviewItem(ctx, item.ID, "allow")
+	if err != nil || retry == nil {
+		t.Fatalf("released item should be claimable again: claim=%+v err=%v", retry, err)
+	}
+	completed, err := store.CompleteReviewItem(ctx, item.ID, retry.Token, ReviewDecision{Decision: "allow"})
+	if err != nil || completed == nil || completed.Status != "allowed" {
+		t.Fatalf("claimed decision should complete: item=%+v err=%v", completed, err)
 	}
 }
 
