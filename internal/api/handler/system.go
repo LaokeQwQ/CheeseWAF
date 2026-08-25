@@ -249,6 +249,11 @@ func applySystemPayload(next *config.Config, req systemPayload) error {
 		if _, ok := blockpage.TemplateByID(next.BlockPage.TemplateID); !ok {
 			return fmt.Errorf("unknown block page template")
 		}
+		clean, err := config.SanitizeBlockPageHTML(next.BlockPage.CustomHTML)
+		if err != nil {
+			return err
+		}
+		next.BlockPage.CustomHTML = clean
 		if _, err := blockpage.NewRendererFromConfig(next.BlockPage); err != nil {
 			return err
 		}

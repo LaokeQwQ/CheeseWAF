@@ -1190,6 +1190,39 @@ func TestUpdateBlockPageConfigPersistsAndNotifies(t *testing.T) {
 	}
 }
 
+func TestUpdateBlockPageConfigSanitizesActiveHTMLBeforePersistence(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+	payload := config.BlockPageConfig{
+		TemplateID:    "minimal",
+		CustomEnabled: true,
+		CustomHTML:    `<html><body onload="alert(1)"><script>alert(2)</script><main>{{.TraceID}}</main><a href="javascript:alert(3)">x</a></body></html>`,
+	}
+	raw, _ := json.Marshal(payload)
+	recorder := httptest.NewRecorder()
+	handler.UpdateBlockPageConfig(recorder, httptest.NewRequest(http.MethodPut, "/api/block-pages/config", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("sanitized block page update failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean := strings.ToLower(loaded.BlockPage.CustomHTML)
+	for _, forbidden := range []string{"<script", "onload=", "javascript:"} {
+		if strings.Contains(clean, forbidden) {
+			t.Fatalf("persisted block page retained %q: %s", forbidden, loaded.BlockPage.CustomHTML)
+		}
+	}
+	if !strings.Contains(loaded.BlockPage.CustomHTML, "{{.TraceID}}") {
+		t.Fatalf("template placeholder was removed: %s", loaded.BlockPage.CustomHTML)
+	}
+}
+
 func TestPreviewBlockPageConfigRendersRuntimeHTMLWithoutPersisting(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")

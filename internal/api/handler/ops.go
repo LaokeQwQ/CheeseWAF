@@ -560,6 +560,12 @@ func (h *Handler) PreviewBlockPageConfig(w http.ResponseWriter, r *http.Request)
 	if strings.TrimSpace(req.CustomHTML) == "" {
 		req.CustomEnabled = false
 	}
+	if clean, err := config.SanitizeBlockPageHTML(req.CustomHTML); err != nil {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
+		return
+	} else {
+		req.CustomHTML = clean
+	}
 	renderer, err := blockpage.NewRendererFromConfig(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
@@ -697,11 +703,17 @@ func (h *Handler) applyBlockPageConfig(w http.ResponseWriter, next config.BlockP
 		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_UNKNOWN", "unknown block page template")
 		return false
 	}
+	clean, err := config.SanitizeBlockPageHTML(next.CustomHTML)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
+		return false
+	}
+	next.CustomHTML = clean
 	if _, err := blockpage.NewRendererFromConfig(next); err != nil {
 		writeError(w, http.StatusBadRequest, "BLOCK_PAGE_TEMPLATE_INVALID", err.Error())
 		return false
 	}
-	_, err := h.commitConfigMutation(func(candidate *config.Config) error {
+	_, err = h.commitConfigMutation(func(candidate *config.Config) error {
 		candidate.BlockPage = next
 		return nil
 	}, func(candidate *config.Config) error {

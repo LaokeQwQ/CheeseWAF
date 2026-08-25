@@ -1499,7 +1499,11 @@ func validateBlockPage(page BlockPageConfig) error {
 	if strings.TrimSpace(page.CustomHTML) == "" {
 		return nil
 	}
-	if _, err := template.New("block_page").Parse(page.CustomHTML); err != nil {
+	clean, err := SanitizeBlockPageHTML(page.CustomHTML)
+	if err != nil {
+		return fmt.Errorf("block_page.custom_html cannot be sanitized: %w", err)
+	}
+	if _, err := template.New("block_page").Parse(clean); err != nil {
 		return fmt.Errorf("block_page.custom_html has invalid template syntax: %w", err)
 	}
 	return nil
