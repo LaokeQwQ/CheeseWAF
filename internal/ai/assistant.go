@@ -35,7 +35,7 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 	}
 	// R3: role-based tool whitelist (does not weaken dual-control approvals).
 	actor := ApprovalActorFromContext(ctx)
-	if err := GuardToolAccess(actor.Role, tool, DefaultRoleToolPolicy()); err != nil {
+	if err := GuardToolAccessForActor(actor, tool, DefaultRoleToolPolicy()); err != nil {
 		return nil, err
 	}
 	if tool.Sensitivity() != ReadOnly {
@@ -45,20 +45,30 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 		actor := ApprovalActorFromContext(ctx)
 		if approvalID == "" {
 			diff := ""
+			preview := ""
 			if previewer, ok := tool.(ToolPreviewer); ok {
 				var err error
 				diff, err = previewer.Preview(ctx, args)
 				if err != nil {
 					return nil, err
 				}
+				preview = diff
 			}
-			request, err := a.approvals.CreateFor(tool, args, diff, actor)
+			request, err := a.approvals.CreateForWithPreview(tool, args, diff, preview, actor)
 			if err != nil {
 				return nil, err
 			}
 			return &ToolExecution{Approval: &request}, nil
 		}
-		if _, err := a.approvals.BeginExecutionFor(approvalID, name, args, actor); err != nil {
+		preview := ""
+		if previewer, ok := tool.(ToolPreviewer); ok {
+			var err error
+			preview, err = previewer.Preview(ctx, args)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if _, err := a.approvals.BeginExecutionForWithPreview(approvalID, name, args, preview, actor); err != nil {
 			return nil, fmt.Errorf("tool %q requires approved request", name)
 		}
 	}

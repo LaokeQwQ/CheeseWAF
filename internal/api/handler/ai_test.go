@@ -695,6 +695,7 @@ func TestAIAssistantReturnsRealToolExecutions(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请读取系统状态和最近安全事件","limit":10}`)))
+	request = withAIApprovalClaims(request, "ai-reader", "ai-reader-session", "admin")
 	handler.AIAssistant(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -800,6 +801,7 @@ func TestAIAssistantFetchesEventsOnlyAfterToolRequest(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	request = withAIApprovalClaims(request, "ai-reader", "ai-reader-session", "admin")
 	handler.AIAssistant(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -957,6 +959,7 @@ func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant/stream", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	request = withAIApprovalClaims(request, "ai-reader", "ai-reader-session", "admin")
 	handler.AIAssistantStream(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant stream ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1061,6 +1064,7 @@ func TestAIAssistantStreamEmitsProviderReasoningBeforeDone(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant/stream", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	request = withAIApprovalClaims(request, "ai-reader", "ai-reader-session", "admin")
 	handler.AIAssistantStream(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant stream ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1090,6 +1094,7 @@ func TestAIAssistantCreatesApprovalForConfigIntent(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请帮我开启滑块验证码","limit":10}`)))
+	request = withAIApprovalClaims(request, "admin-id", "admin-session", "admin")
 	handler.AIAssistant(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1331,7 +1336,7 @@ func TestContinueAIApprovalDoesNotAutoApprovePendingRequest(t *testing.T) {
 	handler := New(Options{Config: &cfg})
 
 	args := map[string]any{"area": "bot_cc", "level": "high"}
-	call, err := handler.executeAssistantTool(context.Background(), "set_protection_level", args, "")
+	call, err := handler.executeAssistantTool(ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{Subject: "test-admin", SessionID: "test-session", Role: "admin"}), "set_protection_level", args, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -1351,6 +1356,20 @@ func TestContinueAIApprovalDoesNotAutoApprovePendingRequest(t *testing.T) {
 	}
 	if cfg.Protection.Policy.BotCC == "high" {
 		t.Fatalf("policy changed before explicit approval: %+v", cfg.Protection.Policy)
+	}
+}
+
+func TestRecentSecurityEventsToolRequiresReadLogsPermission(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg})
+	ctx := ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{
+		Subject:     "ai-user",
+		SessionID:   "ai-session",
+		Role:        "ai_user",
+		Permissions: []string{"use:ai"},
+	})
+	if _, err := handler.executeAssistantTool(ctx, "recent_security_events", map[string]any{"limit": 1}, ""); err == nil || !strings.Contains(err.Error(), "read:logs") {
+		t.Fatalf("log tool bypassed read:logs permission: %v", err)
 	}
 }
 

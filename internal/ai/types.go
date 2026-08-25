@@ -79,6 +79,13 @@ type ToolPreviewer interface {
 	Preview(ctx context.Context, args map[string]any) (string, error)
 }
 
+// ToolPermissioner declares an additional RBAC permission required by a tool.
+// The assistant keeps the declaration optional so existing tools remain
+// compatible while sensitive data readers can enforce their own scope.
+type ToolPermissioner interface {
+	RequiredPermission() string
+}
+
 // Tool is the interface for AI assistant internal tools.
 // Each tool declares its sensitivity level for the approval flow.
 // AI 助手内部工具接口，每个工具声明自己的敏感度级别。

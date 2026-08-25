@@ -198,7 +198,7 @@ func TestAssistantFailsClosedForModificationWhenPersistenceUnavailable(t *testin
 	registry.Register(fakeTool{sensitivity: Modify})
 	registry.Register(approvalReadOnlyTool{})
 	assistant := NewAssistant(registry, store)
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, ""); err == nil || !strings.Contains(err.Error(), "persistence is unavailable") {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", nil, ""); err == nil || !strings.Contains(err.Error(), "persistence is unavailable") {
 		t.Fatalf("modification tool did not fail closed: %v", err)
 	}
 	result, err := assistant.ExecuteTool(context.Background(), "approval_read", nil, "")

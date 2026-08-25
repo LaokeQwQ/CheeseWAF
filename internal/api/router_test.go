@@ -176,13 +176,25 @@ func TestRouterReadonlyCannotExecutePaidAI(t *testing.T) {
 
 func TestRouterExplicitAIUsePermissionPassesRBAC(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_user"] = []string{"use:ai"}
+		cfg.APISec.Permissions["ai_user"] = []string{"use:ai", "read:logs"}
 	})
 	createAuthzUser(t, store, "ai-user-id", "ai-user", "ai-user-password", "ai_user")
 	token := loginAuthzUser(t, router, "ai-user", "ai-user-password")
 	response := perform(router, http.MethodPost, "/api/ai/analyze", token, []byte(`{}`))
 	if response.Code == http.StatusForbidden || response.Code == http.StatusUnauthorized {
 		t.Fatalf("use:ai user should pass RBAC, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRouterAIAnalysisRequiresReadLogsPermission(t *testing.T) {
+	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.Permissions["ai_user"] = []string{"use:ai"}
+	})
+	createAuthzUser(t, store, "ai-user-id", "ai-user", "ai-user-password", "ai_user")
+	token := loginAuthzUser(t, router, "ai-user", "ai-user-password")
+	response := perform(router, http.MethodPost, "/api/ai/analyze", token, []byte(`{}`))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("use:ai without read:logs should be denied, got %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -1442,10 +1454,10 @@ func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
 
 func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_writer"] = []string{"use:ai"}
+		cfg.APISec.Permissions["operator"] = []string{"use:ai"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
-	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "ai_writer")
+	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "operator")
 	createAuthzUser(t, store, "ai-approver-id", "ai-approver", "approver-password", "ai_approver")
 	writerToken := loginAuthzUser(t, router, "ai-writer", "writer-password")
 	approverToken := loginAuthzUser(t, router, "ai-approver", "approver-password")
@@ -1481,10 +1493,10 @@ func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 
 func TestRouterAIApprovalRecoveryPreservesObjectScope(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_writer"] = []string{"use:ai"}
+		cfg.APISec.Permissions["operator"] = []string{"use:ai"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
-	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "ai_writer")
+	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "operator")
 	createAuthzUser(t, store, "ai-approver-id", "ai-approver", "approver-password", "ai_approver")
 	writerToken := loginAuthzUser(t, router, "ai-writer", "writer-password")
 	approverToken := loginAuthzUser(t, router, "ai-approver", "approver-password")

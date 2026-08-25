@@ -325,7 +325,13 @@ func (h *Handler) aiApprovalContextFromContext(ctx context.Context) context.Cont
 	if claims == nil {
 		return ctx
 	}
-	return ai.ContextWithApprovalActor(ctx, ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username, Role: claims.Role})
+	permissions := append([]string(nil), claims.Scopes...)
+	configured := config.Default().APISec.Permissions
+	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+		configured = h.currentConfig().APISec.Permissions
+	}
+	permissions = append(permissions, configured[claims.Role]...)
+	return ai.ContextWithApprovalActor(ctx, ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username, Role: claims.Role, Permissions: permissions})
 }
 
 func (h *Handler) aiApprovalActor(r *http.Request) ai.ApprovalActor {
@@ -336,7 +342,13 @@ func (h *Handler) aiApprovalActor(r *http.Request) ai.ApprovalActor {
 	if claims == nil {
 		return ai.ApprovalActor{}
 	}
-	return ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username, Role: claims.Role}
+	permissions := append([]string(nil), claims.Scopes...)
+	configured := config.Default().APISec.Permissions
+	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+		configured = h.currentConfig().APISec.Permissions
+	}
+	permissions = append(permissions, configured[claims.Role]...)
+	return ai.ApprovalActor{Subject: claims.Subject, SessionID: claims.ID, Username: claims.Username, Role: claims.Role, Permissions: permissions}
 }
 
 func aiToolView(tool ai.Tool) map[string]any {
@@ -350,6 +362,10 @@ func aiToolView(tool ai.Tool) map[string]any {
 
 type recentSecurityEventsTool struct {
 	Sink storage.LogSink
+}
+
+func (recentSecurityEventsTool) RequiredPermission() string {
+	return "read:logs"
 }
 
 func (recentSecurityEventsTool) Name() string {
