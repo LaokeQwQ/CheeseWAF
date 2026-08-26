@@ -2,11 +2,11 @@
 # Run the full semantic evaluation platform in N parallel shards.
 #
 # The large external benign corpus (cybersec_benign_clean.jsonl, ~107 MiB) is
-# normally report-only and skipped by -short. Running it as one process exceeds
-# the Go test 10-minute limit when the paranoia sweep (0..5) re-scans every
-# sample. This script shards deterministically by case name via
-# internal/securitytest.ShardIndexFor, writes each shard's JSON report via
-# EVAL_REPORT_PATH, and merges them with merge-semantic-eval-shards.py.
+# normally report-only and skipped by -short. Running it as one process can
+# exceed the Go test time limit even though the paranoia sweep analyzes each
+# sample once and re-grades its hits at levels 0..5. This script shards JSONL
+# lines deterministically, writes each shard's JSON report via EVAL_REPORT_PATH,
+# and merges them with merge-semantic-eval-shards.py.
 #
 # Usage:
 #   SEMANTIC_EVAL_SHARDS=8 bash scripts/ci/run-semantic-eval-shards.sh

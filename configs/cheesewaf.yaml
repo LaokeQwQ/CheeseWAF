@@ -37,6 +37,10 @@ cluster:
   cluster_id: ""
   node_id: ""
   ha_mode: "single-node"
+  ssh:
+    # Deliberate self-hosted opt-in: permits RFC1918 and IPv6 ULA deployment targets only.
+    # Loopback, link-local, metadata, multicast, and reserved targets remain denied.
+    allow_private_targets: false
   interconnect:
     listen: "127.0.0.1:9444"
     advertise_addr: ""

@@ -155,11 +155,18 @@ type ClusterConfig struct {
 	ClusterID    string                  `yaml:"cluster_id" json:"cluster_id"`
 	NodeID       string                  `yaml:"node_id" json:"node_id"`
 	HAMode       string                  `yaml:"ha_mode" json:"ha_mode"`
+	SSH          ClusterSSHConfig        `yaml:"ssh" json:"ssh"`
 	Interconnect InterconnectConfig      `yaml:"interconnect" json:"interconnect"`
 	Consensus    ConsensusConfig         `yaml:"consensus" json:"consensus"`
 	Join         JoinConfig              `yaml:"join" json:"join"`
 	Nodes        []ClusterNodeConfig     `yaml:"nodes" json:"nodes"`
 	Protection   ClusterProtectionConfig `yaml:"protection" json:"protection"`
+}
+
+type ClusterSSHConfig struct {
+	// AllowPrivateTargets permits RFC1918 and IPv6 ULA deployment targets.
+	// Loopback, link-local, metadata, multicast, and reserved targets stay denied.
+	AllowPrivateTargets bool `yaml:"allow_private_targets" json:"allow_private_targets"`
 }
 
 type InterconnectConfig struct {
@@ -623,7 +630,10 @@ type RateLimitProfile struct {
 }
 
 type BotProtectionConfig struct {
-	Enabled                    bool          `yaml:"enabled" json:"enabled"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// ChallengeBackend is currently memory-only. Redis is intentionally not
+	// exposed until the shared challenge lifecycle is wired into Policy.
+	ChallengeBackend           string        `yaml:"challenge_backend" json:"challenge_backend"`
 	RiskLevel                  int           `yaml:"risk_level" json:"risk_level"`
 	RiskLowThreshold           int           `yaml:"risk_low_threshold" json:"risk_low_threshold"`
 	RiskMediumThreshold        int           `yaml:"risk_medium_threshold" json:"risk_medium_threshold"`

@@ -649,6 +649,7 @@ export default function SystemPage() {
 
                 <StoragePanel title="Redis" enabled={system.storage.redis.enabled} onToggle={(enabled) => patchStorage('redis', { enabled })} action={() => storageTestMutation.mutate('redis')} loading={storageTestMutation.isPending}>
                   <label><span>{t('system.address')}</span><Input value={system.storage.redis.address} onChange={(e) => patchStorage('redis', { address: e.target.value })} /></label>
+                  <p className="text-sm text-muted-foreground">{t('system.redisBotUnavailable')}</p>
                 </StoragePanel>
 
                 <StoragePanel title="PostgreSQL" enabled={system.storage.postgresql.enabled} onToggle={(enabled) => patchStorage('postgresql', { enabled })} action={() => storageTestMutation.mutate('postgresql')} loading={storageTestMutation.isPending}>
@@ -825,9 +826,9 @@ export default function SystemPage() {
                     </Table>
                     {apiTokens.length > tokenPageSize && (
                       <div className="flex items-center justify-end gap-2 py-2">
-                        <Button size="sm" variant="outline" disabled={apiTokenPage <= 0} onClick={() => setAPITokenPage((p) => p - 1)}>{t('common.prev', { defaultValue: 'Prev' })}</Button>
+                        <Button size="sm" variant="outline" disabled={apiTokenPage <= 0} onClick={() => setAPITokenPage((p) => p - 1)}>{t('common.prev')}</Button>
                         <span className="text-sm text-muted-foreground">{apiTokenPage + 1}/{tokenPageCount}</span>
-                        <Button size="sm" variant="outline" disabled={apiTokenPage >= tokenPageCount - 1} onClick={() => setAPITokenPage((p) => p + 1)}>{t('common.next', { defaultValue: 'Next' })}</Button>
+                        <Button size="sm" variant="outline" disabled={apiTokenPage >= tokenPageCount - 1} onClick={() => setAPITokenPage((p) => p + 1)}>{t('common.next')}</Button>
                       </div>
                     )}
                   </div>

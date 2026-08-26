@@ -42,7 +42,7 @@ func TestSelfLearningDryRunDoesNotCreateRules(t *testing.T) {
 	}
 }
 
-func TestSelfLearningAutoApplyCreatesOnlySafeHighConfidenceRules(t *testing.T) {
+func TestSelfLearningAutoApplyWithoutReviewStaysDryRun(t *testing.T) {
 	now := time.Date(2026, 6, 18, 3, 30, 0, 0, time.UTC)
 	sink := &selfLearningSink{items: repeatedSelfLearningEvents(now, 6)}
 	rules := &selfLearningRuleStore{}
@@ -65,15 +65,8 @@ func TestSelfLearningAutoApplyCreatesOnlySafeHighConfidenceRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run self learning: %v", err)
 	}
-	if report.DryRun || len(report.Applied) != 1 || len(rules.created) != 1 {
-		t.Fatalf("expected one applied rule, report=%+v created=%+v", report, rules.created)
-	}
-	rule := rules.created[0]
-	if rule.Pattern != "union select" && rule.Pattern != "union\\ select" {
-		t.Fatalf("expected escaped union select pattern, got %+v", rule)
-	}
-	if rule.Action != "block" || !rule.Enabled || rule.Priority != 180 {
-		t.Fatalf("unexpected applied rule: %+v", rule)
+	if !report.DryRun || report.AutoApply || len(report.Applied) != 0 || len(rules.created) != 0 {
+		t.Fatalf("expected unreviewed auto-apply to remain dry-run, report=%+v created=%+v", report, rules.created)
 	}
 }
 
@@ -116,9 +109,50 @@ func TestSelfLearningCanWriteRulesBlockedForcesDryRun(t *testing.T) {
 		t.Fatal("expected skipped entries explaining write block")
 	}
 	for _, skip := range report.Skipped {
-		if !strings.Contains(skip.Reason, "rule writes blocked") || !strings.Contains(skip.Reason, "frozen") {
+		if !strings.Contains(skip.Reason, "candidate has not passed AI review") &&
+			(!strings.Contains(skip.Reason, "rule writes blocked") || !strings.Contains(skip.Reason, "frozen")) {
 			t.Fatalf("unexpected skip reason: %q", skip.Reason)
 		}
+	}
+}
+
+func TestSelfLearningNeverAutoAppliesWithoutLLMReview(t *testing.T) {
+	now := time.Date(2026, 6, 18, 3, 30, 0, 0, time.UTC)
+	rules := &selfLearningRuleStore{}
+	report, err := RunSelfLearning(context.Background(), SelfLearningOptions{
+		Config: config.AISelfLearningConfig{AutoApply: true, MinConfidence: 0.95, MinEvents: 5, MaxEvents: 100, MaxRulesPerRun: 3, Action: "block"},
+		Sink:   &selfLearningSink{items: repeatedSelfLearningEvents(now, 6)}, Rules: rules, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.DryRun || report.AutoApply || len(report.Applied) != 0 || len(rules.created) != 0 {
+		t.Fatalf("missing LLM review must force dry-run: %+v rules=%+v", report, rules.created)
+	}
+}
+
+func TestSelfLearningIgnoresUnblockedLogEvents(t *testing.T) {
+	now := time.Date(2026, 6, 18, 3, 30, 0, 0, time.UTC)
+	entries := repeatedSelfLearningEvents(now, 6)
+	for i := range entries {
+		entries[i].Action = "log"
+	}
+	report, err := RunSelfLearning(context.Background(), SelfLearningOptions{
+		Config: config.AISelfLearningConfig{DryRun: true, MinEvents: 5, MaxEvents: 100},
+		Sink:   &selfLearningSink{items: entries}, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Candidates) != 0 {
+		t.Fatalf("log-only events must not produce self-learning candidates: %+v", report.Candidates)
+	}
+}
+
+func TestSelfLearningRequiresAIReviewForEveryAutoApplyCandidate(t *testing.T) {
+	candidate := SelfLearningCandidate{Category: "sqli", Pattern: "union select", Confidence: 0.999, EventCount: 20}
+	if reason := validateSelfLearningCandidate(candidate, config.AISelfLearningConfig{MinConfidence: 0.95, MinEvents: 5, AutoApply: true}, nil); reason == "" {
+		t.Fatal("an unreviewed candidate must not pass auto-apply validation")
 	}
 }
 

@@ -1,42 +1,39 @@
-import { describe, expect, it } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import i18n from '../../i18n';
 import { fallbackSystem } from '../System/systemModel';
-import {
-  buildUpdatesSavePayload,
-  CUSTOM_OTA_SERVER_OPTION,
-  resolveOTAServerSelectValue,
-  validateOTAServer,
-} from './UpdatesPage';
+import UpdatesPage from './UpdatesPage';
 
-describe('OTA custom source handling', () => {
-  it('uses custom mode for unknown servers without treating the marker as a URL', () => {
-    expect(resolveOTAServerSelectValue('https://updates.example.com/releases')).toBe(CUSTOM_OTA_SERVER_OPTION);
-    expect(validateOTAServer(CUSTOM_OTA_SERVER_OPTION, CUSTOM_OTA_SERVER_OPTION)).toBeNull();
-  });
+vi.mock('../../api/client', () => ({
+  fetchSystemConfig: vi.fn(),
+}));
 
-  it('refuses to save the custom marker or non-HTTPS custom URLs', () => {
-    expect(() => buildUpdatesSavePayload({
+import { fetchSystemConfig } from '../../api/client';
+
+const mockedFetchSystemConfig = vi.mocked(fetchSystemConfig);
+
+describe('updates availability state', () => {
+  it('shows unavailable states without operational update or feed controls', async () => {
+    await i18n.changeLanguage('en-US');
+    mockedFetchSystemConfig.mockResolvedValue({
       ...fallbackSystem,
-      update: { ota: { ...fallbackSystem.update.ota, server: '' } },
-    }, CUSTOM_OTA_SERVER_OPTION)).toThrow('valid HTTPS URL');
+      capabilities: {
+        ota_updates: { available: false, reason: 'NOT_IMPLEMENTED' },
+        vulnerability_feeds: { available: false, reason: 'NOT_IMPLEMENTED' },
+        bot_challenge_redis: { available: false, reason: 'NOT_IMPLEMENTED' },
+      },
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-    expect(() => buildUpdatesSavePayload({
-      ...fallbackSystem,
-      update: { ota: { ...fallbackSystem.update.ota, server: CUSTOM_OTA_SERVER_OPTION } },
-    }, CUSTOM_OTA_SERVER_OPTION)).toThrow('valid HTTPS URL');
+    render(<QueryClientProvider client={queryClient}><UpdatesPage /></QueryClientProvider>);
 
-    expect(() => buildUpdatesSavePayload({
-      ...fallbackSystem,
-      update: { ota: { ...fallbackSystem.update.ota, server: 'http://updates.example.com/releases' } },
-    }, CUSTOM_OTA_SERVER_OPTION)).toThrow('valid HTTPS URL');
-  });
-
-  it('saves a valid custom HTTPS URL instead of the custom marker', () => {
-    const payload = buildUpdatesSavePayload({
-      ...fallbackSystem,
-      update: { ota: { ...fallbackSystem.update.ota, server: 'https://updates.example.com/releases' } },
-    }, CUSTOM_OTA_SERVER_OPTION);
-
-    expect(payload.update.ota.server).toBe('https://updates.example.com/releases');
-    expect(payload.update.ota.server).not.toBe(CUSTOM_OTA_SERVER_OPTION);
+    expect(await screen.findByText('OTA updates are unavailable')).toBeTruthy();
+    expect(screen.getByText('Vulnerability feeds are unavailable')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /save/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /sync key/i })).toBeNull();
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('button', { name: /add/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /delete/i })).toBeNull();
   });
 });

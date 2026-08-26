@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"net"
@@ -20,6 +21,21 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
 )
+
+var ErrBotRedisBackendUnavailable = errors.New("bot Redis challenge backend is not wired into the runtime; use challenge_backend=memory")
+
+// ValidateBotChallengeBackend keeps the public configuration contract honest:
+// Policy currently owns an in-process challenge lifecycle only.
+func ValidateBotChallengeBackend(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "memory":
+		return nil
+	case "redis":
+		return ErrBotRedisBackendUnavailable
+	default:
+		return fmt.Errorf("protection.bot.challenge_backend must be memory (got %q)", value)
+	}
+}
 
 const (
 	maxTrustedProxyCIDRs   = 1024
@@ -68,6 +84,20 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
+	}
+	if cfg.Storage.Redis.Enabled {
+		address := strings.TrimSpace(cfg.Storage.Redis.Address)
+		if address == "" {
+			return fmt.Errorf("storage.redis.address is required when Redis storage is enabled")
+		}
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return fmt.Errorf("storage.redis.address must be host:port")
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return fmt.Errorf("storage.redis.address port must be between 1 and 65535")
+		}
 	}
 	if err := validateTimeSync(cfg.TimeSync); err != nil {
 		return err
@@ -1499,7 +1529,11 @@ func validateBlockPage(page BlockPageConfig) error {
 	if strings.TrimSpace(page.CustomHTML) == "" {
 		return nil
 	}
-	if _, err := template.New("block_page").Parse(page.CustomHTML); err != nil {
+	clean, err := SanitizeBlockPageHTML(page.CustomHTML)
+	if err != nil {
+		return fmt.Errorf("block_page.custom_html cannot be sanitized: %w", err)
+	}
+	if _, err := template.New("block_page").Parse(clean); err != nil {
 		return fmt.Errorf("block_page.custom_html has invalid template syntax: %w", err)
 	}
 	return nil
@@ -1534,6 +1568,9 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 }
 
 func validateBotProtection(bot BotProtectionConfig) error {
+	if err := ValidateBotChallengeBackend(bot.ChallengeBackend); err != nil {
+		return err
+	}
 	if bot.RiskLevel < 1 || bot.RiskLevel > 5 {
 		return fmt.Errorf("protection.bot.risk_level must be between 1 and 5")
 	}
@@ -1973,6 +2010,9 @@ func hasAnyTLSCertificate(cfg *Config) bool {
 }
 
 func validateACME(cfg ACMEConfig) error {
+	if _, err := ResolveACMEReloadCommand(cfg.ReloadCommand); err != nil {
+		return fmt.Errorf("acme.reload_command is invalid: %w", err)
+	}
 	if !cfg.Enabled {
 		return nil
 	}
@@ -1987,9 +2027,6 @@ func validateACME(cfg ACMEConfig) error {
 	}
 	if err := validateACMEServer(cfg.Server); err != nil {
 		return fmt.Errorf("acme.server is invalid: %w", err)
-	}
-	if err := validateACMEReloadCommand(cfg.ReloadCommand); err != nil {
-		return fmt.Errorf("acme.reload_command is invalid: %w", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.KeyType)) {
 	case "", "ec-256", "ec-384", "2048", "3072", "4096":
@@ -2030,31 +2067,6 @@ func validateACMEServer(value string) error {
 		AllowedSchemes: []string{"https"},
 	})
 	return err
-}
-
-func validateACMEReloadCommand(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	if strings.ContainsAny(value, "\x00\r\n") {
-		return fmt.Errorf("must not contain control characters")
-	}
-	// Reject shell metacharacters and require an absolute executable path.
-	// acme.sh executes --reloadcmd through a shell, so free-form strings are RCE.
-	if strings.ContainsAny(value, ";|&<>$`\\!*?\n\r") {
-		return fmt.Errorf("must not contain shell metacharacters")
-	}
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return fmt.Errorf("must not be empty")
-	}
-	exe := fields[0]
-	// Accept Unix absolute paths even when validating on Windows.
-	if !filepath.IsAbs(exe) && !strings.HasPrefix(exe, "/") {
-		return fmt.Errorf("executable must be an absolute path")
-	}
-	return nil
 }
 
 func validateSiteCertificate(site SiteConfig) error {

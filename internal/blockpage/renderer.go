@@ -97,6 +97,13 @@ func NewRenderer() *Renderer {
 
 func NewRendererFromConfig(cfg config.BlockPageConfig) (*Renderer, error) {
 	html := ResolveTemplateHTML(cfg)
+	if cfg.CustomEnabled && strings.TrimSpace(cfg.CustomHTML) != "" && !isLegacyStaticCustomHTML(cfg.CustomHTML) {
+		clean, err := config.SanitizeBlockPageHTML(cfg.CustomHTML)
+		if err != nil {
+			return nil, err
+		}
+		html = clean
+	}
 	parsed, err := template.New("block").Parse(html)
 	if err != nil {
 		return nil, err
@@ -113,6 +120,7 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, data Data) {
 	w.Header().Set("X-CheeseWAF-Trace-ID", data.TraceID)
 	w.Header().Set("X-CheeseWAF-Event-ID", data.EventID)
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(body))
 }

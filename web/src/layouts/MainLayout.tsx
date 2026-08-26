@@ -157,6 +157,40 @@ export function realtimeQueryKeys(messageType: string): ReadonlyArray<readonly u
   }
 }
 
+export function createRealtimeInvalidationScheduler(
+  invalidate: (queryKey: readonly unknown[]) => void,
+  schedule: (callback: () => void, delay: number) => number = (callback, delay) => window.setTimeout(callback, delay),
+  cancel: (handle: number) => void = (handle) => window.clearTimeout(handle),
+) {
+  const pending = new globalThis.Map<string, readonly unknown[]>();
+  let timer: number | null = null;
+  const flush = () => {
+    timer = null;
+    const keys = Array.from(pending.values());
+    pending.clear();
+    for (const queryKey of keys) {
+      invalidate(queryKey);
+    }
+  };
+  return {
+    enqueue(queryKeys: ReadonlyArray<readonly unknown[]>) {
+      for (const queryKey of queryKeys) {
+        pending.set(JSON.stringify(queryKey), queryKey);
+      }
+      if (timer == null && pending.size > 0) {
+        timer = schedule(flush, 1_000);
+      }
+    },
+    close() {
+      if (timer != null) {
+        cancel(timer);
+        timer = null;
+      }
+      pending.clear();
+    },
+  };
+}
+
 export default function MainLayout() {
   const { t } = useTranslation();
   const location = useLocation();
@@ -212,14 +246,19 @@ export default function MainLayout() {
       setRealtimeConnected(false);
       return undefined;
     }
-    return subscribeRealtimeEvents({
+    const scheduler = createRealtimeInvalidationScheduler((queryKey) => {
+      void queryClient.invalidateQueries({ queryKey });
+    });
+    const subscription = subscribeRealtimeEvents({
       onConnectionChange: setRealtimeConnected,
       onEvent: (message) => {
-        for (const queryKey of realtimeQueryKeys(message.type)) {
-          void queryClient.invalidateQueries({ queryKey });
-        }
+        scheduler.enqueue(realtimeQueryKeys(message.type));
       },
-    }).close;
+    });
+    return () => {
+      subscription.close();
+      scheduler.close();
+    };
   }, [queryClient, shellAccess.realtime]);
 
   useEffect(() => {

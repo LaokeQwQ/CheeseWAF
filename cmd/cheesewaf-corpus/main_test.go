@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
 )
 
 func TestRunAnalyzerModeWritesPassingReport(t *testing.T) {
@@ -380,6 +383,7 @@ func TestRunStreamModeWritesNDJSONAndSummary(t *testing.T) {
 		CorpusPath: corpus,
 		Timeout:    time.Second,
 		OutputPath: ndjson,
+		Shards:     1,
 		Stream:     true,
 	}); err != nil {
 		t.Fatal(err)
@@ -412,6 +416,273 @@ func TestRunStreamModeWritesNDJSONAndSummary(t *testing.T) {
 	}
 	if rep.AttackDetected != 1 || rep.BenignClean != 1 {
 		t.Fatalf("unexpected counters: attack_detected=%d benign_clean=%d", rep.AttackDetected, rep.BenignClean)
+	}
+}
+
+func TestRunStreamModeWritesFailureArtifactsBeforeReturningError(t *testing.T) {
+	corpus := writeCorpus(t, `{"name":"missed-attack","source_family":"unit","label":"attack","category":"sqli","method":"GET","target":"/ok"}`+"\n")
+	output := filepath.Join(t.TempDir(), "results.jsonl")
+
+	err := run(options{
+		Mode:       "analyzer",
+		CorpusPath: corpus,
+		OutputPath: output,
+		Shards:     1,
+		Stream:     true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "security corpus validation failed: 1/1 cases failed") {
+		t.Fatalf("expected streamed validation failure, got %v", err)
+	}
+
+	data, readErr := os.ReadFile(output)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var res result
+	if err := json.Unmarshal(bytes.TrimSpace(data), &res); err != nil {
+		t.Fatalf("stream output is not valid NDJSON: %v", err)
+	}
+	if res.Name != "missed-attack" || res.Passed {
+		t.Fatalf("unexpected streamed result: %+v", res)
+	}
+
+	report := readSummary(t, output+".summary.json")
+	if report.Total != 1 || report.Failures != 1 || report.AttackMissed != 1 {
+		t.Fatalf("unexpected failure summary: %+v", report)
+	}
+}
+
+func TestCorpusCLIStreamFailureExitsNonzeroAfterWritingArtifacts(t *testing.T) {
+	corpus := writeCorpus(t, `{"name":"missed-attack","source_family":"unit","label":"attack","category":"sqli","method":"GET","target":"/ok"}`+"\n")
+	output := filepath.Join(t.TempDir(), "results.jsonl")
+	binary := filepath.Join(t.TempDir(), "cheesewaf-corpus")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if data, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build corpus CLI: %v\n%s", err, data)
+	}
+	cmd := exec.Command(binary,
+		"-mode", "analyzer",
+		"-corpus", corpus,
+		"-output", output,
+		"-stream",
+	)
+	data, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+		t.Fatalf("expected nonzero corpus CLI exit, got err=%v output=%s", err, data)
+	}
+	if !strings.Contains(string(data), "security corpus validation failed: 1/1 cases failed") {
+		t.Fatalf("expected validation error on stderr, got %s", data)
+	}
+
+	report := readSummary(t, output+".summary.json")
+	if report.Total != 1 || report.Failures != 1 {
+		t.Fatalf("unexpected subprocess summary: %+v", report)
+	}
+}
+
+func TestRunStreamModeRejectsEmptyCorpus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "empty", raw: ""},
+		{name: "blank-only", raw: " \n\t\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			corpus := writeCorpus(t, tc.raw)
+			err := run(options{Mode: "analyzer", CorpusPath: corpus, Shards: 1, Stream: true})
+			if err == nil || err.Error() != "corpus is empty" {
+				t.Fatalf("expected corpus is empty error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRunStreamModeDistinguishesEmptyCorpusFromEmptyShard(t *testing.T) {
+	corpus := writeCorpus(t, "\n\t\n")
+	err := run(options{Mode: "analyzer", CorpusPath: corpus, Shards: 2, Shard: 1, Stream: true})
+	if err == nil || err.Error() != "corpus is empty" {
+		t.Fatalf("expected corpus is empty error, got %v", err)
+	}
+}
+
+func TestRunNonStreamUsesRawLineShardMembership(t *testing.T) {
+	const shards = 2
+	var raw []byte
+	var selectedShard int
+	for i := 0; i < 100; i++ {
+		candidate := []byte(fmt.Sprintf(`{"name":"raw-shard-%d","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`, i))
+		byRaw := securitytest.ShardIndexForRaw(candidate, shards)
+		byName := securitytest.ShardIndexFor(fmt.Sprintf("raw-shard-%d", i), shards)
+		if byRaw != byName {
+			raw = candidate
+			selectedShard = byRaw
+			break
+		}
+	}
+	if len(raw) == 0 {
+		t.Fatal("failed to construct raw/name shard mismatch")
+	}
+	corpus := writeCorpus(t, string(raw)+"\n")
+	output := filepath.Join(t.TempDir(), "report.json")
+	if err := run(options{
+		Mode:       "analyzer",
+		CorpusPath: corpus,
+		OutputPath: output,
+		Shards:     shards,
+		Shard:      selectedShard,
+	}); err != nil {
+		t.Fatalf("raw-line selected shard must run in non-stream mode: %v", err)
+	}
+	if report := readSummary(t, output); report.Total != 1 {
+		t.Fatalf("non-stream raw shard report = %+v, want one selected case", report)
+	}
+}
+
+func TestRunStreamModeRejectsInvalidShardParameters(t *testing.T) {
+	corpus := writeCorpus(t, `{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n")
+	for _, tc := range []struct {
+		name   string
+		shards int
+		shard  int
+		want   string
+	}{
+		{name: "zero shards", shards: 0, shard: 0, want: "--shards must be at least 1"},
+		{name: "negative shard", shards: 2, shard: -1, want: "--shard must be between 0 and 1 for --shards=2"},
+		{name: "shard equals count", shards: 2, shard: 2, want: "--shard must be between 0 and 1 for --shards=2"},
+		{name: "nonzero unsharded index", shards: 1, shard: 1, want: "--shard must be between 0 and 0 for --shards=1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := run(options{
+				Mode:       "analyzer",
+				CorpusPath: corpus,
+				Shards:     tc.shards,
+				Shard:      tc.shard,
+				Stream:     true,
+			})
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestRunStreamModeRejectsEmptySelectedShard(t *testing.T) {
+	raw := []byte(`{"name":"only-case","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`)
+	selectedShard := 1 - securitytest.ShardIndexForRaw(raw, 2)
+	corpus := writeCorpus(t, string(raw)+"\n")
+
+	err := run(options{
+		Mode:       "analyzer",
+		CorpusPath: corpus,
+		Shards:     2,
+		Shard:      selectedShard,
+		Stream:     true,
+	})
+	if err == nil || err.Error() != "corpus shard is empty" {
+		t.Fatalf("expected corpus shard is empty error, got %v", err)
+	}
+}
+
+func TestRunStreamGateFailureWritesSummaryBeforeReturningError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	corpus := writeCorpus(t, `{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n")
+	output := filepath.Join(t.TempDir(), "results.jsonl")
+	err := run(options{
+		Mode:            "gate",
+		CorpusPath:      corpus,
+		BaseURL:         server.URL,
+		AdminURL:        server.URL,
+		BlockStatuses:   "403",
+		OutputPath:      output,
+		RequireExternal: true,
+		SkipExternal:    true,
+		Shards:          1,
+		Stream:          true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "security corpus validation failed") {
+		t.Fatalf("expected gate validation failure, got %v", err)
+	}
+
+	report := readSummary(t, output+".summary.json")
+	if report.Total != 2 || report.Failures != 5 || len(report.ExternalSuites) != 5 {
+		t.Fatalf("unexpected gate failure summary: %+v", report)
+	}
+}
+
+func TestLocalCorpusRequestConstructionErrorsAreWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	corpus := writeCorpus(t,
+		`{"name":"bad-method","source_family":"unit","label":"benign","method":"GET\\nBAD","target":"/ok"}`+"\n"+
+			`{"name":"bad-target","source_family":"unit","label":"benign","method":"GET","target":"%gh"}`+"\n",
+	)
+	for _, mode := range []string{"analyzer", "http"} {
+		t.Run(mode, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "report.json")
+			err := run(options{
+				Mode:          mode,
+				CorpusPath:    corpus,
+				BaseURL:       server.URL,
+				BlockStatuses: "403",
+				OutputPath:    output,
+			})
+			if err != nil {
+				t.Fatalf("local construction error should be a warning: %v", err)
+			}
+
+			report := readSummary(t, output)
+			if report.Total != 2 || report.Warnings != 2 || report.Failures != 0 {
+				t.Fatalf("unexpected local construction summary: %+v", report)
+			}
+			for _, res := range report.Results {
+				if !res.Warning || !res.Passed || res.Error == "" {
+					t.Fatalf("unexpected local construction result: %+v", res)
+				}
+			}
+		})
+	}
+}
+
+func TestHTTPTransportErrorsRemainFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	baseURL := server.URL
+	server.Close()
+
+	corpus := writeCorpus(t, `{"name":"transport-error","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n")
+	output := filepath.Join(t.TempDir(), "report.json")
+	err := run(options{
+		Mode:          "http",
+		CorpusPath:    corpus,
+		BaseURL:       baseURL,
+		Timeout:       time.Second,
+		BlockStatuses: "403",
+		OutputPath:    output,
+	})
+	if err == nil || !strings.Contains(err.Error(), "security corpus validation failed") {
+		t.Fatalf("expected HTTP transport failure, got %v", err)
+	}
+
+	report := readSummary(t, output)
+	if report.Total != 1 || report.Failures != 1 || report.Warnings != 0 {
+		t.Fatalf("unexpected transport failure summary: %+v", report)
+	}
+	if len(report.Results) != 1 || report.Results[0].Warning || report.Results[0].Error == "" {
+		t.Fatalf("unexpected transport failure result: %+v", report.Results)
 	}
 }
 
@@ -455,6 +726,15 @@ func readSummary(t *testing.T, path string) summary {
 		t.Fatal(err)
 	}
 	return report
+}
+
+func writeCorpus(t *testing.T, raw string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "corpus.jsonl")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func stubExternalExecution(t *testing.T, lookPath func(string) (string, error), run func(context.Context, suiteCommand, func(string, int, error) suiteResult) suiteResult) func() {

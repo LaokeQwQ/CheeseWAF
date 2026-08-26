@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,9 +101,9 @@ func TestInstallPublishesOnlyTheExactPreviousGenerationAfterVerification(t *test
 func TestSSHRunnerPasswordAuthExecutesFixedCheck(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "ok\n"})
 	rec := NewMemoryAuditRecorder()
-	runner := NewSSHRunner(SSHRunnerOptions{Audit: rec, Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
+	runner := newRedirectedTestSSHRunner(server, SSHRunnerOptions{Audit: rec, Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
 	result, err := runner.Check(context.Background(), SSHDeploymentRequest{
-		Host:          server.host,
+		Host:          "node.example.com",
 		User:          "root",
 		Port:          server.port,
 		Password:      "secret",
@@ -129,14 +130,15 @@ func TestSSHRunnerPrivateKeyAuthExecutesFixedDeploy(t *testing.T) {
 	tmp := t.TempDir()
 	binary := writeTestDeployBinary(t, tmp, "cheesewaf-test-binary")
 	t.Setenv("CHEESEWAF_DEPLOY_BINARY", binary)
-	runner := NewSSHRunner(SSHRunnerOptions{Audit: rec, Timeout: 5 * time.Second, KnownHosts: filepath.Join(tmp, "known_hosts")})
+	runner := newRedirectedTestSSHRunner(server, SSHRunnerOptions{Audit: rec, Timeout: 5 * time.Second, KnownHosts: filepath.Join(tmp, "known_hosts")})
 	result, err := runner.Deploy(context.Background(), SSHDeploymentRequest{
-		Host:          server.host,
+		Host:          "node.example.com",
 		User:          "root",
 		Port:          server.port,
 		PrivateKey:    privateKeyPEM,
 		HostKeySHA256: ssh.FingerprintSHA256(server.hostKey.PublicKey()),
 		Action:        "install",
+		ResolvedIPs:   []string{"8.8.8.8"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -161,14 +163,15 @@ func TestSSHRunnerPrivateKeyAuthExecutesFixedDeploy(t *testing.T) {
 
 func TestSSHRunnerExecutesFixedRollbackInstall(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "CheeseWAF previous\n"})
-	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
+	runner := newRedirectedTestSSHRunner(server, SSHRunnerOptions{Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
 	result, err := runner.Deploy(context.Background(), SSHDeploymentRequest{
-		Host:          server.host,
+		Host:          "node.example.com",
 		User:          "root",
 		Port:          server.port,
 		Password:      "secret",
 		HostKeySHA256: ssh.FingerprintSHA256(server.hostKey.PublicKey()),
 		Action:        actionRollbackInstall,
+		ResolvedIPs:   []string{"8.8.8.8"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -379,9 +382,9 @@ func assertNoDeploymentTemps(t *testing.T, target string) {
 func TestSSHRunnerRejectsHostKeyMismatch(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "ok\n"})
 	otherKey, _ := generateSSHPrivateKey(t)
-	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
+	runner := newRedirectedTestSSHRunner(server, SSHRunnerOptions{Timeout: 5 * time.Second, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
 	_, err := runner.Check(context.Background(), SSHDeploymentRequest{
-		Host:          server.host,
+		Host:          "node.example.com",
 		User:          "root",
 		Port:          server.port,
 		Password:      "secret",
@@ -514,14 +517,15 @@ func TestSSHRunnerOutputLimit(t *testing.T) {
 	server := startTestSSHServer(t, testSSHServerOptions{Password: "secret", Output: "abcdef"})
 	binary := writeTestDeployBinary(t, t.TempDir(), "abcdef")
 	t.Setenv("CHEESEWAF_DEPLOY_BINARY", binary)
-	runner := NewSSHRunner(SSHRunnerOptions{Timeout: 5 * time.Second, OutputLimit: 4, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
+	runner := newRedirectedTestSSHRunner(server, SSHRunnerOptions{Timeout: 5 * time.Second, OutputLimit: 4, KnownHosts: filepath.Join(t.TempDir(), "known_hosts")})
 	result, err := runner.Deploy(context.Background(), SSHDeploymentRequest{
-		Host:          server.host,
+		Host:          "node.example.com",
 		User:          "root",
 		Port:          server.port,
 		Password:      "secret",
 		HostKeySHA256: ssh.FingerprintSHA256(server.hostKey.PublicKey()),
 		Action:        "install",
+		ResolvedIPs:   []string{"8.8.8.8"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -620,6 +624,16 @@ func startTestSSHServer(t *testing.T, opts testSSHServerOptions) *testSSHServer 
 		}
 	}()
 	return server
+}
+
+func newRedirectedTestSSHRunner(server *testSSHServer, opts SSHRunnerOptions) *SSHRunner {
+	opts.Resolver = &staticTargetResolver{answers: map[string][]netip.Addr{
+		"node.example.com": {netip.MustParseAddr("8.8.8.8")},
+	}}
+	opts.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(server.host, strconv.Itoa(server.port)))
+	}
+	return NewSSHRunner(opts)
 }
 
 func handleTestSSHConn(conn net.Conn, config *ssh.ServerConfig, output string, commands chan<- testSSHExec) {

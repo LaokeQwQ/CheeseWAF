@@ -292,10 +292,7 @@ tell application "Finder"
       set position of item "Applications" of container window to {470, 220}
     end try
     try
-      set position of item "Fix Gatekeeper.command" of container window to {170, 390}
-    end try
-    try
-      set position of item "Read Me.txt" of container window to {470, 390}
+      set position of item "Read Me.txt" of container window to {320, 390}
     end try
     update without registering applications
     delay 1
@@ -330,8 +327,6 @@ for tarball in "${tarballs[@]}"; do
   assemble_app "$package_dir" "$version" "${dmg_root}/CheeseWAF.app"
   ln -s /Applications "${dmg_root}/Applications"
   cp "${repo_root}/deploy/macos/first-open.txt" "${dmg_root}/Read Me.txt"
-  cp "${repo_root}/deploy/macos/fix-gatekeeper.command" "${dmg_root}/Fix Gatekeeper.command"
-  chmod +x "${dmg_root}/Fix Gatekeeper.command"
   if [[ -f "${repo_root}/deploy/macos/dmg-background.png" ]]; then
     cp "${repo_root}/deploy/macos/dmg-background.png" "${dmg_root}/.background/background.png"
   fi

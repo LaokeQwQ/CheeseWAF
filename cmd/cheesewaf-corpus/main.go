@@ -134,6 +134,12 @@ func main() {
 }
 
 func run(opts options) error {
+	if opts.Shards == 0 && !opts.Stream {
+		opts.Shards = 1
+	}
+	if err := securitytest.ValidateShard(opts.Shards, opts.Shard); err != nil {
+		return err
+	}
 	file, err := os.Open(opts.CorpusPath)
 	if err != nil {
 		return err
@@ -154,18 +160,19 @@ func run(opts options) error {
 		return runStream(opts, reader)
 	}
 
-	cases, err := securitytest.LoadJSONL(reader)
+	cases := make([]securitytest.Case, 0)
+	corpusStats, err := securitytest.ForEachJSONLWithStats(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
+		cases = append(cases, tc)
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	if len(cases) == 0 {
+	if corpusStats.TotalCases == 0 {
 		return errors.New("corpus is empty")
 	}
-	if opts.Shards > 1 {
-		cases = securitytest.FilterShard(cases, opts.Shards, opts.Shard)
-		if len(cases) == 0 {
-			return errors.New("corpus shard is empty")
-		}
+	if corpusStats.SelectedCases == 0 {
+		return errors.New("corpus shard is empty")
 	}
 
 	started := time.Now().UTC()
@@ -265,6 +272,9 @@ func runStream(opts options, reader io.Reader) error {
 	default:
 		return fmt.Errorf("unsupported mode %q", opts.Mode)
 	}
+	if err := validateStreamShardOptions(opts.Shards, opts.Shard); err != nil {
+		return err
+	}
 	if (opts.Mode == "http" || opts.Mode == "gate") && strings.TrimSpace(opts.BaseURL) == "" {
 		return errors.New("--base-url is required in http and gate modes")
 	}
@@ -342,17 +352,18 @@ func runStream(opts options, reader io.Reader) error {
 		}()
 	}
 
-	loadErr := make(chan error, 1)
-	producerDone := make(chan struct{})
+	type corpusLoadResult struct {
+		stats securitytest.JSONLStats
+		err   error
+	}
+	loadResult := make(chan corpusLoadResult, 1)
 	go func() {
-		defer close(producerDone)
-		defer close(cases)
-		if err := securitytest.ForEachJSONL(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
+		stats, err := securitytest.ForEachJSONLWithStats(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
 			cases <- tc
 			return nil
-		}); err != nil {
-			loadErr <- err
-		}
+		})
+		close(cases)
+		loadResult <- corpusLoadResult{stats: stats, err: err}
 	}()
 
 	writerDone := make(chan error, 1)
@@ -360,18 +371,20 @@ func runStream(opts options, reader io.Reader) error {
 		writerDone <- writeStreamResults(opts, out, results, &report)
 	}()
 
-	<-producerDone
+	loaded := <-loadResult
 	workersWG.Wait()
 	close(results)
 	if err := <-writerDone; err != nil {
 		return err
 	}
-	select {
-	case err := <-loadErr:
-		if err != nil {
-			return err
-		}
-	default:
+	if loaded.err != nil {
+		return loaded.err
+	}
+	if loaded.stats.TotalCases == 0 {
+		return errors.New("corpus is empty")
+	}
+	if loaded.stats.SelectedCases == 0 {
+		return errors.New("corpus shard is empty")
 	}
 
 	if opts.Mode == "gate" {
@@ -391,7 +404,17 @@ func runStream(opts options, reader io.Reader) error {
 		return report.ExternalSuites[i].Name < report.ExternalSuites[j].Name
 	})
 
-	return writeStreamSummary(opts, &report)
+	if err := writeStreamSummary(opts, &report); err != nil {
+		return err
+	}
+	if report.Failures > 0 {
+		return fmt.Errorf("security corpus validation failed: %d/%d cases failed", report.Failures, report.Total)
+	}
+	return nil
+}
+
+func validateStreamShardOptions(shards, shard int) error {
+	return securitytest.ValidateShard(shards, shard)
 }
 
 func writeStreamResults(opts options, out io.Writer, results <-chan result, report *summary) error {
@@ -518,15 +541,24 @@ func validateHTTP(client *http.Client, baseURL string, blockStatuses map[int]str
 	res := baseResult("http", tc)
 	start := time.Now()
 
+	if _, err := parseBaseURL(baseURL); err != nil {
+		res.Error = err.Error()
+		res.LatencyMS = durationMS(time.Since(start))
+		return res
+	}
 	target, err := resolveTarget(baseURL, tc.Target)
 	if err != nil {
 		res.Error = err.Error()
+		res.Passed = true
+		res.Warning = true
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
 	req, err := http.NewRequest(tc.Method, target, strings.NewReader(tc.Body))
 	if err != nil {
 		res.Error = err.Error()
+		res.Passed = true
+		res.Warning = true
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
@@ -617,12 +649,9 @@ func httpClient(timeout time.Duration, insecure bool) *http.Client {
 }
 
 func resolveTarget(baseURL, target string) (string, error) {
-	base, err := url.Parse(baseURL)
+	base, err := parseBaseURL(baseURL)
 	if err != nil {
 		return "", err
-	}
-	if base.Scheme == "" || base.Host == "" {
-		return "", fmt.Errorf("base URL %q must include scheme and host", baseURL)
 	}
 	parsedTarget, err := url.Parse(target)
 	if err != nil {
@@ -632,6 +661,17 @@ func resolveTarget(baseURL, target string) (string, error) {
 		return parsedTarget.String(), nil
 	}
 	return base.ResolveReference(parsedTarget).String(), nil
+}
+
+func parseBaseURL(baseURL string) (*url.URL, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	if base.Scheme == "" || base.Host == "" {
+		return nil, fmt.Errorf("base URL %q must include scheme and host", baseURL)
+	}
+	return base, nil
 }
 
 func (s *summary) count(res result) {

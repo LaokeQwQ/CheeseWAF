@@ -761,7 +761,7 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	registry.Register(fakeTool{sensitivity: Modify})
 	assistant := NewAssistant(registry, NewApprovalStore())
 
-	first, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, "")
+	first, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", nil, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -772,7 +772,7 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	second, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, approved.ID)
+	second, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", nil, approved.ID)
 	if err != nil {
 		t.Fatalf("execute approved tool: %v", err)
 	}
@@ -782,8 +782,32 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	if second.Approval == nil || second.Approval.Status != ApprovalExecuted {
 		t.Fatalf("expected approval to be marked executed after tool success, got %+v", second.Approval)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, approved.ID); err == nil {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", nil, approved.ID); err == nil {
 		t.Fatal("expected approved request to be single-use")
+	}
+}
+
+func TestAssistantRejectsApprovalWhenPreviewStateChanged(t *testing.T) {
+	state := "before"
+	registry := NewRegistry()
+	registry.Register(previewStateTool{state: &state})
+	store := NewApprovalStore()
+	assistant := NewAssistant(registry, store)
+
+	first, err := assistant.ExecuteTool(testAdminAIContext(), "preview_state_modify", nil, "")
+	if err != nil || first.Approval == nil {
+		t.Fatalf("create approval: execution=%+v err=%v", first, err)
+	}
+	if _, err := assistant.Approve(first.Approval.ID); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	state = "changed by another writer"
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "preview_state_modify", nil, first.Approval.ID); err == nil || !strings.Contains(err.Error(), "requires approved request") {
+		t.Fatalf("stale preview was accepted: %v", err)
+	}
+	stored, ok := store.Get(first.Approval.ID)
+	if !ok || stored.Status != ApprovalApproved {
+		t.Fatalf("stale preview must not consume approval: %+v", stored)
 	}
 }
 
@@ -836,7 +860,7 @@ func TestAssistantApprovedToolCannotRetryAfterExecutionFailure(t *testing.T) {
 	assistant := NewAssistant(registry, store)
 	args := map[string]any{"enabled": true}
 
-	first, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, "")
+	first, err := assistant.ExecuteTool(testAdminAIContext(), "fake_fail_once", args, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -844,7 +868,7 @@ func TestAssistantApprovedToolCannotRetryAfterExecutionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, approved.ID); err == nil {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_fail_once", args, approved.ID); err == nil {
 		t.Fatal("expected first approved execution to fail")
 	}
 	stored, ok := store.Get(approved.ID)
@@ -854,7 +878,7 @@ func TestAssistantApprovedToolCannotRetryAfterExecutionFailure(t *testing.T) {
 	if stored.Status != ApprovalFailed {
 		t.Fatalf("failed execution should mark approval failed, got %+v", stored)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, approved.ID); err == nil {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_fail_once", args, approved.ID); err == nil {
 		t.Fatal("expected failed approval to be single-use")
 	}
 }
@@ -917,7 +941,7 @@ func TestAssistantRejectsApprovalArgumentSwap(t *testing.T) {
 	registry.Register(fakeTool{sensitivity: Modify})
 	assistant := NewAssistant(registry, NewApprovalStore())
 
-	first, err := assistant.ExecuteTool(context.Background(), "fake_modify", map[string]any{"enabled": true}, "")
+	first, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", map[string]any{"enabled": true}, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -925,7 +949,7 @@ func TestAssistantRejectsApprovalArgumentSwap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", map[string]any{"enabled": false}, approved.ID); err == nil {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", map[string]any{"enabled": false}, approved.ID); err == nil {
 		t.Fatal("expected approval argument mismatch to be rejected")
 	}
 }
@@ -995,6 +1019,25 @@ func TestApprovalStoreListReturnsSortedDefensiveSnapshots(t *testing.T) {
 
 type fakeTool struct {
 	sensitivity ToolSensitivity
+}
+
+type previewStateTool struct {
+	state *string
+}
+
+func (previewStateTool) Name() string                 { return "preview_state_modify" }
+func (previewStateTool) Description() string          { return "preview state test tool" }
+func (previewStateTool) Sensitivity() ToolSensitivity { return Modify }
+func (previewStateTool) Parameters() map[string]any   { return map[string]any{"type": "object"} }
+func (t previewStateTool) Preview(context.Context, map[string]any) (string, error) {
+	return *t.state, nil
+}
+func (previewStateTool) Execute(context.Context, map[string]any) (*ToolResult, error) {
+	return &ToolResult{Success: true}, nil
+}
+
+func testAdminAIContext() context.Context {
+	return ContextWithApprovalActor(context.Background(), ApprovalActor{Subject: "test-admin", SessionID: "test-session", Role: "admin"})
 }
 
 func (f fakeTool) Name() string {

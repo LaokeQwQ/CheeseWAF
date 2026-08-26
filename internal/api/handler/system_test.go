@@ -18,6 +18,191 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+func TestUpdateSystemValidatesACMEReloadProfile(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	t.Run("rejects arbitrary command while disabled", func(t *testing.T) {
+		next := cfg.ACME
+		next.Enabled = false
+		next.ReloadCommand = "/bin/sh -c 'id'"
+		raw, _ := json.Marshal(map[string]any{"acme": next})
+		recorder := httptest.NewRecorder()
+		handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("expected invalid reload command to return 400, code=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if cfg.ACME.ReloadCommand != "" {
+			t.Fatalf("rejected reload command mutated config: %q", cfg.ACME.ReloadCommand)
+		}
+	})
+
+	t.Run("accepts documented profile", func(t *testing.T) {
+		next := cfg.ACME
+		next.ReloadCommand = config.ACMEReloadProfileSystemdRestart
+		raw, _ := json.Marshal(map[string]any{"acme": next})
+		recorder := httptest.NewRecorder()
+		handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected documented reload profile to save, code=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if cfg.ACME.ReloadCommand != config.ACMEReloadProfileSystemdRestart {
+			t.Fatalf("saved reload profile = %q", cfg.ACME.ReloadCommand)
+		}
+	})
+}
+
+func TestSystemExposesUnavailableUpdateCapabilitiesAndEffectiveDisabledState(t *testing.T) {
+	cfg := config.Default()
+	cfg.Update.OTA.Enabled = true
+	cfg.Update.OTA.AutoUpdateRules = true
+	cfg.Update.OTA.AutoUpdateBinary = true
+	cfg.Vulnerability.Enabled = true
+	cfg.Vulnerability.Feeds = []config.VulnerabilityFeedConfig{{ID: "legacy-feed", Enabled: true}}
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save legacy config: %v", err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read legacy config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	recorder := httptest.NewRecorder()
+	handler.System(recorder, httptest.NewRequest(http.MethodGet, "/api/system", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected system response ok, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var response struct {
+		Data struct {
+			Capabilities map[string]struct {
+				Available bool   `json:"available"`
+				Reason    string `json:"reason"`
+			} `json:"capabilities"`
+			Update struct {
+				OTA struct {
+					Enabled          bool `json:"enabled"`
+					AutoUpdateRules  bool `json:"auto_update_rules"`
+					AutoUpdateBinary bool `json:"auto_update_binary"`
+				} `json:"ota"`
+			} `json:"update"`
+			Vulnerability struct {
+				Enabled bool `json:"enabled"`
+				Feeds   []struct {
+					Enabled bool `json:"enabled"`
+				} `json:"feeds"`
+			} `json:"vulnerability"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode system response: %v", err)
+	}
+	for _, capability := range []string{"ota_updates", "vulnerability_feeds"} {
+		got := response.Data.Capabilities[capability]
+		if got.Available || got.Reason != "NOT_IMPLEMENTED" {
+			t.Fatalf("capability %q = %+v, want unavailable NOT_IMPLEMENTED", capability, got)
+		}
+	}
+	if response.Data.Update.OTA.Enabled || response.Data.Update.OTA.AutoUpdateRules || response.Data.Update.OTA.AutoUpdateBinary {
+		t.Fatalf("effective OTA state was not disabled: %+v", response.Data.Update.OTA)
+	}
+	if response.Data.Vulnerability.Enabled || len(response.Data.Vulnerability.Feeds) != 1 || response.Data.Vulnerability.Feeds[0].Enabled {
+		t.Fatalf("effective vulnerability state was not disabled: %+v", response.Data.Vulnerability)
+	}
+	if !cfg.Update.OTA.Enabled || !cfg.Vulnerability.Enabled || !cfg.Vulnerability.Feeds[0].Enabled {
+		t.Fatal("GET mutated the legacy enabled config")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after GET: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("GET rewrote the legacy config")
+	}
+}
+
+func TestUpdateSystemRejectsUnavailableFeatureEnablementBeforeMutation(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var runtimeCalls int
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnTimeSyncChanged: func(config.TimeSyncConfig) error {
+			runtimeCalls++
+			return nil
+		},
+	})
+
+	tests := []struct {
+		name    string
+		payload map[string]any
+		code    string
+	}{
+		{name: "ota", payload: map[string]any{"time_sync": map[string]any{"sync_interval": int64(time.Hour)}, "update": map[string]any{"ota": map[string]any{"enabled": true}}}, code: "OTA_UPDATES_UNAVAILABLE"},
+		{name: "vulnerability feeds", payload: map[string]any{"time_sync": map[string]any{"sync_interval": int64(time.Hour)}, "vulnerability": map[string]any{"enabled": true}}, code: "VULNERABILITY_FEEDS_UNAVAILABLE"},
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config before rejected updates: %v", err)
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw, _ := json.Marshal(test.payload)
+			recorder := httptest.NewRecorder()
+			handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+			if recorder.Code != http.StatusNotImplemented {
+				t.Fatalf("expected 501, code=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), `"code":"`+test.code+`"`) {
+				t.Fatalf("expected stable error code %q, body=%s", test.code, recorder.Body.String())
+			}
+			if cfg.Update.OTA.Enabled || cfg.Vulnerability.Enabled || runtimeCalls != 0 {
+				t.Fatalf("rejected update mutated config/runtime: update=%+v vulnerability=%+v runtime_calls=%d", cfg.Update, cfg.Vulnerability, runtimeCalls)
+			}
+			after, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("read config after rejected update: %v", err)
+			}
+			if string(after) != string(before) {
+				t.Fatal("rejected update persisted configuration")
+			}
+		})
+	}
+}
+
+func TestUpdateSystemAcceptsDisablingUnavailableFeatures(t *testing.T) {
+	cfg := config.Default()
+	cfg.Update.OTA.Enabled = true
+	cfg.Vulnerability.Enabled = true
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	nextUpdate := cfg.Update
+	nextUpdate.OTA.Enabled = false
+	nextVulnerability := cfg.Vulnerability
+	nextVulnerability.Enabled = false
+	raw, _ := json.Marshal(map[string]any{"update": nextUpdate, "vulnerability": nextVulnerability})
+	recorder := httptest.NewRecorder()
+	New(Options{Config: &cfg, ConfigPath: configPath}).UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected disabling to succeed, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Update.OTA.Enabled || cfg.Vulnerability.Enabled {
+		t.Fatalf("disabling did not persist in memory: update=%+v vulnerability=%+v", cfg.Update, cfg.Vulnerability)
+	}
+}
+
 func TestUpdateSystemNotifiesAPISecReload(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
@@ -1002,6 +1187,39 @@ func TestUpdateBlockPageConfigPersistsAndNotifies(t *testing.T) {
 	}
 	if !loaded.BlockPage.CustomEnabled || loaded.BlockPage.CustomHTML == "" {
 		t.Fatalf("block page config was not persisted: %+v", loaded.BlockPage)
+	}
+}
+
+func TestUpdateBlockPageConfigSanitizesActiveHTMLBeforePersistence(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+	payload := config.BlockPageConfig{
+		TemplateID:    "minimal",
+		CustomEnabled: true,
+		CustomHTML:    `<html><body onload="alert(1)"><script>alert(2)</script><main>{{.TraceID}}</main><a href="javascript:alert(3)">x</a></body></html>`,
+	}
+	raw, _ := json.Marshal(payload)
+	recorder := httptest.NewRecorder()
+	handler.UpdateBlockPageConfig(recorder, httptest.NewRequest(http.MethodPut, "/api/block-pages/config", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("sanitized block page update failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean := strings.ToLower(loaded.BlockPage.CustomHTML)
+	for _, forbidden := range []string{"<script", "onload=", "javascript:"} {
+		if strings.Contains(clean, forbidden) {
+			t.Fatalf("persisted block page retained %q: %s", forbidden, loaded.BlockPage.CustomHTML)
+		}
+	}
+	if !strings.Contains(loaded.BlockPage.CustomHTML, "{{.TraceID}}") {
+		t.Fatalf("template placeholder was removed: %s", loaded.BlockPage.CustomHTML)
 	}
 }
 

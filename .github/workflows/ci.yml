@@ -12,6 +12,9 @@ run-name: CI
       - master
       - canary
       - dev
+    tags:
+      - 'Alpha-*'
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -345,7 +348,7 @@ jobs:
 
   release-artifacts:
     name: release-artifacts
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))
     runs-on: ubuntu-latest
     needs:
       - go-mod-tidy
@@ -383,13 +386,14 @@ jobs:
           CHEESEWAF_REF_NAME: ${{ github.ref_name }}
           CHEESEWAF_RUN_NUMBER: ${{ github.run_number }}
           CHEESEWAF_COMMIT: ${{ github.sha }}
-          WINDOWS_CERT_P12: ${{ secrets.WINDOWS_CERT_P12 }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          # Branch artifacts stay available without signing credentials. Only tag-triggered packaging can resolve them.
+          WINDOWS_CERT_P12: ${{ github.ref_type == 'tag' && secrets.WINDOWS_CERT_P12 || '' }}
+          WINDOWS_CERT_PASSWORD: ${{ github.ref_type == 'tag' && secrets.WINDOWS_CERT_PASSWORD || '' }}
         run: bash scripts/ci/go-env.sh bash scripts/ci/package-release.sh
       - name: Verify branch release artifacts
         shell: bash
         env:
-          WINDOWS_CERT_P12: ${{ secrets.WINDOWS_CERT_P12 }}
+          WINDOWS_CERT_P12: ${{ github.ref_type == 'tag' && secrets.WINDOWS_CERT_P12 || '' }}
         run: |
           signing_mode=warn
           if [[ -n "$WINDOWS_CERT_P12" ]]; then signing_mode=1; fi
@@ -405,7 +409,7 @@ jobs:
 
   package-macos-dmg:
     name: package-macos-dmg
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))
     runs-on: macos-latest
     needs:
       - release-artifacts
@@ -421,21 +425,22 @@ jobs:
       - name: Build macOS disk images
         shell: bash
         env:
-          MACOS_P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
-          MACOS_P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
-          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          # Branch artifacts stay available without signing credentials. Only tag-triggered packaging can resolve them.
+          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_BASE64 || '' }}
+          MACOS_P12_PASSWORD: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_PASSWORD || '' }}
+          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && secrets.MACOS_CODESIGN_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
         run: bash scripts/ci/package-macos-dmg.sh release
       - name: Verify macOS disk images
         shell: bash
         env:
-          MACOS_P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
-          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_BASE64 || '' }}
+          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && secrets.MACOS_CODESIGN_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
         run: |
           signing_mode=warn
           if [[ -n "$APPLE_API_KEY" && -n "$APPLE_API_KEY_ID" && -n "$APPLE_API_ISSUER" ]] && \
@@ -488,3 +493,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/publish-prerelease.sh release
+
+  publish-release:
+    name: publish-release
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    environment: publish-release
+    needs:
+      - release-artifacts
+      - package-macos-dmg
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
+          path: release
+      - name: Download macOS disk images
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}-dmg
+          path: release
+      - name: Install syft
+        run: bash scripts/ci/install-syft.sh
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Publish stable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/publish-release.sh release

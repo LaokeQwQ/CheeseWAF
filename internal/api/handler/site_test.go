@@ -594,7 +594,7 @@ func TestIssueSiteACMEIgnoresUntrustedRuntimeFields(t *testing.T) {
 	handler.Config.ACME.ACMESHPath = "/opt/cheesewaf/bin/acme.sh"
 	handler.Config.ACME.Home = filepath.Join(t.TempDir(), "acme-home")
 	handler.Config.ACME.CertDir = filepath.Join(t.TempDir(), "certs")
-	handler.Config.ACME.ReloadCommand = "/usr/bin/true"
+	handler.Config.ACME.ReloadCommand = config.ACMEReloadProfileSystemdRestart
 	issuer := &recordingACMEIssuer{}
 	handler.ACMEIssuer = issuer
 

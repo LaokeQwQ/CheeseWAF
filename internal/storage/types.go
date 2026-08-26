@@ -127,6 +127,9 @@ type ReviewStore interface {
 	HasPendingReview(ctx context.Context, siteID, category, payload, uri string) (bool, error)
 	HasSimilarReview(ctx context.Context, siteID, category, payload, uri string) (bool, error)
 	SetReviewAIVerdict(ctx context.Context, id, verdict string) error
+	ClaimReviewItem(ctx context.Context, id, decision string) (*ReviewDecisionClaim, error)
+	ReleaseReviewItem(ctx context.Context, id, token string) error
+	CompleteReviewItem(ctx context.Context, id, token string, decision ReviewDecision) (*ReviewItem, error)
 	DecideReviewItem(ctx context.Context, id string, decision ReviewDecision) (*ReviewItem, error)
 	UpsertSitePromote(ctx context.Context, siteID string, until time.Time) error
 	ListSitePromotes(ctx context.Context) (map[string]time.Time, error)
@@ -182,6 +185,13 @@ type ReviewDecision struct {
 	DecidedBySubject string
 	DecidedByName    string
 	DecidedByRole    string
+}
+
+// ReviewDecisionClaim is a short-lived, exclusive reservation for applying a
+// review decision outside the database transaction.
+type ReviewDecisionClaim struct {
+	Item  *ReviewItem
+	Token string
 }
 
 // NotificationStore manages persistent, user-scoped management notifications.

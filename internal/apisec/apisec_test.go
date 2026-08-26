@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -485,10 +486,11 @@ func TestValidateWithBodySizeUsesActualBytesWhenContentLengthUnknown(t *testing.
 		t.Fatalf("expected exceeds message, got %+v", findings[0])
 	}
 
-	// Unknown actual size: ContentLength unknown and bodyBytes < 0 → no finding.
+	// Unknown ContentLength is measured through a bounded body peek.
+	req.Body = io.NopCloser(strings.NewReader(strings.Repeat("x", 64)))
 	findings = validator.ValidateWithBodySize(req, -1)
-	if len(findings) != 0 {
-		t.Fatalf("expected no finding when body size is unknown, got %+v", findings)
+	if len(findings) != 1 || findings[0].Field != "body" {
+		t.Fatalf("expected chunked body finding, got %+v", findings)
 	}
 
 	// ContentLength still consulted when bodyBytes is unknown.

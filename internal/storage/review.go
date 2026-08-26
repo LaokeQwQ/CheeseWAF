@@ -96,6 +96,22 @@ func (s *SQLiteStore) HasSimilarReview(ctx context.Context, siteID, category, pa
 	return s.hasReview(ctx, siteID, category, payload, uri, false)
 }
 
+// PruneReviewItems removes only old, terminal review items. Pending items are
+// retained regardless of age so a delayed operator or model can still inspect
+// them. The batch limit keeps each maintenance transaction short.
+func (s *SQLiteStore) PruneReviewItems(ctx context.Context, before time.Time, batchSize int) (int64, error) {
+	if batchSize <= 0 || batchSize > defaultReviewPruneBatch {
+		batchSize = defaultReviewPruneBatch
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM review_items WHERE id IN (
+		SELECT id FROM review_items WHERE status <> 'pending' AND created_at < ? ORDER BY created_at LIMIT ?
+	)`, formatTime(before.UTC()), batchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *SQLiteStore) hasReview(ctx context.Context, siteID, category, payload, uri string, pendingOnly bool) (bool, error) {
 	query := `SELECT COUNT(1) FROM review_items WHERE site_id=? AND category=? AND payload=? AND uri=?`
 	if pendingOnly {
@@ -120,6 +136,69 @@ func (s *SQLiteStore) SetReviewAIVerdict(ctx context.Context, id, verdict string
 	return err
 }
 
+// ClaimReviewItem reserves the item before any external rule/config mutation.
+// The conditional update is the serialization point shared by all processes.
+func (s *SQLiteStore) ClaimReviewItem(ctx context.Context, id, decision string) (*ReviewDecisionClaim, error) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(decision) == "" {
+		return nil, fmt.Errorf("review decision claim is required")
+	}
+	token := uuid.NewString()
+	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET decision_claim=?
+		WHERE id=? AND decision_claim='' AND (status='pending' OR
+		(status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint')))`, token, id, decision)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, nil
+	}
+	item, err := s.GetReviewItem(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, fmt.Errorf("review item disappeared after claim")
+	}
+	return &ReviewDecisionClaim{Item: item, Token: token}, nil
+}
+
+func (s *SQLiteStore) ReleaseReviewItem(ctx context.Context, id, token string) error {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(token) == "" {
+		return fmt.Errorf("review decision claim is required")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET decision_claim='' WHERE id=? AND decision_claim=?`, id, token)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("review decision claim was lost")
+	}
+	return nil
+}
+
+// CompleteReviewItem can only finalize a decision held by its claim token.
+func (s *SQLiteStore) CompleteReviewItem(ctx context.Context, id, token string, decision ReviewDecision) (*ReviewItem, error) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(token) == "" || strings.TrimSpace(decision.Decision) == "" {
+		return nil, fmt.Errorf("review decision completion is required")
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET status=?, decision=?, applied_rule_id=?,
+		decided_by_subject=?, decided_by_name=?, decided_by_role=?, decided_at=?, decision_claim=''
+		WHERE id=? AND decision_claim=?`,
+		reviewStatusForDecision(decision.Decision), decision.Decision, decision.AppliedRuleID,
+		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id, token)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, nil
+	}
+	return s.GetReviewItem(ctx, id)
+}
+
 func (s *SQLiteStore) DecideReviewItem(ctx context.Context, id string, decision ReviewDecision) (*ReviewItem, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(decision.Decision) == "" {
 		return nil, fmt.Errorf("review decision is required")
@@ -127,7 +206,7 @@ func (s *SQLiteStore) DecideReviewItem(ctx context.Context, id string, decision 
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET status=?, decision=?, applied_rule_id=?,
 		decided_by_subject=?, decided_by_name=?, decided_by_role=?, decided_at=?
-		WHERE id=? AND (status='pending' OR (status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint')))`,
+		WHERE id=? AND decision_claim='' AND (status='pending' OR (status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint')))`,
 		reviewStatusForDecision(decision.Decision), decision.Decision, decision.AppliedRuleID,
 		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id, decision.Decision)
 	if err != nil {

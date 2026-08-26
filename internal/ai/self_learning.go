@@ -90,7 +90,9 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 	}
 	groups := groupSelfLearningEvents(entries)
 	candidates := deterministicSelfLearningCandidates(groups, cfg)
-	reviewOK := opts.Client == nil
+	// Automatic rule writes require an actual model review. A missing client is
+	// a deliberate dry-run state, never an implicit approval.
+	reviewOK := !cfg.AutoApply || opts.Client != nil
 	if opts.Client != nil && len(candidates) > 0 {
 		if reviewed, err := reviewSelfLearningCandidates(ctx, opts.Client, opts.Language, candidates); err == nil {
 			candidates = mergeReviewedSelfLearningCandidates(candidates, reviewed)
@@ -371,6 +373,9 @@ func validateSelfLearningCandidate(candidate SelfLearningCandidate, cfg config.A
 	if candidate.EventCount < cfg.MinEvents {
 		return "not enough repeated evidence"
 	}
+	if cfg.AutoApply && !candidate.AIReviewed {
+		return "candidate has not passed AI review"
+	}
 	if candidate.Confidence < cfg.MinConfidence {
 		return "confidence below threshold"
 	}
@@ -411,7 +416,7 @@ func ruleKey(siteID, location, pattern string) string {
 
 func selfLearningEventEligible(entry storage.LogEntry) bool {
 	switch strings.ToLower(strings.TrimSpace(entry.Action)) {
-	case "block", "challenge", "log":
+	case "block":
 	default:
 		return false
 	}

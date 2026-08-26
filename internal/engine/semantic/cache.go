@@ -170,9 +170,10 @@ func (c *candidateCache) put(key uint64, hits []Hit) {
 	if c == nil {
 		return
 	}
-	expires := time.Now().Add(c.ttl).UnixNano()
-	if jitter := int64(c.ttl) / 8; jitter > 0 {
-		expires = time.Now().Add(c.ttl - time.Duration(rand.Int63n(2*jitter+1))).UnixNano()
+	now := time.Now()
+	expires := now.Add(c.ttl).UnixNano()
+	if jitter := c.ttl / 8; jitter > 0 {
+		expires = now.Add(cacheTTLWithJitter(c.ttl, rand.Int63n(int64(2*jitter)+1))).UnixNano()
 	}
 	stored := cloneHits(hits)
 	s := c.shard(key)
@@ -196,6 +197,14 @@ func (c *candidateCache) put(key uint64, hits []Hit) {
 	}
 	s.items[key] = cacheEntry{hits: stored, expires: expires}
 	s.mu.Unlock()
+}
+
+func cacheTTLWithJitter(ttl time.Duration, sample int64) time.Duration {
+	jitter := ttl / 8
+	if jitter <= 0 {
+		return ttl
+	}
+	return ttl - jitter + time.Duration(sample)
 }
 
 func (c *candidateCache) stats() (hits, misses uint64) {
