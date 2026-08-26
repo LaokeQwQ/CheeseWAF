@@ -28,4 +28,12 @@ describe('offline attack map sources', () => {
       }
     }
   });
+
+  it('ships the ten-dash overlay as a FeatureCollection', () => {
+    const payload = JSON.parse(
+      readFileSync(join(here, '../../../public/map/china/ten_dash.geojson'), 'utf8'),
+    ) as { type?: string; features?: unknown[] };
+    expect(payload.type).toBe('FeatureCollection');
+    expect(payload.features).toHaveLength(1);
+  });
 });

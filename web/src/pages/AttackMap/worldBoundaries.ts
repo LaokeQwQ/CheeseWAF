@@ -1,7 +1,5 @@
 import type { GeoFeatureCollection } from './attackMapData';
 
-const emptyWorld: GeoFeatureCollection = { type: 'FeatureCollection', features: [] };
-
 export async function loadGaodeWorldCollection(signal?: AbortSignal): Promise<GeoFeatureCollection> {
   const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
   const url = `${base}map/world/gaode_world.geojson.gz`;
@@ -9,14 +7,17 @@ export async function loadGaodeWorldCollection(signal?: AbortSignal): Promise<Ge
   if (!response.ok) {
     throw new Error(`Failed to fetch Gaode world map: ${response.status}`);
   }
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('DecompressionStream is unavailable; cannot decompress the Gaode world map');
+  }
   const body = response.body;
-  if (!body || typeof DecompressionStream === 'undefined') {
-    return emptyWorld;
+  if (!body) {
+    throw new Error('No response body for the Gaode world map');
   }
   const decompressed = body.pipeThrough(new DecompressionStream('gzip'));
   const collection = await new Response(decompressed).json() as GeoFeatureCollection;
   if (!collection || collection.type !== 'FeatureCollection' || !Array.isArray(collection.features)) {
-    return emptyWorld;
+    throw new Error('Invalid Gaode world map payload');
   }
   return collection;
 }

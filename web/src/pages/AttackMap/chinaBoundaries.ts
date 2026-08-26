@@ -473,26 +473,24 @@ export async function loadOfflineChinaBoundaryTree(options: {
         countyByCity.set(city, cityBucket);
       }
     }
-    // Preferred exact districts.
-    for (const code of prefer) {
+    // Preferred districts are already in the full pack.
+    const preferredCodes = includeDistricts ? [] : [...prefer];
+    for (const code of preferredCodes) {
       if (/^\d{6}$/.test(code) && !code.endsWith('0000') && !code.endsWith('00')) {
         const feature = countyByCode.get(code);
         if (feature) collected.push(feature);
       }
     }
-    // Preferred city parents -> all their counties.
-    for (const code of prefer) {
+    for (const code of preferredCodes) {
       if (/^\d{6}$/.test(code) && !code.endsWith('0000') && code.endsWith('00')) {
         for (const feature of countyByCity.get(code) ?? []) collected.push(feature);
       }
     }
-    // Direct-admin preferred provinces -> all their counties (matches 直辖市 current behavior).
-    for (const code of prefer) {
+    for (const code of preferredCodes) {
       if (/^\d{6}$/.test(code) && code.endsWith('0000') && directAdminProvincePrefixes.has(code.slice(0, 2))) {
         for (const feature of countyByProvince.get(code) ?? []) collected.push(feature);
       }
     }
-    // Full district pack when explicitly requested.
     if (includeDistricts) {
       for (const feature of countyCollection.features) collected.push(feature);
     }
@@ -509,7 +507,7 @@ function dedupeFeaturesByAdcode(features: WorldFeature[]): WorldFeature[] {
   const out: WorldFeature[] = [];
   for (const feature of features) {
     const props = feature.properties ?? {};
-    const key = String(props.adcode ?? props.id ?? feature.id ?? '').trim() || `idx-${out.length}`;
+    const key = (chinaFeatureAdcode(props) || String(props.id ?? feature.id ?? '')).trim() || `idx-${out.length}`;
     if (seen.has(key)) {
       continue;
     }
