@@ -80,7 +80,7 @@ try {
 
   await page.screenshot({ path: join(outDir, 'attack-map-2d-offline.png') });
 
-  // China mode: district-level offline pack (world-atlas + china-map-echarts)
+  // China mode: district-level offline pack (world-atlas + public/map GeoJSON)
   await page.goto(`${base}/attack-map?mode=china`, { waitUntil: 'domcontentloaded', timeout: 45_000 });
   const chinaMap = page.locator('[data-testid="osm-attack-map"]');
   await chinaMap.waitFor({ state: 'visible', timeout: 45_000 });
@@ -94,7 +94,7 @@ try {
   if (chinaMode !== 'china' || chinaEngine !== 'maplibre-offline' || chinaOffline !== 'true' || chinaCanvas < 1) {
     report.ok = false;
   }
-  if (!/offline/i.test(credit) || !/china-map-echarts|world-atlas/i.test(credit)) {
+  if (!/offline|离线/i.test(credit) || !/GS\s*[（(]?\s*202[45]|审图号/i.test(credit)) {
     report.ok = false;
   }
   await page.screenshot({ path: join(outDir, 'attack-map-china-offline.png') });

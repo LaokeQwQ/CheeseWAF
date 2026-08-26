@@ -3446,3 +3446,17 @@
     animation: none !important;
   }
 }
+
+
+.map-approval-badge {
+  display: inline-block;
+  margin-left: 0.6rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(58, 99, 144, 0.45);
+  background: rgba(24, 84, 132, 0.08);
+  color: inherit;
+  font-size: 0.78em;
+  line-height: 1.4;
+  white-space: nowrap;
+}

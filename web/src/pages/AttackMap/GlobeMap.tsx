@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { geoEquirectangular, geoGraticule10, geoPath, type GeoPermissibleObjects } from 'd3-geo';
+import { geoArea, geoCentroid, geoEquirectangular, geoGraticule10, geoPath, type GeoPermissibleObjects } from 'd3-geo';
 import {
   ACESFilmicToneMapping,
   AdditiveBlending,
@@ -81,6 +81,9 @@ type GlobeMarkerData = (AttackRegion & { isTarget?: false }) | {
 const globeLevelColors: Record<ThreatLevel, number> = threatPaletteRgb;
 
 const markerColorFallback = 0x2176d2;
+
+/** Max country labels drawn on the globe texture (area-ranked). */
+const GLOBE_LABEL_LIMIT = 60;
 
 type GlobeRuntime = {
   renderer: ThreeWebGLRenderer;
@@ -177,6 +180,20 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     renderer.domElement.style.pointerEvents = 'auto';
     renderer.domElement.style.touchAction = 'none';
     host.appendChild(renderer.domElement);
+
+    // WebGL context loss (GPU reset, driver crash): show the flat-map fallback
+    // instead of a frozen canvas; rebuild the renderer if the context restores.
+    let contextLost = false;
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      contextLost = true;
+      setWebglError(true);
+    };
+    const onContextRestored = () => {
+      setWebglError(false);
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', onContextRestored);
 
     const tooltip = document.createElement('div');
     tooltip.className = 'globe-tooltip';
@@ -531,7 +548,16 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       renderer.domElement.removeEventListener('pointercancel', onPointerCancel);
       renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
       renderer.domElement.removeEventListener('wheel', onWheel);
-      renderer.dispose();
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
+      if (contextLost) {
+        // Keep the restored listener alive on the (detached) canvas so a late
+        // context restore can still flip webglError back and rebuild the globe.
+        renderer.dispose();
+      } else {
+        renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
+        renderer.dispose();
+        renderer.forceContextLoss();
+      }
       disposeObjectTree(starField, earthGroup);
       runtime.worldTexture?.dispose();
       cloudTexture?.dispose();
@@ -924,6 +950,36 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
       : (isDarkGlobe ? 'rgba(196,239,226,0.42)' : 'rgba(49,92,112,0.34)');
     ctx.lineWidth = level ? (isDarkGlobe ? 1.4 : 1.25) : 0.72;
     ctx.stroke();
+  }
+
+  // Country labels: rank by spherical area and keep only the top entries so
+  // dense small-country regions (Europe, Caribbean, SE Asia) don't overlap.
+  const labelSize = Math.max(10, Math.min(15, Math.round(canvas.width / 100)));
+  ctx.font = `${labelSize}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = isDarkGlobe ? 'rgba(2,20,26,0.85)' : 'rgba(255,255,255,0.9)';
+  ctx.fillStyle = isDarkGlobe ? 'rgba(226,244,255,0.92)' : 'rgba(23,58,78,0.92)';
+  const labeledFeatures = worldFeatures
+    .map((item) => ({
+      item,
+      name: String(((item.properties ?? {}) as { name?: string }).name ?? '').trim(),
+      area: geoArea(asGeoPathObject(item)),
+    }))
+    .filter((entry) => entry.name && entry.area > 0)
+    .sort((a, b) => b.area - a.area)
+    .slice(0, GLOBE_LABEL_LIMIT);
+  for (const { item, name } of labeledFeatures) {
+    const centroid = geoCentroid(asGeoPathObject(item));
+    if (!Number.isFinite(centroid[0]) || !Number.isFinite(centroid[1])) continue;
+    const point = textureProjection(centroid);
+    if (!point) continue;
+    const x = point[0];
+    const y = point[1];
+    if (x < -48 || x > canvas.width + 48 || y < -48 || y > canvas.height + 48) continue;
+    ctx.strokeText(name, x, y);
+    ctx.fillText(name, x, y);
   }
 
   const vignette = ctx.createRadialGradient(canvas.width * 0.5, canvas.height * 0.45, 0, canvas.width * 0.5, canvas.height * 0.5, canvas.width * 0.66);

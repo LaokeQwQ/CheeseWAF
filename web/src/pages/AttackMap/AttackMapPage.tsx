@@ -14,7 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui';
-import { fetchChinaMapBoundaryByCode } from '../../api/client';
+import { fetchChinaMapBoundaryByCode, fetchSystemConfig } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import { preloadAttackScreenPage, preloadGlobeMap } from '../../routes/preload';
 import { displayAction, displayCategory, displayCountry, displayGeoPlace, displaySeverity, isSameGeoCountry } from '../../utils/display';
@@ -32,7 +32,7 @@ import {
 } from './attackMapData';
 import type { GeoFeatureCollection } from './chinaBoundaries';
 import { threatLevels, threatShapeLabel, threatShapeClass } from './threatPalette';
-import OsmAttackMap, { type OsmAttackMapHandle } from './OsmAttackMap';
+import type { OsmAttackMapHandle } from './OsmAttackMap';
 import '../../styles/attack-map.css';
 import { useAttackMapFeed } from './useAttackMapFeed';
 import { regionsFromAttackMapAggregates } from './attackMapFeed';
@@ -40,6 +40,7 @@ import { regionsFromAttackMapAggregates } from './attackMapFeed';
 const OFFLINE_CHINA_BOUNDARY_QUERY_KEY = ['attack-map-china-boundary-offline'] as const;
 
 const GlobeMap = lazy(() => import('./GlobeMap'));
+const OsmAttackMap = lazy(() => import('./OsmAttackMap'));
 
 type MapMode = '2d' | '3d' | 'china';
 type ChinaBoundariesModule = typeof import('./chinaBoundaries');
@@ -84,12 +85,35 @@ export default function AttackMapPage() {
     retry: false,
     staleTime: 60 * 60_000,
   });
+  const { data: systemConfig, isFetched: isSystemConfigFetched } = useQuery({
+    queryKey: ['system'],
+    queryFn: fetchSystemConfig,
+    retry: false,
+    enabled: mode === 'china',
+    staleTime: 5 * 60_000,
+  });
+  const chinaBoundaryEnabled = Boolean(
+    chinaBoundaries && chinaBoundaries.isChinaBoundaryEnabled(systemConfig?.console?.map?.china_boundary),
+  );
+  const { data: chinaComplianceAssets } = useQuery({
+    queryKey: ['attack-map-china-compliance-assets'],
+    queryFn: () => chinaBoundaries!.loadChinaComplianceAssets(),
+    enabled: mode === 'china' && Boolean(chinaBoundaries) && chinaBoundaryEnabled,
+    retry: false,
+    staleTime: 60 * 60_000,
+  });
+  const chinaCompliance = useMemo(
+    () => (chinaBoundaries && chinaComplianceAssets
+      ? chinaBoundaries.buildChinaComplianceFeatures(chinaComplianceAssets, chinaBoundaryEnabled)
+      : null),
+    [chinaBoundaries, chinaComplianceAssets, chinaBoundaryEnabled],
+  );
   const chinaBoundaryAdcodes = useMemo(
     () => chinaBoundaries?.boundaryAdcodesFromRegions(chinaRegions, chinaAssets?.adminIndex) ?? [],
     [chinaAssets?.adminIndex, chinaBoundaries, chinaRegions],
   );
   preferAdcodesRef.current = chinaBoundaryAdcodes;
-  // Offline open pack (`china-map-echarts` in node_modules / dist): progressive
+  // Offline open pack (vendored GeoJSON under public/map): progressive
   // province → prefer 区县 → remaining city parents. No network tile CDN.
   const { data: externalChinaBoundary } = useQuery({
     queryKey: ['attack-map-china-boundary-external', chinaBoundaryAdcodes],
@@ -369,17 +393,21 @@ export default function AttackMapPage() {
               />
             </Suspense>
           ) : (
-            <OsmAttackMap
-              mode={mode === 'china' ? 'china' : 'world'}
-              regions={mode === 'china' ? chinaRegions : mappedRegions}
-              selectedRegionKey={selectedRegionKey}
-              onSelectRegion={setSelectedRegionKey}
-              ariaLabel={mode === 'china' ? t('attackMap.chinaMapAria') : t('attackMap.worldMapAria')}
-              chinaBoundary={mode === 'china' ? chinaMaplibreBoundary : null}
-              countryLevels={countryLevels}
-              mapRef={osmMapRef}
-              formatTooltip={(region) => formatRegionTooltip(region, t)}
-            />
+            <Suspense fallback={null}>
+              <OsmAttackMap
+                mode={mode === 'china' ? 'china' : 'world'}
+                regions={mode === 'china' ? chinaRegions : mappedRegions}
+                selectedRegionKey={selectedRegionKey}
+                onSelectRegion={setSelectedRegionKey}
+                ariaLabel={mode === 'china' ? t('attackMap.chinaMapAria') : t('attackMap.worldMapAria')}
+                chinaBoundary={mode === 'china' ? chinaMaplibreBoundary : null}
+                chinaCompliance={mode === 'china' ? chinaCompliance : null}
+                chinaBoundaryEnabled={chinaBoundaryEnabled}
+                countryLevels={countryLevels}
+                mapRef={osmMapRef}
+                formatTooltip={(region) => formatRegionTooltip(region, t)}
+              />
+            </Suspense>
           )}
           {(regions.length === 0 || (mode === 'china' && chinaRegions.length === 0)) && (
             <div className="map-empty" role="status" aria-live="polite">
@@ -395,12 +423,20 @@ export default function AttackMapPage() {
               {t('attackMap.boundaryUnavailableDetail')}
             </div>
           )}
+          {mode === 'china' && isSystemConfigFetched && !chinaBoundaryEnabled && (
+            <div className="map-empty map-warning" role="status">
+              {t('attackMap.chinaBoundaryDisabled')}
+            </div>
+          )}
           <div className="map-basemap-credit" aria-hidden="true">
             {mode === '3d'
               ? t('attackMap.basemapCredit3d')
               : mode === 'china'
-                ? t('attackMap.basemapCreditChina')
+                ? (chinaBoundaryEnabled ? t('attackMap.basemapCreditChina') : t('attackMap.basemapCreditChinaProjection'))
                 : t('attackMap.basemapCreditWorld')}
+            {mode === 'china' && chinaBoundaryEnabled && (
+              <span className="map-approval-badge">{t('attackMap.chinaApproval')}</span>
+            )}
           </div>
         </section>
       </section>

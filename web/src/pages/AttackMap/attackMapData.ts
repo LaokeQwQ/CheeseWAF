@@ -12,7 +12,7 @@ export type WorldFeature = {
   geometry: unknown;
   properties?: Record<string, unknown>;
 };
-type WorldFeatureCollection = {
+export type GeoFeatureCollection = {
   type: 'FeatureCollection';
   features: WorldFeature[];
 };
@@ -65,7 +65,7 @@ export type AttackRegion = {
 const mapWidth = 1000;
 const mapHeight = 500;
 const topo = worldTopology as any;
-const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as WorldFeatureCollection;
+const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as GeoFeatureCollection;
 export const worldFeatures = worldFeatureCollection.features.filter((item) => item.geometry);
 export const mapProjection = geoNaturalEarth1().fitExtent([[28, 28], [mapWidth - 28, mapHeight - 28]], worldFeatureCollection as any);
 const mapPath = geoPath(mapProjection);
