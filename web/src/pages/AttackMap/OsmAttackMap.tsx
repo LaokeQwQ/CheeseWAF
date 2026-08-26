@@ -24,7 +24,7 @@ import { type ChinaComplianceFeatures, type GeoFeatureCollection } from './china
  * - vendored public/map GeoJSON (province / city / district) + optional offline tree
  * - attack log aggregates → point markers
  *
- * Rendering: MapLibre GL (open Mapbox GL fork) + Mapbox-like palette, GeoJSON only.
+ * Rendering: MapLibre GL + GeoJSON only. No raster tile CDN.
  */
 
 export type OsmMapMode = 'world' | 'china';
@@ -91,14 +91,6 @@ const ATTACK_GLOW = 'attack-regions-glow';
 const CHINA_SOURCE = 'china-admin-boundary';
 const CHINA_FILL = 'china-admin-fill';
 const CHINA_LINE = 'china-admin-line';
-const OSM_SOURCE = 'osm-raster';
-const OSM_LAYER = 'osm-raster-background';
-/**
- * OSM 在线瓦片（仅世界模式可选底图，中国模式永不启用）。
- * 合规风险提示：该 URL 指向境外 OSM 公共服务，存在可用性与地图数据合规风险；
- * 后续应改为可配置项（如内网瓦片服务或具备审图号的合规图源），此处先集中为常量便于替换。
- */
-const OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 const CHINA_TEN_DASH_SOURCE = 'china-ten-dash';
 const CHINA_TEN_DASH_LINE = 'china-ten-dash-line';
 const CHINA_HUANGYAN_SOURCE = 'china-huangyan';
@@ -107,34 +99,18 @@ const CHINA_HUANGYAN_LINE = 'china-huangyan-line';
 const TEN_DASH_NAME = '十段线';
 const HUANGYAN_NAME = '黄岩岛';
 
-/** Fully offline MapLibre style: solid water background, no tile sources. */
-/** Offline-first MapLibre style: solid water background plus an OSM raster
- * source/layer that is only shown in world mode (never China mode). */
+/** Fully offline MapLibre style: solid water, no raster tile sources. */
 function buildOfflineStyle(): StyleSpecification {
   return {
     version: 8,
     name: 'cheesewaf-offline-mapbox-like',
     // No remote glyphs/sprites → labels render only via DOM markers/popups.
-    sources: {
-      [OSM_SOURCE]: {
-        type: 'raster',
-        tiles: [OSM_TILE_URL],
-        tileSize: 256,
-        attribution: '© OpenStreetMap contributors',
-      },
-    },
+    sources: {},
     layers: [
       {
         id: 'background',
         type: 'background',
         paint: { 'background-color': palette.water },
-      },
-      {
-        id: OSM_LAYER,
-        type: 'raster',
-        source: OSM_SOURCE,
-        layout: { visibility: 'none' },
-        paint: { 'raster-opacity': 0.5 },
       },
     ],
   };
@@ -230,13 +206,6 @@ export default function OsmAttackMap({
 
     map.addControl(new NavigationControl({ showCompass: false }), 'top-right');
     map.addControl(new ScaleControl({ maxWidth: 120 }), 'bottom-left');
-    map.on('error', (event) => {
-      // World-mode OSM tiles are optional; keep the offline water/land style if they fail.
-      const sourceId = (event as { sourceId?: string }).sourceId;
-      if (sourceId === OSM_SOURCE && map.getLayer(OSM_LAYER)) {
-        map.setLayoutProperty(OSM_LAYER, 'visibility', 'none');
-      }
-    });
 
     popupRef.current = new Popup({
       closeButton: false,
@@ -602,9 +571,6 @@ function syncChina(
   }
   if (map.getLayer(WORLD_LINE)) {
     map.setPaintProperty(WORLD_LINE, 'line-opacity', mode === 'china' ? 0.35 : 0.9);
-  }
-  if (map.getLayer(OSM_LAYER)) {
-    map.setLayoutProperty(OSM_LAYER, 'visibility', mode === 'china' ? 'none' : 'visible');
   }
   if (map.getLayer(CHINA_FILL)) {
     map.setLayoutProperty(CHINA_FILL, 'visibility', boundaryVisible ? 'visible' : 'none');
