@@ -8,6 +8,7 @@
     "prebuild": "node scripts/build-china-admin-index.mjs",
     "build": "tsc -b && vite build && node scripts/verify-build-budget.mjs",
     "build:china-admin-index": "node scripts/build-china-admin-index.mjs",
+    "pack:gaode-world": "node scripts/pack-gaode-world.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

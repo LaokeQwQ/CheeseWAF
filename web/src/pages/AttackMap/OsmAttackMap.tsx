@@ -8,7 +8,7 @@ import {
   type StyleSpecification,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { normalizeWorldId, worldFeatures, type AttackRegion, type ThreatLevel } from './attackMapData';
+import { normalizeWorldId, type AttackRegion, type ThreatLevel } from './attackMapData';
 import { threatPaletteHex, threatPaletteNeutralHex } from './threatPalette';
 import { type ChinaComplianceFeatures, type GeoFeatureCollection } from './chinaBoundaries';
 
@@ -20,7 +20,7 @@ import { type ChinaComplianceFeatures, type GeoFeatureCollection } from './china
  * - District/county precision for China is enough (not full street OSM)
  *
  * Data (all local, served/bundled offline):
- * - world-atlas countries-110m → coarse world land
+ * - licensed Gaode world countries (GS(2021)648) under public/map/world
  * - vendored public/map GeoJSON (province / city / district) + optional offline tree
  * - attack log aggregates → point markers
  *
@@ -42,6 +42,8 @@ type OsmAttackMapProps = {
   selectedRegionKey: string | null;
   onSelectRegion: (key: string | null) => void;
   ariaLabel: string;
+  /** Licensed Gaode world countries (GS(2021)648). */
+  worldBoundary?: GeoFeatureCollection | null;
   /** Offline China admin GeoJSON (WGS84), province→city→district as available. */
   chinaBoundary?: GeoFeatureCollection | null;
   /** 十段线 + 黄岩岛 compliance geometry (rendered only when gate enabled). */
@@ -96,6 +98,8 @@ const CHINA_TEN_DASH_LINE = 'china-ten-dash-line';
 const CHINA_HUANGYAN_SOURCE = 'china-huangyan';
 const CHINA_HUANGYAN_FILL = 'china-huangyan-fill';
 const CHINA_HUANGYAN_LINE = 'china-huangyan-line';
+const CHINA_BORDERS_SOURCE = 'china-national-borders';
+const CHINA_BORDERS_LINE = 'china-national-borders-line';
 const TEN_DASH_NAME = '十段线';
 const HUANGYAN_NAME = '黄岩岛';
 
@@ -122,6 +126,7 @@ export default function OsmAttackMap({
   selectedRegionKey,
   onSelectRegion,
   ariaLabel,
+  worldBoundary,
   chinaBoundary,
   chinaCompliance,
   chinaBoundaryEnabled,
@@ -138,10 +143,12 @@ export default function OsmAttackMap({
   const onSelectRef = useRef(onSelectRegion);
   const countryLevelsRef = useRef(countryLevels);
   const modeRef = useRef(mode);
+  const worldBoundaryRef = useRef(worldBoundary);
   const chinaBoundaryRef = useRef(chinaBoundary);
   const chinaComplianceRef = useRef(chinaCompliance);
   const chinaBoundaryEnabledRef = useRef(chinaBoundaryEnabled);
   const selectedRegionKeyRef = useRef(selectedRegionKey);
+  worldBoundaryRef.current = worldBoundary;
   regionsRef.current = regions;
   formatRef.current = formatTooltip;
   onSelectRef.current = onSelectRegion;
@@ -153,7 +160,7 @@ export default function OsmAttackMap({
   selectedRegionKeyRef.current = selectedRegionKey;
 
   const attackGeo = useMemo(() => regionsToGeoJSON(regions), [regions]);
-  const worldGeo = useMemo(() => worldLandGeoJSON(countryLevels), [countryLevels]);
+  const worldGeo = useMemo(() => worldLandGeoJSON(worldBoundary, countryLevels), [worldBoundary, countryLevels]);
 
   // Dedupe marker: load handler and the props effect both funnel here, so a
   // china sync with identical inputs runs at most once.
@@ -220,7 +227,7 @@ export default function OsmAttackMap({
       ensureChinaLayers(map);
       ensureChinaComplianceLayers(map);
       ensureAttackLayers(map);
-      syncSource(map, WORLD_SOURCE, worldLandGeoJSON(countryLevelsRef.current));
+      syncSource(map, WORLD_SOURCE, worldLandGeoJSON(worldBoundaryRef.current, countryLevelsRef.current));
       syncSource(map, ATTACK_SOURCE, regionsToGeoJSON(regionsRef.current), selectedRegionKeyRef.current);
       // Re-read props via refs so boundaries that resolved before `load` still paint.
       syncChinaDeduped(map);
@@ -237,7 +244,7 @@ export default function OsmAttackMap({
       map.getCanvas().style.cursor = '';
       popupRef.current?.remove();
     });
-    const complianceLayers = [CHINA_TEN_DASH_LINE, CHINA_HUANGYAN_FILL, CHINA_HUANGYAN_LINE];
+    const complianceLayers = [CHINA_TEN_DASH_LINE, CHINA_HUANGYAN_FILL, CHINA_HUANGYAN_LINE, CHINA_BORDERS_LINE];
     map.on('mousemove', complianceLayers, (event) => {
       const feature = event.features?.[0];
       if (!feature || !popupRef.current) return;
@@ -511,6 +518,37 @@ function ensureChinaComplianceLayers(map: MapLibreMap) {
       },
     });
   }
+  if (!map.getSource(CHINA_BORDERS_SOURCE)) {
+    map.addSource(CHINA_BORDERS_SOURCE, { type: 'geojson', data: emptyFC() as never });
+  }
+  if (!map.getLayer(CHINA_BORDERS_LINE)) {
+    map.addLayer({
+      id: CHINA_BORDERS_LINE,
+      type: 'line',
+      source: CHINA_BORDERS_SOURCE,
+      layout: { visibility: 'none' },
+      paint: {
+        'line-color': [
+          'match',
+          ['coalesce', ['get', 'kind'], ''],
+          'guojiexian', '#9f1239',
+          'weidingguojie', '#be123c',
+          'haishangshengjie', '#0369a1',
+          'xianggangjie', '#a16207',
+          '#0f172a',
+        ],
+        'line-width': [
+          'match',
+          ['coalesce', ['get', 'kind'], ''],
+          'guojiexian', 1.6,
+          'weidingguojie', 1.4,
+          'haishangshengjie', 1.1,
+          0.9,
+        ],
+        'line-opacity': 0.92,
+      },
+    });
+  }
 }
 
 function ensureAttackLayers(map: MapLibreMap) {
@@ -581,8 +619,10 @@ function syncChina(
   const complianceVisible = mode === 'china' && chinaBoundaryEnabled;
   const tenDash = complianceVisible && chinaCompliance?.tenDash?.features?.length ? chinaCompliance.tenDash : emptyFC();
   const huangyan = complianceVisible && chinaCompliance?.huangyan?.features?.length ? chinaCompliance.huangyan : emptyFC();
+  const borders = complianceVisible && chinaCompliance?.borders?.features?.length ? chinaCompliance.borders : emptyFC();
   syncSource(map, CHINA_TEN_DASH_SOURCE, tenDash);
   syncSource(map, CHINA_HUANGYAN_SOURCE, huangyan);
+  syncSource(map, CHINA_BORDERS_SOURCE, borders);
   if (map.getLayer(CHINA_TEN_DASH_LINE)) {
     map.setLayoutProperty(CHINA_TEN_DASH_LINE, 'visibility', complianceVisible && tenDash.features.length > 0 ? 'visible' : 'none');
   }
@@ -591,6 +631,9 @@ function syncChina(
   }
   if (map.getLayer(CHINA_HUANGYAN_LINE)) {
     map.setLayoutProperty(CHINA_HUANGYAN_LINE, 'visibility', complianceVisible && huangyan.features.length > 0 ? 'visible' : 'none');
+  }
+  if (map.getLayer(CHINA_BORDERS_LINE)) {
+    map.setLayoutProperty(CHINA_BORDERS_LINE, 'visibility', complianceVisible && borders.features.length > 0 ? 'visible' : 'none');
   }
 }
 
@@ -651,14 +694,19 @@ function syncSource(
   source.setData(data as never);
 }
 
-function worldLandGeoJSON(countryLevels?: Map<string, ThreatLevel>): GeoFeatureCollection {
+function worldLandGeoJSON(
+  worldBoundary?: GeoFeatureCollection | null,
+  countryLevels?: Map<string, ThreatLevel>,
+): GeoFeatureCollection {
+  const features = worldBoundary?.features ?? [];
   return {
     type: 'FeatureCollection',
-    features: worldFeatures
+    features: features
       .filter((feature) => feature.geometry)
       .map((feature, index) => {
-        const id = normalizeWorldId(feature.id ?? index);
-        const risk = countryLevels?.get(id) ?? 'neutral';
+        const iso2 = String(feature.properties?.iso2 ?? feature.id ?? '').trim();
+        const id = iso2 || normalizeWorldId(feature.id ?? index);
+        const risk = countryLevels?.get(id) ?? countryLevels?.get(normalizeWorldId(feature.id ?? id)) ?? 'neutral';
         return {
           type: 'Feature' as const,
           id,

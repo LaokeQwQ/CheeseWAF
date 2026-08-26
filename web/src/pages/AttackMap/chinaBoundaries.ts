@@ -41,11 +41,13 @@ export type ChinaAdminIndex = {
 export type ChinaComplianceAssets = {
   tenDash: GeoFeatureCollection;
   huangyan: GeoFeatureCollection;
+  borders: GeoFeatureCollection;
 };
 
 export type ChinaComplianceFeatures = {
   tenDash: GeoFeatureCollection;
   huangyan: GeoFeatureCollection;
+  borders: GeoFeatureCollection;
 };
 
 export type ChinaBoundaryGateConfig = {
@@ -76,10 +78,12 @@ export function buildChinaComplianceFeatures(
   if (!enabled) return null;
   const tenDash = assets?.tenDash;
   const huangyan = assets?.huangyan;
-  if (!tenDash?.features?.length && !huangyan?.features?.length) return null;
+  const borders = assets?.borders;
+  if (!tenDash?.features?.length && !huangyan?.features?.length && !borders?.features?.length) return null;
   return {
     tenDash: tenDash ?? emptyFeatureCollection,
     huangyan: huangyan ?? emptyFeatureCollection,
+    borders: borders ?? emptyFeatureCollection,
   };
 }
 
@@ -223,11 +227,12 @@ export function loadVendoredChinaCollection(kind: 'province' | 'city' | 'county'
 }
 
 export async function loadChinaComplianceAssets(): Promise<ChinaComplianceAssets> {
-  const [tenDash, huangyan] = await Promise.all([
+  const [tenDash, huangyan, borders] = await Promise.all([
     fetchGzJson<GeoFeatureCollection>('map/china/ten_dash.geojson'),
     fetchGzJson<GeoFeatureCollection>('map/china/huangyan.geojson'),
+    fetchGzJson<GeoFeatureCollection>('map/china/china_borders.geojson.gz'),
   ]);
-  return { tenDash, huangyan };
+  return { tenDash, huangyan, borders };
 }
 
 export async function loadChinaMapAssets(): Promise<ChinaMapAssets> {

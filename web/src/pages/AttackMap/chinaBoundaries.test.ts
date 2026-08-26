@@ -20,11 +20,12 @@ describe('china boundary compliance gate', () => {
 
   it('builds empty compliance when disabled or no assets', () => {
     expect(buildChinaComplianceFeatures(null, true)).toBeNull();
-    expect(buildChinaComplianceFeatures({ tenDash: fc([]), huangyan: fc([]) }, true)).toBeNull();
+    expect(buildChinaComplianceFeatures({ tenDash: fc([]), huangyan: fc([]), borders: fc([]) }, true)).toBeNull();
     expect(buildChinaComplianceFeatures(null, false)).toBeNull();
     const assets = {
       tenDash: fc([{ type: 'Feature' as const, properties: { name: '十段线' }, geometry: { type: 'MultiLineString', coordinates: [] } }]),
       huangyan: fc([]),
+      borders: fc([]),
     };
     const features = buildChinaComplianceFeatures(assets, true);
     expect(features).not.toBeNull();

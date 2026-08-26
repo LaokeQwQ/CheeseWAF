@@ -24,13 +24,13 @@ import {
   resolveProtectedTarget,
   severityRank,
   threatLevelFor,
-  worldFeatures,
   worldMapPaths,
   type AttackRegion,
   type LocationPrecision,
   type ThreatLevel,
 } from './attackMapData';
 import type { GeoFeatureCollection } from './chinaBoundaries';
+import { loadGaodeWorldCollection } from './worldBoundaries';
 import { threatLevels, threatShapeLabel, threatShapeClass } from './threatPalette';
 import type { OsmAttackMapHandle } from './OsmAttackMap';
 import '../../styles/attack-map.css';
@@ -71,6 +71,13 @@ export default function AttackMapPage() {
   const regions = useMemo(() => regionsFromAttackMapAggregates(aggregates), [aggregates]);
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
   const chinaRegions = useMemo(() => mappedRegions.filter(isChinaRegion), [mappedRegions]);
+  const { data: gaodeWorld } = useQuery({
+    queryKey: ['attack-map-gaode-world'],
+    queryFn: () => loadGaodeWorldCollection(),
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const worldLandFeatures = gaodeWorld?.features ?? [];
   const { data: chinaBoundaries, isLoading: isChinaModuleLoading, isError: isChinaModuleError } = useQuery<ChinaBoundariesModule>({
     queryKey: ['attack-map-china-boundaries-module'],
     queryFn: () => import('./chinaBoundaries'),
@@ -387,7 +394,7 @@ export default function AttackMapPage() {
                 regions={mappedRegions}
                 zoom={zoom}
                 countryLevels={countryLevels}
-                worldFeatures={worldFeatures}
+                worldFeatures={worldLandFeatures}
                 target={protectedTarget}
                 visualTheme="dark"
                 fallback={renderGlobeFallback(mappedRegions, countryLevels, t('attackMap.worldMapAria'))}
@@ -401,6 +408,7 @@ export default function AttackMapPage() {
                 selectedRegionKey={selectedRegionKey}
                 onSelectRegion={setSelectedRegionKey}
                 ariaLabel={mode === 'china' ? t('attackMap.chinaMapAria') : t('attackMap.worldMapAria')}
+                worldBoundary={gaodeWorld ?? null}
                 chinaBoundary={mode === 'china' ? chinaMaplibreBoundary : null}
                 chinaCompliance={mode === 'china' ? chinaCompliance : null}
                 chinaBoundaryEnabled={chinaBoundaryEnabled}
