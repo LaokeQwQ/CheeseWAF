@@ -118,24 +118,25 @@ func requiresDefaultTLSCertificate(cfg *config.Config) bool {
 
 func (s *SiteCertificateStore) TLSConfig(cfg config.TLSConfig) *tls.Config {
 	listenerMin := parseMinTLSVersion(cfg.MinVersion, tls.VersionTLS13)
-	return &tls.Config{
+	base := &tls.Config{
 		MinVersion:     listenerMin,
 		GetCertificate: s.GetCertificate,
-		// Per-site min_tls_version is applied at handshake time via SNI.
-		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-			siteMin := s.minTLSForSNI("")
-			if hello != nil {
-				siteMin = s.minTLSForSNI(hello.ServerName)
-			}
-			if siteMin == 0 {
-				siteMin = listenerMin
-			}
-			return &tls.Config{
-				MinVersion:     siteMin,
-				GetCertificate: s.GetCertificate,
-			}, nil
-		},
+		NextProtos:     []string{"h2", "http/1.1"},
 	}
+	base.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		siteMin := s.minTLSForSNI("")
+		if hello != nil {
+			siteMin = s.minTLSForSNI(hello.ServerName)
+		}
+		if siteMin == 0 {
+			siteMin = listenerMin
+		}
+		cloned := base.Clone()
+		cloned.MinVersion = siteMin
+		cloned.GetConfigForClient = nil
+		return cloned, nil
+	}
+	return base
 }
 
 func parseMinTLSVersion(raw string, fallback uint16) uint16 {

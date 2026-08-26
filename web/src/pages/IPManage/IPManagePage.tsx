@@ -41,6 +41,7 @@ import {
   fetchSites,
   importThreatIntel,
   lookupThreatIntel,
+  adoptThreatIntel,
   syncThreatIntel,
   testThreatIntelProvider,
   updateIPAccessRules,
@@ -107,6 +108,7 @@ export default function IPManagePage() {
     contents: '',
   });
   const [lookupDraft, setLookupDraft] = useState({ providerId: '', ip: '' });
+  const [lookupItems, setLookupItems] = useState<Array<Record<string, unknown>>>([]);
   const [providerStatuses, setProviderStatuses] = useState<Record<string, IntelOperationStatus>>({});
   const [importStatus, setImportStatus] = useState<IntelOperationStatus | null>(null);
   const [syncStatus, setSyncStatus] = useState<IntelOperationStatus | null>(null);
@@ -270,12 +272,38 @@ export default function IPManagePage() {
   const lookupMutation = useMutation({
     mutationFn: () => lookupThreatIntel(lookupDraft.providerId, lookupDraft.ip),
     onSuccess: (result) => {
+      const found = result.items.length > 0;
+      const status = buildCountStatus({
+        tone: found ? 'success' : 'warning',
+        title: found ? t('ip.lookupFound') : t('ip.lookupClean'),
+        countLabel: t('ip.parsedItems'),
+        imported: result.items.length,
+        total: result.items.length,
+        t,
+        items: result.items,
+      });
+      setLookupStatus(status);
+      setLookupItems(result.items);
+      setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
+      showStatusMessage(status);
+    },
+    onError: (error) => {
+      const status = buildErrorStatus(t('ip.lookupFailed'), error.message);
+      setLookupStatus(status);
+      setLookupItems([]);
+      setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
+      toast.error(error.message);
+    },
+  });
+  const adoptMutation = useMutation({
+    mutationFn: () => adoptThreatIntel(lookupItems),
+    onSuccess: (result) => {
       const status = buildCountStatus({
         tone: result.imported > 0 ? 'success' : 'warning',
-        title: result.imported > 0 ? t('ip.lookupApplied') : t('ip.lookupClean'),
+        title: t('ip.lookupApplied'),
         countLabel: t('ip.lookupImported'),
         imported: result.imported,
-        total: result.items.length,
+        total: result.total,
         t,
         items: result.items,
       });
@@ -287,7 +315,6 @@ export default function IPManagePage() {
     onError: (error) => {
       const status = buildErrorStatus(t('ip.lookupFailed'), error.message);
       setLookupStatus(status);
-      setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
       toast.error(error.message);
     },
   });
@@ -1152,6 +1179,14 @@ export default function IPManagePage() {
                 <div className="form-action-row">
                   <Button disabled={!lookupDraft.providerId || !lookupDraft.ip} loading={lookupMutation.isPending} onClick={() => lookupMutation.mutate()}>
                     {t('ip.lookup')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={lookupItems.length === 0}
+                    loading={adoptMutation.isPending}
+                    onClick={() => adoptMutation.mutate()}
+                  >
+                    {t('ip.lookupAdopt')}
                   </Button>
                 </div>
                 {lookupStatus && <IntelStatusPanel status={lookupStatus} t={t} />}

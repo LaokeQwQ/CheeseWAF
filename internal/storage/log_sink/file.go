@@ -100,20 +100,26 @@ func (s *FileSink) Write(_ context.Context, entry *storage.LogEntry) error {
 		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.file == nil || s.writer == nil {
+		s.mu.Unlock()
 		return fmt.Errorf("file sink is closed")
 	}
 	lineLimit := int64(maxFileSinkWriteLineBytes)
 	if s.maxSizeBytes > 0 && s.maxSizeBytes-1 < lineLimit {
 		lineLimit = s.maxSizeBytes - 1
 	}
+	s.mu.Unlock()
 	if lineLimit <= 0 {
 		return fmt.Errorf("maximum log size is too small")
 	}
 	data, stored, err := marshalBoundedLogEntry(*entry, int(lineLimit))
 	if err != nil {
 		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil || s.writer == nil {
+		return fmt.Errorf("file sink is closed")
 	}
 	recordSize := int64(len(data) + 1)
 	if s.maxSizeBytes > 0 && s.currentSize > 0 && s.currentSize+recordSize > s.maxSizeBytes {

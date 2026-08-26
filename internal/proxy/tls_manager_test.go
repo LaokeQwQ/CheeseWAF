@@ -48,6 +48,18 @@ func TestSiteCertificateStoreAppliesSiteMinTLS(t *testing.T) {
 	if clientCfg.MinVersion != tls.VersionTLS13 {
 		t.Fatalf("client min = %#x, want TLS1.3", clientCfg.MinVersion)
 	}
+	if len(clientCfg.NextProtos) == 0 {
+		t.Fatal("GetConfigForClient must keep ALPN NextProtos")
+	}
+	foundH2 := false
+	for _, proto := range clientCfg.NextProtos {
+		if proto == "h2" {
+			foundH2 = true
+		}
+	}
+	if !foundH2 {
+		t.Fatalf("NextProtos = %#v, want h2", clientCfg.NextProtos)
+	}
 }
 
 func TestSiteCertificateStoreDoesNotLoadUnusedDefaultCertificate(t *testing.T) {

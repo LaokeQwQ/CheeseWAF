@@ -1254,8 +1254,16 @@ func loginCAPTCHASkippedForPeer(r *http.Request, adminPublic bool) bool {
 	if adminPublic {
 		return false
 	}
-	ip := net.ParseIP(socketPeerIP(r))
-	return ip != nil && ip.IsLoopback()
+	peer := socketPeerIP(r)
+	ip := net.ParseIP(peer)
+	if ip == nil || !ip.IsLoopback() {
+		return false
+	}
+	// A local reverse proxy that forwards an external client still needs CAPTCHA.
+	if trustedLoginClientIP(r, peer, adminPublic) != "" {
+		return false
+	}
+	return true
 }
 
 func socketPeerIP(r *http.Request) string {
