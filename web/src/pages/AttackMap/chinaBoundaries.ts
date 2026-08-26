@@ -530,11 +530,11 @@ export function chinaBoundarySourceLabel(source: ChinaAdministrativeMap['sourceS
 
 /**
  * code→name 索引由构建期脚本 scripts/build-china-admin-index.mjs 从
- * china_aux.geojson.gz 提取生成（public/map/aux/china_admin_index.json），
- * 避免运行时为建索引拉取 8MB 完整 aux 几何数据。
+ * china_aux.geojson.gz 提取生成（public/map/lookup/china_admin_index.json），
+ * 避免运行时为建索引拉取 8MB 完整几何数据。
  */
 async function loadChinaAdminIndex(): Promise<ChinaAdminIndex> {
-  const entries = await fetchGzJson<Array<{ code: string; name: string }>>('map/aux/china_admin_index.json');
+  const entries = await fetchGzJson<Array<{ code: string; name: string }>>('map/lookup/china_admin_index.json');
   const nameToCodes = new Map<string, string[]>();
   const codeToName = new Map<string, string>();
   for (const entry of Array.isArray(entries) ? entries : []) {

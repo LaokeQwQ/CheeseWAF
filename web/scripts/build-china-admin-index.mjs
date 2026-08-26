@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Build-time extractor: public/map/aux/china_aux.geojson.gz (~8MB, full
- * geometry) → public/map/aux/china_admin_index.json ([{code,name}] only).
+ * Build-time extractor: public/map/lookup/china_aux.geojson.gz (~8MB, full
+ * geometry) → public/map/lookup/china_admin_index.json ([{code,name}] only).
  *
  * The runtime only needs a code→name lookup to resolve admin codes from
  * region names; shipping the full aux geometry for that is wasteful.
@@ -13,8 +13,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
-const sourcePath = path.join(projectRoot, 'public', 'map', 'aux', 'china_aux.geojson.gz');
-const outputPath = path.join(projectRoot, 'public', 'map', 'aux', 'china_admin_index.json');
+const sourcePath = path.join(projectRoot, 'public', 'map', 'lookup', 'china_aux.geojson.gz');
+const outputPath = path.join(projectRoot, 'public', 'map', 'lookup', 'china_admin_index.json');
 
 /** Mirror of chinaFeatureAdcode in src/pages/AttackMap/chinaBoundaries.ts. */
 function featureAdcode(properties) {
