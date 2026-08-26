@@ -1,5 +1,8 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # Repo override: org UI currently includes no paths, so every file is
 # "excluded by none and included by none" and reviews are skipped.
+# Auto-review defaults to only the GitHub default branch. Feature PRs
+# target origin/dev, so list protected heads explicitly.
 language: en-US
 reviews:
   profile: chill
@@ -12,3 +15,10 @@ reviews:
     - "!**/*.png"
     - "!**/*.ico"
     - "!**/*.icns"
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "^dev$"
+      - "^canary$"
+      - "^master$"
