@@ -9,7 +9,8 @@ import QueryErrorState from '../../components/QueryErrorState';
 import { useAppStore } from '../../stores';
 import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry, displaySeverity } from '../../utils/display';
-import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './attackMapData';
+import { aggregateRegions, buildCountryLevelMap, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './attackMapData';
+import { loadGaodeWorldCollection } from './worldBoundaries';
 import '../../styles/attack-map.css';
 import { useAttackMapFeed } from './useAttackMapFeed';
 import { regionsFromAttackMapAggregates } from './attackMapFeed';
@@ -51,6 +52,12 @@ export default function AttackScreenPage() {
   );
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
   const globeRegions = useMemo(() => mappedRegions.slice(0, maxGlobeRegions), [mappedRegions]);
+  const { data: gaodeWorld } = useQuery({
+    queryKey: ['attack-map-gaode-world'],
+    queryFn: () => loadGaodeWorldCollection(),
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
   const attackTypes = useMemo(() => buildAttackTypes(visibleAttackEntries, t), [visibleAttackEntries, t]);
   const sourceCountries = useMemo(() => buildSourceCountries(mappedRegions), [mappedRegions]);
@@ -206,7 +213,7 @@ export default function AttackScreenPage() {
                 regions={globeRegions}
                 zoom={1}
                 countryLevels={countryLevels}
-                worldFeatures={worldFeatures}
+                worldFeatures={gaodeWorld?.features ?? []}
                 target={protectedTarget}
                 visualTheme={visualTheme}
                 fallback={<div className="attack-screen-globe-empty">{t('attackMap.attacks')}: 0</div>}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { geoEquirectangular, geoGraticule10, geoPath, type GeoPermissibleObjects } from 'd3-geo';
+import { geoArea, geoCentroid, geoEquirectangular, geoGraticule10, geoPath, type GeoPermissibleObjects } from 'd3-geo';
 import {
   ACESFilmicToneMapping,
   AdditiveBlending,
@@ -81,6 +81,9 @@ type GlobeMarkerData = (AttackRegion & { isTarget?: false }) | {
 const globeLevelColors: Record<ThreatLevel, number> = threatPaletteRgb;
 
 const markerColorFallback = 0x2176d2;
+
+/** Max country labels drawn on the globe texture (area-ranked). */
+const GLOBE_LABEL_LIMIT = 18;
 
 type GlobeRuntime = {
   renderer: ThreeWebGLRenderer;
@@ -173,10 +176,24 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.06;
-    renderer.setClearColor(isDarkGlobe ? 0x000000 : 0xf8fbff, 0);
+    renderer.setClearColor(isDarkGlobe ? 0x02060d : 0xf8fbff, isDarkGlobe ? 1 : 0);
     renderer.domElement.style.pointerEvents = 'auto';
     renderer.domElement.style.touchAction = 'none';
     host.appendChild(renderer.domElement);
+
+    // WebGL context loss (GPU reset, driver crash): show the flat-map fallback
+    // instead of a frozen canvas; rebuild the renderer if the context restores.
+    let contextLost = false;
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      contextLost = true;
+      setWebglError(true);
+    };
+    const onContextRestored = () => {
+      setWebglError(false);
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', onContextRestored);
 
     const tooltip = document.createElement('div');
     tooltip.className = 'globe-tooltip';
@@ -202,12 +219,12 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       globeGeometry,
       new MeshPhysicalMaterial({
         map: null,
-        roughness: isDarkGlobe ? 0.76 : 0.82,
-        metalness: 0.02,
-        clearcoat: isDarkGlobe ? 0.18 : 0.1,
-        clearcoatRoughness: isDarkGlobe ? 0.58 : 0.7,
-        emissive: new Color(isDarkGlobe ? 0x021b29 : 0xdff6fb),
-        emissiveIntensity: isDarkGlobe ? 0.2 : 0.06,
+        roughness: isDarkGlobe ? 0.92 : 0.82,
+        metalness: 0,
+        clearcoat: isDarkGlobe ? 0.08 : 0.1,
+        clearcoatRoughness: isDarkGlobe ? 0.86 : 0.7,
+        emissive: new Color(isDarkGlobe ? 0x08283c : 0xdff6fb),
+        emissiveIntensity: isDarkGlobe ? 0.62 : 0.06,
       }),
     );
     earthGroup.add(globe);
@@ -219,7 +236,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       new MeshBasicMaterial({
         map: cloudTexture,
         transparent: true,
-        opacity: isDarkGlobe ? 0.2 : 0.16,
+        opacity: isDarkGlobe ? 0.12 : 0.16,
         depthWrite: false,
         blending: AdditiveBlending,
       }),
@@ -230,7 +247,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       atmosphereGeometry,
       new ShaderMaterial({
         uniforms: {
-          glowColor: { value: new Color(isDarkGlobe ? 0x5bdcff : 0x4e9ed1) },
+          glowColor: { value: new Color(isDarkGlobe ? 0x4ec8ff : 0x4e9ed1) },
         },
         vertexShader: `
           varying vec3 vNormal;
@@ -243,8 +260,8 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
           uniform vec3 glowColor;
           varying vec3 vNormal;
           void main() {
-            float rim = pow(0.72 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.4);
-            gl_FragColor = vec4(glowColor, clamp(rim, 0.0, 0.58));
+            float intensity = pow(0.65 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 3.1);
+            gl_FragColor = vec4(glowColor, clamp(intensity, 0.0, 0.86));
           }
         `,
         transparent: true,
@@ -254,6 +271,33 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       }),
     );
     earthGroup.add(atmosphere);
+    const innerAtmosphere = new Mesh(
+      new SphereGeometry(1.028, 96, 96),
+      new ShaderMaterial({
+        uniforms: {
+          glowColor: { value: new Color(isDarkGlobe ? 0x7ee7ff : 0x7eb7d6) },
+        },
+        vertexShader: `
+          varying vec3 vNormal;
+          void main() {
+            vNormal = normalize(normalMatrix * normal);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 glowColor;
+          varying vec3 vNormal;
+          void main() {
+            float intensity = pow(0.55 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 4.4);
+            gl_FragColor = vec4(glowColor, clamp(intensity, 0.0, 0.42));
+          }
+        `,
+        transparent: true,
+        depthWrite: false,
+        blending: AdditiveBlending,
+      }),
+    );
+    earthGroup.add(innerAtmosphere);
 
     const markerGroup = new Group();
     earthGroup.add(markerGroup);
@@ -349,14 +393,14 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       setControlsActive(false);
     };
 
-    scene.add(new AmbientLight(isDarkGlobe ? 0x8fb7d9 : 0xffffff, isDarkGlobe ? 0.32 : 0.62));
-    const hemi = new HemisphereLight(isDarkGlobe ? 0xa9e5ff : 0xf4fbff, isDarkGlobe ? 0x06101c : 0xb9d9e6, isDarkGlobe ? 0.82 : 0.9);
+    scene.add(new AmbientLight(isDarkGlobe ? 0x6ea8c8 : 0xffffff, isDarkGlobe ? 0.22 : 0.62));
+    const hemi = new HemisphereLight(isDarkGlobe ? 0x8fd4ff : 0xf4fbff, isDarkGlobe ? 0x02060d : 0xb9d9e6, isDarkGlobe ? 0.55 : 0.9);
     scene.add(hemi);
-    const light = new DirectionalLight(0xffffff, isDarkGlobe ? 2.35 : 1.78);
-    light.position.set(3.4, 2.2, 4.2);
+    const light = new DirectionalLight(0xffffff, isDarkGlobe ? 1.55 : 1.78);
+    light.position.set(3.8, 1.6, 2.8);
     scene.add(light);
-    const rimLight = new DirectionalLight(isDarkGlobe ? 0x74e0ff : 0x3b8dbc, isDarkGlobe ? 1.15 : 0.48);
-    rimLight.position.set(-3.4, 0.55, -2.3);
+    const rimLight = new DirectionalLight(isDarkGlobe ? 0x3ecfff : 0x3b8dbc, isDarkGlobe ? 1.85 : 0.48);
+    rimLight.position.set(-3.6, 0.2, -2.6);
     scene.add(rimLight);
 
     const raycaster = new Raycaster();
@@ -460,7 +504,7 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       }
       const shouldAutoRotate = !controlsActive && !dragging;
       if (!reducedMotion) {
-        earthGroup.rotation.y += shouldAutoRotate ? delta * 0.038 : 0;
+        earthGroup.rotation.y += shouldAutoRotate ? delta * 0.046 : 0;
         clouds.rotation.y += delta * 0.024;
         clouds.rotation.x = Math.sin(elapsed * 0.12) * 0.012;
         starField.rotation.y += delta * 0.004;
@@ -531,7 +575,16 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       renderer.domElement.removeEventListener('pointercancel', onPointerCancel);
       renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
       renderer.domElement.removeEventListener('wheel', onWheel);
-      renderer.dispose();
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
+      if (contextLost) {
+        // Keep the restored listener alive on the (detached) canvas so a late
+        // context restore can still flip webglError back and rebuild the globe.
+        renderer.dispose();
+      } else {
+        renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
+        renderer.dispose();
+        renderer.forceContextLoss();
+      }
       disposeObjectTree(starField, earthGroup);
       runtime.worldTexture?.dispose();
       cloudTexture?.dispose();
@@ -592,6 +645,7 @@ function updateGlobeTexture(runtime: GlobeRuntime, countryLevels: Map<string, Th
   runtime.worldTexture?.dispose();
   runtime.worldTexture = texture;
   runtime.globeMaterial.map = texture;
+  runtime.globeMaterial.emissiveMap = texture;
   runtime.globeMaterial.needsUpdate = true;
   runtime.render();
 }
@@ -631,30 +685,30 @@ function rebuildGlobeMarkers(
   for (const [index, region] of regions.entries()) {
     const normal = latLonToVector(region.lat, region.lon, 1).normalize();
     const color = globeLevelColors[region.level] ?? markerColorFallback;
-    const markerSize = Math.max(0.024, Math.min(0.076, region.size / 520));
-    const height = Math.max(0.055, Math.min(0.18, region.size / 250));
+    const markerSize = Math.max(0.02, Math.min(0.058, region.size / 640));
+    const height = Math.max(0.09, Math.min(0.46, region.size / 150));
 
     const ringMaterial = new MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.52,
-      depthWrite: false,
-      blending: AdditiveBlending,
-    });
-    const ring = new Mesh(new TorusGeometry(markerSize * 1.45, 0.0045, 10, 42), ringMaterial);
-    ring.position.copy(normal.clone().multiplyScalar(1.041));
-    orientNormal(ring, normal);
-    ring.userData.region = region;
-
-    const beamMaterial = new MeshBasicMaterial({
       color,
       transparent: true,
       opacity: 0.7,
       depthWrite: false,
       blending: AdditiveBlending,
     });
-    const beam = new Mesh(new CylinderGeometry(markerSize * 0.11, markerSize * 0.22, height, 16, 1, true), beamMaterial);
-    beam.position.copy(normal.clone().multiplyScalar(1.052 + height / 2));
+    const ring = new Mesh(new TorusGeometry(markerSize * 1.85, 0.0036, 8, 36), ringMaterial);
+    ring.position.copy(normal.clone().multiplyScalar(1.018));
+    orientNormal(ring, normal);
+    ring.userData.region = region;
+
+    const beamMaterial = new MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+      blending: AdditiveBlending,
+    });
+    const beam = new Mesh(new CylinderGeometry(markerSize * 0.34, markerSize * 0.52, height, 6, 1, false), beamMaterial);
+    beam.position.copy(normal.clone().multiplyScalar(1.02 + height / 2));
     beam.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), normal);
     beam.userData.region = region;
 
@@ -752,7 +806,7 @@ function formatGlobeRegionLocation(region: AttackRegion, t: (key: string, option
 function createArcMesh(start: ThreeVector3, end: ThreeVector3, material: ThreeMeshBasicMaterial) {
   const midpoint = start.clone().add(end).normalize().multiplyScalar(1.28 + Math.min(0.26, start.distanceTo(end) * 0.09));
   const curve = new CatmullRomCurve3([start, midpoint, end]);
-  const mesh = new Mesh(new TubeGeometry(curve, 58, 0.0032, 8, false), material);
+  const mesh = new Mesh(new TubeGeometry(curve, 64, 0.0022, 8, false), material);
   return { mesh, curve };
 }
 
@@ -760,9 +814,9 @@ function createGridSphere(radius: number, visualTheme: GlobeVisualTheme) {
   const isDarkGlobe = visualTheme === 'dark';
   const group = new Group();
   const material = new LineBasicMaterial({
-    color: isDarkGlobe ? 0x8ce8ff : 0x27799d,
+    color: isDarkGlobe ? 0x7ee4ff : 0x27799d,
     transparent: true,
-    opacity: isDarkGlobe ? 0.16 : 0.11,
+    opacity: isDarkGlobe ? 0.28 : 0.11,
     depthWrite: false,
     blending: isDarkGlobe ? AdditiveBlending : NormalBlending,
   });
@@ -811,7 +865,7 @@ function disposeObjectTree(...objects: ThreeObject3D[]) {
 
 function createStarField(visualTheme: GlobeVisualTheme) {
   const isDarkGlobe = visualTheme === 'dark';
-  const count = 260;
+  const count = isDarkGlobe ? 720 : 260;
   const positions = new Float32Array(count * 3);
   for (let index = 0; index < count; index += 1) {
     const theta = index * 2.399963229728653;
@@ -828,10 +882,10 @@ function createStarField(visualTheme: GlobeVisualTheme) {
     geometry,
     new PointsMaterial({
       color: isDarkGlobe ? 0xb8d9ff : 0x2e7da4,
-      size: isDarkGlobe ? 0.012 : 0.009,
+      size: isDarkGlobe ? 0.016 : 0.009,
       sizeAttenuation: true,
       transparent: true,
-      opacity: isDarkGlobe ? 0.58 : 0.16,
+      opacity: isDarkGlobe ? 0.78 : 0.16,
       depthWrite: false,
     }),
   );
@@ -865,10 +919,10 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
     canvas.width * 0.76,
   );
   if (isDarkGlobe) {
-    ocean.addColorStop(0, '#0e5667');
-    ocean.addColorStop(0.42, '#083444');
-    ocean.addColorStop(0.78, '#031829');
-    ocean.addColorStop(1, '#020814');
+    ocean.addColorStop(0, '#06324a');
+    ocean.addColorStop(0.38, '#041e32');
+    ocean.addColorStop(0.72, '#02101c');
+    ocean.addColorStop(1, '#01060d');
   } else {
     ocean.addColorStop(0, '#f0fbff');
     ocean.addColorStop(0.38, '#d7edf8');
@@ -898,8 +952,8 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
 
   ctx.beginPath();
   texturePath(asGeoPathObject(geoGraticule10()));
-  ctx.strokeStyle = isDarkGlobe ? 'rgba(130,226,239,0.08)' : 'rgba(35,97,124,0.12)';
-  ctx.lineWidth = 0.9;
+  ctx.strokeStyle = isDarkGlobe ? 'rgba(110, 220, 255, 0.22)' : 'rgba(35,97,124,0.12)';
+  ctx.lineWidth = isDarkGlobe ? 0.7 : 0.9;
   ctx.stroke();
 
   ctx.lineJoin = 'round';
@@ -920,10 +974,40 @@ function createWorldTexture(countryLevels: Map<string, ThreatLevel>, worldFeatur
     ctx.beginPath();
     texturePath(asGeoPathObject(item));
     ctx.strokeStyle = level
-      ? (isDarkGlobe ? 'rgba(255,241,224,0.86)' : 'rgba(255,255,255,0.86)')
-      : (isDarkGlobe ? 'rgba(196,239,226,0.42)' : 'rgba(49,92,112,0.34)');
-    ctx.lineWidth = level ? (isDarkGlobe ? 1.4 : 1.25) : 0.72;
+      ? (isDarkGlobe ? 'rgba(186, 245, 255, 0.92)' : 'rgba(255,255,255,0.86)')
+      : (isDarkGlobe ? 'rgba(92, 210, 240, 0.55)' : 'rgba(49,92,112,0.34)');
+    ctx.lineWidth = level ? (isDarkGlobe ? 1.15 : 1.25) : (isDarkGlobe ? 0.55 : 0.72);
     ctx.stroke();
+  }
+
+  // Country labels: rank by spherical area and keep only the top entries so
+  // dense small-country regions (Europe, Caribbean, SE Asia) don't overlap.
+  const labelSize = Math.max(10, Math.min(15, Math.round(canvas.width / 100)));
+  ctx.font = `${labelSize}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = isDarkGlobe ? 'rgba(1, 10, 18, 0.82)' : 'rgba(255,255,255,0.9)';
+  ctx.fillStyle = isDarkGlobe ? 'rgba(186, 240, 255, 0.78)' : 'rgba(23,58,78,0.92)';
+  const labeledFeatures = worldFeatures
+    .map((item) => ({
+      item,
+      name: String(((item.properties ?? {}) as { name?: string }).name ?? '').trim(),
+      area: geoArea(asGeoPathObject(item)),
+    }))
+    .filter((entry) => entry.name && entry.area > 0)
+    .sort((a, b) => b.area - a.area)
+    .slice(0, GLOBE_LABEL_LIMIT);
+  for (const { item, name } of labeledFeatures) {
+    const centroid = geoCentroid(asGeoPathObject(item));
+    if (!Number.isFinite(centroid[0]) || !Number.isFinite(centroid[1])) continue;
+    const point = textureProjection(centroid);
+    if (!point) continue;
+    const x = point[0];
+    const y = point[1];
+    if (x < -48 || x > canvas.width + 48 || y < -48 || y > canvas.height + 48) continue;
+    ctx.strokeText(name, x, y);
+    ctx.fillText(name, x, y);
   }
 
   const vignette = ctx.createRadialGradient(canvas.width * 0.5, canvas.height * 0.45, 0, canvas.width * 0.5, canvas.height * 0.5, canvas.width * 0.66);
@@ -985,7 +1069,7 @@ function globeFillForLevel(level: ThreatLevel | undefined, visualTheme: GlobeVis
   if (level) {
     return threatPaletteHex[level];
   }
-  return visualTheme === 'light' ? '#d7eadb' : '#9ec8b9';
+  return visualTheme === 'light' ? '#d7eadb' : '#1d6d82';
 }
 
 function globeShadowForLevel(level: ThreatLevel | undefined, visualTheme: GlobeVisualTheme) {

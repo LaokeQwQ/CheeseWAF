@@ -12,7 +12,7 @@ export type WorldFeature = {
   geometry: unknown;
   properties?: Record<string, unknown>;
 };
-type WorldFeatureCollection = {
+export type GeoFeatureCollection = {
   type: 'FeatureCollection';
   features: WorldFeature[];
 };
@@ -65,7 +65,7 @@ export type AttackRegion = {
 const mapWidth = 1000;
 const mapHeight = 500;
 const topo = worldTopology as any;
-const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as WorldFeatureCollection;
+const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as GeoFeatureCollection;
 export const worldFeatures = worldFeatureCollection.features.filter((item) => item.geometry);
 export const mapProjection = geoNaturalEarth1().fitExtent([[28, 28], [mapWidth - 28, mapHeight - 28]], worldFeatureCollection as any);
 const mapPath = geoPath(mapProjection);
@@ -293,13 +293,7 @@ export function buildCountryLevelMap(regions: AttackRegion[]) {
     if (!region.mappable) {
       continue;
     }
-    // HK/MO are not world-atlas faces (no 344/446), so they fill as CN on the
-    // world layer while TW keeps its own 158 face. This matches isChinaRegion.
     const bucketCountry = worldFillCountryCode(region.countryCode);
-    const numericId = countryNumericIds[bucketCountry];
-    if (!numericId) {
-      continue;
-    }
     const current = byCountry.get(bucketCountry) ?? { attacks: 0, severityRank: 0 };
     current.attacks += region.attacks;
     current.severityRank = Math.max(current.severityRank, region.severityRank);
@@ -308,13 +302,24 @@ export function buildCountryLevelMap(regions: AttackRegion[]) {
   const maxAttacks = Math.max(1, ...Array.from(byCountry.values()).map((item) => item.attacks));
   const levels = new Map<string, ThreatLevel>();
   for (const [country, value] of byCountry.entries()) {
-    levels.set(countryNumericIds[country], threatLevelFor(value.attacks, value.severityRank, maxAttacks));
+    const level = threatLevelFor(value.attacks, value.severityRank, maxAttacks);
+    levels.set(country, level);
+    const numericId = countryNumericIds[country];
+    if (numericId) {
+      levels.set(numericId, level);
+    }
+    if (country === 'CN') {
+      const taiwanNumeric = countryNumericIds.TW;
+      if (taiwanNumeric) {
+        levels.set(taiwanNumeric, level);
+      }
+    }
   }
   return levels;
 }
 
-function worldFillCountryCode(countryCode: string): string {
-  return countryCode === 'HK' || countryCode === 'MO' ? 'CN' : countryCode;
+export function worldFillCountryCode(countryCode: string): string {
+  return countryCode === 'HK' || countryCode === 'MO' || countryCode === 'TW' ? 'CN' : countryCode;
 }
 
 export function resolveProtectedTarget(entries: LogEntry[], t: (key: string, options?: Record<string, unknown>) => string): ProtectedTarget {
