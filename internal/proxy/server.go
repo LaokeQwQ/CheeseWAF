@@ -700,21 +700,26 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeLog(r.Context(), reqCtx, "cache_hit", cached.Status, start, nil)
 		return
 	}
-	target, err := s.lb.Next(site, reqCtx.ClientIP)
-	if err != nil {
-		s.proxyError(w, r, site, reqCtx, "proxy_error", "no upstream", http.StatusBadGateway, start, err)
-		return
-	}
 	if IsWebSocketUpgrade(r) {
+		target, err := s.lb.Next(site, reqCtx.ClientIP)
+		if err != nil {
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "no upstream", http.StatusBadGateway, start, err)
+			return
+		}
 		rp := NewReverseProxyForClient(target, site.WAF.Performance.ProxyTimeout, reqCtx.ClientIP)
 		var proxyErr error
 		rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
 			proxyErr = err
 		}
+		release := s.lb.Track(target)
 		unlockRuntime()
 		rp.ServeHTTP(w, r)
 		lockRuntime()
+		release()
 		if proxyErr != nil {
+			if isUpstreamConnectError(proxyErr) {
+				s.markUpstream(target, false)
+			}
 			status := http.StatusBadGateway
 			category, message := "proxy_error", "upstream proxy error"
 			if requestBodyTooLarge(proxyErr) {
@@ -724,6 +729,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			s.proxyError(w, r, site, reqCtx, category, message, status, start, proxyErr)
 			return
 		}
+		s.markUpstream(target, true)
 		s.writeLog(r.Context(), reqCtx, "pass", http.StatusSwitchingProtocols, start, nil)
 		return
 	}
@@ -731,34 +737,65 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	cacheCandidate := retrySafe && edgeRT.cache.CaptureCandidate(r)
 	compressCandidate := retrySafe && edgeRT.compress.MayApplyRequest(r)
 	if !cacheCandidate && !compressCandidate {
-		rp := NewReverseProxyForClient(target, site.WAF.Performance.ProxyTimeout, reqCtx.ClientIP)
-		var proxyErr error
-		rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
-			proxyErr = err
+		skip := map[string]struct{}{}
+		var lastErr error
+		attempts := len(site.Upstreams)
+		if attempts < 1 {
+			attempts = 1
 		}
-		if siteRT.inspector.Enabled() {
-			rp.ModifyResponse = func(resp *http.Response) error {
-				return inspectUpstreamResponse(site, siteRT, publicRequest, reqCtx, resp)
+		for i := 0; i < attempts; i++ {
+			target, err := s.lb.nextExcluding(site, reqCtx.ClientIP, skip)
+			if err != nil {
+				if lastErr != nil {
+					err = lastErr
+				}
+				s.proxyError(w, r, site, reqCtx, "proxy_error", "no upstream", http.StatusBadGateway, start, err)
+				return
 			}
-		}
-		recorder := &proxyStatusRecorder{ResponseWriter: w, status: http.StatusOK}
-		unlockRuntime()
-		rp.ServeHTTP(recorder, r)
-		lockRuntime()
-		if proxyErr != nil {
+			skip[upstreamKeyFromURL(target)] = struct{}{}
+			rp := NewReverseProxyForClient(target, site.WAF.Performance.ProxyTimeout, reqCtx.ClientIP)
+			var proxyErr error
+			rp.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
+				proxyErr = err
+			}
+			if siteRT.inspector.Enabled() {
+				rp.ModifyResponse = func(resp *http.Response) error {
+					return inspectUpstreamResponse(site, siteRT, publicRequest, reqCtx, resp)
+				}
+			}
+			recorder := &proxyStatusRecorder{ResponseWriter: w, status: http.StatusOK}
+			release := s.lb.Track(target)
+			unlockRuntime()
+			rp.ServeHTTP(recorder, r)
+			lockRuntime()
+			release()
+			if proxyErr == nil {
+				s.markUpstream(target, true)
+				s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
+				return
+			}
+			lastErr = proxyErr
+			if isUpstreamConnectError(proxyErr) {
+				s.markUpstream(target, false)
+			}
 			if s.blockTamperedResponse(w, reqCtx, proxyErr, start) {
 				return
 			}
-			status := http.StatusBadGateway
-			category, message := "proxy_error", "upstream proxy error"
 			if requestBodyTooLarge(proxyErr) {
-				status = http.StatusRequestEntityTooLarge
-				category, message = "request_too_large", "request body exceeds site limit"
+				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, proxyErr)
+				return
 			}
-			s.proxyError(w, r, site, reqCtx, category, message, status, start, proxyErr)
-			return
+			if recorder.wrote || !shouldRetryUpstream(proxyErr, retrySafe) {
+				s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, proxyErr)
+				return
+			}
 		}
-		s.writeLog(r.Context(), reqCtx, "pass", recorder.status, start, nil)
+		s.proxyError(w, r, site, reqCtx, "proxy_error", "upstream proxy error", http.StatusBadGateway, start, lastErr)
+		return
+	}
+	target, err := s.lb.Next(site, reqCtx.ClientIP)
+	if err != nil {
+		s.proxyError(w, r, site, reqCtx, "proxy_error", "no upstream", http.StatusBadGateway, start, err)
 		return
 	}
 	captureLimit := edgeCaptureLimit(site, edgeRT.cache, cacheCandidate, compressCandidate)
@@ -796,9 +833,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
+	release := s.lb.Track(target)
 	unlockRuntime()
 	rp.ServeHTTP(capture, r)
 	lockRuntime()
+	release()
 	if capture.Committed() {
 		if proxyErr != nil || capture.Err() != nil {
 			err := proxyErr
@@ -808,6 +847,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			if s.blockTamperedResponse(w, reqCtx, err, start) {
 				return
 			}
+			if isUpstreamConnectError(err) {
+				s.markUpstream(target, false)
+			}
 			s.writeLog(r.Context(), reqCtx, "proxy_error", capture.Response().Status, start, &storage.LogEntry{
 				Category: "proxy_error",
 				Severity: engine.SeverityHigh.String(),
@@ -815,6 +857,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		s.markUpstream(target, true)
 		s.writeLog(r.Context(), reqCtx, "pass", capture.Response().Status, start, nil)
 		return
 	}
@@ -828,9 +871,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusRequestEntityTooLarge
 			category, message = "request_too_large", "request body exceeds site limit"
 		}
+		if isUpstreamConnectError(proxyErr) {
+			s.markUpstream(target, false)
+		}
 		s.proxyError(w, r, site, reqCtx, category, message, status, start, proxyErr)
 		return
 	}
+	s.markUpstream(target, true)
 	captured := capture.Response()
 	if cacheCandidate {
 		edgeRT.cache.Store(r, captured)
@@ -1027,11 +1074,21 @@ func retrySafeRequest(r *http.Request) bool {
 type proxyStatusRecorder struct {
 	http.ResponseWriter
 	status int
+	wrote  bool
 }
 
 func (r *proxyStatusRecorder) WriteHeader(status int) {
+	r.wrote = true
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *proxyStatusRecorder) Write(b []byte) (int, error) {
+	r.wrote = true
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
 }
 
 func (r *proxyStatusRecorder) Flush() {

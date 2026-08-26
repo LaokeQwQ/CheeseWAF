@@ -695,12 +695,35 @@ func TestLookupThreatIntelImportsProviderConfirmedIndicator(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected lookup ok, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+	if len(reloaded.IP.ThreatIntel) != 0 {
+		t.Fatalf("lookup must stay read-only, got %+v", reloaded.IP.ThreatIntel)
+	}
+	var response struct {
+		Data struct {
+			Imported int                        `json:"imported"`
+			Items    []config.ThreatIntelConfig `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode lookup response: %v", err)
+	}
+	if response.Data.Imported != 0 || len(response.Data.Items) != 1 {
+		t.Fatalf("expected one lookup item without import, got %+v", response.Data)
+	}
+
+	adoptRaw, _ := json.Marshal(map[string]any{"items": response.Data.Items})
+	adoptRec := httptest.NewRecorder()
+	adoptReq := httptest.NewRequest(http.MethodPost, "/api/ip/threat-intel/lookup/adopt", bytes.NewReader(adoptRaw))
+	handler.AdoptThreatIntel(adoptRec, adoptReq)
+	if adoptRec.Code != http.StatusOK {
+		t.Fatalf("expected adopt ok, code=%d body=%s", adoptRec.Code, adoptRec.Body.String())
+	}
 	if len(reloaded.IP.ThreatIntel) != 1 {
-		t.Fatalf("expected one imported indicator, got %+v", reloaded.IP.ThreatIntel)
+		t.Fatalf("expected one adopted indicator, got %+v", reloaded.IP.ThreatIntel)
 	}
 	item := reloaded.IP.ThreatIntel[0]
 	if item.Value != "203.0.113.46" || item.Source != "ThreatBook Labs" || item.Confidence != 0.91 {
-		t.Fatalf("unexpected imported indicator: %+v", item)
+		t.Fatalf("unexpected adopted indicator: %+v", item)
 	}
 }
 

@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   syncThreatIntel: vi.fn(),
   testThreatIntelProvider: vi.fn(),
   lookupThreatIntel: vi.fn(),
+  adoptThreatIntel: vi.fn(),
   exportThreatIntel: vi.fn(),
 }));
 

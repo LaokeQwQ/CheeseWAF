@@ -76,7 +76,11 @@ func TestTrustedLoginClientIPRejectsXFFWhenAdminPublic(t *testing.T) {
 	if loginCAPTCHASkippedForPeer(r, true) {
 		t.Fatal("admin public must not skip CAPTCHA for loopback")
 	}
-	if !loginCAPTCHASkippedForPeer(r, false) {
-		t.Fatal("non-public loopback may skip CAPTCHA")
+	if loginCAPTCHASkippedForPeer(r, false) {
+		t.Fatal("loopback with a forwarded client must not skip CAPTCHA")
+	}
+	local := &http.Request{Header: make(http.Header), RemoteAddr: "127.0.0.1:54321"}
+	if !loginCAPTCHASkippedForPeer(local, false) {
+		t.Fatal("direct loopback without X-Forwarded-For may skip CAPTCHA")
 	}
 }

@@ -1,6 +1,7 @@
 package ip
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -168,6 +169,24 @@ func TestParseMISPAttributeShape(t *testing.T) {
 	}
 	if items[0].Value != "203.0.113.64" || items[0].Action != "block" {
 		t.Fatalf("unexpected MISP indicator: %+v", items[0])
+	}
+}
+
+func TestWalkJSONStopsAtDepthLimit(t *testing.T) {
+	nested := any("203.0.113.77")
+	for i := 0; i < 80; i++ {
+		nested = map[string]any{"objects": []any{nested}}
+	}
+	raw, err := json.Marshal(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := ParseThreatIntel("json", raw, ImportOptions{Source: "depth"})
+	if err != nil {
+		t.Fatalf("parse nested json: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("depth-limited walk must not import buried indicators, got %+v", items)
 	}
 }
 
