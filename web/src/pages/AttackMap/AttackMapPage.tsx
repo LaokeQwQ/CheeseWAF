@@ -389,6 +389,7 @@ export default function AttackMapPage() {
                 countryLevels={countryLevels}
                 worldFeatures={worldFeatures}
                 target={protectedTarget}
+                visualTheme="dark"
                 fallback={renderGlobeFallback(mappedRegions, countryLevels, t('attackMap.worldMapAria'))}
               />
             </Suspense>

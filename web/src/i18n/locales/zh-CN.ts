@@ -1364,7 +1364,7 @@ const zhCN = {
     mode3d: '3D',
     modeChina: '中国区域',
     bigScreen: '攻击大屏',
-    basemapCredit3d: 'Three.js 地球',
+    basemapCredit3d: '离线三维地球',
     basemapCreditChina: '离线 · 省/市/区划数据（GS 2024-0650 / GS 2025-5996）+ 十段线/黄岩岛 · MapLibre',
     basemapCreditWorld: '离线国界 · MapLibre',
     basemapCreditChinaProjection: '中国区域 · 态势投影（未启用行政边界）',

@@ -1364,7 +1364,7 @@ const enUS = {
     mode3d: '3D',
     modeChina: 'China Region',
     bigScreen: 'Attack Screen',
-    basemapCredit3d: 'Three.js globe',
+    basemapCredit3d: 'Offline 3D globe',
     basemapCreditChina: 'Offline · province/city/district data (GS 2024-0650 / GS 2025-5996) + ten-dash line / Huangyan · MapLibre',
     basemapCreditWorld: 'Offline country borders · MapLibre',
     basemapCreditChinaProjection: 'China region · projection only (administrative boundaries disabled)',

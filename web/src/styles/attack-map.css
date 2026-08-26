@@ -624,41 +624,15 @@
   background: transparent;
 }
 
-.attack-map-page .map-canvas.map-mode-3d {
-  background:
-    radial-gradient(
-      circle at 50% 44%,
-      color-mix(in srgb, var(--accent-info) 11%, transparent),
-      transparent 35%
-    ),
-    radial-gradient(
-      circle at 28% 22%,
-      color-mix(in srgb, var(--accent) 7%, transparent),
-      transparent 32%
-    ),
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--surface-soft) 88%, var(--surface)),
-      var(--surface)
-    );
-  background-color: var(--surface);
-}
-
+.attack-map-page .map-canvas.map-mode-3d,
 :root[data-theme="dark"] .attack-map-page .map-canvas.map-mode-3d,
-:root[data-theme="black-gold"] .attack-map-page .map-canvas.map-mode-3d {
+:root[data-theme="black-gold"] .attack-map-page .map-canvas.map-mode-3d,
+:root[data-theme="light"] .attack-map-page .map-canvas.map-mode-3d {
   background:
-    radial-gradient(
-      circle at 50% 45%,
-      color-mix(in srgb, var(--accent-info) 22%, transparent),
-      transparent 34%
-    ),
-    radial-gradient(
-      circle at 30% 20%,
-      color-mix(in srgb, var(--accent) 18%, transparent),
-      transparent 30%
-    ),
-    var(--map-canvas-3d-bg);
-  background-color: var(--surface-soft);
+    radial-gradient(circle at 50% 46%, rgba(24, 92, 140, 0.42) 0%, transparent 34%),
+    radial-gradient(circle at 50% 100%, rgba(4, 18, 36, 0.9) 0%, transparent 46%),
+    #02060d;
+  background-color: #02060d;
 }
 
 .attack-map-page .globe-stage canvas {
@@ -2388,42 +2362,22 @@
 }
 
 .attack-map-page .map-mode-3d {
-  background-color: var(--surface) !important;
+  background-color: #02060d !important;
 }
 
 .attack-map-page .map-canvas.map-mode-3d {
   background:
-    radial-gradient(
-      circle at 52% 45%,
-      color-mix(in srgb, var(--accent-info) 10%, transparent),
-      transparent 38%
-    ),
-    radial-gradient(
-      circle at 28% 20%,
-      color-mix(in srgb, var(--accent) 6%, transparent),
-      transparent 30%
-    ),
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--surface-soft) 90%, var(--surface)),
-      var(--surface)
-    ) !important;
+    radial-gradient(circle at 50% 46%, rgba(24, 92, 140, 0.42) 0%, transparent 34%),
+    radial-gradient(circle at 50% 100%, rgba(4, 18, 36, 0.9) 0%, transparent 46%),
+    #02060d !important;
 }
 
 :root[data-theme="dark"] .attack-map-page .map-canvas.map-mode-3d,
 :root[data-theme="black-gold"] .attack-map-page .map-canvas.map-mode-3d {
   background:
-    radial-gradient(
-      circle at 50% 45%,
-      color-mix(in srgb, var(--accent-info) 22%, transparent),
-      transparent 34%
-    ),
-    radial-gradient(
-      circle at 30% 20%,
-      color-mix(in srgb, var(--accent) 18%, transparent),
-      transparent 30%
-    ),
-    var(--map-canvas-3d-bg) !important;
+    radial-gradient(circle at 50% 46%, rgba(24, 92, 140, 0.42) 0%, transparent 34%),
+    radial-gradient(circle at 50% 100%, rgba(4, 18, 36, 0.9) 0%, transparent 46%),
+    #02060d !important;
 }
 
 @media (max-width: 520px) {
