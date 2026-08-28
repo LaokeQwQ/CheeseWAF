@@ -891,6 +891,12 @@ export function lookupThreatIntel(providerId: string, ip: string) {
   );
 }
 
+export function adoptThreatIntel(items: Array<Record<string, unknown>>) {
+  return unwrap<{ imported: number; total: number; items: Array<Record<string, unknown>> }>(
+    apiClient.post('/ip/threat-intel/lookup/adopt', { items }),
+  );
+}
+
 export async function exportThreatIntel(format: 'csv' | 'stix') {
   const response = await apiClient.get('/ip/threat-intel/export', {
     params: { format },

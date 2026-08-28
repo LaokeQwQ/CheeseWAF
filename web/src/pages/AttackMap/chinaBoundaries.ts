@@ -1,10 +1,7 @@
 import { geoMercator, geoPath } from 'd3-geo';
-import type { AttackRegion, ThreatLevel, WorldFeature } from './attackMapData';
+import type { AttackRegion, GeoFeatureCollection, ThreatLevel, WorldFeature } from './attackMapData';
 
-export type GeoFeatureCollection = {
-  type: 'FeatureCollection';
-  features: WorldFeature[];
-};
+export type { GeoFeatureCollection };
 
 export type ChinaBoundaryLayer = {
   key: string;
@@ -36,25 +33,91 @@ export type ChinaMapAssets = {
   adminIndex: ChinaAdminIndex;
 };
 
-type AdminRecord = {
-  code: string;
-  name: string;
-  province?: string;
-  city?: string;
-  area?: string;
-};
-
 export type ChinaAdminIndex = {
   nameToCodes: Map<string, string[]>;
   codeToName: Map<string, string>;
 };
+
+export type ChinaComplianceAssets = {
+  tenDash: GeoFeatureCollection;
+  huangyan: GeoFeatureCollection;
+  borders: GeoFeatureCollection;
+};
+
+export type ChinaComplianceFeatures = {
+  tenDash: GeoFeatureCollection;
+  huangyan: GeoFeatureCollection;
+  borders: GeoFeatureCollection;
+};
+
+export type ChinaBoundaryGateConfig = {
+  enabled?: boolean;
+  license?: string;
+  review_id?: string;
+  source_type?: string;
+};
+
+export function chinaFeatureAdcode(properties: Record<string, unknown> | null | undefined): string {
+  const props = properties ?? {};
+  const gb = typeof props.gb === 'string' && props.gb.length >= 8 ? props.gb.slice(3) : '';
+  const adcode = typeof props.adcode === 'string' || typeof props.adcode === 'number' ? String(props.adcode) : '';
+  return gb || adcode;
+}
+
+export function isChinaBoundaryEnabled(gate?: ChinaBoundaryGateConfig | null): boolean {
+  if (!gate || gate.enabled === false) return false;
+  const hasLicense = Boolean((gate.license ?? '').trim());
+  const hasReviewId = Boolean((gate.review_id ?? '').trim());
+  return hasLicense || hasReviewId;
+}
+
+export function buildChinaComplianceFeatures(
+  assets: ChinaComplianceAssets | null | undefined,
+  enabled: boolean,
+): ChinaComplianceFeatures | null {
+  if (!enabled) return null;
+  const tenDash = assets?.tenDash;
+  const huangyan = assets?.huangyan;
+  const borders = assets?.borders;
+  if (!tenDash?.features?.length && !huangyan?.features?.length && !borders?.features?.length) return null;
+  return {
+    tenDash: tenDash ?? emptyFeatureCollection,
+    huangyan: huangyan ?? emptyFeatureCollection,
+    borders: borders ?? emptyFeatureCollection,
+  };
+}
+
+export function filterChinaCollectionByPrefix(collection: GeoFeatureCollection, prefixLength: number): GeoFeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: collection.features.filter((feature) => chinaFeatureAdcode(feature.properties ?? {}).length >= prefixLength),
+  };
+}
+
+export async function fetchGzJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+  const absolute = /^https?:\/\//.test(url) ? url : `${base}${url.replace(/^\//, '')}`;
+  const response = await fetch(absolute, { headers: { Accept: 'application/json' }, signal });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+  }
+  if (url.endsWith('.gz')) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw new Error(`DecompressionStream is unavailable; cannot decompress ${url}`);
+    }
+    const body = response.body;
+    if (!body) throw new Error(`No response body for ${url}`);
+    const decompressed = body.pipeThrough(new DecompressionStream('gzip'));
+    return new Response(decompressed).json() as Promise<T>;
+  }
+  return response.json() as Promise<T>;
+}
 
 const chinaMapWidth = 960;
 const chinaMapHeight = 620;
 const chinaViewBox = `0 0 ${chinaMapWidth} ${chinaMapHeight}`;
 const directAdminProvincePrefixes = new Set(['11', '12', '31', '50', '71', '81', '82']);
 const emptyFeatureCollection: GeoFeatureCollection = { type: 'FeatureCollection', features: [] };
-let builtinAdcodeManifest: Promise<Set<string>> | null = null;
 const chinaAdminNameAliases: Record<string, string> = {
   anhui: '安徽',
   beijing: '北京',
@@ -143,9 +206,38 @@ const chinaAdminNameAliases: Record<string, string> = {
   xihudistrict: '西湖',
 };
 
+const vendoredChinaCache = new Map<string, Promise<GeoFeatureCollection>>();
+
+const vendoredChinaFiles: Record<'province' | 'city' | 'county', string> = {
+  province: 'map/china/china_province.geojson.gz',
+  city: 'map/china/china_region.geojson.gz',
+  county: 'map/china/china_county.geojson.gz',
+};
+
+export function loadVendoredChinaCollection(kind: 'province' | 'city' | 'county', signal?: AbortSignal): Promise<GeoFeatureCollection> {
+  let pending = vendoredChinaCache.get(kind);
+  if (!pending) {
+    pending = fetchGzJson<GeoFeatureCollection>(vendoredChinaFiles[kind], signal).catch((error) => {
+      vendoredChinaCache.delete(kind);
+      throw error;
+    });
+    vendoredChinaCache.set(kind, pending);
+  }
+  return pending;
+}
+
+export async function loadChinaComplianceAssets(): Promise<ChinaComplianceAssets> {
+  const [tenDash, huangyan, borders] = await Promise.all([
+    fetchGzJson<GeoFeatureCollection>('map/china/ten_dash.geojson'),
+    fetchGzJson<GeoFeatureCollection>('map/china/huangyan.geojson'),
+    fetchGzJson<GeoFeatureCollection>('map/china/china_borders.geojson.gz'),
+  ]);
+  return { tenDash, huangyan, borders };
+}
+
 export async function loadChinaMapAssets(): Promise<ChinaMapAssets> {
   const [country, adminIndex] = await Promise.all([
-    loadBuiltinFeatureCollection('100000'),
+    loadVendoredChinaCollection('province'),
     loadChinaAdminIndex(),
   ]);
   return {
@@ -330,133 +422,92 @@ export async function loadOfflineChinaBoundaryTree(options: {
 } = {}): Promise<GeoFeatureCollection> {
   const includeDistricts = options.includeDistricts ?? false;
   const signal = options.signal;
-  const manifest = await loadBuiltinAdcodeManifest();
-  const codes = Array.from(manifest).filter((code) => /^\d{6}$/.test(code));
-  const codeSet = new Set(codes);
-  const provinceParents = codes.filter((code) => code.endsWith('0000') && code !== '100000');
-  const cityParents = codes.filter((code) => code.endsWith('00') && !code.endsWith('0000'));
-  const cityParentSet = new Set(cityParents);
-  const prefer = new Set<string>();
-  for (const rawCode of options.preferAdcodes ?? []) {
-    const code = String(rawCode);
-    if (!/^\d{6}$/.test(code)) {
-      continue;
-    }
-    if (directAdminProvincePrefixes.has(code.slice(0, 2))) {
-      prefer.add(provinceCode(code));
-    }
-    const city = cityCode(code);
-    if (city) {
-      prefer.add(city);
-    }
-    if (!code.endsWith('00')) {
-      prefer.add(code);
-    }
-  }
+  if (signal?.aborted) return emptyFeatureCollection;
 
-  const collected: WorldFeature[] = [];
-  const loadedParents = new Set<string>();
-
-  const emit = (): GeoFeatureCollection => {
-    const features = dedupeFeaturesByAdcode(collected).map(ensureFeatureAdminLevel);
-    const collection: GeoFeatureCollection = { type: 'FeatureCollection', features };
+  const emit = (features: WorldFeature[]): GeoFeatureCollection => {
+    const collection: GeoFeatureCollection = {
+      type: 'FeatureCollection',
+      features: dedupeFeaturesByAdcode(features).map(ensureFeatureAdminLevel),
+    };
     options.onPartial?.(collection);
     return collection;
   };
 
-  const loadParents = async (adcodes: string[], concurrency: number) => {
-    const pending = adcodes.filter((code) => codeSet.has(code) && !loadedParents.has(code));
-    if (pending.length === 0) {
-      return;
-    }
-    for (const code of pending) {
-      loadedParents.add(code);
-    }
-    const collections = await mapPool(pending, concurrency, (adcode, abortSignal) => loadBuiltinFeatureCollectionCached(adcode, abortSignal), signal);
-    if (signal?.aborted) {
-      return;
-    }
-    for (const collection of collections) {
-      if (collection?.features?.length) {
-        collected.push(...collection.features);
-      }
-    }
-  };
+  // Phase 1: city-level polygons (includes 直辖市 parent features) always.
+  const cityCollection = await loadVendoredChinaCollection('city', signal);
+  if (signal?.aborted) return emptyFeatureCollection;
+  const collected: WorldFeature[] = [...cityCollection.features];
+  let result = emit(collected);
 
-  // Phase 1: province parents → city (or 直辖市 district) polygons
-  await loadParents(provinceParents, 12);
-  let result = emit();
-
-  // Prefer city/district parents related to log aggregates (paint attacked 区县 first)
-  const preferParents = Array.from(prefer).filter(
-    (code) => cityParentSet.has(code) || provinceParents.includes(code) || codeSet.has(code),
-  );
-  // Phase 2: attack-relevant city/district parents first (prefer already filtered)
-  if (preferParents.length > 0) {
-    await loadParents(preferParents, 10);
-    result = emit();
+  const prefer = new Set<string>();
+  for (const rawCode of options.preferAdcodes ?? []) {
+    const code = String(rawCode);
+    if (!/^\d{6}$/.test(code)) continue;
+    if (directAdminProvincePrefixes.has(code.slice(0, 2))) {
+      prefer.add(provinceCode(code));
+    }
+    const city = cityCode(code);
+    if (city) prefer.add(city);
+    if (!code.endsWith('00')) prefer.add(code);
   }
 
-  // Phase 3: remaining city parents only when explicitly requested
-  if (includeDistricts) {
-    const remainingCityParents = cityParents.filter((code) => !loadedParents.has(code));
-    if (remainingCityParents.length > 0) {
-      await loadParents(remainingCityParents, 6);
-      result = emit();
+  const needDistricts = includeDistricts || prefer.size > 0;
+  if (needDistricts) {
+    const countyCollection = await loadVendoredChinaCollection('county', signal);
+    if (signal?.aborted) return result;
+    const countyByCode = new Map<string, WorldFeature>();
+    const countyByCity = new Map<string, WorldFeature[]>();
+    const countyByProvince = new Map<string, WorldFeature[]>();
+    for (const feature of countyCollection.features) {
+      const code = chinaFeatureAdcode(feature.properties ?? {});
+      if (!code) continue;
+      countyByCode.set(code, feature);
+      const province = provinceCode(code);
+      const city = cityCode(code);
+      const provinceBucket = countyByProvince.get(province) ?? [];
+      provinceBucket.push(feature);
+      countyByProvince.set(province, provinceBucket);
+      if (city) {
+        const cityBucket = countyByCity.get(city) ?? [];
+        cityBucket.push(feature);
+        countyByCity.set(city, cityBucket);
+      }
     }
+    // Preferred districts are already in the full pack.
+    const preferredCodes = includeDistricts ? [] : [...prefer];
+    for (const code of preferredCodes) {
+      if (/^\d{6}$/.test(code) && !code.endsWith('0000') && !code.endsWith('00')) {
+        const feature = countyByCode.get(code);
+        if (feature) collected.push(feature);
+      }
+    }
+    for (const code of preferredCodes) {
+      if (/^\d{6}$/.test(code) && !code.endsWith('0000') && code.endsWith('00')) {
+        for (const feature of countyByCity.get(code) ?? []) collected.push(feature);
+      }
+    }
+    for (const code of preferredCodes) {
+      if (/^\d{6}$/.test(code) && code.endsWith('0000') && directAdminProvincePrefixes.has(code.slice(0, 2))) {
+        for (const feature of countyByProvince.get(code) ?? []) collected.push(feature);
+      }
+    }
+    if (includeDistricts) {
+      for (const feature of countyCollection.features) collected.push(feature);
+    }
+    result = emit(collected);
   }
 
   return result;
 }
 
-const offlineFeatureCache = new Map<string, Promise<GeoFeatureCollection | null>>();
 
-function loadBuiltinFeatureCollectionCached(adcode: string, signal?: AbortSignal) {
-  let pending = offlineFeatureCache.get(adcode);
-  if (!pending) {
-    pending = loadBuiltinFeatureCollection(adcode, signal);
-    offlineFeatureCache.set(adcode, pending);
-  }
-  return pending;
-}
-
-async function mapPool<T, R>(items: T[], concurrency: number, worker: (item: T, signal?: AbortSignal) => Promise<R>, signal?: AbortSignal): Promise<R[]> {
-  if (items.length === 0) {
-    return [];
-  }
-  if (signal?.aborted) {
-    return [];
-  }
-  const limit = Math.max(1, Math.min(concurrency, items.length));
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-  async function run() {
-    while (cursor < items.length && !signal?.aborted) {
-      const index = cursor;
-      cursor += 1;
-      if (signal?.aborted) {
-        return;
-      }
-      try {
-        results[index] = await worker(items[index], signal);
-      } catch (error) {
-        if (signal?.aborted || (error as { name?: string })?.name === 'AbortError') {
-          return;
-        }
-        throw error;
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: limit }, () => run()));
-  return results;
-}
 
 function dedupeFeaturesByAdcode(features: WorldFeature[]): WorldFeature[] {
   const seen = new Set<string>();
   const out: WorldFeature[] = [];
   for (const feature of features) {
     const props = feature.properties ?? {};
-    const key = String(props.adcode ?? props.id ?? feature.id ?? '').trim() || `idx-${out.length}`;
+    const key = (chinaFeatureAdcode(props) || String(props.id ?? feature.id ?? '')).trim() || `idx-${out.length}`;
     if (seen.has(key)) {
       continue;
     }
@@ -479,111 +530,31 @@ export function chinaBoundarySourceLabel(source: ChinaAdministrativeMap['sourceS
   }
 }
 
-async function loadBuiltinFeatureCollection(adcode: string, signal?: AbortSignal) {
-  if (!/^\d{6}$/.test(adcode)) {
-    return null;
-  }
-  const availableAdcodes = await loadBuiltinAdcodeManifest();
-  if (availableAdcodes.size > 0 && !availableAdcodes.has(adcode)) {
-    return null;
-  }
-  if (signal?.aborted) {
-    return null;
-  }
-  const collection = asNullableFeatureCollection(await fetchChinaMapJSON(adcode, signal));
-  return collection ? rewindBuiltinFeatureCollection(collection) : null;
-}
 
+/**
+ * code→name 索引由构建期脚本 scripts/build-china-admin-index.mjs 从
+ * china_aux.geojson.gz 提取生成（public/map/lookup/china_admin_index.json），
+ * 避免运行时为建索引拉取 8MB 完整几何数据。
+ */
 async function loadChinaAdminIndex(): Promise<ChinaAdminIndex> {
-  const [provinceRecords, cityRecords, areaRecords] = await Promise.all([
-    fetchAdminRecords('province/province.json'),
-    fetchAdminRecords('city/city.json'),
-    fetchAdminRecords('area/area.json'),
-  ]);
-  const records = [...provinceRecords, ...cityRecords, ...areaRecords];
+  const entries = await fetchGzJson<Array<{ code: string; name: string }>>('map/lookup/china_admin_index.json');
   const nameToCodes = new Map<string, string[]>();
   const codeToName = new Map<string, string>();
-  const add = (record: AdminRecord) => {
-    if (!/^\d{6}$/.test(record.code)) {
-      return;
-    }
-    codeToName.set(record.code, record.name);
-    const normalized = normalizeChinaAdminName(record.name);
-    if (!normalized) {
-      return;
-    }
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const code = String(entry?.code ?? '').trim();
+    const name = String(entry?.name ?? '').trim();
+    if (!/^\d{6}$/.test(code) || !name) continue;
+    codeToName.set(code, name);
+    const normalized = normalizeChinaAdminName(name);
+    if (!normalized) continue;
     const items = nameToCodes.get(normalized) ?? [];
-    items.push(record.code);
+    items.push(code);
     nameToCodes.set(normalized, items);
-  };
-  records.forEach(add);
+  }
   return { nameToCodes, codeToName };
 }
 
-async function fetchChinaMapJSON(adcode: string, signal?: AbortSignal) {
-  try {
-    const response = await fetch(chinaMapAssetURL(adcode), {
-      headers: { Accept: 'application/json' },
-      signal,
-    });
-    if (!response.ok) {
-      return null;
-    }
-    return response.json();
-  } catch {
-    // AbortError and network errors both degrade to null (caller treats as unavailable).
-    return null;
-  }
-}
 
-async function loadBuiltinAdcodeManifest() {
-  if (!builtinAdcodeManifest) {
-    builtinAdcodeManifest = fetchBuiltinAdcodeManifest();
-  }
-  return builtinAdcodeManifest;
-}
-
-async function fetchBuiltinAdcodeManifest() {
-  try {
-    const response = await fetch(staticAssetURL('china-map-echarts/map/index.json'), {
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) {
-      return new Set<string>();
-    }
-    const value = await response.json();
-    return new Set(Array.isArray(value) ? value.filter((item): item is string => /^\d{6}$/.test(String(item))) : []);
-  } catch {
-    return new Set<string>();
-  }
-}
-
-async function fetchAdminRecords(path: string): Promise<AdminRecord[]> {
-  if (!/^(province\/province|city\/city|area\/area)\.json$/.test(path)) {
-    return [];
-  }
-  try {
-    const response = await fetch(staticAssetURL(`province-city-china/${path}`), {
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) {
-      return [];
-    }
-    const value = await response.json();
-    return Array.isArray(value) ? value as AdminRecord[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function chinaMapAssetURL(adcode: string) {
-  return staticAssetURL(`china-map-echarts/map/${adcode}.json`);
-}
-
-function staticAssetURL(path: string) {
-  const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
-  return `${base}${path}`;
-}
 
 function toLayer(
   feature: WorldFeature,
@@ -712,13 +683,16 @@ function readFeatureLevel(feature: WorldFeature) {
 function ensureFeatureAdminLevel(feature: WorldFeature): WorldFeature {
   const properties = feature.properties ?? {};
   const level = inferAdminLevel(feature);
-  if (String(properties.level ?? '') === level) {
+  const adcode = chinaFeatureAdcode(properties);
+  const nextAdcode = String(properties.adcode ?? '') || adcode;
+  if (String(properties.level ?? '') === level && String(properties.adcode ?? '') === nextAdcode) {
     return feature;
   }
   return {
     ...feature,
     properties: {
       ...properties,
+      ...(nextAdcode ? { adcode: nextAdcode } : {}),
       level,
     },
   };
@@ -729,7 +703,8 @@ function inferAdminLevel(feature: WorldFeature): string {
   if (existing === 'province' || existing === 'city' || existing === 'district' || existing === 'county') {
     return existing;
   }
-  const code = String(feature.properties?.adcode ?? feature.properties?.id ?? feature.id ?? '').trim();
+  const code = chinaFeatureAdcode(feature.properties ?? {})
+    || String(feature.properties?.adcode ?? feature.properties?.id ?? feature.id ?? '').trim();
   if (/^\d{6}$/.test(code)) {
     if (code.endsWith('0000')) {
       return 'province';

@@ -233,6 +233,7 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("write:threat_intel")).Post("/ip/threat-intel/sync", h.SyncThreatIntel)
 			r.With(require("write:threat_intel")).Post("/ip/threat-intel/test", h.TestThreatIntelProvider)
 			r.With(require("read:threat_intel")).Post("/ip/threat-intel/lookup", h.LookupThreatIntel)
+			r.With(require("write:threat_intel")).Post("/ip/threat-intel/lookup/adopt", h.AdoptThreatIntel)
 			r.With(require("read:protection"), h.ConfigReadMiddleware).Get("/protection", h.Protection)
 			r.With(require("read:protection"), h.ConfigReadMiddleware).Get("/protection/bot/metrics", h.BotChallengeMetrics)
 			r.With(require("read:protection"), h.ConfigReadMiddleware).Get("/captcha/assets", h.ListCAPTCHAAssets)

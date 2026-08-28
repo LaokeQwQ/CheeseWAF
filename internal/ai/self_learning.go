@@ -96,6 +96,15 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 	if opts.Client != nil && len(candidates) > 0 {
 		if reviewed, err := reviewSelfLearningCandidates(ctx, opts.Client, opts.Language, candidates); err == nil {
 			candidates = mergeReviewedSelfLearningCandidates(candidates, reviewed)
+			if cfg.AutoApply {
+				reviewedOnly := make([]SelfLearningCandidate, 0, len(candidates))
+				for _, candidate := range candidates {
+					if candidate.AIReviewed {
+						reviewedOnly = append(reviewedOnly, candidate)
+					}
+				}
+				candidates = reviewedOnly
+			}
 			reviewOK = true
 		} else {
 			// Fail closed: never auto-apply unreviewed candidates when LLM review is configured.

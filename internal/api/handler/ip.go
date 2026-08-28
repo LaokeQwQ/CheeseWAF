@@ -319,9 +319,6 @@ func (h *Handler) TestThreatIntelProvider(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) LookupThreatIntel(w http.ResponseWriter, r *http.Request) {
-	if h.rejectClusterConfigWriteIfFrozen(w, r) {
-		return
-	}
 	var req threatIntelLookupPayload
 	if !decode(w, r, &req) {
 		return
@@ -331,25 +328,41 @@ func (h *Handler) LookupThreatIntel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "provider not found")
 		return
 	}
-	var imported []config.ThreatIntelConfig
+	var items []config.ThreatIntelConfig
 	for _, provider := range providers {
-		items, err := lookupProviderIP(r.Context(), provider, req.IP)
+		found, err := lookupProviderIP(r.Context(), provider, req.IP)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "THREAT_INTEL_LOOKUP_ERROR", err.Error())
 			return
 		}
-		imported = append(imported, items...)
+		items = append(items, found...)
 	}
-	if len(imported) > 0 {
-		_, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
-			next.IP.ThreatIntel = ipprotect.MergeThreatIntel(next.IP.ThreatIntel, imported)
-			return nil
-		})
-		if !ok {
-			return
-		}
+	writeData(w, map[string]any{"ip": req.IP, "imported": 0, "items": items})
+}
+
+func (h *Handler) AdoptThreatIntel(w http.ResponseWriter, r *http.Request) {
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		return
 	}
-	writeData(w, map[string]any{"ip": req.IP, "imported": len(imported), "items": imported})
+	var req struct {
+		Items []config.ThreatIntelConfig `json:"items"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	adopted := ipprotect.AdoptableIndicators(req.Items)
+	if len(adopted) == 0 {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "no valid indicators to adopt")
+		return
+	}
+	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+		next.IP.ThreatIntel = ipprotect.MergeThreatIntel(next.IP.ThreatIntel, adopted)
+		return nil
+	})
+	if !ok {
+		return
+	}
+	writeData(w, map[string]any{"imported": len(adopted), "total": len(committed.Protection.IP.ThreatIntel), "items": adopted})
 }
 
 func (h *Handler) ExportThreatIntel(w http.ResponseWriter, r *http.Request) {
@@ -832,7 +845,14 @@ func intelSummary(items []ipprotect.Indicator) string {
 
 func stixIPPattern(value string) string {
 	if strings.Contains(value, "/") {
+		ip, _, err := net.ParseCIDR(value)
+		if err == nil && ip != nil && ip.To4() == nil {
+			return "[ipv6-addr:value ISSUBSET '" + value + "']"
+		}
 		return "[ipv4-addr:value ISSUBSET '" + value + "']"
+	}
+	if ip := net.ParseIP(value); ip != nil && ip.To4() == nil {
+		return "[ipv6-addr:value = '" + value + "']"
 	}
 	return "[ipv4-addr:value = '" + value + "']"
 }
