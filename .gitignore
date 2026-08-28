@@ -4,6 +4,7 @@
 /build/
 /out/
 /output/
+/outputs/
 /release/
 *.exe
 *.exe~
@@ -147,6 +148,7 @@ artifacts/
 .grok/
 .qoder/
 .agents/
+.workbuddy/
 
 # OS metadata
 .DS_Store

@@ -156,7 +156,7 @@ jobs:
         run: npm run test:captcha-contract
       - name: Install pinned coverage provider
         working-directory: web
-        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.10
+        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11
       - name: Run dashboard tests with coverage
         working-directory: web
         run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10
