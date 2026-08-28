@@ -251,6 +251,7 @@ func runServe(ctx context.Context) error {
 	defer stopRuntime()
 	healthChecker.Start(runtimeCtx)
 	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now(), hub)
+	startReviewRetention(runtimeCtx, store)
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
 		schedulerAIClient = ai.NewClient(cfg.AI.ReasoningRuntimeConfig(), nil)
@@ -408,6 +409,37 @@ func runServe(ctx context.Context) error {
 	}
 	wg.Wait()
 	return serveErr
+}
+
+type reviewRetentionStore interface {
+	PruneReviewItems(context.Context, time.Time, int) (int64, error)
+}
+
+func startReviewRetention(ctx context.Context, store storage.Store) {
+	pruner, ok := store.(reviewRetentionStore)
+	if !ok || pruner == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		prune := func() {
+			pruneCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if _, err := pruner.PruneReviewItems(pruneCtx, time.Now().UTC().Add(-30*24*time.Hour), 500); err != nil {
+				log.Printf("review retention prune failed: %v", err)
+			}
+		}
+		prune()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				prune()
+			}
+		}
+	}()
 }
 
 func setupBrowserURL(scheme, adminListen, token string) string {

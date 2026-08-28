@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -438,6 +439,17 @@ func (h *Handler) UpdateBotProtection(w http.ResponseWriter, r *http.Request) {
 	var req config.BotProtectionConfig
 	if !decode(w, r, &req) {
 		return
+	}
+	if err := config.ValidateBotChallengeBackend(req.ChallengeBackend); err != nil {
+		if errors.Is(err, config.ErrBotRedisBackendUnavailable) {
+			writeError(w, http.StatusNotImplemented, "BOT_REDIS_BACKEND_UNAVAILABLE", err.Error())
+		} else {
+			writeError(w, http.StatusBadRequest, "CONFIG_INVALID", err.Error())
+		}
+		return
+	}
+	if strings.TrimSpace(req.ChallengeBackend) == "" {
+		req.ChallengeBackend = "memory"
 	}
 	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
 		if req.Secret == "" {

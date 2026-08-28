@@ -20,6 +20,11 @@ type reviewDecideRequest struct {
 	Decision string `json:"decision"`
 }
 
+type reviewDecisionApplication struct {
+	appliedRuleID string
+	rollback      func() error
+}
+
 func (h *Handler) ListReviewItems(w http.ResponseWriter, r *http.Request) {
 	if h.Store == nil {
 		writeData(w, map[string]any{"items": []storage.ReviewItem{}, "total": 0})
@@ -121,24 +126,40 @@ func (h *Handler) DecideReviewItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "REVIEW_ALREADY_DECIDED", "review item is already decided")
 		return
 	}
-	appliedID, err := h.applyReviewDecision(r, item, decision)
+	claim, err := h.Store.ClaimReviewItem(r.Context(), item.ID, decision)
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "REVIEW_CLAIM_ERROR", err.Error())
+		return
+	}
+	if claim == nil || claim.Item == nil {
+		writeError(w, http.StatusConflict, "REVIEW_ALREADY_DECIDED", "review item is already being decided")
+		return
+	}
+	item = claim.Item
+	application, err := h.applyReviewDecision(r, item, decision)
+	if err != nil {
+		if releaseErr := h.Store.ReleaseReviewItem(r.Context(), item.ID, claim.Token); releaseErr != nil {
+			writeError(w, http.StatusInternalServerError, "REVIEW_CLEANUP_ERROR", fmt.Sprintf("%v; release decision claim: %v", err, releaseErr))
+			return
+		}
 		writeError(w, http.StatusBadRequest, "REVIEW_APPLY_ERROR", err.Error())
 		return
 	}
 	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
-	decided, err := h.Store.DecideReviewItem(r.Context(), item.ID, storage.ReviewDecision{
+	decided, err := h.Store.CompleteReviewItem(r.Context(), item.ID, claim.Token, storage.ReviewDecision{
 		Decision:         decision,
-		AppliedRuleID:    appliedID,
+		AppliedRuleID:    application.appliedRuleID,
 		DecidedBySubject: reviewSubject(claims),
 		DecidedByName:    reviewUser(claims),
 		DecidedByRole:    reviewRole(claims),
 	})
 	if err != nil {
+		_ = h.rollbackReviewDecision(r, item, application, claim.Token)
 		writeError(w, http.StatusInternalServerError, "REVIEW_DECIDE_ERROR", err.Error())
 		return
 	}
 	if decided == nil {
+		_ = h.rollbackReviewDecision(r, item, application, claim.Token)
 		writeError(w, http.StatusConflict, "REVIEW_ALREADY_DECIDED", "review item is already decided")
 		return
 	}
@@ -146,16 +167,16 @@ func (h *Handler) DecideReviewItem(w http.ResponseWriter, r *http.Request) {
 	writeData(w, decided)
 }
 
-func (h *Handler) applyReviewDecision(r *http.Request, item *storage.ReviewItem, decision string) (string, error) {
+func (h *Handler) applyReviewDecision(r *http.Request, item *storage.ReviewItem, decision string) (reviewDecisionApplication, error) {
 	switch decision {
 	case "allow":
-		return "", nil
+		return reviewDecisionApplication{}, nil
 	case "block_payload":
 		payload := strings.TrimSpace(item.Payload)
 		if payload == "" {
-			return "", fmt.Errorf("payload is empty")
+			return reviewDecisionApplication{}, fmt.Errorf("payload is empty")
 		}
-		return h.addSiteCustomRule(r, item, storage.SiteCustomRule{
+		id, err := h.addSiteCustomRule(r, item, storage.SiteCustomRule{
 			Name:     "待确认转拦截（payload）",
 			Pattern:  regexp.QuoteMeta(payload),
 			Location: reviewRuleLocation(item.Source),
@@ -164,12 +185,32 @@ func (h *Handler) applyReviewDecision(r *http.Request, item *storage.ReviewItem,
 			Enabled:  true,
 			Priority: 20,
 		})
+		if err != nil {
+			return reviewDecisionApplication{}, err
+		}
+		return reviewDecisionApplication{appliedRuleID: id, rollback: func() error {
+			return h.rollbackSiteDecision(r, item.SiteID, func(site *storage.Site) bool {
+				filtered := make([]storage.SiteCustomRule, 0, len(site.Advanced.CustomRules))
+				removed := false
+				for _, candidate := range site.Advanced.CustomRules {
+					if candidate.ID == id {
+						removed = true
+						continue
+					}
+					filtered = append(filtered, candidate)
+				}
+				if removed {
+					site.Advanced.CustomRules = filtered
+				}
+				return removed
+			})
+		}}, nil
 	case "block_uri":
 		path := reviewPath(item.URI)
 		if path == "" {
-			return "", fmt.Errorf("uri is empty")
+			return reviewDecisionApplication{}, fmt.Errorf("uri is empty")
 		}
-		return h.addSiteCustomRule(r, item, storage.SiteCustomRule{
+		id, err := h.addSiteCustomRule(r, item, storage.SiteCustomRule{
 			Name:     "待确认转拦截（URL）",
 			Pattern:  "^" + regexp.QuoteMeta(path) + `(\?|$)`,
 			Location: "uri",
@@ -178,15 +219,208 @@ func (h *Handler) applyReviewDecision(r *http.Request, item *storage.ReviewItem,
 			Enabled:  true,
 			Priority: 20,
 		})
+		if err != nil {
+			return reviewDecisionApplication{}, err
+		}
+		return reviewDecisionApplication{appliedRuleID: id, rollback: func() error {
+			return h.rollbackSiteDecision(r, item.SiteID, func(site *storage.Site) bool {
+				filtered := make([]storage.SiteCustomRule, 0, len(site.Advanced.CustomRules))
+				removed := false
+				for _, candidate := range site.Advanced.CustomRules {
+					if candidate.ID == id {
+						removed = true
+						continue
+					}
+					filtered = append(filtered, candidate)
+				}
+				if removed {
+					site.Advanced.CustomRules = filtered
+				}
+				return removed
+			})
+		}}, nil
 	case "block_ip":
-		return h.addIPBlockRule(r, item)
+		id, err := h.addIPBlockRule(r, item)
+		if err != nil {
+			return reviewDecisionApplication{}, err
+		}
+		return reviewDecisionApplication{appliedRuleID: id, rollback: func() error {
+			return h.rollbackIPRule(r, id)
+		}}, nil
 	case "block_fingerprint":
-		return h.addFingerprintDeny(r, item)
+		id, err := h.addFingerprintDeny(r, item)
+		if err != nil {
+			return reviewDecisionApplication{}, err
+		}
+		return reviewDecisionApplication{appliedRuleID: id, rollback: func() error {
+			return h.rollbackSiteDecision(r, item.SiteID, func(site *storage.Site) bool {
+				fingerprint := strings.TrimSpace(item.Fingerprint)
+				filtered := make([]string, 0, len(site.Advanced.SemanticPolicy.FingerprintDeny))
+				removed := false
+				for _, candidate := range site.Advanced.SemanticPolicy.FingerprintDeny {
+					if strings.EqualFold(candidate, fingerprint) {
+						removed = true
+						continue
+					}
+					filtered = append(filtered, candidate)
+				}
+				if removed {
+					site.Advanced.SemanticPolicy.FingerprintDeny = filtered
+				}
+				return removed
+			})
+		}}, nil
 	case "allow_whitelist":
-		return h.addSiteAllowlist(r, item)
+		id, err := h.addSiteAllowlist(r, item)
+		if err != nil {
+			return reviewDecisionApplication{}, err
+		}
+		return reviewDecisionApplication{appliedRuleID: id, rollback: func() error {
+			param := strings.TrimSpace(item.ParamName)
+			path := reviewPath(item.URI)
+			return h.rollbackSiteDecision(r, item.SiteID, func(site *storage.Site) bool {
+				if param != "" {
+					filtered := make([]string, 0, len(site.Advanced.SemanticPolicy.ParamAllowlist))
+					removed := false
+					for _, candidate := range site.Advanced.SemanticPolicy.ParamAllowlist {
+						if strings.EqualFold(candidate, param) {
+							removed = true
+							continue
+						}
+						filtered = append(filtered, candidate)
+					}
+					if removed {
+						site.Advanced.SemanticPolicy.ParamAllowlist = filtered
+					}
+					return removed
+				}
+				filtered := make([]string, 0, len(site.Advanced.SemanticPolicy.PathAllowlist))
+				removed := false
+				for _, candidate := range site.Advanced.SemanticPolicy.PathAllowlist {
+					if strings.EqualFold(candidate, path) {
+						removed = true
+						continue
+					}
+					filtered = append(filtered, candidate)
+				}
+				if removed {
+					site.Advanced.SemanticPolicy.PathAllowlist = filtered
+				}
+				return removed
+			})
+		}}, nil
 	default:
-		return "", fmt.Errorf("unsupported decision")
+		return reviewDecisionApplication{}, fmt.Errorf("unsupported decision")
 	}
+}
+
+func (h *Handler) rollbackReviewDecision(r *http.Request, item *storage.ReviewItem, application reviewDecisionApplication, claimToken string) error {
+	if application.rollback != nil {
+		if err := application.rollback(); err != nil {
+			return err
+		}
+	}
+	return h.Store.ReleaseReviewItem(r.Context(), item.ID, claimToken)
+}
+
+func (h *Handler) rollbackSiteDecision(r *http.Request, siteID string, mutate func(*storage.Site) bool) error {
+	h.siteMutationMu.Lock()
+	defer h.siteMutationMu.Unlock()
+	site, err := h.Store.GetSite(r.Context(), siteID)
+	if err != nil || site == nil {
+		return err
+	}
+	if !mutate(site) {
+		return nil
+	}
+	if err := h.Store.UpdateSite(r.Context(), site); err != nil {
+		return err
+	}
+	return h.syncSites(r)
+}
+
+func (h *Handler) rollbackIPRule(r *http.Request, ruleID string) error {
+	_, err := h.commitConfigMutation(func(candidate *config.Config) error {
+		filtered := candidate.Protection.IP.AccessRules[:0]
+		for _, rule := range candidate.Protection.IP.AccessRules {
+			if rule.ID != ruleID {
+				filtered = append(filtered, rule)
+			}
+		}
+		candidate.Protection.IP.AccessRules = filtered
+		return nil
+	}, func(candidate *config.Config) error {
+		return h.notifyProtectionConfigChanged(candidate.Protection)
+	})
+	return err
+}
+
+func (h *Handler) rollbackAppliedReviewChange(r *http.Request, item *storage.ReviewItem, appliedID string) error {
+	if item == nil || appliedID == "" {
+		return nil
+	}
+	if strings.HasPrefix(appliedID, "review-ip-") {
+		_, err := h.commitConfigMutation(func(candidate *config.Config) error {
+			filtered := candidate.Protection.IP.AccessRules[:0]
+			for _, rule := range candidate.Protection.IP.AccessRules {
+				if rule.ID != appliedID {
+					filtered = append(filtered, rule)
+				}
+			}
+			candidate.Protection.IP.AccessRules = filtered
+			return nil
+		}, func(candidate *config.Config) error { return h.notifyProtectionConfigChanged(candidate.Protection) })
+		return err
+	}
+	if strings.TrimSpace(item.SiteID) == "" {
+		return nil
+	}
+	h.siteMutationMu.Lock()
+	defer h.siteMutationMu.Unlock()
+	site, err := h.Store.GetSite(r.Context(), item.SiteID)
+	if err != nil || site == nil {
+		return err
+	}
+	if strings.HasPrefix(appliedID, "fingerprint:") {
+		value := strings.TrimPrefix(appliedID, "fingerprint:")
+		filtered := site.Advanced.SemanticPolicy.FingerprintDeny[:0]
+		for _, entry := range site.Advanced.SemanticPolicy.FingerprintDeny {
+			if entry != value {
+				filtered = append(filtered, entry)
+			}
+		}
+		site.Advanced.SemanticPolicy.FingerprintDeny = filtered
+	} else if strings.HasPrefix(appliedID, "param:") {
+		value := strings.TrimPrefix(appliedID, "param:")
+		filtered := site.Advanced.SemanticPolicy.ParamAllowlist[:0]
+		for _, entry := range site.Advanced.SemanticPolicy.ParamAllowlist {
+			if entry != value {
+				filtered = append(filtered, entry)
+			}
+		}
+		site.Advanced.SemanticPolicy.ParamAllowlist = filtered
+	} else if strings.HasPrefix(appliedID, "path:") {
+		value := strings.TrimPrefix(appliedID, "path:")
+		filtered := site.Advanced.SemanticPolicy.PathAllowlist[:0]
+		for _, entry := range site.Advanced.SemanticPolicy.PathAllowlist {
+			if entry != value {
+				filtered = append(filtered, entry)
+			}
+		}
+		site.Advanced.SemanticPolicy.PathAllowlist = filtered
+	} else {
+		filtered := site.Advanced.CustomRules[:0]
+		for _, rule := range site.Advanced.CustomRules {
+			if rule.ID != appliedID {
+				filtered = append(filtered, rule)
+			}
+		}
+		site.Advanced.CustomRules = filtered
+	}
+	if err := h.Store.UpdateSite(r.Context(), site); err != nil {
+		return err
+	}
+	return h.syncSites(r)
 }
 
 func (h *Handler) addSiteCustomRule(r *http.Request, item *storage.ReviewItem, rule storage.SiteCustomRule) (string, error) {

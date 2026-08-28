@@ -214,6 +214,8 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
+The systemd unit reads `/etc/cheesewaf/cheesewaf.yaml` but only makes `/var/lib/cheesewaf` and `/var/log/cheesewaf` writable. Operators who previously relied on the service to write configuration must edit the file as root (or through their configuration management system), then run `sudo systemctl restart cheesewaf`.
+
 The default admin listener is `127.0.0.1:9443`. On the server (or over an SSH tunnel) open `http://127.0.0.1:9443/setup`. Loopback `/setup` can finish first-install without pasting a token. From another host, copy the URL from `journalctl -u cheesewaf` or `/var/lib/cheesewaf/setup.url`. Remote `SERVER_IP:9443` stays closed until setup chooses a public admin strategy.
 
 `GET /api/setup` returns 405; first-install status is `GET /api/setup/status`. Completing setup is `POST /api/setup` with `X-CheeseWAF-Setup-Token`. Login from another host still needs the console captcha; loopback API login does not.
@@ -222,7 +224,7 @@ The default admin listener is `127.0.0.1:9443`. On the server (or over an SSH tu
 
 ### 2. Docker Deployment (Docker Compose)
 
-Docker images are built from a git checkout (`deploy/docker/Dockerfile`). Release `.tar.gz` files are for systemd, not for `docker compose` without the repository. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem. The runtime image installs the distro CA bundle so outbound HTTPS to origins verifies certificates. Bind `9443` only on trusted networks; the image listens on all interfaces with admin TLS.
+Docker images are built from a git checkout (`deploy/docker/Dockerfile`). Release `.tar.gz` files are for systemd, not for `docker compose` without the repository. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem. The runtime image installs the distro CA bundle so outbound HTTPS to origins verifies certificates. Compose maps admin TLS to host loopback (`127.0.0.1:9443`); use an SSH tunnel or a separately hardened reverse proxy when remote access is required.
 
 #### Step 1: Create Compose File
 
@@ -328,12 +330,7 @@ Windows releases bundle a lightweight local GUI controller bound strictly to loo
 1. Download `cheesewaf-arm64-darwin-*.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*.dmg` (Intel).
 2. Open the disk image and drag **CheeseWAF** into **Applications**.
 3. Open CheeseWAF from Launchpad or Applications. It starts the local controller (start / stop / open the Web console).
-4. If macOS says the app is damaged, that is Gatekeeper blocking an unsigned PreTest build. Run **Fix Gatekeeper.command** on the disk, or:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
-open /Applications/CheeseWAF.app
-```
+4. Signed and notarized releases should open normally. For an ad-hoc PreTest developer build only, Control-click the app in Applications, choose **Open**, and confirm the one-time prompt.
 
 Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*.tar.gz` if you only want the CLI.
 
@@ -477,6 +474,8 @@ go run ./cmd/cheesewaf-corpus --mode analyzer
 ## Documentation
 
 - [ACME Certificate Reload Profiles](docs/acme.md)
+- [Semantic Evaluation Platform](docs/evaluation-platform.md)
+- [Release, Upgrade and Rollback](docs/release.md)
 - [Protection Policy & Roadmap](docs/protection-policy-roadmap.md)
 - [Paranoia Level Code Mapping](docs/paranoia-level-implementation.md)
 - [Performance Optimization Notes](docs/performance-optimization.md)

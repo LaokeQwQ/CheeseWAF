@@ -149,6 +149,23 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 	}
 }
 
+func TestRouterReadonlyCannotMutateNotifications(t *testing.T) {
+	router, _, readerToken := newAuthzTestRouter(t)
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPatch, path: "/api/notifications/notification-1"},
+		{method: http.MethodPost, path: "/api/notifications/read-all"},
+		{method: http.MethodDelete, path: "/api/notifications"},
+	} {
+		recorder := perform(router, tc.method, tc.path, readerToken, []byte(`{"read":true}`))
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("readonly notification mutation %s %s returned %d: %s", tc.method, tc.path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestRouterReadonlyCannotExecutePaidAI(t *testing.T) {
 	router, _, readerToken := newAuthzTestRouter(t)
 	response := perform(router, http.MethodPost, "/api/ai/analyze", readerToken, []byte(`{}`))
@@ -159,13 +176,25 @@ func TestRouterReadonlyCannotExecutePaidAI(t *testing.T) {
 
 func TestRouterExplicitAIUsePermissionPassesRBAC(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_user"] = []string{"use:ai"}
+		cfg.APISec.Permissions["ai_user"] = []string{"use:ai", "read:logs"}
 	})
 	createAuthzUser(t, store, "ai-user-id", "ai-user", "ai-user-password", "ai_user")
 	token := loginAuthzUser(t, router, "ai-user", "ai-user-password")
 	response := perform(router, http.MethodPost, "/api/ai/analyze", token, []byte(`{}`))
 	if response.Code == http.StatusForbidden || response.Code == http.StatusUnauthorized {
 		t.Fatalf("use:ai user should pass RBAC, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRouterAIAnalysisRequiresReadLogsPermission(t *testing.T) {
+	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.Permissions["ai_user"] = []string{"use:ai"}
+	})
+	createAuthzUser(t, store, "ai-user-id", "ai-user", "ai-user-password", "ai_user")
+	token := loginAuthzUser(t, router, "ai-user", "ai-user-password")
+	response := perform(router, http.MethodPost, "/api/ai/analyze", token, []byte(`{}`))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("use:ai without read:logs should be denied, got %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -1425,10 +1454,10 @@ func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
 
 func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_writer"] = []string{"use:ai"}
+		cfg.APISec.Permissions["operator"] = []string{"use:ai"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
-	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "ai_writer")
+	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "operator")
 	createAuthzUser(t, store, "ai-approver-id", "ai-approver", "approver-password", "ai_approver")
 	writerToken := loginAuthzUser(t, router, "ai-writer", "writer-password")
 	approverToken := loginAuthzUser(t, router, "ai-approver", "approver-password")
@@ -1464,10 +1493,10 @@ func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 
 func TestRouterAIApprovalRecoveryPreservesObjectScope(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_writer"] = []string{"use:ai"}
+		cfg.APISec.Permissions["operator"] = []string{"use:ai"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
-	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "ai_writer")
+	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "operator")
 	createAuthzUser(t, store, "ai-approver-id", "ai-approver", "approver-password", "ai_approver")
 	writerToken := loginAuthzUser(t, router, "ai-writer", "writer-password")
 	approverToken := loginAuthzUser(t, router, "ai-approver", "approver-password")
@@ -1493,7 +1522,7 @@ func TestRouterAIApprovalRecoveryPreservesObjectScope(t *testing.T) {
 }
 
 func TestRouterNotificationsContractAndIsolation(t *testing.T) {
-	router, _, store, adminToken, readerToken := newAuthzTestRouterState(t, nil)
+	router, _, store, adminToken, _ := newAuthzTestRouterState(t, nil)
 	ctx := context.Background()
 	for _, item := range []*storage.Notification{
 		{ID: "admin-unread", UserID: "admin-id", Title: "Admin unread"},
@@ -1541,7 +1570,7 @@ func TestRouterNotificationsContractAndIsolation(t *testing.T) {
 	if !updatedEnvelope.Data.Read || !updatedEnvelope.Data.Pinned || updatedEnvelope.Data.Type != "info" {
 		t.Fatalf("unexpected updated notification: %+v", updatedEnvelope.Data)
 	}
-	markAll := perform(router, http.MethodPost, "/api/notifications/read-all", readerToken, nil)
+	markAll := perform(router, http.MethodPost, "/api/notifications/read-all", adminToken, nil)
 	if markAll.Code != http.StatusOK {
 		t.Fatalf("reader mark all: %d %s", markAll.Code, markAll.Body.String())
 	}
@@ -1552,7 +1581,7 @@ func TestRouterNotificationsContractAndIsolation(t *testing.T) {
 	if envelope.Data.Total != 2 || envelope.Data.Unread != 0 {
 		t.Fatalf("reader action changed admin unread count: %+v", envelope.Data)
 	}
-	clear := perform(router, http.MethodDelete, "/api/notifications", readerToken, nil)
+	clear := perform(router, http.MethodDelete, "/api/notifications", adminToken, nil)
 	if clear.Code != http.StatusOK {
 		t.Fatalf("reader clear: %d %s", clear.Code, clear.Body.String())
 	}
@@ -1560,8 +1589,8 @@ func TestRouterNotificationsContractAndIsolation(t *testing.T) {
 	if err := json.NewDecoder(adminAfterClear.Body).Decode(&envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Data.Total != 2 {
-		t.Fatalf("reader clear changed admin notifications: %+v", envelope.Data)
+	if envelope.Data.Total != 0 {
+		t.Fatalf("admin clear did not remove admin notifications: %+v", envelope.Data)
 	}
 	for _, path := range []string{"/api/notifications?filter=invalid", "/api/notifications?limit=101"} {
 		bad := perform(router, http.MethodGet, path, adminToken, nil)

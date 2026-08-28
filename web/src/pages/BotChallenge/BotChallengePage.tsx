@@ -171,8 +171,8 @@ function EventTable({ events, loading, forbidden, error, retry, locale, navigate
   return <section className={`panel ${styles.eventPanel}`}>
     <div className={'panel-heading'}><h2>{t('botChallenge.events')}</h2><span>{t('botChallenge.eventsHint')}</span></div>
     {forbidden ? <EventPanelState
-      title={t('botChallenge.eventsForbidden', { defaultValue: t('botChallenge.captchaAssets.forbidden') })}
-      hint={t('botChallenge.eventsPermissionHint', { defaultValue: 'The read:logs permission is required to view challenge events. Metrics remain available with read:protection.' })}
+      title={t('botChallenge.eventsForbidden')}
+      hint={t('botChallenge.eventsPermissionHint')}
     /> : error ? <EventPanelState title={t('botChallenge.loadFailed')} hint={eventErrorMessage(error, t)} retry={retry} retryLabel={t('common.retry')}/> : <>
       <div className={styles.eventTable}>
         {loading ? <div className="p-4"><Skeleton className="h-24 w-full" /></div> : events.length === 0 ? <Empty description={t('botChallenge.noEvents')}/> : (
@@ -209,9 +209,9 @@ function EventTable({ events, loading, forbidden, error, retry, locale, navigate
             </Table>
             {events.length > pageSize && (
               <div className="flex items-center justify-end gap-2 p-2">
-                <Button size="sm" variant="outline" disabled={page <= 0} onClick={() => setPage(page - 1)}>{t('common.prev', { defaultValue: 'Prev' })}</Button>
+                <Button size="sm" variant="outline" disabled={page <= 0} onClick={() => setPage(page - 1)}>{t('common.prev')}</Button>
                 <span className="text-sm text-muted-foreground">{page + 1}/{pageCount}</span>
-                <Button size="sm" variant="outline" disabled={page >= pageCount - 1} onClick={() => setPage(page + 1)}>{t('common.next', { defaultValue: 'Next' })}</Button>
+                <Button size="sm" variant="outline" disabled={page >= pageCount - 1} onClick={() => setPage(page + 1)}>{t('common.next')}</Button>
               </div>
             )}
           </>
@@ -244,7 +244,7 @@ function OutcomeTag({ value, t }: { value: string; t: TFunction }) {
 }
 function formatNumber(value?: number, locale?: string) { return value == null ? '—' : new Intl.NumberFormat(locale).format(value); }
 function formatBucketTime(value: string, locale: string, count: number) { return new Date(value).toLocaleString(locale, count > 24 ? { month: 'short', day: 'numeric' } : { hour: '2-digit', minute: '2-digit' }); }
-function typeLabel(type: string, t: TFunction) { return t(`protection.captchaTypes.${type}`, { defaultValue: type === 'unknown' ? t('common.unknown') : type }); }
+function typeLabel(type: string, t: TFunction) { return type === 'unknown' ? t('common.unknown') : t(`protection.captchaTypes.${type}`); }
 function eventErrorMessage(error: unknown, t: TFunction) { return error instanceof Error && error.message.trim() ? error.message : t('botChallenge.loadFailedHint'); }
 function isHTTPStatus(error: unknown, status: number) { return error instanceof APIRequestError && error.status === status; }
 type EventPermission = 'allowed' | 'denied' | 'unknown';

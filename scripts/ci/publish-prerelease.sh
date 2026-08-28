@@ -11,8 +11,15 @@ release_dir="${1:-release}"
 tag=""
 suffix=""
 commit=""
+release_kind="${CHEESEWAF_RELEASE_KIND:-}"
 if [[ -f "${release_dir}/release-manifest.txt" ]]; then
-  tag="$(awk -F': ' '/^prerelease_tag:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+	tag="$(awk -F': ' '/^release_tag:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+	if [[ -z "$tag" ]]; then
+		tag="$(awk -F': ' '/^prerelease_tag:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+	fi
+	if [[ -z "$release_kind" ]]; then
+		release_kind="$(awk -F': ' '/^release_kind:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
+	fi
   suffix="$(awk -F': ' '/^file_suffix:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
   commit="$(awk -F': ' '/^commit:/{print $2; exit}' "${release_dir}/release-manifest.txt")"
   if [[ -z "$suffix" ]]; then
@@ -20,13 +27,28 @@ if [[ -f "${release_dir}/release-manifest.txt" ]]; then
   fi
 fi
 if [[ -z "$tag" ]]; then
-  echo "::error::prerelease_tag is missing from release-manifest.txt" >&2
-  exit 1
+	echo "::error::release_tag is missing from release-manifest.txt" >&2
+	exit 1
 fi
-[[ "$tag" == Alpha-* ]] || {
-  echo "::error::pre-release tag must start with Alpha-: ${tag}" >&2
-  exit 1
-}
+release_kind="${release_kind:-prerelease}"
+case "$release_kind" in
+  prerelease)
+    [[ "$tag" == Alpha-* ]] || {
+      echo "::error::pre-release tag must start with Alpha-: ${tag}" >&2
+      exit 1
+    }
+    ;;
+  stable)
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+      echo "::error::stable release tag must use vMAJOR.MINOR.PATCH: ${tag}" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "::error::release_kind must be prerelease or stable" >&2
+    exit 1
+    ;;
+esac
 if [[ -z "$commit" ]]; then
   echo "::error::commit is missing from release-manifest.txt" >&2
   exit 1
@@ -132,16 +154,35 @@ sign_blob() {
     "$file"
 }
 
+sha256_file() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    echo "::error::sha256sum or shasum is required to verify existing release assets" >&2
+    return 1
+  fi
+}
+
 sign_blob "${release_dir}/SHA256SUMS"
 sign_blob "$sbom_file"
 sign_blob "$product_sbom"
 
 notes="$(mktemp)"
-trap 'rm -f "$notes"' EXIT
+existing_asset_dir="$(mktemp -d)"
+trap 'rm -f "$notes"; rm -rf "$existing_asset_dir"' EXIT
+release_label="stable release"
+release_notice="This is a stable release. Review the upgrade and rollback instructions before deployment."
+if [[ "$release_kind" == "prerelease" ]]; then
+  release_label="pre-release"
+  release_notice="This is an alpha build, not a stable release. Configuration and APIs may change."
+fi
 cat >"$notes" <<EOF
-CheeseWAF pre-release \`${tag}\`.
+CheeseWAF ${release_label} \`${tag}\`.
 
-This is an alpha build, not a stable release. Configuration and APIs may change.
+${release_notice}
 
 Download the archive that matches your OS and CPU:
 
@@ -187,7 +228,35 @@ if gh release view "$tag" >/dev/null 2>&1; then
   for asset in "${assets[@]}"; do
     asset_name="$(basename "$asset")"
     if grep -Fxq "$asset_name" <<<"$existing_assets"; then
-      echo "release ${tag} already contains immutable asset ${asset_name}; keeping it"
+      expected_sha="$(awk -v name="$asset_name" '$2 == name { print $1; found++ } END { exit found > 1 ? 1 : 0 }' "${release_dir}/SHA256SUMS")" || {
+        echo "::error::SHA256SUMS contains duplicate entries for existing asset ${asset_name}" >&2
+        exit 1
+      }
+      if [[ -z "$expected_sha" ]]; then
+        expected_sha="$(sha256_file "$asset")" || exit 1
+      fi
+      [[ "$expected_sha" =~ ^[[:xdigit:]]{64}$ ]] || {
+        echo "::error::invalid SHA-256 for existing asset ${asset_name}" >&2
+        exit 1
+      }
+      rm -f "${existing_asset_dir}/${asset_name}"
+      gh release download "$tag" \
+        --pattern "$asset_name" \
+        --dir "$existing_asset_dir" || {
+          echo "::error::could not download existing release asset ${asset_name} for verification" >&2
+          exit 1
+        }
+      remote_asset="${existing_asset_dir}/${asset_name}"
+      [[ -f "$remote_asset" ]] || {
+        echo "::error::downloaded release asset is missing: ${asset_name}" >&2
+        exit 1
+      }
+      actual_sha="$(sha256_file "$remote_asset")" || exit 1
+      [[ "$actual_sha" == "$expected_sha" ]] || {
+        echo "::error::existing release asset ${asset_name} does not match its local SHA256SUMS entry" >&2
+        exit 1
+      }
+      echo "release ${tag} already contains verified immutable asset ${asset_name}; keeping it"
     else
       missing_assets+=("$asset")
     fi
@@ -198,9 +267,17 @@ if gh release view "$tag" >/dev/null 2>&1; then
   exit 0
 fi
 
-gh release create "$tag" \
-  --target "$commit" \
-  --prerelease \
-  --title "$tag" \
-  --notes-file "$notes" \
-  "${assets[@]}"
+if [[ "$release_kind" == "prerelease" ]]; then
+  gh release create "$tag" \
+    --target "$commit" \
+    --prerelease \
+    --title "$tag" \
+    --notes-file "$notes" \
+    "${assets[@]}"
+else
+  gh release create "$tag" \
+    --target "$commit" \
+    --title "$tag" \
+    --notes-file "$notes" \
+    "${assets[@]}"
+fi

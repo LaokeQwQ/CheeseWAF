@@ -68,6 +68,7 @@ func systemConfigView(cfg *config.Config) map[string]any {
 		"capabilities": map[string]any{
 			"ota_updates":         map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
 			"vulnerability_feeds": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
+			"bot_challenge_redis": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED", "message": "bot challenge state uses the in-process memory backend; storage.redis does not change it"},
 		},
 		"monitor":    monitorConfigView(cfg.Monitor),
 		"apisec":     apiSecConfigView(cfg.APISec),

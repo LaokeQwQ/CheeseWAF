@@ -1,7 +1,9 @@
 package apisec
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -54,6 +56,8 @@ func (v *Validator) ValidateWithBodySize(r *http.Request, bodyBytes int64) []Val
 	}
 	var findings []ValidationFinding
 	path := r.URL.Path
+	measuredBodyBytes := int64(-1)
+	bodyMeasured := false
 	for _, item := range v.schemas {
 		if item.cfg.Method != "" && !strings.EqualFold(item.cfg.Method, r.Method) {
 			continue
@@ -78,7 +82,22 @@ func (v *Validator) ValidateWithBodySize(r *http.Request, bodyBytes int64) []Val
 				if r.Body == nil {
 					continue
 				}
-				size = r.ContentLength
+				if r.ContentLength >= 0 {
+					size = r.ContentLength
+				} else if !bodyMeasured {
+					probeLimit := item.cfg.MaxBodyBytes + 1
+					body, err := io.ReadAll(io.LimitReader(r.Body, probeLimit))
+					if err != nil {
+						measuredBodyBytes = probeLimit
+					} else {
+						measuredBodyBytes = int64(len(body))
+					}
+					r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
+					bodyMeasured = true
+					size = measuredBodyBytes
+				} else {
+					size = measuredBodyBytes
+				}
 			}
 			if size > item.cfg.MaxBodyBytes {
 				findings = append(findings, finding(item.cfg.ID, "body", fmt.Sprintf("body exceeds %d bytes", item.cfg.MaxBodyBytes)))

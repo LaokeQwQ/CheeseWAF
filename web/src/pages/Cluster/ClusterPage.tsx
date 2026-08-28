@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Badge,
   Button,
@@ -85,6 +85,18 @@ type DeployAuthMethod = 'agent' | 'password' | 'private_key';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+export async function fetchRollingJob(id: string): Promise<ClusterRollingJob> {
+  const job = await fetchClusterRollingUpgrade(id);
+  if (job.rollback_job_id && job.status === 'failed') {
+    try {
+      return await fetchClusterRollingUpgrade(job.rollback_job_id);
+    } catch {
+      return job;
+    }
+  }
+  return job;
+}
+
 export default function ClusterPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -138,27 +150,18 @@ export default function ClusterPage() {
     rollingJobID && (rollingJob?.status === 'pending' || rollingJob?.status === 'running' || rollingJob?.rollback_job_id),
   );
   const rollingRefreshInterval = usePollingVisibility(rollingNeedsPoll ? 2000 : false);
-  useQuery({
+  const { data: polledRollingJob } = useQuery({
     queryKey: ['cluster-rolling-job', rollingJobID],
-    queryFn: async () => {
-      if (!rollingJobID) return null;
-      const job = await fetchClusterRollingUpgrade(rollingJobID);
-      setRollingJob(job);
-      if (job.rollback_job_id && job.status === 'failed') {
-        try {
-          const rb = await fetchClusterRollingUpgrade(job.rollback_job_id);
-          setRollingJob(rb);
-          return rb;
-        } catch {
-          return job;
-        }
-      }
-      return job;
-    },
+    queryFn: () => fetchRollingJob(rollingJobID as string),
     enabled: rollingNeedsPoll,
     refetchInterval: rollingRefreshInterval,
     retry: false,
   });
+  useEffect(() => {
+    if (polledRollingJob) {
+      setRollingJob(polledRollingJob);
+    }
+  }, [polledRollingJob]);
   const { data: tokens, isFetching: isFetchingTokens, isError: isTokensError, error: tokensError, refetch: refetchTokens } = useQuery({
     queryKey: ['cluster-join-tokens'],
     queryFn: fetchClusterJoinTokens,
@@ -392,7 +395,7 @@ export default function ClusterPage() {
     mutationFn: createClusterBootstrapPlan,
     onSuccess: (plan) => {
       setBootstrapPlan(plan);
-      toast.success(t('cluster.bootstrapPlanReady', { defaultValue: 'Bootstrap plan ready' }));
+      toast.success(t('cluster.bootstrapPlanReady'));
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -401,7 +404,7 @@ export default function ClusterPage() {
     mutationFn: startClusterRollingUpgrade,
     onSuccess: (job) => {
       setRollingJob(job);
-      toast.success(t('cluster.rollingStarted', { defaultValue: 'Rolling upgrade started' }));
+      toast.success(t('cluster.rollingStarted'));
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -409,7 +412,7 @@ export default function ClusterPage() {
   const submitBootstrapPlan = async () => {
     const values = bootstrapForm;
     if (!String(values.nodeId || '').trim() || !String(values.controllerUrl || '').trim() || !String(values.advertiseAddr || '').trim()) {
-      toast.warning(t('cluster.bootstrapFieldsRequired', { defaultValue: 'Node ID, controller URL, and advertise address are required' }));
+      toast.warning(t('cluster.bootstrapFieldsRequired'));
       return;
     }
     bootstrapMutation.mutate({
@@ -430,7 +433,7 @@ export default function ClusterPage() {
       .map((item) => item.trim())
       .filter(Boolean);
     if (hosts.length === 0) {
-      toast.warning(t('cluster.rollingHostsRequired', { defaultValue: 'Enter at least one host' }));
+      toast.warning(t('cluster.rollingHostsRequired'));
       return;
     }
     rollingMutation.mutate({
@@ -456,7 +459,7 @@ export default function ClusterPage() {
     try {
       const job = await startClusterRollingRollback(rollingJob.id);
       setRollingJob(job);
-      toast.success(t('cluster.rollbackStarted', { defaultValue: 'Rollback started' }));
+      toast.success(t('cluster.rollbackStarted'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     }
@@ -539,8 +542,8 @@ export default function ClusterPage() {
                 <div><span>{t('cluster.consistency')}</span><strong>{consensusLabel(data.consensus_provider, t)}</strong></div>
                 {consensus && (
                   <>
-                    <div><span>{t('cluster.leader', { defaultValue: 'Leader' })}</span><strong>{consensus.leader_id || '—'}</strong></div>
-                    <div><span>{t('cluster.localRole', { defaultValue: 'Local role' })}</span><strong>{consensus.local_role || '—'}</strong></div>
+                    <div><span>{t('cluster.leader')}</span><strong>{consensus.leader_id || '—'}</strong></div>
+                    <div><span>{t('cluster.localRole')}</span><strong>{consensus.local_role || '—'}</strong></div>
                   </>
                 )}
               </div>
@@ -573,8 +576,8 @@ export default function ClusterPage() {
           <div className="cluster-card-head cluster-card-head-compact">
             <span className="cluster-icon"><PackageCheck size={18} /></span>
             <div>
-              <CardTitle>{t('cluster.bootstrapTitle', { defaultValue: 'Install and join orchestration' })}</CardTitle>
-              <CardDescription>{t('cluster.bootstrapHint', { defaultValue: 'Mint a one-time join token and get the install-then-join checklist for a new node.' })}</CardDescription>
+              <CardTitle>{t('cluster.bootstrapTitle')}</CardTitle>
+              <CardDescription>{t('cluster.bootstrapHint')}</CardDescription>
             </div>
           </div>
           <div className="cluster-token-form">
@@ -590,25 +593,25 @@ export default function ClusterPage() {
                 </Select>
               </label>
               <label>
-                <span>{t('cluster.nodeId', { defaultValue: 'Node ID' })}</span>
+                <span>{t('cluster.nodeId')}</span>
                 <Input placeholder="waf-b" value={bootstrapForm.nodeId || ''} onChange={(e) => setBootstrapForm((c) => ({ ...c, nodeId: e.target.value }))} />
               </label>
               <label>
-                <span>{t('cluster.controllerUrl', { defaultValue: 'Controller URL' })}</span>
+                <span>{t('cluster.controllerUrl')}</span>
                 <Input placeholder="https://controller.example:9443" value={bootstrapForm.controllerUrl || ''} onChange={(e) => setBootstrapForm((c) => ({ ...c, controllerUrl: e.target.value }))} />
               </label>
               <label>
-                <span>{t('cluster.advertiseAddr', { defaultValue: 'Advertise address' })}</span>
+                <span>{t('cluster.advertiseAddr')}</span>
                 <Input placeholder="10.0.0.2:9444" value={bootstrapForm.advertiseAddr || ''} onChange={(e) => setBootstrapForm((c) => ({ ...c, advertiseAddr: e.target.value }))} />
               </label>
             </div>
             <Button loading={bootstrapMutation.isPending} onClick={() => void submitBootstrapPlan()}>
-              {t('cluster.createBootstrapPlan', { defaultValue: 'Create bootstrap plan' })}
+              {t('cluster.createBootstrapPlan')}
             </Button>
           </div>
           {bootstrapPlan && (
             <div className="cluster-result-note">
-              <strong>{t('cluster.joinCommand', { defaultValue: 'Join command' })}</strong>
+              <strong>{t('cluster.joinCommand')}</strong>
               <pre className="cluster-command">{bootstrapPlan.join_command}</pre>
               <p>{bootstrapPlan.install_hint}</p>
               <p>{bootstrapPlan.post_join_hint}</p>
@@ -620,21 +623,21 @@ export default function ClusterPage() {
           <div className="cluster-card-head cluster-card-head-compact">
             <span className="cluster-icon"><RotateCcw size={18} /></span>
             <div>
-              <CardTitle>{t('cluster.rollingTitle', { defaultValue: 'Rolling upgrade' })}</CardTitle>
-              <CardDescription>{t('cluster.rollingHint', { defaultValue: 'Upgrade nodes one by one: install binary, restart service, stop on first failure.' })}</CardDescription>
+              <CardTitle>{t('cluster.rollingTitle')}</CardTitle>
+              <CardDescription>{t('cluster.rollingHint')}</CardDescription>
             </div>
           </div>
           <div className="cluster-token-form">
             <label>
-              <span>{t('cluster.rollingHosts', { defaultValue: 'Hosts (one per line)' })}</span>
+              <span>{t('cluster.rollingHosts')}</span>
               <Textarea rows={4} placeholder={'waf-a.example\nwaf-b.example'} value={rollingForm.hosts || ''} onChange={(e) => setRollingForm((c) => ({ ...c, hosts: e.target.value }))} />
             </label>
             <label>
-              <span>{t('cluster.sshUser', { defaultValue: 'SSH user' })}</span>
+              <span>{t('cluster.sshUser')}</span>
               <Input value={rollingForm.user || ''} onChange={(e) => setRollingForm((c) => ({ ...c, user: e.target.value }))} />
             </label>
             <Button loading={rollingMutation.isPending} onClick={() => void submitRollingUpgrade()}>
-              {t('cluster.startRolling', { defaultValue: 'Start rolling upgrade' })}
+              {t('cluster.startRolling')}
             </Button>
           </div>
           {rollingJob && (
@@ -649,26 +652,26 @@ export default function ClusterPage() {
               </ul>
               {(rollingJob.status === 'failed' || rollingJob.status === 'succeeded') && !rollingJob.rollback_of && (
                 <Button className="mt-2" variant="outline" onClick={() => void rollbackRollingJob()}>
-                  {t('cluster.startRollback', { defaultValue: 'Start rollback' })}
+                  {t('cluster.startRollback')}
                 </Button>
               )}
             </div>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => void loadTrafficPeers('least_conn')}>
-              {t('cluster.loadTrafficPeers', { defaultValue: 'Preview traffic peers (least_conn)' })}
+              {t('cluster.loadTrafficPeers')}
             </Button>
             <Button variant="outline" onClick={() => void loadTrafficPeers('sticky')}>
-              {t('cluster.loadStickyPeers', { defaultValue: 'Preview sticky peers' })}
+              {t('cluster.loadStickyPeers')}
             </Button>
           </div>
           {trafficPeers && (
             <div className="cluster-result-note">
-              <strong>{t('cluster.selectedPeer', { defaultValue: 'Selected peer' })}</strong>
+              <strong>{t('cluster.selectedPeer')}</strong>
               <span>{trafficPeers.selected?.node_id || '—'} {trafficPeers.selected?.advertise_addr || ''}</span>
-              <span>{t('cluster.eligiblePeers', { defaultValue: 'Eligible' })}: {trafficPeers.peers?.length ?? 0}</span>
-              <span>{t('cluster.healthyPeers', { defaultValue: 'Healthy' })}: {trafficPeers.healthy?.length ?? trafficPeers.peers?.length ?? 0}</span>
-              <span>{t('cluster.trafficMode', { defaultValue: 'Mode' })}: {trafficPeers.mode}</span>
+              <span>{t('cluster.eligiblePeers')}: {trafficPeers.peers?.length ?? 0}</span>
+              <span>{t('cluster.healthyPeers')}: {trafficPeers.healthy?.length ?? trafficPeers.peers?.length ?? 0}</span>
+              <span>{t('cluster.trafficMode')}: {trafficPeers.mode}</span>
             </div>
           )}
         </Card>
@@ -1208,9 +1211,9 @@ export default function ClusterPage() {
             </Table>
             {auditEntries.length > 10 && (
               <div className="flex justify-end gap-2 py-2">
-                <Button size="sm" variant="outline" disabled={auditPage <= 0} onClick={() => setAuditPage((p) => p - 1)}>{t('common.prev', { defaultValue: 'Prev' })}</Button>
+                <Button size="sm" variant="outline" disabled={auditPage <= 0} onClick={() => setAuditPage((p) => p - 1)}>{t('common.prev')}</Button>
                 <span className="text-sm text-muted-foreground">{auditPage + 1}/{Math.ceil(auditEntries.length / 10)}</span>
-                <Button size="sm" variant="outline" disabled={auditPage >= Math.ceil(auditEntries.length / 10) - 1} onClick={() => setAuditPage((p) => p + 1)}>{t('common.next', { defaultValue: 'Next' })}</Button>
+                <Button size="sm" variant="outline" disabled={auditPage >= Math.ceil(auditEntries.length / 10) - 1} onClick={() => setAuditPage((p) => p + 1)}>{t('common.next')}</Button>
               </div>
             )}
           </div>

@@ -26,9 +26,6 @@ func DefaultRoleToolPolicy() RoleToolPolicy {
 			"operator":  Modify,
 			"readonly":  ReadOnly,
 			"api_token": ReadOnly,
-			// Empty role: HTTP RBAC already gated the request; allow full tool set
-			// for internal callers and tests that omit actor role.
-			"": Destructive,
 		},
 		AllowedTools: map[string]map[string]struct{}{
 			// Explicit allow-list for modification tools (admin/operator).
@@ -55,8 +52,9 @@ func (p RoleToolPolicy) ToolAllowed(role string, tool Tool) bool {
 	sens := tool.Sensitivity()
 	max, ok := p.MaxSensitivity[role]
 	if !ok {
-		// Unknown roles (e.g. custom test roles) get Modify ceiling so dual-control still applies.
-		max = Modify
+		// Unknown roles must never gain write access through a typo or a new
+		// role that was added without an explicit AI policy entry.
+		max = ReadOnly
 	}
 	if sens > max {
 		return false
@@ -64,8 +62,8 @@ func (p RoleToolPolicy) ToolAllowed(role string, tool Tool) bool {
 	if sens == ReadOnly && p.AllowReadOnly {
 		return true
 	}
-	// Admin / empty actor: all tools under sensitivity cap.
-	if role == "admin" || role == "" {
+	// Admin: all tools under the administrator sensitivity cap.
+	if role == "admin" {
 		return true
 	}
 	allowed := p.AllowedTools[role]
@@ -80,11 +78,40 @@ func (p RoleToolPolicy) ToolAllowed(role string, tool Tool) bool {
 
 // GuardToolAccess returns an error if the actor role cannot use the tool.
 func GuardToolAccess(role string, tool Tool, policy RoleToolPolicy) error {
+	return GuardToolAccessForActor(ApprovalActor{Role: role}, tool, policy)
+}
+
+// GuardToolAccessForActor applies both the role sensitivity ceiling and any
+// tool-specific permission requirement declared by the tool.
+func GuardToolAccessForActor(actor ApprovalActor, tool Tool, policy RoleToolPolicy) error {
 	if tool == nil {
 		return fmt.Errorf("tool is nil")
 	}
+	role := strings.ToLower(strings.TrimSpace(actor.Role))
 	if !policy.ToolAllowed(role, tool) {
-		return fmt.Errorf("tool %q is not allowed for role %q", tool.Name(), role)
+		return fmt.Errorf("tool %q is not allowed for role %q", tool.Name(), actor.Role)
+	}
+	if permissioner, ok := tool.(ToolPermissioner); ok {
+		required := strings.TrimSpace(permissioner.RequiredPermission())
+		if required != "" && !permissionAllowedForActor(actor, required) {
+			return fmt.Errorf("tool %q requires permission %q", tool.Name(), required)
+		}
 	}
 	return nil
+}
+
+func permissionAllowedForActor(actor ApprovalActor, required string) bool {
+	if strings.EqualFold(strings.TrimSpace(actor.Role), "admin") {
+		return true
+	}
+	for _, permission := range actor.Permissions {
+		permission = strings.TrimSpace(permission)
+		if permission == "*" || permission == required {
+			return true
+		}
+		if strings.HasSuffix(permission, "*") && strings.HasPrefix(required, strings.TrimSuffix(permission, "*")) {
+			return true
+		}
+	}
+	return false
 }

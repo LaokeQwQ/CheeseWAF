@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuditEntry, Notification } from '../types/api';
-import { buildSearchResults, navigationForAccount, NotificationPanel, realtimeQueryKeys, shellCapabilities, withStableNotificationKeys } from './MainLayout';
+import { buildSearchResults, createRealtimeInvalidationScheduler, navigationForAccount, NotificationPanel, realtimeQueryKeys, shellCapabilities, withStableNotificationKeys } from './MainLayout';
 
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
@@ -158,5 +158,27 @@ describe('shell authorization and realtime invalidation', () => {
     expect(realtimeQueryKeys('alert')).toEqual([['notifications']]);
     expect(realtimeQueryKeys('stats')).toContainEqual(['monitor-summary']);
     expect(realtimeQueryKeys('unknown')).toEqual([]);
+  });
+
+  it('coalesces realtime invalidations for one second and flushes each query once', () => {
+    const scheduled: Array<() => void> = [];
+    const schedule = vi.fn((callback: () => void) => {
+      scheduled.push(callback);
+      return scheduled.length;
+    });
+    const invalidate = vi.fn();
+    const scheduler = createRealtimeInvalidationScheduler(invalidate, schedule, vi.fn());
+
+    scheduler.enqueue([['logs'], ['notifications']]);
+    scheduler.enqueue([['logs']]);
+
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(schedule).toHaveBeenCalledWith(expect.any(Function), 1_000);
+    expect(invalidate).not.toHaveBeenCalled();
+
+    scheduled[0]?.();
+    expect(invalidate).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledWith(['logs']);
+    expect(invalidate).toHaveBeenCalledWith(['notifications']);
   });
 });

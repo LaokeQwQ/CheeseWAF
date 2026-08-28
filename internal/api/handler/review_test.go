@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
@@ -231,5 +232,78 @@ func TestReviewBlockedItemRejectsAllow(t *testing.T) {
 	router.ServeHTTP(decide, req)
 	if decide.Code != http.StatusConflict {
 		t.Fatalf("blocked item must not accept allow, got %d %s", decide.Code, decide.Body.String())
+	}
+}
+
+func TestReviewDecisionReleasesClaimWhenRuleApplicationFails(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	item := &storage.ReviewItem{SiteID: site.ID, Status: "pending", URI: "/search", Payload: ""}
+	if err := store.CreateReviewItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Post("/review/{id}/decide", handler.DecideReviewItem)
+	req := httptest.NewRequest(http.MethodPost, "/review/"+item.ID+"/decide", bytes.NewReader([]byte(`{"decision":"block_payload"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected apply failure, got %d %s", recorder.Code, recorder.Body.String())
+	}
+	claim, err := store.ClaimReviewItem(context.Background(), item.ID, "allow")
+	if err != nil || claim == nil {
+		t.Fatalf("failed apply must release claim: claim=%+v err=%v", claim, err)
+	}
+	if err := store.ReleaseReviewItem(context.Background(), item.ID, claim.Token); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReviewDecisionClaimAllowsOnlyOneConcurrentRuleApplication(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	item := &storage.ReviewItem{
+		SiteID:  site.ID,
+		Status:  "pending",
+		URI:     "/search",
+		Payload: "eval($_GET[cmd])",
+		Source:  "query",
+	}
+	if err := store.CreateReviewItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Post("/review/{id}/decide", handler.DecideReviewItem)
+
+	const attempts = 8
+	codes := make(chan int, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/review/"+item.ID+"/decide", bytes.NewReader([]byte(`{"decision":"block_payload"}`)))
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+			codes <- recorder.Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	oks := 0
+	for code := range codes {
+		if code == http.StatusOK {
+			oks++
+		}
+		if code != http.StatusOK && code != http.StatusConflict {
+			t.Fatalf("unexpected concurrent decision status: %d", code)
+		}
+	}
+	if oks != 1 {
+		t.Fatalf("expected exactly one successful decision, got %d", oks)
+	}
+	updated, err := store.GetSite(context.Background(), site.ID)
+	if err != nil || updated == nil || len(updated.Advanced.CustomRules) != 1 {
+		t.Fatalf("expected exactly one applied rule: site=%+v err=%v", updated, err)
 	}
 }

@@ -180,6 +180,7 @@ func Default() Config {
 			},
 			Bot: BotProtectionConfig{
 				Enabled:                false,
+				ChallengeBackend:       "memory",
 				RiskLevel:              2,
 				RiskLowThreshold:       35,
 				RiskMediumThreshold:    55,
@@ -851,6 +852,9 @@ func applyDefaults(cfg *Config) {
 	cfg.Protection.Policy = cfg.Protection.Policy.WithDefaults(DefaultProtectionPolicy())
 	if cfg.Protection.Bot.ChallengeTTL == 0 {
 		cfg.Protection.Bot.ChallengeTTL = def.Protection.Bot.ChallengeTTL
+	}
+	if cfg.Protection.Bot.ChallengeBackend == "" {
+		cfg.Protection.Bot.ChallengeBackend = def.Protection.Bot.ChallengeBackend
 	}
 	if cfg.Protection.Bot.RiskLevel == 0 {
 		cfg.Protection.Bot.RiskLevel = def.Protection.Bot.RiskLevel

