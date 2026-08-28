@@ -26,6 +26,11 @@ import (
 
 const maxMapBoundaryBytes = 5 << 20
 
+const (
+	otaUpdatesUnavailableCode         = "OTA_UPDATES_UNAVAILABLE"
+	vulnerabilityFeedsUnavailableCode = "VULNERABILITY_FEEDS_UNAVAILABLE"
+)
+
 var chinaMapAdcodePattern = regexp.MustCompile(`^\d{6}$`)
 
 var systemHTTPClient = func(policy netguard.URLPolicy) *http.Client {
@@ -121,6 +126,10 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if code, message := unavailableSystemEnablement(req); code != "" {
+		writeError(w, http.StatusNotImplemented, code, message)
+		return
+	}
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
 		return applySystemPayload(candidate, req)
 	}, func(candidate *config.Config) error {
@@ -149,6 +158,16 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = committed
 	h.System(w, r)
+}
+
+func unavailableSystemEnablement(req systemPayload) (string, string) {
+	if req.Update != nil && req.Update.OTA.Enabled {
+		return otaUpdatesUnavailableCode, "OTA updates are unavailable because no updater worker is implemented"
+	}
+	if req.Vulnerability != nil && req.Vulnerability.Enabled {
+		return vulnerabilityFeedsUnavailableCode, "vulnerability feeds are unavailable because no feed worker is implemented"
+	}
+	return "", ""
 }
 
 func clonePermissionMap(in map[string][]string) map[string][]string {
@@ -230,6 +249,11 @@ func applySystemPayload(next *config.Config, req systemPayload) error {
 		if _, ok := blockpage.TemplateByID(next.BlockPage.TemplateID); !ok {
 			return fmt.Errorf("unknown block page template")
 		}
+		clean, err := config.SanitizeBlockPageHTML(next.BlockPage.CustomHTML)
+		if err != nil {
+			return err
+		}
+		next.BlockPage.CustomHTML = clean
 		if _, err := blockpage.NewRendererFromConfig(next.BlockPage); err != nil {
 			return err
 		}

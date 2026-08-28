@@ -18,6 +18,14 @@ def nums_add(a, b):
     return out
 
 
+def failed_case_key(case):
+    """Return a stable identity for one diagnostic failed-case entry."""
+    try:
+        return json.dumps(case, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return repr(case)
+
+
 def main() -> int:
     files = sorted(Path(p) for p in sys.argv[1:])
     if not files:
@@ -35,6 +43,7 @@ def main() -> int:
     source_totals = {}
     category_totals = {}
     paranoia_totals = {}
+    failed_case_keys = set()
     for path in files:
         try:
             data = json.loads(path.read_text())
@@ -51,7 +60,13 @@ def main() -> int:
         for level, pm in data.get("by_paranoia_level", {}).items():
             paranoia_totals.setdefault(level, {})
             paranoia_totals[level] = nums_add(paranoia_totals[level], pm)
-        merged["failed_cases"].extend(data.get("failed_cases", [])[:100])
+        for failed_case in data.get("failed_cases", []):
+            key = failed_case_key(failed_case)
+            if key in failed_case_keys:
+                continue
+            failed_case_keys.add(key)
+            if len(merged["failed_cases"]) < 100:
+                merged["failed_cases"].append(failed_case)
 
     for name, src in source_totals.items():
         b = src.get("benign_total", 0)

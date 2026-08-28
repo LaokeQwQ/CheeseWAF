@@ -1386,6 +1386,17 @@ func TestRouterLogoutRevokesBearerToken(t *testing.T) {
 	if logout.Code != http.StatusOK {
 		t.Fatalf("expected logout to succeed, got %d: %s", logout.Code, logout.Body.String())
 	}
+	expired := make(map[string]bool)
+	for _, cookie := range logout.Result().Cookies() {
+		if cookie.MaxAge < 0 {
+			expired[cookie.Name] = true
+		}
+	}
+	for _, name := range []string{middleware.SessionCookieName, middleware.CSRFCookieName, middleware.SecureSessionCookieName, middleware.SecureCSRFCookieName} {
+		if !expired[name] {
+			t.Errorf("logout did not expire cookie %q", name)
+		}
+	}
 
 	system := perform(router, http.MethodGet, "/api/system", adminToken, nil)
 	if system.Code != http.StatusUnauthorized {

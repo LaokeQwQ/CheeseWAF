@@ -31,13 +31,14 @@ const (
 
 // RollingTarget is one host in a rolling upgrade batch.
 type RollingTarget struct {
-	NodeID        string `json:"node_id,omitempty"`
-	Host          string `json:"host"`
-	User          string `json:"user"`
-	Port          int    `json:"port,omitempty"`
-	Password      string `json:"password,omitempty"`
-	PrivateKey    string `json:"private_key,omitempty"`
-	HostKeySHA256 string `json:"host_key_sha256,omitempty"`
+	NodeID        string   `json:"node_id,omitempty"`
+	Host          string   `json:"host"`
+	User          string   `json:"user"`
+	Port          int      `json:"port,omitempty"`
+	Password      string   `json:"password,omitempty"`
+	PrivateKey    string   `json:"private_key,omitempty"`
+	HostKeySHA256 string   `json:"host_key_sha256,omitempty"`
+	ResolvedIPs   []string `json:"-"`
 }
 
 // RollingUpgradeRequest starts a sequential multi-node binary upgrade.
@@ -93,6 +94,8 @@ type RollingJob struct {
 
 // DeployStarter starts a single-host deploy task (install / rollback / restart).
 type DeployStarter interface {
+	// Precheck refreshes the one-time network binding used by rollback actions.
+	Precheck(ctx context.Context, target RollingTarget) (RollingTarget, error)
 	StartInstall(ctx context.Context, target RollingTarget) (taskID string, err error)
 	// StartRollbackInstall restores the newest remote binary backup (rollback-install).
 	StartRollbackInstall(ctx context.Context, target RollingTarget) (taskID string, err error)
@@ -253,6 +256,20 @@ func (m *RollingManager) StartRollback(ctx context.Context, jobID string) (*Roll
 		})
 		return nil, fmt.Errorf("no succeeded targets available to roll back")
 	}
+	checked := make([]RollingTarget, 0, len(reversed))
+	for index, target := range reversed {
+		refreshed, err := m.starter.Precheck(ctx, target)
+		if err != nil {
+			m.updateJob(src.ID, func(j *RollingJob) {
+				if j.RollbackJobID == placeholderID {
+					j.RollbackJobID = ""
+				}
+			})
+			return nil, fmt.Errorf("rollback target %d precheck failed: %w", index, err)
+		}
+		checked = append(checked, refreshed)
+	}
+	reversed = checked
 	stop := true
 	auto := false
 	pauseStr := ""

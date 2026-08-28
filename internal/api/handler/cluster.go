@@ -146,12 +146,14 @@ func (h *Handler) ClusterDeployCheck(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := deploy.NewSSHRunner(deploy.SSHRunnerOptions{}).Check(r.Context(), req.SSHDeploymentRequest)
+	result, err := h.clusterDeployRunner().Check(r.Context(), req.SSHDeploymentRequest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "CLUSTER_SSH_INVALID", err.Error())
 		return
 	}
-	auth, err := h.clusterDeployAuthorizationStore().Issue("", authorizationTarget(req.SSHDeploymentRequest))
+	target := authorizationTarget(req.SSHDeploymentRequest)
+	target.ResolvedIPs = append([]string(nil), result.ResolvedIPs...)
+	auth, err := h.clusterDeployAuthorizationStore().IssueBound("", target)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CLUSTER_SSH_AUTHORIZATION_FAILED", err.Error())
 		return
@@ -164,11 +166,11 @@ func (h *Handler) ClusterDeployRun(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := h.consumeClusterDeployAuthorization(req); err != nil {
+	if err := h.consumeClusterDeployAuthorization(&req); err != nil {
 		writeError(w, http.StatusForbidden, "CLUSTER_SSH_PRECHECK_REQUIRED", err.Error())
 		return
 	}
-	result, err := deploy.NewSSHRunner(deploy.SSHRunnerOptions{}).Deploy(r.Context(), req.SSHDeploymentRequest)
+	result, err := h.clusterDeployRunner().Deploy(r.Context(), req.SSHDeploymentRequest)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "CLUSTER_SSH_FAILED", err.Error())
 		return
@@ -182,7 +184,7 @@ func (h *Handler) ClusterStartDeployTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if strings.TrimSpace(req.Action) != "check" {
-		if err := h.consumeClusterDeployAuthorization(req); err != nil {
+		if err := h.consumeClusterDeployAuthorization(&req); err != nil {
 			writeError(w, http.StatusForbidden, "CLUSTER_SSH_PRECHECK_REQUIRED", err.Error())
 			return
 		}
@@ -222,7 +224,12 @@ func (h *Handler) ClusterGetDeployTask(w http.ResponseWriter, r *http.Request) {
 		target, ok := h.clusterDeployPending[id]
 		h.clusterDeployAuthMu.Unlock()
 		if ok {
-			auth, err := h.clusterDeployAuthorizationStore().Issue(id, target)
+			if task.CheckResult == nil {
+				writeError(w, http.StatusInternalServerError, "CLUSTER_SSH_AUTHORIZATION_FAILED", "successful SSH check has no result")
+				return
+			}
+			target.ResolvedIPs = append([]string(nil), task.CheckResult.ResolvedIPs...)
+			auth, err := h.clusterDeployAuthorizationStore().IssueBound(id, target)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "CLUSTER_SSH_AUTHORIZATION_FAILED", err.Error())
 				return
@@ -244,7 +251,7 @@ func (h *Handler) ClusterListDeployTasks(w http.ResponseWriter, r *http.Request)
 }
 
 func authorizationTarget(req deploy.SSHDeploymentRequest) deploy.AuthorizationTarget {
-	t := deploy.AuthorizationTarget{Host: req.Host, User: req.User, Port: req.Port, HostKeySHA256: req.HostKeySHA256}
+	t := deploy.AuthorizationTarget{Host: req.Host, User: req.User, Port: req.Port, HostKeySHA256: req.HostKeySHA256, ResolvedIPs: append([]string(nil), req.ResolvedIPs...)}
 	action := strings.ToLower(strings.TrimSpace(req.Action))
 	// Only bind the intended deploy action when the caller explicitly names a
 	// non-check action. A check task authorization must remain usable for the
@@ -262,8 +269,16 @@ func authorizationTarget(req deploy.SSHDeploymentRequest) deploy.AuthorizationTa
 	}
 	return t
 }
-func (h *Handler) consumeClusterDeployAuthorization(req clusterDeployRequest) error {
-	return h.clusterDeployAuthorizationStore().Consume(req.Authorization, authorizationTarget(req.SSHDeploymentRequest))
+func (h *Handler) consumeClusterDeployAuthorization(req *clusterDeployRequest) error {
+	if req == nil {
+		return deploy.ErrAuthorizationInvalid
+	}
+	bound, err := h.clusterDeployAuthorizationStore().ConsumeBound(req.Authorization, authorizationTarget(req.SSHDeploymentRequest))
+	if err != nil {
+		return err
+	}
+	req.ResolvedIPs = append([]string(nil), bound.ResolvedIPs...)
+	return nil
 }
 func (h *Handler) clusterDeployAuthorizationStore() *deploy.AuthorizationStore {
 	h.clusterDeployAuthMu.Lock()
@@ -1111,9 +1126,20 @@ func (h *Handler) clusterDeployTaskManager() *deploy.TaskManager {
 	h.clusterDeployTasksMu.Lock()
 	defer h.clusterDeployTasksMu.Unlock()
 	if h.ClusterDeployTasks == nil {
-		h.ClusterDeployTasks = deploy.NewTaskManager(deploy.TaskManagerOptions{})
+		h.ClusterDeployTasks = deploy.NewTaskManager(deploy.TaskManagerOptions{Runner: h.clusterDeployRunner()})
 	}
 	return h.ClusterDeployTasks
+}
+
+func (h *Handler) clusterDeployRunner() deploy.TaskRunner {
+	if h != nil && h.ClusterDeployRunner != nil {
+		return h.ClusterDeployRunner
+	}
+	allowPrivateTargets := false
+	if h != nil && h.currentConfig() != nil {
+		allowPrivateTargets = h.currentConfig().Cluster.SSH.AllowPrivateTargets
+	}
+	return deploy.NewSSHRunner(deploy.SSHRunnerOptions{AllowPrivateTargets: allowPrivateTargets})
 }
 
 func (h *Handler) clusterHeartbeatRegistry() *cluster.HeartbeatRegistry {

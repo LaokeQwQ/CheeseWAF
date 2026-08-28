@@ -21,6 +21,15 @@ import { fallbackSystem, normalizeSystem } from '../System/systemModel';
 
 type DNSProvider = SystemConfig['acme']['dns_providers'][number];
 
+const SYSTEMD_RESTART_PROFILE = 'systemd-restart';
+const SYSTEMD_RESTART_COMMAND = '/usr/bin/systemctl restart cheesewaf.service';
+
+function reloadProfile(value: string) {
+  return value === SYSTEMD_RESTART_PROFILE || value === SYSTEMD_RESTART_COMMAND
+    ? SYSTEMD_RESTART_PROFILE
+    : 'disabled';
+}
+
 export default function SSLPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -180,8 +189,18 @@ export default function SSLPage() {
               <Input value={system.acme.cert_dir} placeholder="./data/certs" onChange={(e) => patchACME({ cert_dir: e.target.value })} disabled={!isSuccess} />
             </label>
             <label className="wide-field">
-              <span>{t('system.acmeReloadCommand')}</span>
-              <Input value={system.acme.reload_command} placeholder="systemctl reload cheesewaf" onChange={(e) => patchACME({ reload_command: e.target.value })} disabled={!isSuccess} />
+              <span>{t('system.acmeReloadProfile')}</span>
+              <Select
+                value={reloadProfile(system.acme.reload_command)}
+                onValueChange={(profile) => patchACME({ reload_command: profile === 'disabled' ? '' : profile })}
+                disabled={!isSuccess}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="disabled">{t('system.acmeReloadDisabled')}</SelectItem>
+                  <SelectItem value={SYSTEMD_RESTART_PROFILE}>{t('system.acmeReloadSystemdRestart')}</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
           </div>
         </section>

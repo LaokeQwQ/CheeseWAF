@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -357,7 +358,7 @@ func TestClusterDeployTaskRunCreatesTrackableTaskAndRedactsSecrets(t *testing.T)
 			NewID:  func() string { return "deploy-task-1" },
 		}),
 	})
-	auth, _ := h.clusterDeployAuthorizationStore().Issue("test", deploy.AuthorizationTarget{Host: "node-a.example.com", User: "root", Port: 22})
+	auth, _ := h.clusterDeployAuthorizationStore().IssueBound("test", deploy.AuthorizationTarget{Host: "node-a.example.com", User: "root", Port: 22, ResolvedIPs: []string{"8.8.8.8"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(`{"host":"node-a.example.com","user":"root","password":"`+secret+`","action":"install","authorization":"`+auth.Handle+`"}`))
 	rec := httptest.NewRecorder()
 	h.ClusterStartDeployTask(rec, req)
@@ -381,6 +382,9 @@ func TestClusterDeployTaskRunCreatesTrackableTaskAndRedactsSecrets(t *testing.T)
 	if task.Output != "installed with <redacted>" {
 		t.Fatalf("task output was not redacted: %q", task.Output)
 	}
+	if got := runner.lastDeployRequest().ResolvedIPs; len(got) != 1 || got[0] != "8.8.8.8" {
+		t.Fatalf("deploy task did not receive the authorized address binding: %v", got)
+	}
 
 	getReq := withURLParam(httptest.NewRequest(http.MethodGet, "/api/cluster/deploy/tasks/"+created.Data.ID, nil), "id", created.Data.ID)
 	getRec := httptest.NewRecorder()
@@ -403,7 +407,7 @@ func TestClusterDeployTaskFailureDoesNotLeakPrivateKey(t *testing.T) {
 			NewID:  func() string { return "deploy-task-2" },
 		}),
 	})
-	auth, _ := h.clusterDeployAuthorizationStore().Issue("test", deploy.AuthorizationTarget{Host: "node-b.example.com", User: "root", Port: 22})
+	auth, _ := h.clusterDeployAuthorizationStore().IssueBound("test", deploy.AuthorizationTarget{Host: "node-b.example.com", User: "root", Port: 22, ResolvedIPs: []string{"8.8.4.4"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(`{"host":"node-b.example.com","user":"root","private_key":`+strconv.Quote(privateKey)+`,"action":"restart-service","authorization":"`+auth.Handle+`"}`))
 	rec := httptest.NewRecorder()
 	h.ClusterStartDeployTask(rec, req)
@@ -438,7 +442,7 @@ func TestClusterFailedCheckTaskNeverReturnsAuthorization(t *testing.T) {
 func TestClusterDeployAuthorizationRejectsChangedTargetAndReplay(t *testing.T) {
 	runner := &fakeClusterDeployRunner{deployResult: deploy.DeployResult{OK: true}}
 	h := New(Options{Config: ptrClusterConfig(config.Default()), ClusterDeployTasks: deploy.NewTaskManager(deploy.TaskManagerOptions{Runner: runner})})
-	auth, _ := h.clusterDeployAuthorizationStore().Issue("test", deploy.AuthorizationTarget{Host: "node.example.com", User: "root", Port: 22, HostKeySHA256: "SHA256:abc"})
+	auth, _ := h.clusterDeployAuthorizationStore().IssueBound("test", deploy.AuthorizationTarget{Host: "node.example.com", User: "root", Port: 22, HostKeySHA256: "SHA256:abc", ResolvedIPs: []string{"8.8.8.8"}})
 	for _, body := range []string{
 		`{"host":"other.example.com","user":"root","port":22,"host_key_sha256":"SHA256:abc","action":"install","authorization":"` + auth.Handle + `"}`,
 		`{"host":"node.example.com","user":"root","port":22,"host_key_sha256":"SHA256:abc","action":"install","authorization":"` + auth.Handle + `"}`,
@@ -452,6 +456,137 @@ func TestClusterDeployAuthorizationRejectsChangedTargetAndReplay(t *testing.T) {
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestClusterSuccessfulCheckTaskIssuesBoundAuthorization(t *testing.T) {
+	runner := &fakeClusterDeployRunner{checkResult: deploy.CheckResult{OK: true, ResolvedIPs: []string{"8.8.8.8"}}, deployResult: deploy.DeployResult{OK: true}}
+	taskIDs := []string{"bound-check-task", "bound-deploy-task"}
+	taskIDIndex := 0
+	h := New(Options{
+		Config: ptrClusterConfig(config.Default()),
+		ClusterDeployTasks: deploy.NewTaskManager(deploy.TaskManagerOptions{
+			Runner: runner,
+			NewID: func() string {
+				id := taskIDs[taskIDIndex]
+				taskIDIndex++
+				return id
+			},
+		}),
+	})
+	start := httptest.NewRecorder()
+	h.ClusterStartDeployTask(start, httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(`{"host":"node.example.com","user":"root","port":22,"host_key_sha256":"SHA256:abc","action":"check"}`)))
+	if start.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", start.Code, start.Body.String())
+	}
+	_ = waitClusterDeployTask(t, h, "bound-check-task", deploy.TaskStatusSucceeded)
+
+	get := httptest.NewRecorder()
+	h.ClusterGetDeployTask(get, withURLParam(httptest.NewRequest(http.MethodGet, "/api/cluster/deploy/tasks/bound-check-task", nil), "id", "bound-check-task"))
+	var checked struct {
+		Data clusterDeployTaskView `json:"data"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &checked); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(get.Body.String(), "8.8.8.8") {
+		t.Fatalf("internal resolved address leaked through deploy task API: %s", get.Body.String())
+	}
+	if checked.Data.Authorization == nil || checked.Data.Authorization.Handle == "" {
+		t.Fatalf("successful check did not return authorization: %s", get.Body.String())
+	}
+
+	run := httptest.NewRecorder()
+	body := `{"host":"node.example.com","user":"root","port":22,"host_key_sha256":"SHA256:abc","action":"restart-service","authorization":"` + checked.Data.Authorization.Handle + `"}`
+	h.ClusterStartDeployTask(run, httptest.NewRequest(http.MethodPost, "/api/cluster/deploy/tasks", strings.NewReader(body)))
+	if run.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", run.Code, run.Body.String())
+	}
+	_ = waitClusterDeployTask(t, h, "bound-deploy-task", deploy.TaskStatusSucceeded)
+	if got := runner.lastDeployRequest().ResolvedIPs; len(got) != 1 || got[0] != "8.8.8.8" {
+		t.Fatalf("check result address binding was not forwarded: %v", got)
+	}
+}
+
+func TestClusterRollingRollbackPerformsFreshBoundPrecheck(t *testing.T) {
+	runner := &fakeClusterDeployRunner{
+		checkResult:  deploy.CheckResult{OK: true, ResolvedIPs: []string{"8.8.8.8"}},
+		deployResult: deploy.DeployResult{OK: true},
+	}
+	h := New(Options{
+		Config:              ptrClusterConfig(config.Default()),
+		ClusterDeployRunner: runner,
+		ClusterDeployTasks:  deploy.NewTaskManager(deploy.TaskManagerOptions{Runner: runner}),
+	})
+	body, _ := json.Marshal(map[string]any{
+		"targets":       []map[string]any{{"host": "node.example.com", "user": "root", "port": 22, "host_key_sha256": "SHA256:abc"}},
+		"pause_between": "0s",
+	})
+	start := httptest.NewRecorder()
+	h.ClusterStartRollingUpgrade(start, httptest.NewRequest(http.MethodPost, "/api/cluster/orchestrate/rolling-upgrade", bytes.NewReader(body)))
+	if start.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", start.Code, start.Body.String())
+	}
+	var started struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.Data.ID == "" {
+		t.Fatalf("missing rolling job id: %s", start.Body.String())
+	}
+	waitRollingHandlerStatus(t, h, started.Data.ID, "succeeded")
+
+	before := len(runner.checkRequests())
+	rollbackReq := withURLParam(httptest.NewRequest(http.MethodPost, "/api/cluster/orchestrate/rolling-upgrade/"+started.Data.ID+"/rollback", nil), "id", started.Data.ID)
+	rollback := httptest.NewRecorder()
+	h.ClusterStartRollingRollback(rollback, rollbackReq)
+	if rollback.Code != http.StatusOK {
+		t.Fatalf("rollback status=%d body=%s", rollback.Code, rollback.Body.String())
+	}
+	if got := len(runner.checkRequests()); got <= before {
+		t.Fatalf("rollback did not perform a fresh SSH precheck: before=%d after=%d", before, got)
+	}
+}
+
+func TestClusterRollingUpgradePrechecksAndBindsEveryTarget(t *testing.T) {
+	runner := &fakeClusterDeployRunner{checkResult: deploy.CheckResult{OK: true, ResolvedIPs: []string{"8.8.8.8"}}, deployResult: deploy.DeployResult{OK: true}}
+	authStore := deploy.NewAuthorizationStore(deploy.AuthorizationStoreOptions{NewToken: func() (string, error) { return "rolling-bound-token", nil }})
+	h := New(Options{
+		Config:              ptrClusterConfig(config.Default()),
+		ClusterDeployRunner: runner,
+		ClusterDeployAuth:   authStore,
+		ClusterDeployTasks: deploy.NewTaskManager(deploy.TaskManagerOptions{
+			Runner: runner,
+			NewID:  func() string { return "rolling-deploy-task" },
+		}),
+	})
+	restart := false
+	body, _ := json.Marshal(map[string]any{
+		"targets":         []map[string]any{{"host": "node.example.com", "user": "root", "port": 22, "host_key_sha256": "SHA256:abc"}},
+		"pause_between":   "0s",
+		"restart_service": restart,
+	})
+	rec := httptest.NewRecorder()
+	h.ClusterStartRollingUpgrade(rec, httptest.NewRequest(http.MethodPost, "/api/cluster/orchestrate/rolling-upgrade", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(runner.deployRequests()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := runner.checkRequests(); len(got) != 1 || got[0].Host != "node.example.com" {
+		t.Fatalf("rolling precheck requests = %+v", got)
+	}
+	if got := runner.lastDeployRequest().ResolvedIPs; len(got) != 1 || got[0] != "8.8.8.8" {
+		t.Fatalf("rolling deploy did not receive prechecked binding: %v", got)
+	}
+	if _, err := authStore.ConsumeBound("rolling-bound-token", deploy.AuthorizationTarget{Host: "node.example.com", User: "root", Port: 22, HostKeySHA256: "SHA256:abc"}); err == nil {
+		t.Fatal("rolling precheck authorization was not consumed")
 	}
 }
 
@@ -510,11 +645,12 @@ func TestClusterAuditCombinesHTTPAuditAndDeployTaskEvents(t *testing.T) {
 	clockIndex := 0
 	runner := &fakeClusterDeployRunner{
 		checkResult: deploy.CheckResult{
-			OK:      true,
-			Host:    "node-a.example.com",
-			User:    "root",
-			Port:    22,
-			Message: "checked",
+			OK:          true,
+			Host:        "node-a.example.com",
+			User:        "root",
+			Port:        22,
+			Message:     "checked",
+			ResolvedIPs: []string{"8.8.8.8"},
 		},
 	}
 	h := New(Options{
@@ -1103,13 +1239,19 @@ func TestClusterRotateNodeCertificateRejectsRevokedNode(t *testing.T) {
 }
 
 type fakeClusterDeployRunner struct {
+	mu           sync.Mutex
 	checkResult  deploy.CheckResult
 	checkErr     error
 	deployResult deploy.DeployResult
 	deployErr    error
+	checks       []deploy.SSHDeploymentRequest
+	deploys      []deploy.SSHDeploymentRequest
 }
 
 func (r *fakeClusterDeployRunner) Check(_ context.Context, req deploy.SSHDeploymentRequest) (deploy.CheckResult, error) {
+	r.mu.Lock()
+	r.checks = append(r.checks, req)
+	r.mu.Unlock()
 	result := r.checkResult
 	if result.Host == "" {
 		result.Host = strings.TrimSpace(req.Host)
@@ -1124,11 +1266,34 @@ func (r *fakeClusterDeployRunner) Check(_ context.Context, req deploy.SSHDeploym
 }
 
 func (r *fakeClusterDeployRunner) Deploy(_ context.Context, req deploy.SSHDeploymentRequest) (deploy.DeployResult, error) {
+	r.mu.Lock()
+	r.deploys = append(r.deploys, req)
+	r.mu.Unlock()
 	result := r.deployResult
 	if result.Host == "" {
 		result.Host = strings.TrimSpace(req.Host)
 	}
 	return result, r.deployErr
+}
+
+func (r *fakeClusterDeployRunner) checkRequests() []deploy.SSHDeploymentRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]deploy.SSHDeploymentRequest(nil), r.checks...)
+}
+
+func (r *fakeClusterDeployRunner) deployRequests() []deploy.SSHDeploymentRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]deploy.SSHDeploymentRequest(nil), r.deploys...)
+}
+
+func (r *fakeClusterDeployRunner) lastDeployRequest() deploy.SSHDeploymentRequest {
+	requests := r.deployRequests()
+	if len(requests) == 0 {
+		return deploy.SSHDeploymentRequest{}
+	}
+	return requests[len(requests)-1]
 }
 
 func waitClusterDeployTask(t *testing.T, h *Handler, id string, want string) deploy.Task {
@@ -1154,6 +1319,34 @@ func waitClusterDeployTask(t *testing.T, h *Handler, id string, want string) dep
 	}
 	t.Fatalf("task %s did not reach status %s", id, want)
 	return deploy.Task{}
+}
+
+func waitRollingHandlerStatus(t *testing.T, h *Handler, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		h.ClusterGetRollingUpgrade(rec, withURLParam(httptest.NewRequest(http.MethodGet, "/api/cluster/orchestrate/rolling-upgrade/"+id, nil), "id", id))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("rolling status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var envelope struct {
+			Data struct {
+				Status string `json:"status"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Data.Status == want {
+			return
+		}
+		if envelope.Data.Status == "failed" {
+			t.Fatalf("rolling job failed: %s", rec.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for rolling status %q", want)
 }
 
 func ptrClusterConfig(cfg config.Config) *config.Config {

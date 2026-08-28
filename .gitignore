@@ -108,6 +108,7 @@ cheesewaf-*-deploy.tar.gz
 !docs/protection-policy-roadmap.md
 !docs/paranoia-level-implementation.md
 !docs/environment-variables.md
+!docs/acme.md
 *.private.md
 *.local.md
 
@@ -180,3 +181,4 @@ internal/engine/semantic/reports/
 internal/engine/semantic/testdata/openappsec_benign_clean.jsonl
 internal/engine/semantic/testdata/openappsec_attack_clean.jsonl
 internal/engine/semantic/testdata/modsec_attack_clean.jsonl
+.dsh_better_edit/

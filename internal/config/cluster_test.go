@@ -16,6 +16,17 @@ func TestClusterDefaultIsStandalone(t *testing.T) {
 	if cfg.Cluster.Consensus.Provider != "builtin" {
 		t.Fatalf("default cluster consensus provider = %q, want builtin", cfg.Cluster.Consensus.Provider)
 	}
+	if cfg.Cluster.SSH.AllowPrivateTargets {
+		t.Fatal("private SSH deployment targets must be denied by default")
+	}
+}
+
+func TestClusterPrivateSSHDeploymentOptInIsAccepted(t *testing.T) {
+	cfg := Default()
+	cfg.Cluster.SSH.AllowPrivateTargets = true
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("private SSH target opt-in rejected: %v", err)
+	}
 }
 
 func TestClusterRejectsEnabledClusterInStandaloneMode(t *testing.T) {

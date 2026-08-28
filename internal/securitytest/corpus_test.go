@@ -1,6 +1,7 @@
 package securitytest
 
 import (
+	"bufio"
 	"strings"
 	"testing"
 )
@@ -80,5 +81,83 @@ func TestFilterShardKeepsOnlyMatchingAndPartitions(t *testing.T) {
 	}
 	if total != len(cases) {
 		t.Fatalf("shards must partition all cases; got total %d, want %d", total, len(cases))
+	}
+}
+
+func TestForEachJSONLSkipsOverLongLines(t *testing.T) {
+	t.Setenv("CHEESEWAF_CORPUS_MAX_LINE_BYTES", "128")
+	long := `{"name":"` + strings.Repeat("x", 400) + `","source_family":"unit","label":"benign","method":"GET","target":"/long"}`
+	raw := strings.Join([]string{
+		`{"name":"ok-one","source_family":"unit","label":"benign","method":"GET","target":"/a"}`,
+		long,
+		`{"name":"ok-two","source_family":"unit","label":"benign","method":"GET","target":"/b"}`,
+	}, "\n")
+	var got []Case
+	err := ForEachJSONL(strings.NewReader(raw), 1, 0, func(tc Case) error {
+		got = append(got, tc)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 readable cases, got %d", len(got))
+	}
+}
+
+func TestReadBoundedJSONLLineDiscardsHugeLineAndContinues(t *testing.T) {
+	const maxLine = 128
+	valid := `{"name":"after-long","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`
+	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 4<<20)+"\n"+valid+"\n"), 64*1024)
+
+	line, overlong, err := readBoundedJSONLLine(reader, maxLine)
+	if err != nil {
+		t.Fatalf("read long line: %v", err)
+	}
+	if !overlong {
+		t.Fatal("expected the huge line to be marked overlong")
+	}
+	if cap(line) > maxLine+2 {
+		t.Fatalf("reader retained %d bytes for a %d-byte limit", cap(line), maxLine)
+	}
+
+	line, overlong, err = readBoundedJSONLLine(reader, maxLine)
+	if err != nil {
+		t.Fatalf("read valid line after long line: %v", err)
+	}
+	if overlong || string(line) != valid {
+		t.Fatalf("next line = %q overlong=%v, want valid corpus entry", line, overlong)
+	}
+}
+
+func TestForEachJSONLStatsDistinguishesCorpusAndSelectedShard(t *testing.T) {
+	raw := []byte(`{"name":"only-case","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`)
+	shard := 1 - ShardIndexForRaw(raw, 2)
+
+	stats, err := ForEachJSONLWithStats(strings.NewReader(string(raw)+"\n"), 2, shard, func(Case) error {
+		t.Fatal("a non-selected case reached the callback")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalCases != 1 || stats.SelectedCases != 0 {
+		t.Fatalf("stats = %+v, want one total case and zero selected", stats)
+	}
+}
+
+func TestForEachJSONLRejectsInvalidShardRange(t *testing.T) {
+	for _, tc := range []struct {
+		shards int
+		shard  int
+	}{
+		{shards: 0, shard: 0},
+		{shards: 1, shard: 1},
+		{shards: 2, shard: -1},
+		{shards: 2, shard: 2},
+	} {
+		if _, err := ForEachJSONLWithStats(strings.NewReader(""), tc.shards, tc.shard, func(Case) error { return nil }); err == nil {
+			t.Fatalf("invalid shard range shards=%d shard=%d was accepted", tc.shards, tc.shard)
+		}
 	}
 }

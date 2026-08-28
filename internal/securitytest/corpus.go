@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"os"
+	"strconv"
 	"strings"
 )
+
+const defaultCorpusMaxLineBytes = 2 * 1024 * 1024
 
 type Case struct {
 	Name         string            `json:"name"`
@@ -95,32 +99,7 @@ func StrictCategory(source string) bool {
 		strings.HasPrefix(s, "portswigger-")
 }
 
-func LoadJSONL(r io.Reader) ([]Case, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-
-	var cases []Case
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var tc Case
-		if err := json.Unmarshal(line, &tc); err != nil {
-			return nil, fmt.Errorf("line %d: %w", lineNo, err)
-		}
-		if err := ValidateCase(tc); err != nil {
-			return nil, fmt.Errorf("line %d: %w", lineNo, err)
-		}
-		cases = append(cases, tc)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return cases, nil
-}
+func LoadJSONL(r io.Reader) ([]Case, error) { return LoadJSONLFiltered(r, 1, 0) }
 
 func ValidateCase(tc Case) error {
 	if strings.TrimSpace(tc.Name) == "" {
@@ -165,24 +144,74 @@ func ShardIndexForRaw(line []byte, shards int) int {
 	return int(h.Sum32() % uint32(shards))
 }
 
-// ForEachJSONL streams a JSONL corpus line by line and invokes fn only for
-// lines belonging to the requested shard (raw-line prefilter). shards<=1 keeps
-// every line for backwards compatibility. The callback form avoids materializing
-// the whole corpus as []Case, which is the dominant memory cost for the large
-// external benign corpus.
-func ForEachJSONL(r io.Reader, shards, shard int, fn func(Case) error) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+// JSONLStats describes a bounded JSONL pass. TotalCases and SelectedCases count
+// validated corpus cases; overlong physical records are skipped before parsing.
+type JSONLStats struct {
+	NonEmptyLines   int
+	TotalCases      int
+	SelectedCases   int
+	SkippedOverlong int
+}
+
+// ValidateShard rejects invalid shard ranges instead of quietly filtering every
+// case. Callers can use the same contract in streaming and slice-backed modes.
+func ValidateShard(shards, shard int) error {
+	if shards < 1 {
+		return fmt.Errorf("--shards must be at least 1")
+	}
+	if shard < 0 || shard >= shards {
+		return fmt.Errorf("--shard must be between 0 and %d for --shards=%d", shards-1, shards)
+	}
+	return nil
+}
+
+// ForEachJSONLRaw reads bounded raw JSONL records. The callback receives every
+// non-empty, non-overlong line together with its deterministic raw-line shard
+// membership. This lets non-Case formats share the same limit and sharding
+// contract as the primary corpus loader.
+func ForEachJSONLRaw(r io.Reader, shards, shard int, fn func(line []byte, lineNo int, selected bool) error) (JSONLStats, error) {
+	if err := ValidateShard(shards, shard); err != nil {
+		return JSONLStats{}, err
+	}
+	reader := bufio.NewReaderSize(r, 64*1024)
+	maxLine := corpusMaxLineBytes()
+	stats := JSONLStats{}
 	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
+	for {
+		rawLine, overlong, readErr := readBoundedJSONLLine(reader, maxLine)
+		if len(rawLine) > 0 || readErr == nil {
+			lineNo++
 		}
-		if shards > 1 && ShardIndexForRaw(line, shards) != shard {
-			continue
+		line := bytes.TrimSpace(rawLine)
+		if len(line) > 0 {
+			stats.NonEmptyLines++
+			if overlong || len(line) > maxLine {
+				stats.SkippedOverlong++
+			} else {
+				selected := shards == 1 || ShardIndexForRaw(line, shards) == shard
+				if fn != nil {
+					if err := fn(line, lineNo, selected); err != nil {
+						return stats, err
+					}
+				}
+			}
 		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				return stats, readErr
+			}
+			return stats, nil
+		}
+	}
+}
+
+// ForEachJSONLWithStats streams validated corpus cases. Every bounded record is
+// parsed before shard selection so all shards agree on corpus validity, while
+// only selected cases reach fn.
+func ForEachJSONLWithStats(r io.Reader, shards, shard int, fn func(Case) error) (JSONLStats, error) {
+	totalCases := 0
+	selectedCases := 0
+	stats, err := ForEachJSONLRaw(r, shards, shard, func(line []byte, lineNo int, selected bool) error {
 		var tc Case
 		if err := json.Unmarshal(line, &tc); err != nil {
 			return fmt.Errorf("line %d: %w", lineNo, err)
@@ -190,14 +219,30 @@ func ForEachJSONL(r io.Reader, shards, shard int, fn func(Case) error) error {
 		if err := ValidateCase(tc); err != nil {
 			return fmt.Errorf("line %d: %w", lineNo, err)
 		}
-		if err := fn(tc); err != nil {
-			return err
+		totalCases++
+		if !selected {
+			return nil
 		}
+		selectedCases++
+		if fn != nil {
+			return fn(tc)
+		}
+		return nil
+	})
+	stats.TotalCases = totalCases
+	stats.SelectedCases = selectedCases
+	if err == nil && stats.SkippedOverlong > 0 {
+		fmt.Fprintf(os.Stderr, "corpus: skipped %d over-long line(s)\n", stats.SkippedOverlong)
 	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	return nil
+	return stats, err
+}
+
+// ForEachJSONL streams validated corpus cases while discarding overlong records
+// without materializing a complete line. Use ForEachJSONLWithStats when the
+// caller needs total and selected case counts.
+func ForEachJSONL(r io.Reader, shards, shard int, fn func(Case) error) error {
+	_, err := ForEachJSONLWithStats(r, shards, shard, fn)
+	return err
 }
 
 // LoadJSONLFiltered is a convenience wrapper over ForEachJSONL for callers that
@@ -205,11 +250,66 @@ func ForEachJSONL(r io.Reader, shards, shard int, fn func(Case) error) error {
 // streaming path.
 func LoadJSONLFiltered(r io.Reader, shards, shard int) ([]Case, error) {
 	var cases []Case
-	err := ForEachJSONL(r, shards, shard, func(tc Case) error {
+	_, err := ForEachJSONLWithStats(r, shards, shard, func(tc Case) error {
 		cases = append(cases, tc)
 		return nil
 	})
 	return cases, err
+}
+
+func corpusMaxLineBytes() int {
+	maxLine := defaultCorpusMaxLineBytes
+	if raw := strings.TrimSpace(os.Getenv("CHEESEWAF_CORPUS_MAX_LINE_BYTES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n < maxLine {
+			maxLine = n
+		}
+	}
+	return maxLine
+}
+
+// readBoundedJSONLLine reads through one physical line while retaining no more
+// than maxLine bytes plus CRLF tolerance. It returns io.EOF with the final
+// unterminated line, if any.
+func readBoundedJSONLLine(reader *bufio.Reader, maxLine int) ([]byte, bool, error) {
+	if reader == nil {
+		return nil, false, io.EOF
+	}
+	if maxLine < 1 {
+		maxLine = 1
+	}
+	const newlineAllowance = 2
+	limit := maxLine + newlineAllowance
+	line := make([]byte, 0, minJSONLBufferCapacity(limit))
+	overlong := false
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 && !overlong {
+			remaining := limit - len(line)
+			if remaining <= 0 {
+				overlong = true
+			} else if len(fragment) > remaining {
+				line = append(line, fragment[:remaining]...)
+				overlong = true
+			} else {
+				line = append(line, fragment...)
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		trimmed := bytes.TrimRight(line, "\r\n")
+		if len(trimmed) > maxLine {
+			overlong = true
+		}
+		return trimmed, overlong, err
+	}
+}
+
+func minJSONLBufferCapacity(limit int) int {
+	if limit < 64*1024 {
+		return limit
+	}
+	return 64 * 1024
 }
 
 // FilterShard returns only the cases belonging to the requested shard.

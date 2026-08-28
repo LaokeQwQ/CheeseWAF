@@ -403,6 +403,11 @@ func Load(path string) (*Config, error) {
 	if err := Validate(&cfg); err != nil {
 		return nil, err
 	}
+	if clean, err := SanitizeBlockPageHTML(cfg.BlockPage.CustomHTML); err != nil {
+		return nil, err
+	} else {
+		cfg.BlockPage.CustomHTML = clean
+	}
 	return &cfg, nil
 }
 
@@ -410,7 +415,13 @@ func Save(path string, cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
-	contents, err := yaml.Marshal(cfg)
+	canonical := *cfg
+	clean, err := SanitizeBlockPageHTML(canonical.BlockPage.CustomHTML)
+	if err != nil {
+		return err
+	}
+	canonical.BlockPage.CustomHTML = clean
+	contents, err := yaml.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
