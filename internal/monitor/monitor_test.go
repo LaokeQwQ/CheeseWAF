@@ -10,6 +10,9 @@ import (
 )
 
 func TestRenderPrometheusIncludesCoreMetrics(t *testing.T) {
+	storage.ResetLogWriteFailuresForTest()
+	t.Cleanup(storage.ResetLogWriteFailuresForTest)
+	storage.RecordLogWriteFailure()
 	snapshot := Collect(time.Now().Add(-time.Minute), 2, []storage.LogEntry{
 		{Action: "block", StatusCode: 403, Category: "sqli"},
 	}, map[string]int64{"data": 42})
@@ -19,6 +22,9 @@ func TestRenderPrometheusIncludesCoreMetrics(t *testing.T) {
 	}
 	if snapshot.ProcessCount <= 0 || !strings.Contains(out, "cheesewaf_process_count") {
 		t.Fatalf("expected process count metric, snapshot=%+v output:\n%s", snapshot, out)
+	}
+	if !strings.Contains(out, "cheesewaf_logs_dropped_total 1") {
+		t.Fatalf("expected log failure metric, output:\n%s", out)
 	}
 }
 

@@ -60,7 +60,10 @@ func TestEnsureDefaultsDoesNotOverwriteExistingConfig(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	configPath := filepath.Join(dataDir, DefaultConfigFile)
+	configPath := DefaultConfigPath(dataDir)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o750); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
 	if err := os.WriteFile(configPath, []byte("custom: true\n"), 0o640); err != nil {
 		t.Fatalf("write custom config: %v", err)
 	}

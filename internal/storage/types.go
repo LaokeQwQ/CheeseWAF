@@ -411,14 +411,15 @@ type SiteRewriteRule struct {
 
 // SiteCustomRule is a live site-scoped pattern applied by the request pipeline.
 type SiteCustomRule struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Pattern  string `json:"pattern"`
-	Location string `json:"location"`
-	Action   string `json:"action"`
-	Severity string `json:"severity"`
-	Enabled  bool   `json:"enabled"`
-	Priority int    `json:"priority"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Pattern     string `json:"pattern"`
+	Location    string `json:"location"`
+	Action      string `json:"action"`
+	Severity    string `json:"severity"`
+	Enabled     bool   `json:"enabled"`
+	Priority    int    `json:"priority"`
 }
 
 type SiteAccessControl struct {
@@ -437,7 +438,7 @@ type Rule struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Pattern     string `json:"pattern"`
-	Location    string `json:"location"` // uri/header/body/cookie
+	Location    string `json:"location"` // uri/query/header/body/cookie
 	Action      string `json:"action"`   // block/log/challenge
 	Severity    string `json:"severity"`
 	Enabled     bool   `json:"enabled"`

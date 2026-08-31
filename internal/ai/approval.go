@@ -353,15 +353,22 @@ func (s *ApprovalStore) BeginExecutionForWithPreview(id string, toolName string,
 	return cloneApprovalRequest(request), nil
 }
 
-func (s *ApprovalStore) MarkExecuted(id string) (ApprovalRequest, error) {
-	return s.finishExecution(id, ApprovalExecuted)
+// MarkExecuted finalizes an executing request on behalf of actor. The actor
+// must be the requester that started the execution, from the same session;
+// otherwise the call is refused and the request is left untouched. This is the
+// second lock of the dual-control chain: the entry point already refuses to
+// start an execution it does not own, and this refuses to finish one it does
+// not own either, so a new call site that forgets the entry-point check still
+// cannot strand somebody else's in-flight change.
+func (s *ApprovalStore) MarkExecuted(id string, actor ApprovalActor) (ApprovalRequest, error) {
+	return s.finishExecution(id, ApprovalExecuted, actor)
 }
 
-func (s *ApprovalStore) MarkExecutionFailed(id string) (ApprovalRequest, error) {
-	return s.finishExecution(id, ApprovalFailed)
+func (s *ApprovalStore) MarkExecutionFailed(id string, actor ApprovalActor) (ApprovalRequest, error) {
+	return s.finishExecution(id, ApprovalFailed, actor)
 }
 
-func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus) (ApprovalRequest, error) {
+func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus, actor ApprovalActor) (ApprovalRequest, error) {
 	if s == nil {
 		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
 	}
@@ -376,6 +383,9 @@ func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus) (Appro
 	}
 	if request.Status != ApprovalExecuting {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is %s, not executing", id, request.Status)
+	}
+	if !requesterMatches(request, actor) {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is bound to another requester", id)
 	}
 	old := request
 	request.Status = status

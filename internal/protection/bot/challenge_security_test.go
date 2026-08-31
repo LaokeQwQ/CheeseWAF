@@ -1,9 +1,13 @@
 package bot
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -367,6 +371,329 @@ func TestClearanceSignVerifyTamperScopePolicyVersionAndExpiry(t *testing.T) {
 		t.Fatal("expired accepted")
 	}
 }
+
+// The tests below exercise the ChallengeBackend seam. The Redis ones drive a
+// scripted RESP stub, so they cover the command/reply plumbing and the code
+// mapping on the Go side. They do NOT execute the Lua scripts: verifying those
+// needs a real redis-server, which is not available in this environment.
+
+func TestMemoryBackendForwardsChallengeLifecycle(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := NewChallengeStore(ChallengeStoreConfig{Capacity: 10, PerOwnerCapacity: 2, Now: func() time.Time { return now }})
+	var backend ChallengeBackend = NewMemoryBackend(store)
+	ctx := context.Background()
+
+	if err := backend.AddScopedWithPeer(ctx, "j1", "owner", "peer", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !backend.Consume(ctx, "j1") {
+		t.Fatal("AddScopedWithPeer did not publish a consumable jti")
+	}
+	if backend.Consume(ctx, "j1") {
+		t.Fatal("jti consumed twice")
+	}
+
+	reservation, err := backend.ReserveScoped(ctx, "owner", "peer", now.Add(time.Minute))
+	if err != nil || reservation == nil {
+		t.Fatalf("reserve: r=%v err=%v", reservation, err)
+	}
+	if err = backend.Start(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	if err = backend.Commit(ctx, reservation, "j2", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if backend.Rollback(ctx, reservation) {
+		t.Fatal("rollback after commit reported a release")
+	}
+
+	// Per-owner cap of 2: j2 is still pending and j1 was consumed, so exactly
+	// one more fits.
+	if err = backend.AddScopedWithPeer(ctx, "j3", "owner", "peer", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err = backend.AddScopedWithPeer(ctx, "j4", "owner", "peer", now.Add(time.Minute)); !errors.Is(err, ErrChallengeCapacity) {
+		t.Fatalf("per-owner cap not enforced: %v", err)
+	}
+	if err = backend.AddScopedWithPeer(ctx, "j5", "other", "peer", now.Add(time.Minute)); err != nil {
+		t.Fatalf("a different owner must not be blocked: %v", err)
+	}
+
+	var nilBackend *MemoryBackend
+	if err = nilBackend.AddScopedWithPeer(ctx, "j", "o", "p", now.Add(time.Minute)); !errors.Is(err, ErrChallengeCapacity) {
+		t.Fatalf("nil backend issued a challenge: %v", err)
+	}
+	if nilBackend.Consume(ctx, "j") || nilBackend.Rollback(ctx, reservation) {
+		t.Fatal("nil backend reported success")
+	}
+	if _, err = nilBackend.ReserveScoped(ctx, "o", "p", now.Add(time.Minute)); !errors.Is(err, ErrChallengeCapacity) {
+		t.Fatalf("nil backend reserved: %v", err)
+	}
+}
+
+func TestNewChallengeBackendDriverSelection(t *testing.T) {
+	store := NewChallengeStore(ChallengeStoreConfig{})
+	empty, err := NewChallengeBackend(BackendConfig{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := empty.(*MemoryBackend); !ok {
+		t.Fatal("empty driver must fall back to memory")
+	}
+	if broken, err := NewChallengeBackend(BackendConfig{Driver: "redis"}, store); err == nil {
+		if _, ok := broken.(*MemoryBackend); ok {
+			t.Fatal("redis driver silently downgraded to memory")
+		}
+	}
+	unreachable, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := unreachable.Addr().String()
+	_ = unreachable.Close()
+	_, err = NewChallengeBackend(BackendConfig{Driver: "redis", RedisURL: "redis://" + addr + "/0"}, store)
+	if !errors.Is(err, ErrRedisBackendUnavailable) {
+		t.Fatalf("unreachable redis must surface ErrRedisBackendUnavailable, got %v", err)
+	}
+	if _, err = NewChallengeBackend(BackendConfig{Driver: "nope"}, store); err == nil {
+		t.Fatal("unknown driver accepted")
+	}
+	if _, err = NewChallengeBackend(BackendConfig{Driver: "redis", RedisURL: "http://127.0.0.1:6379"}, store); err == nil {
+		t.Fatal("non-redis scheme accepted")
+	}
+}
+
+// scriptedRedis answers each command with the next canned RESP reply.
+type scriptedRedis struct {
+	ln      net.Listener
+	mu      sync.Mutex
+	replies []string
+	got     []string
+}
+
+func newScriptedRedis(t *testing.T, replies ...string) *scriptedRedis {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &scriptedRedis{ln: ln, replies: replies}
+	go s.serve()
+	t.Cleanup(func() { _ = ln.Close() })
+	return s
+}
+
+func (s *scriptedRedis) serve() {
+	conn, err := s.ln.Accept()
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	rd := bufio.NewReader(conn)
+	for {
+		args, err := readRESPRequest(rd)
+		if err != nil {
+			return
+		}
+		s.mu.Lock()
+		// Join on NUL: Lua scripts contain spaces and newlines of their own.
+		s.got = append(s.got, strings.Join(args, "\x00"))
+		reply := "+OK\r\n"
+		if len(s.replies) > 0 {
+			reply = s.replies[0]
+			s.replies = s.replies[1:]
+		}
+		s.mu.Unlock()
+		if _, err := conn.Write([]byte(reply)); err != nil {
+			return
+		}
+	}
+}
+
+func (s *scriptedRedis) commands() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.got...)
+}
+
+func readRESPRequest(rd *bufio.Reader) ([]string, error) {
+	header, err := rd.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	header = strings.TrimRight(header, "\r\n")
+	if !strings.HasPrefix(header, "*") {
+		return nil, errors.New("bad request header")
+	}
+	count, err := strconv.Atoi(header[1:])
+	if err != nil {
+		return nil, err
+	}
+	args := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		bulk, err := rd.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		size, err := strconv.Atoi(strings.TrimRight(bulk, "\r\n")[1:])
+		if err != nil {
+			return nil, err
+		}
+		payload := make([]byte, size+2)
+		if _, err = io.ReadFull(rd, payload); err != nil {
+			return nil, err
+		}
+		args = append(args, string(payload[:size]))
+	}
+	return args, nil
+}
+
+func TestRedisBackendLifecycleUsesAtomicEval(t *testing.T) {
+	srv := newScriptedRedis(t,
+		"+PONG\r\n",     // handshake
+		"$3\r\n0:7\r\n", // reserve -> ok, id 7
+		":0\r\n",        // start
+		":0\r\n",        // commit
+		"$3\r\n1:0\r\n", // reserve -> capacity
+		":0\r\n",        // rollback -> released
+		":1\r\n",        // rollback -> unknown
+		":1\r\n",        // consume -> consumed
+		":0\r\n",        // consume -> missing
+	)
+	backend, err := NewRedisBackend(BackendConfig{RedisURL: "redis://" + srv.ln.Addr().String() + "/0", KeyPrefix: "t:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = backend.Close() }()
+	ctx := context.Background()
+	exp := time.Now().Add(time.Minute)
+
+	reservation, err := backend.ReserveScoped(ctx, "owner", "peer", exp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.id != 7 || reservation.owner != "owner" || reservation.peer != "peer" {
+		t.Fatalf("reservation=%+v", reservation)
+	}
+	if err = backend.Start(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	if err = backend.Commit(ctx, reservation, "jti-1", exp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = backend.ReserveScoped(ctx, "owner", "peer", exp); !errors.Is(err, ErrChallengeCapacity) {
+		t.Fatalf("capacity code not mapped: %v", err)
+	}
+	if !backend.Rollback(ctx, reservation) {
+		t.Fatal("rollback reported nothing released")
+	}
+	if backend.Rollback(ctx, reservation) {
+		t.Fatal("rollback reported a second release")
+	}
+	if !backend.Consume(ctx, "jti-1") {
+		t.Fatal("consume returned false for a consumed jti")
+	}
+	if backend.Consume(ctx, "jti-1") {
+		t.Fatal("consume returned true for a missing jti")
+	}
+
+	commands := srv.commands()
+	if len(commands) < 9 {
+		t.Fatalf("expected 9 commands, got %d", len(commands))
+	}
+	if commands[0] != "PING" {
+		t.Fatalf("handshake did not ping: %q", commands[0])
+	}
+	// Every lifecycle step must be a single EVAL with no declared keys: the
+	// scripts touch several counters and must run atomically.
+	for i := 1; i < len(commands); i++ {
+		fields := strings.Split(commands[i], "\x00")
+		if len(fields) < 4 {
+			t.Fatalf("command %d truncated: %q", i, commands[i])
+		}
+		if fields[0] != "EVAL" || fields[2] != "0" {
+			t.Fatalf("command %d = %q, want EVAL with numkeys 0", i, fields[0])
+		}
+		if fields[3] != "t:" {
+			t.Fatalf("command %d did not pass the key prefix: %q", i, fields[3])
+		}
+	}
+}
+
+func TestRedisBackendAddUsesNamespacedKey(t *testing.T) {
+	srv := newScriptedRedis(t, "+PONG\r\n", "+OK\r\n")
+	backend, err := NewRedisBackend(BackendConfig{RedisURL: "redis://" + srv.ln.Addr().String() + "/0", KeyPrefix: "t:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = backend.Close() }()
+	if err = backend.Add(context.Background(), "jti-1", "owner", time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Split(srv.commands()[1], "\x00")
+	if len(fields) != 6 || fields[0] != "SET" || fields[1] != "t:j:jti-1" || fields[2] != "owner" || fields[3] != "PX" || fields[5] != "NX" {
+		t.Fatalf("unexpected SET: %q", srv.commands()[1])
+	}
+	if ttl, err := strconv.Atoi(fields[4]); err != nil || ttl <= 0 {
+		t.Fatalf("missing or invalid TTL: %q", fields[4])
+	}
+}
+
+func TestRedisBackendFailOpenOnlyMasksAvailability(t *testing.T) {
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := dead.Addr().String()
+	_ = dead.Close()
+	ctx := context.Background()
+	exp := time.Now().Add(time.Minute)
+
+	closed := &RedisBackend{addr: addr, prefix: "t:", resTTL: generationReservationTTL}
+	if _, err = closed.ReserveScoped(ctx, "o", "p", exp); err == nil {
+		t.Fatal("fail-closed reserve accepted an outage")
+	}
+	if closed.Consume(ctx, "j") {
+		t.Fatal("fail-closed consume accepted an outage")
+	}
+	if err = closed.Add(ctx, "j", "o", exp); err == nil {
+		t.Fatal("fail-closed add accepted an outage")
+	}
+
+	open := &RedisBackend{addr: addr, prefix: "t:", failOpen: true, resTTL: generationReservationTTL}
+	reservation, err := open.ReserveScoped(ctx, "o", "p", exp)
+	if err != nil || reservation == nil {
+		t.Fatalf("fail-open reserve: r=%v err=%v", reservation, err)
+	}
+	if reservationTracked(reservation) {
+		t.Fatal("fail-open reservation must not claim redis capacity")
+	}
+	if err = open.Start(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	if err = open.Commit(ctx, reservation, "j", exp); err != nil {
+		t.Fatal(err)
+	}
+	if !open.Consume(ctx, "j") {
+		t.Fatal("fail-open consume rejected during an outage")
+	}
+	if !open.Rollback(ctx, reservation) {
+		t.Fatal("fail-open rollback reported a failure")
+	}
+}
+
+func TestRedisReservationReplyParsing(t *testing.T) {
+	if code, id, ok := splitCodeID("0:42"); !ok || code != redisReserveOK || id != 42 {
+		t.Fatalf("0:42 -> %d %d %v", code, id, ok)
+	}
+	if code, _, ok := splitCodeID("2:0"); !ok || code != redisReserveRateLimited {
+		t.Fatalf("2:0 -> %d %v", code, ok)
+	}
+	if _, _, ok := splitCodeID("nope"); ok {
+		t.Fatal("malformed reply accepted")
+	}
+	if _, _, ok := splitCodeID("x:1"); ok {
+		t.Fatal("non numeric code accepted")
+	}
+}
+
 func TestClearanceBindings(t *testing.T) {
 	a, _ := ComputeClearanceBinding(BindingIPPrefixUA, "192.0.2.10", "UA")
 	b, _ := ComputeClearanceBinding(BindingIPPrefixUA, "192.0.2.99", "UA")

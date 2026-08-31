@@ -38,14 +38,16 @@ func ValidateBotChallengeBackend(value string) error {
 }
 
 const (
-	maxTrustedProxyCIDRs   = 1024
-	minFileLogSizeBytes    = 1 << 10
-	maxFileLogSizeBytes    = 1 << 40
-	maxFileLogBackupCount  = 100
-	maxRewriteRulesPerSite = 128
-	maxRewritePatternBytes = 4096
-	maxRewriteReplaceBytes = 4096
-	maxRewriteProgramInsts = 4096
+	maxTrustedProxyCIDRs      = 1024
+	minFileLogSizeBytes       = 1 << 10
+	maxFileLogSizeBytes       = 1 << 40
+	maxFileLogBackupCount     = 100
+	maxRewriteRulesPerSite    = 128
+	maxRewritePatternBytes    = 4096
+	maxRewriteReplaceBytes    = 4096
+	maxRewriteProgramInsts    = 4096
+	maxCustomRulesPerSite     = 256
+	maxCustomRuleProgramInsts = 4096
 )
 
 func Validate(cfg *Config) error {
@@ -300,6 +302,9 @@ func Validate(cfg *Config) error {
 			if !strings.HasPrefix(rule, "/") {
 				return fmt.Errorf("site %q path_allowlist entry %q must start with /", site.Name, rule)
 			}
+		}
+		if len(site.WAF.CustomRules) > maxCustomRulesPerSite {
+			return fmt.Errorf("site %q has too many custom rules: got %d, maximum is %d", site.Name, len(site.WAF.CustomRules), maxCustomRulesPerSite)
 		}
 		for _, rule := range site.WAF.CustomRules {
 			if err := ValidateCustomRule(rule); err != nil {
@@ -1300,10 +1305,21 @@ func ValidateCustomRule(rule CustomRuleConfig) error {
 	if _, err := regexp.Compile(pattern); err != nil {
 		return fmt.Errorf("pattern is invalid: %w", err)
 	}
+	parsed, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return fmt.Errorf("pattern is invalid: %w", err)
+	}
+	program, err := syntax.Compile(parsed.Simplify())
+	if err != nil {
+		return fmt.Errorf("pattern is invalid: %w", err)
+	}
+	if len(program.Inst) > maxCustomRuleProgramInsts {
+		return fmt.Errorf("pattern compiled program exceeds %d instructions", maxCustomRuleProgramInsts)
+	}
 	switch strings.ToLower(strings.TrimSpace(rule.Location)) {
-	case "uri", "header", "body", "cookie":
+	case "uri", "query", "header", "body", "cookie":
 	default:
-		return fmt.Errorf("location must be uri, header, body, or cookie")
+		return fmt.Errorf("location must be uri, query, header, body, or cookie")
 	}
 	switch strings.ToLower(strings.TrimSpace(rule.Action)) {
 	case "block", "log", "challenge":

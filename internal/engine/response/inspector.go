@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 )
 
@@ -58,11 +59,16 @@ func New(cfg config.ResponseInspectionConfig) (*Inspector, error) {
 	}
 	inspector := &Inspector{enabled: true, maxBody: cfg.MaxBodyBytes}
 	for _, pattern := range patterns {
-		re, err := regexp.Compile(pattern)
+		// CompileSafe is a construction-time gate: it rejects patterns whose
+		// complexity score exceeds the budget before any response is scanned.
+		// Matching itself stays on the stdlib regexp (see BoundedRegex.Regexp)
+		// so a configured pattern can never silently truncate the body it is
+		// supposed to inspect.
+		safe, err := engine.CompileSafe(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("compile response pattern %q: %w", pattern, err)
 		}
-		inspector.rules = append(inspector.rules, re)
+		inspector.rules = append(inspector.rules, safe.Regexp())
 	}
 	if len(cfg.TamperSnapshots) > 0 {
 		snapshots := make([]tamper.Snapshot, 0, len(cfg.TamperSnapshots))

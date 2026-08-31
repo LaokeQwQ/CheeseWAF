@@ -7,6 +7,7 @@ import type { Site } from '../../types/api';
 const apiMocks = vi.hoisted(() => ({
   createSite: vi.fn(),
   fetchSites: vi.fn(),
+  importNginx: vi.fn(),
 }));
 
 const toastMocks = vi.hoisted(() => ({
@@ -54,6 +55,24 @@ function makeSite(id: string, name: string): Site {
   });
 }
 
+const nginxFixture = [
+  'server {',
+  '    listen 8080;',
+  '    server_name shop.example.com www.shop.example.com;',
+  '',
+  '    location / {',
+  '        proxy_pass http://127.0.0.1:9000;',
+  '    }',
+  '}',
+  'server {',
+  '    listen 80;',
+  '',
+  '    location / {',
+  '        proxy_pass http://10.0.0.5:8080;',
+  '    }',
+  '}',
+].join('\n');
+
 function renderSites() {
   const client = new QueryClient({
     defaultOptions: {
@@ -84,9 +103,17 @@ async function completeCreateWizard(name: string) {
   await screen.findByRole('button', { name: 'common.finish' });
 }
 
+async function openNginxImport() {
+  fireEvent.click(screen.getByRole('button', { name: 'sites.import.action' }));
+  await screen.findByRole('dialog');
+  return screen.getByRole('textbox') as HTMLTextAreaElement;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   apiMocks.fetchSites.mockResolvedValue([]);
+  apiMocks.createSite.mockResolvedValue(makeSite('site-default', 'default'));
+  apiMocks.importNginx.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -174,6 +201,104 @@ describe('SitesPage query states', () => {
     expect(desktopLink?.classList.contains('site-table-link')).toBe(true);
     expect(document.querySelector('.sites-mobile-card')).toBeTruthy();
     expect(document.querySelectorAll('.site-table-text').length).toBe(2);
+  });
+});
+
+describe('SitesPage nginx import', () => {
+  it('parses the pasted configuration, creates the selected site and refreshes the list', async () => {
+    apiMocks.importNginx.mockResolvedValue([
+      {
+        name: 'shop.example.com',
+        domains: ['shop.example.com', 'www.shop.example.com'],
+        upstreams: [{ address: 'http://127.0.0.1:9000', weight: 1 }],
+        listen_port: 8080,
+        waf: { enabled: true, mode: 'block', rewrite: [] },
+      },
+      {
+        name: '',
+        domains: [],
+        upstreams: [{ address: 'http://10.0.0.5:8080', weight: 1 }],
+        listen_port: 80,
+      },
+    ]);
+    apiMocks.createSite.mockResolvedValue(makeSite('site-shop', 'shop.example.com'));
+    const { invalidateQueries } = renderSites();
+    await waitFor(() => expect(apiMocks.fetchSites).toHaveBeenCalledTimes(1));
+
+    const textarea = await openNginxImport();
+    fireEvent.change(textarea, { target: { value: nginxFixture } });
+    fireEvent.click(screen.getByRole('button', { name: 'sites.import.parse' }));
+
+    await waitFor(() => expect(apiMocks.importNginx).toHaveBeenCalledTimes(1));
+    expect(apiMocks.importNginx.mock.calls[0]?.[0]).toBe(nginxFixture);
+    expect(await screen.findByText('sites.import.summary')).toBeTruthy();
+    expect(screen.getByText('sites.import.issue.name')).toBeTruthy();
+    expect(screen.getByText('sites.import.incompatible')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'sites.import.confirm' }));
+
+    await waitFor(() => expect(apiMocks.createSite).toHaveBeenCalledTimes(1));
+    expect(apiMocks.createSite.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      name: 'shop.example.com',
+      domains: ['shop.example.com', 'www.shop.example.com'],
+      upstreams: ['http://127.0.0.1:9000'],
+      listen_port: 8080,
+      waf_enabled: true,
+      waf_mode: 'block',
+      enabled: true,
+    }));
+    expect(await screen.findByText('sites.import.resultSummary')).toBeTruthy();
+    expect(screen.getByText('sites.import.success')).toBeTruthy();
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['sites'] });
+    expect(toastMocks.success).toHaveBeenCalledWith('sites.import.imported');
+    expect(toastMocks.error).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dialog open and reports the backend parse error', async () => {
+    apiMocks.importNginx.mockRejectedValue(
+      new APIRequestError('nginx configuration exceeds maximum import size', 'NGINX_IMPORT_TOO_LARGE', 400),
+    );
+    renderSites();
+
+    const textarea = await openNginxImport();
+    fireEvent.change(textarea, { target: { value: nginxFixture } });
+    fireEvent.click(screen.getByRole('button', { name: 'sites.import.parse' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('nginx configuration exceeds maximum import size');
+    expect(apiMocks.createSite).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'sites.import.parse' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'common.cancel' })).toBeTruthy();
+  });
+
+  it('reports an empty result instead of pretending the import succeeded', async () => {
+    apiMocks.importNginx.mockResolvedValue([]);
+    renderSites();
+
+    const textarea = await openNginxImport();
+    fireEvent.change(textarea, { target: { value: 'upstream backend { server 127.0.0.1:9000; }' } });
+    fireEvent.click(screen.getByRole('button', { name: 'sites.import.parse' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('sites.import.noServerBlock');
+    expect(apiMocks.importNginx).toHaveBeenCalledTimes(1);
+    expect(apiMocks.createSite).not.toHaveBeenCalled();
+  });
+
+  it('blocks empty or oversized input before calling the import endpoint', async () => {
+    renderSites();
+
+    const textarea = await openNginxImport();
+    fireEvent.change(textarea, { target: { value: '   \n  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'sites.import.parse' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('sites.import.empty');
+
+    fireEvent.change(textarea, { target: { value: `server { ${'x'.repeat((1 << 20) + 1)} }` } });
+    fireEvent.click(screen.getByRole('button', { name: 'sites.import.parse' }));
+    await waitFor(() => expect(
+      (screen.getByRole('alert') as HTMLElement).textContent,
+    ).toContain('sites.import.tooLarge'));
+
+    expect(apiMocks.importNginx).not.toHaveBeenCalled();
+    expect(apiMocks.createSite).not.toHaveBeenCalled();
   });
 });
 

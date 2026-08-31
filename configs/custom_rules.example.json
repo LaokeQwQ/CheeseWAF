@@ -1,0 +1,24 @@
+{
+  "custom_rules": [
+    {
+      "id": "block-admin-probe",
+      "name": "Admin path probe",
+      "pattern": "(?i)/(wp-admin|phpmyadmin|\\.git)",
+      "location": "uri",
+      "action": "block",
+      "severity": "medium",
+      "enabled": true,
+      "priority": 180
+    },
+    {
+      "id": "block-scanner-ua",
+      "name": "Scanner user-agent",
+      "pattern": "(?i)(sqlmap|nikto|nuclei|masscan|zgrab)",
+      "location": "header",
+      "action": "block",
+      "severity": "high",
+      "enabled": true,
+      "priority": 160
+    }
+  ]
+}

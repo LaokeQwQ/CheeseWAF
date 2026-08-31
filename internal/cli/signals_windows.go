@@ -2,10 +2,13 @@
 
 package cli
 
-import "os"
+import (
+	"context"
+	"os"
+)
 
 func serviceStopSignals() []os.Signal {
 	return []os.Signal{os.Interrupt}
 }
 
-func ignoreServiceHangup() {}
+func listenServiceHangup(context.Context, func()) {}

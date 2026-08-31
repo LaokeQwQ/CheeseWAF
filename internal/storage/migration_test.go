@@ -24,8 +24,8 @@ func TestSQLiteMigrateRecordsCurrentSchemaVersion(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("schema version = %d, want 2", version)
+	if version != sqliteSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, sqliteSchemaVersion)
 	}
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatalf("re-running migration: %v", err)
@@ -74,8 +74,61 @@ VALUES('legacy-site', 'legacy', '["legacy.test"]', '["127.0.0.1:9000"]', '2026-0
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("schema version = %d, want 2", version)
+	if version != sqliteSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, sqliteSchemaVersion)
+	}
+}
+
+func TestSQLiteMigrateMovesLegacyRulesIntoSiteCustomRules(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "legacy-rules.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	site := &Site{ID: "site", Name: "site", Domains: []string{"example.test"}, Upstreams: []string{"127.0.0.1:9000"}, Enabled: true}
+	if err := store.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRule(ctx, &Rule{ID: "legacy", SiteID: site.ID, Name: "legacy rule", Description: "migrated description", Pattern: "probe", Location: "query", Action: "challenge", Severity: "high", Enabled: true, Priority: 42}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`PRAGMA user_version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated == nil || len(migrated.Advanced.CustomRules) != 1 {
+		t.Fatalf("legacy rule was not migrated: %+v", migrated)
+	}
+	rule := migrated.Advanced.CustomRules[0]
+	if rule.ID != "legacy" || rule.Description != "migrated description" || rule.Location != "query" || rule.Priority != 42 {
+		t.Fatalf("legacy rule fields changed during migration: %+v", rule)
+	}
+	remaining, err := store.ListRules(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("legacy rules must be removed after migration: %+v", remaining)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Advanced.CustomRules) != 1 {
+		t.Fatalf("migration must be idempotent: %+v", again.Advanced.CustomRules)
 	}
 }
 

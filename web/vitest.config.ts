@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
@@ -16,6 +16,10 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    // scripts/*.test.mjs are written against node:test and are run by
+    // `npm run test:scripts`. Vitest cannot bundle node:test built-ins, so
+    // keep them out of the jsdom run.
+    exclude: [...configDefaults.exclude, 'scripts/**'],
     // Fork per file so CSSTransition timers cannot fire after another suite tears down jsdom.
     pool: 'forks',
     isolate: true,
@@ -24,12 +28,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json-summary'],
       reportsDirectory: './coverage',
-      include: [
-        'src/api/client.ts',
-        'src/themes/index.ts',
-        'src/pages/AI/AIPage.tsx',
-        'src/pages/Updates/UpdatesPage.tsx',
-      ],
+      include: ['src/**/*.{ts,tsx}'],
       thresholds: {
         lines: 27,
         functions: 15,

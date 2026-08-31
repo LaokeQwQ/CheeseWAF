@@ -74,6 +74,29 @@ func TestAccessPolicyPathScope(t *testing.T) {
 	}
 }
 
+// NewAccessPolicy folds the legacy Whitelist/Blacklist config into global
+// allow/block rules, which is what makes the standalone Whitelist/Blacklist
+// constructors redundant. Pin that the folded rules still cover CIDR entries,
+// plain IPs, and the "nothing matched" case.
+func TestAccessPolicyLegacyListsCoverCIDRAndNonMatches(t *testing.T) {
+	policy, err := NewAccessPolicy(config.IPProtectionConfig{
+		Whitelist: []string{"203.0.113.0/24"},
+		Blacklist: []string{"198.51.100.0/24", "198.51.100.7"},
+	})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if decision := policy.Evaluate("203.0.113.10", "site-a", "/"); !decision.Matched || decision.Action != AccessActionAllow || decision.RuleID != "legacy-whitelist" {
+		t.Fatalf("expected CIDR allowlist hit, got %+v", decision)
+	}
+	if decision := policy.Evaluate("198.51.100.7", "site-a", "/"); !decision.Matched || decision.Action != AccessActionBlock || decision.RuleID != "legacy-blacklist" {
+		t.Fatalf("expected blocklist hit, got %+v", decision)
+	}
+	if decision := policy.Evaluate("192.0.2.1", "site-a", "/"); decision.Matched {
+		t.Fatalf("expected no match, got %+v", decision)
+	}
+}
+
 func TestAccessPolicySiteScope(t *testing.T) {
 	policy, err := NewAccessPolicy(config.IPProtectionConfig{
 		AccessRules: []config.IPAccessRuleConfig{

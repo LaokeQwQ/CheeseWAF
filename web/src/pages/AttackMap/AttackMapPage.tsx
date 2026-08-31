@@ -29,7 +29,7 @@ import {
   type LocationPrecision,
   type ThreatLevel,
 } from './attackMapData';
-import type { GeoFeatureCollection } from './chinaBoundaries';
+import type { ExternalChinaBoundaryRejection, GeoFeatureCollection } from './chinaBoundaries';
 import { loadGaodeWorldCollection } from './worldBoundaries';
 import { threatLevels, threatShapeLabel, threatShapeClass } from './threatPalette';
 import type { OsmAttackMapHandle } from './OsmAttackMap';
@@ -38,6 +38,14 @@ import { useAttackMapFeed } from './useAttackMapFeed';
 import { regionsFromAttackMapAggregates } from './attackMapFeed';
 
 const OFFLINE_CHINA_BOUNDARY_QUERY_KEY = ['attack-map-china-boundary-offline'] as const;
+
+/** Literal i18n keys so `locales.test.ts` can see them (template strings would be dead keys). */
+const EXTERNAL_BOUNDARY_REJECTION_KEY: Record<ExternalChinaBoundaryRejection, string> = {
+  'no-crs': 'attackMap.externalBoundaryNoCrs',
+  'unsupported-crs': 'attackMap.externalBoundaryUnsupportedCrs',
+  'no-adcode': 'attackMap.externalBoundaryNoAdcode',
+  'out-of-range': 'attackMap.externalBoundaryOutOfRange',
+};
 
 const GlobeMap = lazy(() => import('./GlobeMap'));
 const OsmAttackMap = lazy(() => import('./OsmAttackMap'));
@@ -122,20 +130,38 @@ export default function AttackMapPage() {
   preferAdcodesRef.current = chinaBoundaryAdcodes;
   // Offline open pack (vendored GeoJSON under public/map): progressive
   // province → prefer 区县 → remaining city parents. No network tile CDN.
+  //
+  // The external district supplement is admitted through a fail-closed gate:
+  // the source must declare its coordinate system and every feature must carry
+  // a district-level adcode inside the requested scope. Anything else is
+  // refused and the built-in boundaries are rendered instead — a map with an
+  // offset or duplicated border is far worse than one with less detail.
   const { data: externalChinaBoundary } = useQuery({
     queryKey: ['attack-map-china-boundary-external', chinaBoundaryAdcodes],
     queryFn: async () => {
-      const collections = await Promise.all(chinaBoundaryAdcodes.map(async (adcode) => {
+      const admitted = await Promise.all(chinaBoundaryAdcodes.map(async (adcode) => {
         const response = await fetchChinaMapBoundaryByCode(adcode);
-        return response.enabled ? sanitizeExternalBoundary(response.geojson) : null;
+        if (!response.enabled) return null;
+        const sanitized = sanitizeExternalBoundary(response.geojson);
+        if (!sanitized) return null;
+        return chinaBoundaries!.admitExternalChinaBoundary({
+          geojson: sanitized,
+          declaredCrs: response.coordinate_system,
+          allowedAdcodes: chinaBoundaryAdcodes,
+        });
       }));
-      const features = collections.flatMap((collection) => collection?.features ?? []);
-      return features.length > 0 ? { type: 'FeatureCollection', features } as GeoFeatureCollection : null;
+      const features = admitted.flatMap((result) => result?.collection?.features ?? []);
+      return {
+        collection: features.length > 0 ? { type: 'FeatureCollection', features } as GeoFeatureCollection : null,
+        rejection: admitted.find((result) => result?.rejection)?.rejection ?? null,
+      };
     },
     enabled: mode === 'china' && Boolean(chinaAssets) && chinaBoundaryAdcodes.length > 0,
     retry: false,
     staleTime: 30 * 60_000,
   });
+  const externalBoundaryCollection = externalChinaBoundary?.collection ?? null;
+  const externalBoundaryRejection = externalChinaBoundary?.rejection ?? null;
   const { data: offlineChinaBoundary, isFetching: isOfflineBoundaryLoading, isError: isOfflineBoundaryError } = useQuery({
     // Stable key: full offline tree is identical regardless of prefer order.
     queryKey: OFFLINE_CHINA_BOUNDARY_QUERY_KEY,
@@ -153,19 +179,19 @@ export default function AttackMapPage() {
   });
   const chinaAdministrativeMap = useMemo(
     () => chinaAssets && chinaBoundaries
-      ? chinaBoundaries.createChinaAdministrativeMap(chinaAssets, chinaRegions, externalChinaBoundary ?? null, offlineChinaBoundary ?? null)
+      ? chinaBoundaries.createChinaAdministrativeMap(chinaAssets, chinaRegions, externalBoundaryCollection, offlineChinaBoundary ?? null)
       : null,
-    [offlineChinaBoundary, chinaAssets, chinaBoundaries, chinaRegions, externalChinaBoundary],
+    [offlineChinaBoundary, chinaAssets, chinaBoundaries, chinaRegions, externalBoundaryCollection],
   );
   /** WGS84 GeoJSON overlay for MapLibre China mode (province + city + district offline pack). */
   const chinaMaplibreBoundary = useMemo<GeoFeatureCollection | null>(() => {
     const merged = chinaBoundaries?.mergeChinaBoundaries(
       chinaAssets?.country ?? null,
       offlineChinaBoundary ?? null,
-      externalChinaBoundary ?? null,
+      externalBoundaryCollection,
     );
     return merged && merged.collection.features.length > 0 ? merged.collection : null;
-  }, [chinaBoundaries, chinaAssets, offlineChinaBoundary, externalChinaBoundary]);
+  }, [chinaBoundaries, chinaAssets, offlineChinaBoundary, externalBoundaryCollection]);
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
   const protectedTarget = useMemo(() => resolveProtectedTarget(entries, t), [entries, t]);
   const total = regions.reduce((sum, region) => sum + region.attacks, 0);
@@ -435,6 +461,11 @@ export default function AttackMapPage() {
           {mode === 'china' && isSystemConfigFetched && !chinaBoundaryEnabled && (
             <div className="map-empty map-warning" role="status">
               {t('attackMap.chinaBoundaryDisabled')}
+            </div>
+          )}
+          {mode === 'china' && externalBoundaryRejection && (
+            <div className="map-empty map-warning" role="status">
+              {t(EXTERNAL_BOUNDARY_REJECTION_KEY[externalBoundaryRejection])}
             </div>
           )}
           <div className="map-basemap-credit" aria-hidden="true">

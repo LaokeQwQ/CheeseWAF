@@ -63,6 +63,7 @@ func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes in
 		ClientIP:     clientIP,
 		TraceID:      blockpage.NewTraceID(),
 		SiteID:       siteID,
+		Results:      make([]DetectionResult, 0, 8),
 		Metadata:     map[string]any{},
 		maxBodyBytes: maxBodyBytes,
 	}

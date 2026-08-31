@@ -44,6 +44,7 @@
 - [Configuration Reference](#configuration-reference)
 - [Tech Stack](#tech-stack)
 - [Development & Testing](#development--testing)
+- [Corpus Governance](#corpus-governance)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -115,6 +116,10 @@ flowchart TB
 ## Paranoia Levels
 
 The paranoia level is configured per site via `waf.paranoia_level` (valid values: **0–5**, default: **3**).
+
+> **Two independent knobs.** `waf.paranoia_level` (0–5) drives the semantic engine itself — how strictly it judges payload shapes. The proxy's block/challenge thresholds come from a *separate* setting, `protection_policy.web_attack` (`off` / `low` / `smart` / `high` / `strict`, default `smart`). They are configured independently: raising `paranoia_level` makes the engine more sensitive, while `web_attack` decides what happens to a detection (severity/confidence gates, aggregate risk score, and the fail-mode when the 100 ms detection budget runs out).
+>
+> In log metadata and the console, `waf_policy_decision.paranoia_level` reports the site's configured level (0–5) and `waf_policy_decision.policy_tier` reports the `web_attack` strategy ordinal (0–4). They are deliberately separate fields — do not read one as the other.
 
 The analyzer inspects **individual decoded parameter values** (paths and parameter names remain visible) and categorizes detected attack signatures into two structural shapes:
 - **Isolated Payload**: The inspected parameter value consists almost entirely of exploit syntax (e.g., `UNION SELECT 1,2,3`, allowing minimal wrappers like `@` or trailing semicolons).
@@ -214,7 +219,7 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-The systemd unit reads `/etc/cheesewaf/cheesewaf.yaml` but only makes `/var/lib/cheesewaf` and `/var/log/cheesewaf` writable. Operators who previously relied on the service to write configuration must edit the file as root (or through their configuration management system), then run `sudo systemctl restart cheesewaf`.
+The systemd unit keeps `ProtectSystem=strict` and grants the service write access only to `/etc/cheesewaf`, `/var/lib/cheesewaf`, and `/var/log/cheesewaf`. This lets the management API save validated configuration changes while keeping the rest of the system read-only.
 
 The default admin listener is `127.0.0.1:9443`. On the server (or over an SSH tunnel) open `http://127.0.0.1:9443/setup`. Loopback `/setup` can finish first-install without pasting a token. From another host, copy the URL from `journalctl -u cheesewaf` or `/var/lib/cheesewaf/setup.url`. Remote `SERVER_IP:9443` stays closed until setup chooses a public admin strategy.
 
@@ -291,7 +296,7 @@ Three Windows shapes. The CLI is one `cheesewaf.exe`. The zip adds configs, the 
 2. Run it as `cheesewaf.exe`:
 
 ```powershell
-.\cheesewaf-*-windows-amd64.exe serve --config .\cheesewaf.yaml --data-dir .\data
+.\cheesewaf-*-windows-amd64.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
 .\cheesewaf-*-windows-amd64.exe status
 .\cheesewaf-*-windows-amd64.exe stop
 ```
@@ -373,7 +378,7 @@ In **AI Settings**:
 
 ## Configuration Reference
 
-A default `cheesewaf.yaml` file is generated upon first startup (reference template: [configs/cheesewaf.yaml](configs/cheesewaf.yaml)):
+A default `data/config/cheesewaf.yaml` file is generated upon first startup (reference template: [configs/cheesewaf.yaml](configs/cheesewaf.yaml)):
 
 ```yaml
 server:
@@ -410,8 +415,18 @@ ai:
   enabled: true
   provider: "openai"
   api_base: "https://api.example.com/v1"
-  model: "gpt-4o-mini"
+  model: "provider-default"
 ```
+
+Site custom rules live only in `sites[].waf.custom_rules`. The console Rules page can import YAML/JSON: it validates and dedupes first, then replaces the site set. On failure the currently working rules stay in place and the API returns an error. The CLI can import the same document:
+
+```bash
+waf-cli --config ./data/config/cheesewaf.yaml rules example --format yaml
+waf-cli --config ./data/config/cheesewaf.yaml rules import --site default --file custom_rules.yaml
+waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --format json
+```
+
+After you edit the config file, the process watches `cheesewaf.yaml` mtime, and `SIGHUP` reloads immediately. A load or compile failure keeps the previous rules.
 
 ---
 
@@ -465,8 +480,19 @@ go vet ./cmd/... ./internal/...
 # Frontend type checking and tests
 cd web && npm run typecheck && npm test && cd ..
 
-# Replay bundled security test corpus against the analyzer
-go run ./cmd/cheesewaf-corpus --mode analyzer
+# Generate and replay the governed security corpus
+make security-corpus
+```
+
+### Corpus Governance
+
+Governance runs are read-only and recursively enumerate every `.jsonl` or `.jsonl.gz` file below `internal/engine/semantic/testdata/` at runtime. The pipeline is ordered as: global deduplication → structural/semantic triage → selection and cleaning → second review. It writes `formal.jsonl`, `quarantine.jsonl`, and an auditable `manifest.json` to a temporary directory. Git-ignored large corpora are represented as optional inputs in the manifest when absent; nested and compressed copies are not silently omitted.
+
+`make corpus-governance` audits all available corpora while keeping their rows in a quarantine snapshot. `make security-corpus` separately builds a hash-bound formal snapshot from repository-curated sources, pins the input hashes, exact source/label/category coverage, governance policy and formal artifact hash, and requires zero hard rejects, then feeds only that snapshot to both analyzer replay and semantic evaluation. The malformed `pat-sqli-00119` record remains preserved in an explicitly pinned quarantine-only file; it is not silently replaced or removed from the audit denominator. CI also requires at least 250 benign and 10,000 attack rows before applying FPR below 0.8% and TPR of at least 99% to this governed regression snapshot. This does not claim that an independent blind set or every quarantined research corpus already meets the same target.
+
+```bash
+make corpus-governance
+make security-corpus
 ```
 
 ---
@@ -475,6 +501,7 @@ go run ./cmd/cheesewaf-corpus --mode analyzer
 
 - [ACME Certificate Reload Profiles](docs/acme.md)
 - [Semantic Evaluation Platform](docs/evaluation-platform.md)
+- [Semantic Corpus Governance](docs/semantic-corpus-governance.md)
 - [Release, Upgrade and Rollback](docs/release.md)
 - [Protection Policy & Roadmap](docs/protection-policy-roadmap.md)
 - [Paranoia Level Code Mapping](docs/paranoia-level-implementation.md)

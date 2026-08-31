@@ -3,8 +3,11 @@ package semantic
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http/httptest"
 	"regexp"
+	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -251,6 +254,66 @@ func TestPipelineHighConcurrency(t *testing.T) {
 	}
 }
 
+// Pipeline latency budgets. The gates use avg and p99, never max: a single max
+// is dominated by GC pauses and scheduler noise (measured 340µs and 2756µs on
+// identical code), so asserting on it produces flakes that train people to
+// re-run CI instead of investigating.
+//
+// Baselines measured at the time of writing: avg ~64µs, p99 ~100µs. The former
+// gate (max > 5000µs, logged but never failed) let a 10x slowdown through.
+//
+// The p99 budget is deliberately looser than the avg one (20x vs 3x baseline).
+// p99 is far more sensitive to machine load than avg: this test passes
+// consistently when run alone, but p99 climbs to ~1.8ms when the full suite runs
+// in parallel (CPU contention + GC pauses), while avg stays around 0.18ms. A
+// tight p99 budget therefore flakes on CI rather than catching real regressions.
+// Keep asserting on p99 anyway — it still catches a multi-x slowdown — but do
+// not tighten it without measuring under full-suite load first.
+const (
+	pipelineLatencyAvgBudgetUs = 200
+	pipelineLatencyP99BudgetUs = 2000
+)
+
+// raceLatencyMultiplier scales those budgets when the test binary is built with
+// -race, which is what CI runs.
+//
+// The race detector instruments every channel hand-off and mutex, and this
+// pipeline is almost nothing but those: the measured avg goes from ~60µs to
+// ~1200µs, a 20x cost. Asserting the unscaled budget under -race fails on
+// completely unmodified code — measured 1212µs against a 200µs budget at HEAD —
+// which is worse than having no gate at all, because it trains people to re-run
+// CI instead of investigating.
+//
+// 10x is chosen deliberately below the measured 20x so the gate still bites:
+// under -race it catches roughly a 2x regression, while precise enforcement of
+// the 200µs budget remains the job of a non-race run.
+const raceLatencyMultiplier = 10
+
+// latencyBudgets returns the avg and p99 budgets for this build.
+func latencyBudgets() (avg, p99 float64) {
+	avg, p99 = pipelineLatencyAvgBudgetUs, pipelineLatencyP99BudgetUs
+	if raceDetectorEnabled() {
+		avg *= raceLatencyMultiplier
+		p99 *= raceLatencyMultiplier
+	}
+	return avg, p99
+}
+
+// raceDetectorEnabled reports whether this binary was built with -race. There is
+// no runtime API for it; the flag only appears in the build metadata.
+func raceDetectorEnabled() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-race" {
+			return setting.Value == "true"
+		}
+	}
+	return false
+}
+
 // Latency distribution test
 func TestPipelineLatency(t *testing.T) {
 	pipeline := engine.NewPipeline(
@@ -262,6 +325,7 @@ func TestPipelineLatency(t *testing.T) {
 	samples := 10000
 	var totalNs int64
 	maxNs := int64(0)
+	elapsedNs := make([]int64, 0, samples)
 
 	for i := 0; i < samples; i++ {
 		reqCtx, _ := engine.NewRequestContext(req, "default")
@@ -269,6 +333,7 @@ func TestPipelineLatency(t *testing.T) {
 		_, _ = pipeline.Detect(ctx, reqCtx)
 		elapsed := time.Since(start).Nanoseconds()
 		totalNs += elapsed
+		elapsedNs = append(elapsedNs, elapsed)
 		if elapsed > maxNs {
 			maxNs = elapsed
 		}
@@ -276,11 +341,46 @@ func TestPipelineLatency(t *testing.T) {
 
 	avgUs := float64(totalNs) / float64(samples) / 1000
 	maxUs := float64(maxNs) / 1000
-	t.Logf("Pipeline latency: avg=%.1fµs, max=%.1fµs over %d samples", avgUs, maxUs, samples)
 
-	if maxUs > 5000 {
-		t.Logf("WARNING: max latency %.1fµs exceeds 5ms target", maxUs)
+	// Gate on avg and p99, never on max. A single max is dominated by GC pauses
+	// and scheduler noise — measured 340µs and 2756µs on identical code — so
+	// asserting on it trains people to re-run CI instead of investigating.
+	p99Us := float64(percentile(elapsedNs, 0.99)) / 1000
+	avgBudget, p99Budget := latencyBudgets()
+	if raceDetectorEnabled() {
+		t.Logf("race detector enabled: budgets scaled to avg=%.0fµs p99=%.0fµs (base %dµs/%dµs)",
+			avgBudget, p99Budget, pipelineLatencyAvgBudgetUs, pipelineLatencyP99BudgetUs)
 	}
+	t.Logf("Pipeline latency: avg=%.1fµs, p99=%.1fµs, max=%.1fµs over %d samples", avgUs, p99Us, maxUs, samples)
+
+	// These used to be t.Logf warnings, so the test could never fail and a 10x
+	// slowdown shipped unnoticed. Budgets sit ~3x above the measured baseline
+	// (avg ~64µs, p99 ~100µs).
+	if avgUs > avgBudget {
+		t.Errorf("avg pipeline latency %.1fµs exceeds %.0fµs budget; detection is on the request path, investigate before merging", avgUs, avgBudget)
+	}
+	if p99Us > p99Budget {
+		t.Errorf("p99 pipeline latency %.1fµs exceeds %.0fµs budget (max was %.1fµs)", p99Us, p99Budget, maxUs)
+	}
+}
+
+// percentile returns the q-th percentile (0<q<=1) of a non-empty slice using
+// nearest-rank. The input slice is left unsorted.
+func percentile(values []int64, q float64) int64 {
+	if len(values) == 0 {
+		return 0
+	}
+	rank := int(math.Ceil(q*float64(len(values)))) - 1
+	if rank < 0 {
+		rank = 0
+	}
+	if rank >= len(values) {
+		rank = len(values) - 1
+	}
+	sorted := make([]int64, len(values))
+	copy(sorted, values)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return sorted[rank]
 }
 
 // Memory allocation benchmark

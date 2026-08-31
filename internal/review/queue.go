@@ -20,6 +20,7 @@ type Queue struct {
 	AutoAgree      func(siteID string) bool
 	PromoteSeconds func(siteID string) int
 	ApplyBlock     func(ctx context.Context, item *storage.ReviewItem) (string, error)
+	RollbackBlock  func(ctx context.Context, item *storage.ReviewItem, ruleID string) error
 	Notify         func(ctx context.Context, title, message, target string)
 	// AnalyzeItem is an optional test/integration hook. Production uses the
 	// bounded AI client path below.
@@ -221,6 +222,11 @@ func (q *Queue) maybeAutoAgree(ctx context.Context, item *storage.ReviewItem, an
 		DecidedByName: "auto-agree",
 		DecidedByRole: "system",
 	}); err != nil {
+		if q.RollbackBlock != nil {
+			if rollbackErr := q.RollbackBlock(ctx, latest, ruleID); rollbackErr != nil {
+				log.Printf("review auto-agree rollback failed id=%s rule=%s: %v", item.ID, ruleID, rollbackErr)
+			}
+		}
 		log.Printf("review auto-agree decide failed id=%s: %v", item.ID, err)
 		return
 	}

@@ -24,6 +24,42 @@ type failingReadCloser struct{}
 func (failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("read failed") }
 func (failingReadCloser) Close() error             { return nil }
 
+// Sensitive patterns come from config and are compiled once at construction.
+// Config validation (validateResponseInspection) only checks that they compile,
+// so CompileSafe is the only complexity bound on them.
+func TestNewRejectsSensitivePatternOverComplexityBudget(t *testing.T) {
+	if _, err := New(config.ResponseInspectionConfig{
+		Enabled:           true,
+		SensitivePatterns: []string{strings.Repeat(`[\s\S]*`, 11)},
+	}); err == nil {
+		t.Fatal("New accepted a sensitive pattern over the complexity budget")
+	}
+}
+
+// The gate must not reject the shipped defaults or a realistic alternation-heavy
+// pattern, otherwise installing it would wedge response inspection at startup.
+func TestNewAcceptsDefaultAndRealisticSensitivePatterns(t *testing.T) {
+	inspector, err := New(config.ResponseInspectionConfig{Enabled: true, SensitivePatterns: []string{
+		`AKIA[0-9A-Z]{16}`,
+		`(?i)password\s*[=:]\s*['"]?[^'"\s]+`,
+		`(?i)BEGIN\s+(?:RSA|EC|OPENSSH)\s+PRIVATE\s+KEY`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`aws_key = AKIAIOSFODNN7EXAMPLE`)
+	finding := inspector.Inspect(body)
+	if finding == nil || finding.DetectorID != "response.inspector" {
+		t.Fatalf("expected finding, got %+v", finding)
+	}
+}
+
+func TestDefaultSensitivePatternsPassComplexityGate(t *testing.T) {
+	if _, err := New(config.ResponseInspectionConfig{Enabled: true}); err != nil {
+		t.Fatalf("default sensitive patterns must pass the gate: %v", err)
+	}
+}
+
 func TestInspectHTTPChecksCapturedPrefixWhenResponseExceedsLimit(t *testing.T) {
 	inspector, err := New(config.ResponseInspectionConfig{Enabled: true, MaxBodyBytes: 32, SensitivePatterns: []string{`SECRET-PREFIX`}})
 	if err != nil {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ProtectionConfig } from './api';
+import type { MonitorSnapshot, ProtectionConfig, RuntimeStats } from './api';
 
 describe('ProtectionConfig bot type', () => {
   it('exposes the fields aligned with internal/config BotProtectionConfig', () => {
@@ -60,5 +60,29 @@ describe('ProtectionConfig bot type', () => {
     expect(bot.pow_max_difficulty).toBe(2);
     expect(bot.pow_accept_legacy).toBe(false);
     expect(bot.captcha_binding_mode).toBe('strict_ip_ua');
+  });
+});
+
+describe('RuntimeStats (GET /stats) stays a subset of MonitorSnapshot (GET /monitor)', () => {
+  /**
+   * /stats 除了写死的 status 之外，每个字段都能在 /monitor 的快照里拿到同名字段，
+   * 所以它不该有独立 UI。这里把"子集"关系固化成类型约束：
+   * 一旦后端给 /stats 加了 /monitor 没有的字段，这行赋值就会编译失败，
+   * 提醒接线者重新评估而不是默认继续不接。
+   */
+  it('aligns with the handler in internal/api/handler/stats.go', () => {
+    const stats: RuntimeStats = {
+      uptime_seconds: 3_600,
+      goroutines: 128,
+      process_count: 2,
+      memory_alloc: 41_234_567,
+      sites: 7,
+      status: 'running',
+    };
+    const sharedKeys: Array<Exclude<keyof RuntimeStats, 'status'>> = ['uptime_seconds', 'goroutines', 'process_count', 'memory_alloc', 'sites'];
+    const mirroredByMonitor: Array<keyof MonitorSnapshot> = sharedKeys;
+
+    expect(stats.status).toBe('running');
+    expect(mirroredByMonitor).toHaveLength(sharedKeys.length);
   });
 });

@@ -20,7 +20,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
@@ -243,7 +245,8 @@ func reviewCandidateMap(hit Hit, level int) map[string]any {
 // analyzeAllCandidates runs field analysis. Multi-field requests use a bounded
 // worker pool so multi-core CPUs scan independent parameters concurrently while
 // preserving FP-first merge rules and stable Input ordering.
-// incomplete is true only when the context cancelled mid-scan (fields skipped).
+// incomplete is true when the context cancelled or the explicitly enabled
+// fast-abort policy stopped the scan before every field was analyzed.
 // best is only meaningful when haveBest is true; returning it by value keeps the
 // winning Hit off the heap (the previous *Hit escaped on every hit).
 func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semanticCandidate) (AnalysisReport, Hit, bool, bool) {
@@ -299,6 +302,13 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 	}
 
 	outs := make([]fieldOut, len(candidates))
+	// Seed every slot before workers start. The optional fast-abort path may
+	// intentionally leave tail candidates unscanned after a critical hit; a
+	// zero-value slot must never be mistaken for a real empty input in the
+	// analysis report.
+	for i := range candidates {
+		outs[i].input = candidates[i].input
+	}
 	workers := runtime.GOMAXPROCS(0)
 	if workers > 8 {
 		workers = 8
@@ -355,7 +365,11 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 		merge.add(a.mode, a, outs[i].hits)
 	}
 	merge.finish()
-	return merge.report, merge.best, merge.haveBest, skipped.Load()
+	// A fast abort is a deliberate partial scan just like context cancellation:
+	// surface it to callers so pipeline policy can avoid treating the report as a
+	// complete pass. The seeded inputs above keep report ordering and metadata
+	// intact even for candidates that were not reached by a worker.
+	return merge.report, merge.best, merge.haveBest, skipped.Load() || abort.Load()
 }
 
 // parallelCandidateThreshold is the candidate count at which the bounded worker
@@ -427,9 +441,14 @@ func anomalyContribution(h Hit) (string, int) {
 }
 
 func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
+	bareCommandSinkValue := a.enabled["rce"] && rceBareCommandSinkValueForSource(candidate.input.Source, candidate.input.Name, candidate.text)
 	// Ultra-cheap prefilter before any hash/lock: ordinary ids/slugs/versions.
-	// Not cached — hashing + shard lock costs more than the byte scan itself.
-	if looksCleanASCIIField(candidate.text) {
+	// A known bare command value such as "id" or "whoami" is a complete payload
+	// when it sits in an execution sink, so it must reach the context-aware RCE
+	// analyzer. Parameter-name candidates themselves (for example the query key
+	// "cmd") are excluded by rceBareCommandSinkValue. Not cached — hashing + shard
+	// lock costs more than the byte scan itself.
+	if looksCleanASCIIField(candidate.text) && !bareCommandSinkValue {
 		return nil
 	}
 
@@ -444,7 +463,35 @@ func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
 		ProcessMetrics().RecordCache(false)
 	}
 
-	guesses := guessCategories(candidate.text)
+	guesses := guessCategoriesForSource(candidate.text, candidate.input.Name, candidate.input.Source)
+	// A javascript: value is meaningful without HTML markup only when the
+	// candidate itself came from a URL-valued field. Keep this context check
+	// alongside category guessing so such fields are not skipped before
+	// analyzeXSS gets a chance to explain the hit.
+	if xssJavascriptURLFieldContext(candidate) {
+		seenXSS := false
+		for _, category := range guesses {
+			if category == "xss" {
+				seenXSS = true
+				break
+			}
+		}
+		if !seenXSS {
+			guesses = append(guesses, "xss")
+		}
+	}
+	if xssStandaloneJavascriptURLContext(candidate) {
+		seenXSS := false
+		for _, category := range guesses {
+			if category == "xss" {
+				seenXSS = true
+				break
+			}
+		}
+		if !seenXSS {
+			guesses = append(guesses, "xss")
+		}
+	}
 	if len(guesses) == 0 {
 		if cacheable {
 			processCandidateCache.put(key, nil)
@@ -567,17 +614,17 @@ func categoryPriority(hit Hit) int {
 			strings.Contains(context, "database") {
 			return 74
 		}
-		if rceExecutionSink(hit.Name) {
+		if rceExecutionSinkForSource(hit.Source, hit.Name) {
 			return 85
 		}
 		if strings.Contains(payload, "cmd=") ||
 			strings.Contains(payload, "command=") ||
 			strings.Contains(payload, "exec=") ||
-			rceWhitespaceEvasion.MatchString(payload) ||
-			rceInterpreterInline.MatchString(payload) ||
-			rcePowerShellSideFx.MatchString(payload) ||
-			rceDownloadExecChain.MatchString(payload) ||
-			rceReverseShellPrimitive.MatchString(payload) ||
+			(rceWhitespaceEvasionMayMatch(payload) && rceWhitespaceEvasion.MatchString(payload)) ||
+			(rceInterpreterInlineMayMatch(payload) && rceInterpreterInline.MatchString(payload)) ||
+			(rcePowerShellSideFxMayMatch(payload) && rcePowerShellSideFx.MatchString(payload)) ||
+			(rceDownloadExecChainMayMatch(payload) && rceDownloadExecChain.MatchString(payload)) ||
+			(rceReverseShellPrimitiveMayMatch(payload) && rceReverseShellPrimitive.MatchString(payload)) ||
 			strings.Contains(context, "download-to-shell") ||
 			strings.Contains(context, "reverse connection") ||
 			strings.Contains(context, "interpreter inline") {
@@ -612,6 +659,19 @@ func categoryPriority(hit Hit) int {
 	case "ssti":
 		return 60
 	case "xss":
+		// A javascript: or data: URI sitting in a URL-bearing attribute is
+		// unambiguous markup execution, so it outranks the SQL reading. Without
+		// this, "<img src="java<!-- -->script:alert(1)">" is attributed to sqli:
+		// the HTML comment inside the scheme is also "--", which is a SQL comment
+		// marker, and sqli sits at 75. The request is still blocked either way,
+		// but the responder is told the wrong thing and the miss shows up as an
+		// XSS detection gap.
+		if javascriptURLContext.MatchString(payload) ||
+			xssObfuscatedJavascriptURL.MatchString(payload) ||
+			xssDataURLContext.MatchString(payload) ||
+			xssSrcdocContext.MatchString(payload) {
+			return 78
+		}
 		return 50
 	case "nosqli":
 		return 45
@@ -631,6 +691,11 @@ const (
 	maxJSONNodes           = 200
 	maxJSONDepth           = 8
 	maxJSONTreeDecodeBytes = 256 << 10
+	// maxMultipartInputs caps how many inspection inputs one multipart body can
+	// contribute, bounding the parse work an attacker-controlled upload can
+	// trigger. A part yields up to two inputs (filename plus content), so this
+	// bounds parts to at least maxMultipartInputs/2 and at most its full value.
+	maxMultipartInputs = 128
 )
 
 // rawCoverageSignal is not a detector or block decision. It only selects the
@@ -791,6 +856,19 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	}
 	if pathRaw != "" && pathRaw != "/" {
 		add(&uriInputs, InputPoint{Source: "uri", Name: "path", Raw: clipRaw(pathRaw), Layers: rawLayersOnly})
+	}
+	// Custom-scheme request targets (for example javascript://...) have no
+	// normal URL path, so preserve the target as an explicit URI candidate. The
+	// XSS matcher still requires a complete executable scheme value; ordinary
+	// HTTP targets are untouched.
+	targetRaw := r.URL.RequestURI()
+	if r.URL.Scheme != "" {
+		targetRaw = r.URL.String()
+	} else if targetRaw == "" {
+		targetRaw = r.URL.String()
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(targetRaw)), "javascript:") {
+		add(&uriInputs, InputPoint{Source: "uri", Name: "target", Raw: clipRaw(targetRaw), Layers: rawLayersOnly})
 	}
 	// url.Query() allocates a url.Values map even for an empty RawQuery, and the
 	// loop below would then iterate zero times. Skip the whole step instead.
@@ -1577,7 +1655,7 @@ func multipartInputs(body []byte, boundary string) []InputPoint {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	var inputs []InputPoint
 	buf := make([]byte, maxInputRawBytes)
-	for len(inputs) < 128 {
+	for len(inputs) < maxMultipartInputs {
 		part, err := reader.NextPart()
 		if err != nil {
 			break
@@ -1665,7 +1743,7 @@ func decodeVariantsDeep(dst []decodedVariant, raw string, decodeDepth int) []dec
 		if usedDepth >= decodeDepth {
 			continue
 		}
-		if next := decoder.DecodeWithDepth(item.text, decodeDepth-usedDepth); next.Text != item.text {
+		if next := decoder.DecodeWithDepthPreserveControls(item.text, decodeDepth-usedDepth); next.Text != item.text {
 			queue = append(queue, decodedVariant{text: next.Text, layers: appendLayers(item.layers, next.Layers[1:]...)})
 		}
 		if unescaped := html.UnescapeString(item.text); unescaped != item.text {
@@ -1901,17 +1979,33 @@ func executableSQLText(raw string) string {
 	return sqlKeywordBridgeComment.ReplaceAllString(text, "$1$2")
 }
 
-func guessCategories(raw string) []string {
+func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 	// Fast negative path only for clean identifiers. Dirty/unknown shapes over-scan
 	// rather than risk missing attacks (FP-first applies later in blockableHit).
-	if looksCleanASCIIField(raw) {
+	if looksCleanASCIIField(raw) && !rceBareCommandSinkValueForSource(inputSource, inputName, raw) {
 		return nil
 	}
 	hints := scanAttackHints(raw)
 	if hints == 0 {
 		hints = hintSQL | hintXSS | hintRCE | hintLFI | hintXXE | hintSSRF | hintNoSQL | hintSSTI
 	}
-	text := normalize(raw)
+	// Fold overlong UTF-8 before normalising, for the same reason analyzeLFI
+	// does: NFKC turns the invalid bytes 0xC0 0xAF into U+FFFD, and the scoring
+	// gates here would then see no "../" and give lfi zero score — so
+	// analyzeLFI was never called on the very payload it was written to catch.
+	foldedRaw := foldOverlongUTF8(raw)
+	text := normalize(foldedRaw)
+	// RCE line-chain detection needs a compatibility-folded view that retains
+	// newlines. The general normalized view deliberately strips controls for
+	// tokenization, which would otherwise erase `ｉｄ\nｌｓ` before the RCE hint can
+	// open the analyzer.
+	// When no control rune is present, both normalizers produce the same view;
+	// reuse text instead of paying for a second NFKC/lowercase pass on every
+	// ordinary attack candidate.
+	rceText := text
+	if strings.IndexFunc(foldedRaw, unicode.IsControl) >= 0 {
+		rceText = normalizePreserveControls(foldedRaw)
+	}
 	ordered := []string{"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti", "webshell", "log4shell"}
 	scores := map[string]int{}
 	if hints&hintSQL != 0 {
@@ -1929,7 +2023,7 @@ func guessCategories(raw string) []string {
 			strings.Contains(text, "procedure analyse") || strings.Contains(text, "dbms_lock.sleep") ||
 			strings.Contains(text, "sp_oacreate") || strings.Contains(text, "openrowset") ||
 			strings.Contains(text, "0x") || strings.Contains(text, "/*") || strings.Contains(text, "--")
-		if cheapSQL {
+		if cheapSQL || xpathCheapGate(text) {
 			scores["sqli"] += 2
 		} else {
 			sqlCompact := compactSQL(text)
@@ -1950,12 +2044,37 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintRCE != 0 {
-		if strings.Contains(text, ";") || strings.Contains(text, "&&") || strings.Contains(text, "|") || strings.Contains(text, "$(") || strings.Contains(text, "`") || strings.Contains(text, "$shell") || strings.Contains(text, "$ifs") || strings.Contains(text, "${ifs}") || strings.Contains(text, "/usr/bin/") || strings.Contains(text, "/bin/") || strings.Contains(text, "cmd.exe") || strings.Contains(text, "cmd /c") || strings.Contains(text, "powershell") || strings.Contains(text, "pwsh") || strings.Contains(text, "encodedcommand") || strings.Contains(text, "downloadstring") || strings.Contains(text, "downloadfile") || strings.Contains(text, "webclient") || strings.Contains(text, "tcpclient") || strings.Contains(text, "new-object") || strings.Contains(text, "<?php") || strings.Contains(text, "eval(") || strings.Contains(text, "assert(") || strings.Contains(text, "getallheaders") || strings.Contains(text, "apache_request_headers") || strings.Contains(text, "bash -c") || strings.Contains(text, "sh -c") || strings.Contains(text, "wget ") || strings.Contains(text, "curl ") || strings.Contains(text, "python -c") || strings.Contains(text, "php -r") || strings.Contains(text, "perl -e") || strings.Contains(text, "ld_preload") || strings.Contains(text, "child_process") || rceReverseShellPrimitive.MatchString(text) || rceTemplateExecutionPrimitive.MatchString(text) || rceNetWebClientSideFx.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceLoaderPrimitive.MatchString(text) {
+		if strings.Contains(rceText, ";") || strings.Contains(rceText, "&&") || strings.Contains(rceText, "|") || strings.Contains(rceText, "$(") || strings.Contains(rceText, "`") || strings.Contains(rceText, "$shell") || strings.Contains(rceText, "$ifs") || strings.Contains(rceText, "${ifs}") || strings.Contains(rceText, "/usr/bin/") || strings.Contains(rceText, "/bin/") || strings.Contains(rceText, "/etc/") || strings.Contains(rceText, "/proc/") || strings.Contains(rceText, "cmd.exe") || strings.Contains(rceText, "cmd /c") || strings.Contains(rceText, "powershell") || strings.Contains(rceText, "pwsh") || strings.Contains(rceText, "encodedcommand") || strings.Contains(rceText, "downloadstring") || strings.Contains(rceText, "downloadfile") || strings.Contains(rceText, "webclient") || strings.Contains(rceText, "tcpclient") || strings.Contains(rceText, "new-object") || strings.Contains(rceText, "<?php") || strings.Contains(rceText, "eval(") || strings.Contains(rceText, "assert(") || strings.Contains(rceText, "getallheaders") || strings.Contains(rceText, "apache_request_headers") || strings.Contains(rceText, "bash -c") || strings.Contains(rceText, "sh -c") || strings.Contains(rceText, "wget ") || strings.Contains(rceText, "curl ") || strings.Contains(rceText, "python -c") || strings.Contains(rceText, "php -r") || strings.Contains(rceText, "perl -e") || strings.Contains(rceText, "ld_preload") || strings.Contains(rceText, "child_process") ||
+			(rceInterpreterInlineMayMatch(rceText) && rceInterpreterInline.MatchString(rceText)) ||
+			(strings.Contains(rceText, "$shell") || strings.Contains(rceText, "${shell}")) && strings.Contains(rceText, " -c") ||
+			rceReverseShellPrimitiveMayMatch(rceText) && rceReverseShellPrimitive.MatchString(rceText) ||
+			rceTemplateExecutionPrimitiveMayMatch(rceText) && rceTemplateExecutionPrimitive.MatchString(rceText) ||
+			rceNetWebClientSideFxMayMatch(rceText) && rceNetWebClientSideFx.MatchString(rceText) ||
+			rcePowerShellSideFxMayMatch(rceText) && rcePowerShellSideFx.MatchString(rceText) ||
+			rceLoaderPrimitiveMayMatch(rceText) && rceLoaderPrimitive.MatchString(rceText) ||
+			rceNewlineCommandChain(rceText) || rceControlCommandChain(rceText) {
 			scores["rce"] += 2
 		}
 	}
+	// A command sink must be analyzed even when its value has no punctuation:
+	// `cmd=id` and `exec=whoami` are complete payloads, not ordinary identifiers.
+	// analyzeRCE still requires a known command or another execution signal before
+	// emitting a hit, so opening this family is safe for values such as `cmd=123`.
+	if rceBareCommandSinkValueForSource(inputSource, inputName, rceText) {
+		scores["rce"] += 2
+	}
+	// Explicit command parameters also carry multi-word commands without shell
+	// punctuation (for example `cmd=ls -la` or `cmd=python3 -c 'id'`). Keep this
+	// gate narrow: only the terminal, unambiguous command-parameter names are
+	// eligible, and the value must begin with a known executable plus an argument.
+	if rceCommandSinkShapeForSource(inputSource, inputName, rceText) {
+		scores["rce"] += 2
+	}
+	if rceSinkNULPatternIntentForSource(inputSource, inputName, rceText) {
+		scores["rce"] += 2
+	}
 	if hints&hintLFI != 0 {
-		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") ||
+		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiWindowsSystemPathMatch(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") || lfiSSIDirective.MatchString(text) ||
 			// RFI-shaped remote includes: http(s) value often only scores SSRF unless LFI is also opened.
 			((strings.Contains(text, "http://") || strings.Contains(text, "https://")) && (strings.Contains(text, ".php") || strings.Contains(text, "shell") || strings.Contains(text, "passwd") || strings.HasSuffix(text, "?"))) {
 			scores["lfi"] += 2
@@ -1977,7 +2096,7 @@ func guessCategories(raw string) []string {
 		}
 	}
 	if hints&hintNoSQL != 0 {
-		if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "$function") || strings.Contains(text, "this.") || strings.Contains(text, "function(") {
+		if nosqlOperatorToken.MatchString(text) || strings.Contains(text, "$function") || strings.Contains(text, "this.") || strings.Contains(text, "function(") || nosqlShellEscapeMatch(text) {
 			scores["nosqli"] += 2
 		}
 	}
@@ -2024,14 +2143,33 @@ const (
 	hintLog4Shell
 )
 
-// scanAttackHints does a single ASCII-oriented pass to decide which detector
-// families deserve full analysis. Prefer false-positive on the hint (over-scan)
+// scanAttackHints does a single marker pass to decide which detector families
+// deserve full analysis. The probe combines a raw lowercase view (which keeps
+// control bytes such as newlines) with an NFKC lowercase view (which exposes
+// compatibility-encoded markers). Prefer false-positive on the hint (over-scan)
 // rather than under-scan that would miss attacks.
 func scanAttackHints(raw string) int {
 	if len(raw) == 0 {
 		return 0
 	}
-	lower := strings.ToLower(raw)
+	rawLower := strings.ToLower(raw)
+	// For printable ASCII, NFKC is a no-op and normalize would repeat the same
+	// lowercase pass (and often allocate a second string). Only build the
+	// compatibility/controls-stripped view when a byte can actually change it.
+	normalizedLower := rawLower
+	if hintNeedsNormalizedView(raw) {
+		normalizedLower = normalize(raw)
+	}
+	normalizedControlLower := rawLower
+	if strings.ContainsAny(raw, "\r\n") {
+		normalizedControlLower = normalizePreserveControls(raw)
+	}
+	lower := rawLower
+	if normalizedLower != rawLower {
+		// The NUL separator prevents a marker from being synthesized across the
+		// two views while allowing either view to satisfy a necessary hint.
+		lower += "\x00" + normalizedLower
+	}
 	var hints int
 	// SQL stems (include quote/OR glue without requiring spaces: 'OR' '')
 	if strings.Contains(lower, "select") || strings.Contains(lower, "union") ||
@@ -2050,6 +2188,19 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "updatexml") || strings.Contains(lower, "='") ||
 		strings.Contains(lower, "=\"") || strings.Contains(lower, "exec ") ||
 		strings.Contains(lower, "execute ") {
+		hints |= hintSQL
+	}
+	// XPath injection. The location path (a "//" axis with a node test) is the
+	// real discriminator, but it cannot be gated on cheaply here because "//" is
+	// also the URL scheme separator and a line comment in C-family source. The
+	// function vocabulary is the practical gate: analyzeSQL resolves whether a
+	// location path is actually present before scoring anything.
+	//
+	// These payloads are why this matters — none of them carries a single SQL
+	// keyword, so without this hint the SQL analyzer never ran on them at all:
+	//   ' or count(//*) > 0 or ''='
+	//   substring(//users/user[1]/concat(password),3,1)='m'
+	if xpathCheapGate(lower) {
 		hints |= hintSQL
 	}
 	// XSS
@@ -2080,7 +2231,11 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "ncat") || strings.Contains(lower, "netcat") ||
 		strings.Contains(lower, "$shell") || strings.Contains(lower, "${shell}") ||
 		strings.Contains(lower, "ld_preload") || strings.Contains(lower, "child_process") ||
-		strings.Contains(lower, "defineclass") || strings.Contains(lower, "assembly.load") {
+		strings.Contains(lower, "defineclass") || strings.Contains(lower, "assembly.load") ||
+		lfiCommandReadSink.MatchString(lower) ||
+		rceNewlineCommandChain(rawLower) ||
+		rceNewlineCommandChain(normalizedControlLower) ||
+		rceNewlineCommandChain(normalizedLower) {
 		hints |= hintRCE
 	}
 	// LFI
@@ -2092,7 +2247,12 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, ".aws") || strings.Contains(lower, ".git") ||
 		strings.Contains(lower, ".ssh") || strings.Contains(lower, "boot.ini") ||
 		strings.Contains(lower, "win.ini") || strings.Contains(lower, "passwd") ||
-		strings.Contains(lower, "phar://") || strings.Contains(lower, "expect://") {
+		strings.Contains(lower, "phar://") || strings.Contains(lower, "expect://") ||
+		// Windows drive-absolute paths. ":\" is the marker rather than ":/"
+		// because ":/" is in every URL. Without this, a Windows LFI target
+		// scored no hint at all and analyzeLFI was never called.
+		strings.Contains(lower, ":\\") ||
+		lfiSSIDirective.MatchString(lower) {
 		hints |= hintLFI
 	}
 	// XXE
@@ -2115,7 +2275,8 @@ func scanAttackHints(raw string) int {
 	// NoSQL — any $-operator token (including $elemMatch / $nin / …).
 	if strings.Contains(lower, "$") || strings.Contains(lower, "this.") ||
 		strings.Contains(lower, "function(") || strings.Contains(lower, "mapreduce") ||
-		strings.Contains(lower, `"map"`) || strings.Contains(lower, `"reduce"`) {
+		strings.Contains(lower, `"map"`) || strings.Contains(lower, `"reduce"`) ||
+		nosqlShellEscapeMatch(lower) {
 		hints |= hintNoSQL
 	}
 	// SSTI
@@ -2147,6 +2308,20 @@ func scanAttackHints(raw string) int {
 	return hints
 }
 
+// hintNeedsNormalizedView reports whether normalize(raw) can differ from a
+// lowercase ASCII view. Printable ASCII has no compatibility mappings; C0/DEL
+// controls may be stripped and non-ASCII bytes may carry compatibility forms or
+// invalid UTF-8 that the normalizer must inspect.
+func hintNeedsNormalizedView(raw string) bool {
+	for i := 0; i < len(raw); i++ {
+		b := raw[i]
+		if b >= 0x80 || b < 0x20 || b == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
 func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hit, bool) {
 	switch category {
 	case "sqli":
@@ -2173,6 +2348,15 @@ func analyzeSyntaxAndSemantics(category string, candidate semanticCandidate) (Hi
 		return Hit{}, false
 	}
 }
+
+// sstiMixedOperands is the operand alternation for sstiQuotedArithmeticProbe:
+// arithmetic where at least one side is a quoted string. The three orderings are
+// spelled out because excluding the number-operator-number case is the whole
+// point — that shape stays behind the sstiProbeContext parameter-name gate,
+// which is what keeps template documentation out of the results.
+const sstiMixedOperands = `[-+]?\d+\s*[*\/+]\s*(?:'[^']{0,24}'|"[^"]{0,24}")|` +
+	`(?:'[^']{0,24}'|"[^"]{0,24}")\s*[*\/+]\s*[-+]?\d+|` +
+	`(?:'[^']{0,24}'|"[^"]{0,24}")\s*[*\/+]\s*(?:'[^']{0,24}'|"[^"]{0,24}")`
 
 var (
 	sqlBooleanTautology     = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
@@ -2208,16 +2392,125 @@ var (
 	unicodeEscapePattern = regexp.MustCompile(`\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))`)
 	// Encoded traversal only — bare %2f/%5c (normal URL path encoding) must NOT match.
 	// Matches: %2e%2e%2f, ..%2f, %2e%2e/, double-encoded dots, overlong dots, %c0%af abuse.
-	lfiEncodedTraversal           = regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%25c0%25af|\.{4,}[/\\]+`)
-	lfiDotEnvTarget               = regexp.MustCompile(`(?i)(?:^|[/\\])\.env(?:$|[?#.]|%00|%23)`)
-	lfiSensitiveTarget            = regexp.MustCompile(`(?i)(?:^|[/\\])(?:etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|issue|motd|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|root/\.bash_history|home/[^/\\]+/\.ssh/(?:id_rsa|id_dsa|authorized_keys)|var/log/(?:syslog|auth\.log|nginx/access\.log|nginx/error\.log|apache2/access\.log|apache2/error\.log|httpd-access\.log)|winnt/system32/cmd\.exe|windows/(?:win\.ini|system32/drivers/etc/hosts)|boot\.ini|web-inf/web\.xml|meta-inf/manifest\.mf|\.htaccess|_config\.php|config\.php|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|wp-config\.php|dump\.sql|database\.sql|id_rsa)(?:$|[?#\x00.]|%00|%23)`)
-	nosqlOperatorToken            = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|eval|all|mod|type|size|ne|eq|gt|lt|in|or|and)(?:$|[.\[\]}\]"'\s:=,&?])`)
-	nosqlJSBehavior               = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.|emit\s*\()`)
-	nosqlMapReducePayload         = regexp.MustCompile(`(?i)(?:"map"\s*:\s*"(?:function\s*\(|function\s+[a-z])|"reduce"\s*:\s*"(?:function\s*\(|function\s+[a-z])|"mapreduce"\s*:)`)
-	nosqlWideRegex                = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
-	nosqlOperatorNames            = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$eval", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and"}
-	sstiTemplateExpression        = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|%\{.*?\}|<%=?\s*.*?%>)`)
-	sstiArithmeticProbe           = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
+	// The trailing alternation is the overlong-UTF-8 family. "%c0%af" is a
+	// two-byte encoding of "/" and "%c0%ae" of "."; "%e0%80%af"/"%e0%80%ae" are
+	// the three-byte equivalents. A server that decodes percent escapes and
+	// then normalises UTF-8 folds them into "../", which is the whole point.
+	// Only "%c0%af" and its double-encoded form were covered, so
+	// "..%e0%80%af..%e0%80%afetc%e0%80%afpasswd" walked straight through.
+	lfiEncodedTraversal = regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%c0%ae|%c1%9c|%e0%80%af|%e0%80%ae|%25c0%25af|%25c0%25ae|%25e0%2580%25af|\.{4,}[/\\]+`)
+
+	// lfiWindowsSystemPath covers the half of the file-inclusion surface the
+	// engine never modelled. Every sensitive target above is Unix-shaped —
+	// /etc/passwd, /proc/self/environ, .ssh/id_rsa — so a Windows host's
+	// equivalents produced no signal at all and the LFI analyzer was never even
+	// invoked: "C:\Windows\System32\drivers\etc\hosts" scored zero hints.
+	//
+	// The drive-letter prefix is mandatory (a bare "Windows\System32" in prose is
+	// ordinary text), and it is paired with either a Windows system directory or
+	// a credential/configuration filename, because "C:\Users\bob\notes.txt" is a
+	// file path but not an attack.
+	//
+	// "Program Files" is deliberately absent. It is where every desktop app is
+	// installed, so it appears constantly in ordinary prose — release notes,
+	// install instructions, crash reports — and matching it turned sentences
+	// like "copies files to C:\Program Files\App and starts the service" into
+	// high-confidence LFI. ProgramData is kept: it is the machine-wide
+	// configuration root, which is exactly what an attacker wants to read.
+	lfiWindowsSystemPath = regexp.MustCompile(`(?i)\b[a-z]:[/\\]{1,2}[^\s"']{0,160}?(?:windows|winnt|inetpub|programdata|system32|syswow64|\brepair\b|web\.config|unattend\.xml|secrets?\.(?:ini|json|ya?ml)|\.htpasswd|id_rsa|\bsam\b|(?:settings|config|database|credentials?)\.(?:xml|json|ini|ya?ml))`)
+
+	// lfiWindowsPathTargets are the words lfiWindowsSystemPath needs to find
+	// after the drive prefix. They double as a cheap pre-filter: the pattern
+	// carries a bounded non-greedy run and fifteen alternatives and costs
+	// ~2.7µs per call, which is far too much to spend on every candidate.
+	// Requiring one of these substrings first is a strict superset of what the
+	// pattern can match.
+	lfiWindowsPathTargets = []string{
+		"windows", "winnt", "inetpub", "programdata", "system32", "syswow64",
+		"repair", "web.config", "unattend", "secrets", ".htpasswd", "id_rsa",
+		"config.", "settings.", "database.", "credentials.", "sam",
+	}
+	// lfiSSIDirective is a Server Side Includes directive. It is file inclusion
+	// by another name: the server reads a file, or runs a command, and pastes the
+	// result into the page. The engine had no notion of it at all, so the 26
+	// verified LFI misses in this family were only ever caught by accident, when
+	// the path inside the directive happened to satisfy an unrelated pattern.
+	//
+	// The leading "<!" tolerates the space-split evasion "<!- -#include", where
+	// the two dashes are separated so a naive "<!--#" literal does not match.
+	lfiSSIDirective = regexp.MustCompile(`(?i)<!\s*-{1,2}\s*-?\s*#\s*(?:include|exec|echo|fsize|flastmod|config|printenv|set)\b`)
+
+	lfiDotEnvTarget    = regexp.MustCompile(`(?i)(?:^|[/\\])\.env(?:$|[?#.]|%00|%23)`)
+	lfiSensitiveTarget = regexp.MustCompile(`(?i)(?:^|[/\\])(?:etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|issue|motd|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|root/\.bash_history|home/[^/\\]+/\.ssh/(?:id_rsa|id_dsa|authorized_keys)|var/log/(?:syslog|auth\.log|nginx/access\.log|nginx/error\.log|apache2/access\.log|apache2/error\.log|httpd-access\.log)|winnt/system32/cmd\.exe|windows/(?:win\.ini|system32/drivers/etc/hosts)|boot\.ini|web-inf/web\.xml|meta-inf/manifest\.mf|\.htaccess|_config\.php|config\.php|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|wp-config\.php|dump\.sql|database\.sql|id_rsa)(?:$|[?#\x00.]|%00|%23)`)
+	// "set" and "unset" were missing from the operator vocabulary. They are
+	// ordinary MongoDB update operators, and they are the ones an injection uses
+	// when the goal is to change a field — "{$set:{isAdmin:true}}" — rather than
+	// to read one. Without them the payload below scored no NoSQL signal at all
+	// and was left to the RCE analyzer, which correctly declined it.
+	nosqlOperatorToken = regexp.MustCompile(`(?i)(?:^|[.\[\]{"'\s:=,&?])\$(?:jsonschema|elemmatch|function|where|regex|exists|gte|lte|nin|nor|not|expr|eval|all|mod|type|size|ne|eq|gt|lt|in|or|and|set|unset|rename|inc|push|pull|addtoset)(?:$|[.\[\]}\]"'\s:=,&?])`)
+
+	// nosqlShellEscape matches a breakout out of the host expression and into
+	// the MongoDB shell or server-side JavaScript context, where the payload
+	// calls a database method directly:
+	//
+	//	theme=dark'; db.users.update({username:'admin'},{$set:{isAdmin:true}}); //
+	//	username=alex' } || db.users.find({isAdmin:true}) --
+	//
+	// The distinguishing feature is that no query operator is required. The
+	// attacker is not injecting into a filter document; they are terminating the
+	// surrounding expression and writing their own statement, which is why the
+	// operator-based gate — the only one the NoSQL analyzer had — never fired.
+	nosqlShellEscape = regexp.MustCompile(`(?i)db\s*\.\s*[a-z_]\w*\s*\.\s*(?:find|findone|update|updatemany|updateone|insert|insertmany|insertone|remove|deleteone|deletemany|aggregate|count|distinct|drop|createcollection|createindex|eval|runcommand|mapreduce|bulkwrite)\s*\(`)
+
+	// nosqlShellEscapeGate is the substring pre-filter for nosqlShellEscape.
+	//
+	// The full pattern costs ~2µs per call and scanAttackHints runs on every
+	// input point of every request, so it cannot be called unguarded: that alone
+	// was a 20x pipeline-latency regression. "db." must be present for any of
+	// the method alternatives to have a receiver, so checking for it first is a
+	// strict superset and costs almost nothing.
+	nosqlShellEscapeGate   = "db."
+	nosqlJSBehavior        = regexp.MustCompile(`(?i)(?:this\.[a-z_][a-z0-9_]*|function\s*\(|return\s+|sleep\s*\(|constructor\s*\[|process\.|emit\s*\()`)
+	nosqlMapReducePayload  = regexp.MustCompile(`(?i)(?:"map"\s*:\s*"(?:function\s*\(|function\s+[a-z])|"reduce"\s*:\s*"(?:function\s*\(|function\s+[a-z])|"mapreduce"\s*:)`)
+	nosqlWideRegex         = regexp.MustCompile(`(?i)(?:\.\*|\^\.\*\$|\[[^\]]*\])`)
+	nosqlOperatorNames     = []string{"$jsonschema", "$elemmatch", "$function", "$where", "$regex", "$exists", "$gte", "$lte", "$nin", "$nor", "$not", "$expr", "$eval", "$all", "$mod", "$type", "$size", "$ne", "$eq", "$gt", "$lt", "$in", "$or", "$and", "$set", "$unset", "$rename"}
+	sstiTemplateExpression = regexp.MustCompile(`(?is)(?:\{\{.*?\}\}|\{%.*?%\}|\$\{.*?\}|#\{.*?\}|%\{.*?\}|<%=?\s*.*?%>)`)
+	sstiArithmeticProbe    = regexp.MustCompile(`(?is)(?:\{\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}\}|\$\{\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*\}|<%=?\s*[-+]?\d+\s*[*+\-/]\s*[-+]?\d+\s*%>)`)
+
+	// sstiQuotedArithmeticProbe is "{{ 7*'7' }}" and its siblings: arithmetic
+	// between a number and a quoted string.
+	//
+	// This is the canonical Jinja/Twig evaluation probe, and it is not a
+	// calculation anyone wants an answer to — it is a question. "7*'7' asks a
+	// template engine to multiply an integer by a string; only an engine that
+	// really evaluates the expression answers it, with "7777777". Every one of
+	// the 36 verified SSTI misses was this exact probe, and the bare-integer
+	// pattern above could not see it because the second operand is quoted.
+	//
+	// It deliberately does not need the parameter-name gate that
+	// sstiProbeContext imposes on the integer form. That gate exists because
+	// "7*7" is a plausible fragment of ordinary text; "7*'7'" is not, and the
+	// corpus delivered it through parameter names the gate does not trust
+	// ("greeting", "note", "preview_text").
+	// At least one operand must be quoted. That requirement is the entire point
+	// of having a second pattern: "7 * 7" is a plausible fragment of ordinary
+	// text and stays behind the sstiProbeContext gate, while "7 * '7'" is not.
+	// An earlier version allowed two plain numbers here and immediately
+	// reproduced the curated corpus's documented benign case —
+	// "Template documentation may show {{ 7 * 7 }} as a harmless arithmetic
+	// example" — as a detection.
+	sstiQuotedArithmeticProbe = regexp.MustCompile(`(?is)(?:\{\{\s*(?:` + sstiMixedOperands + `)\s*\}\}|\$\{\s*(?:` + sstiMixedOperands + `)\s*\}|<%=?\s*(?:` + sstiMixedOperands + `)\s*%>)`)
+
+	// sstiWholeBodyExpression matches a value that is nothing but a single
+	// template expression.
+	//
+	// It decides whether sstiProbeContext applies. That gate exists because
+	// "7*7" can be a fragment of ordinary prose — but it can only be applied
+	// when there IS a field name to judge. Payloads whose request line cannot be
+	// expressed as a URL arrive as the entire body, under the field name "body",
+	// which tells us nothing either way; gating on it silently dropped "{{7*7}}"
+	// and "${7*7}".
+	sstiWholeBodyExpression       = regexp.MustCompile(`(?is)^(?:\{\{[^{}]*\}\}|\{%[^{}]*%\}|\$\{[^{}]*\}|#\{[^{}]*\}|%\{[^{}]*\}|<%=?[^%]*%>)$`)
 	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|#(?:context|_memberaccess|request|session)|@[a-z0-9_.]+@|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.(?:execute|objectconstructor)|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime|objectspace\.each_object|classloader\.loadclass|loadclass\s*\(|request\.getclass|application\.getclass|session\.getclass|#set\s*\(\s*\$|\{php\}|smarty\.version|mako\.runtime|velocity\.context|pebble\.extension)`)
 	rceNetWebClientSideFx         = regexp.MustCompile(`(?i)(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|system\.net\.webclient|download(?:file|string)\s*\(|iwr\s+|invoke-webrequest\b)`)
 	rcePowerShellReverseShell     = regexp.MustCompile(`(?i)(?:tcpclient\s*\(|getstream\s*\(|net\.sockets\.tcpclient|while\s*\(\s*\$i\s*=\s*\$s\.read)`)
@@ -2238,28 +2531,102 @@ var (
 	lfiCommandReadSink = regexp.MustCompile(`(?i)\b(?:cat|type|more|less|head|tail)\s+(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
 )
 
+var (
+	// sqlCountStarFrom anchors the heavy time-based blind query: an aggregate
+	// whose FROM names a comma-separated list of sources.
+	sqlCountStarFrom = regexp.MustCompile(`(?i)count\s*\(\s*\*\s*\)\s+from\s+`)
+	// sqlRowExplosion is the Postgres equivalent: the series length is chosen so
+	// the query takes seconds, and that duration is the observable channel.
+	sqlRowExplosion = regexp.MustCompile(`(?i)generate_series\s*\(\s*1\s*,\s*[1-9]\d{3,}`)
+)
+
 // sqlCommentTruncationShape returns true if SQL comment markers appear in actual
 // injection context (after quote, paren, equals, digit) rather than in prose,
 // C code comments, Markdown, or email addresses (user@example.com, list--item).
+
+// sqlHeavyQueryPrimitive reports the deliberate-resource-exhaustion family of
+// time-based blind SQL injection.
+//
+// 148 of the 172 verified SQL misses were this one shape, and it carries no
+// sleep(), no benchmark() and no waitfor — the attacker is not asking the
+// database to wait, they are asking it to do pointless work and measuring how
+// long it takes:
+//
+//	select count(*) from all_users t1,all_users t2,all_users t3,all_users t4
+//	select count(*) from rdb$fields as t1,rdb$types as t2 where 'x'='x
+//	select count(*) from generate_series(1,5000000) and (('wmoo' like 'wmoo
+//
+// The first two are an aggregate over a comma-separated table list, which is a
+// Cartesian product: N row sets multiplied together. Nobody writes that to
+// count anything. The third is a Postgres series whose only purpose is its
+// length. The existing analyzer saw "SELECT FROM" and stopped there, and a lone
+// SELECT/FROM is deliberately not blockable on its own because documentation
+// quotes it constantly — so these scored no semantic reason and were dropped.
+func sqlHeavyQueryPrimitive(text string) bool {
+	if sqlRowExplosion.MatchString(text) {
+		return true
+	}
+	match := sqlCountStarFrom.FindStringIndex(text)
+	if match == nil {
+		return false
+	}
+	// Count commas at paren depth zero after the FROM. Depth matters: the comma
+	// inside generate_series(1,5000000) is an argument separator, not a table
+	// separator, and counting it would make every series call look like a join.
+	depth := 0
+	for i := match[1]; i < len(text); i++ {
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				return true
+			}
+		case ';', '\n', '\r':
+			return false // the statement, or the line, ended
+		}
+	}
+	return false
+}
+
 func sqlCommentTruncationShape(text string) bool {
 	lower := strings.ToLower(text)
 	// Check for -- (must not be in email or Markdown list context)
 	if strings.Contains(text, "--") {
 		idx := strings.Index(text, "--")
 		if idx > 0 {
-			before := text[idx-1]
+			// Skip whitespace between the payload and its comment marker.
+			// "pass' AnD SeLeCt CoUnT(*) FrOm users > 5 -- " is a working
+			// injection, but the marker sits one space past the expression, and
+			// reading text[idx-1] literally saw a space instead of the digit —
+			// so the whole family of space-separated comment truncations was
+			// scored as having no injection context.
+			pos := idx
+			for pos > 0 && (text[pos-1] == ' ' || text[pos-1] == '\t') {
+				pos--
+			}
+			before := text[pos-1]
 			// Injection context: quote, paren, digit, equals precedes --
 			if before == '\'' || before == '"' || before == ')' || before == '=' ||
 				(before >= '0' && before <= '9') {
 				return true
 			}
-			// Check for SQL keyword before --: SELECT--, WHERE--
-			if idx >= 6 {
-				prevWord := strings.ToLower(text[idx-6 : idx])
-				if strings.Contains(prevWord, "select") || strings.Contains(prevWord, "where") ||
-					strings.Contains(prevWord, "union") || strings.Contains(prevWord, "order") {
-					return true
-				}
+			// Check for SQL keyword before --: SELECT--, WHERE--. The window is
+			// 32 bytes rather than 6 because the marker is usually separated
+			// from the keyword by the rest of the predicate ("users > 5 -- ").
+			windowStart := pos - 32
+			if windowStart < 0 {
+				windowStart = 0
+			}
+			prevWord := strings.ToLower(text[windowStart:pos])
+			if strings.Contains(prevWord, "select") || strings.Contains(prevWord, "where") ||
+				strings.Contains(prevWord, "union") || strings.Contains(prevWord, "order") ||
+				strings.Contains(prevWord, "count") || strings.Contains(prevWord, "from") {
+				return true
 			}
 		}
 	}
@@ -2396,6 +2763,11 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlTimeFunction.MatchString(text) {
 		reasons["semantics: time-based database side effect"] = true
 	}
+	// Time-based blind injection does not have to ask the database to sleep. It
+	// can simply ask it to work, and measure the response.
+	if sqlHeavyQueryPrimitive(text) {
+		reasons["semantics: aggregate over a cross-joined or generated row set makes response time observable"] = true
+	}
 	if sqlDialectTimeFunction.MatchString(text) && sqlExecutionContext(text, compact) {
 		reasons["semantics: dialect-specific database time-delay side effect"] = true
 	}
@@ -2466,6 +2838,17 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if !sqlReasonsBlockable(reasons) {
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate.text); detected && containsReviewedSQLFingerprint(fp, candidate.text) {
 			reasons["syntax: SQL token fingerprint matched"] = true
+		}
+	}
+	// XPath injection: same breakout, different grammar. Filed under "sqli" by
+	// every corpus we measure against and by the industry generally, so it is
+	// attributed to the SQL category rather than a category of its own — adding
+	// one would fragment the sqli number for no operational gain.
+	if step, isXPath := xpathInjectionShape(text); isXPath {
+		reasons["syntax: XPath location path expression ("+step+")"] = true
+		reasons["semantics: XPath predicate can traverse document nodes outside the intended query scope"] = true
+		if xpathFunctionCall.MatchString(text) && (strings.Contains(text, "count(") || strings.Contains(text, "string-length(")) {
+			reasons["semantics: XPath node-count or length probe can infer document contents"] = true
 		}
 	}
 	if len(reasons) == 0 || !sqlReasonsBlockable(reasons) {
@@ -2619,6 +3002,226 @@ func isSQLWhitespace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
 }
 
+// XPath injection reaches the SQL analyzer because it is filed under "sqli" by
+// every public corpus we measure against, and because it genuinely is the same
+// attack: break out of a quoted literal and make the back-end evaluate an
+// expression the developer did not write. The engine modelled the SQL grammar
+// and none of the XPath one, so `' or count(//*) > 0 or ''='` and
+// `substring(//users/user[1]/concat(password),3,1)='m'` both passed through
+// untouched — 213 of the 676 verified detection misses were this one gap.
+//
+// The discriminator is the location path, never the function vocabulary.
+// "concat(", "count(" and "substring(" are ordinary SQL and ordinary
+// JavaScript; what only XPath has is a node test hanging off a "//" axis.
+
+var xpathFunctionCall = regexp.MustCompile(`(?i)\b(?:count|substring|string-length|normalize-space|local-name|namespace-uri|name|text|position|last|translate|starts-with|contains|concat|sum|number|string|boolean|document)\s*\(`)
+
+// foldOverlongUTF8 rewrites overlong UTF-8 sequences into the single ASCII
+// character they encode, and leaves everything else byte-for-byte identical.
+//
+// Only sequences whose computed code point is below 0x80 are rewritten, which
+// is exactly the set that cannot be legitimate text: a real two-byte character
+// starts at U+0080, so every CJK, Cyrillic or accented sequence decodes above
+// the threshold and passes through untouched. The rewrite is therefore confined
+// to the overlong forms that exist solely to smuggle an ASCII metacharacter
+// past a UTF-8 decoder.
+func foldOverlongUTF8(s string) string {
+	// Fast path: nothing above 0xBF means no multi-byte sequence at all, and
+	// every ordinary request takes it.
+	hasLead := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0xc0 {
+			hasLead = true
+			break
+		}
+	}
+	if !hasLead {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case c >= 0xc0 && c < 0xe0 && i+1 < len(s) && s[i+1]&0xc0 == 0x80:
+			if cp := rune(c&0x1f)<<6 | rune(s[i+1]&0x3f); cp < 0x80 {
+				b.WriteByte(byte(cp))
+				i += 2
+				continue
+			}
+		case c >= 0xe0 && c < 0xf0 && i+2 < len(s) && s[i+1]&0xc0 == 0x80 && s[i+2]&0xc0 == 0x80:
+			if cp := rune(c&0x0f)<<12 | rune(s[i+1]&0x3f)<<6 | rune(s[i+2]&0x3f); cp < 0x80 {
+				b.WriteByte(byte(cp))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
+// xpathCheapGate is the substring pre-filter that decides whether the SQL
+// analyzer is worth running on a candidate at all. It is a deliberate
+// superset — the real discrimination happens in analyzeSQL, which additionally
+// requires a location path.
+//
+// It lives here as one function because two callers need it and they must not
+// drift apart: scanAttackHints sets hintSQL so the analyzer is invoked, and the
+// SQL scoring gate adds sqli to the candidate's score set so the analyzer's
+// result is kept. Wiring only the first produced a hit that was then discarded
+// because sqli was never in the candidate's categories.
+func xpathCheapGate(lower string) bool {
+	return strings.Contains(lower, "substring(") || strings.Contains(lower, "string-length(") ||
+		strings.Contains(lower, "normalize-space(") || strings.Contains(lower, "local-name(") ||
+		strings.Contains(lower, "namespace-uri(") || strings.Contains(lower, "count(//") ||
+		strings.Contains(lower, "name(//") || strings.Contains(lower, "document(//")
+}
+
+// xpathLocationPathStep returns the first XPath location path in text that is
+// specific enough to be evidence.
+//
+// A bare "//" proves nothing: it is the URL scheme separator, a line comment in
+// C-family source, and a Markdown list marker. What makes a step unmistakable
+// is the node test that follows — a wildcard, a node-test function, a
+// positional predicate, or a second path step. "count(//*)" and
+// "//users/user[1]" qualify; "// Package engine provides" does not, which
+// matters because the curated corpus contains real source files where a doc
+// comment or a "//" import path is ordinary text.
+func xpathLocationPathStep(text string) (string, bool) {
+	for i := 0; i+1 < len(text); i++ {
+		if text[i] != '/' || text[i+1] != '/' {
+			continue
+		}
+		// "http://host" and a longer "//" run are not location paths.
+		if i > 0 && (text[i-1] == ':' || text[i-1] == '/') {
+			continue
+		}
+		p := &xpathScanner{s: text, i: i + 2}
+		if p.run() {
+			return text[i:p.i], true
+		}
+	}
+	return "", false
+}
+
+type xpathScanner struct {
+	s           string
+	i           int
+	sawWildcard bool
+}
+
+// run consumes one or more "/"-separated node tests and reports whether the
+// run carries enough structure to be XPath rather than a URL or a comment.
+func (p *xpathScanner) run() bool {
+	steps := 0
+	hasFunc, hasPredicate := false, false
+	for {
+		isFunc, ok := p.step()
+		if !ok {
+			break
+		}
+		steps++
+		if isFunc {
+			hasFunc = true
+		}
+		if p.predicates() > 0 {
+			hasPredicate = true
+		}
+		// Only a single "/" continues the path; "//" starts an axis of its own
+		// and belongs to the next iteration of the outer scan.
+		if p.i+1 < len(p.s) && p.s[p.i] == '/' && p.s[p.i+1] != '/' {
+			p.i++
+			continue
+		}
+		break
+	}
+	if steps == 0 {
+		return false
+	}
+	// A lone plain-name step with no predicate is a URL host or a comment
+	// marker, not a location path.
+	return hasFunc || hasPredicate || steps >= 2 || p.sawWildcard
+}
+
+func (p *xpathScanner) step() (isFunc, ok bool) {
+	for p.i < len(p.s) && (p.s[p.i] == ' ' || p.s[p.i] == '\t') {
+		p.i++
+	}
+	start := p.i
+	if p.i < len(p.s) && p.s[p.i] == '*' {
+		p.i++
+		p.sawWildcard = true
+	} else {
+		for p.i < len(p.s) && isXPathNameByte(p.s[p.i]) {
+			p.i++
+		}
+	}
+	if p.i == start {
+		return false, false
+	}
+	// A trailing "(" marks a node-test function: node(), text(), comment().
+	return p.i < len(p.s) && p.s[p.i] == '(', true
+}
+
+// predicates consumes a run of balanced "[...]" and returns how many it took.
+func (p *xpathScanner) predicates() int {
+	n := 0
+	for p.i < len(p.s) && p.s[p.i] == '[' {
+		end := xpathMatchBracket(p.s, p.i)
+		if end < 0 {
+			return n // unbalanced predicate: take what we have
+		}
+		p.i = end
+		n++
+	}
+	return n
+}
+
+// xpathMatchBracket returns the offset just past the "]" closing the "[" at
+// start, or -1 when the bracket is never closed. Depth-counted so that a
+// predicate containing another "[" — "[substring(.,1,1)='a'][1]" — is consumed
+// as one unit instead of ending the predicate early.
+func xpathMatchBracket(s string, start int) int {
+	depth := 0
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
+}
+
+func isXPathNameByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	}
+	return b == '_' || b == '-' || b == '.'
+}
+
+// xpathInjectionShape reports whether text carries an XPath location path
+// together with corroborating XPath grammar. Both halves are required: the path
+// supplies the discrimination and the function call rules out the residual
+// cases where a path-like string appears in ordinary content.
+func xpathInjectionShape(text string) (step string, ok bool) {
+	step, ok = xpathLocationPathStep(text)
+	if !ok {
+		return "", false
+	}
+	if !xpathFunctionCall.MatchString(text) {
+		return "", false
+	}
+	return step, true
+}
+
 func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	text := strings.TrimSpace(candidate.text)
 	lowerText := normalize(text)
@@ -2629,19 +3232,31 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	structuralOperator := nosqlOperatorInPath(name)
 	textOperator := nosqlOperatorToken.MatchString(lowerText)
 	mapReduce := nosqlMapReducePayload.MatchString(lowerText)
+	// Breakout into the MongoDB shell: the payload terminates the host
+	// expression and calls a database method, so there may be no operator
+	// anywhere in it.
+	shellEscape := nosqlShellEscapeMatch(lowerText)
 	// JSON often splits map/reduce into separate fields; detect by field name + JS body.
 	fieldMapReduce := nosqlMapReduceField(name) && nosqlJSBehavior.MatchString(lowerText)
-	if !structuralOperator && !textOperator && !mapReduce && !fieldMapReduce {
+	if !structuralOperator && !textOperator && !mapReduce && !fieldMapReduce && !shellEscape {
 		return Hit{}, false
 	}
 	// Documentation field names normally skip NoSQL. Exception: raw request bodies
 	// that carry real operator tokens (e.g. broken/partial JSON with "$eval").
-	if !structuralOperator && !mapReduce && !fieldMapReduce && nosqlDocumentationContext(name) {
+	//
+	// shellEscape is exempt from both gates below. A breakout into the MongoDB
+	// shell has no operator *by construction* — that is what distinguishes it
+	// from operator injection — so requiring one here would disable the path
+	// that was added for it. The corpus demonstrated exactly that:
+	// "comment=Nice post!'); db.users.remove({isAdmin:true}); //" was missed
+	// while the same payload under a field named "query" was caught, purely
+	// because "query" happens to be in nosqlSensitiveContext.
+	if !structuralOperator && !mapReduce && !fieldMapReduce && !shellEscape && nosqlDocumentationContext(name) {
 		if !(candidate.input.Source == "body.raw" && textOperator) {
 			return Hit{}, false
 		}
 	}
-	if !structuralOperator && !mapReduce && !fieldMapReduce && !nosqlSensitiveContext(name) && !nosqlLooksLikeStructuredPayload(lowerText) {
+	if !structuralOperator && !mapReduce && !fieldMapReduce && !shellEscape && !nosqlSensitiveContext(name) && !nosqlLooksLikeStructuredPayload(lowerText) {
 		// map/reduce field bodies are structured even without $-operators.
 		if !fieldMapReduce {
 			return Hit{}, false
@@ -2659,6 +3274,10 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	if mapReduce || fieldMapReduce {
 		reasons["syntax: MongoDB mapReduce JavaScript payload"] = true
 		reasons["semantics: mapReduce functions can evaluate attacker-controlled server-side JavaScript"] = true
+	}
+	if shellEscape {
+		reasons["syntax: MongoDB shell method call after expression breakout"] = true
+		reasons["semantics: breakout can execute arbitrary database statements outside the intended query"] = true
 	}
 	if nosqlContainsOperator(combined, "$where") {
 		reasons["syntax: server-side JavaScript query operator"] = true
@@ -2703,7 +3322,9 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 		return Hit{}, false
 	}
 	if !hasSemanticReason(reasons) {
-		if !structuralOperator || !nosqlSensitiveContext(name) {
+		// An operator no ordinary client would send is enough on its own;
+		// anything else still needs a sensitive field name to carry the intent.
+		if !nosqlInjectionOperatorInPath(name) && (!structuralOperator || !nosqlSensitiveContext(name)) {
 			return Hit{}, false
 		}
 		reasons["semantics: structured query operator can change application query behavior"] = true
@@ -2731,6 +3352,32 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	return hit(candidate, "nosqli", severity, confidence, reasons), true
+}
+
+// nosqlShellEscapeMatch is the only way nosqlShellEscape should be consulted.
+// The gate exists because the pattern is ~2µs and its callers run per input
+// point; see nosqlShellEscapeGate.
+func nosqlShellEscapeMatch(lower string) bool {
+	if !strings.Contains(lower, nosqlShellEscapeGate) {
+		return false
+	}
+	return nosqlShellEscape.MatchString(lower)
+}
+
+// lfiWindowsSystemPathMatch is the only way lfiWindowsSystemPath should be
+// consulted. The drive-letter colon and one target word are both required by the
+// pattern, so checking them first is a strict superset that costs a fraction as
+// much as entering the regexp engine.
+func lfiWindowsSystemPathMatch(lower string) bool {
+	if !strings.Contains(lower, ":\\") && !strings.Contains(lower, ":/") {
+		return false
+	}
+	for _, target := range lfiWindowsPathTargets {
+		if strings.Contains(lower, target) {
+			return lfiWindowsSystemPath.MatchString(lower)
+		}
+	}
+	return false
 }
 
 func nosqlMapReduceField(name string) bool {
@@ -2771,8 +3418,20 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 		strings.Contains(lowerText, "classloader.loadclass") || strings.Contains(lowerText, "objectspace.each_object") {
 		reasons["semantics: template expression can reach host runtime command execution"] = true
 	}
-	if arithmeticProbe && sstiProbeContext(candidate.input.Name) {
+	// The parameter-name gate can only be applied when a name carries signal.
+	// When the whole value is one template expression there is no surrounding
+	// prose to be a fragment of, so the gate has nothing to discriminate — and
+	// the field name for these payloads is literally "body".
+	wholeBody := sstiWholeBodyExpression.MatchString(text)
+	if arithmeticProbe && (sstiProbeContext(candidate.input.Name) || wholeBody) {
 		reasons["syntax: arithmetic template evaluation probe"] = true
+		reasons["semantics: probe attempts to confirm server-side template evaluation"] = true
+	}
+	// The quoted-operand probe stands on its own: "7*'7'" is not a fragment of
+	// ordinary text, so it does not need the parameter-name gate that the
+	// integer-only form requires to stay clear of prose.
+	if sstiQuotedArithmeticProbe.MatchString(lowerText) {
+		reasons["syntax: arithmetic template evaluation probe with mixed operand types"] = true
 		reasons["semantics: probe attempts to confirm server-side template evaluation"] = true
 	}
 	if !hasSemanticReason(reasons) {
@@ -2815,8 +3474,23 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	if executableXSSContext(lower) {
 		reasons["syntax: executable HTML/JavaScript context"] = true
 	}
+	// Keep a specific explanation in addition to the generic executable-context
+	// reason so review output identifies this legacy CSS escape precisely.
+	if xssCSSExpression.MatchString(lower) {
+		reasons["syntax: CSS JavaScript expression escape"] = true
+		reasons["semantics: CSS expression body is evaluated as script by the browser"] = true
+	}
 	if javascriptURLContext.MatchString(lower) {
 		reasons["syntax: javascript URL in executable HTML attribute"] = true
+	}
+	if xssJavascriptURLFieldContext(candidate) {
+		reasons["syntax: javascript URL in URL-valued request field"] = true
+		reasons["semantics: URL field accepts executable script scheme"] = true
+	}
+	standaloneCandidate := candidate
+	standaloneCandidate.text = lower
+	if xssStandaloneJavascriptURLContext(standaloneCandidate) {
+		reasons["syntax: standalone javascript URL in executable request surface"] = true
 	}
 	if xssDataURLContext.MatchString(lower) {
 		reasons["syntax: executable data URI in HTML attribute"] = true
@@ -2887,60 +3561,204 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 
 func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	text := strings.TrimSpace(candidate.text)
-	lower := normalize(text)
-	sink := rceExecutionSink(candidate.input.Name)
+	// Keep compatibility folding and control boundaries in the primary RCE view.
+	// The compact normalized form is still available for control-free values, but
+	// must not join tokens across NUL/newline boundaries (for example
+	// `new-\x00object`).
+	lower := normalizePreserveControls(text)
+	normalized := normalize(text)
+	// Keep a control-preserving lowercase view for necessary-marker gates. The
+	// normalized view intentionally strips controls from non-ASCII text, while
+	// the raw regex suite still recognizes newline-separated shell commands.
+	rawLower := strings.ToLower(text)
+	// `lower` is already the control-preserving NFKC/lowercase view. Reusing it
+	// avoids a second full Unicode pass on every RCE candidate.
+	normalizedControlLower := lower
+	hasControl := strings.IndexFunc(text, unicode.IsControl) >= 0
+	matchRCE := func(pattern *regexp.Regexp) bool {
+		if guardedMatchString2K(pattern, text) {
+			return true
+		}
+		// Raw text remains the first choice so control-byte/newline semantics are
+		// unchanged. Retry the already-computed NFKC view only when compatibility
+		// characters prevented the raw regexp from seeing its ASCII grammar.
+		if !hasControl && normalized != text && normalized != lower && guardedMatchString2K(pattern, normalized) {
+			return true
+		}
+		return normalizedControlLower != rawLower && guardedMatchString2K(pattern, normalizedControlLower)
+	}
+	matchRCEValue := func(pattern *regexp.Regexp, value string) bool {
+		if guardedMatchString2K(pattern, value) {
+			return true
+		}
+		if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			preservedValue := normalizePreserveControls(value)
+			return preservedValue != value && guardedMatchString2K(pattern, preservedValue)
+		}
+		normalizedValue := normalize(value)
+		return normalizedValue != value && guardedMatchString2K(pattern, normalizedValue)
+	}
+	// A field name such as `cmd.exe` or `command_line` is a useful execution
+	// hint, but those names also occur in CI/job metadata where ordinary
+	// diagnostic commands (`python --version`, `powershell -Help`, `cmd.exe /?`)
+	// are expected.  Keep the historical authority of the short `cmd`/`exec`
+	// aliases, while requiring an execution-shaped value for the newer compound
+	// aliases.  Strong RCE regexes still provide independent evidence below.
+	sink := rceExecutionSinkForValue(candidate.input.Source, candidate.input.Name, text)
+	// Compound aliases are common in build metadata.  Keep their interpreter
+	// grammar conservative: a plain `python3 -c print(1)` is a diagnostic script,
+	// whereas a sink value carrying an OS/process primitive remains actionable.
+	narrowSink := rceSinkAllowed(candidate.input.Source, candidate.input.Name) &&
+		rceNarrowSinkAlias(candidate.input.Name)
+	interpreterInlineEvidence := rceInterpreterInlineMayMatch(lower) &&
+		matchRCE(rceInterpreterInline) &&
+		(!narrowSink || sink || rceInterpreterDangerousArgument(text))
+	// Several later branches consult the same guarded expressions. Compute each
+	// marker-gated result once so long documentation values do not repeatedly
+	// walk the same regular expression (the result is purely a function of this
+	// candidate and its already-normalized view).
+	whitespaceEvasionEvidence := rceWhitespaceEvasionMayMatch(lower) && matchRCE(rceWhitespaceEvasion)
+	metacharExecutionEvidence := rceMetacharExecutionFunctionMayMatch(lower) && matchRCE(rceMetacharExecutionFunction)
+	powerShellSideFxEvidence := rcePowerShellSideFxMayMatch(lower) && matchRCE(rcePowerShellSideFx)
+	encodedPowerShellEvidence := rceEncodedPowerShellMayMatch(lower) && matchRCE(rceEncodedPowerShell)
+	netWebClientEvidence := rceNetWebClientSideFxMayMatch(lower) && matchRCE(rceNetWebClientSideFx)
+	powerShellReverseShellEvidence := rcePowerShellReverseShellMayMatch(lower) && matchRCE(rcePowerShellReverseShell)
+	downloadExecEvidence := rceDownloadExecChainMayMatch(lower) && matchRCE(rceDownloadExecChain)
+	reverseShellEvidence := rceReverseShellPrimitiveMayMatch(lower) && matchRCE(rceReverseShellPrimitive)
+	templateExecutionEvidence := rceTemplateExecutionPrimitiveMayMatch(lower) && matchRCE(rceTemplateExecutionPrimitive)
+	loaderEvidence := rceLoaderPrimitiveMayMatch(lower) && matchRCE(rceLoaderPrimitive)
+	// A NUL introduced by URL/HTML decoding is a token boundary at an explicit
+	// command sink, not whitespace to be stripped. Keep the ordinary views
+	// unchanged everywhere else so prose such as `new-\x00object` cannot be
+	// reassembled into an executable token.
+	controlCommandView := ""
+	if sink && rceControlCommandChain(text) {
+		controlCommandView = rceControlCommandView(text)
+	}
 	reasons := map[string]bool{}
 	// Markdown table markup turns "| id |" into a fake pipe-plus-command shape.
 	// Outside an execution sink, a table delimiter row means the pipes are cell
 	// separators. Inside a sink, table markup earns no trust.
 	tableMarkup := !sink && markdownTableShape(text)
+	tableCommand := tableMarkup && markdownTableHasExecutableCommand(text)
+	// A genuine command embedded in a table cell must not inherit the prose
+	// exemption. Ordinary documentation tables list bare tool names in one cell
+	// and descriptions in another; a cell that starts with a known executable and
+	// carries an argument is an execution-shaped payload and is analyzed normally.
+	if tableCommand {
+		tableMarkup = false
+		reasons["syntax: shell metacharacter plus executable command"] = true
+		reasons["semantics: command execution intent"] = true
+	}
 
+	patternZeroMatched := false
 	if !tableMarkup {
-		for _, pattern := range rcePatterns {
-			if guardedMatchString2K(pattern, text) {
+		for i, pattern := range rcePatterns {
+			if !rcePatternMayMatchViews(i, rawLower, lower) &&
+				!rcePatternMayMatch(i, normalizedControlLower) {
+				continue
+			}
+			matched := matchRCE(pattern)
+			if !matched && controlCommandView != "" {
+				matched = guardedMatchString2K(pattern, controlCommandView)
+			}
+			if matched {
+				// Compound command fields are also used for build metadata and
+				// diagnostics.  When the value did not pass the high-confidence
+				// sink gate, broad interpreter/binary grammar must not manufacture
+				// the two reasons required for a block.  Keep explicit separators
+				// and the stronger indexed attack patterns active so a real payload
+				// such as `command_line=;id` or an encoded/dynamic PowerShell value
+				// still reaches the detector.
+				if narrowSink && !sink && rceCompoundDiagnosticPattern(i) {
+					continue
+				}
+				if i == 0 {
+					patternZeroMatched = true
+				}
 				reasons["syntax: shell metacharacter plus executable command"] = true
+				if rcePatternCarriesSemanticIntent(i) {
+					reasons["semantics: command execution intent"] = true
+				}
 			}
 		}
+	}
+	// Alias commands such as `arp`, `route`, and `tftp` are intentionally kept
+	// out of the backtick/prose vocabulary because they are common words or
+	// documentation terms. Only promote them after the indexed shell-command
+	// expression itself matched; otherwise a prose fragment like
+	// "please review; route details" would mint two reasons without any regex
+	// evidence and bypass the hard-signal gate.
+	if patternZeroMatched && rceIndexedAliasCommandIntentForSource(text, tableMarkup, candidate.input.Source, candidate.input.Name) {
+		reasons["syntax: shell metacharacter plus executable command"] = true
+		reasons["semantics: command execution intent"] = true
 	}
 	// Bare English ";" must not count outside execution sinks (major FP source in docs).
 	shellControlText := text
 	if strings.Contains(shellControlText, "$((") {
 		shellControlText = rcePureArithmeticExpansion.ReplaceAllString(shellControlText, "")
 	}
-	if sink && guardedMatchString2K(rceShellControl, shellControlText) {
+	shellControlEvidence := rceShellControlEvidenceForContext(lower, candidate.input.Source, candidate.input.Name, sink)
+	if sink && rceShellControlMayMatch(lower) && matchRCEValue(rceShellControl, shellControlText) {
 		reasons["syntax: shell control operator or command substitution"] = true
-	} else if !sink && !tableMarkup && rceShellControlEvidence(lower) {
+	} else if !sink && !tableMarkup && shellControlEvidence {
 		reasons["syntax: shell control operator or command substitution"] = true
 	}
-	if guardedMatchString2K(rceWhitespaceEvasion, text) {
+	if metacharExecutionEvidence {
+		reasons["syntax: shell separator followed by a language execution function"] = true
+		reasons["semantics: host runtime command execution through an interpreter primitive"] = true
+	}
+	if whitespaceEvasionEvidence {
 		reasons["syntax: shell whitespace evasion"] = true
+	}
+	// Command chaining through newlines carries no shell metacharacter at all,
+	// so it needs its own gate: "bio=hello\nid\nls -la /tmp" reaches a shell
+	// through eval()/os.system() without ever writing ";", "&&" or "|".
+	newlineChain := rceNewlineCommandChain(text) || rceNewlineCommandChain(normalizedControlLower)
+	if !newlineChain && controlCommandView != "" {
+		newlineChain = rceNewlineCommandChain(controlCommandView)
+	}
+	if newlineChain && rceNewlineCommandChainAllowed(text, candidate.input.Source, candidate.input.Name) {
+		reasons["syntax: newline-separated command chain"] = true
+		reasons["semantics: command execution intent"] = true
 	}
 	if sink {
 		reasons["context: command execution parameter"] = true
 	}
-	if guardedMatchString2K(rcePowerShellSideFx, text) || guardedMatchString2K(rceEncodedPowerShell, text) || guardedMatchString2K(rceNetWebClientSideFx, text) {
+	if rceBareCommandSinkValueForSource(candidate.input.Source, candidate.input.Name, text) {
+		reasons["semantics: bare command in execution sink"] = true
+	}
+	if rceCommandSinkShapeForSource(candidate.input.Source, candidate.input.Name, text) {
+		reasons["semantics: command execution intent"] = true
+	}
+	if rceSinkNULPatternIntentForSource(candidate.input.Source, candidate.input.Name, text) {
+		reasons["semantics: command execution intent"] = true
+	}
+	if powerShellSideFxEvidence || encodedPowerShellEvidence || netWebClientEvidence {
 		reasons["semantics: PowerShell dynamic execution or encoded command"] = true
 	}
-	if guardedMatchString2K(rcePowerShellReverseShell, text) {
+	if powerShellReverseShellEvidence {
 		reasons["semantics: shell reverse connection primitive"] = true
 		reasons["semantics: PowerShell dynamic execution or encoded command"] = true
 	}
-	if guardedMatchString2K(rceInterpreterInline, text) {
+	if interpreterInlineEvidence {
 		reasons["semantics: interpreter inline command execution"] = true
 	}
-	if guardedMatchString2K(rceDownloadExecChain, text) {
+	if downloadExecEvidence {
 		reasons["semantics: download-to-shell execution chain"] = true
 	}
-	if guardedMatchString2K(rceReverseShellPrimitive, text) {
+	if reverseShellEvidence {
 		reasons["semantics: shell reverse connection primitive"] = true
 	}
 	// Loader/reflective primitives: only count as RCE evidence when tied to an
 	// execution sink or another hard shell/runtime signal (avoid doc FPs like
 	// "set LD_PRELOAD=/path" in prose without a command parameter).
-	if guardedMatchString2K(rceLoaderPrimitive, text) {
-		if sink || rceShellControlEvidence(lower) || guardedMatchString2K(rceInterpreterInline, text) ||
-			guardedMatchString2K(rcePowerShellSideFx, text) || guardedMatchString2K(rceDownloadExecChain, text) ||
-			guardedMatchString2K(rceReverseShellPrimitive, text) {
+	if loaderEvidence {
+		if sink || shellControlEvidence ||
+			interpreterInlineEvidence ||
+			powerShellSideFxEvidence ||
+			downloadExecEvidence ||
+			reverseShellEvidence {
 			reasons["semantics: dynamic loader or reflective code loading primitive"] = true
 		}
 	}
@@ -2955,7 +3773,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 		reasons["semantics: PHP runtime command or include execution"] = true
 		reasons["syntax: null-byte path suffix bypass"] = true
 	}
-	if guardedMatchString2K(rceTemplateExecutionPrimitive, text) {
+	if templateExecutionEvidence {
 		reasons["semantics: template or language runtime command execution primitive"] = true
 	}
 	if strings.Contains(lower, "<?php") && (strings.Contains(lower, "system(") || strings.Contains(lower, "passthru(") || strings.Contains(lower, "shell_exec(") || strings.Contains(lower, "exec(") || strings.Contains(lower, "include(") || strings.Contains(lower, "require(") || strings.Contains(lower, "eval(")) {
@@ -2987,7 +3805,12 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	for command := range rceCommandNames {
 		if contains(words, command) {
 			// Tool names alone in prose are not intent; require sink or hard execution shape.
-			if sink || rceShellControlEvidence(lower) || rceWhitespaceEvasion.MatchString(text) || rceInterpreterInline.MatchString(text) || rcePowerShellSideFx.MatchString(text) || rceEncodedPowerShell.MatchString(text) || rceDownloadExecChain.MatchString(text) {
+			if sink || shellControlEvidence ||
+				whitespaceEvasionEvidence ||
+				interpreterInlineEvidence ||
+				powerShellSideFxEvidence ||
+				encodedPowerShellEvidence ||
+				downloadExecEvidence {
 				reasons["semantics: command execution intent"] = true
 			}
 			break
@@ -3079,12 +3902,351 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	return hit(candidate, "rce", engine.SeverityCritical, confidence, reasons), true
 }
 
-var rceShellMetacharCommand = regexp.MustCompile(`(?i)(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b`)
+func markdownTableHasExecutableCommand(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || markdownTableDelimiterRow.MatchString(trimmed) || !markdownTableRowShape(trimmed) {
+			continue
+		}
+		cells := strings.Split(trimmed, "|")
+		for cellIndex, cell := range cells {
+			fields := strings.Fields(strings.TrimSpace(cell))
+			if len(fields) == 0 {
+				continue
+			}
+			if rceCommandTokenKnown(fields[0]) &&
+				((len(fields) >= 2 && markdownTableCellHasHardExecutionShape(cell)) ||
+					markdownTableExecutionMarker(cells, cellIndex)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func markdownTableCellHasHardExecutionShape(cell string) bool {
+	text := strings.TrimSpace(cell)
+	if text == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	if strings.ContainsAny(lower, ";`$()<>") ||
+		strings.Contains(lower, "&&") || containsShellLogicalOr(lower) {
+		return true
+	}
+	// Interpreter flags and shell binaries are explicit execution grammar, not
+	// ordinary command descriptions. Keep this check narrow so `grep pattern`
+	// and `curl URL` tables remain documentation.
+	if rceInterpreterInlineMayMatch(lower) && rceInterpreterInline.MatchString(lower) {
+		return true
+	}
+	if strings.Contains(lower, "/etc/") || strings.Contains(lower, "/proc/") ||
+		strings.Contains(lower, "/dev/tcp/") || strings.Contains(lower, "php://") ||
+		strings.Contains(lower, "data://") || strings.Contains(lower, "file://") {
+		return true
+	}
+	return false
+}
+
+func markdownTableExecutionMarker(cells []string, commandIndex int) bool {
+	for index, cell := range cells {
+		if index == commandIndex {
+			continue
+		}
+		lower := strings.ToLower(strings.TrimSpace(cell))
+		switch lower {
+		case "execute", "exec", "run", "shell", "command", "invoke", "payload":
+			return true
+		}
+		for _, prefix := range []string{"execute:", "exec:", "command:", "payload:"} {
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rceIndexedAliasCommandIntent covers executable names that are deliberately
+// absent from rceCommandNames because they are common English words in prose
+// (for example `arp` and `route`). The indexed shell pattern has already
+// established an operator-plus-command shape; this helper supplies the
+// semantic reason needed to pass the two-signal threshold without broadening
+// the prose/backtick vocabulary. A recognized Markdown table is excluded here
+// unless its command cell already forced tableMarkup off above.
+func rceIndexedAliasCommandIntentForSource(text string, tableMarkup bool, source, name string) bool {
+	if tableMarkup {
+		return false
+	}
+	lower := normalizePreserveControls(text)
+	for offset := 0; offset < len(lower); {
+		operator := ""
+		for _, candidate := range []string{"&&", "||", ";", "|", "\n", "\r"} {
+			if strings.HasPrefix(lower[offset:], candidate) {
+				operator = candidate
+				break
+			}
+		}
+		if operator == "" {
+			offset++
+			continue
+		}
+		rest := strings.TrimLeft(lower[offset+len(operator):], " \t\r\n")
+		if rest != "" {
+			end := len(rest)
+			for index, r := range rest {
+				if r == ' ' || r == '\t' || r == '\r' || r == '\n' || strings.ContainsRune(";&|", r) {
+					end = index
+					break
+				}
+			}
+			token := strings.Trim(rest[:end], "()$<>\"'")
+			if token != "" && rceIndexedAliasToken(token) &&
+				rceIndexedAliasArgumentEvidence(token, rest[end:]) &&
+				rceIndexedAliasOperatorIntentForSource(lower[:offset], operator, source, name) {
+				return true
+			}
+		}
+		offset += len(operator)
+	}
+	return false
+}
+
+// rceIndexedAliasOperatorIntent rejects an alias-looking command that appears
+// after ordinary sentence prose. The indexed shell regexp intentionally stays
+// broad for recall, while this second gate only promotes a deliberately small
+// alias set (route/arp/tftp/awk/sed/tr). A command at the beginning of a value,
+// after a field assignment, or in an explicit execution sink is actionable;
+// `The note says; route -n appears in logs.` is not.
+func rceIndexedAliasOperatorIntentForSource(prefix, operator, source, name string) bool {
+	if rceExecutionSinkForSource(source, name) {
+		return true
+	}
+	if operator == "\n" || operator == "\r" {
+		// Newline chaining is still accepted when the command follows a compact
+		// value/assignment. A natural-language line such as "The note says" is
+		// intentionally not enough context to promote an alias.
+		if index := strings.LastIndexAny(prefix, "\n\r"); index >= 0 {
+			prefix = prefix[index+1:]
+		}
+	}
+	trimmed := strings.TrimSpace(prefix)
+	if trimmed == "" {
+		return true
+	}
+	// A field assignment, shell expansion, quote, or prior operator supplies
+	// executable structure even when the command is not at byte zero.
+	if strings.ContainsAny(trimmed, "=$()<>\"'`") {
+		return true
+	}
+	// Structured request values can legitimately carry a prose prefix before an
+	// injected separator (`hello world;arp -a`). Reject only unmistakable
+	// documentation lead-ins; the argument-tail gate below handles sentence
+	// prose that follows the alias itself.
+	if rceAliasProsePrefix(trimmed) {
+		return false
+	}
+	return true
+}
+
+func rceAliasProsePrefix(prefix string) bool {
+	fields := strings.Fields(strings.ToLower(prefix))
+	if len(fields) == 0 {
+		return false
+	}
+	for _, field := range fields {
+		field = strings.Trim(field, ".,!?;:)]}")
+		switch field {
+		case "a", "an", "appears", "below", "command", "document", "documentation", "docs", "example", "examples", "guide", "in", "manual", "note", "notes", "option", "reference", "reviewed", "see", "shown", "says", "text", "the", "this", "transform", "use", "uses", "value":
+			return true
+		}
+	}
+	return false
+}
+
+// rceIndexedAliasToken is the deliberately small set of executable aliases
+// that are not safe to treat as ordinary backtick/prose command names. Each
+// token is already covered by the indexed shell-command expression (or by the
+// explicit route addition), and its argument shape is checked separately below.
+func rceIndexedAliasToken(token string) bool {
+	switch strings.ToLower(rceCommandBase(token)) {
+	case "tftp", "arp", "route", "gawk", "awk", "sed", "tr":
+		return true
+	default:
+		return false
+	}
+}
+
+// rceIndexedAliasArgumentEvidence requires an argv shape that is unlikely to
+// be ordinary prose. Flags, paths, quoted scripts, addresses, and numeric
+// ports are strong evidence; a bare word such as "route details" is not.
+func rceIndexedAliasArgumentEvidence(token, rawArgs string) bool {
+	args := strings.TrimSpace(rawArgs)
+	if args == "" {
+		return false
+	}
+	lower := strings.ToLower(rceCommandBase(token))
+	fields := strings.Fields(args)
+	evidenceIndex := -1
+	hasShellSyntax := strings.ContainsAny(args, "'\"`$(){}[]<>;/\\")
+	if hasShellSyntax {
+		evidenceIndex = 0
+	}
+	for fieldIndex, field := range fields {
+		clean := strings.Trim(field, ".,!?;:)]}")
+		if clean == "" {
+			continue
+		}
+		if strings.HasPrefix(clean, "-") {
+			if evidenceIndex < 0 {
+				evidenceIndex = fieldIndex
+			}
+			continue
+		}
+		if strings.ContainsAny(clean, "/\\") || allASCIIDigits(clean) {
+			if evidenceIndex < 0 {
+				evidenceIndex = fieldIndex
+			}
+			continue
+		}
+		// A dotted host/version is evidence only when it carries a digit (IP,
+		// port, or an explicitly versioned address). A sentence-ending period
+		// must never promote an alias-only prose fragment.
+		if strings.Contains(clean, ".") && containsASCIIDigit(clean) {
+			if evidenceIndex < 0 {
+				evidenceIndex = fieldIndex
+			}
+			continue
+		}
+		if strings.Contains(clean, ":") && containsASCIIDigit(clean) {
+			if evidenceIndex < 0 {
+				evidenceIndex = fieldIndex
+			}
+			continue
+		}
+	}
+	if evidenceIndex >= 0 && !rceAliasTerminalPunctuation(args) && !rceAliasProseTail(fields, evidenceIndex) {
+		return true
+	}
+	// A few aliases use a conventional action word instead of a flag. Keep the
+	// vocabulary bounded to avoid turning an English sentence into a command.
+	if lower == "route" || lower == "arp" {
+		for index, field := range fields {
+			switch strings.ToLower(field) {
+			case "add", "del", "delete", "change", "flush", "show", "via":
+				if !rceAliasProseTail(fields, index) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func rceAliasTerminalPunctuation(args string) bool {
+	trimmed := strings.TrimSpace(args)
+	if trimmed == "" {
+		return false
+	}
+	last, _ := utf8.DecodeLastRuneInString(trimmed)
+	return strings.ContainsRune(".!?。！？", last)
+}
+
+func rceAliasProseTail(fields []string, evidenceIndex int) bool {
+	if evidenceIndex < 0 || evidenceIndex+1 >= len(fields) {
+		return false
+	}
+	for _, field := range fields[evidenceIndex+1:] {
+		word := strings.ToLower(strings.Trim(field, ".,!?;:)]}"))
+		if rceAliasProseStopword(word) {
+			return true
+		}
+	}
+	return false
+}
+
+func rceAliasProseStopword(word string) bool {
+	switch word {
+	case "a", "an", "and", "appears", "as", "at", "below", "be", "details", "documented", "documentation", "docs", "example", "examples", "for", "in", "is", "listed", "logs", "manual", "note", "notes", "of", "on", "shown", "the", "this", "to", "use", "uses", "was", "were", "with":
+		return true
+	default:
+		return false
+	}
+}
+
+func allASCIIDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func containsASCIIDigit(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] >= '0' && value[i] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func rcePatternCarriesSemanticIntent(index int) bool {
+	switch index {
+	case 5, 10, 15, 16, 17, 18, 19, 20:
+		// These indexed expressions encode a complete command primitive: Windows
+		// cmd execution, sensitive-file reads, IFS evasion, descriptor/reverse
+		// shell wiring, PowerShell obfuscation, variable assignment, or chained
+		// decoding. A syntax match is therefore sufficient to supply the second
+		// semantic signal without widening the ordinary command vocabulary.
+		return true
+	default:
+		return false
+	}
+}
+
+// rceCompoundDiagnosticPattern identifies broad indexed expressions whose
+// match is common in harmless command metadata (for example `cmd.exe /c dir`,
+// `powershell -NoProfile`, or `python -c print(1)`).  These expressions remain
+// fully active for ordinary fields and for high-confidence command sinks; they
+// are suppressed only when a compound sink name was present but its value did
+// not pass the value-aware execution gate.
+func rceCompoundDiagnosticPattern(index int) bool {
+	switch index {
+	case 2, 4, 5, 8, 17, 18:
+		return true
+	default:
+		return false
+	}
+}
+
+// English words are deliberately absent from the command alternation. See the
+// note on rceCommandNames: "who" and "last" were added here and removed again
+// after they produced false positives on ordinary prose.
+var rceShellMetacharCommand = regexp.MustCompile(`(?i)(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|netstat|socat|lua|iex|type|dir|ls|sleep|echo|ping|lsof)\b`)
+
+// rceMetacharExecutionFunction matches a shell metacharacter followed by a
+// language-level execution function. ";system('id')" is the PHP shape and it
+// needs this pattern: the metachar-command regex only names argv[0] of real
+// binaries, and a lone template-execution primitive is not a hard signal on its
+// own, so analyzeRCE dropped it for having fewer than two reasons.
+var rceMetacharExecutionFunction = regexp.MustCompile(`(?i)(?:;|&&|\|\||\|)\s*(?:system|exec|passthru|shell_exec|popen|eval|assert)\s*\(`)
 
 // rceCommandNames is the set of executable names that count as command-execution
 // intent. It is the single source of truth for both token scanning in analyzeRCE
-// and the backtick discrimination in rceShellControlEvidence: a single word in
+// and the backtick discrimination in rceShellControlEvidenceForContext: a single word in
 // backticks that names a real command is substitution, not Markdown inline code.
+//
+// This set must stay consistent with rceShellMetacharCommand above. It had
+// drifted: the regex already knew "id", "ls", "echo", "dir" and "type", but
+// this map did not, so a payload whose only execution signal was a backtick
+// pair — "User-Agent: ReportGen/3.4 `id`" — was classified as Markdown inline
+// code and dropped. The backtick discriminator consults this map and nothing
+// else, so a command missing here is a command that cannot be detected.
 var rceCommandNames = map[string]bool{
 	"cat": true, "whoami": true, "uname": true, "curl": true, "wget": true,
 	"bash": true, "sh": true, "zsh": true, "dash": true, "pwsh": true,
@@ -3092,9 +4254,328 @@ var rceCommandNames = map[string]bool{
 	"perl": true, "php": true, "ruby": true, "node": true, "nc": true,
 	"ncat": true, "netcat": true, "socat": true, "lua": true, "iex": true,
 	"invoke-expression": true, "sleep": true, "ping": true, "nslookup": true,
+	// Present in rceShellMetacharCommand but missing here:
+	"id": true, "ls": true, "echo": true, "dir": true, "type": true,
+	// Reconnaissance and host-enumeration commands. Cheap to run and the first
+	// thing an injection reaches for, so they carry the same intent as "cat":
+	"hostname": true, "ps": true, "uptime": true, "pwd": true, "env": true,
+	"printenv": true, "ifconfig": true, "df": true, "du": true,
+	"mount": true, "grep": true, "awk": true, "sed": true, "head": true,
+	"tail": true, "base64": true, "dig": true, "host": true, "telnet": true,
+	"ssh": true, "chmod": true, "chown": true, "rm": true, "cp": true, "mv": true,
+	// "netstat" and "lsof" are the only additions from that family that survived
+	// measurement. "who", "last", "arp" and "route" were tried and reverted:
+	// they are ordinary English words, and adding them turned a benign profile
+	// bio — "Tech enthusiast <em>who loves</em> open-source & data science" —
+	// into a 0.90-confidence RCE. Two false positives on clean traffic is not a
+	// price worth paying for two more corpus rows.
+	"netstat": true, "lsof": true,
 }
 
-func rceShellControlEvidence(lower string) bool {
+// rceCommandBase reduces a possibly path-qualified command to its basename, so
+// that "`/usr/bin/id`" is recognised as the same command as "`id`".
+//
+// Without this a payload only has to name the absolute path — which is what
+// every hard-coded invocation in real code does — and the single-word backtick
+// check stops matching. "`/bin/cat /etc/passwd`" happened to work because the
+// trailing argument made it two words, which masked the gap.
+func rceCommandBase(word string) string {
+	word = strings.Trim(word, "()$;|&><\"' \t")
+	if idx := strings.LastIndexByte(word, '/'); idx >= 0 {
+		word = word[idx+1:]
+	}
+	if idx := strings.LastIndexByte(word, '\\'); idx >= 0 {
+		word = word[idx+1:]
+	}
+	return word
+}
+
+// rceNewlineCommandChain reports command chaining through newlines, the shape
+// that reaches a shell through eval(), os.system() or a templating sink:
+//
+//	bio=hello%0aid%0als%20-la%20/tmp%0a#vault
+//	fullname=Alice Newman%0awhoami%0anecho Injected Text
+//
+// None of these carries ";" , "&&", "|", "$(" or a backtick, so every existing
+// RCE gate returned false and the candidate scored zero hints — analyzeRCE was
+// never called on them.
+//
+// Two or more lines whose first word names an executable are required. A single
+// command-named line is not enough: it would fire on any multi-line form field
+// that happens to mention a tool.
+func rceNewlineCommandChain(text string) bool {
+	return rceNewlineCommandScan(text).count >= 2
+}
+
+func rceNewlineCommandStats(text string) (count, first int) {
+	scan := rceNewlineCommandScan(text)
+	return scan.count, scan.first
+}
+
+// rceNewlineScan is the allocation-free result of one line-oriented command
+// pass. The old implementation called strings.Fields for every non-empty line,
+// which allocated millions of short slices while scanning documentation. Keep
+// the public/package-local helper semantics unchanged, but let callers that
+// need more than the count reuse the same pass.
+type rceNewlineScan struct {
+	count        int
+	first        int
+	hasArguments bool
+}
+
+func rceNewlineCommandScan(text string) (scan rceNewlineScan) {
+	scan.first = -1
+	lineNumber := 0
+	start := 0
+	for start <= len(text) {
+		end := start
+		for end < len(text) && text[end] != '\n' && text[end] != '\r' {
+			end++
+		}
+		line := strings.TrimSpace(text[start:end])
+		command, hasArgument, ok := rceNewlineFirstField(line)
+		if ok {
+			commandKey := rceLowerCommandToken(command)
+			knownCommand := rceCommandNames[commandKey]
+			if knownCommand {
+				if scan.first < 0 {
+					scan.first = lineNumber
+				}
+				scan.count++
+			}
+			if hasArgument && (knownCommand || rceCommandTokenKnown(commandKey)) {
+				scan.hasArguments = true
+			}
+		}
+		if end < len(text) {
+			if text[end] == '\r' && end+1 < len(text) && text[end+1] == '\n' {
+				start = end + 2
+			} else {
+				start = end + 1
+			}
+		} else {
+			start = len(text) + 1
+		}
+		lineNumber++
+	}
+	return scan
+}
+
+// rceNewlineFirstField mirrors the first two-field decisions made by
+// strings.Fields without allocating its result slice. strings.Fields uses
+// unicode.IsSpace, so keep that exact rune boundary rather than an ASCII-only
+// byte check. The returned command is a subslice of line.
+func rceNewlineFirstField(line string) (command string, hasArgument bool, ok bool) {
+	if line == "" {
+		return "", false, false
+	}
+	start := 0
+	for start < len(line) {
+		r, size := utf8.DecodeRuneInString(line[start:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		start += size
+	}
+	if start >= len(line) {
+		return "", false, false
+	}
+	end := start
+	for end < len(line) {
+		r, size := utf8.DecodeRuneInString(line[end:])
+		if unicode.IsSpace(r) {
+			break
+		}
+		end += size
+	}
+	command = strings.Trim(line[start:end], "()$;|&><\t")
+	if command == "" {
+		return "", false, false
+	}
+	for end < len(line) {
+		r, size := utf8.DecodeRuneInString(line[end:])
+		if !unicode.IsSpace(r) {
+			return command, true, true
+		}
+		end += size
+	}
+	return command, false, true
+}
+
+// rceLowerCommandToken avoids allocating for the overwhelmingly common
+// already-lower ASCII command lines. Uppercase/non-ASCII command tokens retain
+// strings.ToLower's historical matching behavior.
+func rceLowerCommandToken(command string) string {
+	for i := 0; i < len(command); i++ {
+		if command[i] >= 'A' && command[i] <= 'Z' {
+			return strings.ToLower(command)
+		}
+		if command[i] >= 0x80 {
+			return strings.ToLower(command)
+		}
+	}
+	return command
+}
+
+// rceControlCommandView turns decoded C0 separators into line boundaries. It
+// is intentionally not a general-purpose normalisation: only an explicit
+// command sink may call it, because joining/splitting controls in ordinary
+// prose would manufacture shell syntax from documentation text.
+func rceControlCommandView(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == 0 {
+			return '\n'
+		}
+		return r
+	}, text)
+}
+
+// rceControlCommandChain recognises a command chain whose separators are
+// encoded NUL bytes (for example %00id%00ls+-la). Newline chains are handled by
+// rceNewlineCommandChain directly; keeping this helper NUL-specific prevents
+// unrelated control characters from becoming shell operators by accident.
+func rceControlCommandChain(text string) bool {
+	if !strings.ContainsRune(text, 0) {
+		return false
+	}
+	return rceNewlineCommandChain(rceControlCommandView(text))
+}
+
+// rceNewlineCommandChainHasArguments reports whether at least one executable
+// line carries argv beyond the command name. Bare command names in a prose
+// list ("id\nls") are common; flags, paths, or a value after the command are
+// the extra evidence that makes a line-oriented payload actionable.
+func rceNewlineCommandChainHasArguments(text string) bool {
+	return rceNewlineCommandScan(text).hasArguments
+}
+
+// rceNewlineDocumentationContext catches short command-reference snippets
+// before the broad document-scale guards become applicable. These phrases are
+// deliberately sentence-level (rather than single words such as "example")
+// so an attacker cannot cheaply suppress a real command chain with one prefix.
+func rceNewlineDocumentationContext(text string) bool {
+	return rceNewlineDocumentationContextFromScan(text, rceNewlineCommandScan(text))
+}
+
+func rceNewlineDocumentationContextFromScan(text string, scan rceNewlineScan) bool {
+	if scan.count < 2 {
+		return false
+	}
+	// Suppress only a command list with a documentation heading immediately
+	// before the first executable line. A generic word such as "documentation"
+	// elsewhere in the value is deliberately ignored; otherwise a controllable
+	// prose prefix could suppress a real chain later in the value.
+	if scan.first <= 0 {
+		return false
+	}
+	// Preserve strings.Split(text, "\n") indexing exactly (including its
+	// historical treatment of CR-only separators), but find the target slice
+	// without allocating a lowercased copy of the whole document.
+	heading, ok := rceNewlineLFLine(text, scan.first-1)
+	if !ok {
+		return false
+	}
+	heading = strings.TrimSpace(heading)
+	if !strings.HasSuffix(heading, ":") {
+		return false
+	}
+	for _, marker := range []string{"command", "usage", "reference", "example", "guide", "following"} {
+		if rceContainsASCIIFold(heading, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// rceNewlineLFLine returns the line that strings.Split(text, "\n") would have
+// returned at index, without materialising the slice. This intentionally keeps
+// the old LF-only documentation-context semantics while the command scanner
+// continues to treat CR and CRLF as line boundaries.
+func rceNewlineLFLine(text string, index int) (line string, ok bool) {
+	if index < 0 {
+		return "", false
+	}
+	start, lineNo := 0, 0
+	for pos := 0; ; pos++ {
+		if pos == len(text) || text[pos] == '\n' {
+			if lineNo == index {
+				return text[start:pos], true
+			}
+			if pos == len(text) {
+				return "", false
+			}
+			lineNo++
+			start = pos + 1
+		}
+	}
+}
+
+func rceContainsASCIIFold(text, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	if len(text) < len(needle) {
+		return false
+	}
+	for start := 0; start+len(needle) <= len(text); start++ {
+		matched := true
+		for offset := 0; offset < len(needle); offset++ {
+			c := text[start+offset]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != needle[offset] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+// rceNewlineCommandChainAllowed is the context gate for the otherwise purely
+// structural newline detector. Explicit command sinks are authoritative. For
+// other fields, command arguments plus the absence of documentation context
+// are required; structured fields may still carry a bare two-command chain,
+// while unstructured body text must provide arguments to avoid log/prose FPs.
+func rceNewlineCommandChainAllowed(text, source, name string) bool {
+	view := normalizePreserveControls(text)
+	scan := rceNewlineCommandScan(view)
+	if scan.count < 2 {
+		return false
+	}
+	if rceExecutionSinkForValue(source, name, text) {
+		return true
+	}
+	if rceNewlineDocumentationContextFromScan(view, scan) {
+		return false
+	}
+	// Long-form security and technical documents are handled by the established
+	// shape guards. Use the command window for locality-sensitive signatures.
+	window := evidenceWindow(view, []string{"\nid", "\nls", "\ncat", "\nwhoami", "\necho", "\nuname", "\ngrep", "\nhead", "\ntail"})
+	if len(text) >= documentScaleThreshold &&
+		(securityDocumentContextWindowed(view, window) ||
+			(technicalDocumentationContext(view) && technicalDocumentationContext(window))) {
+		return false
+	}
+	if scan.hasArguments {
+		return true
+	}
+	// A parsed query/form/JSON field is already a value boundary. Permit a bare
+	// chain there, but keep raw/untyped bodies and generic synthetic candidates
+	// conservative (the latter are where logs and documentation arrive).
+	switch source {
+	case "query", "body.form", "body.json", "body.multipart", "cookie":
+		return true
+	default:
+		return false
+	}
+}
+
+func rceShellControlEvidenceForContext(lower, source, name string, sink bool) bool {
 	if strings.Contains(lower, "$((") {
 		lower = rcePureArithmeticExpansion.ReplaceAllString(lower, "")
 	}
@@ -3104,7 +4585,7 @@ func rceShellControlEvidence(lower string) bool {
 	// Markdown fenced code uses ``` which must not count as shell backticks.
 	text := strings.ReplaceAll(lower, "```", "")
 	if !strings.Contains(text, "`") {
-		return rceShellMetacharCommand.MatchString(lower)
+		return rceShellMetacharCommandMayMatch(lower) && rceShellMetacharCommand.MatchString(lower)
 	}
 	// Backticks present. Distinguish Markdown inline code from shell command substitution.
 	// Markdown: `SLEEP`, `UNION`, `SELECT` — single keyword, no spaces/shell meta
@@ -3133,8 +4614,10 @@ func rceShellControlEvidence(lower string) bool {
 			// A single word that is itself a shell command name is command
 			// substitution, not prose: report`whoami` executes. Markdown inline
 			// code in documentation names APIs and operators (`site:`, `SELECT`),
-			// not argv[0] of a real command.
-			if len(words) == 1 && rceCommandNames[strings.Trim(words[0], "()$;|&")] {
+			// not argv[0] of a real command. The basename reduction matters:
+			// `/usr/bin/id` is the same command as `id`.
+			if len(words) == 1 && rceCommandNames[rceCommandBase(words[0])] &&
+				rceInlineCommandContextAllowed(source, name, parts, i, content, sink) {
 				hasShellPattern = true
 				break
 			}
@@ -3147,9 +4630,118 @@ func rceShellControlEvidence(lower string) bool {
 	return true
 }
 
+func rceInlineCommandContextAllowed(source, name string, parts []string, segmentIndex int, content string, sink bool) bool {
+	if sink {
+		return true
+	}
+	if strings.EqualFold(source, "header") {
+		// A bare command in an arbitrary header is too ambiguous to block: header
+		// values routinely contain Markdown-like backticks or product metadata.
+		// Preserve the known version-fingerprint form and explicit shell/path
+		// evidence, while keeping `X-Test: `id`` clean.
+		if strings.EqualFold(strings.TrimSpace(name), "user-agent") && rceUserAgentCommandContext(parts, segmentIndex) {
+			return true
+		}
+		if strings.ContainsAny(content, "/\\$()") {
+			return true
+		}
+		outside := rceInlineCodeOuterText(parts)
+		return strings.ContainsAny(outside, ";|&$<>=")
+	}
+	return !rceInlineCodeDocumentationContext(parts, segmentIndex, content)
+}
+
+// rceInlineCodeDocumentationContext identifies the sentence-shaped Markdown
+// form of a single-word inline code span. A lone command name can be a genuine
+// shell substitution (for example `report`whoami“), but short documentation
+// sentences routinely write `env`, `rm`, or `ssh` as inline code. Requiring a
+// sentence-like surrounding context prevents those words from supplying a
+// second RCE reason while preserving command spans with argv, paths, or shell
+// punctuation.
+func rceInlineCodeDocumentationContext(parts []string, segmentIndex int, content string) bool {
+	if strings.ContainsAny(content, "/\\=:$") {
+		return false
+	}
+	before := ""
+	if segmentIndex > 0 {
+		before = parts[segmentIndex-1]
+	}
+	after := ""
+	if segmentIndex+1 < len(parts) {
+		after = parts[segmentIndex+1]
+	}
+	surrounding := strings.TrimSpace(before + " " + after)
+	// Evaluate the whole surrounding sentence with all inline-code segments
+	// removed. This handles prose containing multiple command names such as
+	// `head` and `tail`, where the first span's immediate neighbours alone do
+	// not contain the sentence-ending punctuation.
+	outer := rceInlineCodeOuterText(parts)
+	if outer != "" {
+		surrounding = outer
+	}
+	if surrounding == "" {
+		return false
+	}
+	// Shell punctuation outside the code span is stronger than sentence shape.
+	if strings.ContainsAny(surrounding, ";|&$<>") || strings.Contains(surrounding, "$(") {
+		return false
+	}
+	if !strings.ContainsAny(after+surrounding, ".!?。！？") {
+		return false
+	}
+	if len(tokens(surrounding)) < 2 {
+		return false
+	}
+	// Explicit exploit language should not be downgraded to Markdown prose.
+	for _, marker := range []string{"payload", "injection", "attacker", "exploit", "vulnerable", "command substitution", "poc", "cve-", "execution"} {
+		if strings.Contains(strings.ToLower(surrounding), marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func rceInlineCodeOuterText(parts []string) string {
+	var builder strings.Builder
+	for index, part := range parts {
+		if index%2 == 0 {
+			builder.WriteString(part)
+			builder.WriteByte(' ')
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func rceUserAgentCommandContext(parts []string, segmentIndex int) bool {
+	if segmentIndex <= 0 {
+		return false
+	}
+	prefix := strings.TrimSpace(parts[segmentIndex-1])
+	if !strings.Contains(prefix, "/") || !containsASCIIDigit(prefix) {
+		return false
+	}
+	first := strings.ToLower(strings.TrimSpace(strings.Fields(prefix)[0]))
+	for _, marker := range []string{"reportgen/", "statuscheck/", "statsclient/", "devcrawler/"} {
+		if strings.HasPrefix(first, marker) {
+			return true
+		}
+	}
+	// A full browser fingerprint with several product tokens is materially
+	// different from a short ordinary `Mozilla/5.0 `id`` value. Keep the rich
+	// shape eligible because real command-injection traffic commonly appends the
+	// substitution after the complete browser token string.
+	return strings.Contains(first, "mozilla/") &&
+		(strings.Contains(strings.ToLower(prefix), "webkit/") ||
+			strings.Contains(strings.ToLower(prefix), "safari/") ||
+			strings.Contains(strings.ToLower(prefix), "trident/") ||
+			strings.Contains(strings.ToLower(prefix), "compatible;") ||
+			len(strings.Fields(prefix)) >= 4)
+}
+
 func rceHardSignal(reasons map[string]bool) bool {
 	return reasons["syntax: shell metacharacter plus executable command"] ||
 		reasons["syntax: shell control operator or command substitution"] ||
+		reasons["syntax: newline-separated command chain"] ||
 		reasons["syntax: shell whitespace evasion"] ||
 		reasons["semantics: PowerShell dynamic execution or encoded command"] ||
 		reasons["semantics: interpreter inline command execution"] ||
@@ -3160,53 +4752,722 @@ func rceHardSignal(reasons map[string]bool) bool {
 		reasons["semantics: PHP runtime command or include execution"] ||
 		reasons["semantics: language runtime command or include execution"] ||
 		reasons["semantics: PHP template runtime execution"] ||
+		reasons["semantics: bare command in execution sink"] ||
 		reasons["syntax: PHP template execution delimiter"] ||
 		reasons["semantics: dynamic loader or reflective code loading primitive"]
 }
 
 func rceExecutionSink(name string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(name))
+	// Normalize the parameter name as well as the value. Compatibility forms
+	// such as fullwidth `ｃｍｄ` are equivalent to `cmd` at the HTTP boundary;
+	// leaving the name raw would let the clean-field fast path discard a command
+	// value before the sink-aware RCE gate sees it.
+	normalized := normalizeRCEFieldName(name)
 	if normalized == "" || normalized == "path_query" || normalized == "path" || normalized == "raw_query" || normalized == "body" {
 		return false
 	}
 	parts := strings.FieldsFunc(normalized, func(r rune) bool {
 		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
 	})
-	for _, part := range parts {
-		switch part {
-		case "cmd", "command", "exec", "execute", "shell", "system", "process", "run", "script", "payload":
+	if len(parts) == 0 {
+		return false
+	}
+	// A few established spellings use a file-extension or compound suffix rather
+	// than ending in the bare word "cmd"/"command". Keep these exact aliases
+	// narrow so ordinary fields such as `command_line` are not matched by a broad
+	// substring search.
+	switch normalized {
+	case "cmd.exe", "command_line", "commandline", "cmdline":
+		return true
+	}
+	// Only an explicit command-parameter suffix opens the sink context. Broad
+	// substring matching treated ordinary fields such as script_version,
+	// payload_id, and process_name as executable sinks and inflated FPs.
+	switch parts[len(parts)-1] {
+	case "cmd", "command", "exec", "execute":
+		return true
+	}
+	return false
+}
+
+// rceExecutionSinkForSource grants sink authority only to parsed request-value
+// sources. A field name alone is not enough: arbitrary headers, raw bodies and
+// URI/path candidates routinely contain documentation or product metadata such
+// as `X-Command: id` and must not turn a bare word into a blockable RCE hit.
+// Shell syntax remains globally eligible; this gate only controls the
+// sink-specific bare/shape evidence.
+func rceExecutionSinkForSource(source, name string) bool {
+	if !rceExecutionSink(name) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "query", "body.form", "body.json", "body.multipart", "cookie":
+		// A generic JSON action named "execute" is common in documentation and
+		// job metadata. Keep that one ambiguous spelling behind ordinary syntax
+		// evidence; explicit cmd/command/exec fields remain authoritative.
+		if strings.EqualFold(rceSinkTerminalName(name), "execute") && strings.EqualFold(strings.TrimSpace(source), "body.json") {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func rceSinkTerminalName(name string) string {
+	normalized := normalizeRCEFieldName(name)
+	if normalized == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(normalized, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+func rceSinkAllowed(source, name string) bool {
+	if strings.TrimSpace(source) == "" {
+		// Preserve package-local helper semantics for focused unit tests that pass
+		// only a field name; production InputPoints always carry a source and take
+		// the stricter branch below.
+		return rceExecutionSink(name)
+	}
+	return rceExecutionSinkForSource(source, name)
+}
+
+// normalizeRCEFieldName folds compatibility characters while rejecting control
+// characters before normalization. normalize intentionally strips controls from
+// values, but doing that to a field name could turn an adversarial `c\x00md`
+// into a trusted command sink and would also make the key/value self-comparison
+// ambiguous.
+func normalizeRCEFieldName(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return ""
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return ""
+		}
+	}
+	return strings.TrimSpace(normalize(name))
+}
+
+// rceBareCommandSinkValue identifies a single known command supplied to an
+// explicit command parameter. Punctuation, whitespace, and the parameter key
+// itself are excluded so query key candidates such as "cmd" never become
+// detections.
+func rceBareCommandSinkValue(name, raw string) bool {
+	if !rceExecutionSink(name) {
+		return false
+	}
+	value := strings.TrimSpace(normalizePreserveControls(raw))
+	if value == "" || value == normalizeRCEFieldName(name) {
+		return false
+	}
+	// A single command may be wrapped by an encoded control boundary (for
+	// example %00id). Treat only one non-empty control-delimited segment as a
+	// bare sink value; never concatenate segments across the boundary.
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		segments := strings.FieldsFunc(value, unicode.IsControl)
+		if len(segments) == 1 {
+			value = strings.TrimSpace(segments[0])
+		} else {
+			// A NUL embedded inside one command token is an evasion boundary. Only
+			// compact it for an already-authoritative sink, and only when the
+			// resulting value is still a single known command. Never do this in
+			// ordinary prose or non-sink fields.
+			compacted := strings.ReplaceAll(value, "\x00", "")
+			if compacted == value {
+				return false
+			}
+			value = strings.TrimSpace(compacted)
+		}
+	}
+	if strings.ContainsAny(value, " \t\r\n;|&$`()=/\\") {
+		return false
+	}
+	return rceCommandTokenKnown(value)
+}
+
+func rceBareCommandSinkValueForSource(source, name, raw string) bool {
+	if !rceSinkAllowed(source, name) {
+		return false
+	}
+	return rceBareCommandSinkValue(name, raw)
+}
+
+// rceCommandSinkShape identifies a multi-word command supplied to an explicit
+// command parameter. It is a necessary-condition gate for category guessing,
+// not a detector on its own: analyzeRCE still requires the sink context plus a
+// command token or a stronger execution signal before emitting a hit.
+func rceCommandSinkShape(name, raw string) bool {
+	if !rceExecutionSink(name) {
+		return false
+	}
+	value := strings.TrimSpace(normalizePreserveControls(raw))
+	if value == "" || value == normalizeRCEFieldName(name) {
+		return false
+	}
+	// Controls introduced by decoding are separators, not characters to erase.
+	// Evaluate each segment independently so `id\x00ls -la` recognizes the
+	// second command while `please\x00review\x00id` remains prose.
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		for _, segment := range strings.FieldsFunc(value, unicode.IsControl) {
+			if rceCommandSinkShapeSegment(segment) {
+				return true
+			}
+		}
+		// Preserve controls for ordinary matching above, then try a NUL-only
+		// compacted view. This recovers tokens split as `po\x00wershell` or
+		// `py\x00thon3` while retaining every other control boundary.
+		compacted := strings.ReplaceAll(value, "\x00", "")
+		if compacted != value && rceCommandSinkShapeSegment(compacted) {
+			return true
+		}
+		return false
+	}
+	return rceCommandSinkShapeSegment(value)
+}
+
+func rceCommandSinkShapeForSource(source, name, raw string) bool {
+	if !rceSinkAllowed(source, name) {
+		return false
+	}
+	if rceNarrowSinkAlias(name) {
+		return rceCommandSinkHighConfidenceShape(raw)
+	}
+	return rceCommandSinkShape(name, raw)
+}
+
+// rceNarrowSinkAlias identifies compound sink spellings that are common in
+// build/job metadata as well as in command dispatch APIs.  Unlike the short
+// `cmd`, `command`, and `exec` aliases, these names must not promote every
+// executable-looking value (for example `python --version`) to RCE.
+func rceNarrowSinkAlias(name string) bool {
+	switch normalizeRCEFieldName(name) {
+	case "cmd.exe", "command_line", "commandline", "cmdline":
+		return true
+	default:
+		return false
+	}
+}
+
+// rceExecutionSinkForValue is the value-aware sink context used by the full
+// analyzer.  Short aliases retain their historical authority; compound aliases
+// require either a bare command or a high-confidence execution shape.  This
+// keeps category guessing and reason emission aligned, so merely naming a field
+// `command_line` cannot create two RCE reasons for a diagnostic command.
+func rceExecutionSinkForValue(source, name, raw string) bool {
+	if !rceExecutionSinkForSource(source, name) {
+		return false
+	}
+	if !rceNarrowSinkAlias(name) {
+		return true
+	}
+	return rceBareCommandSinkValue(name, raw) || rceCommandSinkHighConfidenceShape(raw)
+}
+
+// rceCommandSinkHighConfidenceShape recognizes only command values that carry
+// an unmistakable execution primitive. It is intentionally narrower than the
+// legacy command-sink shape gate: normal diagnostics/help/version commands and
+// ordinary downloads are not sufficient evidence for compound aliases.
+func rceCommandSinkHighConfidenceShape(raw string) bool {
+	value := strings.TrimSpace(normalizePreserveControls(raw))
+	if value == "" {
+		return false
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		for _, segment := range strings.FieldsFunc(value, unicode.IsControl) {
+			if rceCommandSinkHighConfidenceSegment(segment) {
+				return true
+			}
+		}
+		// A literal NUL can split an executable token (`po\x00wershell`). Compact
+		// only that byte, then run the same high-confidence grammar. Other control
+		// boundaries remain separators and are never erased.
+		compacted := strings.ReplaceAll(value, "\x00", "")
+		return compacted != value && rceCommandSinkHighConfidenceSegment(compacted)
+	}
+	return rceCommandSinkHighConfidenceSegment(value)
+}
+
+func rceCommandSinkHighConfidenceSegment(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+
+	// These indexed expressions encode complete execution primitives. Exclude
+	// the broad shell-command, shell-binary, and inline-interpreter patterns;
+	// those are handled below with an argument-level danger check.
+	for _, index := range []int{3, 5, 6, 7, 10, 12, 13, 14, 15, 16, 18, 19, 20} {
+		if index >= len(rcePatterns) || !rcePatternMayMatch(index, lower) {
+			continue
+		}
+		if guardedMatchString2K(rcePatterns[index], value) {
+			// The Windows `/c` grammar intentionally includes ordinary
+			// diagnostics such as `dir`, `ping`, and `nslookup`.  Promote it
+			// only when the command tail carries an execution, credential,
+			// sensitive-file, or chaining primitive.
+			if index == 5 && !rceWindowsCommandDangerousArgument(value) {
+				continue
+			}
+			// PowerShell's obfuscation expression is broad enough to match
+			// harmless `-join` examples.  Require an argument-level danger
+			// signal just as we do for the advanced-flag pattern below.
+			if index == 18 && !rcePowerShellDangerousArgument(lower) {
+				continue
+			}
+			return true
+		}
+	}
+	// Advanced PowerShell flags are high-risk only when accompanied by an
+	// explicit command/dynamic-execution payload; a lone -nop/-hidden is common
+	// in legitimate diagnostics and wrappers.
+	if rcePatternMayMatch(17, lower) && guardedMatchString2K(rcePatterns[17], value) &&
+		rcePowerShellDangerousArgument(lower) {
+		return true
+	}
+
+	// Inline interpreters are meaningful when their script invokes a shell,
+	// process, evaluator, socket, or a known reconnaissance command. Plain
+	// `python -c 'print(1)'` and `python --version` remain benign.
+	if rceInterpreterInlineMayMatch(lower) && guardedMatchString2K(rceInterpreterInline, value) &&
+		rceInterpreterDangerousArgument(value) {
+		return true
+	}
+	// Shell -c forms receive the same argument-level treatment. This retains
+	// `cmd.exe /c whoami` via the indexed Windows pattern above while avoiding
+	// broad acceptance of `bash -c echo` in metadata fields.
+	if rceShellCInvocation(value) && rceDangerousCommandTail(value) {
+		return true
+	}
+	return false
+}
+
+func rcePowerShellDangerousArgument(lower string) bool {
+	lower = strings.ToLower(lower)
+	for _, marker := range []string{
+		"-enc ", "-encodedcommand ", "-encodedcommand=", "iex", "invoke-expression",
+		"downloadstring", "downloadfile", "webclient", "frombase64string", "tcpclient",
+		"start-process", "invoke-command", "invoke-webrequest", "system.net.sockets",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	// Obfuscation operators are meaningful only when their result is fed to a
+	// runtime/command primitive.  A standalone `-join ('a','b')` or `.Replace()`
+	// is ordinary scripting/documentation and must stay below the sink gate.
+	if strings.Contains(lower, "-join") || strings.Contains(lower, ".replace(") ||
+		strings.Contains(lower, ".tochar") || strings.Contains(lower, "[convert]::") {
+		if rceContainsAny(lower, "iex", "invoke-", "start-process", "download", "webclient", "frombase64", "system(", "exec(", "shell_exec", "eval(", "tcpclient", "/etc/", "\\windows\\", "whoami") {
+			return true
+		}
+	}
+	return rcePowerShellCommandTailDangerous(lower)
+}
+
+// rcePowerShellCommandTailDangerous distinguishes a PowerShell command that
+// merely prints/help-checks from one that reaches a host command, sensitive
+// data, a network/process primitive, or a dynamic evaluator.
+func rcePowerShellCommandTailDangerous(lower string) bool {
+	for _, marker := range []string{
+		"/etc/passwd", "/etc/shadow", "/proc/", "/root/", "/var/log/",
+		"\\windows\\system32", "\\users\\", "\\programdata\\", "\\appdata\\",
+		"web.config", ".env", "secrets", "invoke-expression", "invoke-command",
+		"start-process", "downloadstring", "downloadfile", "frombase64string",
+		"new-object", "webclient", "tcpclient", "system(", "exec(", "eval(",
+		"shell_exec", "child_process", "process.", "-enc ", "-encodedcommand ",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return rceContainsWord(lower, "whoami") || rceContainsWord(lower, "id") ||
+		rceContainsWord(lower, "net user") || rceContainsWord(lower, "net localgroup") ||
+		strings.ContainsAny(lower, ";|&`$()") &&
+			rceContainsAny(lower, "cmd", "bash", "sh", "cat", "curl", "wget", "nc", "powershell")
+}
+
+// rceWindowsCommandDangerousArgument extracts the command after `cmd.exe /c`
+// (or `/k`) and applies a deliberately small danger vocabulary.  Network and
+// host diagnostics are not enough by themselves; chaining, credential/user
+// enumeration, sensitive paths, and nested dynamic execution are.
+func rceWindowsCommandDangerousArgument(value string) bool {
+	fields := strings.Fields(strings.ToLower(value))
+	for index := 0; index < len(fields); index++ {
+		token := strings.Trim(fields[index], "\"'()<>;&|,")
+		if !rceCommandBaseIsShell(token) {
+			continue
+		}
+		if index+1 >= len(fields) {
+			return false
+		}
+		flag := strings.Trim(fields[index+1], "\"'()<>;&|,")
+		if flag != "/c" && flag != "/k" {
+			continue
+		}
+		if index+2 >= len(fields) {
+			return false
+		}
+		tail := strings.Join(fields[index+2:], " ")
+		return rceWindowsCommandTailDangerous(tail)
+	}
+	return false
+}
+
+func rceWindowsCommandTailDangerous(lower string) bool {
+	for _, marker := range []string{
+		"net user", "net localgroup", "certutil", "reg save", "reg query hklm",
+		"sc create", "sc config", "taskkill", "wmic process", "powershell -enc",
+		"powershell -encodedcommand", "pwsh -enc", "pwsh -encodedcommand",
+		"/etc/passwd", "/etc/shadow", "\\windows\\system32", "\\users\\",
+		"\\programdata\\", "\\appdata\\", "web.config", ".env", "secrets",
+		"downloadstring", "downloadfile", "invoke-expression", "invoke-command",
+		"start-process", "frombase64string", "tcpclient", "child_process",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	if rceContainsWord(lower, "whoami") || rceContainsWord(lower, "id") {
+		return true
+	}
+	// A separator in the command tail means the `/c` wrapper is being used to
+	// chain commands, even when the first command is a benign diagnostic.
+	if strings.ContainsAny(lower, ";&|`$()") {
+		return true
+	}
+	// Curl/wget are only promoted here when they are chained into an interpreter;
+	// a standalone health probe remains benign.
+	return (strings.Contains(lower, "curl ") || strings.Contains(lower, "wget ")) &&
+		rceContainsAny(lower, " |", "|", "&&", ";", "powershell", "cmd ", "bash ", "sh ")
+}
+
+func rceInterpreterDangerousArgument(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"os.system", "os.popen", "subprocess", "popen(", "socket", "pty.",
+		"__import__", "eval(", "exec(", "compile(", "child_process", "process.",
+		"system(", "shell_exec", "/bin/",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	// The inline-interpreter regexp also covers Windows `cmd.exe /c` forms,
+	// whose command list contains benign diagnostics.  Reuse the argument-level
+	// Windows gate instead of treating the executable name itself as danger.
+	if strings.Contains(lower, "cmd.exe") || strings.Contains(lower, "cmd /c") || strings.Contains(lower, "cmd /k") {
+		return rceWindowsCommandDangerousArgument(value)
+	}
+	// Do not treat a quoted identifier in a harmless script (`print("id")`) as
+	// a command.  Inspect the first token after an interpreter flag instead;
+	// exact command tails such as `-c id` and `-c 'cat /etc/passwd'` remain high
+	// confidence while ordinary print/import scripts stay below the compound-sink
+	// threshold.
+	fields := strings.Fields(value)
+	for index := 0; index+1 < len(fields); index++ {
+		flag := strings.ToLower(strings.Trim(fields[index], "\"'()"))
+		if flag != "-c" && flag != "-e" && flag != "-r" && flag != "-S" {
+			continue
+		}
+		tail := strings.TrimSpace(strings.Join(fields[index+1:], " "))
+		tail = strings.Trim(tail, "\"'")
+		if tail == "" {
+			continue
+		}
+		first := strings.Trim(strings.Fields(tail)[0], "\"'()")
+		switch first {
+		case "id", "whoami", "cat", "curl", "wget", "nc", "ncat", "netcat", "bash", "sh", "powershell", "cmd":
 			return true
 		}
 	}
 	return false
 }
 
+func rceShellCInvocation(value string) bool {
+	lower := strings.ToLower(value)
+	fields := strings.Fields(lower)
+	for index := 0; index+1 < len(fields); index++ {
+		token := strings.Trim(fields[index], "\"'()<>;&|")
+		if !rceCommandBaseIsShell(token) {
+			continue
+		}
+		next := strings.Trim(fields[index+1], "\"'()<>;&|")
+		if next == "-c" || next == "--command" {
+			return true
+		}
+	}
+	return false
+}
+
+func rceCommandBaseIsShell(token string) bool {
+	token = strings.TrimSuffix(strings.ToLower(rceCommandBase(token)), ".exe")
+	switch token {
+	case "bash", "sh", "zsh", "dash", "ksh", "tcsh", "csh", "cmd":
+		return true
+	default:
+		return false
+	}
+}
+
+func rceDangerousCommandTail(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"/etc/passwd", "/etc/shadow", "/proc/", "/root/", "/var/log/", "/dev/tcp/",
+		"net user", "net localgroup", "certutil", "powershell",
+		"curl ", "wget ", "nc ", "ncat ", "netcat ", "downloadstring", "system(",
+		"shell_exec", "eval(", "exec(", ";", "&&", "||", "|",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return rceContainsWord(lower, "whoami") || rceContainsWord(lower, "id")
+}
+
+func rceContainsWord(text, word string) bool {
+	if text == "" || word == "" {
+		return false
+	}
+	text = strings.ToLower(text)
+	word = strings.ToLower(word)
+	for offset := 0; offset < len(text); {
+		rel := strings.Index(text[offset:], word)
+		if rel < 0 {
+			return false
+		}
+		start := offset + rel
+		end := start + len(word)
+		beforeOK := start == 0 || !rceWordByte(text[start-1])
+		afterOK := end == len(text) || !rceWordByte(text[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
+func rceWordByte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '_'
+}
+
+// rceSinkNULPatternIntentForSource retries the indexed RCE grammar after
+// removing only decoded NUL bytes inside an authoritative command sink. NUL is
+// a common token-splitting evasion (`po\x00wershell`, `py\x00thon3`); compacting
+// it globally would turn ordinary documentation into executable-looking words,
+// so this path is deliberately limited to parsed command-value sources.
+func rceSinkNULPatternIntentForSource(source, name, raw string) bool {
+	if !rceSinkAllowed(source, name) || !strings.ContainsRune(raw, 0) {
+		return false
+	}
+	if rceNarrowSinkAlias(name) {
+		return rceCommandSinkHighConfidenceShape(raw)
+	}
+	value := normalizePreserveControls(raw)
+	compacted := strings.ReplaceAll(value, "\x00", "")
+	if compacted == value || compacted == "" {
+		return false
+	}
+	lower := strings.ToLower(compacted)
+	for index, pattern := range rcePatterns {
+		if !rcePatternMayMatch(index, lower) {
+			continue
+		}
+		if guardedMatchString2K(pattern, compacted) {
+			return true
+		}
+	}
+	// The auxiliary high-confidence expressions are not all part of the indexed
+	// battery (for example the loader and template primitives). Try them only on
+	// this narrow, sink-authorized compact view.
+	for _, pattern := range []*regexp.Regexp{
+		rcePowerShellSideFx,
+		rceEncodedPowerShell,
+		rceInterpreterInline,
+		rceDownloadExecChain,
+		rceReverseShellPrimitive,
+		rceTemplateExecutionPrimitive,
+		rceLoaderPrimitive,
+	} {
+		if guardedMatchString2K(pattern, compacted) {
+			return true
+		}
+	}
+	return false
+}
+
+func rceCommandSinkShapeSegment(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	fields := strings.Fields(value)
+	if len(fields) < 2 {
+		return false
+	}
+	// Scan the executable prefix so environment assignments such as
+	// `FOO=bar /bin/sh -c id` still reach the RCE analyzer without making every
+	// arbitrary long value expensive. Once the first non-wrapper token is not a
+	// known executable, stop: `cmd=please review id` is prose, not a command.
+	limit := len(fields)
+	if limit > 5 {
+		limit = 5
+	}
+	for index, field := range fields[:limit] {
+		rawToken := strings.ToLower(strings.TrimSpace(strings.Trim(field, "\"'")))
+		token := strings.Trim(field, "()$;|&><\"'")
+		if token == "" {
+			continue
+		}
+		if rawToken == "$shell" || rawToken == "${shell}" {
+			return index+2 < len(fields) && strings.EqualFold(fields[index+1], "-c")
+		}
+		if rceCommandSinkPrefixToken(token) {
+			continue
+		}
+		if rceCommandTokenKnown(token) {
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func rceCommandSinkPrefixToken(token string) bool {
+	lower := strings.ToLower(strings.TrimSpace(token))
+	if rceEnvAssignmentToken(lower) {
+		return true
+	}
+	switch lower {
+	case "env", "sudo", "doas", "command", "busybox", "timeout", "nice", "nohup":
+		return true
+	default:
+		return false
+	}
+}
+
+func rceEnvAssignmentToken(token string) bool {
+	eq := strings.IndexByte(token, '=')
+	if eq <= 0 {
+		return false
+	}
+	key := token[:eq]
+	for i, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || (i > 0 && r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// rceCommandTokenKnown is the shared executable vocabulary for command-sink
+// shape detection and semantic command-intent scoring. The extra aliases cover
+// the binary forms present in rcePatterns without adding them to the backtick
+// prose discriminator's deliberately conservative map.
+func rceCommandTokenKnown(token string) bool {
+	token = strings.TrimSpace(strings.ToLower(rceCommandBase(token)))
+	token = strings.TrimSuffix(token, ".exe")
+	if rceCommandNames[token] {
+		return true
+	}
+	switch token {
+	case "ksh", "tcsh", "csh", "fetch", "lynx", "tftp", "arp", "route", "gawk", "tr", "gunzip", "unxz",
+		"ab", "ansible", "chef", "cscli", "visudo", "gpgsm", "ssh-keyscan", "nmap", "expect",
+		"scp", "rsync", "sendmail":
+		return true
+	default:
+		return rceVersionedInterpreterToken(token)
+	}
+}
+
+func rceVersionedInterpreterToken(token string) bool {
+	for _, prefix := range []string{"python", "perl", "php", "ruby", "node", "lua"} {
+		if !strings.HasPrefix(token, prefix) || len(token) == len(prefix) {
+			continue
+		}
+		suffix := token[len(prefix):]
+		for _, r := range suffix {
+			if (r >= '0' && r <= '9') || r == '.' {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	return false
+}
+
 func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
-	text := candidate.text
+	// Fold overlong UTF-8 before anything normalises the text.
+	//
+	// "..%c0%af..%c0%afetc%c0%afpasswd" is a traversal whose separators are
+	// written as two-byte UTF-8 encodings of "/". Percent-decoding leaves the
+	// raw bytes 0xC0 0xAF, which are not valid UTF-8, and normalize() applies
+	// NFKC — which replaces every invalid byte with U+FFFD. The traversal is
+	// therefore erased before a single pattern runs, and only the escaped
+	// spelling could ever have matched. That spelling does not survive to this
+	// point: Go's url.Query() has already decoded the parameter by the time the
+	// engine builds its input points, so no candidate carries "%c0%af".
+	//
+	// Fold it back to the character it encodes and the existing traversal
+	// patterns see the payload as the server will.
+	text := foldOverlongUTF8(candidate.text)
+	controlBoundary := lfiNullByteInternalBoundary(text)
+	pathSuffix := lfiNullBytePathSuffixShape(text)
+	explicitPathContext := lfiExplicitPathContext(candidate.input.Source, candidate.input.Name)
 	reasons := map[string]bool{}
-	for _, pattern := range lfiPatterns {
+	for index, pattern := range lfiPatterns {
+		// Patterns 3 and 6 are sensitive-target signatures. When a decoded NUL
+		// sits inside a command word (c\x00at /etc/passwd), those signatures are
+		// documentation evidence rather than a path request. Keep them enabled for
+		// explicit file/path fields and for a genuine null-byte path suffix.
+		if controlBoundary && !explicitPathContext && !pathSuffix && (index == 3 || index == 6) {
+			continue
+		}
 		if pattern.MatchString(text) {
 			reasons["syntax: traversal or wrapper path expression"] = true
 		}
 	}
 	lower := normalize(text)
+	if strings.IndexFunc(text, unicode.IsControl) >= 0 {
+		// Do not compact decoded control boundaries: doing so turns c\x00at into
+		// cat and lets a prose command example satisfy the file-read sink regex.
+		lower = normalizePreserveControls(text)
+	}
 	if lfiEncodedTraversal.MatchString(lower) || strings.Contains(lower, "..//") || strings.Contains(lower, `..\/`) || strings.Contains(lower, "....//") {
 		reasons["syntax: encoded or overlong traversal path"] = true
 	}
-	if strings.Contains(lower, "%00") || strings.Contains(lower, "\x00") {
+	if pathSuffix {
 		reasons["syntax: null-byte path suffix bypass"] = true
 	}
-	if lfiSensitiveTarget.MatchString(lower) {
+	if (!controlBoundary || explicitPathContext || pathSuffix) && lfiSensitiveTarget.MatchString(lower) {
 		reasons["semantics: sensitive local file target"] = true
 	}
-	if lfiFileReadSink.MatchString(lower) {
+	if lfiWindowsSystemPathMatch(lower) {
+		reasons["syntax: Windows drive-absolute path expression"] = true
+		reasons["semantics: sensitive local file target"] = true
+	}
+	if lfiSSIDirective.MatchString(lower) {
+		reasons["syntax: server-side include directive"] = true
+		reasons["semantics: server evaluates the directive to read a local file or run a command"] = true
+	}
+	if (!controlBoundary || explicitPathContext) && lfiFileReadSink.MatchString(lower) {
 		reasons["semantics: application template reads a local file path"] = true
 	}
-	if lfiCommandReadSink.MatchString(lower) {
+	if !controlBoundary && lfiCommandReadSink.MatchString(lower) {
 		reasons["semantics: command reads a sensitive local file"] = true
 	}
 	for _, target := range []string{"/etc/passwd", "/etc/shadow", "/etc/group", "/etc/hosts", "/etc/hostname", "/etc/fstab", "/etc/sudoers", "/etc/crontab", "/etc/nginx/nginx.conf", "/etc/apache2/apache2.conf", "/etc/redis/redis.conf", "/etc/mysql/my.cnf", "/etc/php/php.ini", "/etc/ssh/sshd_config", "/proc/self/environ", "/proc/self/cmdline", "/proc/self/maps", "/proc/version", "/proc/cpuinfo", "/root/.bash_history", "boot.ini", "win.ini", "web-inf/web.xml", "meta-inf/manifest.mf", ".htaccess", ".aws/credentials", ".git/config", ".env", ".ssh/id_rsa", "wp-config", "_config.php", "dump.sql", "database.sql", "/var/log/syslog", "/var/log/auth.log", "/var/log/nginx/access.log", "/var/log/apache2/access.log", "httpd-access.log", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {
-		if strings.Contains(lower, target) {
+		if (!controlBoundary || explicitPathContext || pathSuffix) && strings.Contains(lower, target) {
 			reasons["semantics: sensitive local file target"] = true
 			break
 		}
@@ -3313,6 +5574,91 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	return hit(candidate, "lfi", engine.SeverityHigh, confidence, reasons), true
+}
+
+// lfiNullBytePathSuffixShape accepts null-byte bypasses only when the marker
+// terminates or extends a path-like token. A marker embedded in a command word
+// (c%00at, new-%00object) is an encoding boundary, not evidence that a file
+// path was requested.
+func lfiNullBytePathSuffixShape(raw string) bool {
+	lower := strings.ToLower(raw)
+	for offset := 0; offset < len(lower); {
+		index := strings.Index(lower[offset:], "%00")
+		markerLen := 3
+		if index < 0 {
+			if nul := strings.IndexByte(lower[offset:], 0); nul < 0 {
+				break
+			} else {
+				index = nul
+				markerLen = 1
+			}
+		}
+		index += offset
+		before := lower[:index]
+		start := strings.LastIndexAny(before, " \t\r\n=&?;|") + 1
+		token := before[start:]
+		after := lower[index+markerLen:]
+		if after == "" {
+			if lfiPathLikeToken(token) || strings.HasSuffix(token, "..") {
+				return true
+			}
+		} else {
+			next, _ := utf8.DecodeRuneInString(after)
+			if strings.ContainsRune("./?#&/\\", next) && (lfiPathLikeToken(token) || strings.Contains(token, "..") || next == '.') {
+				return true
+			}
+			// A traversal segment can be followed directly by a drive/path
+			// component after the NUL (`..%00c:/boot.ini`, `..%00wp-config.php`).
+			// The two dots are already a strong path signal even without a slash at
+			// the byte immediately following the boundary.
+			if strings.HasSuffix(token, "..") &&
+				(strings.Contains(after, "/") || strings.Contains(after, "\\") ||
+					strings.Contains(after, "boot.ini") || strings.Contains(after, "wp-config") ||
+					strings.Contains(after, "passwd") || strings.Contains(after, "shadow")) {
+				return true
+			}
+			if unicode.IsSpace(next) && lfiPathLikeToken(token) {
+				return true
+			}
+		}
+		offset = index + markerLen
+	}
+	return false
+}
+
+func lfiPathLikeToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	return strings.ContainsAny(token, "/\\") ||
+		strings.Contains(token, ".php") || strings.Contains(token, ".jsp") ||
+		strings.Contains(token, ".asp") || strings.Contains(token, ".aspx") ||
+		strings.Contains(token, ".config") || strings.Contains(token, ".ini") ||
+		strings.Contains(token, ".yaml") || strings.Contains(token, ".yml") ||
+		strings.Contains(token, ".json") || strings.Contains(token, ".txt")
+}
+
+func lfiNullByteInternalBoundary(raw string) bool {
+	if !strings.Contains(strings.ToLower(raw), "%00") && !strings.ContainsRune(raw, 0) {
+		return false
+	}
+	return !lfiNullBytePathSuffixShape(raw)
+}
+
+func lfiExplicitPathContext(source, name string) bool {
+	if strings.EqualFold(source, "uri") {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" || lower == "body" || lower == "raw_query" || lower == "path_query" {
+		return false
+	}
+	for _, marker := range []string{"file", "filename", "path", "page", "include", "require", "template", "tpl", "view", "document", "resource", "config"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // lfiRemoteIncludeContext is true when a file or include parameter carries a remote URL.
@@ -3503,6 +5849,14 @@ func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
 
 func ssrfFetchSink(candidate semanticCandidate) bool {
 	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
+	// A raw body that is nothing but a URL is a fetch target whatever the field
+	// is called. This is the one input position where a metadata-service address
+	// was previously invisible: the corpora that deliver a bare SSRF target with
+	// no request line have it moved into the body by the adapter, and requiring
+	// a parameter name meant "169.254.169.254" in the body scored nothing.
+	if candidate.input.Source == "body.raw" && ssrfWholeBodyTarget(candidate.text) {
+		return true
+	}
 	if name == "" || name == "path_query" || name == "path" || name == "raw_query" || name == "body" || name == "text" || name == "content" || name == "message" || name == "description" {
 		return false
 	}
@@ -3524,6 +5878,26 @@ func ssrfFetchSink(candidate semanticCandidate) bool {
 		}
 	}
 	return false
+}
+
+// ssrfWholeBodyTarget reports a body consisting entirely of a single URL.
+//
+// The "entirely" is the whole point: a URL embedded in a sentence is ordinary
+// content, but a body whose every byte is "http://169.254.169.254/latest/meta-data/"
+// is a fetch request with nowhere to hide. The length bound keeps it cheap and
+// rules out bodies that merely begin with a URL.
+func ssrfWholeBodyTarget(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" || len(t) > 512 || !strings.Contains(t, "://") {
+		return false
+	}
+	for i := 0; i < len(t); i++ {
+		switch t[i] {
+		case ' ', '\t', '\n', '\r':
+			return false
+		}
+	}
+	return true
 }
 
 func hit(candidate semanticCandidate, category string, severity engine.Severity, confidence float64, reasons map[string]bool) Hit {
@@ -3701,8 +6075,14 @@ func sqlReasonsBlockable(reasons map[string]bool) bool {
 }
 
 func nosqlStructuredSource(source string) bool {
+	// "header" matters more than it looks. A dozen verified misses carried the
+	// entire attack in a custom "X-User-Filter" header holding
+	// {"$where": "if(this.isAdmin){...}"} while the URL and body were ordinary
+	// traffic — and because headers were absent here, NoSQL analysis was skipped
+	// for every header on every request. A WAF cannot treat headers as second
+	// class: they are attacker-controlled input like any other.
 	switch source {
-	case "query", "body.form", "body.json", "body.raw", "cookie":
+	case "query", "body.form", "body.json", "body.raw", "cookie", "header":
 		return true
 	default:
 		return false
@@ -3712,6 +6092,38 @@ func nosqlStructuredSource(source string) bool {
 func nosqlOperatorInPath(value string) bool {
 	lower := strings.ToLower(value)
 	for _, op := range nosqlOperatorNames {
+		if lower == op ||
+			strings.Contains(lower, "."+op) ||
+			strings.Contains(lower, op+"[]") ||
+			strings.Contains(lower, "["+op+"]") ||
+			strings.Contains(lower, "["+op+"].") {
+			return true
+		}
+	}
+	return false
+}
+
+// nosqlInjectionOperatorNames is the subset of bracketed query operators that
+// no ordinary client has a reason to send. The comparison and negation families
+// exist to widen, invert or compute a server-side predicate, which is precisely
+// the attack; the range and set families ($gt, $lt, $in, $all, $and, $or) also
+// appear in legitimate multi-value filters, so those stay behind the
+// sensitive-field gate rather than being trusted on their own.
+//
+// Splitting the two is what lets "?apikey[$ne]=xyz" and "?secret[$ne]=guessme"
+// be detected: both are authentication-bypass injections, and neither field name
+// was in nosqlSensitiveContext, so the analyzer used to require a sensitive
+// context, decline, and drop them.
+var nosqlInjectionOperatorNames = []string{
+	"$ne", "$nin", "$not", "$nor", "$where", "$function", "$eval",
+	"$expr", "$regex", "$exists", "$set", "$unset", "$jsonschema",
+}
+
+// nosqlInjectionOperatorInPath reports a bracketed operator from the subset
+// above in a parameter or JSON path.
+func nosqlInjectionOperatorInPath(value string) bool {
+	lower := strings.ToLower(value)
+	for _, op := range nosqlInjectionOperatorNames {
 		if lower == op ||
 			strings.Contains(lower, "."+op) ||
 			strings.Contains(lower, op+"[]") ||

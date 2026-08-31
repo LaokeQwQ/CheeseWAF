@@ -1,12 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ScheduledTask } from '../../types/api';
+import type { ScheduledTask, ScheduledTaskHistoryEntry } from '../../types/api';
 
 const apiMocks = vi.hoisted(() => ({
   cleanupStorage: vi.fn(),
   exportBackup: vi.fn(),
   fetchStorageStats: vi.fn(),
+  fetchTaskHistory: vi.fn(),
   fetchTasks: vi.fn(),
   updateTasks: vi.fn(),
 }));
@@ -93,6 +94,14 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+function historyPanel() {
+  const panel = document.querySelector('.ops-history-panel');
+  if (!panel) {
+    throw new Error('Task history panel was not rendered');
+  }
+  return panel as HTMLElement;
+}
+
 function desktopTaskRow(name: string) {
   const match = screen.getAllByText(name).find((element) => element.closest('tr'));
   const row = match?.closest('tr');
@@ -108,6 +117,7 @@ beforeEach(() => {
   apiMocks.fetchStorageStats.mockResolvedValue({ data: 1024, logs: 2048 });
   apiMocks.cleanupStorage.mockResolvedValue({ removed: 1, scanned: 2 });
   apiMocks.exportBackup.mockResolvedValue({ path: './backup.tar.gz' });
+  apiMocks.fetchTaskHistory.mockResolvedValue([]);
   apiMocks.updateTasks.mockImplementation(async (tasks: ScheduledTask[]) => tasks);
 });
 
@@ -189,5 +199,77 @@ describe('OperationsPage task mutations', () => {
 
     await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('backup failed'));
     expect(toastMocks.success).not.toHaveBeenCalled();
+  });
+});
+
+describe('OperationsPage task history', () => {
+  it('renders execution history with task names, readable times, durations and statuses', async () => {
+    const entries: ScheduledTaskHistoryEntry[] = [
+      { task_id: 'cleanup-1', started_at: '2026-08-29T02:03:04Z', duration: 1_200_000_000, success: true },
+      {
+        task_id: 'security-daily-report',
+        started_at: '2026-08-29T03:04:05Z',
+        duration: 340_000_000,
+        success: false,
+        error: 'disk quota exceeded',
+      },
+      { task_id: 'deleted-task', started_at: '2026-08-29T04:00:00Z', duration: 65_000_000_000, success: true },
+    ];
+    apiMocks.fetchTaskHistory.mockResolvedValue(entries);
+    renderOperations();
+
+    await waitFor(() => expect(document.querySelector('.ops-history-table')).toBeTruthy());
+    const panel = historyPanel();
+
+    // task_id is resolved to the task name when the task still exists, and falls back to the raw id
+    expect(within(panel).getByText('Cleanup fixture')).toBeTruthy();
+    expect(within(panel).getByText('Security report fixture')).toBeTruthy();
+    expect(within(panel).getByText('deleted-task')).toBeTruthy();
+
+    // nanoseconds are converted instead of being shown raw
+    expect(within(panel).getByText('1.2s')).toBeTruthy();
+    expect(within(panel).getByText('340ms')).toBeTruthy();
+    expect(within(panel).getByText('1m5s')).toBeTruthy();
+    expect(panel.textContent).not.toContain('1200000000');
+
+    expect(within(panel).getAllByText('ops.historySuccess')).toHaveLength(2);
+    expect(within(panel).getAllByText('ops.historyFailed')).toHaveLength(1);
+    expect(within(panel).getByText('disk quota exceeded')).toBeTruthy();
+
+    expect(panel.querySelector('time[datetime="2026-08-29T02:03:04Z"]')).toBeTruthy();
+    expect(panel.querySelector('.ops-history-row-failed')).toBeTruthy();
+  });
+
+  it('formats sub-second and hour-scale durations', async () => {
+    apiMocks.fetchTaskHistory.mockResolvedValue([
+      { task_id: 'cleanup-1', started_at: '2026-08-29T02:03:04Z', duration: 900, success: true },
+      { task_id: 'cleanup-1', started_at: '2026-08-29T02:03:05Z', duration: 12_000, success: true },
+      { task_id: 'cleanup-1', started_at: '2026-08-29T02:03:06Z', duration: 3_900_000_000_000, success: true },
+    ] as ScheduledTaskHistoryEntry[]);
+    renderOperations();
+
+    await waitFor(() => expect(document.querySelector('.ops-history-table')).toBeTruthy());
+    const panel = historyPanel();
+    expect(within(panel).getByText('900ns')).toBeTruthy();
+    expect(within(panel).getByText('12µs')).toBeTruthy();
+    expect(within(panel).getByText('1h5m')).toBeTruthy();
+  });
+
+  it('shows a friendly empty state when the scheduler has no history yet', async () => {
+    apiMocks.fetchTaskHistory.mockResolvedValue([]);
+    renderOperations();
+
+    expect(await screen.findByText('ops.historyEmpty')).toBeTruthy();
+    expect(document.querySelector('.ops-history-table')).toBeNull();
+  });
+
+  it('surfaces a retryable error when history cannot be loaded', async () => {
+    apiMocks.fetchTaskHistory.mockRejectedValue(new APIRequestError('history unavailable', 'TASK_HISTORY_FAILED', 500));
+    renderOperations();
+
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.some((alert) => alert.textContent?.includes('history unavailable'))).toBe(true);
+    expect(document.querySelector('.ops-history-table')).toBeNull();
+    expect(screen.queryByText('ops.historyEmpty')).toBeNull();
   });
 });

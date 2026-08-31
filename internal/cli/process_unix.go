@@ -19,6 +19,30 @@ var (
 	processStopPoll        = 25 * time.Millisecond
 )
 
+func signalServiceHangup(runtimeDir string) error {
+	record, err := readPIDRecord(runtimeDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if record.PID <= 0 {
+		return nil
+	}
+	running, err := processRunning(record.PID)
+	if err != nil {
+		return err
+	}
+	if !running {
+		return nil
+	}
+	if err := syscall.Kill(record.PID, syscall.SIGHUP); err != nil {
+		return fmt.Errorf("signal service hangup: %w", err)
+	}
+	return nil
+}
+
 func processRunning(pid int) (bool, error) {
 	if pid <= 0 {
 		return false, nil

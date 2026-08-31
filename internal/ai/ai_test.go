@@ -787,6 +787,89 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	}
 }
 
+// A read-only tool never creates an approval, so an approval id on a read-only
+// call can only point at somebody else's request. Honouring it would let any
+// caller flip a foreign `executing` request to executed/failed and leave its
+// owner unable to complete a change that was already applied.
+func TestAssistantReadOnlyExecutionDoesNotFinalizeForeignApproval(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(fakeTool{sensitivity: Modify})
+	registry.Register(approvalReadOnlyTool{})
+	store := NewApprovalStore()
+	assistant := NewAssistant(registry, store)
+
+	owner := ApprovalActor{Subject: "owner", SessionID: "owner-session"}
+	pending, err := store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", owner)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	approved, err := store.ApproveFor(pending.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"})
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	// Park the request in `executing`, exactly like an in-flight
+	// continue/stream call made by its owner.
+	executing, err := store.BeginExecutionFor(approved.ID, "fake_modify", nil, owner)
+	if err != nil {
+		t.Fatalf("begin execution: %v", err)
+	}
+	if executing.Status != ApprovalExecuting {
+		t.Fatalf("expected executing approval, got %s", executing.Status)
+	}
+
+	// A different console user (an approver can list every approval id) calls
+	// a read-only tool while carrying that id.
+	intruder := ContextWithApprovalActor(context.Background(), ApprovalActor{Subject: "intruder", SessionID: "intruder-session", Role: "approver"})
+	execution, err := assistant.ExecuteTool(intruder, "approval_read", nil, executing.ID)
+	if err != nil {
+		t.Fatalf("read-only tool should still execute: %v", err)
+	}
+	if execution.Result == nil || !execution.Result.Success {
+		t.Fatalf("unexpected read-only result: %+v", execution.Result)
+	}
+	if execution.Approval != nil {
+		t.Fatalf("read-only execution must not adopt an approval: %+v", execution.Approval)
+	}
+	stored, ok := store.Get(executing.ID)
+	if !ok {
+		t.Fatal("foreign approval disappeared from the store")
+	}
+	if stored.Status != ApprovalExecuting {
+		t.Fatalf("read-only call finalized a foreign approval: status=%s", stored.Status)
+	}
+	// The owner must still be able to finalize its own request.
+	if _, err := store.MarkExecuted(executing.ID, owner); err != nil {
+		t.Fatalf("owner can no longer complete its own approval: %v", err)
+	}
+}
+
+// The continue path consumes an approved request through
+// BeginExecutionForWithPreview; an approval that expired while it was waiting
+// for a second person must not become executable.
+func TestApprovalExecutionRejectsExpiredApprovedRequest(t *testing.T) {
+	store := NewApprovalStore()
+	now := time.Now().UTC()
+	store.now = func() time.Time { return now }
+
+	owner := ApprovalActor{Subject: "owner", SessionID: "owner-session"}
+	request, err := store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", owner)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	if _, err := store.ApproveFor(request.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	store.now = func() time.Time { return now.Add(defaultApprovalTTL + time.Minute) }
+	if _, err := store.BeginExecutionFor(request.ID, "fake_modify", nil, owner); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired approval was consumed: %v", err)
+	}
+	stored, _ := store.Get(request.ID)
+	if stored.Status != ApprovalApproved {
+		t.Fatalf("expiration must not move the request out of approved: %s", stored.Status)
+	}
+}
+
 func TestAssistantRejectsApprovalWhenPreviewStateChanged(t *testing.T) {
 	state := "before"
 	registry := NewRegistry()

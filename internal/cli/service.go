@@ -92,7 +92,10 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ignoreServiceHangup()
+	// Registered with an empty handler: the signal is still captured (so SIGHUP
+	// does not terminate the process, matching the previous signal.Ignore
+	// behaviour) but no reload action is wired up yet.
+	listenServiceHangup(ctx, func() {})
 	if err := applyCLIDataDir(cfg, dataDir); err != nil {
 		return err
 	}

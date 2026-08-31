@@ -52,10 +52,13 @@ func FromConfig(cfg config.SchedulerConfig, dataDir, configPath, logPath string)
 }
 
 type Runtime struct {
-	AIConfig config.AIConfig
-	Sink     storage.LogSink
-	Store    storage.RuleStore
-	Client   *ai.Client
+	AIConfig        config.AIConfig
+	Sink            storage.LogSink
+	Store           storage.RuleStore
+	Client          *ai.Client
+	ListCustomRules func(context.Context) ([]storage.Rule, error)
+	ApplyCustomRule func(context.Context, *storage.Rule) error
+	CanWriteRules   func() error
 }
 
 func FromConfigWithRuntime(cfg config.SchedulerConfig, dataDir, configPath, logPath string, runtime Runtime) []Task {

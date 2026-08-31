@@ -159,7 +159,7 @@ jobs:
         run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11
       - name: Run dashboard tests with coverage
         working-directory: web
-        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10
+        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=27 --coverage.thresholds.functions=15 --coverage.thresholds.statements=27 --coverage.thresholds.branches=22
       - name: Verify coverage output
         working-directory: web
         shell: bash
@@ -218,11 +218,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Run curated semantic corpus
-        run: bash scripts/ci/go-env.sh go run ./cmd/cheesewaf-corpus --mode analyzer
-      - name: Run semantic evaluation gates (short)
-        run: |
-          FPR_GATE=0.1 TPR_GATE=99.0 bash scripts/ci/go-env.sh go test -run TestEvaluationPlatform -short -count=1 ./internal/engine/semantic/
+      - name: Verify corpus governance integrity
+        env:
+          CORPUS_GOVERNANCE_MAX_PARSE_ERRORS: "0"
+          CORPUS_GOVERNANCE_MAX_INVALID_UTF8: "0"
+          CORPUS_GOVERNANCE_MAX_OVERLONG: "0"
+          CORPUS_GOVERNANCE_MAX_LABEL_CONFLICTS: "3"
+          CORPUS_GOVERNANCE_MAX_REPAIRS: "127"
+        run: bash scripts/ci/run-corpus-governance.sh
+      - name: Replay and evaluate governed semantic snapshot
+        env:
+          FPR_GATE: "0.8"
+          TPR_GATE: "99.0"
+          FPR_MIN_BENIGN: "250"
+          TPR_MIN_ATTACK: "10000"
+        run: bash scripts/ci/run-governed-semantic-gate.sh
 
   cross-build:
     name: cross-build

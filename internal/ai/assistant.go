@@ -71,17 +71,26 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 		if _, err := a.approvals.BeginExecutionForWithPreview(approvalID, name, args, preview, actor); err != nil {
 			return nil, fmt.Errorf("tool %q requires approved request", name)
 		}
+	} else {
+		// Read-only tools never create approval requests, so an approval id
+		// carried on a read-only call can only belong to another request.
+		// Drop it: honouring the id would let any caller finalize (and thereby
+		// destroy) somebody else's in-flight modification out from under its
+		// owner. MarkExecuted/MarkExecutionFailed now reject a foreign
+		// requester too, but that is the backstop, not the licence to pass
+		// ids around.
+		approvalID = ""
 	}
 	result, err := tool.Execute(ctx, args)
 	if err != nil {
 		if approvalID != "" {
-			_, _ = a.approvals.MarkExecutionFailed(approvalID)
+			_, _ = a.approvals.MarkExecutionFailed(approvalID, actor)
 		}
 		return nil, err
 	}
 	execution := &ToolExecution{Result: result}
 	if approvalID != "" {
-		if approval, err := a.approvals.MarkExecuted(approvalID); err == nil {
+		if approval, err := a.approvals.MarkExecuted(approvalID, actor); err == nil {
 			execution.Approval = &approval
 		} else {
 			return nil, err

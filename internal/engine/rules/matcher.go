@@ -7,10 +7,6 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
-func MatchValue(rule Rule, reqCtx *engine.RequestContext) string {
-	return new(requestViews).match(rule, reqCtx)
-}
-
 type requestViews struct {
 	body         string
 	bodyReady    bool
@@ -26,6 +22,8 @@ func (v *requestViews) match(rule Rule, reqCtx *engine.RequestContext) string {
 	}
 	r := reqCtx.Request
 	switch rule.Location {
+	case "query":
+		return r.URL.RawQuery
 	case "body":
 		if !v.bodyReady {
 			body := reqCtx.DecodedBody
@@ -58,7 +56,7 @@ func (v *requestViews) match(rule Rule, reqCtx *engine.RequestContext) string {
 	case "method":
 		return r.Method
 	default:
-		return r.URL.RequestURI()
+		return r.URL.Path
 	}
 }
 

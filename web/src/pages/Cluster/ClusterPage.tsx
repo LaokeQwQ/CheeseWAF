@@ -5,6 +5,7 @@ import {
   Card,
   CardDescription,
   CardTitle,
+  ConfirmDialog,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -32,8 +33,8 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Download, KeyRound, Network, PackageCheck, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { createClusterBootstrapPlan, createClusterJoinToken, fetchClusterAudit, fetchClusterConsensus, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterRollingUpgrade, fetchClusterStatus, fetchClusterTrafficPeers, generateClusterAnsiblePackage, revokeClusterJoinToken, rotateClusterNodeCertificate, startClusterDeploymentTask, startClusterRollingRollback, startClusterRollingUpgrade } from '../../api/client';
-import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterBootstrapPlan, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration, ClusterRollingJob, ClusterTrafficPeersResponse } from '../../types/api';
+import { checkClusterDeployment, createClusterBootstrapPlan, createClusterJoinToken, fetchClusterAudit, fetchClusterConsensus, fetchClusterDeploymentTask, fetchClusterDeploymentTasks, fetchClusterJoinTokens, fetchClusterNodes, fetchClusterRollingUpgrade, fetchClusterRollingUpgrades, fetchClusterStatus, fetchClusterTrafficPeers, generateClusterAnsiblePackage, proposeClusterConfigVersion, revokeClusterJoinToken, reportClusterTrafficPeer, rotateClusterNodeCertificate, startClusterDeploymentTask, startClusterRollingRollback, startClusterRollingUpgrade } from '../../api/client';
+import type { ClusterAnsibleHost, ClusterAnsiblePackage, ClusterAuditEntry, ClusterBootstrapPlan, ClusterConfigVersionRecord, ClusterDeploymentAuthorization, ClusterDeploymentCheckPassedResult, ClusterDeploymentRequest, ClusterDeploymentTask, ClusterDeploymentTaskEvent, ClusterJoinToken, ClusterJoinTokenCreateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeRegistration, ClusterRollingJob, ClusterTrafficPeersResponse } from '../../types/api';
 import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 type ClusterDeployForm = {
@@ -79,9 +80,41 @@ type ClusterRollingForm = {
   user?: string;
 };
 
+type ClusterConfigVersionForm = {
+  version?: string;
+  message?: string;
+};
+
 type DeployMethod = 'ansible' | 'ssh';
 type DeployAuthMethod = 'agent' | 'password' | 'private_key';
 
+/**
+ * Host identity a deployment authorization is bound to. The backend compares
+ * host (lower-cased, trailing dot removed), user, port, and the normalized
+ * `SHA256:` fingerprint, so the UI normalizes the same way before deciding
+ * whether an existing precheck still unlocks the fixed action.
+ */
+type DeployTargetIdentity = {
+  host: string;
+  user: string;
+  port: number;
+  hostKeySHA256: string;
+};
+
+type SyncPrecheck = {
+  // Narrowed on purpose: POST /cluster/deploy/check only ever answers with a
+  // passing result, failures come back as an HTTP 400 and land in onError.
+  result: ClusterDeploymentCheckPassedResult;
+  authorization: ClusterDeploymentAuthorization;
+  target: DeployTargetIdentity;
+};
+
+type TrafficReportKind = 'success' | 'failure';
+
+type TrafficReportRequest = {
+  nodeId: string;
+  kind: TrafficReportKind;
+};
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -106,6 +139,12 @@ export default function ClusterPage() {
   const [certificateForm, setCertificateForm] = useState<ClusterCertificateForm>({});
   const [bootstrapForm, setBootstrapForm] = useState<ClusterBootstrapForm>({ role: 'waf' });
   const [rollingForm, setRollingForm] = useState<ClusterRollingForm>({ user: 'root' });
+  const [configVersionForm, setConfigVersionForm] = useState<ClusterConfigVersionForm>({});
+  const [syncPrecheck, setSyncPrecheck] = useState<SyncPrecheck | null>(null);
+  const [pendingTrafficReport, setPendingTrafficReport] = useState<TrafficReportRequest | null>(null);
+  const [trafficReportError, setTrafficReportError] = useState<string | null>(null);
+  const [configVersionError, setConfigVersionError] = useState<string | null>(null);
+  const [latestConfigVersion, setLatestConfigVersion] = useState<ClusterConfigVersionRecord | null>(null);
   const [deployMethod, setDeployMethod] = useState<DeployMethod>('ansible');
   const [deployWizardStep, setDeployWizardStep] = useState(0);
   const [deployAuthMethod, setDeployAuthMethod] = useState<DeployAuthMethod>('agent');
@@ -119,6 +158,7 @@ export default function ClusterPage() {
   const [latestToken, setLatestToken] = useState<ClusterJoinToken | null>(null);
   const [joinCommandFields, setJoinCommandFields] = useState<JoinCommandFields>({});
   const [latestCertificate, setLatestCertificate] = useState<ClusterNodeCertificateRotateResponse | null>(null);
+  const [reportingTraffic, setReportingTraffic] = useState<TrafficReportRequest | null>(null);
   const [tokenOperationError, setTokenOperationError] = useState<string | null>(null);
   const [revokingTokenID, setRevokingTokenID] = useState<string | null>(null);
   const [revokeConfirmID, setRevokeConfirmID] = useState<string | null>(null);
@@ -150,6 +190,7 @@ export default function ClusterPage() {
     rollingJobID && (rollingJob?.status === 'pending' || rollingJob?.status === 'running' || rollingJob?.rollback_job_id),
   );
   const rollingRefreshInterval = usePollingVisibility(rollingNeedsPoll ? 2000 : false);
+  const rollingListRefreshInterval = usePollingVisibility(rollingNeedsPoll ? 5000 : false);
   const { data: polledRollingJob } = useQuery({
     queryKey: ['cluster-rolling-job', rollingJobID],
     queryFn: () => fetchRollingJob(rollingJobID as string),
@@ -174,6 +215,14 @@ export default function ClusterPage() {
     refetchInterval: nodesRefreshInterval,
     retry: false,
   });
+  // RollingManager.List() walks a Go map, so the backend returns jobs in
+  // arbitrary order. Sort newest-first here to keep the table stable.
+  const { data: rollingJobs, isFetching: isFetchingRollingJobs, isError: isRollingJobsError, error: rollingJobsError, refetch: refetchRollingJobs } = useQuery({
+    queryKey: ['cluster-rolling-jobs'],
+    queryFn: fetchClusterRollingUpgrades,
+    refetchInterval: rollingListRefreshInterval,
+    retry: false,
+  });
   const { data: deployTasks, isFetching: isFetchingDeployTasks, refetch: refetchDeployTasks } = useQuery({
     queryKey: ['cluster-deploy-tasks'],
     queryFn: fetchClusterDeploymentTasks,
@@ -190,6 +239,17 @@ export default function ClusterPage() {
   const selectedDeployTask = activeDeployTaskId ? deployTasks?.items.find((item) => item.id === activeDeployTaskId) : null;
   const activeDeployTask = selectedDeployTask ?? (submittedDeployTask?.id === activeDeployTaskId ? submittedDeployTask : null);
   const auditEntries = clusterAudit?.items || [];
+  const rollingJobList = [...(rollingJobs?.items || [])].sort((left, right) => (
+    String(right.updated_at || '').localeCompare(String(left.updated_at || ''))
+  ));
+  const currentDeployTarget: DeployTargetIdentity = normalizeDeployTargetIdentity({
+    host: deployForm.host,
+    user: deployForm.user,
+    port: deployForm.port,
+    hostKeySHA256: deployForm.hostKeySHA256,
+  });
+  const syncPrecheckUnlocksRun = Boolean(syncPrecheck && deployTargetsMatch(syncPrecheck.target, currentDeployTarget));
+  const taskPrecheckUnlocksRun = Boolean(activeDeployTask && activeDeployTask.action === 'check' && activeDeployTask.status === 'succeeded');
   const createTokenMutation = useMutation({
     mutationFn: (payload: ClusterJoinTokenCreateRequest) => createClusterJoinToken(payload),
     onMutate: () => {
@@ -231,12 +291,22 @@ export default function ClusterPage() {
       setSubmittedDeployTask(task);
       setDeployWizardStep((current) => Math.max(current, 3));
       setDeployForm((current) => ({ ...current, password: '', privateKey: '' }));
+      // The precheck authorization is single-use; consuming it for a fixed
+      // action invalidates the quick precheck result shown above.
+      if (task.action !== 'check') {
+        setSyncPrecheck(null);
+      }
       void queryClient.invalidateQueries({ queryKey: ['cluster-deploy-tasks'] });
       void queryClient.invalidateQueries({ queryKey: ['cluster-status'] });
       toast.success(t('cluster.deployTaskStarted'));
     },
-    onError: (error) => {
+    onError: (error, variables) => {
       setDeployForm((current) => ({ ...current, password: '', privateKey: '' }));
+      // A precheck authorization is consumed before the task starts, so a
+      // failed submit leaves it spent even if the task never ran.
+      if (variables.action !== 'check') {
+        setSyncPrecheck(null);
+      }
       toast.error(error.message);
     },
   });
@@ -284,6 +354,80 @@ export default function ClusterPage() {
     },
   });
 
+  /**
+   * POST /cluster/deploy/check is the synchronous counterpart of the check
+   * task. It never asks for an authorization up front — it *issues* one on
+   * success, bound to host/user/port/host key. Feeding that authorization into
+   * `startClusterDeploymentTask` is what lets one precheck unlock the fixed
+   * action, so the button is only shown as unlocked while those fields still
+   * match what was checked.
+   */
+  const quickPrecheckMutation = useMutation({
+    mutationFn: (vars: { payload: ClusterDeploymentRequest; target: DeployTargetIdentity }) => checkClusterDeployment(vars.payload),
+    onSuccess: (response, vars) => {
+      const result = response?.result;
+      if (!result) {
+        setSyncPrecheck(null);
+        toast.error(t('cluster.deployWizardPrecheckRequired'));
+        return;
+      }
+      setSyncPrecheck({
+        result,
+        authorization: response.authorization,
+        target: vars.target,
+      });
+      if (result.ok) {
+        setDeployWizardStep((current) => Math.max(current, 2));
+        toast.success(t('cluster.precheckOk'));
+      } else {
+        toast.warning(t('cluster.precheckUnreachable'));
+      }
+    },
+    onError: (error: Error) => {
+      setSyncPrecheck(null);
+      toast.error(error.message);
+    },
+  });
+
+  const trafficReportMutation = useMutation({
+    mutationFn: (vars: TrafficReportRequest) => reportClusterTrafficPeer(vars.nodeId, vars.kind),
+    onMutate: (vars) => {
+      setTrafficReportError(null);
+      setReportingTraffic(vars);
+    },
+    onSuccess: (_result, vars) => {
+      toast.success(
+        vars.kind === 'failure'
+          ? t('cluster.trafficReportFailureToast', { node: vars.nodeId })
+          : t('cluster.trafficReportSuccessToast', { node: vars.nodeId }),
+      );
+    },
+    onError: (error: Error) => {
+      setTrafficReportError(error.message);
+      toast.error(error.message);
+    },
+    onSettled: () => {
+      setReportingTraffic(null);
+    },
+  });
+
+  const configVersionMutation = useMutation({
+    mutationFn: (payload: { version: string; message?: string }) => proposeClusterConfigVersion(payload),
+    onMutate: () => {
+      setConfigVersionError(null);
+    },
+    onSuccess: (record) => {
+      setLatestConfigVersion(record);
+      setConfigVersionForm((current) => ({ ...current, version: '' }));
+      void queryClient.invalidateQueries({ queryKey: ['cluster-consensus'] });
+      toast.success(t('cluster.configVersionProposed'));
+    },
+    onError: (error: Error) => {
+      setConfigVersionError(error.message);
+      toast.error(error.message);
+    },
+  });
+
   const submitToken = async () => {
     if (latestToken?.value) {
       const message = t('cluster.tokenClearBeforeCreate');
@@ -299,36 +443,35 @@ export default function ClusterPage() {
     });
   };
 
-  const submitDeployment = async (mode: 'check' | 'run') => {
+  const buildDeploymentPayload = (action: string): ClusterDeploymentRequest | null => {
     const values = deployForm;
     if (!String(values.host || '').trim()) {
       toast.warning(t('cluster.deployHostRequired'));
-      return;
+      return null;
     }
     if (!String(values.user || '').trim()) {
       toast.warning(t('cluster.deployUserRequired'));
-      return;
+      return null;
     }
     if (!values.port) {
       toast.warning(t('cluster.deployPortRequired'));
-      return;
+      return null;
     }
-    const action = String(values.action || 'install');
     const payload: ClusterDeploymentRequest = {
       host: String(values.host || '').trim(),
       user: String(values.user || 'root').trim(),
       port: Number(values.port || 22),
-      action: mode === 'check' ? 'check' : action,
+      action,
     };
     const password = String(values.password || '').trim();
     const privateKey = String(values.privateKey || '').trim();
     if (deployAuthMethod === 'password' && !password) {
       toast.warning(t('cluster.deployPasswordRequired'));
-      return;
+      return null;
     }
     if (deployAuthMethod === 'private_key' && !privateKey) {
       toast.warning(t('cluster.deployPrivateKeyRequired'));
-      return;
+      return null;
     }
     if (deployAuthMethod === 'password' && password) {
       payload.password = password;
@@ -339,28 +482,81 @@ export default function ClusterPage() {
     const hostKeySHA256 = String(values.hostKeySHA256 || '').trim();
     if (!hostKeySHA256) {
       toast.warning(t('cluster.deployHostKeyRequired'));
+      return null;
+    }
+    payload.host_key_sha256 = hostKeySHA256;
+    return payload;
+  };
+
+  const submitDeployment = async (mode: 'check' | 'run') => {
+    const values = deployForm;
+    const payload = buildDeploymentPayload(mode === 'check' ? 'check' : String(values.action || 'install'));
+    if (!payload) {
       return;
     }
-    if (hostKeySHA256) {
-      payload.host_key_sha256 = hostKeySHA256;
-    }
+    const hostKeySHA256 = String(values.hostKeySHA256 || '').trim();
     if (mode === 'check') {
       setDeployWizardStep(2);
       deployTaskMutation.mutate(payload);
-    } else {
-      if (!activeDeployTask || activeDeployTask.action !== 'check' || activeDeployTask.status !== 'succeeded') {
-        toast.warning(t('cluster.deployWizardPrecheckRequired'));
-        return;
-      }
+      return;
+    }
+    // A fixed action needs an SSH precheck authorization. Either the async
+    // check task produced one, or the synchronous quick precheck did — as long
+    // as host/user/port/host key still match what was checked.
+    const syncAuthorization = syncPrecheck && deployTargetsMatch(syncPrecheck.target, normalizeDeployTargetIdentity({
+      host: payload.host,
+      user: payload.user,
+      port: payload.port,
+      hostKeySHA256,
+    })) ? syncPrecheck.authorization : null;
+    if (!taskPrecheckUnlocksRun && !syncAuthorization) {
+      toast.warning(t('cluster.deployWizardPrecheckRequired'));
+      return;
+    }
+    let authorization = syncAuthorization?.handle || '';
+    if (!authorization && activeDeployTask) {
       const checkedTask = await fetchClusterDeploymentTask(activeDeployTask.id);
       if (checkedTask.action !== 'check' || checkedTask.status !== 'succeeded' || !checkedTask.authorization?.handle) {
         toast.warning(t('cluster.deployWizardPrecheckRequired'));
         return;
       }
-      payload.authorization = checkedTask.authorization.handle;
-      setDeployWizardStep(3);
-      deployTaskMutation.mutate(payload);
+      authorization = checkedTask.authorization.handle;
     }
+    if (!authorization) {
+      toast.warning(t('cluster.deployWizardPrecheckRequired'));
+      return;
+    }
+    payload.authorization = authorization;
+    setDeployWizardStep(3);
+    deployTaskMutation.mutate(payload);
+  };
+
+  const submitQuickPrecheck = () => {
+    const payload = buildDeploymentPayload('check');
+    if (!payload) {
+      return;
+    }
+    quickPrecheckMutation.mutate({
+      payload,
+      target: normalizeDeployTargetIdentity({
+        host: payload.host,
+        user: payload.user,
+        port: payload.port,
+        hostKeySHA256: payload.host_key_sha256,
+      }),
+    });
+  };
+
+  const submitConfigVersion = () => {
+    const version = String(configVersionForm.version || '').trim();
+    if (!version) {
+      const message = t('cluster.configVersionRequired');
+      setConfigVersionError(message);
+      toast.warning(message);
+      return;
+    }
+    const message = String(configVersionForm.message || '').trim();
+    configVersionMutation.mutate({ version, message: message || undefined });
   };
 
   const addAnsibleNode = () => {
@@ -387,6 +583,7 @@ export default function ClusterPage() {
 
     setActiveDeployTaskId(null);
     setSubmittedDeployTask(null);
+    setSyncPrecheck(null);
     setAnsiblePackage(null);
     setSelectedAnsibleFile('README.md');
   };
@@ -404,6 +601,7 @@ export default function ClusterPage() {
     mutationFn: startClusterRollingUpgrade,
     onSuccess: (job) => {
       setRollingJob(job);
+      void queryClient.invalidateQueries({ queryKey: ['cluster-rolling-jobs'] });
       toast.success(t('cluster.rollingStarted'));
     },
     onError: (error: Error) => toast.error(error.message),
@@ -459,6 +657,7 @@ export default function ClusterPage() {
     try {
       const job = await startClusterRollingRollback(rollingJob.id);
       setRollingJob(job);
+      void queryClient.invalidateQueries({ queryKey: ['cluster-rolling-jobs'] });
       toast.success(t('cluster.rollbackStarted'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -574,6 +773,80 @@ export default function ClusterPage() {
 
         <Card className="cluster-join-card">
           <div className="cluster-card-head cluster-card-head-compact">
+            <span className="cluster-icon cluster-icon-safe"><ShieldCheck size={18} /></span>
+            <div>
+              <CardTitle>{t('cluster.configVersionTitle')}</CardTitle>
+              <CardDescription>{t('cluster.configVersionHint')}</CardDescription>
+            </div>
+          </div>
+          <div className="cluster-token-form">
+            <div className="cluster-token-fields">
+              <label>
+                <span>{t('cluster.configVersionField')}</span>
+                <Input
+                  placeholder={t('cluster.configVersionPlaceholder')}
+                  value={configVersionForm.version || ''}
+                  onChange={(e) => setConfigVersionForm((c) => ({ ...c, version: e.target.value }))}
+                />
+              </label>
+              <label>
+                <span>{t('cluster.configVersionMessage')}</span>
+                <Input
+                  placeholder={t('cluster.configVersionMessagePlaceholder')}
+                  value={configVersionForm.message || ''}
+                  onChange={(e) => setConfigVersionForm((c) => ({ ...c, message: e.target.value }))}
+                />
+              </label>
+              <div>
+                <Button loading={configVersionMutation.isPending} disabled={configVersionMutation.isPending} onClick={() => submitConfigVersion()}>
+                  <Plus size={16} />{t('cluster.configVersionSubmit')}
+                </Button>
+              </div>
+            </div>
+          </div>
+          {consensus && (
+            <div className="cluster-result-note cluster-result-note-muted">
+              <span>{t('cluster.configVersionLeaderHint', {
+                leader: consensus.leader_id || '—',
+                role: consensus.local_role || '—',
+              })}</span>
+            </div>
+          )}
+          {configVersionError && (
+            <div className="cluster-result-note cluster-result-note-error cluster-inline-error">
+              <strong>{t('cluster.configVersionFailed')}</strong>
+              <span>{configVersionError}</span>
+              <Button size="sm" variant="outline" onClick={() => setConfigVersionError(null)}>{t('common.close')}</Button>
+            </div>
+          )}
+          {latestConfigVersion && (
+            <div className="cluster-result-note cluster-result-note-ok cluster-config-version-result">
+              <strong>{t('cluster.configVersionResultTitle')}</strong>
+              <span>{t('cluster.configVersionField')}: <code>{latestConfigVersion.version}</code></span>
+              <span>{t('cluster.configVersionLeader')}: {latestConfigVersion.leader_id || '—'}</span>
+              <span>{t('cluster.configVersionCreated')}: {formatTimestamp(latestConfigVersion.created_at)}</span>
+              {latestConfigVersion.message ? <span>{latestConfigVersion.message}</span> : null}
+            </div>
+          )}
+          <div className="cluster-result-note cluster-result-note-muted">
+            <strong>{t('cluster.configVersionRecent')}</strong>
+            {(consensus?.recent_versions || []).length ? (
+              <ul>
+                {(consensus?.recent_versions || []).map((record) => (
+                  <li key={`${record.version}-${record.created_at}`}>
+                    <code>{record.version}</code> · {formatTimestamp(record.created_at)}
+                    {record.message ? ` — ${record.message}` : ''}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <span>{t('cluster.configVersionRecentEmpty')}</span>
+            )}
+          </div>
+        </Card>
+
+        <Card className="cluster-join-card">
+          <div className="cluster-card-head cluster-card-head-compact">
             <span className="cluster-icon"><PackageCheck size={18} /></span>
             <div>
               <CardTitle>{t('cluster.bootstrapTitle')}</CardTitle>
@@ -657,6 +930,83 @@ export default function ClusterPage() {
               )}
             </div>
           )}
+          <div className="cluster-section-title">
+            <div>
+              <strong>{t('cluster.rollingJobsTitle')}</strong>
+              <span>{t('cluster.rollingJobsHint')}</span>
+            </div>
+            <Button size="sm" variant="outline" loading={isFetchingRollingJobs} onClick={() => void refetchRollingJobs()}>
+              {t('cluster.refresh')}
+            </Button>
+          </div>
+          {isRollingJobsError && (
+            <div className="cluster-result-note cluster-result-note-error cluster-inline-error">
+              <strong>{t('cluster.rollingJobsLoadFailed')}</strong>
+              <span>{errorMessage(rollingJobsError)}</span>
+              <Button size="sm" variant="outline" onClick={() => void refetchRollingJobs()}>{t('common.retry')}</Button>
+            </div>
+          )}
+          {!isRollingJobsError && !rollingJobList.length && !isFetchingRollingJobs && (
+            <div className="cluster-result-note cluster-result-note-muted">
+              <strong>{t('cluster.rollingJobsEmptyTitle')}</strong>
+              <span>{t('cluster.rollingJobsEmptyHint')}</span>
+            </div>
+          )}
+          {rollingJobList.length > 0 && (
+            <div className="table-scroll relative">
+              {isFetchingRollingJobs && <div className="absolute inset-0 z-10 bg-background/40" aria-busy />}
+              <Table className="cluster-rolling-job-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('cluster.rollingJobID')}</TableHead>
+                    <TableHead>{t('cluster.rollingJobStatus')}</TableHead>
+                    <TableHead>{t('cluster.rollingJobProgress')}</TableHead>
+                    <TableHead>{t('cluster.rollingJobUpdated')}</TableHead>
+                    <TableHead>{t('common.actions')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rollingJobList.map((job) => {
+                    const progress = rollingJobProgress(job);
+                    return (
+                      <TableRow key={job.id}>
+                        <TableCell><code>{job.id}</code></TableCell>
+                        <TableCell>{deployTaskStatusTag(job.status, t)}</TableCell>
+                        <TableCell>{progress.done}/{progress.total}</TableCell>
+                        <TableCell>{formatTimestamp(job.updated_at)}</TableCell>
+                        <TableCell>
+                          <Button size="sm" variant="outline" onClick={() => setRollingJob(job)}>{t('cluster.rollingJobView')}</Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+          <div className="cluster-mobile-cards">
+            <section className="cluster-mobile-list" aria-label={t('cluster.rollingJobList')}>
+              <h3>{t('cluster.rollingJobsTitle')}</h3>
+              {rollingJobList.length ? rollingJobList.map((job) => {
+                const progress = rollingJobProgress(job);
+                return (
+                  <article className="cluster-mobile-card" key={job.id}>
+                    <div className="cluster-mobile-card-head">
+                      <code>{job.id}</code>
+                      {deployTaskStatusTag(job.status, t)}
+                    </div>
+                    <dl>
+                      <div><dt>{t('cluster.rollingJobProgress')}</dt><dd>{progress.done}/{progress.total}</dd></div>
+                      <div><dt>{t('cluster.rollingJobUpdated')}</dt><dd>{formatTimestamp(job.updated_at)}</dd></div>
+                    </dl>
+                    <div className="cluster-mobile-actions">
+                      <Button size="sm" variant="outline" onClick={() => setRollingJob(job)}>{t('cluster.rollingJobView')}</Button>
+                    </div>
+                  </article>
+                );
+              }) : <div className="cluster-mobile-empty">{t('common.noData')}</div>}
+            </section>
+          </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => void loadTrafficPeers('least_conn')}>
               {t('cluster.loadTrafficPeers')}
@@ -848,18 +1198,38 @@ export default function ClusterPage() {
                       <TableCell>{formatRuntimeHeartbeat(item)}</TableCell>
                       <TableCell>{item.runtime?.config_version || '-'}</TableCell>
                       <TableCell>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={item.revoked}
-                          onClick={() => {
-                            setCertificateForm((c) => ({ ...c, nodeId: item.node_id }));
-                            setLatestCertificate(null);
-                            document.getElementById('cluster-cert-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                          }}
-                        >
-                          {t('cluster.certSign')}
-                        </Button>
+                        <div className="cluster-node-actions">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={item.revoked}
+                            onClick={() => {
+                              setCertificateForm((c) => ({ ...c, nodeId: item.node_id }));
+                              setLatestCertificate(null);
+                              document.getElementById('cluster-cert-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }}
+                          >
+                            {t('cluster.certSign')}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={item.revoked || Boolean(reportingTraffic)}
+                            loading={reportingTraffic?.nodeId === item.node_id && reportingTraffic?.kind === 'success'}
+                            onClick={() => setPendingTrafficReport({ nodeId: item.node_id, kind: 'success' })}
+                          >
+                            {t('cluster.trafficReportSuccess')}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={item.revoked || Boolean(reportingTraffic)}
+                            loading={reportingTraffic?.nodeId === item.node_id && reportingTraffic?.kind === 'failure'}
+                            onClick={() => setPendingTrafficReport({ nodeId: item.node_id, kind: 'failure' })}
+                          >
+                            {t('cluster.trafficReportFailure')}
+                          </Button>
+                        </div>
                       </TableCell>
                       <TableCell>{formatTimestamp(item.joined_at)}</TableCell>
                       <TableCell>{formatTimestamp(item.certificate_expiry)}</TableCell>
@@ -869,6 +1239,17 @@ export default function ClusterPage() {
               </Table>
             </div>
           </div>
+          <div className="cluster-result-note cluster-result-note-muted cluster-traffic-report-note">
+            <strong>{t('cluster.trafficReportTitle')}</strong>
+            <span>{t('cluster.trafficReportHint')}</span>
+          </div>
+          {trafficReportError && (
+            <div className="cluster-result-note cluster-result-note-error cluster-inline-error">
+              <strong>{t('cluster.trafficReportTitle')}</strong>
+              <span>{trafficReportError}</span>
+              <Button size="sm" variant="outline" onClick={() => setTrafficReportError(null)}>{t('common.close')}</Button>
+            </div>
+          )}
           <div className="cluster-mobile-cards">
             <section className="cluster-mobile-list" aria-label={t('cluster.joinTokenList')}>
               <h3>{t('cluster.joinTokenList')}</h3>
@@ -922,6 +1303,24 @@ export default function ClusterPage() {
                       }}
                     >
                       {t('cluster.certSign')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={item.revoked || Boolean(reportingTraffic)}
+                      loading={reportingTraffic?.nodeId === item.node_id && reportingTraffic?.kind === 'success'}
+                      onClick={() => setPendingTrafficReport({ nodeId: item.node_id, kind: 'success' })}
+                    >
+                      {t('cluster.trafficReportSuccess')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={item.revoked || Boolean(reportingTraffic)}
+                      loading={reportingTraffic?.nodeId === item.node_id && reportingTraffic?.kind === 'failure'}
+                      onClick={() => setPendingTrafficReport({ nodeId: item.node_id, kind: 'failure' })}
+                    >
+                      {t('cluster.trafficReportFailure')}
                     </Button>
                   </div>
                 </article>
@@ -1139,13 +1538,40 @@ export default function ClusterPage() {
                   <Button variant="outline" loading={deployTaskMutation.isPending} disabled={deployTaskMutation.isPending} onClick={() => void submitDeployment('check')}>
                     <ShieldCheck size={16} />{t('cluster.deployWizardRunPrecheck')}
                   </Button>
-                  <Button loading={deployTaskMutation.isPending} disabled={deployTaskMutation.isPending || !activeDeployTask || activeDeployTask.action !== 'check' || activeDeployTask.status !== 'succeeded'} onClick={() => void submitDeployment('run')}>
+                  <Button variant="outline" loading={quickPrecheckMutation.isPending} disabled={quickPrecheckMutation.isPending || deployTaskMutation.isPending} onClick={() => submitQuickPrecheck()}>
+                    <ShieldCheck size={16} />{t('cluster.quickPrecheck')}
+                  </Button>
+                  <Button loading={deployTaskMutation.isPending} disabled={deployTaskMutation.isPending || !(syncPrecheckUnlocksRun || taskPrecheckUnlocksRun)} onClick={() => void submitDeployment('run')}>
                     <Play size={16} />{t('cluster.deployWizardStartAction')}
                   </Button>
                   <Button variant="outline" disabled={deployTaskMutation.isPending} onClick={resetDeploymentWizard}>
                     <RotateCcw size={16} />{t('common.reset')}
                   </Button>
                 </div>
+                <div className="cluster-result-note cluster-result-note-muted">
+                  <span>{t('cluster.precheckQuickHint')}</span>
+                </div>
+                {syncPrecheck && (
+                  <div className={`cluster-result-note ${syncPrecheck.result.ok ? 'cluster-result-note-ok' : 'cluster-result-note-error'} cluster-quick-precheck-result`}>
+                    <div className="cluster-task-summary-line">
+                      <strong>{t('cluster.precheckResultTitle')}</strong>
+                      <Badge variant={syncPrecheck.result.ok ? 'success' : 'destructive'}>
+                        {syncPrecheck.result.ok ? t('cluster.precheckOk') : t('cluster.precheckUnreachable')}
+                      </Badge>
+                    </div>
+                    <span>{t('cluster.precheckTarget')}: {syncPrecheck.result.user}@{syncPrecheck.result.host}:{syncPrecheck.result.port}</span>
+                    <span>{t('cluster.precheckCheckedAt')}: {formatTimestamp(syncPrecheck.result.checked_at)}</span>
+                    {syncPrecheck.result.message ? <span>{displayTaskText(syncPrecheck.result.message)}</span> : null}
+                    {syncPrecheck.result.command?.length ? <code>{syncPrecheck.result.command.join(' ')}</code> : null}
+                    {syncPrecheck.authorization ? (
+                      <>
+                        <span>{t('cluster.precheckAuthorization')}</span>
+                        <span>{t('cluster.precheckAuthorizationExpires')}: {formatTimestamp(syncPrecheck.authorization.expires_at)}</span>
+                        <span>{t('cluster.precheckAuthorizationHint')}</span>
+                      </>
+                    ) : null}
+                  </div>
+                )}
               </div>
               <DeploymentTaskPanel
                 activeDeployTask={activeDeployTask}
@@ -1192,6 +1618,8 @@ export default function ClusterPage() {
                   <TableHead>{t('cluster.auditSourceType')}</TableHead>
                   <TableHead>{t('cluster.auditAction')}</TableHead>
                   <TableHead>{t('cluster.auditActor')}</TableHead>
+                  <TableHead>{t('cluster.auditTarget')}</TableHead>
+                  <TableHead>{t('cluster.auditRemoteIP')}</TableHead>
                   <TableHead>{t('cluster.auditStatus')}</TableHead>
                   <TableHead>{t('cluster.auditMessage')}</TableHead>
                 </TableRow>
@@ -1203,6 +1631,8 @@ export default function ClusterPage() {
                     <TableCell><ClusterAuditSourceCell entry={entry} t={t} /></TableCell>
                     <TableCell><span className="cluster-audit-text">{clusterAuditAction(entry, t)}</span></TableCell>
                     <TableCell><span className="cluster-audit-text">{clusterAuditActor(entry, t)}</span></TableCell>
+                    <TableCell><code className="table-code" title={clusterAuditTarget(entry)}>{clusterAuditTarget(entry) || '-'}</code></TableCell>
+                    <TableCell><span className="nowrap-cell" title={entry.remote_ip}>{entry.remote_ip || '-'}</span></TableCell>
                     <TableCell>{clusterAuditStatusTag(entry, t)}</TableCell>
                     <TableCell><span className="cluster-audit-message">{clusterAuditMessage(entry, t)}</span></TableCell>
                   </TableRow>
@@ -1224,6 +1654,27 @@ export default function ClusterPage() {
           </div>
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingTrafficReport)}
+        onOpenChange={(open) => { if (!open) setPendingTrafficReport(null); }}
+        title={pendingTrafficReport?.kind === 'failure' ? t('cluster.trafficReportFailureConfirmTitle') : t('cluster.trafficReportSuccessConfirmTitle')}
+        description={
+          pendingTrafficReport?.kind === 'failure'
+            ? t('cluster.trafficReportFailureConfirmContent', { node: pendingTrafficReport?.nodeId || '' })
+            : t('cluster.trafficReportSuccessConfirmContent', { node: pendingTrafficReport?.nodeId || '' })
+        }
+        confirmLabel={pendingTrafficReport?.kind === 'failure' ? t('cluster.trafficReportFailure') : t('cluster.trafficReportSuccess')}
+        cancelLabel={t('common.cancel')}
+        destructive={pendingTrafficReport?.kind === 'failure'}
+        loading={trafficReportMutation.isPending}
+        onConfirm={() => {
+          if (pendingTrafficReport) {
+            trafficReportMutation.mutate(pendingTrafficReport);
+          }
+          setPendingTrafficReport(null);
+        }}
+      />
 
       <Dialog open={Boolean(revokeConfirmID)} onOpenChange={(open) => { if (!open) setRevokeConfirmID(null); }}>
         <DialogContent>
@@ -2039,4 +2490,39 @@ function formatTimestamp(value: string) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error || '');
+}
+
+function normalizeHostKeyFingerprint(value: string | undefined) {
+  const trimmed = String(value || '').trim();
+  if (trimmed.length >= 7 && trimmed.slice(0, 7).toLowerCase() === 'sha256:') {
+    return `SHA256:${trimmed.slice(7)}`;
+  }
+  return trimmed;
+}
+
+function normalizeDeployTargetIdentity(value: {
+  host?: string;
+  user?: string;
+  port?: number;
+  hostKeySHA256?: string;
+}): DeployTargetIdentity {
+  return {
+    host: String(value.host || '').trim().toLowerCase().replace(/\.$/, ''),
+    user: String(value.user || '').trim(),
+    port: Number(value.port || 22),
+    hostKeySHA256: normalizeHostKeyFingerprint(value.hostKeySHA256),
+  };
+}
+
+function deployTargetsMatch(left: DeployTargetIdentity, right: DeployTargetIdentity) {
+  return left.host === right.host
+    && left.user === right.user
+    && left.port === right.port
+    && left.hostKeySHA256 === right.hostKeySHA256;
+}
+
+function rollingJobProgress(job: ClusterRollingJob) {
+  const steps = job.steps || [];
+  const done = steps.filter((step) => step.status === 'healthy' || step.status === 'skipped').length;
+  return { done, total: steps.length };
 }

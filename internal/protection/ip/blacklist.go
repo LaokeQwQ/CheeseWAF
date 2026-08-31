@@ -55,19 +55,3 @@ func (m *Matcher) Contains(raw string) bool {
 	}
 	return len(m.cidrs.match(addr)) > 0
 }
-
-type Blacklist struct {
-	matcher *Matcher
-}
-
-func NewBlacklist(entries []string) (*Blacklist, error) {
-	matcher, err := NewMatcher(entries)
-	if err != nil {
-		return nil, err
-	}
-	return &Blacklist{matcher: matcher}, nil
-}
-
-func (b *Blacklist) Blocked(ip string) bool {
-	return b != nil && b.matcher.Contains(ip)
-}

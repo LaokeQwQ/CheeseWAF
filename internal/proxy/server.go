@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -664,7 +665,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if result != nil && result.Detected {
-			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results)
+			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results, site.WAF.ParanoiaLevel)
 			reqCtx.Metadata["waf_policy_decision"] = decision
 			reqCtx.Metadata["detection"] = result
 			switch decision.Action {
@@ -674,6 +675,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			case engine.ActionChallenge.String():
 				s.challenge(w, r, reqCtx, result.Category, result.Message, start)
 				return
+			case engine.ActionLog.String():
+				// Explicit pass-through. Most of the time this is the intended
+				// outcome: something was detected but scored below the policy
+				// threshold. It is only a fail-open when the analysis never
+				// completed, and a WAF that forwards un-analysed traffic is
+				// indistinguishable from no WAF — so make that observable
+				// instead of letting it fall out of the switch unnoticed.
+				if exhausted, _ := reqCtx.Metadata["detection_budget_exhausted"].(bool); exhausted {
+					engine.RecordBudgetExhaustedPass()
+					log.Printf("waf: detection budget exhausted, forwarding un-analysed request site_id=%q trace_id=%q policy=%q", site.ID, reqCtx.TraceID, policy.WebAttack)
+				}
 			}
 		}
 	}
@@ -1178,10 +1190,16 @@ func (s *Server) blockThreatIntel(w http.ResponseWriter, reqCtx *engine.RequestC
 }
 
 type webAttackPolicyDecision struct {
-	Level             string  `json:"level"`
-	Action            string  `json:"action"`
-	Reason            string  `json:"reason"`
+	Level  string `json:"level"`
+	Action string `json:"action"`
+	Reason string `json:"reason"`
+	// ParanoiaLevel is the site's configured engine sensitivity
+	// (waf.paranoia_level, 0-5). PolicyTier is the separate 0-4 ordinal derived
+	// from the web_attack policy string. The two used to share the
+	// paranoia_level name, so logs and the console reported a strategy ordinal
+	// while operators read it as the site's configured sensitivity level.
 	ParanoiaLevel     int     `json:"paranoia_level"`
+	PolicyTier        int     `json:"policy_tier"`
 	MinimumSeverity   string  `json:"minimum_severity"`
 	MinimumConfidence float64 `json:"minimum_confidence"`
 	MinimumRiskScore  int     `json:"minimum_risk_score"`
@@ -1195,10 +1213,15 @@ type webAttackPolicyDecision struct {
 }
 
 func evaluateWebAttackPolicy(level string, result *engine.DetectionResult) webAttackPolicyDecision {
-	return evaluateWebAttackPolicyWithEvidence(level, result, nil)
+	return evaluateWebAttackPolicyWithEvidence(level, result, nil, config.DefaultParanoiaLevel)
 }
 
-func evaluateWebAttackPolicyWithEvidence(level string, result *engine.DetectionResult, results []engine.DetectionResult) webAttackPolicyDecision {
+func evaluateWebAttackPolicyWithEvidence(
+	level string,
+	result *engine.DetectionResult,
+	results []engine.DetectionResult,
+	siteParanoiaLevel int,
+) webAttackPolicyDecision {
 	if level == "" {
 		level = config.ProtectionLevelSmart
 	}
@@ -1208,7 +1231,8 @@ func evaluateWebAttackPolicyWithEvidence(level string, result *engine.DetectionR
 		Level:             level,
 		Action:            engine.ActionLog.String(),
 		Reason:            "detected below policy threshold",
-		ParanoiaLevel:     webAttackParanoiaLevel(level),
+		ParanoiaLevel:     config.EffectiveParanoiaLevel(siteParanoiaLevel),
+		PolicyTier:        webAttackParanoiaLevel(level),
 		MinimumSeverity:   minSeverity.String(),
 		MinimumConfidence: minConfidence,
 		MinimumRiskScore:  riskThreshold,
@@ -1843,7 +1867,12 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		s.enqueueReview(ctx, reqCtx, action)
 		return
 	}
-	_ = s.logSink.Write(ctx, entry)
+	// P0-2: a failed sink write used to be discarded silently, so events could
+	// vanish without a trace. Record it, count it, and log it.
+	if err := s.logSink.Write(ctx, entry); err != nil {
+		storage.RecordLogWriteFailure()
+		log.Printf("proxy: log sink write failed trace_id=%q site_id=%q action=%q: %v", entry.TraceID, entry.SiteID, entry.Action, err)
+	}
 	s.enqueueReview(ctx, reqCtx, action)
 }
 

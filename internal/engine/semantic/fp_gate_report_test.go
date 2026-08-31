@@ -11,7 +11,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
-	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
+	"github.com/LaokeQwQ/CheeseWAF/internal/security"
 )
 
 func TestFPGateReport(t *testing.T) {
@@ -24,13 +24,13 @@ func TestFPGateReport(t *testing.T) {
 		"testdata/benign_production_shapes.jsonl",
 		"testdata/handcrafted_attack_neighbors.jsonl",
 	}
-	var cases []securitytest.Case
+	var cases []security.Case
 	for _, name := range files {
 		f, err := os.Open(name)
 		if err != nil {
 			t.Fatalf("open %s: %v", name, err)
 		}
-		loaded, err := securitytest.LoadJSONL(f)
+		loaded, err := security.LoadJSONL(f)
 		f.Close()
 		if err != nil {
 			t.Fatalf("load %s: %v", name, err)
@@ -91,7 +91,7 @@ func TestFPGateReport(t *testing.T) {
 		"benign_fp":           benignFP,
 		"benign_pass":         benignTotal - benignFP,
 		"fp_rate_percent":     fpRate,
-		"fp_rate_target_pct":  0.00001,
+		"fp_rate_gate_pct":    0.8,
 		"fp_gate_pass":        benignFP == 0,
 		"attack_total":        attackTotal,
 		"attack_hit":          attackHit,

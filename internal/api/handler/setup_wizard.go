@@ -199,13 +199,14 @@ func (h *Handler) SetupDraftGet(w http.ResponseWriter, r *http.Request) {
 }
 
 type setupDraftPatch struct {
-	Profile       string               `json:"profile"`
-	Custom        *setup.ProfileConfig `json:"custom"`
-	Username      string               `json:"username"`
-	Password      string               `json:"password"`
-	AdminListen   string               `json:"admin_listen"`
-	AdminStrategy string               `json:"admin_strategy"`
-	Confirmed     *bool                `json:"confirmed"`
+	Profile       string                  `json:"profile"`
+	Custom        *setup.ProfileConfig    `json:"custom"`
+	Username      string                  `json:"username"`
+	Password      string                  `json:"password"`
+	AdminListen   string                  `json:"admin_listen"`
+	AdminStrategy string                  `json:"admin_strategy"`
+	Integrations  *setup.IntegrationsConfig `json:"integrations"`
+	Confirmed     *bool                   `json:"confirmed"`
 }
 
 // SetupDraftPatch updates multi-step wizard fields. CompleteSetup remains a separate final call.
@@ -244,6 +245,9 @@ func (h *Handler) SetupDraftPatch(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.AdminStrategy != "" {
 			d.AdminStrategy = req.AdminStrategy
+		}
+		if req.Integrations != nil {
+			d.Integrations = req.Integrations
 		}
 		if req.Confirmed != nil {
 			d.Confirmed = *req.Confirmed

@@ -98,7 +98,9 @@ func (s *ClearanceStateStore) Revoke(jti string) bool {
 	return true
 }
 
-func NewChallengeStore(c ChallengeStoreConfig) *ChallengeStore {
+// applyDefaults fills in every unset bound. It is shared with the Redis backend
+// so both stores enforce the same limits for the same configuration.
+func (c *ChallengeStoreConfig) applyDefaults() {
 	if c.Capacity < 1 {
 		c.Capacity = 10000
 	}
@@ -158,6 +160,10 @@ func NewChallengeStore(c ChallengeStoreConfig) *ChallengeStore {
 			c.PerPeerRate = c.PerPeerCapacity * 4
 		}
 	}
+}
+
+func NewChallengeStore(c ChallengeStoreConfig) *ChallengeStore {
+	c.applyDefaults()
 	return &ChallengeStore{
 		m:                  make(map[string]challengeEntry),
 		reservations:       make(map[uint64]*ChallengeReservation),

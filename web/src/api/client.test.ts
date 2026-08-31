@@ -27,6 +27,7 @@ import {
   enableUser2FA,
   fetchSession,
   fetchSite,
+  fetchStats,
   issueSiteACMECertificate,
   login,
   parseSSEBlock,
@@ -48,6 +49,7 @@ import {
   updateNotification,
 } from './client';
 import { apiClient } from './client';
+import type { RuntimeStats } from '../types/api';
 import { queryClient } from '../queryClient';
 
 describe('log event lookup', () => {
@@ -343,6 +345,43 @@ describe('shell health API', () => {
     await expect(fetchHealth()).rejects.toEqual(expect.objectContaining<Partial<APIRequestError>>({
       code: 'HEALTH_RESPONSE_INVALID',
       status: 200,
+    }));
+  });
+});
+
+describe('runtime stats API', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('returns the typed process runtime snapshot', async () => {
+    const stats: RuntimeStats = {
+      uptime_seconds: 3_600,
+      goroutines: 128,
+      process_count: 2,
+      memory_alloc: 41_234_567,
+      sites: 7,
+      status: 'running',
+    };
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValueOnce({ data: { data: stats } });
+
+    await expect(fetchStats()).resolves.toEqual(stats);
+    expect(get).toHaveBeenCalledWith('/stats');
+  });
+
+  it('surfaces backend error envelopes as APIRequestError', async () => {
+    vi.spyOn(apiClient, 'get').mockRejectedValueOnce(Object.assign(new Error('Request failed with status code 403'), {
+      isAxiosError: true,
+      response: {
+        status: 403,
+        statusText: 'Forbidden',
+        headers: {},
+        config: {},
+        data: { error: { code: 'FORBIDDEN', message: 'missing read:monitor scope' } },
+      },
+    }));
+
+    await expect(fetchStats()).rejects.toEqual(expect.objectContaining<Partial<APIRequestError>>({
+      code: 'FORBIDDEN',
+      status: 403,
     }));
   });
 });

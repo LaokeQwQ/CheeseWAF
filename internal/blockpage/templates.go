@@ -7,10 +7,6 @@ type TemplateInfo struct {
 	HTML        string `json:"html"`
 }
 
-func DefaultTemplate() string {
-	return defaultBlockTemplate
-}
-
 func TemplateByID(id string) (TemplateInfo, bool) {
 	for _, item := range TemplateLibrary() {
 		if item.ID == id {

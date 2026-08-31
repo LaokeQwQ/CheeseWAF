@@ -527,14 +527,15 @@ func (s *SemanticEngineSwitches) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type CustomRuleConfig struct {
-	ID       string `yaml:"id" json:"id"`
-	Name     string `yaml:"name" json:"name"`
-	Pattern  string `yaml:"pattern" json:"pattern"`
-	Location string `yaml:"location" json:"location"`
-	Action   string `yaml:"action" json:"action"`
-	Severity string `yaml:"severity" json:"severity"`
-	Enabled  bool   `yaml:"enabled" json:"enabled"`
-	Priority int    `yaml:"priority" json:"priority"`
+	ID          string `yaml:"id" json:"id"`
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	Pattern     string `yaml:"pattern" json:"pattern"`
+	Location    string `yaml:"location" json:"location"`
+	Action      string `yaml:"action" json:"action"`
+	Severity    string `yaml:"severity" json:"severity"`
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	Priority    int    `yaml:"priority" json:"priority"`
 }
 
 type PerformanceTuningConfig struct {
