@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/tls"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -22,7 +24,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
-	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
+	"github.com/LaokeQwQ/CheeseWAF/internal/security"
 )
 
 type result struct {
@@ -68,65 +70,68 @@ type summary struct {
 }
 
 type options struct {
-	Mode            string
-	CorpusPath      string
-	BaseURL         string
-	AdminURL        string
-	Timeout         time.Duration
-	ToolTimeout     time.Duration
-	Insecure        bool
-	BlockStatuses   string
-	OutputPath      string
-	NucleiTemplates string
-	RequireExternal bool
-	SkipExternal    bool
-	Workers         int
-	Shards          int
-	Shard           int
-	Stream          bool
-	Progress        bool
+	Mode                 string
+	CorpusPath           string
+	GovernanceConfigPath string
+	BaseURL              string
+	AdminURL             string
+	Timeout              time.Duration
+	ToolTimeout          time.Duration
+	Insecure             bool
+	BlockStatuses        string
+	OutputPath           string
+	NucleiTemplates      string
+	RequireExternal      bool
+	SkipExternal         bool
+	Workers              int
+	Shards               int
+	Shard                int
+	Stream               bool
+	Progress             bool
 }
 
 func main() {
 	var (
-		mode            = flag.String("mode", "analyzer", "validation mode: analyzer, http, or gate")
-		corpusPath      = flag.String("corpus", "internal/engine/semantic/testdata/curated_external_shapes.jsonl", "JSONL corpus path")
-		baseURL         = flag.String("base-url", "", "base URL for http/gate mode, for example http://127.0.0.1:8080")
-		adminURL        = flag.String("admin-url", "", "admin-plane base URL for gate mode; defaults to base URL when empty")
-		timeout         = flag.Duration("timeout", 10*time.Second, "per-request timeout in http mode")
-		toolTimeout     = flag.Duration("tool-timeout", 10*time.Minute, "per-tool timeout in gate mode")
-		insecure        = flag.Bool("insecure", false, "skip TLS certificate verification in http mode and supported gate scanners")
-		blockStatuses   = flag.String("block-statuses", "403,406,429,451,503", "comma-separated statuses treated as WAF block/challenge")
-		outputPath      = flag.String("output", "", "write JSON report to file instead of stdout")
-		nucleiTemplates = flag.String("nuclei-templates", "security-validation/nuclei", "nuclei template directory for gate mode")
-		requireExternal = flag.Bool("require-external", false, "fail gate mode when an external scanner is missing instead of skipping")
-		skipExternal    = flag.Bool("skip-external", false, "skip external scanner wrappers in gate mode and run only analyzer/http replay")
-		workers         = flag.Int("workers", 0, "concurrent workers for analyzer/http replay (0 = GOMAXPROCS)")
-		shards          = flag.Int("shards", 1, "number of corpus shards (1 = no sharding)")
-		shard           = flag.Int("shard", 0, "shard index to process (0-based; requires -shards > 1)")
-		stream          = flag.Bool("stream", false, "stream per-case results as JSON lines instead of collecting the full report")
-		progress        = flag.Bool("progress", false, "print per-case progress lines to stderr")
+		mode             = flag.String("mode", "analyzer", "validation mode: analyzer, http, gate, or govern")
+		corpusPath       = flag.String("corpus", "internal/engine/semantic/testdata/curated_external_shapes.jsonl", "JSONL corpus path")
+		governanceConfig = flag.String("governance-config", "", "local JSON corpus governance configuration")
+		baseURL          = flag.String("base-url", "", "base URL for http/gate mode, for example http://127.0.0.1:8080")
+		adminURL         = flag.String("admin-url", "", "admin-plane base URL for gate mode; defaults to base URL when empty")
+		timeout          = flag.Duration("timeout", 10*time.Second, "per-request timeout in http mode")
+		toolTimeout      = flag.Duration("tool-timeout", 10*time.Minute, "per-tool timeout in gate mode")
+		insecure         = flag.Bool("insecure", false, "skip TLS certificate verification in http mode and supported gate scanners")
+		blockStatuses    = flag.String("block-statuses", "403,406,429,451,503", "comma-separated statuses treated as WAF block/challenge")
+		outputPath       = flag.String("output", "", "write JSON report to file instead of stdout")
+		nucleiTemplates  = flag.String("nuclei-templates", "security-validation/nuclei", "nuclei template directory for gate mode")
+		requireExternal  = flag.Bool("require-external", false, "fail gate mode when an external scanner is missing instead of skipping")
+		skipExternal     = flag.Bool("skip-external", false, "skip external scanner wrappers in gate mode and run only analyzer/http replay")
+		workers          = flag.Int("workers", 0, "concurrent workers for analyzer/http replay (0 = GOMAXPROCS)")
+		shards           = flag.Int("shards", 1, "number of corpus shards (1 = no sharding)")
+		shard            = flag.Int("shard", 0, "shard index to process (0-based; requires -shards > 1)")
+		stream           = flag.Bool("stream", false, "stream per-case results as JSON lines instead of collecting the full report")
+		progress         = flag.Bool("progress", false, "print per-case progress lines to stderr")
 	)
 	flag.Parse()
 
 	if err := run(options{
-		Mode:            *mode,
-		CorpusPath:      *corpusPath,
-		BaseURL:         *baseURL,
-		AdminURL:        *adminURL,
-		Timeout:         *timeout,
-		ToolTimeout:     *toolTimeout,
-		Insecure:        *insecure,
-		BlockStatuses:   *blockStatuses,
-		OutputPath:      *outputPath,
-		NucleiTemplates: *nucleiTemplates,
-		RequireExternal: *requireExternal,
-		SkipExternal:    *skipExternal,
-		Workers:         *workers,
-		Shards:          *shards,
-		Shard:           *shard,
-		Stream:          *stream,
-		Progress:        *progress,
+		Mode:                 *mode,
+		CorpusPath:           *corpusPath,
+		GovernanceConfigPath: *governanceConfig,
+		BaseURL:              *baseURL,
+		AdminURL:             *adminURL,
+		Timeout:              *timeout,
+		ToolTimeout:          *toolTimeout,
+		Insecure:             *insecure,
+		BlockStatuses:        *blockStatuses,
+		OutputPath:           *outputPath,
+		NucleiTemplates:      *nucleiTemplates,
+		RequireExternal:      *requireExternal,
+		SkipExternal:         *skipExternal,
+		Workers:              *workers,
+		Shards:               *shards,
+		Shard:                *shard,
+		Stream:               *stream,
+		Progress:             *progress,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -134,10 +139,37 @@ func main() {
 }
 
 func run(opts options) error {
+	return runContext(context.Background(), opts)
+}
+
+// runWithContext is kept separate from the CLI entry point so callers can
+// cancel a governance run without changing the behavior of existing modes.
+func runWithContext(ctx context.Context, opts options) error {
+	return runContext(ctx, opts)
+}
+
+func runContext(ctx context.Context, opts options) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if opts.Mode == "govern" {
+		var summary bytes.Buffer
+		if err := runGovernanceWithOutput(ctx, opts.GovernanceConfigPath, opts.OutputPath, &summary); err != nil {
+			return err
+		}
+		if opts.OutputPath == "" {
+			_, err := os.Stdout.Write(summary.Bytes())
+			return err
+		}
+		return writeAtomicReport(opts.OutputPath, summary.Bytes())
+	}
+	if opts.Mode != "analyzer" && opts.Mode != "http" && opts.Mode != "gate" {
+		return fmt.Errorf("unsupported mode %q", opts.Mode)
+	}
 	if opts.Shards == 0 && !opts.Stream {
 		opts.Shards = 1
 	}
-	if err := securitytest.ValidateShard(opts.Shards, opts.Shard); err != nil {
+	if err := security.ValidateShard(opts.Shards, opts.Shard); err != nil {
 		return err
 	}
 	file, err := os.Open(opts.CorpusPath)
@@ -160,8 +192,8 @@ func run(opts options) error {
 		return runStream(opts, reader)
 	}
 
-	cases := make([]securitytest.Case, 0)
-	corpusStats, err := securitytest.ForEachJSONLWithStats(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
+	cases := make([]security.Case, 0)
+	corpusStats, err := security.ForEachJSONLWithStats(reader, opts.Shards, opts.Shard, func(tc security.Case) error {
 		cases = append(cases, tc)
 		return nil
 	})
@@ -188,7 +220,7 @@ func run(opts options) error {
 
 	switch opts.Mode {
 	case "analyzer":
-		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc security.Case) result {
 			return validateAnalyzer(analyzer, tc)
 		}) {
 			report.addReport(res, opts.Progress)
@@ -202,7 +234,7 @@ func run(opts options) error {
 			return err
 		}
 		client := httpClient(opts.Timeout, opts.Insecure)
-		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc security.Case) result {
 			return validateHTTP(client, opts.BaseURL, statuses, tc)
 		}) {
 			report.addReport(res, opts.Progress)
@@ -216,12 +248,12 @@ func run(opts options) error {
 			return err
 		}
 		client := httpClient(opts.Timeout, opts.Insecure)
-		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc security.Case) result {
 			return validateAnalyzer(analyzer, tc)
 		}) {
 			report.addReport(res, opts.Progress)
 		}
-		for _, res := range runConcurrent(cases, opts.Workers, func(tc securitytest.Case) result {
+		for _, res := range runConcurrent(cases, opts.Workers, func(tc security.Case) result {
 			return validateHTTP(client, opts.BaseURL, statuses, tc)
 		}) {
 			report.addReport(res, opts.Progress)
@@ -266,6 +298,192 @@ func run(opts options) error {
 	return nil
 }
 
+func runGovernance(ctx context.Context, configPath string, out io.Writer) error {
+	return runGovernanceWithOutput(ctx, configPath, "", out)
+}
+
+func runGovernanceWithOutput(ctx context.Context, configPath, summaryPath string, out io.Writer) error {
+	if strings.TrimSpace(configPath) == "" {
+		return errors.New("--governance-config is required in govern mode")
+	}
+	if isRemotePath(configPath) {
+		return errors.New("--governance-config must be a local JSON file")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cfg, err := loadGovernanceConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if len(cfg.Sources)+len(cfg.Existing)+len(cfg.Incoming) == 0 {
+		return errors.New("governance config requires at least one source")
+	}
+	if err := validateGovernanceConfigPaths(cfg, configPath); err != nil {
+		return err
+	}
+	if err := validateGovernanceSummaryPath(cfg, configPath, summaryPath); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	report, err := security.RunGovernance(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	// Duplicate relations are retained in the manifest file for auditability,
+	// but omitting the potentially large relation list from stdout keeps CI and
+	// local command output bounded and readable.
+	manifestSummary := report.Manifest
+	manifestSummary.DuplicateRelations = nil
+	encoded, err := json.MarshalIndent(manifestSummary, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	_, err = out.Write(encoded)
+	return err
+}
+
+func validateGovernanceConfigPaths(cfg security.GovernanceConfig, configPath string) error {
+	if strings.TrimSpace(cfg.ReviewPath) != "" {
+		for _, source := range append(append(append([]security.SourceSpec{}, cfg.Sources...), cfg.Existing...), cfg.Incoming...) {
+			if strings.TrimSpace(source.Path) == "" {
+				continue
+			}
+			if sameLocalPath(cfg.ReviewPath, source.Path) {
+				return fmt.Errorf("governance review path overlaps source input: %s", cfg.ReviewPath)
+			}
+		}
+	}
+	for _, output := range []string{cfg.FormalPath, cfg.QuarantinePath, cfg.ManifestPath} {
+		if strings.TrimSpace(output) == "" {
+			continue
+		}
+		if sameLocalPath(configPath, output) {
+			return fmt.Errorf("governance output path overlaps config input: %s", output)
+		}
+	}
+	return nil
+}
+
+// validateGovernanceSummaryPath prevents the human-readable summary from
+// overwriting a governance input or one of the immutable audit artifacts. The
+// core validates its own three outputs; this check covers the CLI-only fourth
+// output, including symlink aliases and the config file itself.
+func validateGovernanceSummaryPath(cfg security.GovernanceConfig, configPath, summaryPath string) error {
+	if strings.TrimSpace(summaryPath) == "" {
+		return nil
+	}
+	if isRemotePath(summaryPath) {
+		return errors.New("governance summary path must be a local file")
+	}
+	protected := []string{configPath, cfg.FormalPath, cfg.QuarantinePath, cfg.ManifestPath, cfg.ReviewPath}
+	for _, src := range append(append(append([]security.SourceSpec{}, cfg.Sources...), cfg.Existing...), cfg.Incoming...) {
+		protected = append(protected, src.Path)
+	}
+	for _, path := range protected {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if sameLocalPath(summaryPath, path) {
+			return fmt.Errorf("governance summary path overlaps protected input/output: %s", summaryPath)
+		}
+	}
+	return nil
+}
+
+func sameLocalPath(a, b string) bool {
+	canonicalA := canonicalPath(a)
+	canonicalB := canonicalPath(b)
+	if canonicalA == canonicalB || strings.EqualFold(canonicalA, canonicalB) {
+		return true
+	}
+	infoA, errA := os.Stat(a)
+	infoB, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
+}
+
+func canonicalPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	abs = filepath.Clean(abs)
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved)
+	}
+	// The summary normally does not exist yet. Resolve an existing parent so a
+	// symlinked output directory cannot bypass the overlap check.
+	parent, base := filepath.Dir(abs), filepath.Base(abs)
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		return filepath.Clean(filepath.Join(resolved, base))
+	}
+	return abs
+}
+
+func writeAtomicReport(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".corpus-report-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	cleanup := func() { _ = os.Remove(tmp) }
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		cleanup()
+		return err
+	}
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		cleanup()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
+}
+
+func loadGovernanceConfig(path string) (security.GovernanceConfig, error) {
+	var cfg security.GovernanceConfig
+	if isRemotePath(path) {
+		return cfg, errors.New("governance config must be a local JSON file")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return cfg, fmt.Errorf("open governance config: %w", err)
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		return cfg, fmt.Errorf("parse governance config: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return cfg, errors.New("parse governance config: multiple JSON values")
+		}
+		return cfg, fmt.Errorf("parse governance config: %w", err)
+	}
+	return cfg, nil
+}
+
+func isRemotePath(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	return strings.Contains(trimmed, "://") || strings.HasPrefix(strings.ToLower(trimmed), "file:")
+}
+
 func runStream(opts options, reader io.Reader) error {
 	switch opts.Mode {
 	case "analyzer", "http", "gate":
@@ -300,7 +518,7 @@ func runStream(opts options, reader io.Reader) error {
 		client = httpClient(opts.Timeout, opts.Insecure)
 	}
 
-	process := func(tc securitytest.Case) []result {
+	process := func(tc security.Case) []result {
 		switch opts.Mode {
 		case "analyzer":
 			return []result{validateAnalyzer(analyzer, tc)}
@@ -337,7 +555,7 @@ func runStream(opts options, reader io.Reader) error {
 		}()
 	}
 
-	cases := make(chan securitytest.Case, workers*2)
+	cases := make(chan security.Case, workers*2)
 	results := make(chan result, workers*2)
 	var workersWG sync.WaitGroup
 	for w := 0; w < workers; w++ {
@@ -353,12 +571,12 @@ func runStream(opts options, reader io.Reader) error {
 	}
 
 	type corpusLoadResult struct {
-		stats securitytest.JSONLStats
+		stats security.JSONLStats
 		err   error
 	}
 	loadResult := make(chan corpusLoadResult, 1)
 	go func() {
-		stats, err := securitytest.ForEachJSONLWithStats(reader, opts.Shards, opts.Shard, func(tc securitytest.Case) error {
+		stats, err := security.ForEachJSONLWithStats(reader, opts.Shards, opts.Shard, func(tc security.Case) error {
 			cases <- tc
 			return nil
 		})
@@ -414,7 +632,7 @@ func runStream(opts options, reader io.Reader) error {
 }
 
 func validateStreamShardOptions(shards, shard int) error {
-	return securitytest.ValidateShard(shards, shard)
+	return security.ValidateShard(shards, shard)
 }
 
 func writeStreamResults(opts options, out io.Writer, results <-chan result, report *summary) error {
@@ -455,7 +673,7 @@ func writeStreamSummary(opts options, report *summary) error {
 	return os.WriteFile(opts.OutputPath+".summary.json", encoded, 0o644)
 }
 
-func runConcurrent(cases []securitytest.Case, workers int, fn func(securitytest.Case) result) []result {
+func runConcurrent(cases []security.Case, workers int, fn func(security.Case) result) []result {
 	if len(cases) == 0 {
 		return nil
 	}
@@ -491,7 +709,7 @@ func runConcurrent(cases []securitytest.Case, workers int, fn func(securitytest.
 	return out
 }
 
-func validateAnalyzer(analyzer *semantic.Analyzer, tc securitytest.Case) result {
+func validateAnalyzer(analyzer *semantic.Analyzer, tc security.Case) result {
 	res := baseResult("analyzer", tc)
 	start := time.Now()
 
@@ -525,7 +743,7 @@ func validateAnalyzer(analyzer *semantic.Analyzer, tc securitytest.Case) result 
 	}
 	switch tc.Label {
 	case "attack":
-		if securitytest.StrictCategory(tc.SourceFamily) {
+		if security.StrictCategory(tc.SourceFamily) {
 			res.Passed = res.Detected && res.DetectorCategory == tc.Category
 		} else {
 			res.Passed = res.Detected
@@ -537,7 +755,7 @@ func validateAnalyzer(analyzer *semantic.Analyzer, tc securitytest.Case) result 
 	return res
 }
 
-func validateHTTP(client *http.Client, baseURL string, blockStatuses map[int]struct{}, tc securitytest.Case) result {
+func validateHTTP(client *http.Client, baseURL string, blockStatuses map[int]struct{}, tc security.Case) result {
 	res := baseResult("http", tc)
 	start := time.Now()
 
@@ -588,7 +806,7 @@ func validateHTTP(client *http.Client, baseURL string, blockStatuses map[int]str
 	return res
 }
 
-func baseResult(mode string, tc securitytest.Case) result {
+func baseResult(mode string, tc security.Case) result {
 	return result{
 		Name:         tc.Name,
 		SourceFamily: tc.SourceFamily,
@@ -601,7 +819,7 @@ func baseResult(mode string, tc securitytest.Case) result {
 	}
 }
 
-func newCorpusRequest(tc securitytest.Case) (*http.Request, error) {
+func newCorpusRequest(tc security.Case) (*http.Request, error) {
 	req, err := http.NewRequest(tc.Method, tc.Target, strings.NewReader(tc.Body))
 	if err != nil {
 		return nil, err

@@ -8,28 +8,26 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
-	"unicode/utf8"
-
-	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
 )
 
 const (
-	// MaxInputBytes is the hard limit on any single input source.
-	MaxInputBytes = 512 * 1024 // 512KB
 	// MaxDecodedBytes limits post-decompression/decoding expansion.
 	MaxDecodedBytes = 2 * 1024 * 1024 // 2MB
 	// MaxRegexMatchTime is the deadline for any single regex match.
 	MaxRegexMatchTime = 50 * time.Millisecond
-	// MaxAllocsPerDetect is the maximum memory allocations per Detect() call.
-	MaxAllocsPerDetect = 100_000
+	// maxAllocsPerDetectCeiling is the intended maximum memory allocations per
+	// Detect() call. It is deliberately unexported: nothing enforces it, and an
+	// exported name would advertise a capability the engine does not have.
+	//
+	// It cannot be enforced cheaply: Go has no per-goroutine allocation counter,
+	// and runtime.ReadMemStats stop-the-worlds, which is unusable on the request
+	// path. The engine bounds allocation structurally instead — per-field size,
+	// candidate/node/tree budgets — plus a wall-clock pipeline deadline. Kept
+	// only as documentation of the intended ceiling.
+	maxAllocsPerDetectCeiling = 100_000
 	// MaxRegexComplexityScore rejects patterns likely to cause catastrophic backtracking.
 	MaxRegexComplexityScore = 30
-	// MaxJSONNestingDepth prevents stack overflow from deeply nested JSON.
-	MaxJSONNestingDepth = 32
-	// MaxMultipartParts prevents excessive multipart form parsing.
-	MaxMultipartParts = 64
 	// maxInflightRegexMatches bounds timed-out regexp goroutines so ReDoS
 	// payloads cannot accumulate unlimited workers (stdlib regexp is not interruptible).
 	maxInflightRegexMatches = 64
@@ -50,6 +48,20 @@ var guardSlots = make(chan struct{}, maxInflightGuards)
 
 // BoundedRegex wraps a regexp.Regexp with timeout protection for ReDoS.
 type BoundedRegex struct{ re *regexp.Regexp }
+
+// Regexp returns the compiled stdlib pattern behind the bounded wrapper.
+//
+// CompileSafe is also a construction-time gate: callers that must keep stdlib
+// match semantics (no input truncation, no deadline) use Regexp to run the
+// match themselves while still requiring the complexity gate up front. That
+// matters for detectors, where silently truncating the subject would let an
+// attacker append a payload past the truncation point.
+func (b *BoundedRegex) Regexp() *regexp.Regexp {
+	if b == nil {
+		return nil
+	}
+	return b.re
+}
 
 // CompileSafe compiles a regex pattern and rejects dangerously complex ones.
 func CompileSafe(pattern string) (*BoundedRegex, error) {
@@ -158,32 +170,11 @@ func isQuantifier(b byte) bool {
 	return b == '*' || b == '+' || b == '?' || b == '{'
 }
 
-// SanitizeInput bounds and validates raw input before detection.
-func SanitizeInput(raw string) string {
-	if len(raw) > MaxInputBytes {
-		raw = raw[:MaxInputBytes]
-	}
-	// Strip NULL bytes which can cause issues in some parsers
-	raw = strings.ReplaceAll(raw, "\x00", "")
-	// Ensure valid UTF-8
-	if !utf8.ValidString(raw) {
-		raw = strings.ToValidUTF8(raw, "�")
-	}
-	return raw
-}
-
-// DecodeSafe performs bounded decoding that prevents decompression bombs.
-func DecodeSafe(raw string) decoder.Decoded {
-	safe := SanitizeInput(raw)
-	result := decoder.Decode(safe)
-	// Prevent decode expansion bombs (e.g., %00%00%00... -> NUL NUL NUL)
-	if len(result.Text) > MaxDecodedBytes {
-		result.Text = result.Text[:MaxDecodedBytes]
-	}
-	return result
-}
-
 // Guard runs a detection function with panic recovery and timeout protection.
+//
+// GuardSync is the hot-path form and is what the request pipeline uses; this
+// variant exists for callers that genuinely need to abandon a detector that has
+// hung, which is why it pays for a goroutine and a wall-clock timer.
 func Guard[T any](fn func() (T, error)) (result T, err error) {
 	var zero T
 	select {
@@ -228,14 +219,23 @@ func Guard[T any](fn func() (T, error)) (result T, err error) {
 	}
 }
 
-// BoundedDecode returns safely decoded text within memory bounds.
-func BoundedDecode(raw string) string {
-	safe := SanitizeInput(raw)
-	result := decoder.Decode(safe)
-	if len(result.Text) > MaxDecodedBytes {
-		return result.Text[:MaxDecodedBytes]
+// GuardSync protects a non-blocking detector without creating a goroutine or
+// timer. The caller's pipeline context still enforces the request deadline.
+func GuardSync[T any](fn func() (T, error)) (result T, err error) {
+	var zero T
+	select {
+	case guardSlots <- struct{}{}:
+		defer func() { <-guardSlots }()
+	default:
+		return zero, ErrDetectionOverload
 	}
-	return result.Text
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("detector panic recovered: %v\nstack: %s", recovered, truncate(string(debug.Stack()), 500))
+			result = zero
+		}
+	}()
+	return fn()
 }
 
 func truncate(s string, maxLen int) string {
@@ -244,63 +244,3 @@ func truncate(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "...(truncated)"
 }
-
-// === Circuit Breaker for Overload Protection ===
-
-type CircuitBreaker struct {
-	maxConcurrent int
-	current       int32
-	mu            sync.Mutex
-	open          bool
-}
-
-func NewCircuitBreaker(maxConcurrent int) *CircuitBreaker {
-	if maxConcurrent <= 0 {
-		maxConcurrent = 10000
-	}
-	return &CircuitBreaker{maxConcurrent: maxConcurrent}
-}
-
-func (cb *CircuitBreaker) Allow() bool {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	if cb.open {
-		return false
-	}
-	return cb.current < int32(cb.maxConcurrent)
-}
-
-// Acquire reserves a slot atomically under the breaker lock (check+increment).
-func (cb *CircuitBreaker) Acquire() bool {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	if cb.open || cb.current >= int32(cb.maxConcurrent) {
-		return false
-	}
-	cb.current++
-	return true
-}
-
-func (cb *CircuitBreaker) Release() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	if cb.current > 0 {
-		cb.current--
-	}
-}
-
-func (cb *CircuitBreaker) Trip() {
-	cb.mu.Lock()
-	cb.open = true
-	cb.mu.Unlock()
-}
-
-func (cb *CircuitBreaker) Reset() {
-	cb.mu.Lock()
-	cb.open = false
-	cb.current = 0
-	cb.mu.Unlock()
-}
-
-// GlobalCircuitBreaker protects the entire detection pipeline from overload.
-var GlobalCircuitBreaker = NewCircuitBreaker(10000)

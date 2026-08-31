@@ -20,12 +20,11 @@ import (
 )
 
 const (
-	defaultAuditFileBytes       int64 = 8 << 20
-	defaultAuditBackups               = 3
-	defaultDeniedAuditPerMinute       = 120
-	maxAuditQueryLimit                = 1000
-	maxAuditLineBytes                 = 24 << 10
-	auditReadBufferBytes              = 16 << 10
+	defaultAuditFileBytes int64 = 8 << 20
+	defaultAuditBackups         = 3
+	maxAuditQueryLimit          = 1000
+	maxAuditLineBytes           = 24 << 10
+	auditReadBufferBytes        = 16 << 10
 
 	maxAuditSubjectBytes  = 128
 	maxAuditUserBytes     = 128
@@ -58,10 +57,6 @@ type Auditor struct {
 	maxFileBytes int64
 	maxBackups   int
 	quotaChecked bool
-	deniedMu     sync.Mutex
-	deniedStart  time.Time
-	deniedCount  int
-	deniedLimit  int
 }
 
 func NewAuditor(path string) *Auditor {
@@ -74,7 +69,6 @@ func NewAuditorWithClock(path string, clock timekeeper.Clock) *Auditor {
 		now:          utcNowFunc(clock),
 		maxFileBytes: defaultAuditFileBytes,
 		maxBackups:   defaultAuditBackups,
-		deniedLimit:  defaultDeniedAuditPerMinute,
 	}
 }
 
@@ -84,9 +78,6 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(recorder, r)
 		now := a.nowUTC()
-		if (recorder.status == http.StatusUnauthorized || recorder.status == http.StatusForbidden) && !a.allowDeniedAudit(now) {
-			return
-		}
 		claims, _ := r.Context().Value(UserContextKey).(*Claims)
 		entry := AuditEntry{
 			Timestamp: now,
@@ -106,27 +97,6 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 			log.Printf("audit: write failed method=%q path=%q status=%d: %v", entry.Method, entry.Path, entry.Status, err)
 		}
 	})
-}
-
-func (a *Auditor) allowDeniedAudit(now time.Time) bool {
-	if a == nil {
-		return false
-	}
-	limit := a.deniedLimit
-	if limit <= 0 {
-		limit = defaultDeniedAuditPerMinute
-	}
-	a.deniedMu.Lock()
-	defer a.deniedMu.Unlock()
-	if a.deniedStart.IsZero() || now.Before(a.deniedStart) || now.Sub(a.deniedStart) >= time.Minute {
-		a.deniedStart = now
-		a.deniedCount = 0
-	}
-	if a.deniedCount >= limit {
-		return false
-	}
-	a.deniedCount++
-	return true
 }
 
 func (a *Auditor) nowUTC() time.Time {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 )
+
+const maxConfigVersionFiles = 20
 
 func (h *Handler) ListSites(w http.ResponseWriter, r *http.Request) {
 	sites, err := h.Store.ListSites(r.Context())
@@ -182,6 +185,9 @@ func (h *Handler) syncSites(r *http.Request) error {
 	}
 	configSites := storage.SitesToConfig(sites)
 	_, err = h.commitConfigMutation(func(candidate *config.Config) error {
+		if err := h.preservePersistedRestartOnlyConfig(candidate); err != nil {
+			return err
+		}
 		candidate.Sites = configSites
 		return nil
 	}, func(candidate *config.Config) error {
@@ -191,6 +197,39 @@ func (h *Handler) syncSites(r *http.Request) error {
 		return h.OnSitesChanged(candidate.Sites)
 	})
 	return err
+}
+
+// preservePersistedRestartOnlyConfig keeps file values that are intentionally
+// waiting for process restart when a site-only API mutation writes the whole
+// configuration document from the live snapshot.
+func (h *Handler) preservePersistedRestartOnlyConfig(candidate *config.Config) error {
+	if h == nil || candidate == nil || strings.TrimSpace(h.ConfigPath) == "" {
+		return nil
+	}
+	disk, err := config.Load(h.ConfigPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("load persisted restart-only configuration: %w", err)
+	}
+	candidate.Deployment = disk.Deployment
+	candidate.Server = disk.Server
+	candidate.TLS = disk.TLS
+	candidate.Setup = disk.Setup
+	candidate.Cluster = disk.Cluster
+	candidate.Console = disk.Console
+	candidate.CAPTCHAAssets = disk.CAPTCHAAssets
+	candidate.Storage = disk.Storage
+	candidate.Logging = disk.Logging
+	candidate.ACME = disk.ACME
+	candidate.AI = disk.AI
+	candidate.Update = disk.Update
+	candidate.Vulnerability = disk.Vulnerability
+	candidate.Scheduler = disk.Scheduler
+	candidate.Monitor = disk.Monitor
+	candidate.Performance = disk.Performance
+	return nil
 }
 
 func (h *Handler) validateCandidateSites(r *http.Request, mutate func([]storage.Site) []storage.Site) error {
@@ -288,22 +327,101 @@ func (h *Handler) writeConfigVersion(raw []byte, candidate *config.Config) error
 }
 
 func writeConfigVersionFile(dir string, raw []byte, now time.Time) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	contents, err := redactConfigVersion(raw)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	if err := pruneConfigVersionFiles(dir, maxConfigVersionFiles-1); err != nil {
 		return err
 	}
 	// Include nanoseconds so same-second commits cannot overwrite history.
 	name := "cheesewaf-" + now.UTC().Format("20060102T150405.000000000Z") + ".yaml"
 	path := filepath.Join(dir, name)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	_, werr := f.Write(raw)
+	_, werr := f.Write(contents)
 	cerr := f.Close()
 	if werr != nil {
 		return werr
 	}
 	return cerr
+}
+
+func redactConfigVersion(raw []byte) ([]byte, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(raw, &document); err != nil {
+		return nil, fmt.Errorf("decode config version: %w", err)
+	}
+	redactConfigVersionNode(&document)
+	contents, err := yaml.Marshal(&document)
+	if err != nil {
+		return nil, fmt.Errorf("encode redacted config version: %w", err)
+	}
+	return contents, nil
+}
+
+func redactConfigVersionNode(node *yaml.Node) {
+	if node == nil {
+		return
+	}
+	switch node.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, child := range node.Content {
+			redactConfigVersionNode(child)
+		}
+	case yaml.MappingNode:
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key := node.Content[index]
+			value := node.Content[index+1]
+			if configVersionSecretKey(key.Value) {
+				value.Kind = yaml.ScalarNode
+				value.Tag = "!!str"
+				value.Value = ""
+				value.Content = nil
+				continue
+			}
+			redactConfigVersionNode(value)
+		}
+	}
+}
+
+func configVersionSecretKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "env" || key == "headers" || key == "dsn" || key == "password" || key == "secret" || key == "token" || key == "hash" || key == "key_pem" || key == "jwks_json" {
+		return true
+	}
+	return strings.HasSuffix(key, "_key") || strings.HasSuffix(key, "_secret") || strings.HasSuffix(key, "_password") || strings.HasSuffix(key, "_token") || strings.HasSuffix(key, "_hash")
+}
+
+func pruneConfigVersionFiles(dir string, keep int) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	versions := make([]os.DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), "cheesewaf-") && strings.HasSuffix(entry.Name(), ".yaml") {
+			versions = append(versions, entry)
+		}
+	}
+	sort.Slice(versions, func(left, right int) bool { return versions[left].Name() < versions[right].Name() })
+	if keep < 0 {
+		keep = 0
+	}
+	for _, entry := range versions[:max(0, len(versions)-keep)] {
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeConfigBytesAtomic(path string, raw []byte) error {

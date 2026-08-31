@@ -29,9 +29,9 @@ func macAppResourcesDir(exe string) string {
 func applyMacAppLaunchPaths(exe string) (configPath, dataDir string) {
 	support := macAppSupportDir()
 	if support == "" {
-		return filepath.Join(".", "data", "cheesewaf.yaml"), filepath.Join(".", "data")
+		return filepath.Join(".", "data", "config", "cheesewaf.yaml"), filepath.Join(".", "data")
 	}
-	configPath = filepath.Join(support, "cheesewaf.yaml")
+	configPath = filepath.Join(support, "config", "cheesewaf.yaml")
 	dataDir = filepath.Join(support, "data")
 	resources := macAppResourcesDir(exe)
 	webDir := filepath.Join(resources, "web")

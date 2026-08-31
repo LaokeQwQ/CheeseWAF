@@ -4143,7 +4143,22 @@ code {
   gap: 8px;
 }
 .auth-toolbar-select {
-  min-width: 132px;
+  /* 固定宽度：最长文案是 en-US 的 "Miku Green"（实测 82.77px），
+     24px 内边距 + 15px 图标 + 8px 间距 + 16px 箭头 ≈ 146px，留余量取 152px。
+     用固定宽度而非 min-width，避免切换主题时工具栏宽度跳动。
+     min() 保证窄屏（≤336px）下不溢出：左边距恒 ≥12px。 */
+  width: min(152px, calc(50vw - 16px));
+}
+/* 图标与箭头不允许被压缩，否则长文案下会被挤扁（实测 15px → 8.16px） */
+.auth-toolbar-select svg {
+  flex: 0 0 auto;
+}
+.auth-toolbar-select > span,
+.topbar-select > span,
+.language-select > span {
+  display: flex;
+  align-items: center;
+  min-width: 0;
 }
 .auth-footer {
   width: 100%;
@@ -7506,7 +7521,15 @@ code {
 }
 .cluster-mobile-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
+}
+.cluster-node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
 }
 .cluster-mobile-empty {
   color: var(--text-muted);
@@ -7640,12 +7663,10 @@ code {
   justify-content: space-between;
   margin: -2px 0 12px;
 }
-.cluster-audit-table {
-  display: none;
-}
+/* 桌面端显示表格，≤640px 由下方媒体查询切成卡片。
+   注意：基线不能在这里隐藏 .cluster-audit-table，否则桌面端审计表格永远不显示。 */
 .cluster-audit-cards {
-  display: grid;
-  gap: 12px;
+  display: none;
 }
 .cluster-audit-source {
   min-width: 0;
@@ -8842,4 +8863,261 @@ code {
   color: var(--text-muted, var(--text-secondary));
   font-size: 13px;
   line-height: 1.45;
+}
+
+/* ============================================================================
+ * Setup wizard — Meta-style polish
+ *
+ * Follows Meta Commerce design system where practical:
+ *   • Radius scale: pill buttons (100px), cards (16/24px), inputs (8px)
+ *   • Flat surfaces: minimal shadow, no heavy gradients
+ *   • Motion: 150-250ms ease-out for hover/focus, 300ms ease-in-out for expand
+ *   • Inputs: 44px height, 1px hairline border, #1876F2 focus ring
+ *   • Selected radio cards: 2px solid #0143B5 inset (no layout shift)
+ *
+ * Fonts remain the project's existing free-commercial stack (Inter + system UI);
+ * no proprietary typefaces are introduced.
+ * ============================================================================ */
+
+.setup-screen,
+.setup-panel {
+  /* Meta commerce semantic tokens, scoped to the wizard. */
+  --meta-canvas: #ffffff;
+  --meta-surface-soft: #f1f4f7;
+  --meta-hairline: #ced0d4;
+  --meta-hairline-soft: #dee3e9;
+  --meta-ink-deep: #0a1317;
+  --meta-ink: #1c1e21;
+  --meta-charcoal: #444950;
+  --meta-slate: #4b4c4f;
+  --meta-steel: #5d6c7b;
+  --meta-stone: #8595a4;
+  --meta-primary: #0064e0;
+  --meta-primary-hover: #0457cb;
+  --meta-primary-active: #0347a9;
+  --meta-focus: #1876f2;
+  --meta-selected: #0143b5;
+  --meta-critical: #e41e3f;
+  --meta-success: #31a24c;
+  --meta-warning: #f7b928;
+  --meta-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root[data-theme='dark'] .setup-screen,
+:root[data-theme='dark'] .setup-panel,
+:root[data-theme='black-gold'] .setup-screen,
+:root[data-theme='black-gold'] .setup-panel {
+  --meta-canvas: #18191a;
+  --meta-surface-soft: #242526;
+  --meta-hairline: #3e4042;
+  --meta-hairline-soft: #3e4042;
+  --meta-ink-deep: #f5f5f5;
+  --meta-ink: #e4e6eb;
+  --meta-charcoal: #b0b3b8;
+  --meta-slate: #b0b3b8;
+  --meta-steel: #8c8f94;
+  --meta-stone: #6c6f74;
+  --meta-primary: #4599ff;
+  --meta-primary-hover: #5ba7ff;
+  --meta-primary-active: #72b4ff;
+  --meta-focus: #4599ff;
+  --meta-selected: #4599ff;
+  --meta-critical: #f0284a;
+  --meta-success: #45bd62;
+  --meta-warning: #f7b928;
+}
+
+.setup-screen {
+  background: var(--app-bg);
+}
+
+.setup-panel {
+  width: min(100%, 680px);
+  padding: clamp(28px, 5vw, 40px);
+  border-radius: 24px;
+  background: var(--meta-canvas);
+  border: 1px solid var(--meta-hairline-soft);
+  /* Only elevation in the whole wizard: the panel floats above the page. */
+  box-shadow: 0 1px 4px 0 rgba(20, 22, 26, 0.08);
+}
+
+:root[data-theme='dark'] .setup-panel,
+:root[data-theme='black-gold'] .setup-panel {
+  box-shadow: 0 1px 4px 0 rgba(0, 0, 0, 0.28);
+}
+
+.setup-panel .auth-form {
+  gap: 16px;
+}
+
+.setup-panel .auth-brand {
+  margin-bottom: 28px;
+}
+
+.setup-panel .auth-brand h1 {
+  font-size: 28px;
+  letter-spacing: -0.16px;
+  color: var(--meta-ink-deep);
+}
+
+.setup-panel .auth-brand p {
+  color: var(--meta-steel);
+}
+
+.setup-steps {
+  margin-bottom: 28px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--meta-hairline-soft);
+  color: var(--meta-stone);
+}
+
+.setup-steps li {
+  transition: color 150ms ease-out, opacity 150ms ease-out;
+}
+
+.setup-steps li[aria-current='step'] {
+  color: var(--meta-primary);
+  background: color-mix(in srgb, var(--meta-primary) 10%, transparent);
+  padding: 4px 10px;
+  margin: -4px -10px;
+  border-radius: 100px;
+  font-weight: 600;
+}
+
+.setup-card {
+  border-radius: 16px;
+  background: var(--meta-canvas);
+  border: 1px solid var(--meta-hairline);
+  transition:
+    transform 200ms var(--meta-ease),
+    background-color 200ms var(--meta-ease),
+    border-color 200ms var(--meta-ease),
+    box-shadow 200ms var(--meta-ease);
+}
+
+.setup-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--meta-stone);
+}
+
+.setup-card-radio {
+  border-radius: 8px;
+  border: 1px solid var(--meta-hairline);
+  background: var(--meta-canvas);
+  transition:
+    transform 150ms var(--meta-ease),
+    background-color 150ms var(--meta-ease),
+    box-shadow 150ms var(--meta-ease);
+}
+
+.setup-card-radio:hover {
+  transform: translateY(-1px);
+  background: var(--meta-surface-soft);
+}
+
+.setup-card-radio-selected {
+  box-shadow: inset 0 0 0 2px var(--meta-selected);
+  border-color: transparent;
+}
+
+.setup-card-radio-selected:hover {
+  background: color-mix(in srgb, var(--meta-primary) 5%, var(--meta-canvas));
+}
+
+.setup-input {
+  height: 44px;
+  border-radius: 8px;
+  border: 1px solid var(--meta-hairline);
+  background: var(--meta-canvas);
+  transition:
+    border-color 150ms ease-out,
+    box-shadow 150ms ease-out;
+}
+
+.setup-input:focus-visible {
+  border-color: var(--meta-focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--meta-focus) 25%, transparent);
+}
+
+.setup-btn-primary {
+  height: 44px;
+  border-radius: 100px;
+  background: var(--meta-primary);
+  color: #ffffff;
+  font-weight: 600;
+  transition:
+    background-color 150ms ease-out,
+    transform 150ms var(--meta-ease),
+    box-shadow 150ms ease-out;
+}
+
+.setup-btn-primary:hover {
+  background: var(--meta-primary-hover);
+  transform: translateY(-1px);
+}
+
+.setup-btn-primary:active {
+  background: var(--meta-primary-active);
+  transform: translateY(0);
+}
+
+.setup-btn-secondary {
+  height: 44px;
+  border-radius: 100px;
+  border: 1px solid var(--meta-hairline);
+  background: var(--meta-canvas);
+  color: var(--meta-ink);
+  font-weight: 600;
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out,
+    transform 150ms var(--meta-ease);
+}
+
+.setup-btn-secondary:hover {
+  background: var(--meta-surface-soft);
+  border-color: var(--meta-stone);
+}
+
+.setup-success-mark {
+  animation: setup-success-pop 420ms var(--meta-ease) both;
+}
+
+@keyframes setup-success-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  70% {
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes setup-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.setup-step-content {
+  animation: setup-step-in 250ms var(--meta-ease) both;
+}
+
+@media (max-width: 520px) {
+  .setup-panel {
+    padding: 24px;
+    border-radius: 20px;
+  }
+  .setup-panel .auth-form {
+    gap: 14px;
+  }
 }

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
@@ -20,6 +20,10 @@ const apiMocks = vi.hoisted(() => ({
   startClusterRollingUpgrade: vi.fn(),
   startClusterRollingRollback: vi.fn(),
   fetchClusterTrafficPeers: vi.fn(),
+  checkClusterDeployment: vi.fn(),
+  fetchClusterRollingUpgrades: vi.fn(),
+  reportClusterTrafficPeer: vi.fn(),
+  proposeClusterConfigVersion: vi.fn(),
 }));
 
 const toastMocks = vi.hoisted(() => ({
@@ -101,7 +105,22 @@ beforeEach(() => {
   });
   apiMocks.fetchClusterDeploymentTasks.mockResolvedValue({ items: [] });
   apiMocks.fetchClusterAudit.mockResolvedValue({ items: [] });
+  apiMocks.fetchClusterRollingUpgrades.mockResolvedValue({ items: [], total: 0 });
+  apiMocks.fetchClusterTrafficPeers.mockResolvedValue({ mode: 'least_conn', peers: [], healthy: [], ok: false });
 });
+
+/** Fills the SSH wizard fields required by every deploy/precheck mutation. */
+async function fillSSHWizard() {
+  const host = await screen.findByPlaceholderText('192.0.2.10');
+  fireEvent.change(host, { target: { value: 'waf-a.example' } });
+  const hostKey = screen.getByPlaceholderText('SHA256:...');
+  fireEvent.change(hostKey, { target: { value: 'SHA256:abc123' } });
+}
+
+async function openSSHWizard() {
+  fireEvent.click(screen.getByRole('radio', { name: /cluster\.deployWizardMethodSSH/ }));
+  await fillSSHWizard();
+}
 
 afterEach(() => {
   cleanup();
@@ -207,5 +226,202 @@ describe('ClusterPage', () => {
     expect(await screen.findByText('cluster.standalone')).toBeTruthy();
     expect(screen.getByText('cluster.protected')).toBeTruthy();
     expect(screen.getByText('cluster.singleNodeHint')).toBeTruthy();
+  });
+});
+
+describe('ClusterPage quick SSH precheck', () => {
+  const precheckResponse = {
+    result: {
+      ok: true,
+      host: 'waf-a.example',
+      user: 'root',
+      port: 22,
+      command: ['ssh', '-p', '22', 'root@waf-a.example'],
+      message: 'SSH check completed',
+      checked_at: '2026-08-29T02:00:00Z',
+    },
+    authorization: { handle: 'auth-handle-1', expires_at: '2026-08-29T02:05:00Z' },
+  };
+
+  it('runs the synchronous precheck and renders the result', async () => {
+    apiMocks.checkClusterDeployment.mockResolvedValue(precheckResponse);
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterStatus).toHaveBeenCalled());
+    await openSSHWizard();
+
+    fireEvent.click(screen.getByRole('button', { name: 'cluster.quickPrecheck' }));
+    await waitFor(() => expect(apiMocks.checkClusterDeployment).toHaveBeenCalledWith({
+      host: 'waf-a.example',
+      user: 'root',
+      port: 22,
+      action: 'check',
+      host_key_sha256: 'SHA256:abc123',
+    }));
+
+    expect(await screen.findByText('cluster.precheckResultTitle')).toBeTruthy();
+    expect(screen.getByText('cluster.precheckOk')).toBeTruthy();
+    expect(screen.getByText('cluster.precheckAuthorization')).toBeTruthy();
+  });
+
+  it('surfaces a failed precheck without showing an authorization', async () => {
+    apiMocks.checkClusterDeployment.mockRejectedValue(new Error('ssh host key fingerprint mismatch'));
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterStatus).toHaveBeenCalled());
+    await openSSHWizard();
+
+    fireEvent.click(screen.getByRole('button', { name: 'cluster.quickPrecheck' }));
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('ssh host key fingerprint mismatch'));
+    expect(screen.queryByText('cluster.precheckResultTitle')).toBeNull();
+  });
+
+  it('uses the quick precheck authorization to run the fixed action', async () => {
+    apiMocks.checkClusterDeployment.mockResolvedValue(precheckResponse);
+    apiMocks.startClusterDeploymentTask.mockResolvedValue({ id: 'task-9', action: 'install', status: 'pending' });
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterStatus).toHaveBeenCalled());
+    await openSSHWizard();
+
+    const runButton = () => screen.getByRole('button', { name: 'cluster.deployWizardStartAction' }) as HTMLButtonElement;
+    expect(runButton().disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'cluster.quickPrecheck' }));
+    await screen.findByText('cluster.precheckResultTitle');
+    expect(runButton().disabled).toBe(false);
+
+    fireEvent.click(runButton());
+    await waitFor(() => expect(apiMocks.startClusterDeploymentTask).toHaveBeenCalledWith({
+      host: 'waf-a.example',
+      user: 'root',
+      port: 22,
+      action: 'install',
+      host_key_sha256: 'SHA256:abc123',
+      authorization: 'auth-handle-1',
+    }));
+  });
+
+  it('locks the fixed action again once the checked target no longer matches', async () => {
+    apiMocks.checkClusterDeployment.mockResolvedValue(precheckResponse);
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterStatus).toHaveBeenCalled());
+    await openSSHWizard();
+
+    fireEvent.click(screen.getByRole('button', { name: 'cluster.quickPrecheck' }));
+    await screen.findByText('cluster.precheckResultTitle');
+
+    fireEvent.change(screen.getByPlaceholderText('SHA256:...'), { target: { value: 'SHA256:other' } });
+    const runButton = screen.getByRole('button', { name: 'cluster.deployWizardStartAction' }) as HTMLButtonElement;
+    expect(runButton.disabled).toBe(true);
+  });
+});
+
+describe('ClusterPage rolling upgrade job list', () => {
+  it('lists rolling jobs and opens the selected one', async () => {
+    apiMocks.fetchClusterRollingUpgrades.mockResolvedValue({
+      items: [
+        { id: 'rolling-old', status: 'succeeded', steps: [{ index: 0, host: 'waf-a', stage: 'healthy', status: 'healthy', updated_at: '2026-08-29T01:00:00Z' }], started_at: '2026-08-29T01:00:00Z', updated_at: '2026-08-29T01:05:00Z', stop_on_failure: true, restart_service: true },
+        { id: 'rolling-new', status: 'running', steps: [{ index: 0, host: 'waf-b', stage: 'installing', status: 'running', updated_at: '2026-08-29T02:00:00Z' }], started_at: '2026-08-29T02:00:00Z', updated_at: '2026-08-29T02:10:00Z', stop_on_failure: true, restart_service: true },
+      ],
+      total: 2,
+    });
+    apiMocks.fetchClusterRollingUpgrade.mockResolvedValue({
+      id: 'rolling-new', status: 'running', steps: [], started_at: '2026-08-29T02:00:00Z', updated_at: '2026-08-29T02:10:00Z', stop_on_failure: true, restart_service: true,
+    });
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterRollingUpgrades).toHaveBeenCalled());
+    expect((await screen.findAllByText('rolling-old')).length).toBeGreaterThan(0);
+
+    // Sorted newest-first: the running job must precede the finished one.
+    const rows = screen.getAllByRole('row');
+    const listedIDs = rows.map((row) => row.textContent || '').filter((text) => text.includes('rolling-'));
+    expect(listedIDs[0]).toContain('rolling-new');
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'cluster.rollingJobView' })[0]);
+    await waitFor(() => expect(apiMocks.fetchClusterRollingUpgrade).toHaveBeenCalledWith('rolling-new'));
+  });
+
+  it('shows a retryable error when the job list fails to load', async () => {
+    apiMocks.fetchClusterRollingUpgrades.mockRejectedValue(new Error('rolling service down'));
+    renderPage();
+    expect(await screen.findByText('cluster.rollingJobsLoadFailed')).toBeTruthy();
+    expect(screen.getByText('rolling service down')).toBeTruthy();
+
+    apiMocks.fetchClusterRollingUpgrades.mockResolvedValue({ items: [], total: 0 });
+    fireEvent.click(screen.getByRole('button', { name: 'common.retry' }));
+    await waitFor(() => expect(apiMocks.fetchClusterRollingUpgrades).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('cluster.rollingJobsEmptyTitle')).toBeTruthy();
+  });
+});
+
+describe('ClusterPage traffic probe reports', () => {
+  it('reports a successful probe after confirmation', async () => {
+    apiMocks.reportClusterTrafficPeer.mockResolvedValue({ ok: true, node_id: 'waf-1', report: 'success' });
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterNodes).toHaveBeenCalled());
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'cluster.trafficReportSuccess' }))[0]);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cluster.trafficReportSuccess' }));
+
+    await waitFor(() => expect(apiMocks.reportClusterTrafficPeer).toHaveBeenCalledWith('waf-1', 'success'));
+    expect(toastMocks.success).toHaveBeenCalledWith('cluster.trafficReportSuccessToast');
+  });
+
+  it('reports a failed probe and surfaces backend rejection', async () => {
+    apiMocks.reportClusterTrafficPeer.mockRejectedValue(new Error('node_id must be a registered cluster node'));
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterNodes).toHaveBeenCalled());
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'cluster.trafficReportFailure' }))[0]);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cluster.trafficReportFailure' }));
+
+    await waitFor(() => expect(apiMocks.reportClusterTrafficPeer).toHaveBeenCalledWith('waf-1', 'failure'));
+    expect(toastMocks.error).toHaveBeenCalledWith('node_id must be a registered cluster node');
+    expect(await screen.findByText('node_id must be a registered cluster node')).toBeTruthy();
+  });
+});
+
+describe('ClusterPage config version proposals', () => {
+  it('proposes a configuration version and renders the record', async () => {
+    apiMocks.proposeClusterConfigVersion.mockResolvedValue({
+      version: '2026-08-29-01',
+      leader_id: 'waf-1',
+      message: 'tightened rule set',
+      created_at: '2026-08-29T03:00:00Z',
+    });
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterStatus).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText('cluster.configVersionPlaceholder'), { target: { value: '2026-08-29-01' } });
+    fireEvent.change(screen.getByPlaceholderText('cluster.configVersionMessagePlaceholder'), { target: { value: 'tightened rule set' } });
+    fireEvent.click(screen.getByRole('button', { name: 'cluster.configVersionSubmit' }));
+
+    await waitFor(() => expect(apiMocks.proposeClusterConfigVersion).toHaveBeenCalledWith({
+      version: '2026-08-29-01',
+      message: 'tightened rule set',
+    }));
+    expect(await screen.findByText('cluster.configVersionResultTitle')).toBeTruthy();
+    expect(screen.getByText('2026-08-29-01')).toBeTruthy();
+    expect(toastMocks.success).toHaveBeenCalledWith('cluster.configVersionProposed');
+  });
+
+  it('rejects an empty version locally and surfaces a consensus rejection', async () => {
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchClusterStatus).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'cluster.configVersionSubmit' }));
+    await waitFor(() => expect(toastMocks.warning).toHaveBeenCalledWith('cluster.configVersionRequired'));
+    expect(apiMocks.proposeClusterConfigVersion).not.toHaveBeenCalled();
+
+    apiMocks.proposeClusterConfigVersion.mockRejectedValue(new Error('only the cluster leader may propose config versions'));
+    fireEvent.change(screen.getByPlaceholderText('cluster.configVersionPlaceholder'), { target: { value: '2026-08-29-02' } });
+    fireEvent.click(screen.getByRole('button', { name: 'cluster.configVersionSubmit' }));
+
+    await waitFor(() => expect(apiMocks.proposeClusterConfigVersion).toHaveBeenCalledWith({
+      version: '2026-08-29-02',
+      message: undefined,
+    }));
+    expect(await screen.findByText('cluster.configVersionFailed')).toBeTruthy();
+    expect(screen.getByText('only the cluster leader may propose config versions')).toBeTruthy();
   });
 });

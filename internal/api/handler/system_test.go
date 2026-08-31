@@ -499,6 +499,41 @@ func TestPersistConfigRestoresPreviousFileWhenVersionWriteFails(t *testing.T) {
 	}
 }
 
+func TestConfigVersionRedactsSecretsUsesOwnerOnlyPermissionsAndPrunesHistory(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte("ai:\n  api_key: config-secret\nstorage:\n  postgresql:\n    dsn: postgres://user:password@example.test/db\nacme:\n  dns_providers:\n    - env:\n        API_TOKEN: provider-secret\n")
+	now := time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC)
+	for index := 0; index < maxConfigVersionFiles+2; index++ {
+		if err := writeConfigVersionFile(dir, raw, now.Add(time.Duration(index)*time.Second)); err != nil {
+			t.Fatalf("write version %d: %v", index, err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read version directory: %v", err)
+	}
+	if len(entries) != maxConfigVersionFiles {
+		t.Fatalf("version files = %d, want %d", len(entries), maxConfigVersionFiles)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			t.Fatalf("stat version: %v", err)
+		}
+		if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+			t.Fatalf("version mode = %o, want %o", got, want)
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read version: %v", err)
+		}
+		if strings.Contains(string(contents), "config-secret") || strings.Contains(string(contents), "provider-secret") || strings.Contains(string(contents), "postgres://user:password") {
+			t.Fatalf("version contains a secret: %s", contents)
+		}
+	}
+}
+
 func TestConfigMutationsMergeConcurrentIndependentUpdates(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")

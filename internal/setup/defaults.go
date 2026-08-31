@@ -22,11 +22,13 @@ import (
 )
 
 const (
-	DefaultConfigFile = "cheesewaf.yaml"
-	DefaultCertDir    = "certs"
-	DefaultLogDir     = "logs"
-	DefaultRuntimeDir = "run"
-	DefaultSQLiteFile = "cheesewaf.db"
+	DefaultConfigFile    = "cheesewaf.yaml"
+	DefaultConfigDirName = "config"
+	LegacyConfigFile     = "waf.yaml"
+	DefaultCertDir       = "certs"
+	DefaultLogDir        = "logs"
+	DefaultRuntimeDir    = "run"
+	DefaultSQLiteFile    = "cheesewaf.db"
 
 	DefaultAdminCertFile  = "admin.crt"
 	DefaultAdminKeyFile   = "admin.key"
@@ -590,7 +592,7 @@ func normalizeDefaultOptions(opts DefaultOptions) DefaultOptions {
 		opts.DataDir = DefaultDataDir
 	}
 	if opts.ConfigPath == "" {
-		opts.ConfigPath = filepath.Join(opts.DataDir, DefaultConfigFile)
+		opts.ConfigPath = DefaultConfigPath(opts.DataDir)
 	}
 	if len(opts.Hostnames) == 0 {
 		opts.Hostnames = append([]string(nil), DefaultCertificateHosts...)
@@ -632,6 +634,15 @@ func writeFile(path string, contents []byte, perm os.FileMode, overwrite bool) e
 func missing(path string) bool {
 	_, err := os.Stat(path)
 	return errors.Is(err, os.ErrNotExist)
+}
+
+// DefaultConfigPath is the generated/runtime config file under the data
+// directory's config subdirectory, not next to the SQLite file.
+func DefaultConfigPath(dataDir string) string {
+	if strings.TrimSpace(dataDir) == "" {
+		dataDir = DefaultDataDir
+	}
+	return filepath.Join(dataDir, DefaultConfigDirName, DefaultConfigFile)
 }
 
 func quoteYAML(value string) string {

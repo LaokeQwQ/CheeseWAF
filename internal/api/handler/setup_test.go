@@ -285,3 +285,47 @@ func TestSetupStatusNeverExposesSetupTokenInResponse(t *testing.T) {
 		t.Fatalf("non-loopback must not include setup_url: %s", out.Body.String())
 	}
 }
+
+func TestSetupDraftPatchStoresIntegrations(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Setup.DataDir = dataDir
+	drafts := setup.NewDraftStore(time.Minute)
+	draft, err := drafts.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{Config: &cfg, SetupDrafts: drafts, SetupToken: "local-setup-secret"})
+
+	body := `{"integrations":{"postgresEnabled":true,"postgresDsn":"postgres://u:p@127.0.0.1/db","postgresTable":"logs","prometheusEnabled":true,"prometheusPath":"/metrics","prometheusPublic":false,"victoriaEnabled":true,"victoriaEndpoint":"http://127.0.0.1:9428/insert"}}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/setup/draft", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.AddCookie(&http.Cookie{Name: setup.SetupSessionCookie, Value: draft.ID})
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CheeseWAF-Setup-Token", "local-setup-secret")
+	rr := httptest.NewRecorder()
+	h.SetupDraftPatch(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch returned %d: %s", rr.Code, rr.Body.String())
+	}
+	var envelope struct {
+		Data setup.SetupDraft `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Data.Integrations == nil {
+		t.Fatal("integrations not stored in draft")
+	}
+	if !envelope.Data.Integrations.PostgresEnabled || envelope.Data.Integrations.PostgresTable != "logs" {
+		t.Fatalf("postgres integration mismatch: %+v", envelope.Data.Integrations)
+	}
+	if !envelope.Data.Integrations.PrometheusEnabled || envelope.Data.Integrations.PrometheusPath != "/metrics" {
+		t.Fatalf("prometheus integration mismatch: %+v", envelope.Data.Integrations)
+	}
+	if !envelope.Data.Integrations.VictoriaEnabled || envelope.Data.Integrations.VictoriaEndpoint == "" {
+		t.Fatalf("victoria integration mismatch: %+v", envelope.Data.Integrations)
+	}
+}

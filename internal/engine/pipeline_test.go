@@ -66,6 +66,24 @@ func TestPipelineBlockDetectionOverridesEarlierLogDetection(t *testing.T) {
 	}
 }
 
+func TestPipelinePrecomputesDetectorGroups(t *testing.T) {
+	pipeline := NewPipeline(
+		staticPipelineDetector{id: "semantic", priority: 300},
+		staticPipelineDetector{id: "pre-b", priority: 20},
+		staticPipelineDetector{id: "pre-a", priority: 10},
+	)
+	snapshot := pipeline.snapshot.Load()
+	if snapshot == nil {
+		t.Fatal("pipeline snapshot was not initialized")
+	}
+	if got := snapshot.preFilters[0].ID(); got != "pre-a" {
+		t.Fatalf("pre-filter order = %q, want pre-a", got)
+	}
+	if len(snapshot.preFilters) != 2 || len(snapshot.semanticGroup) != 1 || snapshot.semanticGroup[0].ID() != "semantic" {
+		t.Fatalf("unexpected precomputed groups: pre=%v semantic=%v", len(snapshot.preFilters), len(snapshot.semanticGroup))
+	}
+}
+
 type staticPipelineDetector struct {
 	id       string
 	priority int
@@ -122,6 +140,16 @@ func TestPipelineBudgetExhaustedPolicies(t *testing.T) {
 		}
 		if got == nil || !got.Detected || got.Action != ActionLog || got.Category != "detection_budget" {
 			t.Fatalf("expected observe log result, got %#v", got)
+		}
+	})
+
+	t.Run("unset policy challenges", func(t *testing.T) {
+		got, err := NewPipeline(slow).Detect(context.Background(), &RequestContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || !got.Detected || got.Action != ActionChallenge || got.Category != "detection_budget" {
+			t.Fatalf("expected default challenge result, got %#v", got)
 		}
 	})
 

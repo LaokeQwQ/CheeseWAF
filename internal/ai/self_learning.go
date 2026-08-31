@@ -15,12 +15,16 @@ import (
 )
 
 type SelfLearningOptions struct {
-	Config   config.AISelfLearningConfig
-	Client   *Client
-	Sink     storage.LogSink
-	Rules    storage.RuleStore
-	Language string
-	Now      func() time.Time
+	Config config.AISelfLearningConfig
+	Client *Client
+	Sink   storage.LogSink
+	Rules  storage.RuleStore
+	// ListCustomRules and ApplyCustomRule let callers use the live site rule
+	// service instead of the legacy rules table.
+	ListCustomRules func(context.Context) ([]storage.Rule, error)
+	ApplyCustomRule func(context.Context, *storage.Rule) error
+	Language        string
+	Now             func() time.Time
 	// CanWriteRules is checked before auto-applying rules. When it returns an
 	// error (cluster freeze, local config freeze, etc.), the run is forced to
 	// dry-run only so operators still get candidate reports without writes.
@@ -134,8 +138,13 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 		Groups:      len(groups),
 		Candidates:  candidates,
 	}
-	if opts.Rules != nil && autoApply {
-		existing, _ := opts.Rules.ListRules(ctx, "")
+	if autoApply && (opts.ApplyCustomRule != nil || opts.Rules != nil) {
+		var existing []storage.Rule
+		if opts.ListCustomRules != nil {
+			existing, _ = opts.ListCustomRules(ctx)
+		} else if opts.Rules != nil {
+			existing, _ = opts.Rules.ListRules(ctx, "")
+		}
 		seen := existingRulePatterns(existing)
 		for _, candidate := range candidates {
 			if len(report.Applied) >= cfg.MaxRulesPerRun {
@@ -158,8 +167,14 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 				Enabled:     true,
 				Priority:    180,
 			}
-			if err := opts.Rules.CreateRule(ctx, &rule); err != nil {
-				report.Skipped = append(report.Skipped, SelfLearningSkip{Candidate: candidate, Reason: err.Error()})
+			var applyErr error
+			if opts.ApplyCustomRule != nil {
+				applyErr = opts.ApplyCustomRule(ctx, &rule)
+			} else {
+				applyErr = opts.Rules.CreateRule(ctx, &rule)
+			}
+			if applyErr != nil {
+				report.Skipped = append(report.Skipped, SelfLearningSkip{Candidate: candidate, Reason: applyErr.Error()})
 				continue
 			}
 			seen[ruleKey(rule.SiteID, rule.Location, rule.Pattern)] = struct{}{}

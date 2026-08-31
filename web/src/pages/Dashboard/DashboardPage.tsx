@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Activity, ChevronRight, Cpu, HardDrive, Maximize2, MemoryStick, Recycle, RotateCcw, Server, ShieldCheck, Zap } from 'lucide-react';
+import { Activity, ChevronRight, Cpu, HardDrive, Maximize2, MemoryStick, Pause, Play, Recycle, RotateCcw, Server, ShieldCheck, Zap } from 'lucide-react';
 import {
   Badge,
   Button,
@@ -60,9 +60,15 @@ export default function DashboardPage() {
   /** 1 = full period; lower = wheel-zoom into the latest segment. */
   const [chartWindowRatio, setChartWindowRatio] = useState(1);
   const totalsChartRef = useRef<HTMLDivElement | null>(null);
-  const liveRefreshInterval = usePollingVisibility(refreshMs);
-  const totalsRefreshInterval = usePollingVisibility(totalsRefreshMs);
-  const sitesRefreshInterval = usePollingVisibility(60_000);
+  // Hooks must run unconditionally, so the visibility-aware intervals are
+  // always computed and the pause flag is applied to the results afterwards.
+  const [livePaused, setLivePaused] = useState(false);
+  const liveVisibility = usePollingVisibility(refreshMs);
+  const totalsVisibility = usePollingVisibility(totalsRefreshMs);
+  const sitesVisibility = usePollingVisibility(60_000);
+  const liveRefreshInterval = livePaused ? false : liveVisibility;
+  const totalsRefreshInterval = livePaused ? false : totalsVisibility;
+  const sitesRefreshInterval = livePaused ? false : sitesVisibility;
 
   useEffect(() => {
     const el = totalsChartRef.current;
@@ -303,6 +309,23 @@ export default function DashboardPage() {
                   </Select>
                 </div>
                 <div className="dashboard-chart-actions">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        size="icon"
+                        variant={livePaused ? 'secondary' : 'outline'}
+                        className="icon-button"
+                        aria-label={livePaused ? t('dashboard.resumeAutoRefresh') : t('dashboard.pauseAutoRefresh')}
+                        aria-pressed={livePaused}
+                        onClick={() => setLivePaused((value) => !value)}
+                      >
+                        {livePaused ? <Play size={15} /> : <Pause size={15} />}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {livePaused ? t('dashboard.autoRefreshPaused') : t('dashboard.pauseAutoRefresh')}
+                    </TooltipContent>
+                  </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button

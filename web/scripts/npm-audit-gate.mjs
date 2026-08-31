@@ -23,14 +23,11 @@ const ALLOWLIST = {
   },
 };
 
-/** Packages that only surface the allowlisted RSC advisory via dependency edges. */
-const ALLOWLISTED_PACKAGES = new Set(["react-router", "react-router-dom"]);
-
 function runNpmAuditJson() {
   // Prefer PATH resolution without shell to avoid Windows arg concatenation warnings.
   const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
   try {
-    return execFileSync(npmCmd, ["audit", "--json", "--omit=dev"], {
+    return execFileSync(npmCmd, ["audit", "--json"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -84,16 +81,12 @@ function main() {
 
     if (ids.size === 0) {
       // Nested "via" entries may only name a parent package (no GHSA object).
-      if (ALLOWLISTED_PACKAGES.has(name)) {
-        allowed.push({ name, severity, ids: ["(package-allowlist)"] });
-        continue;
-      }
       blocking.push({ name, severity, ids: ["(no-ghsa)"], via: ghsas });
       continue;
     }
 
     const allAllowed = [...ids].every((id) => ALLOWLIST[id.toUpperCase()]);
-    if (allAllowed || ALLOWLISTED_PACKAGES.has(name)) {
+    if (allAllowed) {
       allowed.push({ name, severity, ids: [...ids] });
       continue;
     }
@@ -108,8 +101,6 @@ function main() {
         if (meta) {
           console.log(`- ${item.name} ${id}: ${meta.reason}`);
           console.log(`  follow-up: ${meta.followUp}`);
-        } else {
-          console.log(`- ${item.name} ${id}: covered by package allowlist (same as GHSA-QWWW-VCR4-C8H2)`);
         }
       }
     }

@@ -36,6 +36,44 @@ func TestAnalyzerMultipartDetectsAttackPastFieldPrefix(t *testing.T) {
 	assertAnalyzerCategory(t, req, "rce")
 }
 
+// maxMultipartInputs is the only thing bounding how many inputs one
+// attacker-controlled multipart body can contribute. Pin both ends: a body with
+// far more parts than the cap must be truncated to it, and the cap must still
+// admit ordinary uploads.
+func TestMultipartInputsCapsPartCount(t *testing.T) {
+	const parts = 512
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for i := 0; i < parts; i++ {
+		field, err := writer.CreateFormField(fmt.Sprintf("field_%03d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := field.Write([]byte("ordinary")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contentType := writer.FormDataContentType()
+	boundary := boundaryFromContentType(contentType)
+	if boundary == "" {
+		t.Fatalf("no boundary in %q", contentType)
+	}
+	inputs := multipartInputs(body.Bytes(), boundary)
+	if len(inputs) == 0 {
+		t.Fatal("multipartInputs returned nothing for a well-formed body")
+	}
+	if len(inputs) > maxMultipartInputs {
+		t.Fatalf("multipartInputs returned %d inputs for %d parts, want <= %d", len(inputs), parts, maxMultipartInputs)
+	}
+	// The cap must be what stopped the walk, not the end of the body.
+	if len(inputs) < maxMultipartInputs {
+		t.Fatalf("multipartInputs stopped at %d inputs, want the cap %d to bind", len(inputs), maxMultipartInputs)
+	}
+}
+
 func TestAnalyzerBodyCannotBeStarvedByQueryCandidates(t *testing.T) {
 	query := make(url.Values, maxCandidates)
 	for i := 0; i < maxCandidates; i++ {

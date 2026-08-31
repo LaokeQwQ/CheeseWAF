@@ -19,6 +19,8 @@ workflow_files=(
 
 for workflow in "${workflow_files[@]}"; do
   [[ -r "$workflow" ]] || fail "missing workflow: ${workflow}"
+  grep -A1 -Fx 'permissions:' "$workflow" | grep -Eq '^[[:space:]]+contents:[[:space:]]+read([[:space:]]*(#.*)?)?$' ||
+    fail "${workflow} must set default permissions.contents to read"
   grep -Fq 'PR_BASE_REF: ${{ github.base_ref }}' "$workflow" ||
     fail "${workflow} must pass the PR base ref through env"
   grep -Fq 'PR_HEAD_REF: ${{ github.head_ref }}' "$workflow" ||
@@ -54,6 +56,23 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not typecheck the dashboard"
   grep -Fq 'npm run build' "$workflow" ||
     fail "${workflow} does not build the dashboard"
+  grep -Fq 'bash scripts/ci/run-corpus-governance.sh' "$workflow" ||
+    fail "${workflow} does not run the corpus governance gate"
+  grep -Fq 'bash scripts/ci/run-governed-semantic-gate.sh' "$workflow" ||
+    fail "${workflow} does not run the governed semantic gate"
+  for governance_var in \
+    CORPUS_GOVERNANCE_MAX_PARSE_ERRORS \
+    CORPUS_GOVERNANCE_MAX_INVALID_UTF8 \
+    CORPUS_GOVERNANCE_MAX_OVERLONG \
+    CORPUS_GOVERNANCE_MAX_LABEL_CONFLICTS \
+    CORPUS_GOVERNANCE_MAX_REPAIRS; do
+    grep -Fq "${governance_var}:" "$workflow" ||
+      fail "${workflow} does not pin ${governance_var}"
+  done
+  grep -Fq 'FPR_MIN_BENIGN:' "$workflow" ||
+    fail "${workflow} does not pin the benign minimum for the semantic gate"
+  grep -Fq 'TPR_MIN_ATTACK:' "$workflow" ||
+    fail "${workflow} does not pin the attack minimum for the semantic gate"
 done
 
 grep -Fq "node-version: ${NODE_VERSION}" .github/workflows/ci.yml ||
@@ -365,10 +384,25 @@ grep -Fq 'node scripts/npm-audit-gate.mjs' .forgejo/workflows/ci.yml ||
 
 # Coverage gates must stay aligned with actual observed coverage so CI is not
 # guaranteed to fail.
-grep -Fq -- '--coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10' .github/workflows/ci.yml ||
-  fail "GitHub Actions web-build coverage thresholds must be 20/20/20/10"
-grep -Fq -- '--coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10' .forgejo/workflows/ci.yml ||
-  fail "Forgejo web-build coverage thresholds must be 20/20/20/10"
+#
+# The thresholds now live in web/vitest.config.ts as the single source of truth.
+# CI must NOT pass --coverage.thresholds.* on the CLI: doing so silently
+# overrides the config file, which is how the gate ended up pinned at 20% while
+# only measuring 4 files. Check the intent (no CLI override + a real config
+# threshold + full-src measurement) rather than a hardcoded number.
+for workflow in .github/workflows/ci.yml .forgejo/workflows/ci.yml; do
+  if grep -Fq -- '--coverage.thresholds.' "$workflow"; then
+    fail "$workflow must not override coverage thresholds on the CLI (they belong in web/vitest.config.ts)"
+  fi
+  grep -Fq -- 'npm test -- --coverage' "$workflow" ||
+    fail "$workflow web-build must run the dashboard suite with coverage"
+done
+grep -Fq "include: ['src/**/*.{ts,tsx}']" web/vitest.config.ts ||
+  fail "vitest coverage must measure the whole src tree, not a hardcoded file list"
+for key in lines functions statements branches; do
+  grep -Fq "$key:" web/vitest.config.ts ||
+    fail "vitest.config.ts must define a $key coverage threshold"
+done
 grep -Fq 'coverage_floor="${GO_COVERAGE_FLOOR:-50.0}"' scripts/ci/verify-go-quality.sh ||
   fail "Go coverage floor must default to 50%"
 
@@ -414,11 +448,8 @@ grep -Fq '"127.0.0.1:9443:9443"' deploy/docker/docker-compose.yml ||
 if grep -Fq '"9443:9443"' deploy/docker/docker-compose.yml; then
   fail "Docker admin TLS must not bind to all host interfaces"
 fi
-grep -Fq 'ReadWritePaths=/var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
-  fail "systemd runtime writes must stay under data and log directories"
-if grep -E '^ReadWritePaths=.*(/etc/cheesewaf|/etc/)' deploy/systemd/cheesewaf.service; then
-  fail "systemd must not make /etc/cheesewaf writable"
-fi
+grep -Fq 'ReadWritePaths=/etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
+	fail "systemd must allow CheeseWAF to update its own configuration directory"
 if [[ -e deploy/macos/fix-gatekeeper.command ]]; then
   fail "signed macOS release media must not ship a Gatekeeper quarantine helper"
 fi

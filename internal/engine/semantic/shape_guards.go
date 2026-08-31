@@ -624,20 +624,103 @@ func ctfScoreboardContext(text string) bool {
 //	| id   | print…  |
 //
 // A shell pipeline cannot contain a delimiter row, so this shape cannot occur
-// in a real command chain. The guard additionally refuses to fire when the text
-// carries a hard shell operator other than "|", so an attacker cannot wrap
-// "$(...)" or "&&" in table markup to buy suppression.
+// in a real command chain. Short alignment cells (for example `|:-:|`) are
+// accepted only when at least two neighbouring pipe-delimited rows establish
+// the surrounding table; this prevents a lone `|-|-|` payload from becoming a
+// suppression oracle. The guard additionally refuses to fire when the text
+// carries a hard shell operator, including a logical-or that is not merely two
+// adjacent table separators.
 func markdownTableShape(text string) bool {
-	if !markdownTableDelimiterRow.MatchString(text) {
+	lines := strings.Split(text, "\n")
+	delimiter := -1
+	for index, line := range lines {
+		if markdownTableDelimiterRow.MatchString(line) && markdownTableHasNeighbourRows(lines, index) {
+			delimiter = index
+			break
+		}
+	}
+	if delimiter < 0 {
 		return false
 	}
 	// Any non-pipe shell control operator means this is not just table markup.
 	if strings.Contains(text, "$(") || strings.Contains(text, "&&") ||
-		strings.Contains(text, "||") || strings.Contains(text, ";") ||
+		containsShellLogicalOr(text) || strings.Contains(text, ";") ||
 		strings.Contains(text, "`") || strings.Contains(text, ">") {
 		return false
 	}
 	return true
+}
+
+// markdownTableHasNeighbourRows requires two ordinary pipe-delimited rows
+// near a delimiter row. A delimiter line by itself is too easy to forge inside
+// a payload; a header/body pair gives the guard enough structure to be useful
+// on real Markdown while keeping the short-hyphen form conservative.
+func markdownTableHasNeighbourRows(lines []string, delimiter int) bool {
+	rows := 0
+	for index, line := range lines {
+		if index == delimiter || absInt(index-delimiter) > 4 || !markdownTableRowShape(line) {
+			continue
+		}
+		rows++
+		if rows >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func markdownTableRowShape(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || !strings.Contains(trimmed, "|") || markdownTableDelimiterRow.MatchString(trimmed) {
+		return false
+	}
+	// A table row has at least two cell separators. This excludes ordinary
+	// shell pipelines such as `id | whoami` while allowing optional edge pipes.
+	if strings.Count(trimmed, "|") < 2 {
+		return false
+	}
+	// Empty pipe runs are not useful evidence of a Markdown table. Without this
+	// check, `||||||` can serve as two neighbouring rows around a delimiter and
+	// suppress a real command on a later row.
+	for _, cell := range strings.Split(trimmed, "|") {
+		if strings.TrimSpace(cell) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+// containsShellLogicalOr distinguishes the shell operator `||` from adjacent
+// empty Markdown cells (`||||`). Whitespace is ignored around the candidate so
+// `id || whoami` remains a hard operator while `|title|||||` stays table data.
+func containsShellLogicalOr(text string) bool {
+	for offset := 0; offset < len(text); {
+		relative := strings.Index(text[offset:], "||")
+		if relative < 0 {
+			return false
+		}
+		index := offset + relative
+		left := index - 1
+		for left >= 0 && (text[left] == ' ' || text[left] == '\t' || text[left] == '\r' || text[left] == '\n') {
+			left--
+		}
+		right := index + 2
+		for right < len(text) && (text[right] == ' ' || text[right] == '\t' || text[right] == '\r' || text[right] == '\n') {
+			right++
+		}
+		if (left < 0 || text[left] != '|') && (right >= len(text) || text[right] != '|') {
+			return true
+		}
+		offset = index + 2
+	}
+	return false
 }
 
 // securityDocumentContext reports whether the text is a security document rather
@@ -1197,9 +1280,10 @@ var (
 	ctfFlagLink = regexp.MustCompile(`(?i)\[flag\d`)
 
 	// markdownTableDelimiterRow matches a Markdown table delimiter row:
-	// "| --- | --- |", "|:---|---:|", "| :-: | --- |". Requires at least two
-	// columns so a single "|---|" cannot qualify.
-	markdownTableDelimiterRow = regexp.MustCompile(`(?m)^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*\|[ \t]*:?-{2,}:?[ \t]*\|?[ \t]*$`)
+	// "| --- | --- |", "|:---|---:|", "| :-: | --- |". CommonMark permits a
+	// single hyphen when alignment colons are present, so use one-or-more rather
+	// than two-or-more; requiring two columns keeps a lone shell pipe out.
+	markdownTableDelimiterRow = regexp.MustCompile(`(?m)^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(?:\|[ \t]*:?-{1,}:?[ \t]*)+\|?[ \t]*$`)
 
 	// ctfPointValue matches CTF scoring notation: "200p", "30 points", "872p".
 	// A bare "p" must be attached to the digits so that ordinary numbers

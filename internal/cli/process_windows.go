@@ -17,6 +17,8 @@ var (
 	processStopPoll        = 25 * time.Millisecond
 )
 
+func signalServiceHangup(string) error { return nil }
+
 func processRunning(pid int) (bool, error) {
 	// Windows OpenProcess takes a DWORD (uint32). Reject non-positive values and
 	// anything that would truncate on the architecture-dependent int → uint32 cast.

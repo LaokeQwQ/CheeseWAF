@@ -504,6 +504,87 @@ func TestServerBlocksSemanticPostBodyPayloads(t *testing.T) {
 	}
 }
 
+// TestBudgetExhaustedPolicyAppliedEndToEnd drives the real budget-exhaustion
+// path (a detector that outlives the detection budget) so the open/observe/closed
+// fail-mode is genuinely exercised, not just the decision helper.
+//
+// This is the guard that catches the original P0 and its level-inversion
+// variant: with `high` mapped to `observe` this test fails, because an
+// un-analysed request is forwarded instead of challenged.
+func TestBudgetExhaustedPolicyAppliedEndToEnd(t *testing.T) {
+	for _, level := range []string{config.ProtectionLevelSmart, config.ProtectionLevelHigh, config.ProtectionLevelStrict} {
+		t.Run(level, func(t *testing.T) {
+			server, sink, cleanup := newPolicyTestServerWithDetectors(t, level, overBudgetDetector{})
+			defer cleanup()
+
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+
+			if len(sink.entries) != 1 {
+				t.Fatalf("level %s: expected one log entry, got %d", level, len(sink.entries))
+			}
+			// The budget actually ran out, so the fail-mode policy applied.
+			if _, ok := sink.entries[0].Metadata["detection_analysis_incomplete"]; !ok {
+				t.Fatalf("level %s: budget exhaustion was not reached, metadata=%v", level, sink.entries[0].Metadata)
+			}
+			if sink.entries[0].Action != engine.ActionChallenge.String() {
+				t.Fatalf("level %s: un-analysed request was %q instead of challenged — WAF failed open",
+					level, sink.entries[0].Action)
+			}
+		})
+	}
+}
+
+// TestBudgetExhaustedDoesNotFailOpen checks that a detection whose action is
+// "challenge" is actually challenged by the server rather than forwarded.
+//
+// Scope note: this drives a request through the real server, but the stub
+// detector returns immediately, so the pipeline never reaches
+// finalizeBudgetExhausted. This test therefore covers the action switch (the
+// missing "log" branch that caused the original P0), while the budget policy
+// itself is covered by TestBudgetExhaustedPolicyAppliedEndToEnd. Keep both:
+// mutation testing showed this one alone does NOT catch a `high` → `observe`
+// mapping regression.
+func TestBudgetExhaustedDoesNotFailOpen(t *testing.T) {
+	budget := &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "pipeline.budget",
+		Category:   "detection_budget",
+		Severity:   engine.SeverityMedium,
+		Action:     engine.ActionChallenge,
+		Confidence: 0.55,
+		Message:    "detection budget exhausted",
+	}
+
+	for _, level := range []string{config.ProtectionLevelSmart, config.ProtectionLevelHigh, config.ProtectionLevelStrict} {
+		t.Run(level, func(t *testing.T) {
+			server, sink, cleanup := newPolicyTestServer(t, level, budget)
+			defer cleanup()
+
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+
+			if len(sink.entries) != 1 {
+				t.Fatalf("level %s: expected exactly one log entry, got %d", level, len(sink.entries))
+			}
+			// Judge by the recorded action, not by the response body: the
+			// challenge page is HTML whose PoW token can contain arbitrary
+			// substrings, so string matching on it is unreliable.
+			if sink.entries[0].Action != engine.ActionChallenge.String() {
+				t.Fatalf("level %s: budget-exhausted request was not challenged (action %q, code %d) — WAF failed open",
+					level, sink.entries[0].Action, recorder.Code)
+			}
+			decision, ok := sink.entries[0].Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+			if !ok {
+				t.Fatalf("level %s: missing policy decision metadata", level)
+			}
+			if decision.DetectorCategory != "detection_budget" {
+				t.Fatalf("level %s: unexpected detector category %q", level, decision.DetectorCategory)
+			}
+		})
+	}
+}
+
 func TestServerWebAttackPolicyLevels(t *testing.T) {
 	result := &engine.DetectionResult{
 		Detected:   true,
@@ -588,7 +669,7 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 			Confidence: 0.55,
 			Message:    "detection budget exhausted",
 		}
-		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, budget, nil)
+		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, budget, nil, config.DefaultParanoiaLevel)
 		if decision.Action != engine.ActionChallenge.String() {
 			t.Fatalf("budget closed must honor challenge without severity gate, got %#v", decision)
 		}
@@ -699,7 +780,7 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 		legacy := analyzer
 		legacy.DetectorID = "semantic.sql"
 		legacy.Message = "SQL injection pattern matched"
-		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, &analyzer, []engine.DetectionResult{analyzer, legacy})
+		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, &analyzer, []engine.DetectionResult{analyzer, legacy}, config.DefaultParanoiaLevel)
 		if decision.EvidenceCount != 1 {
 			t.Fatalf("expected duplicate analyzer/legacy evidence to count once, got %#v", decision)
 		}
@@ -1634,6 +1715,27 @@ func (d staticDetector) Detect(context.Context, *engine.RequestContext) (*engine
 func newPolicyTestServer(t *testing.T, level string, result *engine.DetectionResult) (*Server, *captureSink, func()) {
 	t.Helper()
 	return newPolicyTestServerWithDetectors(t, level, staticDetector{result: result})
+}
+
+// overBudgetDetector never finishes before the pipeline's detection budget
+// elapses, which is the only way to reach finalizeBudgetExhausted — the code
+// path that applies the open/observe/closed fail-mode. A stub that simply
+// returns a DetectionResult skips it entirely, so tests built on
+// staticDetector do not actually exercise the budget policy.
+type overBudgetDetector struct{}
+
+func (overBudgetDetector) ID() string   { return "test.over-budget" }
+func (overBudgetDetector) Name() string { return "Over-Budget Detector" }
+func (overBudgetDetector) Priority() int {
+	return 1
+}
+func (overBudgetDetector) Detect(ctx context.Context, _ *engine.RequestContext) (*engine.DetectionResult, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(2 * time.Second):
+		return nil, context.DeadlineExceeded
+	}
 }
 
 func newPolicyTestServerWithDetectors(t *testing.T, level string, detectors ...engine.Detector) (*Server, *captureSink, func()) {

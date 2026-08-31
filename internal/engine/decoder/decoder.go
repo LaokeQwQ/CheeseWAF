@@ -37,6 +37,19 @@ func Decode(raw string) Decoded {
 // DecodeWithDepth applies at most maxDepth transforming decode layers. Values
 // outside the supported range are normalized to the safe default/ceiling.
 func DecodeWithDepth(raw string, maxDepth int) Decoded {
+	return decodeWithDepth(raw, maxDepth, true)
+}
+
+// DecodeWithDepthPreserveControls applies the same bounded transformations as
+// DecodeWithDepth but keeps control bytes introduced by a decoding layer. The
+// semantic detectors use this view so a sanitizer cannot join two tokens across
+// an encoded NUL (for example `new-%00object` -> `new-object`). Callers that
+// need the historical sanitized text should continue using DecodeWithDepth.
+func DecodeWithDepthPreserveControls(raw string, maxDepth int) Decoded {
+	return decodeWithDepth(raw, maxDepth, false)
+}
+
+func decodeWithDepth(raw string, maxDepth int, stripNUL bool) Decoded {
 	if maxDepth <= 0 {
 		maxDepth = DefaultDecodeDepth
 	}
@@ -83,9 +96,11 @@ func DecodeWithDepth(raw string, maxDepth int) Decoded {
 		break
 	}
 	text = strings.TrimSpace(text)
-	// Strip NULs introduced by URL/HTML/unicode decoding so downstream
-	// matchers never see null-byte obfuscation in decoded Text.
-	text = strings.ReplaceAll(text, "\x00", "")
+	if stripNUL {
+		// Strip NULs introduced by URL/HTML/unicode decoding so downstream
+		// matchers never see null-byte obfuscation in decoded Text.
+		text = strings.ReplaceAll(text, "\x00", "")
+	}
 	return Decoded{Raw: raw, Layers: layers, Text: text}
 }
 

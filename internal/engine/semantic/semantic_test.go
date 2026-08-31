@@ -458,6 +458,36 @@ func TestXSSDetectorBlocksScriptPayload(t *testing.T) {
 	}
 }
 
+func TestXSSDetectorStandaloneJavascriptURLContext(t *testing.T) {
+	tests := []struct {
+		name, target, body string
+		want               bool
+	}{
+		{name: "path", target: "/javascript:alert(1)", want: true},
+		{name: "body", target: "/submit", body: "javascript:alert(1)", want: true},
+		{name: "ordinary-query", target: "/docs?text=javascript%3Aalert(1)", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, tc.target, bytes.NewBufferString(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got != nil && got.Detected) != tc.want {
+				t.Fatalf("standalone URL context detection = %v, want %v; result=%+v", got != nil && got.Detected, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
 	cases := []string{
 		"/?next=%3Ca%20href%3Djava%00script%3Aalert(1)%3Ego%3C%2Fa%3E",
@@ -491,6 +521,10 @@ func TestXSSDetectorBlocksSMILAnimationHref(t *testing.T) {
 		`<svg><animate values="javascript:alert(1)" attributeName="xlink:href" /></svg>`,
 		`<svg><set attributeName="href" value="javascript:alert(1)" /></svg>`,
 		`<svg><set value="javascript:alert(1)" attributeName="xlink:href" /></svg>`,
+		`<svg><animate attributeName="xlink:href" from="javascript:alert(1)" to="" /></svg>`,
+		`<svg><animate from="javascript:alert(1)" to="" attributeName="xlink:href" /></svg>`,
+		`<svg><set attributeName="href" to="javascript:alert(1)" /></svg>`,
+		`<svg><set from="javascript:alert(1)" attributeName="href" /></svg>`,
 	}
 	for _, payload := range payloads {
 		t.Run(payload, func(t *testing.T) {

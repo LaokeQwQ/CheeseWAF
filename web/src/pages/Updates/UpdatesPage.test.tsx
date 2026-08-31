@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import i18n from '../../i18n';
+import i18n, { ensureLanguage } from '../../i18n';
 import { fallbackSystem } from '../System/systemModel';
 import UpdatesPage from './UpdatesPage';
 
@@ -15,6 +15,9 @@ const mockedFetchSystemConfig = vi.mocked(fetchSystemConfig);
 
 describe('updates availability state', () => {
   it('shows unavailable states without operational update or feed controls', async () => {
+    // Only the default locale ships in the entry chunk, so the English bundle
+    // has to be fetched before switching or every t() call returns the raw key.
+    await ensureLanguage('en-US');
     await i18n.changeLanguage('en-US');
     mockedFetchSystemConfig.mockResolvedValue({
       ...fallbackSystem,

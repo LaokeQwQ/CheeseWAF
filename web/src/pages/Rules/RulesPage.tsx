@@ -1,12 +1,14 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Plus, ShieldCheck, Wand2 } from 'lucide-react';
+import { Download, Edit3, Plus, ShieldCheck, Trash2, Upload, Wand2 } from 'lucide-react';
 import {
   Badge,
   Button,
+  ConfirmDialog,
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -27,7 +29,8 @@ import {
   Textarea,
   toast,
 } from '@/components/ui';
-import { createRule, fetchRules } from '../../api/client';
+import { createRule, deleteRule, exportCustomRules, fetchRules, fetchRulesExample, fetchSites, importCustomRules, updateRule } from '../../api/client';
+import type { Rule } from '../../types/api';
 import { ruleTemplates, testPattern, validateRuleDraft } from './rulesLogic';
 import './RulesPage.css';
 
@@ -57,16 +60,53 @@ export default function RulesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [siteId, setSiteId] = useState('');
   const [draft, setDraft] = useState<RuleDraft>(emptyDraft);
+  const [editingRule, setEditingRule] = useState<Rule | null>(null);
   const [testInput, setTestInput] = useState('');
   const [page, setPage] = useState(1);
-  const { data, isError, isLoading, refetch } = useQuery({ queryKey: ['rules'], queryFn: () => fetchRules(), retry: false });
+  const [rulePendingDelete, setRulePendingDelete] = useState<Rule | null>(null);
+  const sitesQuery = useQuery({ queryKey: ['sites'], queryFn: fetchSites, retry: false });
+  const sites = sitesQuery.data ?? [];
+  const selectedSiteId = siteId || sites[0]?.id || '';
+  const { data, isError, isLoading, refetch } = useQuery({
+    queryKey: ['rules', selectedSiteId],
+    queryFn: () => fetchRules(selectedSiteId || undefined),
+    retry: false,
+    enabled: !sitesQuery.isPending,
+  });
   const mutation = useMutation({
-    mutationFn: createRule,
+    mutationFn: (payload: Partial<Rule>) => editingRule ? updateRule(editingRule.id, payload) : createRule(payload),
     onSuccess: () => {
       setOpen(false);
+      setEditingRule(null);
       setDraft(emptyDraft());
       setTestInput('');
+      queryClient.invalidateQueries({ queryKey: ['rules'] });
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (rule: Rule) => deleteRule(rule.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['rules'] }),
+    onError: (error) => toast.error(error.message),
+  });
+  const importMutation = useMutation({
+    mutationFn: ({ id, body, contentType }: { id: string; body: string; contentType: string }) => importCustomRules(id, body, contentType),
+    onSuccess: (result) => {
+      setImportOpen(false);
+      setImportFile(null);
+      queryClient.invalidateQueries({ queryKey: ['rules'] });
+      queryClient.invalidateQueries({ queryKey: ['sites'] });
+      toast.success(t('rules.imported', { count: result.count }));
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const toggleMutation = useMutation({
+    mutationFn: ({ rule, enabled }: { rule: Rule; enabled: boolean }) => updateRule(rule.id, { ...rule, enabled, site_id: rule.site_id || selectedSiteId }),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['rules'] });
     },
     onError: (error) => toast.error(error.message),
@@ -98,8 +138,23 @@ export default function RulesPage() {
   const closeModal = () => {
     if (mutation.isPending) return;
     setOpen(false);
+    setEditingRule(null);
     setDraft(emptyDraft());
     setTestInput('');
+  };
+  const openEditor = (rule?: Rule) => {
+    setEditingRule(rule ?? null);
+    setDraft(rule ? {
+      name: rule.name,
+      description: rule.description ?? '',
+      pattern: rule.pattern,
+      location: rule.location,
+      action: rule.action,
+      severity: rule.severity,
+      priority: rule.priority,
+    } : emptyDraft());
+    setTestInput('');
+    setOpen(true);
   };
   const handleRuleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -110,8 +165,12 @@ export default function RulesPage() {
       toast.warning(validation.error);
       return;
     }
+    if (!selectedSiteId) {
+      toast.warning(t('rules.importNeedSite'));
+      return;
+    }
     mutation.mutate({
-      site_id: 'default',
+      site_id: selectedSiteId,
       name: draft.name,
       description: draft.description ?? '',
       pattern,
@@ -119,8 +178,52 @@ export default function RulesPage() {
       action: draft.action ?? 'block',
       severity: draft.severity ?? 'medium',
       priority,
-      enabled: true,
+      enabled: editingRule?.enabled ?? true,
     });
+  };
+  const saveBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+  const downloadExample = async (format: 'yaml' | 'json') => {
+    try {
+      const blob = await fetchRulesExample(format);
+      saveBlob(blob, `custom_rules.example.${format === 'json' ? 'json' : 'yaml'}`);
+      toast.success(t('rules.exampleDownloaded'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('rules.loadFailed'));
+    }
+  };
+  const downloadExport = async () => {
+    if (!selectedSiteId) {
+      toast.warning(t('rules.importNeedSite'));
+      return;
+    }
+    try {
+      const blob = await exportCustomRules(selectedSiteId, 'yaml');
+      saveBlob(blob, `custom_rules-${selectedSiteId}.yaml`);
+      toast.success(t('rules.exported'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('rules.loadFailed'));
+    }
+  };
+  const handleImportSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!selectedSiteId) {
+      toast.warning(t('rules.importNeedSite'));
+      return;
+    }
+    if (!importFile) {
+      toast.warning(t('rules.importNeedFile'));
+      return;
+    }
+    const body = await importFile.text();
+    const contentType = importFile.name.toLowerCase().endsWith('.json') ? 'application/json' : 'application/yaml';
+    importMutation.mutate({ id: selectedSiteId, body, contentType });
   };
 
   return (
@@ -130,16 +233,38 @@ export default function RulesPage() {
           <h1>{t('rules.wafTitle')}</h1>
           <p>{t('rules.subtitle')}</p>
         </div>
-        <Button
-          onClick={() => {
-            setDraft(emptyDraft());
-            setTestInput('');
-            setOpen(true);
-          }}
-        >
-          <Plus size={16} />
-          {t('rules.create')}
-        </Button>
+        <div className="rules-toolbar">
+          <label className="rules-site-picker">
+            <span>{t('rules.site')}</span>
+            {selectedSiteId ? (
+              <Select value={selectedSiteId} onValueChange={(value) => { setSiteId(value); setPage(1); }}>
+                <SelectTrigger><SelectValue placeholder={t('rules.site')} /></SelectTrigger>
+                <SelectContent>
+                  {sites.map((site) => (
+                    <SelectItem key={site.id} value={site.id}>{site.name || site.id}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input disabled placeholder={t('rules.site')} />
+            )}
+            <em>{t('rules.siteHint')}</em>
+          </label>
+          <Button variant="outline" onClick={() => void downloadExport()} disabled={!selectedSiteId}>
+            <Download size={16} />
+            {t('rules.export')}
+          </Button>
+          <Button variant="outline" onClick={() => { setImportFile(null); setImportOpen(true); }} disabled={!selectedSiteId}>
+            <Upload size={16} />
+            {t('rules.import')}
+          </Button>
+          <Button
+            onClick={() => openEditor()}
+          >
+            <Plus size={16} />
+            {t('rules.create')}
+          </Button>
+        </div>
       </header>
 
       <section className="table-panel">
@@ -162,6 +287,7 @@ export default function RulesPage() {
                   <TableHead>{t('rules.severity')}</TableHead>
                   <TableHead>{t('rules.priority')}</TableHead>
                   <TableHead>{t('rules.enabled')}</TableHead>
+                  <TableHead>{t('common.actions')}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -186,9 +312,20 @@ export default function RulesPage() {
                     <TableCell>
                       <Switch
                         checked={rule.enabled}
-                        disabled
+                        disabled={toggleMutation.isPending}
+                        onCheckedChange={(enabled) => toggleMutation.mutate({ rule, enabled })}
                         aria-label={rule.enabled ? t('common.enabled') : t('common.disabled')}
                       />
+                    </TableCell>
+                    <TableCell>
+                      <div className="form-action-row">
+                        <Button size="sm" variant="outline" onClick={() => openEditor(rule)} aria-label={`${t('common.edit')} ${rule.name}`}>
+                          <Edit3 size={14} />
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setRulePendingDelete(rule)} disabled={deleteMutation.isPending} aria-label={`${t('common.delete')} ${rule.name}`}>
+                          <Trash2 size={14} />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -210,6 +347,48 @@ export default function RulesPage() {
       </section>
 
       <Dialog
+        open={importOpen}
+        onOpenChange={(next) => {
+          if (importMutation.isPending) return;
+          setImportOpen(next);
+          if (!next) setImportFile(null);
+        }}
+      >
+        <DialogContent className="rule-import-modal max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t('rules.importTitle')}</DialogTitle>
+            <DialogDescription>{t('rules.importHint')}</DialogDescription>
+          </DialogHeader>
+          <form className="rule-import-form" onSubmit={(event) => { void handleImportSubmit(event); }}>
+            <div className="rule-import-examples">
+              <Button type="button" variant="outline" onClick={() => void downloadExample('yaml')}>
+                <Download size={15} />
+                {t('rules.downloadExampleYaml')}
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void downloadExample('json')}>
+                <Download size={15} />
+                {t('rules.downloadExampleJson')}
+              </Button>
+            </div>
+            <div className="field-stack">
+              <Label htmlFor="custom-rules-file">{t('rules.importFile')}</Label>
+              <Input
+                id="custom-rules-file"
+                type="file"
+                accept=".yaml,.yml,.json,application/json,text/yaml"
+                onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
+              />
+            </div>
+            <DialogFooter className="form-action-row">
+              <Button type="button" variant="outline" onClick={() => setImportOpen(false)} disabled={importMutation.isPending}>
+                {t('common.cancel')}
+              </Button>
+              <Button type="submit" loading={importMutation.isPending}>{t('rules.importConfirm')}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog
         open={open}
         onOpenChange={(next) => {
           if (!next) closeModal();
@@ -218,7 +397,7 @@ export default function RulesPage() {
       >
         <DialogContent className="rule-editor-modal max-w-4xl">
           <DialogHeader>
-            <DialogTitle>{t('rules.create')}</DialogTitle>
+            <DialogTitle>{t(editingRule ? 'common.edit' : 'rules.create')}</DialogTitle>
           </DialogHeader>
           <form className="rule-editor-form" noValidate onSubmit={handleRuleSubmit}>
             <div className="rule-editor-grid">
@@ -354,6 +533,21 @@ export default function RulesPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={rulePendingDelete !== null}
+        onOpenChange={(next) => { if (!next) setRulePendingDelete(null); }}
+        title={t('common.confirmDeleteTitle')}
+        description={t('common.confirmDeleteEntry')}
+        confirmLabel={t('common.delete')}
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (rulePendingDelete) {
+            deleteMutation.mutate(rulePendingDelete);
+          }
+          setRulePendingDelete(null);
+        }}
+      />
     </section>
   );
 }

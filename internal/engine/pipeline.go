@@ -12,8 +12,14 @@ import (
 )
 
 type Pipeline struct {
-	detectors []Detector
-	mu        sync.RWMutex
+	mu       sync.Mutex
+	snapshot atomic.Pointer[pipelineSnapshot]
+}
+
+type pipelineSnapshot struct {
+	detectors     []Detector
+	preFilters    []Detector
+	semanticGroup []Detector
 }
 
 type detectionBudgetExhaustedHook func()
@@ -98,10 +104,28 @@ func (p *Pipeline) Add(detector Detector) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.detectors = append(p.detectors, detector)
-	sort.SliceStable(p.detectors, func(i, j int) bool {
-		return p.detectors[i].Priority() < p.detectors[j].Priority()
+	previous := p.snapshot.Load()
+	detectors := make([]Detector, 0, 1)
+	if previous != nil {
+		detectors = append(detectors, previous.detectors...)
+	}
+	detectors = append(detectors, detector)
+	sort.SliceStable(detectors, func(i, j int) bool {
+		return detectors[i].Priority() < detectors[j].Priority()
 	})
+	p.snapshot.Store(makePipelineSnapshot(detectors))
+}
+
+func makePipelineSnapshot(detectors []Detector) *pipelineSnapshot {
+	snapshot := &pipelineSnapshot{detectors: append([]Detector(nil), detectors...)}
+	for _, detector := range snapshot.detectors {
+		if detector.Priority() < 290 {
+			snapshot.preFilters = append(snapshot.preFilters, detector)
+		} else {
+			snapshot.semanticGroup = append(snapshot.semanticGroup, detector)
+		}
+	}
+	return snapshot
 }
 
 func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*DetectionResult, error) {
@@ -114,26 +138,17 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 
-	p.mu.RLock()
-	detectors := make([]Detector, len(p.detectors))
-	copy(detectors, p.detectors)
-	p.mu.RUnlock()
-
-	var firstDetected *DetectionResult
-
-	preFilters := make([]Detector, 0, len(detectors))
-	semanticGroup := make([]Detector, 0, len(detectors))
-	for _, d := range detectors {
-		if d.Priority() < 290 {
-			preFilters = append(preFilters, d)
-		} else {
-			semanticGroup = append(semanticGroup, d)
-		}
+	snapshot := p.snapshot.Load()
+	if snapshot == nil {
+		return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
 	}
+	var firstDetected *DetectionResult
+	preFilters := snapshot.preFilters
+	semanticGroup := snapshot.semanticGroup
 
 	// Phase 1: pre-filters sequential (IP/ACL/Bot/RateLimit — fast, order-sensitive).
 	for _, detector := range preFilters {
-		result, err := Guard(func() (*DetectionResult, error) { return detector.Detect(ctx, reqCtx) })
+		result, err := GuardSync(func() (*DetectionResult, error) { return detector.Detect(ctx, reqCtx) })
 		if err != nil {
 			if errors.Is(err, ErrDetectionOverload) {
 				if parentErr := parentCtx.Err(); parentErr != nil {
@@ -270,7 +285,7 @@ func budgetAnalysisIncomplete(ctx context.Context, reqCtx *RequestContext, detec
 
 // finalizeBudgetExhausted marks budget exhaustion, records metrics, and applies
 // the commercial fail-mode policy from metadata["budget_exhausted_policy"]:
-// open | observe | closed (default observe when unset — matches smart web_attack).
+// open | observe | closed (default closed when unset — matches smart web_attack).
 func finalizeBudgetExhausted(reqCtx *RequestContext, firstDetected *DetectionResult) *DetectionResult {
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
@@ -289,7 +304,7 @@ func finalizeBudgetExhausted(reqCtx *RequestContext, firstDetected *DetectionRes
 	case "open", "observe", "closed":
 		// keep as-is
 	default:
-		policy = "observe"
+		policy = "closed"
 	}
 	reqCtx.Metadata["budget_exhausted_policy"] = policy
 
@@ -424,9 +439,11 @@ func actionRank(action Action) int {
 }
 
 func (p *Pipeline) Detectors() []Detector {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	out := make([]Detector, len(p.detectors))
-	copy(out, p.detectors)
+	snapshot := p.snapshot.Load()
+	if snapshot == nil {
+		return nil
+	}
+	out := make([]Detector, len(snapshot.detectors))
+	copy(out, snapshot.detectors)
 	return out
 }

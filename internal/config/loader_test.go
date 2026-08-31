@@ -1,10 +1,12 @@
 package config
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -22,6 +24,22 @@ func TestLoadSampleConfig(t *testing.T) {
 	}
 	if cfg.Console.Login.CAPTCHA.Mode != "slider" || cfg.Console.Login.CAPTCHA.Slider.PowMaxNumber <= 0 {
 		t.Fatalf("expected sample login captcha slider defaults, got %+v", cfg.Console.Login.CAPTCHA)
+	}
+}
+
+func TestSaveCreatesOwnerOnlyConfigFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	cfg := Default()
+	cfg.AI.APIKey = "config-secret"
+	if err := Save(path, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Fatalf("config mode = %o, want %o", got, want)
 	}
 }
 
@@ -889,3 +907,109 @@ func TestCloneDeepCopiesNestedStateAndPreservesRuntimeFields(t *testing.T) {
 		t.Fatalf("clone dropped JWKS cache root: %q", cloned.APISec.Auth.JWKSCacheRoot)
 	}
 }
+
+func TestWatchAppliesValidChangeAndIgnoresInvalidLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	cfg := Default()
+	if err := Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var applied []string
+	go func() {
+		_ = Watch(ctx, path, 20*time.Millisecond, func(next *Config) error {
+			id := "none"
+			if next != nil && len(next.Sites) > 0 && len(next.Sites[0].WAF.CustomRules) > 0 {
+				id = next.Sites[0].WAF.CustomRules[0].ID
+			}
+			mu.Lock()
+			applied = append(applied, id)
+			mu.Unlock()
+			return nil
+		})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(path, []byte("sites: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	mu.Lock()
+	if len(applied) != 0 {
+		mu.Unlock()
+		t.Fatalf("invalid load must not apply: %v", applied)
+	}
+	mu.Unlock()
+	cfg.Sites[0].WAF.CustomRules = []CustomRuleConfig{{
+		ID: "watch-rule", Name: "watch", Pattern: "watch-token", Location: "uri", Action: "block", Severity: "low", Enabled: true, Priority: 8,
+	}}
+	if err := Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		ok := len(applied) > 0 && applied[len(applied)-1] == "watch-rule"
+		mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("valid change not applied: %v", applied)
+}
+
+func TestWatchKeepsLastGoodWhenApplyFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	cfg := Default()
+	if err := Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	success := 0
+	failed := 0
+	go func() {
+		_ = Watch(ctx, path, 20*time.Millisecond, func(next *Config) error {
+			if next != nil && len(next.Sites) > 0 && len(next.Sites[0].WAF.CustomRules) > 0 {
+				mu.Lock()
+				failed++
+				mu.Unlock()
+				return errWatchApply
+			}
+			mu.Lock()
+			success++
+			mu.Unlock()
+			return nil
+		})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cfg.Sites[0].WAF.CustomRules = []CustomRuleConfig{{
+		ID: "bad-apply", Name: "bad", Pattern: "x", Location: "uri", Action: "block", Severity: "low", Enabled: true, Priority: 1,
+	}}
+	if err := Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := failed > 0
+		mu.Unlock()
+		if done {
+			cancel()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("apply failure was not observed")
+}
+
+var errWatchApply = errString("keep previous")
+
+type errString string
+
+func (e errString) Error() string { return string(e) }

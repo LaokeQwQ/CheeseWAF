@@ -15,6 +15,7 @@ type HardwareProfile string
 const (
 	ProfileLow    HardwareProfile = "low"
 	ProfileMedium HardwareProfile = "medium"
+	ProfileSmart  HardwareProfile = "smart"
 	ProfileHigh   HardwareProfile = "high"
 	ProfileCustom HardwareProfile = "custom"
 )
@@ -59,6 +60,14 @@ func ProfileDefaults(p HardwareProfile) ProfileConfig {
 			PipelineBudgetMS: 50, SemanticDepth: 2, WebAttackLevel: "smart",
 			ChallengeConcurrency: 64, ChallengeCapacity: 10000,
 			RateLimitRequests: 100, MaxBodyBytes: 8 << 20, AccessLogSamplePct: 100,
+		}
+	case ProfileSmart:
+		// Smart adaptive: smart scoring at the lowest overhead. Sits between low
+		// and medium on resources because it relies on scoring rather than depth.
+		return ProfileConfig{
+			PipelineBudgetMS: 40, SemanticDepth: 2, WebAttackLevel: "smart",
+			ChallengeConcurrency: 48, ChallengeCapacity: 7500,
+			RateLimitRequests: 80, MaxBodyBytes: 6 << 20, AccessLogSamplePct: 100,
 		}
 	default: // low / incomplete
 		return ProfileConfig{

@@ -12,26 +12,38 @@ import (
 )
 
 type Rule struct {
-	ID       string
-	Name     string
-	Pattern  *regexp.Regexp
-	Location string
-	Action   engine.Action
-	Severity engine.Severity
-	Priority int
-	Enabled  bool
+	ID            string
+	Name          string
+	Pattern       *regexp.Regexp
+	Location      string
+	Action        engine.Action
+	Severity      engine.Severity
+	Priority      int
+	Enabled       bool
+	literalPrefix string
 }
 
 func FromConfig(items []config.CustomRuleConfig) ([]Rule, error) {
-	out := make([]Rule, 0, len(items))
+	return FromStorage(ConfigToStorage("", items))
+}
+
+func ConfigToStorage(siteID string, items []config.CustomRuleConfig) []storage.Rule {
+	out := make([]storage.Rule, 0, len(items))
 	for _, item := range items {
-		rule, err := compile(item.ID, item.Name, item.Pattern, item.Location, item.Action, item.Severity, item.Priority, item.Enabled)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, rule)
+		out = append(out, storage.Rule{
+			ID:          item.ID,
+			SiteID:      siteID,
+			Name:        item.Name,
+			Description: item.Description,
+			Pattern:     item.Pattern,
+			Location:    item.Location,
+			Action:      item.Action,
+			Severity:    item.Severity,
+			Enabled:     item.Enabled,
+			Priority:    item.Priority,
+		})
 	}
-	return out, nil
+	return out
 }
 
 func FromStorage(items []storage.Rule) ([]Rule, error) {
@@ -60,15 +72,20 @@ func compile(id, name, pattern, location, action, severity string, priority int,
 	if err != nil {
 		return Rule{}, fmt.Errorf("compile rule %q: %w", id, err)
 	}
+	literalPrefix, _ := re.LiteralPrefix()
+	if strings.Contains(pattern, "(?i") || strings.Contains(pattern, "(?-i") {
+		literalPrefix = ""
+	}
 	return Rule{
-		ID:       id,
-		Name:     name,
-		Pattern:  re,
-		Location: strings.ToLower(location),
-		Action:   ParseAction(action),
-		Severity: ParseSeverity(severity),
-		Priority: priority,
-		Enabled:  enabled,
+		ID:            id,
+		Name:          name,
+		Pattern:       re,
+		Location:      strings.ToLower(location),
+		Action:        ParseAction(action),
+		Severity:      ParseSeverity(severity),
+		Priority:      priority,
+		Enabled:       enabled,
+		literalPrefix: literalPrefix,
 	}, nil
 }
 

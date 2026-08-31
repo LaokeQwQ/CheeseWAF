@@ -18,7 +18,7 @@ const (
 )
 
 var (
-	configPath = "./data/cheesewaf.yaml"
+	configPath = "./data/config/cheesewaf.yaml"
 	dataDir    = "./data"
 	cliLang    = ""
 )
@@ -43,7 +43,7 @@ func newRootCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&dataDir, "data-dir", dataDir, "Runtime data directory")
 	cmd.PersistentFlags().StringVar(&cliLang, "lang", "", "CLI language (en|zh-CN); default from install/env/system")
 	cmd.SetVersionTemplate(`{{printf "CheeseWAF %s\n" .Version}}`)
-	// Flags-only invocations such as `cheesewaf --config /etc/cheesewaf.yaml`
+	// Flags-only invocations such as `cheesewaf --config /etc/cheesewaf/cheesewaf.yaml`
 	// must start the server. Only an empty argv used to insert "serve".
 	cmd.RunE = serveCmd.RunE
 	cmd.AddCommand(serveCmd)
@@ -53,10 +53,12 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(stopCmd)
 	cmd.AddCommand(restartCmd)
 	cmd.AddCommand(userCmd)
+	cmd.AddCommand(newSetupCommand())
 	cmd.AddCommand(newClusterCommand())
 	cmd.AddCommand(versionCmd)
 	cmd.AddCommand(newLangCommand())
 	cmd.AddCommand(newLogsCommand())
+	cmd.AddCommand(rulesCmd)
 	return cmd
 }
 

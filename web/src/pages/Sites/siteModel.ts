@@ -1,4 +1,4 @@
-import type { Site, SiteAdvanced } from '../../types/api';
+import type { NginxImportSite, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
 
 export const defaultSiteAdvanced: SiteAdvanced = {
   certificate: {
@@ -166,6 +166,86 @@ export function splitList(value: unknown) {
 
 export function asCSV(value: unknown[]) {
   return value.join(', ');
+}
+
+/** Mirrors the backend body limit in internal/api/handler/ops.go (1 MiB). */
+export const NGINX_IMPORT_MAX_BYTES = 1 << 20;
+
+/**
+ * Why a parsed nginx server block cannot be turned into a site. Empty means the
+ * candidate is importable. Values are i18n key suffixes under `sites.import.issue`.
+ */
+export type NginxImportIssue = '' | 'name' | 'domain' | 'upstream';
+
+export type NginxImportRow = {
+  name: string;
+  domains: string[];
+  upstreams: string[];
+  listenPort: number;
+  rewrite: SiteRewriteRule[];
+  issue: NginxImportIssue;
+};
+
+/**
+ * Counts `server { ... }` openings the way the backend parser does, so the UI can
+ * report how many blocks were dropped (a block with neither server_name nor
+ * proxy_pass never reaches the response).
+ */
+export function countNginxServerBlocks(contents: string): number {
+  let count = 0;
+  for (const raw of String(contents ?? '').split('\n')) {
+    const line = (raw.split('#')[0] ?? '').trim();
+    if (line.startsWith('server') && line.includes('{')) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+export function nginxImportRows(parsed: NginxImportSite[] | null | undefined): NginxImportRow[] {
+  return (Array.isArray(parsed) ? parsed : []).map((site) => {
+    const domains = asArray(site.domains).map((item) => String(item ?? '').trim()).filter(Boolean);
+    const upstreams = asArray(site.upstreams)
+      .map((item) => String((typeof item === 'string' ? item : item?.address) ?? '').trim())
+      .filter(Boolean);
+    const name = String(site.name ?? '').trim();
+    const port = Number(site.listen_port);
+    return {
+      name,
+      domains,
+      upstreams,
+      listenPort: Number.isInteger(port) && port > 0 && port <= 65535 ? port : 80,
+      rewrite: asArray(site.waf?.rewrite).map((rule, index) => ({
+        id: rule?.id || `nginx-rewrite-${index + 1}`,
+        pattern: String(rule?.pattern ?? ''),
+        replacement: String(rule?.replacement ?? ''),
+        redirect_code: Number(rule?.redirect_code) || 0,
+        enabled: rule?.enabled ?? true,
+      })).filter((rule) => rule.pattern !== '' && rule.replacement !== ''),
+      // Matches config.Validate: name, at least one domain and one upstream are required.
+      issue: !name ? 'name' : domains.length === 0 ? 'domain' : upstreams.length === 0 ? 'upstream' : '',
+    };
+  });
+}
+
+export function nginxImportPayload(row: NginxImportRow): Partial<Site> {
+  return {
+    name: row.name,
+    domains: row.domains,
+    upstreams: row.upstreams,
+    listen_port: row.listenPort,
+    loadbalance: 'round_robin',
+    enable_ssl: false,
+    waf_enabled: true,
+    waf_mode: 'block',
+    paranoia_level: 3,
+    enabled: true,
+    advanced: {
+      ...defaultSiteAdvanced,
+      access_log_enabled: true,
+      rewrite: row.rewrite,
+    },
+  };
 }
 
 function asArray<T>(value: T[] | null | undefined): T[] {

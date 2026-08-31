@@ -298,7 +298,12 @@ type trustedACMERuntime struct {
 
 func (h *Handler) trustedSiteACMERuntime(site *storage.Site) trustedACMERuntime {
 	cfg := config.Default()
-	if h != nil && h.currentConfig() != nil {
+	if h != nil && h.Config != nil {
+		// Config is the compatibility view kept in sync by publishConfig and is
+		// also the field used by package-level callers to override test/runtime
+		// ACME paths before issuing a certificate.
+		cfg = *h.Config
+	} else if h != nil && h.currentConfig() != nil {
 		cfg = *h.currentConfig()
 	}
 	acmeCfg := cfg.ACME

@@ -17,8 +17,336 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
+	"github.com/LaokeQwQ/CheeseWAF/internal/security"
 )
+
+func TestRunGovernanceConfigSuccessWritesManifestSummary(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "incoming.jsonl")
+	if err := os.WriteFile(source, []byte(`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "governance.json")
+	formal := filepath.Join(dir, "formal.jsonl")
+	quarantine := filepath.Join(dir, "quarantine.jsonl")
+	manifest := filepath.Join(dir, "manifest.json")
+	config := security.GovernanceConfig{
+		Sources:        []security.SourceSpec{{Path: source, Name: "unit", License: "internal", Access: "local-file"}},
+		FormalPath:     formal,
+		QuarantinePath: quarantine,
+		ManifestPath:   manifest,
+	}
+	writeGovernanceJSON(t, cfgPath, config)
+
+	var stdout bytes.Buffer
+	if err := runGovernance(context.Background(), cfgPath, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	var got security.GovernanceManifest
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("manifest summary is not JSON: %v", err)
+	}
+	if got.Total != 1 || got.Quarantine != 1 || got.Pipeline == "" {
+		t.Fatalf("unexpected governance manifest: %+v", got)
+	}
+	if _, err := os.Stat(manifest); err != nil {
+		t.Fatalf("governance manifest output missing: %v", err)
+	}
+}
+
+func TestRunGovernanceModeHonorsOutputPath(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "incoming.jsonl")
+	if err := os.WriteFile(source, []byte(`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "governance.json")
+	config := security.GovernanceConfig{
+		Sources:        []security.SourceSpec{{Path: source, Name: "unit", License: "internal", Access: "local-file"}},
+		FormalPath:     filepath.Join(dir, "formal.jsonl"),
+		QuarantinePath: filepath.Join(dir, "quarantine.jsonl"),
+		ManifestPath:   filepath.Join(dir, "manifest.json"),
+	}
+	writeGovernanceJSON(t, cfgPath, config)
+	summaryPath := filepath.Join(dir, "summary.json")
+	if err := runContext(context.Background(), options{Mode: "govern", GovernanceConfigPath: cfgPath, OutputPath: summaryPath}); err != nil {
+		t.Fatal(err)
+	}
+	var got security.GovernanceManifest
+	b, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("governance summary is not JSON: %v", err)
+	}
+	if got.Total != 1 || got.Quarantine != 1 {
+		t.Fatalf("unexpected governance summary: %+v", got)
+	}
+}
+
+func TestRunGovernanceModeRejectsSummaryOverlap(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "incoming.jsonl")
+	original := []byte(`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}` + "\n")
+	if err := os.WriteFile(source, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "governance.json")
+	config := security.GovernanceConfig{
+		Sources:        []security.SourceSpec{{Path: source, Name: "unit", License: "internal", Access: "local-file"}},
+		FormalPath:     filepath.Join(dir, "formal.jsonl"),
+		QuarantinePath: filepath.Join(dir, "quarantine.jsonl"),
+		ManifestPath:   filepath.Join(dir, "manifest.json"),
+	}
+	writeGovernanceJSON(t, cfgPath, config)
+
+	for name, output := range map[string]string{
+		"source":     source,
+		"config":     cfgPath,
+		"formal":     config.FormalPath,
+		"quarantine": config.QuarantinePath,
+		"manifest":   config.ManifestPath,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := runContext(context.Background(), options{Mode: "govern", GovernanceConfigPath: cfgPath, OutputPath: output})
+			if err == nil || !strings.Contains(err.Error(), "overlaps protected") {
+				t.Fatalf("expected protected-path overlap error, got %v", err)
+			}
+		})
+	}
+	got, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatal("governance summary validation modified the source file")
+	}
+}
+
+func TestRunGovernanceModeRejectsOutputOverlapWithConfig(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "incoming.jsonl")
+	if err := os.WriteFile(source, []byte(`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "governance.json")
+	outputs := []string{
+		filepath.Join(dir, "formal.jsonl"),
+		filepath.Join(dir, "quarantine.jsonl"),
+		filepath.Join(dir, "manifest.json"),
+	}
+	for _, output := range outputs {
+		t.Run(filepath.Base(output), func(t *testing.T) {
+			config := security.GovernanceConfig{
+				Sources:        []security.SourceSpec{{Path: source, Name: "unit", License: "internal", Access: "local-file"}},
+				FormalPath:     outputs[0],
+				QuarantinePath: outputs[1],
+				ManifestPath:   outputs[2],
+			}
+			switch output {
+			case outputs[0]:
+				config.FormalPath = cfgPath
+			case outputs[1]:
+				config.QuarantinePath = cfgPath
+			case outputs[2]:
+				config.ManifestPath = cfgPath
+			}
+			writeGovernanceJSON(t, cfgPath, config)
+			before, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = runContext(context.Background(), options{Mode: "govern", GovernanceConfigPath: cfgPath})
+			if err == nil || !strings.Contains(err.Error(), "overlaps config input") {
+				t.Fatalf("expected config overlap error, got %v", err)
+			}
+			after, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("config file was modified after overlap rejection")
+			}
+		})
+	}
+}
+
+func TestRunGovernanceModeRejectsCaseFoldedConfigOverlap(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "incoming.jsonl")
+	if err := os.WriteFile(source, []byte(`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "governance.json")
+	writeGovernanceJSON(t, cfgPath, security.GovernanceConfig{
+		Sources:        []security.SourceSpec{{Path: source, Name: "unit", License: "internal", Access: "local-file"}},
+		FormalPath:     strings.ToUpper(cfgPath),
+		QuarantinePath: filepath.Join(dir, "quarantine.jsonl"),
+		ManifestPath:   filepath.Join(dir, "manifest.json"),
+	})
+
+	err := runContext(context.Background(), options{Mode: "govern", GovernanceConfigPath: cfgPath})
+	if err == nil || !strings.Contains(err.Error(), "overlaps config input") {
+		t.Fatalf("expected case-folded config overlap error, got %v", err)
+	}
+}
+
+func TestRunGovernanceModeRejectsReviewPathOverlapWithSource(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "incoming.jsonl")
+	if err := os.WriteFile(source, []byte(`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		reviewPath func(t *testing.T) string
+	}{
+		{name: "exact", reviewPath: func(*testing.T) string { return source }},
+		{name: "case-fold", reviewPath: func(*testing.T) string { return strings.ToUpper(source) }},
+		{name: "symlink", reviewPath: func(t *testing.T) string {
+			alias := filepath.Join(dir, "reviews-alias.jsonl")
+			if err := os.Symlink(source, alias); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			return alias
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reviewPath := tc.reviewPath(t)
+			cfgPath := filepath.Join(t.TempDir(), "governance.json")
+			configDir := filepath.Dir(cfgPath)
+			writeGovernanceJSON(t, cfgPath, security.GovernanceConfig{
+				Sources:        []security.SourceSpec{{Path: source, Name: "unit", License: "internal", Access: "local-file"}},
+				FormalPath:     filepath.Join(configDir, "formal.jsonl"),
+				QuarantinePath: filepath.Join(configDir, "quarantine.jsonl"),
+				ManifestPath:   filepath.Join(configDir, "manifest.json"),
+				ReviewPath:     reviewPath,
+			})
+
+			err := runContext(context.Background(), options{Mode: "govern", GovernanceConfigPath: cfgPath})
+			if err == nil || !strings.Contains(err.Error(), "governance review path overlaps source input") {
+				t.Fatalf("expected review/source overlap error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRunGovernanceModeRejectsCaseFoldedSummaryOverlap(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "incoming.jsonl")
+	if err := os.WriteFile(source, []byte(`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "governance.json")
+	writeGovernanceJSON(t, cfgPath, security.GovernanceConfig{
+		Sources:        []security.SourceSpec{{Path: source, Name: "unit", License: "internal", Access: "local-file"}},
+		FormalPath:     filepath.Join(dir, "formal.jsonl"),
+		QuarantinePath: filepath.Join(dir, "quarantine.jsonl"),
+		ManifestPath:   filepath.Join(dir, "manifest.json"),
+	})
+
+	err := runContext(context.Background(), options{
+		Mode:                 "govern",
+		GovernanceConfigPath: cfgPath,
+		OutputPath:           strings.ToUpper(source),
+	})
+	if err == nil || !strings.Contains(err.Error(), "overlaps protected") {
+		t.Fatalf("expected case-folded summary overlap error, got %v", err)
+	}
+}
+
+func TestRunGovernanceModeRejectsSummarySymlinkToSource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions are platform-specific")
+	}
+	dir := t.TempDir()
+	source := filepath.Join(dir, "incoming.jsonl")
+	line := `{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/ok"}` + "\n"
+	if err := os.WriteFile(source, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "summary.json")
+	if err := os.Symlink(source, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "governance.json")
+	writeGovernanceJSON(t, cfgPath, security.GovernanceConfig{
+		Sources:        []security.SourceSpec{{Path: source, Name: "unit", License: "internal", Access: "local-file"}},
+		FormalPath:     filepath.Join(dir, "formal.jsonl"),
+		QuarantinePath: filepath.Join(dir, "quarantine.jsonl"),
+		ManifestPath:   filepath.Join(dir, "manifest.json"),
+	})
+	err := runContext(context.Background(), options{Mode: "govern", GovernanceConfigPath: cfgPath, OutputPath: alias})
+	if err == nil || !strings.Contains(err.Error(), "overlaps protected") {
+		t.Fatalf("expected symlink overlap error, got %v", err)
+	}
+}
+
+func TestRunGovernanceInputErrors(t *testing.T) {
+	dir := t.TempDir()
+	invalidJSON := filepath.Join(dir, "invalid.json")
+	if err := os.WriteFile(invalidJSON, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		opts options
+		want string
+	}{
+		{name: "unknown mode", opts: options{Mode: "unknown"}, want: `unsupported mode "unknown"`},
+		{name: "missing config", opts: options{Mode: "govern"}, want: "--governance-config is required"},
+		{name: "invalid JSON", opts: options{Mode: "govern", GovernanceConfigPath: invalidJSON}, want: "parse governance config"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runContext(context.Background(), tc.opts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestRunGovernancePropagatesCoreErrors(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "governance.json")
+	config := security.GovernanceConfig{
+		Sources:        []security.SourceSpec{{Path: filepath.Join(dir, "missing.jsonl"), License: "internal", Access: "local-file"}},
+		FormalPath:     filepath.Join(dir, "formal.jsonl"),
+		QuarantinePath: filepath.Join(dir, "quarantine.jsonl"),
+		ManifestPath:   filepath.Join(dir, "manifest.json"),
+	}
+	writeGovernanceJSON(t, cfgPath, config)
+	err := runGovernance(context.Background(), cfgPath, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "open "+config.Sources[0].Path) {
+		t.Fatalf("expected governance core source error, got %v", err)
+	}
+}
+
+func TestRunGovernanceHonorsCanceledContext(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "governance.json")
+	writeGovernanceJSON(t, cfgPath, security.GovernanceConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := runWithContext(ctx, options{Mode: "govern", GovernanceConfigPath: cfgPath})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func writeGovernanceJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	b, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestRunAnalyzerModeWritesPassingReport(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "report.json")
@@ -517,8 +845,8 @@ func TestRunNonStreamUsesRawLineShardMembership(t *testing.T) {
 	var selectedShard int
 	for i := 0; i < 100; i++ {
 		candidate := []byte(fmt.Sprintf(`{"name":"raw-shard-%d","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`, i))
-		byRaw := securitytest.ShardIndexForRaw(candidate, shards)
-		byName := securitytest.ShardIndexFor(fmt.Sprintf("raw-shard-%d", i), shards)
+		byRaw := security.ShardIndexForRaw(candidate, shards)
+		byName := security.ShardIndexFor(fmt.Sprintf("raw-shard-%d", i), shards)
 		if byRaw != byName {
 			raw = candidate
 			selectedShard = byRaw
@@ -574,7 +902,7 @@ func TestRunStreamModeRejectsInvalidShardParameters(t *testing.T) {
 
 func TestRunStreamModeRejectsEmptySelectedShard(t *testing.T) {
 	raw := []byte(`{"name":"only-case","source_family":"unit","label":"benign","method":"GET","target":"/ok"}`)
-	selectedShard := 1 - securitytest.ShardIndexForRaw(raw, 2)
+	selectedShard := 1 - security.ShardIndexForRaw(raw, 2)
 	corpus := writeCorpus(t, string(raw)+"\n")
 
 	err := run(options{

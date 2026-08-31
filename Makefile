@@ -14,7 +14,7 @@ GO           := go
 GOFLAGS      := -trimpath
 CGO_ENABLED  := 0
 
-.PHONY: all build build-cli run test test-go web-test web-build security-corpus security-corpus-http security-gate lint clean dev help
+.PHONY: all build build-cli run test test-go web-test web-build security-corpus security-corpus-http security-gate corpus-governance lint clean dev help
 
 ## help: Show this help message
 help:
@@ -27,6 +27,7 @@ help:
 	@echo "  make test        Run Go and frontend tests"
 	@echo "  make web-build   Build the web dashboard"
 	@echo "  make security-corpus      Run curated semantic corpus against analyzer"
+	@echo "  make corpus-governance   Validate and classify all semantic JSONL corpora"
 	@echo "  make security-corpus-http Run curated corpus against deployed WAF (BASE_URL=...)"
 	@echo "  make security-gate        Run analyzer, HTTP replay, and optional external scanner gate (BASE_URL=..., ADMIN_URL=...)"
 	@echo "  make lint        Run golangci-lint"
@@ -140,11 +141,15 @@ web-build:
 
 ## security-corpus: Run curated attack/benign corpus against the semantic analyzer
 security-corpus:
-	$(GO) run ./cmd/cheesewaf-corpus --mode analyzer
+	bash scripts/ci/run-governed-semantic-gate.sh
 
 ## eval-shards: Run semantic evaluation corpus in parallel shards (env SEMANTIC_EVAL_SHARDS)
 eval-shards:
 	bash scripts/ci/run-semantic-eval-shards.sh
+
+## corpus-governance: Run read-only corpus governance into a temporary directory
+corpus-governance:
+	bash scripts/ci/run-corpus-governance.sh
 
 ## security-corpus-http: Run curated attack/benign corpus against a deployed WAF (BASE_URL=http://127.0.0.1:8080)
 security-corpus-http:

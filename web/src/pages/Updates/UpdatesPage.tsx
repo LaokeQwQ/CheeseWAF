@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui';
 import { useQuery } from '@tanstack/react-query';
-import { CloudDownload, ShieldAlert } from 'lucide-react';
+import { CloudDownload, Database, ShieldAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchSystemConfig } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
@@ -72,6 +72,19 @@ export default function UpdatesPage() {
           t={t}
         />
       </div>
+      {/* P2-23: storage.redis looks configurable but bot challenge state has no
+          Redis backend wired in, so say so here instead of letting operators
+          believe their Redis settings took effect. */}
+      <section className="panel updates-runtime-panel">
+        <div className="panel-heading">
+          <h2><Database size={16} /> {t('updates.botChallengeRedis')}</h2>
+          <Badge variant="secondary">{t('updates.unavailable')}</Badge>
+        </div>
+        <div className="empty-state" role="status">
+          <p>{t('updates.redisUnavailable')}</p>
+          <p>{t('updates.unavailableReason', { reason: system.capabilities.bot_challenge_redis.reason })}</p>
+        </div>
+      </section>
     </section>
   );
 }

@@ -33,3 +33,16 @@ func TestSanitizeBlockPageHTMLRejectsDangerousCSS(t *testing.T) {
 		t.Fatalf("dangerous CSS was retained: %s", clean)
 	}
 }
+
+func TestSanitizeBlockPageHTMLRejectsDangerousStyleElementText(t *testing.T) {
+	clean, err := SanitizeBlockPageHTML(`<html><head><style>@import url("https://evil.example/track.css"); .safe { color: blue; }</style></head><body>text</body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(clean), "@import") || strings.Contains(strings.ToLower(clean), "evil.example") {
+		t.Fatalf("dangerous style element content was retained: %s", clean)
+	}
+	if !strings.Contains(clean, "color: blue") {
+		t.Fatalf("safe style element content was removed: %s", clean)
+	}
+}
