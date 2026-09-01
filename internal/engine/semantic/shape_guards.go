@@ -200,8 +200,14 @@ func vulnerabilityReportContext(text string) bool {
 	// evidence at document scale and never on their own.
 	if strings.Contains(lower, "exploit-db") || strings.Contains(lower, "安全公告") ||
 		strings.Contains(lower, "cve编号") || strings.Contains(lower, "漏洞证明") ||
-		strings.Contains(lower, "proof of concept") || strings.Contains(lower, "security advisory") ||
-		strings.Contains(lower, "security research") {
+		strings.Contains(lower, "proof of concept") || strings.Contains(lower, "security advisory") {
+		return true
+	}
+	// "security research" is common in short user profile fields (including
+	// attacker-controlled bios). Treat it as a document marker only once the
+	// surrounding value reaches article scale; otherwise it can suppress a
+	// strong SQL payload embedded in a short profile sentence.
+	if len(text) >= documentScaleThreshold && strings.Contains(lower, "security research") {
 		return true
 	}
 	if len(text) >= documentScaleThreshold && countWordMarkers(lower, vulnWeakMarkers) >= 2 {

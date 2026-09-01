@@ -35,6 +35,14 @@ func writeSource(t *testing.T, lines ...string) string {
 	return p
 }
 
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 func writeGzipSource(t *testing.T, lines ...string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "src.jsonl.gz")
@@ -203,6 +211,41 @@ func TestGovernanceRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestGovernanceSentryDSNIsHardQuarantinedAndRedacted(t *testing.T) {
+	dsn := "https://0123456789abcdef0123456789abcdef@o123456.ingest.us.sentry.io/987654"
+	line := fmt.Sprintf(`{"name":"sentry","source_family":"telemetry","label":"benign","method":"GET","target":"/health?dsn=%s","body":"telemetry=%s"}`, dsn, dsn)
+	p := writeSource(t, line)
+	src := allowedSource(p)
+	src.AllowFormal = true
+	rep, dir := governTmp(t, GovernanceConfig{Sources: []SourceSpec{src}})
+
+	if rep.Manifest.Formal != 0 || rep.Manifest.Quarantine != 1 {
+		t.Fatalf("Sentry DSN escaped hard isolation: %+v", rep.Manifest)
+	}
+	if rep.Manifest.ByReason["secret_detected"] != 1 {
+		t.Fatalf("Sentry DSN was not audited as secret_detected: %+v", rep.Manifest.ByReason)
+	}
+	blob := readAll(t, filepath.Join(dir, "quarantine.jsonl"))
+	if strings.Contains(blob, "0123456789abcdef0123456789abcdef") {
+		t.Fatalf("Sentry DSN key survived quarantine output: %s", blob)
+	}
+	if !strings.Contains(blob, "https://[REDACTED]@o123456.ingest.us.sentry.io/987654") {
+		t.Fatalf("Sentry DSN audit shape was not preserved: %s", blob)
+	}
+}
+
+func TestGovernanceSentryDSNMatcherStaysNarrow(t *testing.T) {
+	for _, value := range []string{
+		"https://example.com/o123456.ingest.us.sentry.io/987654",
+		"https://shortkey@o123456.ingest.us.sentry.io/987654",
+		"https://0123456789abcdef0123456789abcdef@o123456.example.com/987654",
+	} {
+		if sentryDSNRE.MatchString(value) {
+			t.Errorf("non-Sentry value matched narrow DSN detector: %q", value)
+		}
+	}
+}
+
 func TestGovernanceSecretHeaderNameIsHardQuarantined(t *testing.T) {
 	leaky := `{"name":"leak","source_family":"t","label":"benign","method":"GET","target":"/","header":{"Authorization":"Basic dXNlcjpwYXNz"}}`
 	p := writeSource(t, leaky)
@@ -309,6 +352,62 @@ func TestGovernanceSensitiveMetadataIsHardQuarantinedAndRedacted(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestGovernanceURIUserinfoIsIsolatedWithoutURLFalsePositives(t *testing.T) {
+	cases := []struct {
+		name, target string
+		wantRedacted bool
+	}{
+		{name: "userinfo", target: "https://alice:secret@example.test/api", wantRedacted: true},
+		{name: "path-colon", target: "/docs/http://example.test/a:b", wantRedacted: false},
+		{name: "email", target: "/contact/alice@local", wantRedacted: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Case{Name: tc.name, SourceFamily: "unit", Label: "benign", Method: "GET", Target: tc.target}
+			p := writeSource(t, mustJSON(c))
+			src := allowedSource(p)
+			src.AllowFormal = true
+			rep, _ := governTmp(t, GovernanceConfig{Sources: []SourceSpec{src}})
+			if tc.wantRedacted {
+				if rep.Manifest.ByReason["secret_detected"] != 1 || rep.Manifest.Quarantine != 1 {
+					t.Fatalf("userinfo escaped hard isolation: %+v", rep.Manifest)
+				}
+				if !strings.Contains(rep.Quarantine[0].Target, "https://[REDACTED]@example.test") {
+					t.Fatalf("userinfo was not redacted: %q", rep.Quarantine[0].Target)
+				}
+			} else if rep.Manifest.Formal != 1 {
+				t.Fatalf("ordinary URL/path was over-filtered: %+v", rep.Manifest)
+			}
+		})
+	}
+}
+
+func TestGovernanceCSRFHeadersAreSensitiveButCustomHeadersRemain(t *testing.T) {
+	for _, name := range []string{"X-XSRF-Token", "X-SF-CSRF-Token", "X-CSRF-Token", "XSRF-Token", "CSRF-Token"} {
+		t.Run(name, func(t *testing.T) {
+			c := Case{Name: "csrf", SourceFamily: "unit", Label: "benign", Method: "GET", Target: "/", Header: map[string]string{name: "opaque-value"}}
+			p := writeSource(t, mustJSON(c))
+			src := allowedSource(p)
+			src.AllowFormal = true
+			rep, _ := governTmp(t, GovernanceConfig{Sources: []SourceSpec{src}})
+			if rep.Manifest.ByReason["secret_detected"] != 1 || rep.Manifest.Quarantine != 1 {
+				t.Fatalf("%s escaped isolation: %+v", name, rep.Manifest)
+			}
+			if _, ok := rep.Quarantine[0].Header[name]; ok {
+				t.Fatalf("sensitive header survived sanitization")
+			}
+		})
+	}
+	c := Case{Name: "custom", SourceFamily: "unit", Label: "benign", Method: "GET", Target: "/", Header: map[string]string{"X-Feature": "opaque-value"}}
+	p := writeSource(t, mustJSON(c))
+	src := allowedSource(p)
+	src.AllowFormal = true
+	rep, _ := governTmp(t, GovernanceConfig{Sources: []SourceSpec{src}})
+	if rep.Manifest.Formal != 1 || rep.Formal[0].Header["X-Feature"] != "opaque-value" {
+		t.Fatalf("ordinary custom header was over-filtered: %+v", rep.Manifest)
 	}
 }
 
@@ -462,6 +561,70 @@ func TestGovernanceRejectsOverlappingPaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGovernanceRejectsDuplicateSourceDeclarations(t *testing.T) {
+	p := writeSource(t, attackLine)
+	variants := []struct {
+		name string
+		cfg  GovernanceConfig
+	}{
+		{
+			name: "empty source path",
+			cfg:  GovernanceConfig{Sources: []SourceSpec{{Name: "missing-path"}}},
+		},
+		{
+			name: "same source list",
+			cfg: GovernanceConfig{Sources: []SourceSpec{
+				allowedSource(p), allowedSource(p),
+			}},
+		},
+		{
+			name: "across source lists",
+			cfg: GovernanceConfig{
+				Sources:  []SourceSpec{allowedSource(p)},
+				Existing: []SourceSpec{allowedSource(filepath.Join(filepath.Dir(p), ".", filepath.Base(p)))},
+			},
+		},
+	}
+	for _, tc := range variants {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := RunGovernance(context.Background(), withGovernanceOutputs(t, tc.cfg))
+			if err == nil {
+				t.Fatalf("invalid source declaration was accepted")
+			}
+			if tc.name == "empty source path" {
+				if !strings.Contains(err.Error(), "source path is empty") {
+					t.Fatalf("empty source path error=%v", err)
+				}
+				return
+			}
+			if !strings.Contains(err.Error(), "duplicate source path") {
+				t.Fatalf("duplicate source declaration error=%v", err)
+			}
+		})
+	}
+
+	alias := filepath.Join(t.TempDir(), "source-alias.jsonl")
+	if err := os.Symlink(p, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, err := RunGovernance(context.Background(), withGovernanceOutputs(t, GovernanceConfig{
+		Sources:  []SourceSpec{allowedSource(p)},
+		Incoming: []SourceSpec{allowedSource(alias)},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "duplicate source path") {
+		t.Fatalf("symlink duplicate source declaration was accepted: %v", err)
+	}
+}
+
+func withGovernanceOutputs(t *testing.T, cfg GovernanceConfig) GovernanceConfig {
+	t.Helper()
+	dir := t.TempDir()
+	cfg.FormalPath = filepath.Join(dir, "formal.jsonl")
+	cfg.QuarantinePath = filepath.Join(dir, "quarantine.jsonl")
+	cfg.ManifestPath = filepath.Join(dir, "manifest.json")
+	return cfg
 }
 
 func TestGovernanceRejectsSymlinkOutputOverlap(t *testing.T) {

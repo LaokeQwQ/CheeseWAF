@@ -3,7 +3,9 @@ package engine
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"sync"
 )
 
 // Action represents the action to take when a detection matches.
@@ -60,8 +62,16 @@ type RequestContext struct {
 	Metadata    map[string]any    // 扩展元数据 / Extension metadata
 
 	// Lazy body fields (hot path): body is not read until EnsureBody.
-	maxBodyBytes int64
-	bodyLoaded   bool
+	// bodyMu also protects the immutable snapshots used when semantic detector
+	// forks are created. Detectors must treat DecodedBody as read-only.
+	bodyMu        sync.Mutex
+	maxBodyBytes  int64
+	bodyLoaded    bool
+	rawBody       []byte
+	bodyErr       error
+	bodyReadDone  chan struct{}
+	bodyReadBody  io.ReadCloser
+	bodyCloseOnce *sync.Once
 }
 
 // Detector is the core interface for all WAF detection modules.

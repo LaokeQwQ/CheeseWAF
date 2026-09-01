@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -68,6 +69,39 @@ type Hit struct {
 	Confidence float64         `json:"confidence"`
 	Payload    string          `json:"payload"`
 	Isolation  string          `json:"isolation,omitempty"`
+}
+
+// ErrSemanticInputIncomplete marks a request whose semantic input could not be
+// covered completely. Callers should use errors.Is or the AnalysisIncomplete /
+// IncompleteReason methods rather than matching the error string.
+var ErrSemanticInputIncomplete = errors.New("semantic input coverage incomplete")
+
+const multipartCoverageIncompleteReason = "multipart_coverage_incomplete"
+
+// InputIncompleteError is returned only when coverage was incomplete and the
+// analyzer has no explicit detection result to preserve. Its small behavioral
+// interface lets the engine recognize the condition without importing this
+// package (which would create an import cycle).
+type InputIncompleteError struct {
+	Reason string
+}
+
+func (e *InputIncompleteError) Error() string {
+	if e == nil || strings.TrimSpace(e.Reason) == "" {
+		return ErrSemanticInputIncomplete.Error()
+	}
+	return ErrSemanticInputIncomplete.Error() + ": " + e.Reason
+}
+
+func (e *InputIncompleteError) Unwrap() error { return ErrSemanticInputIncomplete }
+
+func (e *InputIncompleteError) AnalysisIncomplete() bool { return e != nil }
+
+func (e *InputIncompleteError) IncompleteReason() string {
+	if e == nil {
+		return ""
+	}
+	return e.Reason
 }
 
 type semanticCandidate struct {
@@ -143,6 +177,7 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	}
 
 	candidates := extractCandidatesWithOptions(reqCtx, a.paramAllowlist, a.decodeDepth)
+	inputIncompleteErr := semanticInputIncompleteError(reqCtx)
 	report, best, haveBest, incomplete := a.analyzeAllCandidates(ctx, candidates)
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}
@@ -166,12 +201,12 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		if review, ok := strongestHit(report.Hits); ok {
 			reqCtx.Metadata["review_candidate"] = reviewCandidateMap(review, a.paranoiaLevel)
 		}
-		return nil, nil
+		return nil, inputIncompleteErr
 	}
 	reqCtx.Metadata["review_candidate"] = reviewCandidateMap(best, a.paranoiaLevel)
 	action := actionForMode(a.mode)
 	if a.mode == "block" && !a.blockableHit(best) {
-		return nil, nil
+		return nil, inputIncompleteErr
 	}
 	if action == engine.ActionBlock {
 		outcome = OutcomeBlock
@@ -189,6 +224,18 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		Confidence: best.Confidence,
 		Payload:    best.Payload,
 	}, nil
+}
+
+func semanticInputIncompleteError(reqCtx *engine.RequestContext) error {
+	if reqCtx == nil || reqCtx.Metadata == nil {
+		return nil
+	}
+	incomplete, _ := reqCtx.Metadata["semantic_input_incomplete"].(bool)
+	if !incomplete {
+		return nil
+	}
+	reason, _ := reqCtx.Metadata["semantic_input_incomplete_reason"].(string)
+	return &InputIncompleteError{Reason: reason}
 }
 
 // analyzerDetectorIDs holds the precomputed "semantic.analyzer.<category>"
@@ -254,6 +301,17 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 	merge.report.Inputs = make([]InputPoint, 0, len(candidates))
 	if len(candidates) == 0 {
 		return merge.report, Hit{}, false, false
+	}
+	// A request that is already over budget must not enter any scan path. Apart
+	// from avoiding needless regex/cache work during cancellation storms, this
+	// keeps the report contract consistent across tiny, mid-size, and pooled
+	// requests: every extracted input remains visible, but no candidate is
+	// presented as analyzed.
+	if err := ctx.Err(); err != nil {
+		for _, candidate := range candidates {
+			merge.report.Inputs = append(merge.report.Inputs, candidate.input)
+		}
+		return merge.report, Hit{}, false, true
 	}
 
 	// Sequential for tiny requests (lower scheduling overhead). Keeps the
@@ -480,6 +538,18 @@ func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
 			guesses = append(guesses, "xss")
 		}
 	}
+	if xssDataURLFieldContext(candidate) {
+		seenXSS := false
+		for _, category := range guesses {
+			if category == "xss" {
+				seenXSS = true
+				break
+			}
+		}
+		if !seenXSS {
+			guesses = append(guesses, "xss")
+		}
+	}
 	if xssStandaloneJavascriptURLContext(candidate) {
 		seenXSS := false
 		for _, category := range guesses {
@@ -669,7 +739,8 @@ func categoryPriority(hit Hit) int {
 		if javascriptURLContext.MatchString(payload) ||
 			xssObfuscatedJavascriptURL.MatchString(payload) ||
 			xssDataURLContext.MatchString(payload) ||
-			xssSrcdocContext.MatchString(payload) {
+			xssSrcdocContext.MatchString(payload) ||
+			strings.Contains(context, "data URI in URL-valued") {
 			return 78
 		}
 		return 50
@@ -702,7 +773,7 @@ const (
 // most useful bounded window from an oversized value and promotes suspicious
 // inputs when a request exceeds the global candidate budget. Final decisions
 // still go through the category-specific syntax and semantic analyzers.
-var rawCoverageSignal = regexp.MustCompile(`(?i)(?:\$\{\s*jndi\s*:|\$\{\$\{|\$\{[^}]{0,40}(?::-|:-[^}]|date:)|<\?(?:php|=)|<!\s*(?:doctype|entity)|<\s*script\b|javascript\s*:|(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b|(?:union(?:\s|%20)+(?:all(?:\s|%20)+)?select|(?:or|and)(?:\s|%20)+\d+(?:\s|%20)*=(?:\s|%20)*\d+)|\.\.[/\\]|%2e%2e(?:%2f|/)|\{\{|\{%|%\{|<%|\$(?:where|function|eval|regex|ne|gt|gte|lt|lte)\b|https?://(?:127(?:\.\d+){3}|169\.254(?:\.\d+){2}|localhost\b)|\(\)\s*\{)`)
+var rawCoverageSignal = regexp.MustCompile(`(?i)(?:\$\{\s*jndi\s*:|\$\{\$\{|\$\{[^}]{0,40}(?::-|:-[^}]|date:)|<\?(?:php|=)|<!\s*(?:doctype|entity)|<\s*script\b|javascript\s*:|data\s*:\s*(?:text/html|application/xhtml\+xml|image/svg\+xml)\s*;\s*base64\s*,|(?:;|&&|\|\||\|)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|lua|iex|type|dir|ls|sleep|echo|ping)\b|(?:union(?:\s|%20)+(?:all(?:\s|%20)+)?select|(?:or|and)(?:\s|%20)+\d+(?:\s|%20)*=(?:\s|%20)*\d+|(?:drop(?:\s|%20)+table|delete(?:\s|%20)+from)|(?:order|group)(?:\s|%20)+by(?:\s|%20)+\d+|case(?:\s|%20)+when|select(?:\s|%20)+@@(?:version|datadir|hostname|basedir)\b)|0[xX](?:2[eE]|2[fF]|5[cC])(?:[./\\%0-9a-fA-F]{0,96}0[xX](?:2[eE]|2[fF]|5[cC])){2}|(?:/etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab)|/proc/(?:self/(?:environ|cmdline|maps)|version|cpuinfo)|win\.ini|boot\.ini|wp-config|\.env|\.ssh/id_rsa|\.aws/credentials|docker\.sock|/var/log/|serviceaccount/token)|\.\.[/\\]|%2e%2e(?:%2f|/)|\{\{|\{%|%\{|<%|\$(?:where|function|eval|regex|ne|gt|gte|lt|lte)\b|https?://(?:127(?:\.\d+){3}|169\.254(?:\.\d+){2}|localhost\b)|\(\)\s*\{)`)
 
 func normalizePathAllowlist(paths []string) []string {
 	if len(paths) == 0 {
@@ -769,25 +840,6 @@ func pathAllowlisted(path string, rules []string) bool {
 		}
 	}
 	return false
-}
-
-func (a *Analyzer) filterAllowlistedCandidates(candidates []semanticCandidate) []semanticCandidate {
-	if a == nil || len(a.paramAllowlist) == 0 || len(candidates) == 0 {
-		return candidates
-	}
-	kept := make([]semanticCandidate, 0, len(candidates))
-	skipped := 0
-	for _, c := range candidates {
-		if paramAllowlisted(c.input.Source, c.input.Name, a.paramAllowlist) {
-			skipped++
-			continue
-		}
-		kept = append(kept, c)
-	}
-	if skipped > 0 {
-		ProcessMetrics().RecordAllowlistSkip("param")
-	}
-	return kept
 }
 
 // paramAllowlisted skips query/form/json/cookie/multipart parameter names only.
@@ -922,10 +974,14 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	}
 	groups = append(groups, cookieInputs)
 	bodyGroup := make([]InputPoint, 0, 4)
-	for _, input := range bodyInputs(r, reqCtx.DecodedBody) {
+	bodyPoints, bodyIncomplete := bodyInputsWithStatus(r, reqCtx.DecodedBody)
+	for _, input := range bodyPoints {
 		add(&bodyGroup, input)
 	}
 	groups = append(groups, bodyGroup)
+	if bodyIncomplete {
+		markSemanticInputIncomplete(reqCtx, multipartCoverageIncompleteReason)
+	}
 	if allowSkipped > 0 {
 		ProcessMetrics().RecordAllowlistSkip("param")
 	}
@@ -1021,6 +1077,22 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 		reqCtx.Metadata["semantic_skipped"] = "param_allowlist"
 	}
 	return candidates
+}
+
+func markSemanticInputIncomplete(reqCtx *engine.RequestContext, reason string) {
+	if reqCtx == nil {
+		return
+	}
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = map[string]any{}
+	}
+	reqCtx.Metadata["semantic_input_incomplete"] = true
+	reqCtx.Metadata["semantic_input_incomplete_reason"] = reason
+	// The pipeline already has an analysis-incomplete metadata channel. Mirror
+	// input coverage loss onto it so isolated detector forks carry both the
+	// precise cause and the aggregate state expected by fail-mode handling.
+	reqCtx.Metadata["semantic_analysis_incomplete"] = true
+	reqCtx.Metadata["semantic_analysis_incomplete_reason"] = reason
 }
 
 // fairInputCursor alternates from the head and tail of a source group. A
@@ -1159,7 +1231,7 @@ func clipRaw(raw string) string {
 	if len(raw) <= maxInputRawBytes {
 		return raw
 	}
-	if match := rawCoverageSignal.FindStringIndex(raw); match != nil {
+	if match := bestRawCoverageMatch(raw); match != nil {
 		start, end := rawCoverageWindow(len(raw), match[0], match[1])
 		return strings.Clone(raw[start:end])
 	}
@@ -1174,7 +1246,7 @@ func clipRaw(raw string) string {
 
 func clipRawBytes(raw []byte) string {
 	if len(raw) > maxInputRawBytes {
-		if match := rawCoverageSignal.FindIndex(raw); match != nil {
+		if match := bestRawCoverageMatchBytes(raw); match != nil {
 			start, end := rawCoverageWindow(len(raw), match[0], match[1])
 			return string(raw[start:end])
 		}
@@ -1187,6 +1259,123 @@ func clipRawBytes(raw []byte) string {
 		return string(out)
 	}
 	return string(raw)
+}
+
+// bestRawCoverageMatch chooses the most actionable anchor from an oversized
+// value. A first, harmless documentation marker must not hide a later attack
+// marker from the bounded window; ties prefer the later occurrence so a
+// trailing payload remains visible without retaining the whole body. Matches
+// are streamed one at a time, so marker-flooding documents use constant
+// temporary memory while still allowing a later high-confidence anchor to win.
+func bestRawCoverageMatch(raw string) []int {
+	var best []int
+	bestScore := -1
+	searchStart := 0
+	for searchStart < len(raw) {
+		relative := rawCoverageSignal.FindStringIndex(raw[searchStart:])
+		if relative == nil {
+			break
+		}
+		match := []int{searchStart + relative[0], searchStart + relative[1]}
+		score := rawCoverageAnchorScore(raw, match)
+		if score >= bestScore {
+			best = match
+			bestScore = score
+		}
+		searchStart = match[1]
+	}
+	return best
+}
+
+func bestRawCoverageMatchBytes(raw []byte) []int {
+	var best []int
+	bestScore := -1
+	searchStart := 0
+	for searchStart < len(raw) {
+		relative := rawCoverageSignal.FindIndex(raw[searchStart:])
+		if relative == nil {
+			break
+		}
+		match := []int{searchStart + relative[0], searchStart + relative[1]}
+		score := rawCoverageAnchorScoreBytes(raw, match)
+		if score >= bestScore {
+			best = match
+			bestScore = score
+		}
+		searchStart = match[1]
+	}
+	return best
+}
+
+func rawCoverageAnchorScore(raw string, match []int) int {
+	if len(match) != 2 || match[0] < 0 || match[1] > len(raw) || match[0] >= match[1] {
+		return -1
+	}
+	lo := match[0] - 160
+	if lo < 0 {
+		lo = 0
+	}
+	hi := match[1] + 160
+	if hi > len(raw) {
+		hi = len(raw)
+	}
+	return rawCoverageAnchorScoreWindow(raw[lo:hi], match[0]-lo, match[1]-lo)
+}
+
+func rawCoverageAnchorScoreBytes(raw []byte, match []int) int {
+	if len(match) != 2 || match[0] < 0 || match[1] > len(raw) || match[0] >= match[1] {
+		return -1
+	}
+	lo := match[0] - 160
+	if lo < 0 {
+		lo = 0
+	}
+	hi := match[1] + 160
+	if hi > len(raw) {
+		hi = len(raw)
+	}
+	return rawCoverageAnchorScoreWindow(string(raw[lo:hi]), match[0]-lo, match[1]-lo)
+}
+
+func rawCoverageAnchorScoreWindow(window string, matchStart, matchEnd int) int {
+	// Keep the match slice on the original byte offsets. Unicode lower-casing
+	// can change byte length for a few code points; lower the matched ASCII
+	// token and the surrounding context independently so offsets cannot drift.
+	lower := strings.ToLower(window)
+	matched := strings.ToLower(window[matchStart:matchEnd])
+	score := 10
+	if strings.Contains(matched, "/etc/") || strings.Contains(matched, "/proc/") ||
+		strings.Contains(matched, "/var/log/") || strings.Contains(matched, "win.ini") ||
+		strings.Contains(matched, "boot.ini") || strings.Contains(matched, "passwd") ||
+		strings.Contains(matched, "shadow") || strings.Contains(matched, "wp-config") ||
+		strings.Contains(matched, ".env") || strings.Contains(matched, ".ssh/") ||
+		strings.Contains(matched, ".aws/") || strings.Contains(matched, "docker.sock") ||
+		strings.Contains(matched, "web-inf/") || strings.Contains(matched, "manifest.mf") ||
+		strings.Contains(matched, "serviceaccount/token") {
+		score += 80
+	}
+	if strings.Contains(matched, "union") || strings.Contains(matched, "drop") ||
+		strings.Contains(matched, "delete") || strings.Contains(matched, "order") ||
+		strings.Contains(matched, "group") || strings.Contains(matched, "case") ||
+		strings.Contains(matched, "select") {
+		score += 60
+	}
+	if strings.Contains(matched, "0x") {
+		score += 20
+	}
+	for _, marker := range []string{"%00", "../", "\\x00", "--", "/*", "; ", "&&", "||"} {
+		if strings.Contains(lower, marker) {
+			score += 25
+			break
+		}
+	}
+	for _, marker := range []string{"documentation", "example", "guide", "article", "discuss", "tutorial"} {
+		if strings.Contains(lower, marker) {
+			score -= 20
+			break
+		}
+	}
+	return score
 }
 
 func rawCoverageWindow(length, matchStart, matchEnd int) (int, int) {
@@ -1289,8 +1478,17 @@ func lenientQueryValues(rawQuery string) url.Values {
 // sharing the caller's slice would make path/query/header inputs consume the
 // body's candidate budget and could drop attack fields that are extracted today.
 func bodyInputs(r *http.Request, body []byte) []InputPoint {
+	inputs, _ := bodyInputsWithStatus(r, body)
+	return inputs
+}
+
+// bodyInputsWithStatus returns the bounded body candidates plus whether parsing
+// had to stop on malformed/truncated multipart input. The status is kept
+// separate from the legacy bodyInputs API so callers that only need extraction
+// remain source-compatible while the analyzer can surface coverage loss.
+func bodyInputsWithStatus(r *http.Request, body []byte) ([]InputPoint, bool) {
 	if len(body) == 0 {
-		return nil
+		return nil, false
 	}
 	// charset=utf-16 bodies are often delivered as raw LE/BE bytes; convert before
 	// analysis. Both branches ran the same byte-level check, so decode once and
@@ -1305,28 +1503,47 @@ func bodyInputs(r *http.Request, body []byte) []InputPoint {
 	// smallest capacity that covers a minimal JSON object (key+value per field)
 	// without inflating bytes/op for the common small body.
 	inputs := make([]InputPoint, 0, 4)
-	contentType := requestMediaType(r.Header.Get("Content-Type"))
+	contentTypeHeader := r.Header.Get("Content-Type")
+	contentType := requestMediaType(contentTypeHeader)
 	switch contentType {
 	case "application/x-www-form-urlencoded":
 		values, err := url.ParseQuery(string(body))
 		if err == nil {
-			for key, list := range values {
+			// url.ParseQuery returns a map. Sort its keys before constructing
+			// InputPoints: candidate budgeting/fair traversal is order-sensitive,
+			// so ranging the map would make late fields nondeterministically survive
+			// the maxCandidates cap.
+			keys := make([]string, 0, len(values))
+			for key := range values {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				list := values[key]
 				inputs = append(inputs, InputPoint{Source: "body.form", Name: key, Raw: key, Layers: rawLayersOnly})
 				for _, value := range list {
 					inputs = append(inputs, InputPoint{Source: "body.form", Name: key, Raw: value, Layers: rawLayersOnly})
 				}
 			}
-			return withBodyCoverage(body, inputs)
+			return withBodyCoverage(body, inputs), false
 		}
 	case "application/json":
 		flattenJSONInputs("body.json", "", body, &inputs)
 		if len(inputs) > 0 {
-			return withBodyCoverage(body, inputs)
+			return withBodyCoverage(body, inputs), false
 		}
 	case "multipart/form-data":
 		if boundary := boundaryFromContentType(r.Header.Get("Content-Type")); boundary != "" {
-			return withBodyCoverage(body, multipartInputs(body, boundary))
+			multipart, incomplete := multipartInputsWithStatus(body, boundary)
+			covered := withBodyCoverage(body, multipart)
+			if incomplete {
+				covered = ensureBodyRawCoverage(body, covered)
+			}
+			return covered, incomplete
 		}
+		// A multipart media type without a valid boundary cannot be parsed
+		// faithfully. Keep a bounded raw view and surface the coverage loss.
+		return withBodyCoverage(body, []InputPoint{{Source: "body.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly}}), true
 	}
 	if json.Valid(body) {
 		flattenJSONInputs("body.json", "", body, &inputs)
@@ -1334,7 +1551,13 @@ func bodyInputs(r *http.Request, body []byte) []InputPoint {
 	if len(inputs) == 0 {
 		inputs = append(inputs, InputPoint{Source: "body.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
 	}
-	return withBodyCoverage(body, inputs)
+	declaredMultipart := isDeclaredMultipartContentType(contentTypeHeader)
+	return withBodyCoverage(body, inputs), declaredMultipart
+}
+
+func isDeclaredMultipartContentType(header string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(header))
+	return trimmed == "multipart/form-data" || strings.HasPrefix(trimmed, "multipart/form-data;")
 }
 
 func withBodyCoverage(body []byte, inputs []InputPoint) []InputPoint {
@@ -1351,6 +1574,17 @@ func withBodyCoverage(body []byte, inputs []InputPoint) []InputPoint {
 		Raw:    clipRawBytes(body),
 		Layers: rawLayersOnly,
 	})
+	return append(covered, inputs...)
+}
+
+func ensureBodyRawCoverage(body []byte, inputs []InputPoint) []InputPoint {
+	for _, input := range inputs {
+		if input.Source == "body.raw" && input.Name == "body" {
+			return inputs
+		}
+	}
+	covered := make([]InputPoint, 0, len(inputs)+1)
+	covered = append(covered, InputPoint{Source: "body.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
 	return append(covered, inputs...)
 }
 
@@ -1426,6 +1660,9 @@ func flattenJSONInputs(source, prefix string, raw []byte, inputs *[]InputPoint) 
 		flattenJSONInputsStream(source, prefix, raw, inputs)
 		return
 	}
+	// Preserve the historical decoder behavior for malformed/trailing documents
+	// (it emits the first successfully decoded value) while using a bounded
+	// head/tail collector inside the decoder fallback for valid large objects.
 	flattenJSONInputsDecode(source, prefix, raw, inputs)
 }
 
@@ -1597,8 +1834,9 @@ func discardJSONValue(decoder *json.Decoder) error {
 	return nil
 }
 
-// flattenJSONInputsDecode is the original decoder-backed walk, kept as the
-// authority for every body the byte walker declines.
+// flattenJSONInputsDecode is the decoder-backed fallback for bodies the byte
+// walker declines. Its bounded collector keeps the fallback deterministic and
+// retains a tail sample when the candidate budget is reached.
 func flattenJSONInputsDecode(source, prefix string, raw []byte, inputs *[]InputPoint) {
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -1606,41 +1844,74 @@ func flattenJSONInputsDecode(source, prefix string, raw []byte, inputs *[]InputP
 	if err := decoder.Decode(&value); err != nil {
 		return
 	}
+	capacity := maxCandidates - len(*inputs)
+	if capacity <= 0 {
+		return
+	}
+	collector := newJSONInputCollector(capacity)
 	nodes := 0
-	flattenJSONValue(source, prefix, value, inputs, 0, &nodes)
+	flattenJSONValueBounded(source, prefix, value, 0, &nodes, &collector)
+	collector.appendTo(inputs)
 }
 
-func flattenJSONValue(source, prefix string, value any, inputs *[]InputPoint, depth int, nodes *int) {
-	if depth > maxJSONDepth || *nodes >= maxJSONNodes || len(*inputs) >= maxCandidates {
+// flattenJSONValueBounded walks the decoder's map representation while keeping
+// a deterministic head/tail sample once the candidate budget is full. It must
+// continue traversing after the head is populated; otherwise a late attack field
+// can be hidden behind maxCandidates ordinary fields.
+func flattenJSONValueBounded(source, prefix string, value any, depth int, nodes *int, collector *jsonInputCollector) {
+	if depth > maxJSONDepth || *nodes >= maxJSONNodes {
 		return
 	}
 	*nodes++
 	switch typed := value.(type) {
 	case map[string]any:
-		for key, value := range typed {
-			if *nodes >= maxJSONNodes || len(*inputs) >= maxCandidates {
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			value := typed[key]
+			if *nodes >= maxJSONNodes {
 				return
 			}
 			name := key
 			if prefix != "" {
 				name = prefix + "." + key
 			}
-			*inputs = append(*inputs, InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: rawLayersOnly})
-			flattenJSONValue(source, name, value, inputs, depth+1, nodes)
+			collector.add(InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: rawLayersOnly})
+			flattenJSONValueBounded(source, name, value, depth+1, nodes, collector)
 		}
 	case []any:
 		for idx, value := range typed {
 			if *nodes >= maxJSONNodes {
 				return
 			}
-			flattenJSONValue(source, prefix+"[]", value, inputs, depth+1, nodes)
+			flattenJSONValueBounded(source, prefix+"[]", value, depth+1, nodes, collector)
 			_ = idx
 		}
 	case string:
-		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: clipRaw(typed), Layers: rawLayersOnly})
+		collector.add(InputPoint{Source: source, Name: prefix, Raw: clipRaw(typed), Layers: rawLayersOnly})
 	case json.Number, bool, float64:
-		*inputs = append(*inputs, InputPoint{Source: source, Name: prefix, Raw: toString(typed), Layers: rawLayersOnly})
+		collector.add(InputPoint{Source: source, Name: prefix, Raw: toString(typed), Layers: rawLayersOnly})
 	}
+}
+
+// flattenJSONValue preserves the package-local helper used by older tests and
+// callers. New extraction paths use flattenJSONValueBounded directly so they can
+// retain a head/tail sample after the candidate budget fills; this wrapper keeps
+// the original append-oriented signature for compatibility.
+func flattenJSONValue(source, prefix string, value any, inputs *[]InputPoint, depth int, nodes *int) {
+	if inputs == nil {
+		return
+	}
+	capacity := maxCandidates - len(*inputs)
+	if capacity <= 0 {
+		return
+	}
+	collector := newJSONInputCollector(capacity)
+	flattenJSONValueBounded(source, prefix, value, depth, nodes, &collector)
+	collector.appendTo(inputs)
 }
 
 func boundaryFromContentType(header string) string {
@@ -1652,14 +1923,36 @@ func boundaryFromContentType(header string) string {
 }
 
 func multipartInputs(body []byte, boundary string) []InputPoint {
+	inputs, _ := multipartInputsWithStatus(body, boundary)
+	return inputs
+}
+
+func multipartInputsWithStatus(body []byte, boundary string) ([]InputPoint, bool) {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	var inputs []InputPoint
-	buf := make([]byte, maxInputRawBytes)
-	for len(inputs) < maxMultipartInputs {
+	// Read one byte past the per-part cap so an oversized part is distinguishable
+	// from an exactly capped, valid part. The candidate remains bounded to the
+	// existing maxInputRawBytes window.
+	buf := make([]byte, maxInputRawBytes+1)
+	incomplete := false
+	partsSeen := 0
+	appendInput := func(input InputPoint) bool {
+		if len(inputs) >= maxMultipartInputs {
+			incomplete = true
+			return false
+		}
+		inputs = append(inputs, input)
+		return true
+	}
+	for len(inputs) < maxMultipartInputs && partsSeen < maxMultipartInputs {
 		part, err := reader.NextPart()
 		if err != nil {
+			if err != io.EOF {
+				incomplete = true
+			}
 			break
 		}
+		partsSeen++
 		formName := part.FormName()
 		fileName := part.FileName()
 		name := formName
@@ -1672,23 +1965,51 @@ func multipartInputs(body []byte, boundary string) []InputPoint {
 		// Always inspect attacker-controlled upload filenames (SQLi second-order,
 		// webshell.php, null-byte suffix bypass). Content may be empty/binary.
 		if fileName != "" {
-			inputs = append(inputs, InputPoint{
+			if !appendInput(InputPoint{
 				Source: "body.multipart",
 				Name:   clipRaw(name + ".filename"),
 				Raw:    clipRaw(fileName),
 				Layers: rawLayersOnly,
-			})
+			}) {
+				break
+			}
 		}
-		n, err := io.ReadFull(part, buf)
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			continue
+		n := 0
+		for n < len(buf) {
+			m, readErr := part.Read(buf[n:])
+			n += m
+			if readErr != nil {
+				if readErr != io.EOF {
+					// A part that cannot reach its framing delimiter is
+					// incomplete; retain any bytes read before the error.
+					incomplete = true
+				}
+				break
+			}
+			if m == 0 {
+				break
+			}
 		}
 		if n == 0 {
 			continue
 		}
-		inputs = append(inputs, InputPoint{Source: "body.multipart", Name: clipRaw(name), Raw: string(buf[:n]), Layers: rawLayersOnly})
+		if n > maxInputRawBytes {
+			incomplete = true
+			n = maxInputRawBytes
+		}
+		if !appendInput(InputPoint{Source: "body.multipart", Name: clipRaw(name), Raw: string(buf[:n]), Layers: rawLayersOnly}) {
+			break
+		}
 	}
-	return inputs
+	if (len(inputs) >= maxMultipartInputs || partsSeen >= maxMultipartInputs) && !incomplete {
+		// Probe once beyond the cap so exactly-cap-sized, well-formed bodies do
+		// not get marked incomplete. Any additional part (or framing error)
+		// proves that the inspection budget omitted attacker-controlled bytes.
+		if _, err := reader.NextPart(); err != io.EOF {
+			incomplete = true
+		}
+	}
+	return inputs, incomplete
 }
 
 type decodedVariant struct {
@@ -1768,7 +2089,42 @@ func decodeUTF16Payload(raw string) (string, bool) {
 			return out, true
 		}
 	}
+	// Avoid converting every ordinary ASCII candidate to []byte.  The byte
+	// decoder only has useful work when a BOM or a UTF-16-like NUL pattern is
+	// present; the cheap string scan preserves that decision without a temporary
+	// allocation on the normal request path.
+	if !looksLikeUTF16String(raw) {
+		return "", false
+	}
 	return decodeUTF16FromBytes([]byte(raw))
+}
+
+func looksLikeUTF16String(raw string) bool {
+	if len(raw) < 4 {
+		return false
+	}
+	if (raw[0] == '\xff' && raw[1] == '\xfe') || (raw[0] == '\xfe' && raw[1] == '\xff') {
+		return true
+	}
+	limit := len(raw)
+	if limit > 256 {
+		limit = 256
+	}
+	nulEven, nulOdd := 0, 0
+	for i := 0; i < limit; i++ {
+		if raw[i] != 0 {
+			continue
+		}
+		if i%2 == 0 {
+			nulEven++
+		} else {
+			nulOdd++
+		}
+	}
+	if nulEven == 0 && nulOdd == 0 {
+		return false
+	}
+	return nulOdd >= limit/6 || nulEven >= limit/6
 }
 
 func decodeUTF16FromBytes(b []byte) (string, bool) {
@@ -1962,8 +2318,12 @@ func decodeUnicodeEscapes(raw string) (string, bool) {
 
 func compactSQL(raw string) string {
 	text := executableSQLText(raw)
-	text = sqlLineComment.ReplaceAllString(text, "")
-	text = strings.ReplaceAll(text, "#", "")
+	if strings.Contains(text, "--") {
+		text = sqlLineComment.ReplaceAllString(text, "")
+	}
+	if strings.Contains(text, "#") {
+		text = strings.ReplaceAll(text, "#", "")
+	}
 	var b strings.Builder
 	for _, r := range text {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '=' {
@@ -1975,6 +2335,12 @@ func compactSQL(raw string) string {
 
 func executableSQLText(raw string) string {
 	text := normalize(raw)
+	// The two rewrite expressions only have an effect when a block-comment
+	// delimiter is present. Avoid running regexp.ReplaceAllString over every
+	// prose candidate; this is a dominant cost for long benign documents.
+	if !strings.Contains(text, "/*") {
+		return text
+	}
 	text = sqlMySQLVersionComment.ReplaceAllString(text, " $1 ")
 	return sqlKeywordBridgeComment.ReplaceAllString(text, "$1$2")
 }
@@ -1985,16 +2351,50 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 	if looksCleanASCIIField(raw) && !rceBareCommandSinkValueForSource(inputSource, inputName, raw) {
 		return nil
 	}
+	// Long unstructured values are commonly security articles, logs, or source
+	// listings. Running every category's regexp suite on those values makes the
+	// hot path proportional to document length even when there is no request
+	// signal (a sentence containing "select" used to open the SQL suite). Keep a
+	// conservative, category-specific marker gate for document-scale candidates.
+	// Short values retain the historical over-scan behavior; long attack payloads
+	// still pass when they carry a concrete query, script, command, path, template,
+	// protocol, or runtime marker. The gate only chooses analyzers -- the existing
+	// syntax/semantic and document-context guards still decide block/pass.
+	longMask := 0
+	if len(raw) >= longCandidateThreshold {
+		longMask = longCandidateStrongHints(raw, inputName, inputSource)
+		if longMask == 0 {
+			return nil
+		}
+	}
 	hints := scanAttackHints(raw)
 	if hints == 0 {
 		hints = hintSQL | hintXSS | hintRCE | hintLFI | hintXXE | hintSSRF | hintNoSQL | hintSSTI
+	}
+	if longMask != 0 {
+		// Keep only families backed by a strong long-value marker. This prevents a
+		// generic word such as "and" from re-opening SQL alongside a real, unrelated
+		// marker (for example an embedded <script> sample).
+		hints &= longMask
+		if hints == 0 {
+			hints = longMask
+		}
 	}
 	// Fold overlong UTF-8 before normalising, for the same reason analyzeLFI
 	// does: NFKC turns the invalid bytes 0xC0 0xAF into U+FFFD, and the scoring
 	// gates here would then see no "../" and give lfi zero score — so
 	// analyzeLFI was never called on the very payload it was written to catch.
 	foldedRaw := foldOverlongUTF8(raw)
+	if lfiUnicodeSeparatorCandidate(foldedRaw, inputSource, inputName) {
+		if foldedUnicode, ok := foldLFIUnicodeSeparators(foldedRaw); ok {
+			foldedRaw = foldedUnicode
+		}
+	}
 	text := normalize(foldedRaw)
+	dataURLFieldContext := xssDataURLFieldContext(semanticCandidate{
+		input: InputPoint{Source: inputSource, Name: inputName},
+		text:  raw,
+	})
 	// RCE line-chain detection needs a compatibility-folded view that retains
 	// newlines. The general normalized view deliberately strips controls for
 	// tokenization, which would otherwise erase `ｉｄ\nｌｓ` before the RCE hint can
@@ -2022,7 +2422,8 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 			strings.Contains(text, "load_file") || strings.Contains(text, "into outfile") ||
 			strings.Contains(text, "procedure analyse") || strings.Contains(text, "dbms_lock.sleep") ||
 			strings.Contains(text, "sp_oacreate") || strings.Contains(text, "openrowset") ||
-			strings.Contains(text, "0x") || strings.Contains(text, "/*") || strings.Contains(text, "--")
+			strings.Contains(text, "0x") || strings.Contains(text, "/*") || strings.Contains(text, "--") ||
+			longCandidateSQLStrongHint(text)
 		if cheapSQL || xpathCheapGate(text) {
 			scores["sqli"] += 2
 		} else {
@@ -2042,6 +2443,9 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 		if strings.Contains(text, "<script") || strings.Contains(text, ":script") || executableXSSContext(text) || strings.Contains(text, "<svg") || strings.Contains(text, "<img") || strings.Contains(text, "<xss") || strings.Contains(text, "<meta") || strings.Contains(text, "expression(") {
 			scores["xss"] += 2
 		}
+	}
+	if dataURLFieldContext {
+		scores["xss"] += 2
 	}
 	if hints&hintRCE != 0 {
 		if strings.Contains(rceText, ";") || strings.Contains(rceText, "&&") || strings.Contains(rceText, "|") || strings.Contains(rceText, "$(") || strings.Contains(rceText, "`") || strings.Contains(rceText, "$shell") || strings.Contains(rceText, "$ifs") || strings.Contains(rceText, "${ifs}") || strings.Contains(rceText, "/usr/bin/") || strings.Contains(rceText, "/bin/") || strings.Contains(rceText, "/etc/") || strings.Contains(rceText, "/proc/") || strings.Contains(rceText, "cmd.exe") || strings.Contains(rceText, "cmd /c") || strings.Contains(rceText, "powershell") || strings.Contains(rceText, "pwsh") || strings.Contains(rceText, "encodedcommand") || strings.Contains(rceText, "downloadstring") || strings.Contains(rceText, "downloadfile") || strings.Contains(rceText, "webclient") || strings.Contains(rceText, "tcpclient") || strings.Contains(rceText, "new-object") || strings.Contains(rceText, "<?php") || strings.Contains(rceText, "eval(") || strings.Contains(rceText, "assert(") || strings.Contains(rceText, "getallheaders") || strings.Contains(rceText, "apache_request_headers") || strings.Contains(rceText, "bash -c") || strings.Contains(rceText, "sh -c") || strings.Contains(rceText, "wget ") || strings.Contains(rceText, "curl ") || strings.Contains(rceText, "python -c") || strings.Contains(rceText, "php -r") || strings.Contains(rceText, "perl -e") || strings.Contains(rceText, "ld_preload") || strings.Contains(rceText, "child_process") ||
@@ -2075,6 +2479,7 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 	}
 	if hints&hintLFI != 0 {
 		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiWindowsSystemPathMatch(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") || lfiSSIDirective.MatchString(text) ||
+			lfiHexPathEscapeCandidate(foldedRaw, inputSource, inputName) ||
 			// RFI-shaped remote includes: http(s) value often only scores SSRF unless LFI is also opened.
 			((strings.Contains(text, "http://") || strings.Contains(text, "https://")) && (strings.Contains(text, ".php") || strings.Contains(text, "shell") || strings.Contains(text, "passwd") || strings.HasSuffix(text, "?"))) {
 			scores["lfi"] += 2
@@ -2128,6 +2533,451 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 		}
 	}
 	return guesses
+}
+
+// longCandidateThreshold is intentionally above normal query/form values and
+// below the bounded 16 KiB candidate window. Values at or above it are treated
+// as document-scale for candidate selection; a concrete marker is still enough
+// to enter the full category analyzer. The 256-byte boundary keeps short attack
+// payloads on the exact historical path while covering the common prose/JSON
+// document sizes that caused the regex hot spot.
+const longCandidateThreshold = 256
+
+// longCandidateStrongHints returns a necessary-condition mask for expensive
+// analyzers on long values. It is deliberately made from bounded substring
+// checks and small scans rather than regular expressions: this function runs on
+// every long body/document candidate, including benign prose. Returning a
+// category means "worth analyzing", never "malicious".
+func longCandidateStrongHints(raw, inputName, inputSource string) int {
+	lower := strings.ToLower(raw)
+	mask := 0
+
+	// SQL: require query composition, a boolean/time/file primitive, or a
+	// comment/quote shape that can actually alter a statement. Bare words such as
+	// "select"/"union" in an article are intentionally insufficient.
+	if longCandidateSQLStrongHint(lower) ||
+		strings.Contains(lower, "union select") || strings.Contains(lower, "union/**/select") ||
+		strings.Contains(lower, "union/*") || strings.Contains(lower, "or 1=1") ||
+		strings.Contains(lower, "and 1=1") || strings.Contains(lower, "or'1'='1") ||
+		strings.Contains(lower, "and'1'='1") || strings.Contains(lower, "sleep(") ||
+		strings.Contains(lower, "benchmark(") || strings.Contains(lower, "pg_sleep") ||
+		strings.Contains(lower, "waitfor delay") || strings.Contains(lower, "xp_cmdshell") ||
+		strings.Contains(lower, "information_schema") || strings.Contains(lower, "into outfile") ||
+		strings.Contains(lower, "load_file") || strings.Contains(lower, "dbms_lock.sleep") ||
+		strings.Contains(lower, "procedure analyse") || strings.Contains(lower, "openrowset") ||
+		(strings.Contains(lower, "select") && strings.Contains(lower, " from ") &&
+			longCandidateKeywordPair(lower, "select", " from ", 320)) ||
+		longCandidateSQLCommentShape(lower) {
+		mask |= hintSQL
+	}
+
+	// XSS/XXE/webshell/log injection markers. Encoded angle brackets are kept as
+	// markers because candidate decoding may be disabled for a large opaque body.
+	if strings.Contains(lower, "<script") || strings.Contains(lower, "%3cscript") ||
+		strings.Contains(lower, "<svg") || strings.Contains(lower, "%3csvg") ||
+		strings.Contains(lower, "javascript:") || strings.Contains(lower, "data:text/html") ||
+		strings.Contains(lower, "onerror=") || strings.Contains(lower, "onload=") ||
+		strings.Contains(lower, "onclick=") || strings.Contains(lower, "alert(") {
+		mask |= hintXSS
+	}
+	if strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<!entity") ||
+		strings.Contains(lower, "xinclude") || strings.Contains(lower, "xi:include") {
+		mask |= hintXXE
+	}
+	if strings.Contains(lower, "<?php") || strings.Contains(lower, "<?=") ||
+		strings.Contains(lower, "base64_decode") || strings.Contains(lower, "shell_exec") ||
+		strings.Contains(lower, "$_get[") || strings.Contains(lower, "$_post[") ||
+		strings.Contains(lower, "runtime.getruntime") || strings.Contains(lower, "processbuilder") {
+		mask |= hintWebshell
+	}
+	if strings.Contains(lower, "${jndi:") || strings.Contains(lower, "${${") ||
+		strings.Contains(lower, "() { :;};") {
+		mask |= hintLog4Shell
+	}
+
+	// RCE: command sinks are authoritative even when the value is a bare command;
+	// otherwise require an interpreter, shell boundary, download/exec chain, or a
+	// sensitive command target. The sink helpers are source-aware and avoid turning
+	// ordinary prose that happens to contain "cmd" into a deep scan.
+	if rceBareCommandSinkValueForSource(inputSource, inputName, raw) ||
+		rceCommandSinkShapeForSource(inputSource, inputName, raw) ||
+		strings.Contains(lower, "bash -c") || strings.Contains(lower, "sh -c") ||
+		strings.Contains(lower, "cmd /c") || strings.Contains(lower, "powershell -") ||
+		strings.Contains(lower, "pwsh -") || strings.Contains(lower, "encodedcommand") ||
+		strings.Contains(lower, "curl ") && (strings.Contains(lower, "|sh") || strings.Contains(lower, "| sh") || strings.Contains(lower, ";sh")) ||
+		strings.Contains(lower, "wget ") && (strings.Contains(lower, "|sh") || strings.Contains(lower, "| sh") || strings.Contains(lower, ";sh")) ||
+		strings.Contains(lower, "/dev/tcp/") || strings.Contains(lower, "child_process") ||
+		strings.Contains(lower, "ld_preload") || strings.Contains(lower, "downloadstring") ||
+		strings.Contains(lower, "invoke-expression") || strings.Contains(lower, "eval(") ||
+		strings.Contains(lower, "system(") || strings.Contains(lower, "shell_exec(") ||
+		longCandidateShellCommandShape(lower) || rceNewlineCommandChain(lower) {
+		mask |= hintRCE
+	}
+
+	// LFI and SSRF markers are target-oriented. A generic public URL in a long
+	// article is not enough; internal metadata targets and explicit file wrappers
+	// are. URL-bearing field names retain a narrow path for opaque callback values.
+	if strings.Contains(lower, "../") || strings.Contains(lower, `..\`) ||
+		strings.Contains(lower, "%2e%2e") || strings.Contains(lower, "/etc/passwd") ||
+		strings.Contains(lower, "/etc/shadow") || strings.Contains(lower, "/proc/self") ||
+		strings.Contains(lower, ".env") || strings.Contains(lower, "wp-config") ||
+		strings.Contains(lower, "php://") || strings.Contains(lower, "file://") ||
+		strings.Contains(lower, "docker.sock") || strings.Contains(lower, "boot.ini") ||
+		strings.Contains(lower, "win.ini") || lfiSSIDirective.MatchString(lower) ||
+		lfiHexPathEscapeCandidate(raw, inputSource, inputName) {
+		mask |= hintLFI
+	}
+	if strings.Contains(lower, "169.254.") || strings.Contains(lower, "127.0.0.1") ||
+		strings.Contains(lower, "localhost") || strings.Contains(lower, "metadata.google.internal") ||
+		strings.Contains(lower, "gopher://") || strings.Contains(lower, "dict://") ||
+		((strings.Contains(lower, "http://") || strings.Contains(lower, "https://")) &&
+			longCandidateURLField(inputName)) {
+		mask |= hintSSRF
+	}
+
+	// NoSQL/SSTI syntax has low-cost, high-specificity delimiters. Do not open
+	// these families for ordinary JSON/prose braces or dollar amounts.
+	if longCandidateNoSQLOperator(lower) || strings.Contains(lower, "db.") {
+		mask |= hintNoSQL
+	}
+	if strings.Contains(lower, "{{") || strings.Contains(lower, "{%") ||
+		strings.Contains(lower, "${") || strings.Contains(lower, "<%") ||
+		strings.Contains(lower, "__class__") || strings.Contains(lower, "__globals__") {
+		mask |= hintSSTI
+	}
+
+	// Compatibility forms (full-width tags, long-s characters in shell names,
+	// and similar evasions) are uncommon in benign long text. Re-check one folded
+	// view only when the ASCII pass found no marker, preserving recall without
+	// making normalization part of the usual negative path.
+	if mask == 0 && hintNeedsNormalizedView(raw) {
+		folded := normalizePreserveControls(raw)
+		if folded != raw {
+			mask = longCandidateStrongHintsASCII(strings.ToLower(folded), inputName, inputSource)
+		}
+	}
+	return mask
+}
+
+func longCandidateStrongHintsASCII(lower, inputName, inputSource string) int {
+	// The folded fallback intentionally shares the same conservative markers but
+	// avoids recursively allocating or normalizing a second time.
+	mask := 0
+	if longCandidateSQLStrongHint(lower) ||
+		strings.Contains(lower, "union select") || strings.Contains(lower, "or 1=1") ||
+		strings.Contains(lower, "and 1=1") || strings.Contains(lower, "sleep(") ||
+		strings.Contains(lower, "xp_cmdshell") || strings.Contains(lower, "information_schema") ||
+		strings.Contains(lower, "into outfile") || strings.Contains(lower, "load_file") ||
+		(strings.Contains(lower, "select") && strings.Contains(lower, " from ")) || longCandidateSQLCommentShape(lower) {
+		mask |= hintSQL
+	}
+	if strings.Contains(lower, "<script") || strings.Contains(lower, "<svg") ||
+		strings.Contains(lower, "javascript:") || strings.Contains(lower, "onerror=") ||
+		strings.Contains(lower, "onload=") || strings.Contains(lower, "alert(") {
+		mask |= hintXSS
+	}
+	if strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<!entity") || strings.Contains(lower, "xinclude") {
+		mask |= hintXXE
+	}
+	if strings.Contains(lower, "<?php") || strings.Contains(lower, "base64_decode") ||
+		strings.Contains(lower, "shell_exec") || strings.Contains(lower, "processbuilder") {
+		mask |= hintWebshell
+	}
+	if strings.Contains(lower, "${jndi:") || strings.Contains(lower, "() { :;};") {
+		mask |= hintLog4Shell
+	}
+	if rceBareCommandSinkValueForSource(inputSource, inputName, lower) ||
+		strings.Contains(lower, "bash -c") || strings.Contains(lower, "sh -c") ||
+		strings.Contains(lower, "cmd /c") || strings.Contains(lower, "powershell -") ||
+		strings.Contains(lower, "/dev/tcp/") || strings.Contains(lower, "child_process") ||
+		strings.Contains(lower, "eval(") || longCandidateShellCommandShape(lower) ||
+		rceNewlineCommandChain(lower) {
+		mask |= hintRCE
+	}
+	if strings.Contains(lower, "../") || strings.Contains(lower, "%2e%2e") ||
+		strings.Contains(lower, "/etc/passwd") || strings.Contains(lower, ".env") ||
+		strings.Contains(lower, "php://") || strings.Contains(lower, "file://") ||
+		lfiHexPathEscapeCandidate(lower, inputSource, inputName) {
+		mask |= hintLFI
+	}
+	if strings.Contains(lower, "169.254.") || strings.Contains(lower, "127.0.0.1") ||
+		strings.Contains(lower, "localhost") || strings.Contains(lower, "gopher://") {
+		mask |= hintSSRF
+	}
+	if longCandidateNoSQLOperator(lower) || strings.Contains(lower, "db.") {
+		mask |= hintNoSQL
+	}
+	if strings.Contains(lower, "{{") || strings.Contains(lower, "{%") || strings.Contains(lower, "${") ||
+		strings.Contains(lower, "<%") || strings.Contains(lower, "__class__") {
+		mask |= hintSSTI
+	}
+	return mask
+}
+
+func longCandidateKeywordPair(text, first, second string, maxGap int) bool {
+	start := 0
+	for start < len(text) {
+		i := strings.Index(text[start:], first)
+		if i < 0 {
+			return false
+		}
+		i += start + len(first)
+		end := strings.Index(text[i:], second)
+		if end >= 0 && end <= maxGap {
+			return true
+		}
+		start = i
+	}
+	return false
+}
+
+// longCandidateSQLStrongHint keeps the long-value SQL gate aligned with a small
+// set of high-confidence analyzer shapes that are not plain SELECT/FROM prose:
+// ordinal ORDER BY probes, prefixed UNION ALL SELECT continuations, destructive
+// statement breaks, CASE/WHEN payloads, and server-version reads. Require an
+// injection-like prefix so ordinary SQL documentation examples do not reopen
+// the SQL analyzer on document-scale bodies.
+func longCandidateSQLStrongHint(lower string) bool {
+	if longCandidateSQLPrefixedMarker(lower, "union all select") ||
+		longCandidateSQLPrefixedMarker(lower, "union distinct select") ||
+		longCandidateSQLPrefixedMarker(lower, "drop table") ||
+		longCandidateSQLPrefixedMarker(lower, "delete from") ||
+		longCandidateSQLPrefixedOrdinalClause(lower, "order by") ||
+		longCandidateSQLPrefixedOrdinalClause(lower, "group by") ||
+		longCandidateSQLPrefixedCaseWhen(lower) {
+		return true
+	}
+	for _, probe := range []string{"@@version", "@@datadir", "@@hostname", "@@basedir"} {
+		if longCandidateSQLPrefixedSelectProbe(lower, probe) {
+			return true
+		}
+	}
+	return false
+}
+
+func longCandidateSQLPrefixedMarker(lower, marker string) bool {
+	return longCandidateSQLPrefixedPhrase(lower, marker)
+}
+
+func longCandidateSQLPrefixedOrdinalClause(lower, clause string) bool {
+	start := 0
+	for start < len(lower) {
+		offset := strings.Index(lower[start:], firstSQLWord(clause))
+		if offset < 0 {
+			return false
+		}
+		idx := start + offset
+		if end, ok := longCandidateSQLPhraseAt(lower, idx, clause); ok &&
+			longCandidateSQLPrefixContext(lower, idx) &&
+			longCandidateSQLDigitAfter(lower[end:]) {
+			return true
+		}
+		start = idx + len(firstSQLWord(clause))
+	}
+	return false
+}
+
+func longCandidateSQLPrefixedCaseWhen(lower string) bool {
+	start := 0
+	const marker = "case when"
+	for start < len(lower) {
+		offset := strings.Index(lower[start:], firstSQLWord(marker))
+		if offset < 0 {
+			return false
+		}
+		idx := start + offset
+		if end, ok := longCandidateSQLPhraseAt(lower, idx, marker); ok &&
+			longCandidateSQLPrefixContext(lower, idx) &&
+			longCandidateSQLOrderedWords(lower[end:], "then", "else", "end") {
+			return true
+		}
+		start = idx + len(firstSQLWord(marker))
+	}
+	return false
+}
+
+func longCandidateSQLPrefixedSelectProbe(lower, probe string) bool {
+	return longCandidateSQLPrefixedPhrase(lower, "select "+probe)
+}
+
+func longCandidateSQLPrefixedPhrase(lower, phrase string) bool {
+	start := 0
+	for start < len(lower) {
+		offset := strings.Index(lower[start:], firstSQLWord(phrase))
+		if offset < 0 {
+			return false
+		}
+		idx := start + offset
+		if _, ok := longCandidateSQLPhraseAt(lower, idx, phrase); ok && longCandidateSQLPrefixContext(lower, idx) {
+			return true
+		}
+		start = idx + len(firstSQLWord(phrase))
+	}
+	return false
+}
+
+func longCandidateSQLPrefixContext(lower string, index int) bool {
+	if index <= 0 {
+		return true
+	}
+	if strings.HasSuffix(lower[:index], "*/") {
+		return true
+	}
+	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+		switch lower[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '\'', '"', ')', ';',
+			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+			'=', '?', '&', '#', '(':
+			return true
+		default:
+			return false
+		}
+	}
+	// A phrase at the beginning of a line is still an executable candidate;
+	// document-context guards run after this pre-filter and decide whether it is
+	// quoted prose.
+	return index <= 8
+}
+
+func longCandidateSQLDigitAfter(lower string) bool {
+	for i := 0; i < len(lower) && i < 8; i++ {
+		switch lower[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func firstSQLWord(phrase string) string {
+	if index := strings.IndexByte(phrase, ' '); index >= 0 {
+		return phrase[:index]
+	}
+	return phrase
+}
+
+func longCandidateSQLPhraseAt(lower string, index int, phrase string) (int, bool) {
+	if index < 0 || index >= len(lower) {
+		return 0, false
+	}
+	first := firstSQLWord(phrase)
+	if !strings.HasPrefix(lower[index:], first) ||
+		(index > 0 && isSQLIdentifierByte(lower[index-1])) {
+		return 0, false
+	}
+	position := index + len(first)
+	for offset := len(first); offset < len(phrase); {
+		if phrase[offset] != ' ' {
+			return 0, false
+		}
+		for offset < len(phrase) && phrase[offset] == ' ' {
+			offset++
+		}
+		if position >= len(lower) || !isSQLWhitespace(lower[position]) {
+			return 0, false
+		}
+		for position < len(lower) && isSQLWhitespace(lower[position]) {
+			position++
+		}
+		wordStart := offset
+		for offset < len(phrase) && phrase[offset] != ' ' {
+			offset++
+		}
+		word := phrase[wordStart:offset]
+		if position+len(word) > len(lower) || lower[position:position+len(word)] != word {
+			return 0, false
+		}
+		position += len(word)
+	}
+	if position < len(lower) && isSQLIdentifierByte(lower[position]) {
+		return 0, false
+	}
+	return position, true
+}
+
+func longCandidateSQLOrderedWords(lower string, words ...string) bool {
+	offset := 0
+	for _, word := range words {
+		idx := strings.Index(lower[offset:], word)
+		for idx >= 0 {
+			idx += offset
+			end := idx + len(word)
+			if (idx == 0 || !isSQLIdentifierByte(lower[idx-1])) &&
+				(end == len(lower) || !isSQLIdentifierByte(lower[end])) {
+				break
+			}
+			next := idx + len(word)
+			relative := strings.Index(lower[next:], word)
+			if relative < 0 {
+				idx = -1
+				break
+			}
+			idx = relative + next
+		}
+		if idx < 0 {
+			return false
+		}
+		offset = idx + len(word)
+	}
+	return true
+}
+
+func isSQLIdentifierByte(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+		(value >= '0' && value <= '9') || value == '_'
+}
+
+func longCandidateSQLCommentShape(lower string) bool {
+	if !(strings.Contains(lower, "--") || strings.Contains(lower, "/*")) {
+		return false
+	}
+	return strings.Contains(lower, "'") || strings.Contains(lower, `"`) ||
+		strings.Contains(lower, "union") || strings.Contains(lower, "select") ||
+		strings.Contains(lower, "where") || strings.Contains(lower, "=")
+}
+
+func longCandidateShellCommandShape(lower string) bool {
+	if !(strings.Contains(lower, ";") || strings.Contains(lower, "&&") ||
+		strings.Contains(lower, "||") || strings.Contains(lower, "|")) {
+		return false
+	}
+	// The shared marker helper is allocation-free and accepts arbitrary
+	// whitespace between the separator and command. Keep the explicit examples
+	// below as a cheap fast path for the most common forms.
+	if rceShellMetacharCommandMayMatch(lower) {
+		return true
+	}
+	for _, command := range []string{";id", ";whoami", ";cat ", ";curl ", ";wget ", ";bash", ";sh ", "|sh", "| sh", "|bash", "| bash", "&&id", "&& id", "&&whoami", "&& whoami"} {
+		if strings.Contains(lower, command) {
+			return true
+		}
+	}
+	return false
+}
+
+func longCandidateURLField(name string) bool {
+	lower := strings.ToLower(name)
+	for _, marker := range []string{"url", "uri", "redirect", "callback", "endpoint", "next", "dest", "target", "fetch"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func longCandidateNoSQLOperator(lower string) bool {
+	for _, marker := range []string{"$ne", "$eq", "$gt", "$gte", "$lt", "$lte", "$in", "$nin", "$where", "$regex", "$expr", "$function", "$set", "$unset"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -2252,7 +3102,12 @@ func scanAttackHints(raw string) int {
 		// because ":/" is in every URL. Without this, a Windows LFI target
 		// scored no hint at all and analyzeLFI was never called.
 		strings.Contains(lower, ":\\") ||
-		lfiSSIDirective.MatchString(lower) {
+		lfiSSIDirective.MatchString(lower) ||
+		// Textual hex path bytes are only a pre-filter signal here. The
+		// source-aware gate in analyzeLFI decides whether the folded view is
+		// strong enough to score, so SQL values such as `0x2e` are not decoded
+		// globally or treated as LFI by this hint alone.
+		lfiHexPathEscapeHint(raw) {
 		hints |= hintLFI
 	}
 	// XXE
@@ -2358,26 +3213,53 @@ const sstiMixedOperands = `[-+]?\d+\s*[*\/+]\s*(?:'[^']{0,24}'|"[^"]{0,24}")|` +
 	`(?:'[^']{0,24}'|"[^"]{0,24}")\s*[*\/+]\s*[-+]?\d+|` +
 	`(?:'[^']{0,24}'|"[^"]{0,24}")\s*[*\/+]\s*(?:'[^']{0,24}'|"[^"]{0,24}")`
 
+// Keep the quoted-AND-SELECT gate tied to database-oriented functions. A
+// generic identifier followed by parentheses is common in ordinary prose
+// (for example, "menu(item) > options") and is not enough to establish SQL.
+const sqlQuotedAndSelectFunctionNames = `(?:ascii|benchmark|cast|char|character|chr|coalesce|concat(?:_ws)?|convert|count|current_user|database|db_name|elt|exists|extractvalue|floor|group_concat|hex|if|ifnull|json_extract|length|len|load_file|lower|md5|mid|nchar|ord|pg_sleep|rand|regexp_like|schema|sha1|sha2|sleep|substr|substring|upper|updatexml|user|version|xmltype)`
+
 var (
 	sqlBooleanTautology     = regexp.MustCompile(`(?i)(?:'|"|\b)\s*(?:or|and)\s+(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')\s*=\s*(?:'?\d+'?|[a-z_][a-z0-9_]*|'[^']*')`)
 	sqlEmptyStringTautology = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*(?:''|""|'[^']*'|"[^"]*"|['"])\s*=\s*(?:''|""|'[^']*'|"[^"]*"|['"])`)
 	sqlQuotedOrCompare      = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:''|""|'[^']{0,64}'\s*(?:=|<>|!=)|"[^"]{0,64}"\s*(?:=|<>|!=)|\d+\s*(?:=|<>|!=|<|>)\s*\d+|\d+\b|true\b|false\b|null\b)`)
 	sqlQuotedOrCall         = regexp.MustCompile(`(?i)(?:'|")\s*or\s*(?:waitfor\b|(?:sleep|benchmark|pg_sleep|if|exists|ascii|substring|substr|ord|mid|concat|char|chr|updatexml|extractvalue|elt|user|version|database|schema|current_user)\s*\()`)
 	sqlQuotedOrSubq         = regexp.MustCompile(`(?i)(?:'|")\s*or\s*\(\s*(?:select|exists|if\s*\(|case\s+when|not\s+(?:\d|true|null|\()|\d+\s*=|'[^']*'\s*=)`)
-	sqlQuotedOrIdent        = regexp.MustCompile(`(?i)(?:'|")\s*or\s+[a-z_][a-z0-9_]*\s*(?:=|<>|!=|--|/\*|#(?:\s|$)|like\s*(?:'|\"|0x))`)
-	sqlQuotedOrNot          = regexp.MustCompile(`(?i)(?:'|")\s*or\s+not\s+(?:\d+\s*=|true\b|false\b|null\b|\()`)
-	sqlTimeFunction         = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
-	sqlDialectTimeFunction  = regexp.MustCompile(`(?i)\bdbms_(?:lock|session)\.sleep\s*\(`)
-	sqlComment              = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
-	sqlDangerousFunc        = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|sp_oa(?:create|method)|openrowset|opendatasource|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
-	sqlErrorFunction        = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name|utl_http\.request)\s*\(`)
-	sqlStringFunction       = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
-	sqlComparison           = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
-	sqlOrderByInference     = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
-	sqlHavingInference      = regexp.MustCompile(`(?i)\bhaving\s+(?:\d+|'[^']*'|"[^"]*")\s*=\s*(?:\d+|'[^']*'|"[^"]*")\s*(?:--|#|/\*)`)
-	sqlRegexProbe           = regexp.MustCompile(`(?i)\b(?:rlike|regexp|like)\s+(?:binary\s+)?(?:0x[0-9a-f]+|'[^']*'|"[^"]*")`)
-	sqlProcedureAnalyse     = regexp.MustCompile(`(?i)\bprocedure\s+analyse\s*\(`)
-	sqlMetadataObject       = regexp.MustCompile(`(?i)\b(?:information_schema|pg_catalog|pg_shadow|pg_group|sysibm|syscat|sysobjects|syscolumns|sysusers|master\.\.|sys\.|sqlite_master|mysql\.user|@@(?:version|datadir|hostname|basedir)|current\s+user|session_user|system_user)\b`)
+	// A quote breakout followed by AND SELECT is a common boolean/error-based
+	// subquery shape. Keep this separate from the broad SELECT/FROM grammar:
+	// the latter is intentionally non-blockable on its own because documentation
+	// quotes it constantly. The strong-context helper below requires a predicate
+	// comparison, FROM/WHERE clause, or SQL comment truncation before scoring.
+	sqlQuotedAndSelectProbe     = regexp.MustCompile(`(?i)(?:'|")\s*and\s*\(?\s*select\b`)
+	sqlQuotedAndSelectFunction  = regexp.MustCompile(`(?is)^\s*` + sqlQuotedAndSelectFunctionNames + `\s*\([^;\r\n]{0,160}\)\s*\)*\s*(?:=|<>|!=|>=|<=|>|<|like\b|in\b)`)
+	sqlQuotedAndSelectLead      = regexp.MustCompile(`(?is)^\s*(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)|\*|@@?[a-z_][a-z0-9_$]*|null\b|true\b|false\b|['\"][^'\"\r\n]{0,160}['\"]|\(\s*select\b|(?:distinct|all)\s+(?:[a-z_][a-z0-9_$]*|\*)\s+|` + sqlQuotedAndSelectFunctionNames + `\s*\(|[a-z_][a-z0-9_$]*\s+(?:from|where|limit|group|order|having)\b)`)
+	sqlQuotedAndSelectFromWhere = regexp.MustCompile(`(?is)\bfrom\b.{0,160}\bwhere\b`)
+	// A FROM/WHERE tail must carry a numeric or quoted comparison. This avoids
+	// treating natural language such as "select 'a' from the menu where color=red"
+	// as an injected subquery while retaining boolean/error probes.
+	sqlQuotedAndSelectWherePredicate = regexp.MustCompile(`(?is)\bwhere\b.{0,120}(?:\d+\s*(?:=|<>|!=|>=|<=|>|<|like\b|in\b)\s*(?:\d+|['\"][^'\"\r\n]{0,80}['\"]?)|['\"][^'\"\r\n]{0,80}['\"]\s*(?:=|<>|!=|>=|<=|>|<|like\b|in\b)\s*['\"][^'\"\r\n]{0,80}['\"]?|[a-z_][a-z0-9_$]*\s*(?:=|<>|!=|>=|<=|>|<|like\b|in\b)\s*(?:\d+|['\"][^'\"\r\n]{0,80}['\"]?))`)
+	// Oracle/PostgreSQL-style string concatenation probes use `'||(SELECT ...`.
+	// Requiring a numeric equality inside the subquery's WHERE clause keeps this
+	// distinct from prose that merely quotes a SELECT example.
+	sqlQuotedConcatSelectPredicate = regexp.MustCompile(`(?is)(?:^|[A-Za-z0-9_$)\]=+\-])(?:'|\")\s*\|\|\s*\(\s*select\b.{0,240}\bwhere\b.{0,120}\b\d+\s*=\s*\d+\b`)
+	sqlQuotedOrIdent               = regexp.MustCompile(`(?i)(?:'|")\s*or\s+[a-z_][a-z0-9_]*\s*(?:=|<>|!=|--|/\*|#(?:\s|$)|like\s*(?:'|\"|0x))`)
+	sqlQuotedOrNot                 = regexp.MustCompile(`(?i)(?:'|")\s*or\s+not\s+(?:\d+\s*=|true\b|false\b|null\b|\()`)
+	sqlTimeFunction                = regexp.MustCompile(`(?i)(?:\b(?:sleep|benchmark|pg_sleep)\s*\(|\bwaitfor\s+delay\b)`)
+	sqlDialectTimeFunction         = regexp.MustCompile(`(?i)\bdbms_(?:lock|session)\.sleep\s*\(|\bdbms_pipe\.receive_message\s*\(`)
+	sqlComment                     = regexp.MustCompile(`(?i)(?:--|#|/\*)`)
+	sqlNCSemanticWordRE            = regexp.MustCompile(`(?i)\b(?:select|union|from|where|having|order|group|insert|update|delete|drop|exec(?:ute)?|case|when|sleep|benchmark|waitfor|into|outfile|load_file|information_schema|pg_sleep|procedure|analyse|rlike|regexp)\b`)
+	sqlDangerousFunc               = regexp.MustCompile(`(?i)\b(?:xp_cmdshell|sp_oa(?:create|method)|openrowset|opendatasource|load_file|into\s+outfile|copy\s+.+\s+to\s+program)\b`)
+	sqlErrorFunction               = regexp.MustCompile(`(?i)\b(?:extractvalue|updatexml|xmltype|ctxsys\.drithsx\.sn|utl_inaddr\.get_host_name|utl_http\.request)\s*\(`)
+	sqlStringFunction              = regexp.MustCompile(`(?i)\b(?:char|chr|concat|concat_ws|nchar|ascii|substring|substr)\s*\(`)
+	sqlComparison                  = regexp.MustCompile(`(?i)(?:=|<>|!=|<=>|\blike\b|\bin\b)`)
+	sqlOrderByInference            = regexp.MustCompile(`(?i)\b(?:order|group)\s+by\s+\d+\s*(?:--|#|/\*)`)
+	sqlHavingInference             = regexp.MustCompile(`(?i)\bhaving\s+(?:\d+|'[^']*'|"[^"]*")\s*=\s*(?:\d+|'[^']*'|"[^"]*")\s*(?:--|#|/\*)`)
+	sqlRegexProbe                  = regexp.MustCompile(`(?i)\b(?:rlike|regexp|like)\s+(?:binary\s+)?(?:0x[0-9a-f]+|'[^']*'|"[^"]*")`)
+	sqlProcedureAnalyse            = regexp.MustCompile(`(?i)\bprocedure\s+analyse\s*\(`)
+	// The @@ variables begin with a non-word character, so a \b immediately
+	// before @@ can never match (both sides are non-word). Keep the ordinary
+	// catalog/user names word-bounded, but give server-variable probes their own
+	// branch so `SELECT @@version` is visible to the semantic analyzer.
+	sqlMetadataObject       = regexp.MustCompile(`(?i)(?:\b(?:information_schema|pg_catalog|pg_shadow|pg_group|sysibm|syscat|sysobjects|syscolumns|sysusers|master\.\.|sys\.|sqlite_master|mysql\.user|current\s+user|session_user|system_user)\b|\brdb\$(?:database|fields|types|collations|functions)\b|@@(?:version|datadir|hostname|basedir)\b)`)
 	sqlSubquery             = regexp.MustCompile(`(?is)\(\s*select\b.+?\bfrom\b.+?\)`)
 	sqlCaseWhen             = regexp.MustCompile(`(?is)\bcase\s+when\b.+?\bthen\b.+?\belse\b.+?\bend\b`)
 	sqlSelectFrom           = regexp.MustCompile(`(?is)\bselect\b.{0,240}\bfrom\b`)
@@ -2398,7 +3280,8 @@ var (
 	// then normalises UTF-8 folds them into "../", which is the whole point.
 	// Only "%c0%af" and its double-encoded form were covered, so
 	// "..%e0%80%af..%e0%80%afetc%e0%80%afpasswd" walked straight through.
-	lfiEncodedTraversal = regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%c0%ae|%c1%9c|%e0%80%af|%e0%80%ae|%25c0%25af|%25c0%25ae|%25e0%2580%25af|\.{4,}[/\\]+`)
+	lfiEncodedTraversal            = regexp.MustCompile(`(?i)(?:%25)*(?:%2e){2,}(?:%25)*(?:%2f|%5c)|(?:\.\.(?:%25)*(?:%2f|%5c))|(?:%25)*%2e(?:%25)*%2e[/\\]|%c0%af|%c0%ae|%c1%9c|%e0%80%af|%e0%80%ae|%25c0%25af|%25c0%25ae|%25e0%2580%25af|\.{4,}[/\\]+`)
+	lfiRemoteExecutableExtensionRE = regexp.MustCompile(`(?i)\.(?:php\d?|phtml|phar|jsp|jspx|asp|aspx|cgi|pl|shtml|inc)(?:[/\\?#&=\s]|$)`)
 
 	// lfiWindowsSystemPath covers the half of the file-inclusion surface the
 	// engine never modelled. Every sensitive target above is Unix-shaped —
@@ -2510,21 +3393,26 @@ var (
 	// expressed as a URL arrive as the entire body, under the field name "body",
 	// which tells us nothing either way; gating on it silently dropped "{{7*7}}"
 	// and "${7*7}".
-	sstiWholeBodyExpression       = regexp.MustCompile(`(?is)^(?:\{\{[^{}]*\}\}|\{%[^{}]*%\}|\$\{[^{}]*\}|#\{[^{}]*\}|%\{[^{}]*\}|<%=?[^%]*%>)$`)
-	sstiDangerousBehavior         = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|#(?:context|_memberaccess|request|session)|@[a-z0-9_.]+@|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.(?:execute|objectconstructor)|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime|objectspace\.each_object|classloader\.loadclass|loadclass\s*\(|request\.getclass|application\.getclass|session\.getclass|#set\s*\(\s*\$|\{php\}|smarty\.version|mako\.runtime|velocity\.context|pebble\.extension)`)
-	rceNetWebClientSideFx         = regexp.MustCompile(`(?i)(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|system\.net\.webclient|download(?:file|string)\s*\(|iwr\s+|invoke-webrequest\b)`)
-	rcePowerShellReverseShell     = regexp.MustCompile(`(?i)(?:tcpclient\s*\(|getstream\s*\(|net\.sockets\.tcpclient|while\s*\(\s*\$i\s*=\s*\$s\.read)`)
-	sqlBlockComment               = regexp.MustCompile(`(?is)/\*.*?\*/`)
-	sqlLineComment                = regexp.MustCompile(`(?m)--[^\r\n]*`)
-	rceShellControl               = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
-	rcePureArithmeticExpansion    = regexp.MustCompile(`\$\(\(\s*[-+]?\d(?:\d|[ \t\r\n+*/%-])*\s*\)\)`)
-	rceWhitespaceEvasion          = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
-	rcePowerShellSideFx           = regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|downloadfile|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b)|(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|(?:download(?:file|string)|invoke-expression|iex)\s*\()`)
-	rceEncodedPowerShell          = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,160}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{12,}`)
-	rceInterpreterInline          = regexp.MustCompile(`(?i)(?:^|[=&\s;|])(?:bash|sh|zsh|dash|ksh)\s+-c\s+['"]?(?:id|whoami|cat|curl|wget|uname|nc|ncat|python3?|perl|php|ruby|node|powershell|pwsh)\b|(?:^|[=&\s;|])cmd(?:\.exe)?\s*/c\s+(?:whoami|id|dir|type|powershell|certutil|curl|wget|ping|nslookup)\b|(?:python3?|perl|php|ruby|node|lua)\s+(?:-c|-e|-r)\b`)
-	rceDownloadExecChain          = regexp.MustCompile(`(?i)(?:curl|wget|fetch|busybox\s+wget)\s+[^\r\n|;&]+(?:\||;|&&)\s*(?:sh|bash|zsh|dash|ksh|python3?|php|perl|ruby|node)\b`)
-	rceReverseShellPrimitive      = regexp.MustCompile(`(?i)(?:/dev/tcp/|/dev/udp/|nc\s+-e|ncat\s+-e|bash\s+-i|sh\s*<\s*/dev/tcp|socket\.socket\s*\(|child_process|require\s*\(\s*['"]child_process['"]\s*\))`)
-	rceTemplateExecutionPrimitive = regexp.MustCompile(`(?i)(?:registerundefinedfiltercallback\s*\(\s*['"]exec|filter\s*\(\s*['"]system|system\s*\(|exec\s*\(|popen\s*\(|passthru\s*\(|shell_exec\s*\()`)
+	sstiWholeBodyExpression = regexp.MustCompile(`(?is)^(?:\{\{[^{}]*\}\}|\{%[^{}]*%\}|\$\{[^{}]*\}|#\{[^{}]*\}|%\{[^{}]*\}|<%=?[^%]*%>)$`)
+	// Freemarker's exposed beans helper is a high-confidence execution sink,
+	// but the exact expression is also commonly quoted in security tutorials.
+	// Keep it separate so the analyzer can apply a local documentation guard
+	// without weakening the other SSTI dangerous-behaviour signatures.
+	sstiFreemarkerBeansRuntimeExec = regexp.MustCompile(`(?i)\bbeans?\s*\.\s*get\s*\([^)]*\)\s*\.\s*exec\s*\(`)
+	sstiDangerousBehavior          = regexp.MustCompile(`(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|#(?:context|_memberaccess|request|session)|@[a-z0-9_.]+@|popen\s*\(|os\s*\.\s*(?:system|popen)|__import__\s*\(|\bimport\s*\(|getruntime\s*\(\s*\)\s*\.\s*exec|runtime\.getruntime|java\.lang\.runtime|processbuilder|child_process|execsync|system\s*\(|passthru\s*\(|shell_exec\s*\(|freemarker\.template\.utility\.(?:execute|objectconstructor)|\?new\s*\(|registerundefinedfiltercallback|_self\.env|getfilter\s*\(|constructor\s*\.\s*constructor|t\s*\(\s*java\.lang\.runtime|objectspace\.each_object|classloader\.loadclass|loadclass\s*\(|request\.getclass|application\.getclass|session\.getclass|#set\s*\(\s*\$|\{php\}|smarty\.version|mako\.runtime|velocity\.context|pebble\.extension)`)
+	rceNetWebClientSideFx          = regexp.MustCompile(`(?i)(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|system\.net\.webclient|download(?:file|string)\s*\(|iwr\s+|invoke-webrequest\b)`)
+	rcePowerShellReverseShell      = regexp.MustCompile(`(?i)(?:tcpclient\s*\(|getstream\s*\(|net\.sockets\.tcpclient|while\s*\(\s*\$i\s*=\s*\$s\.read)`)
+	sqlBlockComment                = regexp.MustCompile(`(?is)/\*.*?\*/`)
+	sqlLineComment                 = regexp.MustCompile(`(?m)--[^\r\n]*`)
+	rceShellControl                = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
+	rcePureArithmeticExpansion     = regexp.MustCompile(`\$\(\(\s*[-+]?\d(?:\d|[ \t\r\n+*/%-])*\s*\)\)`)
+	rceWhitespaceEvasion           = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
+	rcePowerShellSideFx            = regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|downloadfile|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b)|(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|(?:download(?:file|string)|invoke-expression|iex)\s*\()`)
+	rceEncodedPowerShell           = regexp.MustCompile(`(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,160}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{12,}`)
+	rceInterpreterInline           = regexp.MustCompile(`(?i)(?:^|[=&\s;|])(?:bash|sh|zsh|dash|ksh)\s+-c\s+['"]?(?:id|whoami|cat|curl|wget|uname|nc|ncat|python3?|perl|php|ruby|node|powershell|pwsh)\b|(?:^|[=&\s;|])cmd(?:\.exe)?\s*/c\s+(?:whoami|id|dir|type|powershell|certutil|curl|wget|ping|nslookup)\b|(?:python3?|perl|php|ruby|node|lua)\s+(?:-c|-e|-r)\b`)
+	rceDownloadExecChain           = regexp.MustCompile(`(?i)(?:curl|wget|fetch|busybox\s+wget)\s+[^\r\n|;&]+(?:\||;|&&)\s*(?:sh|bash|zsh|dash|ksh|python3?|php|perl|ruby|node)\b`)
+	rceReverseShellPrimitive       = regexp.MustCompile(`(?i)(?:/dev/tcp/|/dev/udp/|nc\s+-e|ncat\s+-e|bash\s+-i|sh\s*<\s*/dev/tcp|socket\.socket\s*\(|child_process|require\s*\(\s*['"]child_process['"]\s*\))`)
+	rceTemplateExecutionPrimitive  = regexp.MustCompile(`(?i)(?:registerundefinedfiltercallback\s*\(\s*['"]exec|filter\s*\(\s*['"]system|system\s*\(|exec\s*\(|popen\s*\(|passthru\s*\(|shell_exec\s*\()`)
 	// Generic “unknown exploit” shapes: loader hooks / polyglot runtime without CVE names.
 	rceLoaderPrimitive = regexp.MustCompile(`(?i)(?:ld_preload\s*=|dyld_insert_libraries\s*=|process\.dlopen\s*\(|ctypes\.cdll|java\.lang\.classloader|defineclass\s*\(|unsafe\.defineanonymousclass|reflection\.emit|assembly\.load\s*\()`)
 	lfiFileReadSink    = regexp.MustCompile(`(?i)(?:file\.read\s*\(|get_user_file\s*\(|readfile\s*\(|file_get_contents\s*\(|open\s*\()[^)]*(?:/etc/|c:[/\\]|boot\.ini|\.ssh/|/proc/|/var/log/)`)
@@ -2684,6 +3572,52 @@ func quotedOrPredicateInjection(text string) bool {
 		sqlQuotedOrNot.MatchString(text)
 }
 
+// sqlQuotedAndSelectInjectionShape recognizes only an injection-shaped
+// quote-break followed by AND SELECT. A bare "' and select" phrase is not
+// sufficient: the SELECT must carry a predicate/comparison, a FROM/WHERE
+// clause, or a comment terminator. This keeps ordinary prose and SQL examples
+// behind the existing document/markdown guards while covering scalar and
+// aggregate subquery probes.
+func sqlQuotedAndSelectInjectionShape(text string) bool {
+	for start := 0; start < len(text); {
+		loc := sqlQuotedAndSelectProbe.FindStringIndex(text[start:])
+		if loc == nil {
+			return false
+		}
+		begin := start + loc[0]
+		tailStart := start + loc[1]
+		tailEnd := tailStart + 240
+		if tailEnd > len(text) {
+			tailEnd = len(text)
+		}
+		tail := text[tailStart:tailEnd]
+		// A known database-function result followed by a comparison is strong SQL
+		// evidence. Requiring the operand at the beginning of the SELECT tail
+		// prevents ordinary prose such as "select (a menu) > options" from
+		// satisfying the old, position-free `) >` check.
+		if sqlQuotedAndSelectFunction.MatchString(tail) {
+			return true
+		}
+		// Aggregate and existence probes commonly use a FROM/WHERE clause. The
+		// lead check excludes narrative phrases whose text merely contains those
+		// words later in the sentence.
+		if sqlQuotedAndSelectLead.MatchString(tail) &&
+			sqlQuotedAndSelectFromWhere.MatchString(tail) &&
+			sqlQuotedAndSelectWherePredicate.MatchString(tail) {
+			return true
+		}
+		// SQL line/block comments are only meaningful here when the SELECT tail
+		// itself starts with a SQL-shaped operand and the existing positional
+		// comment guard confirms a truncation context. A bare prose "--" is not
+		// enough.
+		if sqlQuotedAndSelectLead.MatchString(tail) && sqlCommentTruncationShape(tail) {
+			return true
+		}
+		start = begin + 1
+	}
+	return false
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -2759,6 +3693,12 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 	if quotedOrPredicateInjection(text) {
 		reasons["syntax: quoted OR predicate injection"] = true
+	}
+	if sqlQuotedAndSelectInjectionShape(text) {
+		reasons["syntax: quoted AND SELECT subquery predicate"] = true
+	}
+	if sqlQuotedConcatSelectPredicate.MatchString(text) {
+		reasons["syntax: quoted concatenation SELECT predicate"] = true
 	}
 	if sqlTimeFunction.MatchString(text) {
 		reasons["semantics: time-based database side effect"] = true
@@ -2836,7 +3776,9 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		reasons["syntax: SQL function comparison inside boolean predicate"] = true
 	}
 	if !sqlReasonsBlockable(reasons) {
-		if fp, detected := engine.SQLLibinjectionFingerprint(candidate.text); detected && containsReviewedSQLFingerprint(fp, candidate.text) {
+		if fp, detected := engine.SQLLibinjectionFingerprint(candidate.text); detected &&
+			containsReviewedSQLFingerprint(fp, candidate.text) &&
+			!sqlNaturalLanguageFingerprintOnly(candidate, fp) {
 			reasons["syntax: SQL token fingerprint matched"] = true
 		}
 	}
@@ -2891,6 +3833,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		"into outfile", "load_file", "information_schema", "sleep(",
 		"benchmark(", "waitfor delay", "pg_sleep", "1=1", "1=0",
 		"' or", "\" or", "or 1=", "and 1=",
+		"'||", "|| (select", "receive_message", "rdb$database",
 	})
 
 	// Security document context: vulnerability reports, CTF writeups, training
@@ -2933,7 +3876,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	// is surrounded by explanatory prose, not oracle filler padding).
 	// Oracle bypass: filler region near payload has no techdoc markers → window returns false.
 	// Legitimate doc: explanatory text around examples contains 示例/攻击/vulnerability/etc.
-	if technicalDocumentationContext(doc) && technicalDocumentationContext(sqlWin) {
+	if technicalDocumentationContext(doc) && technicalDocumentationEvidenceContext(sqlWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -2943,17 +3886,184 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	return hit(candidate, "sqli", severity, confidence, reasons), true
 }
 
+// technicalDocumentationEvidenceContext is the local half of the SQL
+// documentation guard. The general documentation classifier deliberately
+// ignores short strings, but an evidence window at the beginning or end of a
+// document can be shorter than that threshold. In that case require both an
+// explanatory marker and an SQL/documentation term; a lone keyword such as
+// "select" still does not suppress a real payload.
+func technicalDocumentationEvidenceContext(text string) bool {
+	if len(text) >= 200 {
+		return technicalDocumentationContext(text)
+	}
+	if len(text) < 80 {
+		return false
+	}
+	lower := strings.ToLower(text)
+	markers := 0
+	for _, marker := range []string{"example", "documentation", "guide", "article", "reference", "tutorial", "without executing", "for defenders"} {
+		if strings.Contains(lower, marker) {
+			markers++
+		}
+	}
+	if markers == 0 {
+		return false
+	}
+	return strings.Contains(lower, "sql") || strings.Contains(lower, "query") ||
+		strings.Contains(lower, "syntax") || strings.Contains(lower, "statement")
+}
+
 var reviewedSQLFingerprintWindows = [...]string{"kc", "nc", "Uwk", "Bn", "fws", "Ew", "Ef", "o("}
+
+var sqlNaturalLanguageFields = [...]string{
+	"comment", "description", "feedback", "message", "note", "query", "question", "search", "summary", "text", "title",
+}
+
+var sqlNaturalLanguageMarkers = [...]string{
+	"a", "an", "the", "this", "that", "these", "those", "our", "your", "their", "we", "i", "you", "they",
+	"to", "of", "for", "with", "without", "from", "into", "is", "are", "was", "were", "can", "could", "would", "should",
+}
+
+// sqlNaturalLanguageFingerprintOnly rejects one narrow low-context class: a
+// prose value in a field explicitly meant for human language whose only SQL
+// evidence is the libinjection Uwk token window. Strong grammar is evaluated
+// before this helper and never reaches it, so quote/comment breakouts,
+// tautologies, SELECT/FROM, time functions, metadata access, and obfuscated
+// fragments remain blockable. Requiring sentence structure plus the absence of
+// SQL punctuation also keeps bare UNION SELECT payloads and compact blind
+// probes out of the suppression path.
+func sqlNaturalLanguageFingerprintOnly(candidate semanticCandidate, fingerprint string) bool {
+	if !strings.Contains(fingerprint, "Uwk") || !sqlNaturalLanguageField(candidate.input.Source, candidate.input.Name) {
+		return false
+	}
+	// Do not suppress a mixed fingerprint. A prose-looking value may still carry
+	// an independent comment, EXEC, or operator-subquery window; those stronger
+	// signals must retain their normal blocking path.
+	for _, window := range reviewedSQLFingerprintWindows {
+		if window != "Uwk" && strings.Contains(fingerprint, window) {
+			return false
+		}
+	}
+	text := strings.TrimSpace(candidate.text)
+	if len(text) < 32 || len(text) > 512 {
+		return false
+	}
+	if strings.ContainsAny(text, "'\";=#()") || strings.Contains(text, "--") || strings.Contains(text, "/*") {
+		return false
+	}
+	lower := strings.ToLower(text)
+	words := tokens(text)
+	if len(words) < 7 || countWordMarkers(lower, sqlNaturalLanguageMarkers[:]) < 2 {
+		return false
+	}
+	return strings.HasSuffix(text, ".") || strings.HasSuffix(text, "?") || strings.HasSuffix(text, "!")
+}
+
+func sqlNaturalLanguageField(source, name string) bool {
+	switch strings.ToLower(source) {
+	case "query", "form", "json", "multipart", "body.form", "body.json", "body.multipart":
+	default:
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	for _, field := range sqlNaturalLanguageFields {
+		if lower == field || strings.HasSuffix(lower, "."+field) || strings.HasSuffix(lower, "_"+field) {
+			return true
+		}
+	}
+	return false
+}
 
 func containsReviewedSQLFingerprint(fingerprint, raw string) bool {
 	for _, window := range reviewedSQLFingerprintWindows {
 		if !strings.Contains(fingerprint, window) {
 			continue
 		}
+		if window == "nc" && strings.Contains(raw, "--") && !hasSQLNCSemanticContext(raw) {
+			continue
+		}
+		if window == "o(" && !hasSQLOperatorSubqueryContext(raw) {
+			continue
+		}
 		if (window == "Ew" || window == "Ef") && !hasSQLExecFingerprintContext(raw) {
 			continue
 		}
 		return true
+	}
+	return false
+}
+
+func hasSQLNCTerminatorContext(raw string) bool {
+	for offset := 0; offset < len(raw); {
+		relative := strings.Index(raw[offset:], "--")
+		if relative < 0 {
+			return false
+		}
+		start := offset + relative
+		if start+2 == len(raw) {
+			return true
+		}
+		next := raw[start+2]
+		if isSQLWhitespace(next) || next == '+' {
+			return true
+		}
+		offset = start + 2
+	}
+	return false
+}
+
+// hasSQLNCSemanticContext keeps a non-terminated double-dash slug from being
+// accepted as a SQL comment while retaining payloads that carry SQL grammar
+// next to the marker (for example a UNION/SELECT continuation or a quoted
+// predicate). Standard line-comment terminators are accepted by the fast path.
+func hasSQLNCSemanticContext(raw string) bool {
+	if hasSQLNCTerminatorContext(raw) {
+		return true
+	}
+	lower := strings.ToLower(raw)
+	for offset := 0; offset < len(lower); {
+		relative := strings.Index(lower[offset:], "--")
+		if relative < 0 {
+			return false
+		}
+		marker := offset + relative
+		start := marker - 160
+		if start < 0 {
+			start = 0
+		}
+		window := lower[start:marker]
+		if sqlNCSemanticWordRE.MatchString(window) || quotedOrPredicateInjection(window) {
+			return true
+		}
+		offset = marker + 2
+	}
+	return false
+}
+
+// hasSQLOperatorSubqueryContext keeps the short `o(` fingerprint from treating
+// ordinary parenthesized telemetry values such as `(direct)` as SQL. A real
+// operator-subquery has an SQL clause immediately inside the parentheses and an
+// operator at the opening boundary (for example `||(SELECT ...)` or `=(SELECT
+// ...)`).
+func hasSQLOperatorSubqueryContext(raw string) bool {
+	lower := strings.ToLower(raw)
+	for offset := 0; offset < len(lower); {
+		relative := strings.Index(lower[offset:], "select")
+		if relative < 0 {
+			return false
+		}
+		selectAt := offset + relative
+		open := strings.LastIndexByte(lower[:selectAt], '(')
+		if open >= 0 && selectAt-open <= 16 {
+			boundary := open - 1
+			for boundary >= 0 && isSQLWhitespace(lower[boundary]) {
+				boundary--
+			}
+			if boundary >= 0 && strings.ContainsRune("|=<>!&^+-*/", rune(lower[boundary])) {
+				return true
+			}
+		}
+		offset = selectAt + len("select")
 	}
 	return false
 }
@@ -3060,6 +4170,338 @@ func foldOverlongUTF8(s string) string {
 		i++
 	}
 	return b.String()
+}
+
+// foldLFIUnicodeSeparators canonicalises the one legacy Unicode-escaped path
+// separator observed in the quarantined corpus. Older IIS-style canonicalisers
+// accepted %u2216 (U+2216 SET MINUS) as a backslash; treating it as a slash in
+// this LFI-only analysis view lets the existing traversal and sensitive-target
+// rules reason about the path without changing the shared decoder semantics.
+// The original candidate is always retained for audit attribution.
+func foldLFIUnicodeSeparators(raw string) (string, bool) {
+	if !strings.Contains(raw, "%u2216") && !strings.Contains(raw, "%U2216") {
+		return raw, false
+	}
+	var b strings.Builder
+	b.Grow(len(raw))
+	changed := false
+	for i := 0; i < len(raw); {
+		if i+6 <= len(raw) && raw[i] == '%' && (raw[i+1] == 'u' || raw[i+1] == 'U') &&
+			strings.EqualFold(raw[i+2:i+6], "2216") {
+			b.WriteByte('/')
+			i += 6
+			changed = true
+			continue
+		}
+		b.WriteByte(raw[i])
+		i++
+	}
+	if !changed {
+		return raw, false
+	}
+	return b.String(), true
+}
+
+// lfiUnicodeSeparatorCandidate keeps the specialised fold away from ordinary
+// Unicode/math prose. A traversal marker is required everywhere; unstructured
+// fields additionally need a local sensitive target. Explicit file/path/URI
+// fields may use traversal alone, matching the existing LFI field gate.
+func lfiUnicodeSeparatorCandidate(raw, source, name string) bool {
+	if (!strings.Contains(raw, "%u2216") && !strings.Contains(raw, "%U2216")) || !strings.Contains(raw, "..") {
+		return false
+	}
+	folded, ok := foldLFIUnicodeSeparators(raw)
+	if !ok {
+		return false
+	}
+	if lfiHexExplicitPathContext(source, name) {
+		return true
+	}
+	lower := strings.ToLower(folded)
+	if lfiSensitiveTarget.MatchString(lower) {
+		return true
+	}
+	for _, marker := range []string{"apache2/logs", ".secret"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// lfiHexPathEscapeHint is a deliberately narrow, raw-input superset for
+// textual hexadecimal path bytes. It only opens the LFI family when a value
+// carries a NUL boundary and a high-confidence sensitive target; ordinary SQL
+// constants such as 0x2e/0x2f therefore remain on their normal SQL path.
+// Source-aware callers use lfiHexPathEscapeCandidate when an explicit path
+// field supplies the missing context.
+func lfiHexPathEscapeHint(raw string) bool {
+	if !lfiHexPathEscapeShape(raw) {
+		return false
+	}
+	lower := strings.ToLower(raw)
+	return (strings.ContainsRune(raw, 0) || strings.Contains(lower, "%00")) &&
+		lfiHexSensitiveTargetMarker(lower) && lfiHexSensitiveTargetNearHexPath(raw)
+}
+
+// lfiHexPathEscapeCandidate applies the source/name context that the cheap
+// hint cannot see. Generic fields still require a decoded/encoded NUL and a
+// sensitive target; explicit path/file/URI fields may use the folded traversal
+// itself as the evidence. This prevents global decoding of SQL 0x literals.
+func lfiHexPathEscapeCandidate(raw, source, name string) bool {
+	if !lfiHexPathEscapeShape(raw) {
+		return false
+	}
+	if lfiHexExplicitPathContext(source, name) {
+		return true
+	}
+	lower := strings.ToLower(raw)
+	return (strings.ContainsRune(raw, 0) || strings.Contains(lower, "%00")) &&
+		lfiHexSensitiveTargetMarker(lower) && lfiHexSensitiveTargetNearHexPath(raw)
+}
+
+func lfiHexExplicitPathContext(source, name string) bool {
+	if strings.EqualFold(source, "uri") {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" || lower == "body" || lower == "raw_query" || lower == "path_query" {
+		return false
+	}
+	parts := strings.FieldsFunc(lower, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
+	})
+	for _, part := range parts {
+		switch part {
+		case "file", "filename", "filepath", "path", "page", "include", "require", "template", "tpl", "view", "resource":
+			return true
+		}
+	}
+	return false
+}
+
+// lfiHexPathEscapeShape counts only the three textual byte escapes that can
+// form a path separator or traversal dot. Requiring two dots and one separator
+// in one punctuation-only cluster keeps a single SQL hex literal, or a prose
+// list such as `0x2e, 0x2e, 0x2f`, from opening LFI analysis.
+func lfiHexPathEscapeShape(raw string) bool {
+	if !strings.Contains(raw, "0x") && !strings.Contains(raw, "0X") {
+		return false
+	}
+	_, _, ok := lfiHexPathEscapeCluster(raw)
+	return ok
+}
+
+type lfiHexEscapeRange struct {
+	start int
+	end   int
+}
+
+func lfiHexPathEscapeCluster(raw string) (int, int, bool) {
+	clusters := lfiHexPathEscapeClusters(raw)
+	if len(clusters) == 0 {
+		return 0, 0, false
+	}
+	return clusters[0].start, clusters[0].end, true
+}
+
+func lfiHexPathEscapeClusters(raw string) []lfiHexEscapeRange {
+	const maxClusterBytes = 96
+	var clusters []lfiHexEscapeRange
+	for cursor := 0; cursor+4 <= len(raw); {
+		start := lfiHexEscapeTokenIndex(raw, cursor)
+		if start < 0 {
+			break
+		}
+		value, ok := lfiHexPathEscapeAt(raw, start)
+		if !ok {
+			cursor = start + 4
+			continue
+		}
+		dots, separators := 0, 0
+		if value == 0x2e {
+			dots++
+		} else {
+			separators++
+		}
+		lastEnd := start + 4
+		for pos := lastEnd; pos+4 <= len(raw) && pos-start <= maxClusterBytes; {
+			next := lfiHexEscapeTokenIndex(raw, pos)
+			if next < 0 {
+				break
+			}
+			if next+4 > len(raw) {
+				break
+			}
+			nextValue, nextOK := lfiHexPathEscapeAt(raw, next)
+			if !nextOK || !lfiHexPathEscapeJoiner(raw[lastEnd:next]) {
+				break
+			}
+			if nextValue == 0x2e {
+				dots++
+			} else {
+				separators++
+			}
+			if dots >= 2 && separators >= 1 {
+				clusters = append(clusters, lfiHexEscapeRange{start: start, end: next + 4})
+				cursor = next + 4
+				break
+			}
+			lastEnd = next + 4
+			pos = lastEnd
+		}
+		if dots < 2 || separators < 1 {
+			cursor = start + 4
+		}
+	}
+	return clusters
+}
+
+func lfiHexEscapeTokenIndex(raw string, start int) int {
+	for index := start; index+4 <= len(raw); index++ {
+		if raw[index] == '0' && (raw[index+1] == 'x' || raw[index+1] == 'X') {
+			return index
+		}
+	}
+	return -1
+}
+
+func lfiHexPathEscapeJoiner(joiner string) bool {
+	for i := 0; i < len(joiner); i++ {
+		c := joiner[i]
+		if c == '.' || c == '/' || c == '\\' || c == '%' || c == 0 ||
+			(c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func lfiHexPathEscapeAt(raw string, index int) (byte, bool) {
+	if index < 0 || index+4 > len(raw) || raw[index] != '0' ||
+		(raw[index+1] != 'x' && raw[index+1] != 'X') {
+		return 0, false
+	}
+	high, ok := fromHex(raw[index+2])
+	if !ok {
+		return 0, false
+	}
+	low, ok := fromHex(raw[index+3])
+	if !ok {
+		return 0, false
+	}
+	value := high<<4 | low
+	if value != 0x2e && value != 0x2f && value != 0x5c {
+		return 0, false
+	}
+	return value, true
+}
+
+func lfiHexSensitiveTargetMarker(lower string) bool {
+	for _, marker := range []string{
+		"win.ini", "boot.ini", "passwd", "shadow", "wp-config", ".env",
+		"id_rsa", "web.xml", "manifest.mf", "docker.sock", "/etc/",
+		"/proc/", "/var/log/", "serviceaccount/token",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func lfiHexSensitiveTargetNearHexPath(raw string) bool {
+	for _, escapeRange := range lfiHexPathEscapeClusters(raw) {
+		lower := strings.ToLower(raw[escapeRange.end:])
+		for strings.HasPrefix(lower, "%00") {
+			lower = lower[3:]
+		}
+		for len(lower) > 0 && lower[0] == 0 {
+			lower = lower[1:]
+		}
+		// The separator after the textual-hex traversal may itself be percent
+		// encoded. Fold only slash/backslash bytes in this bounded suffix; the
+		// full candidate remains untouched for audit attribution.
+		lower = strings.ReplaceAll(lower, "%2f", "/")
+		lower = strings.ReplaceAll(lower, "%5c", "\\")
+		for _, marker := range []string{
+			"win.ini", "boot.ini", "passwd", "shadow", "wp-config", ".env",
+			"id_rsa", "web.xml", "manifest.mf", "docker.sock", "/etc/",
+			"/proc/", "/var/log/", "serviceaccount/token",
+		} {
+			if strings.HasPrefix(lower, marker) {
+				return true
+			}
+			if index := strings.Index(lower, marker); index > 0 && index <= 96 &&
+				(lower[index-1] == '/' || lower[index-1] == '\\') {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// foldLFIHexPathEscapes returns a view in which only path-byte escapes are
+// folded. The original candidate remains untouched for audit payloads and hit
+// attribution; callers use this view only for LFI shape analysis.
+func foldLFIHexPathEscapes(raw, source, name string) (string, bool) {
+	if !lfiHexPathEscapeCandidate(raw, source, name) {
+		return raw, false
+	}
+	clusters := lfiHexPathEscapeClusters(raw)
+	if len(clusters) == 0 {
+		return raw, false
+	}
+	var b strings.Builder
+	b.Grow(len(raw))
+	changed := false
+	clusterIndex := 0
+	for i := 0; i < len(raw); {
+		for clusterIndex < len(clusters) && i >= clusters[clusterIndex].end {
+			clusterIndex++
+		}
+		inCluster := clusterIndex < len(clusters) && i >= clusters[clusterIndex].start && i < clusters[clusterIndex].end
+		if inCluster {
+			if value, ok := lfiHexPathEscapeAt(raw, i); ok {
+				b.WriteByte(value)
+				i += 4
+				changed = true
+				continue
+			}
+		}
+		b.WriteByte(raw[i])
+		i++
+	}
+	if !changed {
+		return raw, false
+	}
+	return b.String(), true
+}
+
+func foldLFIHexPathEscapeRange(raw string, escapeRange lfiHexEscapeRange) (string, bool) {
+	if escapeRange.start < 0 || escapeRange.end <= escapeRange.start || escapeRange.end > len(raw) {
+		return raw, false
+	}
+	var b strings.Builder
+	b.Grow(len(raw))
+	changed := false
+	for i := 0; i < len(raw); {
+		if i >= escapeRange.start && i < escapeRange.end {
+			if value, ok := lfiHexPathEscapeAt(raw, i); ok {
+				b.WriteByte(value)
+				i += 4
+				changed = true
+				continue
+			}
+		}
+		b.WriteByte(raw[i])
+		i++
+	}
+	if !changed {
+		return raw, false
+	}
+	return b.String(), true
 }
 
 // xpathCheapGate is the substring pre-filter that decides whether the SQL
@@ -3406,7 +4848,8 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 	reasons := map[string]bool{
 		"syntax: server-side template expression delimiter": true,
 	}
-	dangerous := sstiDangerousBehavior.MatchString(lowerText)
+	freemarkerRuntimeExec := sstiFreemarkerBeansRuntimeExec.MatchString(lowerText)
+	dangerous := sstiDangerousBehavior.MatchString(lowerText) || freemarkerRuntimeExec
 	arithmeticProbe := sstiArithmeticProbe.MatchString(lowerText)
 	if dangerous {
 		reasons["semantics: template expression reaches introspection or execution primitive"] = true
@@ -3463,6 +4906,23 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 			return Hit{}, false
 		}
 	}
+	// The beans runtime sink is especially common in educational examples,
+	// while a live request normally places it in a short template value.  Apply
+	// a locality-aware prose check only to this newly covered shape so the
+	// broader SSTI execution signatures retain their existing behavior.
+	if freemarkerRuntimeExec {
+		// Use the executable expression itself as the anchor.  A prose
+		// prefix may mention "FreeMarker" long before the sink; anchoring on
+		// that word would make the locality window too short to recognize the
+		// nearby documentation markers.
+		beansWin := evidenceWindow(text, []string{"beans", ".exec("})
+		if technicalDocumentationContext(beansWin) {
+			confidence *= 0.4
+			if confidence < 0.7 {
+				return Hit{}, false
+			}
+		}
+	}
 
 	return hit(candidate, "ssti", severity, confidence, reasons), true
 }
@@ -3486,6 +4946,10 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	if xssJavascriptURLFieldContext(candidate) {
 		reasons["syntax: javascript URL in URL-valued request field"] = true
 		reasons["semantics: URL field accepts executable script scheme"] = true
+	}
+	if xssDataURLFieldContext(candidate) {
+		reasons["syntax: executable data URI in URL-valued request field"] = true
+		reasons["semantics: URL field carries base64-encoded executable HTML"] = true
 	}
 	standaloneCandidate := candidate
 	standaloneCandidate.text = lower
@@ -4766,10 +6230,8 @@ func rceExecutionSink(name string) bool {
 	if normalized == "" || normalized == "path_query" || normalized == "path" || normalized == "raw_query" || normalized == "body" {
 		return false
 	}
-	parts := strings.FieldsFunc(normalized, func(r rune) bool {
-		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
-	})
-	if len(parts) == 0 {
+	terminal := rceSinkTerminalPart(normalized)
+	if terminal == "" {
 		return false
 	}
 	// A few established spellings use a file-extension or compound suffix rather
@@ -4783,7 +6245,7 @@ func rceExecutionSink(name string) bool {
 	// Only an explicit command-parameter suffix opens the sink context. Broad
 	// substring matching treated ordinary fields such as script_version,
 	// payload_id, and process_name as executable sinks and inflated FPs.
-	switch parts[len(parts)-1] {
+	switch terminal {
 	case "cmd", "command", "exec", "execute":
 		return true
 	}
@@ -4819,13 +6281,32 @@ func rceSinkTerminalName(name string) string {
 	if normalized == "" {
 		return ""
 	}
-	parts := strings.FieldsFunc(normalized, func(r rune) bool {
-		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
-	})
-	if len(parts) == 0 {
-		return ""
+	return rceSinkTerminalPart(normalized)
+}
+
+// rceSinkTerminalPart returns the final non-empty field segment without
+// allocating a []string. Field names are normalized before reaching this
+// helper, and the delimiter set is ASCII, so byte scanning is equivalent to
+// the previous FieldsFunc implementation even for UTF-8 names.
+func rceSinkTerminalPart(normalized string) string {
+	end := len(normalized)
+	for end > 0 && isRCEFieldDelimiter(normalized[end-1]) {
+		end--
 	}
-	return parts[len(parts)-1]
+	start := end
+	for start > 0 && !isRCEFieldDelimiter(normalized[start-1]) {
+		start--
+	}
+	return normalized[start:end]
+}
+
+func isRCEFieldDelimiter(c byte) bool {
+	switch c {
+	case '.', '_', '-', '[', ']':
+		return true
+	default:
+		return false
+	}
 }
 
 func rceSinkAllowed(source, name string) bool {
@@ -5076,10 +6557,9 @@ func rcePowerShellDangerousArgument(lower string) bool {
 // merely prints/help-checks from one that reaches a host command, sensitive
 // data, a network/process primitive, or a dynamic evaluator.
 func rcePowerShellCommandTailDangerous(lower string) bool {
+	lower = strings.ToLower(lower)
 	for _, marker := range []string{
-		"/etc/passwd", "/etc/shadow", "/proc/", "/root/", "/var/log/",
-		"\\windows\\system32", "\\users\\", "\\programdata\\", "\\appdata\\",
-		"web.config", ".env", "secrets", "invoke-expression", "invoke-command",
+		"invoke-expression", "invoke-command",
 		"start-process", "downloadstring", "downloadfile", "frombase64string",
 		"new-object", "webclient", "tcpclient", "system(", "exec(", "eval(",
 		"shell_exec", "child_process", "process.", "-enc ", "-encodedcommand ",
@@ -5088,10 +6568,23 @@ func rcePowerShellCommandTailDangerous(lower string) bool {
 			return true
 		}
 	}
-	return rceContainsWord(lower, "whoami") || rceContainsWord(lower, "id") ||
-		rceContainsWord(lower, "net user") || rceContainsWord(lower, "net localgroup") ||
-		strings.ContainsAny(lower, ";|&`$()") &&
-			rceContainsAny(lower, "cmd", "bash", "sh", "cat", "curl", "wget", "nc", "powershell")
+	// Sensitive paths are only execution evidence when a command actually reads
+	// them. Output/help commands frequently print the path as an example, e.g.
+	// `Write-Output "/etc/passwd"`; classify that as data rather than a file
+	// access. The quote-aware command parser handles `Get-Content`, `type`,
+	// `cat`, and language-level reads below.
+	if commandTailReadsSensitiveFile(lower) {
+		return true
+	}
+	// A command tail is parsed by argv[0] and shell separators. Looking for the
+	// word `id` anywhere in the tail is unsound: `Write-Output id` and
+	// `echo id` are routine diagnostics. Only a command token (or a nested
+	// substitution/side-effect primitive) supplies execution evidence.
+	if script := commandArgumentAfterInterpreter(lower); script != "" && commandScriptDangerous(script) {
+		return true
+	}
+	return commandScriptDangerous(lower) ||
+		(rceContainsWord(lower, "net user") || rceContainsWord(lower, "net localgroup"))
 }
 
 // rceWindowsCommandDangerousArgument extracts the command after `cmd.exe /c`
@@ -5122,12 +6615,11 @@ func rceWindowsCommandDangerousArgument(value string) bool {
 }
 
 func rceWindowsCommandTailDangerous(lower string) bool {
+	lower = strings.ToLower(lower)
 	for _, marker := range []string{
 		"net user", "net localgroup", "certutil", "reg save", "reg query hklm",
 		"sc create", "sc config", "taskkill", "wmic process", "powershell -enc",
 		"powershell -encodedcommand", "pwsh -enc", "pwsh -encodedcommand",
-		"/etc/passwd", "/etc/shadow", "\\windows\\system32", "\\users\\",
-		"\\programdata\\", "\\appdata\\", "web.config", ".env", "secrets",
 		"downloadstring", "downloadfile", "invoke-expression", "invoke-command",
 		"start-process", "frombase64string", "tcpclient", "child_process",
 	} {
@@ -5135,18 +6627,15 @@ func rceWindowsCommandTailDangerous(lower string) bool {
 			return true
 		}
 	}
-	if rceContainsWord(lower, "whoami") || rceContainsWord(lower, "id") {
-		return true
-	}
 	// A separator in the command tail means the `/c` wrapper is being used to
 	// chain commands, even when the first command is a benign diagnostic.
-	if strings.ContainsAny(lower, ";&|`$()") {
+	if len(splitShellCommandSegments(lower)) > 1 || commandSubstitutionOutsideQuotes(lower) {
 		return true
 	}
-	// Curl/wget are only promoted here when they are chained into an interpreter;
-	// a standalone health probe remains benign.
-	return (strings.Contains(lower, "curl ") || strings.Contains(lower, "wget ")) &&
-		rceContainsAny(lower, " |", "|", "&&", ";", "powershell", "cmd ", "bash ", "sh ")
+	// Evaluate the command token rather than searching the whole tail for `id`.
+	// This keeps `echo id`/`dir` diagnostics clean while retaining `whoami`,
+	// `type <sensitive path>`, and chained execution commands.
+	return commandScriptDangerous(lower) || commandTailReadsSensitiveFile(lower)
 }
 
 func rceInterpreterDangerousArgument(value string) bool {
@@ -5154,11 +6643,18 @@ func rceInterpreterDangerousArgument(value string) bool {
 	for _, marker := range []string{
 		"os.system", "os.popen", "subprocess", "popen(", "socket", "pty.",
 		"__import__", "eval(", "exec(", "compile(", "child_process", "process.",
-		"system(", "shell_exec", "/bin/",
+		"system(", "shell_exec",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
+	}
+	// Python/Perl/Ruby one-liners often read a sensitive file through a language
+	// API rather than invoking `cat`. Require an actual read primitive next to the
+	// path; a printed documentation string such as `print('cat /etc/passwd')`
+	// remains ordinary output.
+	if containsLanguageFileRead(lower) {
+		return true
 	}
 	// The inline-interpreter regexp also covers Windows `cmd.exe /c` forms,
 	// whose command list contains benign diagnostics.  Reuse the argument-level
@@ -5171,6 +6667,9 @@ func rceInterpreterDangerousArgument(value string) bool {
 	// exact command tails such as `-c id` and `-c 'cat /etc/passwd'` remain high
 	// confidence while ordinary print/import scripts stay below the compound-sink
 	// threshold.
+	if script := commandArgumentAfterInterpreter(value); script != "" && commandScriptDangerous(script) {
+		return true
+	}
 	fields := strings.Fields(value)
 	for index := 0; index+1 < len(fields); index++ {
 		flag := strings.ToLower(strings.Trim(fields[index], "\"'()"))
@@ -5184,7 +6683,326 @@ func rceInterpreterDangerousArgument(value string) bool {
 		}
 		first := strings.Trim(strings.Fields(tail)[0], "\"'()")
 		switch first {
-		case "id", "whoami", "cat", "curl", "wget", "nc", "ncat", "netcat", "bash", "sh", "powershell", "cmd":
+		case "id", "whoami", "cat", "nc", "ncat", "netcat", "bash", "sh", "powershell", "cmd":
+			return true
+		}
+	}
+	return false
+}
+
+// commandArgumentAfterInterpreter returns the script/command portion of a
+// common interpreter invocation. It deliberately understands only the bounded
+// flag forms used by the RCE grammar; arbitrary prose is returned unchanged so
+// callers can still apply their normal marker checks.
+func commandArgumentAfterInterpreter(value string) string {
+	fields := strings.Fields(value)
+	for i := 0; i < len(fields); i++ {
+		token := strings.Trim(fields[i], "\"'()<>;&|,")
+		if !commandInterpreterToken(token) {
+			continue
+		}
+		base := commandInterpreterBase(token)
+		// Options such as PowerShell's -NoProfile may precede -Command. Scan a
+		// bounded argv prefix instead of requiring the execution flag to be the
+		// token immediately following the interpreter.
+		for j := i + 1; j < len(fields) && j <= i+8; j++ {
+			flag := strings.ToLower(strings.Trim(fields[j], "\"'()<>;&|,"))
+			switch flag {
+			case "-c", "--command", "-e", "-r", "-s", "/c", "/k", "-command", "-encodedcommand", "-enc", "-encoded":
+				if j+1 < len(fields) {
+					return strings.TrimSpace(strings.Join(fields[j+1:], " "))
+				}
+				return ""
+			}
+			// Most interpreter switches are flag-only. Skip the value of the
+			// handful of options that consume one argument, so a value beginning
+			// with `-c` cannot be mistaken for the command switch.
+			if base == "powershell" || base == "pwsh" {
+				switch flag {
+				case "-w", "-windowstyle", "-executionpolicy", "-ep", "-file", "-f", "-inputformat", "-outputformat":
+					if j+1 < len(fields) {
+						j++
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func commandInterpreterBase(token string) string {
+	return strings.TrimSuffix(strings.ToLower(rceCommandBase(token)), ".exe")
+}
+
+func commandInterpreterToken(token string) bool {
+	switch commandInterpreterBase(token) {
+	case "bash", "sh", "zsh", "dash", "ksh", "tcsh", "csh", "cmd",
+		"powershell", "pwsh", "python", "python3", "perl", "php", "ruby", "node", "lua":
+		return true
+	default:
+		return false
+	}
+}
+
+// commandScriptDangerous evaluates command segments by their first executable
+// token. This is intentionally conservative for output/help/diagnostic
+// commands: their arguments are data, so a word such as `id` must not by itself
+// create an RCE hit. Nested shell substitutions and sensitive-file reads remain
+// strong evidence.
+func commandScriptDangerous(script string) bool {
+	script = strings.TrimSpace(strings.ToLower(script))
+	if script == "" {
+		return false
+	}
+	if commandSubstitutionOutsideQuotes(script) {
+		return true
+	}
+	for _, segment := range splitShellCommandSegments(script) {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
+		token, rest := firstCommandToken(segment)
+		if token == "" {
+			continue
+		}
+		if commandOutputToken(token) {
+			// `print(open(...).read())` is an actual file read, while
+			// `print('cat /etc/passwd')` is merely output.
+			if containsLanguageFileRead(segment) {
+				return true
+			}
+			continue
+		}
+		if commandTokenDangerous(token) {
+			// The interpreter binary is only a wrapper here. Inspect its explicit
+			// command/script argument before classifying the invocation; otherwise
+			// harmless `bash -c echo id` and `powershell -Command Write-Output id`
+			// are promoted solely because the wrapper name is in the danger list.
+			if commandInterpreterToken(token) {
+				if nested := commandArgumentAfterInterpreter(segment); nested != "" && commandScriptDangerous(nested) {
+					return true
+				}
+				continue
+			}
+			if commandDiagnosticToken(token) {
+				if containsExecutableFileRead(segment) || commandHasExecutionArgument(rest) {
+					return true
+				}
+				continue
+			}
+			return true
+		}
+		// A nested interpreter may be wrapped in a path or assignment. Recurse
+		// into its -c/-e argument once, retaining the same bounded grammar.
+		if nested := commandArgumentAfterInterpreter(segment); nested != "" && commandScriptDangerous(nested) {
+			return true
+		}
+	}
+	return false
+}
+
+func commandOutputToken(token string) bool {
+	switch strings.TrimSuffix(strings.ToLower(rceCommandBase(token)), ".exe") {
+	case "echo", "printf", "print", "println", "write-output", "write-host", "out-host", "format-list", "format-table":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandDiagnosticToken(token string) bool {
+	switch strings.TrimSuffix(strings.ToLower(rceCommandBase(token)), ".exe") {
+	case "dir", "ls", "ping", "nslookup", "sleep", "uname", "hostname", "pwd", "env", "printenv",
+		// Network probes are common in health checks and build diagnostics.  A
+		// plain request is not an execution primitive; download-to-shell chains
+		// and sensitive-file reads are handled by the surrounding grammar.
+		"curl", "wget", "fetch":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandTokenDangerous(token string) bool {
+	switch strings.TrimSuffix(strings.ToLower(rceCommandBase(token)), ".exe") {
+	case "id", "whoami", "cat", "head", "tail", "less", "more", "type", "xxd", "hexdump", "od",
+		"curl", "wget", "nc", "ncat", "netcat", "net", "certutil", "reg", "sc", "wmic", "taskkill",
+		"bash", "sh", "zsh", "dash", "ksh", "tcsh", "csh", "cmd", "powershell", "pwsh",
+		"python", "python3", "perl", "php", "ruby", "node", "lua", "rm", "chmod", "chown", "dd",
+		"get-content", "getcontent", "gc", "invoke-expression", "invoke-command", "start-process", "remove-item", "set-content":
+		return true
+	default:
+		return false
+	}
+}
+
+// commandTailReadsSensitiveFile reports a local sensitive-file read while
+// preserving quote-aware command semantics. A URL argument to curl/wget and a
+// string printed by echo/Write-Output are data, not local file access.
+func commandTailReadsSensitiveFile(value string) bool {
+	if !containsCommandSensitivePath(value) {
+		return false
+	}
+	script := value
+	if nested := commandArgumentAfterInterpreter(value); nested != "" {
+		script = nested
+	}
+	for _, segment := range splitShellCommandSegments(script) {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
+		token, _ := firstCommandToken(segment)
+		if token == "" || commandOutputToken(token) || commandDiagnosticToken(token) {
+			continue
+		}
+		if commandInterpreterToken(token) {
+			if nested := commandArgumentAfterInterpreter(segment); nested != "" && commandTailReadsSensitiveFile(nested) {
+				return true
+			}
+			continue
+		}
+		if commandTokenDangerous(token) || containsLanguageFileRead(segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCommandSensitivePath(value string) bool {
+	lower := strings.ToLower(value)
+	for _, path := range []string{"/etc/passwd", "/etc/shadow", "/etc/hosts", "/proc/", "/root/", "/var/log/", "\\windows\\win.ini", "\\windows\\system32", "\\users\\", "win.ini", "boot.ini", "web.config", ".env", "secrets"} {
+		if strings.Contains(lower, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func commandHasExecutionArgument(rest string) bool {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return false
+	}
+	if containsExecutableFileRead(rest) || commandSubstitutionOutsideQuotes(rest) {
+		return true
+	}
+	// Shell separators inside quoted arguments (notably `&` in a URL query
+	// string) are data. splitShellCommandSegments only splits operators outside
+	// quotes, so its segment count is the execution-shaped signal we want here.
+	return len(splitShellCommandSegments(rest)) > 1
+}
+
+func containsExecutableFileRead(value string) bool {
+	lower := strings.ToLower(value)
+	for _, path := range []string{"/etc/passwd", "/etc/shadow", "/etc/hosts", "/proc/", "/root/", "/var/log/", "\\windows\\win.ini", "\\windows\\system32", "\\users\\", "win.ini", "boot.ini", "web.config", ".env"} {
+		if strings.Contains(lower, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsLanguageFileRead(value string) bool {
+	lower := strings.ToLower(value)
+	if !containsExecutableFileRead(lower) {
+		return false
+	}
+	for _, marker := range []string{"open(", "read(", ".read", "readall", "read_text", "get-content", "getcontent", "fileread", "file_get_contents", "readfile", "streamreader"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstCommandToken(segment string) (token, rest string) {
+	segment = strings.TrimSpace(segment)
+	for len(segment) > 0 && strings.ContainsRune("([{", rune(segment[0])) {
+		segment = strings.TrimSpace(segment[1:])
+	}
+	for {
+		fields := strings.Fields(segment)
+		if len(fields) == 0 {
+			return "", ""
+		}
+		token = strings.Trim(fields[0], "\"'()<>;&|,`$")
+		// Strip shell variable assignments before argv[0].
+		if strings.Contains(token, "=") && !strings.HasPrefix(token, "=") {
+			segment = strings.TrimSpace(strings.TrimPrefix(segment, fields[0]))
+			continue
+		}
+		prefixLen := len(fields[0])
+		if prefixLen >= len(segment) {
+			return token, ""
+		}
+		return token, strings.TrimSpace(segment[prefixLen:])
+	}
+}
+
+func splitShellCommandSegments(value string) []string {
+	segments := make([]string, 0, 4)
+	start := 0
+	var quote byte
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote != 0 {
+			if quote == '"' && c == '\\' {
+				escaped = true
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			continue
+		}
+		if c == ';' || c == '\n' || c == '\r' {
+			segments = append(segments, value[start:i])
+			start = i + 1
+			continue
+		}
+		if c == '|' || c == '&' {
+			segments = append(segments, value[start:i])
+			if i+1 < len(value) && value[i+1] == c {
+				i++
+			}
+			start = i + 1
+		}
+	}
+	segments = append(segments, value[start:])
+	return segments
+}
+
+func commandSubstitutionOutsideQuotes(value string) bool {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote != 0 {
+			if quote == '"' && c == '\\' {
+				escaped = true
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			continue
+		}
+		if c == '`' || (c == '$' && i+1 < len(value) && value[i+1] == '(') {
 			return true
 		}
 	}
@@ -5221,15 +7039,26 @@ func rceDangerousCommandTail(value string) bool {
 	lower := strings.ToLower(value)
 	for _, marker := range []string{
 		"/etc/passwd", "/etc/shadow", "/proc/", "/root/", "/var/log/", "/dev/tcp/",
-		"net user", "net localgroup", "certutil", "powershell",
-		"curl ", "wget ", "nc ", "ncat ", "netcat ", "downloadstring", "system(",
-		"shell_exec", "eval(", "exec(", ";", "&&", "||", "|",
+		"net user", "net localgroup", "certutil", "downloadstring", "system(",
+		"shell_exec", "eval(", "exec(",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
-	return rceContainsWord(lower, "whoami") || rceContainsWord(lower, "id")
+	// Treat only operators outside quotes as command chaining. A literal pipe or
+	// ampersand in an argument (for example a documented URL or `echo "a|b"`)
+	// is data and should not promote a compound metadata field.
+	if len(splitShellCommandSegments(lower)) > 1 || commandSubstitutionOutsideQuotes(lower) {
+		return true
+	}
+	// Do not search the complete wrapper string for short command names: in
+	// `bash -c echo id`, `id` is an output argument rather than the command.
+	// Parse the explicit interpreter argument and classify its first token.
+	if script := commandArgumentAfterInterpreter(lower); script != "" {
+		return commandScriptDangerous(script)
+	}
+	return commandScriptDangerous(lower)
 }
 
 func rceContainsWord(text, word string) bool {
@@ -5421,6 +7250,14 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	// Fold it back to the character it encodes and the existing traversal
 	// patterns see the payload as the server will.
 	text := foldOverlongUTF8(candidate.text)
+	if lfiUnicodeSeparatorCandidate(text, candidate.input.Source, candidate.input.Name) {
+		if foldedUnicode, ok := foldLFIUnicodeSeparators(text); ok {
+			text = foldedUnicode
+		}
+	}
+	if folded, ok := foldLFIHexPathEscapes(text, candidate.input.Source, candidate.input.Name); ok {
+		text = folded
+	}
 	controlBoundary := lfiNullByteInternalBoundary(text)
 	pathSuffix := lfiNullBytePathSuffixShape(text)
 	explicitPathContext := lfiExplicitPathContext(candidate.input.Source, candidate.input.Name)
@@ -5501,6 +7338,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	hasPathSignal := reasons["syntax: traversal or wrapper path expression"] ||
 		reasons["syntax: encoded or overlong traversal path"] ||
 		reasons["syntax: null-byte path suffix bypass"] ||
+		reasons["syntax: server-side include directive"] ||
 		reasons["semantics: sensitive local file target"] ||
 		reasons["semantics: stream wrapper local file access"] ||
 		reasons["semantics: remote file include target"] ||
@@ -5537,12 +7375,21 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		"php://", "phar://", "zip://", "expect://", "data://",
 		".ssh/id_rsa", ".aws/credentials", ".git/config", ".env",
 		"web-inf/web.xml", "boot.ini", "win.ini", "wp-config",
-		"docker.sock", "/var/log/",
+		"docker.sock", "/var/log/", "#include", "#exec", "#echo",
+		"#fsize", "#flastmod", "#config", "#printenv", "#set",
 	})
 
 	// Security document context: reports, writeups, papers, and source files
 	// quote paths like /etc/passwd and file:// URIs as subject matter.
-	if securityDocumentContextWindowed(text, lfiWin) {
+	securityDocument := securityDocumentContextWindowed(text, lfiWin)
+	if reasons["syntax: server-side include directive"] {
+		// SSI directives are themselves the evidence.  A report heading far
+		// before the directive must not suppress a later executable request;
+		// judge the document-shaped guard on the local directive window while
+		// retaining the normal full-document diffuse guards for other LFI forms.
+		securityDocument = securityDocumentContextWindowed(lfiWin, lfiWin)
+	}
+	if securityDocument {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5678,13 +7525,21 @@ func lfiRemoteIncludeContext(name, lower string) bool {
 	parts := strings.FieldsFunc(n, func(r rune) bool {
 		return r == '.' || r == '_' || r == '-' || r == '[' || r == ']'
 	})
+	filenameSink := false
 	for _, part := range parts {
 		switch part {
-		case "file", "filename", "path", "page", "include", "require", "template", "tpl", "doc", "document", "view", "lang", "locale":
+		case "file", "path", "page", "include", "require", "template", "tpl", "doc", "document", "view":
 			return true
+		case "filename":
+			// Browser and telemetry payloads commonly use a `filename` field for
+			// ordinary remote media/document URLs. Treat that generic field as an
+			// include sink only when the remote target has an executable/template
+			// extension; explicit include/page/file sinks remain broad so unusual
+			// extensionless RFI payloads are not lost.
+			filenameSink = true
 		}
 	}
-	return false
+	return filenameSink && lfiRemoteExecutableExtensionRE.MatchString(lower)
 }
 
 func analyzeXXE(candidate semanticCandidate) (Hit, bool) {
@@ -6021,6 +7876,8 @@ func (a *Analyzer) blockableHit(h Hit) bool {
 		}
 		return strings.Contains(h.Syntax, "UNION") ||
 			strings.Contains(h.Syntax, "tautology") ||
+			strings.Contains(h.Syntax, "quoted AND SELECT") ||
+			strings.Contains(h.Syntax, "quoted concatenation SELECT") ||
 			strings.Contains(h.Syntax, "comment") ||
 			strings.Contains(h.Syntax, "token fingerprint") ||
 			strings.Contains(h.Syntax, "OR predicate") ||
@@ -6059,6 +7916,8 @@ func sqlReasonsBlockable(reasons map[string]bool) bool {
 	for reason := range reasons {
 		if strings.Contains(reason, "UNION") ||
 			strings.Contains(reason, "tautology") ||
+			strings.Contains(reason, "quoted AND SELECT") ||
+			strings.Contains(reason, "quoted concatenation SELECT") ||
 			strings.Contains(reason, "comment") ||
 			strings.Contains(reason, "token fingerprint") ||
 			strings.Contains(reason, "OR predicate") ||

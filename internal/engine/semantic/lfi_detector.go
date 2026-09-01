@@ -43,37 +43,129 @@ func (d *LFIDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (
 	candidates := []string{payload, decoder.DecodeWithDepthPreserveControls(payload, decoder.DefaultDecodeDepth).Text}
 	for _, candidate := range candidates {
 		trimmed := strings.TrimSpace(candidate)
-		controlBoundary := lfiNullByteInternalBoundary(trimmed)
-		pathSuffix := lfiNullBytePathSuffixShape(trimmed)
-		for index, pattern := range lfiPatterns {
-			if controlBoundary && !pathSuffix && (index == 3 || index == 6) {
-				continue
+		views := []string{trimmed}
+		if lfiUnicodeSeparatorCandidate(trimmed, "", "") && !standaloneLFIUnicodeDocumentationContext(trimmed) {
+			if folded, ok := foldLFIUnicodeSeparators(trimmed); ok && folded != trimmed {
+				views = append(views, folded)
 			}
-			if pattern.MatchString(trimmed) {
+		}
+		// Standalone detection has no parsed field name. The raw-only gate still
+		// permits the high-confidence NUL+sensitive-target shape while refusing
+		// ordinary SQL hexadecimal constants.
+		if lfiHexPathEscapeCandidate(trimmed, "", "") {
+			// Evaluate each qualifying cluster locally. A documentation example at
+			// the beginning of a long body must not suppress a later executable
+			// cluster in the same candidate.
+			for _, escapeRange := range lfiHexPathEscapeClusters(trimmed) {
+				if standaloneLFIHexDocumentationContextAt(trimmed, escapeRange) {
+					continue
+				}
+				if folded, ok := foldLFIHexPathEscapeRange(trimmed, escapeRange); ok && folded != trimmed {
+					views = append(views, folded)
+				}
+			}
+		}
+		for _, view := range views {
+			// A Server Side Includes directive is already an executable file/
+			// command sink.  The standalone detector cannot rely on a parsed
+			// field name, so keep the signature local and apply the same
+			// documentation suppression used by the folded LFI paths below.
+			lowerView := strings.ToLower(view)
+			if matches := lfiSSIDirective.FindAllStringIndex(lowerView, -1); len(matches) > 0 {
+				for _, match := range matches {
+					if standaloneLFISSIDocumentationContextAt(view, match[0], match[1]) {
+						continue
+					}
+					return &engine.DetectionResult{
+						Detected:   true,
+						DetectorID: d.ID(),
+						Category:   "lfi",
+						Severity:   engine.SeverityHigh,
+						Action:     actionForMode(d.mode),
+						Message:    "server-side include directive matched",
+						Confidence: 0.86,
+						Payload:    trimmed,
+					}, nil
+				}
+			}
+			controlBoundary := lfiNullByteInternalBoundary(view)
+			pathSuffix := lfiNullBytePathSuffixShape(view)
+			for index, pattern := range lfiPatterns {
+				if controlBoundary && !pathSuffix && (index == 3 || index == 6) {
+					continue
+				}
+				if pattern.MatchString(view) {
+					return &engine.DetectionResult{
+						Detected:   true,
+						DetectorID: d.ID(),
+						Category:   "lfi",
+						Severity:   engine.SeverityHigh,
+						Action:     actionForMode(d.mode),
+						Message:    "local file inclusion pattern matched",
+						Confidence: 0.86,
+						Payload:    trimmed,
+					}, nil
+				}
+			}
+			if pathSuffix {
 				return &engine.DetectionResult{
 					Detected:   true,
 					DetectorID: d.ID(),
 					Category:   "lfi",
 					Severity:   engine.SeverityHigh,
 					Action:     actionForMode(d.mode),
-					Message:    "local file inclusion pattern matched",
+					Message:    "local file inclusion null-byte suffix matched",
 					Confidence: 0.86,
 					Payload:    trimmed,
 				}, nil
 			}
 		}
-		if pathSuffix {
-			return &engine.DetectionResult{
-				Detected:   true,
-				DetectorID: d.ID(),
-				Category:   "lfi",
-				Severity:   engine.SeverityHigh,
-				Action:     actionForMode(d.mode),
-				Message:    "local file inclusion null-byte suffix matched",
-				Confidence: 0.86,
-				Payload:    trimmed,
-			}, nil
-		}
 	}
 	return nil, nil
+}
+
+func standaloneLFIHexDocumentationContextAt(full string, escapeRange lfiHexEscapeRange) bool {
+	lo := escapeRange.start - evidenceNeighbourhoodRadius
+	if lo < 0 {
+		lo = 0
+	}
+	hi := escapeRange.end + evidenceNeighbourhoodRadius
+	if hi > len(full) {
+		hi = len(full)
+	}
+	win := full[lo:hi]
+	return securityDocumentContextWindowed(win, win) || technicalDocumentationContext(win)
+}
+
+func standaloneLFISSIDocumentationContextAt(full string, start, end int) bool {
+	lo := start - evidenceNeighbourhoodRadius
+	if lo < 0 {
+		lo = 0
+	}
+	hi := end + evidenceNeighbourhoodRadius
+	if hi > len(full) {
+		hi = len(full)
+	}
+	win := full[lo:hi]
+	return securityDocumentContextWindowed(win, win) || technicalDocumentationContext(win)
+}
+
+func standaloneLFIUnicodeDocumentationContext(full string) bool {
+	index := strings.Index(full, "%u2216")
+	if index < 0 {
+		index = strings.Index(full, "%U2216")
+	}
+	if index < 0 {
+		return false
+	}
+	lo := index - evidenceNeighbourhoodRadius
+	if lo < 0 {
+		lo = 0
+	}
+	hi := index + len("%u2216") + evidenceNeighbourhoodRadius
+	if hi > len(full) {
+		hi = len(full)
+	}
+	win := full[lo:hi]
+	return securityDocumentContextWindowed(win, win) || technicalDocumentationContext(win)
 }

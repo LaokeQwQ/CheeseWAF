@@ -260,6 +260,8 @@ type ParanoiaMetrics struct {
 	AttackHit   int     `json:"attack_hit"`
 	FPR         float64 `json:"fpr"`
 	TPR         float64 `json:"tpr"`
+	FPRUpper99  float64 `json:"fpr_upper_99_percent,omitempty"`
+	TPRLower99  float64 `json:"tpr_lower_99_percent,omitempty"`
 }
 
 type SourceMetrics struct {
@@ -277,10 +279,12 @@ type CategoryMetrics struct {
 }
 
 type EvalMetrics struct {
-	FPR       float64 `json:"fpr_percent"`
-	TPR       float64 `json:"tpr_percent"`
-	Precision float64 `json:"precision_percent"`
-	F1Score   float64 `json:"f1_score"`
+	FPR        float64 `json:"fpr_percent"`
+	TPR        float64 `json:"tpr_percent"`
+	Precision  float64 `json:"precision_percent"`
+	F1Score    float64 `json:"f1_score"`
+	FPRUpper99 float64 `json:"fpr_upper_99_percent,omitempty"`
+	TPRLower99 float64 `json:"tpr_lower_99_percent,omitempty"`
 }
 
 type PerformanceMetrics struct {
@@ -463,11 +467,17 @@ func computeMetrics(benignTotal, benignFP, attackTotal, attackHit int) EvalMetri
 	// FPR: false positives / total benign
 	if benignTotal > 0 {
 		m.FPR = float64(benignFP) / float64(benignTotal) * 100
+		if _, upper, ok := security.WilsonInterval99(benignFP, benignTotal); ok {
+			m.FPRUpper99 = upper * 100
+		}
 	}
 
 	// TPR (recall): true positives / total attack
 	if attackTotal > 0 {
 		m.TPR = float64(attackHit) / float64(attackTotal) * 100
+		if lower, _, ok := security.WilsonInterval99(attackHit, attackTotal); ok {
+			m.TPRLower99 = lower * 100
+		}
 	}
 
 	// Precision: true positives / (true positives + false positives)
@@ -521,11 +531,17 @@ func outputReport(t *testing.T, report *EvaluationReport) {
 		sumFP(report.Sources),
 		sumBenign(report.Sources),
 	)
+	if report.Overall.FPRUpper99 > 0 {
+		fmt.Printf("FPR 99%% upper bound: %.4f%%\n", report.Overall.FPRUpper99)
+	}
 	fmt.Printf("Overall TPR: %.4f%% (%d hit / %d attack)\n",
 		report.Overall.TPR,
 		sumAttackHit(report.Sources),
 		sumAttack(report.Sources),
 	)
+	if report.Overall.TPRLower99 > 0 {
+		fmt.Printf("TPR 99%% lower bound: %.4f%%\n", report.Overall.TPRLower99)
+	}
 	fmt.Printf("Precision: %.4f%%\n", report.Overall.Precision)
 	fmt.Printf("F1 Score: %.4f\n", report.Overall.F1Score)
 
@@ -549,8 +565,9 @@ func outputReport(t *testing.T, report *EvaluationReport) {
 		for level := 0; level <= 5; level++ {
 			levelKey := fmt.Sprintf("%d", level)
 			if m, ok := report.ByParanoiaLevel[levelKey]; ok {
-				fmt.Printf("Level %d: FPR=%.2f%% (%d/%d), TPR=%.2f%% (%d/%d)\n",
-					level, m.FPR, m.BenignFP, m.BenignTotal, m.TPR, m.AttackHit, m.AttackTotal)
+				fmt.Printf("Level %d: FPR=%.2f%% (upper99 %.2f%%, %d/%d), TPR=%.2f%% (lower99 %.2f%%, %d/%d)\n",
+					level, m.FPR, m.FPRUpper99, m.BenignFP, m.BenignTotal,
+					m.TPR, m.TPRLower99, m.AttackHit, m.AttackTotal)
 			}
 		}
 	}
@@ -980,6 +997,12 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 			AttackHit:   totals[level].attackHit,
 			FPR:         fpr,
 			TPR:         tpr,
+		}
+		if _, upper, ok := security.WilsonInterval99(totals[level].benignFP, totals[level].benignTotal); ok {
+			report.ByParanoiaLevel[levelKey].FPRUpper99 = upper * 100
+		}
+		if lower, _, ok := security.WilsonInterval99(totals[level].attackHit, totals[level].attackTotal); ok {
+			report.ByParanoiaLevel[levelKey].TPRLower99 = lower * 100
 		}
 		t.Logf("Level %d: FPR=%.2f%% (%d/%d), TPR=%.2f%% (%d/%d)",
 			level, fpr, totals[level].benignFP, totals[level].benignTotal,

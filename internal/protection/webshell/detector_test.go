@@ -33,6 +33,25 @@ func TestDetectorBlocksEncodedUploadThroughPipeline(t *testing.T) {
 	}
 }
 
+func TestDetectorBlocksDeferredBodyUploadThroughPipeline(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.test/upload.php", strings.NewReader(`<?php system($_GET["cmd"]); ?>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	reqCtx, err := engine.NewRequestContextDeferredBody(req, "site-a", nil, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.NewPipeline(NewDetector(DetectorConfig{Mode: "block"})).Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.DetectorID != "protection.webshell" || result.Action != engine.ActionBlock {
+		t.Fatalf("deferred upload did not block through pipeline: %+v", result)
+	}
+}
+
 func TestDetectorRunsBeforeConcurrentSemanticDetection(t *testing.T) {
 	if priority := NewDetector(DetectorConfig{}).Priority(); priority >= 290 {
 		t.Fatalf("webshell detector priority = %d, want sequential pre-filter priority", priority)

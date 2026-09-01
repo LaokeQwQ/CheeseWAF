@@ -1,8 +1,12 @@
 package semantic
 
 import (
+	"context"
+	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
 // The LFI model was Unix-shaped end to end: every sensitive target the engine
@@ -75,5 +79,55 @@ func TestWindowsPathInProseIsNotAnAttack(t *testing.T) {
 		if got != nil && got.Detected {
 			t.Errorf("benign Windows path %q detected as %s", in, got.Category)
 		}
+	}
+}
+
+func TestLFIUnicodeEscapedSeparator(t *testing.T) {
+	cases := []string{
+		"/report/generate?src=..%u2216..%u2216..%u2216usr%u2216local%u2216apache2%u2216logs",
+		"/assets/load?filepath=..%u2216..%u2216..%u2216home%u2216user%u2216.secret",
+		"/preview?file=..%u2216..%u2216..%u2216etc%u2216passwd",
+		"/download?resource=..%u2216..%u2216..%u2216etc%u2216shadow",
+		"/assets/get?source=..%u2216..%u2216..%u2216etc%u2216passwd",
+	}
+	a := NewAnalyzer("block", 2, "lfi")
+	for _, target := range cases {
+		t.Run(target, func(t *testing.T) {
+			got := detectOnTarget(t, a, "GET", target, "", "")
+			if got == nil || !got.Detected || got.Category != "lfi" {
+				t.Fatalf("expected Unicode-escaped separator LFI detection, got %+v", got)
+			}
+		})
+	}
+	req, err := http.NewRequest(http.MethodGet, cases[2], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	standalone, err := NewLFIDetector("block").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if standalone == nil || !standalone.Detected || standalone.Category != "lfi" {
+		t.Fatalf("standalone detector missed Unicode-escaped separator LFI: %+v", standalone)
+	}
+}
+
+func TestLFIUnicodeEscapedSeparatorDocumentationStaysClean(t *testing.T) {
+	benign := []string{
+		"Mathematics uses %u2216 for the set-minus symbol.",
+		"Documentation mentions ..%u2216..%u2216etc%u2216passwd as a legacy canonicalization example.",
+	}
+	a := NewAnalyzer("block", 2, "lfi")
+	for _, value := range benign {
+		t.Run(value, func(t *testing.T) {
+			got := detectOnTarget(t, a, "GET", "/docs?text="+url.QueryEscape(value), "", "")
+			if got != nil && got.Detected {
+				t.Fatalf("documentation/math text triggered LFI: %+v", got)
+			}
+		})
 	}
 }

@@ -146,8 +146,17 @@ type duplicateRelation struct {
 
 type duplicateObservation = duplicateRelation
 
+// sentryDSNRE intentionally requires the public Sentry DSN shape rather than
+// treating arbitrary URLs or identifiers as secrets. The key is the sensitive
+// component; the ingest host and project are retained for audit context.
+var sentryDSNRE = regexp.MustCompile(`(?i)(https://)[A-Za-z0-9]{16,64}(@o[0-9]+\.ingest\.[a-z0-9-]+\.sentry\.io/[0-9]+)`)
 var secretRE = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+|(?i)(api[_-]?key|token|secret|password)(\s*[:=]\s*)[^\s,&]+|(?i)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}`)
 var emailRE = regexp.MustCompile(`(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}`)
+
+// uriUserinfoRE is deliberately limited to HTTP(S) authority userinfo. It
+// does not treat colons in ordinary paths, arbitrary URLs, or email addresses
+// as credentials.
+var uriUserinfoRE = regexp.MustCompile(`(?i)(https?://)[^/\s?#@]+:[^/\s?#@]*@([^/\s?#]+)`)
 var placeholderRE = regexp.MustCompile(`(?i)(?:\{\{\s*(?:placeholder|your[_ -]?|todo|example)|\$\{\s*(?:placeholder|your[_ -]?|todo|example)|\{(?:file|path|host|target|username|user|id|value|payload|token|api[_-]?key)\}|<\s*(?:target|host|placeholder)\s*>|YOUR[_ -]?(?:API|TOKEN|KEY)|REPLACE_ME)`)
 var allowedCorpusLicenses = map[string]struct{}{
 	"repository-curated": {}, "internal": {}, "project-license": {},
@@ -211,6 +220,9 @@ func RunGovernance(ctx context.Context, cfg GovernanceConfig) (GovernanceReport,
 	allSources = append(allSources, cfg.Incoming...)
 	if len(allSources) == 0 {
 		return out, errors.New("governance config requires at least one source")
+	}
+	if err := validateSourcePaths(allSources); err != nil {
+		return out, err
 	}
 	for i := range allSources {
 		if strings.TrimSpace(allSources[i].Name) == "" {
@@ -511,6 +523,26 @@ func RunGovernance(ctx context.Context, cfg GovernanceConfig) (GovernanceReport,
 		return out, err
 	}
 	return out, nil
+}
+
+// validateSourcePaths rejects a source file being declared more than once in
+// any of the Sources/Existing/Incoming lists. Re-reading the same file under
+// different provenance would make row counts and source hashes ambiguous even
+// though the later record de-duplication pass collapses identical rows.
+func validateSourcePaths(sources []SourceSpec) error {
+	seen := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if strings.TrimSpace(source.Path) == "" {
+			return errors.New("governance config source path is empty")
+		}
+		for _, previous := range seen {
+			if sameCorpusPath(previous, source.Path) {
+				return fmt.Errorf("governance config contains duplicate source path %q", source.Path)
+			}
+		}
+		seen = append(seen, source.Path)
+	}
+	return nil
 }
 
 func validateOutputPaths(cfg GovernanceConfig, src []SourceSpec) error {
@@ -1299,7 +1331,7 @@ func screen(c Case, src SourceSpec) ([]string, bool) {
 			appendReason(&rs, "no_fidelity_evidence")
 		}
 	}
-	if secretRE.MatchString(auditText) {
+	if sentryDSNRE.MatchString(auditText) || secretRE.MatchString(auditText) || uriUserinfoRE.MatchString(auditText) {
 		appendReason(&rs, "secret_detected")
 		hard = true
 	}
@@ -1433,12 +1465,14 @@ func sanitizeCase(c Case) Case {
 }
 
 func sanitizeCorpusText(value string) string {
+	value = sentryDSNRE.ReplaceAllString(value, "$1[REDACTED]$2")
+	value = uriUserinfoRE.ReplaceAllString(value, "$1[REDACTED]@$2")
 	value = secretRE.ReplaceAllString(value, "$1[REDACTED]")
 	return emailRE.ReplaceAllString(value, "[REDACTED_EMAIL]")
 }
 func isSecretHeader(k string) bool {
 	k = strings.ToLower(strings.TrimSpace(k))
-	return k == "authorization" || k == "proxy-authorization" || k == "x-api-key" || k == "x-auth-token" || k == "api-key"
+	return k == "authorization" || k == "proxy-authorization" || k == "x-api-key" || k == "x-auth-token" || k == "api-key" || k == "x-xsrf-token" || k == "x-sf-csrf-token" || k == "x-csrf-token" || k == "xsrf-token" || k == "csrf-token"
 }
 
 func isCookieHeader(k string) bool {

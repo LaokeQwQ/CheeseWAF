@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"hash"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
@@ -69,69 +74,146 @@ type summary struct {
 	ExternalSuites    []suiteResult `json:"external_suites,omitempty"`
 }
 
+// splitEvaluationReport is intentionally separate from the legacy replay
+// summary. It records request-level quality metrics for exactly one immutable
+// partition and never mixes train/validation/blind denominators.
+type splitEvaluationReport struct {
+	Version             string                          `json:"version"`
+	Mode                string                          `json:"mode"`
+	Artifact            string                          `json:"artifact"`
+	ArtifactSHA256      string                          `json:"artifact_sha256"`
+	ManifestSHA256      string                          `json:"governance_manifest_sha256,omitempty"`
+	ManifestPayloadHash string                          `json:"governance_manifest_payload_hash,omitempty"`
+	FormalSHA256        string                          `json:"governance_formal_sha256,omitempty"`
+	SplitInputSHA256    string                          `json:"split_input_sha256,omitempty"`
+	Split               security.EvaluationSplit        `json:"split"`
+	StartedAt           time.Time                       `json:"started_at"`
+	DurationMS          float64                         `json:"duration_ms"`
+	InputRecords        int                             `json:"input_records"`
+	EvaluatedRecords    int                             `json:"evaluated_records"`
+	Groups              int                             `json:"groups"`
+	Repaired            bool                            `json:"repaired,omitempty"`
+	AttackTotal         int                             `json:"attack_total"`
+	AttackDetected      int                             `json:"attack_detected"`
+	AttackMissed        int                             `json:"attack_missed"`
+	BenignTotal         int                             `json:"benign_total"`
+	BenignClean         int                             `json:"benign_clean"`
+	FalsePositive       int                             `json:"false_positive"`
+	CategoryMismatches  int                             `json:"category_mismatches"`
+	Failures            int                             `json:"failures"`
+	FPRPercent          float64                         `json:"fpr_percent"`
+	TPRPercent          float64                         `json:"tpr_percent"`
+	PrecisionPercent    float64                         `json:"precision_percent"`
+	F1Score             float64                         `json:"f1_score"`
+	FPRUpper99Percent   float64                         `json:"fpr_upper_99_percent,omitempty"`
+	TPRLower99Percent   float64                         `json:"tpr_lower_99_percent,omitempty"`
+	Sources             map[string]splitSourceMetrics   `json:"sources"`
+	Categories          map[string]splitCategoryMetrics `json:"categories,omitempty"`
+	Results             []result                        `json:"results"`
+}
+
+type splitSourceMetrics struct {
+	BenignTotal    int     `json:"benign_total"`
+	BenignFP       int     `json:"benign_fp"`
+	AttackTotal    int     `json:"attack_total"`
+	AttackDetected int     `json:"attack_detected"`
+	FPRPercent     float64 `json:"fpr_percent"`
+	TPRPercent     float64 `json:"tpr_percent"`
+}
+
+type splitCategoryMetrics struct {
+	AttackTotal    int     `json:"attack_total"`
+	AttackDetected int     `json:"attack_detected"`
+	TPRPercent     float64 `json:"tpr_percent"`
+}
+
 type options struct {
-	Mode                 string
-	CorpusPath           string
-	GovernanceConfigPath string
-	BaseURL              string
-	AdminURL             string
-	Timeout              time.Duration
-	ToolTimeout          time.Duration
-	Insecure             bool
-	BlockStatuses        string
-	OutputPath           string
-	NucleiTemplates      string
-	RequireExternal      bool
-	SkipExternal         bool
-	Workers              int
-	Shards               int
-	Shard                int
-	Stream               bool
-	Progress             bool
+	Mode                   string
+	CorpusPath             string
+	GovernanceConfigPath   string
+	GovernanceManifestPath string
+	GovernanceFormalPath   string
+	SplitConfigPath        string
+	EvaluationSplit        string
+	ExpectedArtifactSHA256 string
+	MaxRecords             int
+	MaxBytes               int64
+	AllowUngoverned        bool
+	BaseURL                string
+	AdminURL               string
+	Timeout                time.Duration
+	ToolTimeout            time.Duration
+	Insecure               bool
+	BlockStatuses          string
+	OutputPath             string
+	NucleiTemplates        string
+	RequireExternal        bool
+	SkipExternal           bool
+	Workers                int
+	Shards                 int
+	Shard                  int
+	Stream                 bool
+	Progress               bool
 }
 
 func main() {
 	var (
-		mode             = flag.String("mode", "analyzer", "validation mode: analyzer, http, gate, or govern")
-		corpusPath       = flag.String("corpus", "internal/engine/semantic/testdata/curated_external_shapes.jsonl", "JSONL corpus path")
-		governanceConfig = flag.String("governance-config", "", "local JSON corpus governance configuration")
-		baseURL          = flag.String("base-url", "", "base URL for http/gate mode, for example http://127.0.0.1:8080")
-		adminURL         = flag.String("admin-url", "", "admin-plane base URL for gate mode; defaults to base URL when empty")
-		timeout          = flag.Duration("timeout", 10*time.Second, "per-request timeout in http mode")
-		toolTimeout      = flag.Duration("tool-timeout", 10*time.Minute, "per-tool timeout in gate mode")
-		insecure         = flag.Bool("insecure", false, "skip TLS certificate verification in http mode and supported gate scanners")
-		blockStatuses    = flag.String("block-statuses", "403,406,429,451,503", "comma-separated statuses treated as WAF block/challenge")
-		outputPath       = flag.String("output", "", "write JSON report to file instead of stdout")
-		nucleiTemplates  = flag.String("nuclei-templates", "security-validation/nuclei", "nuclei template directory for gate mode")
-		requireExternal  = flag.Bool("require-external", false, "fail gate mode when an external scanner is missing instead of skipping")
-		skipExternal     = flag.Bool("skip-external", false, "skip external scanner wrappers in gate mode and run only analyzer/http replay")
-		workers          = flag.Int("workers", 0, "concurrent workers for analyzer/http replay (0 = GOMAXPROCS)")
-		shards           = flag.Int("shards", 1, "number of corpus shards (1 = no sharding)")
-		shard            = flag.Int("shard", 0, "shard index to process (0-based; requires -shards > 1)")
-		stream           = flag.Bool("stream", false, "stream per-case results as JSON lines instead of collecting the full report")
-		progress         = flag.Bool("progress", false, "print per-case progress lines to stderr")
+		mode               = flag.String("mode", "analyzer", "validation mode: analyzer, http, gate, govern, split, or evaluate-split")
+		corpusPath         = flag.String("corpus", "internal/engine/semantic/testdata/curated_external_shapes.jsonl", "JSONL corpus path")
+		governanceConfig   = flag.String("governance-config", "", "local JSON corpus governance configuration")
+		governanceManifest = flag.String("governance-manifest", "", "local governance manifest binding a formal split input")
+		governanceFormal   = flag.String("governance-formal", "", "local formal governance snapshot when split input is a metadata envelope")
+		splitConfig        = flag.String("split-config", "", "local JSON group-aware evaluation split configuration")
+		evaluationSplit    = flag.String("evaluation-split", "", "partition to evaluate in evaluate-split mode: train, validation, or blind")
+		expectedArtifact   = flag.String("expected-artifact-sha256", "", "expected lowercase SHA-256 of the complete evaluation split artifact")
+		maxRecords         = flag.Int("max-records", 0, "maximum evaluation records for split mode (0 = finite default)")
+		maxBytes           = flag.Int64("max-bytes", 0, "maximum decompressed evaluation JSONL bytes for split mode (0 = finite default)")
+		allowUngoverned    = flag.Bool("allow-ungoverned", false, "explicitly allow hand-authored evaluation rows without governance provenance in split mode")
+		baseURL            = flag.String("base-url", "", "base URL for http/gate mode, for example http://127.0.0.1:8080")
+		adminURL           = flag.String("admin-url", "", "admin-plane base URL for gate mode; defaults to base URL when empty")
+		timeout            = flag.Duration("timeout", 10*time.Second, "per-request timeout in http mode")
+		toolTimeout        = flag.Duration("tool-timeout", 10*time.Minute, "per-tool timeout in gate mode")
+		insecure           = flag.Bool("insecure", false, "skip TLS certificate verification in http mode and supported gate scanners")
+		blockStatuses      = flag.String("block-statuses", "403,406,429,451,503", "comma-separated statuses treated as WAF block/challenge")
+		outputPath         = flag.String("output", "", "write JSON report to file instead of stdout")
+		nucleiTemplates    = flag.String("nuclei-templates", "security-validation/nuclei", "nuclei template directory for gate mode")
+		requireExternal    = flag.Bool("require-external", false, "fail gate mode when an external scanner is missing instead of skipping")
+		skipExternal       = flag.Bool("skip-external", false, "skip external scanner wrappers in gate mode and run only analyzer/http replay")
+		workers            = flag.Int("workers", 0, "concurrent workers for analyzer/http replay (0 = GOMAXPROCS)")
+		shards             = flag.Int("shards", 1, "number of corpus shards (1 = no sharding)")
+		shard              = flag.Int("shard", 0, "shard index to process (0-based; requires -shards > 1)")
+		stream             = flag.Bool("stream", false, "stream per-case results as JSON lines instead of collecting the full report")
+		progress           = flag.Bool("progress", false, "print per-case progress lines to stderr")
 	)
 	flag.Parse()
 
 	if err := run(options{
-		Mode:                 *mode,
-		CorpusPath:           *corpusPath,
-		GovernanceConfigPath: *governanceConfig,
-		BaseURL:              *baseURL,
-		AdminURL:             *adminURL,
-		Timeout:              *timeout,
-		ToolTimeout:          *toolTimeout,
-		Insecure:             *insecure,
-		BlockStatuses:        *blockStatuses,
-		OutputPath:           *outputPath,
-		NucleiTemplates:      *nucleiTemplates,
-		RequireExternal:      *requireExternal,
-		SkipExternal:         *skipExternal,
-		Workers:              *workers,
-		Shards:               *shards,
-		Shard:                *shard,
-		Stream:               *stream,
-		Progress:             *progress,
+		Mode:                   *mode,
+		CorpusPath:             *corpusPath,
+		GovernanceConfigPath:   *governanceConfig,
+		GovernanceManifestPath: *governanceManifest,
+		GovernanceFormalPath:   *governanceFormal,
+		SplitConfigPath:        *splitConfig,
+		EvaluationSplit:        *evaluationSplit,
+		ExpectedArtifactSHA256: *expectedArtifact,
+		MaxRecords:             *maxRecords,
+		MaxBytes:               *maxBytes,
+		AllowUngoverned:        *allowUngoverned,
+		BaseURL:                *baseURL,
+		AdminURL:               *adminURL,
+		Timeout:                *timeout,
+		ToolTimeout:            *toolTimeout,
+		Insecure:               *insecure,
+		BlockStatuses:          *blockStatuses,
+		OutputPath:             *outputPath,
+		NucleiTemplates:        *nucleiTemplates,
+		RequireExternal:        *requireExternal,
+		SkipExternal:           *skipExternal,
+		Workers:                *workers,
+		Shards:                 *shards,
+		Shard:                  *shard,
+		Stream:                 *stream,
+		Progress:               *progress,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -152,6 +234,9 @@ func runContext(ctx context.Context, opts options) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if strings.TrimSpace(opts.ExpectedArtifactSHA256) != "" && opts.Mode != "evaluate-split" {
+		return errors.New("--expected-artifact-sha256 is only supported in evaluate-split mode")
+	}
 	if opts.Mode == "govern" {
 		var summary bytes.Buffer
 		if err := runGovernanceWithOutput(ctx, opts.GovernanceConfigPath, opts.OutputPath, &summary); err != nil {
@@ -162,6 +247,12 @@ func runContext(ctx context.Context, opts options) error {
 			return err
 		}
 		return writeAtomicReport(opts.OutputPath, summary.Bytes())
+	}
+	if opts.Mode == "split" {
+		return runEvaluationSplit(ctx, opts)
+	}
+	if opts.Mode == "evaluate-split" {
+		return runEvaluationSplitArtifact(ctx, opts)
 	}
 	if opts.Mode != "analyzer" && opts.Mode != "http" && opts.Mode != "gate" {
 		return fmt.Errorf("unsupported mode %q", opts.Mode)
@@ -199,6 +290,9 @@ func runContext(ctx context.Context, opts options) error {
 	})
 	if err != nil {
 		return err
+	}
+	if corpusStats.SkippedOverlong > 0 {
+		return fmt.Errorf("corpus contains %d overlong record(s); refusing incomplete evaluation", corpusStats.SkippedOverlong)
 	}
 	if corpusStats.TotalCases == 0 {
 		return errors.New("corpus is empty")
@@ -296,6 +390,1303 @@ func runContext(ctx context.Context, opts options) error {
 		return fmt.Errorf("security corpus validation failed: %d/%d cases failed", report.Failures, report.Total)
 	}
 	return nil
+}
+
+// runEvaluationSplit builds the independent train/validation/blind artifact.
+// It intentionally loads the complete input in one process: sharding before
+// grouping could split a shared site/session across partitions and invalidate
+// the leakage guarantee.
+func runEvaluationSplit(ctx context.Context, opts options) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if opts.Stream {
+		return errors.New("--stream is not supported in split mode")
+	}
+	if opts.Shards < 0 || opts.Shards > 1 || opts.Shard != 0 {
+		return errors.New("split mode requires one complete input shard")
+	}
+	if strings.TrimSpace(opts.CorpusPath) == "" {
+		return errors.New("--corpus is required in split mode")
+	}
+	if isRemotePath(opts.CorpusPath) {
+		return errors.New("--corpus must be a local JSONL file in split mode")
+	}
+	if strings.TrimSpace(opts.SplitConfigPath) == "" {
+		return errors.New("--split-config is required in split mode")
+	}
+	if isRemotePath(opts.SplitConfigPath) {
+		return errors.New("--split-config must be a local JSON file")
+	}
+	manifestPath := strings.TrimSpace(opts.GovernanceManifestPath)
+	formalPath := strings.TrimSpace(opts.GovernanceFormalPath)
+	if manifestPath != "" && isRemotePath(manifestPath) {
+		return errors.New("--governance-manifest must be a local JSON file")
+	}
+	if formalPath != "" && isRemotePath(formalPath) {
+		return errors.New("--governance-formal must be a local JSONL file")
+	}
+	if strings.TrimSpace(opts.OutputPath) != "" &&
+		(sameLocalPath(opts.OutputPath, opts.CorpusPath) || sameLocalPath(opts.OutputPath, opts.SplitConfigPath) ||
+			(manifestPath != "" && sameLocalPath(opts.OutputPath, manifestPath)) ||
+			(formalPath != "" && sameLocalPath(opts.OutputPath, formalPath))) {
+		return errors.New("split output path overlaps an input")
+	}
+	if manifestPath != "" && (sameLocalPath(manifestPath, opts.CorpusPath) || sameLocalPath(manifestPath, opts.SplitConfigPath)) {
+		return errors.New("governance manifest path overlaps an input")
+	}
+	if formalPath != "" && (sameLocalPath(formalPath, opts.CorpusPath) ||
+		sameLocalPath(formalPath, opts.SplitConfigPath) ||
+		(manifestPath != "" && sameLocalPath(formalPath, manifestPath))) {
+		return errors.New("governance formal path overlaps another input")
+	}
+	cfg, err := loadEvaluationSplitConfig(opts.SplitConfigPath)
+	if err != nil {
+		return err
+	}
+	file, err := openLocalRegularFile(opts.CorpusPath, "evaluation corpus")
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("evaluation corpus must be a regular file")
+	}
+	var reader io.Reader = file
+	var gz *gzip.Reader
+	if strings.HasSuffix(strings.ToLower(opts.CorpusPath), ".gz") {
+		gz, err = gzip.NewReader(file)
+		if err != nil {
+			return fmt.Errorf("open evaluation gzip: %w", err)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	// Hash the decompressed split input independently from the governance formal
+	// output. A grouping sidecar can add site/session/time metadata while still
+	// being required to match every governed formal row below.
+	inputDigest := sha256.New()
+	reader = io.TeeReader(reader, inputDigest)
+	records, stats, err := security.LoadEvaluationJSONL(reader, security.EvaluationLoadOptions{
+		MaxRecords: opts.MaxRecords, MaxBytes: opts.MaxBytes,
+		RequireGoverned:            opts.AllowUngoverned == false,
+		VerifyGovernanceProvenance: opts.AllowUngoverned,
+	})
+	if err != nil {
+		return err
+	}
+	if stats.SkippedOverlong > 0 {
+		return fmt.Errorf("evaluation corpus contains %d overlong record(s); clean them before splitting", stats.SkippedOverlong)
+	}
+	if len(records) == 0 {
+		return errors.New("evaluation corpus is empty")
+	}
+	artifact, err := security.BuildEvaluationSplit(records, cfg)
+	if err != nil {
+		return fmt.Errorf("build evaluation split: %w", err)
+	}
+	artifact.LoadStats = stats
+	if artifact.Governed {
+		if manifestPath == "" {
+			return errors.New("--governance-manifest is required for governed evaluation splits")
+		}
+		inputHash := hex.EncodeToString(inputDigest.Sum(nil))
+		manifest, binding, err := loadEvaluationGovernanceBinding(manifestPath, inputHash, stats.TotalRecords)
+		if err != nil {
+			return err
+		}
+		if err := verifyGovernanceSourceHashes(ctx, manifest); err != nil {
+			return err
+		}
+		if err := verifyGovernedSplitMembership(records, inputHash, formalPath, manifest, opts.MaxRecords, opts.MaxBytes); err != nil {
+			return err
+		}
+		artifact.Governance = &binding
+	} else if manifestPath != "" || formalPath != "" {
+		return errors.New("governance binding flags cannot be used with an ungoverned evaluation split")
+	}
+	encoded, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if strings.TrimSpace(opts.OutputPath) == "" {
+		_, err = os.Stdout.Write(encoded)
+		return err
+	}
+	return writeAtomicReport(opts.OutputPath, encoded)
+}
+
+func loadEvaluationSplitConfig(path string) (security.SplitConfig, error) {
+	var cfg security.SplitConfig
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return cfg, errors.New("split config path is required")
+	}
+	if isRemotePath(path) {
+		return cfg, errors.New("split config must be a local JSON file")
+	}
+	lstat, err := os.Lstat(path)
+	if err != nil {
+		return cfg, fmt.Errorf("open split config: %w", err)
+	}
+	if !lstat.Mode().IsRegular() {
+		return cfg, errors.New("split config must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return cfg, fmt.Errorf("open split config: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return cfg, fmt.Errorf("stat split config: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return cfg, errors.New("split config must be a regular file")
+	}
+	if !os.SameFile(lstat, info) {
+		return cfg, errors.New("split config changed while opening")
+	}
+	const maxSplitConfigBytes = 1 << 20
+	if info.Size() > maxSplitConfigBytes {
+		return cfg, fmt.Errorf("split config exceeds %d bytes", maxSplitConfigBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxSplitConfigBytes+1))
+	if err != nil {
+		return cfg, fmt.Errorf("read split config: %w", err)
+	}
+	if len(data) > maxSplitConfigBytes {
+		return cfg, fmt.Errorf("split config exceeds %d bytes", maxSplitConfigBytes)
+	}
+	if err := validateSplitConfigJSON(data); err != nil {
+		return cfg, fmt.Errorf("parse split config: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
+		return cfg, fmt.Errorf("parse split config: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return cfg, errors.New("parse split config: multiple JSON values")
+		}
+		return cfg, fmt.Errorf("parse split config: %w", err)
+	}
+	return cfg, nil
+}
+
+// validateSplitConfigJSON rejects malformed UTF-8 and duplicate object keys
+// before encoding/json applies last-value-wins semantics. Split configuration
+// is a local trust-boundary input: bounding and validating it keeps a symlinked
+// or oversized file from bypassing the deterministic assignment contract.
+func validateSplitConfigJSON(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("invalid UTF-8")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	duplicate, err := scanSplitConfigJSONValue(decoder, 0)
+	if err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	if duplicate {
+		return errors.New("duplicate JSON object key")
+	}
+	return nil
+}
+
+func scanSplitConfigJSONValue(decoder *json.Decoder, depth int) (bool, error) {
+	if depth > security.DefaultEvaluationArtifactMaxDepth {
+		return false, errors.New("split config JSON nesting limit exceeded")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return false, err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return false, nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		duplicate := false
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return false, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return false, errors.New("JSON object key is not a string")
+			}
+			key = strings.ToLower(key)
+			if _, exists := seen[key]; exists {
+				duplicate = true
+			}
+			seen[key] = struct{}{}
+			childDuplicate, err := scanSplitConfigJSONValue(decoder, depth+1)
+			if err != nil {
+				return false, err
+			}
+			duplicate = duplicate || childDuplicate
+		}
+		if _, err := decoder.Token(); err != nil {
+			return false, err
+		}
+		return duplicate, nil
+	case '[':
+		duplicate := false
+		for decoder.More() {
+			childDuplicate, err := scanSplitConfigJSONValue(decoder, depth+1)
+			if err != nil {
+				return false, err
+			}
+			duplicate = duplicate || childDuplicate
+		}
+		if _, err := decoder.Token(); err != nil {
+			return false, err
+		}
+		return duplicate, nil
+	default:
+		return false, fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
+}
+
+const maxEvaluationGovernanceManifestBytes = 8 << 20
+
+// loadEvaluationGovernanceBinding verifies the manifest's self-hash and its
+// formal output identity before a split can be labelled governed. inputHash is
+// the decompressed split input identity; it may differ from the formal output
+// when a metadata envelope adds grouping fields.
+func loadEvaluationGovernanceBinding(path, inputHash string, formalRecords int) (security.GovernanceManifest, security.EvaluationGovernanceBinding, error) {
+	var manifest security.GovernanceManifest
+	var binding security.EvaluationGovernanceBinding
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return manifest, binding, errors.New("governance manifest path is required")
+	}
+	if isRemotePath(path) {
+		return manifest, binding, errors.New("governance manifest must be a local JSON file")
+	}
+	lstat, err := os.Lstat(path)
+	if err != nil {
+		return manifest, binding, fmt.Errorf("open governance manifest: %w", err)
+	}
+	if !lstat.Mode().IsRegular() {
+		return manifest, binding, errors.New("governance manifest must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return manifest, binding, fmt.Errorf("open governance manifest: %w", err)
+	}
+	defer file.Close()
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return manifest, binding, fmt.Errorf("stat governance manifest: %w", err)
+	}
+	if !fileInfo.Mode().IsRegular() {
+		return manifest, binding, errors.New("governance manifest must be a regular file")
+	}
+	if !os.SameFile(lstat, fileInfo) {
+		return manifest, binding, errors.New("governance manifest changed while opening")
+	}
+	if fileInfo.Size() > maxEvaluationGovernanceManifestBytes {
+		return manifest, binding, fmt.Errorf("governance manifest exceeds %d bytes", maxEvaluationGovernanceManifestBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxEvaluationGovernanceManifestBytes+1))
+	if err != nil {
+		return manifest, binding, fmt.Errorf("read governance manifest: %w", err)
+	}
+	if len(data) > maxEvaluationGovernanceManifestBytes {
+		return manifest, binding, fmt.Errorf("governance manifest exceeds %d bytes", maxEvaluationGovernanceManifestBytes)
+	}
+	if err := validateGovernanceManifestJSON(data); err != nil {
+		return manifest, binding, fmt.Errorf("parse governance manifest: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
+		return manifest, binding, fmt.Errorf("parse governance manifest: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return manifest, binding, errors.New("parse governance manifest: multiple JSON values")
+		}
+		return manifest, binding, fmt.Errorf("parse governance manifest: %w", err)
+	}
+	manifestPayloadHash := strings.TrimSpace(manifest.ManifestPayloadHash)
+	if !validSHA256Hex(manifestPayloadHash) {
+		return manifest, binding, errors.New("governance manifest is missing a valid manifest_payload_hash")
+	}
+	manifest.ManifestPayloadHash = ""
+	payload, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return manifest, binding, fmt.Errorf("marshal governance manifest payload: %w", err)
+	}
+	if got := digestHex(payload); got != manifestPayloadHash {
+		return manifest, binding, fmt.Errorf("governance manifest payload hash mismatch: got %s want %s", got, manifestPayloadHash)
+	}
+	manifest.ManifestPayloadHash = manifestPayloadHash
+	formalOutputHash := ""
+	if manifest.OutputHashes != nil {
+		formalOutputHash = strings.TrimSpace(manifest.OutputHashes["formal"])
+	}
+	if !validSHA256Hex(formalOutputHash) {
+		return manifest, binding, errors.New("governance manifest output_hashes.formal is missing or invalid")
+	}
+	if err := validateGovernanceManifestInputHashes(manifest); err != nil {
+		return manifest, binding, err
+	}
+	if formalRecords > 0 && manifest.Formal != formalRecords {
+		return manifest, binding, fmt.Errorf("split input records do not match governance manifest formal count: got %d want %d", formalRecords, manifest.Formal)
+	}
+	if manifest.Formal < 1 {
+		return manifest, binding, errors.New("governance manifest formal count must be positive")
+	}
+	if manifest.Rejected != 0 {
+		return manifest, binding, fmt.Errorf("governance manifest contains %d rejected input rows", manifest.Rejected)
+	}
+	if manifest.ByDecision == nil {
+		return manifest, binding, errors.New("governance manifest by_decision is missing")
+	}
+	hardReject, ok := manifest.ByDecision["hard_reject"]
+	if !ok || hardReject != 0 {
+		return manifest, binding, fmt.Errorf("governance manifest hard_reject count must be zero, got %d", hardReject)
+	}
+	for name, value := range map[string]string{
+		"pipeline":    manifest.Pipeline,
+		"version":     manifest.Version,
+		"policy_hash": manifest.PolicyHash,
+		"review_hash": manifest.ReviewHash,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return manifest, binding, fmt.Errorf("governance manifest %s is required", name)
+		}
+	}
+	if !validSHA256Hex(inputHash) {
+		return manifest, binding, errors.New("split input hash is invalid")
+	}
+	binding = security.EvaluationGovernanceBinding{
+		ManifestSHA256:      digestHex(data),
+		ManifestPayloadHash: manifestPayloadHash,
+		FormalSHA256:        formalOutputHash,
+		InputSHA256:         inputHash,
+		FormalRecords:       manifest.Formal,
+		Pipeline:            manifest.Pipeline,
+		Version:             manifest.Version,
+		PolicyHash:          manifest.PolicyHash,
+		ReviewHash:          manifest.ReviewHash,
+	}
+	if err := security.ValidateEvaluationGovernanceBinding(&binding); err != nil {
+		return manifest, security.EvaluationGovernanceBinding{}, err
+	}
+	return manifest, binding, nil
+}
+
+// validateGovernanceManifestInputHashes keeps the source registry and its
+// recorded identities closed under the manifest. Optional files that were
+// absent during governance are the only declared exception; every other
+// source must have one canonical SHA-256 entry, and no undeclared entry may
+// be smuggled into the map.
+func validateGovernanceManifestInputHashes(manifest security.GovernanceManifest) error {
+	if len(manifest.InputHashes) == 0 {
+		return errors.New("governance manifest input_hashes must contain at least one source")
+	}
+	missing := make(map[string]struct{}, len(manifest.MissingOptional))
+	for _, path := range manifest.MissingOptional {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return errors.New("governance manifest missing_optional contains an empty path")
+		}
+		if _, duplicate := missing[path]; duplicate {
+			return fmt.Errorf("governance manifest missing_optional contains duplicate path %q", path)
+		}
+		missing[path] = struct{}{}
+	}
+	declared := make(map[string]bool, len(manifest.SourceSpecs))
+	expected := make(map[string]struct{}, len(manifest.SourceSpecs))
+	// Keep the exact serialized path as the manifest key, but reject filesystem
+	// aliases in source_specs. Otherwise `source.jsonl`, `./source.jsonl`, and a
+	// symlink to either could be counted as independent sources.
+	seenSources := make([]string, 0, len(manifest.SourceSpecs))
+	for _, source := range manifest.SourceSpecs {
+		path := strings.TrimSpace(source.Path)
+		if path == "" {
+			return errors.New("governance manifest source_specs contains an empty path")
+		}
+		for _, previous := range seenSources {
+			if sameLocalPath(previous, path) {
+				if previous == path {
+					return fmt.Errorf("governance manifest source_specs contains duplicate path %q", path)
+				}
+				return fmt.Errorf("governance manifest source_specs contains duplicate or aliased path %q (same as %q)", path, previous)
+			}
+		}
+		seenSources = append(seenSources, path)
+		declared[path] = source.Optional
+		if !source.Optional {
+			expected[path] = struct{}{}
+		} else if _, isMissing := missing[path]; !isMissing {
+			expected[path] = struct{}{}
+		}
+	}
+	for path := range missing {
+		optional, ok := declared[path]
+		if !ok || !optional {
+			return fmt.Errorf("governance manifest missing_optional path %q is not a declared optional source", path)
+		}
+	}
+	for path, hash := range manifest.InputHashes {
+		if strings.TrimSpace(path) == "" {
+			return errors.New("governance manifest input_hashes contains an empty path")
+		}
+		if hash != strings.TrimSpace(hash) || !validSHA256Hex(hash) {
+			return fmt.Errorf("governance manifest input hash for %q is missing or invalid", path)
+		}
+		if _, ok := expected[path]; !ok {
+			return fmt.Errorf("governance manifest input hash for undeclared source %q", path)
+		}
+	}
+	for path := range expected {
+		if _, ok := manifest.InputHashes[path]; !ok {
+			return fmt.Errorf("governance manifest is missing an input hash for source %q", path)
+		}
+	}
+	return nil
+}
+
+// maxGovernanceSourceHashBytes is the largest raw source file that split mode
+// will re-hash when binding an input to a governance manifest. Governance uses
+// the same ceiling for one source, so this keeps verification finite even when
+// a hand-authored manifest advertises an unbounded or otherwise unsafe limit.
+const maxGovernanceSourceHashBytes int64 = 8 << 30
+
+// verifyGovernanceSourceHashes closes the gap between a manifest's declared
+// input_hashes and the files that are present when a split is created. The
+// provenance index intentionally checks only referenced lines; this full-file
+// pass also detects an appended or replaced unreferenced line before the split
+// can be labelled governed.
+func verifyGovernanceSourceHashes(ctx context.Context, manifest security.GovernanceManifest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateGovernanceManifestInputHashes(manifest); err != nil {
+		return err
+	}
+	missing := make(map[string]struct{}, len(manifest.MissingOptional))
+	for _, path := range manifest.MissingOptional {
+		missing[path] = struct{}{}
+	}
+	maxBytes := maxGovernanceSourceHashBytes
+	if manifest.Limits.MaxInputBytes > 0 && manifest.Limits.MaxInputBytes < maxBytes {
+		maxBytes = manifest.Limits.MaxInputBytes
+	}
+	missingPaths := make([]string, 0, len(missing))
+	for _, source := range manifest.SourceSpecs {
+		path := strings.TrimSpace(source.Path)
+		if path == "" {
+			return errors.New("governance manifest source_specs contains an empty path")
+		}
+		if isRemotePath(path) {
+			return fmt.Errorf("governance manifest source %q must be a local file", path)
+		}
+		_, wasMissing := missing[path]
+		_, lstatErr := os.Lstat(path)
+		if wasMissing {
+			if lstatErr == nil {
+				return fmt.Errorf("governance optional source %q appeared after the manifest was created", path)
+			}
+			if errors.Is(lstatErr, os.ErrNotExist) {
+				missingPaths = append(missingPaths, path)
+				continue
+			}
+			return fmt.Errorf("inspect governance optional source %q: %w", path, lstatErr)
+		}
+		expected, ok := manifest.InputHashes[path]
+		if !ok {
+			return fmt.Errorf("governance manifest is missing an input hash for source %q", path)
+		}
+		got, err := hashGovernanceSourceFile(ctx, path, maxBytes)
+		if err != nil {
+			return fmt.Errorf("hash governance source %q: %w", path, err)
+		}
+		if got != expected {
+			return fmt.Errorf("governance source hash mismatch for %q: got %s want %s", path, got, expected)
+		}
+	}
+	// A missing optional file can appear while the required sources are being
+	// hashed. Re-check once at the end so an ordinary concurrent writer cannot
+	// silently turn an absent optional input into a governed input.
+	for _, path := range missingPaths {
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("governance optional source %q appeared after the manifest was created", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect governance optional source %q: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func hashGovernanceSourceFile(ctx context.Context, path string, maxBytes int64) (string, error) {
+	if isRemotePath(path) {
+		return "", errors.New("governance source must be a local file")
+	}
+	pathBefore, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !pathBefore.Mode().IsRegular() {
+		return "", errors.New("governance source must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	before, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !before.Mode().IsRegular() {
+		return "", errors.New("governance source must be a regular file")
+	}
+	if !os.SameFile(pathBefore, before) {
+		return "", errors.New("changed while opening")
+	}
+	if maxBytes < 1 || maxBytes > maxGovernanceSourceHashBytes {
+		maxBytes = maxGovernanceSourceHashBytes
+	}
+	if before.Size() > maxBytes {
+		return "", fmt.Errorf("exceeds %d bytes", maxBytes)
+	}
+	h := sha256.New()
+	buf := make([]byte, 128*1024)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		n, readErr := file.Read(buf)
+		if n > 0 {
+			total += int64(n)
+			if total > maxBytes {
+				return "", fmt.Errorf("exceeds %d bytes", maxBytes)
+			}
+			if _, err := h.Write(buf[:n]); err != nil {
+				return "", err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	pathAfter, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() ||
+		!os.SameFile(pathBefore, pathAfter) || pathBefore.Size() != pathAfter.Size() {
+		return "", errors.New("changed while hashing")
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// validateGovernanceManifestJSON rejects duplicate members before
+// encoding/json can apply its last-value-wins behavior. The file is already
+// byte-bounded by the caller; depth is bounded independently to avoid an
+// adversarially nested local manifest exhausting the call stack.
+func validateGovernanceManifestJSON(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("invalid UTF-8")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	duplicate, err := scanGovernanceManifestJSONValue(decoder, 0)
+	if err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	if duplicate {
+		return errors.New("duplicate JSON object key")
+	}
+	return nil
+}
+
+func scanGovernanceManifestJSONValue(decoder *json.Decoder, depth int) (bool, error) {
+	if depth > security.DefaultEvaluationArtifactMaxDepth {
+		return false, errors.New("governance manifest JSON nesting limit exceeded")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return false, err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return false, nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		duplicate := false
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return false, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return false, errors.New("JSON object key is not a string")
+			}
+			key = strings.ToLower(key)
+			if _, exists := seen[key]; exists {
+				duplicate = true
+			}
+			seen[key] = struct{}{}
+			childDuplicate, err := scanGovernanceManifestJSONValue(decoder, depth+1)
+			if err != nil {
+				return false, err
+			}
+			duplicate = duplicate || childDuplicate
+		}
+		if _, err := decoder.Token(); err != nil {
+			return false, err
+		}
+		return duplicate, nil
+	case '[':
+		duplicate := false
+		for decoder.More() {
+			childDuplicate, err := scanGovernanceManifestJSONValue(decoder, depth+1)
+			if err != nil {
+				return false, err
+			}
+			duplicate = duplicate || childDuplicate
+		}
+		if _, err := decoder.Token(); err != nil {
+			return false, err
+		}
+		return duplicate, nil
+	default:
+		return false, nil
+	}
+}
+
+func verifyGovernedSplitMembership(records []security.EvaluationRecord, inputHash, formalPath string, manifest security.GovernanceManifest, maxRecords int, maxBytes int64) error {
+	if err := verifyGovernedSourceReferences(records, manifest); err != nil {
+		return err
+	}
+	formalHash := strings.TrimSpace(manifest.OutputHashes["formal"])
+	if inputHash == formalHash {
+		// The split input is the exact formal output already checked by the
+		// manifest hash and record count. No second file read is necessary.
+		return nil
+	}
+	formalPath = strings.TrimSpace(formalPath)
+	if formalPath == "" {
+		return errors.New("--governance-formal is required when the split corpus is a metadata envelope rather than the exact formal snapshot")
+	}
+	formalRecords, stats, loadedHash, err := loadGovernedEvaluationFile(formalPath, maxRecords, maxBytes)
+	if err != nil {
+		return fmt.Errorf("load governance formal snapshot: %w", err)
+	}
+	if loadedHash != formalHash {
+		return fmt.Errorf("governance formal snapshot hash mismatch: got %s want %s", loadedHash, formalHash)
+	}
+	if stats.TotalRecords != manifest.Formal || len(formalRecords) != manifest.Formal {
+		return fmt.Errorf("governance formal snapshot records do not match manifest: got %d want %d", len(formalRecords), manifest.Formal)
+	}
+	if len(records) != len(formalRecords) {
+		return fmt.Errorf("split input records do not match formal snapshot: got %d want %d", len(records), len(formalRecords))
+	}
+	byFingerprint := make(map[string]security.EvaluationRecord, len(formalRecords))
+	for i, record := range formalRecords {
+		fingerprint := strings.ToLower(strings.TrimSpace(record.Fingerprint))
+		if _, exists := byFingerprint[fingerprint]; exists {
+			return fmt.Errorf("governance formal snapshot contains duplicate fingerprint at record %d", i)
+		}
+		byFingerprint[fingerprint] = record
+	}
+	for i, record := range records {
+		fingerprint := strings.ToLower(strings.TrimSpace(record.Fingerprint))
+		formal, ok := byFingerprint[fingerprint]
+		if !ok {
+			return fmt.Errorf("split input record %d is absent from the governance formal snapshot", i)
+		}
+		if !sameGovernedEvaluationIdentity(record, formal) {
+			return fmt.Errorf("split input record %d does not preserve its governance formal identity", i)
+		}
+		delete(byFingerprint, fingerprint)
+	}
+	if len(byFingerprint) != 0 {
+		return fmt.Errorf("split input omits %d governance formal record(s)", len(byFingerprint))
+	}
+	return nil
+}
+
+// verifyGovernedSourceReferences prevents a metadata envelope from pointing
+// at an undeclared local file that happens to contain the same request line.
+// Matching is filesystem-aware but deliberately case-sensitive on a
+// case-sensitive filesystem; EqualFold would conflate two distinct source
+// files such as source.jsonl and SOURCE.jsonl on Linux.
+func verifyGovernedSourceReferences(records []security.EvaluationRecord, manifest security.GovernanceManifest) error {
+	declared := make([]string, 0, len(manifest.SourceSpecs))
+	for _, source := range manifest.SourceSpecs {
+		path := strings.TrimSpace(source.Path)
+		if _, ok := manifest.InputHashes[path]; ok {
+			declared = append(declared, path)
+		}
+	}
+	if len(declared) == 0 {
+		return errors.New("governance manifest has no present source paths")
+	}
+	for i, record := range records {
+		path := strings.TrimSpace(record.GovernancePath)
+		allowed := false
+		for _, sourcePath := range declared {
+			if sameGovernancePath(path, sourcePath) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("split input record %d governance path %q is not a declared governance source", i, path)
+		}
+	}
+	return nil
+}
+
+func loadGovernedEvaluationFile(path string, maxRecords int, maxBytes int64) ([]security.EvaluationRecord, security.EvaluationLoadStats, string, error) {
+	var emptyStats security.EvaluationLoadStats
+	file, err := openLocalRegularFile(path, "governance formal snapshot")
+	if err != nil {
+		return nil, emptyStats, "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, emptyStats, "", err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, emptyStats, "", errors.New("governance formal snapshot must be a regular file")
+	}
+	var reader io.Reader = file
+	var gz *gzip.Reader
+	if strings.HasSuffix(strings.ToLower(path), ".gz") {
+		gz, err = gzip.NewReader(file)
+		if err != nil {
+			return nil, emptyStats, "", err
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	digest := sha256.New()
+	records, stats, err := security.LoadEvaluationJSONL(io.TeeReader(reader, digest), security.EvaluationLoadOptions{
+		MaxRecords:      maxRecords,
+		MaxBytes:        maxBytes,
+		RequireGoverned: true,
+	})
+	if err != nil {
+		return nil, stats, "", err
+	}
+	if stats.SkippedOverlong != 0 {
+		return nil, stats, "", fmt.Errorf("contains %d overlong record(s)", stats.SkippedOverlong)
+	}
+	return records, stats, hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+// openLocalRegularFile rejects final-component symlinks and closes the small
+// Lstat/Open race before any caller starts hashing or parsing an evidence
+// artifact.  A content hash alone is not enough here: following a mutable
+// indirection could pair a valid manifest with a different file on a later
+// replay.
+func openLocalRegularFile(path, label string) (*os.File, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("%s path is required", label)
+	}
+	if isRemotePath(path) {
+		return nil, fmt.Errorf("%s must be a local file", label)
+	}
+	lstat, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", label, err)
+	}
+	if !lstat.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file", label)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", label, err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("stat %s: %w", label, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("%s must be a regular file", label)
+	}
+	if !os.SameFile(lstat, info) {
+		_ = file.Close()
+		return nil, fmt.Errorf("%s changed while opening", label)
+	}
+	return file, nil
+}
+
+func sameGovernedEvaluationIdentity(input, formal security.EvaluationRecord) bool {
+	if !strings.EqualFold(strings.TrimSpace(input.Fingerprint), strings.TrimSpace(formal.Fingerprint)) ||
+		strings.TrimSpace(input.Source) != strings.TrimSpace(formal.Source) ||
+		input.GovernanceLine != formal.GovernanceLine ||
+		!strings.EqualFold(strings.TrimSpace(input.RawHash), strings.TrimSpace(formal.RawHash)) ||
+		!strings.EqualFold(strings.TrimSpace(input.Decision), strings.TrimSpace(formal.Decision)) ||
+		strings.TrimSpace(input.ReviewRuleVersion) != strings.TrimSpace(formal.ReviewRuleVersion) ||
+		strings.TrimSpace(input.Reviewer) != strings.TrimSpace(formal.Reviewer) ||
+		strings.TrimSpace(input.ReviewReason) != strings.TrimSpace(formal.ReviewReason) ||
+		strings.TrimSpace(input.ReviewedAt) != strings.TrimSpace(formal.ReviewedAt) {
+		return false
+	}
+	if !sameGovernancePath(input.GovernancePath, formal.GovernancePath) {
+		return false
+	}
+	return strings.TrimSpace(input.Case.Name) == strings.TrimSpace(formal.Case.Name) &&
+		strings.TrimSpace(input.Case.SourceFamily) == strings.TrimSpace(formal.Case.SourceFamily) &&
+		strings.EqualFold(strings.TrimSpace(input.Case.Label), strings.TrimSpace(formal.Case.Label)) &&
+		strings.EqualFold(strings.TrimSpace(input.Case.Category), strings.TrimSpace(formal.Case.Category)) &&
+		strings.TrimSpace(input.Case.Rationale) == strings.TrimSpace(formal.Case.Rationale)
+}
+
+func sameGovernancePath(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return false
+	}
+	canonicalA := canonicalPath(a)
+	canonicalB := canonicalPath(b)
+	if canonicalA == canonicalB {
+		return true
+	}
+	infoA, errA := os.Stat(a)
+	infoB, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
+}
+
+func verifyEvaluationGovernanceBinding(path string, expected *security.EvaluationGovernanceBinding) error {
+	if expected == nil {
+		return errors.New("governance binding is missing")
+	}
+	if err := security.ValidateEvaluationGovernanceBinding(expected); err != nil {
+		return err
+	}
+	// The locked split artifact is the trust anchor for InputSHA256. Replay does
+	// not re-open the original split input; it re-verifies every manifest-derived
+	// field and preserves the input hash as an audit identity protected by the
+	// artifact's immutable storage and externally recorded artifact hash.
+	_, actual, err := loadEvaluationGovernanceBinding(path, expected.InputSHA256, expected.FormalRecords)
+	if err != nil {
+		return err
+	}
+	if actual != *expected {
+		return errors.New("governance manifest does not match the split artifact binding")
+	}
+	return nil
+}
+
+func digestHex(data []byte) string {
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+func validSHA256Hex(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+// runEvaluationSplitArtifact replays exactly one partition from a validated
+// split artifact. It is deliberately separate from raw analyzer mode so a
+// caller cannot accidentally treat an unassigned corpus as a blind result.
+func runEvaluationSplitArtifact(ctx context.Context, opts options) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if opts.Stream {
+		return errors.New("--stream is not supported in evaluate-split mode")
+	}
+	if opts.Shards < 0 || opts.Shards > 1 || opts.Shard != 0 {
+		return errors.New("evaluate-split mode requires one complete artifact")
+	}
+	if strings.TrimSpace(opts.CorpusPath) == "" {
+		return errors.New("--corpus is required in evaluate-split mode and must point to a split artifact")
+	}
+	if isRemotePath(opts.CorpusPath) {
+		return errors.New("split artifact must be a local JSON file")
+	}
+	if strings.TrimSpace(opts.GovernanceFormalPath) != "" {
+		return errors.New("--governance-formal is only supported in split mode")
+	}
+	manifestPath := strings.TrimSpace(opts.GovernanceManifestPath)
+	if manifestPath != "" && isRemotePath(manifestPath) {
+		return errors.New("--governance-manifest must be a local JSON file")
+	}
+	selected, err := parseEvaluationSplit(opts.EvaluationSplit)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.OutputPath) != "" && (sameLocalPath(opts.OutputPath, opts.CorpusPath) ||
+		(manifestPath != "" && sameLocalPath(opts.OutputPath, manifestPath))) {
+		return errors.New("evaluation output path overlaps the split artifact")
+	}
+	if manifestPath != "" && sameLocalPath(manifestPath, opts.CorpusPath) {
+		return errors.New("governance manifest path overlaps the split artifact")
+	}
+	file, err := openLocalRegularFile(opts.CorpusPath, "evaluation split artifact")
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("split artifact must be a regular file")
+	}
+	digest := sha256.New()
+	artifact, err := security.LoadEvaluationSplitArtifact(io.TeeReader(file, digest), opts.MaxRecords)
+	if err != nil {
+		return err
+	}
+	if err := requireCompleteEvaluationLoadStats(artifact.LoadStats, artifact.InputRecords); err != nil {
+		return err
+	}
+	if artifact.Summary.Count(selected) == 0 {
+		return fmt.Errorf("evaluation split %q is empty", selected)
+	}
+	gateRequested := false
+	if _, ok := os.LookupEnv("FPR_GATE"); ok {
+		gateRequested = true
+	}
+	if _, ok := os.LookupEnv("TPR_GATE"); ok {
+		gateRequested = true
+	}
+	if artifact.Governed {
+		if artifact.Governance == nil {
+			return errors.New("governed evaluation split artifact is missing its governance binding")
+		}
+		if manifestPath == "" {
+			return errors.New("--governance-manifest is required when replaying a governed split artifact")
+		}
+		if err := verifyEvaluationGovernanceBinding(manifestPath, artifact.Governance); err != nil {
+			return fmt.Errorf("verify governance manifest: %w", err)
+		}
+	} else {
+		if selected == security.SplitBlind || gateRequested {
+			return errors.New("ungoverned evaluation split artifacts cannot be replayed as blind quality evidence")
+		}
+		if manifestPath != "" {
+			return errors.New("--governance-manifest cannot be used with an ungoverned split artifact")
+		}
+	}
+	actualArtifactSHA256 := hex.EncodeToString(digest.Sum(nil))
+	expectedArtifactSHA256 := strings.TrimSpace(opts.ExpectedArtifactSHA256)
+	if expectedArtifactSHA256 == "" {
+		if artifact.Governed || gateRequested {
+			return errors.New("--expected-artifact-sha256 is required for governed replay and quality gates")
+		}
+	} else {
+		if !validSHA256Hex(expectedArtifactSHA256) {
+			return errors.New("--expected-artifact-sha256 must be a 64-character lowercase SHA-256")
+		}
+		if expectedArtifactSHA256 != actualArtifactSHA256 {
+			return fmt.Errorf("split artifact SHA-256 mismatch: got %s want %s", actualArtifactSHA256, expectedArtifactSHA256)
+		}
+	}
+
+	rows := make([]security.AssignedEvaluationRecord, 0, artifact.Summary.Count(selected))
+	cases := make([]security.Case, 0, artifact.Summary.Count(selected))
+	for _, row := range artifact.Records {
+		if row.Split != selected {
+			continue
+		}
+		rows = append(rows, row)
+		cases = append(cases, row.Case)
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("evaluation split %q is empty", selected)
+	}
+	started := time.Now().UTC()
+	analyzer := semantic.NewAnalyzer("block", 2)
+	results, err := runConcurrentContext(ctx, cases, opts.Workers, func(tc security.Case) result {
+		return validateAnalyzerContext(ctx, analyzer, tc)
+	})
+	if err != nil {
+		return err
+	}
+	for _, item := range results {
+		if item.Error != "" {
+			return fmt.Errorf("evaluation case %q failed: %s", item.Name, item.Error)
+		}
+		if item.Warning {
+			return fmt.Errorf("evaluation case %q produced a warning: %s", item.Name, item.Error)
+		}
+	}
+	report := buildSplitEvaluationReport(artifact, opts.CorpusPath, digest, selected, rows, results, started)
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if strings.TrimSpace(opts.OutputPath) == "" {
+		if _, err := os.Stdout.Write(encoded); err != nil {
+			return err
+		}
+	} else if err := writeAtomicReport(opts.OutputPath, encoded); err != nil {
+		return err
+	}
+	if err := applySplitEvaluationGates(report); err != nil {
+		return err
+	}
+	return nil
+}
+
+func parseEvaluationSplit(raw string) (security.EvaluationSplit, error) {
+	switch security.EvaluationSplit(strings.ToLower(strings.TrimSpace(raw))) {
+	case security.SplitTrain:
+		return security.SplitTrain, nil
+	case security.SplitValidation:
+		return security.SplitValidation, nil
+	case security.SplitBlind:
+		return security.SplitBlind, nil
+	default:
+		return "", errors.New("--evaluation-split must be one of train, validation, or blind")
+	}
+}
+
+func requireCompleteEvaluationLoadStats(stats security.EvaluationLoadStats, input int) error {
+	if input < 1 {
+		return errors.New("evaluation split artifact has no input records")
+	}
+	if stats.TotalRecords != input || stats.SelectedRecords != input || stats.NonEmptyLines < input || stats.SkippedOverlong != 0 {
+		return fmt.Errorf("split artifact load_stats are incomplete or unsafe: %+v", stats)
+	}
+	return nil
+}
+
+func buildSplitEvaluationReport(artifact security.EvaluationSplitArtifact, artifactPath string, digest hash.Hash, selected security.EvaluationSplit, rows []security.AssignedEvaluationRecord, results []result, started time.Time) *splitEvaluationReport {
+	selectedGroups := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		selectedGroups[row.Group] = struct{}{}
+	}
+	report := &splitEvaluationReport{
+		Version:          "split-evaluation-v1",
+		Mode:             "evaluate-split",
+		Artifact:         artifactPath,
+		ArtifactSHA256:   hex.EncodeToString(digest.Sum(nil)),
+		Split:            selected,
+		StartedAt:        started,
+		InputRecords:     artifact.InputRecords,
+		EvaluatedRecords: len(rows),
+		Groups:           len(selectedGroups),
+		Repaired:         artifact.Summary.Repaired,
+		Sources:          make(map[string]splitSourceMetrics),
+		Categories:       make(map[string]splitCategoryMetrics),
+		Results:          append([]result(nil), results...),
+	}
+	if artifact.Governance != nil {
+		report.ManifestSHA256 = artifact.Governance.ManifestSHA256
+		report.ManifestPayloadHash = artifact.Governance.ManifestPayloadHash
+		report.FormalSHA256 = artifact.Governance.FormalSHA256
+		report.SplitInputSHA256 = artifact.Governance.InputSHA256
+	}
+	for i, row := range rows {
+		if i >= len(results) {
+			break
+		}
+		item := results[i]
+		source := strings.TrimSpace(row.Source)
+		src := report.Sources[source]
+		if row.Case.Label == "benign" {
+			report.BenignTotal++
+			src.BenignTotal++
+			if item.Detected {
+				report.FalsePositive++
+				src.BenignFP++
+			} else {
+				report.BenignClean++
+			}
+		} else if row.Case.Label == "attack" {
+			report.AttackTotal++
+			src.AttackTotal++
+			if item.Detected {
+				report.AttackDetected++
+				src.AttackDetected++
+			} else {
+				report.AttackMissed++
+			}
+			category := strings.TrimSpace(row.Case.Category)
+			if category != "" {
+				cat := report.Categories[category]
+				cat.AttackTotal++
+				if item.Detected {
+					cat.AttackDetected++
+				}
+				report.Categories[category] = cat
+			}
+			if item.Detected && !item.Passed {
+				report.CategoryMismatches++
+			}
+		}
+		report.Sources[source] = src
+	}
+	report.Failures = report.FalsePositive + report.AttackMissed + report.CategoryMismatches
+	if report.BenignTotal > 0 {
+		report.FPRPercent = float64(report.FalsePositive) / float64(report.BenignTotal) * 100
+		if _, upper, ok := security.WilsonInterval99(report.FalsePositive, report.BenignTotal); ok {
+			report.FPRUpper99Percent = upper * 100
+		}
+	}
+	if report.AttackTotal > 0 {
+		report.TPRPercent = float64(report.AttackDetected) / float64(report.AttackTotal) * 100
+		if lower, _, ok := security.WilsonInterval99(report.AttackDetected, report.AttackTotal); ok {
+			report.TPRLower99Percent = lower * 100
+		}
+	}
+	positives := report.AttackDetected + report.FalsePositive
+	if positives > 0 {
+		report.PrecisionPercent = float64(report.AttackDetected) / float64(positives) * 100
+	}
+	if report.PrecisionPercent > 0 && report.TPRPercent > 0 {
+		report.F1Score = 2 * report.PrecisionPercent * report.TPRPercent / (report.PrecisionPercent + report.TPRPercent)
+	}
+	for source, metrics := range report.Sources {
+		if metrics.BenignTotal > 0 {
+			metrics.FPRPercent = float64(metrics.BenignFP) / float64(metrics.BenignTotal) * 100
+		}
+		if metrics.AttackTotal > 0 {
+			metrics.TPRPercent = float64(metrics.AttackDetected) / float64(metrics.AttackTotal) * 100
+		}
+		report.Sources[source] = metrics
+	}
+	for category, metrics := range report.Categories {
+		if metrics.AttackTotal > 0 {
+			metrics.TPRPercent = float64(metrics.AttackDetected) / float64(metrics.AttackTotal) * 100
+		}
+		report.Categories[category] = metrics
+	}
+	report.DurationMS = durationMS(time.Since(started))
+	sort.Slice(report.Results, func(i, j int) bool { return report.Results[i].Name < report.Results[j].Name })
+	return report
+}
+
+func applySplitEvaluationGates(report *splitEvaluationReport) error {
+	if report == nil {
+		return errors.New("split evaluation report is nil")
+	}
+	fprGateEnabled := false
+	tprGateEnabled := false
+	if raw, ok := os.LookupEnv("FPR_GATE"); ok {
+		fprGateEnabled = true
+		gate, err := parseSplitPercentGate("FPR_GATE", raw)
+		if err != nil {
+			return err
+		}
+		minimum, err := splitPositiveEnvInt("FPR_MIN_BENIGN", 100)
+		if err != nil {
+			return err
+		}
+		if report.BenignTotal < minimum {
+			return fmt.Errorf("FPR gate requires at least %d benign samples, got %d", minimum, report.BenignTotal)
+		}
+		if report.FPRPercent >= gate {
+			return fmt.Errorf("%s FPR gate failed: %.4f%% is not below %.4f%%", report.Split, report.FPRPercent, gate)
+		}
+	}
+	if raw, ok := os.LookupEnv("TPR_GATE"); ok {
+		tprGateEnabled = true
+		gate, err := parseSplitPercentGate("TPR_GATE", raw)
+		if err != nil {
+			return err
+		}
+		minimum, err := splitPositiveEnvInt("TPR_MIN_ATTACK", 100)
+		if err != nil {
+			return err
+		}
+		if report.AttackTotal < minimum {
+			return fmt.Errorf("TPR gate requires at least %d attack samples, got %d", minimum, report.AttackTotal)
+		}
+		if report.TPRPercent < gate {
+			return fmt.Errorf("%s TPR gate failed: %.4f%% < %.4f%%", report.Split, report.TPRPercent, gate)
+		}
+	}
+	// A blind point estimate with one class or one connected group is not an
+	// independent quality result. Keep tiny smoke fixtures usable when no gate
+	// is requested, but fail closed as soon as a caller asks this command to
+	// certify FPR/TPR. The minimum can be raised explicitly for a publication
+	// run; it is deliberately not inferred from the requested fractions.
+	if report.Split == security.SplitBlind && (fprGateEnabled || tprGateEnabled) {
+		if report.BenignTotal < 1 || report.AttackTotal < 1 {
+			return fmt.Errorf("blind quality gate requires both benign and attack samples, got benign=%d attack=%d", report.BenignTotal, report.AttackTotal)
+		}
+		minimumGroups, err := splitPositiveEnvInt("BLIND_MIN_GROUPS", 2)
+		if err != nil {
+			return err
+		}
+		if report.Groups < minimumGroups {
+			return fmt.Errorf("blind quality gate requires at least %d independent groups, got %d", minimumGroups, report.Groups)
+		}
+	}
+	return nil
+}
+
+func parseSplitPercentGate(name, raw string) (float64, error) {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+		return 0, fmt.Errorf("%s must be a finite percentage in [0, 100], got %q", name, raw)
+	}
+	return value, nil
+}
+
+func splitPositiveEnvInt(name string, fallback int) (int, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 1 {
+		return 0, fmt.Errorf("%s must be a positive integer, got %q", name, raw)
+	}
+	return value, nil
 }
 
 func runGovernance(ctx context.Context, configPath string, out io.Writer) error {
@@ -454,17 +1845,49 @@ func writeAtomicReport(path string, data []byte) error {
 	return nil
 }
 
+const maxGovernanceConfigBytes = 8 << 20
+
 func loadGovernanceConfig(path string) (security.GovernanceConfig, error) {
 	var cfg security.GovernanceConfig
 	if isRemotePath(path) {
 		return cfg, errors.New("governance config must be a local JSON file")
+	}
+	lstat, err := os.Lstat(path)
+	if err != nil {
+		return cfg, fmt.Errorf("open governance config: %w", err)
+	}
+	if !lstat.Mode().IsRegular() {
+		return cfg, errors.New("governance config must be a regular file")
 	}
 	f, err := os.Open(path)
 	if err != nil {
 		return cfg, fmt.Errorf("open governance config: %w", err)
 	}
 	defer f.Close()
-	dec := json.NewDecoder(f)
+	info, err := f.Stat()
+	if err != nil {
+		return cfg, fmt.Errorf("stat governance config: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return cfg, errors.New("governance config must be a regular file")
+	}
+	if !os.SameFile(lstat, info) {
+		return cfg, errors.New("governance config changed while opening")
+	}
+	if info.Size() > maxGovernanceConfigBytes {
+		return cfg, fmt.Errorf("governance config exceeds %d bytes", maxGovernanceConfigBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxGovernanceConfigBytes+1))
+	if err != nil {
+		return cfg, fmt.Errorf("read governance config: %w", err)
+	}
+	if len(data) > maxGovernanceConfigBytes {
+		return cfg, fmt.Errorf("governance config exceeds %d bytes", maxGovernanceConfigBytes)
+	}
+	if err := validateGovernanceConfigJSON(data); err != nil {
+		return cfg, fmt.Errorf("parse governance config: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
 		return cfg, fmt.Errorf("parse governance config: %w", err)
@@ -476,7 +1899,103 @@ func loadGovernanceConfig(path string) (security.GovernanceConfig, error) {
 		}
 		return cfg, fmt.Errorf("parse governance config: %w", err)
 	}
+	after, err := f.Stat()
+	if err != nil {
+		return cfg, fmt.Errorf("stat governance config: %w", err)
+	}
+	pathAfter, err := os.Stat(path)
+	if err != nil {
+		return cfg, fmt.Errorf("stat governance config: %w", err)
+	}
+	if !os.SameFile(info, after) || info.Size() != after.Size() ||
+		!os.SameFile(lstat, pathAfter) || lstat.Size() != pathAfter.Size() {
+		return cfg, errors.New("governance config changed while reading")
+	}
 	return cfg, nil
+}
+
+// validateGovernanceConfigJSON rejects duplicate members before
+// encoding/json applies last-value-wins semantics. Governance configuration
+// controls source selection, output paths, limits, and review policy, so an
+// ambiguous local file must fail closed just like a split or manifest input.
+func validateGovernanceConfigJSON(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("invalid UTF-8")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	duplicate, err := scanGovernanceConfigJSONValue(decoder, 0)
+	if err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	if duplicate {
+		return errors.New("duplicate JSON object key")
+	}
+	return nil
+}
+
+func scanGovernanceConfigJSONValue(decoder *json.Decoder, depth int) (bool, error) {
+	if depth > security.DefaultEvaluationArtifactMaxDepth {
+		return false, errors.New("governance config JSON nesting limit exceeded")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return false, err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return false, nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		duplicate := false
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return false, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return false, errors.New("governance config JSON object key is not a string")
+			}
+			key = strings.ToLower(key)
+			if _, exists := seen[key]; exists {
+				duplicate = true
+			}
+			seen[key] = struct{}{}
+			childDuplicate, err := scanGovernanceConfigJSONValue(decoder, depth+1)
+			if err != nil {
+				return false, err
+			}
+			duplicate = duplicate || childDuplicate
+		}
+		if _, err := decoder.Token(); err != nil {
+			return false, err
+		}
+		return duplicate, nil
+	case '[':
+		duplicate := false
+		for decoder.More() {
+			childDuplicate, err := scanGovernanceConfigJSONValue(decoder, depth+1)
+			if err != nil {
+				return false, err
+			}
+			duplicate = duplicate || childDuplicate
+		}
+		if _, err := decoder.Token(); err != nil {
+			return false, err
+		}
+		return duplicate, nil
+	default:
+		return false, fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
 }
 
 func isRemotePath(path string) bool {
@@ -598,6 +2117,9 @@ func runStream(opts options, reader io.Reader) error {
 	if loaded.err != nil {
 		return loaded.err
 	}
+	if loaded.stats.SkippedOverlong > 0 {
+		return fmt.Errorf("corpus contains %d overlong record(s); refusing incomplete evaluation", loaded.stats.SkippedOverlong)
+	}
 	if loaded.stats.TotalCases == 0 {
 		return errors.New("corpus is empty")
 	}
@@ -709,9 +2231,82 @@ func runConcurrent(cases []security.Case, workers int, fn func(security.Case) re
 	return out
 }
 
+// runConcurrentContext is the cancellation-aware variant used by independent
+// evaluation. Results retain input order so reports remain reproducible even
+// when detector work completes out of order.
+func runConcurrentContext(ctx context.Context, cases []security.Case, workers int, fn func(security.Case) result) ([]result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(cases) == 0 {
+		return nil, nil
+	}
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(cases) {
+		workers = len(cases)
+	}
+	out := make([]result, len(cases))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					out[index] = fn(cases[index])
+				}
+			}
+		}()
+	}
+	dispatching := true
+	for index := range cases {
+		select {
+		case jobs <- index:
+		case <-ctx.Done():
+			dispatching = false
+		}
+		if !dispatching {
+			break
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func validateAnalyzer(analyzer *semantic.Analyzer, tc security.Case) result {
+	return validateAnalyzerContext(context.Background(), analyzer, tc)
+}
+
+func validateAnalyzerContext(ctx context.Context, analyzer *semantic.Analyzer, tc security.Case) result {
 	res := baseResult("analyzer", tc)
 	start := time.Now()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		res.Error = err.Error()
+		res.LatencyMS = durationMS(time.Since(start))
+		return res
+	}
 
 	req, err := newCorpusRequest(tc)
 	if err != nil {
@@ -729,7 +2324,7 @@ func validateAnalyzer(analyzer *semantic.Analyzer, tc security.Case) result {
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
-	detection, err := analyzer.Detect(context.Background(), reqCtx)
+	detection, err := analyzer.Detect(ctx, reqCtx)
 	if err != nil {
 		res.Error = err.Error()
 		res.LatencyMS = durationMS(time.Since(start))

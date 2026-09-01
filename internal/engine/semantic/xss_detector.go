@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"context"
+	"encoding/base64"
 	"regexp"
 	"strings"
 
@@ -41,7 +42,7 @@ var (
 	// whole field value (for example a redirect target or a raw request body).
 	// Keeping the anchor is important: prose and markup attributes may mention
 	// the same scheme without executing it.
-	xssStandaloneJavascriptURL = regexp.MustCompile(`(?is)^(?:/)?\s*["'` + "`" + `]?\s*javascript\s*:\s*(?:(?:/{2}|/\*.*?\*/\s*)?)(?:\s|%[0-9a-f]{2})*(?:[a-z_][a-z0-9_]*\s*\(|void\s*\()`)
+	xssStandaloneJavascriptURL = regexp.MustCompile(`(?is)^\s*["'` + "`" + `]?\s*javascript\s*:\s*(?:(?:/{2}|/\*.*?\*/\s*)?)(?:\s|%[0-9a-f]{2})*(?:[a-z_][a-z0-9_]*\s*\(|void\s*\()`)
 	// URL-valued request fields may carry the scheme without HTML markup. Keep
 	// this separate from the whole-value matcher so a field such as
 	// "profile_bio" does not become executable merely because it mentions the
@@ -58,7 +59,11 @@ func xssJavascriptURLFieldContext(candidate semanticCandidate) bool {
 	if !xssJavascriptURLField.MatchString(candidate.text) {
 		return false
 	}
-	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
+	return xssURLSinkFieldName(candidate.input.Name)
+}
+
+func xssURLSinkFieldName(rawName string) bool {
+	name := strings.ToLower(strings.TrimSpace(rawName))
 	if name == "" {
 		return false
 	}
@@ -76,6 +81,101 @@ func xssJavascriptURLFieldContext(candidate semanticCandidate) bool {
 	}
 	return strings.HasSuffix(name, "url") || strings.HasSuffix(name, "uri") ||
 		strings.HasSuffix(name, "href") || strings.HasSuffix(name, "link")
+}
+
+// xssDataURLBase64Field is deliberately anchored. A data URI in a free-text
+// field is not an execution sink by itself; the field-name gate below supplies
+// the missing URL context. Restricting the media types and requiring base64
+// keeps ordinary image/data values out of the expensive decode path.
+var xssDataURLBase64Field = regexp.MustCompile(`(?is)^\s*data\s*:\s*(?:text/html|application/xhtml\+xml|image/svg\+xml)\s*;\s*base64\s*,\s*([a-z0-9+/_=\-\s]+)\s*$`)
+
+// xssDataURLFieldContext recognizes an executable HTML data URI carried by a
+// URL-valued request field. The decoded bytes are checked by the same
+// executable-context battery used for markup, so a harmless base64 HTML page
+// does not become a hit merely because it uses a URL-looking parameter name.
+func xssDataURLFieldContext(candidate semanticCandidate) bool {
+	trimmed := strings.TrimSpace(candidate.text)
+	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
+	pathSurface := strings.EqualFold(candidate.input.Source, "uri") && name == "path" &&
+		asciiFoldPrefix(trimmed, "/data:")
+	if !xssURLSinkFieldName(name) && !pathSurface {
+		return false
+	}
+	if !asciiFoldContains(trimmed, "data:") {
+		return false
+	}
+	decoded, ok := decodeXSSDataURL(candidate.text)
+	return ok && executableXSSContext(normalize(decoded))
+}
+
+func asciiFoldPrefix(text, prefix string) bool {
+	if len(text) < len(prefix) {
+		return false
+	}
+	return asciiFoldEqual(text[:len(prefix)], prefix)
+}
+
+func asciiFoldContains(text, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	if len(text) < len(needle) {
+		return false
+	}
+	for i := 0; i <= len(text)-len(needle); i++ {
+		if asciiFoldEqual(text[i:i+len(needle)], needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func asciiFoldEqual(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := 0; i < len(left); i++ {
+		l, r := left[i], right[i]
+		if l >= 'A' && l <= 'Z' {
+			l += 'a' - 'A'
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		if l != r {
+			return false
+		}
+	}
+	return true
+}
+
+func decodeXSSDataURL(raw string) (string, bool) {
+	match := xssDataURLBase64Field.FindStringSubmatch(strings.TrimSpace(raw))
+	if len(match) != 2 {
+		// URI paths in the corpus carry one leading slash before the data scheme.
+		trimmed := strings.TrimSpace(raw)
+		if asciiFoldPrefix(trimmed, "/data:") {
+			match = xssDataURLBase64Field.FindStringSubmatch(trimmed[1:])
+		}
+	}
+	if len(match) != 2 || len(match[1]) == 0 || len(match[1]) > maxInputRawBytes {
+		return "", false
+	}
+	encoded := strings.ReplaceAll(match[1], " ", "+")
+	for _, encoding := range []*base64.Encoding{
+		base64.StdEncoding, base64.RawStdEncoding,
+		base64.URLEncoding, base64.RawURLEncoding,
+	} {
+		decoded, err := encoding.DecodeString(encoded)
+		if err != nil || len(decoded) == 0 {
+			continue
+		}
+		if printableRatio(string(decoded)) < 0.65 {
+			continue
+		}
+		return string(decoded), true
+	}
+	return "", false
 }
 
 // xssStandaloneJavascriptURLContext keeps the complete-scheme matcher tied to
@@ -241,6 +341,12 @@ func (d *XSSDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 			Message: "XSS payload pattern matched", Confidence: 0.86, Payload: strings.TrimSpace(surface),
 		}, nil
 	}
+	if surface, ok := standaloneDataURLSurface(reqCtx); ok {
+		return &engine.DetectionResult{
+			Detected: true, DetectorID: d.ID(), Category: "xss", Severity: engine.SeverityHigh, Action: actionForMode(d.mode),
+			Message: "XSS executable data URI matched", Confidence: 0.90, Payload: strings.TrimSpace(surface),
+		}, nil
+	}
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -290,6 +396,34 @@ func standaloneJavascriptURLSurface(reqCtx *engine.RequestContext) (string, bool
 		body := string(reqCtx.DecodedBody)
 		if xssStandaloneJavascriptURL.MatchString(normalize(body)) {
 			return body, true
+		}
+	}
+	return "", false
+}
+
+func standaloneDataURLSurface(reqCtx *engine.RequestContext) (string, bool) {
+	if reqCtx == nil || reqCtx.Request == nil || reqCtx.Request.URL == nil {
+		return "", false
+	}
+	path := reqCtx.Request.URL.EscapedPath()
+	if path == "" {
+		path = reqCtx.Request.URL.Path
+	}
+	if xssDataURLFieldContext(semanticCandidate{input: InputPoint{Source: "uri", Name: "path"}, text: path}) {
+		return path, true
+	}
+	for name, values := range reqCtx.Request.URL.Query() {
+		for _, value := range values {
+			candidate := semanticCandidate{input: InputPoint{Source: "query", Name: name}, text: value}
+			if xssDataURLFieldContext(candidate) {
+				return value, true
+			}
+		}
+	}
+	for _, input := range bodyInputs(reqCtx.Request, reqCtx.DecodedBody) {
+		candidate := semanticCandidate{input: input, text: input.Raw}
+		if xssDataURLFieldContext(candidate) {
+			return input.Raw, true
 		}
 	}
 	return "", false

@@ -111,6 +111,7 @@ cheesewaf-*-deploy.tar.gz
 !docs/environment-variables.md
 !docs/acme.md
 !docs/semantic-corpus-governance.md
+!docs/open-corpus-catalog.md
 *.private.md
 *.local.md
 

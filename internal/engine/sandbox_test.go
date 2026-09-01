@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGuardSyncRecoversPanicAndReturnsErrors(t *testing.T) {
@@ -16,6 +18,100 @@ func TestGuardSyncRecoversPanicAndReturnsErrors(t *testing.T) {
 	_, err := GuardSync(func() (*DetectionResult, error) { return nil, want })
 	if !errors.Is(err, want) {
 		t.Fatalf("GuardSync error = %v, want %v", err, want)
+	}
+}
+
+func TestGuardContextReturnsOnCancellationWhileDetectorIgnoresContext(t *testing.T) {
+	baselineSlots := len(guardSlots)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := GuardContext(ctx, func() (*DetectionResult, error) {
+			close(started)
+			<-release
+			close(finished)
+			return nil, nil
+		})
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("guarded detector did not start")
+	}
+	cancel()
+	startedAt := time.Now()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("GuardContext error = %v, want context.Canceled", err)
+		}
+		if elapsed := time.Since(startedAt); elapsed > 250*time.Millisecond {
+			t.Fatalf("GuardContext returned after cancellation in %s", elapsed)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("GuardContext waited for detector after context cancellation")
+	}
+
+	// The detector is deliberately released after the caller returns. This
+	// proves the bounded guard slot remains owned until the abandoned work exits.
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("abandoned detector did not finish after release")
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(guardSlots) > baselineSlots && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := len(guardSlots); got > baselineSlots {
+		t.Fatalf("guard slot leaked after detector exit: baseline=%d current=%d", baselineSlots, got)
+	}
+}
+
+func TestGuardContextDoesNotLeakWhenLateDetectorPanics(t *testing.T) {
+	baselineSlots := len(guardSlots)
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := GuardContext(ctx, func() (*DetectionResult, error) {
+			<-release
+			panic("late detector panic")
+		})
+		done <- err
+	}()
+	// Let the guarded goroutine acquire its slot before cancellation.
+	deadline := time.Now().Add(time.Second)
+	for len(guardSlots) <= baselineSlots && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(guardSlots) <= baselineSlots {
+		t.Fatal("guarded detector did not acquire a slot")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("GuardContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("GuardContext did not return after cancellation")
+	}
+	close(release)
+	deadline = time.Now().Add(time.Second)
+	for len(guardSlots) > baselineSlots && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := len(guardSlots); got > baselineSlots {
+		t.Fatalf("guard slot leaked after late panic: baseline=%d current=%d", baselineSlots, got)
 	}
 }
 
@@ -65,5 +161,17 @@ func TestBoundedRegexRegexpReturnsUnderlyingStdlibPattern(t *testing.T) {
 	var nilBounded *BoundedRegex
 	if nilBounded.Regexp() != nil {
 		t.Fatal("nil BoundedRegex must expose a nil regexp")
+	}
+}
+
+func TestBoundedRegexScansBeyondLegacyInputCutoff(t *testing.T) {
+	re, err := CompileSafe(`tail-marker`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Repeat("x", MaxDecodedBytes+32) + "tail-marker"
+	matched, err := re.MatchStringStatus(input)
+	if err != nil || !matched {
+		t.Fatalf("full subject match=(%v,%v), want true,nil", matched, err)
 	}
 }
