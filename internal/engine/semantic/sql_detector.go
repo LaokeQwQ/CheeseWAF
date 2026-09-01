@@ -38,6 +38,15 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 		}
 		// Deep tokenization first (fast, high precision; libinjection-compatible)
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate); detected {
+			// The nc token also describes ordinary numeric URL slugs such as
+			// "123--phone". Require a SQL-shaped line-comment terminator before
+			// treating this low-context fingerprint as executable input.
+			if strings.Contains(fp, "nc") && strings.Contains(candidate, "--") && !hasSQLNCSemanticContext(candidate) {
+				continue
+			}
+			if strings.Contains(fp, "o(") && !hasSQLOperatorSubqueryContext(candidate) {
+				continue
+			}
 			// EXEC/Ef fingerprints are useful for real stored-procedure payloads,
 			// but the short token window also appears in SQL Server documentation.
 			// Keep the same statement-boundary guard used by the staged analyzer.
@@ -196,6 +205,12 @@ var sqlSignatures = []string{
 
 func looksLikeSQLi(raw string) (bool, string) {
 	text := executableSQLText(raw)
+	if sqlQuotedAndSelectInjectionShape(text) {
+		return true, "SQL quoted AND SELECT subquery predicate matched"
+	}
+	if sqlQuotedConcatSelectPredicate.MatchString(text) {
+		return true, "SQL quoted concatenation SELECT predicate matched"
+	}
 	for _, sig := range sqlSignatures {
 		if strings.Contains(text, sig) {
 			return true, "SQL injection signature matched: " + strings.TrimSpace(sig)

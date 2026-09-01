@@ -78,6 +78,22 @@ func TestRCECommandNamesCoversShellMetacharVocabulary(t *testing.T) {
 	}
 }
 
+func TestRCESinkTerminalPartKeepsCompoundFieldSemantics(t *testing.T) {
+	cases := map[string]string{
+		"cmd":             "cmd",
+		"command_line":    "line",
+		"exec.result":     "result",
+		"nested[command]": "command",
+		"trailing--":      "trailing",
+		"":                "",
+	}
+	for field, want := range cases {
+		if got := rceSinkTerminalPart(field); got != want {
+			t.Errorf("rceSinkTerminalPart(%q)=%q, want %q", field, got, want)
+		}
+	}
+}
+
 func TestRCENewlineCommandChainUnit(t *testing.T) {
 	positive := []string{
 		"hello\nid\nls -la /tmp\n#vault",
@@ -378,7 +394,8 @@ func TestXSSStandaloneJavascriptURLRequiresExecutionContext(t *testing.T) {
 		{"url-field", "/go?next=" + url.QueryEscape("javascript:alert(1)"), ""},
 		{"url-field-wrapper", "/r?url=" + url.QueryEscape("<>javascript:alert(1);"), ""},
 		{"raw-body-url", "/submit", "javascript:alert(1)"},
-		{"scheme-path", "/javascript:%0dalert(1)", ""},
+		// A slash-prefixed value is an ordinary HTTP path, not a javascript:
+		// scheme. Keep this shape in the negative corpus below.
 		{"scheme-target", "javascript://alert(1)//", ""},
 	}
 	a := NewAnalyzer("block", 2, "xss")
@@ -422,6 +439,9 @@ func TestXSSStandaloneJavascriptURLRequiresExecutionContext(t *testing.T) {
 				t.Fatalf("non-executable javascript text triggered XSS: %+v", got)
 			}
 		})
+	}
+	if got := detectOnTarget(t, a, "GET", "/javascript:%0dalert(1)", "", ""); got != nil && got.Detected && got.Category == "xss" {
+		t.Fatalf("ordinary HTTP path was treated as a javascript URL: %+v", got)
 	}
 	// An exact script-looking value in an ordinary text field is still data;
 	// only a URL-valued field gets the request-level execution interpretation.

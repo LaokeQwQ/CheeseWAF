@@ -131,6 +131,21 @@ jobs:
       - name: Run go vet
         shell: bash
         run: bash scripts/ci/verify-go-quality.sh vet
+      - name: Capture semantic request-path performance baseline
+        shell: bash
+        env:
+          SEMANTIC_BENCH_TIME: 1s
+          SEMANTIC_BENCH_COUNT: "3"
+          SEMANTIC_BENCH_CPU: 1,4
+          SEMANTIC_BENCH_OUTPUT: /tmp/cheesewaf-semantic-benchmark.json
+        run: bash scripts/ci/run-semantic-benchmark.sh
+      - name: Upload semantic performance baseline
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: semantic-benchmark-${{ github.run_number }}-${{ github.sha }}
+          path: /tmp/cheesewaf-semantic-benchmark.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Enforce coverage floor
         shell: bash
         run: bash scripts/ci/verify-go-quality.sh coverage
@@ -159,7 +174,7 @@ jobs:
         run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11
       - name: Run dashboard tests with coverage
         working-directory: web
-        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=27 --coverage.thresholds.functions=15 --coverage.thresholds.statements=27 --coverage.thresholds.branches=22
+        run: npm test -- --coverage
       - name: Verify coverage output
         working-directory: web
         shell: bash
@@ -226,6 +241,9 @@ jobs:
           CORPUS_GOVERNANCE_MAX_LABEL_CONFLICTS: "3"
           CORPUS_GOVERNANCE_MAX_REPAIRS: "127"
         run: bash scripts/ci/run-corpus-governance.sh
+      - name: Smoke-test evaluation artifact first-capture lock
+        shell: bash
+        run: bash scripts/ci/lock-evaluation-artifact_test.sh
       - name: Replay and evaluate governed semantic snapshot
         env:
           FPR_GATE: "0.8"

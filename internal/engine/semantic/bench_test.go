@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http/httptest"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -124,32 +125,94 @@ func BenchmarkSemanticAnalyzerMultiFieldParallel(b *testing.B) {
 	}
 }
 
-func BenchmarkSemanticAnalyzerParallelRequests(b *testing.B) {
+type semanticMixedBenchmarkCase struct {
+	name   string
+	target string
+	attack bool
+}
+
+// Keep the request mix fixed and balanced so before/after runs exercise the
+// same request-path work. These cases intentionally include ordinary text that
+// resembles security vocabulary as well as four distinct attack families.
+var semanticMixedBenchmarkCases = [...]semanticMixedBenchmarkCase{
+	{name: "clean_catalog", target: "/catalog?q=wireless+headphones&sort=price", attack: false},
+	{name: "attack_sqli", target: "/search?q=1%27+union+select+username%2Cpassword+from+users--", attack: true},
+	{name: "clean_theme", target: "/settings?theme=select+a+theme&mode=dark", attack: false},
+	{name: "attack_xss", target: "/comment?text=%3Cscript%3Ealert%281%29%3C%2Fscript%3E", attack: true},
+	{name: "clean_download", target: "/download?file=quarterly-report.pdf", attack: false},
+	{name: "attack_rce", target: "/run?cmd=%3Bcat+%2Fetc%2Fpasswd%3Bid", attack: true},
+	{name: "clean_users", target: "/api/users?sort=name&dir=asc&page=2", attack: false},
+	{name: "attack_ssrf", target: "/fetch?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data", attack: true},
+}
+
+// BenchmarkSemanticAnalyzerMixedRequestPath is the stable semantic-engine
+// performance entry point used by `make semantic-bench`. One operation is one
+// complete request path: construct the HTTP request and RequestContext, then
+// invoke the shared analyzer. The parallel case therefore includes the cache
+// and metrics contention that concurrent proxy requests encounter.
+func BenchmarkSemanticAnalyzerMixedRequestPath(b *testing.B) {
+	processCandidateCache.resetForTest()
 	analyzer := NewAnalyzer("block", 2)
-	payloads := []string{
-		"/search?q=select+a+theme",
-		"/search?q=1+union+select+1,2--",
-		"/download?file=report.pdf",
-		"/run?cmd=cmd+/c+whoami",
-		"/api/users?sort=name&dir=asc",
-	}
-	b.ReportAllocs()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			req := httptest.NewRequest("GET", payloads[i%len(payloads)], nil)
-			i++
-			reqCtx, err := engine.NewRequestContext(req, "default")
+	ctx := context.Background()
+	validateSemanticMixedBenchmarkCases(b, ctx, analyzer)
+
+	b.Run("sequential", func(b *testing.B) {
+		processCandidateCache.resetForTest()
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		var last *engine.DetectionResult
+		for i := 0; i < b.N; i++ {
+			result, err := runSemanticMixedBenchmarkCase(ctx, analyzer, semanticMixedBenchmarkCases[i%len(semanticMixedBenchmarkCases)])
 			if err != nil {
-				b.Error(err)
-				return
+				b.Fatal(err)
 			}
-			if _, err := analyzer.Detect(context.Background(), reqCtx); err != nil {
-				b.Error(err)
-				return
-			}
+			last = result
 		}
+		runtime.KeepAlive(last)
 	})
+
+	b.Run("parallel", func(b *testing.B) {
+		processCandidateCache.resetForTest()
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		b.RunParallel(func(pb *testing.PB) {
+			var last *engine.DetectionResult
+			for i := 0; pb.Next(); i++ {
+				result, err := runSemanticMixedBenchmarkCase(ctx, analyzer, semanticMixedBenchmarkCases[i%len(semanticMixedBenchmarkCases)])
+				if err != nil {
+					b.Error(err)
+					return
+				}
+				last = result
+			}
+			runtime.KeepAlive(last)
+		})
+	})
+}
+
+func validateSemanticMixedBenchmarkCases(b *testing.B, ctx context.Context, analyzer *Analyzer) {
+	b.Helper()
+	for _, benchmarkCase := range semanticMixedBenchmarkCases {
+		result, err := runSemanticMixedBenchmarkCase(ctx, analyzer, benchmarkCase)
+		if err != nil {
+			b.Fatalf("validate %s: %v", benchmarkCase.name, err)
+		}
+		detected := result != nil && result.Detected
+		if detected != benchmarkCase.attack {
+			b.Fatalf("validate %s: detected=%t, want attack=%t", benchmarkCase.name, detected, benchmarkCase.attack)
+		}
+	}
+}
+
+func runSemanticMixedBenchmarkCase(ctx context.Context, analyzer *Analyzer, benchmarkCase semanticMixedBenchmarkCase) (*engine.DetectionResult, error) {
+	req := httptest.NewRequest("GET", benchmarkCase.target, nil)
+	reqCtx, err := engine.NewRequestContext(req, "benchmark")
+	if err != nil {
+		return nil, err
+	}
+	return analyzer.Detect(ctx, reqCtx)
 }
 
 func BenchmarkPipelineWithRules(b *testing.B) {

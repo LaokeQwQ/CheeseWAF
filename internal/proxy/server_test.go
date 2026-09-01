@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +25,215 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"nhooyr.io/websocket"
 )
+
+type pipelineErrorStub struct {
+	err error
+}
+
+func (p pipelineErrorStub) Detect(context.Context, *engine.RequestContext) (*engine.DetectionResult, error) {
+	return nil, p.err
+}
+
+func TestRequestBodyReadErrorStatusDistinguishesOverload(t *testing.T) {
+	wrapped := fmt.Errorf("body read: %w", engine.ErrRequestBodyReadOverload)
+	tests := []struct {
+		name     string
+		err      error
+		fallback int
+		want     int
+	}{
+		{name: "wrapped overload from request path", err: wrapped, fallback: http.StatusBadRequest, want: http.StatusServiceUnavailable},
+		{name: "wrapped overload from pipeline path", err: wrapped, fallback: http.StatusInternalServerError, want: http.StatusServiceUnavailable},
+		{name: "ordinary read failure", err: fmt.Errorf("malformed body"), fallback: http.StatusBadRequest, want: http.StatusBadRequest},
+		{name: "nil error preserves fallback", err: nil, fallback: http.StatusInternalServerError, want: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := requestBodyReadErrorStatus(tc.err, tc.fallback); got != tc.want {
+				t.Fatalf("requestBodyReadErrorStatus()=%d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServerMapsPipelineBodyLimitToRequestEntityTooLarge(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = nil
+	cfg.Sites[0].WAF.Enabled = true
+	cfg.Sites[0].WAF.Mode = "block"
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelSmart,
+		APISecurity: config.ProtectionLevelOff,
+		BotCC:       config.ProtectionLevelOff,
+		ThreatIntel: config.ProtectionLevelOff,
+	}
+	cfg.APISec.Enabled = false
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.pipelineMu.Lock()
+	server.pipeline = pipelineErrorStub{err: fmt.Errorf("pipeline body read: %w", engine.ErrRequestBodyTooLarge)}
+	server.pipelineMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/upload", strings.NewReader("x"))
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%q, want 413", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 || sink.entries[0].Category != "request_too_large" || sink.entries[0].StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("unexpected request limit event: %#v", sink.entries)
+	}
+}
+
+func TestServerMapsPipelineBodyReadOverloadToServiceUnavailable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = nil
+	cfg.Sites[0].WAF.Enabled = true
+	cfg.Sites[0].WAF.Mode = "block"
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelSmart,
+		APISecurity: config.ProtectionLevelOff,
+		BotCC:       config.ProtectionLevelOff,
+		ThreatIntel: config.ProtectionLevelOff,
+	}
+	cfg.APISec.Enabled = false
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.pipelineMu.Lock()
+	server.pipeline = pipelineErrorStub{err: fmt.Errorf("pipeline body read: %w", engine.ErrRequestBodyReadOverload)}
+	server.pipelineMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/upload", strings.NewReader("x"))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%q, want 503", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 {
+		t.Fatalf("expected one overload event, got %d: %#v", len(sink.entries), sink.entries)
+	}
+	entry := sink.entries[0]
+	if entry.StatusCode != http.StatusServiceUnavailable || entry.Metadata["proxy_error"] != "request body inspection temporarily unavailable" {
+		t.Fatalf("unexpected pipeline overload event: %#v", entry)
+	}
+}
+
+func TestServerPreservesEmptyBodyForEdgeAndFailoverEligibility(t *testing.T) {
+	configurations := []struct {
+		name      string
+		configure func(*config.Config)
+	}{
+		{
+			name: "waf disabled",
+			configure: func(cfg *config.Config) {
+				cfg.Sites[0].WAF.Enabled = false
+				cfg.Sites[0].WAF.Mode = "off"
+			},
+		},
+		{
+			name: "web attack off",
+			configure: func(cfg *config.Config) {
+				cfg.Sites[0].WAF.Enabled = true
+				cfg.Sites[0].WAF.Mode = "block"
+				cfg.Protection.Policy.WebAttack = config.ProtectionLevelOff
+			},
+		},
+	}
+
+	for _, configuration := range configurations {
+		t.Run(configuration.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Sites[0].Upstreams = nil
+			cfg.APISec.Enabled = false
+			cfg.Protection.Policy = config.ProtectionPolicyConfig{
+				WebAttack:   config.ProtectionLevelSmart,
+				APISecurity: config.ProtectionLevelOff,
+				BotCC:       config.ProtectionLevelOff,
+				ThreatIntel: config.ProtectionLevelOff,
+			}
+			cfg.Protection.IP.Whitelist = nil
+			cfg.Protection.IP.Blacklist = nil
+			configuration.configure(&cfg)
+
+			server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			edgeRT := server.edgeRuntime.Load()
+			if edgeRT == nil {
+				t.Fatal("missing edge runtime")
+			}
+
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				for _, nilBody := range []bool{false, true} {
+					name := strings.ToLower(method)
+					if nilBody {
+						name += "_nil_body"
+					} else {
+						name += "_no_body_sentinel"
+					}
+					t.Run(name, func(t *testing.T) {
+						req := httptest.NewRequest(method, "http://localhost/assets/app.js", nil)
+						if nilBody {
+							req.Body = nil
+						}
+						req.Header.Set("Accept-Encoding", "gzip")
+						edgeRT.cache.Store(req, edge.CapturedResponse{
+							Status: http.StatusOK,
+							Header: http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+							Body:   []byte(strings.Repeat("a", 2048)),
+						})
+
+						recorder := httptest.NewRecorder()
+						server.Handler().ServeHTTP(recorder, req)
+
+						if recorder.Code != http.StatusOK || recorder.Header().Get("X-CheeseWAF-Cache") != "HIT" {
+							t.Fatalf("status=%d cache=%q body=%q", recorder.Code, recorder.Header().Get("X-CheeseWAF-Cache"), recorder.Body.String())
+						}
+						if recorder.Header().Get("Content-Encoding") != "gzip" {
+							t.Fatalf("content encoding=%q, want gzip", recorder.Header().Get("Content-Encoding"))
+						}
+						if nilBody {
+							if req.Body != nil {
+								t.Fatalf("nil body was replaced with %T", req.Body)
+							}
+						} else if req.Body != http.NoBody {
+							t.Fatalf("http.NoBody was replaced with %T", req.Body)
+						}
+						if !retrySafeRequest(req) {
+							t.Fatal("empty GET/HEAD lost retry eligibility")
+						}
+						if !edgeRT.cache.CaptureCandidate(req) {
+							t.Fatal("empty GET/HEAD lost cache eligibility")
+						}
+						if !edgeRT.compress.MayApplyRequest(req) {
+							t.Fatal("empty GET/HEAD lost compression eligibility")
+						}
+						if !shouldRetryUpstream(&net.DNSError{Err: "temporary lookup failure", Name: "upstream.invalid", IsTemporary: true}, retrySafeRequest(req)) {
+							t.Fatal("empty GET/HEAD lost failover eligibility")
+						}
+					})
+				}
+			}
+		})
+	}
+}
 
 func TestServerRejectsKnownLengthBodyBeforeUpstream(t *testing.T) {
 	assertOversizedRequestRejected(t, false)
@@ -69,11 +280,20 @@ func TestServerCapsUninspectedUnknownLengthBodies(t *testing.T) {
 		bytes int64
 	}
 	reads := make(chan upstreamRead, 2)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Bind explicitly to IPv4 so this test remains runnable in sandboxes that
+	// prohibit IPv6 listeners. The request still passes through the real
+	// reverse-proxy transport below.
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n, _ := io.Copy(io.Discard, r.Body)
 		reads <- upstreamRead{bytes: n}
 		w.WriteHeader(http.StatusNoContent)
 	}))
+	upstream.Listener = listener
+	upstream.Start()
 	defer upstream.Close()
 
 	cfg := config.Default()
@@ -120,6 +340,14 @@ func TestServerCapsUninspectedUnknownLengthBodies(t *testing.T) {
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status=%d body=%q, want %d", rec.Code, rec.Body.String(), tc.wantStatus)
 			}
+			if tc.wantStatus == http.StatusRequestEntityTooLarge {
+				select {
+				case got := <-reads:
+					t.Fatalf("oversized request reached upstream and read %d bytes", got.bytes)
+				default:
+				}
+				return
+			}
 			select {
 			case got := <-reads:
 				if got.bytes > tc.wantBytes {
@@ -129,6 +357,62 @@ func TestServerCapsUninspectedUnknownLengthBodies(t *testing.T) {
 				t.Fatal("upstream did not receive the request")
 			}
 		})
+	}
+}
+
+func TestServerMapsRequestBodyReadOverloadToServiceUnavailable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = nil
+	cfg.Sites[0].WAF.Enabled = false
+	cfg.Sites[0].WAF.Mode = "off"
+	cfg.APISec.Enabled = false
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelOff,
+		APISecurity: config.ProtectionLevelOff,
+		BotCC:       config.ProtectionLevelOff,
+		ThreatIntel: config.ProtectionLevelOff,
+	}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Preserve any pre-existing permits, then saturate the bounded preflight
+	// pool so this request exercises the server-side overload path without
+	// starting a body reader or touching an upstream.
+	initial := len(preflightBodySlots)
+	for i := 0; i < initial; i++ {
+		<-preflightBodySlots
+	}
+	for i := 0; i < cap(preflightBodySlots); i++ {
+		preflightBodySlots <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < cap(preflightBodySlots); i++ {
+			<-preflightBodySlots
+		}
+		for i := 0; i < initial; i++ {
+			preflightBodySlots <- struct{}{}
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/upload", strings.NewReader("body"))
+	req.ContentLength = -1
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%q, want 503", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 {
+		t.Fatalf("expected one overload event, got %d: %#v", len(sink.entries), sink.entries)
+	}
+	entry := sink.entries[0]
+	if entry.StatusCode != http.StatusServiceUnavailable || entry.Category != "proxy_error" || entry.Metadata["proxy_error"] != "failed to read request" {
+		t.Fatalf("unexpected overload event: %#v", entry)
 	}
 }
 

@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -38,6 +39,14 @@ const (
 // ErrDetectionOverload reports that Guard could not start detector work
 // because every bounded worker slot was already occupied.
 var ErrDetectionOverload = errors.New("detection overload: too many in-flight guards")
+
+var (
+	// ErrRegexMatchTimeout and ErrRegexMatchOverload let callers that need
+	// fail-closed accounting distinguish an incomplete match from a clean
+	// negative result. The legacy bool methods retain their compatibility shape.
+	ErrRegexMatchTimeout  = errors.New("regular expression match timed out")
+	ErrRegexMatchOverload = errors.New("regular expression matcher overloaded")
+)
 
 // regexMatchSlots holds a permit until the match goroutine finishes, even after
 // the caller timed out. That caps leaked workers under ReDoS load.
@@ -77,17 +86,23 @@ func CompileSafe(pattern string) (*BoundedRegex, error) {
 
 // MatchString performs bounded matching with ReDoS protection via deadline.
 func (b *BoundedRegex) MatchString(s string) bool {
+	matched, _ := b.MatchStringStatus(s)
+	return matched
+}
+
+// MatchStringStatus performs the complete match without truncating the
+// subject. Go's regexp engine is RE2-based and linear-time; truncation here
+// would create a security bypass whenever a payload is appended after the old
+// cutoff. Callers that need to surface an incomplete inspection should use the
+// returned error.
+func (b *BoundedRegex) MatchStringStatus(s string) (bool, error) {
 	if b == nil || b.re == nil {
-		return false
-	}
-	if len(s) > MaxDecodedBytes {
-		s = s[:MaxDecodedBytes]
+		return false, nil
 	}
 	select {
 	case regexMatchSlots <- struct{}{}:
 	default:
-		// Overload: fail closed (no-match) rather than spawning more workers.
-		return false
+		return false, ErrRegexMatchOverload
 	}
 	done := make(chan bool, 1)
 	go func() {
@@ -100,24 +115,27 @@ func (b *BoundedRegex) MatchString(s string) bool {
 		if !timer.Stop() {
 			<-timer.C
 		}
-		return result
+		return result, nil
 	case <-timer.C:
-		return false // Treat timeout as no-match to prevent ReDoS
+		return false, ErrRegexMatchTimeout
 	}
 }
 
 // Match performs bounded matching on a byte slice with ReDoS protection.
 func (b *BoundedRegex) Match(b2 []byte) bool {
+	matched, _ := b.MatchStatus(b2)
+	return matched
+}
+
+// MatchStatus is the byte-slice counterpart of MatchStringStatus.
+func (b *BoundedRegex) MatchStatus(b2 []byte) (bool, error) {
 	if b == nil || b.re == nil {
-		return false
-	}
-	if len(b2) > MaxDecodedBytes {
-		b2 = b2[:MaxDecodedBytes]
+		return false, nil
 	}
 	select {
 	case regexMatchSlots <- struct{}{}:
 	default:
-		return false
+		return false, ErrRegexMatchOverload
 	}
 	done := make(chan bool, 1)
 	go func() {
@@ -130,9 +148,9 @@ func (b *BoundedRegex) Match(b2 []byte) bool {
 		if !timer.Stop() {
 			<-timer.C
 		}
-		return result
+		return result, nil
 	case <-timer.C:
-		return false
+		return false, ErrRegexMatchTimeout
 	}
 }
 
@@ -171,12 +189,28 @@ func isQuantifier(b byte) bool {
 }
 
 // Guard runs a detection function with panic recovery and timeout protection.
-//
-// GuardSync is the hot-path form and is what the request pipeline uses; this
-// variant exists for callers that genuinely need to abandon a detector that has
-// hung, which is why it pays for a goroutine and a wall-clock timer.
+// It is the compatibility wrapper for callers without a context; request
+// paths should prefer GuardContext so cancellation can end the wait early.
 func Guard[T any](fn func() (T, error)) (result T, err error) {
+	return GuardContext(context.Background(), fn)
+}
+
+// GuardContext runs a detector with panic recovery, a hard upper bound, and
+// caller cancellation. The detector runs in a bounded goroutine so a function
+// that ignores ctx cannot hold the request path past its budget. When the
+// caller returns early, the guard slot remains occupied until the detector
+// exits; this preserves the leak bound enforced by guardSlots.
+//
+// A nil context is treated like context.Background for compatibility with
+// callers that do not have a request scope.
+func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, err error) {
 	var zero T
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return zero, ctxErr
+	}
 	select {
 	case guardSlots <- struct{}{}:
 	default:
@@ -192,28 +226,58 @@ func Guard[T any](fn func() (T, error)) (result T, err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				stack := string(debug.Stack())
-				done <- struct {
+				out := struct {
 					res T
 					err error
 				}{
 					err: fmt.Errorf("detector panic recovered: %v\nstack: %s", r, truncate(stack, 500)),
 				}
+				// The caller may have returned on ctx.Done. Never let panic
+				// reporting block forever on the one-slot result channel.
+				select {
+				case done <- out:
+				default:
+				}
 			}
 		}()
+		// Avoid starting detector work when cancellation won the race between
+		// admission and goroutine scheduling. A detector that is already running
+		// is still allowed to unwind; its slot remains held until it exits.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			select {
+			case done <- struct {
+				res T
+				err error
+			}{err: ctxErr}:
+			default:
+			}
+			return
+		}
 		res, e := fn()
-		done <- struct {
+		out := struct {
 			res T
 			err error
 		}{res, e}
+		select {
+		case done <- out:
+		default:
+		}
 	}()
 
 	timer := time.NewTimer(2 * time.Second)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
 	select {
 	case r := <-done:
-		if !timer.Stop() {
-			<-timer.C
-		}
 		return r.res, r.err
+	case <-ctx.Done():
+		return zero, ctx.Err()
 	case <-timer.C:
 		return zero, fmt.Errorf("detection deadline exceeded (2s)")
 	}

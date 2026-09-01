@@ -58,6 +58,10 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not build the dashboard"
   grep -Fq 'bash scripts/ci/run-corpus-governance.sh' "$workflow" ||
     fail "${workflow} does not run the corpus governance gate"
+  grep -Fq 'bash scripts/ci/run-semantic-benchmark.sh' "$workflow" ||
+    fail "${workflow} does not capture the semantic performance baseline"
+  grep -Fq 'bash scripts/ci/lock-evaluation-artifact_test.sh' "$workflow" ||
+    fail "${workflow} does not run the evaluation artifact lock smoke test"
   grep -Fq 'bash scripts/ci/run-governed-semantic-gate.sh' "$workflow" ||
     fail "${workflow} does not run the governed semantic gate"
   for governance_var in \
@@ -74,6 +78,29 @@ for workflow in "${workflow_files[@]}"; do
   grep -Fq 'TPR_MIN_ATTACK:' "$workflow" ||
     fail "${workflow} does not pin the attack minimum for the semantic gate"
 done
+
+# Keep the local structured benchmark target behavior aligned with the script:
+# command-line Make overrides must reach the runner instead of silently falling
+# back to its defaults.
+makefile_bench_line="$(make -n semantic-bench-report SEMANTIC_BENCH_TIME=17ms SEMANTIC_BENCH_COUNT=2 SEMANTIC_BENCH_CPU=3 SEMANTIC_BENCH_OUTPUT=/tmp/semantic-bench-check.json 2>/dev/null)" ||
+  fail "Makefile semantic-bench-report dry run failed"
+grep -Fq 'SEMANTIC_BENCH_TIME="17ms"' <<<"$makefile_bench_line" ||
+  fail "Makefile semantic-bench-report does not pass SEMANTIC_BENCH_TIME"
+grep -Fq 'SEMANTIC_BENCH_COUNT="2"' <<<"$makefile_bench_line" ||
+  fail "Makefile semantic-bench-report does not pass SEMANTIC_BENCH_COUNT"
+grep -Fq 'SEMANTIC_BENCH_CPU="3"' <<<"$makefile_bench_line" ||
+  fail "Makefile semantic-bench-report does not pass SEMANTIC_BENCH_CPU"
+grep -Fq 'SEMANTIC_BENCH_OUTPUT="/tmp/semantic-bench-check.json"' <<<"$makefile_bench_line" ||
+  fail "Makefile semantic-bench-report does not pass SEMANTIC_BENCH_OUTPUT"
+
+[[ -x scripts/ci/lock-evaluation-artifact.sh ]] ||
+  fail "evaluation artifact lock helper must be executable"
+[[ -x scripts/ci/lock-evaluation-artifact_test.sh ]] ||
+  fail "evaluation artifact lock smoke test must be executable"
+[[ -x scripts/ci/run-semantic-benchmark.sh ]] ||
+  fail "semantic benchmark runner must be executable"
+bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh ||
+  fail "evaluation and benchmark scripts must pass bash syntax validation"
 
 grep -Fq "node-version: ${NODE_VERSION}" .github/workflows/ci.yml ||
   fail "GitHub Actions must pin Node ${NODE_VERSION}"

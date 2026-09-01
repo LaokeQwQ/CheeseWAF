@@ -3,10 +3,12 @@ package semantic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -17,19 +19,21 @@ import (
 
 // TestExternalCorpusBaseline measures the semantic engine against the seven
 // public corpora that are committed under testdata/ but referenced by no Go
-// code. They are the only generalisation coverage the project has: the corpora
+// code. They are historical, quarantine-only research coverage: the corpora
 // the CI gate actually sees (curated_corpus, mined_probe) were written against
-// this engine, so a green gate there is close to a tautology.
+// this engine, so a green gate there is close to a tautology, while these files
+// are not independent blind or release-quality evidence.
 //
 // This test is deliberately OPT-IN and deliberately NOT a gate:
 //
 //	SEMANTIC_EXTERNAL_BASELINE=1 go test -run TestExternalCorpusBaseline ./internal/engine/semantic/
 //
 // It was written to answer "what is the number?" before anyone decides what the
-// threshold should be. Turning it into a pass/fail gate before reading the
+// threshold should be. Turning its rates into a release gate before reading the
 // baseline would put the cart before the horse, and silently lowering TPR_GATE
-// to make it green would be worse than not measuring at all. Every result below
-// is logged, none of it fails the test.
+// to make it green would be worse than not measuring at all. The measured rates
+// never fail this test, but incomplete input coverage and unexpected analyzer
+// errors do fail it so they cannot be mistaken for clean outcomes.
 //
 // Use SEMANTIC_EXTERNAL_BASELINE_OUT=<path> to also write the JSON report.
 func TestExternalCorpusBaseline(t *testing.T) {
@@ -41,11 +45,16 @@ func TestExternalCorpusBaseline(t *testing.T) {
 	ResetProcessCacheForTest()
 
 	analyzer := NewAnalyzer("block", 2)
+	failureDumpPath := strings.TrimSpace(os.Getenv("SEMANTIC_EXTERNAL_BASELINE_FAILS"))
+	if err := resetFailureDump(failureDumpPath); err != nil {
+		t.Fatalf("prepare external baseline failure dump: %v", err)
+	}
 
 	report := &baselineReport{
 		Sources:    make(map[string]*baselineSource),
 		ByCategory: make(map[string]*CategoryMetrics),
 	}
+	report.Provenance = collectBaselineProvenance(externalCorpusPaths())
 	for name := range externalCorpusPaths() {
 		report.Sources[name] = &baselineSource{}
 	}
@@ -62,7 +71,7 @@ func TestExternalCorpusBaseline(t *testing.T) {
 		m := report.Sources[src.name]
 		processed := 0
 		limit := evalMaxCases()
-		fails := &failCollector{path: strings.TrimSpace(os.Getenv("SEMANTIC_EXTERNAL_BASELINE_FAILS"))}
+		fails := &failCollector{path: failureDumpPath}
 		stats, err := security.ForEachRawHTTPJSONLPair(f, shards, shard, src.truth,
 			func(tc security.Case, raw security.RawHTTPCase) error {
 				if limit > 0 && processed >= limit {
@@ -93,6 +102,8 @@ func TestExternalCorpusBaseline(t *testing.T) {
 		report.OverallAttackHit += m.AttackHit
 		report.SkippedUnadaptable += m.SkippedUnadaptable
 		report.SkippedUnbuildable += m.SkippedUnbuildable
+		report.AnalysisIncomplete += m.AnalysisIncomplete
+		report.AnalysisErrors += m.AnalysisErrors
 		report.UnexpectedTotal += m.UnexpectedTotal
 		report.UnexpectedHit += m.UnexpectedHit
 		report.Repaired += m.Repaired
@@ -121,6 +132,12 @@ func TestExternalCorpusBaseline(t *testing.T) {
 		if c.AttackTotal > 0 {
 			c.TPR = float64(c.AttackHit) / float64(c.AttackTotal) * 100
 		}
+	}
+	if report.AnalysisIncomplete > 0 {
+		t.Errorf("external baseline omitted %d cases because semantic input coverage was incomplete", report.AnalysisIncomplete)
+	}
+	if report.AnalysisErrors > 0 {
+		t.Errorf("external baseline encountered %d semantic analysis errors", report.AnalysisErrors)
 	}
 
 	logBaselineReport(t, report)
@@ -190,8 +207,14 @@ type baselineSource struct {
 	// request at all (unparseable targets). SkippedUnbuildable counts records
 	// the engine refused (oversized bodies). Both are reported because dropping
 	// attack samples without counting them inflates TPR.
-	SkippedUnadaptable int  `json:"skipped_unadaptable"`
-	SkippedUnbuildable int  `json:"skipped_unbuildable"`
+	SkippedUnadaptable int `json:"skipped_unadaptable"`
+	SkippedUnbuildable int `json:"skipped_unbuildable"`
+	// AnalysisIncomplete is distinct from adapter/build skips: the request was
+	// constructed, but the analyzer could not cover its input completely. It is
+	// never included in a quality denominator. AnalysisErrors are unexpected
+	// analyzer failures and likewise cannot be treated as clean outcomes.
+	AnalysisIncomplete int  `json:"analysis_incomplete"`
+	AnalysisErrors     int  `json:"analysis_errors"`
 	Capped             bool `json:"capped"`
 	// UnexpectedTotal/Hit track the subset aetherguard itself marks as not
 	// expected to be detected. They are a subset of AttackTotal.
@@ -225,6 +248,7 @@ type baselineSource struct {
 }
 
 type baselineReport struct {
+	Provenance         baselineProvenance          `json:"provenance"`
 	Sources            map[string]*baselineSource  `json:"sources"`
 	ByCategory         map[string]*CategoryMetrics `json:"by_category"`
 	OverallMetrics     EvalMetrics                 `json:"overall"`
@@ -234,6 +258,8 @@ type baselineReport struct {
 	OverallAttackHit   int                         `json:"overall_attack_hit"`
 	SkippedUnadaptable int                         `json:"skipped_unadaptable"`
 	SkippedUnbuildable int                         `json:"skipped_unbuildable"`
+	AnalysisIncomplete int                         `json:"analysis_incomplete"`
+	AnalysisErrors     int                         `json:"analysis_errors"`
 	UnexpectedTotal    int                         `json:"upstream_unexpected_total"`
 	UnexpectedHit      int                         `json:"upstream_unexpected_hit"`
 	Repaired           int                         `json:"repaired_split_payload"`
@@ -259,12 +285,13 @@ type baselineReport struct {
 // every failure to disk rather than just counting them.
 type baselineFailCase struct {
 	Source   string `json:"source"`
-	Type     string `json:"type"` // "FP" (benign flagged) or "FN" (attack missed)
+	Type     string `json:"type"` // "FP", "FN", "INCOMPLETE", or "ERROR"
 	Name     string `json:"name"`
 	Category string `json:"category,omitempty"`
 	Method   string `json:"method"`
 	Target   string `json:"target"`
 	Body     string `json:"body"`
+	Error    string `json:"error,omitempty"`
 	// Headers are dumped because these corpora hide payloads outside the
 	// request line: an ai_waf row carries only an ordinary profile update in
 	// its URL and body while the actual time-based blind injection sits in a
@@ -282,31 +309,132 @@ type failCollector struct {
 	path string
 	file *os.File
 	enc  *json.Encoder
+	err  error
+}
+
+// resetFailureDump starts a fresh opt-in baseline run. The collector is
+// intentionally append-only while sources are streamed so one source cannot
+// erase another; resetting once before the source loop prevents a reused path
+// from retaining stale failures from an earlier run.
+func resetFailureDump(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("failure dump path must not be a symlink: %s", path)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("failure dump path must be a regular file: %s", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect failure dump path: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("truncate failure dump: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close truncated failure dump: %w", err)
+	}
+	return nil
 }
 
 func (c *failCollector) add(fc baselineFailCase) {
-	if c.path == "" {
+	if c.path == "" || c.err != nil {
 		return
 	}
 	if c.file == nil {
 		f, err := os.OpenFile(c.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
-			c.path = ""
+			c.err = fmt.Errorf("open failure dump: %w", err)
 			return
 		}
 		c.file = f
 		c.enc = json.NewEncoder(f)
 	}
-	_ = c.enc.Encode(fc)
+	if err := c.enc.Encode(fc); err != nil {
+		c.err = fmt.Errorf("write failure dump: %w", err)
+	}
 }
 
 func (c *failCollector) Close() error {
-	if c.file == nil {
-		return nil
+	var closeErr error
+	if c.file != nil {
+		closeErr = c.file.Close()
+		c.file = nil
 	}
-	err := c.file.Close()
-	c.file = nil
-	return err
+	if c.err != nil && closeErr != nil {
+		return errors.Join(c.err, closeErr)
+	}
+	if c.err != nil {
+		return c.err
+	}
+	return closeErr
+}
+
+func TestResetFailureDumpReplacesStaleRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "failures.jsonl")
+	if err := os.WriteFile(path, []byte(`{"source":"old","type":"FN"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("seed stale failure dump: %v", err)
+	}
+	if err := resetFailureDump(path); err != nil {
+		t.Fatalf("reset failure dump: %v", err)
+	}
+
+	collector := &failCollector{path: path}
+	collector.add(baselineFailCase{Source: "current", Type: "FP", Name: "fresh"})
+	if err := collector.Close(); err != nil {
+		t.Fatalf("close failure dump: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read failure dump: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("stale rows were retained: got %d lines (%q)", len(lines), string(data))
+	}
+	var got baselineFailCase
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatalf("decode current failure row: %v", err)
+	}
+	if got.Source != "current" || got.Name != "fresh" {
+		t.Fatalf("unexpected current failure row: %+v", got)
+	}
+}
+
+func TestResetFailureDumpRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.jsonl")
+	link := filepath.Join(dir, "failures.jsonl")
+	if err := os.WriteFile(target, []byte("sentinel\n"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := resetFailureDump(link); err == nil {
+		t.Fatal("symlink failure dump path was accepted")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != "sentinel\n" {
+		t.Fatalf("symlink target was modified: %q", string(data))
+	}
+}
+
+func TestFailCollectorReportsOpenError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "failures.jsonl")
+	collector := &failCollector{path: path}
+	collector.add(baselineFailCase{Source: "current", Type: "FP", Name: "fresh"})
+	if err := collector.Close(); err == nil {
+		t.Fatal("failure dump open error was swallowed")
+	}
 }
 
 func measureBaselineCase(t *testing.T, analyzer *Analyzer, tc security.Case, raw security.RawHTTPCase, report *baselineReport, m *baselineSource, sourceName string, fails *failCollector) {
@@ -335,7 +463,18 @@ func measureBaselineCase(t *testing.T, analyzer *Analyzer, tc security.Case, raw
 
 	res, err := analyzer.Detect(context.Background(), reqCtx)
 	if err != nil {
-		t.Errorf("detection error on %s: %v", tc.Name, err)
+		failureType := "ERROR"
+		if errors.Is(err, ErrSemanticInputIncomplete) {
+			m.AnalysisIncomplete++
+			failureType = "INCOMPLETE"
+		} else {
+			m.AnalysisErrors++
+		}
+		fails.add(baselineFailCase{
+			Source: sourceName, Type: failureType, Name: tc.Name, Category: tc.Category,
+			Method: tc.Method, Target: clip(tc.Target), Body: clip(tc.Body),
+			Headers: tc.Header, Evidence: security.FidelityOf(tc).Classes, Error: clip(err.Error()),
+		})
 		return
 	}
 	detected := res != nil && res.Detected
@@ -451,6 +590,9 @@ func logBaselineReport(t *testing.T, report *baselineReport) {
 			name, m.BenignTotal, m.BenignFP, m.EvalMetrics.FPR,
 			m.AttackTotal, m.AttackHit, m.EvalMetrics.TPR,
 			m.SkippedUnadaptable, m.SkippedUnbuildable, m.Repaired+m.RepairedToBody, m.Capped)
+		if m.AnalysisIncomplete > 0 || m.AnalysisErrors > 0 {
+			t.Logf("%-26s   ↳ omitted from rates: incomplete=%d errors=%d", "", m.AnalysisIncomplete, m.AnalysisErrors)
+		}
 		if m.UnexpectedTotal > 0 {
 			t.Logf("%-26s   ↳ upstream-unexpected subset: %d samples, %d detected (%.2f%%)",
 				"", m.UnexpectedTotal, m.UnexpectedHit,
@@ -508,6 +650,10 @@ func logBaselineReport(t *testing.T, report *baselineReport) {
 		t.Logf("DROPPED (not counted in any rate above): unadaptable=%d unbuildable=%d — these make the headline look BETTER than reality",
 			report.SkippedUnadaptable, report.SkippedUnbuildable)
 	}
+	if report.AnalysisIncomplete > 0 || report.AnalysisErrors > 0 {
+		t.Logf("OMITTED (not counted in any rate above): incomplete=%d errors=%d — coverage failures are not clean outcomes",
+			report.AnalysisIncomplete, report.AnalysisErrors)
+	}
 	if report.UnexpectedTotal > 0 {
 		t.Logf("upstream-unexpected subset: %d samples, %d detected (%.2f%%)",
 			report.UnexpectedTotal, report.UnexpectedHit,
@@ -529,9 +675,123 @@ func writeBaselineReport(t *testing.T, report *baselineReport) {
 		t.Errorf("marshal baseline report: %v", err)
 		return
 	}
-	if err := os.WriteFile(out, append(data, '\n'), 0o600); err != nil {
+	if err := writeBaselineReportFile(out, append(data, '\n')); err != nil {
 		t.Errorf("write baseline report to %s: %v", out, err)
 		return
 	}
 	t.Logf("wrote baseline report to %s", out)
+}
+
+// writeBaselineReportFile writes a report without following a final-component
+// symlink and without exposing a partially-written JSON document. The report
+// path is opt-in and user-controlled; keeping its safety contract aligned with
+// the failure-dump path prevents an accidental overwrite outside the intended
+// output file when a stale symlink is reused.
+func writeBaselineReportFile(path string, data []byte) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("baseline report path must not be empty")
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("baseline report path must not be a symlink: %s", path)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("baseline report path must be a regular file: %s", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect baseline report path: %w", err)
+	}
+
+	parent := filepath.Dir(path)
+	temporary, err := os.CreateTemp(parent, ".semantic-baseline-report.*")
+	if err != nil {
+		return fmt.Errorf("create temporary baseline report: %w", err)
+	}
+	temporaryName := temporary.Name()
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = os.Remove(temporaryName)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("restrict temporary baseline report: %w", err)
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write temporary baseline report: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync temporary baseline report: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close temporary baseline report: %w", err)
+	}
+	if err := installBaselineReport(temporaryName, path, parent); err != nil {
+		return fmt.Errorf("install baseline report: %w", err)
+	}
+	removeTemporary = false
+	return nil
+}
+
+// Windows' MoveFile call does not replace an existing destination. Move the
+// already-validated regular file aside there, then restore it if installation
+// fails. Unix-like platforms retain the single atomic rename path.
+func installBaselineReport(temporaryName, path, parent string) error {
+	if runtime.GOOS != "windows" {
+		return os.Rename(temporaryName, path)
+	}
+
+	backupName, err := moveExistingBaselineReportAside(path, parent)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryName, path); err != nil {
+		if backupName != "" {
+			if restoreErr := os.Rename(backupName, path); restoreErr != nil {
+				return errors.Join(err, fmt.Errorf("restore previous baseline report: %w", restoreErr))
+			}
+		}
+		return err
+	}
+	if backupName != "" {
+		_ = os.Remove(backupName)
+	}
+	return nil
+}
+
+func moveExistingBaselineReportAside(path, parent string) (string, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspect existing baseline report: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("baseline report path must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("baseline report path must be a regular file: %s", path)
+	}
+
+	placeholder, err := os.CreateTemp(parent, ".semantic-baseline-report-backup.*")
+	if err != nil {
+		return "", fmt.Errorf("create baseline report backup placeholder: %w", err)
+	}
+	backupName := placeholder.Name()
+	if err := placeholder.Close(); err != nil {
+		_ = os.Remove(backupName)
+		return "", fmt.Errorf("close baseline report backup placeholder: %w", err)
+	}
+	if err := os.Remove(backupName); err != nil {
+		return "", fmt.Errorf("remove baseline report backup placeholder: %w", err)
+	}
+	if err := os.Rename(path, backupName); err != nil {
+		return "", fmt.Errorf("move existing baseline report aside: %w", err)
+	}
+	return backupName, nil
 }
