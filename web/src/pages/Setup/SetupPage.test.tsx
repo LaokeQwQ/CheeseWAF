@@ -366,7 +366,7 @@ describe('SetupPage', () => {
   it('types the headline one language at a time so the two never mix', async () => {
     render(<SetupPage />);
     const headline = () => screen.getByTestId('setup-language-typewriter');
-    const typed = () => (headline().textContent ?? '').replace('|', '');
+    const typed = () => (headline().textContent ?? '').replaceAll('|', '');
     const isOneLanguage = (text: string) =>
       'setup.languageTitleZh'.startsWith(text) || 'setup.languageTitleEn'.startsWith(text);
 

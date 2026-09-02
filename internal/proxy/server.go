@@ -2030,7 +2030,10 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 	// vanish without a trace. Record it, count it, and log it.
 	if err := s.logSink.Write(ctx, entry); err != nil {
 		storage.RecordLogWriteFailure()
-		log.Printf("proxy: log sink write failed trace_id=%q site_id=%q action=%q: %v", entry.TraceID, entry.SiteID, entry.Action, err)
+		// Keep the diagnostic bounded to request-independent identifiers. Sink
+		// errors may echo backend responses or serialized request data, including
+		// sensitive HTTP headers, so never write the error text to the process log.
+		log.Printf("proxy: log sink write failed trace_id=%q site_id=%q action=%q", entry.TraceID, entry.SiteID, entry.Action)
 	}
 	s.enqueueReview(ctx, reqCtx, action)
 }
