@@ -1,6 +1,8 @@
 # Keep automated reviews enabled for every protected promotion branch. The
 # repository default branch is included automatically; these entries extend
-# coverage to the development and canary promotion stages as well.
+# coverage to the development and canary promotion stages as well. The review
+# provider caps a run at 100 files, so select the production/security paths
+# here; the excluded fixtures and tests remain enforced by CI.
 language: en-US
 reviews:
   profile: chill
@@ -14,7 +16,27 @@ reviews:
       - "^canary$"
       - "^master$"
   path_filters:
-    - "**"
+    - "internal/engine/semantic/**"
+    - "internal/security/**"
+    - "internal/config/**"
+    - "internal/engine/budget_metrics.go"
+    - "internal/engine/context.go"
+    - "internal/engine/pipeline.go"
+    - "internal/engine/sandbox.go"
+    - "internal/engine/types.go"
+    - "scripts/ci/**"
+    - "deploy/docker/**"
+    - ".github/workflows/**"
+    - ".forgejo/workflows/**"
+    - "configs/**"
+    - "web/scripts/**"
+    - "web/vite.config.ts"
+    - "README_CN.md"
+    - ".coderabbit.yaml"
+    - "!**/*_test.go"
+    - "!**/*_test.sh"
+    - "!**/*_test.py"
+    - "!internal/engine/semantic/testdata/**"
     - "!**/*.lock"
     - "!**/go.sum"
     - "!**/*.png"

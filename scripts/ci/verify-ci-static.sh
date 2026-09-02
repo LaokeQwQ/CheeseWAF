@@ -583,6 +583,11 @@ for replacement in \
   [[ "$(grep -Fc "$replacement" deploy/docker/Dockerfile)" -ge 2 ]] ||
     fail "Dockerfile must assert config rewrite: ${replacement}"
 done
+grep -Fq ',/^[[:space:]]*read_timeout:/' deploy/docker/Dockerfile ||
+  fail "Dockerfile admin TLS rewrite must stop at the read_timeout key"
+if grep -Fq ',/^[[:space:]]*read_timeout:[[:space:]]*$/' deploy/docker/Dockerfile; then
+  fail "Dockerfile admin TLS rewrite must allow a read_timeout value"
+fi
 grep -Fq "before 06:00 on tuesday" renovate.json ||
   fail "Renovate must not overlap Dependabot's Monday maintenance window"
 grep -A2 '"enabledManagers"' renovate.json | grep -Fq '"dockerfile"' ||

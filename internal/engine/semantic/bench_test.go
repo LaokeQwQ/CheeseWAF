@@ -337,10 +337,9 @@ const (
 	pipelineLatencyP99BudgetUs = 2000
 )
 
-// Race builds need a separate budget because the detector instruments every
-// channel hand-off and mutex, and this pipeline is almost nothing but those.
-// Keep the p99 multiplier unchanged; the CI failure was specifically the
-// average budget.
+// Instrumented builds need separate budgets because the detector instruments
+// every channel hand-off and mutex, and this pipeline is almost nothing but
+// those. Coverage counters add a second, smaller cost to each statement.
 //
 // The race detector instruments every channel hand-off and mutex, and this
 // pipeline is almost nothing but those: the measured avg goes from ~60µs to
@@ -348,13 +347,15 @@ const (
 // on an otherwise unchanged pipeline, which is worse than having no gate at
 // all because it trains people to re-run CI instead of investigating.
 //
-// Ubuntu race CI measured an average of 2.819ms on an otherwise unchanged
-// pipeline. A 15x average multiplier gives a round 3ms budget, enough to cover
-// that instrumented baseline while still failing a sustained regression. The
-// precise 200µs budget remains enforced by non-race runs.
+// Ubuntu and Windows race CI measured averages of 2.819ms and 3.401ms on an
+// otherwise unchanged pipeline. A 20x average multiplier gives a round 4ms
+// budget, enough to cover that instrumented baseline and ordinary hosted-runner
+// contention while still failing a sustained regression. The precise 200µs
+// budget remains enforced by an uninstrumented run.
 const (
-	raceLatencyAvgMultiplier = 15
-	raceLatencyP99Multiplier = 10
+	raceLatencyAvgMultiplier  = 20
+	raceLatencyP99Multiplier  = 15
+	coverageLatencyMultiplier = 2
 )
 
 // latencyBudgets returns the avg and p99 budgets for this build.
@@ -363,6 +364,10 @@ func latencyBudgets() (avg, p99 float64) {
 	if raceDetectorEnabled() {
 		avg *= raceLatencyAvgMultiplier
 		p99 *= raceLatencyP99Multiplier
+	}
+	if testing.CoverMode() != "" {
+		avg *= coverageLatencyMultiplier
+		p99 *= coverageLatencyMultiplier
 	}
 	return avg, p99
 }
