@@ -31,6 +31,7 @@ reviews:
     - "configs/**"
     - "web/scripts/**"
     - "web/vite.config.ts"
+    - "web/package.json"
     - "README_CN.md"
     - ".coderabbit.yaml"
     - "!**/*_test.go"

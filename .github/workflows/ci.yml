@@ -146,6 +146,9 @@ jobs:
           path: /tmp/cheesewaf-semantic-benchmark.json
           if-no-files-found: error
           retention-days: 30
+      - name: Enforce uninstrumented semantic latency budget
+        shell: bash
+        run: bash scripts/ci/go-env.sh go test -run '^TestPipelineLatency$' -count=1 ./internal/engine/semantic
       - name: Enforce coverage floor
         shell: bash
         run: bash scripts/ci/verify-go-quality.sh coverage
